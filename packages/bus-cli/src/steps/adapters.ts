@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { HERMES_PLUGIN } from "@oa/bus-adapter-hermes";
 import {
   type Doc,
   jsoncValue,
@@ -43,13 +44,19 @@ import {
   removeCodexEntry,
   upsertCodexEntry,
 } from "./codex.ts";
+import {
+  hermesPluginDir,
+  installHermes,
+  pluginState,
+  uninstallHermes,
+} from "./hermes.ts";
 
 export type Exec = (
   cmd: string,
   args: string[],
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
-export type Harness = "claude" | "opencode" | "pi" | "omp" | "codex";
+export type Harness = "claude" | "opencode" | "pi" | "omp" | "codex" | "hermes";
 
 export type AdapterDeps = {
   /** The user's home: harness configs live under it. */
@@ -61,7 +68,7 @@ export type AdapterDeps = {
   /** The argv that runs the CLI: `[node, <OA_BUS_HOME>/bin/dist/index.js]`, or one executable. */
   busBin: string[];
   /** `pi` is the one extension file Pi and oh-my-pi both load. */
-  assets: { pi: string; opencodePlugin: string };
+  assets: { pi: string; opencodePlugin: string; hermes?: string };
   which: (cmd: string) => boolean;
   exec: Exec;
   /** The Codex desktop app's bundle; undefined where there is none to look for. */
@@ -80,6 +87,8 @@ export type InstallResult = {
   sharedPiFile?: string;
   /** Codex was configured, but no `codex` binary was found to wake its threads with. */
   codexNoWake: boolean;
+  /** Hermes's plugin was installed: running Hermes processes load it only after a restart. */
+  hermesRestart: boolean;
 };
 export type UninstallResult = {
   removed: Harness[];
@@ -94,12 +103,21 @@ export type UninstallResult = {
 /** The harness entry (MCP server, OpenCode plugin) name. OpenBus uses `openbus`: both can be installed. */
 export const HARNESS_ENTRY = "oa_bus";
 const NAME = HARNESS_ENTRY;
-const HARNESSES: Harness[] = ["claude", "opencode", "pi", "omp", "codex"];
+const HARNESSES: Harness[] = [
+  "claude",
+  "opencode",
+  "pi",
+  "omp",
+  "codex",
+  "hermes",
+];
 
 /** The shipped Pi (and oh-my-pi) extension and OpenCode TUI plugin. */
 export const readAssets = (): AdapterDeps["assets"] => ({
   pi: readFileSync(PI_EXTENSION, "utf8"),
   opencodePlugin: readFileSync(OPENCODE_TUI_PLUGIN, "utf8"),
+  // A folder, not text: the plugin is several Python files.
+  hermes: HERMES_PLUGIN,
 });
 
 /** The bus home when it is not `<home>/.oa-bus`: the one value a harness entry must carry. */
@@ -532,6 +550,11 @@ const install: Record<Harness, Step> = {
     }
     return "done";
   },
+
+  // Hermes loads a Python plugin folder; its own CLI enables it.
+  async hermes(deps) {
+    return installHermes(deps);
+  },
 };
 
 // Uninstall works from the files, so it also cleans up after a harness the
@@ -628,6 +651,10 @@ const uninstall: Record<Harness, Step> = {
     rmSync(p.codexBin, { force: true });
     return saved || pinned ? "done" : "none";
   },
+
+  async hermes(deps) {
+    return uninstallHermes(deps);
+  },
 };
 
 async function each(
@@ -673,6 +700,7 @@ export async function installAdapters(
       ? { sharedPiFile: paths(deps).pi }
       : {}),
     codexNoWake: done.includes("codex") && notes.includes(CODEX_NO_BIN),
+    hermesRestart: done.includes("hermes"),
   };
 }
 
@@ -699,6 +727,8 @@ export type AdapterState = "configured" | "missing" | "absent";
 /** Read-only: whether each harness on PATH has Open Artifacts bus registered. Never execs. */
 export function checkAdapters(
   deps: Pick<AdapterDeps, "home" | "busHome" | "env" | "which" | "codexApp"> & {
+    /** The shipped Hermes plugin folder to compare with; the package's own by default. */
+    hermesPlugin?: string;
     /** The argv entries run, when known without writing: Codex's command is compared too. */
     busBin?: string[];
   },
@@ -769,6 +799,15 @@ export function checkAdapters(
         ),
         deps.busBin !== undefined,
       ),
+    ),
+    // Files only (this never execs): whether Hermes enabled it is hermesEnabled's.
+    hermes: state(
+      "hermes",
+      () =>
+        pluginState(
+          hermesPluginDir(deps.home, deps.env ?? {}),
+          deps.hermesPlugin ?? HERMES_PLUGIN,
+        ) === "current",
     ),
   };
 }

@@ -24,6 +24,7 @@ import {
   installAdapters,
   readAssets,
 } from "../steps/adapters.ts";
+import { hermesEnabled } from "../steps/hermes.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
 import { LoginFailed, login } from "./login.ts";
@@ -180,6 +181,7 @@ async function harnessesStep(
   else if (out.skipped.length === 0) say(ctx, c.noHarness());
   if (out.sharedPiFile) say(ctx, c.sharedPiFile());
   if (out.codexNoWake) say(ctx, c.codexNoWake());
+  if (out.hermesRestart) say(ctx, c.hermesRestart());
   for (const s of out.skipped)
     say(ctx, await skippedLines(ctx, s.harness, s.reason));
   if (out.installed.includes("opencode"))
@@ -361,19 +363,21 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
     label: "Harnesses configured",
     failed: "Harnesses not configured",
     action: `Run ${BUS_CMD} to configure them.`,
-    check: async (ctx) =>
-      Object.values(
-        checkAdapters({
-          home: ctx.userHome,
-          busHome: ctx.home,
-          env: ctx.env,
-          which: ctx.which,
-          codexApp: ctx.codexApp,
-          busBin: ctx.service.argv?.(),
-        }),
-      ).includes("missing")
-        ? "todo"
-        : "done",
+    check: async (ctx) => {
+      const wiring = checkAdapters({
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        which: ctx.which,
+        codexApp: ctx.codexApp,
+        busBin: ctx.service.argv?.(),
+      });
+      if (Object.values(wiring).includes("missing")) return "todo";
+      // The plugin files can be right while Hermes has it disabled.
+      if (wiring.hermes === "configured" && !(await hermesEnabled(ctx)))
+        return "todo";
+      return "done";
+    },
     apply: (ctx) => harnessesStep(ctx, opts.hub),
   },
   {

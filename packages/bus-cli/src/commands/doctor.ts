@@ -32,6 +32,7 @@ import {
   readToml,
   sandboxRisk,
 } from "../steps/codex.ts";
+import { hermesEnabled } from "../steps/hermes.ts";
 import { errorTail } from "./login.ts";
 import { type Healthz, healthzBody, hostOf, updateTarget } from "./status.ts";
 
@@ -220,7 +221,14 @@ export async function doctor(ctx: Ctx): Promise<number> {
     codexApp: ctx.codexApp,
     busBin: ctx.service.argv?.(),
   });
-  for (const h of ["claude", "opencode", "pi", "omp", "codex"] as Harness[]) {
+  for (const h of [
+    "claude",
+    "opencode",
+    "pi",
+    "omp",
+    "codex",
+    "hermes",
+  ] as Harness[]) {
     if (wiring[h] === "absent") continue;
     let version: string | undefined;
     if (h === "opencode") {
@@ -235,7 +243,11 @@ export async function doctor(ctx: Ctx): Promise<number> {
         continue;
       }
     }
-    if (wiring[h] === "configured") pass(c.wired(h, version));
+    if (
+      wiring[h] === "configured" &&
+      (h !== "hermes" || (await hermesEnabled(ctx)))
+    )
+      pass(c.wired(h, version));
     else fail(c.notWired(h));
     if (h === "claude") {
       const settings = join(

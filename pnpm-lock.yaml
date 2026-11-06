@@ -773,6 +773,9 @@ importers:
       '@oa/bus-adapter-claude-code':
         specifier: workspace:*
         version: link:../bus-adapter-claude-code
+      '@oa/bus-adapter-hermes':
+        specifier: workspace:*
+        version: link:../bus-adapter-hermes
       '@oa/bus-adapter-mcp-json':
         specifier: workspace:*
         version: link:../bus-adapter-mcp-json
