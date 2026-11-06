@@ -31,6 +31,11 @@ const touch = () =>
 export const pinHint = () =>
   touch() ? "Tap to place a pin" : "Click to place a pin";
 
+/** "Esc to cancel", on a device with a keyboard only: touch has the Select button. */
+function EscHint() {
+  return touch() ? null : <span> · Esc to cancel</span>;
+}
+
 /** Select and Pin tools for images and pdf pages (#1490). */
 function Tools({ api }: { api: CommentsApi }) {
   if (!api.pinFormat || !api.canComment) return null;
@@ -54,7 +59,12 @@ function Tools({ api }: { api: CommentsApi }) {
           Pin
         </Button>
       </div>
-      {api.mode === "pin" && <p className={`${TXT} ${MUTED}`}>{pinHint()}</p>}
+      {api.mode === "pin" && (
+        <p className={`${TXT} ${MUTED}`}>
+          <span>{pinHint()}</span>
+          <EscHint />
+        </p>
+      )}
     </div>
   );
 }
@@ -68,7 +78,10 @@ export function PinBar() {
       role="status"
       className="fixed bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-card px-3 py-1 shadow-md"
     >
-      <span className={`${TXT} whitespace-nowrap`}>{pinHint()}</span>
+      <span className={`${TXT} whitespace-nowrap`}>
+        <span>{pinHint()}</span>
+        <EscHint />
+      </span>
       <Button size="xs" variant="ghost" onClick={() => api.setMode("select")}>
         Select
       </Button>

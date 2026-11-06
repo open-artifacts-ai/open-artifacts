@@ -181,6 +181,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     ).toBeInTheDocument();
     fireEvent.click(await tool("Pin"));
     expect(await screen.findByText("Click to place a pin")).toBeInTheDocument();
+    expect(screen.getByText(/Esc to cancel/)).toBeInTheDocument();
     await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("pin"));
     // Esc leaves pin mode.
     fireEvent.keyDown(document.body, { key: "Escape" });
@@ -195,6 +196,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     await col();
     fireEvent.click(await tool("Pin"));
     expect(await screen.findByText("Tap to place a pin")).toBeInTheDocument();
+    expect(screen.queryByText(/Esc to cancel/)).toBeNull();
   });
 
   it("the frame's Esc (comment.escape) leaves pin mode", async () => {
