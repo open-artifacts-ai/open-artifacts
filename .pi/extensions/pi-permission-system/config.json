@@ -545,17 +545,57 @@
         "action": "deny",
         "reason": "Forcing a worktree removal can drop uncommitted work: commit and push first, then remove without --force, or ask your human."
       },
-      "git worktree add*--force*": {
+      "git worktree add*--f*": {
         "action": "deny",
-        "reason": "Forcing a worktree add can overwrite a checked-out branch: drop --force, or ask your human."
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
       },
       "git worktree add* -f*": {
         "action": "deny",
-        "reason": "Forcing a worktree add can overwrite a checked-out branch: drop --force, or ask your human."
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
       },
-      "git worktree add*--for*": {
+      "git worktree add* -?f*": {
         "action": "deny",
-        "reason": "Forcing a worktree add can overwrite a checked-out branch: drop --force, or ask your human."
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add* -??f*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*\"*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*'*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*\\*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*$*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*`*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*{*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*[*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*\t*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add* -B*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
       }
     },
     "mcp": {
