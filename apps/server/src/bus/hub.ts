@@ -34,8 +34,10 @@ import {
   utf8Bytes,
 } from "@oa/bus-protocol";
 import {
+  BUS_LINK_MAX,
   BUS_ROLE_MAX,
   type BusAgent,
+  type BusLink,
   type BusRole,
   type BusRoleProposal,
 } from "@oa/shared";
@@ -49,6 +51,14 @@ import {
 } from "../services/bus.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
+import {
+  addLink,
+  isLinked,
+  linkedNamespaces,
+  listLinks,
+  type PutLinkResult,
+  removeLink,
+} from "./links.js";
 import {
   type DecideResult,
   decideProposal,
@@ -261,6 +271,7 @@ const HUB_CAPS = [
   BUS_CAPS.roles,
   BUS_CAPS.ids,
   BUS_CAPS.mailbox,
+  BUS_CAPS.links,
 ];
 
 /**
@@ -272,6 +283,16 @@ const HUB_CAPS = [
 const mailboxGated = (ws: WebSocket | null): boolean => {
   const caps = ws ? attachmentOf(ws)?.caps : undefined;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.mailbox);
+};
+
+/**
+ * Project links (#1567, BUS_CAPS.links): a socket's roster and sends reach the
+ * namespaces linked to its own only when its hello listed it. Fails closed,
+ * like renameGated: any other socket sees today's isolation.
+ */
+const linksGated = (ws: WebSocket | null): boolean => {
+  const caps = ws ? attachmentOf(ws)?.caps : undefined;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.links);
 };
 
 /**
@@ -475,6 +496,39 @@ function rosterAudience(
   sql: SqlStorage,
   changed: string[],
   machines: string[],
+  linkMachines: ReadonlySet<string>,
+): Map<string, string[]> {
+  const out = directAudience(sql, changed, machines);
+  // #1567: a namespace linked to a changed one sees its agents too, so the
+  // machines hosting agents there hear `roster_changed{theirs}` as well.
+  const wanted = new Set(changed);
+  const heard = new Set<string>();
+  for (const x of changed)
+    for (const r of linkedNamespaces(sql, OWNER_ORG_ID, x))
+      if (!wanted.has(r)) heard.add(r);
+  for (const r of heard)
+    for (const row of all<{ machineId: string }>(
+      sql,
+      "select distinct machine_id as machineId from agents where org_id = ? and namespace = ? and live = 1",
+      OWNER_ORG_ID,
+      r,
+    )) {
+      // Only a links-capable machine can use the extra frame.
+      if (!linkMachines.has(row.machineId)) continue;
+      const cur = out.get(row.machineId);
+      // `changed` itself is shared by every global machine: copy, never push.
+      if (cur === changed) out.set(row.machineId, [...changed, r]);
+      else if (cur) {
+        if (!cur.includes(r)) cur.push(r);
+      } else out.set(row.machineId, [r]);
+    }
+  return out;
+}
+
+function directAudience(
+  sql: SqlStorage,
+  changed: string[],
+  machines: string[],
 ): Map<string, string[]> {
   const out = new Map<string, string[]>();
   const all_ = (m: string) => out.set(m, changed);
@@ -519,7 +573,12 @@ function rosterAudience(
  * What changed: the namespaces of the agents that changed, and whether any of
  * them is global (a global appears in every namespace's list).
  */
-type RosterChange = { namespaces: string[]; global: boolean };
+type RosterChange = {
+  namespaces: string[];
+  global: boolean;
+  /** #1567: a link change; only links-capable sockets hear it. */
+  linksOnly?: boolean;
+};
 
 /**
  * A global change reaches every daemon: one `roster_changed{ns}` for each
@@ -557,14 +616,26 @@ function notifyRoster(
   if (changed.length === 0) return;
   const sockets = ctx
     .getWebSockets(DAEMON_TAG)
-    .filter((w) => w !== except && w.readyState === OPEN && !isReplaced(w));
+    .filter(
+      (w) =>
+        w !== except &&
+        w.readyState === OPEN &&
+        !isReplaced(w) &&
+        (change.linksOnly !== true || linksGated(w)),
+    );
   if (sockets.length === 0) return;
+  const linkMachines = new Set(
+    sockets
+      .filter((w) => linksGated(w))
+      .map(machineOf)
+      .filter((m): m is string => m !== null),
+  );
   const machines = [
     ...new Set(sockets.map(machineOf).filter((m): m is string => m !== null)),
   ];
   const audience = change.global
     ? everyDaemonAudience(ctx.storage.sql)
-    : rosterAudience(ctx.storage.sql, changed, machines);
+    : rosterAudience(ctx.storage.sql, changed, machines, linkMachines);
   const encoded = new Map<string, string>();
   const frameFor = (namespace: string) => {
     let f = encoded.get(namespace);
@@ -1487,9 +1558,36 @@ function roster(
   formerFields: boolean,
   now: number,
   withAway = false,
+  withLinks = false,
 ): ServerFrame {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
+  // #1567: a links-capable non-global socket also sees the namespaces linked
+  // to its own (direct links only). Own namespace first, then linked ones.
+  const linked =
+    withLinks && agent.global !== 1
+      ? linkedNamespaces(sql, OWNER_ORG_ID, agent.namespace)
+      : [];
+  const nsRank = (ns: string) =>
+    linked.length === 0
+      ? 0
+      : ns === agent.namespace
+        ? 0
+        : linked.includes(ns)
+          ? 1
+          : 2;
+  const byScope = (a: AgentRow, b: AgentRow) =>
+    nsRank(a.namespace) !== nsRank(b.namespace)
+      ? nsRank(a.namespace) - nsRank(b.namespace)
+      : a.namespace === b.namespace
+        ? a.name < b.name
+          ? -1
+          : a.name > b.name
+            ? 1
+            : 0
+        : a.namespace < b.namespace
+          ? -1
+          : 1;
   let rows: AgentRow[];
   if (agent.global === 1) {
     rows = all<AgentRow>(
@@ -1513,25 +1611,29 @@ function roster(
       OWNER_ORG_ID,
       cap,
     );
+    const lived =
+      linked.length === 0
+        ? []
+        : all<AgentRow>(
+            sql,
+            `select ${AGENT_COLS} from agents where org_id = ? and live = 1 and namespace in (select value from json_each(?)) order by namespace, name limit ?`,
+            OWNER_ORG_ID,
+            JSON.stringify(linked),
+            cap,
+          );
     const seen = new Set(local.map((r) => r.id));
-    rows = [...local, ...globals.filter((r) => !seen.has(r.id))]
-      .sort((a, b) =>
-        a.namespace === b.namespace
-          ? a.name < b.name
-            ? -1
-            : a.name > b.name
-              ? 1
-              : 0
-          : a.namespace < b.namespace
-            ? -1
-            : 1,
-      )
+    for (const r of lived) seen.add(r.id);
+    rows = [...local, ...lived, ...globals.filter((r) => !seen.has(r.id))]
+      .sort(byScope)
       .slice(0, cap);
   }
   // #1295: a mailbox-capable socket also sees the agents away in its scope.
   if (withAway) {
+    const scopeNs = [agent.namespace, ...linked];
     const scope =
-      agent.global === 1 ? "" : "and (f.global = 1 or f.namespace = ?)";
+      agent.global === 1
+        ? ""
+        : `and (f.global = 1 or f.namespace in (select value from json_each(?)))`;
     const away = all<AgentRow>(
       sql,
       `select ${AGENT_COLS} from agents where org_id = ? and live = 0 and id in
@@ -1540,27 +1642,15 @@ function roster(
             left join machines m on m.id = a.machine_id
            where f.org_id = ? and f.kind = 'away' and f.expires_at > ?
              and a.live = 0 and m.revoked_at is null ${scope})
-       order by namespace, name limit ?`,
+       order by ${linked.length === 0 ? "" : "(namespace = ?) desc, "}namespace, name limit ?`,
       OWNER_ORG_ID,
       OWNER_ORG_ID,
       now,
-      ...(agent.global === 1 ? [] : [agent.namespace]),
+      ...(agent.global === 1 ? [] : [JSON.stringify(scopeNs)]),
+      ...(linked.length === 0 ? [] : [agent.namespace]),
       cap,
     );
-    if (away.length > 0)
-      rows = [...rows, ...away]
-        .sort((a, b) =>
-          a.namespace === b.namespace
-            ? a.name < b.name
-              ? -1
-              : a.name > b.name
-                ? 1
-                : 0
-            : a.namespace < b.namespace
-              ? -1
-              : 1,
-        )
-        .slice(0, cap);
+    if (away.length > 0) rows = [...rows, ...away].sort(byScope).slice(0, cap);
   }
   const awaySince = new Map<string, number>();
   if (withAway) {
@@ -2051,6 +2141,7 @@ function resolveTarget(
   toName: string,
   toNamespace: string | undefined,
   now: number,
+  withLinks = false,
 ): Resolution {
   const lname = toName.toLowerCase();
   // A former name is never held by two agents in one scope (nameTaken);
@@ -2069,7 +2160,26 @@ function resolveTarget(
     const hit = liveVisibleIn(sql, ns, lname);
     return hit ? { ok: true, agent: hit } : formerIn({ ns });
   };
+  // #1567: the namespaces directly linked to the sender's (never transitive),
+  // for a links-capable non-global sender only. Any other sender has none, so
+  // every path below is today's.
+  const linked =
+    withLinks && sender.global !== 1
+      ? linkedNamespaces(sql, OWNER_ORG_ID, sender.namespace)
+      : [];
   if (sender.global !== 1) {
+    if (toNamespace !== undefined && linked.includes(toNamespace)) {
+      // A linked namespace is reached as a global sender reaches any.
+      const hit = visibleIn(toNamespace);
+      if (hit) return hit;
+      const away = awayAgent(sql, toNamespace, lname, now);
+      if (away) return away;
+      const gone = goneReason(sql, toNamespace, lname);
+      if (gone) return refused(gone);
+      if (heldName(sql, toNamespace, lname, now))
+        return refused("reserved_name");
+      return refused("unknown_agent");
+    }
     if (toNamespace !== undefined && toNamespace !== sender.namespace) {
       // Only a live global homed in X is reachable. Everything else is the
       // same refusal, so it cannot probe what exists in another namespace.
@@ -2086,6 +2196,25 @@ function resolveTarget(
     if (gone) return refused(gone);
     if (heldName(sql, sender.namespace, lname, now))
       return refused("reserved_name");
+    // #1567: only a clean miss in the sender's own namespace (live, role,
+    // former, away, gone, held) tries the linked ones, and only when the send
+    // names no namespace. Live first, then away. One hit resolves; hits in
+    // two of them are ambiguous (the sender names `to_namespace`).
+    if (linked.length > 0 && toNamespace === undefined) {
+      for (const look of [
+        visibleIn,
+        (ns: string) => awayAgent(sql, ns, lname, now),
+      ]) {
+        const found = new Map<string, Resolution>();
+        for (const ns of linked) {
+          const h = look(ns);
+          if (h) found.set(h.ok ? h.agent.id : h.reason, h);
+        }
+        const only = [...found.values()];
+        if (only.length > 1) return refused("ambiguous");
+        if (only[0]) return only[0];
+      }
+    }
     // Other namespaces are invisible and unreachable (spec goal 5, scenario
     // 6): a name live only elsewhere is unknown_agent, so no probe can tell
     // it exists. other_namespace answers an explicit to_namespace only.
@@ -2908,6 +3037,58 @@ export class BusHub extends DurableObject<Env> {
     return deleteRole(this.ctx.storage.sql, OWNER_ORG_ID, id);
   }
 
+  // ------------------------------------------------------------------ links
+
+  #maxLinks = BUS_LINK_MAX;
+
+  /** Tests only (static, not RPC): the link cap (null: BUS_LINK_MAX). */
+  static setMaxLinksForTests(hub: BusHub, max: number | null): void {
+    hub.#maxLinks = max ?? BUS_LINK_MAX;
+  }
+
+  /** #1567: the member's links between namespaces, for the dashboard. Worker only. */
+  async listLinks(): Promise<BusLink[]> {
+    return listLinks(this.ctx.storage.sql, OWNER_ORG_ID, this.#maxLinks);
+  }
+
+  /**
+   * #1567: links namespaces `a` and `b` (idempotent). Both sides' sockets
+   * hear `roster_changed`. Worker only (the member's REST); no frame links.
+   */
+  async putLink(a: string, b: string): Promise<PutLinkResult> {
+    const sql = this.ctx.storage.sql;
+    const existed = isLinked(sql, OWNER_ORG_ID, a, b);
+    const r = addLink(
+      sql,
+      OWNER_ORG_ID,
+      a,
+      b,
+      this.#now(),
+      newId,
+      this.#maxLinks,
+    );
+    if (r.ok && !existed)
+      notifyRoster(this.ctx, {
+        namespaces: [a, b],
+        global: false,
+        linksOnly: true,
+      });
+    logEvent("link_set", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /** #1567: removes link `id`; false when unknown. Both sides hear `roster_changed`. Worker only. */
+  async deleteLink(id: string): Promise<boolean> {
+    const gone = removeLink(this.ctx.storage.sql, OWNER_ORG_ID, id);
+    if (gone)
+      notifyRoster(this.ctx, {
+        namespaces: [gone.a, gone.b],
+        global: false,
+        linksOnly: true,
+      });
+    return gone !== null;
+  }
+
   /**
    * #1372: records an AI agent's role proposal under `tokenHash` (the
    * sha256 of its confirm link's secret, minted by the Worker). Changes no
@@ -3386,7 +3567,9 @@ export class BusHub extends DurableObject<Env> {
           server_version: VERSION,
           // Only to a hello that listed ids: any other client decodes hello_ok
           // strictly, a rename-only one included.
-          ...(hasCap(f, BUS_CAPS.ids) || hasCap(f, BUS_CAPS.mailbox)
+          ...(hasCap(f, BUS_CAPS.ids) ||
+          hasCap(f, BUS_CAPS.mailbox) ||
+          hasCap(f, BUS_CAPS.links)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -3470,6 +3653,7 @@ export class BusHub extends DurableObject<Env> {
               renameGated(ws),
               this.#now(),
               mailboxGated(ws),
+              linksGated(ws),
             ),
           );
         return;
@@ -3789,7 +3973,14 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
     if (key.dropped && this.#sendKeys !== null) this.#sendKeys--;
-    const res = resolveTarget(sql, sender, f.to_name, f.to_namespace, now);
+    const res = resolveTarget(
+      sql,
+      sender,
+      f.to_name,
+      f.to_namespace,
+      now,
+      linksGated(ws),
+    );
     // A reply (`to_id`) goes only to the agent it answers: never to whoever
     // holds the name now (wireReason shows agent_gone only to an ids socket).
     // Role resolution stays inside resolveTarget, before this check.

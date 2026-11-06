@@ -37,6 +37,15 @@ export const BUS_CAPS = {
    * `replaces` (a /clear).
    */
   mailbox: "mailbox",
+  /**
+   * Project links (#1567): the client understands roster rows and routing
+   * across the namespaces its member linked (each row carries its own
+   * `namespace`; a name in two linked namespaces is `ambiguous` until the
+   * send names `to_namespace`). The hub widens a socket's roster and routing
+   * only when its hello listed it, and lists it in `hello_ok.caps`; any other
+   * socket sees today's isolation.
+   */
+  links: "links",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 
