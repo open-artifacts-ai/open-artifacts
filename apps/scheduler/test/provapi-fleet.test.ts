@@ -67,6 +67,30 @@ const NOW = Date.UTC(2026, 10, 2, 12, 0);
 const MIN = 60_000;
 const TARGET = "0.93.0";
 
+/**
+ * Worst measured wall time of one `fleetDue` tick over the local D1, on a host
+ * loaded the way CI loads one: 280 ms. A 19-tick loop below was still running
+ * when its 5,301 ms budget expired (5301 / 19 = 279 ms a tick, load average 20+
+ * on 24 cores, #1575); quiet runs on the same host measure 93 ms a tick and
+ * 25-50 ms for the ticks that do no work. Two real D1 queries per install
+ * dominate.
+ */
+const FLEET_TICK_MS = 280;
+/**
+ * Slack over FLEET_TICK_MS for a runner slower than the worst one measured: the
+ * runs above already spread 93-280 ms a tick, and one busy run put three of
+ * these loops past the 5 s default (5.0 s, 5.4 s and 8.2 s).
+ */
+const FLEET_HEADROOM = 3;
+/**
+ * Per-test timeout for a test that ticks the fleet `n` times, from its own
+ * work: n x worst tick x headroom. The costliest loop here ticks a 2-hour
+ * window every 2 minutes (61 ticks), so its budget is 61 x 280 ms x 3 = 51,240
+ * ms; the 5 s default is 0.3x that loop's own work on a loaded host, which is
+ * what made these loops flake there (#1575).
+ */
+const fleetTicksTimeout = (n: number) => n * FLEET_TICK_MS * FLEET_HEADROOM;
+
 /** Which installs answer /healthz on which version. */
 type Answers = Map<string, string | "down">;
 
@@ -863,7 +887,8 @@ describe("halts", () => {
       const reached = (await fleetJobs()).map((x) => x.install_id);
       expect(reached).toEqual(expect.arrayContaining(last));
       expect(reached.filter((x) => x === held)).toHaveLength(1);
-    });
+      // 29 ticks above, each also re-reading the jobs: 29 x 93 ms x 3.
+    }, fleetTicksTimeout(29));
 
     it("isn't tried again for this target", async () => {
       const { held, f } = await heldMember();
@@ -888,7 +913,8 @@ describe("halts", () => {
           job_id: j?.id,
         }),
       );
-    });
+      // 19 ticks above (t = 2 to 38): 19 x 93 ms x 3.
+    }, fleetTicksTimeout(19));
 
     it("any other failure on a member still halts", async () => {
       const canary = await on(TARGET);
@@ -950,7 +976,8 @@ describe("halts", () => {
         expect((await fleetJobs()).some((x) => x.install_id === id)).toBe(
           false,
         );
-    });
+      // 30 ticks above (t = 2 to 60): 30 x 93 ms x 3.
+    }, fleetTicksTimeout(30));
 
     it("on a batch member: the version halts, what's queued is canceled, and no further install moves", async () => {
       const canary = await on(TARGET);
@@ -984,7 +1011,8 @@ describe("halts", () => {
           ),
         }),
       );
-    });
+      // 30 ticks above (t = 2 to 60): 30 x 93 ms x 3.
+    }, fleetTicksTimeout(30));
   });
 
   it("a failed fleet upgrade halts its version, with a durable mark", async () => {
@@ -2195,7 +2223,8 @@ describe("#1343: FLEET_SECOND (leo) after the canary smoke", () => {
       `fleet_halt:${TARGET}:${leo}`,
     ]);
     expect((await fleetJobs()).map((r) => r.install_id)).not.toContain(rest);
-  });
+    // 10 ticks above: 10 x 93 ms x 3.
+  }, fleetTicksTimeout(10));
 
   it("leo's job canceled before it landed: the batches still start", async () => {
     const canary = await on(TARGET, { created: 0 });
@@ -2217,7 +2246,8 @@ describe("#1343: FLEET_SECOND (leo) after the canary smoke", () => {
     expect(
       (await fleetJobs()).filter((r) => r.install_id === leo),
     ).toHaveLength(1);
-  });
+    // 60 ticks above (t = 2 to 120): 60 x 93 ms x 3.
+  }, fleetTicksTimeout(60));
 
   it("with no canary, FLEET_SECOND and a required smoke are inert: no smoke, nothing queued, no alert", async () => {
     const leo = await on("0.92.0", { created: 0 });
@@ -2234,7 +2264,8 @@ describe("#1343: FLEET_SECOND (leo) after the canary smoke", () => {
     const c = await fleetConditions(f.env, NOW + 120 * MIN);
     expect(c.fleet_halted).toEqual({ open: false, rows: [] });
     expect(c.version_skew.open).toBeNull();
-  });
+    // 61 ticks above (t = 0 to 120): 61 x 93 ms x 3.
+  }, fleetTicksTimeout(61));
 });
 
 describe("#1343: the canary smoke gates the rollout", () => {
@@ -2317,7 +2348,8 @@ describe("#1343: the canary smoke gates the rollout", () => {
     expect((await fleetJobs()).filter((j) => j.kind === "rollback")).toEqual(
       [],
     );
-  });
+    // 10 ticks above (t = 2 to 20): 10 x 93 ms x 3.
+  }, fleetTicksTimeout(10));
 
   it("a transport failure counts once; a second on a later tick halts", async () => {
     const { canary, rest } = await settled();
@@ -2392,7 +2424,8 @@ describe("#1343: the canary smoke gates the rollout", () => {
     expect((await codes(f, NOW + FLEET_BLOCKED_MS)).map((r) => r.code)).toEqual(
       ["smoke_unconfigured", "canary_blocked"],
     );
-  });
+    // 23 ticks above (t = 0 to 45): 23 x 93 ms x 3.
+  }, fleetTicksTimeout(23));
 
   it("out of the tick's time: neither a pass nor a failure", async () => {
     const { canary, rest } = await settled();
@@ -2529,7 +2562,8 @@ describe("#1343: FLEET_SMOKE off keeps the passive soak", () => {
       ).toEqual([]);
       await db.prepare("DELETE FROM jobs").run();
     }
-  });
+    // 32 ticks above (16 a mode, t = 0 to 30): 32 x 93 ms x 3.
+  }, fleetTicksTimeout(32));
 });
 
 describe("#1343: the smoke mark is the canary's own", () => {
@@ -2581,7 +2615,8 @@ describe("#1343: FLEET_SMOKE off follows the per-env FLEET_SOAK_MIN", () => {
     await fleetDue(f.env, NOW + 60 * MIN, f.opts);
     expect(await queued()).toEqual([rest]);
     expect(f.smokes).toEqual([]);
-  });
+    // 30 ticks above (t = 0 to 58): 30 x 93 ms x 3.
+  }, fleetTicksTimeout(30));
 
   it("required ignores FLEET_SOAK_MIN: the 2-minute settle and the smoke", async () => {
     const canary = await on(TARGET, { created: 0 });
@@ -2635,7 +2670,8 @@ describe("#1343: canary_blocked waits out the off-mode soak", () => {
     expect(
       (await fleetConditions(f.env, NOW + 50 * MIN)).fleet_halted.rows,
     ).toEqual([]);
-  });
+    // 26 ticks above (t = 0 to 50): 26 x 93 ms x 3.
+  }, fleetTicksTimeout(26));
 });
 
 describe("#1343: FLEET_SMOKE_SHARE reaches the smoke", () => {
