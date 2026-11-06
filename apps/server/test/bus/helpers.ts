@@ -153,9 +153,9 @@ afterAll(async () => {
                 .one().n,
           ),
         ).toBe(0),
-      { timeout: 3000 },
+      { timeout: 20000 },
     )
-    .catch(() => {});
+    .catch((err) => console.warn("bus index rows left at file end", err));
 });
 
 /** A daemon socket. Every frame it receives must parse with decodeServerFrame. */
