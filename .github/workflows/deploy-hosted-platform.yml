@@ -1,6 +1,6 @@
 # Deploys one env's hosted platform Workers (docs/ops/hosted.md) from a stable
-# release tag, by hand or from prod-release-chain.yml (#1343, workflow_call,
-# always env prod and every target): the platform D1 migrations, the auth and directory
+# release tag, by hand or dispatched by prod-release-chain.yml (#1343, always
+# env prod and every target): the platform D1 migrations, the auth and directory
 # brokers, the provision token's read-back, the provisioner, dispatch, the
 # scheduler, the inventory Worker, the Provisioning API and the
 # zone wiring (DNS, routes, settings: planned, then applied in the same run).
@@ -24,7 +24,7 @@
 # tagged with the release (the "workers/tag" annotation), which
 # redline-staging.yml checks before it starts (scripts/ci/platform-tags.sh).
 name: deploy-hosted-platform
-run-name: deploy-hosted-platform ${{ inputs.env }} ${{ inputs.tag }}
+run-name: deploy-hosted-platform ${{ inputs.env }} ${{ inputs.tag }}${{ inputs.chain_id && format(' [{0}]', inputs.chain_id) || '' }}
 
 on:
   workflow_dispatch:
@@ -53,58 +53,26 @@ on:
         required: true
         default: false
         type: boolean
-  # The automatic prod release chain (prod-release-chain.yml, #1343). The same
-  # inputs, so every gate below runs unchanged; env has no choice type here,
-  # so the input check refuses anything but staging or prod. A called run
-  # shares this file's concurrency group with a manual one, and github.ref
-  # and github.sha are the caller's (workflow_run: main and main's head).
-  workflow_call:
-    inputs:
-      env:
-        type: string
-        required: true
-      tag:
-        type: string
-        required: true
-      targets:
-        type: string
+      # The prod release chain's alone (prod-release-chain.yml, #1343): once
+      # this run holds the concurrency group, before anything deploys, the tag
+      # must be newer than the release prod's scheduler runs, so a manual
+      # deploy of a newer tag that won the group is never downgraded.
+      require_newer:
+        description: "Release chain only: refuse unless the tag is newer than prod's scheduler"
         required: false
-        default: "platform-db,auth-broker,directory-broker,provision-token,provisioner,dispatch,inventory,provisioning,zones,scheduler"
-      reason:
-        type: string
+        default: false
+        type: boolean
+      # The chain's own id: the run-name carries it, so the chain finds
+      # exactly the run it dispatched (scripts/ci/chain-dispatch.ts).
+      chain_id:
+        description: "Release chain only: the chain run's id, shown in the run name"
         required: false
         default: ""
-      verify_only:
-        type: boolean
-        required: false
-        default: false
-      # The chain only: after this run holds the concurrency group, before
-      # anything deploys, the tag must be newer than the release prod's
-      # scheduler runs, so a manual deploy of a newer tag that won the group
-      # is never downgraded.
-      require_newer:
-        type: boolean
-        required: false
-        default: false
-    # OA_OWNER_EMAIL is the one repo-level secret a called run needs, and the
-    # only one the chain passes (never `inherit`). The rest are the
-    # Environment's (hosted-prod-deploy), which reach the job there and win
-    # over anything passed; they are declared only so the job may name them.
-    secrets:
-      OA_OWNER_EMAIL:
-        required: false
-      CLOUDFLARE_API_TOKEN:
-        required: false
-      GOOGLE_CLIENT_SECRET:
-        required: false
-      GOOGLE_DIRECTORY_CLIENT_SECRET:
-        required: false
-      ADMIN_IDENTITIES:
-        required: false
-      FLEET_SMOKE_TOKEN:
-        required: false
-      FLEET_SMOKE_SHARE_TO:
-        required: false
+        type: string
+    # No workflow_call: a called workflow resolves a secret its caller does
+    # not pass to an empty string, even when the job's Environment has it
+    # (run 42109047045). A dispatched run reads every secret from its own
+    # job's Environment (hosted-<env>-deploy), plus the repo's OA_OWNER_EMAIL.
 
 # actions: read lets the release gate read release-please.yml's run and jobs
 # (and the staging-first gate redline-staging.yml's runs); issues: write lets
@@ -134,7 +102,7 @@ jobs:
           OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
         run: |
           set -euo pipefail
-          # workflow_call has no choice type: the env is checked here.
+          # Defense in depth: the env is checked here too.
           case "$DEPLOY_ENV" in staging | prod) ;; *) echo "env must be staging or prod"; exit 1 ;; esac
           # #1084: the scheduler needs the alert address. Refuse here, before
           # any target runs, so a run never stops halfway through the list.
@@ -243,7 +211,7 @@ jobs:
           done
           cp .deploy-logic/packages/provision/src/wfp.ts "$RUNNER_TEMP/main-wfp.ts"
           mkdir "$RUNNER_TEMP/main-ci"
-          for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh staging-smoke-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts; do
+          for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh staging-smoke-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts deploy-token-identity.sh; do
             cp ".deploy-logic/scripts/ci/$f" "$RUNNER_TEMP/main-ci/$f"
           done
           cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"
@@ -268,7 +236,7 @@ jobs:
           TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
         run: bash "$RUNNER_TEMP/main-ci/staging-smoke-gate.sh" "$TAG"
-      - uses: pnpm/action-setup@a7487c7e89a18df4991f7f222e4898a00d66ddda # v4.1.0
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .nvmrc
@@ -286,6 +254,15 @@ jobs:
           DEPLOY_ENV: ${{ inputs.env }}
           OA_OWNER_EMAIL: ${{ secrets.OA_OWNER_EMAIL }}
         run: bash "$RUNNER_TEMP/main-ci/hosted-constants.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"
+      # Before any Cloudflare read or write: the token must be the one pinned
+      # as deploy_token_id in <env>.json (the Environment's, not a repo-level
+      # fallback), and active.
+      - name: The deploy token is the Environment's
+        id: token_identity
+        env:
+          DEPLOY_ENV: ${{ inputs.env }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: bash "$RUNNER_TEMP/main-ci/deploy-token-identity.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"
       # The release chain (#1343) re-checks here, holding the concurrency
       # group and before anything deploys: prod's scheduler (the fleet's
       # target) must run an older release than the tag.
@@ -382,7 +359,7 @@ jobs:
       # The token's own end date (provision's checkToken never sees it): an
       # issue naming only the secret, 30 days ahead.
       - name: The deploy token's expiry
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && steps.token_identity.outcome == 'success' }}
         env:
           DEPLOY_ENV: ${{ inputs.env }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

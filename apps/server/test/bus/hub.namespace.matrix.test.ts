@@ -634,10 +634,13 @@ describe("RPC surface", () => {
     expect(own).toEqual([
       "closeAll",
       "decideRoleProposal",
+      "deleteLink",
       "deleteRole",
+      "listLinks",
       "listRoleProposals",
       "listRoles",
       "proposeRole",
+      "putLink",
       "putRole",
       "revokeMachine",
       "snapshot",

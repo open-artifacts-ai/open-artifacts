@@ -18,6 +18,7 @@ import {
   writeGlobalDirs,
 } from "../src/global.ts";
 import { resolveNamespace } from "../src/namespace.ts";
+import { approvals } from "./approvals.ts";
 
 const tmp = (p = "ob-gl-") => realpathSync(mkdtempSync(join(tmpdir(), p)));
 const noGit = { gitRemote: () => null, gitRoot: () => null };
@@ -40,7 +41,12 @@ describe("C19: the global allowlist", () => {
       },
     );
     const log = vi.fn();
-    const deps = { ...noGit, log, globalFile: globalFile(homeWith([])) };
+    const deps = {
+      ...noGit,
+      log,
+      globalFile: globalFile(homeWith([])),
+      namespacesFile: approvals([repo, "cloned"]),
+    };
     expect(resolveNamespace(repo, deps)).toEqual({
       namespace: "cloned",
       global: false,

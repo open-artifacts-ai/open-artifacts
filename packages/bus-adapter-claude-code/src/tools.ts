@@ -97,7 +97,7 @@ const text = (t: string, isError?: boolean): ToolResult => ({
 });
 
 /** Older daemons send only `live`. */
-const queued = (a: { live: boolean; state?: "live" | "queued" }) =>
+const queued = (a: { live: boolean; state?: "live" | "queued" | "away" }) =>
   (a.state ?? (a.live ? "live" : "queued")) === "queued";
 
 /**
@@ -151,7 +151,16 @@ async function run(
       return text(
         r.agents.length
           ? r.agents
-              .map((a) => rosterLine({ ...a, queued: queued(a) }, now))
+              .map((a) =>
+                rosterLine(
+                  {
+                    ...a,
+                    queued: queued(a),
+                    away: a.state === "away" ? (a.since ?? "") : undefined,
+                  },
+                  now,
+                ),
+              )
               .join("\n")
           : "No agents in your namespace.",
       );

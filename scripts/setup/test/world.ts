@@ -508,7 +508,7 @@ export function world(w: World = {}) {
             };
       }
       if (cmd === "pnpm" && args[0] === "--version")
-        return { code: 0, stdout: "10.11.1\n", stderr: "" };
+        return { code: 0, stdout: "11.25.0\n", stderr: "" };
       const a = args.slice(args.indexOf("wrangler") + 1).join(" ");
       let stdout = "";
       const [, kind, rest] =

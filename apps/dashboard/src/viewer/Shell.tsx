@@ -483,20 +483,20 @@ function Viewer({
   const commentsButton = commentsOn
     ? surface === "column"
       ? {
-          open: cmt.open,
+          open: cmt.listedOpen,
           expanded: columnShown && !panelOpen,
           onClick: () =>
             panelOpen ? setPanel(true, "comments") : setColOpen(!columnShown),
         }
       : surface === "panel"
         ? {
-            open: cmt.open,
+            open: cmt.listedOpen,
             expanded: panelOpen && tab === "comments",
             onClick: () =>
               setPanel(!(panelOpen && tab === "comments"), "comments"),
           }
         : {
-            open: cmt.open,
+            open: cmt.listedOpen,
             expanded: dialogOpen,
             onClick: () => setDialogOpen((o) => !o),
           }

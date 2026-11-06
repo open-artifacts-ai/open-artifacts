@@ -960,7 +960,7 @@ describe("plan enforcement", () => {
     // Reads stay: the team artifact, its versions.
     expect((await send(R.artifact(a), member.cookie)).status).toBe(200);
     expect((await send(R.versions(shared), member.cookie)).status).toBe(200);
-    // The owner: own personal artifacts writable; shares and invites refused.
+    // The owner: own personal artifacts writable and shareable; invites refused.
     expect(
       (
         await send(R.versions(a), owner.cookie, {
@@ -977,14 +977,15 @@ describe("plan enforcement", () => {
         })
       ).status,
     ).toBe(200);
+    // Sharing is free on every plan: only invites and spaces are refused.
     expect(
-      await code(
+      (
         await send(R.shares(a), owner.cookie, {
           method: "PUT",
           body: { email: `s-${tag}@a.com`, role: "viewer" },
-        }),
-      ),
-    ).toEqual([403, "plan_read_only"]);
+        })
+      ).status,
+    ).toBe(200);
     expect(
       await code(
         await send(R.members, owner.cookie, {
@@ -1074,7 +1075,7 @@ describe("plan enforcement", () => {
     expect((await errOf(r)).code).toBe("plan_read_only");
   });
 
-  it("MCP agents: the owner's agent is refused team writes and counted for its data writes", async () => {
+  it("MCP agents: the owner's agent is refused team writes, shares freely and is counted for its data writes", async () => {
     await cache({});
     const sp = await send(R.spaces, owner.cookie, {
       method: "POST",
@@ -1106,7 +1107,8 @@ describe("plan enforcement", () => {
         email: `m-${tag}@a.com`,
         role: "viewer",
       });
-      expect(share.isError).toBe(true);
+      // Sharing is free on every plan.
+      expect(share.isError).toBeFalsy();
       const ok = await tool(client, "artifact_data_set", {
         id: mine,
         collection: "c",

@@ -326,6 +326,11 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
     "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
   "DELETE /api/v1/bus/roles/:id":
     "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
+  // #1567: reached through bus/routes.ts roleWriter, like the role writes.
+  "PUT /api/v1/bus/links":
+    "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
+  "DELETE /api/v1/bus/links/:id":
+    "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
   // #1372: offered only while the bus is on; never on a hosted install.
   "tool:bus_role_propose":
     "bus-off: the tool isn't offered on a hosted install (the bus is off until #1299)",
@@ -353,6 +358,8 @@ export const INTERACTIVE_ONLY: readonly string[] = [
   "PUT /api/v1/bus/share-notices",
   "PUT /api/v1/bus/roles",
   "DELETE /api/v1/bus/roles/:id",
+  "PUT /api/v1/bus/links",
+  "DELETE /api/v1/bus/links/:id",
   // #1300: the /bus page's share-notice form, as PUT R.shareNotices. A
   // public-policy page route (PUBLIC_ROUTES), so no org surface or case:
   // the suite probes scoped routes only (coverageGaps' `scoped`).
@@ -373,6 +380,8 @@ const ERASE_AUTHZ = "POST R.memberErase(id): authorization";
 const SHARE_NOTICE_TESTS = "apps/server/test/follows.test.ts";
 const ROLE_TESTS = "apps/server/test/bus/roles.rest.test.ts";
 const ROLE_D = "roles REST (#1296)";
+const LINK_TESTS = "apps/server/test/bus/links.rest.test.ts";
+const LINK_D = "links REST (#1567)";
 const PROPOSAL_TESTS = "apps/server/test/bus/roles.proposals.test.ts";
 const PROPOSAL_D = "role proposals over MCP (#1372)";
 
@@ -569,6 +578,40 @@ export const DROPPED: Readonly<
         file: ROLE_TESTS,
         describe: ROLE_D,
         test: "a PAT may read but never set or remove; guests, capped and anonymous callers get nothing",
+      },
+    ],
+  },
+  // #1567: the matrix links two probe namespaces (200, or the named conflict
+  // while the caller has no bus) and removes one (204) in an Access session.
+  "org PUT /api/v1/bus/links": {
+    why: "interactive-only",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: LINK_TESTS,
+        describe: LINK_D,
+        test: "the member links, lists, relinks idempotently and unlinks",
+      },
+      {
+        file: LINK_TESTS,
+        describe: LINK_D,
+        test: "a PAT may read but never link or unlink; a machine token, guests, capped and anonymous callers get nothing",
+      },
+    ],
+  },
+  "org DELETE /api/v1/bus/links/:id": {
+    why: "interactive-only",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: LINK_TESTS,
+        describe: LINK_D,
+        test: "another member reaches only their own hub",
+      },
+      {
+        file: LINK_TESTS,
+        describe: LINK_D,
+        test: "a PAT may read but never link or unlink; a machine token, guests, capped and anonymous callers get nothing",
       },
     ],
   },

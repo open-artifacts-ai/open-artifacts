@@ -47,6 +47,7 @@ import {
   orgCan,
   type PolicyAction,
   planRefuses,
+  SHARING_ACTIONS,
   TEAM_ROLES,
 } from "./policy.js";
 
@@ -107,6 +108,18 @@ export function withPlan<M extends Member>(
 export const planOfMember = (
   m: Member | null | undefined,
 ): EffectivePlan | null => (m ? ((m as PlannedMember)[PLAN] ?? null) : null);
+
+/** The plan lock this member was loaded with is a suspension. */
+export const suspendedMember = (m: Member | null | undefined): boolean =>
+  isSuspended(planOfMember(m));
+
+/**
+ * The plan is locked and billing's status is suspended. Keyed on the status,
+ * not the lock reason: the outage rule (last good read over 7 days old)
+ * reports billing_unreachable and would mask a suspension.
+ */
+export const isSuspended = (plan: EffectivePlan | null | undefined): boolean =>
+  plan?.status === "suspended" && !!plan.lock;
 
 /** The one way to build a Caller: carries the member's cap. */
 export function callerOf(m: Member | null | undefined): Caller {
@@ -425,6 +438,7 @@ export function canCtx(
     // The one read of the stored columns (fail closed, #681).
     dataWriters: dataWritersOf(a),
     plan: p?.lock?.mode ?? null,
+    suspended: isSuspended(p),
   };
 }
 
@@ -466,13 +480,26 @@ export function dataWriteRefusal(
 }
 
 /**
+ * `c` without the billing plan cap when `action` is sharing (share, unshare,
+ * visibility); `c` itself otherwise. Sharing is free on every plan.
+ */
+export const sharingCaller = (c: Caller, action: PolicyAction): Caller =>
+  c.kind === "user" &&
+  c.cap === "plan" &&
+  SHARING_ACTIONS.has(action) &&
+  // A suspension is not a payment state: only a removal passes under it.
+  (action === "unshare" || !suspendedMember(c.user))
+    ? { ...c, cap: null }
+    : c;
+
+/**
  * The artifact and the caller's level if they may take `action`; otherwise
  * 404 (never 403). The one check for owner-or-manager actions: never compare
  * levels for those, ask `can` (a manager fails requireAccess("owner")).
  */
 export async function authorize(
   env: Env,
-  c: Caller,
+  who: Caller,
   artifactId: string,
   action: PolicyAction,
   opts: {
@@ -482,6 +509,9 @@ export async function authorize(
     ctx?: { firstThumbnail?: boolean };
   } = {},
 ): Promise<{ level: AccessLevel; artifact: ArtifactRow }> {
+  // Sharing is free on every plan: the billing plan cap never lowers the
+  // level for it (guest and restricted caps still do).
+  const c = sharingCaller(who, action);
   let r: Access | null;
   if (opts.prefetch) {
     r = await loadAccess(env, c, artifactId, opts);

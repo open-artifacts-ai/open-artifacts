@@ -112,7 +112,7 @@ const deliver = (from_id?: string) => ({
 describe("reply ids in the daemon", () => {
   it("says hello with the ids cap", async () => {
     const { h } = await session(undefined);
-    expect(h.of("hello")[0]?.caps).toEqual([BUS_CAPS.ids]);
+    expect(h.of("hello")[0]?.caps).toEqual([BUS_CAPS.ids, BUS_CAPS.mailbox]);
   });
 
   it("a reply names the agent that wrote, when the hub listed ids", async () => {

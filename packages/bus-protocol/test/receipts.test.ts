@@ -24,6 +24,8 @@ describe("receipts", () => {
       "ambiguous",
       "role_vacant",
       "agent_gone",
+      "mailbox_full",
+      "reserved_name",
     ]);
   });
   it("rejects ambiguous on expired", () => {

@@ -9,6 +9,8 @@ import {
   Button as ShButton,
 } from "@oa/ui/shadcn";
 import type { ReactNode } from "react";
+import { READ_ONLY_NOTICE } from "../api/errorCopy";
+import { useFrozen } from "../auth/permissions";
 import { toast } from "../layout/toast";
 
 /** The settings pages' 880px measure, centered in the shell gutter. */
@@ -90,10 +92,13 @@ export function CodeBlock({
   children,
   copy,
   label,
+  disabled = false,
 }: {
   children: ReactNode;
   copy: string;
   label: string;
+  /** The button only: the code stays readable and selectable. */
+  disabled?: boolean;
 }) {
   return (
     <div className="flex min-w-0 items-start gap-[var(--oa-space-1)] rounded-md bg-secondary">
@@ -103,6 +108,7 @@ export function CodeBlock({
         size="sm"
         className="m-[var(--oa-space-1)] flex-none text-[length:var(--oa-text-sm)]"
         aria-label={label}
+        disabled={disabled}
         onClick={() => copyText(copy, "Copied")}
       >
         Copy
@@ -116,13 +122,15 @@ export function Code({
   code,
   label,
   wrap = false,
+  disabled = false,
 }: {
   code: string;
   label: string;
   wrap?: boolean;
+  disabled?: boolean;
 }) {
   return (
-    <CodeBlock copy={code} label={label}>
+    <CodeBlock copy={code} label={label} disabled={disabled}>
       <pre
         // Focusable so keyboard users can scroll a long line (wrapped ones
         // don't scroll).
@@ -136,5 +144,29 @@ export function Code({
         <code>{code}</code>
       </pre>
     </CodeBlock>
+  );
+}
+
+/**
+ * Write controls only. Under the plan cap the fieldset turns the controls
+ * inside off (it adds no box); reads, lists, pagers and Retry stay outside.
+ * Goes inside a card part, never around one: card parts stay direct children
+ * of the card or its form.
+ */
+export function WriteLock({ children }: { children: ReactNode }) {
+  return (
+    <fieldset disabled={useFrozen()} className="contents">
+      {children}
+    </fieldset>
+  );
+}
+
+/** The one muted line a locked page shows, for the disabled controls. */
+export function ReadOnlyNote() {
+  if (!useFrozen()) return null;
+  return (
+    <p role="status" className={`m-0 ${muted}`}>
+      {READ_ONLY_NOTICE}
+    </p>
   );
 }

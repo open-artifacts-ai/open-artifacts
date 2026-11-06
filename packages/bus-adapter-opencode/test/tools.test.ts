@@ -316,6 +316,12 @@ describe("status in OpenCode", () => {
         row({ name: "c", status: "blocked", status_at: at(180) }),
         row({ name: "d", status_label: "\x1b]0;t\x07" }),
         row({ name: "e" }),
+        row({
+          name: "f",
+          state: "away",
+          live: false,
+          since: "2026-11-05T10:00:00.000Z",
+        }),
       ],
     }));
     expect(text).toBe(
@@ -325,8 +331,33 @@ describe("status in OpenCode", () => {
         "- c (opencode, ns)  agent says: blocked · 3 h ago",
         "- d (opencode, ns)",
         "- e (opencode, ns)",
+        "- f (opencode, ns) (away since 2026-11-05 10:00 UTC)",
       ].join("\n"),
     );
+  });
+
+  it("#1527: self shows the config files the daemon refused", async () => {
+    const self = await run("self", {}, () => ({
+      type: "agent",
+      agent: row({
+        config_files: [
+          {
+            file: "/home/u/x/.oa-bus.json",
+            state: "refused",
+            reason: "is writable by everyone",
+            fix: "run chmod o-w /home/u/x/.oa-bus.json",
+          },
+        ],
+      }),
+    }));
+    expect(JSON.parse(self.text).config_files).toEqual([
+      {
+        file: "/home/u/x/.oa-bus.json",
+        state: "refused",
+        reason: "is writable by everyone",
+        fix: "run chmod o-w /home/u/x/.oa-bus.json",
+      },
+    ]);
   });
 
   it("self asks for its own row and names no role", async () => {

@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -142,6 +143,14 @@ async function boot() {
   writeFileSync(
     join(project, ".oa-bus.json"),
     JSON.stringify({ namespace: NS }),
+    { mode: 0o600 },
+  );
+  // #1525: the namespace takes effect only once the user approves it.
+  writeFileSync(
+    join(home, "namespaces.json"),
+    JSON.stringify({
+      approved: [{ dir: realpathSync(project), namespace: NS }],
+    }),
     { mode: 0o600 },
   );
 

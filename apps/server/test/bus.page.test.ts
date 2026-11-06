@@ -56,6 +56,7 @@ const agent = (over: Partial<BusAgent> = {}): BusAgent => ({
   global: false,
   state: "live",
   running: true,
+  since: null,
   updatedAt: "2026-11-04T09:00:00Z",
   ...over,
 });

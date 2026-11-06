@@ -2,6 +2,7 @@ import { hasDirectoryScopes } from "@oa/auth-core";
 import type {
   DirectoryBinding,
   DirectoryConnectError,
+  DirectoryMode,
   Member,
   SyncStatus,
 } from "@oa/shared";
@@ -715,18 +716,20 @@ export async function disconnectDirectory(
  * GET R.directory until T13's DirectorySync serves it. With no transport,
  * mode is "off" and, with `showProblem` (the org owner: directory.manage),
  * lastError carries the configuration problem and held sweeps their
- * snoozeReason (null without it, #412). An expired pending
+ * snoozeReason (null without it, #412). `mode`: the mode the caller follows
+ * (the DirectorySync DO's, which hosted billing sets), else the provisioned
+ * FEATURES'. An expired pending
  * confirmation is dropped first (lazy expiry), except with expire: false.
  */
 export async function directoryStatus(
   env: Env,
-  o: { showProblem: boolean; expire?: boolean },
+  o: { showProblem: boolean; expire?: boolean; mode?: DirectoryMode },
 ): Promise<SyncStatus> {
   // Not in the DirectorySync DO (expire: false): expiry revokes the pending
   // grant first, and the DO has no broker capability on hosted (review 33).
   if (o.expire !== false) await expirePending(env);
   const t = directoryTransport(env);
-  const mode = t.kind === "none" ? "off" : directoryMode(env);
+  const mode = t.kind === "none" ? "off" : (o.mode ?? directoryMode(env));
   const [{ binding }, pending, health, tomb, prior, next] = await Promise.all([
     readBinding(env),
     readPending(env),

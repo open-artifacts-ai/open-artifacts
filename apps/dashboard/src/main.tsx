@@ -107,6 +107,17 @@ async function startMocks() {
       ),
     );
   }
+  // ?mock=plan-locked (with ?hosted=1): a plan-locked admin; see mockRestricted.ts.
+  if (restricted === "plan-locked") {
+    const { planLockedHandlers } = await import("./mockRestricted");
+    extra.push(
+      ...planLockedHandlers(
+        createHandlers({
+          hosted: parseHostedParam(params.get("hosted")) ?? {},
+        }),
+      ),
+    );
+  }
   // ?mock=transfer-error (with ?hosted=1): a transfer's counts fail to load.
   if (params.get("mock") === "transfer-error")
     extra.push(

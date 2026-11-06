@@ -1,5 +1,58 @@
 # Changelog
 
+## [0.129.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.128.0...v0.129.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** link two namespaces on the hub ([#1567](https://github.com/open-artifacts-ai/open-artifacts/issues/1567), PR 1 of 3) ([#1572](https://github.com/open-artifacts-ai/open-artifacts/issues/1572)) ([e6dad03](https://github.com/open-artifacts-ai/open-artifacts/commit/e6dad03e879496a33319567ce41570bd04f3152c))
+
+## [0.128.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.127.0...v0.128.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **bus:** A folder that set its namespace in .oa-bus.json joins its derived namespace until you run: oa-bus namespace approve <dir>
+
+### Bug Fixes
+
+* **bus:** a .oa-bus.json namespace takes effect only after the user approves it ([#1525](https://github.com/open-artifacts-ai/open-artifacts/issues/1525)) ([#1569](https://github.com/open-artifacts-ai/open-artifacts/issues/1569)) ([bb2ac29](https://github.com/open-artifacts-ai/open-artifacts/commit/bb2ac295bf42fb24a78932f1db059c4641debd2f))
+* **comments:** mock permissions follow the server; two-line author line; older-version badge ([#1529](https://github.com/open-artifacts-ai/open-artifacts/issues/1529)) ([#1549](https://github.com/open-artifacts-ai/open-artifacts/issues/1549)) ([d31d5af](https://github.com/open-artifacts-ai/open-artifacts/commit/d31d5af1eabadfcb4f61f458747fd08419325741))
+
+## [0.127.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.126.0...v0.127.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** install the skill beside the bus tools ([#1456](https://github.com/open-artifacts-ai/open-artifacts/issues/1456)) ([#1551](https://github.com/open-artifacts-ai/open-artifacts/issues/1551)) ([ffae385](https://github.com/open-artifacts-ai/open-artifacts/commit/ffae38543d764388fb846a25d1683ad8668b497b))
+
+
+### Bug Fixes
+
+* **dashboard:** plan copy before the trial, admin wording, suspended ([#1518](https://github.com/open-artifacts-ai/open-artifacts/issues/1518)) ([#1560](https://github.com/open-artifacts-ai/open-artifacts/issues/1560)) ([c257ffd](https://github.com/open-artifacts-ai/open-artifacts/commit/c257ffda657935a5cf3cf8d8bb37d23aabaafd43))
+* **directory:** status reports the mode the DO follows ([#860](https://github.com/open-artifacts-ai/open-artifacts/issues/860)) ([#1562](https://github.com/open-artifacts-ai/open-artifacts/issues/1562)) ([8f6525e](https://github.com/open-artifacts-ai/open-artifacts/commit/8f6525efe3bdeec9604768b4af95658d3ad46880))
+
+## [0.126.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.125.0...v0.126.0) (2026-11-06)
+
+
+### Features
+
+* **ci:** the deploy refuses a token that is not the env's pinned deploy token ([#1545](https://github.com/open-artifacts-ai/open-artifacts/issues/1545)) ([7226d35](https://github.com/open-artifacts-ai/open-artifacts/commit/7226d3573b3c3e767203ffff9c3e9dfc6ebcdfa8))
+
+## [0.125.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.124.0...v0.125.0) (2026-11-05)
+
+
+### Features
+
+* **comments:** runtime view mode for viewers who can't comment; Design polish ([#1491](https://github.com/open-artifacts-ai/open-artifacts/issues/1491), [#1529](https://github.com/open-artifacts-ai/open-artifacts/issues/1529)) ([#1531](https://github.com/open-artifacts-ai/open-artifacts/issues/1531)) ([aa41cbe](https://github.com/open-artifacts-ai/open-artifacts/commit/aa41cbe4cadc2c804a12ec5cc062955b33df7b0e))
+* **skill:** publish a file in one call, and with this instance's tools ([#1540](https://github.com/open-artifacts-ai/open-artifacts/issues/1540)) ([#1542](https://github.com/open-artifacts-ai/open-artifacts/issues/1542)) ([f5e7a70](https://github.com/open-artifacts-ai/open-artifacts/commit/f5e7a70631295e3fb593374a8e809e0aaf732f79))
+
+
+### Bug Fixes
+
+* **bus:** show refused config files with their fix; accept a group-writable file you own ([#1527](https://github.com/open-artifacts-ai/open-artifacts/issues/1527)) ([#1530](https://github.com/open-artifacts-ai/open-artifacts/issues/1530)) ([bf0a895](https://github.com/open-artifacts-ai/open-artifacts/commit/bf0a895034047c750889550359763cbfd0beedaf))
+* **ci:** hosted-publish resolves a release from a failed release-please run ([#1524](https://github.com/open-artifacts-ai/open-artifacts/issues/1524)) ([fdca013](https://github.com/open-artifacts-ai/open-artifacts/commit/fdca0139a3d4fdafd5df979d1cbac2f15ffb2f4d))
+
 ## [0.124.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.123.0...v0.124.0) (2026-11-05)
 
 

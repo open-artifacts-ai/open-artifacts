@@ -251,6 +251,7 @@ describe("pi extension asset", () => {
       pid: process.pid,
       cwd: "/work/repo",
       proposed_name: "my-pi",
+      caps: ["mailbox", "pending"],
       attest: { proc_start: procStartOf(process.pid) },
     });
     // `TZ=UTC LC_ALL=C ps -o lstart=`: "Fri Oct 23 08:13:26 2026".
@@ -350,6 +351,39 @@ describe("pi extension asset", () => {
     expect(JSON.parse(await p.call("self", {})).kind).toBe("zz");
   });
 
+  it("#1527: self shows the config files the daemon refused", async () => {
+    const { p } = await started((f) =>
+      f.type === "self"
+        ? {
+            type: "agent",
+            agent: {
+              name: "me",
+              namespace: "ns",
+              kind: "pi",
+              live: true,
+              global: false,
+              config_files: [
+                {
+                  file: "/home/u/x/.oa-bus.json",
+                  state: "refused",
+                  reason: "is writable by everyone",
+                  fix: "run chmod o-w /home/u/x/.oa-bus.json",
+                },
+              ],
+            },
+          }
+        : undefined,
+    );
+    expect(JSON.parse(await p.call("self", {})).config_files).toEqual([
+      {
+        file: "/home/u/x/.oa-bus.json",
+        state: "refused",
+        reason: "is writable by everyone",
+        fix: "run chmod o-w /home/u/x/.oa-bus.json",
+      },
+    ]);
+  });
+
   it("list_agents, self and fetch render like the MCP tools", async () => {
     const { p } = await started((f) =>
       f.type === "list"
@@ -373,6 +407,15 @@ describe("pi extension asset", () => {
                 global: false,
                 machine_label: "desktop",
               },
+              {
+                name: "c",
+                namespace: "ns",
+                kind: "pi",
+                live: false,
+                state: "away",
+                since: "2026-11-05T10:00:00.000Z",
+                global: false,
+              },
             ],
           }
         : f.type === "self"
@@ -395,7 +438,7 @@ describe("pi extension asset", () => {
             : undefined,
     );
     expect(await p.call("list_agents", {})).toBe(
-      "- a (pi, ns)\n- b (opencode, ns, desktop) (queued)",
+      "- a (pi, ns)\n- b (opencode, ns, desktop) (queued)\n- c (pi, ns) (away since 2026-11-05 10:00 UTC)",
     );
     expect(JSON.parse(await p.call("self", {}))).toMatchObject({
       name: "pi-agent",

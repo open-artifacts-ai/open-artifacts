@@ -188,11 +188,20 @@ describe("claude mcp tools", () => {
             state: "queued",
             global: false,
           },
+          {
+            name: "gamma",
+            kind: "claude-code",
+            namespace: "ns",
+            live: false,
+            state: "away",
+            since: "2026-11-05T10:00:00.000Z",
+            global: false,
+          },
         ],
       })),
     );
     expect(r.content[0].text).toBe(
-      "- alpha (pi, ns)\n- beta (claude-code, ns) (queued)",
+      "- alpha (pi, ns)\n- beta (claude-code, ns) (queued)\n- gamma (claude-code, ns) (away since 2026-11-05 10:00 UTC)",
     );
   });
 
@@ -417,5 +426,62 @@ describe("an unknown kind over the socket (C26h)", () => {
     const c = await connected(true);
     expect(await say(c, "list_agents")).toBe("- alpha (zz, ns)\n- b (omp, ns)");
     expect(JSON.parse((await say(c, "self")) ?? "").kind).toBe("zz");
+  });
+});
+
+describe("#1527: self shows the config files the daemon refused", () => {
+  it("prints each file with its reason and fix", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "ob-cfg-")), "d.sock");
+    const server = await serveDaemon({
+      path,
+      onHello: () => ({ bus_name: "me", namespace: "ns", global: false }),
+      onFrame: (f) =>
+        f.type === "self"
+          ? {
+              type: "agent",
+              agent: {
+                name: "me",
+                namespace: "ns",
+                kind: "claude-code",
+                live: true,
+                global: false,
+                config_files: [
+                  {
+                    file: "/home/u/x/.oa-bus.json",
+                    state: "refused",
+                    reason: "is writable by everyone",
+                    fix: "run chmod o-w /home/u/x/.oa-bus.json",
+                  },
+                ],
+              },
+            }
+          : undefined,
+    });
+    const c = await connectDaemon({
+      path,
+      hello: Hello.parse({
+        v: 1,
+        id: "h",
+        type: "hello",
+        kind: "claude-code",
+        agent_ref: "s1",
+        pid: process.pid,
+        cwd: process.cwd(),
+        attest: {},
+      }),
+    });
+    const out = JSON.parse(
+      (await callTool("self", {}, c)).content[0]?.text ?? "",
+    );
+    c.close();
+    await server.close?.();
+    expect(out.config_files).toEqual([
+      {
+        file: "/home/u/x/.oa-bus.json",
+        state: "refused",
+        reason: "is writable by everyone",
+        fix: "run chmod o-w /home/u/x/.oa-bus.json",
+      },
+    ]);
   });
 });

@@ -84,6 +84,16 @@ const AgentUp = z.strictObject({
    * it only to hubs that accept it.
    */
   name_kind: NameKindSchema.optional(),
+  /**
+   * #1295: the agent_ref this one takes over from, after a /clear: the same
+   * live process now reports a new session. The hub honours it only for a
+   * socket whose hello listed `BUS_CAPS.mailbox`, when the old ref is an
+   * agent of the same machine; the new ref then inherits the old address
+   * (name, former names) and its pending mail, instead of `<name>-2`. A hub
+   * decoder older than this field refuses the key, so a client sends it only
+   * after `hello_ok.caps` listed `mailbox`.
+   */
+  replaces: AgentRefSchema.optional(),
 });
 
 const AgentDown = z.strictObject({
@@ -246,9 +256,16 @@ const RosterAgent = z.strictObject({
   global: z.boolean(),
   /**
    * `live`: machine connected. `queued`: machine disconnected but the session
-   * was last reported open (mail waits up to 1 h). Closed agents are omitted.
+   * was last reported open (mail waits). `away` (#1295, cap-gated): closed,
+   * its mailbox kept for 7 d. Other closed agents are omitted.
    */
-  state: z.enum(["live", "queued"]),
+  state: z.enum(["live", "queued", "away"]),
+  /**
+   * When an `away` agent closed (#1295). Sent, with `state: "away"`, only to
+   * a socket whose hello listed `BUS_CAPS.mailbox`: a decoder older than
+   * either refuses the row, and with it the whole roster.
+   */
+  since: IsoTimeSchema.optional(),
   /** The agent's machine label. */
   machine_label: MachineLabelSchema.optional(),
   /** Self-reported ("agent says"); cleared on close. */

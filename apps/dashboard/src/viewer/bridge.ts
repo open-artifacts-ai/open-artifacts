@@ -589,7 +589,7 @@ export function createBridge(opts: BridgeOptions) {
       if (next.id === id) artifact = next;
     },
     /** Comments (#682): the mode, then the threads to draw (anchors and ids only, never text). */
-    setCommentsMode(mode: "off" | "select" | "pin") {
+    setCommentsMode(mode: "off" | "view" | "select" | "pin") {
       reply({ oa: 1, type: "comments.mode", mode });
     },
     setComments(
