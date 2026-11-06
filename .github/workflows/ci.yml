@@ -604,6 +604,40 @@ jobs:
         with:
           path: ~/.cache/oa-migration-seed
           key: ${{ steps.key.outputs.key }}
+  # #1602: the Hermes plugin is Python, standard library only, so its tests need
+  # no pnpm install. Not a required check. As in migration-timing, the path
+  # filter is decided inside the job and any error in the diff means run.
+  hermes-plugin:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: changed
+        name: Did bus-ipc or the Hermes plugin change?
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          run=true
+          if [ "$EVENT" != workflow_dispatch ] && [ -n "${BASE_SHA:-}" ] \
+            && files="$(git diff --name-only "$BASE_SHA"...HEAD)" \
+            && ! grep -qE '^(packages/bus-ipc/|packages/bus-adapter-hermes/|\.github/workflows/ci\.yml$)' <<< "$files"; then
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+          if [ "$run" = false ]; then
+            echo "no bus-ipc or Hermes plugin change: nothing to test"
+          fi
+      - uses: actions/setup-python@v5
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        with:
+          python-version: "3.11"
+      - name: Hermes plugin tests
+        if: ${{ steps.changed.outputs.run == 'true' }}
+        run: python3 -m unittest discover -s packages/bus-adapter-hermes/tests
   # Not a required check: skipped unless a release-config file changed.
   release-dry-run:
     if: ${{ github.event_name == 'pull_request' }}
