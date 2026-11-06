@@ -65,9 +65,11 @@ for (const k of KINDS) {
 
     const p = await ctx.newPage();
 
-    // The IdP is a reserved host that never answers: the tab ends on an
-    // error page after the redirect, which is all this needs.
-    await p.goto(url).catch(() => {});
+    // The IdP is a reserved host: refuse the request at once, so the
+    // browser doesn't sit on a DNS lookup (WebKit in CI did, and the next
+    // navigation waited behind it). The redirect to it is all this needs.
+    await ctx.route(/access\.e2e\.invalid/, (r) => r.abort());
+    await p.goto(url, { timeout: 15_000 }).catch(() => {});
     // The hop keeps the secret in this tab and sends the browser to sign-in
     // without it: `next` is the page's path.
     await expect
@@ -80,7 +82,7 @@ for (const k of KINDS) {
 
     // Sign in (a fresh interactive session in dev), back to the page's path.
     // The card appearing is the proof the secret survived in sessionStorage.
-    await p.goto(freshSignInUrl(email, k.base));
+    await p.goto(freshSignInUrl(email, k.base), { timeout: 15_000 });
     await expect(p.getByRole("heading", { name: k.heading })).toBeVisible();
     expect(await p.evaluate(() => location.hash)).toBe("");
     expect(p.url()).not.toContain(secret);
