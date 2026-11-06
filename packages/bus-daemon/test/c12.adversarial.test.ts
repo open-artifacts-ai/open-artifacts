@@ -47,6 +47,13 @@ describe("C12 adversarial", () => {
     const first: string[] = [];
     const second: string[] = [];
     let conns = 0;
+    // Resolved by the server when the second link has every queued reply. Not
+    // vi.waitFor: with a faked Date it advances the clock on each poll, which
+    // refills the pacer and writes a reply to the first link after it dropped.
+    let gotAll!: () => void;
+    const done = new Promise<void>((r) => {
+      gotAll = r;
+    });
     const wss = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((r) => wss.once("listening", () => r()));
     wss.on("connection", (ws) => {
@@ -60,6 +67,7 @@ describe("C12 adversarial", () => {
         const fr = JSON.parse(String(d));
         if (fr.type !== "send") return;
         link.push(fr.id);
+        if (link === second && second.length === 18) gotAll();
         // The drop is driven by what the pacer wrote: both written replies are in.
         if (link === first && first.length === 2) {
           ws.terminate();
@@ -106,9 +114,7 @@ describe("C12 adversarial", () => {
       } as ClientFrame);
     }
     try {
-      await vi.waitFor(() => expect(second.length).toBe(18), {
-        timeout: 4000,
-      });
+      await done;
       // Written before the drop: delivered on the first link, never resent.
       expect(first).toEqual(ids.slice(0, 2));
       // Still queued in the pacer at the drop: resent on the next link, in order.
