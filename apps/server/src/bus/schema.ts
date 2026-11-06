@@ -249,6 +249,22 @@ create index if not exists role_proposals_created on role_proposals(org_id, crea
 create index if not exists role_proposals_pending on role_proposals(expires_at)
   where status = 'pending';
 
+-- #1567 grants: what the member allowed between namespaces. kind 'link': the
+-- namespaces ns_a and ns_b (sorted, ns_a < ns_b) see each other's agents and
+-- may message each other, directly only (bus/links.ts). kind is open for
+-- #1346 (role_reach). A new table: create-if-not-exists adds it; wipe()
+-- deletes it.
+create table if not exists grants (
+  id text primary key,
+  org_id text not null,
+  kind text not null,
+  ns_a text not null,
+  ns_b text not null,
+  created_at integer not null,
+  unique (org_id, kind, ns_a, ns_b)
+);
+create index if not exists grants_b on grants(org_id, kind, ns_b);
+
 create table if not exists meta (
   org_id text not null,
   key text not null,

@@ -291,6 +291,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/bus/roles": { org: "mcp.connect" },
   "PUT /api/v1/bus/roles": { org: "mcp.connect" },
   "DELETE /api/v1/bus/roles/:id": { org: "mcp.connect" },
+  // #1567 project links; PUT and DELETE browser sessions only (handler).
+  "GET /api/v1/bus/links": { org: "mcp.connect" },
+  "PUT /api/v1/bus/links": { org: "mcp.connect" },
+  "DELETE /api/v1/bus/links/:id": { org: "mcp.connect" },
   // #1372: the role proposal confirm page (bus/role-confirm.ts). The handler
   // takes only an interactive cookie session of the hub's own member (a
   // PAT, an OAuth grant or a machine token is refused) and a POST its form

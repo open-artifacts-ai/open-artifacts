@@ -95,6 +95,36 @@ export const BusRoleSchema = z.strictObject({
 });
 export type BusRole = z.infer<typeof BusRoleSchema>;
 
+/** Links between two of the member's namespaces (#1567) one member may hold. */
+export const BUS_LINK_MAX = 100;
+
+/**
+ * One link (#1567): the two namespaces see each other's agents and may
+ * message each other. Stored once as a sorted pair (`a` < `b`) and read both
+ * ways; never transitive.
+ */
+export const BusLinkSchema = z.strictObject({
+  id: z.string(),
+  a: BusAddressSchema.shape.namespace,
+  b: BusAddressSchema.shape.namespace,
+  createdAt: z.string(),
+});
+export type BusLink = z.infer<typeof BusLinkSchema>;
+
+/** GET R.busLinks, ordered by `a` then `b`. `live` false: the bus could not be asked (links is then []). */
+export const BusLinksSchema = z.strictObject({
+  links: z.array(BusLinkSchema).max(BUS_LINK_MAX),
+  live: z.boolean(),
+});
+export type BusLinks = z.infer<typeof BusLinksSchema>;
+
+/** PUT R.busLinks: link namespaces `a` and `b` (any order; two different ones). */
+export const BusLinkPutSchema = z.strictObject({
+  a: BusAddressSchema.shape.namespace,
+  b: BusAddressSchema.shape.namespace,
+});
+export type BusLinkPut = z.infer<typeof BusLinkPutSchema>;
+
 /** How long a role proposal's confirm link works (#1372). */
 export const BUS_ROLE_PROPOSAL_TTL_MS = 15 * 60_000;
 /** Pending role proposals one member may have at once (#1372). */
