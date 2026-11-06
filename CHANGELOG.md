@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.126.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.125.0...v0.126.0) (2026-11-06)
+
+
+### Features
+
+* **ci:** the deploy refuses a token that is not the env's pinned deploy token ([#1545](https://github.com/open-artifacts-ai/open-artifacts/issues/1545)) ([7226d35](https://github.com/open-artifacts-ai/open-artifacts/commit/7226d3573b3c3e767203ffff9c3e9dfc6ebcdfa8))
+
 ## [0.125.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.124.0...v0.125.0) (2026-11-05)
 
 
