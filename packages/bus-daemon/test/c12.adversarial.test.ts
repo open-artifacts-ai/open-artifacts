@@ -51,6 +51,10 @@ describe("C12 adversarial", () => {
     await new Promise<void>((r) => wss.once("listening", () => r()));
     wss.on("connection", (ws) => {
       conns++;
+      // The clock stays frozen until the daemon has dialled again: a real
+      // clock any earlier refills the pacer while the first link is still
+      // open, and a third reply goes out on a link that is about to drop.
+      if (conns === 2) vi.useRealTimers();
       const link = conns === 1 ? first : second;
       ws.on("message", (d) => {
         const fr = JSON.parse(String(d));
@@ -58,7 +62,6 @@ describe("C12 adversarial", () => {
         link.push(fr.id);
         // The drop is driven by what the pacer wrote: both written replies are in.
         if (link === first && first.length === 2) {
-          vi.useRealTimers();
           ws.terminate();
         }
       });
@@ -104,7 +107,7 @@ describe("C12 adversarial", () => {
     }
     try {
       await vi.waitFor(() => expect(second.length).toBe(18), {
-        timeout: 4000,
+        timeout: 12_000,
       });
       // Written before the drop: delivered on the first link, never resent.
       expect(first).toEqual(ids.slice(0, 2));
@@ -115,7 +118,7 @@ describe("C12 adversarial", () => {
       hub.stop();
       await new Promise<void>((r) => wss.close(() => r()));
     }
-  });
+  }, 20_000);
 });
 
 describe("C12 adversarial, round 1", () => {
