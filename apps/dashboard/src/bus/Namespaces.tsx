@@ -1,5 +1,5 @@
 // #1293: Agents › Namespaces, and one namespace's page.
-import type { BusAgent, BusRole } from "@oa/shared";
+import type { BusAgent, BusLink as BusLinkRow, BusRole } from "@oa/shared";
 import {
   Table,
   TableBody,
@@ -8,11 +8,12 @@ import {
   TableHeader,
   TableRow,
 } from "@oa/ui/shadcn";
-import { useBusAgents, useBusRoles } from "../api/queries";
+import { useBusAgents, useBusLinks, useBusRoles } from "../api/queries";
 import { LoadError } from "../layout/LoadError";
 import { Notice } from "../layout/Notice";
 import { muted, SettingsCard, STACK } from "../settings/ui";
 import { shortDate } from "./format";
+import { LinksCard, linkedTo } from "./Links";
 import {
   buildRail,
   globalsFrom,
@@ -41,10 +42,12 @@ function NamespacePage({
   ns,
   agents,
   roles,
+  links,
 }: {
   ns: string;
   agents: BusAgent[];
   roles: BusRole[] | undefined;
+  links: BusLinkRow[];
 }) {
   const all = [...new Set(agents.map((a) => a.namespace))];
   const here = agents.filter((a) => a.namespace === ns && !a.global);
@@ -54,6 +57,7 @@ function NamespacePage({
   const machines = [...new Set(here.map((a) => a.machineLabel))].sort();
   const name = shortName(ns, all);
   const mine = (roles ?? []).filter((r) => r.namespace === ns);
+  const linked = linkedTo(links, ns);
   const count = `${here.length} agent${here.length === 1 ? "" : "s"}, ${live} live`;
   return (
     <div className={STACK}>
@@ -88,6 +92,15 @@ function NamespacePage({
           </dd>
         </dl>
         {globals && <p className={`m-0 ${muted}`}>{globals}</p>}
+        {linked.length > 0 && (
+          <p className="m-0 text-[length:var(--oa-text-sm)]">
+            Linked with{" "}
+            {listOf(linked.map((n) => shortName(n, [...all, ...linked])))}.{" "}
+            <BusLink to="/agents/namespaces" className={LINK}>
+              Manage links
+            </BusLink>
+          </p>
+        )}
         <p className="m-0 text-[length:var(--oa-text-sm)]">
           <BusLink to="/agents" search={{ in: `ns:${ns}` }} className={LINK}>
             See its agents
@@ -126,6 +139,7 @@ function NamespacePage({
 export function NamespacesTab({ ns }: { ns?: string }) {
   const agents = useBusAgents();
   const roles = useBusRoles();
+  const links = useBusLinks();
   if (agents.isPending) return <p className={`m-0 ${muted}`}>Loading…</p>;
   if (agents.isError)
     return (
@@ -144,6 +158,7 @@ export function NamespacesTab({ ns }: { ns?: string }) {
         ns={ns}
         agents={list}
         roles={roles.data?.live ? roles.data.roles : undefined}
+        links={links.data?.live ? links.data.links : []}
       />
     );
   const rail = buildRail(list);
@@ -163,44 +178,49 @@ export function NamespacesTab({ ns }: { ns?: string }) {
       </p>
     );
   return (
-    <SettingsCard
-      id="oa-nss-h"
-      title="Namespaces"
-      subtitle="Where your running agents started. A repo's namespace comes from its git remote; any other folder uses its name."
-    >
-      <Table aria-label="Namespaces">
-        <TableHeader>
-          <TableRow>
-            <TableHead>Namespace</TableHead>
-            <TableHead>In</TableHead>
-            <TableHead className="text-right">Agents</TableHead>
-            <TableHead className="text-right">Live</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((n) => (
-            <TableRow key={n.ns}>
-              <TableCell className="font-medium">
-                <BusLink
-                  to="/agents/namespaces"
-                  search={{ ns: n.ns }}
-                  title={n.ns}
-                  className={LINK}
-                >
-                  {n.label}
-                </BusLink>
-              </TableCell>
-              <TableCell className="text-muted-foreground">{n.where}</TableCell>
-              <TableCell className="text-right tabular-nums">
-                {n.total}
-              </TableCell>
-              <TableCell className="text-right tabular-nums">
-                {n.live}
-              </TableCell>
+    <div className={STACK}>
+      <SettingsCard
+        id="oa-nss-h"
+        title="Namespaces"
+        subtitle="Where your running agents started. A repo's namespace comes from its git remote; any other folder uses its name."
+      >
+        <Table aria-label="Namespaces">
+          <TableHeader>
+            <TableRow>
+              <TableHead>Namespace</TableHead>
+              <TableHead>In</TableHead>
+              <TableHead className="text-right">Agents</TableHead>
+              <TableHead className="text-right">Live</TableHead>
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </SettingsCard>
+          </TableHeader>
+          <TableBody>
+            {rows.map((n) => (
+              <TableRow key={n.ns}>
+                <TableCell className="font-medium">
+                  <BusLink
+                    to="/agents/namespaces"
+                    search={{ ns: n.ns }}
+                    title={n.ns}
+                    className={LINK}
+                  >
+                    {n.label}
+                  </BusLink>
+                </TableCell>
+                <TableCell className="text-muted-foreground">
+                  {n.where}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {n.total}
+                </TableCell>
+                <TableCell className="text-right tabular-nums">
+                  {n.live}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </SettingsCard>
+      <LinksCard known={rows.map((r) => r.ns)} />
+    </div>
   );
 }
