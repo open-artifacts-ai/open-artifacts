@@ -261,7 +261,7 @@ describe("asks on the comments column", () => {
       await within(c).findByRole("button", { name: /Show resolved/ }),
     );
     expect(
-      await within(c).findByText(/Which layout\?: Side by side/),
+      await within(c).findByText(/Which layout\?: Side by side · You/),
     ).toBeInTheDocument();
     expect(within(c).queryByRole("button", { name: /List only/ })).toBeNull();
     fireEvent.click(within(c).getByRole("button", { name: "Show" }));

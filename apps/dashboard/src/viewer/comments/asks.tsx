@@ -99,7 +99,8 @@ export function AskBlock({
         className={`flex items-center gap-2 rounded-md bg-muted px-2 py-1 ${TXT}`}
       >
         <span className="min-w-0 flex-1 break-words">
-          {ask.question}: {pickedOpt.label} · {ask.answer?.by.name}
+          {ask.question}: {pickedOpt.label} ·{" "}
+          {ask.answer?.by.me ? "You" : ask.answer?.by.name}
         </span>
         <Button size="xs" variant="ghost" onClick={() => setOpen(true)}>
           Show
