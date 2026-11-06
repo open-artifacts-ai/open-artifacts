@@ -22,7 +22,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
 import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
-import { errorCopy } from "../api/errorCopy";
+import { billingContext, errorCopy } from "../api/errorCopy";
 import {
   useInviteMember,
   useMembers,
@@ -206,9 +206,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
               ? inviteRefusedCopy(refused.data.reason, parsed, domains)
               : e instanceof ApiClientError
                 ? e.code.startsWith("plan_") || e.code === "billing_unavailable"
-                  ? errorCopy(e, e.message, {
-                      owner: me?.user.role === "owner" && me.auth?.cap == null,
-                    })
+                  ? errorCopy(e, e.message, billingContext(me))
                   : e.message
                 : "Couldn't add.",
           );
