@@ -24,11 +24,7 @@ import {
   installAdapters,
   readAssets,
 } from "../steps/adapters.ts";
-import {
-  installSkill,
-  MAX_SKILL_BYTES,
-  uninstallSkill,
-} from "../steps/skill.ts";
+import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
 import { LoginFailed, login } from "./login.ts";
 
@@ -196,22 +192,7 @@ async function harnessesStep(
     {
       home: ctx.userHome,
       env: ctx.env,
-      fetchSkill: async (url) => {
-        const r = await ctx.fetch(url, {
-          headers: { accept: "text/markdown" },
-          redirect: "error",
-        });
-        if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
-        const type = r.headers.get("content-type") ?? "";
-        if (!type.toLowerCase().startsWith("text/markdown"))
-          throw new Error(`unexpected content-type: ${type || "none"}`);
-        const text = await r.text();
-        if (new TextEncoder().encode(text).length > MAX_SKILL_BYTES)
-          throw new Error("skill too large");
-        if (!text.startsWith("---\nname: "))
-          throw new Error("not a skill: no frontmatter");
-        return text;
-      },
+      fetchSkill: (url) => fetchSkillText(ctx.fetch, url),
     },
     hub ? originOf(hub) : machineOrigin(ctx),
     out.installed,

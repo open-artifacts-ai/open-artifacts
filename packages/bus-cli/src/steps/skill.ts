@@ -22,6 +22,7 @@ import {
 import { dirname, join } from "node:path";
 import { harnessSkills } from "@oa/shared/harness-skills";
 import type { Harness } from "./adapters.ts";
+import { codexHome } from "./codex.ts";
 
 /** Immediately after the frontmatter: the only file we may replace. */
 export const SKILL_MARKER =
@@ -50,7 +51,7 @@ export type SkillResult = {
   failedUrl?: string;
 };
 
-const env = (deps: SkillDeps) => deps.env ?? {};
+const env = (deps: Pick<SkillDeps, "env">) => deps.env ?? {};
 
 /** The folder a harness reads skills from, honoring the same env overrides the adapters do. */
 export const skillDir = (
@@ -61,16 +62,15 @@ export const skillDir = (
   const opencode =
     e.OPENCODE_CONFIG_DIR ??
     join(e.XDG_CONFIG_HOME ?? join(deps.home, ".config"), "opencode");
-  const piAgent =
-    e.PI_CODING_AGENT_DIR ??
-    join(e.PI_CODING_AGENT_DIR ?? deps.home, ".pi/agent");
-  const ompAgent = join(deps.home, ".agents");
+  // pi and omp both read ~/.agents/skills (the shared table says so). Never
+  // ~/.pi/agent/skills: pi reads both folders and warns about the collision.
+  const agents = join(deps.home, ".agents", "skills");
   return {
     claude: join(e.CLAUDE_CONFIG_DIR ?? join(deps.home, ".claude"), "skills"),
     opencode: join(opencode, "skills"),
-    pi: join(piAgent, "skills"),
-    omp: join(ompAgent, "skills"),
-    codex: join(e.CODEX_HOME ?? join(deps.home, ".codex"), "AGENTS.md"),
+    pi: agents,
+    omp: agents,
+    codex: join(codexHome(deps.home, e), "AGENTS.md"),
   }[h];
 };
 
@@ -91,8 +91,96 @@ const withMarker = (text: string): string => {
   return `${text.slice(0, at)}${SKILL_MARKER}\n${text.slice(at)}`;
 };
 
-/** Ours only when the marker line is present. */
-const isOurs = (text: string) => text.split("\n").includes(SKILL_MARKER);
+/**
+ * Ours only when the marker is the line right after the closing frontmatter
+ * `---`, the folder is the frontmatter name, and the name is an open-artifacts one.
+ */
+const isOurs = (text: string, folder: string): boolean => {
+  const t = text.replace(/\r\n/g, "\n");
+  const m = /^---\n[\s\S]*?\n---\n/.exec(t);
+  if (!m) return false;
+  const name = skillFolder(t);
+  return (
+    name === folder &&
+    name.startsWith("open-artifacts") &&
+    t.slice(m[0].length).split("\n", 1)[0] === SKILL_MARKER
+  );
+};
+
+/** Whole-line index of a marker, ignoring a trailing CR (CRLF files). */
+const lineIndex = (lines: string[], marker: string, from = 0): number => {
+  for (let i = from; i < lines.length; i++)
+    if (lines[i]?.replace(/\r$/, "") === marker) return i;
+  return -1;
+};
+
+/** A served text that quotes a marker line would corrupt ownership: refuse it. */
+const quotesMarker = (text: string): boolean => {
+  const lines = text.split("\n");
+  return [SKILL_MARKER, CODEX_BEGIN, CODEX_END].some(
+    (m) => lineIndex(lines, m) !== -1,
+  );
+};
+
+const lstatOk = (path: string): boolean => {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Is `path` a symlink whose target is missing? */
+const brokenLink = (path: string): boolean => {
+  try {
+    return lstatSync(path).isSymbolicLink() && !existsSync(path);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Fetches the skill text. Redirects are refused, the content type must be
+ * markdown, and the 256 KB cap is enforced while reading, not after.
+ */
+export async function fetchSkillText(
+  doFetch: typeof fetch,
+  url: string,
+): Promise<string> {
+  const r = await doFetch(url, {
+    headers: { accept: "text/markdown" },
+    redirect: "error",
+  });
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  const type = r.headers.get("content-type") ?? "";
+  if (!type.toLowerCase().startsWith("text/markdown"))
+    throw new Error(`unexpected content-type: ${type || "none"}`);
+  const declared = Number(r.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_SKILL_BYTES) {
+    await r.body?.cancel().catch(() => {});
+    throw new Error("skill too large");
+  }
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = r.body?.getReader();
+  if (reader) {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > MAX_SKILL_BYTES) {
+        await reader.cancel().catch(() => {});
+        throw new Error("skill too large");
+      }
+      chunks.push(value);
+    }
+  }
+  const text = new TextDecoder().decode(Buffer.concat(chunks));
+  if (!text.startsWith("---\nname: "))
+    throw new Error("not a skill: no frontmatter");
+  return text;
+}
 
 /** Follows a symlink: write through it, keep the link. */
 const targetOf = (path: string) => {
@@ -124,8 +212,8 @@ const writeAtomic = (path: string, text: string) => {
 /** The Codex block, whole-line markers only, replaced in place and never doubled. */
 export const withCodexBlock = (existing: string, text: string): string => {
   const lines = existing.split("\n");
-  const start = lines.indexOf(CODEX_BEGIN);
-  const end = lines.indexOf(CODEX_END, start + 1);
+  const start = lineIndex(lines, CODEX_BEGIN);
+  const end = lineIndex(lines, CODEX_END, start + 1);
   const block = [CODEX_BEGIN, ...text.trimEnd().split("\n"), CODEX_END];
   if (start === -1) {
     const head = existing.trimEnd();
@@ -140,8 +228,8 @@ export const withCodexBlock = (existing: string, text: string): string => {
 /** BEGIN without END: leave the file alone and say so. */
 const codexBroken = (text: string) => {
   const lines = text.split("\n");
-  const start = lines.indexOf(CODEX_BEGIN);
-  return start !== -1 && lines.indexOf(CODEX_END, start + 1) === -1;
+  const start = lineIndex(lines, CODEX_BEGIN);
+  return start !== -1 && lineIndex(lines, CODEX_END, start + 1) === -1;
 };
 
 /**
@@ -171,7 +259,7 @@ export async function installSkill(
       return { written, notes, failedUrl: url };
     }
     const folder = skillFolder(text);
-    if (!folder)
+    if (!folder?.startsWith("open-artifacts") || quotesMarker(text))
       return {
         written,
         notes,
@@ -181,6 +269,10 @@ export async function installSkill(
     const path = harnessSkills[h].agentsMd
       ? base
       : join(base, folder, "SKILL.md");
+    if (brokenLink(path)) {
+      notes.push(`Left ${path} alone: it is a broken symlink.`);
+      continue;
+    }
     const writing = targetOf(path);
     try {
       if (harnessSkills[h].agentsMd) {
@@ -193,7 +285,10 @@ export async function installSkill(
         }
         writeAtomic(writing, withCodexBlock(before, text));
       } else {
-        if (existsSync(writing) && !isOurs(readFileSync(writing, "utf8"))) {
+        if (
+          existsSync(writing) &&
+          !isOurs(readFileSync(writing, "utf8"), folder)
+        ) {
           notes.push(
             `Left ${writing} alone: it has no Open Artifacts marker, so it is not ours to replace.`,
           );
@@ -218,47 +313,78 @@ export const uninstallSkill = (
 ): SkillResult => {
   const written: string[] = [];
   const notes: string[] = [];
+  const seen = new Set<string>();
+  const fail = (path: string, e: unknown) =>
+    notes.push(
+      `Left ${path} alone: ${e instanceof Error ? e.message : String(e)}`,
+    );
   for (const h of harnesses) {
     const base = skillDir(deps, h);
+    // pi and omp share a folder: visit it once.
+    if (seen.has(base)) continue;
+    seen.add(base);
     if (harnessSkills[h].agentsMd) {
-      if (!existsSync(base)) continue;
-      const text = readFileSync(base, "utf8");
-      if (codexBroken(text)) {
-        notes.push(`Left ${base} alone: its block has no END marker.`);
-        continue;
-      }
       try {
+        if (brokenLink(base) || !existsSync(base)) continue;
+        const text = readFileSync(base, "utf8");
+        if (codexBroken(text)) {
+          notes.push(`Left ${base} alone: its block has no END marker.`);
+          continue;
+        }
         const next = withCodexBlock(text, "");
         // An emptied block is no block: drop the markers too.
         const clean = next
           .split("\n")
-          .filter((l) => l !== CODEX_BEGIN && l !== CODEX_END)
+          .filter((l) => {
+            const t = l.replace(/\r$/, "");
+            return t !== CODEX_BEGIN && t !== CODEX_END;
+          })
           .join("\n")
           .trimEnd();
-        if (clean) writeAtomic(base, `${clean}\n`);
-        else rmSync(base, { force: true });
+        if (clean) writeAtomic(targetOf(base), `${clean}\n`);
+        else rmSync(targetOf(base), { force: true });
         written.push(base);
-      } catch {
-        notes.push(`Left ${base} alone: its block could not be removed.`);
+      } catch (e) {
+        fail(base, e);
       }
       continue;
     }
-    if (!existsSync(base)) continue;
-    for (const entry of readdirSync(base)) {
-      const file = join(base, entry, "SKILL.md");
-      if (!existsSync(file)) continue;
-      if (!isOurs(readFileSync(targetOf(file), "utf8"))) {
-        notes.push(`Left ${file} alone: it has no Open Artifacts marker.`);
-        continue;
-      }
-      rmSync(targetOf(file), { force: true });
-      // rmdirSync, never recursive: the folder goes only if we left it empty.
+    let entries: string[];
+    try {
+      if (!existsSync(base)) continue;
+      entries = readdirSync(base);
+    } catch (e) {
+      fail(base, e);
+      continue;
+    }
+    for (const entry of entries) {
+      const dir = join(base, entry);
+      const file = join(dir, "SKILL.md");
       try {
-        rmdirSync(join(base, entry));
-      } catch {
-        // Another file in there: leave the folder.
+        const st = lstatSync(dir);
+        if (st.isSymbolicLink()) {
+          if (existsSync(file))
+            notes.push(`Left ${dir} alone: it is a symlinked folder.`);
+          continue;
+        }
+        if (!st.isDirectory() || !lstatOk(file)) continue;
+        if (!isOurs(readFileSync(targetOf(file), "utf8"), entry)) {
+          notes.push(
+            `Left ${file} alone: it is not an Open Artifacts skill file.`,
+          );
+          continue;
+        }
+        rmSync(targetOf(file), { force: true });
+        // rmdirSync, never recursive: the folder goes only if we left it empty.
+        try {
+          rmdirSync(dir);
+        } catch {
+          // Another file in there: leave the folder.
+        }
+        written.push(file);
+      } catch (e) {
+        fail(file, e);
       }
-      written.push(file);
     }
   }
   return { written, notes };
