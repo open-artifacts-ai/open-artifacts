@@ -54,6 +54,7 @@
       "gh api repos/open-artifacts-ai/*": "allow",
       "gh api graphql *": "allow",
       "git push *": "allow",
+      "git -C * push *": "allow",
       "git fetch *": "allow",
       "git switch *": "allow",
       "git merge --no-edit origin/main": "allow",
