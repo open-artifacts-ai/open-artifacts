@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.131.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.130.0...v0.131.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** oa-bus link via a confirm link; adapters show linked agents ([#1567](https://github.com/open-artifacts-ai/open-artifacts/issues/1567), PR 2 of 3) ([#1579](https://github.com/open-artifacts-ai/open-artifacts/issues/1579)) ([260cf15](https://github.com/open-artifacts-ai/open-artifacts/commit/260cf153dd94d1b487831cf7bf2146051365bde8))
+
 ## [0.130.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.129.0...v0.130.0) (2026-11-06)
 
 
