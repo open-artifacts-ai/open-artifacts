@@ -190,6 +190,26 @@ describe("search", () => {
     expect(d.items[0]?.snippet).toContain(`${SNIPPET_MARK.open}descr${tag}`);
   });
 
+  it("ranks a title match above a body match with many hits", async () => {
+    const w = `ranked${tag}`;
+    // Filler documents without the word: bm25's idf floors at ~0 when the
+    // word is in most documents, which would hide the column weights.
+    for (let i = 0; i < 6; i++)
+      await pub(o, { title: `Filler ${i}`, format: "markdown", content: "x" });
+    const body = await pub(o, {
+      title: "Notes",
+      format: "markdown",
+      content: `${w} some other words here `.repeat(8),
+    });
+    const title = await pub(o, {
+      title: `About ${w}`,
+      format: "markdown",
+      content: "nothing relevant here at all ".repeat(3),
+    });
+    const h = await hits(o, w);
+    expect(h.items.map((x) => x.id)).toEqual([title.id, body.id]);
+  });
+
   it("anonymous → 401", async () => {
     expect((await search(null, "x")).status).toBe(401);
   });
