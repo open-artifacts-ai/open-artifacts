@@ -118,6 +118,8 @@ export function mountLinkConfirm(app: AppType): void {
           a: p.a,
           b: p.b,
           noop: v.noop,
+          machineLabel: p.machineLabel,
+          proposedAt: p.createdAt,
           minutesLeft: Math.max(
             1,
             Math.ceil((p.expiresAt - Date.now()) / 60_000),

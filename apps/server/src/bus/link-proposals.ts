@@ -43,6 +43,9 @@ export type LinkProposalView = {
   a: string;
   b: string;
   expiresAt: number;
+  /** When it was proposed (ms), and the proposing machine's label (null: gone). */
+  createdAt: number;
+  machineLabel: string | null;
   status: "pending" | "applied" | "refused" | "expired";
   reason: string | null;
 };
@@ -67,13 +70,14 @@ export type LinkDecideResult =
   | { ok: true; proposal: LinkProposalView; noop: boolean }
   | { ok: false; reason: LinkRefusalReason; proposal: LinkProposalView | null };
 
-const SELECT = `select id, action, ns_a as a, ns_b as b, expires_at as expiresAt, status, reason
-  from link_proposals`;
+const SELECT = `select p.id, p.action, p.ns_a as a, p.ns_b as b, p.expires_at as expiresAt,
+    p.created_at as createdAt, m.label as machineLabel, p.status, p.reason
+  from link_proposals p left join machines m on m.org_id = p.org_id and m.id = p.machine_id`;
 
 const byHash = (sql: SqlStorage, orgId: string, hash: string) =>
   one<LinkProposalView>(
     sql,
-    `${SELECT} where org_id = ? and token_hash = ?`,
+    `${SELECT} where p.org_id = ? and p.token_hash = ?`,
     orgId,
     hash,
   );

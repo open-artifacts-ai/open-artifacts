@@ -18,6 +18,7 @@ import { createPat } from "../../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../../src/auth/session.js";
 import type { BusHub } from "../../src/bus/hub.js";
 import { LINK_CONFIRM_SCOPE } from "../../src/bus/link-confirm.js";
+import { ROLE_CONFIRM_SCOPE } from "../../src/bus/role-confirm.js";
 import { formCsrf } from "../../src/http/pages.js";
 import { sha256Hex } from "../../src/util/crypto.js";
 import { errOf, fetchAndWait } from "../helpers.js";
@@ -370,6 +371,68 @@ describe("link proposals (#1567)", () => {
     expect((await confirmInBrowser(cookie, p.secret)).status).toBe(200);
     expect(await links(userId)).toHaveLength(1);
     d.close();
+  });
+
+  it("the confirm page names the machine that proposed, escaped", async () => {
+    const { userId, cookie, d, machineToken } = await withBus();
+    const p = await proposed(
+      await propose(machineToken, { action: "link", a: ns("ma"), b: ns("mb") }),
+    );
+    const html = await (await get(p.secret, { cookie })).text();
+    expect(html).toMatch(/Proposed from[\s\S]{0,40}MacBook/);
+    expect(html).toContain("MacBook");
+    expect(html).toMatch(
+      /MacBook[\s\S]{0,40}at[\s\S]{0,20}\d{4}-\d\d-\d\d \d\d:\d\d UTC/,
+    );
+    // A hostile label is escaped.
+    await runInHub(userId, (s) => {
+      s.storage.sql.exec("update machines set label = ?", "<b>evil</b>");
+    });
+    const h2 = await (await get(p.secret, { cookie })).text();
+    expect(h2).not.toContain("<b>evil</b>");
+    expect(h2).toContain("&lt;b&gt;evil&lt;/b&gt;");
+    d.close();
+  });
+
+  it("another member opening or posting to this URL gets 404; a role-scope form token is refused", async () => {
+    const { userId, cookie, d, machineToken } = await withBus();
+    const p = await proposed(
+      await propose(machineToken, { action: "link", a: ns("ka"), b: ns("kb") }),
+    );
+    const b = await withBus();
+    expect((await get(p.secret, { cookie: b.cookie })).status).toBe(404);
+    const bCsrf = await formCsrf(
+      env,
+      LINK_CONFIRM_SCOPE,
+      b.userId,
+      await sha256Hex(p.secret),
+    );
+    expect(
+      (
+        await post(p.secret, { cookie: b.cookie }, [
+          ["csrf", bCsrf],
+          ["decision", "confirm"],
+        ])
+      ).status,
+    ).toBe(404);
+    const roleCsrf = await formCsrf(
+      env,
+      ROLE_CONFIRM_SCOPE,
+      userId,
+      await sha256Hex(p.secret),
+    );
+    expect(
+      (
+        await post(p.secret, { cookie }, [
+          ["csrf", roleCsrf],
+          ["decision", "confirm"],
+        ])
+      ).status,
+    ).toBe(403);
+    expect(await links(userId)).toEqual([]);
+    expect(await links(b.userId)).toEqual([]);
+    d.close();
+    b.d.close();
   });
 
   it("an expired proposal is refused and nothing changes", async () => {

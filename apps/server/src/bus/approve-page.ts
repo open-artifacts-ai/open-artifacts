@@ -345,6 +345,9 @@ export type LinkConfirmView = {
   b: string;
   /** True when confirming changes nothing (already linked, or no such link). */
   noop: boolean;
+  /** The proposing machine's label (null: gone) and when, in ms. */
+  machineLabel: string | null;
+  proposedAt: number;
   minutesLeft: number;
   userEmail: string;
   formAction: string;
@@ -371,6 +374,7 @@ export function renderLinkConfirm(v: LinkConfirmView): string {
     <input type="hidden" name="csrf" value="${v.csrf}">
     <h1>${link ? "Link" : "Unlink"} <span class="mono wrap">${v.a}</span> and <span class="mono wrap">${v.b}</span>?</h1>
     <p>A command you ran in a terminal on one of your machines asked for this. Nothing changes unless you confirm it.</p>
+    <p class="muted">Proposed from <b class="wrap">${v.machineLabel ?? "a machine that is gone"}</b> at ${new Date(v.proposedAt).toISOString().slice(0, 16).replace("T", " ")} UTC. If an agent asked you to confirm this, check that it is the machine you expect.</p>
     <ul>
       <li>${CHECK}<div><b>${link ? "Linked projects see each other" : "After this they no longer see each other"}</b><small>${link ? "Their agents appear in each other's lists and can message each other. Only these two: a link never chains to a third project." : "Their agents stop appearing in each other's lists and can no longer message each other."}</small></div></li>
       <li>${CHECK}<div><b>Project</b><small class="wrap mono">${v.a}</small></div></li>
