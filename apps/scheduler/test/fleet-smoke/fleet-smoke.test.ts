@@ -6,14 +6,14 @@
 import { env } from "cloudflare:workers";
 import { newId } from "@oa/shared";
 import { describe, expect, it } from "vitest";
+import { createPat } from "../../../server/src/auth/pat.js";
+import { login } from "../../../server/test/helpers.js";
+import { callWorker, E } from "../../../server/test/mcp-helpers.js";
 import {
   SMOKE_BUS_SKIPPED,
   SMOKE_TITLE_PREFIX,
   smoke,
 } from "../../src/provapi/smoke.js";
-import { createPat } from "../../../server/src/auth/pat.js";
-import { login } from "../../../server/test/helpers.js";
-import { callWorker, E } from "../../../server/test/mcp-helpers.js";
 
 const INSTALL = "icanary00001";
 const HOST = "app.localhost";
