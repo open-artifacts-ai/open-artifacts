@@ -7,7 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "pnpm --filter @oa/shared --filter @oa/provisioning-contract --filter @oa/provision build && vitest run && vitest run -c vitest.node.config.ts",
+    "test": "pnpm --filter @oa/shared --filter @oa/provisioning-contract --filter @oa/provision build && vitest run && vitest run -c vitest.fleet.config.ts && vitest run -c vitest.node.config.ts",
     "typecheck": "pnpm --filter @oa/shared --filter @oa/provisioning-contract --filter @oa/provision build && tsc --noEmit"
   },
   "dependencies": {

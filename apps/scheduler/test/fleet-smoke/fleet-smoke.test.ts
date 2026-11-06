@@ -10,10 +10,10 @@ import {
   SMOKE_BUS_SKIPPED,
   SMOKE_TITLE_PREFIX,
   smoke,
-} from "../../scheduler/src/provapi/smoke.js";
-import { createPat } from "../src/auth/pat.js";
-import { login } from "./helpers.js";
-import { callWorker, E } from "./mcp-helpers.js";
+} from "../../src/provapi/smoke.js";
+import { createPat } from "../../../server/src/auth/pat.js";
+import { login } from "../../../server/test/helpers.js";
+import { callWorker, E } from "../../../server/test/mcp-helpers.js";
 
 const INSTALL = "icanary00001";
 const HOST = "app.localhost";

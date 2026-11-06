@@ -14,5 +14,5 @@ export default defineConfig({
       miniflare: { bindings: { TEST_MIGRATIONS: migrations } },
     }),
   ],
-  test: { include: ["test/**/*.test.ts"], exclude: ["test/node/**"] },
+  test: { include: ["test/**/*.test.ts"], exclude: ["test/node/**", "test/fleet-smoke/**"] },
 });
