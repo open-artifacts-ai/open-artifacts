@@ -22,7 +22,7 @@ import { LINK_CONFIRM_SCOPE } from "../../src/bus/link-confirm.js";
 import { ROLE_CONFIRM_SCOPE } from "../../src/bus/role-confirm.js";
 import { formCsrf } from "../../src/http/pages.js";
 import { sha256Hex } from "../../src/util/crypto.js";
-import { errOf, fetchAndWait } from "../helpers.js";
+import { api, errOf, fetchAndWait } from "../helpers.js";
 import { confirmBrowser } from "./confirm-browser.js";
 import { daemon, hubOf, machine, member, ns } from "./helpers.js";
 
@@ -62,7 +62,13 @@ async function withBus() {
     client_version: "0.0.0",
   });
   await d.next();
-  return { userId: base.userId, cookie, d, machineToken: mach.token };
+  return {
+    userId: base.userId,
+    cookie,
+    d,
+    machineToken: mach.token,
+    machineId: mach.id,
+  };
 }
 
 const propose = (
@@ -473,6 +479,103 @@ describe("link proposals (#1567)", () => {
     expect((await one(second.token)).status).toBe(200);
     d.close();
     d2.close();
+  });
+});
+
+describe("link proposals: revoking the machine (#1403)", () => {
+  it("revoking a machine expires its pending proposals at once; another machine's and decided ones are untouched", async () => {
+    const { userId, cookie, d, machineToken, machineId } = await withBus();
+    const other = await machine("Other", userId);
+    const od = await daemon(other.token);
+    od.send({
+      v: 1,
+      id: "h",
+      type: "hello",
+      machine_label: "Other",
+      client_version: "0.0.0",
+    });
+    await od.next();
+    const [a, b] = [ns("ra"), ns("rb")];
+    const mine = await proposed(
+      await propose(machineToken, { action: "link", a, b }),
+    );
+    const decided = await proposed(
+      await propose(machineToken, { action: "link", a: ns("da"), b: ns("db") }),
+    );
+    expect(
+      (await confirmInBrowser(cookie, decided.secret, "reject")).status,
+    ).toBe(200);
+    const theirs = await proposed(
+      await propose(other.token, { action: "link", a, b }),
+    );
+    const statuses = async () =>
+      (
+        await runInDurableObject(
+          await hubOf(userId),
+          (_: BusHub, st: DurableObjectState) =>
+            st.storage.sql
+              .exec<{ status: string }>("select status from link_proposals")
+              .toArray()
+              .map((r) => r.status),
+        )
+      ).sort();
+    expect(await statuses()).toEqual(["pending", "pending", "refused"]);
+    const rev = await api(app, R.busMachine(machineId), cookie, {
+      method: "DELETE",
+    });
+    expect(rev.status).toBe(204);
+    expect(await statuses()).toEqual(["expired", "pending", "refused"]);
+    // The revoked machine's link is dead; nothing was linked.
+    expect((await get(mine.secret, { cookie })).status).toBe(410);
+    expect((await confirmInBrowser(cookie, theirs.secret)).status).toBe(200);
+    d.close();
+    od.close();
+  });
+});
+
+describe("link proposals: a machine revoked in bulk (#1403)", () => {
+  it("members.ts/identity.ts revoke machines in D1 without the hub: the link still refuses at view and confirm, and other machines' links work", async () => {
+    const { userId, cookie, d, machineToken, machineId } = await withBus();
+    const other = await machine("Other", userId);
+    const od = await daemon(other.token);
+    od.send({
+      v: 1,
+      id: "h",
+      type: "hello",
+      machine_label: "Other",
+      client_version: "0.0.0",
+    });
+    await od.next();
+    const mine = await proposed(
+      await propose(machineToken, { action: "link", a: ns("ba"), b: ns("bb") }),
+    );
+    const mine2 = await proposed(
+      await propose(machineToken, { action: "link", a: ns("bc"), b: ns("bd") }),
+    );
+    const theirs = await proposed(
+      await propose(other.token, { action: "link", a: ns("be"), b: ns("bf") }),
+    );
+    await env.DB.prepare("update bus_machines set revoked_at = ? where id = ?")
+      .bind(Date.now(), machineId)
+      .run();
+    expect((await get(mine.secret, { cookie })).status).toBe(410);
+    const dead = await post(mine2.secret, { cookie }, [
+      [
+        "csrf",
+        await formCsrf(
+          env,
+          LINK_CONFIRM_SCOPE,
+          userId,
+          await sha256Hex(mine2.secret),
+        ),
+      ],
+      ["decision", "confirm"],
+    ]);
+    expect(dead.status).toBe(410);
+    expect(await links(userId)).toEqual([]);
+    expect((await confirmInBrowser(cookie, theirs.secret)).status).toBe(200);
+    d.close();
+    od.close();
   });
 });
 
