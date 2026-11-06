@@ -225,7 +225,7 @@ function checkImage(
     if (t !== want && t !== "application/octet-stream")
       return {
         reason: "content_type",
-        message: `"${path}" was uploaded as ${t}, but a .${extOf(path)} image is ${want}.`,
+        message: `"${path}" was uploaded as ${t}, but a .${extOf(path)} image is ${want}. Create a new upload with contentType ${want}.`,
       };
   }
   if (kind === "svg")
@@ -233,13 +233,13 @@ function checkImage(
       ? null
       : {
           reason: "not_svg",
-          message: `"${path}" isn't an SVG image: it must be UTF-8 text with an <svg> root element.`,
+          message: `"${path}" isn't an SVG image: it must be UTF-8 text with an <svg> root element. Fix the file and publish again.`,
         };
   if (RASTER_SIG[kind](head)) return null;
   const what = detectBinary(head);
   return {
     reason: "not_image",
-    message: `"${path}" ${what ? `is ${what}` : `doesn't start with the ${IMAGE_LABEL[kind]} signature`}, so it can't be shown as a ${IMAGE_LABEL[kind]} image.`,
+    message: `"${path}" ${what ? `is ${what}` : `doesn't start with the ${IMAGE_LABEL[kind]} signature`}, so it can't be shown as a ${IMAGE_LABEL[kind]} image. Publish a real ${IMAGE_LABEL[kind]} file, or name the file for its real type.`,
   };
 }
 
@@ -350,7 +350,7 @@ export function checkEntry(
       ? null
       : {
           reason: "not_pdf",
-          message: `"${path}" doesn't start with %PDF, so it can't be shown as a PDF.`,
+          message: `"${path}" doesn't start with %PDF, so it can't be shown as a PDF. Publish a real PDF, or name the file for its real type.`,
         };
   if (format === "image") return checkImage(path, head, truncated, contentType);
   if (!TEXT_FORMATS.has(format) || isUtf8Text(head, truncated)) return null;
@@ -358,16 +358,16 @@ export function checkEntry(
   if (what)
     return {
       reason: "binary",
-      message: `"${path}" is ${what}, not text, so it can't be shown as ${NAME[format]}.`,
+      message: `"${path}" is ${what}, not text, so it can't be shown as ${NAME[format]}. Publish UTF-8 text, or name the file for its real type.`,
     };
   if (contentType !== undefined && isBinaryContentType(contentType))
     return {
       reason: "content_type",
-      message: `"${path}" was uploaded as ${contentType} and isn't UTF-8 text, so it can't be shown as ${NAME[format]}.`,
+      message: `"${path}" was uploaded as ${contentType} and isn't UTF-8 text, so it can't be shown as ${NAME[format]}. Publish UTF-8 text, or name the file for its real type.`,
     };
   return {
     reason: "not_text",
-    message: `"${path}" isn't UTF-8 text, so it can't be shown as ${NAME[format]}.`,
+    message: `"${path}" isn't UTF-8 text, so it can't be shown as ${NAME[format]}. Publish UTF-8 text, or name the file for its real type.`,
   };
 }
 

@@ -98,7 +98,7 @@ describe("B6 breaker", () => {
     const over = await call(env, R.artifacts, { title: "many", files });
     expect(over.status).toBe(413);
     expect((await errOf(over)).message).toBe(
-      "publish more than 900 inline files via uploads",
+      "Too many inline files (over 900). Send the extra files through create_upload and pass their uploadId.",
     );
   }, 30_000);
 
@@ -262,7 +262,7 @@ describe("B6 breaker", () => {
     });
     expect(r2.status).toBe(400);
     expect((await errOf(r2)).message).toBe(
-      "use POST /versions to publish a new version",
+      "This id already has an artifact. Publish a new version with its id, or leave id out to create a new artifact.",
     );
     const up = await uploaded("r.txt");
     const r3 = await call(env, R.versions(up.artifactId), {

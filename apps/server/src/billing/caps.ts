@@ -54,7 +54,7 @@ export function planLimitError(limit: PlanLimit, max: number): ApiError {
   const details: PlanLimitDetails = { tier: "free", limit, max };
   return new ApiError(
     "plan_limit",
-    "This free instance has reached its limit; a team plan lifts it",
+    "This free instance has reached its limit. Delete what you no longer need, or ask the owner to move to a team plan.",
     details,
   );
 }

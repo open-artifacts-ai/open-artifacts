@@ -198,7 +198,7 @@ describe("image: publish", () => {
     expect(await errOf(r)).toEqual({
       code: "binary_entry",
       message:
-        '"p.png" was uploaded as image/jpeg, but a .png image is image/png.',
+        '"p.png" was uploaded as image/jpeg, but a .png image is image/png. Create a new upload with contentType image/png.',
       details: { path: "p.png", reason: "content_type" },
     });
     for (const ct of ["image/png", "application/octet-stream", undefined]) {
