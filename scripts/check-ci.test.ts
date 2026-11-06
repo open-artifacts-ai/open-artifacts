@@ -1994,3 +1994,42 @@ describe("workflow and job env use only contexts available there", () => {
     });
   }
 });
+
+// W9b (design 10.1), public half: install writes are the Provisioning API's.
+// No public workflow names a retired hosted file, target or secret, and every
+// oa:hosted call in one is a kept command. Hosted workflows (the paths in
+// scripts/ci/private-paths.txt) are checked by scripts/ci/hosted-workflow-rules.test.ts,
+// which moves with them (#1056).
+describe("W9b: public workflows keep the retired hosted writes retired", () => {
+  const privatePaths = new Set(
+    read("scripts/ci/private-paths.txt")
+      .split("\n")
+      .map((l) => l.replace(/#.*/, "").trim())
+      .filter(Boolean),
+  );
+  const workflows = readdirSync(join(root, ".github/workflows")).filter(
+    (f) => /\.ya?ml$/.test(f) && !privatePaths.has(`.github/workflows/${f}`),
+  );
+
+  it("checks at least the public workflows", () => {
+    expect(workflows).toContain("ci.yml");
+  });
+
+  it("no public workflow names a retired file, target or secret", () => {
+    const banned =
+      /hosted-ops|ci-args|redline-creds|redline-deploy|hosted-turnstile-keys|prod-clean-cli|inventory-key|INVENTORY_KEY|secrets\.REDLINE_RL_|CREATE_OWNER_EMAIL|TURNSTILE_KEYS/;
+    for (const f of workflows)
+      expect(read(`.github/workflows/${f}`), f).not.toMatch(banned);
+  });
+
+  it("every oa:hosted call in a public workflow is a kept command", () => {
+    for (const f of workflows)
+      for (const [, cmd] of read(`.github/workflows/${f}`).matchAll(
+        /oa:hosted\s+(?:"\$\{[^}]*\}"|([a-z-]+))/g,
+      ))
+        expect(
+          ["status", "publish-release", "publish-floor"],
+          `${f}: ${cmd}`,
+        ).toContain(cmd ?? "(argv)");
+  });
+});
