@@ -6,6 +6,7 @@ import {
   CommentListSchema,
   CommentSchema,
   CommentThreadSchema,
+  MENTIONS_MAX,
   type NewThreadBody,
   R,
   type ReplyBody,
@@ -92,6 +93,7 @@ export const useReply = (id: string, guest = false) =>
         body: v.body,
         ...(v.guestName ? { guestName: v.guestName } : {}),
         ...(v.mentions?.length ? { mentions: v.mentions } : {}),
+        ...(v.assign ? { assign: v.assign } : {}),
       },
       CommentSchema,
       undefined,
@@ -171,6 +173,9 @@ export const useDeleteComment = (id: string, guest = false) =>
     ),
   );
 
+/** More agents @mentioned than one comment may carry. */
+export class TooManyMentions extends Error {}
+
 /** "5 seconds", "2 minutes": a Retry-After rounded up. */
 const wait = (s: number) =>
   s <= 90
@@ -179,6 +184,8 @@ const wait = (s: number) =>
 
 /** The copy for a failed comment call (Product's strings where the spec has them). */
 export function commentError(e: unknown, capped = false): string {
+  if (e instanceof TooManyMentions)
+    return `Mention at most ${MENTIONS_MAX} agents in one comment.`;
   const code = e instanceof ApiClientError ? e.code : null;
   // A capped (guest or restricted) member's writes are refused as read-only:
   // the server answers 404, and says nothing about a missing comment.

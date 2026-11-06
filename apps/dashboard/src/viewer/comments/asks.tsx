@@ -7,7 +7,7 @@ import type {
   KeyRef,
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { answerError, useAnswerAsk } from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
@@ -85,6 +85,7 @@ export function AskBlock({
   const answer = useAnswerAsk(artifactId);
   const [err, setErr] = useState<unknown>(null);
   const [open, setOpen] = useState(false);
+  const qid = useId();
   if (!ask) return null;
   const mine = ask.to.some((a) => a.me);
   const canAnswer = mine && !ask.closed;
@@ -113,8 +114,13 @@ export function AskBlock({
       <p className={`${TXT} ${MUTED}`}>
         Ask for {ask.to.map((a) => (a.me ? "you" : a.name)).join(", ")}
       </p>
-      <p className={`${TXT} font-semibold break-words`}>{ask.question}</p>
-      <ul className="m-0 flex list-none flex-col gap-1 p-0">
+      <p id={qid} className={`${TXT} font-semibold break-words`}>
+        {ask.question}
+      </p>
+      <ul
+        aria-labelledby={qid}
+        className="m-0 flex list-none flex-col gap-1 p-0"
+      >
         {ask.options.map((o) => {
           const rec = ask.recommended?.optionId === o.id;
           return (
@@ -123,7 +129,7 @@ export function AskBlock({
                 variant="outline"
                 size="sm"
                 className="h-auto w-full justify-start gap-2 py-1 text-left whitespace-normal"
-                disabled={!canAnswer || answer.isPending}
+                disabled={!canAnswer || answer.isPending || picked === o.id}
                 aria-pressed={picked === o.id}
                 data-option={o.id}
                 onClick={() => {
@@ -173,7 +179,7 @@ export function AskBlock({
         </p>
       )}
       <div className="flex gap-2">
-        {next && (
+        {next && canAnswer && (
           <Button size="xs" variant="outline" onClick={next}>
             Next ask
           </Button>
@@ -194,41 +200,86 @@ export function mentionQuery(before: string): string | null {
   return m ? (m[1] ?? "") : null;
 }
 
+/**
+ * Agents the picker offers for a query; null (no picker) once the query has run past a
+ * whole agent name plus a space ("@OA Design " is a finished mention).
+ */
+export function matchAgents(
+  agents: readonly ArtifactAgent[],
+  query: string,
+): ArtifactAgent[] | null {
+  const q = query.toLowerCase();
+  if (agents.some((a) => q.startsWith(`${a.name.toLowerCase()} `))) return null;
+  return agents.filter((a) => a.name.toLowerCase().includes(q));
+}
+
+const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Keys of the agents named as "@Name" in the text: after the start or
+ * whitespace (so not in an email), before the end, whitespace or punctuation.
+ * Longest names first, and a matched span is used up, so "@Bob" is not also "Bo".
+ */
+export function mentionedKeys(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): string[] {
+  let rest = text;
+  const keys: string[] = [];
+  for (const a of [...agents].sort((x, y) => y.name.length - x.name.length)) {
+    const re = new RegExp(`(^|\\s)@${esc(a.name)}(?=$|[\\s.,;:!?)\\]])`, "i");
+    const m = re.exec(rest);
+    if (!m) continue;
+    keys.push(a.key);
+    const at = m.index + (m[1]?.length ?? 0);
+    rest =
+      rest.slice(0, at) +
+      " ".repeat(a.name.length + 1) +
+      rest.slice(at + a.name.length + 1);
+  }
+  return keys;
+}
+
 export function MentionMenu({
-  agents,
-  query,
+  id,
+  matches,
+  active,
   onPick,
 }: {
-  agents: readonly ArtifactAgent[];
-  query: string;
+  id: string;
+  matches: readonly ArtifactAgent[];
+  active: number;
   onPick: (a: ArtifactAgent) => void;
 }) {
-  const q = query.toLowerCase();
-  const list = agents.filter((a) => a.name.toLowerCase().includes(q));
   return (
     <div
+      id={id}
       role="listbox"
       aria-label="Agents on this page"
       className="rounded-md border border-border bg-background"
     >
-      {list.length === 0 ? (
+      {matches.length === 0 ? (
         <p className={`p-2 ${TXT} ${MUTED}`}>
           No agent works on this page with that name.
         </p>
       ) : (
-        list.map((a) => (
-          <button
+        matches.map((a, i) => (
+          <div
             key={a.key}
-            type="button"
+            id={`${id}-${i}`}
             role="option"
-            aria-selected="false"
-            className={`flex w-full cursor-pointer items-center gap-2 border-0 bg-transparent px-2 py-1 text-left ${TXT} hover:bg-muted`}
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => onPick(a)}
+            tabIndex={-1}
+            aria-selected={i === active}
+            className={`flex w-full cursor-pointer items-center gap-2 px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:bg-muted`}
+            // Picked on mouse down so the textarea keeps focus; the keys are on the textarea.
+            onMouseDown={(e) => {
+              e.preventDefault();
+              onPick(a);
+            }}
           >
             <b className="min-w-0 flex-1 truncate">{a.name}</b>
             <span className={MUTED}>{a.online ? "online" : "offline"}</span>
-          </button>
+          </div>
         ))
       )}
     </div>

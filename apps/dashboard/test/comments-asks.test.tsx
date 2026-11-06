@@ -290,7 +290,7 @@ describe("@mentions in the composer", () => {
       within(menu).queryByRole("option", { name: /OA Product/ }),
     ).toBeNull();
     expect(opt).toHaveTextContent("offline");
-    fireEvent.click(opt);
+    fireEvent.mouseDown(opt);
     expect(box).toHaveValue("@OA Design ");
     fireEvent.change(box, { target: { value: "@OA Design why B?" } });
     fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
@@ -319,5 +319,165 @@ describe("@mentions in the composer", () => {
     ).toBeInTheDocument();
     expect(within(c).getByText(/Seen/)).toBeInTheDocument();
     expect(within(c).getByText(/Assigned to/)).toHaveTextContent("Done");
+  });
+});
+
+const AGENTS = [
+  { key: "agent:product", name: "OA Product", online: true },
+  { key: "agent:design", name: "OA Design", online: false },
+  { key: "agent:bo", name: "Bo", online: true },
+  { key: "agent:bob", name: "Bob", online: true },
+];
+const withAgents = () =>
+  server.use(
+    http.get(`*${R.artifactAgents(OWNED)}`, () => HttpResponse.json(AGENTS)),
+  );
+const noteBox = async () => {
+  const c = await col();
+  const box = await within(c).findByRole("textbox", {
+    name: "Comment on the whole page",
+  });
+  fireEvent.focus(box);
+  // Wait for the agents to load: the picker only opens once they have.
+  await waitFor(() => {
+    fireEvent.change(box, { target: { value: "@" } });
+    expect(within(c).queryByRole("listbox")).not.toBeNull();
+  });
+  fireEvent.change(box, { target: { value: "" } });
+  return { c, box };
+};
+
+describe("@ picker details", () => {
+  it("closes after a pick and stays closed for the rest of the sentence", async () => {
+    withAgents();
+    mount(viewerPath(OWNED));
+    const { c, box } = await noteBox();
+    fireEvent.change(box, { target: { value: "@OA D" } });
+    fireEvent.mouseDown(
+      within(await within(c).findByRole("listbox")).getByRole("option", {
+        name: /OA Design/,
+      }),
+    );
+    expect(within(c).queryByRole("listbox")).toBeNull();
+    // Typing on past the finished name does not bring back "No agent works...".
+    fireEvent.change(box, { target: { value: "@OA Design please" } });
+    expect(within(c).queryByRole("listbox")).toBeNull();
+    expect(within(c).queryByText(/No agent works/)).toBeNull();
+  });
+
+  it("works from the keyboard: arrows move, Enter picks, Escape closes", async () => {
+    withAgents();
+    mount(viewerPath(OWNED));
+    const { c, box } = await noteBox();
+    fireEvent.change(box, { target: { value: "@OA" } });
+    const menu = await within(c).findByRole("listbox");
+    const opts = () => within(menu).getAllByRole("option");
+    expect(opts()[0]).toHaveAttribute("aria-selected", "true");
+    expect(box).toHaveAttribute("aria-activedescendant", opts()[0]?.id);
+    fireEvent.keyDown(box, { key: "ArrowDown" });
+    expect(opts()[1]).toHaveAttribute("aria-selected", "true");
+    expect(box).toHaveAttribute("aria-activedescendant", opts()[1]?.id);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(box).toHaveValue("@OA Design ");
+    expect(within(c).queryByRole("listbox")).toBeNull();
+    fireEvent.change(box, { target: { value: "@OA" } });
+    await within(c).findByRole("listbox");
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(within(c).queryByRole("listbox")).toBeNull();
+    expect(box).toHaveValue("@OA");
+  });
+
+  it("mentions only whole @names after whitespace, longest first", async () => {
+    withAgents();
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const { c, box } = await noteBox();
+    fireEvent.change(box, {
+      target: { value: "@Bob look, mail me@Bo.com and ask @OA Product." },
+    });
+    // Close the menu the trailing text may open, then send.
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts.length).toBeGreaterThan(0));
+    const sent = posts[0]?.body as { mentions: { key: string }[] };
+    const keys = sent.mentions.map((m) => m.key).sort();
+    expect(keys).toEqual(["agent:bob", "agent:product"]);
+  });
+
+  it("refuses more mentions than a comment may carry, in plain words", async () => {
+    const many = Array.from({ length: 11 }, (_, i) => ({
+      key: `agent:n${i}`,
+      name: `Ag${String.fromCharCode(65 + i)}`,
+      online: true,
+    }));
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, () => HttpResponse.json(many)),
+    );
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.focus(box);
+    await waitFor(() => {
+      fireEvent.change(box, { target: { value: "@" } });
+      expect(within(c).queryByRole("listbox")).not.toBeNull();
+    });
+    fireEvent.change(box, {
+      target: { value: `${many.map((a) => `@${a.name}`).join(" ")} go` },
+    });
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    expect(await within(c).findByRole("alert")).toHaveTextContent(
+      "Mention at most 10 agents in one comment.",
+    );
+    expect(posts).toHaveLength(0);
+  });
+
+  it("sends Assign to with a reply", async () => {
+    withAgents();
+    serveThreads(() => [askThread({}, {})]);
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
+    const box = await within(c).findByRole("textbox", { name: "Reply" });
+    const select = await waitFor(() => {
+      const s = within(c).getByLabelText("Assign to") as HTMLSelectElement;
+      expect(s.options.length).toBeGreaterThan(1);
+      return s;
+    });
+    fireEvent.change(select, { target: { value: "agent:design" } });
+    fireEvent.change(box, { target: { value: "please do it" } });
+    fireEvent.click(
+      within(c).getByRole("button", { name: "Reply", hidden: false }),
+    );
+    await waitFor(() => expect(posts.length).toBeGreaterThan(0));
+    expect(posts[0]?.body).toMatchObject({
+      body: "please do it",
+      assign: { key: "agent:design" },
+    });
+  });
+
+  it("does not resend the answer already picked", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          answer: {
+            optionId: "a",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(
+      await within(c).findByRole("button", { name: /List only/ }),
+    ).toBeDisabled();
+    expect(
+      within(c).getByRole("button", { name: /Side by side/ }),
+    ).toBeEnabled();
   });
 });

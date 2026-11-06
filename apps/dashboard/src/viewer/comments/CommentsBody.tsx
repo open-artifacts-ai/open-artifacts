@@ -5,14 +5,16 @@ import {
   type CommentAuthor,
   type Comment as CommentT,
   type CommentThread,
+  MENTIONS_MAX,
   viewerPath,
 } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import {
   commentError,
+  TooManyMentions,
   useArtifactAgents,
   useCreateThread,
   useDeleteComment,
@@ -29,6 +31,8 @@ import {
   type Extras,
   extrasBody,
   MentionMenu,
+  matchAgents,
+  mentionedKeys,
   mentionQuery,
 } from "./asks";
 import { numbering } from "./model";
@@ -92,7 +96,26 @@ function Composer({
   const ref = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState(0);
   const [assign, setAssign] = useState("");
+  const [menuOff, setMenuOff] = useState(false);
+  const [activeOpt, setActiveOpt] = useState(0);
+  const menuId = useId();
   const query = agents?.length ? mentionQuery(text.slice(0, caret)) : null;
+  const found =
+    query !== null && agents && !menuOff ? matchAgents(agents, query) : null;
+  const matches = found ?? [];
+  const menuOpen = matches.length > 0;
+  const pick = (a: ArtifactAgent) => {
+    const before = text.slice(0, caret).replace(/@[\w .-]{0,40}$/, "");
+    setText(`${before}@${a.name} ${text.slice(caret)}`);
+    const at = before.length + a.name.length + 2;
+    setCaret(at);
+    setMenuOff(true);
+    setActiveOpt(0);
+    requestAnimationFrame(() => {
+      ref.current?.focus();
+      ref.current?.setSelectionRange(at, at);
+    });
+  };
   useEffect(() => {
     if (autoFocus) ref.current?.focus();
   }, [autoFocus]);
@@ -110,9 +133,9 @@ function Composer({
     setError(null);
     try {
       // Only agents whose @name is still in the text are mentioned.
-      const mentions = (agents ?? [])
-        .filter((a) => body.includes(`@${a.name}`))
-        .map((a) => ({ key: a.key }));
+      const keys = mentionedKeys(body, agents ?? []);
+      if (keys.length > MENTIONS_MAX) throw new TooManyMentions();
+      const mentions = keys.map((key) => ({ key }));
       await onSubmit(body, {
         mentions,
         ...(assign ? { assign: { key: assign } } : {}),
@@ -150,9 +173,39 @@ function Composer({
         onChange={(e) => {
           setText(e.target.value);
           setCaret(e.target.selectionStart);
+          setMenuOff(false);
+          setActiveOpt(0);
         }}
+        aria-controls={menuOpen ? menuId : undefined}
+        aria-activedescendant={menuOpen ? `${menuId}-${activeOpt}` : undefined}
         onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
         onKeyDown={(e) => {
+          if (menuOpen) {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              const n = matches.length;
+              setActiveOpt(
+                (i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n,
+              );
+              return;
+            }
+            if (
+              (e.key === "Enter" || e.key === "Tab") &&
+              !e.metaKey &&
+              !e.ctrlKey
+            ) {
+              e.preventDefault();
+              const a = matches[activeOpt];
+              if (a) pick(a);
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              setMenuOff(true);
+              return;
+            }
+          }
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             void go();
@@ -163,22 +216,12 @@ function Composer({
           }
         }}
       />
-      {query !== null && agents && (
+      {found && (
         <MentionMenu
-          agents={agents}
-          query={query}
-          onPick={(a) => {
-            const pos = caret;
-            const before = text.slice(0, pos).replace(/@[\w .-]{0,40}$/, "");
-            const next = `${before}@${a.name} ${text.slice(pos)}`;
-            setText(next);
-            const at = before.length + a.name.length + 2;
-            setCaret(at);
-            requestAnimationFrame(() => {
-              ref.current?.focus();
-              ref.current?.setSelectionRange(at, at);
-            });
-          }}
+          id={menuId}
+          matches={matches}
+          active={activeOpt}
+          onPick={pick}
         />
       )}
       {error != null && (
@@ -264,7 +307,9 @@ function CommentRow({
   c: CommentT;
   root: boolean;
 }) {
-  const pending = asksForMe(api.ordered).filter((id) => id !== thread.id);
+  const pending = asksForMe([...api.ordered, ...api.orphans]).filter(
+    (id) => id !== thread.id,
+  );
   const nextAsk = pending[0];
   const edit = useEditComment(api.artifactId, api.guest);
   const del = useDeleteComment(api.artifactId, api.guest);
@@ -666,7 +711,7 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
   const ordered = visible(api.ordered);
   const orphans = visible(api.orphans);
   const none = api.threads.length === 0;
-  const forMe = asksForMe(api.ordered);
+  const forMe = asksForMe([...api.ordered, ...api.orphans]);
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
       <div className={`flex items-center justify-between gap-2 ${TXT}`}>
