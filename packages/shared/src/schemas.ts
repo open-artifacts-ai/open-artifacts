@@ -309,6 +309,8 @@ export const ArtifactSummarySchema = z.object({
   can: ArtifactCanSchema.optional(),
   /** #682: the Comments setting (on by default). Absent: the server has no comments (older than #1496), so the shell shows none. */
   comments: z.boolean().optional(),
+  /** #1535: open asks addressed to the caller. Absent reads as 0. */
+  asksForYou: z.number().int().min(0).optional(),
 });
 export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;
 
@@ -367,6 +369,8 @@ export const ListQuerySchema = z
     cursor: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(100).default(25),
     includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
+    /** #1535: needs_answer = open asks addressed to the caller; waiting_on_agents = work assigned to an agent and not done. */
+    filter: z.enum(["needs_answer", "waiting_on_agents"]).optional(),
     /**
      * Artifacts with any version from this connection (AgentViaSchema). Only
      * the caller's own grant or token matches; any other is an empty page.
