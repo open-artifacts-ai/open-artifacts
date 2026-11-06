@@ -122,7 +122,9 @@ describe("installSkill", () => {
     );
     expect(r.written).toEqual([]);
     expect(f.urls).toEqual([]);
-    expect(r.notes.join(" ")).toContain("No instance to fetch the skill from");
+    expect(r.notes.join(" ")).toContain(
+      "Skipped the skill file: this machine isn't approved",
+    );
   });
 
   it("writes nothing and names the URL when the fetch fails", async () => {
@@ -197,7 +199,9 @@ describe("installSkill", () => {
       ["codex"],
     );
     expect(readFileSync(path, "utf8")).toBe(`${CODEX_BEGIN}\nold\n`);
-    expect(r.notes.join(" ")).toContain("no END marker");
+    expect(r.notes.join(" ")).toContain(
+      "no END marker. Fix or remove the block, then rerun the install.",
+    );
   });
 });
 

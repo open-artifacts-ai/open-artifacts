@@ -246,7 +246,7 @@ export async function installSkill(
   if (harnesses.length === 0) return { written, notes };
   if (!origin) {
     notes.push(
-      "No instance to fetch the skill from: skipped the skill file. Rerun the install once this machine is approved.",
+      "Skipped the skill file: this machine isn't approved on an instance yet. Rerun the install once it is.",
     );
     return { written, notes };
   }
@@ -279,7 +279,7 @@ export async function installSkill(
         const before = existsSync(writing) ? readFileSync(writing, "utf8") : "";
         if (codexBroken(before)) {
           notes.push(
-            `Left ${writing} alone: its Open Artifacts block has no END marker.`,
+            `Left ${writing} alone: its Open Artifacts block has no END marker. Fix or remove the block, then rerun the install.`,
           );
           continue;
         }
@@ -328,7 +328,9 @@ export const uninstallSkill = (
         if (brokenLink(base) || !existsSync(base)) continue;
         const text = readFileSync(base, "utf8");
         if (codexBroken(text)) {
-          notes.push(`Left ${base} alone: its block has no END marker.`);
+          notes.push(
+            `Left ${base} alone: its Open Artifacts block has no END marker. Fix or remove the block, then rerun the install.`,
+          );
           continue;
         }
         const next = withCodexBlock(text, "");

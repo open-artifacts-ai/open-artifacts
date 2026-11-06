@@ -213,7 +213,7 @@ function reportSkillFailure(ctx: Ctx): boolean {
   if (!url) return false;
   sayErr(ctx, [
     `Could not fetch the skill from ${url}.`,
-    `The bus tools are wired. Rerun ${BUS_CMD} install to write the skill.`,
+    `The bus tools are set up. Rerun ${BUS_CMD} install to write the skill.`,
   ]);
   return true;
 }
