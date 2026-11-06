@@ -478,8 +478,8 @@ describe("skill.md drift", () => {
         "create a new upload instead of reusing that id",
       ])
         expect(doc, `${label}: ${phrase}`).toContain(phrase);
-      // Backend has not built these yet: the skill must not teach them.
-      expect(doc).not.toContain("`edits`");
+      // `edits` shipped with #1548 (the tool description teaches it). The
+      // check is named expectedVersion; the issue's working name never ships.
       expect(doc).not.toContain("baseVersion");
     }
   });
