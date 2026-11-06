@@ -700,6 +700,39 @@ describe("under a suspension the owner can't make anything public", () => {
     }
   });
 
+  it("refuses creating a new public artifact, over REST and MCP; private works", async () => {
+    const make = (visibility: string) =>
+      send(props, R.artifacts, owner.cookie, {
+        method: "POST",
+        body: { title: `new ${uniq()}`, ...html, visibility },
+      });
+    const pub = await make("public");
+    expect(pub.status).toBe(403);
+    expect((await code(pub)).error?.code).toBe("plan_read_only");
+    expect((await make("private")).status).toBe(201);
+    const { token } = await createPat(env, owner.userId, `new ${uniq()}`);
+    const client = await connect(token, { env: H, props });
+    try {
+      const refused = await tool(client, "publish_artifact", {
+        title: `mcp ${uniq()}`,
+        format: "html",
+        content: "<p>x</p>",
+        visibility: "public",
+      });
+      expect(refused.isError).toBe(true);
+      expect(textOf(refused)).toMatch(/read-only/i);
+      const ok = await tool(client, "publish_artifact", {
+        title: `mcp ${uniq()}`,
+        format: "html",
+        content: "<p>x</p>",
+        visibility: "private",
+      });
+      expect(ok.isError ?? false).toBe(false);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("still allows team and private, and removing a share", async () => {
     for (const visibility of ["team", "private"])
       expect(

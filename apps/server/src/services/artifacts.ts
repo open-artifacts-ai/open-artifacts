@@ -184,6 +184,8 @@ export async function publish(
   ctx?: Ctx,
   mode: PublishMode = "any",
 ): Promise<PublishResult> {
+  // Under a suspension nothing becomes public: create and new version alike.
+  refuseSuspendedPublic(user, input.visibility);
   const plan = planFiles(input);
   const db = env.DB;
   const now = Date.now();
@@ -232,7 +234,6 @@ export async function publish(
     if (exists) {
       const who = callerOf(user);
       const { level, artifact: a } = await authorize(env, who, id, "publish");
-      refuseSuspendedPublic(user, input.visibility);
       if (input.spaceId !== undefined)
         throw new ApiError(
           "use_move",
