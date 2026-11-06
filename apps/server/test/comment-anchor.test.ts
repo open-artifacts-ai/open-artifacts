@@ -180,7 +180,7 @@ describe("verifyQuote and checkAnchor", () => {
       kind: "pin",
       x: 0.5,
       y: 0.5,
-      contentHash: "bogus",
+      contentHash: "f".repeat(64),
     });
     expect(r.anchor).toMatchObject({ kind: "pin", contentHash: want });
     // The list reports the same hash the pin was stamped with.
@@ -201,7 +201,7 @@ describe("verifyQuote and checkAnchor", () => {
       kind: "pin",
       x: 0.1,
       y: 0.2,
-      contentHash: "bogus",
+      contentHash: "f".repeat(64),
     });
     expect(r.anchor).toMatchObject({ contentHash: await sha256Hex(PDF) });
   });
@@ -212,7 +212,7 @@ describe("verifyQuote and checkAnchor", () => {
         version: 9,
         x: 0.5,
         y: 0.5,
-        contentHash: "h",
+        contentHash: "f".repeat(64),
       }),
     ).rejects.toMatchObject({ code: "anchor_not_in_version" });
   });

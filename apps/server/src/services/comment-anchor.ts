@@ -1,6 +1,7 @@
 import { CONTEXT_CHARS } from "@oa/shared";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
+import { sha256Sink } from "../util/digest.js";
 
 // Quote verification for comment anchors (#682). The html page's own code is
 // untrusted and receives anchors in the frame, so a text anchor on an html
@@ -239,16 +240,7 @@ export async function versionEntryHash(
   if (e.digest) return e.digest;
   const obj = await env.FILES.get(e.key);
   if (!obj) return null;
-  // DigestStream is a Workers extension the DOM-less lib types omit.
-  const ds = new (
-    crypto as unknown as {
-      DigestStream: new (
-        algo: string,
-      ) => WritableStream<Uint8Array> & { digest: Promise<ArrayBuffer> };
-    }
-  ).DigestStream("SHA-256");
-  await obj.body.pipeTo(ds);
-  return Array.from(new Uint8Array(await ds.digest), (b) =>
-    b.toString(16).padStart(2, "0"),
-  ).join("");
+  const sink = sha256Sink();
+  await obj.body.pipeTo(sink.writable);
+  return sink.hex();
 }

@@ -457,6 +457,7 @@ type UploadRow = {
   path: string;
   consumed: number;
   received_at: number | null;
+  digest: string | null;
 };
 
 /**
@@ -560,6 +561,7 @@ export async function materialize(
         key: row.r2_key,
         size: row.size,
         contentType: row.content_type,
+        ...(row.digest ? { digest: row.digest } : {}),
       });
       continue;
     }

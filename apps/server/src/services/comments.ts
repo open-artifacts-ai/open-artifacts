@@ -147,6 +147,8 @@ export async function checkAnchor(
       throw new ApiError("invalid_anchor", "Pins are not available on html", [
         { path: ["kind"], message: "Pins are not available on html" },
       ]);
+    // Rate limit first: the hash may cost an R2 read (a pre-digest version).
+    await beforeVerify?.();
     // The server stamps the hash from the version's own bytes: a client's value is ignored.
     const contentHash = await versionEntryHash(env, a.id, version);
     if (contentHash === null)
