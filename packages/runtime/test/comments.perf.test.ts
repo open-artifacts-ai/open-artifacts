@@ -130,28 +130,32 @@ describe("many anchors", () => {
     c.dispose();
   });
 
-  it("a page that mutates every frame re-resolves on the timer only, and still re-anchors", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    const threads = pageAndThreads();
-    const { c, shell, frame } = boot();
-    shell({ type: "comments.mode", mode: "select" });
-    shell({ type: "comments.set", threads });
-    expect(resolved.builds).toBe(1);
-    const p = document.querySelector("p") as HTMLElement;
-    for (let i = 0; i < 30; i++) {
-      p.append("x"); // a mutation between every pair of scroll frames
-      await flush();
-      window.dispatchEvent(new Event("scroll"));
-      frame();
-      await vi.advanceTimersByTimeAsync(100); // never 150 ms quiet: only the max wait fires
-    }
-    // 3 s of constant change: the 1 s max wait fires about 3 times, never per frame
-    expect(resolved.builds).toBeGreaterThanOrEqual(2);
-    expect(resolved.builds).toBeLessThanOrEqual(5);
-    // once the page settles, the trailing timer lands one more
-    const before = resolved.builds;
-    await vi.advanceTimersByTimeAsync(200);
-    expect(resolved.builds).toBeLessThanOrEqual(before + 1);
-    c.dispose();
-  }, ANCHOR_TIMEOUT_MS);
+  it(
+    "a page that mutates every frame re-resolves on the timer only, and still re-anchors",
+    async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const threads = pageAndThreads();
+      const { c, shell, frame } = boot();
+      shell({ type: "comments.mode", mode: "select" });
+      shell({ type: "comments.set", threads });
+      expect(resolved.builds).toBe(1);
+      const p = document.querySelector("p") as HTMLElement;
+      for (let i = 0; i < 30; i++) {
+        p.append("x"); // a mutation between every pair of scroll frames
+        await flush();
+        window.dispatchEvent(new Event("scroll"));
+        frame();
+        await vi.advanceTimersByTimeAsync(100); // never 150 ms quiet: only the max wait fires
+      }
+      // 3 s of constant change: the 1 s max wait fires about 3 times, never per frame
+      expect(resolved.builds).toBeGreaterThanOrEqual(2);
+      expect(resolved.builds).toBeLessThanOrEqual(5);
+      // once the page settles, the trailing timer lands one more
+      const before = resolved.builds;
+      await vi.advanceTimersByTimeAsync(200);
+      expect(resolved.builds).toBeLessThanOrEqual(before + 1);
+      c.dispose();
+    },
+    ANCHOR_TIMEOUT_MS,
+  );
 });
