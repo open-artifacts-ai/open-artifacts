@@ -43,6 +43,7 @@ import {
 } from "./navigate";
 import { isPanelTab, type PanelTab, SidePanel } from "./panels/SidePanel";
 import { RenavNotice } from "./RenavNotice";
+import { SignupNudge } from "./SignupNudge";
 import { SlowNotice } from "./SlowNotice";
 import { TitleBar } from "./TitleBar";
 import { useArtifactSideEffects } from "./useArtifactSideEffects";
@@ -135,6 +136,7 @@ function Viewer({
   readOnly = false,
   viewer,
   role,
+  hosted,
   plan,
   chromeless,
   slot,
@@ -168,6 +170,8 @@ function Viewer({
   /** The owner's Restore of an artifact deleted while open. */
   onUndelete?: () => Promise<void>;
   role: Me["user"]["role"] | undefined;
+  /** The signed-in install is hosted (Me.instance.hosted). */
+  hosted: boolean;
   plan: Me["instance"]["plan"] | undefined;
   artifact: ArtifactSummary;
   version: number;
@@ -522,6 +526,12 @@ function Viewer({
               gone={gone !== null}
               comments={commentsButton}
             />
+            <SignupNudge
+              authed={authed}
+              guest={role === "guest"}
+              hosted={hosted}
+              email={viewer?.email ?? null}
+            />
             {gone && (
               <GoneBanner
                 gone={gone}
@@ -794,6 +804,7 @@ function ArtifactShell({
               authed={authed}
               readOnly={authed && me.me.auth?.readOnly === true}
               role={authed ? me.me.user.role : undefined}
+              hosted={authed && me.me.instance.hosted === true}
               plan={authed ? me.me.instance.plan : undefined}
               viewer={
                 authed
