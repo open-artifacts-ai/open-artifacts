@@ -23,7 +23,7 @@ export { BillingGate } from "@oa/broker-core/billing-gate";
 export { BrokerGate } from "@oa/broker-core/gate";
 export { CLOSED_COPY, PAUSED_COPY } from "./unavailable.js";
 
-export interface Env extends BrokerGateEnv, BillingGateEnv {
+export interface Env extends BrokerGateEnv, Partial<BillingGateEnv> {
   DISPATCHER: DispatchNamespace;
   /**
    * host -> HOSTS value (`<id>`, `paused:<id>` or `closed:<id>`), written by
@@ -102,7 +102,7 @@ export default {
       const appHost = appHostFor(host, env.OA_ENV) ?? "";
       const props = {
         ...brokerProps(gates, id),
-        ...billingProps(gates, id, appHost),
+        ...billingProps(gates, id, appHost, env),
       };
       return await env.DISPATCHER.get(names(id, env.OA_ENV).script, {
         props,

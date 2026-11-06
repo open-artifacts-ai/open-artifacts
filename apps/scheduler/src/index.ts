@@ -43,6 +43,7 @@ const withGates = (
   gates: GateExports | undefined,
   id: string,
   appHost: unknown,
+  env: { BILLING?: Fetcher },
 ) =>
   gates
     ? {
@@ -52,6 +53,7 @@ const withGates = (
             gates,
             id,
             typeof appHost === "string" ? appHost : "",
+            env,
           ),
         },
       }
@@ -61,7 +63,7 @@ export interface Env
   extends QuotaEnv,
     BrokerGateEnv,
     ProvapiEnv,
-    BillingGateEnv {
+    Partial<BillingGateEnv> {
   DISPATCHER: DispatchNamespace;
   /** Platform D1 (installs metadata only; no customer data). */
   PLATFORM_DB: D1Database;
@@ -485,7 +487,12 @@ export async function runNightly(
         const r = await (
           env.DISPATCHER.get(
             names(id, env.OA_ENV).script,
-            withGates(gates, id, (still as { app_host?: unknown }).app_host),
+            withGates(
+              gates,
+              id,
+              (still as { app_host?: unknown }).app_host,
+              env,
+            ),
           ) as unknown as ScheduledFetcher
         ).scheduled({ cron: job, scheduledTime: new Date(now) });
         checkOutcome(r);
@@ -680,7 +687,7 @@ async function runRevokeTick(
           (
             env.DISPATCHER.get(
               names(id, env.OA_ENV).script,
-              withGates(gates, id, app_host),
+              withGates(gates, id, app_host, env),
             ) as unknown as ScheduledFetcher
           ).scheduled({ cron: REVOKE_JOB, scheduledTime: new Date(now) }),
           timeoutMs,

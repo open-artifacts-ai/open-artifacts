@@ -1372,6 +1372,7 @@ describe("nightly: each call's billing gate carries the installs row's app host"
     const args: { script: string; args: unknown }[] = [];
     const env = {
       OA_ENV: "staging",
+      BILLING: { fetch: async () => Response.json({ ok: true }) },
       PLATFORM_DB: db,
       DISPATCHER: {
         get(script: string, a: unknown) {
@@ -1401,5 +1402,34 @@ describe("nightly: each call's billing gate carries the installs row's app host"
         billingGate: { installId: idOf(1), appHost: "s1.app.test" },
       },
     });
+  });
+
+  it("no BILLING binding: the cron's calls carry the broker gates and no BILLING gate", async () => {
+    await seed([{ id: idOf(0), state: "active" }]);
+    const args: { script: string; args: unknown }[] = [];
+    const env = {
+      OA_ENV: "staging",
+      PLATFORM_DB: db,
+      DISPATCHER: {
+        get(script: string, a: unknown) {
+          args.push({ script, args: a });
+          return { scheduled: async () => undefined };
+        },
+      },
+    } as unknown as Env;
+    const gates = {
+      BrokerGate: (o: { props: unknown }) => ({ gate: o.props }),
+      BillingGate: (o: { props: unknown }) => ({ billingGate: o.props }),
+    };
+    const r = await nightly(env, Date.now(), { gates: gates as never });
+    expect(r.ok).toEqual([idOf(0)]);
+    expect(args).toHaveLength(1);
+    const props = (
+      (args[0] as { args: unknown }).args as { props: Record<string, unknown> }
+    ).props;
+    expect(Object.keys(props).sort()).toEqual([
+      "AUTH_BROKER",
+      "DIRECTORY_BROKER",
+    ]);
   });
 });

@@ -13,7 +13,12 @@ type Fetcher = (req: Request) => Promise<Response>;
 
 function fakes(
   map: Record<string, string> = {},
-  opts: { get?: () => never; fetch?: Fetcher; kvThrows?: boolean } = {},
+  opts: {
+    get?: () => never;
+    fetch?: Fetcher;
+    kvThrows?: boolean;
+    noBilling?: boolean;
+  } = {},
 ) {
   const reads: { key: string; opts: unknown }[] = [];
   const scripts: string[] = [];
@@ -21,6 +26,10 @@ function fakes(
   const seen: Request[] = [];
   const env = {
     OA_ENV: "staging",
+    // The billing Worker's binding; absent until billing is deployed.
+    ...(opts.noBilling
+      ? {}
+      : { BILLING: { fetch: async () => Response.json({}) } }),
     HOSTS: {
       get: async (key: string, o: unknown) => {
         reads.push({ key, opts: o });
@@ -485,6 +494,29 @@ describe("host normalization matches @oa/shared normalizeHost", () => {
 });
 
 describe("broker gates in props", () => {
+  it("no BILLING binding: the install gets its broker gates and no BILLING gate at all", async () => {
+    const f = fakes(MAP, { noBilling: true });
+    gates.length = 0;
+    expect(
+      (await call(f.env, "https://beta.open-artifacts-staging.app/x")).status,
+    ).toBe(200);
+    expect(f.args).toEqual([
+      {
+        props: {
+          AUTH_BROKER: { gate: { installId: B, kind: "auth" } },
+          DIRECTORY_BROKER: { gate: { installId: B, kind: "directory" } },
+        },
+      },
+    ]);
+    expect(Object.keys((f.args[0] as { props: object }).props)).not.toContain(
+      "BILLING",
+    );
+    expect(gates.map((g) => g.props)).toEqual([
+      { installId: B, kind: "auth" },
+      { installId: B, kind: "directory" },
+    ]);
+  });
+
   it("a mapped host gets one auth, one directory and one billing gate, for that install only", async () => {
     const f = fakes(MAP);
     gates.length = 0;

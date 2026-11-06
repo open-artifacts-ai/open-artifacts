@@ -62,14 +62,15 @@ describe("wrangler.jsonc", () => {
       const provisioner = names.provisioner;
       // BrokerGate's bindings: this env's two brokers, never the other env's;
       // and the provisioner's ProvisionerRpc entrypoint (tokenStatus).
+      expect(JSON.stringify(e.services)).not.toContain("BILLING");
       expect(e.services).toEqual([
         { binding: "AUTH_BROKER", service: platformNames(env).broker },
         {
           binding: "DIRECTORY_BROKER",
           service: platformNames(env).directoryBroker,
         },
-        // BillingGate's binding: this env's billing Worker.
-        { binding: "BILLING", service: platformNames(env).billing },
+        // No BILLING binding yet: it and the billing deploy target land
+        // together in the cloud repo. Without it no billing gate is built.
         {
           binding: "PROVISIONER",
           service: provisioner,

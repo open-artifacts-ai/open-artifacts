@@ -165,11 +165,18 @@ export class BillingGate extends WorkerEntrypoint<
   }
 }
 
-/** The install's billing gate for one request, for that install only. */
+/**
+ * The install's billing gate for one request, for that install only. Nothing
+ * when the caller has no BILLING binding (billing not deployed): the server
+ * then sees no gate and behaves as it did before billing, rather than
+ * reading a tier it can never get.
+ */
 export function billingProps(
   exports: { BillingGate: (o: { props: BillingGateProps }) => Fetcher },
   installId: string,
   appHost: string,
-): { BILLING: Fetcher } {
+  env: { BILLING?: Fetcher },
+): { BILLING?: Fetcher } {
+  if (!env.BILLING) return {};
   return { BILLING: exports.BillingGate({ props: { installId, appHost } }) };
 }

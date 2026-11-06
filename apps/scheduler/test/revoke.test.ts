@@ -589,7 +589,9 @@ describe("H-DV review fixes", () => {
     const env = {
       ...f.env,
       // Bound, so the billing check runs and fails on its own fixed line.
-      BILLING: { fetch: async () => Response.json({ ok: true }) },
+      BILLING: {
+        fetch: async () => Response.json({ ok: true }),
+      } as unknown as Fetcher,
       PLATFORM_DB: new Proxy(db, {
         get(t, k) {
           if (k === "prepare")
@@ -768,6 +770,9 @@ describe("broker gates on every install call", () => {
   it("the revoke call carries that install's gates, and only its own", async () => {
     await seed([{ id: idOf(0) }, { id: idOf(1) }]);
     const f = fakes();
+    (f.env as { BILLING?: unknown }).BILLING = {
+      fetch: async () => Response.json({ ok: true }),
+    };
     await revokeTick(f.env, NOW, { gates });
     expect(f.args.sort((a, b) => a.script.localeCompare(b.script))).toEqual([
       { script: `oa-s-${idOf(0)}`, args: props(idOf(0)) },
@@ -782,6 +787,9 @@ describe("broker gates on every install call", () => {
       { id: idOf(2) },
     ]);
     const f = fakes();
+    (f.env as { BILLING?: unknown }).BILLING = {
+      fetch: async () => Response.json({ ok: true }),
+    };
     const r = await directorySync(f.env, NOW, gates);
     expect(r.ok.sort()).toEqual([idOf(0), idOf(1)]);
     expect(f.calls.map((c) => c.opts)).toEqual([

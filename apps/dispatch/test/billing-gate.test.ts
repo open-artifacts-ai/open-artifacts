@@ -182,11 +182,29 @@ describe("BillingGate: allowed calls", () => {
       },
       A,
       APP_HOST,
+      world().env,
     );
     expect(out).toEqual({
       BILLING: { gate: { installId: A, appHost: APP_HOST } },
     });
     expect(made).toEqual([{ installId: A, appHost: APP_HOST }]);
+  });
+
+  it("billingProps gives nothing, and builds no gate, when BILLING is unbound", () => {
+    const made: unknown[] = [];
+    const out = billingProps(
+      {
+        BillingGate: (o) => {
+          made.push(o.props);
+          return { gate: o.props } as unknown as Fetcher;
+        },
+      },
+      A,
+      APP_HOST,
+      {},
+    );
+    expect(out).toEqual({});
+    expect(made).toEqual([]);
   });
 });
 

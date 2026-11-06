@@ -36,14 +36,15 @@ describe("wrangler.jsonc", () => {
         DIRECTORY_BROKER_ORIGIN: `https://directory.${zone}`,
       });
       // The gate's bindings: this env's two brokers, never the other env's.
+      expect(JSON.stringify(e.services)).not.toContain("BILLING");
       expect(e.services).toEqual([
         { binding: "AUTH_BROKER", service: platformNames(env).broker },
         {
           binding: "DIRECTORY_BROKER",
           service: platformNames(env).directoryBroker,
         },
-        // BillingGate's binding: this env's billing Worker.
-        { binding: "BILLING", service: platformNames(env).billing },
+        // No BILLING binding yet: it and the billing deploy target land
+        // together in the cloud repo. Without it no billing gate is built.
       ]);
       expect(e.dispatch_namespaces).toEqual([
         { binding: "DISPATCHER", namespace: NAMESPACES[env] },
