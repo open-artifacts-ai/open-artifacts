@@ -59,9 +59,10 @@ export const PlanViewSchema = z.object({
   /** Distinct creators this UTC calendar month so far (CREATOR definition). Owner and admins only. */
   creatorsThisMonth: z.number().int().nonnegative().optional(),
   /**
-   * Team features are read-only (spaces, shares to others, invites, every
-   * write by anyone but the org owner). Nothing is deleted; the owner's own
-   * artifacts stay readable and writable.
+   * Team features are read-only (spaces, invites, every write by anyone but
+   * the org owner), except sharing, which is free on every plan: sharing an
+   * artifact and changing who can open it always work. Nothing is deleted;
+   * the owner's own artifacts stay readable and writable.
    */
   readOnly: z.boolean(),
   /** Why readOnly, or why a free instance refuses team features ("solo"). */

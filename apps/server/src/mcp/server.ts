@@ -301,6 +301,17 @@ type Dispatch = {
   _registeredTools: Record<string, unknown>;
   executeToolHandler: (tool: unknown, args: unknown, ctx: unknown) => unknown;
 };
+/** publish_artifact args that name an artifact and set its visibility, nothing else (`message` is ignored). */
+const isVisibilityOnlyCall = (args: unknown): boolean => {
+  const set = Object.entries((args ?? {}) as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .map(([k]) => k);
+  return (
+    set.includes("id") &&
+    set.includes("visibility") &&
+    set.every((k) => k === "id" || k === "visibility" || k === "message")
+  );
+};
 function enforceToolPolicy(server: McpServer, t: ToolEnv): void {
   const d = server as unknown as Dispatch;
   const run = d.executeToolHandler.bind(server);
@@ -308,7 +319,17 @@ function enforceToolPolicy(server: McpServer, t: ToolEnv): void {
     const name = Object.entries(d._registeredTools).find(
       ([, v]) => v === tool,
     )?.[0];
-    const p = name === undefined ? undefined : TOOL_POLICY[name];
+    let p = name === undefined ? undefined : TOOL_POLICY[name];
+    // Sharing is free on every payment plan: a plan-capped member's
+    // settings-only publish_artifact that changes visibility alone is
+    // set_visibility, and takes its policy (patch checks the rest).
+    if (
+      name === "publish_artifact" &&
+      t.caller.kind === "user" &&
+      t.caller.cap === "plan" &&
+      isVisibilityOnlyCall(args)
+    )
+      p = TOOL_POLICY.set_visibility;
     return withAccessCache(async () => {
       try {
         if (!p)

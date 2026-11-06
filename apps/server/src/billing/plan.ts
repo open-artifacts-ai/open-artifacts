@@ -104,7 +104,7 @@ export function parseStored<T>(
  * - solo: a free instance. Team features answer plan_required; an invite is
  *   allowed while the trial was never used (it starts the trial).
  * - readOnly: team features are read-only (plan_read_only). Nothing is
- *   deleted; removals (a member, a share) still pass.
+ *   deleted; removals (a member) still pass. Sharing is never locked.
  */
 export type PlanLock = {
   mode: "solo" | "readOnly";
@@ -256,8 +256,8 @@ export function planError(lock: PlanLock): ApiError {
 }
 
 /**
- * Team features (an invite, a share to someone else, a shared space and its
- * members, mappings and moves) need a plan: plan_required on a free
+ * Team features (an invite, a shared space and its members, mappings and
+ * moves) need a plan; sharing an artifact never does (free on every plan): plan_required on a free
  * instance, plan_read_only while read-only. `invite`: the first invite on a
  * free instance whose trial never ran passes (it starts the trial).
  */

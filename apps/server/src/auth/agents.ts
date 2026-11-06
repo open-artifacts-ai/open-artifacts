@@ -1,5 +1,5 @@
 import type { Member } from "@oa/shared";
-import { callerOf, capOfCaller } from "./authz.js";
+import { callerOf, capOfCaller, suspendedMember } from "./authz.js";
 import { orgCan } from "./policy.js";
 
 /**
@@ -9,4 +9,7 @@ import { orgCan } from "./policy.js";
  * authenticates checks this, and so does minting a PAT.
  */
 export const canConnect = (user: Member) =>
-  orgCan(user, "mcp.connect", { cap: capOfCaller(callerOf(user)) });
+  orgCan(user, "mcp.connect", {
+    cap: capOfCaller(callerOf(user)),
+    suspended: suspendedMember(user),
+  });

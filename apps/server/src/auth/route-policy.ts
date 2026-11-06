@@ -12,6 +12,7 @@ import {
   caller,
   capOfCaller,
   planOfMember,
+  suspendedMember,
   withAccessCache,
 } from "./authz.js";
 import { orgCan } from "./policy.js";
@@ -115,7 +116,16 @@ export async function enforce(
     // Malformed ids never reach D1.
     if (!isId(id)) throw notFound();
     try {
-      await authorize(env, who, id, p.artifact, {
+      // Sharing is free: a plan-capped caller passes this floor on a route
+      // that carries sharing (the handler refuses the rest of the write).
+      const gate: Caller =
+        p.planSharing &&
+        who.kind === "user" &&
+        who.cap === "plan" &&
+        !suspendedMember(who.user)
+          ? { ...who, cap: null }
+          : who;
+      await authorize(env, gate, id, p.artifact, {
         allowDeleted: p.allowDeleted,
         prefetch: true,
         ctx: p.ctx,
@@ -157,7 +167,11 @@ export async function enforce(
     throw new ApiError("unauthorized", "Sign in required");
   if (
     "org" in p &&
-    !orgCan(who.user, p.org, { cap: capOfCaller(who), read: !write })
+    !orgCan(who.user, p.org, {
+      cap: capOfCaller(who),
+      read: !write,
+      suspended: suspendedMember(who.user),
+    })
   ) {
     // Hosted billing: an admin under the plan cap gets the clear 403 on a
     // write their role would allow (their admin reads and billing pass

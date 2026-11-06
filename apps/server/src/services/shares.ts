@@ -10,7 +10,12 @@ import {
   viewerPath,
 } from "@oa/shared";
 import { asc, eq } from "drizzle-orm";
-import { authorize, callerOf, planOfMember } from "../auth/authz.js";
+import {
+  authorize,
+  callerOf,
+  planOfMember,
+  suspendedMember,
+} from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
 import { capOf } from "../auth/policy.js";
 import { requireTeamPlan } from "../billing/plan.js";
@@ -162,9 +167,10 @@ export async function putShare(
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<ShareResult> {
   const artifact = await ownerOnly(env, user, id);
-  // Hosted billing: a share to someone else is a team feature (REST and the
-  // share_artifact tool both land here). Removing a share never is.
-  requireTeamPlan(planOfMember(user));
+  // Sharing is free on every payment plan and lock (a mechanism to make OA
+  // viral). A suspension is an operator's stop, not a payment state: no new
+  // shares under it, for anyone.
+  if (suspendedMember(user)) requireTeamPlan(planOfMember(user));
   const email = normalizeEmail(s.email);
   if (!email) throw new ApiError("bad_request", "Invalid email");
   if (email === normalizeEmail(user.email))

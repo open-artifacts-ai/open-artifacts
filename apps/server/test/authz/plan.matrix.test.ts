@@ -3,7 +3,7 @@
 // today's behaviour; under a lock (free and solo, or read-only) everyone but
 // the org owner is read-only (403 plan_required / plan_read_only), the owner
 // keeps their own personal artifacts and loses the team features, removals
-// still pass, and anonymous data writes stop only while read-only. Reads
+// still pass, sharing (share, unshare, visibility) is free for everyone, and anonymous data writes stop only while read-only. Reads
 // pass in every state. Writes carry the CSRF header (cookie sessions), so a
 // refusal is the plan's, never csrf.
 import { env } from "cloudflare:workers";
@@ -73,6 +73,8 @@ type Surface = {
   team?: true;
   /** A removal: never refused by a lock. */
   removal?: true;
+  /** Sharing is free: never refused by a lock, for anyone who could do it. */
+  sharing?: true;
   /** Anonymous data write: refused only while read-only. */
   anonWrite?: true;
   run: (who: Who) => Promise<Response>;
@@ -143,7 +145,7 @@ const SURFACES: Surface[] = [
   {
     name: "share with someone (own)",
     base: ["owner", "admin", "member"],
-    team: true,
+    sharing: true,
     run: (w) =>
       send(props, R.shares(art(w)), cred(w), {
         method: "PUT",
@@ -153,7 +155,7 @@ const SURFACES: Surface[] = [
   {
     name: "remove a share (own)",
     base: ["owner", "admin", "member"],
-    removal: true,
+    sharing: true,
     run: async (w) => {
       const email = `r-${uniq()}@a.com`;
       await env.DB.prepare(
@@ -163,6 +165,16 @@ const SURFACES: Surface[] = [
         .run();
       return send(props, R.share(art(w), email), cred(w), { method: "DELETE" });
     },
+  },
+  {
+    name: "change visibility (own)",
+    base: ["owner", "admin", "member"],
+    sharing: true,
+    run: (w) =>
+      send(props, R.artifact(art(w)), cred(w), {
+        method: "PATCH",
+        body: { visibility: "public" },
+      }),
   },
   {
     name: "invite",
@@ -254,6 +266,8 @@ function expected(
   // Anonymous visitors aren't capped: only read-only stops their data writes.
   if (s.anonWrite && who === "anonymous")
     return state === "readOnly" ? CODE.readOnly : "allow";
+  // Sharing is free: no plan lock touches it, for anyone.
+  if (s.sharing) return "allow";
   // Everyone but the owner is read-only, removals included.
   if (who !== "owner") return CODE[state];
   if (s.removal) return "allow";
@@ -348,7 +362,7 @@ it("the expected table refuses every non-owner write and every owner team write 
   for (const state of ["solo", "readOnly"] as const)
     for (const s of SURFACES)
       for (const who of ["admin", "member"] as const)
-        if (s.base.includes(who))
+        if (s.base.includes(who) && !s.sharing)
           expect(expected(s, who, state)).toBe(CODE[state]);
   void DAY;
 });
