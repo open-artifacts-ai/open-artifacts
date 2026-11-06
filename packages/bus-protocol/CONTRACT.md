@@ -292,5 +292,9 @@ suffixes folded. Namespaces are canonical `[a-z0-9._~/-]{1,128}`, derived by
 `namespaceFrom`.
 
 `.oa-bus.json` (`CONFIG_FILE`): strict `{namespace?, global?}`, nearest file
-wins per key. `global` grants nothing; global comes only from the user's
+wins per key. A `namespace` that differs from the derived one takes effect
+only for a directory the user approved for exactly that namespace
+(`oa-bus namespace approve`, `<home>/namespaces.json`, read strictly, matched by
+directory identity); otherwise the derived namespace is used and the file is
+listed as `pending`. `global` grants nothing; global comes only from the user's
 allowlist under the client's home folder.

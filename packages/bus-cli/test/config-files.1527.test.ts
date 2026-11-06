@@ -75,7 +75,16 @@ describe("doctor", () => {
 
   it("prints nothing for a 0600 file", async () => {
     const { ctx, file } = setup();
+    // A namespaced file the user approved lists nothing.
     chmodSync(file, 0o600);
+    mkdirSync(ctx.home, { recursive: true });
+    writeFileSync(
+      join(ctx.home, "namespaces.json"),
+      JSON.stringify({
+        approved: [{ dir: realpathSync(join(file, "..")), namespace: "mine" }],
+      }),
+      { mode: 0o600 },
+    );
     await doctor(ctx);
     expect(ctx.all().join("\n")).not.toContain(".oa-bus.json");
   });

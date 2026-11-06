@@ -1,5 +1,6 @@
 import { connect, type Socket } from "node:net";
 import {
+  ADAPTER_CAPS,
   CLIENT_VERSION,
   DaemonFrame,
   type Hello,
@@ -243,7 +244,7 @@ export function daemonStatus(opts: {
     );
     sock.once("connect", () =>
       sock.write(
-        `${JSON.stringify({ v: 1, id: "status", type: "status", client_version: CLIENT_VERSION, ...(opts.cwd ? { cwd: opts.cwd } : {}) })}\n`,
+        `${JSON.stringify({ v: 1, id: "status", type: "status", client_version: CLIENT_VERSION, caps: [ADAPTER_CAPS.pending], ...(opts.cwd ? { cwd: opts.cwd } : {}) })}\n`,
       ),
     );
     sock.on("data", (chunk) => {
