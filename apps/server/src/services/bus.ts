@@ -26,6 +26,7 @@ import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { logError } from "../log.js";
 import { b64urlEncode, sha256Hex } from "../util/crypto.js";
+import { type Via, viaKey } from "./agent-usage.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
 
 // The bus's D1 side and the dashboard's reads of a member's BusHub (#1291).
@@ -133,6 +134,8 @@ export type BusHubRpc = {
     tokenHash: string,
     decision: "confirm" | "reject",
   ): Promise<DecideResult>;
+  /** #1403: expires the pending role proposals a PAT or OAuth grant made (`t:<id>` / `g:<id>`). */
+  expireRoleProposalsOf(credential: string): Promise<ProposalAudit[]>;
   /** #1372: the newest role proposals. */
   listRoleProposals(): Promise<{
     proposals: BusRoleProposal[];
@@ -693,6 +696,37 @@ async function auditExpired(
   );
 }
 
+/**
+ * #1403: a PAT or OAuth grant was revoked: its pending role proposals expire
+ * at once, each audited bus.role.expired with why `credential_revoked`. A
+ * best effort after the revoke itself (which already refuses the credential):
+ * a hub that can't be reached is logged, and the proposals still lapse at
+ * their TTL. No hub (no machine ever connected) holds none.
+ */
+export async function expireBusRoleProposalsOf(
+  env: Env,
+  userId: string,
+  via: Via,
+): Promise<void> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return;
+  const hub = busHub(env, userId);
+  if (!hub) return;
+  try {
+    const expired = await roleCall(hub.expireRoleProposalsOf(viaKey(via)));
+    if (expired.length === 0) return;
+    const system: AuditActor = { kind: "system", id: null };
+    await env.DB.batch(
+      expired.map((a) =>
+        audit(env, "bus.role.expired", auditTarget(userId), system, {
+          detail: detailOf(a, "credential_revoked"),
+        }),
+      ),
+    );
+  } catch (e) {
+    logError("bus_credential_expire_failed", e);
+  }
+}
+
 /** The member's hub for a proposal call, or a `no_bus` conflict (404 while the bus is off). */
 async function proposalHub(env: Env, userId: string): Promise<BusHubRpc> {
   if (!busOn(env)) throw new ApiError("not_found", "Not found");
@@ -716,6 +750,8 @@ export async function proposeBusRole(
   env: Env,
   userId: string,
   input: BusRoleProposeInput,
+  /** The PAT or OAuth grant the request authenticated with (#1403): revoking it expires the proposal. */
+  via?: Via,
 ): Promise<{ proposal: BusRoleProposal; confirmUrl: string }> {
   if (input.action === "set" && input.agent === undefined)
     throw new ApiError("bad_request", "agent is required to set a role", {
@@ -734,6 +770,7 @@ export async function proposeBusRole(
         namespace: input.namespace,
         name: input.name,
         agent: input.agent ?? null,
+        credential: via ? viaKey(via) : null,
       },
       await sha256Hex(secret),
     ),

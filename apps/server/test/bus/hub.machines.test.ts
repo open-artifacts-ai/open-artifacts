@@ -78,6 +78,7 @@ const RPC_ALLOWLIST = [
   "decideRoleProposal",
   "deleteLink",
   "deleteRole",
+  "expireRoleProposalsOf",
   "listLinks",
   "listRoleProposals",
   "listRoles",

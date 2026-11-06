@@ -23,6 +23,7 @@ export function registerBusTools(server: McpServer, t: ToolEnv): void {
           t.env,
           t.user.id,
           input,
+          t.agentNow()?.via,
         );
         const role = `role "${p.name}" in ${p.namespace}`;
         const was = p.priorHolderName ? ` (now ${p.priorHolderName})` : "";

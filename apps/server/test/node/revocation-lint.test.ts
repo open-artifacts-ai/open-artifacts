@@ -151,6 +151,13 @@ const WIDENS: Readonly<Record<string, string>> = {
     "a link proposal's status, not access",
   "bus/link-proposals.ts:decideLinkProposal":
     "a link proposal's status, not access",
+  // #1403: a revoked credential's or machine's pending proposals expire.
+  // They hold no socket: the revoke itself closed the machine's, and a PAT
+  // or grant opens none on a hub (only a confirm link, which this kills).
+  "bus/link-proposals.ts:expireLinkProposalsOfMachine":
+    "a link proposal's status, not access",
+  "bus/role-proposals.ts:expireByCredential":
+    "a role proposal's status, not access",
 };
 
 /** Exempt from the scan: the primitives themselves. */

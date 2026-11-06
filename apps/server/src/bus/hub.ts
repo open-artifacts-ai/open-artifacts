@@ -53,6 +53,7 @@ import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
   decideLinkProposal,
+  expireLinkProposalsOfMachine,
   type LinkDecideResult,
   type LinkProposalAction,
   type LinkProposeResult,
@@ -71,6 +72,7 @@ import {
 import {
   type DecideResult,
   decideProposal,
+  expireByCredential,
   expireProposals,
   listProposals,
   type ProposalAudit,
@@ -3216,6 +3218,19 @@ export class BusHub extends DurableObject<Env> {
     return r;
   }
 
+  /**
+   * #1403: expires the pending role proposals `credential` (`t:<id>` or
+   * `g:<id>`) made, for the revoke of that PAT or OAuth grant. Worker only.
+   */
+  async expireRoleProposalsOf(credential: string): Promise<ProposalAudit[]> {
+    return expireByCredential(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      credential,
+      this.#now(),
+    );
+  }
+
   /** #1372: the newest role proposals, for GET R.busRoles; expires the overdue ones first. Worker only. */
   async listRoleProposals(): Promise<{
     proposals: BusRoleProposal[];
@@ -3342,6 +3357,8 @@ export class BusHub extends DurableObject<Env> {
     if (typeof id !== "string" || !isId(id)) return false;
     const sql = this.ctx.storage.sql;
     const now = this.#now();
+    // #1403: its pending link proposals die with it, even on a repeat call.
+    expireLinkProposalsOfMachine(sql, OWNER_ORG_ID, id, now);
     const res = sql.exec(
       "update machines set revoked_at = ? where id = ? and org_id = ? and revoked_at is null",
       now,
