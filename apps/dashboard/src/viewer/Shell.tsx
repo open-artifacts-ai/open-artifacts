@@ -43,6 +43,7 @@ import {
 } from "./navigate";
 import { isPanelTab, type PanelTab, SidePanel } from "./panels/SidePanel";
 import { RenavNotice } from "./RenavNotice";
+import { SignupNudge } from "./SignupNudge";
 import { SlowNotice } from "./SlowNotice";
 import { TitleBar } from "./TitleBar";
 import { useArtifactSideEffects } from "./useArtifactSideEffects";
@@ -132,9 +133,11 @@ function Viewer({
   version,
   explicitVersion,
   authed,
+  anonymous,
   readOnly = false,
   viewer,
   role,
+  hosted,
   plan,
   chromeless,
   slot,
@@ -168,11 +171,15 @@ function Viewer({
   /** The owner's Restore of an artifact deleted while open. */
   onUndelete?: () => Promise<void>;
   role: Me["user"]["role"] | undefined;
+  /** The signed-in install is hosted (Me.instance.hosted). */
+  hosted: boolean;
   plan: Me["instance"]["plan"] | undefined;
   artifact: ArtifactSummary;
   version: number;
   explicitVersion: boolean;
   authed: boolean;
+  /** /me answered 401 (signed out), not loading or errored. */
+  anonymous: boolean;
   /** A capped (guest or restricted) member: the server refuses their comment writes. */
   readOnly?: boolean;
   viewer: { email: string; name: string | null } | null;
@@ -522,6 +529,12 @@ function Viewer({
               gone={gone !== null}
               comments={commentsButton}
             />
+            <SignupNudge
+              authed={authed}
+              anonymous={anonymous}
+              guest={role === "guest"}
+              hosted={hosted}
+            />
             {gone && (
               <GoneBanner
                 gone={gone}
@@ -792,8 +805,10 @@ function ArtifactShell({
               explicitVersion={v !== undefined}
               chromeless={chromeless}
               authed={authed}
+              anonymous={me.status === "anonymous"}
               readOnly={authed && me.me.auth?.readOnly === true}
               role={authed ? me.me.user.role : undefined}
+              hosted={authed && me.me.instance.hosted === true}
               plan={authed ? me.me.instance.plan : undefined}
               viewer={
                 authed
