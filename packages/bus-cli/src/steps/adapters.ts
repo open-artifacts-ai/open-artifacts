@@ -102,6 +102,25 @@ export const readAssets = (): AdapterDeps["assets"] => ({
   opencodePlugin: readFileSync(OPENCODE_TUI_PLUGIN, "utf8"),
 });
 
+/** The bus home when it is not `<home>/.oa-bus`: the one value a harness entry must carry. */
+const movedHome = (deps: Pick<AdapterDeps, "home" | "busHome">) => {
+  if (deps.busHome === undefined) return undefined;
+  const ob = resolve(deps.busHome);
+  return ob === join(deps.home, ".oa-bus") ? undefined : ob;
+};
+
+/**
+ * Pi, oh-my-pi and OpenCode's TUI plugin run inside the harness, whose config
+ * has no env to set: a moved home is set in the file's own first line, never
+ * over an OA_BUS_HOME the user exported (#1443).
+ */
+// The `||=` line sets OA_BUS_HOME for the whole harness process; its children
+// inherit it on purpose, so they find the same bus.
+const homeLine = (ob: string) =>
+  `process.env.OA_BUS_HOME ||= ${JSON.stringify(ob)};`;
+const withHome = (text: string, ob: string | undefined) =>
+  ob === undefined ? text : `${homeLine(ob)}\n${text}`;
+
 const paths = (deps: AdapterDeps) => {
   const env = deps.env ?? {};
   const opencode =
@@ -374,12 +393,15 @@ const install: Record<Harness, Step> = {
   async claude(deps, notes) {
     if (!deps.which("claude")) return "absent";
     await run(deps, "claude", ["mcp", "remove", "--scope", "user", NAME]);
+    const moved = movedHome(deps);
     const add = await run(deps, "claude", [
       "mcp",
       "add",
       "--scope",
       "user",
       NAME,
+      // Variadic: it must end at the `--` before the server's argv.
+      ...(moved ? ["-e", `OA_BUS_HOME=${moved}`] : []),
       "--",
       ...deps.busBin,
       "mcp",
@@ -395,7 +417,7 @@ const install: Record<Harness, Step> = {
         type: "stdio",
         command: deps.busBin[0],
         args: [...deps.busBin.slice(1), "mcp", "claude"],
-        env: {},
+        env: moved ? { OA_BUS_HOME: moved } : {},
       }),
     );
     notes.push(
@@ -422,6 +444,9 @@ const install: Record<Harness, Step> = {
     const server = {
       type: "local",
       command: [...deps.busBin, "mcp", "opencode"],
+      ...(movedHome(deps)
+        ? { environment: { OA_BUS_HOME: movedHome(deps) } }
+        : {}),
     };
     const nextConfig = upsertOpencodeMcp(config, NAME, server);
     const nextCli = upsertPlugin(cli, p.opencodePlugin);
@@ -445,7 +470,7 @@ const install: Record<Harness, Step> = {
     writeRecord(p.record, record, created);
     writeAtomic(
       join(p.opencodePlugin, "tui.js"),
-      deps.assets.opencodePlugin,
+      withHome(deps.assets.opencodePlugin, movedHome(deps)),
       0o644,
     );
     saveText(configPath, config, nextConfig, (d) =>
@@ -458,7 +483,11 @@ const install: Record<Harness, Step> = {
 
   async pi(deps) {
     if (!deps.which("pi")) return "absent";
-    writeAtomic(paths(deps).pi, deps.assets.pi, 0o644);
+    writeAtomic(
+      paths(deps).pi,
+      withHome(deps.assets.pi, movedHome(deps)),
+      0o644,
+    );
     return "done";
   },
 
@@ -466,7 +495,11 @@ const install: Record<Harness, Step> = {
     if (!hasOmp(deps)) return "absent";
     // Pi's step just wrote the one file both load.
     if (sharedFile(deps) && done.includes("pi")) return "done";
-    writeAtomic(paths(deps).omp, deps.assets.pi, 0o644);
+    writeAtomic(
+      paths(deps).omp,
+      withHome(deps.assets.pi, movedHome(deps)),
+      0o644,
+    );
     return "done";
   },
 
@@ -678,6 +711,19 @@ export function checkAdapters(
       return false;
     }
   };
+  // The extension must set the home it was installed for, and only that.
+  const homeOf = (env: unknown): string | undefined =>
+    typeof env === "object" && env !== null
+      ? ((env as Doc).OA_BUS_HOME as string | undefined)
+      : undefined;
+  const homed = (file: string) => {
+    if (!existsSync(file)) return false;
+    const first = readFileSync(file, "utf8").split("\n", 1)[0] ?? "";
+    const ob = movedHome(deps);
+    return ob === undefined
+      ? !first.startsWith("process.env.OA_BUS_HOME ||=")
+      : first === homeLine(ob);
+  };
   const state = (h: Harness, ok: () => boolean): AdapterState =>
     !(h === "omp"
       ? hasOmp(deps)
@@ -689,29 +735,29 @@ export function checkAdapters(
         ? "configured"
         : "missing";
   return {
-    claude: state(
-      "claude",
-      () =>
-        (readDoc(p.claude).mcpServers as Doc | undefined)?.[NAME] !== undefined,
-    ),
+    claude: state("claude", () => {
+      const e = (readDoc(p.claude).mcpServers as Doc | undefined)?.[NAME] as
+        | Doc
+        | undefined;
+      return e !== undefined && homeOf(e.env) === movedHome(deps);
+    }),
     opencode: state(
       "opencode",
       () =>
         p.opencodeConfigs.filter(present).some((f) => {
           const d = parseJsonc(readFileSync(f, "utf8"), f);
-          return (
-            servers(d)?.[NAME] !== undefined ||
-            (d.mcp as Doc | undefined)?.[NAME] !== undefined
-          );
+          const e = (servers(d)?.[NAME] ??
+            (d.mcp as Doc | undefined)?.[NAME]) as Doc | undefined;
+          return e !== undefined && homeOf(e.environment) === movedHome(deps);
         }) &&
         listed(
           parseJsonc(readFileSync(p.opencodeCli, "utf8"), p.opencodeCli),
           p.opencodePlugin,
         ) &&
-        existsSync(join(p.opencodePlugin, "tui.js")),
+        homed(join(p.opencodePlugin, "tui.js")),
     ),
-    pi: state("pi", () => existsSync(p.pi)),
-    omp: state("omp", () => existsSync(p.omp)),
+    pi: state("pi", () => homed(p.pi)),
+    omp: state("omp", () => homed(p.omp)),
     codex: state("codex", () =>
       entryIs(
         codexEntryOf(readToml(p.codex).doc),

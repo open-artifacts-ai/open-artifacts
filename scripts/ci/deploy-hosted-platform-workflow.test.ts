@@ -52,7 +52,7 @@ describe("deploy-hosted-platform.yml", () => {
   });
   it("names each run after its env and tag", () => {
     expect(w["run-name"]).toBe(
-      "deploy-hosted-platform ${{ inputs.env }} ${{ inputs.tag }}",
+      "deploy-hosted-platform ${{ inputs.env }} ${{ inputs.tag }}${{ inputs.chain_id && format(' [{0}]', inputs.chain_id) || '' }}",
     );
   });
   it("break-glass: fewer targets need a reason, checked before any checkout; verify_only is exempt", () => {
@@ -142,8 +142,8 @@ describe("deploy-hosted-platform.yml", () => {
       "Reason: dispatch 5xx %s\n\nRun: https://github.com/o/r/actions/runs/1\n\nActor: someone\n",
     );
   });
-  it("runs on dispatch or from the release chain, read-only, one at a time, in the env's Environment", () => {
-    expect(Object.keys(w.on)).toEqual(["workflow_dispatch", "workflow_call"]);
+  it("runs by dispatch only (the chain dispatches it), read-only, one at a time, in the env's Environment", () => {
+    expect(Object.keys(w.on)).toEqual(["workflow_dispatch"]);
     const inputs = w.on.workflow_dispatch.inputs;
     expect(inputs.tag.required).toBe(true);
     expect(inputs.env).toMatchObject({
@@ -161,8 +161,10 @@ describe("deploy-hosted-platform.yml", () => {
       issues: "write",
     });
     expect(Object.keys(inputs).sort()).toEqual([
+      "chain_id",
       "env",
       "reason",
+      "require_newer",
       "tag",
       "targets",
       "verify_only",
@@ -219,7 +221,7 @@ describe("deploy-hosted-platform.yml", () => {
     );
     // The constants and the id lookup are main's too, never the tag's.
     expect(use).toContain(
-      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh staging-smoke-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts; do",
+      "for f in hosted-cf.sh hosted-constants.sh hosted-resource-ids.sh staging-first-gate.sh staging-smoke-gate.sh deploy-token-expiry.sh platform-tags.sh worker-tag.sh prod-release-chain.ts deploy-token-identity.sh; do",
     );
     expect(use).toContain(
       'cp -R .deploy-logic/.github/hosted "$RUNNER_TEMP/main-ci/hosted"',
@@ -241,6 +243,9 @@ describe("deploy-hosted-platform.yml", () => {
     // The release chain's re-check (#1343) sits between: it needs the
     // account id, and runs before any lookup or deploy.
     expect(i("Load the hosted constants")).toBe(
+      i("The deploy token is the Environment's") - 1,
+    );
+    expect(i("The deploy token is the Environment's")).toBe(
       i("The tag is newer than prod's") - 1,
     );
     expect(i("The tag is newer than prod's")).toBe(
@@ -313,6 +318,7 @@ describe("deploy-hosted-platform.yml", () => {
     expect(withSecrets.map((s) => s.name)).toEqual([
       "Check the inputs",
       "Load the hosted constants",
+      "The deploy token is the Environment's",
       "The tag is newer than prod's",
       "Resolve the resource ids",
       "Deploy and verify",
@@ -640,7 +646,10 @@ describe("deploy-hosted-platform.yml", () => {
     );
     const e = named("The deploy token's expiry");
     expect(steps.at(-1)).toBe(e);
-    expect(e.if).toBe("${{ !cancelled() }}");
+    // A wrong or unverified token never opens a roll issue.
+    expect(e.if).toBe(
+      "${{ !cancelled() && steps.token_identity.outcome == 'success' }}",
+    );
     expect(e.run).toBe(
       'bash "$RUNNER_TEMP/main-ci/deploy-token-expiry.sh" "$DEPLOY_ENV"',
     );
@@ -651,59 +660,44 @@ describe("deploy-hosted-platform.yml", () => {
     });
   });
 
-  // #1343: prod-release-chain.yml calls this file. A manual dispatch keeps
-  // every input as it was; the call takes the same inputs, so every gate and
-  // `if:` that reads them resolves the same way.
-  it("workflow_call takes the dispatch's inputs, same defaults; the env is checked in the input step", () => {
+  // #1343: prod-release-chain.yml dispatches this file. A called workflow
+  // resolves a secret its caller does not pass to empty even when the job's
+  // Environment has it (run 42109047045), so there is no workflow_call: every
+  // secret comes from the job's own Environment.
+  it("has no workflow_call; the chain's two inputs are optional; the run name carries the chain id; the env is checked in the input step", () => {
+    expect(w.on.workflow_call).toBeUndefined();
+    expect(text.replace(/^\s*#.*$/gm, "")).not.toContain("workflow_call");
     const d = w.on.workflow_dispatch.inputs;
-    const c = w.on.workflow_call.inputs;
-    // require_newer is the chain's alone: a manual dispatch never sees it.
-    expect(Object.keys(c)).toEqual([...Object.keys(d), "require_newer"]);
-    expect(c.require_newer).toEqual({
+    expect(d.require_newer).toMatchObject({
       type: "boolean",
       required: false,
       default: false,
     });
-    expect(d.env).toEqual({
-      description: "Which env's Workers",
+    expect(d.chain_id).toMatchObject({
+      type: "string",
+      required: false,
+      default: "",
+    });
+    expect(w["run-name"]).toContain("${{ inputs.chain_id");
+    expect(d.env).toMatchObject({
       required: true,
       type: "choice",
       options: ["staging", "prod"],
     });
-    expect(c.env).toEqual({ type: "string", required: true });
-    expect(c.tag).toEqual({ type: "string", required: true });
-    expect(c.targets).toEqual({
-      type: "string",
-      required: false,
-      default: FULL,
-    });
     expect(d.targets.default).toBe(FULL);
-    expect(c.reason).toEqual({ type: "string", required: false, default: "" });
-    expect(c.verify_only).toEqual({
-      type: "boolean",
-      required: false,
-      default: false,
-    });
-    // Every secret the job names is declared, none required: the
-    // Environment supplies all but OA_OWNER_EMAIL, a repo secret.
-    expect(w.on.workflow_call.secrets).toEqual(
-      Object.fromEntries(
-        [
-          "OA_OWNER_EMAIL",
-          "CLOUDFLARE_API_TOKEN",
-          "GOOGLE_CLIENT_SECRET",
-          "GOOGLE_DIRECTORY_CLIENT_SECRET",
-          "ADMIN_IDENTITIES",
-          "FLEET_SMOKE_TOKEN",
-          "FLEET_SMOKE_SHARE_TO",
-        ].map((k) => [k, { required: false }]),
-      ),
-    );
+    // Every secret the job reads is the Environment's (or the repo's
+    // OA_OWNER_EMAIL), none declared for a caller to pass.
     const named_ = new Set(text.match(/secrets\.([A-Z_]+)/g));
-    expect([...named_].map((x) => x.slice(8)).sort()).toEqual(
-      Object.keys(w.on.workflow_call.secrets).sort(),
-    );
-    // The env has no choice type under workflow_call: the first step refuses
+    expect([...named_].map((x) => x.slice(8)).sort()).toEqual([
+      "ADMIN_IDENTITIES",
+      "CLOUDFLARE_API_TOKEN",
+      "FLEET_SMOKE_SHARE_TO",
+      "FLEET_SMOKE_TOKEN",
+      "GOOGLE_CLIENT_SECRET",
+      "GOOGLE_DIRECTORY_CLIENT_SECRET",
+      "OA_OWNER_EMAIL",
+    ]);
+    // Defense in depth: the first step refuses
     // anything but staging or prod, before any checkout.
     const check = named("Check the inputs");
     const go = (DEPLOY_ENV: string) =>
@@ -831,5 +825,29 @@ describe("deploy-hosted-platform.yml", () => {
     // prod's tag unreadable: refuse.
     expect(go("prod", "v0.99.0", "")).not.toBe(0);
     expect(go("staging", "v0.99.0", "v0.98.3")).not.toBe(0);
+  });
+
+  it("verifies the deploy token's identity right after the constants, before any step using CLOUDFLARE_API_TOKEN", () => {
+    const names = steps.map((s) => s.name);
+    const at = names.indexOf("The deploy token is the Environment's");
+    expect(at).toBe(names.indexOf("Load the hosted constants") + 1);
+    const first = steps.findIndex((s) =>
+      JSON.stringify(s).includes("CLOUDFLARE_API_TOKEN"),
+    );
+    expect(first).toBe(at);
+    // Fail-open guards: main's copy of the script, main's hosted constants,
+    // exactly this line, and nothing that swallows a failure.
+    const g = steps[at];
+    expect(g.id).toBe("token_identity");
+    expect(g.run).toBe(
+      'bash "$RUNNER_TEMP/main-ci/deploy-token-identity.sh" "$DEPLOY_ENV" "$RUNNER_TEMP/main-ci/hosted"',
+    );
+    expect(g.if).toBeUndefined();
+    expect(g["continue-on-error"]).toBeUndefined();
+    expect(JSON.stringify(g)).not.toMatch(/\|\|\s*true|continue-on-error/);
+    expect(g.shell).toBeUndefined();
+    expect(text).toContain(
+      "worker-tag.sh prod-release-chain.ts deploy-token-identity.sh;",
+    );
   });
 });

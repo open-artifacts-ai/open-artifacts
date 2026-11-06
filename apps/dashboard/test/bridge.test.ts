@@ -351,6 +351,80 @@ describe("pdf / thumb / resize", () => {
   });
 });
 
+describe("comments (#682)", () => {
+  const withCb = () => {
+    const o = {
+      iframe,
+      url: URL_,
+      artifact: ART,
+      version: 1,
+      viewer: null,
+      theme: "light" as const,
+      onPdfText: vi.fn(),
+      onThumb: vi.fn(),
+      onCommentSelect: vi.fn(),
+      onCommentPositions: vi.fn(),
+      onCommentOpen: vi.fn(),
+    };
+    live.push(createBridge(o));
+    return o;
+  };
+  const sel = { kind: "text", exact: "x", prefix: "", suffix: "" };
+
+  it("forwards valid comment messages from the frame", () => {
+    const o = withCb();
+    send({ oa: 1, type: "comment.select", anchor: sel });
+    send({ oa: 1, type: "comment.open", id: "t1" });
+    send({
+      oa: 1,
+      type: "comment.positions",
+      positions: [{ id: "t1", state: "exact", top: 5 }],
+    });
+    expect(o.onCommentSelect).toHaveBeenCalledWith(sel);
+    expect(o.onCommentOpen).toHaveBeenCalledWith("t1");
+    expect(o.onCommentPositions).toHaveBeenCalledWith([
+      { id: "t1", state: "exact", top: 5 },
+    ]);
+  });
+
+  it("drops comment messages that fail the shared schemas, or lack the nonce", () => {
+    const o = withCb();
+    send({ oa: 1, type: "comment.open", id: "not valid!" });
+    send({ oa: 1, type: "comment.open", id: "t1", extra: "<b>" });
+    send({ oa: 1, type: "comment.select", anchor: { ...sel, body: "text" } });
+    send({ oa: 1, type: "comment.select", anchor: { ...sel, exact: "" } });
+    send({ oa: 1, type: "comment.open", id: "t1" }, { raw: true });
+    expect(o.onCommentOpen).not.toHaveBeenCalled();
+    expect(o.onCommentSelect).not.toHaveBeenCalled();
+  });
+
+  it("sends the mode, the threads and a focus to the frame", () => {
+    const b = mk();
+    b.setCommentsMode("select");
+    b.setComments([
+      {
+        id: "t1",
+        n: 1,
+        active: true,
+        anchor: { kind: "pin", version: 1, x: 0, y: 0, contentHash: "h" },
+      },
+    ]);
+    b.focusComment("t1");
+    expect(post).toHaveBeenCalledWith(
+      { oa: 1, type: "comments.mode", mode: "select" },
+      "*",
+    );
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "comments.set" }),
+      "*",
+    );
+    expect(post).toHaveBeenCalledWith(
+      { oa: 1, type: "comments.focus", id: "t1" },
+      "*",
+    );
+  });
+});
+
 describe("db.subscribe", () => {
   const sub = (id: string, collection = "c") =>
     call("db.subscribe", { collection }, id);
@@ -1085,9 +1159,12 @@ describe("the frame can't change the bridge's artifact", () => {
     expect(Object.keys(b).sort()).toEqual(
       [
         "dispose",
+        "focusComment",
         "requestThumbnail",
         "scrollTo",
         "setArtifact",
+        "setComments",
+        "setCommentsMode",
         "setTheme",
       ].sort(),
     );

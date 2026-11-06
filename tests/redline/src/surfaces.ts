@@ -251,6 +251,11 @@ const FOREIGN = "apps/server/test/redline.foreign-credential.test.ts";
 const FOREIGN_D =
   "red line: another install's credential on the dropped directory surfaces";
 const INSTANCE: Citation = { file: MATRIX, describe: "instance routes" };
+/** Hosted billing's authz: owner and admin allowed, member, guest, anonymous refused. */
+const BILLING_AUTHZ: Citation = {
+  file: "apps/server/test/authz/plan.matrix.test.ts",
+  describe: "plan %s: billing and admin reads",
+};
 const ARTIFACTS: Citation = {
   file: MATRIX,
   describe: "artifact surfaces (sync stale 8 days)",
@@ -321,9 +326,23 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
     "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
   "DELETE /api/v1/bus/roles/:id":
     "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
+  // #1567: reached through bus/routes.ts roleWriter, like the role writes.
+  "PUT /api/v1/bus/links":
+    "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
+  "DELETE /api/v1/bus/links/:id":
+    "interactive-only: a hook-minted session is 404 here like a PAT; A at B is deny-only",
   // #1372: offered only while the bus is on; never on a hosted install.
   "tool:bus_role_propose":
     "bus-off: the tool isn't offered on a hosted install (the bus is off until #1299)",
+  // Self-serve billing (hosted only): an allowed caller's request reaches
+  // billing (a Stripe session or a usage report), so no success leg runs
+  // live. A at B is deny-only.
+  "POST /api/v1/billing/checkout":
+    "interactive-only: an allowed request opens a Stripe Checkout session through billing, for a browser session only; A at B is deny-only",
+  "POST /api/v1/billing/portal":
+    "interactive-only: an allowed request opens a Stripe Customer Portal session through billing, for a browser session only; A at B is deny-only",
+  "POST /api/v1/billing/usage":
+    "interactive-only: an allowed request sends this month's usage report to billing, for a browser session only; A at B is deny-only",
 };
 
 /**
@@ -339,6 +358,8 @@ export const INTERACTIVE_ONLY: readonly string[] = [
   "PUT /api/v1/bus/share-notices",
   "PUT /api/v1/bus/roles",
   "DELETE /api/v1/bus/roles/:id",
+  "PUT /api/v1/bus/links",
+  "DELETE /api/v1/bus/links/:id",
   // #1300: the /bus page's share-notice form, as PUT R.shareNotices. A
   // public-policy page route (PUBLIC_ROUTES), so no org surface or case:
   // the suite probes scoped routes only (coverageGaps' `scoped`).
@@ -346,6 +367,15 @@ export const INTERACTIVE_ONLY: readonly string[] = [
   // #1372: the role proposal confirm page, the same kind (PUBLIC_ROUTES).
   "GET /bus/roles/confirm/:token",
   "POST /bus/roles/confirm/:token",
+  // #1567: the link confirm page, the same kind (PUBLIC_ROUTES).
+  "GET /bus/links/confirm/:token",
+  "POST /bus/links/confirm/:token",
+  // Hosted billing: Checkout, Portal and the usage report open Stripe or
+  // reach billing only for a person in a browser session (billing.ts
+  // requireBillingManager), so a hook-minted session is 404 here.
+  "POST /api/v1/billing/checkout",
+  "POST /api/v1/billing/portal",
+  "POST /api/v1/billing/usage",
 ];
 
 const ERASE_TESTS = "apps/server/test/members.erase.test.ts";
@@ -353,6 +383,8 @@ const ERASE_AUTHZ = "POST R.memberErase(id): authorization";
 const SHARE_NOTICE_TESTS = "apps/server/test/follows.test.ts";
 const ROLE_TESTS = "apps/server/test/bus/roles.rest.test.ts";
 const ROLE_D = "roles REST (#1296)";
+const LINK_TESTS = "apps/server/test/bus/links.rest.test.ts";
+const LINK_D = "links REST (#1567)";
 const PROPOSAL_TESTS = "apps/server/test/bus/roles.proposals.test.ts";
 const PROPOSAL_D = "role proposals over MCP (#1372)";
 
@@ -551,6 +583,52 @@ export const DROPPED: Readonly<
         test: "a PAT may read but never set or remove; guests, capped and anonymous callers get nothing",
       },
     ],
+  },
+  // #1567: the matrix links two probe namespaces (200, or the named conflict
+  // while the caller has no bus) and removes one (204) in an Access session.
+  "org PUT /api/v1/bus/links": {
+    why: "interactive-only",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: LINK_TESTS,
+        describe: LINK_D,
+        test: "the member links, lists, relinks idempotently and unlinks",
+      },
+      {
+        file: LINK_TESTS,
+        describe: LINK_D,
+        test: "a PAT may read but never link or unlink; a machine token, guests, capped and anonymous callers get nothing",
+      },
+    ],
+  },
+  "org DELETE /api/v1/bus/links/:id": {
+    why: "interactive-only",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: LINK_TESTS,
+        describe: LINK_D,
+        test: "another member reaches only their own hub",
+      },
+      {
+        file: LINK_TESTS,
+        describe: LINK_D,
+        test: "a PAT may read but never link or unlink; a machine token, guests, capped and anonymous callers get nothing",
+      },
+    ],
+  },
+  "org POST /api/v1/billing/checkout": {
+    why: "interactive-only",
+    coveredBy: [INSTANCE, BILLING_AUTHZ],
+  },
+  "org POST /api/v1/billing/portal": {
+    why: "interactive-only",
+    coveredBy: [INSTANCE, BILLING_AUTHZ],
+  },
+  "org POST /api/v1/billing/usage": {
+    why: "interactive-only",
+    coveredBy: [INSTANCE, BILLING_AUTHZ],
   },
   "org DELETE /api/v1/spaces/:id/mappings/:groupId": {
     why: "real-only",

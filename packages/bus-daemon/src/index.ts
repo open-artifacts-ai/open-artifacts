@@ -1,4 +1,4 @@
-import { lstatSync, writeFileSync } from "node:fs";
+import { lstatSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import { claudeSessionsDir } from "@oa/bus-adapter-claude-code";
 import {
@@ -7,6 +7,7 @@ import {
   supportsPromptId,
 } from "@oa/bus-adapter-opencode/version";
 import {
+  ADAPTER_CAPS,
   type DaemonFrame,
   excerptOf,
   fitName,
@@ -22,6 +23,7 @@ import {
 } from "@oa/bus-ipc";
 import {
   BUS_CAPS,
+  BUS_CMD,
   BUS_ROUTES,
   type ClientFrame,
   ClientFrameSchema,
@@ -54,6 +56,12 @@ import {
   savedToken,
   socketPath,
 } from "./config.ts";
+import {
+  ConfigIssues,
+  configPaths,
+  inspectApprovals,
+  inspectGlobal,
+} from "./config-issues.ts";
 import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
 import { HubConnection, type HubOptions } from "./hub.ts";
 import {
@@ -101,13 +109,16 @@ export * from "./agents.ts";
 export * from "./attest.ts";
 export * from "./codex-attest.ts";
 export * from "./config.ts";
+export * from "./config-issues.ts";
 export * from "./dedupe.ts";
 export * from "./deliver.ts";
 export * from "./global.ts";
 export * from "./hub.ts";
 export * from "./liveness/claude.ts";
 export * from "./namespace.ts";
+export * from "./namespaces.ts";
 export * from "./outbox.ts";
+export { readOwnFile } from "./own-file.ts";
 export * from "./presence/opencode.ts";
 export * from "./resend.ts";
 export * from "./routes.ts";
@@ -282,6 +293,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       proposed_name: fitName(rec.proposedName, 64),
       namespace: rec.namespace,
       global: rec.global,
+      // A /clear: the new ref takes over the old address and its mail (#1295).
+      ...(rec.replaces !== undefined && hubMailbox
+        ? { replaces: rec.replaces }
+        : {}),
     });
   };
   /** Never a loop: one retry after a long wait; a reconnect replays it sooner. */
@@ -303,10 +318,31 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     caps.delete(ref);
   };
 
+  const configIssues = new ConfigIssues();
+  /** Config files refused or noted (#1527): `.oa-bus.json` files seen, and the allowlist. */
+  const configFiles = (cwd?: string, pending = false) => {
+    const g = inspectGlobal();
+    const a = inspectApprovals();
+    let within: Set<string> | undefined;
+    // An agent sees only its own folder chain: other projects' paths stay private.
+    if (cwd !== undefined) {
+      try {
+        within = new Set(configPaths(realpathSync(cwd)));
+      } catch {
+        within = new Set(configPaths(cwd));
+      }
+    }
+    return [
+      ...configIssues.list(within, { pending }),
+      ...(a ? [a] : []),
+      ...(g ? [g] : []),
+    ];
+  };
   const resolveNs = (cwd: string, allowMissing: boolean) =>
     (
       deps.resolveNamespace ??
-      ((dir) => resolveNamespace(dir, { log, allowMissing }))
+      ((dir) =>
+        resolveNamespace(dir, { log, allowMissing, issues: configIssues }))
     )(cwd);
 
   const cl = deps.claude ?? {};
@@ -557,6 +593,44 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     },
   });
 
+  /**
+   * A /clear (#1295): the Claude agent that ran in process `pid` under
+   * another ref, which that process no longer reports. It may already be
+   * closed: a tick that could not read the session file mid-rewrite closes
+   * it first, and the hub then holds its address as `away`. The same pid and
+   * process start is the same process; any other session is another agent.
+   */
+  const clearedFrom = (
+    ref: string,
+    pid: number,
+    procStart: string | undefined,
+    liveRefs: Set<string>,
+  ): AgentRecord | undefined =>
+    agents
+      .all()
+      .filter(
+        (a) =>
+          a.kind === "claude-code" &&
+          a.pid === pid &&
+          procStart !== undefined &&
+          a.procStart === procStart &&
+          a.ref !== ref &&
+          !liveRefs.has(a.ref) &&
+          !takenOver.has(a.ref),
+      )
+      // The live one, else the one this process reported last: after A, B, C
+      // the third replaces B, never A (A's address is B's by then).
+      .sort(
+        (a, b) =>
+          Number(b.live) - Number(a.live) ||
+          (seenAt.get(b.ref) ?? 0) - (seenAt.get(a.ref) ?? 0),
+      )[0];
+  /** Sessions whose address a later session of the same process took over. */
+  const takenOver = new Set<string>();
+  /** Order in which this process's sessions were last seen (higher is later). */
+  const seenAt = new Map<string, number>();
+  let seenSeq = 0;
+
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
     const live = liveClaudeSessions(claudeSessions);
@@ -566,10 +640,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     for (const s of live) {
       const prev = agents.byRef(s.ref);
       if (prev && prev.kind !== "claude-code") continue;
+      // Admitted before its session file existed: learn the process start
+      // now (live or already closed by a tick that could not see the file),
+      // so a later /clear in this process is recognised (#1295).
+      if (prev && prev.procStart === undefined && prev.pid === s.pid)
+        prev.procStart = s.procStart;
       if (prev?.live) {
         // `claude --resume` brings the same session back under a new pid; while
         // the current one still runs it stays, so two files never flap.
-        if (!livePid(s.ref, prev.pid)) prev.pid = s.pid;
+        if (!livePid(s.ref, prev.pid)) {
+          prev.pid = s.pid;
+          prev.procStart = s.procStart;
+        }
         continue;
       }
       // Closed by a failed delivery and still the same process.
@@ -582,15 +664,25 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         continue;
       }
       if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
+      // /clear: the same process, a new session id. The new ref keeps the
+      // old one's address (#1295); the old one is closed below.
+      seenAt.set(s.ref, ++seenSeq);
+      // A ref this daemon already knows (a /resume) is no takeover.
+      const old = prev
+        ? undefined
+        : clearedFrom(s.ref, s.pid, s.procStart, liveRefs);
+      if (old) takenOver.add(old.ref);
       announceUp(
         agents.up({
+          ...(old ? { replaces: old.ref } : {}),
           ref: s.ref,
           kind: "claude-code",
-          proposedName: s.name,
-          busName: prev?.busName ?? s.name,
+          proposedName: old?.busName ?? s.name,
+          busName: prev?.busName ?? old?.busName ?? s.name,
           namespace: ns.namespace,
           global: ns.global,
           pid: s.pid,
+          procStart: s.procStart,
           cwd: s.cwd,
           live: true,
         }),
@@ -653,6 +745,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubDroppedAt: number | undefined;
   /** The hub's last hello_ok listed BUS_CAPS.ids: a reply may carry to_id. */
   let hubIds = false;
+  /** The hub's last hello_ok listed BUS_CAPS.mailbox: agent_up may carry `replaces`. */
+  let hubMailbox = false;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
   let hubVersion: string | undefined;
   const hub = new HubConnection({
@@ -672,7 +766,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           upIds.delete(frame.id);
           clearLimited(frame.agent_ref);
           const agent = agents.byRef(frame.agent_ref);
-          if (agent) agent.busName = frame.bus_name;
+          if (agent) {
+            agent.busName = frame.bus_name;
+            // Answered: the hub knows the new ref, the handover is done.
+            delete agent.replaces;
+          }
           // Registered on this link: its sends lost to the last one go again.
           resends.up(frame.agent_ref);
           return;
@@ -754,6 +852,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubVersion = frame.server_version;
           // A reply names its agent (to_id) only to a hub that said it can.
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
+          hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
           // Queued replies go now that the link says what it supports.
           outbox.flush();
           return;
@@ -776,7 +875,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         deps.onRevoked?.(true);
         return;
       }
-      log("this machine was revoked; run `npx @open-artifacts/bus install`");
+      log(`this machine was revoked; run \`${BUS_CMD} install\``);
       process.exitCode = 1;
       try {
         writeFileSync(
@@ -805,6 +904,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // The next link's hello_ok says again which hub this is.
       hubVersion = undefined;
       hubIds = false;
+      // A replay before the next hello_ok must not carry `replaces`.
+      hubMailbox = false;
       statusRelay.dropped();
       receipts.release();
       // A send not yet answered waits for the next link; anything else fails now.
@@ -896,22 +997,28 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           const mine = new Map(local.map((a) => [a.busName, a.kind]));
           const roster =
             local[0] && hub.open ? await hubRoster(local[0].ref) : undefined;
+          // #1295: away agents are closed; status lists only open ones.
           const rows = roster
-            ? roster.map((a) => ({
-                name: a.name,
-                kind: a.kind,
-                machine:
-                  a.machine_label ??
-                  (mine.get(a.name) === a.kind ? cfg.label : ""),
-                state: a.state ?? ("live" as const),
-                ...(a.status === undefined ? {} : { status: a.status }),
-                ...(a.status_label === undefined
-                  ? {}
-                  : { status_label: a.status_label }),
-                ...(a.status_at === undefined
-                  ? {}
-                  : { status_at: a.status_at }),
-              }))
+            ? roster
+                .filter((a) => a.state !== "away")
+                .map((a) => ({
+                  name: a.name,
+                  kind: a.kind,
+                  machine:
+                    a.machine_label ??
+                    (mine.get(a.name) === a.kind ? cfg.label : ""),
+                  state:
+                    a.state === "away"
+                      ? ("queued" as const)
+                      : (a.state ?? ("live" as const)),
+                  ...(a.status === undefined ? {} : { status: a.status }),
+                  ...(a.status_label === undefined
+                    ? {}
+                    : { status_label: a.status_label }),
+                  ...(a.status_at === undefined
+                    ? {}
+                    : { status_at: a.status_at }),
+                }))
             : local.map((a) => ({
                 name: a.busName,
                 kind: a.kind,
@@ -921,10 +1028,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return { namespace, agents: rows };
         }),
       );
+      const config_files = configFiles(
+        undefined,
+        req.caps?.includes(ADAPTER_CAPS.pending),
+      );
       return {
         pid: process.pid,
         version,
         label: cfg.label,
+        ...(config_files.length > 0 ? { config_files } : {}),
         hub: hub.open ? "connected" : "connecting",
         ...(hub.open || !hub.lastError ? {} : { hub_error: hub.lastError }),
         hub_ever: hubEver,
@@ -1049,14 +1161,36 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           };
         attested(pid);
         const proposedName = hello.proposed_name ?? hello.agent_ref;
+        // /clear (#1295): this new session runs in the process of a live
+        // one whose session file is gone; it takes over that address.
+        const files =
+          hello.kind === "claude-code"
+            ? liveClaudeSessions(claudeSessions)
+            : [];
+        const mine = files.find(
+          (x) => x.ref === hello.agent_ref && x.pid === pid,
+        );
+        const old =
+          mine && !prev
+            ? clearedFrom(
+                hello.agent_ref,
+                pid,
+                mine.procStart,
+                new Set(files.map((x) => x.ref)),
+              )
+            : undefined;
+        seenAt.set(hello.agent_ref, ++seenSeq);
+        if (old) takenOver.add(old.ref);
         const rec = agents.up({
+          ...(old ? { replaces: old.ref } : {}),
           ref: hello.agent_ref,
           kind: hello.kind,
-          proposedName,
-          busName: prev?.busName ?? proposedName,
+          proposedName: old?.busName ?? proposedName,
+          busName: prev?.busName ?? old?.busName ?? proposedName,
           namespace: ns.namespace,
           global: ns.global,
           pid,
+          ...(mine ? { procStart: mine.procStart } : {}),
           cwd,
           live: true,
         });
@@ -1103,6 +1237,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         limited: (ref) =>
           limited.has(ref) ? (caps.get(ref) ?? "machine") : undefined,
         version,
+        configFiles,
         // The self tool's status: the agent's own row on its roster.
         ownRow: (ref) => {
           const me = agents.byRef(ref);

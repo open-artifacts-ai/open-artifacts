@@ -3,6 +3,9 @@ import {
   ArtifactSummarySchema,
   type BusAddress,
   BusAgentsSchema,
+  type BusLinkPut,
+  BusLinkSchema,
+  BusLinksSchema,
   BusMachinesSchema,
   type BusRolePut,
   BusRoleSchema,
@@ -66,6 +69,7 @@ import {
   TrashItemSchema,
 } from "./contract";
 import {
+  billingContext,
   DIRECTORY_SETTINGS,
   type ErrorContext,
   errorCopy,
@@ -101,6 +105,7 @@ export const qk = {
   busAgents: ["bus", "agents"] as const,
   shareNotices: ["bus", "share-notices"] as const,
   busRoles: ["bus", "roles"] as const,
+  busLinks: ["bus", "links"] as const,
   settings: ["settings"] as const,
   usage: ["usage"] as const,
   spaces: (q?: SpacesQueryInput) => ["spaces", q ?? {}] as const,
@@ -318,6 +323,30 @@ export const useDeleteBusRole = () =>
     () => [qk.busRoles],
     "Couldn't remove the role.",
   );
+/** #1567: the member's namespace links (GET R.busLinks); polled while visible. */
+export const useBusLinks = (enabled = true) =>
+  useQuery({
+    enabled,
+    queryKey: qk.busLinks,
+    queryFn: ({ signal }) => api.get(R.busLinks, BusLinksSchema, signal),
+    refetchInterval: BUS_POLL_MS,
+  });
+/** Link two namespaces (PUT R.busLinks, idempotent). Refusals (409) are the dialog's to show. */
+export const usePutBusLink = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: BusLinkPut) =>
+      api.send("PUT", R.busLinks, v, z.object({ link: BusLinkSchema })),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.busLinks }),
+  });
+};
+/** Remove a link (DELETE R.busLink(id), idempotent). */
+export const useDeleteBusLink = () =>
+  useInvalidating(
+    (id: string) => api.send("DELETE", R.busLink(id), undefined),
+    () => [qk.busLinks],
+    "Couldn't remove the link.",
+  );
 export const useSettings = () =>
   useQuery({
     queryKey: qk.settings,
@@ -344,10 +373,15 @@ export const useUsage = (
   });
 
 /** Where the error shows and who hit it, for `errorCopy` and `errorLink`. */
-const errorContext = (qc: QueryClient): ErrorContext => ({
-  capped: qc.getQueryData<Me>(qk.me)?.auth?.cap != null,
-  onDirectoryPage: location.pathname.startsWith(DIRECTORY_SETTINGS),
-});
+const errorContext = (qc: QueryClient): ErrorContext => {
+  const me = qc.getQueryData<Me>(qk.me);
+  return {
+    capped: me?.auth?.cap != null,
+    cap: me?.auth?.cap ?? null,
+    ...billingContext(me),
+    onDirectoryPage: location.pathname.startsWith(DIRECTORY_SETTINGS),
+  };
+};
 
 /** A failure toast: `title`, Design's copy for `e`, and its link if any. */
 const failureToast = (
@@ -477,6 +511,8 @@ const useOptimisticMembers = <V>(
   failure: string,
   /** A 403 owner_only: the caller says so on the row (no toast). */
   onOwnerOnly?: (v: V) => void,
+  /** A free instance's plan_limit / plan_required: the caller says so on the row, with this copy. */
+  onPlan?: (v: V, copy: string) => void,
 ) => {
   const qc = useQueryClient();
   return useMutation({
@@ -500,18 +536,28 @@ const useOptimisticMembers = <V>(
         void qc.invalidateQueries({ queryKey: qk.me });
         if (onOwnerOnly) return onOwnerOnly(v);
       }
+      if (
+        onPlan &&
+        e instanceof ApiClientError &&
+        (e.code === "plan_limit" || e.code === "plan_required")
+      )
+        return onPlan(v, errorCopy(e, failure, errorContext(qc)));
       failToast(e, failure);
     },
     onSettled: () => qc.invalidateQueries({ queryKey: qk.members }),
   });
 };
-export const usePatchMember = (onOwnerOnly?: (id: string) => void) =>
+export const usePatchMember = (
+  onOwnerOnly?: (id: string) => void,
+  onPlan?: (id: string, copy: string) => void,
+) =>
   useOptimisticMembers(
     (v: { id: string } & MemberPatch) =>
       api.send("PATCH", R.member(v.id), { role: v.role }, MemberSchema),
     (list, v) => list.map((m) => (m.id === v.id ? { ...m, role: v.role } : m)),
     "Couldn't change the role.",
     onOwnerOnly && ((v) => onOwnerOnly(v.id)),
+    onPlan && ((v, copy) => onPlan(v.id, copy)),
   );
 export const useRemoveMember = (onOwnerOnly?: (id: string) => void) =>
   useOptimisticMembers(
@@ -711,6 +757,8 @@ export const useSpaceCandidates = (id: string, q: string, enabled = true) =>
 /** The People card shows member refusals by the row, and snaps the role back. */
 const memberInline = (e: ApiClientError) =>
   e.code === "space_forbidden" ||
+  e.code === "plan_limit" ||
+  e.code === "plan_required" ||
   e.code === "member_synced" ||
   e.code === "managed_by_org_mapping" ||
   e.code === "not_found";

@@ -12,7 +12,8 @@ import { BILLING_HEALTH_OK_KEY } from "@oa/provisioning-contract/state";
 import { type AlertEnv, alertFor, stepAlert } from "./provapi/alerts.js";
 
 export interface BillingHealthEnv extends AlertEnv {
-  BILLING: Fetcher;
+  /** Absent until the billing Worker is deployed: the check then does nothing. */
+  BILLING?: Fetcher;
   OA_ENV?: string;
 }
 
@@ -31,11 +32,11 @@ const GET_SQL = "SELECT value FROM platform_state WHERE key = ?1";
 export type BillingHealth = "ok" | "down" | "unreachable";
 
 /** True when billing answered 200 with {ok:true} within timeoutMs. */
-async function healthy(env: BillingHealthEnv, timeoutMs: number) {
+async function healthy(billing: Fetcher, timeoutMs: number) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const r = await Promise.race([
-      env.BILLING.fetch(`${BILLING_ORIGIN}/health`),
+      billing.fetch(`${BILLING_ORIGIN}/health`),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error("timeout")), timeoutMs);
       }),
@@ -62,7 +63,10 @@ export async function billingHealth(
   now: number,
   { timeoutMs = 5_000 }: { timeoutMs?: number } = {},
 ): Promise<BillingHealth> {
-  const ok = await healthy(env, timeoutMs);
+  // No BILLING binding (billing not deployed): nothing to check, no state
+  // written, no alert, as before billing existed.
+  if (!env.BILLING) return "ok";
+  const ok = await healthy(env.BILLING, timeoutMs);
   const alert = alertFor("billing_unreachable", env.OA_ENV ?? "unknown");
   let health: BillingHealth = ok ? "ok" : "down";
   try {

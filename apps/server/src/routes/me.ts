@@ -11,14 +11,21 @@ import {
 } from "@oa/shared";
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
-import { caller, capOfCaller, requireUser } from "../auth/authz.js";
+import {
+  caller,
+  capOfCaller,
+  planOfMember,
+  requireUser,
+} from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
 import { instanceFeatures, instanceSignIn } from "../auth/sign-in.js";
+import { creatorCount, monthOf } from "../billing/creators.js";
+import { refreshPlan } from "../billing/store.js";
 import { instanceDirectory, readHealth } from "../directory/health.js";
 import { emailEnabled } from "../email/send.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
-import type { AppEnv } from "../http/middleware.js";
+import { type AppEnv, execCtx } from "../http/middleware.js";
 import { logWarn } from "../log.js";
 import { busOn } from "../services/bus.js";
 import { getSettingsKv, toSettings } from "../services/members.js";
@@ -70,6 +77,9 @@ async function toMe(
   const notices = await meNotices(c.env, user, cap, kv);
   if (notices) me.notices = notices;
   const exp = c.var.sessionExp;
+  // Hosted billing: the plan as this request's user load read it (null off
+  // hosted billing).
+  const plan = planOfMember(user);
   // Every install (parity 2): guests_read_only and the caller's cap reach an
   // Access-only dashboard too, or a guest sees no view-only state.
   me.instance.features = instanceFeatures(c.env);
@@ -92,12 +102,53 @@ async function toMe(
     me.personalSpaceId = user.id;
     me.spaces = await mySharedSpaces(c.env, caller(c));
   }
+  // Self-serve billing (hosted only): the plan as this request's user load
+  // read it. Billing details for the uncapped owner and admins, who also
+  // refresh the tier on demand (at most once a minute, after the response).
+  if (plan) {
+    const details = orgCan(user, "billing.manage", { cap });
+    me.instance.billing = {
+      tier: plan.tier,
+      status: details ? plan.status : null,
+      trialEndsAt:
+        details && plan.trialEndsAt !== null
+          ? new Date(plan.trialEndsAt).toISOString()
+          : null,
+      graceUntil:
+        details && plan.graceUntil !== null
+          ? new Date(plan.graceUntil).toISOString()
+          : null,
+      ...(details
+        ? {
+            creatorsThisMonth: await creatorCount(c.env, monthOf(Date.now())),
+          }
+        : {}),
+      readOnly: plan.readOnly,
+      ...(plan.reason ? { reason: plan.reason } : {}),
+    };
+    if (details) {
+      const run = refreshPlan(c.env, Date.now(), { onDemand: true });
+      const ctx = execCtx(c);
+      if (ctx) ctx.waitUntil(run);
+      else await run;
+    }
+  }
   // Hosted M1 (#359): in every sign-in mode (Access-only included, parity 1),
   // so the dashboard reads one shape.
   me.instance.hosted = c.env.HOSTED === "1";
-  // Reported only (behaviour follows FEATURES, which provisioning derives
-  // from TIER); null off hosted.
-  me.instance.tier = me.instance.hosted ? hostedTier(c.env.TIER) : null;
+  // Hosted: the billing plan's tier when there is one (the same tier as
+  // Me.instance.billing.tier; null for free, which has no Tier), else the
+  // provisioned TIER. Features follow the same tier (featuresOf). Null off
+  // hosted.
+  // Read even when the plan rules: an unknown TIER is still logged.
+  const provisioned = me.instance.hosted ? hostedTier(c.env.TIER) : null;
+  me.instance.tier = !me.instance.hosted
+    ? null
+    : plan
+      ? plan.tier === "free"
+        ? null
+        : plan.tier
+      : provisioned;
   // Owners also see why configured sign-in is off (AuthConfig.problems).
   me.instance.signIn = instanceSignIn(
     c.env,

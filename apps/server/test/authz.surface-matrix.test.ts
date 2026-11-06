@@ -522,7 +522,12 @@ describe("instance routes", () => {
         const exp = {} as Record<CallerName, string>;
         await Promise.all(
           CALLERS.map(async (who) => {
-            exp[who] = orgExpected(who, s.rule, s.route);
+            // This world is self-hosted (fixture E): a hosted-only route
+            // refuses everyone.
+            exp[who] = orgExpected(who, s.rule, s.route, {
+              hosted: E.HOSTED === "1",
+              ...(s.hostedOnly ? { hostedOnly: true } : {}),
+            });
             // Allowed, it changes the instance: "instance writes" runs it
             // last, on its own.
             if (s.instance && exp[who] === "allow") {

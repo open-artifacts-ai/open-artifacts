@@ -588,6 +588,8 @@ describe("H-DV review fixes", () => {
     const f = fakes();
     const env = {
       ...f.env,
+      // Bound, so the billing check runs and fails on its own fixed line.
+      BILLING: { fetch: async () => Response.json({ ok: true }) },
       PLATFORM_DB: new Proxy(db, {
         get(t, k) {
           if (k === "prepare")

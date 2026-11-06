@@ -101,6 +101,17 @@ function logs() {
 }
 
 describe("billingHealth", () => {
+  it("no BILLING binding: nothing is checked, recorded, logged or sent, however long it lasts", async () => {
+    const b = billing();
+    const lines = logs();
+    const { BILLING: _gone, ...bare } = b.env;
+    for (const at of [T0, T0 + 2 * 60 * MIN, T0 + 3 * DAY])
+      expect(await billingHealth(bare, at)).toBe("ok");
+    expect(await state(BILLING_OK_KEY)).toBeNull();
+    expect(b.subjects).toEqual([]);
+    expect(lines).toEqual([]);
+  });
+
   it("a success records its time; nothing is logged or sent", async () => {
     const b = billing();
     const lines = logs();

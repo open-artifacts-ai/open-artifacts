@@ -32,14 +32,19 @@ export const limiter = (max = 30) => {
 };
 
 /** Calls the Worker (default export), awaiting its waitUntil work. */
-export const callWorker = (req: Request, e: unknown = E()) =>
-  fetchAndWait(worker as never, req, e);
+export const callWorker = (
+  req: Request,
+  e: unknown = E(),
+  props?: Record<string, unknown>,
+) => fetchAndWait(worker as never, req, e, props);
 
 /** An MCP client connected to the Worker's /mcp with `Authorization: Bearer <token>`. */
 export async function connect(
   token: string,
   opts: {
     env?: unknown;
+    /** ctx.props for every request (e.g. a fake BILLING gate). */
+    props?: Record<string, unknown>;
     clientInfo?: { name: string; version: string };
     /** Negotiate the 2026-07-28 per-request era instead of 2025 (the default). */
     modern?: boolean;
@@ -52,7 +57,11 @@ export async function connect(
   const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
     requestInit: { headers: { authorization: `Bearer ${token}` } },
     fetch: (url, init) =>
-      callWorker(new Request(String(url), init as RequestInit), opts.env),
+      callWorker(
+        new Request(String(url), init as RequestInit),
+        opts.env,
+        opts.props,
+      ),
   });
   await client.connect(transport);
   return client;

@@ -1,9 +1,11 @@
-import type {
-  AdapterFrame,
-  AgentInfo,
-  DaemonFrame,
-  Hello,
-  Unframed,
+import {
+  ADAPTER_CAPS,
+  type AdapterFrame,
+  type AgentInfo,
+  type ConfigFile,
+  type DaemonFrame,
+  type Hello,
+  type Unframed,
 } from "@oa/bus-ipc";
 import {
   AGENT_CAP_MESSAGES,
@@ -183,6 +185,8 @@ export type RouteCtx = {
     ref: string,
     reply: (f: Unframed) => unknown,
   ) => Unframed | undefined;
+  /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
+  configFiles?: (cwd: string, pending?: boolean) => ConfigFile[];
   /** The daemon's version, reported by `self`. */
   version?: string;
   /**
@@ -207,6 +211,43 @@ const statusOf = (row: StatusRow | undefined): StatusRow =>
     ),
   );
 
+/** What an adapter that did not list `mailbox` is shown for the new refusals. */
+const OLD_REASON = {
+  mailbox_full: "inbox_full",
+  reserved_name: "unknown_agent",
+} as const;
+
+/**
+ * #1295: a reply as an adapter without the `mailbox` cap can decode it: no
+ * away rows, no `since` or `queued`, and the new refusals as the reasons they
+ * replace (as the hub does for a socket without the cap).
+ */
+function forOldAdapter(f: DaemonFrame): DaemonFrame {
+  if (f.type === "roster")
+    return {
+      ...f,
+      agents: f.agents
+        .filter((a) => a.state !== "away")
+        .map(({ since: _since, ...a }) => a),
+    };
+  if (f.type === "receipt") {
+    const {
+      queued: _q,
+      since: _s,
+      ...r
+    } = f as typeof f & {
+      queued?: unknown;
+      since?: unknown;
+    };
+    const reason =
+      r.reason !== undefined && r.reason in OLD_REASON
+        ? OLD_REASON[r.reason as keyof typeof OLD_REASON]
+        : r.reason;
+    return { ...r, ...(reason === undefined ? {} : { reason }) } as DaemonFrame;
+  }
+  return f;
+}
+
 /** A local request is attributed to the connection's attested agent, never to a frame field. */
 export function routeLocal(
   frame: Exclude<AdapterFrame, { type: "hello" }>,
@@ -221,6 +262,12 @@ export function routeLocal(
 
   switch (frame.type) {
     case "self": {
+      const files = frame.row
+        ? (ctx.configFiles?.(
+            agent.cwd,
+            hello.caps?.includes(ADAPTER_CAPS.pending),
+          ) ?? [])
+        : [];
       const self = {
         type: "agent",
         agent: {
@@ -229,6 +276,7 @@ export function routeLocal(
           kind: agent.kind,
           live: agent.live,
           global: agent.global,
+          ...(files.length > 0 ? { config_files: files } : {}),
         },
       } as const;
       // The status is the hub's: asked for only by the self tool.
@@ -298,7 +346,10 @@ export function routeLocal(
           code: "bad_frame",
           message: "the frame is not valid on the hub wire",
         };
-      const id = ctx.pending.open(frame.id, reply);
+      const gated = hello.caps?.includes(ADAPTER_CAPS.mailbox)
+        ? reply
+        : (f: DaemonFrame) => reply(forOldAdapter(f));
+      const id = ctx.pending.open(frame.id, gated);
       if (ctx.hub.send(build(id))) return undefined;
       ctx.pending.cancel(id);
       return {

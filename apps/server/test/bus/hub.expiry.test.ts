@@ -10,6 +10,7 @@ import {
   type ClientFrame,
   decodeServerFrame,
   LIMITS,
+  MAILBOX_RETAIN_MS,
   type ServerFrame,
 } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it } from "vitest";
@@ -73,10 +74,13 @@ const runAlarm = async () => {
 
 afterEach(async () => {
   await setClock(null);
+  // #1295: a close no longer releases held mail (it stays pending for the
+  // reopen), so a test's leftovers must not fill the shared held cap.
+  await evictHeld();
 });
 
 const HOUR = 3_600_000;
-const TTL = LIMITS.mailTtlSec * 1000;
+const TTL = MAILBOX_RETAIN_MS;
 
 type Receipt = Extract<ServerFrame, { type: "receipt" }>;
 
@@ -533,54 +537,113 @@ describe("alarm", () => {
 });
 
 describe("closed sessions", () => {
-  it("sessions{closed} expires queued mail as recipient_closed; reopening resurrects nothing", async () => {
+  it("sessions{closed} keeps queued mail pending (away); the same ref reopening gets it, once", async () => {
     const { s, t, tm, n, receiver, close } = await setup();
     await offline(t);
     const r = await sendAndReceipt(s, send("s1", "sref", receiver, "queued"));
     const t2 = await ready(tm.token);
     t2.send({ v: 1, id: "se", type: "sessions", open: [], closed: ["rref"] });
+    await barrier(t2);
+    expect(await receiptRow(r.msg_id)).toMatchObject({ state: "pending" });
+    expect((await mailRow(r.msg_id))?.body).toBe("queued");
+    // The same session ref opens again: the pending mail comes back.
+    await agent(t2, "rref", receiver, n);
+    const d = await waitFor(t2, "deliver");
+    expect(d).toMatchObject({ msg_id: r.msg_id, body: "queued" });
+    t2.send(ack("a2", r.msg_id));
     expect(await waitFor(s, "receipt_update")).toMatchObject({
       msg_id: r.msg_id,
-      state: "expired",
-      reason: "recipient_closed",
-    });
-    expect(await mailRow(r.msg_id)).toBeNull();
-    // The same session ref opens again: nothing comes back.
-    await agent(t2, "rref", receiver, n);
-    await barrier(t2);
-    expect(types(t2)).not.toContain("deliver");
-    expect(await receiptRow(r.msg_id)).toMatchObject({
-      state: "expired",
-      reason: "recipient_closed",
+      state: "delivered",
     });
     await barrier(s);
     expect(updates(s, r.msg_id)).toHaveLength(1);
     close(t2);
   });
 
-  it("agent_down expires held mail live; a late ack is ignored", async () => {
+  it("sessions{closed} mail expires at the end of the away reservation, the sender told once", async () => {
+    const { s, t, tm, receiver, close } = await setup();
+    await offline(t);
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "queued"));
+    const t2 = await ready(tm.token);
+    t2.send({ v: 1, id: "se", type: "sessions", open: [], closed: ["rref"] });
+    await barrier(t2);
+    await setClock(Date.now() + TTL + 5000);
+    await runAlarm();
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: r.msg_id,
+      state: "expired",
+    });
+    expect(await mailRow(r.msg_id)).toBeNull();
+    await barrier(s);
+    expect(updates(s, r.msg_id)).toHaveLength(1);
+    close(t2);
+  });
+
+  it("agent_down keeps held mail pending (stored at the ack timeout); a reopen gets it", async () => {
+    const { s, t, n, receiver, close } = await setup();
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "held"));
+    await waitFor(t, "deliver");
+    expect((await heldStats()).ids).toContain(r.msg_id);
+    t.send({ v: 1, id: "dn", type: "agent_down", agent_ref: "rref" });
+    await barrier(t);
+    expect(await receiptRow(r.msg_id)).toMatchObject({ state: "pending" });
+    await setClock(Date.now() + LIMITS.ackTimeoutMs + 1000);
+    await runAlarm();
+    expect((await mailRow(r.msg_id))?.body).toBe("held");
+    await agent(t, "rref", receiver, n);
+    expect(
+      (await waitFor(t, "deliver")) as { msg_id: string; body: string },
+    ).toMatchObject({ msg_id: r.msg_id, body: "held" });
+    expect(updates(s, r.msg_id)).toHaveLength(0);
+    close();
+  });
+
+  it("agent_down: held bytes drop once the ack timeout persists the body; the receipt stays pending, the mail row exists, a reopen delivers it, and held bytes end at 0", async () => {
     const { s, t, n, receiver, close } = await setup();
     const r = await sendAndReceipt(s, send("s1", "sref", receiver, "held"));
     await waitFor(t, "deliver");
     const before = await heldStats();
     expect(before.ids).toContain(r.msg_id);
+    expect(before.bytes).toBe(256);
     t.send({ v: 1, id: "dn", type: "agent_down", agent_ref: "rref" });
-    expect(await waitFor(s, "receipt_update")).toMatchObject({
-      msg_id: r.msg_id,
-      state: "expired",
-      reason: "recipient_closed",
-    });
+    await barrier(t);
+    // The close itself keeps the held body and the receipt.
+    expect((await heldStats()).bytes).toBe(256);
+    expect(await receiptRow(r.msg_id)).toMatchObject({ state: "pending" });
+    await setClock(Date.now() + LIMITS.ackTimeoutMs + 1000);
+    await runAlarm();
     const after = await heldStats();
     expect(after.ids).not.toContain(r.msg_id);
-    expect(after.bytes).toBe(before.bytes - 256);
-    expect(await mailRow(r.msg_id)).toBeNull();
+    expect(after.bytes).toBe(0);
+    expect((await mailRow(r.msg_id))?.body).toBe("held");
+    expect(await receiptRow(r.msg_id)).toMatchObject({ state: "pending" });
+    await agent(t, "rref", receiver, n);
+    const d = await waitFor(t, "deliver");
+    expect(d).toMatchObject({ msg_id: r.msg_id, body: "held" });
     t.send(ack("a1", r.msg_id));
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: r.msg_id,
+      state: "delivered",
+    });
+    expect((await heldStats()).bytes).toBe(0);
+    close();
+  });
+
+  it("agent_down: a late ack from the closing session still settles the held mail once (the machine is the recipient), and a reopen redelivers nothing", async () => {
+    const { s, t, n, receiver, close } = await setup();
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "held"));
+    await waitFor(t, "deliver");
+    t.send({ v: 1, id: "dn", type: "agent_down", agent_ref: "rref" });
+    t.send(ack("a1", r.msg_id));
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: r.msg_id,
+      state: "delivered",
+    });
     await agent(t, "rref", receiver, n);
     await barrier(t);
     await barrier(s);
     expect(types(t).filter((x) => x === "deliver")).toHaveLength(1);
     expect(updates(s, r.msg_id)).toHaveLength(1);
-    expect(await receiptRow(r.msg_id)).toMatchObject({ state: "expired" });
     close();
   });
 });

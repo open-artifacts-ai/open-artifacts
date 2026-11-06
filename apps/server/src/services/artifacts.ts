@@ -38,12 +38,18 @@ import {
   firstThumbnailEligible,
   levelSql,
   listFilterSql,
+  planOfMember,
   publishTarget,
   roleRankQuery,
   roleRankSql,
+  sharingCaller,
+  suspendedMember,
 } from "../auth/authz.js";
-import { authConfig } from "../auth/config.js";
 import { can, dataWritersOf } from "../auth/policy.js";
+import { requireFreeStorage } from "../billing/caps.js";
+import { creatorStmt } from "../billing/creators.js";
+import { featuresOf } from "../billing/features.js";
+import { billingActive, planError, requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -178,6 +184,8 @@ export async function publish(
   ctx?: Ctx,
   mode: PublishMode = "any",
 ): Promise<PublishResult> {
+  // Under a suspension nothing becomes public: create and new version alike.
+  refuseSuspendedPublic(user, input.visibility);
   const plan = planFiles(input);
   const db = env.DB;
   const now = Date.now();
@@ -301,6 +309,8 @@ export async function publish(
   if (create && input.spaceId !== undefined && input.spaceId !== user.id) {
     // Another space needs the spaces feature (404 without it).
     requireSpaces(env);
+    // Hosted billing: a shared space is a team feature.
+    requireTeamPlan(planOfMember(user));
     spaceId = (
       await publishTarget(env, callerOf(user), input.spaceId, "create")
     ).id;
@@ -316,12 +326,16 @@ export async function publish(
     (create ? (await getSettings(env)).defaultVisibility : undefined);
   if (create) dataWriters = resolveDataWriters(input, visibility) ?? "viewers";
 
+  // Hosted billing: a free instance at its storage cap (off until set)
+  // publishes nothing new; restores and renames never land here.
+  await requireFreeStorage(env, 1);
   mark();
   const { manifest, written, uploadIds } = await materialize(
     env,
     id,
     user.id,
     plan,
+    { digest: billingActive(env) },
   );
   mark();
   // The inline content is in R2 now: drop the plan's copies so they don't
@@ -432,6 +446,11 @@ export async function publish(
   // on rename); the body is indexed asynchronously.
   if (visAudit) stmts.push(visAudit);
   stmts.push(seedSearchStmt(db, id));
+  // Hosted billing: the publisher is this month's creator once the version
+  // row exists (an agent's publish counts for its owner). restoreVersion
+  // never writes one.
+  const creator = creatorStmt(env, user.id, id, now);
+  if (creator) stmts.push(creator);
   if (!create && (input.title !== undefined || input.description !== undefined))
     stmts.push(syncTitleStmt(env, id));
   // Last: the guard above still sees every listed upload unconsumed.
@@ -872,7 +891,7 @@ export const spaceCols = (
  * anonymous). Without spaces, `decorate` still sets `can` (withCan).
  */
 export const decorates = (env: Env, caller: Caller): boolean =>
-  caller.kind === "user" && authConfig(env).features.includes("spaces");
+  caller.kind === "user" && featuresOf(env).includes("spaces");
 
 /**
  * Sets `out.space` (SpaceRef) and `out.can` (artifactCan of the caller's
@@ -904,6 +923,32 @@ export function withSpace<T extends ArtifactSummary>(
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
   });
+  return sharingFree(caller, out, !shared, sp?.rank ?? 0);
+}
+
+/**
+ * Sharing is free on every plan: a member capped only by the billing plan
+ * keeps `share` and `setVisibility` on their own personal artifacts and on
+ * those in a shared space they manage (the cap lowers their level to
+ * viewer, which would turn both off). Every other action stays off.
+ */
+function sharingFree<T extends ArtifactSummary>(
+  caller: Caller,
+  out: T,
+  personal: boolean,
+  /** The caller's role rank in the artifact's shared space (3 = manager). */
+  spaceRank = 0,
+): T {
+  if (
+    out.can &&
+    caller.kind === "user" &&
+    capOfCaller(caller) === "plan" &&
+    !suspendedMember(caller.user) &&
+    // The personal owner, or a manager of the shared space: the same two
+    // that the server lets share (can(level, "share")).
+    (personal ? out.owner?.id === caller.user.id : spaceRank === 3)
+  )
+    out.can = { ...out.can, share: true, setVisibility: true };
   return out;
 }
 
@@ -927,7 +972,7 @@ export function withCan<T extends ArtifactSummary>(
     move: false,
     transfer: false,
   };
-  return out;
+  return sharingFree(caller, out, true);
 }
 
 /**
@@ -1258,7 +1303,10 @@ export async function putThumbnail(
   const who = asUser(user);
   const r = await accessLevel(env, who, id);
   if (!r) throw notFound();
-  const editor = can(r.level, "publish", canCtx(who, r.artifact));
+  // The artifact's real space (canCtx alone says personal): a shared-space
+  // artifact under a plan lock is read-only, its thumbnail included.
+  const ctx = { ...canCtx(who, r.artifact), personal: r.personal };
+  const editor = can(r.level, "publish", ctx);
   let firstThumbnail = editor;
   if (!editor) {
     const email = normalizeEmail(user.email);
@@ -1273,7 +1321,7 @@ export async function putThumbnail(
   }
   if (
     !can(r.level, "thumbnail.write", {
-      ...canCtx(who, r.artifact),
+      ...ctx,
       firstThumbnail,
     })
   )
@@ -1423,6 +1471,16 @@ function visibilityAudit(
 }
 
 /**
+ * A suspension is an operator's stop: nothing existing becomes public under
+ * it, the uncapped owner included (team, private and removals still pass).
+ */
+function refuseSuspendedPublic(user: Member, visibility: string | undefined) {
+  const plan = planOfMember(user);
+  if (visibility === "public" && plan?.lock && suspendedMember(user))
+    throw planError(plan.lock);
+}
+
+/**
  * title/description: editor+; visibility/capabilities/dataWriters (and the
  * deprecated allowAnonymousWrites, mapped by resolveDataWriters): owner or
  * manager. A result that is public, declares db and lets viewers write data
@@ -1436,13 +1494,37 @@ export async function patch(
   ctx?: Ctx,
 ): Promise<ArtifactPatchResult> {
   const who = asUser(user);
-  const { level, artifact: a } = await authorize(env, who, id, "publish");
+  // Sharing is free on every plan: a plan-capped member may change who can
+  // open their artifact (visibility alone), nothing else in the PATCH.
+  const lock = capOfCaller(who) === "plan" ? planOfMember(user)?.lock : null;
+  // An allow-list: visibility and nothing else. A suspension is not a payment
+  // state: it keeps the old lock, with no sharing change.
+  const visibilityOnly =
+    p.visibility !== undefined &&
+    Object.entries(p).every(
+      ([k, v]) => v === undefined || k === "visibility",
+    ) &&
+    lock?.reason !== "suspended";
+  if (lock && !visibilityOnly) {
+    await authorize(env, who, id, "view");
+    throw planError(lock);
+  }
+  const { level, artifact: a } = await authorize(
+    env,
+    who,
+    id,
+    lock ? "visibility" : "publish",
+  );
+  refuseSuspendedPublic(user, p.visibility);
   const sharing =
     p.visibility !== undefined ||
     p.capabilities !== undefined ||
     p.dataWriters !== undefined ||
     p.allowAnonymousWrites !== undefined;
-  if (sharing && !can(level, "visibility", canCtx(who, a)))
+  if (
+    sharing &&
+    !can(level, "visibility", canCtx(sharingCaller(who, "visibility"), a))
+  )
     throw new ApiError("bad_request", "only the owner can change sharing");
   await refusePublicLinksOff(env, a, p.visibility);
   const dataWriters = resolveDataWriters(p, p.visibility ?? a.visibility);
@@ -1637,7 +1719,7 @@ export async function undelete(
       .first<{ kind: string; deleted_at: number | null }>();
     if (
       sp?.kind === "shared" &&
-      (sp.deleted_at !== null || !authConfig(env).features.includes("spaces"))
+      (sp.deleted_at !== null || !featuresOf(env).includes("spaces"))
     )
       throw notFound();
     const cutoff = Date.now() - LIMITS.softDeleteDays * DAY;

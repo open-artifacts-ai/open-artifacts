@@ -445,8 +445,22 @@ async function applyLinked(
     if (r.hid && r.hid !== r.uid) {
       // Another row took the address after sync removed this one: it can't
       // come back (and Restore is directory_managed), so say so, not silence.
-      if (await removedBySync(env, r.uid))
+      // Audited once per holder (#1145). The way back is the admin's call:
+      // remove, then erase the holder, and the next sync revives this row.
+      if (await removedBySync(env, r.uid)) {
         logWarn("directory_revive_blocked", undefined, { userId: r.uid });
+        guard();
+        await audit(
+          env,
+          "user.revive_blocked",
+          { type: "user", id: r.uid },
+          { kind: "sync", id: null },
+          {
+            detail: { holderUserId: r.hid },
+            when: { sql: REVIVE_BLOCKED_NEW, args: [r.uid, r.uid, r.hid] },
+          },
+        ).run();
+      }
       return;
     }
     guard();
@@ -516,6 +530,17 @@ async function changeEmail(
   if (!(await moveUserEmail(env, uid, from, to)))
     logWarn("directory_email_taken");
 }
+
+/**
+ * No user.revive_blocked yet for this row and holder since the row's last
+ * status change, so a steady listing writes one row, not one per pass.
+ * Bounded by audit_events_at_idx. Plain `?` (appended to the insert's own
+ * binds): args [row, row, holder].
+ */
+const REVIVE_BLOCKED_NEW = `not exists (select 1 from audit_events
+  where at >= coalesce((select status_changed_at from users where id = ?), 0)
+    and action = 'user.revive_blocked' and target_type = 'user'
+    and target_id = ? and json_extract(detail, '$.holderUserId') = ?)`;
 
 /** Whether directory sync removed this row (users.removed_by_sync). */
 async function removedBySync(env: Env, id: string) {

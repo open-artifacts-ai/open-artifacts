@@ -12,7 +12,9 @@ describe.skipIf(!base)("staging smoke: upgrade.md", () => {
       /^---\nname: open-artifacts-[a-z0-9]+(-[a-z0-9]+)*-upgrade\n/,
     );
     expect(md).toContain(`\`GET ${base}/healthz\``);
-    expect(md).toMatch(/pnpm -s oa:setup --upgrade --name [\w-]+ --json/);
+    expect(md).toMatch(
+      /pnpm --reporter=silent oa:setup --upgrade --name [\w-]+ --json/,
+    );
     expect(md).not.toContain("{{");
     const { version } = (await (await fetch(`${base}/healthz`)).json()) as {
       version: string;

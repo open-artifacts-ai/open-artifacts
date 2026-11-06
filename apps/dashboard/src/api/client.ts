@@ -9,6 +9,8 @@ export class ApiClientError extends Error {
   code: ClientErrorCode;
   status: number;
   details?: unknown;
+  /** A 429's Retry-After in whole seconds, when the header was there and valid. */
+  retryAfter?: number;
   /** Request that failed, when it came from `request`. */
   method?: string;
   path?: string;
@@ -146,6 +148,9 @@ async function request(
   );
   err.method = init.method;
   err.path = path;
+  const ra = res.headers.get("retry-after");
+  if (res.status === 429 && ra && /^\d{1,7}$/.test(ra.trim()))
+    err.retryAfter = Number(ra);
   throw err;
 }
 

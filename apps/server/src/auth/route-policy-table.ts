@@ -30,6 +30,8 @@ export type Policy =
       anon401?: string;
       /** Floor context for viewer thumbnails (the handler applies the exact rule). */
       ctx?: { firstThumbnail?: boolean };
+      /** Sharing is free: the billing plan cap doesn't stop this route at the gate (the handler decides). */
+      planSharing?: true;
     }
   | { org: OrgAction; offWhen?: EnvFlag }
   | { user: string }
@@ -43,6 +45,8 @@ const art = (
     allowDeleted?: true;
     anon401?: string;
     ctx?: { firstThumbnail?: boolean };
+    /** Sharing is free: the billing plan cap doesn't stop this route at the gate (the handler decides). */
+    planSharing?: true;
   } = {},
 ): Policy => ({ artifact: action, ...extra });
 const SAVE = "Sign in to save changes";
@@ -183,7 +187,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     org: "artifact.create",
   },
   [`GET ${ARTS}`]: art("view"),
-  [`PATCH ${ARTS}`]: art("publish", signedIn),
+  // A plan-capped member may change visibility only (patch applies it).
+  [`PATCH ${ARTS}`]: art("publish", { signedIn: true, planSharing: true }),
   [`DELETE ${ARTS}`]: art("delete", signedIn),
   [`POST ${ARTS}/undelete`]: art("undelete", {
     signedIn: true,
@@ -235,6 +240,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "DELETE /api/v1/tokens/:id": { user: "the caller's tokens" },
   // P3 T19: hosted sets usage_off (no ANALYTICS_TOKEN there).
   "GET /api/v1/usage": { org: "usage.read", offWhen: "usage_off" },
+  // Self-serve billing: the uncapped org owner or admin (404 off hosted, the
+  // handler). Each answers only a Stripe URL or this month's count.
+  "POST /api/v1/billing/checkout": { org: "billing.manage" },
+  "POST /api/v1/billing/portal": { org: "billing.manage" },
+  "POST /api/v1/billing/usage": { org: "billing.manage" },
   "GET /api/v1/audit": { org: "audit.read" },
   "GET /api/v1/audit/export": { org: "audit.read" },
   "GET /oauth/authorize": {
@@ -286,6 +296,10 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/bus/roles": { org: "mcp.connect" },
   "PUT /api/v1/bus/roles": { org: "mcp.connect" },
   "DELETE /api/v1/bus/roles/:id": { org: "mcp.connect" },
+  // #1567 project links; PUT and DELETE browser sessions only (handler).
+  "GET /api/v1/bus/links": { org: "mcp.connect" },
+  "PUT /api/v1/bus/links": { org: "mcp.connect" },
+  "DELETE /api/v1/bus/links/:id": { org: "mcp.connect" },
   // #1372: the role proposal confirm page (bus/role-confirm.ts). The handler
   // takes only an interactive cookie session of the hub's own member (a
   // PAT, an OAuth grant or a machine token is refused) and a POST its form
@@ -298,6 +312,20 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     public:
       "role proposal decision; interactive session, form CSRF, the caller's own hub, single use",
   },
+  // #1567: `oa-bus link` records a proposal with a bus machine token (the
+  // handler verifies it: a PAT, an OAuth token or a cookie is 401); the
+  // member confirms on the one-time page below, the role confirm's rules.
+  "POST /api/v1/bus/links/proposals": {
+    signed: "bus machine token (oa_machine_), D1; records a proposal only",
+  },
+  "GET /bus/links/confirm/:token": {
+    public:
+      "link confirm page; redirects to sign-in, interactive session, the caller's own hub",
+  },
+  "POST /bus/links/confirm/:token": {
+    public:
+      "link decision; interactive session, form CSRF, the caller's own hub, single use",
+  },
   "GET /api/v1/oauth-clients": { user: "the caller's grants" },
   "PATCH /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
   "DELETE /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
@@ -307,6 +335,44 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /*": { public: "SPA and assets" },
   "HEAD /*": { public: "SPA and assets" },
 };
+
+/**
+ * Hosted billing: the org-level team-feature writes. Under a plan lock
+ * (billing/plan.ts) the gate refuses them, after the route's own rule, with
+ * 403 plan_required (a free, solo instance) or plan_read_only (team
+ * features read-only). Removals (DELETE, a suspension or demotion through
+ * PATCH members) are never listed: removing people is how a team drops back
+ * to free (under any lock PATCH members refuses only a promotion or a
+ * reactivation: services/members.ts patchMember). The first invite on a
+ * free instance whose trial never ran passes
+ * and starts the trial. Artifact writes in shared spaces, moves and
+ * transfers are refused per artifact (policy can). Sharing (share, unshare,
+ * visibility) is free on every plan and is never listed or refused.
+ */
+export const TEAM_ROUTES: ReadonlySet<string> = new Set([
+  "POST /api/v1/members",
+  "POST /api/v1/members/:id/transfer",
+  // Bringing a removed member back adds a person: a team feature (also
+  // checked in restoreMember for callers outside the route). Lifting a
+  // manual restriction widens access.
+  "POST /api/v1/members/:id/restore",
+  "DELETE /api/v1/members/:id/restricted",
+  "POST /api/v1/spaces",
+  `PATCH ${SPACES}`,
+  `POST ${SPACES}/members/self`,
+  `PUT ${SPACES}/members/:userId`,
+  `PUT ${SPACES}/mappings/:groupId`,
+  "PUT /api/v1/directory/org-mappings/:groupId",
+  "GET /api/v1/directory/connect",
+  "POST /api/v1/directory/confirm",
+  // Sync now, a held group's confirm or snooze, a restricted group: directory
+  // sync is a team feature (the cron feed is skipped too: cron.ts). Cancelling
+  // a snooze is a removal, so it isn't listed.
+  "POST /api/v1/directory/sync",
+  "POST /api/v1/directory/held/:groupId/confirm",
+  "POST /api/v1/directory/held/:groupId/snooze",
+  "PUT /api/v1/directory/restricted-groups/:groupId",
+]);
 
 /** Content host routes: the handlers verify signed tokens or public visibility. */
 export const CONTENT_POLICY: Readonly<Record<string, Policy>> = {

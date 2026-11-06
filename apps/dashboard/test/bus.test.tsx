@@ -9,6 +9,7 @@ import { ApiClientError } from "../src/api/client";
 import { BUS_POLL_MS, qk } from "../src/api/queries";
 import { canUseBus } from "../src/bus/access";
 import { dayTime, shortDate } from "../src/bus/format";
+import { linkError, linkedTo } from "../src/bus/Links";
 import {
   liveOn,
   machineStatus,
@@ -265,7 +266,12 @@ describe("gate: nothing unless canConnect and busOn (capped: revoke-only Machine
       ({ canConnect: _c, busOn: _b, ...m }) => m,
     ],
   ];
-  for (const path of ["/agents", "/agents/roles", "/settings/machines"])
+  for (const path of [
+    "/agents",
+    "/agents/roles",
+    "/agents/namespaces",
+    "/settings/machines",
+  ])
     it(`a guest: ${path} is Not found and asks nothing of the bus`, async () => {
       withBus(guest);
       const seen = calls("GET");
@@ -278,7 +284,7 @@ describe("gate: nothing unless canConnect and busOn (capped: revoke-only Machine
       expect(seen.filter((c) => c.path.startsWith("/api/v1/bus/"))).toEqual([]);
     });
 
-  for (const path of ["/agents", "/agents/roles"])
+  for (const path of ["/agents", "/agents/roles", "/agents/namespaces"])
     it(`a capped member: ${path} is Not found and asks nothing of the bus`, async () => {
       withBus(capped);
       const seen = calls("GET");
@@ -312,7 +318,12 @@ describe("gate: nothing unless canConnect and busOn (capped: revoke-only Machine
   });
 
   for (const [name, me] of denied) {
-    for (const path of ["/agents", "/agents/roles", "/settings/machines"])
+    for (const path of [
+      "/agents",
+      "/agents/roles",
+      "/agents/namespaces",
+      "/settings/machines",
+    ])
       it(`${name}: ${path} is Not found and asks nothing of the bus`, async () => {
         if (me) withBus(me);
         const seen = calls("GET");
@@ -890,6 +901,217 @@ describe("Agents › Namespaces", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/Give this folder its own name/)).toBeNull();
     expect(screen.queryByText(/listed under Everywhere/)).toBeNull();
+  });
+});
+
+describe("Agents › Namespaces › Links (#1567)", () => {
+  const OB = "github.com/open-artifacts-ai/open-bus";
+  const JOBS = "github.com/leourbina/jobs-paris";
+  const refuse = (status: number, code: string, details?: unknown) =>
+    HttpResponse.json({ error: { code, message: "x", details } }, { status });
+
+  it("lists links as pairs, both names shown", async () => {
+    withBus();
+    mount("/agents/namespaces");
+    const l = await screen.findByRole("list", { name: "Links" });
+    await waitFor(() => expect(l).toHaveTextContent("open-artifacts"));
+    expect(l).toHaveTextContent("open-artifacts ↔ open-bus");
+    expect(within(l).getAllByRole("listitem")).toHaveLength(1);
+  });
+
+  it("says so when there are no links", async () => {
+    withBus();
+    server.use(
+      http.get(`*${R.busLinks}`, () =>
+        HttpResponse.json({ links: [], live: true }),
+      ),
+    );
+    mount("/agents/namespaces");
+    expect(await screen.findByText(/No links yet/)).toBeInTheDocument();
+  });
+
+  it("links never chain in the display: A-B and B-C do not list A with C", async () => {
+    withBus();
+    server.use(
+      http.get(`*${R.busLinks}`, () =>
+        HttpResponse.json({
+          links: [
+            { id: "L1", a: JOBS, b: OA, createdAt: "2026-01-01T00:00:00.000Z" },
+            { id: "L2", a: OA, b: OB, createdAt: "2026-01-01T00:00:00.000Z" },
+          ],
+          live: true,
+        }),
+      ),
+    );
+    mount("/agents/namespaces");
+    const l = await screen.findByRole("list", { name: "Links" });
+    await waitFor(() =>
+      expect(within(l).getAllByRole("listitem")).toHaveLength(2),
+    );
+    expect(l).not.toHaveTextContent("jobs-paris ↔ open-bus");
+    expect(
+      linkedTo(
+        [
+          { id: "L1", a: JOBS, b: OA, createdAt: "" },
+          { id: "L2", a: OA, b: OB, createdAt: "" },
+        ],
+        JOBS,
+      ),
+    ).toEqual([OA]);
+  });
+
+  it("a namespace's page names who it is linked with", async () => {
+    withBus();
+    mount(`/agents/namespaces?ns=${encodeURIComponent(OA)}`);
+    expect(await screen.findByText(/Linked with/)).toHaveTextContent(
+      "Linked with open-bus.",
+    );
+  });
+
+  it("Link namespaces PUTs the two picked and lists the new link", async () => {
+    withBus();
+    const sent = calls("PUT");
+    mount("/agents/namespaces");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Link namespaces" }),
+    );
+    const d = await screen.findByRole("dialog", {
+      name: "Link two namespaces",
+    });
+    const link = within(d).getByRole("button", { name: "Link" });
+    expect(link).toBeDisabled();
+    fireEvent.click(
+      within(d).getByRole("combobox", { name: "First namespace" }),
+    );
+    fireEvent.click(await screen.findByRole("option", { name: "jobs-paris" }));
+    fireEvent.click(
+      within(d).getByRole("combobox", { name: "Second namespace" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("option", { name: "open-artifacts" }),
+    );
+    fireEvent.click(link);
+    await waitFor(() =>
+      expect(sent.map((c) => c.body)).toEqual([{ a: JOBS, b: OA }]),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    const l = screen.getByRole("list", { name: "Links" });
+    await waitFor(() =>
+      expect(within(l).getAllByRole("listitem")).toHaveLength(2),
+    );
+  });
+
+  it("an already linked pair cannot be linked again", async () => {
+    withBus();
+    mount("/agents/namespaces");
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Link namespaces" }),
+    );
+    const d = await screen.findByRole("dialog");
+    fireEvent.click(
+      within(d).getByRole("combobox", { name: "First namespace" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("option", { name: "open-artifacts" }),
+    );
+    fireEvent.click(
+      within(d).getByRole("combobox", { name: "Second namespace" }),
+    );
+    fireEvent.click(await screen.findByRole("option", { name: "open-bus" }));
+    expect(within(d).getByText("They are already linked.")).toBeInTheDocument();
+    expect(within(d).getByRole("button", { name: "Link" })).toBeDisabled();
+  });
+
+  it("Remove confirms, then DELETEs that link", async () => {
+    withBus();
+    const sent = calls("DELETE");
+    mount("/agents/namespaces");
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "Remove the link between open-artifacts and open-bus",
+      }),
+    );
+    const d = await screen.findByRole("alertdialog");
+    fireEvent.click(within(d).getByRole("button", { name: "Remove" }));
+    const id = fixtures.busLinks[0]?.id as string;
+    await waitFor(() =>
+      expect(sent.map((c) => c.path)).toEqual([R.busLink(id)]),
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/No links yet/)).toBeInTheDocument(),
+    );
+  });
+
+  it.each([
+    ["link_limit", /most links allowed/],
+    ["no_bus", /Connect a machine first/],
+  ])(
+    "a refused PUT (%s) shows its line and keeps the dialog open",
+    async (reason, line) => {
+      withBus();
+      server.use(
+        http.put(`*${R.busLinks}`, () => refuse(409, "conflict", { reason })),
+      );
+      mount("/agents/namespaces");
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Link namespaces" }),
+      );
+      const d = await screen.findByRole("dialog");
+      fireEvent.click(
+        within(d).getByRole("combobox", { name: "First namespace" }),
+      );
+      fireEvent.click(
+        await screen.findByRole("option", { name: "jobs-paris" }),
+      );
+      fireEvent.click(
+        within(d).getByRole("combobox", { name: "Second namespace" }),
+      );
+      fireEvent.click(
+        await screen.findByRole("option", { name: "open-artifacts" }),
+      );
+      fireEvent.click(within(d).getByRole("button", { name: "Link" }));
+      expect(await within(d).findByRole("alert")).toHaveTextContent(line);
+    },
+  );
+
+  it("linkError: bad_request, unknown reason, non-API errors", () => {
+    const bad = (field: string) => {
+      const e = new ApiClientError("bad_request", "x", 400);
+      e.details = { field };
+      return e;
+    };
+    expect(linkError(bad("namespaces"))).toBe("Pick two different namespaces.");
+    expect(linkError(bad("a"))).toBe("The first namespace isn't valid.");
+    expect(linkError(bad("b"))).toBe("The second namespace isn't valid.");
+    expect(linkError(new Error("boom"))).toBe("That didn't save. Try again.");
+  });
+
+  it("fewer than two namespaces: Link is disabled with a hint", async () => {
+    withBus();
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({ agents: [agentNamed("oa-manager")], live: true }),
+      ),
+      http.get(`*${R.busLinks}`, () =>
+        HttpResponse.json({ links: [], live: true }),
+      ),
+    );
+    mount("/agents/namespaces");
+    expect(
+      await screen.findByRole("button", { name: "Link namespaces" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText(/Linking needs two namespaces/),
+    ).toBeInTheDocument();
+  });
+
+  it("the links failing to load shows Retry, not a blank card", async () => {
+    withBus();
+    server.use(http.get(`*${R.busLinks}`, () => refuse(500, "internal")));
+    mount("/agents/namespaces");
+    expect(
+      await screen.findByText("Couldn't load your links."),
+    ).toBeInTheDocument();
   });
 });
 

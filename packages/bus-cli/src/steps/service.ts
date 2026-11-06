@@ -498,6 +498,30 @@ export function systemService(d: ServiceDeps): Service {
       return { unit: manager };
     },
 
+    async checkNode() {
+      // The node the installed service pins, which may have broken since install
+      // (brew upgrade of icu4c). Intl needs ICU: a node missing it dies here.
+      if (!installed()) return undefined;
+      const node = record().node;
+      if (typeof node !== "string") return undefined;
+      const probe =
+        "new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York'}).format(new Date())";
+      try {
+        const r = await d.exec(node, ["-e", probe]);
+        if (r.code === 0) return undefined;
+        return {
+          node,
+          reason:
+            r.stderr.trim().split("\n")[0]?.slice(0, 160) || `exit ${r.code}`,
+        };
+      } catch (e) {
+        return {
+          node,
+          reason: e instanceof Error ? e.message.slice(0, 160) : String(e),
+        };
+      }
+    },
+
     cli() {
       const argv = [d.execPath, installCli(home(), d.source())];
       // The harness entries run this argv, with or without a service

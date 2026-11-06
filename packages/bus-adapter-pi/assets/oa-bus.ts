@@ -81,7 +81,7 @@ const SELF_TIMEOUT_MS = 2_000;
 // --- Copy: design/cli/transcript.md and @oa/bus-ipc copy.ts, verbatim (a test holds them equal).
 
 const MAX_COLS = 80;
-const HOUR = "1 hour";
+const RETAIN = "7 days";
 
 /**
  * Cuts `value` in the middle, keeping its end, so no line of `text(value)`
@@ -106,15 +106,25 @@ const refusals: Record<
 > = {
   unknown_agent: [
     "No agent has that name here.",
-    "Run list_agents to see who is in this namespace.",
+    "Run the oa_bus list_agents tool to see who is in this namespace.",
   ],
   closed: [
     null,
     "Send it again once the session is open, or message another agent.",
   ],
   inbox_full: [
-    `50 messages are already waiting.`,
+    `200 messages are already waiting.`,
     "Send again once some are delivered or expire.",
+  ],
+  // #1295: the cap sockets' inbox_full (pending count, bytes or the hub total).
+  mailbox_full: [
+    "Its mailbox is full.",
+    "Send again once it has read some, or message another agent.",
+  ],
+  // #1295: a name only held after a move; no one reads it.
+  reserved_name: [
+    "No one has that name now; it was left by an agent that moved.",
+    "Run the oa_bus list_agents tool to find who has it now.",
   ],
   too_large: [
     "It is too large to send (the limit is 1 MB).",
@@ -124,9 +134,10 @@ const refusals: Record<
     "You can reach only agents in your namespace and global agents.",
     "Message an agent in this namespace, or a global agent.",
   ],
+  // #1448: the sender cannot reinstall someone else's machine; no install hint.
   revoked: [
     "That agent's machine was revoked.",
-    "Message another agent, or run npx @open-artifacts/bus install there.",
+    "Run the oa_bus list_agents tool to find who is live.",
   ],
   ambiguous: [
     (n) =>
@@ -136,7 +147,7 @@ const refusals: Record<
   // A reply's agent (to_id) no longer holds the name it wrote from.
   agent_gone: [
     "The agent you are answering is gone; another may hold its name now.",
-    "Run list_agents and message the agent you mean by name.",
+    "Run the oa_bus list_agents tool and message the agent you mean by name.",
   ],
 };
 
@@ -166,13 +177,16 @@ function receiptText(
   sentTo: string,
   namespaces?: number,
   excerpt?: string,
+  movedTo?: string,
+  linkedNs?: string,
 ): string {
   const quote = excerpt ? `"${excerpt}"` : undefined;
   const to = sentTo;
   switch (r.state) {
     case "pending":
       return fitLine(
-        (v) => `○  Queued for ${v}. Not delivered yet; expires in ${HOUR}.`,
+        (v) =>
+          `○  Queued for ${v}. Not delivered yet; expires within ${RETAIN}.`,
         to,
       );
     case "delivered":
@@ -181,7 +195,7 @@ function receiptText(
       const tail = (v: string) =>
         r.reason === "recipient_closed"
           ? `was not delivered because ${v} closed first.`
-          : `was not taken within ${HOUR}.`;
+          : `was not taken within ${RETAIN}.`;
       const head = (v: string) => `×  Expired: your message to ${v}`;
       if (!quote) return fitLine((v) => `${head(v)} ${tail(v)}`, to);
       return fitLine((v) => quoted(head(v), quote, tail(v)), to);
@@ -189,9 +203,16 @@ function receiptText(
     default: {
       const copy = r.reason ? refusals[r.reason] : undefined;
       const label = r.reason ? `Refused (${r.reason})` : "Refused";
-      const [detail, hint] = copy ?? [null, "Message another agent."];
+      const moved = r.reason === "revoked" ? movedTo : undefined;
+      const [detail, hint] = moved
+        ? [null, null]
+        : (copy ?? [null, "Message another agent."]);
       const said = (v: string) =>
-        typeof detail === "function" ? detail(namespaces, v) : detail;
+        moved
+          ? `${v} moved; try ${moved}.`
+          : typeof detail === "function"
+            ? detail(namespaces, v)
+            : detail;
       const lines = (v: string) =>
         [
           quote
@@ -202,11 +223,63 @@ function receiptText(
               )
             : `×  ${label}: your message to ${v} was not delivered.`,
           ...(said(v) ? [`   ${said(v)}`] : []),
-          `   ${hint}`,
+          ...(hint ? [`   ${hint}`] : []),
+          ...(linkedNs !== undefined &&
+          (r.reason === "closed" || r.reason === "revoked")
+            ? [
+                "   A linked project has a live agent with that name:",
+                `   pass to_namespace ${linkedNs} to reach the live one.`,
+              ]
+            : []),
         ].join("\n");
       return fitLine(lines, to);
     }
   }
+}
+
+/** @oa/bus-ipc linkedLiveNamespace (#1567): the one namespace with a live agent called `name`. */
+function linkedLiveNamespace(
+  name: string,
+  roster: readonly {
+    name: string;
+    namespace: string;
+    live?: boolean;
+    state?: string;
+  }[],
+): string | undefined {
+  const l = name.toLowerCase();
+  const seen = new Set(
+    roster
+      .filter(
+        (a) =>
+          a.name.toLowerCase() === l &&
+          (a.state ?? (a.live ? "live" : "queued")) === "live",
+      )
+      .map((a) => a.namespace),
+  );
+  return seen.size === 1 ? [...seen][0] : undefined;
+}
+
+/**
+ * #1448: for a send refused `revoked`, the live name `to` most likely moved
+ * to: `<to>-N` among `names` (the sender's roster), the lowest N, ignoring
+ * case; undefined when none.
+ */
+function movedName(to: string, names: readonly string[]): string | undefined {
+  const base = `${to.toLowerCase()}-`;
+  let best: string | undefined;
+  let bestN = Number.POSITIVE_INFINITY;
+  for (const name of names) {
+    const l = name.toLowerCase();
+    if (!l.startsWith(base)) continue;
+    const tail = l.slice(base.length);
+    if (!/^[0-9]+$/.test(tail)) continue;
+    if (Number(tail) < bestN) {
+      bestN = Number(tail);
+      best = name;
+    }
+  }
+  return best;
 }
 
 const TERMINAL_CONTROLS = new RegExp(
@@ -384,6 +457,14 @@ function statusSaysText(
   ].join(" · ");
 }
 
+/** "2026-11-05 10:00 UTC" from an ISO time; unreadable times are shown as sent. */
+const awayTime = (iso: string): string => {
+  const t = Date.parse(iso);
+  return Number.isNaN(t)
+    ? iso
+    : `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+};
+
 /** @oa/bus-ipc rosterLine: one list_agents line. */
 function rosterLine(
   a: StatusFields & {
@@ -392,11 +473,13 @@ function rosterLine(
     namespace: string;
     machine_label?: unknown;
     queued: boolean;
+    /** #1295: ISO time the agent went away; it is closed, its mailbox kept. */
+    away?: string | undefined;
   },
   now = Date.now(),
 ): string {
   const says = statusSaysText(a, now);
-  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
 }
 
 /** @oa/bus-ipc selfText: the agent entry, its status cleaned. */
@@ -435,6 +518,8 @@ export const copy = {
   rosterLine,
   selfText,
   receiptText,
+  movedName,
+  linkedLiveNamespace,
   excerptOf,
   stripTerminalControls,
   neutralizeBody,
@@ -443,19 +528,23 @@ export const copy = {
   oversizedText,
 };
 
-// --- Tools: the MCP tools' names, descriptions and JSON Schemas.
+// --- Tools: the MCP tools' descriptions and JSON Schemas. Names carry an
+// `oabus_` prefix: Pi and omp refuse to start when two extensions register one
+// name, and the OpenBus extension registers the bare ones. Not `oa_bus_`: their
+// fallback MCP client names an imported tool `<server>_<tool>`, so the oa_bus
+// server's tools would arrive as `oa_bus_*` and clash silently (#1448).
 
 const none = { type: "object", properties: {}, additionalProperties: false };
 const TOOLS = [
   {
-    name: "list_agents",
+    name: "oabus_list_agents",
     label: "Open Artifacts bus: list agents",
     description:
-      "List the agents you can message, in your Open Artifacts bus namespace.",
+      "List the agents you can message, in your Open Artifacts bus namespace and linked ones.",
     parameters: none,
   },
   {
-    name: "send_message",
+    name: "oabus_send_message",
     label: "Open Artifacts bus: send message",
     description: "Send a message to another agent by name.",
     parameters: {
@@ -466,7 +555,7 @@ const TOOLS = [
         to_namespace: {
           type: "string",
           description:
-            "The recipient's namespace, when a global agent's target name exists in several.",
+            "The recipient's namespace, when the target name exists in several: a global agent's, or a linked project's.",
         },
       },
       required: ["to", "text"],
@@ -474,7 +563,7 @@ const TOOLS = [
     },
   },
   {
-    name: "fetch",
+    name: "oabus_fetch",
     label: "Open Artifacts bus: fetch message",
     description: "Fetch the full body of an oversized message by id.",
     parameters: {
@@ -485,14 +574,14 @@ const TOOLS = [
     },
   },
   {
-    name: "self",
+    name: "oabus_self",
     label: "Open Artifacts bus: who am I",
     description:
       "Your own Open Artifacts bus agent entry and bus name. To become global, ask the user to approve running `npx @open-artifacts/bus global add <your start dir>`, then restart.",
     parameters: none,
   },
   {
-    name: "set_status",
+    name: "oabus_set_status",
     label: "Open Artifacts bus: set status",
     description:
       "Tell the user what you are doing: working, idle, blocked, or waiting_on_owner (waiting on the user), with an optional short label. The user sees it labelled as your own report.",
@@ -801,6 +890,9 @@ function open(
         pid: process.pid,
         cwd: id.cwd,
         proposed_name: id.name,
+        // #1295: this asset decodes away rows and the new refusals.
+        // #1525: and a config file that is pending approval.
+        caps: ["mailbox", "pending"],
         attest: start ? { proc_start: start } : {},
       }),
     );
@@ -979,7 +1071,7 @@ export default function oaBus(pi: Pi): void {
 
   /** The sender is the session's attested link; a `from` argument is never read. */
   const run = async (name: string, args: Json, link: Link): Promise<string> => {
-    if (name === "list_agents") {
+    if (name === "oabus_list_agents") {
       const r = await link.request({ type: "list" });
       if (r.type !== "roster") failed(r);
       const agents = (r.agents ?? []) as Json[];
@@ -995,14 +1087,15 @@ export default function oaBus(pi: Pi): void {
                   namespace: String(a.namespace),
                   queued:
                     (a.state ?? (a.live ? "live" : "queued")) === "queued",
+                  away: a.state === "away" ? String(a.since ?? "") : undefined,
                 },
                 now,
               ),
             )
             .join("\n")
-        : "No agents in your namespace.";
+        : "No agents in your namespace and linked ones.";
     }
-    if (name === "send_message") {
+    if (name === "oabus_send_message") {
       const to = String(args.to ?? "");
       const body = String(args.text ?? "");
       if (!to || !body) throw new Error("oa-bus: to and text are required");
@@ -1027,12 +1120,21 @@ export default function oaBus(pi: Pi): void {
         receipt.reason === "ambiguous"
           ? await namespacesOf(to, link)
           : undefined;
-      const out = receiptText(receipt, to, n, excerptOf(body));
+      const moved =
+        receipt.reason === "revoked"
+          ? await movedTo(to, namespace, link)
+          : undefined;
+      const linked =
+        (receipt.reason === "closed" || receipt.reason === "revoked") &&
+        !namespace
+          ? await linkedLive(to, link)
+          : undefined;
+      const out = receiptText(receipt, to, n, excerptOf(body), moved, linked);
       if (receipt.state === "refused" || receipt.state === "expired")
         throw new Error(out);
       return out;
     }
-    if (name === "fetch") {
+    if (name === "oabus_fetch") {
       const r = await link.request({
         type: "fetch",
         msg_id: String(args.msg_id ?? ""),
@@ -1041,7 +1143,7 @@ export default function oaBus(pi: Pi): void {
       // A peer's text, like a delivered body; the daemon strips it too.
       return stripTerminalControls(String(r.body));
     }
-    if (name === "set_status") return statusTool(args, link);
+    if (name === "oabus_set_status") return statusTool(args, link);
     const r = await link.request({ type: "self", row: true });
     if (r.type !== "agent") failed(r);
     return selfText((r.agent ?? null) as Json | null);
@@ -1119,6 +1221,50 @@ export default function oaBus(pi: Pi): void {
         }
       },
     });
+}
+
+/**
+ * #1448: the live `<name>-N` a revoked name moved to, in `namespace` when the
+ * send named one; undefined when none or the roster is unavailable.
+ */
+async function movedTo(
+  name: string,
+  namespace: string | undefined,
+  link: Link,
+): Promise<string | undefined> {
+  try {
+    const r = await link.request({ type: "list" });
+    if (r.type !== "roster") return undefined;
+    const agents = (r.agents ?? []) as Json[];
+    return movedName(
+      name,
+      agents
+        .filter((a) => namespace === undefined || a.namespace === namespace)
+        .map((a) => String(a.name)),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** #1567: the linked namespace with a live agent called `name`; undefined when none or the roster is unavailable. */
+async function linkedLive(
+  name: string,
+  link: Link,
+): Promise<string | undefined> {
+  try {
+    const r = await link.request({ type: "list" });
+    if (r.type !== "roster") return undefined;
+    const agents = ((r.agents ?? []) as Json[]).map((a) => ({
+      name: String(a.name),
+      namespace: String(a.namespace),
+      ...(typeof a.live === "boolean" ? { live: a.live } : {}),
+      ...(typeof a.state === "string" ? { state: a.state } : {}),
+    }));
+    return linkedLiveNamespace(name, agents);
+  } catch {
+    return undefined;
+  }
 }
 
 /** How many namespaces hold `name`; undefined when the roster is unavailable. */

@@ -100,6 +100,9 @@ const REGISTRY: Readonly<Record<string, Guard>> = {
   // P2.5 #5: the reconcile's full restricted_sync recompute caps whoever a
   // restricted group now holds.
   "directory/sync.ts:SyncEngine.recomputeRestricted": "user",
+  // Hosted billing: a tier answer that locks the instance (free or
+  // read-only) caps everyone but the org owner: their sockets close.
+  "billing/store.ts:storePlan": "user",
   // P3 T17 (test builds only): the session hook may lower the user's manual
   // space row.
   "test-hooks/index.ts:grantSpaces": "user",
@@ -143,6 +146,11 @@ const WIDENS: Readonly<Record<string, string>> = {
     "a role proposal's status, not access",
   "bus/role-proposals.ts:decideProposal":
     "a role proposal's status, not access",
+  // #1567: a link proposal's own status column in the BusHub, likewise.
+  "bus/link-proposals.ts:expireLinkProposals":
+    "a link proposal's status, not access",
+  "bus/link-proposals.ts:decideLinkProposal":
+    "a link proposal's status, not access",
 };
 
 /** Exempt from the scan: the primitives themselves. */
@@ -222,6 +230,8 @@ const SHRINK: readonly RegExp[] = [
   /\binto restricted_groups\b/i,
   // P3 T18: the customer_mismatch state denies every synced user.
   /\bstate: "customer_mismatch"/,
+  // Hosted billing: the cached tier; a lock caps everyone but the owner.
+  /\bSTORE_PLAN\b|'billing\.plan'/,
   DATA_WRITERS_WRITE,
 ];
 const CALLS: Record<Guard, RegExp> = {

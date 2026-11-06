@@ -142,8 +142,9 @@ create index if not exists send_keys_due on send_keys(created_at);
 -- name's kind: 'chosen' rows are reserved (nameTaken, putRole), 'default'
 -- rows only resolve (their minted_names row keeps the name from anyone
 -- else). OpenBus #451: 'held' rows are names an agent left a scope under (a
--- close, revoke, offline reap, namespace move or global flip): reserved
--- there, never resolving, never on the roster. A close keeps the chosen rows
+-- close, offline reap, namespace move or global flip): reserved there,
+-- never resolving, never on the roster. #1448: a revoke deletes the rows
+-- of the machine's agents that still reserve, so their names are free. A close keeps the chosen rows
 -- (reserved, resolving to no one until a reopen in their scope) and drops
 -- the default ones; expired rows are purged by the alarm. Never equal
 -- (case-insensitively) to the agent's current name in its scope, distinct
@@ -247,6 +248,42 @@ create table if not exists role_proposals (
 create index if not exists role_proposals_created on role_proposals(org_id, created_at);
 create index if not exists role_proposals_pending on role_proposals(expires_at)
   where status = 'pending';
+
+-- #1567 grants: what the member allowed between namespaces. kind 'link': the
+-- namespaces ns_a and ns_b (sorted, ns_a < ns_b) see each other's agents and
+-- may message each other, directly only (bus/links.ts). kind is open for
+-- #1346 (role_reach). A new table: create-if-not-exists adds it; wipe()
+-- deletes it.
+create table if not exists grants (
+  id text primary key,
+  org_id text not null,
+  kind text not null,
+  ns_a text not null,
+  ns_b text not null,
+  created_at integer not null,
+  unique (org_id, kind, ns_a, ns_b)
+);
+create index if not exists grants_b on grants(org_id, kind, ns_b);
+
+-- #1567 link proposals: a link or unlink a machine's CLI proposed for the
+-- member (bus/link-proposals.ts), decided once on its one-time confirm link.
+-- Only the secret's sha256 is kept. A new table: create-if-not-exists adds
+-- it; wipe() deletes it.
+create table if not exists link_proposals (
+  id text primary key,
+  org_id text not null,
+  token_hash text not null unique,
+  action text not null,
+  ns_a text not null,
+  ns_b text not null,
+  machine_id text not null,
+  created_at integer not null,
+  expires_at integer not null,
+  status text not null default 'pending',
+  reason text,
+  decided_at integer
+);
+create index if not exists link_proposals_machine on link_proposals(org_id, machine_id, created_at);
 
 create table if not exists meta (
   org_id text not null,
@@ -382,6 +419,12 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   );
   if (!machineCols.has("disconnected_at"))
     sql.exec("alter table machines add column disconnected_at integer");
+  // #1295: when the agent's session closed into `away` (epoch ms; a reaped
+  // agent uses its machine's disconnected_at), null while open or after a
+  // revoke. Its pending mail expires at away_since + MAILBOX_RETAIN_MS at
+  // the latest. Add-only.
+  if (!agentCols.has("away_since"))
+    sql.exec("alter table agents add column away_since integer");
   // B14: send_keys.final (1 once the key's receipt left pending), set
   // wherever a receipt is finalized (settle, #expire). Backfilled from
   // receipts in the step that adds it (a missing receipt counts as final).

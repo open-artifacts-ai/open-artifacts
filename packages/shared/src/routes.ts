@@ -110,6 +110,26 @@ export const R = {
   busRoles: "/api/v1/bus/roles",
   /** DELETE -> 204: removes the caller's role (idempotent: unknown is 204 too). Same rules as PUT R.busRoles. */
   busRole: (id: string) => `/api/v1/bus/roles/${seg(id)}`,
+  /**
+   * GET -> BusLinks: the member's links between namespaces (#1567). PUT
+   * BusLinkPut -> { link: BusLink }: links two namespaces (idempotent: an
+   * existing link is returned); 400 bad_request (invalid or equal
+   * namespaces), 409 conflict with details `{ reason }`: `link_limit`
+   * (BUS_LINK_MAX) or `no_bus` (no machine has connected yet). mcp.connect;
+   * PUT and DELETE take an interactive cookie session (a PAT, OAuth grant or
+   * machine token gets 404), so no AI agent can link namespaces.
+   */
+  busLinks: "/api/v1/bus/links",
+  /**
+   * POST BusLinkPropose -> BusLinkProposed (#1567): the CLI's `oa-bus link`.
+   * Authenticated by a bus machine token only (never a session, PAT or OAuth
+   * grant). It records a proposal and links nothing: the member confirms on
+   * the returned one-time URL, in a browser. 409 { reason: rate_limited |
+   * proposal_limit | no_bus }.
+   */
+  busLinkProposals: "/api/v1/bus/links/proposals",
+  /** DELETE -> 204: removes the caller's link (idempotent: unknown is 204 too). Same rules as PUT R.busLinks. */
+  busLink: (id: string) => `/api/v1/bus/links/${seg(id)}`,
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
   /**
@@ -120,6 +140,12 @@ export const R = {
    * limit 1000). Each is omitted when unavailable.
    */
   usage: "/api/v1/usage",
+  /** Hosted billing. POST BillingCheckoutInput -> BillingUrl (the Stripe Checkout page). Org owner or admin in an interactive cookie session only (a PAT, OAuth grant or MCP agent is 404; else 404); 404 off hosted; 503 billing_unavailable. */
+  billingCheckout: "/api/v1/billing/checkout",
+  /** POST {} -> BillingUrl (the Stripe Customer Portal). Same rules as billingCheckout. */
+  billingPortal: "/api/v1/billing/portal",
+  /** POST {} -> BillingUsage: this month's creator count, sent to billing now. Same rules as billingCheckout. */
+  billingUsage: "/api/v1/billing/usage",
   /** GET -> Page<DataDoc> */
   dataCollection: (id: string, col: string) =>
     `${A}/${seg(id)}/data/${seg(col)}`,
@@ -158,6 +184,17 @@ export const R = {
    * (or X-OA-Embed: 1) connects anonymously. `gone` is followed by close 4403.
    */
   events: (id: string) => `${A}/${seg(id)}/events`,
+  /** GET ?status=open|resolved|all (default all) -> CommentList; POST NewThreadBody -> 201 CommentThread (#682). */
+  comments: (id: string) => `${A}/${seg(id)}/comments`,
+  /** PATCH { status } -> CommentThread. */
+  commentThread: (id: string, thread: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}`,
+  /** POST ReplyBody -> 201 Comment (does not reopen). */
+  commentReplies: (id: string, thread: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/replies`,
+  /** PATCH { body } -> Comment; DELETE -> 204 (the root's deletes the thread). */
+  comment: (id: string, thread: string, comment: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}`,
   /** GET Upgrade: websocket; frames are DataChange */
   dataSubscribe: (id: string, col: string) =>
     `${A}/${seg(id)}/data-subscribe?collection=${seg(col)}`,

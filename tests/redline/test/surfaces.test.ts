@@ -192,7 +192,7 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     }
   });
 
-  it("deny-only: the seven real-only drops and the four interactive-only ones, each still a recorded drop", () => {
+  it("deny-only: the real-only drops and the interactive-only ones, each still a recorded drop", () => {
     const only = cases.filter((c) => c.denyOnly);
     expect(only.map((c) => c.name).sort()).toEqual(
       Object.entries(DROPPED)
@@ -202,7 +202,9 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         .map(([n]) => `${n} [session]`)
         .sort(),
     );
-    expect(only).toHaveLength(11);
+    // Seven real-only and six interactive-only on main, three hosted-only
+    // billing writes (interactive-only: browser sessions).
+    expect(only).toHaveLength(16);
     for (const c of only) expect(c.run).toBeDefined();
   });
 
@@ -249,6 +251,8 @@ describe("probe cases (derived from Backend's surfaces)", () => {
       "POST /bus/share-notices",
       "GET /bus/roles/confirm/:token",
       "POST /bus/roles/confirm/:token",
+      "GET /bus/links/confirm/:token",
+      "POST /bus/links/confirm/:token",
     ]);
   });
 
@@ -308,9 +312,9 @@ describe("probe cases (derived from Backend's surfaces)", () => {
         .filter((c) => !c.denyOnly)
         .map((c) => [c.name, c.variant]),
     ).toEqual([[SMOKES.oauth, "oauth"]]);
-    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(11);
+    expect(by("atB").filter((c) => c.denyOnly)).toHaveLength(16);
     // Every other case: B at B only, its kind a matrix foreign caller.
-    expect(by("own")).toHaveLength(cases.length - 2 - 12);
+    expect(by("own")).toHaveLength(cases.length - 2 - 17);
     for (const c of by("own"))
       expect(FOREIGN_CALLERS).toContain(FOREIGN_OF[c.variant]);
   });

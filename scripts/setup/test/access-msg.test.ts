@@ -30,7 +30,7 @@ describe("#3: the Access token reaches setup without a shared shell", () => {
     expect(m).not.toMatch(
       /export OA_ACCESS_TOKEN|read -rs OA_ACCESS_TOKEN|in the shell that launches/,
     );
-    expect(m).toContain("pnpm -s oa:setup --token-links --json");
+    expect(m).toContain("pnpm --reporter=silent oa:setup --token-links --json");
     expect(m).toContain("saveCommand");
     expect(m).toMatch(/then rerun/);
   });
@@ -51,7 +51,7 @@ describe("#4: a fresh install does not offer OA_TEAM_DOMAIN", () => {
     const l = line(w, "access");
     expect(l.status).toBe("action_required");
     expect(l.message).toBe(
-      `A fresh install needs a Cloudflare Access token (Access: Apps and Policies: Edit, Access: Organizations: Read). Create it at ${l.data.url}, save it with the line from \`pnpm -s oa:setup --token-links --json\` (saveCommand), then rerun.`,
+      `A fresh install needs a Cloudflare Access token (Access: Apps and Policies: Edit, Access: Organizations: Read). Create it at ${l.data.url}, save it with the line from \`pnpm --reporter=silent oa:setup --token-links --json\` (saveCommand), then rerun.`,
     );
     expect(l.message).not.toContain("OA_TEAM_DOMAIN");
   });

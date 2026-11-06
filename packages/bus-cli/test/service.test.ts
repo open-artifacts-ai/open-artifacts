@@ -171,7 +171,8 @@ describe("installCli", () => {
       encoding: "utf8",
     });
     expect(out).toMatch(/^oa-bus \d+\.\d+\.\d+/);
-  });
+    // Measures jiti's cold transpile on a loaded runner, not the shim (#1478).
+  }, 30_000);
 });
 
 type Call = [string, string[]];

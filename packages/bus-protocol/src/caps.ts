@@ -27,6 +27,25 @@ export const BUS_CAPS = {
    * client sends `to_id` only when it did.
    */
   ids: "ids",
+  /**
+   * Lasting mailboxes (#1295): the client decodes a send receipt's `queued`
+   * and `since`, the `mailbox_full` and `reserved_name` refusals, and roster
+   * rows with `state: "away"` and `since`. The hub sends those only to a
+   * socket whose hello listed it, and lists it in `hello_ok.caps`; any other
+   * socket sees today's shapes (`inbox_full`, `unknown_agent`, no away rows).
+   * A client also lists it to have the hub hand an address over on `agent_up`
+   * `replaces` (a /clear).
+   */
+  mailbox: "mailbox",
+  /**
+   * Project links (#1567): the client understands roster rows and routing
+   * across the namespaces its member linked (each row carries its own
+   * `namespace`; a name in two linked namespaces is `ambiguous` until the
+   * send names `to_namespace`). The hub widens a socket's roster and routing
+   * only when its hello listed it, and lists it in `hello_ok.caps`; any other
+   * socket sees today's isolation.
+   */
+  links: "links",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

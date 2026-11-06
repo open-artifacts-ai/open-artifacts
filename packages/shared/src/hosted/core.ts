@@ -53,8 +53,13 @@ export const RestrictionSchema = z.object({
 });
 export type Restriction = z.infer<typeof RestrictionSchema>;
 
-/** Why a user's access is capped below their roles: guest, or restricted (manual flag or restricted group). */
-export const CapReasonSchema = z.enum(["guest", "restricted"]);
+/**
+ * Why a user's access is capped below their roles: guest, or restricted
+ * (manual flag or restricted group), or plan (hosted billing: a free or
+ * read-only instance, for everyone but the org owner; writes only, reads
+ * are kept; Me.instance.billing says why).
+ */
+export const CapReasonSchema = z.enum(["guest", "restricted", "plan"]);
 export type CapReason = z.infer<typeof CapReasonSchema>;
 
 /** Hosted billing tier (the UI's tier copy). Null when self-hosted. */
@@ -335,6 +340,8 @@ export const ArtifactCanSchema = z.object({
   move: z.boolean(),
   /** Live-data and storage writes, role-wise (the artifact still needs the capability). False for guests and restricted members, and for viewers when the artifact's dataWriters is "editors"; other viewers keep it. */
   dataWrite: z.boolean(),
+  /** #682: may comment (absent: the shell derives it from who is viewing). */
+  comment: z.boolean().optional(),
 });
 export type ArtifactCan = z.infer<typeof ArtifactCanSchema>;
 

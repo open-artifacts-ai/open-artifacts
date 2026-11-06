@@ -83,7 +83,7 @@ describe("status roster with status", () => {
       "2 agents in namespace ns  1 live · 1 queued",
       "  code-96             Claude Code  mbp                   ● live",
       "  b                   Claude Code  mbp                   ○ queued",
-      "Mail to a queued agent waits up to 1 hour for its machine to reconnect;",
+      "Mail to a queued agent waits up to 7 days for its machine to reconnect;",
       "then the sender is told.",
     ]);
   });

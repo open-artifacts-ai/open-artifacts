@@ -1,13 +1,16 @@
 import {
   BAD_NS_CHARS,
+  BUS_CMD,
   LIMITS,
+  MAILBOX_PENDING_CAP,
+  MAILBOX_RETAIN_MS,
   type ReceiptReason,
   type ReceiptState,
 } from "@oa/bus-protocol";
 
 /** One terminal line at most; the transcript's "cutting long values" rule. */
 const MAX_COLS = 80;
-const HOUR = `${LIMITS.mailTtlSec / 3600} hour`;
+const RETAIN = `${MAILBOX_RETAIN_MS / 86_400_000} days`;
 const MB = `${LIMITS.maxMessageBytes / (1024 * 1024)} MB`;
 
 /**
@@ -33,15 +36,25 @@ const refusals: Record<
 > = {
   unknown_agent: [
     "No agent has that name here.",
-    "Run list_agents to see who is in this namespace.",
+    "Run the oa_bus list_agents tool to see who is in this namespace.",
   ],
   closed: [
     null,
     "Send it again once the session is open, or message another agent.",
   ],
   inbox_full: [
-    `${LIMITS.inboxCap} messages are already waiting.`,
+    `${MAILBOX_PENDING_CAP} messages are already waiting.`,
     "Send again once some are delivered or expire.",
+  ],
+  // #1295: the cap sockets' inbox_full (pending count, bytes or the hub total).
+  mailbox_full: [
+    "Its mailbox is full.",
+    "Send again once it has read some, or message another agent.",
+  ],
+  // #1295: a name only held after a move; no one reads it.
+  reserved_name: [
+    "No one has that name now; it was left by an agent that moved.",
+    "Run the oa_bus list_agents tool to find who has it now.",
   ],
   too_large: [
     `It is too large to send (the limit is ${MB}).`,
@@ -51,9 +64,10 @@ const refusals: Record<
     "You can reach only agents in your namespace and global agents.",
     "Message an agent in this namespace, or a global agent.",
   ],
+  // #1448: the sender cannot reinstall someone else's machine; no install hint.
   revoked: [
     "That agent's machine was revoked.",
-    "Message another agent, or run npx @open-artifacts/bus install there.",
+    "Run the oa_bus list_agents tool to find who is live.",
   ],
   ambiguous: [
     (n) =>
@@ -63,7 +77,7 @@ const refusals: Record<
   // A reply's agent (to_id) no longer holds the name it wrote from.
   agent_gone: [
     "The agent you are answering is gone; another may hold its name now.",
-    "Run list_agents and message the agent you mean by name.",
+    "Run the oa_bus list_agents tool and message the agent you mean by name.",
   ],
 };
 
@@ -86,20 +100,26 @@ const quoted = (head: string, quote: string, tail: string): string => {
  * verbatim, uncoloured (the glyph carries the state). `namespaces` is how many
  * namespaces hold `to`, for `ambiguous`. `excerpt` (from `excerptOf`) is the
  * message an expired or refused notice is about; without it the quote is left
- * out.
+ * out. `movedTo` (from `movedName`, #1448) is the live agent a `revoked` name
+ * most likely moved to: the refusal then says to try it. `linkedNs` (from
+ * `linkedLiveNamespace`, #1567) is the linked namespace holding a live agent of
+ * that name: a `closed` or `revoked` refusal then says to pass `to_namespace`.
  */
 export function receiptText(
   r: { state: ReceiptState; reason?: ReceiptReason },
   sentTo: string,
   namespaces?: number,
   excerpt?: string,
+  movedTo?: string,
+  linkedNs?: string,
 ): string {
   const quote = excerpt ? `"${excerpt}"` : undefined;
   const to = sentTo;
   switch (r.state) {
     case "pending":
       return fitLine(
-        (v) => `○  Queued for ${v}. Not delivered yet; expires in ${HOUR}.`,
+        (v) =>
+          `○  Queued for ${v}. Not delivered yet; expires within ${RETAIN}.`,
         to,
       );
     case "delivered":
@@ -108,7 +128,7 @@ export function receiptText(
       const tail = (v: string) =>
         r.reason === "recipient_closed"
           ? `was not delivered because ${v} closed first.`
-          : `was not taken within ${HOUR}.`;
+          : `was not taken within ${RETAIN}.`;
       const head = (v: string) => `×  Expired: your message to ${v}`;
       if (!quote) return fitLine((v) => `${head(v)} ${tail(v)}`, to);
       return fitLine((v) => quoted(head(v), quote, tail(v)), to);
@@ -116,9 +136,16 @@ export function receiptText(
     case "refused": {
       const copy = r.reason ? refusals[r.reason] : undefined;
       const label = r.reason ? `Refused (${r.reason})` : "Refused";
-      const [detail, hint] = copy ?? [null, "Message another agent."];
+      const moved = r.reason === "revoked" ? movedTo : undefined;
+      const [detail, hint] = moved
+        ? [null, null]
+        : (copy ?? [null, "Message another agent."]);
       const said = (v: string) =>
-        typeof detail === "function" ? detail(namespaces, v) : detail;
+        moved
+          ? `${v} moved; try ${moved}.`
+          : typeof detail === "function"
+            ? detail(namespaces, v)
+            : detail;
       const lines = (v: string) =>
         [
           quote
@@ -129,11 +156,73 @@ export function receiptText(
               )
             : `×  ${label}: your message to ${v} was not delivered.`,
           ...(said(v) ? [`   ${said(v)}`] : []),
-          `   ${hint}`,
+          ...(hint ? [`   ${hint}`] : []),
+          ...(linkedNs !== undefined &&
+          (r.reason === "closed" || r.reason === "revoked")
+            ? [
+                "   A linked project has a live agent with that name:",
+                `   pass to_namespace ${linkedNs} to reach the live one.`,
+              ]
+            : []),
         ].join("\n");
       return fitLine(lines, to);
     }
   }
+}
+
+/**
+ * #1448: for a send refused `revoked`, the live name `to` most likely moved
+ * to: `<to>-N` among `names` (the sender's roster), the lowest N, ignoring
+ * case; undefined when none.
+ */
+export function movedName(
+  to: string,
+  names: readonly string[],
+): string | undefined {
+  const base = `${to.toLowerCase()}-`;
+  let best: string | undefined;
+  let bestN = Number.POSITIVE_INFINITY;
+  for (const name of names) {
+    const l = name.toLowerCase();
+    if (!l.startsWith(base)) continue;
+    const tail = l.slice(base.length);
+    if (!/^[0-9]+$/.test(tail)) continue;
+    if (Number(tail) < bestN) {
+      bestN = Number(tail);
+      best = name;
+    }
+  }
+  return best;
+}
+
+/**
+ * #1567: for a send refused `closed` or `revoked` with no `to_namespace`, the
+ * namespace of the one live agent called `name` in `roster` (ignoring case);
+ * undefined when none, or when it is live in several namespaces. A hub sends
+ * rows of linked namespaces only to a socket whose hello listed the `links`
+ * cap, so any other sees none and gets no hint. An agent live under that name
+ * in the sender's own namespace would not have been refused.
+ */
+export function linkedLiveNamespace(
+  name: string,
+  roster: readonly {
+    name: string;
+    namespace: string;
+    live?: boolean;
+    state?: string;
+  }[],
+): string | undefined {
+  const l = name.toLowerCase();
+  const seen = new Set(
+    roster
+      .filter(
+        (a) =>
+          a.name.toLowerCase() === l &&
+          (a.state ?? (a.live ? "live" : "queued")) === "live",
+      )
+      .map((a) => a.namespace),
+  );
+  return seen.size === 1 ? [...seen][0] : undefined;
 }
 
 /**
@@ -299,8 +388,7 @@ export const STATUS_COPY = {
     "This machine is not connected to the hub right now. Try again in a moment.",
   not_registered:
     "This session is not registered on the bus yet. Try again in a moment.",
-  bad_frame:
-    "The hub did not accept that request. Ask the user to run npx @open-artifacts/bus doctor.",
+  bad_frame: `The hub did not accept that request. Ask the user to run ${BUS_CMD} doctor.`,
 } as const;
 
 const BAD_LABEL_CHARS = new RegExp(BAD_NS_CHARS.source, "gu");
@@ -380,6 +468,14 @@ export function statusSaysText(
   ].join(" · ");
 }
 
+/** "2026-11-05 10:00 UTC" from an ISO time; unreadable times are shown as sent. */
+const awayTime = (iso: string): string => {
+  const t = Date.parse(iso);
+  return Number.isNaN(t)
+    ? iso
+    : `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+};
+
 /** One `list_agents` line: the agent, then its status after two spaces. */
 export function rosterLine(
   a: StatusFields & {
@@ -388,11 +484,13 @@ export function rosterLine(
     namespace: string;
     machine_label?: unknown;
     queued: boolean;
+    /** #1295: ISO time the agent went away; it is closed, its mailbox kept. */
+    away?: string | undefined;
   },
   now = Date.now(),
 ): string {
   const says = statusSaysText(a, now);
-  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
 }
 
 /** The `self` result: the agent entry, its hub-supplied status cleaned as list_agents shows it. */
@@ -425,4 +523,4 @@ export function selfText(
  * Information only, from the local client; it quotes no peer text.
  */
 export const replyGoneText = (name: string): string =>
-  `[oa-bus] Information: your reply to ${name} was not sent. The agent that wrote to you as ${name} is gone, or wrote over an hour ago, and another agent may hold that name now. Use list_agents and send_message to reach the agent you mean.`;
+  `[oa-bus] Information: your reply to ${name} was not sent. The agent that wrote to you as ${name} is gone, or wrote over an hour ago, and another agent may hold that name now. Use the oa_bus list_agents and send_message tools to reach the agent you mean.`;

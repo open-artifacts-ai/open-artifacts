@@ -1,4 +1,5 @@
 import { parseArgs } from "node:util";
+import { BUS_CMD } from "@oa/bus-protocol";
 
 export type Harness = "claude" | "opencode" | "codex" | "pi";
 export type Command = (
@@ -19,6 +20,11 @@ export type Command = (
   | { cmd: "uninstall"; purge: boolean }
   | { cmd: "global"; sub: "add" | "rm"; dir: string }
   | { cmd: "global"; sub: "list" }
+  | { cmd: "namespace"; sub: "approve"; dir: string; yes: boolean }
+  | { cmd: "namespace"; sub: "revoke"; dir: string }
+  | { cmd: "namespace"; sub: "list" }
+  | { cmd: "link"; sub: "add" | "rm"; dirs: [string, string] }
+  | { cmd: "link"; sub: "list" }
   | { cmd: "version" }
 ) & {
   noColor: boolean;
@@ -36,11 +42,15 @@ const COMMANDS = new Set([
   "doctor",
   "uninstall",
   "global",
+  "namespace",
+  "link",
+  "unlink",
   "version",
 ]);
 const HARNESSES = ["claude", "opencode", "codex", "pi"];
-const GLOBAL_USAGE =
-  "usage: npx @open-artifacts/bus global <add|rm> <dir>, or global list";
+const GLOBAL_USAGE = `usage: ${BUS_CMD} global <add|rm> <dir>, or global list`;
+const LINK_USAGE = `usage: ${BUS_CMD} link <dir> <dir>, ${BUS_CMD} unlink <dir> <dir>, or link list`;
+const NAMESPACE_USAGE = `usage: ${BUS_CMD} namespace approve [dir], namespace revoke <dir>, or namespace list`;
 /** Flags every command takes. */
 const COMMON = new Set(["no-color", "version", "home"]);
 /** Each command's own flags. */
@@ -49,6 +59,7 @@ const FLAGS: Record<string, string[]> = {
   login: ["instance", "no-open"],
   daemon: ["instance"],
   uninstall: ["purge"],
+  namespace: ["yes"],
 };
 
 export { main } from "./main.ts";
@@ -77,11 +88,27 @@ export function parse(argv: string[]): Command {
   const takes =
     cmd === "mcp" ? 1 : cmd === "global" ? (rest[0] === "list" ? 1 : 2) : 0;
   if (cmd === "mcp" && rest.length === 0)
-    throw new Error(
-      "usage: npx @open-artifacts/bus mcp <claude|opencode|codex|pi>",
-    );
+    throw new Error(`usage: ${BUS_CMD} mcp <claude|opencode|codex|pi>`);
   if (cmd === "global" && rest.length < takes) throw new Error(GLOBAL_USAGE);
-  const extra = rest[takes];
+  if (cmd === "namespace") {
+    const sub = rest[0];
+    const max = sub === "list" ? 1 : sub === "approve" ? 2 : 2;
+    const min = sub === "revoke" ? 2 : 1;
+    if (!["approve", "revoke", "list"].includes(sub ?? "") || rest.length < min)
+      throw new Error(NAMESPACE_USAGE);
+    if (rest[max] !== undefined)
+      throw new Error(`unexpected argument: ${rest[max]}`);
+  }
+  if (cmd === "link" || cmd === "unlink") {
+    const n = cmd === "link" && rest[0] === "list" ? 1 : 2;
+    if (rest.length < n) throw new Error(LINK_USAGE);
+    if (rest[n] !== undefined)
+      throw new Error(`unexpected argument: ${rest[n]}`);
+  }
+  const extra =
+    cmd === "namespace" || cmd === "link" || cmd === "unlink"
+      ? undefined
+      : rest[takes];
   if (extra !== undefined) throw new Error(`unexpected argument: ${extra}`);
   // An empty path or URL must not fall back to the default home or instance.
   for (const name of ["home", "instance"] as const)
@@ -119,9 +146,7 @@ function route(cmd: string, values: Values, positionals: string[]) {
     case "mcp": {
       const harness = positionals[0] ?? "";
       if (!HARNESSES.includes(harness))
-        throw new Error(
-          "usage: npx @open-artifacts/bus mcp <claude|opencode|codex|pi>",
-        );
+        throw new Error(`usage: ${BUS_CMD} mcp <claude|opencode|codex|pi>`);
       return { cmd, harness: harness as Harness };
     }
     case "uninstall":
@@ -131,6 +156,26 @@ function route(cmd: string, values: Values, positionals: string[]) {
       if (sub === "list") return { cmd, sub };
       if ((sub === "add" || sub === "rm") && dir) return { cmd, sub, dir };
       throw new Error(GLOBAL_USAGE);
+    }
+    case "namespace": {
+      const [sub, dir] = positionals;
+      if (sub === "list") return { cmd, sub };
+      if (sub === "revoke" && dir) return { cmd, sub, dir };
+      if (sub === "approve")
+        return { cmd, sub, dir: dir ?? ".", yes: values.yes };
+      throw new Error(NAMESPACE_USAGE);
+    }
+    case "link":
+    case "unlink": {
+      if (cmd === "link" && positionals[0] === "list")
+        return { cmd: "link", sub: "list" };
+      const [a, b] = positionals;
+      if (!a || !b) throw new Error(LINK_USAGE);
+      return {
+        cmd: "link",
+        sub: cmd === "link" ? "add" : "rm",
+        dirs: [a, b],
+      };
     }
     case "install":
       return {

@@ -5,7 +5,7 @@ import {
   opencodeVersion,
   supportsPromptId,
 } from "@oa/bus-adapter-opencode";
-import type { StatusReply } from "@oa/bus-ipc";
+import { BUS_CMD, type StatusReply } from "@oa/bus-ipc";
 import {
   askDaemon,
   type Ctx,
@@ -24,6 +24,7 @@ import {
   installAdapters,
   readAssets,
 } from "../steps/adapters.ts";
+import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
 import { LoginFailed, login } from "./login.ts";
 
@@ -93,6 +94,7 @@ export async function loginStep(
       hub,
       home: ctx.home,
       label: opts.label,
+      exec: ctx.exec,
       noOpen: opts.noOpen,
       codeRetryMs: CODE_RETRY_MS,
       fetch: ctx.fetch,
@@ -158,7 +160,10 @@ export async function loginStep(
   }
 }
 
-async function harnessesStep(ctx: Ctx): Promise<boolean> {
+async function harnessesStep(
+  ctx: Ctx,
+  hub: string | undefined,
+): Promise<boolean> {
   const c = ctx.copy;
   const out = await installAdapters({
     home: ctx.userHome,
@@ -179,7 +184,44 @@ async function harnessesStep(ctx: Ctx): Promise<boolean> {
     say(ctx, await skippedLines(ctx, s.harness, s.reason));
   if (out.installed.includes("opencode"))
     say(ctx, out.opencodeRestarted ? c.restarted() : c.opencodeNotRunning());
+
+  // The skill goes next to the tools, fetched from the instance, never vendored.
+  // A fetch failure does not stop later steps: it is recorded and the run exits
+  // non-zero at the end, after the daemon (or whatever follows) has had its turn.
+  const skill = await installSkill(
+    {
+      home: ctx.userHome,
+      env: ctx.env,
+      fetchSkill: (url) => fetchSkillText(ctx.fetch, url),
+    },
+    hub ? originOf(hub) : machineOrigin(ctx),
+    out.installed,
+  );
+  for (const n of skill.notes) say(ctx, [n]);
+  if (skill.failedUrl) skillFailure.set(ctx, skill.failedUrl);
+  // Written quietly: the harnesses line above is the user-visible outcome, and
+  // a run that writes nothing has nothing to say.
   return true;
+}
+
+/** A skill fetch that failed, reported once the remaining steps have run. */
+const skillFailure = new WeakMap<Ctx, string>();
+
+/** Prints the skill failure and its rerun line, when the harnesses step recorded one. */
+function reportSkillFailure(ctx: Ctx): boolean {
+  const url = skillFailure.get(ctx);
+  if (!url) return false;
+  sayErr(ctx, [
+    `Could not fetch the skill from ${url}.`,
+    `The bus tools are set up. Rerun ${BUS_CMD} install to write the skill.`,
+  ]);
+  return true;
+}
+
+/** The approved machine's hub origin, or undefined when there is no machine. */
+function machineOrigin(ctx: Ctx): string | undefined {
+  const m = readMachine(ctx.home);
+  return m.state === "ok" ? originOf(m.hub) : undefined;
 }
 
 async function skippedLines(ctx: Ctx, h: Harness, reason: string) {
@@ -307,7 +349,7 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
     name: "login",
     label: "Machine approved",
     failed: "Machine not approved",
-    action: "Run npx @open-artifacts/bus to approve it.",
+    action: `Run ${BUS_CMD} to approve it.`,
     check: async (ctx) => {
       const m = readMachine(ctx.home);
       return m.state === "ok" && !m.revoked ? "done" : "todo";
@@ -318,7 +360,7 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
     name: "harnesses",
     label: "Harnesses configured",
     failed: "Harnesses not configured",
-    action: "Run npx @open-artifacts/bus to configure them.",
+    action: `Run ${BUS_CMD} to configure them.`,
     check: async (ctx) =>
       Object.values(
         checkAdapters({
@@ -332,13 +374,13 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
       ).includes("missing")
         ? "todo"
         : "done",
-    apply: harnessesStep,
+    apply: (ctx) => harnessesStep(ctx, opts.hub),
   },
   {
     name: "daemon",
     label: "Daemon answering",
     failed: "Daemon not answering",
-    action: "Run npx @open-artifacts/bus to start it.",
+    action: `Run ${BUS_CMD} to start it.`,
     check: async (ctx) => {
       try {
         await askDaemon(ctx, { timeoutMs: 1000 });
@@ -370,5 +412,6 @@ export async function install(
     path: join(ctx.home, "install.json"),
     now: ctx.now,
   });
-  return ok ? 0 : 1;
+  const skillFailed = reportSkillFailure(ctx);
+  return ok && !skillFailed ? 0 : 1;
 }

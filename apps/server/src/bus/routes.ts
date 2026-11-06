@@ -15,7 +15,14 @@ import {
   newUserCode,
   normalizeUserCode,
 } from "@oa/bus-protocol";
-import { AUTH, BusRolePutSchema, type Member, R } from "@oa/shared";
+import {
+  AUTH,
+  BusLinkProposeSchema,
+  BusLinkPutSchema,
+  BusRolePutSchema,
+  type Member,
+  R,
+} from "@oa/shared";
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
 import { interactiveSession, requireUser } from "../auth/authz.js";
@@ -36,11 +43,15 @@ import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import {
   busOn,
+  deleteBusLink,
   deleteBusRole,
   listBusAgents,
+  listBusLinks,
   listBusMachines,
   listBusRoles,
   MAX_ACTIVE_MACHINES,
+  proposeBusLink,
+  putBusLink,
   putBusRole,
   revokeBusMachine,
 } from "../services/bus.js";
@@ -99,6 +110,7 @@ export const APPROVE_PATH = BUS_ROUTES.approve;
 
 const COUNTRY = /^[A-Z]{2}$/;
 // Controls, bidi and zero-width characters: they can disguise a name.
+// biome-ignore lint/complexity/useRegexLiterals: a literal would trip noControlCharactersInRegex; the string form is deliberate
 const UNSAFE = new RegExp(
   "[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2069\\ufeff]",
   "gu",
@@ -701,6 +713,49 @@ export function mountBus(app: AppType): void {
     if (!ROLE_ID.test(id))
       throw new ApiError("bad_request", "Invalid id", { field: "id" });
     await deleteBusRole(c.env, user.id, id);
+    return c.body(null, 204);
+  });
+
+  // #1567 project links: the same rules as role writes. An AI agent can
+  // never link namespaces (no MCP tool, no frame, no PAT or machine token).
+  app.get(R.busLinks, async (c) => {
+    const user = requireUser(c);
+    if (!canConnect(user)) throw notFound();
+    return c.json(await listBusLinks(c.env, user.id));
+  });
+  // #1567: the CLI's `oa-bus link`. A bus machine token (never a session, a
+  // PAT or an OAuth grant) may only record a proposal; the member links
+  // nothing until they confirm its one-time URL in a browser.
+  app.post(R.busLinkProposals, async (c) => {
+    if (!busOn(c.env)) throw notFound();
+    const token = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
+    if (!isMachineToken(token)) return unauthorized();
+    const m = await stmt(c.env.DB, MACHINE_BY_HASH)
+      .bind(await sha256Hex(token))
+      .first<{ id: string; userId: string; revokedAt: number | null }>();
+    if (!m || m.revokedAt !== null) return unauthorized();
+    const user = await getUser(c.env, m.userId);
+    if (!user || !canConnect(user)) return unauthorized();
+    const body = await jsonBody(c, BusLinkProposeSchema);
+    return c.json(await proposeBusLink(c.env, user.id, m.id, body));
+  });
+  app.put(R.busLinks, async (c) => {
+    const user = roleWriter(c);
+    const body = await jsonBody(c, BusLinkPutSchema);
+    if (body.a === body.b)
+      throw new ApiError("bad_request", "Invalid namespaces", {
+        field: "namespaces",
+      });
+    return c.json({
+      link: await putBusLink(c.env, user.id, body.a, body.b),
+    });
+  });
+  app.delete(`${R.busLinks}/:id`, async (c) => {
+    const user = roleWriter(c);
+    const id = c.req.param("id") ?? "";
+    if (!ROLE_ID.test(id))
+      throw new ApiError("bad_request", "Invalid id", { field: "id" });
+    await deleteBusLink(c.env, user.id, id);
     return c.body(null, 204);
   });
 }

@@ -5,6 +5,7 @@ import {
   PROD_UNLOCKED,
   RELEASE_PUBKEY,
   RELEASE_PUBKEY_PLACEHOLDER,
+  RELEASE_RETIRED_PUBKEYS,
 } from "../src/internal/gates.js";
 
 // The key ceremony (2026-10-24): each env's release signing key is an Ed25519
@@ -28,6 +29,25 @@ describe("pinned release public keys", () => {
   });
   it("the node:* copy pins the same keys", () => {
     expect({ ...PUBKEYS.RELEASE_PUBKEY }).toEqual({ ...RELEASE_PUBKEY });
+    expect({
+      staging: [...PUBKEYS.RELEASE_RETIRED_PUBKEYS.staging],
+      prod: [...PUBKEYS.RELEASE_RETIRED_PUBKEYS.prod],
+    }).toEqual({
+      staging: [...RELEASE_RETIRED_PUBKEYS.staging],
+      prod: [...RELEASE_RETIRED_PUBKEYS.prod],
+    });
+  });
+  it("keys within an env are distinct and none is in both envs", () => {
+    const list = (env: "staging" | "prod") => [
+      RELEASE_PUBKEY[env],
+      ...RELEASE_RETIRED_PUBKEYS[env],
+    ];
+    for (const env of ["staging", "prod"] as const) {
+      expect(new Set(list(env)).size).toBe(list(env).length);
+      for (const k of RELEASE_RETIRED_PUBKEYS[env])
+        expect(k).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    }
+    for (const k of list("staging")) expect(list("prod")).not.toContain(k);
   });
   // Prod unlocked in its own PR, after the red-line suite passed on staging.
   it("prod is unlocked", () => {

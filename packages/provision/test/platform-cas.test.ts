@@ -5,7 +5,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { cfClient } from "../src/cf.js";
 import { platformNames } from "../src/names.js";
-import { PlatformDb } from "../src/platform.js";
+import { holderLease, leaseJobPart, PlatformDb } from "../src/platform.js";
 import type { InstallId } from "../src/types.js";
 import { FakeCf } from "./fake-cf.js";
 
@@ -127,6 +127,92 @@ describe("install CAS writes on D1's real meta.changes", () => {
         r.row_version,
       ),
     ).toBe(false);
+  });
+});
+
+describe("a job's lease token (holderLease, #1326: fenced by attempt)", () => {
+  const JA = "job:01JOBA";
+  const JB = "job:01JOBB";
+  const ID = "iaaaaaaaaaaa" as InstallId;
+  const claim = async (
+    w: ReturnType<typeof world>,
+    lease: string,
+    until: number,
+  ) => {
+    const cur = await w.db.byId(ID);
+    return w.db.claim(
+      ID,
+      ["creating"],
+      "creating",
+      lease,
+      until,
+      cur?.row_version ?? 0,
+    );
+  };
+
+  it("is the job part, a dot and 32 random hex: one job part per job, a new token per attempt", () => {
+    const a1 = holderLease(JA);
+    const a2 = holderLease(JA);
+    expect(a1).toMatch(/^[0-9a-f]{16}\.[0-9a-f]{32}$/);
+    expect(a1.startsWith(leaseJobPart(JA))).toBe(true);
+    expect(a2.startsWith(leaseJobPart(JA))).toBe(true);
+    expect(a2).not.toBe(a1);
+    expect(leaseJobPart(JB)).not.toBe(leaseJobPart(JA));
+  });
+
+  it("a later attempt of the holding job re-takes the live lease with its own token; the earlier attempt's token then renews and finishes nothing", async () => {
+    const w = world();
+    await row(w);
+    const until = 1_800_000_000_000 + 30 * 60_000;
+    const a1 = holderLease(JA);
+    expect(await claim(w, a1, until)).toBe(true);
+    w.tick(60_000);
+    const a2 = holderLease(JA);
+    expect(await claim(w, a2, until + 60_000)).toBe(true);
+    expect((await w.db.byId(ID))?.lease).toBe(a2);
+    expect(await w.db.renew(ID, a1, until + 60_000)).toBe(false);
+    expect(await w.db.update(ID, { version: "0.57.1" }, a1)).toBe(false);
+    expect(await w.db.finish(ID, a1, "active")).toBe(false);
+    expect(await w.db.byId(ID)).toMatchObject({
+      lease: a2,
+      state: "creating",
+      version: null,
+    });
+  });
+
+  it("another job is refused while the lease is live, and takes it once it expires", async () => {
+    const w = world();
+    await row(w);
+    const until = 1_800_000_000_000 + 30 * 60_000;
+    const a = holderLease(JA);
+    expect(await claim(w, a, until)).toBe(true);
+    expect(await claim(w, holderLease(JB), until)).toBe(false);
+    expect((await w.db.byId(ID))?.lease).toBe(a);
+    // Expiry is unchanged.
+    w.tick(30 * 60_000);
+    const b = holderLease(JB);
+    expect(await claim(w, b, until + 120 * 60_000)).toBe(true);
+    expect((await w.db.byId(ID))?.lease).toBe(b);
+    // Now the first job is the one refused.
+    expect(await claim(w, holderLease(JA), until + 120 * 60_000)).toBe(false);
+  });
+
+  it("a job never re-takes a live CLI lease, even one whose first 16 hex are its job part", async () => {
+    const w = world();
+    await row(w);
+    const until = 1_800_000_000_000 + 30 * 60_000;
+    // A CLI token (hex16: 32 hex, no dot) that starts with job A's 16 hex.
+    const cli = `${leaseJobPart(JA).slice(0, 16)}${"0".repeat(16)}`;
+    expect(cli).toMatch(/^[0-9a-f]{32}$/);
+    expect(await claim(w, cli, until)).toBe(true);
+    expect(await claim(w, holderLease(JA), until)).toBe(false);
+    expect((await w.db.byId(ID))?.lease).toBe(cli);
+    // And a CLI claim never re-takes a job's live lease.
+    w.tick(30 * 60_000 + 1);
+    const a = holderLease(JA);
+    expect(await claim(w, a, until + 120 * 60_000)).toBe(true);
+    expect(await claim(w, a.slice(0, 16) + a.slice(17, 33), until)).toBe(false);
+    expect((await w.db.byId(ID))?.lease).toBe(a);
   });
 });
 

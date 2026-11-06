@@ -24,7 +24,11 @@
 import { delay, type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
 import {
+  BUS_LINK_MAX,
+  BUS_LINKS_PER_NAMESPACE,
   type BusAddress,
+  type BusLink,
+  BusLinkPutSchema,
   type BusRole,
   BusRolePutSchema,
   ShareNoticeAgentsSchema,
@@ -90,6 +94,7 @@ import {
   isHeic,
   textHead,
 } from "../sniff.js";
+import { createCommentHandlers } from "./comments.js";
 import type { ArtifactEventsMock } from "./events.js";
 import { BUS_FIXTURE_NOW, fixtures } from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
@@ -101,6 +106,8 @@ export type MockOptions = {
   /** Me.instance.plan, and GET /usage `plan` and its limits (default "free"). */
   plan?: Plan;
   update?: InstanceUpdate | null;
+  /** Comments writes answer 429 with this Retry-After, in seconds (#682). */
+  commentsRateLimit?: number;
   /**
    * The R.events mock (createArtifactEvents()): hello reports the store's
    * currentVersion; publish/restore emit `version`, delete and
@@ -352,6 +359,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const busMachines: BusMachine[] = opts.bus ? f.busMachines.map(at) : [];
   let busAgents: BusAgent[] = opts.bus ? f.busAgents.map(at) : [];
   let busRoles: BusRole[] = opts.bus ? f.busRoles.map(at) : [];
+  let busLinks: BusLink[] = opts.bus ? f.busLinks.map(at) : [];
   const busRoleProposals = opts.bus ? f.busRoleProposals.map(at) : [];
   const data = new Map<string, Map<string, Map<string, DataDoc>>>();
   const storage = new Map<string, Map<string, StorageEntry>>();
@@ -568,7 +576,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       // Signed-URL uploads carry no session; public artifact reads are anonymous-OK.
       const needsAuth = mutating
         ? !/^\/uploads\/[^/]+$/.test(path)
-        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search|bus\/(share-notices|machines|agents|roles))\/?$/.test(
+        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search|bus\/(share-notices|machines|agents|roles|links))\/?$/.test(
             path,
           );
       // Runtime routes (data/storage) check access first, as on the server:
@@ -597,6 +605,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   return [
     ...pre,
     ...(h?.handlers ?? []),
+    ...createCommentHandlers({
+      artifacts,
+      me,
+      err,
+      emit: (id, open) => opts.events?.emitComments(id, open),
+      rateLimit: opts.commentsRateLimit,
+    }),
     http.get("*/api/v1/me", () => HttpResponse.json(me)),
     http.patch("*/api/v1/me", async ({ request }) => {
       const r = await body(request, MePatchSchema);
@@ -690,6 +705,40 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     }),
     http.delete(`*${R.busRoles}/:id`, ({ params: p }) => {
       busRoles = busRoles.filter((x) => x.id !== p.id);
+      return noContent();
+    }),
+    // #1567: links, ordered by a then b.
+    http.get(`*${R.busLinks}`, () =>
+      HttpResponse.json({ links: busLinks, live: opts.bus === true }),
+    ),
+    // Idempotent; equal namespaces are 400; past the caps (total, or per namespace) 409 link_limit.
+    http.put(`*${R.busLinks}`, async ({ request }) => {
+      const r = await body(request, BusLinkPutSchema);
+      if (r.error) return r.error;
+      if (r.data.a === r.data.b)
+        return err("bad_request", "Invalid namespaces", {
+          field: "namespaces",
+        });
+      const [a, b] =
+        r.data.a < r.data.b ? [r.data.a, r.data.b] : [r.data.b, r.data.a];
+      const had = busLinks.find((l) => l.a === a && l.b === b);
+      if (had) return HttpResponse.json({ link: had });
+      const per = (ns: string) =>
+        busLinks.filter((l) => l.a === ns || l.b === ns).length;
+      if (
+        busLinks.length >= BUS_LINK_MAX ||
+        per(a) >= BUS_LINKS_PER_NAMESPACE ||
+        per(b) >= BUS_LINKS_PER_NAMESPACE
+      )
+        return err("conflict", "Too many links", { reason: "link_limit" });
+      const link: BusLink = { id: newId(), a, b, createdAt: iso() };
+      busLinks = [...busLinks, link].sort((x, y) =>
+        x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : x.b > y.b ? 1 : 0,
+      );
+      return HttpResponse.json({ link });
+    }),
+    http.delete(`*${R.busLinks}/:id`, ({ params: p }) => {
+      busLinks = busLinks.filter((x) => x.id !== p.id);
       return noContent();
     }),
     http.get("*/api/v1/artifacts", ({ request }) => {

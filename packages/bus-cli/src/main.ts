@@ -3,8 +3,10 @@ import { daemon } from "./commands/daemon.ts";
 import { doctor } from "./commands/doctor.ts";
 import { global } from "./commands/global.ts";
 import { install, loginStep } from "./commands/install.ts";
+import { link } from "./commands/link.ts";
 import { logs } from "./commands/logs.ts";
 import { mcp } from "./commands/mcp.ts";
+import { namespace } from "./commands/namespace.ts";
 import { status } from "./commands/status.ts";
 import { uninstall } from "./commands/uninstall.ts";
 import { askDaemon, type Ctx, realCtx, say, sayErr } from "./context.ts";
@@ -83,6 +85,10 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
       return uninstall({ purge: cmd.purge }, ctx);
     case "global":
       return global(cmd, ctx);
+    case "namespace":
+      return namespace(cmd, ctx);
+    case "link":
+      return link(cmd, ctx);
     case "version":
       say(ctx, ctx.copy.header(ctx.version));
       return 0;

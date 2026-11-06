@@ -4,6 +4,8 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import {
+  ADAPTER_CAPS,
+  BUS_CMD,
   CLIENT_VERSION,
   type DaemonClient,
   Hello,
@@ -23,8 +25,7 @@ export const SUBAGENT_REFUSAL =
  * A daemon older than this adapter rejects the hello's shape (bad_frame)
  * until the service restarts on the new bundle (C26j).
  */
-export const RESTART_REFUSAL =
-  "Open Artifacts bus did not accept this thread: the update is half done. Ask the user to run npx @open-artifacts/bus install.";
+export const RESTART_REFUSAL = `Open Artifacts bus did not accept this thread: the update is half done. Ask the user to run ${BUS_CMD} install.`;
 
 const NO_IDENTITY =
   "oa-bus: this Codex version did not send the thread's identity.";
@@ -123,6 +124,7 @@ export function codexHello(
     pid,
     ...(call.cwd ? { cwd: call.cwd } : {}),
     proposed_name: "codex",
+    caps: [ADAPTER_CAPS.mailbox, ADAPTER_CAPS.pending],
     codex: {
       thread_id: call.threadId,
       call_id: call.callId,

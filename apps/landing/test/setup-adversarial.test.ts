@@ -12,10 +12,10 @@ const dist = fileURLToPath(new URL("../dist/", import.meta.url));
 const llms = readFileSync(join(dist, "llms.txt"), "utf8");
 const setupMd = readFileSync(join(dist, "docs/setup.md"), "utf8");
 
-// The documented invocation, e.g. `pnpm oa:setup` or `pnpm -s oa:setup`.
+// The documented invocation, e.g. `pnpm oa:setup` or `pnpm --reporter=silent oa:setup`.
 const invocation = (
   llms.match(
-    /(pnpm(?: -[a-z-]+)* oa:setup) --json(?: --yes)? --app-host/,
+    /(pnpm(?: -{1,2}[a-z-]+(?:=[a-z-]+)?)* oa:setup) --json(?: --yes)? --app-host/,
   )?.[1] ?? "pnpm oa:setup"
 ).split(" ");
 

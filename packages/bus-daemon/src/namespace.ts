@@ -1,16 +1,23 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import {
+  BUS_CMD,
   type BusConfig,
   BusConfigSchema,
-  CONFIG_FILE,
   mergeConfigs,
   namespaceFrom,
   normalizeRemote,
 } from "@oa/bus-protocol";
+import {
+  approveCommand,
+  type ConfigIssues,
+  configIssue,
+  configPaths,
+} from "./config-issues.ts";
 import { globalFile, isGlobalDir, readGlobalDirs } from "./global.ts";
-import { readOwnFile } from "./own-file.ts";
+import { isApproved, namespacesFile, readApprovals } from "./namespaces.ts";
+import { type GroupCheck, readOwnFile } from "./own-file.ts";
 
 export type Namespace = {
   namespace: string;
@@ -28,6 +35,12 @@ export type NamespaceDeps = {
   allowMissing?: boolean;
   /** The user's allowlist; default `<OA_BUS_HOME>/global.json`. */
   globalFile?: string;
+  /** The user's namespace approvals; default `<OA_BUS_HOME>/namespaces.json`. */
+  namespacesFile?: string;
+  /** Collects the config files refused or noted, for status, doctor and self. */
+  issues?: ConfigIssues;
+  /** Tests inject the group check (which group is the user's private one). */
+  group?: GroupCheck;
 };
 
 const warned = new Set<string>();
@@ -62,7 +75,7 @@ export function resolveNamespace(
       deps.log?.(`${cwd} does not resolve; using it as given`);
     }
   }
-  const { cfg, asked } = readConfigs(cwd, deps);
+  const { cfg, asked, nsFile } = readConfigs(cwd, deps);
   const global = !missing && allowlisted(cwd, deps);
   // A repo anyone can write to must not widen what its agents see.
   if (!global)
@@ -70,21 +83,53 @@ export function resolveNamespace(
       once(
         deps,
         `global:${file}`,
-        `ignoring global in ${file}: only \`npx @open-artifacts/bus global add\` makes a directory global`,
+        `ignoring global in ${file}: only \`${BUS_CMD} global add\` makes a directory global`,
       );
-  if (cfg.namespace)
-    return { namespace: cfg.namespace, global, source: "config" };
-
   const remoteUrl = (deps.gitRemote ?? gitRemote)(cwd);
   const root = (deps.gitRoot ?? gitRoot)(cwd);
-  const namespace = namespaceFrom({
+  const derived = namespaceFrom({
     remoteUrl,
     gitRootName: root ? basename(root) : null,
     cwd,
   });
   const source =
     remoteUrl && normalizeRemote(remoteUrl) ? "git" : root ? "dir" : "cwd";
-  return { namespace, global, source };
+  const fallback: Namespace = { namespace: derived, global, source };
+  if (!cfg.namespace || !nsFile) return fallback;
+  // The same as the derived namespace: nothing to approve.
+  if (cfg.namespace === derived) {
+    deps.issues?.setPending(nsFile, deps.uid ?? process.getuid?.(), undefined);
+    return fallback;
+  }
+  if (approved(nsFile, cfg.namespace, deps))
+    return { namespace: cfg.namespace, global, source: "config" };
+  // A repo's own file must not move its agents into another namespace.
+  const dir = dirname(nsFile);
+  deps.issues?.setPending(nsFile, deps.uid ?? process.getuid?.(), {
+    file: nsFile,
+    dir,
+    namespace: cfg.namespace,
+    approvals: deps.namespacesFile,
+  });
+  once(
+    deps,
+    `ns:${nsFile}:${cfg.namespace}`,
+    `ignoring namespace "${cfg.namespace}" in ${nsFile}: not approved; run: ${approveCommand(dir)}`,
+  );
+  return fallback;
+}
+
+/** Whether the user approved `namespace` for the directory holding `file`. */
+function approved(file: string, namespace: string, deps: NamespaceDeps) {
+  const path = deps.namespacesFile ?? namespacesFile();
+  const list = readApprovals(path);
+  if (list.error)
+    once(
+      deps,
+      `approvals:${path}:${list.error}`,
+      `${path} ${list.error}: no namespace is approved`,
+    );
+  return isApproved(dirname(file), namespace, list.entries);
 }
 
 /** Whether `cwd` (a realpath) is in the user's allowlist, by directory identity. */
@@ -119,17 +164,23 @@ function allowlisted(cwd: string, deps: NamespaceDeps): boolean {
 function readConfigs(
   cwd: string,
   deps: NamespaceDeps,
-): { cfg: BusConfig; asked: string[] } {
+): { cfg: BusConfig; asked: string[]; nsFile: string | undefined } {
   const uid = deps.uid ?? process.getuid?.();
   const configs: BusConfig[] = [];
   const asked: string[] = [];
-  for (let dir = cwd; ; dir = dirname(dir)) {
-    const file = join(dir, CONFIG_FILE);
-    const own = readOwnFile(file, uid);
+  /** The nearest file that sets a namespace: the one the user approves. */
+  let nsFile: string | undefined;
+  for (const file of configPaths(cwd)) {
+    const own = readOwnFile(file, uid, {
+      allowGroupWrite: true,
+      ...(deps.group ? { group: deps.group } : {}),
+    });
     if (own.state === "unsafe")
       // Another user could plant one in a shared parent such as /tmp.
       once(deps, file, `ignoring ${file}: it ${own.why}`);
+    let valid = true;
     if (own.state === "ok") {
+      if (own.note) once(deps, `note:${file}`, `using ${file}: it ${own.note}`);
       let parsed: ReturnType<typeof BusConfigSchema.safeParse> | undefined;
       try {
         parsed = BusConfigSchema.safeParse(JSON.parse(own.text));
@@ -137,11 +188,16 @@ function readConfigs(
       if (parsed?.success) {
         configs.push(parsed.data);
         if (parsed.data.global === true) asked.push(file);
-      } else deps.log?.(`ignoring invalid ${file}`);
+        if (parsed.data.namespace !== undefined && nsFile === undefined)
+          nsFile = file;
+      } else {
+        valid = false;
+        deps.log?.(`ignoring invalid ${file}`);
+      }
     }
-    if (dirname(dir) === dir) break;
+    deps.issues?.set(file, uid, configIssue(file, own, valid), deps.group);
   }
-  return { cfg: mergeConfigs(configs), asked };
+  return { cfg: mergeConfigs(configs), asked, nsFile };
 }
 
 /**

@@ -9,7 +9,9 @@ import {
   displayKind,
   earlierStatusText,
   excerptOf,
+  linkedLiveNamespace,
   messageHeader,
+  movedName,
   neutralizeBody,
   oversizedText,
   REFUSAL,
@@ -29,6 +31,18 @@ import { PI_EXTENSION } from "../src/index.ts";
 
 const src = readFileSync(PI_EXTENSION, "utf8");
 const ID = "mmmmmmmmmmmmmmm1";
+
+/** Pi's name for an MCP tool: Pi refuses to start on a name two extensions register (#1448). */
+const piName = (mcpName: string) => `oabus_${mcpName}`;
+/** The names the OpenBus Pi/omp extension registers, installed alongside during the migration. */
+const OPENBUS_TOOLS = [
+  "list_agents",
+  "send_message",
+  "fetch",
+  "self",
+  "set_status",
+  "card",
+];
 
 type Frame = Record<string, unknown> & { type: string; id: string };
 type Conn = { sock: Socket; frames: Frame[]; closed: boolean };
@@ -140,8 +154,8 @@ function fakePi() {
     params: Record<string, unknown>,
     c: Ctx = ctx(),
   ) => {
-    const tool = tools.get(name);
-    if (!tool) throw new Error(`no tool ${name}`);
+    const tool = tools.get(piName(name));
+    if (!tool) throw new Error(`no tool ${piName(name)}`);
     const r = await tool.execute("call-1", params, undefined, undefined, c);
     return r.content.map((x) => x.text).join("");
   };
@@ -190,16 +204,38 @@ describe("pi extension asset", () => {
   it("registers the five tools with the same JSON-Schema parameters as the MCP tools", () => {
     const p = fakePi();
     oa_bus(p.pi as never);
-    expect([...p.tools.keys()]).toEqual(TOOLS.map((t) => t.name));
+    expect([...p.tools.keys()]).toEqual(TOOLS.map((t) => piName(t.name)));
     expect([...p.tools.keys()].sort()).toEqual(
-      ["fetch", "list_agents", "self", "send_message", "set_status"].sort(),
+      [
+        "oabus_fetch",
+        "oabus_list_agents",
+        "oabus_self",
+        "oabus_send_message",
+        "oabus_set_status",
+      ].sort(),
     );
     for (const t of TOOLS) {
-      const tool = p.tools.get(t.name);
+      const tool = p.tools.get(piName(t.name));
       expect(tool?.parameters).toEqual(t.inputSchema);
       expect(tool?.description).toBe(t.description);
       expect(tool?.label).toBeTruthy();
     }
+  });
+
+  it("registers no name the OpenBus extension registers, so Pi starts with both (#1448)", () => {
+    const p = fakePi();
+    oa_bus(p.pi as never);
+    expect(p.tools.size).toBe(5);
+    for (const name of p.tools.keys())
+      expect(OPENBUS_TOOLS).not.toContain(name);
+  });
+
+  it("registers no name Pi's fallback MCP client gives the oa_bus server's tools (oa_bus_<tool>)", () => {
+    const p = fakePi();
+    oa_bus(p.pi as never);
+    const imported = TOOLS.map((t) => `oa_bus_${t.name}`);
+    for (const name of p.tools.keys()) expect(imported).not.toContain(name);
+    for (const t of TOOLS) expect(piName(t.name)).not.toBe(`oa_bus_${t.name}`);
   });
 
   it("says hello at session start as the Pi session, with its UTC process start", async () => {
@@ -216,6 +252,7 @@ describe("pi extension asset", () => {
       pid: process.pid,
       cwd: "/work/repo",
       proposed_name: "my-pi",
+      caps: ["mailbox", "pending"],
       attest: { proc_start: procStartOf(process.pid) },
     });
     // `TZ=UTC LC_ALL=C ps -o lstart=`: "Fri Oct 23 08:13:26 2026".
@@ -315,6 +352,84 @@ describe("pi extension asset", () => {
     expect(JSON.parse(await p.call("self", {})).kind).toBe("zz");
   });
 
+  it("#1567: list_agents covers linked projects; a closed send names the linked namespace", async () => {
+    const row = (name: string, namespace: string) => ({
+      name,
+      namespace,
+      kind: "pi",
+      live: true,
+      state: "live",
+      global: false,
+    });
+    const { p } = await started((f) =>
+      f.type === "list"
+        ? {
+            type: "roster",
+            agents: [row("me", "acme/app"), row("docs", "acme/docs")],
+          }
+        : f.type === "send"
+          ? { type: "receipt", msg_id: ID, state: "refused", reason: "closed" }
+          : undefined,
+    );
+    expect(await p.call("list_agents", {})).toBe(
+      "- me (pi, acme/app)\n- docs (pi, acme/docs)",
+    );
+    await expect(
+      p.call("send_message", { to: "docs", text: "hi" }),
+    ).rejects.toThrow("pass to_namespace acme/docs to reach the live one.");
+    expect(
+      await p
+        .call("send_message", {
+          to: "docs",
+          text: "hi",
+          to_namespace: "acme/docs",
+        })
+        .catch((e: Error) => e.message),
+    ).not.toContain("to_namespace acme/docs to reach");
+  });
+
+  it("#1567: the empty list says linked ones too", async () => {
+    const { p } = await started((f) =>
+      f.type === "list" ? { type: "roster", agents: [] } : undefined,
+    );
+    expect(await p.call("list_agents", {})).toBe(
+      "No agents in your namespace and linked ones.",
+    );
+  });
+
+  it("#1527: self shows the config files the daemon refused", async () => {
+    const { p } = await started((f) =>
+      f.type === "self"
+        ? {
+            type: "agent",
+            agent: {
+              name: "me",
+              namespace: "ns",
+              kind: "pi",
+              live: true,
+              global: false,
+              config_files: [
+                {
+                  file: "/home/u/x/.oa-bus.json",
+                  state: "refused",
+                  reason: "is writable by everyone",
+                  fix: "run chmod o-w /home/u/x/.oa-bus.json",
+                },
+              ],
+            },
+          }
+        : undefined,
+    );
+    expect(JSON.parse(await p.call("self", {})).config_files).toEqual([
+      {
+        file: "/home/u/x/.oa-bus.json",
+        state: "refused",
+        reason: "is writable by everyone",
+        fix: "run chmod o-w /home/u/x/.oa-bus.json",
+      },
+    ]);
+  });
+
   it("list_agents, self and fetch render like the MCP tools", async () => {
     const { p } = await started((f) =>
       f.type === "list"
@@ -338,6 +453,15 @@ describe("pi extension asset", () => {
                 global: false,
                 machine_label: "desktop",
               },
+              {
+                name: "c",
+                namespace: "ns",
+                kind: "pi",
+                live: false,
+                state: "away",
+                since: "2026-11-05T10:00:00.000Z",
+                global: false,
+              },
             ],
           }
         : f.type === "self"
@@ -360,7 +484,7 @@ describe("pi extension asset", () => {
             : undefined,
     );
     expect(await p.call("list_agents", {})).toBe(
-      "- a (pi, ns)\n- b (opencode, ns, desktop) (queued)",
+      "- a (pi, ns)\n- b (opencode, ns, desktop) (queued)\n- c (pi, ns) (away since 2026-11-05 10:00 UTC)",
     );
     expect(JSON.parse(await p.call("self", {}))).toMatchObject({
       name: "pi-agent",
@@ -560,6 +684,22 @@ describe("the asset's own copy matches the shared copy", () => {
         excerptOf("w".repeat(60)),
       ])
         expect(copy.receiptText(r, to, n, ex)).toBe(receiptText(r, to, n, ex));
+    const revoked = { state: "refused", reason: "revoked" } as const;
+    expect(copy.receiptText(revoked, to, undefined, "hi", `${to}-2`)).toBe(
+      receiptText(revoked, to, undefined, "hi", `${to}-2`),
+    );
+    for (const reason of ["closed", "revoked", "unknown_agent"] as const) {
+      const r = { state: "refused", reason } as const;
+      expect(copy.receiptText(r, to, undefined, "hi", undefined, "a/b")).toBe(
+        receiptText(r, to, undefined, "hi", undefined, "a/b"),
+      );
+    }
+    const live = [{ name: to, namespace: "a/b", live: true, state: "live" }];
+    expect(copy.linkedLiveNamespace(to, live)).toBe(
+      linkedLiveNamespace(to, live),
+    );
+    const roster = [`${to}-3`, `${to}-2`, `${to}-2x`, "other"];
+    expect(copy.movedName(to, roster)).toBe(movedName(to, roster));
   });
   it("excerpts", () => {
     for (const body of [
@@ -624,9 +764,11 @@ describe("pi late deliveries (C17)", () => {
               reason: "closed",
               late: [LATE],
             }
-        : f.type === "self"
-          ? { type: "agent", agent: null }
-          : undefined,
+        : f.type === "list"
+          ? { type: "roster", agents: [] }
+          : f.type === "self"
+            ? { type: "agent", agent: null }
+            : undefined,
     );
     expect(await p.call("send_message", { to: "e0", text: "yo" })).toBe(
       `✓  Delivered to e0.\n\n${LATE}`,
@@ -695,8 +837,12 @@ describe("one file for Pi and oh-my-pi (C23b)", () => {
     for (const t of p.tools.values()) expect(t).not.toHaveProperty("loadMode");
     const o = ompHost();
     expect(o.tools.size).toBe(5);
-    expect(o.tools.get("set_status")).toMatchObject({ loadMode: "essential" });
-    expect(o.tools.get("set_status")).toMatchObject({ loadMode: "essential" });
+    expect(o.tools.get("oabus_send_message")).toMatchObject({
+      loadMode: "essential",
+    });
+    expect(o.tools.get("oabus_set_status")).toMatchObject({
+      loadMode: "essential",
+    });
     for (const t of o.tools.values())
       expect(t).toMatchObject({ loadMode: "essential" });
   });
@@ -763,8 +909,8 @@ describe("set_status", () => {
   it("Pi registers set_status before any session, and no card tool", async () => {
     const p = fakePi();
     oa_bus(p.pi as never);
-    expect(p.tools.has("set_status")).toBe(true);
-    expect(p.tools.has("card")).toBe(false);
+    expect(p.tools.has("oabus_set_status")).toBe(true);
+    expect(p.tools.has("oabus_card")).toBe(false);
   });
 
   it("one request; the result says what the user sees", async () => {

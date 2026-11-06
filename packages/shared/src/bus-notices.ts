@@ -95,6 +95,60 @@ export const BusRoleSchema = z.strictObject({
 });
 export type BusRole = z.infer<typeof BusRoleSchema>;
 
+/** Links between two of the member's namespaces (#1567) one member may hold. */
+export const BUS_LINK_MAX = 100;
+/** Links one namespace may have (#1567), so a send's lookup stays small. */
+export const BUS_LINKS_PER_NAMESPACE = 10;
+
+/**
+ * One link (#1567): the two namespaces see each other's agents and may
+ * message each other. Stored once as a sorted pair (`a` < `b`) and read both
+ * ways; never transitive.
+ */
+export const BusLinkSchema = z.strictObject({
+  id: z.string(),
+  a: BusAddressSchema.shape.namespace,
+  b: BusAddressSchema.shape.namespace,
+  createdAt: z.string(),
+});
+export type BusLink = z.infer<typeof BusLinkSchema>;
+
+/** GET R.busLinks, ordered by `a` then `b`. `live` false: the bus could not be asked (links is then []). */
+export const BusLinksSchema = z.strictObject({
+  links: z.array(BusLinkSchema).max(BUS_LINK_MAX),
+  live: z.boolean(),
+});
+export type BusLinks = z.infer<typeof BusLinksSchema>;
+
+/** PUT R.busLinks: link namespaces `a` and `b` (any order; two different ones). */
+export const BusLinkPutSchema = z.strictObject({
+  a: BusAddressSchema.shape.namespace,
+  b: BusAddressSchema.shape.namespace,
+});
+export type BusLinkPut = z.infer<typeof BusLinkPutSchema>;
+
+/** How long a link proposal's confirm link works (#1567): one hour. */
+export const BUS_LINK_PROPOSAL_TTL_MS = 60 * 60_000;
+/** Link proposals waiting for the member at once (#1567). */
+export const BUS_LINK_PROPOSALS_PENDING_MAX = 10;
+/** Link proposals one machine may make in an hour (#1567), then `rate_limited`. */
+export const BUS_LINK_PROPOSALS_PER_MACHINE_HOUR = 10;
+
+/** POST R.busLinkProposals (a machine token): link or unlink two namespaces, for the member to confirm. */
+export const BusLinkProposeSchema = z.strictObject({
+  action: z.enum(["link", "unlink"]),
+  a: BusAddressSchema.shape.namespace,
+  b: BusAddressSchema.shape.namespace,
+});
+export type BusLinkPropose = z.infer<typeof BusLinkProposeSchema>;
+
+/** The proposal route's answer: the one-time confirm URL and when it expires. */
+export const BusLinkProposedSchema = z.strictObject({
+  confirmUrl: z.string(),
+  expiresAt: z.string(),
+});
+export type BusLinkProposed = z.infer<typeof BusLinkProposedSchema>;
+
 /** How long a role proposal's confirm link works (#1372). */
 export const BUS_ROLE_PROPOSAL_TTL_MS = 15 * 60_000;
 /** Pending role proposals one member may have at once (#1372). */

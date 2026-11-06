@@ -33,7 +33,12 @@ import type { AppType } from "./index.js";
 export function requireManager(c: Context<AppEnv>): Member {
   const user = requireUser(c);
   // Under the caller's cap: a capped admin (e.g. a code session) is 404.
-  if (!orgCan(user, "members.manage", { cap: capOfCaller(caller(c)) }))
+  if (
+    !orgCan(user, "members.manage", {
+      cap: capOfCaller(caller(c)),
+      read: c.req.method === "GET",
+    })
+  )
     throw new ApiError("not_found", "Not found");
   return user;
 }
@@ -44,7 +49,12 @@ export function requireManager(c: Context<AppEnv>): Member {
  */
 function requireDeparted(c: Context<AppEnv>): Member {
   const user = requireUser(c);
-  if (!orgCan(user, "transfer.departed", { cap: capOfCaller(caller(c)) }))
+  if (
+    !orgCan(user, "transfer.departed", {
+      cap: capOfCaller(caller(c)),
+      read: c.req.method === "GET",
+    })
+  )
     throw new ApiError("not_found", "Not found");
   return user;
 }

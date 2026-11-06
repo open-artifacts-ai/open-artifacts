@@ -23,7 +23,7 @@ import {
   runMain,
   sha256Hex,
 } from "./release-artifact.mjs";
-import { checkSigningKey, verifySignature } from "./release-pubkeys.mjs";
+import { checkSigningKey, verifyCurrentSignature } from "./release-pubkeys.mjs";
 
 /** @typedef {import("./release-pubkeys.mjs").Env} Env */
 
@@ -81,7 +81,7 @@ async function main() {
     if (a["record-sha256"] !== sha256Hex(f.record))
       throw new Error("the floor record is not the one hosted-floor signed");
     signature = a.signature ?? "";
-    verifySignature(f.env, payload, signature);
+    verifyCurrentSignature(f.env, payload, signature);
   } else {
     const pem = await readKeyFromStdin();
     /** @type {import("node:crypto").KeyObject} */

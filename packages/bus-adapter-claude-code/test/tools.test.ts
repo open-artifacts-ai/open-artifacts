@@ -53,7 +53,7 @@ describe("claude mcp tools", () => {
       content: [
         {
           type: "text",
-          text: "○  Queued for peer. Not delivered yet; expires in 1 hour.",
+          text: "○  Queued for peer. Not delivered yet; expires within 7 days.",
         },
       ],
       isError: false,
@@ -84,7 +84,7 @@ describe("claude mcp tools", () => {
       ),
     );
     expect(r.content[0].text).toBe(
-      '×  Refused (unknown_agent): your message to peer, "hi",\n   was not delivered.\n   No agent has that name here.\n   Run list_agents to see who is in this namespace.',
+      '×  Refused (unknown_agent): your message to peer, "hi",\n   was not delivered.\n   No agent has that name here.\n   Run the oa_bus list_agents tool to see who is in this namespace.',
     );
   });
 
@@ -188,11 +188,20 @@ describe("claude mcp tools", () => {
             state: "queued",
             global: false,
           },
+          {
+            name: "gamma",
+            kind: "claude-code",
+            namespace: "ns",
+            live: false,
+            state: "away",
+            since: "2026-11-05T10:00:00.000Z",
+            global: false,
+          },
         ],
       })),
     );
     expect(r.content[0].text).toBe(
-      "- alpha (pi, ns)\n- beta (claude-code, ns) (queued)",
+      "- alpha (pi, ns)\n- beta (claude-code, ns) (queued)\n- gamma (claude-code, ns) (away since 2026-11-05 10:00 UTC)",
     );
   });
 
@@ -417,5 +426,171 @@ describe("an unknown kind over the socket (C26h)", () => {
     const c = await connected(true);
     expect(await say(c, "list_agents")).toBe("- alpha (zz, ns)\n- b (omp, ns)");
     expect(JSON.parse((await say(c, "self")) ?? "").kind).toBe("zz");
+  });
+});
+
+describe("#1527: self shows the config files the daemon refused", () => {
+  it("prints each file with its reason and fix", async () => {
+    const path = join(mkdtempSync(join(tmpdir(), "ob-cfg-")), "d.sock");
+    const server = await serveDaemon({
+      path,
+      onHello: () => ({ bus_name: "me", namespace: "ns", global: false }),
+      onFrame: (f) =>
+        f.type === "self"
+          ? {
+              type: "agent",
+              agent: {
+                name: "me",
+                namespace: "ns",
+                kind: "claude-code",
+                live: true,
+                global: false,
+                config_files: [
+                  {
+                    file: "/home/u/x/.oa-bus.json",
+                    state: "refused",
+                    reason: "is writable by everyone",
+                    fix: "run chmod o-w /home/u/x/.oa-bus.json",
+                  },
+                ],
+              },
+            }
+          : undefined,
+    });
+    const c = await connectDaemon({
+      path,
+      hello: Hello.parse({
+        v: 1,
+        id: "h",
+        type: "hello",
+        kind: "claude-code",
+        agent_ref: "s1",
+        pid: process.pid,
+        cwd: process.cwd(),
+        attest: {},
+      }),
+    });
+    const out = JSON.parse(
+      (await callTool("self", {}, c)).content[0]?.text ?? "",
+    );
+    c.close();
+    await server.close?.();
+    expect(out.config_files).toEqual([
+      {
+        file: "/home/u/x/.oa-bus.json",
+        state: "refused",
+        reason: "is writable by everyone",
+        fix: "run chmod o-w /home/u/x/.oa-bus.json",
+      },
+    ]);
+  });
+});
+
+describe("linked projects (#1567)", () => {
+  const row = (
+    name: string,
+    namespace: string,
+    state: "live" | "queued" | "away" = "live",
+  ) => ({
+    name,
+    namespace,
+    kind: "claude",
+    live: state === "live",
+    state,
+    global: false,
+  });
+  it("list_agents says it lists linked ones too, and shows each row's namespace", async () => {
+    expect(TOOLS[0].description).toContain("and linked ones");
+    const r = await callTool(
+      "list_agents",
+      {},
+      client(async () => ({
+        v: 1 as const,
+        id: "1",
+        type: "roster" as const,
+        agents: [
+          row("me", "github.com/acme/app"),
+          row("docs", "github.com/acme/docs"),
+        ],
+      })),
+    );
+    expect(r.content[0].text).toBe(
+      "- me (claude, github.com/acme/app)\n- docs (claude, github.com/acme/docs)",
+    );
+    const empty = await callTool(
+      "list_agents",
+      {},
+      client(async () => ({
+        v: 1 as const,
+        id: "1",
+        type: "roster" as const,
+        agents: [],
+      })),
+    );
+    expect(empty.content[0].text).toBe(
+      "No agents in your namespace and linked ones.",
+    );
+  });
+
+  it("a closed or revoked send names the linked namespace holding the live agent", async () => {
+    for (const reason of ["closed", "revoked"] as const) {
+      const request = vi.fn(async (f: { type: string }) =>
+        f.type === "list"
+          ? {
+              v: 1 as const,
+              id: "1",
+              type: "roster" as const,
+              agents: [row("docs", "github.com/acme/docs")],
+            }
+          : {
+              v: 1 as const,
+              id: "1",
+              type: "receipt" as const,
+              msg_id: "mmmmmmmmmmmmmmm1",
+              state: "refused" as const,
+              reason,
+            },
+      );
+      const r = await callTool(
+        "send_message",
+        { to: "docs", text: "hi" },
+        client(request as never),
+      );
+      expect(r.content[0].text).toContain(
+        "pass to_namespace github.com/acme/docs to reach the live one.",
+      );
+      // With to_namespace given, the sender already chose: no hint, no roster read.
+      request.mockClear();
+      const chosen = await callTool(
+        "send_message",
+        { to: "docs", text: "hi", to_namespace: "github.com/acme/app" },
+        client(request as never),
+      );
+      expect(chosen.content[0].text).not.toContain("to_namespace");
+    }
+  });
+
+  it("no hint when the roster shows no linked live agent of that name (a hub without the links cap sends none)", async () => {
+    const r = await callTool(
+      "send_message",
+      { to: "docs", text: "hi" },
+      client((async (f: { type: string }) =>
+        f.type === "list"
+          ? {
+              v: 1,
+              id: "1",
+              type: "roster",
+              agents: [row("other", "github.com/acme/app")],
+            }
+          : {
+              v: 1,
+              id: "1",
+              type: "receipt",
+              msg_id: "mmmmmmmmmmmmmmm1",
+              state: "refused",
+              reason: "closed",
+            }) as never),
+    );
+    expect(r.content[0].text).not.toContain("to_namespace");
   });
 });

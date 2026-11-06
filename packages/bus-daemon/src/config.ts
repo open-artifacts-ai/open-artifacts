@@ -15,7 +15,7 @@ import {
   claudeReturnDir as sharedReturnDir,
   shortSocketDir,
 } from "@oa/bus-adapter-claude-code";
-import { isMachineToken, newMachineLabel } from "@oa/bus-protocol";
+import { BUS_CMD, isMachineToken, newMachineLabel } from "@oa/bus-protocol";
 
 export type Config = {
   hub: string;
@@ -71,7 +71,7 @@ export function prepareReturnDir(dir: string, h = home()): string | null {
   return null;
 }
 
-const NOT_LOGGED_IN = "not logged in: run `npx @open-artifacts/bus install`";
+const NOT_LOGGED_IN = `not logged in: run \`${BUS_CMD} install\``;
 
 /** Start failures no restart fixes; the service matches on `code`, never the message. */
 export const START_ERROR_CODES = [
@@ -211,19 +211,19 @@ export function readConfig(): Config {
   if (revokedFor(String(r.machine_token)))
     throw new StartError(
       "REVOKED",
-      "this machine was revoked; run `npx @open-artifacts/bus install`",
+      `this machine was revoked; run \`${BUS_CMD} install\``,
     );
   const hub = process.env.OA_BUS_INSTANCE || r.hub;
   // The token goes only to the hub that issued it.
   if (hub !== r.hub && originOf(hub) !== originOf(r.hub))
     throw new StartError(
       "HUB_MISMATCH",
-      `the hub ${hub} is not the one this machine was approved for (${r.hub}); run \`npx @open-artifacts/bus login --instance ${hub}\` to approve it there`,
+      `the hub ${hub} is not the one this machine was approved for (${r.hub}); run \`${BUS_CMD} login --instance ${hub}\` to approve it there`,
     );
   if (!isMachineToken(r.machine_token)) {
     throw new StartError(
       "NOT_LOGGED_IN",
-      "machine.json has a malformed machine token: run `npx @open-artifacts/bus install`",
+      `machine.json has a malformed machine token: run \`${BUS_CMD} install\``,
     );
   }
   checkHub(hub);

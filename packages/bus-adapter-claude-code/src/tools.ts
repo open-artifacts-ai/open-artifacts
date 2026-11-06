@@ -1,8 +1,11 @@
 import {
+  BUS_CMD,
   cleanStatusLabel,
   type DaemonClient,
   earlierStatusText,
   excerptOf,
+  linkedLiveNamespace,
+  movedName,
   receiptText,
   rosterLine,
   SetStatus,
@@ -25,7 +28,7 @@ export const TOOLS = [
   {
     name: "list_agents",
     description:
-      "List the agents you can message, in your Open Artifacts bus namespace.",
+      "List the agents you can message, in your Open Artifacts bus namespace and linked ones.",
     inputSchema: none,
   },
   {
@@ -39,7 +42,7 @@ export const TOOLS = [
         to_namespace: {
           type: "string",
           description:
-            "The recipient's namespace, when a global agent's target name exists in several.",
+            "The recipient's namespace, when the target name exists in several: a global agent's, or a linked project's.",
         },
       },
       required: ["to", "text"],
@@ -58,8 +61,7 @@ export const TOOLS = [
   },
   {
     name: "self",
-    description:
-      "Your own Open Artifacts bus agent entry and bus name. To become global, ask the user to approve running `npx @open-artifacts/bus global add <your start dir>`, then restart.",
+    description: `Your own Open Artifacts bus agent entry and bus name. To become global, ask the user to approve running \`${BUS_CMD} global add <your start dir>\`, then restart.`,
     inputSchema: none,
   },
   {
@@ -96,7 +98,7 @@ const text = (t: string, isError?: boolean): ToolResult => ({
 });
 
 /** Older daemons send only `live`. */
-const queued = (a: { live: boolean; state?: "live" | "queued" }) =>
+const queued = (a: { live: boolean; state?: "live" | "queued" | "away" }) =>
   (a.state ?? (a.live ? "live" : "queued")) === "queued";
 
 /**
@@ -150,9 +152,18 @@ async function run(
       return text(
         r.agents.length
           ? r.agents
-              .map((a) => rosterLine({ ...a, queued: queued(a) }, now))
+              .map((a) =>
+                rosterLine(
+                  {
+                    ...a,
+                    queued: queued(a),
+                    away: a.state === "away" ? (a.since ?? "") : undefined,
+                  },
+                  now,
+                ),
+              )
               .join("\n")
-          : "No agents in your namespace.",
+          : "No agents in your namespace and linked ones.",
       );
     }
     if (name === "send_message") {
@@ -174,8 +185,16 @@ async function run(
       if (r.text) return text(r.text, false);
       const n =
         r.reason === "ambiguous" ? await namespacesOf(to, request) : undefined;
+      const moved =
+        r.reason === "revoked"
+          ? await movedTo(to, namespace, request)
+          : undefined;
+      const linked =
+        (r.reason === "closed" || r.reason === "revoked") && !namespace
+          ? await linkedLive(to, request)
+          : undefined;
       return text(
-        receiptText(r, to, n, excerptOf(body)),
+        receiptText(r, to, n, excerptOf(body), moved, linked),
         r.state === "refused" || r.state === "expired",
       );
     }
@@ -253,6 +272,43 @@ async function namespacesOf(
     return new Set(
       r.agents.filter((a) => a.name === name).map((a) => a.namespace),
     ).size;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * #1448: the live `<name>-N` a revoked name moved to, in `namespace` when the
+ * send named one; undefined when none or the roster is unavailable.
+ */
+async function movedTo(
+  name: string,
+  namespace: string | undefined,
+  request: Request,
+): Promise<string | undefined> {
+  try {
+    const r = await request({ type: "list" });
+    if (r.type !== "roster") return undefined;
+    return movedName(
+      name,
+      r.agents
+        .filter((a) => namespace === undefined || a.namespace === namespace)
+        .map((a) => a.name),
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+/** #1567: the linked namespace with a live agent called `name`; undefined when none or the roster is unavailable. */
+async function linkedLive(
+  name: string,
+  request: Request,
+): Promise<string | undefined> {
+  try {
+    const r = await request({ type: "list" });
+    if (r.type !== "roster") return undefined;
+    return linkedLiveNamespace(name, r.agents);
   } catch {
     return undefined;
   }

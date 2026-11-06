@@ -36,6 +36,7 @@
     "@oa/bus-daemon": "workspace:*",
     "@oa/bus-ipc": "workspace:*",
     "@oa/bus-protocol": "workspace:*",
+    "@oa/shared": "workspace:*",
     "@types/node": "^22.19.0",
     "esbuild": "0.28.2",
     "jiti": "2.7.0",

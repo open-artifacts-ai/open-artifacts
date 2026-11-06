@@ -546,3 +546,23 @@ describe("live versions: the socket", () => {
     expect(send).not.toHaveBeenCalled();
   });
 });
+
+describe("live versions: other event frames", () => {
+  it("a comments event never touches version state", async () => {
+    const first = await open(viewerPath(OWNED));
+    post(first, "interacted");
+    await act(async () => {
+      events.emitComments(OWNED, 4);
+      await new Promise((r) => setTimeout(r, 100));
+    });
+    expect(frames()).toEqual([first]);
+    expect(screen.queryByTestId("versions-dot")).toBeNull();
+    expect(screen.queryByRole("button", { name: /View version/ })).toBeNull();
+    expect(screen.queryByText(/available/)).toBeNull();
+    // Control: a real new version on the same touched frame does show them.
+    await publish();
+    expect(
+      (await screen.findAllByTestId("versions-dot", {}, LONG)).length,
+    ).toBeGreaterThan(0);
+  });
+});

@@ -4,6 +4,8 @@ import {
   displayKind,
   excerptOf,
   lateDeliveredText,
+  linkedLiveNamespace,
+  movedName,
   receiptText,
   unconfirmedText,
 } from "../src/copy.ts";
@@ -40,7 +42,7 @@ describe("receipt copy", () => {
 
   it("pending and delivered", () => {
     expect(receiptText({ state: "pending" }, "oa-team-e0")).toBe(
-      "○  Queued for oa-team-e0. Not delivered yet; expires in 1 hour.",
+      "○  Queued for oa-team-e0. Not delivered yet; expires within 7 days.",
     );
     expect(receiptText({ state: "delivered" }, "oa-team-e0")).toBe(
       "✓  Delivered to oa-team-e0.",
@@ -60,6 +62,13 @@ describe("receipt copy", () => {
       t("refused", "too_large"),
       t("refused", "other_namespace"),
       t("refused", "revoked"),
+      receiptText(
+        { state: "refused", reason: "revoked" },
+        "oa-product",
+        undefined,
+        Q,
+        "oa-product-2",
+      ),
       t("refused", "ambiguous", 2, "docs-writer"),
       lateDeliveredText("oa-team-e0", Q),
       unconfirmedText("oa-team-e0", Q),
@@ -67,12 +76,28 @@ describe("receipt copy", () => {
     expect(got).toEqual(want);
   });
 
+  it("#1448: a revoked name points at its live <name>-N, never the reinstall hint", () => {
+    const roster = ["OA Product-3", "oa product-2", "OA Product-2x", "Other"];
+    expect(movedName("OA Product", roster)).toBe("oa product-2");
+    expect(movedName("OA Product", ["OA Productive-2"])).toBeUndefined();
+    const s = receiptText(
+      { state: "refused", reason: "revoked" },
+      "OA Product",
+      undefined,
+      undefined,
+      "OA Product-2",
+    );
+    expect(s).toContain("OA Product moved; try OA Product-2.");
+    expect(t("refused", "revoked")).not.toContain("install");
+    expect(s).not.toContain("install");
+  });
+
   it("an expired notice moves the quote down when line 1 would pass 80 columns", () => {
     const long = excerptOf("x".repeat(60)) as string;
     const s = receiptText({ state: "expired" }, "oa-team-e0", undefined, long);
     // The quote and its tail fit on their own line.
     expect(s).toBe(
-      `×  Expired: your message to oa-team-e0,\n   "${long}", was not taken within 1 hour.`,
+      `×  Expired: your message to oa-team-e0,\n   "${long}", was not taken within 7 days.`,
     );
     // Every line after the first is indented three spaces, the quote included.
     expect(
@@ -99,7 +124,7 @@ describe("receipt copy", () => {
 
   it("keeps the quote on line 1 when it fits, the tail below", () => {
     expect(receiptText({ state: "expired" }, "e0", undefined, "hi")).toBe(
-      `×  Expired: your message to e0, "hi",\n   was not taken within 1 hour.`,
+      `×  Expired: your message to e0, "hi",\n   was not taken within 7 days.`,
     );
     expect(
       receiptText(
@@ -115,7 +140,7 @@ describe("receipt copy", () => {
 
   it("without an excerpt (a legacy entry) the quote is omitted", () => {
     expect(receiptText({ state: "expired" }, "peer")).toBe(
-      "×  Expired: your message to peer was not taken within 1 hour.",
+      "×  Expired: your message to peer was not taken within 7 days.",
     );
     expect(
       receiptText({ state: "expired", reason: "recipient_closed" }, "peer"),
@@ -250,5 +275,64 @@ describe("displayKind (C26h)", () => {
     expect(displayKind("\x1b[2J")).toBe("unknown");
     expect(displayKind("zz\u202e)sn ,ip(\u200b\u2066")).toBe("zz)sn ,ip(");
     expect(displayKind("\u200f\ufeff")).toBe("unknown");
+  });
+});
+
+describe("linked namespaces (#1567)", () => {
+  const row = (name: string, namespace: string, state = "live") => ({
+    name,
+    namespace,
+    live: state === "live",
+    state,
+  });
+  it("closed and revoked refusals say to pass to_namespace when a linked namespace has the live agent", () => {
+    for (const reason of ["closed", "revoked"] as const) {
+      const out = receiptText(
+        { state: "refused", reason },
+        "docs",
+        undefined,
+        "hi",
+        undefined,
+        "github.com/acme/docs",
+      );
+      expect(out).toContain(
+        "pass to_namespace github.com/acme/docs to reach the live one.",
+      );
+    }
+    // Other refusals and no linked namespace: no hint.
+    expect(
+      receiptText(
+        { state: "refused", reason: "unknown_agent" },
+        "docs",
+        undefined,
+        "hi",
+        undefined,
+        "github.com/acme/docs",
+      ),
+    ).not.toContain("to_namespace");
+    expect(
+      receiptText(
+        { state: "refused", reason: "closed" },
+        "docs",
+        undefined,
+        "hi",
+      ),
+    ).not.toContain("to_namespace");
+  });
+  it("finds the one namespace with a live agent of that name, ignoring case", () => {
+    expect(
+      linkedLiveNamespace("Docs", [row("docs", "a/b"), row("x", "c/d")]),
+    ).toBe("a/b");
+    expect(
+      linkedLiveNamespace("docs", [row("docs", "a/b", "away")]),
+    ).toBeUndefined();
+    expect(
+      linkedLiveNamespace("docs", [row("docs", "a/b", "queued")]),
+    ).toBeUndefined();
+    // Live in two: ambiguous, no hint.
+    expect(
+      linkedLiveNamespace("docs", [row("docs", "a/b"), row("docs", "c/d")]),
+    ).toBeUndefined();
+    expect(linkedLiveNamespace("docs", [])).toBeUndefined();
   });
 });

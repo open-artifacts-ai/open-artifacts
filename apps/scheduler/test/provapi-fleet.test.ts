@@ -2219,17 +2219,20 @@ describe("#1343: FLEET_SECOND (leo) after the canary smoke", () => {
     ).toHaveLength(1);
   });
 
-  it("with no canary, FLEET_SECOND is inert (prod as shipped): no smoke, nothing queued", async () => {
+  it("with no canary, FLEET_SECOND and a required smoke are inert: no smoke, nothing queued, no alert", async () => {
     const leo = await on("0.92.0", { created: 0 });
     await on("0.92.0", { created: 1 });
     const f = fakes({ canary: "", second: leo });
+    // The smoke required, a 60-minute soak, no smoke token.
+    Object.assign(f.env, { FLEET_SMOKE: "required", FLEET_SOAK_MIN: "60" });
     const lines = captureLogs(vi.spyOn);
     await ticks(f, NOW, NOW + 120 * MIN);
     expect(await fleetJobs()).toEqual([]);
     expect(f.smokes).toEqual([]);
     expect(new Set(lines)).toEqual(new Set(["provapi fleet no_canary"]));
+    // Past canary_blocked's window: no smoke_unconfigured, no canary_blocked.
     const c = await fleetConditions(f.env, NOW + 120 * MIN);
-    expect(c.fleet_halted.open).toBe(false);
+    expect(c.fleet_halted).toEqual({ open: false, rows: [] });
     expect(c.version_skew.open).toBeNull();
   });
 });
