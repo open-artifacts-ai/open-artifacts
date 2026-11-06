@@ -1075,29 +1075,34 @@ describe("Agents › Namespaces › Links (#1567)", () => {
   );
 
   it("linkError: bad_request, unknown reason, non-API errors", () => {
-    expect(linkError(new ApiClientError("bad_request", "x", 400))).toBe(
-      "Pick two different namespaces.",
-    );
+    const bad = (field: string) => {
+      const e = new ApiClientError("bad_request", "x", 400);
+      e.details = { field };
+      return e;
+    };
+    expect(linkError(bad("namespaces"))).toBe("Pick two different namespaces.");
+    expect(linkError(bad("a"))).toBe("The first namespace isn't valid.");
+    expect(linkError(bad("b"))).toBe("The second namespace isn't valid.");
     expect(linkError(new Error("boom"))).toBe("That didn't save. Try again.");
   });
 
-  it("the mock caps a namespace at 10 links with 409 link_limit", async () => {
+  it("fewer than two namespaces: Link is disabled with a hint", async () => {
     withBus();
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({ agents: [agentNamed("oa-manager")], live: true }),
+      ),
+      http.get(`*${R.busLinks}`, () =>
+        HttpResponse.json({ links: [], live: true }),
+      ),
+    );
     mount("/agents/namespaces");
-    await screen.findByRole("list", { name: "Links" });
-    const put = (b: string) =>
-      fetch(R.busLinks, {
-        method: "PUT",
-        headers: { "content-type": "application/json", "X-OA-Request": "1" },
-        body: JSON.stringify({ a: OA, b }),
-      });
-    for (let i = 0; i < 9; i++) expect((await put(`ns${i}`)).status).toBe(200);
-    const over = await put("ns9");
-    expect(over.status).toBe(409);
     expect(
-      ((await over.json()) as { error: { details: unknown } }).error.details,
-    ).toEqual({ reason: "link_limit" });
-    expect((await put("ns0")).status).toBe(200);
+      await screen.findByRole("button", { name: "Link namespaces" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByText(/Linking needs two namespaces/),
+    ).toBeInTheDocument();
   });
 
   it("the links failing to load shows Retry, not a blank card", async () => {

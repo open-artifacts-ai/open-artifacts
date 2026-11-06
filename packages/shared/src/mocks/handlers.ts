@@ -732,8 +732,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       )
         return err("conflict", "Too many links", { reason: "link_limit" });
       const link: BusLink = { id: newId(), a, b, createdAt: iso() };
-      busLinks = [...busLinks, link].sort(
-        (x, y) => x.a.localeCompare(y.a) || x.b.localeCompare(y.b),
+      busLinks = [...busLinks, link].sort((x, y) =>
+        x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : x.b > y.b ? 1 : 0,
       );
       return HttpResponse.json({ link });
     }),

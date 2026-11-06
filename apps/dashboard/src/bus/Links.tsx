@@ -30,7 +30,12 @@ export function linkError(e: unknown): string {
     const reason = (e.details as { reason?: unknown } | undefined)?.reason;
     if (typeof reason === "string" && LINK_REFUSALS[reason])
       return LINK_REFUSALS[reason];
-    if (e.code === "bad_request") return "Pick two different namespaces.";
+    if (e.code === "bad_request") {
+      const field = (e.details as { field?: unknown } | undefined)?.field;
+      if (field === "a") return "The first namespace isn't valid.";
+      if (field === "b") return "The second namespace isn't valid.";
+      return "Pick two different namespaces.";
+    }
   }
   return "That didn't save. Try again.";
 }
@@ -205,6 +210,12 @@ export function LinksCard({ known }: { known: string[] }) {
         }
       >
         {body()}
+        {q.data?.live && all.length < 2 && (
+          <p className={`m-0 ${muted}`}>
+            Linking needs two namespaces with agents seen here. Or run{" "}
+            <code>oa-bus link</code> from the two folders.
+          </p>
+        )}
       </SettingsCard>
       {adding && (
         <LinkDialog
