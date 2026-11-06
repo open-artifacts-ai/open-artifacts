@@ -10,7 +10,7 @@ import { Button } from "@oa/ui/shadcn";
 import { useId, useState } from "react";
 import { answerError, useAnswerAsk } from "../../api/comments";
 import { TXT } from "../ui";
-import { versionDate } from "../versionDate";
+import { clockTime, versionDate } from "../versionDate";
 
 const MUTED = "text-muted-foreground";
 
@@ -34,18 +34,19 @@ export function asksForMe(threads: readonly CommentThread[]): string[] {
     .map((t) => t.id);
 }
 
-const DELIVERY: Record<CommentMention["delivery"], string> = {
-  delivered: "Delivered",
-  queued: "offline · will get this when it's back",
-  seen: "Seen",
-  gone: "is gone. Mention another agent.",
-};
-const ASSIGNED: Record<CommentAssigned["state"], string> = {
-  delivered: "Delivered",
-  queued: "offline · will get this when it's back",
-  seen: "Seen",
-  done: "Done",
-};
+const OFFLINE = "offline · it will get this when it's back";
+
+/** "Codex is offline · it will get this when it's back", "Claude Code: Delivered". */
+const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
+  d === "queued"
+    ? `${name} is ${OFFLINE}`
+    : d === "gone"
+      ? `${name} is gone · mention another agent`
+      : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
+const assignedLine = (name: string, st: CommentAssigned["state"]) =>
+  st === "queued"
+    ? `Assigned to ${name}, who is ${OFFLINE}`
+    : `Assigned to ${name}: ${st === "done" ? "Done" : st === "seen" ? "Seen" : "Delivered"}`;
 
 /** Delivery of each mention and the assignment, in plain words. Names are text, never HTML. */
 export function Delivery({ c }: { c: CommentT }) {
@@ -54,14 +55,12 @@ export function Delivery({ c }: { c: CommentT }) {
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>
       {c.mentions?.map((m) => (
         <li key={m.key} data-mention={m.key}>
-          <span className="font-medium">@{m.name}</span>{" "}
-          {m.delivery === "gone" ? DELIVERY.gone : `· ${DELIVERY[m.delivery]}`}
+          {deliveryLine(m.name, m.delivery)}
         </li>
       ))}
       {c.assigned && (
         <li data-assigned={c.assigned.key}>
-          Assigned to <span className="font-medium">{c.assigned.name}</span> ·{" "}
-          {ASSIGNED[c.assigned.state]}
+          {assignedLine(c.assigned.name, c.assigned.state)}
         </li>
       )}
     </ul>
@@ -99,8 +98,11 @@ export function AskBlock({
         className={`flex items-center gap-2 rounded-md bg-muted px-2 py-1 ${TXT}`}
       >
         <span className="min-w-0 flex-1 break-words">
-          {ask.question}: {pickedOpt.label} ·{" "}
-          {ask.answer?.by.me ? "You" : ask.answer?.by.name}
+          {ask.question.trimEnd().endsWith("?")
+            ? `${ask.question} `
+            : `${ask.question}: `}
+          {pickedOpt.label} · {ask.answer?.by.me ? "you" : ask.answer?.by.name},{" "}
+          {clockTime(ask.answer?.at ?? "")}
         </span>
         <Button size="xs" variant="ghost" onClick={() => setOpen(true)}>
           Show

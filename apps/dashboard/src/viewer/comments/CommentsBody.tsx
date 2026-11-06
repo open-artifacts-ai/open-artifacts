@@ -87,7 +87,7 @@ function Composer({
   alwaysOpen?: boolean;
   failure?: (e: unknown) => React.ReactNode;
 }) {
-  const { capped } = useCommentsApi();
+  const { capped, canMention, guest } = useCommentsApi();
   const [text, setText] = useState(initial);
   const [open, setOpen] = useState(alwaysOpen);
   const [error, setError] = useState<unknown>(null);
@@ -218,6 +218,15 @@ function Composer({
           }
         }}
       />
+      {!canMention &&
+        !guest &&
+        !capped &&
+        initial === "" &&
+        /(^|\s)@/.test(text) && (
+          <p className={`${TXT} text-muted-foreground`}>
+            Only the owner and editors can wake agents.
+          </p>
+        )}
       {found && (
         <MentionMenu
           id={menuId}

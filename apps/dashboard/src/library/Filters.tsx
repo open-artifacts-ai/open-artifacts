@@ -30,7 +30,7 @@ const FORMATS = [
   ...FormatSchema.options.map((value) => ({ value, label: LABEL[value] })),
 ];
 const WAITING = [
-  { value: ALL, label: "Everything" },
+  { value: ALL, label: "All" },
   { value: "needs_answer", label: "Needs your answer" },
   { value: "waiting_on_agents", label: "Waiting on agents" },
 ];

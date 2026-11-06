@@ -261,7 +261,9 @@ describe("asks on the comments column", () => {
       await within(c).findByRole("button", { name: /Show resolved/ }),
     );
     expect(
-      await within(c).findByText(/Which layout\?: Side by side · You/),
+      await within(c).findByText(
+        /Which layout\? Side by side · you, \d\d:\d\d/,
+      ),
     ).toBeInTheDocument();
     expect(within(c).queryByRole("button", { name: /List only/ })).toBeNull();
     fireEvent.click(within(c).getByRole("button", { name: "Show" }));
@@ -320,10 +322,19 @@ describe("@mentions in the composer", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     expect(
-      await within(c).findByText(/offline · will get this when it's back/),
+      await within(c).findByText(
+        /OA Product is offline · it will get this when it's back/,
+      ),
     ).toBeInTheDocument();
-    expect(within(c).getByText(/Seen/)).toBeInTheDocument();
-    expect(within(c).getByText(/Assigned to/)).toHaveTextContent("Done");
+    expect(
+      within(c).getByText(
+        "OA Product is offline · it will get this when it's back",
+      ),
+    ).toBeInTheDocument();
+    expect(within(c).getByText("OA Design: Seen")).toBeInTheDocument();
+    expect(
+      within(c).getByText("Assigned to OA Product: Done"),
+    ).toBeInTheDocument();
   });
 });
 
@@ -550,5 +561,39 @@ describe("round 2", () => {
         "data-active",
       ),
     );
+  });
+});
+
+describe("round 3 copy", () => {
+  it("shows the wake hint to a commenter who can't mention", async () => {
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({
+          ...fixtures.artifacts.find((a) => a.id === OWNED),
+          access: "viewer",
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: true,
+            comment: true,
+          },
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.focus(box);
+    expect(within(c).queryByText(/can wake agents/)).toBeNull();
+    fireEvent.change(box, { target: { value: "hi @Codex" } });
+    expect(
+      within(c).getByText("Only the owner and editors can wake agents."),
+    ).toBeInTheDocument();
   });
 });
