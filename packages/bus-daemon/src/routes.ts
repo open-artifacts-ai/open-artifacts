@@ -186,7 +186,7 @@ export type RouteCtx = {
     reply: (f: Unframed) => unknown,
   ) => Unframed | undefined;
   /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
-  configFiles?: (cwd: string) => ConfigFile[];
+  configFiles?: (cwd: string, pending?: boolean) => ConfigFile[];
   /** The daemon's version, reported by `self`. */
   version?: string;
   /**
@@ -262,7 +262,12 @@ export function routeLocal(
 
   switch (frame.type) {
     case "self": {
-      const files = frame.row ? (ctx.configFiles?.(agent.cwd) ?? []) : [];
+      const files = frame.row
+        ? (ctx.configFiles?.(
+            agent.cwd,
+            hello.caps?.includes(ADAPTER_CAPS.pending),
+          ) ?? [])
+        : [];
       const self = {
         type: "agent",
         agent: {

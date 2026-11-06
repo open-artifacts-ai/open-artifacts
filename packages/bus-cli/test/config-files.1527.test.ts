@@ -75,6 +75,7 @@ describe("doctor", () => {
 
   it("prints nothing for a 0600 file", async () => {
     const { ctx, file } = setup();
+    writeFileSync(file, "{}");
     chmodSync(file, 0o600);
     await doctor(ctx);
     expect(ctx.all().join("\n")).not.toContain(".oa-bus.json");

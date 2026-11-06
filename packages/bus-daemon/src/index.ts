@@ -7,6 +7,7 @@ import {
   supportsPromptId,
 } from "@oa/bus-adapter-opencode/version";
 import {
+  ADAPTER_CAPS,
   type DaemonFrame,
   excerptOf,
   fitName,
@@ -55,7 +56,12 @@ import {
   savedToken,
   socketPath,
 } from "./config.ts";
-import { ConfigIssues, configPaths, inspectGlobal } from "./config-issues.ts";
+import {
+  ConfigIssues,
+  configPaths,
+  inspectApprovals,
+  inspectGlobal,
+} from "./config-issues.ts";
 import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
 import { HubConnection, type HubOptions } from "./hub.ts";
 import {
@@ -110,7 +116,9 @@ export * from "./global.ts";
 export * from "./hub.ts";
 export * from "./liveness/claude.ts";
 export * from "./namespace.ts";
+export * from "./namespaces.ts";
 export * from "./outbox.ts";
+export { readOwnFile } from "./own-file.ts";
 export * from "./presence/opencode.ts";
 export * from "./resend.ts";
 export * from "./routes.ts";
@@ -312,8 +320,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
 
   const configIssues = new ConfigIssues();
   /** Config files refused or noted (#1527): `.oa-bus.json` files seen, and the allowlist. */
-  const configFiles = (cwd?: string) => {
+  const configFiles = (cwd?: string, pending = false) => {
     const g = inspectGlobal();
+    const a = inspectApprovals();
     let within: Set<string> | undefined;
     // An agent sees only its own folder chain: other projects' paths stay private.
     if (cwd !== undefined) {
@@ -323,7 +332,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         within = new Set(configPaths(cwd));
       }
     }
-    return [...configIssues.list(within), ...(g ? [g] : [])];
+    return [
+      ...configIssues.list(within, { pending }),
+      ...(a ? [a] : []),
+      ...(g ? [g] : []),
+    ];
   };
   const resolveNs = (cwd: string, allowMissing: boolean) =>
     (
@@ -1015,7 +1028,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return { namespace, agents: rows };
         }),
       );
-      const config_files = configFiles();
+      const config_files = configFiles(
+        undefined,
+        req.caps?.includes(ADAPTER_CAPS.pending),
+      );
       return {
         pid: process.pid,
         version,

@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { globalFile, writeGlobalDirs } from "../src/global.ts";
 import { resolveNamespace } from "../src/namespace.ts";
+import { approvals } from "./approvals.ts";
 
 const tmp = () => realpathSync(mkdtempSync(join(tmpdir(), "ob-ns-")));
 const noGit = { gitRemote: () => null, gitRoot: () => null };
@@ -45,7 +46,12 @@ describe("namespace resolution", () => {
       },
     );
     // Its `global` is ignored: only the user's allowlist grants it (C19).
-    expect(resolveNamespace(deep, noGit)).toEqual({
+    expect(
+      resolveNamespace(deep, {
+        ...noGit,
+        namespacesFile: approvals([root, "zeta"]),
+      }),
+    ).toEqual({
       namespace: "zeta",
       global: false,
       source: "config",
@@ -70,7 +76,12 @@ describe("namespace resolution", () => {
         mode: 0o644,
       },
     );
-    expect(resolveNamespace(deep, noGit)).toEqual({
+    expect(
+      resolveNamespace(deep, {
+        ...noGit,
+        namespacesFile: approvals([deep, "inner"]),
+      }),
+    ).toEqual({
       namespace: "inner",
       global: false,
       source: "config",
@@ -86,7 +97,12 @@ describe("namespace resolution", () => {
         mode: 0o644,
       },
     );
-    expect(resolveNamespace(root, noGit).namespace).toBe("github.com/acme/app");
+    expect(
+      resolveNamespace(root, {
+        ...noGit,
+        namespacesFile: approvals([root, "github.com/acme/app"]),
+      }).namespace,
+    ).toBe("github.com/acme/app");
   });
 
   it("ignores and logs an invalid .oa-bus.json", () => {
@@ -149,7 +165,12 @@ describe("namespace resolution", () => {
       },
     );
     symlinkSync(join(repo, "sub"), join(root, "link"));
-    expect(resolveNamespace(join(root, "link"), noGit).namespace).toBe("zeta");
+    expect(
+      resolveNamespace(join(root, "link"), {
+        ...noGit,
+        namespacesFile: approvals([repo, "zeta"]),
+      }).namespace,
+    ).toBe("zeta");
   });
 
   it("throws when the cwd does not resolve", () => {

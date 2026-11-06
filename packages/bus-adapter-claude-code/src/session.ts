@@ -239,7 +239,7 @@ export function sessionHello(
     pid,
     cwd,
     proposed_name: fitName(session.name, 64) || undefined,
-    caps: [ADAPTER_CAPS.mailbox],
+    caps: [ADAPTER_CAPS.mailbox, ADAPTER_CAPS.pending],
     attest: {
       session_id: session.sessionId,
       socket_path: session.socketPath ?? undefined,
