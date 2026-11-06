@@ -5,6 +5,7 @@ import {
   approveCommand,
   canonicalPath,
   isApproved,
+  logApproval,
   namespacesFile,
   readApprovals,
   readOwnFile,
@@ -73,6 +74,11 @@ export async function namespace(
       return 0;
     }
     writeApprovals(keep, ctx.home);
+    for (const e of entries.filter((x) => !keep.includes(x)))
+      logApproval(
+        { action: "revoke", ...e, tty: Boolean(ctx.stdinIsTTY) },
+        ctx.home,
+      );
     say(ctx, c.nsRevoked(shown(ctx, real ?? given)));
     return 0;
   }
@@ -108,7 +114,7 @@ export async function namespace(
   }
   if (!opts.yes) {
     if (!ctx.stdinIsTTY || !ctx.readLine) {
-      sayErr(ctx, c.nsNeedTty(`${approveCommand(real)} --yes`));
+      sayErr(ctx, c.nsNeedTty(approveCommand(real)));
       return 1;
     }
     say(ctx, c.nsAsk(shown(ctx, real), plain(ns)));
@@ -124,6 +130,15 @@ export async function namespace(
     { dir: real, namespace: ns },
   ];
   writeApprovals(next, ctx.home);
+  logApproval(
+    {
+      action: "approve",
+      dir: real,
+      namespace: ns,
+      tty: Boolean(ctx.stdinIsTTY),
+    },
+    ctx.home,
+  );
   say(ctx, c.nsApproved(shown(ctx, real), plain(ns)));
   return 0;
 }

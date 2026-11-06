@@ -58,9 +58,11 @@ describe("namespace approve", () => {
     const { ctx, run, entries, ops } = setup({ tty: false });
     expect(await run("approve", "ops")).toBe(1);
     expect(entries()).toEqual([]);
-    expect(ctx.err().join("\n")).toContain(
-      `oa-bus namespace approve '${ops}' --yes`,
+    const refusal = ctx.err().join("\n");
+    expect(refusal).toContain(
+      `Ask them to run this in a terminal: oa-bus namespace approve '${ops}'`,
     );
+    expect(refusal).not.toContain("--yes");
     expect(await run("approve", "ops", "--yes")).toBe(0);
     expect(entries()).toEqual([{ dir: ops, namespace: "team" }]);
   });
@@ -117,6 +119,31 @@ describe("namespace approve", () => {
     chmodSync(namespacesFile(ctx.home), 0o664);
     expect(await run("approve", "ops", "--yes")).toBe(1);
     expect(readFileSync(namespacesFile(ctx.home), "utf8")).toBe("{}");
+  });
+});
+
+describe("the approvals log", () => {
+  const log = (home: string) => join(home, "logs", "approvals.log");
+
+  it("approve and revoke each append a line, 0600", async () => {
+    const { ctx, run, ops } = setup();
+    await run("approve", "ops");
+    await run("revoke", "ops");
+    const lines = readFileSync(log(ctx.home), "utf8").trim().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(
+      new RegExp(`^\\S+Z approve dir="${ops}" namespace="team" tty=yes$`),
+    );
+    expect(lines[1]).toMatch(/ revoke dir=.* namespace="team" tty=yes$/);
+    expect(statSync(log(ctx.home)).mode & 0o777).toBe(0o600);
+  });
+
+  it("records a --yes without a terminal as tty=no; a refusal logs nothing", async () => {
+    const { ctx, run } = setup({ tty: false });
+    await run("approve", "ops");
+    expect(() => readFileSync(log(ctx.home))).toThrow();
+    await run("approve", "ops", "--yes");
+    expect(readFileSync(log(ctx.home), "utf8")).toMatch(/tty=no\n$/);
   });
 });
 

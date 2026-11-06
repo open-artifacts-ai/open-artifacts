@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import {
+  appendFileSync,
   chmodSync,
   closeSync,
   mkdirSync,
@@ -91,4 +92,26 @@ export function writeApprovals(entries: readonly Approval[], h = home()): void {
     unlinkSync(tmp);
     throw e;
   }
+}
+
+/**
+ * One line per approve or revoke in `<home>/logs/approvals.log` (0600,
+ * appended): time, action, directory, namespace, and whether stdin was a terminal.
+ */
+export function logApproval(
+  entry: {
+    action: "approve" | "revoke";
+    dir: string;
+    namespace: string;
+    tty: boolean;
+  },
+  h = home(),
+  now = new Date(),
+): void {
+  const dir = join(h, "logs");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, "approvals.log");
+  const line = `${now.toISOString()} ${entry.action} dir=${JSON.stringify(entry.dir)} namespace=${JSON.stringify(entry.namespace)} tty=${entry.tty ? "yes" : "no"}\n`;
+  appendFileSync(file, line, { mode: 0o600 });
+  chmodSync(file, 0o600);
 }

@@ -153,6 +153,50 @@ describe("an approval that does not apply", () => {
   });
 });
 
+describe("nested files", () => {
+  it("an approved parent does not approve a child's own namespace: the child is pending", () => {
+    const parent = repo("team");
+    const child = join(parent, "sub");
+    mkdirSync(child);
+    writeFileSync(
+      join(child, ".oa-bus.json"),
+      JSON.stringify({ namespace: "other" }),
+      {
+        mode: 0o600,
+      },
+    );
+    const issues = new ConfigIssues();
+    const ns = resolveNamespace(child, {
+      ...noGit,
+      issues,
+      namespacesFile: approvals([parent, "team"]),
+    });
+    expect(ns.namespace).toBe("sub");
+    expect(issues.list(undefined, { pending: true })).toEqual([
+      expect.objectContaining({
+        state: "pending",
+        file: join(child, ".oa-bus.json"),
+        fix: `oa-bus namespace approve '${child}'`,
+      }),
+    ]);
+  });
+
+  it("a symlinked child file is skipped and falls through to the approved parent", () => {
+    const parent = repo("team");
+    const child = join(parent, "sub");
+    mkdirSync(child);
+    const real = join(tmp(), "elsewhere.json");
+    writeFileSync(real, JSON.stringify({ namespace: "evil" }), { mode: 0o600 });
+    symlinkSync(real, join(child, ".oa-bus.json"));
+    expect(
+      resolveNamespace(child, {
+        ...noGit,
+        namespacesFile: approvals([parent, "team"]),
+      }).namespace,
+    ).toBe("team");
+  });
+});
+
 describe("a namespace equal to the derived one", () => {
   it("needs no approval and lists nothing", () => {
     const dir = repo("github.com/acme/app");

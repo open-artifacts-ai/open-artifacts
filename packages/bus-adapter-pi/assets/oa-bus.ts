@@ -859,7 +859,8 @@ function open(
         cwd: id.cwd,
         proposed_name: id.name,
         // #1295: this asset decodes away rows and the new refusals.
-        caps: ["mailbox"],
+        // #1525: and a config file that is pending approval.
+        caps: ["mailbox", "pending"],
         attest: start ? { proc_start: start } : {},
       }),
     );

@@ -750,8 +750,8 @@ export function copy(style: Style) {
     ],
     nsPrompt: () => "Approve it? [y/N] ",
     nsNeedTty: (command: string) => [
-      fail("Approving a namespace needs you to confirm it."),
-      next(`Run it in a terminal, or add --yes: ${command}`),
+      fail("Approving a namespace needs your user."),
+      next(`Ask them to run this in a terminal: ${command}`),
     ],
     nsDeclined: () => warn("Not approved. Nothing changed."),
     nsAlready: (dir: string, namespace: string) =>
