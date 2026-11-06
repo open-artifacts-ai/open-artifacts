@@ -47,6 +47,8 @@ import {
   fakeBilling,
 } from "./billing-helpers.js";
 import {
+  APP,
+  app,
   BROKER,
   brokerGate,
   connect,
@@ -63,7 +65,7 @@ import {
   type FakeDirectory,
   fakeDirectory,
 } from "./fixtures/fake-directory.js";
-import { login } from "./helpers.js";
+import { fetchAndWait, login } from "./helpers.js";
 import { pinMiddayUtc } from "./midday.js";
 
 const MIN = 60_000;
@@ -1111,6 +1113,73 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
     expect(await period(late + MIN)).toBe("done");
     expect(modes[0]).toBe("google");
     expect((await status()).state).toBe("ok");
+  });
+
+  /** A same-origin POST carrying the BILLING gate too (billing live on the request). */
+  const postBilled = (path: string) =>
+    fetchAndWait(
+      app,
+      new Request(`${APP}${path}`, {
+        method: "POST",
+        headers: { "x-oa-request": "1", cookie: owner.cookie },
+      }),
+      e,
+      { ...hostedProps(), ...billingProps } as never,
+    );
+
+  it("SyncStatus.mode is the mode the DO follows: Business to Team reports frozen from POST /directory/sync (#860)", async () => {
+    const t0 = pinMiddayUtc();
+    const m = mailer();
+    e = hostedEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
+    await tier({ tier: "business" }, t0);
+    await connected(t0);
+    expect((await status()).mode).toBe("google");
+    // Billing live: the provisioned FEATURES still say sync_google.
+    const biz = await postBilled(R.directorySync);
+    expect(biz.status).toBe(202);
+    expect(((await biz.json()) as SyncStatus).mode).toBe("google");
+    await tier({ tier: "team" }, t0 + MIN);
+    const r = await postBilled(R.directorySync);
+    expect(r.status).toBe(202);
+    expect(((await r.json()) as SyncStatus).mode).toBe("frozen");
+    expect(await kv("mode")).toBe("frozen");
+    expect((await status()).mode).toBe("frozen");
+  });
+
+  it("a held confirm: on Team the route refuses (no status), and the DO's own confirm kick reports frozen (#860)", async () => {
+    const t0 = pinMiddayUtc();
+    const m = mailer();
+    e = hostedEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
+    await tier({ tier: "business" }, t0);
+    await connected(t0);
+    await tier({ tier: "team" }, t0 + MIN);
+    // Group sync is stopped on Team: the confirm can't apply, so the route
+    // answers before the DO and no SyncStatus carries a mode.
+    const r = await postBilled(R.directoryHeldConfirm("g-none"));
+    expect(r.status).toBe(409);
+    // The kick a confirm ends with (and Sync now) hands over the tier's mode.
+    const s = await inDo((st) =>
+      engine(st).kick("confirm", t0 + 2 * MIN, "frozen", false),
+    );
+    expect(s.mode).toBe("frozen");
+  });
+
+  it("unchanged without the gate: a gateless hosted install reports the provisioned mode, and a self-hosted DO ignores a handed mode (#860)", async () => {
+    const t0 = pinMiddayUtc();
+    const m = mailer();
+    e = hostedEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
+    await connected(t0);
+    // No BILLING gate on the request: its mode is the provisioned one.
+    const r = await post(e, R.directorySync, owner.cookie);
+    expect(r.status).toBe(202);
+    expect(((await r.json()) as SyncStatus).mode).toBe("google");
+    expect((await status()).mode).toBe("google");
+    // Self-hosted: FEATURES is the only source, whatever a caller hands over.
+    e = directEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
+    const s = await inDo((st) =>
+      engine(st).kick("manual", t0 + MIN, "frozen", false),
+    );
+    expect(s.mode).toBe("google");
   });
 
   it("a locked plan (a lapse) freezes it too, without a lane failure", async () => {
