@@ -7,6 +7,7 @@ dist-assets/
 logs/
 apps/server/wrangler.jsonc
 apps/auth-broker/wrangler.deploy.jsonc
+apps/billing/wrangler.deploy.jsonc
 apps/directory-broker/wrangler.deploy.jsonc
 apps/dispatch/wrangler.deploy.jsonc
 apps/scheduler/wrangler.deploy.jsonc

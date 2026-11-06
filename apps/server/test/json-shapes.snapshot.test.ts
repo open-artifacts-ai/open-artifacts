@@ -1,8 +1,8 @@
 // Byte-level snapshots of the list, me and search JSON (perf refactors of
 // these paths must not change a byte). Ids, timestamps, emails' random tag
 // and cursors are replaced by stable placeholders; key order, spacing and
-// every other byte are compared as-is. Bodies repeat the tag a different
-// number of times so bm25 never ties (ties order by random ids).
+// every other byte are compared as-is. Search ties on bm25 break by newest
+// updated_at, then id; the fixture pins distinct updated_at values.
 import { env } from "cloudflare:workers";
 import {
   ArtifactSummarySchema,
@@ -124,6 +124,13 @@ beforeAll(async () => {
     content: `delta ${tag}`,
   });
   await softDelete(env, ub, b2);
+  // Distinct, ordered updated_at so search ties on bm25 break the same way
+  // every run (newest first); publish alone can land several in one ms.
+  const t0 = 1_700_000_000_000;
+  for (const [i, id] of ids.entries())
+    await env.DB.prepare("update artifacts set updated_at = ? where id = ?")
+      .bind(t0 + i * 1000, id)
+      .run();
 });
 
 describe("JSON shapes (byte snapshots)", () => {

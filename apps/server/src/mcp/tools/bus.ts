@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
+import { logError } from "../../log.js";
 import {
   busOn,
   proposeBusRole,
@@ -19,10 +20,14 @@ export function registerBusTools(server: McpServer, t: ToolEnv): void {
     toolConfig("bus_role_propose"),
     (input) =>
       guard(async () => {
+        const via = t.agentNow()?.via;
+        // No PAT or grant id to attach: a revoke can't end this proposal.
+        if (!via) logError("bus_role_propose_no_credential");
         const { proposal: p, confirmUrl } = await proposeBusRole(
           t.env,
           t.user.id,
           input,
+          via,
         );
         const role = `role "${p.name}" in ${p.namespace}`;
         const was = p.priorHolderName ? ` (now ${p.priorHolderName})` : "";

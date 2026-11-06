@@ -9,7 +9,7 @@ import { parse } from "../src/index.ts";
 import { main } from "../src/main.ts";
 import { fakeCtx, HUB, TOKEN } from "./fake.ts";
 
-const CONFIRM = `${HUB}/bus/links/confirm/${"A".repeat(43)}`;
+const CONFIRM = `${HUB}/bus/links/confirm#${"A".repeat(43)}`;
 
 function setup(reply?: (req: { url: string; init: RequestInit }) => Response) {
   const ctx = fakeCtx();

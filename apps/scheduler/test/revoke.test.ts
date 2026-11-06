@@ -184,7 +184,7 @@ describe("the */2 revoke tick", () => {
     expect(REVOKE_JOB).toBe("oa:directory-disconnect");
     expect(REVOKE_MAX_ATTEMPTS).toBe(5);
     expect(REVOKE_SQL).toBe(
-      "SELECT id, version FROM installs WHERE state='deleting' AND directory_revoke='pending' LIMIT 10",
+      "SELECT id, version, app_host FROM installs WHERE state='deleting' AND directory_revoke='pending' LIMIT 10",
     );
   });
 
@@ -588,6 +588,10 @@ describe("H-DV review fixes", () => {
     const f = fakes();
     const env = {
       ...f.env,
+      // Bound, so the billing check runs and fails on its own fixed line.
+      BILLING: {
+        fetch: async () => Response.json({ ok: true }),
+      } as unknown as Fetcher,
       PLATFORM_DB: new Proxy(db, {
         get(t, k) {
           if (k === "prepare")
@@ -605,8 +609,10 @@ describe("H-DV review fixes", () => {
         createExecutionContext(),
       ),
     ).resolves.toBeUndefined();
-    // The sync run after it aborts on its own fixed line, never raw text.
+    // The billing check before it and the sync run after it each fail on
+    // their own fixed line, never raw text.
     expect(lines.filter((l) => !l.startsWith("provapi "))).toEqual([
+      "billing-health db_error",
       "directory-revoke aborted exception",
       "directory-sync aborted exception",
     ]);
@@ -744,17 +750,29 @@ describe("broker gates on every install call", () => {
   /** ctx.exports.BrokerGate as the runtime gives it: one stub per call, with its props. */
   const gates = {
     BrokerGate: (o: { props: unknown }) => ({ gate: o.props }),
+    BillingGate: (o: { props: unknown }) => ({ billingGate: o.props }),
   } as unknown as GateExports;
   const props = (id: string) => ({
     props: {
       AUTH_BROKER: { gate: { installId: id, kind: "auth" } },
       DIRECTORY_BROKER: { gate: { installId: id, kind: "directory" } },
+      // appHost is the installs row's app_host (seed: s<n>.app.test for
+      // idOf(n) seeded n-th), never anything from a request.
+      BILLING: {
+        billingGate: {
+          installId: id,
+          appHost: `s${Number.parseInt(id.slice(1), 36)}.app.test`,
+        },
+      },
     },
   });
 
   it("the revoke call carries that install's gates, and only its own", async () => {
     await seed([{ id: idOf(0) }, { id: idOf(1) }]);
     const f = fakes();
+    (f.env as { BILLING?: unknown }).BILLING = {
+      fetch: async () => Response.json({ ok: true }),
+    };
     await revokeTick(f.env, NOW, { gates });
     expect(f.args.sort((a, b) => a.script.localeCompare(b.script))).toEqual([
       { script: `oa-s-${idOf(0)}`, args: props(idOf(0)) },
@@ -769,6 +787,9 @@ describe("broker gates on every install call", () => {
       { id: idOf(2) },
     ]);
     const f = fakes();
+    (f.env as { BILLING?: unknown }).BILLING = {
+      fetch: async () => Response.json({ ok: true }),
+    };
     const r = await directorySync(f.env, NOW, gates);
     expect(r.ok.sort()).toEqual([idOf(0), idOf(1)]);
     expect(f.calls.map((c) => c.opts)).toEqual([

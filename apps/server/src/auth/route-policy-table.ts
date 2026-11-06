@@ -321,11 +321,21 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // takes only an interactive cookie session of the hub's own member (a
   // PAT, an OAuth grant or a machine token is refused) and a POST its form
   // token; the link's secret finds the proposal in that member's hub only.
+  // #1426: the secret is in the URL fragment; the page loads without it and
+  // its script posts the secret in a body.
+  "GET /bus/roles/confirm": {
+    public:
+      "role proposal confirm page, no secret in the request; hops to sign-in, interactive session",
+  },
   "GET /bus/roles/confirm/:token": {
     public:
-      "role proposal confirm page; redirects to sign-in, interactive session, the caller's own hub",
+      "notice for the old path-style link; reads nothing, changes nothing",
   },
-  "POST /bus/roles/confirm/:token": {
+  "POST /bus/roles/confirm/view": {
+    public:
+      "role proposal details; interactive session, page CSRF, the caller's own hub",
+  },
+  "POST /bus/roles/confirm": {
     public:
       "role proposal decision; interactive session, form CSRF, the caller's own hub, single use",
   },
@@ -335,11 +345,19 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /api/v1/bus/links/proposals": {
     signed: "bus machine token (oa_machine_), D1; records a proposal only",
   },
+  "GET /bus/links/confirm": {
+    public:
+      "link confirm page, no secret in the request; hops to sign-in, interactive session",
+  },
   "GET /bus/links/confirm/:token": {
     public:
-      "link confirm page; redirects to sign-in, interactive session, the caller's own hub",
+      "notice for the old path-style link; reads nothing, changes nothing",
   },
-  "POST /bus/links/confirm/:token": {
+  "POST /bus/links/confirm/view": {
+    public:
+      "link details; interactive session, page CSRF, the caller's own hub",
+  },
+  "POST /bus/links/confirm": {
     public:
       "link decision; interactive session, form CSRF, the caller's own hub, single use",
   },

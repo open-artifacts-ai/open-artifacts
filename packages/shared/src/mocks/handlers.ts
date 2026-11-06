@@ -94,7 +94,7 @@ import {
   isHeic,
   textHead,
 } from "../sniff.js";
-import { createCommentHandlers } from "./comments.js";
+import { createCommentMock } from "./comments.js";
 import type { ArtifactEventsMock } from "./events.js";
 import { BUS_FIXTURE_NOW, fixtures } from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
@@ -108,6 +108,8 @@ export type MockOptions = {
   update?: InstanceUpdate | null;
   /** Comments writes answer 429 with this Retry-After, in seconds (#682). */
   commentsRateLimit?: number;
+  /** Seed an open ask for the caller on "Landing page" (#1535). */
+  commentAsks?: boolean;
   /**
    * The R.events mock (createArtifactEvents()): hello reports the store's
    * currentVersion; publish/restore emit `version`, delete and
@@ -602,16 +604,18 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     }),
   ];
 
+  const commentMock = createCommentMock({
+    artifacts,
+    me,
+    err,
+    emit: (id, open) => opts.events?.emitComments(id, open),
+    rateLimit: opts.commentsRateLimit,
+    seedAsk: opts.commentAsks,
+  });
   return [
     ...pre,
     ...(h?.handlers ?? []),
-    ...createCommentHandlers({
-      artifacts,
-      me,
-      err,
-      emit: (id, open) => opts.events?.emitComments(id, open),
-      rateLimit: opts.commentsRateLimit,
-    }),
+    ...commentMock.handlers,
     http.get("*/api/v1/me", () => HttpResponse.json(me)),
     http.patch("*/api/v1/me", async ({ request }) => {
       const r = await body(request, MePatchSchema);
@@ -756,7 +760,19 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           .filter((a) => !h?.hidden(a.id))
           .filter((a) => (inSpace ? inSpace(a.space) : matches(a, q)))
           .filter((a) => !inSpace || matches(a, withScope(q, "all")))
-          .map((a) => redactArt(a, request)),
+          .filter(
+            (a) =>
+              p.data.filter === undefined ||
+              (p.data.filter === "needs_answer"
+                ? commentMock.asksForYou(a.id) > 0
+                : commentMock.waitingOnAgents(a.id)),
+          )
+          .map((a) => {
+            const asksForYou = commentMock.asksForYou(a.id);
+            return asksForYou > 0
+              ? { ...redactArt(a, request), asksForYou }
+              : redactArt(a, request);
+          }),
         q,
       );
     }),

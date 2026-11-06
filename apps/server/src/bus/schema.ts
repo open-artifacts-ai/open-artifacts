@@ -243,7 +243,8 @@ create table if not exists role_proposals (
   expires_at integer not null,
   status text not null default 'pending',
   reason text,
-  decided_at integer
+  decided_at integer,
+  credential text
 );
 create index if not exists role_proposals_created on role_proposals(org_id, created_at);
 create index if not exists role_proposals_pending on role_proposals(expires_at)
@@ -452,6 +453,20 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
     );
   sql.exec(HUB_SCHEMA_B14_INDEXES);
   sql.exec(HUB_SCHEMA_PURGE_INDEXES);
+  // #1403: role_proposals.credential is the PAT or OAuth grant that proposed
+  // (`t:<id>` or `g:<id>`, services/agent-usage.ts viaKey); revoking it
+  // expires the proposal. Add-only: rows from before have null (no credential
+  // recorded) and are never touched by a revoke.
+  const proposalCols = new Set(
+    sql
+      .exec<{ name: string }>(
+        "select name from pragma_table_info('role_proposals')",
+      )
+      .toArray()
+      .map((r) => r.name),
+  );
+  if (!proposalCols.has("credential"))
+    sql.exec("alter table role_proposals add column credential text");
   // OpenBus #451: the scope a former name was left in. Backfilled from its
   // agent: before #451 a move or close dropped the rows, so every row is in
   // its agent's current scope.

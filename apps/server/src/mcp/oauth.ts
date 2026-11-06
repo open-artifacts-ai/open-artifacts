@@ -47,6 +47,7 @@ import {
   touchGrant,
   uaFamily,
 } from "../services/agent-usage.js";
+import { expireBusRoleProposalsOf } from "../services/bus.js";
 import { getSettings } from "../services/members.js";
 import { getUser, getUserWithEpoch } from "../services/users.js";
 import { CONSENT_TEMPLATE } from "./consent-template.js";
@@ -634,6 +635,11 @@ export function mountOAuth(app: AppType): void {
     const { user, grant } = await ownGrant(c);
     await oauthApi(c.env).revokeGrant(grant.grantId, user.id);
     await dropGrantUsage(c.env, grant.grantId, user.id);
+    // #1403: the pending bus role proposals this grant made lapse with it.
+    await expireBusRoleProposalsOf(c.env, user.id, {
+      kind: "grant",
+      id: grant.grantId,
+    });
     return c.body(null, 204);
   });
 }

@@ -95,9 +95,9 @@ export async function link(
       const u = new URL(j.confirmUrl);
       if (
         u.origin === new URL(m.hub).origin &&
-        /^\/bus\/links\/confirm\/[A-Za-z0-9_-]{43}$/.test(u.pathname) &&
+        u.pathname === "/bus/links/confirm" &&
         !u.search &&
-        !u.hash
+        /^#[A-Za-z0-9_-]{43}$/.test(u.hash)
       )
         url = u.href;
     }

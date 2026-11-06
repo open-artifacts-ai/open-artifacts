@@ -61,6 +61,10 @@ describe(".github/hosted/<env>.json", () => {
   // Read by provapi-spikes.sh (the staging spikes); pinned to provision's
   // HOSTED_DOMAINS and NAMESPACES so the two never drift.
   it("app_zone, content_zone and dispatch_namespace are provision's, per env", () => {
+    const names = readFileSync(
+      join(root, "packages/provision/src/names.ts"),
+      "utf8",
+    );
     const wfp = readFileSync(
       join(root, "packages/provision/src/wfp.ts"),
       "utf8",
@@ -68,7 +72,7 @@ describe(".github/hosted/<env>.json", () => {
     for (const env of ["prod", "staging"]) {
       const d = new RegExp(
         `${env}: Object\\.freeze\\(\\{\\s*app: "([^"]+)",\\s*content: "([^"]+)"`,
-      ).exec(wfp);
+      ).exec(names);
       expect(d, env).not.toBeNull();
       expect(read(env).app_zone, env).toBe(d?.[1]);
       expect(read(env).content_zone, env).toBe(d?.[2]);
@@ -122,7 +126,7 @@ describe(".github/hosted/<env>.json", () => {
   // in the run (hosted-resource-ids.sh), never committed.
   it("email_zone is the env's app zone, and no zone tag is committed", () => {
     const wfp = readFileSync(
-      join(root, "packages/provision/src/wfp.ts"),
+      join(root, "packages/provision/src/names.ts"),
       "utf8",
     );
     for (const env of ["prod", "staging"]) {

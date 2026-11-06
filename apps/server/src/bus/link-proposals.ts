@@ -101,6 +101,25 @@ export function expireLinkProposals(
   );
 }
 
+/**
+ * #1403: expires the pending proposals `machineId` made, at once, when the
+ * machine is revoked. Decided ones and other machines' are untouched. (Link
+ * proposals have no audit rows yet, #1580.)
+ */
+export function expireLinkProposalsOfMachine(
+  sql: SqlStorage,
+  orgId: string,
+  machineId: string,
+  now: number,
+): void {
+  sql.exec(
+    "update link_proposals set status = 'expired', decided_at = ? where org_id = ? and machine_id = ? and status = 'pending'",
+    now,
+    orgId,
+    machineId,
+  );
+}
+
 const linkIdOf = (sql: SqlStorage, orgId: string, a: string, b: string) =>
   one<{ id: string }>(
     sql,
