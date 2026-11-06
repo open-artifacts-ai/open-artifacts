@@ -89,6 +89,10 @@ function toolSections(md: string): Map<string, string> {
 }
 
 describe("skill.md drift", () => {
+  it("caps output that is not a reply to the human", async () => {
+    expect(await skill()).toContain("stays under 140 characters");
+  });
+
   it("tells every page writer how links open", async () => {
     const md = await skill();
     const at = md.indexOf("\n## Writing pages\n");
