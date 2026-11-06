@@ -51,9 +51,10 @@ export function attest(hello: Hello, deps: AttestDeps = {}): Attest {
       return attestClaude(hello, deps);
     case "opencode":
       return attestOpenCode(hello, deps);
-    // omp runs under bun, so comm is never read: the start time is the check.
+    // omp runs under bun and Hermes under python, so comm is never read: the start time is the check.
     case "pi":
-    case "omp": {
+    case "omp":
+    case "hermes": {
       const kind = hello.kind;
       if (!hello.attest.proc_start) {
         return { ok: false, reason: `${kind} hello has no proc_start` };

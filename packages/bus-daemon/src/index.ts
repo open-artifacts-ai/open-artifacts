@@ -134,8 +134,12 @@ const NOTICE_RETRY_MS = 30_000;
 const LIMITED_RETRY_MS = 5 * 60_000;
 /** How far back `oa-bus status` lists late deliveries. */
 const LATE_WINDOW_MS = 60 * 60_000;
-/** Pi and omp (a Pi fork) run the same extension: it lives as long as its connection and receives on it. */
-const piLike = (kind: string) => kind === "pi" || kind === "omp";
+/**
+ * Pi and omp (a Pi fork) run the same extension; Hermes runs a plugin that
+ * speaks the same protocol. Each lives as long as its connection and receives on it.
+ */
+const piLike = (kind: string) =>
+  kind === "pi" || kind === "omp" || kind === "hermes";
 
 export type DaemonDeps = {
   transports?: Partial<Record<AgentRecord["kind"], DeliverFn>>;
@@ -512,6 +516,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     opencode: (agent, text, msgId) => opencode.notify(agent, text, msgId),
     pi: (agent, text, msgId) => pi.notify(agent, text, msgId),
     omp: (agent, text, msgId) => pi.notify(agent, text, msgId),
+    hermes: (agent, text, msgId) => pi.notify(agent, text, msgId),
     codex: (agent, text, msgId) => codex.notify(agent, text, msgId),
     ...deps.notifiers,
   };
@@ -754,6 +759,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       opencode: (agent, mail) => opencode.deliver(agent, mail),
       pi: (agent, mail) => pi.deliver(agent, mail),
       omp: (agent, mail) => pi.deliver(agent, mail),
+      hermes: (agent, mail) => pi.deliver(agent, mail),
       codex: (agent, mail) => codex.deliver(agent, mail),
       ...deps.transports,
     },

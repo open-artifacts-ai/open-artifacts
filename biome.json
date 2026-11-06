@@ -18,6 +18,7 @@
       "!**/.astro",
       "!**/dist-assets",
       "!pnpm-lock.yaml",
+      "!packages/bus-adapter-hermes/fixtures",
       "!.release-please-manifest.json",
       "!CHANGELOG.md"
     ]
