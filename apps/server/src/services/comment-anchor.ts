@@ -215,3 +215,40 @@ export async function versionFormat(
     .first<{ format: string | null }>();
   return row ? (row.format ?? artifactFormat) : null;
 }
+
+/**
+ * SHA-256 (hex) of a version's entry file, or null when the version does not
+ * exist. Uses the manifest digest when recorded; otherwise (an uploaded entry,
+ * or a version from before digests) the bytes are streamed from R2 once.
+ */
+export async function versionEntryHash(
+  env: Pick<Env, "DB" | "FILES">,
+  artifactId: string,
+  version: number,
+): Promise<string | null> {
+  const row = await env.DB.prepare(
+    "select entry, manifest from versions where artifact_id = ? and version = ?",
+  )
+    .bind(artifactId, version)
+    .first<{ entry: string; manifest: string }>();
+  if (!row) return null;
+  const e = (
+    JSON.parse(row.manifest) as { path: string; key: string; digest?: string }[]
+  ).find((m) => m.path === row.entry);
+  if (!e) return null;
+  if (e.digest) return e.digest;
+  const obj = await env.FILES.get(e.key);
+  if (!obj) return null;
+  // DigestStream is a Workers extension the DOM-less lib types omit.
+  const ds = new (
+    crypto as unknown as {
+      DigestStream: new (
+        algo: string,
+      ) => WritableStream<Uint8Array> & { digest: Promise<ArrayBuffer> };
+    }
+  ).DigestStream("SHA-256");
+  await obj.body.pipeTo(ds);
+  return Array.from(new Uint8Array(await ds.digest), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+}

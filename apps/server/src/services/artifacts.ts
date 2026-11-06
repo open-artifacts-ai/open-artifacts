@@ -49,7 +49,7 @@ import { can, dataWritersOf } from "../auth/policy.js";
 import { requireFreeStorage } from "../billing/caps.js";
 import { creatorStmt } from "../billing/creators.js";
 import { featuresOf } from "../billing/features.js";
-import { billingActive, planError, requireTeamPlan } from "../billing/plan.js";
+import { planError, requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -396,7 +396,7 @@ export async function publish(
     id,
     user.id,
     plan,
-    { digest: billingActive(env) },
+    { digest: true },
   );
   mark();
   // The inline content is in R2 now: drop the plan's copies so they don't
@@ -1357,6 +1357,10 @@ export async function listVersions(
     language: v.language,
     textIndexed: v.text_indexed === 1,
     format: v.format,
+    contentHash:
+      (JSON.parse(v.manifest) as ManifestEntry[]).find(
+        (e) => e.path === v.entry,
+      )?.digest ?? null,
   }));
 }
 

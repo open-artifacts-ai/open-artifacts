@@ -439,6 +439,7 @@ describe("VersionInfoSchema format (C2)", () => {
       files: [],
       language: null,
       textIndexed: true,
+      contentHash: null,
     };
     expect(VersionInfoSchema.safeParse(v).success).toBe(false);
     expect(

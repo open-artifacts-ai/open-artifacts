@@ -30,9 +30,9 @@ export type ManifestEntry = {
   size: number;
   contentType: string;
   /**
-   * Hosted only: the SHA-256 (hex) of an inline file's bytes. The free
-   * storage cap counts distinct content by it (billing/caps.ts); entries
-   * without one (uploads, rows before it) count by key.
+   * The SHA-256 (hex) of an inline file's bytes. The free storage cap counts
+   * distinct content by it (billing/caps.ts); entries without one (uploads,
+   * rows before it) count by key. VersionInfo.contentHash reads it (#1490).
    */
   digest?: string;
 };

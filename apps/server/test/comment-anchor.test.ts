@@ -13,6 +13,15 @@ import { checkAnchor } from "../src/services/comments.js";
 import { getUser } from "../src/services/users.js";
 import { login } from "./helpers.js";
 
+const PDF = "%PDF-1.4\n% pin hash test\n";
+const sha256Hex = async (s: string) =>
+  Array.from(
+    new Uint8Array(
+      await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s)),
+    ),
+    (b) => b.toString(16).padStart(2, "0"),
+  ).join("");
+
 const text = async (html: string) => normalizeText(await visibleText(html));
 
 describe("visible text", () => {
@@ -88,6 +97,7 @@ describe("verifyQuote and checkAnchor", () => {
   let id: string;
   let mdId: string;
   let big: string;
+  let pdfId: string;
   beforeAll(async () => {
     const l = await login(`ca-${newId().slice(0, 6).toLowerCase()}@x.com`);
     const m = await getUser(env, l.userId);
@@ -109,6 +119,7 @@ describe("verifyQuote and checkAnchor", () => {
     ).id;
     mdId = (await mk("markdown", "# Hi\n\nplain")).id;
     big = (await mk("html", "<p>Hello</p>")).id;
+    pdfId = (await mk("pdf", PDF)).id;
   });
   const art = (a: string, format: string) => ({
     id: a,
@@ -162,6 +173,48 @@ describe("verifyQuote and checkAnchor", () => {
       prefix: "",
       suffix: " big world",
     });
+  });
+  it("a pin on a pdf is stamped with the entry's sha256; a client hash is overwritten", async () => {
+    const want = await sha256Hex(PDF);
+    const r = await checkAnchor(env, art(pdfId, "pdf"), {
+      kind: "pin",
+      x: 0.5,
+      y: 0.5,
+      contentHash: "bogus",
+    });
+    expect(r.anchor).toMatchObject({ kind: "pin", contentHash: want });
+    // The list reports the same hash the pin was stamped with.
+    const row = await env.DB.prepare(
+      "select manifest from versions where artifact_id = ? and version = 1",
+    )
+      .bind(pdfId)
+      .first<{ manifest: string }>();
+    expect(JSON.parse(row?.manifest ?? "[]")[0].digest).toBe(want);
+  });
+  it("a pin hash is computed from the bytes when the manifest has no digest", async () => {
+    await env.DB.prepare(
+      "update versions set manifest = json_remove(manifest, '$[0].digest') where artifact_id = ?",
+    )
+      .bind(pdfId)
+      .run();
+    const r = await checkAnchor(env, art(pdfId, "pdf"), {
+      kind: "pin",
+      x: 0.1,
+      y: 0.2,
+      contentHash: "bogus",
+    });
+    expect(r.anchor).toMatchObject({ contentHash: await sha256Hex(PDF) });
+  });
+  it("a pin on a missing version is 422", async () => {
+    await expect(
+      checkAnchor(env, art(pdfId, "pdf"), {
+        kind: "pin",
+        version: 9,
+        x: 0.5,
+        y: 0.5,
+        contentHash: "h",
+      }),
+    ).rejects.toMatchObject({ code: "anchor_not_in_version" });
   });
   it("rejects bad shapes and bad pin hashes as invalid_anchor", async () => {
     await expect(
