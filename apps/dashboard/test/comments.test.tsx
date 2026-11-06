@@ -2,13 +2,24 @@ import { ANON_ID_HEADER, R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import {
   act,
+  configure,
   fireEvent,
+  getConfig,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   calls,
   events,
@@ -18,6 +29,7 @@ import {
   server,
   wait,
 } from "./harness";
+import { FIRST_LOAD_MS } from "./timeouts";
 
 type Opts = {
   iframe: HTMLIFrameElement;
@@ -54,6 +66,15 @@ vi.mock("../src/viewer/bridge", async () => {
 });
 
 installHarness();
+
+// Most waits here follow a write: the PATCH or POST, then the list refetch it
+// invalidates (a second round trip through MSW), then the render. Each hop is
+// CPU-bound and slows about 30x on a loaded runner (#1004), which can pass
+// setup.ts's 5 s asyncUtilTimeout. Stay under the test timeout so a wait that
+// never resolves still reports its own failure.
+const defaultAsyncTimeout = getConfig().asyncUtilTimeout;
+beforeAll(() => configure({ asyncUtilTimeout: FIRST_LOAD_MS }));
+afterAll(() => configure({ asyncUtilTimeout: defaultAsyncTimeout }));
 
 const OWNED = (
   fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
