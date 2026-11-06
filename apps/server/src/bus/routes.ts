@@ -58,6 +58,7 @@ import {
 import { getSettings } from "../services/members.js";
 import { getUser } from "../services/users.js";
 import { hmacSign, sha256Hex } from "../util/crypto.js";
+import { busConfigCap, busConfigRefusal } from "./cap.js";
 import { renderApprove, renderApproved, renderEntry } from "./approve-page.js";
 import {
   AUTHZ_AT_HEADER,
@@ -538,6 +539,10 @@ async function postApprove(c: Context<AppEnv>): Promise<Response> {
   }
   if (step !== "decide")
     return messagePage("Can't connect this machine", "Invalid form.", 400);
+  // #1299: approving a machine is new configuration; a plan cap refuses it.
+  const capped = busConfigRefusal(user);
+  if (capped)
+    return messagePage("Can't connect this machine", capped.message, 403);
   const code = codeOf(one("code") ?? undefined);
   if (
     code === null ||
@@ -736,6 +741,8 @@ export function mountBus(app: AppType): void {
     if (!m || m.revokedAt !== null) return unauthorized();
     const user = await getUser(c.env, m.userId);
     if (!user || !canConnect(user)) return unauthorized();
+    // #1299: a plan-capped member's machine may not propose new links.
+    busConfigCap(user);
     const body = await jsonBody(c, BusLinkProposeSchema);
     return c.json(await proposeBusLink(c.env, user.id, m.id, body));
   });

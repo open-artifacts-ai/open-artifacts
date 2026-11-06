@@ -4,6 +4,7 @@ import {
   proposeBusRole,
   ROLE_PROPOSAL_TTL_MIN,
 } from "../../services/bus.js";
+import { busConfigCap } from "../../bus/cap.js";
 import { guard, ok, type ToolEnv } from "../server.js";
 import { toolConfig } from "../tool-defs.js";
 
@@ -19,6 +20,8 @@ export function registerBusTools(server: McpServer, t: ToolEnv): void {
     toolConfig("bus_role_propose"),
     (input) =>
       guard(async () => {
+        // #1299: proposing new configuration is refused under a plan cap.
+        busConfigCap(t.user);
         const { proposal: p, confirmUrl } = await proposeBusRole(
           t.env,
           t.user.id,

@@ -140,9 +140,19 @@ export type BusHubRpc = {
   }>;
 };
 
-/** True when the bus routes answer: BUS_HUB bound, and not a hosted install (until #1299). */
-export const busOn = (env: Pick<Env, "BUS_HUB" | "HOSTED">): boolean =>
-  env.BUS_HUB !== undefined && env.HOSTED !== "1";
+/**
+ * True when the bus routes answer: BUS_HUB bound, and not a hosted install
+ * (until #1299), unless the install's provisioned FEATURES carry "bus" (the
+ * interim switch for staging and the red line; dropped at the gate lift).
+ */
+export const busOn = (
+  env: Pick<Env, "BUS_HUB" | "HOSTED" | "FEATURES">,
+): boolean =>
+  env.BUS_HUB !== undefined &&
+  (env.HOSTED !== "1" ||
+    (env.FEATURES ?? "")
+      .split(",")
+      .some((f) => f.trim() === "bus"));
 
 /** The member's BusHub, or null without the binding. Never call before a D1 check (see above). */
 export function busHub(
