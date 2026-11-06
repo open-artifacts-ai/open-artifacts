@@ -20,6 +20,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { harnessSkills } from "@oa/shared/harness-skills";
 import type { Harness } from "./adapters.ts";
 
 /** Immediately after the frontmatter: the only file we may replace. */
@@ -177,10 +178,12 @@ export async function installSkill(
         failedUrl: url,
       };
     const base = skillDir(deps, h);
-    const path = h === "codex" ? base : join(base, folder, "SKILL.md");
+    const path = harnessSkills[h].agentsMd
+      ? base
+      : join(base, folder, "SKILL.md");
     const writing = targetOf(path);
     try {
-      if (h === "codex") {
+      if (harnessSkills[h].agentsMd) {
         const before = existsSync(writing) ? readFileSync(writing, "utf8") : "";
         if (codexBroken(before)) {
           notes.push(
@@ -217,7 +220,7 @@ export const uninstallSkill = (
   const notes: string[] = [];
   for (const h of harnesses) {
     const base = skillDir(deps, h);
-    if (h === "codex") {
+    if (harnessSkills[h].agentsMd) {
       if (!existsSync(base)) continue;
       const text = readFileSync(base, "utf8");
       if (codexBroken(text)) {
