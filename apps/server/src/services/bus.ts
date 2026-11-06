@@ -7,6 +7,7 @@ import {
   type BusRole,
   type BusRoleProposal,
   type BusRoleProposeInput,
+  parseFeatures,
 } from "@oa/shared";
 import type {
   LinkDecideResult,
@@ -160,8 +161,7 @@ export const busOn = (
   env: Pick<Env, "BUS_HUB" | "HOSTED" | "FEATURES">,
 ): boolean =>
   env.BUS_HUB !== undefined &&
-  (env.HOSTED !== "1" ||
-    (env.FEATURES ?? "").split(",").some((f) => f.trim() === "bus"));
+  (env.HOSTED !== "1" || parseFeatures(env.FEATURES).includes("bus"));
 
 /** The member's BusHub, or null without the binding. Never call before a D1 check (see above). */
 export function busHub(
