@@ -2,7 +2,7 @@
 import type { ErrorCode } from "@oa/shared";
 import { expect, it } from "vitest";
 import { ApiClientError } from "../src/api/client";
-import { errorCopy, errorLink } from "../src/api/errorCopy";
+import { billingContext, errorCopy, errorLink } from "../src/api/errorCopy";
 
 it.each([
   [
@@ -131,7 +131,7 @@ it.each([
   [
     "suspended",
     "This instance is suspended. Ask your instance owner.",
-    "This instance is suspended.",
+    "This instance is suspended. Email support.",
   ],
   [
     "billing_unreachable",
@@ -147,6 +147,37 @@ it.each([
   const e = planErr("plan_read_only", reason(r));
   expect(errorCopy(e, "x")).toBe(member);
   expect(errorCopy(e, "x", { owner: true })).toBe(owner);
+});
+
+it("plan_required before a trial ever ran offers the trial", () => {
+  const e = planErr("plan_required", reason("solo"));
+  expect(errorCopy(e, "x", { owner: true, trialNeverRan: true })).toBe(
+    "This needs a team plan. Invite someone to start your free 14-day trial, or choose a plan.",
+  );
+  expect(errorCopy(e, "x", { owner: true, trialNeverRan: false })).toBe(
+    "This needs a paid plan. Choose a plan to continue.",
+  );
+  expect(errorCopy(e, "x", { trialNeverRan: true })).toBe(
+    "This needs a paid plan. Ask your instance owner to choose one.",
+  );
+});
+
+it("errorContext gives admins the owner wording and the trial state", () => {
+  const me = (role: string, trialEndsAt: string | null) =>
+    ({
+      user: { role },
+      auth: null,
+      instance: { billing: { tier: "free", trialEndsAt } },
+    }) as never;
+  expect(billingContext(me("admin", null))).toEqual({
+    owner: true,
+    trialNeverRan: true,
+  });
+  expect(billingContext(me("owner", "2026-11-01T00:00:00Z"))).toEqual({
+    owner: true,
+    trialNeverRan: false,
+  });
+  expect(billingContext(me("member", null)).owner).toBe(false);
 });
 
 it("plan_required", () => {

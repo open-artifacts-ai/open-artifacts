@@ -38,10 +38,16 @@ const PLAN_LIMIT_NOUN: Record<string, string> = {
   data_daily_writes: "live-data writes per day",
 };
 
-const planCopy = (e: ApiClientError, owner: boolean): string | undefined => {
+const planCopy = (
+  e: ApiClientError,
+  owner: boolean,
+  trialNeverRan: boolean,
+): string | undefined => {
   const d = e.details as { reason?: unknown; limit?: unknown; max?: unknown };
   switch (e.code) {
     case "plan_required":
+      if (owner && trialNeverRan)
+        return "This needs a team plan. Invite someone to start your free 14-day trial, or choose a plan.";
       return owner
         ? "This needs a paid plan. Choose a plan to continue."
         : `This needs a paid plan. ${ASK} to choose one.`;
@@ -60,7 +66,7 @@ const planCopy = (e: ApiClientError, owner: boolean): string | undefined => {
           return "Team features are read-only while we restore billing. Nothing has been deleted.";
         case "suspended":
           return owner
-            ? "This instance is suspended."
+            ? "This instance is suspended. Email support."
             : `This instance is suspended. ${ASK}.`;
         default:
           return owner
@@ -98,10 +104,35 @@ export type ErrorContext = {
   capped?: boolean;
   /** Me.auth.cap, when capped: "plan" is a locked instance, not a view-only account. */
   cap?: NonNullable<Me["auth"]>["cap"];
-  /** The caller is the org owner (uncapped): billing copy says what they can do. */
+  /** The caller is the org owner or an admin (uncapped): billing copy says what they can do. */
   owner?: boolean;
+  /** A free instance whose trial never ran (trialEndsAt null): plan_required offers the trial. */
+  trialNeverRan?: boolean;
   /** The error shows on the Directory page itself. */
   onDirectoryPage?: boolean;
+};
+
+/**
+ * The billing part of an ErrorContext from Me: owners and admins (uncapped)
+ * can open Plan and billing, so they read the owner wording; trialNeverRan
+ * only means anything to them (others see trialEndsAt as null).
+ */
+export const billingContext = (
+  me: Me | null | undefined,
+): Pick<ErrorContext, "owner" | "trialNeverRan"> => {
+  const owner =
+    (me?.user.role === "owner" || me?.user.role === "admin") &&
+    me.auth?.cap == null;
+  const billing = me?.instance?.billing;
+  return {
+    owner,
+    ...(owner && billing
+      ? {
+          trialNeverRan:
+            billing.tier === "free" && billing.trialEndsAt === null,
+        }
+      : {}),
+  };
 };
 
 /**
@@ -117,7 +148,7 @@ export const errorCopy = (
   if (!(e instanceof ApiClientError)) return fallback;
   if (e.code === "space_forbidden" && ctx?.capped)
     return ctx.cap === "plan" ? PLAN_FORBIDDEN : CAPPED_FORBIDDEN;
-  const plan = planCopy(e, ctx?.owner === true);
+  const plan = planCopy(e, ctx?.owner === true, ctx?.trialNeverRan === true);
   if (plan) return plan;
   const d = e.details as { reason?: unknown; path?: unknown } | undefined;
   if (e.code === "unsupported_format" && d?.reason === "heic")

@@ -308,7 +308,7 @@ it.each([
         readOnly: false,
       },
     },
-    "This needs a paid plan. Choose a plan to continue.",
+    "This needs a team plan. Invite someone to start your free 14-day trial, or choose a plan.",
   ],
 ])(
   "a Snooze refused with %s toasts the plan copy; the row stays held",
