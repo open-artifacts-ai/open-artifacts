@@ -1,4 +1,4 @@
-import type { BusRole, BusRoleProposal } from "../bus-notices.js";
+import type { BusLink, BusRole, BusRoleProposal } from "../bus-notices.js";
 import type {
   ArtifactSummary,
   BusAgent,
@@ -131,6 +131,8 @@ export const fixtures: {
   busAgents: BusAgent[];
   /** #1293: role addresses (served with `bus: true`): one held, one vacant. */
   busRoles: BusRole[];
+  /** #1567: namespace links (served with `bus: true`): one, between two repos. */
+  busLinks: BusLink[];
   /** #1293: one pending role proposal (served with `bus: true`). */
   busRoleProposals: BusRoleProposal[];
 } = {
@@ -417,6 +419,14 @@ export const fixtures: {
       holderName: null,
       vacant: true,
       setAt: "2026-01-01T10:00:00.000Z",
+    },
+  ],
+  busLinks: [
+    {
+      id: "BlA1nPqRsTu4vWxY",
+      a: "github.com/open-artifacts-ai/open-artifacts",
+      b: "github.com/open-artifacts-ai/open-bus",
+      createdAt: "2026-01-02T08:00:00.000Z",
     },
   ],
   busRoleProposals: [
