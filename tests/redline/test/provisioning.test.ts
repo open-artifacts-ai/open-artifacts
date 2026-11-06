@@ -672,6 +672,7 @@ describe("each probe fails on the behaviour it guards", () => {
       });
 
       const closed = { status: 503, source: "dispatch-closed" } as const;
+      const nf = { status: 404, source: "dispatch-404" } as const;
       for (const [what, o, cls] of [
         [
           "dispatch closed, inventory serving",
@@ -679,22 +680,19 @@ describe("each probe fails on the behaviour it guards", () => {
           "dispatch-closed-lag",
         ],
         [
-          "dispatch 404",
-          {
-            last: { status: 404, source: "dispatch-404" },
-            mode: "serving",
-            restoreErrorCode: null,
-          },
-          "restore-broken-404",
+          "404 while the inventory serves is neutral",
+          { last: nf, mode: "serving", restoreErrorCode: null },
+          "dispatch-404-while-serving",
         ],
         [
-          "404 wins over a closed inventory",
-          {
-            last: { status: 404, source: "dispatch-404" },
-            mode: "closed",
-            restoreErrorCode: null,
-          },
-          "restore-broken-404",
+          "404 with a closed inventory",
+          { last: nf, mode: "closed", restoreErrorCode: null },
+          "restore-broken-not-serving",
+        ],
+        [
+          "404 with a restore error code",
+          { last: nf, mode: "serving", restoreErrorCode: "lease_held" },
+          "restore-broken-not-serving",
         ],
         [
           "inventory closed",
@@ -703,8 +701,8 @@ describe("each probe fails on the behaviour it guards", () => {
         ],
         [
           "inventory unreadable",
-          { last: closed, mode: null, restoreErrorCode: null },
-          "restore-broken-not-serving",
+          { last: closed, mode: undefined, restoreErrorCode: null },
+          "inventory-unreadable",
         ],
         [
           "restore job error code",
@@ -730,16 +728,49 @@ describe("each probe fails on the behaviour it guards", () => {
           expect(classifyServing(o).cls).toBe(cls);
         });
 
+      it("PageLog records a no-response entry without a last page", () => {
+        const l = new PageLog();
+        l.recordNoResponse(5000);
+        expect(l.text()).toBe("0 no-response x1 (5 s)");
+        expect(l.last).toBeNull();
+      });
+
       /** After the restore, rl-l's /healthz answers `status` with `body`, forever. */
-      const stuckPage = (status: number, body: string) => {
+      const stuckPage = (
+        status: number,
+        body: string,
+        o: {
+          throwAfter?: number;
+          okAfter?: number;
+          hostsFail?: boolean;
+        } = {},
+      ) => {
         const f = fakeApi();
         let restored = false;
+        let n = 0;
         const real = f.io.fetch;
         f.io.fetch = (async (u: string, i?: RequestInit) => {
           const url = String(u);
           if (url.endsWith("/restore")) restored = true;
-          if (restored && url.includes("://rl-l-") && url.endsWith("/healthz"))
+          if (
+            restored &&
+            o.hostsFail &&
+            url.includes("/hosts?host=") &&
+            !url.includes("rl-p")
+          )
+            return new Response("x", { status: 500 });
+          if (
+            restored &&
+            url.includes("://rl-l-") &&
+            url.endsWith("/healthz")
+          ) {
+            n++;
+            if (o.throwAfter !== undefined && n > o.throwAfter)
+              throw new Error("network");
+            if (o.okAfter !== undefined && n > o.okAfter)
+              return new Response("ok", { status: 200 });
             return new Response(body, { status });
+          }
           return real(u, i);
         }) as typeof fetch;
         return f;
@@ -756,8 +787,43 @@ describe("each probe fails on the behaviour it guards", () => {
       it("dispatch 404 after the restore: restore broken", async () => {
         const out = (await runAll(stuckPage(404, "Not found"))).get("P22");
         expect(out).toMatch(
-          /^P22 serving: not within 120 s \(restore-broken-404\): .*pages seen: 404 dispatch-404 x\d+/,
+          /^P22 serving: not within 120 s \(dispatch-404-while-serving\): .*pages seen: 404 dispatch-404 x\d+/,
         );
+      });
+
+      it("a 404 while the inventory serves: neutral class, not restore-broken", async () => {
+        const out = (await runAll(stuckPage(404, "Not found"))).get("P22");
+        expect(out).toMatch(
+          /^P22 serving: not within 120 s \(dispatch-404-while-serving\): plain 404 Not found while the inventory says serving: HOSTS miss or lag, or script missing; pages seen: 404 dispatch-404 x\d+/,
+        );
+      });
+
+      it("an unreadable inventory on the recheck: its own class", async () => {
+        const out = (
+          await runAll(stuckPage(503, CLOSED_HTML, { hostsFail: true }))
+        ).get("P22");
+        expect(level(out)).toMatch(/^fail: /);
+        expect(out).toMatch(/\(inventory-unreadable\)/);
+        expect(out).toMatch(/inventory mode unreadable$/);
+      });
+
+      it("a thrown recheck keeps the class and the page log", async () => {
+        const out = (
+          await runAll(stuckPage(503, CLOSED_HTML, { throwAfter: 28 }))
+        ).get("P22");
+        expect(out).toMatch(/\(other\)|\(dispatch-closed-lag\)/);
+        expect(out).toMatch(
+          /pages seen: 503 dispatch-closed x\d+ \(\d+-\d+ s\), 0 no-response x1/,
+        );
+      });
+
+      it("a recheck that returns 200 says it came up on recheck, and still fails", async () => {
+        const out = (
+          await runAll(stuckPage(503, CLOSED_HTML, { okAfter: 28 }))
+        ).get("P22");
+        expect(level(out)).toMatch(/^fail: /);
+        expect(out).toMatch(/the page came up on the recheck/);
+        expect(out).toMatch(/came up on recheck after \d+ s$/);
       });
 
       it("the install's own 503: other, with the last statuses", async () => {

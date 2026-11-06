@@ -566,7 +566,11 @@ export async function servingLag(
  * closed and paused 503s carry the W11 titles (apps/dispatch/src/unavailable.ts
  * CLOSED_COPY and PAUSED_COPY) and its notFound is the plain text "Not found"
  * (apps/dispatch/src/index.ts). Anything else came from the install's Worker.
- * The titles are copied here on purpose: this suite imports no app code.
+ * The titles are copied here on purpose: this suite imports no app code; keep
+ * them equal to apps/dispatch/src/unavailable.ts (CLOSED_COPY, PAUSED_COPY).
+ * The 404 is not unique: the install's own foreign-host reply
+ * (apps/server/src/index.ts isForeignHost) is the same plain "Not found", so
+ * "dispatch-404" means "that exact reply, from dispatch or the install".
  */
 export type PageSource =
   | "dispatch-closed"
@@ -587,21 +591,29 @@ export function pageSource(r: Pick<Res, "status" | "text">): PageSource {
 export class PageLog {
   private runs: {
     status: number;
-    source: PageSource;
+    source: PageSource | "no-response";
     n: number;
     from: number;
     to: number;
   }[] = [];
   last: { status: number; source: PageSource } | null = null;
 
-  record(elapsedMs: number, status: number, source: PageSource): void {
+  record(
+    elapsedMs: number,
+    status: number,
+    source: PageSource | "no-response",
+  ): void {
     const s = Math.round(elapsedMs / 1000);
     const r = this.runs[this.runs.length - 1];
     if (r && r.status === status && r.source === source) {
       r.n++;
       r.to = s;
     } else this.runs.push({ status, source, n: 1, from: s, to: s });
-    this.last = { status, source };
+    this.last = source === "no-response" ? null : { status, source };
+  }
+
+  recordNoResponse(elapsedMs: number): void {
+    this.record(elapsedMs, 0, "no-response");
   }
 
   /** "503 dispatch-closed x5 (0-12 s), 200 install x1 (15 s)"; the middle elided past 10 runs. */
@@ -619,37 +631,47 @@ export class PageLog {
 
 export type ServingClass =
   | "dispatch-closed-lag"
-  | "restore-broken-404"
+  | "dispatch-404-while-serving"
   | "restore-broken-not-serving"
+  | "inventory-unreadable"
   | "other";
 
 /**
  * Names why a restored install's app host never answered 200 (#1593), from
- * the last page seen, the inventory mode read after the timeout (null: none,
- * or unreadable) and the restore job. Order: a 404 from dispatch (its script
- * is gone), then an inventory that isn't serving or a restore job with an
- * error code, then dispatch still answering closed or paused while the
- * inventory says serving (KV or cache lag), then anything else.
+ * the last page seen (null: no response), the inventory mode read after the
+ * timeout (undefined: unreadable) and the restore job. Order: an unreadable
+ * inventory, then an inventory that isn't serving or a restore job with an
+ * error code (the restore is broken), then, with the inventory serving: a
+ * plain 404 (neutral: a HOSTS miss or lag, an unparseable value, a KV error,
+ * a missing script or a crashing install all give it), dispatch still
+ * answering closed or paused (HOSTS or cache lag), else other.
  */
 export function classifyServing(o: {
   last: { status: number; source: PageSource } | null;
-  mode: string | null;
+  mode: string | null | undefined;
   restoreErrorCode: string | null;
+  cameUpOnRecheck?: boolean;
 }): { cls: ServingClass; why: string } {
-  if (o.last?.source === "dispatch-404")
+  if (o.mode === undefined)
     return {
-      cls: "restore-broken-404",
-      why: "dispatch answers 404 Not found, so the install's script is missing: the restore is broken",
+      cls: "inventory-unreadable",
+      why: "the inventory mode could not be read, so the cause is unknown",
     };
   if (o.mode !== "serving")
     return {
       cls: "restore-broken-not-serving",
-      why: `the inventory mode is ${o.mode ?? "unreadable"}, not serving: the restore is broken`,
+      why: `the inventory mode is ${o.mode}, not serving: the restore is broken`,
     };
   if (o.restoreErrorCode != null)
     return {
       cls: "restore-broken-not-serving",
       why: `the restore job recorded ${o.restoreErrorCode}: the restore is broken`,
+    };
+  const late = o.cameUpOnRecheck ? "; the page came up on the recheck" : "";
+  if (o.last?.source === "dispatch-404")
+    return {
+      cls: "dispatch-404-while-serving",
+      why: `plain 404 Not found while the inventory says serving: HOSTS miss or lag, or script missing${late}`,
     };
   if (
     o.last?.source === "dispatch-closed" ||
@@ -657,9 +679,9 @@ export function classifyServing(o: {
   )
     return {
       cls: "dispatch-closed-lag",
-      why: `infra: dispatch still answers ${o.last.source.replace("dispatch-", "")} (${o.last.status}) while the inventory says serving: HOSTS or cache lag`,
+      why: `infra: dispatch still answers ${o.last.source.replace("dispatch-", "")} (${o.last.status}) while the inventory says serving: HOSTS or cache lag${late}`,
     };
-  return { cls: "other", why: "no known cause" };
+  return { cls: "other", why: `no known cause${late}` };
 }
 
 /**
@@ -683,19 +705,28 @@ async function servingWait(
     if (run.io.now() >= end) break;
     await run.io.wait(POLL_MS);
   }
-  const r = await run.page(host);
-  log.record(run.io.now() - t0, r.status, pageSource(r));
-  let mode: string | null = null;
+  let cameUp: number | null = null;
+  try {
+    const r = await run.page(host);
+    log.record(run.io.now() - t0, r.status, pageSource(r));
+    if (r.status === 200) cameUp = Math.round((run.io.now() - t0) / 1000);
+  } catch {
+    log.recordNoResponse(run.io.now() - t0);
+  }
+  let mode: string | null | undefined;
   try {
     mode = (await run.hostMode(host)).mode;
-  } catch {}
+  } catch {
+    mode = undefined;
+  }
   const c = classifyServing({
     last: log.last,
     mode,
     restoreErrorCode: restore.lastErrorCode ?? null,
+    cameUpOnRecheck: cameUp !== null,
   });
   throw new ProbeFail(
-    `P22 serving: not within ${PAGE_WITHIN_MS / 1000} s (${c.cls}): ${c.why}; pages seen: ${log.text()}; inventory mode ${mode ?? "unreadable"}`,
+    `P22 serving: not within ${PAGE_WITHIN_MS / 1000} s (${c.cls}): ${c.why}; pages seen: ${log.text()}; inventory mode ${mode === undefined ? "unreadable" : mode}${cameUp !== null ? `; came up on recheck after ${cameUp} s` : ""}`,
   );
 }
 
