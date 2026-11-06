@@ -245,7 +245,12 @@ export async function doctor(ctx: Ctx): Promise<number> {
     }
     if (
       wiring[h] === "configured" &&
-      (h !== "hermes" || (await hermesEnabled(ctx)))
+      (h !== "hermes" ||
+        (await hermesEnabled({
+          home: ctx.userHome,
+          env: ctx.env,
+          exec: ctx.exec,
+        })))
     )
       pass(c.wired(h, version));
     else fail(c.notWired(h));

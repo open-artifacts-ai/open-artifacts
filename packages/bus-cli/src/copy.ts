@@ -251,6 +251,13 @@ export function copy(style: Style) {
     // After the configured line, when the Hermes plugin was copied and enabled.
     hermesRestart: () =>
       next("Restart running Hermes sessions and gateways to load the plugin."),
+    // After uninstall removed the Hermes plugin folder with no hermes binary to disable it.
+    hermesNoCli: (config: string) => [
+      warn("Hermes isn't on PATH, so oa-bus may still be enabled in Hermes."),
+      next(
+        `Run hermes plugins disable oa-bus, or remove oa-bus from plugins.enabled in ${config}.`,
+      ),
+    ],
     opencodeNotRunning: () =>
       done("OpenCode service not running; it loads the plugin when it starts"),
     daemonRunning: (

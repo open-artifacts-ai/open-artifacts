@@ -51,10 +51,17 @@ function setup(
     present?: string[];
     replies?: Record<string, Reply>;
     env?: Record<string, string>;
+    /** Runs on the fresh temp home first (an active_profile file, say). */
+    before?: (home: string) => void;
+    /** Hermes already lists the plugin as enabled. */
+    enabled?: boolean;
   } = {},
 ) {
   const home = tmp("oa-hermes-home-");
+  opts.before?.(home);
   const calls: string[][] = [];
+  let enabled = opts.enabled ?? false;
+  const envs: (Record<string, string> | undefined)[] = [];
   const present = opts.present ?? ["hermes"];
   const dirAtCall: Record<string, boolean> = {};
   const deps: AdapterDeps = {
@@ -63,13 +70,24 @@ function setup(
     busBin: ["/usr/local/bin/oa-bus"],
     assets: { pi: "PI", opencodePlugin: "OC", hermes: shipped() },
     which: (c) => present.includes(c),
-    exec: (async (cmd, args) => {
+    exec: (async (cmd, args, o) => {
+      envs.push(o?.env);
       const key = [cmd, ...args].join(" ");
+      if (key.startsWith("hermes plugins enable")) enabled = true;
+      if (key.startsWith("hermes plugins disable")) enabled = false;
       calls.push([cmd, ...args]);
       dirAtCall[key] = existsSync(hermesPluginDir(home, opts.env ?? {}));
       const hit = Object.entries(opts.replies ?? {}).find(([k]) =>
         key.startsWith(k),
       )?.[1];
+      if (!hit && key.startsWith("hermes plugins list"))
+        return {
+          code: 0,
+          stdout: JSON.stringify([
+            { name: "oa-bus", status: enabled ? "enabled" : "not enabled" },
+          ]),
+          stderr: "",
+        };
       return { stdout: "", stderr: "", ...(hit ?? { code: 0 }) };
     }) as Exec,
   };
@@ -77,6 +95,7 @@ function setup(
     home,
     deps,
     calls,
+    envs,
     dirAtCall,
     dest: hermesPluginDir(home, opts.env ?? {}),
   };
@@ -89,6 +108,7 @@ const ENABLE = [
   "--no-allow-tool-override",
   "oa-bus",
 ];
+const LIST = ["hermes", "plugins", "list", "--json", "--user"];
 const DISABLE = ["hermes", "plugins", "disable", "oa-bus"];
 const ls = (d: string) => readdirSync(d).sort();
 
@@ -126,7 +146,7 @@ describe("installAdapters: hermes", () => {
     expect(readFileSync(join(dest, HERMES_MARKER), "utf8")).toMatch(
       /^managed by the Open Artifacts bus installer: .* [0-9a-f]{16}\n$/,
     );
-    expect(calls).toEqual([ENABLE]);
+    expect(calls).toEqual([LIST, ENABLE]);
     // Nothing else appears in the Hermes home.
     expect(ls(join(home, ".hermes"))).toEqual(["plugins"]);
     expect(ls(join(home, ".hermes/plugins"))).toEqual(["oa-bus"]);
@@ -147,7 +167,16 @@ describe("installAdapters: hermes", () => {
     const out = await installAdapters(deps);
     expect(out.installed).toEqual(["hermes"]);
     expect(lstatSync(dest).ino).toBe(inode);
-    expect(calls).toEqual([ENABLE, ENABLE]);
+    // The second run finds it enabled and leaves its grant alone.
+    expect(calls).toEqual([LIST, ENABLE, LIST]);
+  });
+
+  it("runs no enable for a plugin Hermes already lists as enabled", async () => {
+    const { deps, calls, dest } = setup({ enabled: true });
+    const out = await installAdapters(deps);
+    expect(out.installed).toEqual(["hermes"]);
+    expect(calls).toEqual([LIST]);
+    expect(existsSync(join(dest, "plugin.yaml"))).toBe(true);
   });
 
   it("replaces a stale folder of ours, dropping files the plugin no longer has", async () => {
@@ -302,6 +331,7 @@ describe("checkAdapters: hermes", () => {
 
 describe("hermesEnabled", () => {
   const list = (stdout: string, code = 0) => ({
+    home: "/h",
     exec: (async () => ({ code, stdout, stderr: "" })) as Exec,
   });
   it("reads `hermes plugins list --json`", async () => {
@@ -314,7 +344,7 @@ describe("hermesEnabled", () => {
         stderr: "",
       };
     };
-    expect(await hermesEnabled({ exec })).toBe(true);
+    expect(await hermesEnabled({ home: "/h", exec })).toBe(true);
     expect(seen).toEqual([["hermes", "plugins", "list", "--json", "--user"]]);
   });
   it("is false for disabled, not enabled, absent, errors and non-JSON", async () => {
@@ -331,6 +361,7 @@ describe("hermesEnabled", () => {
     expect(await hermesEnabled(list("[]", 1))).toBe(false);
     expect(
       await hermesEnabled({
+        home: "/h",
         exec: async () => {
           throw new Error("x");
         },
@@ -365,5 +396,110 @@ describe("the Hermes skill", () => {
       expect(existsSync(file)).toBe(false);
       expect(existsSync(join(base, "skills/theirs/SKILL.md"))).toBe(true);
     }
+  });
+});
+
+describe("an active Hermes profile", () => {
+  const coder = (h: string) => {
+    put(join(h, ".hermes/active_profile"), "coder\n");
+    mkdirSync(join(h, ".hermes/profiles/coder"), { recursive: true });
+  };
+
+  it("is the plain home with no profile", () => {
+    const { home } = setup();
+    expect(hermesHome(home, {})).toBe(join(home, ".hermes"));
+    // 'default', a bad name and a profile with no folder all mean no profile.
+    for (const name of ["default", "../x", "ghost"]) {
+      put(join(home, ".hermes/active_profile"), name);
+      expect(hermesHome(home, {})).toBe(join(home, ".hermes"));
+    }
+  });
+
+  it("selects <root>/profiles/<name> for the plugin, the skill and every hermes call", async () => {
+    const s = setup({ before: coder });
+    const profile = join(s.home, ".hermes/profiles/coder");
+    expect(hermesHome(s.home, {})).toBe(profile);
+    expect(s.dest).toBe(join(profile, "plugins/oa-bus"));
+    expect(skillDir({ home: s.home }, "hermes")).toBe(join(profile, "skills"));
+    await installAdapters(s.deps);
+    expect(existsSync(join(s.dest, "plugin.yaml"))).toBe(true);
+    expect(existsSync(join(s.home, ".hermes/plugins"))).toBe(false);
+    await uninstallAdapters(s.deps);
+    expect(s.calls).toEqual([LIST, ENABLE, DISABLE]);
+    expect(s.envs).toEqual([
+      { HERMES_HOME: profile },
+      { HERMES_HOME: profile },
+      { HERMES_HOME: profile },
+    ]);
+    expect(existsSync(s.dest)).toBe(false);
+  });
+
+  it("passes the plain home to hermes when there is no profile", async () => {
+    const s = setup();
+    await installAdapters(s.deps);
+    expect(s.envs).toEqual([
+      { HERMES_HOME: join(s.home, ".hermes") },
+      { HERMES_HOME: join(s.home, ".hermes") },
+    ]);
+  });
+
+  it("keeps a HERMES_HOME that is already a profile, whatever active_profile says", () => {
+    const { home } = setup({ before: coder });
+    const other = join(home, ".hermes/profiles/other");
+    mkdirSync(other, { recursive: true });
+    expect(hermesHome(home, { HERMES_HOME: other })).toBe(other);
+    const docker = tmp("oa-hermes-docker-");
+    mkdirSync(join(docker, "profiles/p1"), { recursive: true });
+    put(join(docker, "active_profile"), "p1");
+    expect(hermesHome(home, { HERMES_HOME: join(docker, "profiles/p1") })).toBe(
+      join(docker, "profiles/p1"),
+    );
+  });
+
+  it("follows active_profile from a HERMES_HOME that is the root", () => {
+    const { home } = setup({ before: coder });
+    const profile = join(home, ".hermes/profiles/coder");
+    expect(hermesHome(home, { HERMES_HOME: join(home, ".hermes") })).toBe(
+      profile,
+    );
+    // A custom root (Docker) holds its own active_profile and profiles.
+    const root = tmp("oa-hermes-docker-");
+    mkdirSync(join(root, "profiles/p1"), { recursive: true });
+    put(join(root, "active_profile"), "P1\n");
+    expect(hermesHome(home, { HERMES_HOME: root })).toBe(
+      join(root, "profiles/p1"),
+    );
+    // A supervised gateway child ignores the sticky profile.
+    expect(
+      hermesHome(home, { HERMES_HOME: root, HERMES_S6_SUPERVISED_CHILD: "1" }),
+    ).toBe(root);
+  });
+});
+
+describe("a killed install", () => {
+  it("stages outside plugins/, and the next install sweeps what was left", async () => {
+    const s = setup();
+    const staging = join(s.home, ".hermes/.oa-bus-staging");
+    // What a SIGKILL mid-copy leaves: a staged plugin with a manifest.
+    put(join(staging, "dead/plugin.yaml"), "name: oa-bus\n");
+    await installAdapters(s.deps);
+    expect(existsSync(staging)).toBe(false);
+    expect(ls(join(s.home, ".hermes/plugins"))).toEqual(["oa-bus"]);
+  });
+});
+
+describe("uninstall without hermes", () => {
+  it("says the config may still list oa-bus", async () => {
+    const s = setup();
+    await installAdapters(s.deps);
+    s.deps.which = () => false;
+    const out = await uninstallAdapters(s.deps);
+    expect(out.removed).toEqual(["hermes"]);
+    expect(out.hermesNoCli).toBe(true);
+  });
+  it("says nothing when hermes disabled it", async () => {
+    const s = setup();
+    await installAdapters(s.deps);
+    expect((await uninstallAdapters(s.deps)).hermesNoCli).toBe(false);
   });
 });

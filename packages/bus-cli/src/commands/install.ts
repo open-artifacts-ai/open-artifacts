@@ -374,7 +374,14 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
       });
       if (Object.values(wiring).includes("missing")) return "todo";
       // The plugin files can be right while Hermes has it disabled.
-      if (wiring.hermes === "configured" && !(await hermesEnabled(ctx)))
+      if (
+        wiring.hermes === "configured" &&
+        !(await hermesEnabled({
+          home: ctx.userHome,
+          env: ctx.env,
+          exec: ctx.exec,
+        }))
+      )
         return "todo";
       return "done";
     },

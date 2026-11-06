@@ -45,6 +45,7 @@ import {
   upsertCodexEntry,
 } from "./codex.ts";
 import {
+  HERMES_NO_CLI,
   hermesPluginDir,
   installHermes,
   pluginState,
@@ -54,6 +55,8 @@ import {
 export type Exec = (
   cmd: string,
   args: string[],
+  /** Extra environment for the command, on top of the CLI's own. */
+  opts?: { env?: Record<string, string> },
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
 export type Harness = "claude" | "opencode" | "pi" | "omp" | "codex" | "hermes";
@@ -98,6 +101,8 @@ export type UninstallResult = {
   folderOnly: Harness[];
   /** OpenCode was touched and `opencode service restart` succeeded. */
   opencodeRestarted: boolean;
+  /** Hermes's plugin folder went with no `hermes` to run `plugins disable`. */
+  hermesNoCli: boolean;
 };
 
 /** The harness entry (MCP server, OpenCode plugin) name. OpenBus uses `openbus`: both can be installed. */
@@ -652,8 +657,8 @@ const uninstall: Record<Harness, Step> = {
     return saved || pinned ? "done" : "none";
   },
 
-  async hermes(deps) {
-    return uninstallHermes(deps);
+  async hermes(deps, notes) {
+    return uninstallHermes(deps, notes);
   },
 };
 
@@ -719,6 +724,7 @@ export async function uninstallAdapters(
       [...done, ...folder].includes("opencode") &&
       deps.which("opencode") &&
       !notes.some((n) => n.startsWith(RESTART_FAILED)),
+    hermesNoCli: notes.includes(HERMES_NO_CLI),
   };
 }
 

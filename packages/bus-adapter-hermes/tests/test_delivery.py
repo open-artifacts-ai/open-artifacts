@@ -458,10 +458,6 @@ class RootsAreSeparate(unittest.TestCase):
         e.bus.deliver(support.deliver_frame(M1), link)  # no exception
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Habits(unittest.TestCase):
     def test_the_wording_is_exact(self):
         self.assertEqual(
@@ -514,3 +510,7 @@ class Habits(unittest.TestCase):
         e = Env()
         e.link()
         self.assertIsNone(e.turn("kid", "cli", "x"))
+
+
+if __name__ == "__main__":
+    unittest.main()

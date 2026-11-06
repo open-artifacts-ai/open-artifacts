@@ -14,23 +14,71 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import type { AdapterDeps } from "./adapters.ts";
 
 /** The plugin's name in plugin.yaml, and its folder under plugins/. */
 export const HERMES_PLUGIN_NAME = "oa-bus";
 /** Written by install, read by uninstall and status: the folder is ours when this is there. */
 export const HERMES_MARKER = ".oa-bus-managed";
+/** The note uninstall leaves when the folder went with no `hermes` to disable it. */
+export const HERMES_NO_CLI =
+  "no hermes binary found; its config may still list oa-bus";
+/** Where a copy is built before it moves into plugins/, in the Hermes home. */
+export const HERMES_STAGING = ".oa-bus-staging";
 
 type Env = Record<string, string | undefined>;
 
-/** HERMES_HOME as Hermes reads it (hermes_constants.py), else `~/.hermes`. */
+const tilded = (home: string, v: string) =>
+  v === "~" ? home : resolve(v.startsWith("~/") ? join(home, v.slice(2)) : v);
+
+/**
+ * The Hermes home its CLI would run in, mirrored from Hermes's source:
+ * hermes_cli/main.py (the profile is picked before anything else loads) and
+ * hermes_constants.py get_default_hermes_root. A HERMES_HOME already inside
+ * `profiles/` is used as is; otherwise `<root>/active_profile`, when it names a
+ * profile that exists, selects `<root>/profiles/<name>`. A supervised s6 child
+ * ignores active_profile. Only that one file is read (a profile name).
+ */
 export function hermesHome(home: string, env: Env): string {
+  const native = join(home, ".hermes");
   const v = env.HERMES_HOME?.trim();
-  if (!v) return join(home, ".hermes");
-  if (v === "~") return home;
-  return resolve(v.startsWith("~/") ? join(home, v.slice(2)) : v);
+  const given = v ? tilded(home, v) : undefined;
+  if (given !== undefined && basename(dirname(given)) === "profiles")
+    return given;
+  const base = given ?? native;
+  const root = (() => {
+    if (given === undefined) return native;
+    const rel = relative(native, given);
+    // Under ~/.hermes: that is the root, whatever the folder is called.
+    if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)))
+      return native;
+    return given;
+  })();
+  if (env.HERMES_S6_SUPERVISED_CHILD) return base;
+  try {
+    const name = readFileSync(join(root, "active_profile"), "utf8")
+      .trim()
+      .toLowerCase();
+    if (name && name !== "default" && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) {
+      const dir = join(root, "profiles", name);
+      if (lstatSync(dir).isDirectory()) return dir;
+    }
+  } catch {}
+  return base;
 }
+
+/** The env Hermes's CLI runs with, so it and our files agree on the home. */
+export const hermesEnv = (home: string, env: Env) => ({
+  HERMES_HOME: hermesHome(home, env),
+});
 
 export const hermesPluginDir = (home: string, env: Env) =>
   join(hermesHome(home, env), "plugins", HERMES_PLUGIN_NAME);
@@ -95,9 +143,14 @@ export function pluginState(
   }
 }
 
-const exec = async (deps: Pick<AdapterDeps, "exec">, args: string[]) => {
+const exec = async (
+  deps: Pick<AdapterDeps, "exec" | "home" | "env">,
+  args: string[],
+) => {
   try {
-    return await deps.exec("hermes", args);
+    return await deps.exec("hermes", args, {
+      env: hermesEnv(deps.home, deps.env ?? {}),
+    });
   } catch (e) {
     return {
       code: -1,
@@ -128,11 +181,13 @@ export async function installHermes(
   if (state !== "current") {
     const plugins = join(dest, "..");
     mkdirSync(plugins, { recursive: true });
-    // Beside the destination so the rename stays on one filesystem.
-    const tmp = join(
-      plugins,
-      `.${HERMES_PLUGIN_NAME}.${process.pid}.${randomBytes(4).toString("hex")}.tmp`,
-    );
+    // Staged outside plugins/ (Hermes loads any folder there with a plugin.yaml),
+    // but in the same Hermes home, so the rename stays on one filesystem. A
+    // killed install leaves its stage behind: the next install sweeps them.
+    const staging = join(plugins, "..", HERMES_STAGING);
+    rmSync(staging, { recursive: true, force: true });
+    mkdirSync(staging, { recursive: true });
+    const tmp = join(staging, randomBytes(4).toString("hex"));
     try {
       mkdirSync(tmp);
       for (const f of files(shipped)) {
@@ -148,10 +203,16 @@ export async function installHermes(
     } catch (e) {
       rmSync(tmp, { recursive: true, force: true });
       throw e;
+    } finally {
+      rmSync(staging, { recursive: true, force: true });
     }
   }
+  // Enable only a plugin Hermes does not list as enabled, so a reinstall never
+  // rewrites the tool-override grant the user may have given it.
+  if (await hermesEnabled(deps)) return "done";
   // --no-allow-tool-override: without it Hermes asks on a terminal. Our tools
-  // are new names; the plugin never replaces a built-in.
+  // are new names; the plugin never replaces a built-in, so a first install
+  // rightly records no grant.
   const r = await exec(deps, [
     "plugins",
     "enable",
@@ -168,6 +229,7 @@ export async function installHermes(
 /** Disables the plugin, then removes our folder. Anything not ours stays. */
 export async function uninstallHermes(
   deps: AdapterDeps,
+  notes: string[],
 ): Promise<"done" | "none"> {
   const dest = hermesPluginDir(deps.home, deps.env ?? {});
   const state = pluginState(dest, undefined);
@@ -181,7 +243,7 @@ export async function uninstallHermes(
       throw new Error(
         `\`hermes plugins disable ${HERMES_PLUGIN_NAME}\` failed (${firstLine(r.stderr) || firstLine(r.stdout) || `exit ${r.code}`}); left the plugin folder, rerun once Hermes works`,
       );
-  }
+  } else notes.push(HERMES_NO_CLI);
   rmSync(dest, { recursive: true, force: true });
   return "done";
 }
@@ -191,7 +253,7 @@ export async function uninstallHermes(
  * (never config.yaml). False when it cannot be told.
  */
 export async function hermesEnabled(
-  deps: Pick<AdapterDeps, "exec">,
+  deps: Pick<AdapterDeps, "exec" | "home" | "env">,
 ): Promise<boolean> {
   const r = await exec(deps, ["plugins", "list", "--json", "--user"]);
   if (r.code !== 0) return false;
