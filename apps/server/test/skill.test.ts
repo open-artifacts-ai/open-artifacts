@@ -93,6 +93,13 @@ describe("skill.md drift", () => {
     expect(await skill()).toContain("stays under 140 characters");
   });
 
+  it("tells agents every wait has a timeout", async () => {
+    const md = await skill();
+    expect(md).toContain("has a timeout");
+    expect(md).toContain("never sit idle");
+    expect(md).toContain("confirm it can land");
+  });
+
   it("tells every page writer how links open", async () => {
     const md = await skill();
     const at = md.indexOf("\n## Writing pages\n");
