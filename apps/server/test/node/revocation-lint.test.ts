@@ -150,6 +150,11 @@ const WIDENS: Readonly<Record<string, string>> = {
   // artifact's DO, never a member's status.
   "runtime/do.ts:ArtifactRuntime.commentsStatus":
     "a comment thread's status, not access",
+  // #1567: a link proposal's own status column in the BusHub, likewise.
+  "bus/link-proposals.ts:expireLinkProposals":
+    "a link proposal's status, not access",
+  "bus/link-proposals.ts:decideLinkProposal":
+    "a link proposal's status, not access",
 };
 
 /** Exempt from the scan: the primitives themselves. */

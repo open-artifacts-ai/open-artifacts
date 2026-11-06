@@ -27,6 +27,14 @@ export const BUS_ROUTES = {
   approve: "/bus/approve",
   /** `GET` WebSocket upgrade, `Authorization: Bearer oa_machine_...`. */
   connect: "/bus/connect",
+  /**
+   * `POST`, `Authorization: Bearer oa_machine_...` (#1567): `oa-bus link` and
+   * `unlink` record a proposal `{ action: "link" | "unlink", a, b }` and get
+   * back `{ confirmUrl, expiresAt }`. It links nothing: the member opens
+   * `confirmUrl` in a browser to confirm. 409 `details.reason`:
+   * `rate_limited`, `proposal_limit`, `no_bus`.
+   */
+  linkProposals: "/api/v1/bus/links/proposals",
 } as const;
 
 export const DeviceCodeRequestSchema = z.strictObject({

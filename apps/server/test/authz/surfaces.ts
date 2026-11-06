@@ -2131,6 +2131,12 @@ export const PUBLIC_ROUTES: readonly string[] = [
   // bus/roles.proposals.test.ts covers each).
   "GET /bus/roles/confirm/:token",
   "POST /bus/roles/confirm/:token",
+  // #1567: `oa-bus link`'s proposal (a machine token, checked by the
+  // handler) and its confirm page (the role confirm's rules); covered by
+  // bus/links.proposals.test.ts.
+  "POST /api/v1/bus/links/proposals",
+  "GET /bus/links/confirm/:token",
+  "POST /bus/links/confirm/:token",
   "GET /a/:id",
   "GET /a/:id/full",
   "GET /a/:id/v/:v",

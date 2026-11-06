@@ -303,6 +303,22 @@ describe("status in OpenCode", () => {
     }).then((r) => ({ text: r.content[0]?.text, frames, r }));
   };
 
+  it("#1567: list_agents includes linked projects' agents with their namespace", async () => {
+    const { text } = await run("list_agents", {}, () => ({
+      type: "roster",
+      agents: [
+        row({ name: "a" }),
+        row({ name: "docs", namespace: "acme/docs" }),
+      ],
+    }));
+    expect(text).toBe("- a (opencode, ns)\n- docs (opencode, acme/docs)");
+    const empty = await run("list_agents", {}, () => ({
+      type: "roster",
+      agents: [],
+    }));
+    expect(empty.text).toBe("No agents in your namespace and linked ones.");
+  });
+
   it("list_agents: statuses, stale, hostile; no role", async () => {
     const { text } = await run("list_agents", {}, () => ({
       type: "roster",

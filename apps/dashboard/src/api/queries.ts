@@ -3,6 +3,9 @@ import {
   ArtifactSummarySchema,
   type BusAddress,
   BusAgentsSchema,
+  type BusLinkPut,
+  BusLinkSchema,
+  BusLinksSchema,
   BusMachinesSchema,
   type BusRolePut,
   BusRoleSchema,
@@ -102,6 +105,7 @@ export const qk = {
   busAgents: ["bus", "agents"] as const,
   shareNotices: ["bus", "share-notices"] as const,
   busRoles: ["bus", "roles"] as const,
+  busLinks: ["bus", "links"] as const,
   settings: ["settings"] as const,
   usage: ["usage"] as const,
   spaces: (q?: SpacesQueryInput) => ["spaces", q ?? {}] as const,
@@ -318,6 +322,30 @@ export const useDeleteBusRole = () =>
     (id: string) => api.send("DELETE", R.busRole(id), undefined),
     () => [qk.busRoles],
     "Couldn't remove the role.",
+  );
+/** #1567: the member's namespace links (GET R.busLinks); polled while visible. */
+export const useBusLinks = (enabled = true) =>
+  useQuery({
+    enabled,
+    queryKey: qk.busLinks,
+    queryFn: ({ signal }) => api.get(R.busLinks, BusLinksSchema, signal),
+    refetchInterval: BUS_POLL_MS,
+  });
+/** Link two namespaces (PUT R.busLinks, idempotent). Refusals (409) are the dialog's to show. */
+export const usePutBusLink = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: BusLinkPut) =>
+      api.send("PUT", R.busLinks, v, z.object({ link: BusLinkSchema })),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.busLinks }),
+  });
+};
+/** Remove a link (DELETE R.busLink(id), idempotent). */
+export const useDeleteBusLink = () =>
+  useInvalidating(
+    (id: string) => api.send("DELETE", R.busLink(id), undefined),
+    () => [qk.busLinks],
+    "Couldn't remove the link.",
   );
 export const useSettings = () =>
   useQuery({
