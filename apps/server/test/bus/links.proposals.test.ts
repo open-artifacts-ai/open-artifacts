@@ -3,6 +3,7 @@
 // one-time link, in a browser (GET/POST /bus/links/confirm/:token), with the
 // role confirm page's checks. No agent credential proposes with anything but
 // a machine token, and none confirms.
+
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
@@ -22,6 +23,7 @@ import { ROLE_CONFIRM_SCOPE } from "../../src/bus/role-confirm.js";
 import { formCsrf } from "../../src/http/pages.js";
 import { sha256Hex } from "../../src/util/crypto.js";
 import { errOf, fetchAndWait } from "../helpers.js";
+import { confirmBrowser } from "./confirm-browser.js";
 import { daemon, hubOf, machine, member, ns } from "./helpers.js";
 
 const runInHub = async (uid: string, fn: (s: DurableObjectState) => void) =>
@@ -85,34 +87,20 @@ const propose = (
 const proposed = async (r: Response) => {
   expect(r.status).toBe(200);
   const sc = (await r.json()) as BusLinkProposed;
-  const m = /\/bus\/links\/confirm\/([A-Za-z0-9_-]{43})$/.exec(sc.confirmUrl);
+  const m = /\/bus\/links\/confirm#([A-Za-z0-9_-]{43})$/.exec(sc.confirmUrl);
   if (!m?.[1]) throw new Error(`no confirm link: ${sc.confirmUrl}`);
   return { ...sc, secret: m[1] };
 };
 
-const path = (secret: string) => `/bus/links/confirm/${secret}`;
+const BASE = "/bus/links/confirm";
+const browser = confirmBrowser(app, APP, BASE);
 const get = (secret: string, headers: Record<string, string>) =>
-  fetchAndWait(app, new Request(`${APP}${path(secret)}`, { headers }), env);
+  browser.get(secret, headers, env);
 const post = (
   secret: string,
   headers: Record<string, string>,
   fields: [string, string][],
-) => {
-  const body = new URLSearchParams(fields).toString();
-  return fetchAndWait(
-    app,
-    new Request(`${APP}${path(secret)}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        "content-length": String(body.length),
-        ...headers,
-      },
-      body,
-    }),
-    env,
-  );
-};
+) => browser.post(secret, headers, fields, env);
 const csrfOf = (body: string) => {
   const m = /name="csrf" value="([^"]+)"/.exec(body);
   if (!m?.[1]) throw new Error("no csrf field on the page");
@@ -353,7 +341,7 @@ describe("link proposals (#1567)", () => {
       (
         await fetchAndWait(
           app,
-          new Request(`${APP}${path(p.secret)}`, {
+          new Request(`${APP}${BASE}`, {
             method: "POST",
             headers: {
               cookie,
@@ -485,5 +473,77 @@ describe("link proposals (#1567)", () => {
     expect((await one(second.token)).status).toBe(200);
     d.close();
     d2.close();
+  });
+});
+
+describe("link proposals: the secret rides in the URL fragment (#1426)", () => {
+  it("fragment -> details -> confirm links, with no secret in any request URL; the machine label shows", async () => {
+    const { userId, cookie, d, machineToken } = await withBus();
+    const p = await proposed(
+      await propose(machineToken, { action: "link", a: ns("fa"), b: ns("fb") }),
+    );
+    expect(p.confirmUrl).toBe(`${APP}${BASE}#${p.secret}`);
+    const b = confirmBrowser(app, APP, BASE);
+    const page = await b.send(env, `${APP}${BASE}`, { headers: { cookie } });
+    expect(page.status).toBe(200);
+    const csp = page.headers.get("content-security-policy") ?? "";
+    expect(csp).toMatch(/script-src 'nonce-[^']+'/);
+    expect(csp).toContain("connect-src 'self'");
+    expect(await page.text()).not.toContain(p.secret);
+    const viewed = await b.get(p.secret, { cookie }, env);
+    expect(viewed.status).toBe(200);
+    const card = await viewed.text();
+    expect(card).toContain("MacBook");
+    expect(await links(userId)).toEqual([]);
+    const done = await b.post(
+      p.secret,
+      { cookie },
+      [
+        ["csrf", csrfOf(card)],
+        ["decision", "confirm"],
+      ],
+      env,
+    );
+    expect(done.status).toBe(200);
+    expect(await links(userId)).toHaveLength(1);
+    expect(b.urls.length).toBeGreaterThanOrEqual(3);
+    for (const u of b.urls) expect(u, u).not.toContain(p.secret);
+    d.close();
+  });
+
+  it("an old path-style link is refused with a notice and does not consume the proposal", async () => {
+    const { userId, cookie, d, machineToken } = await withBus();
+    const p = await proposed(
+      await propose(machineToken, { action: "link", a: ns("oa"), b: ns("ob") }),
+    );
+    for (const c of [cookie, ""]) {
+      const old = await fetchAndWait(
+        app,
+        new Request(`${APP}${BASE}/${p.secret}`, { headers: { cookie: c } }),
+        env,
+      );
+      expect(old.status).toBe(410);
+      expect(await old.text()).toContain("old format");
+    }
+    expect(await links(userId)).toEqual([]);
+    expect((await confirmInBrowser(cookie, p.secret)).status).toBe(200);
+    expect(await links(userId)).toHaveLength(1);
+    d.close();
+  });
+
+  it("signed out, the hop goes to sign-in with the page's path as next and never the secret", async () => {
+    const { machineToken } = await withBus();
+    const p = await proposed(
+      await propose(machineToken, { action: "link", a: ns("sa"), b: ns("sb") }),
+    );
+    const b = confirmBrowser(app, APP, BASE);
+    const hop = await b.send(env, `${APP}${BASE}`);
+    expect(hop.status).toBe(200);
+    const html = await hop.text();
+    expect(html).toContain(
+      `data-go="/auth/login?next=${encodeURIComponent(BASE)}"`,
+    );
+    expect(html).not.toContain(p.secret);
+    expect(hop.headers.get("location")).toBeNull();
   });
 });
