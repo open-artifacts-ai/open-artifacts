@@ -133,6 +133,7 @@ function Viewer({
   version,
   explicitVersion,
   authed,
+  anonymous,
   readOnly = false,
   viewer,
   role,
@@ -177,6 +178,8 @@ function Viewer({
   version: number;
   explicitVersion: boolean;
   authed: boolean;
+  /** /me answered 401 (signed out), not loading or errored. */
+  anonymous: boolean;
   /** A capped (guest or restricted) member: the server refuses their comment writes. */
   readOnly?: boolean;
   viewer: { email: string; name: string | null } | null;
@@ -528,9 +531,9 @@ function Viewer({
             />
             <SignupNudge
               authed={authed}
+              anonymous={anonymous}
               guest={role === "guest"}
               hosted={hosted}
-              email={viewer?.email ?? null}
             />
             {gone && (
               <GoneBanner
@@ -802,6 +805,7 @@ function ArtifactShell({
               explicitVersion={v !== undefined}
               chromeless={chromeless}
               authed={authed}
+              anonymous={me.status === "anonymous"}
               readOnly={authed && me.me.auth?.readOnly === true}
               role={authed ? me.me.user.role : undefined}
               hosted={authed && me.me.instance.hosted === true}

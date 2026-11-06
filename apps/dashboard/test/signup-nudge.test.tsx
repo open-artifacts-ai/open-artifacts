@@ -106,4 +106,66 @@ describe("sign-up nudge in the viewer (#1564)", () => {
     expect(nudge()).toBeNull();
     vi.restoreAllMocks();
   });
+
+  it("the dismissal key holds no email", async () => {
+    mountHosted(viewerPath(PUBLIC), true, (m) => ({
+      ...m,
+      user: { ...m.user, role: "guest" },
+    }));
+    await screen.findByText(COPY);
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    const keys = Object.keys(localStorage).filter((k) =>
+      k.startsWith("oa.signup-nudge"),
+    );
+    expect(keys).toEqual(["oa.signup-nudge.dismissed"]);
+  });
+
+  it("a /me error on a hosted install shows no strip and asks no providers", async () => {
+    let providerCalls = 0;
+    server.use(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json(
+          { error: { code: "forbidden", message: "no" } },
+          { status: 403 },
+        ),
+      ),
+      http.get("*/auth/providers", () => {
+        providerCalls++;
+        return HttpResponse.json({
+          mode: "direct",
+          providers: [],
+          hosted: true,
+        });
+      }),
+    );
+    mount(viewerPath(PUBLIC));
+    await wait(400);
+    expect(nudge()).toBeNull();
+    expect(providerCalls).toBe(0);
+  });
+
+  it("dismissing moves focus to the page heading, not the body", async () => {
+    anonymous(true);
+    mount(viewerPath(PUBLIC));
+    await screen.findByText(COPY);
+    const btn = screen.getByRole("button", { name: "Dismiss" });
+    btn.focus();
+    fireEvent.click(btn);
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { level: 1 }),
+      ),
+    );
+  });
+
+  it("Get started is the primary button and the strip has the accent border", async () => {
+    anonymous(true);
+    mount(viewerPath(PUBLIC));
+    const strip = (await screen.findByText(COPY)).parentElement as HTMLElement;
+    expect(strip.className).toContain("border-[var(--oa-accent)]");
+    expect(screen.getByRole("link", { name: "Get started" })).toHaveAttribute(
+      "data-variant",
+      "default",
+    );
+  });
 });
