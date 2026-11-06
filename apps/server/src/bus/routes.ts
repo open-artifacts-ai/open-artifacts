@@ -110,8 +110,11 @@ export const APPROVE_PATH = BUS_ROUTES.approve;
 
 const COUNTRY = /^[A-Z]{2}$/;
 // Controls, bidi and zero-width characters: they can disguise a name.
-const UNSAFE =
-  /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/gu;
+// biome-ignore lint/complexity/useRegexLiterals: a literal would trip noControlCharactersInRegex; the string form is deliberate
+const UNSAFE = new RegExp(
+  "[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2069\\ufeff]",
+  "gu",
+);
 
 /**
  * Where a device request came from, for the confirm screen: the country
