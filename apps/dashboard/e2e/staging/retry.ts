@@ -4,64 +4,30 @@
 // times with a short backoff, so a poll keeps polling. A write is never sent
 // twice, and an answer that arrived (2xx, 4xx or 5xx) is returned as is, so a
 // refusal can't turn into a pass.
+//
+// A request that got no response for a socket reason is thrown as InfraError,
+// whose message names the network ("infra: no_response ECONNRESET ..."). That
+// is a label on a failing test and nothing more: T19's Playwright result does
+// not reach red-line's infra count (tests/redline src/report.ts), and the gate
+// fails either way (#1596 follow-up). A reset on a write may mean the server
+// ran it, so it stays a failing test and is never retried or passed.
+
+// One list of socket codes, shared with the red-line suite (no imports of its own).
+import {
+  isNetworkError,
+  noResponseCode,
+} from "../../../../tests/redline/src/fetch-timeout";
+
+export { isNetworkError, noResponseCode };
 
 /** The waits before the second and third tries, as in tests/redline/src/http.ts. */
 export const READ_BACKOFF_MS = [250, 1000] as const;
 
-const NET_CODES = new Set([
-  "ECONNRESET",
-  "ECONNREFUSED",
-  "EPIPE",
-  "ETIMEDOUT",
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "UND_ERR_SOCKET",
-  "UND_ERR_CONNECT_TIMEOUT",
-  "UND_ERR_HEADERS_TIMEOUT",
-  "UND_ERR_BODY_TIMEOUT",
-  "UND_ERR_CLOSED",
-]);
-
-/**
- * True when `e` means the request got no response: undici's TypeError "fetch
- * failed" or "terminated", a socket code, or an abort or timeout. Never an
- * HTTP status. A copy of tests/redline/src/fetch-timeout.ts isNetworkError.
- */
-export function isNetworkError(e: unknown): boolean {
-  if (!(e instanceof Error)) return false;
-  if (
-    e instanceof TypeError &&
-    (e.message === "fetch failed" || e.message === "terminated")
-  )
-    return true;
-  if (e.name === "AbortError" || e.name === "TimeoutError") return true;
-  const code = (e as { code?: unknown }).code;
-  const cause = (e as { cause?: { code?: unknown } }).cause?.code;
-  return (
-    (typeof code === "string" && NET_CODES.has(code)) ||
-    (typeof cause === "string" && NET_CODES.has(cause))
-  );
-}
-
-/** The socket code of a request that got no HTTP response (not a timeout or abort). */
-export function noResponseCode(e: unknown): string | undefined {
-  if (!isNetworkError(e)) return undefined;
-  if (
-    e instanceof Error &&
-    (e.name === "AbortError" || e.name === "TimeoutError")
-  )
-    return undefined;
-  const c = e as { code?: unknown; cause?: { code?: unknown } };
-  for (const code of [c.code, c.cause?.code])
-    if (typeof code === "string" && NET_CODES.has(code)) return code;
-  return undefined;
-}
-
 /**
  * A request that got no HTTP response for a socket reason (#1596). Names
- * itself as infra, as tests/redline's "infra: no_response ..." does, so the
- * report says the network failed, not the product. Still a failed test: the
- * gate does not pass on it.
+ * itself as infra in its message, as tests/redline's "infra: no_response ..."
+ * does. A label only: the test still fails and the gate fails with it. The
+ * server may have run a write whose connection was reset.
  */
 export class InfraError extends Error {
   constructor(reason: string, cause: unknown) {

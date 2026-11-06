@@ -116,7 +116,7 @@ export async function setupFetch(
 export const setupNetwork = (install: string, e: unknown) =>
   `setup publish got no response on ${install} (${networkCode(e)})`;
 
-const NET_CODES = new Set([
+export const NET_CODES = new Set([
   "ECONNRESET",
   "ECONNREFUSED",
   "EPIPE",

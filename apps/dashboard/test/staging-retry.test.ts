@@ -124,4 +124,14 @@ describe("sendRead infra classification", () => {
     const send = vi.fn<() => Promise<Response>>().mockRejectedValue(t);
     await expect(sendRead("POST", send, noWait)).rejects.toBe(t);
   });
+
+  it("an AbortError whose cause is ETIMEDOUT is not reclassified", async () => {
+    const a = Object.assign(new DOMException("aborted", "AbortError"), {
+      cause: Object.assign(new Error("connect ETIMEDOUT"), {
+        code: "ETIMEDOUT",
+      }),
+    });
+    const send = vi.fn<() => Promise<Response>>().mockRejectedValue(a);
+    await expect(sendRead("POST", send, noWait)).rejects.toBe(a);
+  });
 });
