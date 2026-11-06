@@ -49,6 +49,11 @@ export function alertStateKey(key: AlertKey, suffix: AlertStateSuffix): string {
  * platform_state timestamp gate"); the design names no key. Not in 0006.
  */
 export const HEALTH_GATE_KEY = "health_checked_at";
+/**
+ * The last time oa-<p>-billing answered /health (the billing outage alert,
+ * scheduler billing-health.ts). Not in 0006.
+ */
+export const BILLING_HEALTH_OK_KEY = "billing_health_ok_at";
 /** The health round in progress (W7). Not in 0006. */
 export const HEALTH_ROUND_KEY = "health_round_at";
 /** /healthz once an hour per mapped install (5.8 "hourly gate"). */

@@ -91,3 +91,11 @@ The fleet rollout stopped. No install is upgraded to a halted version, and the f
 ## version_skew
 
 An install has been off the platform's release for 6 hours. Clears on its own once it reaches the release. Usually `fleet_halted` explains it. If not, check that install on the admin panel: a suspended, paused or `migration_held` install stays behind until someone acts. Each fix is a write the Manager makes, with the user's yes.
+
+## billing_unreachable
+
+The billing Worker (`oa-<p>-billing`, the tier store) has not answered its health check for over an hour. Installs keep their last good tier for 7 days, so this is time to look, not an outage yet. Check the billing Worker's logs and its D1. Clears on its own with the next healthy check. Opened and cleared by the scheduler's billing check, not by a query.
+
+## email_quota
+
+Yesterday's email sends reached 80% or more of the account's Email Sending daily limit. Raise the limit or reduce sending. Checked once a night by the scheduler (`EMAIL_QUOTA_TOKEN`, `EMAIL_QUOTA_ZONES`, `EMAIL_DAILY_LIMIT`); clears when a night comes in under 80%.

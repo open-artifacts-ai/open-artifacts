@@ -18,11 +18,13 @@ apps/scheduler
 apps/dispatch
 apps/inventory
 apps/platform-db
+apps/billing
 
 # Hosted packages. The release bundle builder leaves provision for the public
 # @oa/bundle package (untangle A), so all of provision is private.
 packages/provision
 packages/gh-oidc
+packages/billing-core
 
 # Hosted CLI, red-line, hosted constants, spikes
 scripts/hosted
