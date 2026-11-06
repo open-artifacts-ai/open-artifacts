@@ -302,3 +302,171 @@ describe("self-host and a hosted install with no gate are unchanged", () => {
     ).toBe(200);
   });
 });
+
+describe("a plan-capped member's agent", () => {
+  const pool = { mine: [] as string[], theirs: "" };
+  beforeAll(async () => {
+    fake.down = false;
+    await clearBilling();
+    await cachePlan({
+      ...base,
+      tier: "business",
+      status: "active",
+      version: 1,
+    });
+    for (let i = 0; i < 3; i++) pool.mine.push(await publish(member));
+    pool.theirs = await publish(owner, { visibility: "team" });
+    await clearBilling();
+    await cachePlan({ ...LOCKS.lapsed, version: 2 } as BillingRow);
+  });
+
+  const agent = async (u: U) => {
+    const { token } = await createPat(env, u.userId, `agent ${uniq()}`);
+    return connect(token, { env: H, props });
+  };
+
+  it("connects, and shares and sets visibility on their own artifact", async () => {
+    const client = await agent(member);
+    try {
+      const id = pool.mine[0] as string;
+      const email = `ag-${uniq()}@a.com`;
+      const sh = await tool(client, "share_artifact", {
+        id,
+        email,
+        role: "viewer",
+      });
+      expect(sh.isError ?? false).toBe(false);
+      const v = await tool(client, "set_visibility", {
+        id,
+        visibility: "team",
+      });
+      expect(v.isError ?? false).toBe(false);
+      const un = await tool(client, "unshare_artifact", {
+        id,
+        email,
+      });
+      expect(un.isError ?? false).toBe(false);
+      expect((await tool(client, "get_artifact", { id })).isError).toBeFalsy();
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("every other write still gets the plan error, and another member's artifact is refused", async () => {
+    const client = await agent(member);
+    try {
+      const mine = pool.mine[1] as string;
+      const publishNew = await tool(client, "publish_artifact", {
+        id: mine,
+        format: "html",
+        content: "<p>2</p>",
+      });
+      expect(publishNew.isError).toBe(true);
+      expect(textOf(publishNew)).toMatch(/read-only/i);
+      const rename = await tool(client, "publish_artifact", {
+        id: mine,
+        title: "renamed",
+      });
+      expect(rename.isError).toBe(true);
+      expect(textOf(rename)).toMatch(/read-only/i);
+      const create = await tool(client, "publish_artifact", {
+        title: "new",
+        format: "html",
+        content: "<p>x</p>",
+      });
+      expect(create.isError).toBe(true);
+      const theirs = await tool(client, "share_artifact", {
+        id: pool.theirs,
+        email: `x-${uniq()}@a.com`,
+        role: "viewer",
+      });
+      expect(theirs.isError).toBe(true);
+      const vis = await tool(client, "set_visibility", {
+        id: pool.theirs,
+        visibility: "private",
+      });
+      expect(vis.isError).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("guest- and restricted-capped callers still can't connect", async () => {
+    const restricted = await login(`restricted-${tag}@a.com`, "member");
+    await env.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(restricted.userId)
+      .run();
+    for (const u of [guest, restricted]) {
+      const { token } = await createPat(env, u.userId, `capped ${uniq()}`);
+      await expect(connect(token, { env: H, props })).rejects.toThrow(
+        /Only members can connect agents/,
+      );
+    }
+  });
+});
+
+describe("a plan-capped manager of a shared space", () => {
+  it("the server's can and the share route agree: share and visibility on, the rest off", async () => {
+    await clearBilling();
+    await cachePlan({
+      ...base,
+      tier: "business",
+      status: "active",
+      version: 1,
+    });
+    const sp = await send(props, R.spaces, owner.cookie, {
+      method: "POST",
+      body: { name: `Mgr ${uniq()}` },
+    });
+    expect(sp.status).toBe(201);
+    const spaceId = ((await sp.json()) as { id: string }).id;
+    await env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'manager', 'manual', 1)",
+    )
+      .bind(spaceId, member.userId)
+      .run();
+    const editorOnly = await login(`ed-${tag}@a.com`, "member");
+    await env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'manual', 1)",
+    )
+      .bind(spaceId, editorOnly.userId)
+      .run();
+    const id = await publish(owner, { spaceId });
+    await clearBilling();
+    await cachePlan({ ...LOCKS.lapsed, version: 2 } as BillingRow);
+    const canOf = async (u: U) =>
+      (
+        (await (await send(props, R.artifact(id), u.cookie)).json()) as {
+          can: Record<string, boolean>;
+        }
+      ).can;
+    expect(await canOf(member)).toMatchObject({
+      share: true,
+      setVisibility: true,
+      edit: false,
+      delete: false,
+      move: false,
+    });
+    // An editor (not a manager) can't share, here or on the server.
+    expect(await canOf(editorOnly)).toMatchObject({
+      share: false,
+      setVisibility: false,
+    });
+    expect(
+      (
+        await send(props, R.shares(id), member.cookie, {
+          method: "PUT",
+          body: { email: `mg-${uniq()}@a.com`, role: "viewer" },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await send(props, R.shares(id), editorOnly.cookie, {
+          method: "PUT",
+          body: { email: `eg-${uniq()}@a.com`, role: "viewer" },
+        })
+      ).status,
+    ).toBeGreaterThanOrEqual(400);
+  });
+});

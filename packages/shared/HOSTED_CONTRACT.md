@@ -376,7 +376,7 @@ count.
 | billing unreachable over 7 days (`PLAN_STALE_MS`) | read-only; never falls back upward | `billing_unreachable` |
 
 Under free or read-only: everyone but the org owner is read-only (`Me.auth.cap`
-`"plan"`, `readOnly: true`; reads are kept, agents can't connect); the owner
+`"plan"`, `readOnly: true`; reads are kept; an agent can connect, with the same rules: reads plus sharing, every other write refused); the owner
 keeps their personal artifacts and loses the team features: invites, shared spaces (create, settings, members, mappings, publishing and
 writing in them), moves and transfers, directory connect, sync now, a held
 group's confirm and restricted groups, and (free only) a promotion or a

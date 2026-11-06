@@ -484,11 +484,14 @@ export function orgCan(
     // link reset): owner only (#475).
     case "members.manageAdmins":
       return m.role === "owner" && !capped;
-    // Capped callers never connect agents, the billing plan cap included
-    // (fail closed: the owner's agents keep working).
+    // Guests and restricted members never connect agents (fail closed).
     case "tokens.create":
-    case "mcp.connect":
       return TEAM_ROLES.includes(m.role) && !capped;
+    // The billing plan cap alone may connect an agent: sharing is free, and
+    // through the agent the plan cap's rules apply as for the member
+    // (reads, share, unshare, visibility; every other write is refused).
+    case "mcp.connect":
+      return TEAM_ROLES.includes(m.role) && (!capped || opts.cap === "plan");
     default:
       return admin;
   }

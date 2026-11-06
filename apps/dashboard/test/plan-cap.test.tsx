@@ -132,6 +132,33 @@ it("a locked member opens a normal artifact: the cap, not the mock, turns writes
   expect(screen.getByLabelText("Email")).toBeEnabled();
 });
 
+it("a locked manager of a shared space can share its artifact, and nothing else", async () => {
+  // As the server serves a plan-capped manager: share and visibility on only.
+  const managerCan = {
+    edit: false,
+    share: true,
+    setVisibility: true,
+    delete: false,
+    transfer: false,
+    move: false,
+    dataWrite: false,
+  };
+  mountHosted(`/a/${arts[0].id}`, OPTS, locked("member"), [
+    http.get(`*${R.artifact(arts[0].id)}`, () =>
+      HttpResponse.json({
+        ...arts[0],
+        access: "viewer",
+        space: { id: "sp1", kind: "shared", name: "Team", publicLinks: true },
+        can: managerCan,
+      }),
+    ),
+  ]);
+  await screen.findByRole("heading", { name: arts[0].title });
+  expect(await screen.findByRole("button", { name: "Share" })).toBeEnabled();
+  for (const name of ["Rename", "Delete", "Move"])
+    expect(screen.queryByRole("button", { name })).toBeNull();
+});
+
 it("a locked member can't share an artifact that isn't theirs: the server's can says no", async () => {
   const viewerOnly = {
     edit: false,

@@ -920,26 +920,29 @@ export function withSpace<T extends ArtifactSummary>(
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
   });
-  return sharingFree(caller, out, !shared);
+  return sharingFree(caller, out, !shared, sp?.rank ?? 0);
 }
 
 /**
  * Sharing is free on every plan: a member capped only by the billing plan
- * keeps `share` and `setVisibility` on their own personal artifacts (the
- * cap lowers their level to viewer, which would turn both off). Every other
- * action stays off.
+ * keeps `share` and `setVisibility` on their own personal artifacts and on
+ * those in a shared space they manage (the cap lowers their level to
+ * viewer, which would turn both off). Every other action stays off.
  */
 function sharingFree<T extends ArtifactSummary>(
   caller: Caller,
   out: T,
   personal: boolean,
+  /** The caller's role rank in the artifact's shared space (3 = manager). */
+  spaceRank = 0,
 ): T {
   if (
     out.can &&
-    personal &&
     caller.kind === "user" &&
     capOfCaller(caller) === "plan" &&
-    out.owner?.id === caller.user.id
+    // The personal owner, or a manager of the shared space: the same two
+    // that the server lets share (can(level, "share")).
+    (personal ? out.owner?.id === caller.user.id : spaceRank === 3)
   )
     out.can = { ...out.can, share: true, setVisibility: true };
   return out;
