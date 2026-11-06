@@ -485,3 +485,112 @@ describe("#1527: self shows the config files the daemon refused", () => {
     ]);
   });
 });
+
+describe("linked projects (#1567)", () => {
+  const row = (
+    name: string,
+    namespace: string,
+    state: "live" | "queued" | "away" = "live",
+  ) => ({
+    name,
+    namespace,
+    kind: "claude",
+    live: state === "live",
+    state,
+    global: false,
+  });
+  it("list_agents says it lists linked ones too, and shows each row's namespace", async () => {
+    expect(TOOLS[0].description).toContain("and linked ones");
+    const r = await callTool(
+      "list_agents",
+      {},
+      client(async () => ({
+        v: 1 as const,
+        id: "1",
+        type: "roster" as const,
+        agents: [
+          row("me", "github.com/acme/app"),
+          row("docs", "github.com/acme/docs"),
+        ],
+      })),
+    );
+    expect(r.content[0].text).toBe(
+      "- me (claude, github.com/acme/app)\n- docs (claude, github.com/acme/docs)",
+    );
+    const empty = await callTool(
+      "list_agents",
+      {},
+      client(async () => ({
+        v: 1 as const,
+        id: "1",
+        type: "roster" as const,
+        agents: [],
+      })),
+    );
+    expect(empty.content[0].text).toBe(
+      "No agents in your namespace and linked ones.",
+    );
+  });
+
+  it("a closed or revoked send names the linked namespace holding the live agent", async () => {
+    for (const reason of ["closed", "revoked"] as const) {
+      const request = vi.fn(async (f: { type: string }) =>
+        f.type === "list"
+          ? {
+              v: 1 as const,
+              id: "1",
+              type: "roster" as const,
+              agents: [row("docs", "github.com/acme/docs")],
+            }
+          : {
+              v: 1 as const,
+              id: "1",
+              type: "receipt" as const,
+              msg_id: "mmmmmmmmmmmmmmm1",
+              state: "refused" as const,
+              reason,
+            },
+      );
+      const r = await callTool(
+        "send_message",
+        { to: "docs", text: "hi" },
+        client(request as never),
+      );
+      expect(r.content[0].text).toContain(
+        "pass to_namespace github.com/acme/docs to reach the live one.",
+      );
+      // With to_namespace given, the sender already chose: no hint, no roster read.
+      request.mockClear();
+      const chosen = await callTool(
+        "send_message",
+        { to: "docs", text: "hi", to_namespace: "github.com/acme/app" },
+        client(request as never),
+      );
+      expect(chosen.content[0].text).not.toContain("to_namespace");
+    }
+  });
+
+  it("no hint when the roster shows no linked live agent of that name (a hub without the links cap sends none)", async () => {
+    const r = await callTool(
+      "send_message",
+      { to: "docs", text: "hi" },
+      client((async (f: { type: string }) =>
+        f.type === "list"
+          ? {
+              v: 1,
+              id: "1",
+              type: "roster",
+              agents: [row("other", "github.com/acme/app")],
+            }
+          : {
+              v: 1,
+              id: "1",
+              type: "receipt",
+              msg_id: "mmmmmmmmmmmmmmm1",
+              state: "refused",
+              reason: "closed",
+            }) as never),
+    );
+    expect(r.content[0].text).not.toContain("to_namespace");
+  });
+});

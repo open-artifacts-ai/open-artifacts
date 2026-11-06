@@ -120,6 +120,14 @@ export const R = {
    * machine token gets 404), so no AI agent can link namespaces.
    */
   busLinks: "/api/v1/bus/links",
+  /**
+   * POST BusLinkPropose -> BusLinkProposed (#1567): the CLI's `oa-bus link`.
+   * Authenticated by a bus machine token only (never a session, PAT or OAuth
+   * grant). It records a proposal and links nothing: the member confirms on
+   * the returned one-time URL, in a browser. 409 { reason: rate_limited |
+   * proposal_limit | no_bus }.
+   */
+  busLinkProposals: "/api/v1/bus/links/proposals",
   /** DELETE -> 204: removes the caller's link (idempotent: unknown is 204 too). Same rules as PUT R.busLinks. */
   busLink: (id: string) => `/api/v1/bus/links/${seg(id)}`,
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */

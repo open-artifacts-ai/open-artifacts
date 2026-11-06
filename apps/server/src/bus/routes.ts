@@ -17,6 +17,7 @@ import {
 } from "@oa/bus-protocol";
 import {
   AUTH,
+  BusLinkProposeSchema,
   BusLinkPutSchema,
   BusRolePutSchema,
   type Member,
@@ -49,6 +50,7 @@ import {
   listBusMachines,
   listBusRoles,
   MAX_ACTIVE_MACHINES,
+  proposeBusLink,
   putBusLink,
   putBusRole,
   revokeBusMachine,
@@ -108,10 +110,8 @@ export const APPROVE_PATH = BUS_ROUTES.approve;
 
 const COUNTRY = /^[A-Z]{2}$/;
 // Controls, bidi and zero-width characters: they can disguise a name.
-const UNSAFE = new RegExp(
-  "[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2069\\ufeff]",
-  "gu",
-);
+const UNSAFE =
+  /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/gu;
 
 /**
  * Where a device request came from, for the confirm screen: the country
@@ -719,6 +719,22 @@ export function mountBus(app: AppType): void {
     const user = requireUser(c);
     if (!canConnect(user)) throw notFound();
     return c.json(await listBusLinks(c.env, user.id));
+  });
+  // #1567: the CLI's `oa-bus link`. A bus machine token (never a session, a
+  // PAT or an OAuth grant) may only record a proposal; the member links
+  // nothing until they confirm its one-time URL in a browser.
+  app.post(R.busLinkProposals, async (c) => {
+    if (!busOn(c.env)) throw notFound();
+    const token = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
+    if (!isMachineToken(token)) return unauthorized();
+    const m = await stmt(c.env.DB, MACHINE_BY_HASH)
+      .bind(await sha256Hex(token))
+      .first<{ id: string; userId: string; revokedAt: number | null }>();
+    if (!m || m.revokedAt !== null) return unauthorized();
+    const user = await getUser(c.env, m.userId);
+    if (!user || !canConnect(user)) return unauthorized();
+    const body = await jsonBody(c, BusLinkProposeSchema);
+    return c.json(await proposeBusLink(c.env, user.id, m.id, body));
   });
   app.put(R.busLinks, async (c) => {
     const user = roleWriter(c);

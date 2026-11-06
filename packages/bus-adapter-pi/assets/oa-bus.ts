@@ -178,6 +178,7 @@ function receiptText(
   namespaces?: number,
   excerpt?: string,
   movedTo?: string,
+  linkedNs?: string,
 ): string {
   const quote = excerpt ? `"${excerpt}"` : undefined;
   const to = sentTo;
@@ -223,10 +224,40 @@ function receiptText(
             : `×  ${label}: your message to ${v} was not delivered.`,
           ...(said(v) ? [`   ${said(v)}`] : []),
           ...(hint ? [`   ${hint}`] : []),
+          ...(linkedNs !== undefined &&
+          (r.reason === "closed" || r.reason === "revoked")
+            ? [
+                "   A linked project has a live agent with that name:",
+                `   pass to_namespace ${linkedNs} to reach the live one.`,
+              ]
+            : []),
         ].join("\n");
       return fitLine(lines, to);
     }
   }
+}
+
+/** @oa/bus-ipc linkedLiveNamespace (#1567): the one namespace with a live agent called `name`. */
+function linkedLiveNamespace(
+  name: string,
+  roster: readonly {
+    name: string;
+    namespace: string;
+    live?: boolean;
+    state?: string;
+  }[],
+): string | undefined {
+  const l = name.toLowerCase();
+  const seen = new Set(
+    roster
+      .filter(
+        (a) =>
+          a.name.toLowerCase() === l &&
+          (a.state ?? (a.live ? "live" : "queued")) === "live",
+      )
+      .map((a) => a.namespace),
+  );
+  return seen.size === 1 ? [...seen][0] : undefined;
 }
 
 /**
@@ -488,6 +519,7 @@ export const copy = {
   selfText,
   receiptText,
   movedName,
+  linkedLiveNamespace,
   excerptOf,
   stripTerminalControls,
   neutralizeBody,
@@ -508,7 +540,7 @@ const TOOLS = [
     name: "oabus_list_agents",
     label: "Open Artifacts bus: list agents",
     description:
-      "List the agents you can message, in your Open Artifacts bus namespace.",
+      "List the agents you can message, in your Open Artifacts bus namespace and linked ones.",
     parameters: none,
   },
   {
@@ -523,7 +555,7 @@ const TOOLS = [
         to_namespace: {
           type: "string",
           description:
-            "The recipient's namespace, when a global agent's target name exists in several.",
+            "The recipient's namespace, when the target name exists in several: a global agent's, or a linked project's.",
         },
       },
       required: ["to", "text"],
@@ -1061,7 +1093,7 @@ export default function oaBus(pi: Pi): void {
               ),
             )
             .join("\n")
-        : "No agents in your namespace.";
+        : "No agents in your namespace and linked ones.";
     }
     if (name === "oabus_send_message") {
       const to = String(args.to ?? "");
@@ -1092,7 +1124,12 @@ export default function oaBus(pi: Pi): void {
         receipt.reason === "revoked"
           ? await movedTo(to, namespace, link)
           : undefined;
-      const out = receiptText(receipt, to, n, excerptOf(body), moved);
+      const linked =
+        (receipt.reason === "closed" || receipt.reason === "revoked") &&
+        !namespace
+          ? await linkedLive(to, link)
+          : undefined;
+      const out = receiptText(receipt, to, n, excerptOf(body), moved, linked);
       if (receipt.state === "refused" || receipt.state === "expired")
         throw new Error(out);
       return out;
@@ -1205,6 +1242,26 @@ async function movedTo(
         .filter((a) => namespace === undefined || a.namespace === namespace)
         .map((a) => String(a.name)),
     );
+  } catch {
+    return undefined;
+  }
+}
+
+/** #1567: the linked namespace with a live agent called `name`; undefined when none or the roster is unavailable. */
+async function linkedLive(
+  name: string,
+  link: Link,
+): Promise<string | undefined> {
+  try {
+    const r = await link.request({ type: "list" });
+    if (r.type !== "roster") return undefined;
+    const agents = ((r.agents ?? []) as Json[]).map((a) => ({
+      name: String(a.name),
+      namespace: String(a.namespace),
+      ...(typeof a.live === "boolean" ? { live: a.live } : {}),
+      ...(typeof a.state === "string" ? { state: a.state } : {}),
+    }));
+    return linkedLiveNamespace(name, agents);
   } catch {
     return undefined;
   }

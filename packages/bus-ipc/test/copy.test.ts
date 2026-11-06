@@ -4,6 +4,7 @@ import {
   displayKind,
   excerptOf,
   lateDeliveredText,
+  linkedLiveNamespace,
   movedName,
   receiptText,
   unconfirmedText,
@@ -274,5 +275,64 @@ describe("displayKind (C26h)", () => {
     expect(displayKind("\x1b[2J")).toBe("unknown");
     expect(displayKind("zz\u202e)sn ,ip(\u200b\u2066")).toBe("zz)sn ,ip(");
     expect(displayKind("\u200f\ufeff")).toBe("unknown");
+  });
+});
+
+describe("linked namespaces (#1567)", () => {
+  const row = (name: string, namespace: string, state = "live") => ({
+    name,
+    namespace,
+    live: state === "live",
+    state,
+  });
+  it("closed and revoked refusals say to pass to_namespace when a linked namespace has the live agent", () => {
+    for (const reason of ["closed", "revoked"] as const) {
+      const out = receiptText(
+        { state: "refused", reason },
+        "docs",
+        undefined,
+        "hi",
+        undefined,
+        "github.com/acme/docs",
+      );
+      expect(out).toContain(
+        "pass to_namespace github.com/acme/docs to reach the live one.",
+      );
+    }
+    // Other refusals and no linked namespace: no hint.
+    expect(
+      receiptText(
+        { state: "refused", reason: "unknown_agent" },
+        "docs",
+        undefined,
+        "hi",
+        undefined,
+        "github.com/acme/docs",
+      ),
+    ).not.toContain("to_namespace");
+    expect(
+      receiptText(
+        { state: "refused", reason: "closed" },
+        "docs",
+        undefined,
+        "hi",
+      ),
+    ).not.toContain("to_namespace");
+  });
+  it("finds the one namespace with a live agent of that name, ignoring case", () => {
+    expect(
+      linkedLiveNamespace("Docs", [row("docs", "a/b"), row("x", "c/d")]),
+    ).toBe("a/b");
+    expect(
+      linkedLiveNamespace("docs", [row("docs", "a/b", "away")]),
+    ).toBeUndefined();
+    expect(
+      linkedLiveNamespace("docs", [row("docs", "a/b", "queued")]),
+    ).toBeUndefined();
+    // Live in two: ambiguous, no hint.
+    expect(
+      linkedLiveNamespace("docs", [row("docs", "a/b"), row("docs", "c/d")]),
+    ).toBeUndefined();
+    expect(linkedLiveNamespace("docs", [])).toBeUndefined();
   });
 });

@@ -138,7 +138,7 @@ const failed = () =>
     500,
   );
 
-type Who = { user: Member } | { response: Response };
+export type Who = { user: Member } | { response: Response };
 
 /**
  * How recent the forced sign-in must be to load or post the form: the
@@ -168,8 +168,8 @@ function freshSignIn(c: Context<AppEnv>, now: number): boolean {
  * max_age=0 (?reauth=1), Access with prompt=login and max_age=0, an email
  * code through the sign-in page (every code sign-in is a new code).
  */
-function reauthUrl(c: Context<AppEnv>, secret: string): string {
-  const next = encodeURIComponent(pathOf(secret));
+function reauthUrl(c: Context<AppEnv>, path: string): string {
+  const next = encodeURIComponent(path);
   if (c.var.authMethod === "google")
     return `${AUTH.loginGoogle}?reauth=1&next=${next}`;
   if (c.var.authMethod === "access")
@@ -181,9 +181,16 @@ function reauthUrl(c: Context<AppEnv>, secret: string): string {
  * The caller, or the page that refuses them: bus off, embed, any
  * Authorization header (a PAT, an OAuth grant, a machine token), signed out
  * (GET: to sign-in and back; POST: 401), not allowed to connect agents, or
- * not an interactive sign-in.
+ * not an interactive sign-in. `path` is the confirm link's own path (where
+ * sign-in returns to) and `what` names the change in the refusal copy; link
+ * confirmations (bus/link-confirm.ts) use the same checks.
  */
-function caller(c: Context<AppEnv>, secret: string, post: boolean): Who {
+export function confirmCaller(
+  c: Context<AppEnv>,
+  path: string,
+  post: boolean,
+  what = "a role change",
+): Who {
   if (!busOn(c.env)) return { response: busOff() };
   if (isEmbedRequest(c.req.raw)) return { response: busOff() };
   if (c.req.header("authorization") !== undefined || c.var.tokenId)
@@ -208,7 +215,7 @@ function caller(c: Context<AppEnv>, secret: string, post: boolean): Who {
       response: new Response(null, {
         status: 302,
         headers: {
-          location: `${AUTH.login}?next=${encodeURIComponent(pathOf(secret))}`,
+          location: `${AUTH.login}?next=${encodeURIComponent(path)}`,
           "cache-control": "no-store",
         },
       }),
@@ -219,7 +226,7 @@ function caller(c: Context<AppEnv>, secret: string, post: boolean): Who {
     return {
       response: messagePage(
         "Sign in again",
-        "Confirming a role change takes a browser sign-in. Sign in again, then open the link.",
+        `Confirming ${what} takes a browser sign-in. Sign in again, then open the link.`,
         403,
       ),
     };
@@ -232,7 +239,8 @@ function caller(c: Context<AppEnv>, secret: string, post: boolean): Who {
         renderRoleReauth({
           instanceHost: c.env.APP_HOST,
           userEmail: user.email,
-          reauthUrl: reauthUrl(c, secret),
+          reauthUrl: reauthUrl(c, path),
+          what,
         }),
         403,
       ),
@@ -244,7 +252,7 @@ function caller(c: Context<AppEnv>, secret: string, post: boolean): Who {
 export function mountRoleConfirm(app: AppType): void {
   app.get("/bus/roles/confirm/:token", async (c) => {
     const secret = c.req.param("token");
-    const who = caller(c, secret, false);
+    const who = confirmCaller(c, pathOf(secret), false);
     if ("response" in who) return who.response;
     if (!ROLE_TOKEN.test(secret)) return refused(c, "unknown");
     try {
@@ -290,7 +298,7 @@ export function mountRoleConfirm(app: AppType): void {
     // signed form token and the SameSite=Lax cookie carry CSRF.
     if (busOn(c.env) && c.req.header("sec-fetch-site") === "cross-site")
       return messagePage("Not allowed", "Cross-site request.", 403);
-    const who = caller(c, secret, true);
+    const who = confirmCaller(c, pathOf(secret), true);
     if ("response" in who) return who.response;
     // Fails closed: no content-length (a chunked body), or anything but
     // plain digits, is refused before the body is read.

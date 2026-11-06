@@ -1,4 +1,5 @@
 import type { Hono } from "hono";
+import { mountLinkConfirm } from "../bus/link-confirm.js";
 import { mountBusPage } from "../bus/page.js";
 import { mountRoleConfirm } from "../bus/role-confirm.js";
 import { mountBus } from "../bus/routes.js";
@@ -52,6 +53,7 @@ export function mountRoutes(app: AppType): void {
   mountOAuth(app);
   mountBus(app);
   mountRoleConfirm(app);
+  mountLinkConfirm(app);
   mountBusPage(app, {
     busView,
     busMachine,

@@ -14,6 +14,7 @@ export {
   excerptOf,
   fitName,
   lateDeliveredText,
+  linkedLiveNamespace,
   messageHeader,
   movedName,
   neutralizeBody,

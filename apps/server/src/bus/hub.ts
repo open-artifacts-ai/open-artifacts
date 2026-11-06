@@ -52,6 +52,15 @@ import {
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
+  decideLinkProposal,
+  type LinkDecideResult,
+  type LinkProposalAction,
+  type LinkProposeResult,
+  type LinkViewResult,
+  proposeLink,
+  viewLinkProposal,
+} from "./link-proposals.js";
+import {
   addLink,
   isLinked,
   linkedNamespaces,
@@ -3087,6 +3096,68 @@ export class BusHub extends DurableObject<Env> {
         linksOnly: true,
       });
     return gone !== null;
+  }
+
+  /**
+   * #1567: records a link or unlink `machineId`'s CLI proposed, under
+   * `tokenHash` (the sha256 of its confirm link's secret). Links nothing.
+   * Worker only (services/bus.ts proposeBusLink, from the machine-token route).
+   */
+  async proposeLink(
+    input: { action: LinkProposalAction; a: string; b: string },
+    machineId: string,
+    tokenHash: string,
+  ): Promise<LinkProposeResult> {
+    const r = proposeLink(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      input,
+      machineId,
+      tokenHash,
+      this.#now(),
+      newId,
+    );
+    logEvent("link_proposed", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /** #1567: the link proposal behind `tokenHash`, for the confirm page. Worker only. */
+  async viewLinkProposal(tokenHash: string): Promise<LinkViewResult> {
+    return viewLinkProposal(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      tokenHash,
+      this.#now(),
+    );
+  }
+
+  /**
+   * #1567: confirms (applies, through addLink or removeLink) or rejects the
+   * proposal behind `tokenHash`, once. Worker only, and only from the
+   * confirm page's POST (bus/link-confirm.ts: a browser session and its form
+   * token). Both sides' sockets hear `roster_changed` when a link changed.
+   */
+  async decideLinkProposal(
+    tokenHash: string,
+    decision: "confirm" | "reject",
+  ): Promise<LinkDecideResult> {
+    const { changed, ...r } = decideLinkProposal(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      tokenHash,
+      decision,
+      this.#now(),
+      newId,
+      this.#maxLinks,
+    );
+    if (changed)
+      notifyRoster(this.ctx, {
+        namespaces: [changed.a, changed.b],
+        global: false,
+        linksOnly: true,
+      });
+    logEvent("link_decided", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
   }
 
   /**

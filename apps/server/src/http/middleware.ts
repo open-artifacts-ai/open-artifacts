@@ -100,7 +100,10 @@ export const NO_REFERRER: ReadonlySet<string> = new Set([
  * Path prefixes that also send no referrer: a role proposal's confirm link
  * carries its secret in the path (#1372, bus/role-confirm.ts).
  */
-export const NO_REFERRER_PREFIXES: readonly string[] = ["/bus/roles/confirm/"];
+export const NO_REFERRER_PREFIXES: readonly string[] = [
+  "/bus/roles/confirm/",
+  "/bus/links/confirm/",
+];
 
 /**
  * `frameAncestors` (a pre-validated source list from frameOpts) replaces

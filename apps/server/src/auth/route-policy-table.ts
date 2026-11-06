@@ -312,6 +312,20 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     public:
       "role proposal decision; interactive session, form CSRF, the caller's own hub, single use",
   },
+  // #1567: `oa-bus link` records a proposal with a bus machine token (the
+  // handler verifies it: a PAT, an OAuth token or a cookie is 401); the
+  // member confirms on the one-time page below, the role confirm's rules.
+  "POST /api/v1/bus/links/proposals": {
+    signed: "bus machine token (oa_machine_), D1; records a proposal only",
+  },
+  "GET /bus/links/confirm/:token": {
+    public:
+      "link confirm page; redirects to sign-in, interactive session, the caller's own hub",
+  },
+  "POST /bus/links/confirm/:token": {
+    public:
+      "link decision; interactive session, form CSRF, the caller's own hub, single use",
+  },
   "GET /api/v1/oauth-clients": { user: "the caller's grants" },
   "PATCH /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
   "DELETE /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },

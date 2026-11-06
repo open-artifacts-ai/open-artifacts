@@ -251,6 +251,8 @@ describe("probe cases (derived from Backend's surfaces)", () => {
       "POST /bus/share-notices",
       "GET /bus/roles/confirm/:token",
       "POST /bus/roles/confirm/:token",
+      "GET /bus/links/confirm/:token",
+      "POST /bus/links/confirm/:token",
     ]);
   });
 

@@ -127,6 +127,28 @@ export const BusLinkPutSchema = z.strictObject({
 });
 export type BusLinkPut = z.infer<typeof BusLinkPutSchema>;
 
+/** How long a link proposal's confirm link works (#1567): one hour. */
+export const BUS_LINK_PROPOSAL_TTL_MS = 60 * 60_000;
+/** Link proposals waiting for the member at once (#1567). */
+export const BUS_LINK_PROPOSALS_PENDING_MAX = 10;
+/** Link proposals one machine may make in an hour (#1567), then `rate_limited`. */
+export const BUS_LINK_PROPOSALS_PER_MACHINE_HOUR = 10;
+
+/** POST R.busLinkProposals (a machine token): link or unlink two namespaces, for the member to confirm. */
+export const BusLinkProposeSchema = z.strictObject({
+  action: z.enum(["link", "unlink"]),
+  a: BusAddressSchema.shape.namespace,
+  b: BusAddressSchema.shape.namespace,
+});
+export type BusLinkPropose = z.infer<typeof BusLinkProposeSchema>;
+
+/** The proposal route's answer: the one-time confirm URL and when it expires. */
+export const BusLinkProposedSchema = z.strictObject({
+  confirmUrl: z.string(),
+  expiresAt: z.string(),
+});
+export type BusLinkProposed = z.infer<typeof BusLinkProposedSchema>;
+
 /** How long a role proposal's confirm link works (#1372). */
 export const BUS_ROLE_PROPOSAL_TTL_MS = 15 * 60_000;
 /** Pending role proposals one member may have at once (#1372). */
