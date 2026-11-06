@@ -6,7 +6,7 @@ import {
   type SearchHit,
   SNIPPET_MARK,
 } from "@oa/shared";
-import { and, eq, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, type SQL, sql } from "drizzle-orm";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import {
   authorize,
@@ -525,6 +525,7 @@ export function searchQuery(
   agentVia?: string,
 ) {
   const email = normalizeEmail(caller.user.email);
+  // Ties on bm25 break newest first (updatedAt), then by id.
   // bm25 weights follow the FTS column order: artifact_id (unindexed), title,
   // description, body. Title outranks description outranks body (#1554).
   return getDb(env)
@@ -559,7 +560,11 @@ export function searchQuery(
         agentVia === undefined ? undefined : agentViaSql(caller, agentVia),
       ),
     )
-    .orderBy(sql`bm25(${artifactSearch}, 0, 10, 5, 1)`, artifacts.id)
+    .orderBy(
+      sql`bm25(${artifactSearch}, 0, 10, 5, 1)`,
+      desc(artifacts.updatedAt),
+      artifacts.id,
+    )
     .limit(limit + 1)
     .offset(offset);
 }
