@@ -36,6 +36,9 @@ export type FilterProps = {
   format: Format | undefined;
   agent: string | undefined;
   agents: string[];
+  /** #1535: the waiting-on filter. */
+  waiting?: "needs_answer" | "waiting_on_agents";
+  onWaiting: (f: "needs_answer" | "waiting_on_agents" | undefined) => void;
   /** The agentVia filter (#589) and its connection's name, shown in the Agent select. */
   via?: { label: string };
   view: "grid" | "list";
@@ -147,7 +150,19 @@ export function Filters(p: FilterProps) {
           ))}
         </SelectContent>
       </Select>
-      {(p.format || p.agent || p.via) && (
+      <Choice
+        label="Waiting on"
+        options={[
+          { value: ALL, label: "Everything" },
+          { value: "needs_answer", label: "Needs your answer" },
+          { value: "waiting_on_agents", label: "Waiting on agents" },
+        ]}
+        value={p.waiting ?? ALL}
+        onChange={(v) =>
+          p.onWaiting(v === ALL ? undefined : (v as "needs_answer"))
+        }
+      />
+      {(p.format || p.agent || p.via || p.waiting) && (
         <Button variant="ghost" size="sm" className={TEXT} onClick={p.onClear}>
           Clear filters
         </Button>

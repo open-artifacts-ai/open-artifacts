@@ -1,5 +1,6 @@
 import {
   ANON_ID_HEADER,
+  ArtifactAgentSchema,
   COMMENT_BODY_MAX,
   type Comment,
   CommentListSchema,
@@ -10,6 +11,7 @@ import {
   type ReplyBody,
 } from "@oa/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { z } from "zod";
 import {
   isAnonToken,
   loadAnonToken,
@@ -86,12 +88,44 @@ export const useReply = (id: string, guest = false) =>
     api.send(
       "POST",
       R.commentReplies(id, v.thread),
-      { body: v.body, ...(v.guestName ? { guestName: v.guestName } : {}) },
+      {
+        body: v.body,
+        ...(v.guestName ? { guestName: v.guestName } : {}),
+        ...(v.mentions?.length ? { mentions: v.mentions } : {}),
+      },
       CommentSchema,
       undefined,
       x,
     ),
   );
+/** The agents that follow or publish to the artifact (the @ picker). Owners and editors only; a failure just means no picker. */
+export const useArtifactAgents = (id: string, enabled: boolean) =>
+  useQuery({
+    enabled,
+    queryKey: ["comment-agents", id],
+    retry: false,
+    staleTime: 30_000,
+    queryFn: ({ signal }) =>
+      api.get(R.artifactAgents(id), z.array(ArtifactAgentSchema), signal),
+  });
+
+/** Tap an option on an ask. The list refetches on settle, so a 409 shows the closed ask. */
+export const useAnswerAsk = (id: string) =>
+  useRefetching(
+    id,
+    false,
+    false,
+    (v: { thread: string; comment: string; optionId: string }, x) =>
+      api.send(
+        "POST",
+        R.commentAnswer(id, v.thread, v.comment),
+        { optionId: v.optionId },
+        CommentSchema,
+        undefined,
+        x,
+      ),
+  );
+
 export const useSetThreadStatus = (id: string, guest = false) =>
   useRefetching(
     id,
@@ -177,4 +211,17 @@ export function commentError(e: unknown, capped = false): string {
     default:
       return "Couldn't post your comment. Try again.";
   }
+}
+
+/** Copy for a failed answer: 403 not asked, 409 closed, 400 unknown option. */
+export function answerError(e: unknown): string {
+  const status = e instanceof ApiClientError ? e.status : 0;
+  if (status === 403)
+    return "Only the people this ask is addressed to can answer.";
+  if (status === 409)
+    return "The agent already closed this ask, so it can't be changed.";
+  if (status === 400)
+    return "That option isn't on this ask any more. Reload to see the current ones.";
+  if (status === 404) return "That ask is gone.";
+  return "Couldn't send your answer. Try again.";
 }

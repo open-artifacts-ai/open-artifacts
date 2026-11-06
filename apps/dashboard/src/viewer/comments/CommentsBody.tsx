@@ -1,4 +1,5 @@
 import {
+  type ArtifactAgent,
   COMMENT_BODY_MAX,
   COMMENT_GUEST_NAME_MAX,
   type CommentAuthor,
@@ -12,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import {
   commentError,
+  useArtifactAgents,
   useCreateThread,
   useDeleteComment,
   useEditComment,
@@ -20,6 +22,15 @@ import {
 } from "../../api/comments";
 import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
+import {
+  AskBlock,
+  asksForMe,
+  Delivery,
+  type Extras,
+  extrasBody,
+  MentionMenu,
+  mentionQuery,
+} from "./asks";
 import { numbering } from "./model";
 import { type CommentsApi, useCommentsApi } from "./useComments";
 
@@ -54,14 +65,17 @@ function Composer({
   alwaysOpen = true,
   failure,
   onDirty,
+  agents,
 }: {
+  /** Agents the writer may @mention and assign (owners and editors only). */
+  agents?: readonly ArtifactAgent[];
   /** Called when the box gains or loses text the reader typed. */
   onDirty?: (dirty: boolean) => void;
   placeholder: string;
   label: string;
   submit: string;
   extra?: React.ReactNode;
-  onSubmit: (body: string) => Promise<unknown>;
+  onSubmit: (body: string, extras: Extras) => Promise<unknown>;
   onCancel?: () => void;
   initial?: string;
   autoFocus?: boolean;
@@ -76,6 +90,9 @@ function Composer({
   const [busy, setBusy] = useState(false);
   const once = useRef(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const [caret, setCaret] = useState(0);
+  const [assign, setAssign] = useState("");
+  const query = agents?.length ? mentionQuery(text.slice(0, caret)) : null;
   useEffect(() => {
     if (autoFocus) ref.current?.focus();
   }, [autoFocus]);
@@ -92,8 +109,16 @@ function Composer({
     setBusy(true);
     setError(null);
     try {
-      await onSubmit(body);
+      // Only agents whose @name is still in the text are mentioned.
+      const mentions = (agents ?? [])
+        .filter((a) => body.includes(`@${a.name}`))
+        .map((a) => ({ key: a.key }));
+      await onSubmit(body, {
+        mentions,
+        ...(assign ? { assign: { key: assign } } : {}),
+      });
       setText("");
+      setAssign("");
       if (!alwaysOpen) setOpen(false);
     } catch (e) {
       setError(e);
@@ -122,7 +147,11 @@ function Composer({
         rows={open ? 3 : 1}
         className={TXT}
         onFocus={() => setOpen(true)}
-        onChange={(e) => setText(e.target.value)}
+        onChange={(e) => {
+          setText(e.target.value);
+          setCaret(e.target.selectionStart);
+        }}
+        onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
@@ -134,6 +163,24 @@ function Composer({
           }
         }}
       />
+      {query !== null && agents && (
+        <MentionMenu
+          agents={agents}
+          query={query}
+          onPick={(a) => {
+            const pos = caret;
+            const before = text.slice(0, pos).replace(/@[\w .-]{0,40}$/, "");
+            const next = `${before}@${a.name} ${text.slice(pos)}`;
+            setText(next);
+            const at = before.length + a.name.length + 2;
+            setCaret(at);
+            requestAnimationFrame(() => {
+              ref.current?.focus();
+              ref.current?.setSelectionRange(at, at);
+            });
+          }}
+        />
+      )}
       {error != null && (
         <p role="alert" className={`${TXT} text-destructive`}>
           {commentError(error, capped)}
@@ -146,6 +193,23 @@ function Composer({
             {submit}
           </Button>
           {extra}
+          {agents && agents.length > 0 && (
+            <label className={`flex items-center gap-1 ${TXT}`}>
+              Assign to
+              <select
+                className={`rounded-md border border-input bg-background px-1 py-0.5 ${TXT}`}
+                value={assign}
+                onChange={(e) => setAssign(e.target.value)}
+              >
+                <option value="">No one</option>
+                {agents.map((a) => (
+                  <option key={a.key} value={a.key}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {(onCancel || !alwaysOpen) && (
             <Button size="xs" variant="ghost" onClick={cancel}>
               Cancel
@@ -200,6 +264,8 @@ function CommentRow({
   c: CommentT;
   root: boolean;
 }) {
+  const pending = asksForMe(api.ordered).filter((id) => id !== thread.id);
+  const nextAsk = pending[0];
   const edit = useEditComment(api.artifactId, api.guest);
   const del = useDeleteComment(api.artifactId, api.guest);
   const [menu, setMenu] = useState(false);
@@ -263,9 +329,17 @@ function CommentRow({
             setMode("view");
           }}
         />
+      ) : c.ask ? (
+        <AskBlock
+          artifactId={api.artifactId}
+          thread={thread}
+          c={c}
+          next={nextAsk ? () => api.select(nextAsk, true) : undefined}
+        />
       ) : (
         <p className={`whitespace-pre-wrap break-words ${TXT}`}>{c.body}</p>
       )}
+      <Delivery c={c} />
       {mode === "delete" && (
         <div
           role="alertdialog"
@@ -344,9 +418,16 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
   );
 }
 
+/** The agents to offer in the @ picker: owners and editors only. */
+function useMentionPool(api: CommentsApi) {
+  return useArtifactAgents(api.artifactId, api.canMention && api.canComment)
+    .data;
+}
+
 function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const isActive = api.active === t.id;
   const reply = useReply(api.artifactId, api.guest);
+  const pool = useMentionPool(api);
   const status = useSetThreadStatus(api.artifactId, api.guest);
   const [statusErr, setStatusErr] = useState<unknown>(null);
   const el = useRef<HTMLLIElement>(null);
@@ -434,10 +515,12 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               label="Reply"
               placeholder="Reply"
               submit="Reply"
-              onSubmit={(body) =>
+              agents={pool}
+              onSubmit={(body, x) =>
                 reply.mutateAsync({
                   thread: t.id,
                   body,
+                  ...extrasBody(x),
                   ...(api.guest ? { guestName: api.guestName.trim() } : {}),
                 })
               }
@@ -482,6 +565,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
 function NewThread({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
   const last = useRef("");
+  const pool = useMentionPool(api);
   const draft = api.draft;
   if (!draft) return null;
   const guest = api.guest ? { guestName: api.guestName.trim() } : {};
@@ -506,13 +590,15 @@ function NewThread({ api }: { api: CommentsApi }) {
         placeholder="Add a comment"
         submit="Comment"
         autoFocus
+        agents={pool}
         onDirty={api.setDraftDirty}
         onCancel={api.cancelDraft}
-        onSubmit={async (body) => {
+        onSubmit={async (body, x) => {
           last.current = body;
           await create.mutateAsync({
             anchor: { ...draft.anchor, kind: "text", version: api.version },
             body,
+            ...extrasBody(x),
             ...guest,
           });
           api.cancelDraft();
@@ -546,6 +632,7 @@ function NewThread({ api }: { api: CommentsApi }) {
 
 function NoteComposer({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
+  const pool = useMentionPool(api);
   return (
     <div className="flex flex-col gap-2">
       {api.guest && <GuestName api={api} />}
@@ -554,10 +641,12 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         placeholder="Comment on the whole page"
         submit="Comment"
         alwaysOpen={false}
-        onSubmit={(body) =>
+        agents={pool}
+        onSubmit={(body, x) =>
           create.mutateAsync({
             anchor: { kind: "note" },
             body,
+            ...extrasBody(x),
             ...(api.guest ? { guestName: api.guestName.trim() } : {}),
           })
         }
@@ -577,10 +666,15 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
   const ordered = visible(api.ordered);
   const orphans = visible(api.orphans);
   const none = api.threads.length === 0;
+  const forMe = asksForMe(api.ordered);
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
       <div className={`flex items-center justify-between gap-2 ${TXT}`}>
-        <span>{api.listedOpen} open</span>
+        <span>
+          {api.listedOpen} open
+          {forMe.length > 0 &&
+            ` · ${forMe.length} ask${forMe.length === 1 ? "" : "s"} for you`}
+        </span>
         {resolvedCount > 0 && (
           <Button
             size="xs"
