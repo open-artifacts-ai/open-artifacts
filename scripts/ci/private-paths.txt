@@ -1,5 +1,5 @@
-# Hosted orchestration paths that move to the private repo
-# (open-artifacts-ai/open-artifacts-admin), per the approved #1056 boundary.
+# Hosted orchestration paths that move to the public repo
+# open-artifacts-ai/open-artifacts-cloud, per the approved #1056 boundary.
 #
 # One repo-relative path per line: a file or a directory, no globs, no
 # leading "/", no "..". Blank lines and "#" comments are ignored.
@@ -7,7 +7,7 @@
 # Readers:
 # - scripts/ci/public-only.sh removes these from a copy of the repo and proves
 #   the public code still installs, builds, typechecks and tests without them.
-# - The private repo's sync script will copy exactly these paths (#1056).
+# - The cloud repo's sync script will copy exactly these paths (#1056).
 # Keep this the only list: add a hosted path here, never in a script.
 
 # Control plane apps
@@ -48,14 +48,21 @@ docs/ops/redline-signin.md
 .github/workflows/redline-nightly.yml
 .github/workflows/redline-staging.yml
 .github/workflows/staging-test-admin.yml
+.github/workflows/staging-test-member.yml
+.github/workflows/token-ping-prod.yml
+.github/workflows/token-ping.yml
 
 # scripts/ci: hosted release, signing, publish and gates, with their tests
 scripts/ci/assemble-release.mjs
 scripts/ci/build-hosted-release.ts
+scripts/ci/chain-dispatch.test.ts
+scripts/ci/chain-dispatch.ts
 scripts/ci/check-hosted-release.ts
 scripts/ci/deploy-hosted-platform-workflow.test.ts
 scripts/ci/deploy-token-expiry.sh
 scripts/ci/deploy-token-expiry.test.ts
+scripts/ci/deploy-token-identity.sh
+scripts/ci/deploy-token-identity.test.ts
 scripts/ci/hosted-cf.sh
 scripts/ci/hosted-ci-lookups.test.ts
 scripts/ci/hosted-constants.sh
@@ -91,6 +98,9 @@ scripts/ci/staging-smoke-gate.sh
 scripts/ci/staging-smoke-gate.test.ts
 scripts/ci/tag-passed-checks.sh
 scripts/ci/tag-passed-checks.test.ts
+scripts/ci/token-ping.sh
+scripts/ci/token-ping.test.ts
+scripts/ci/worker-tag.sh
 
 # scripts/ops: everything hosted. Public keeps check-landing-dist,
 # check-prod-token, check-staging-secrets, conflicting-secrets, staging-access
@@ -110,6 +120,8 @@ scripts/ops/platform-db.test.ts
 scripts/ops/platform-db.ts
 scripts/ops/staging-test-admin.test.ts
 scripts/ops/staging-test-admin.ts
+scripts/ops/staging-test-member.test.ts
+scripts/ops/staging-test-member.ts
 scripts/ops/testdata
 scripts/ops/wrangler-env.test.ts
 scripts/ops/wrangler-env.ts
