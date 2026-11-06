@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.127.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.126.0...v0.127.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** install the skill beside the bus tools ([#1456](https://github.com/open-artifacts-ai/open-artifacts/issues/1456)) ([#1551](https://github.com/open-artifacts-ai/open-artifacts/issues/1551)) ([ffae385](https://github.com/open-artifacts-ai/open-artifacts/commit/ffae38543d764388fb846a25d1683ad8668b497b))
+
+
+### Bug Fixes
+
+* **dashboard:** plan copy before the trial, admin wording, suspended ([#1518](https://github.com/open-artifacts-ai/open-artifacts/issues/1518)) ([#1560](https://github.com/open-artifacts-ai/open-artifacts/issues/1560)) ([c257ffd](https://github.com/open-artifacts-ai/open-artifacts/commit/c257ffda657935a5cf3cf8d8bb37d23aabaafd43))
+* **directory:** status reports the mode the DO follows ([#860](https://github.com/open-artifacts-ai/open-artifacts/issues/860)) ([#1562](https://github.com/open-artifacts-ai/open-artifacts/issues/1562)) ([8f6525e](https://github.com/open-artifacts-ai/open-artifacts/commit/8f6525efe3bdeec9604768b4af95658d3ad46880))
+
 ## [0.126.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.125.0...v0.126.0) (2026-11-06)
 
 
