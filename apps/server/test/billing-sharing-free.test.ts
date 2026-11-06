@@ -607,3 +607,126 @@ describe("suspended is an operator's stop: sharing is not free there", () => {
     );
   });
 });
+
+describe("a suspension masked by the outage rule is still a suspension", () => {
+  const pool = { mine: "", owners: "" };
+  beforeAll(async () => {
+    fake.down = false;
+    await clearBilling();
+    await cachePlan({
+      ...base,
+      tier: "business",
+      status: "active",
+      version: 1,
+    });
+    pool.mine = await publish(member);
+    pool.owners = await publish(owner);
+    await clearBilling();
+    // Suspended, and the last good read is over 7 days old: the plan reports
+    // billing_unreachable, but the cached status is still suspended.
+    await cachePlan({ ...SUSPENDED, version: 2 }, mid - 8 * DAY);
+    fake.down = true;
+  });
+  afterAll(() => {
+    fake.down = false;
+  });
+
+  it("refuses a new share, a capped member's visibility change and their agent", async () => {
+    const r = await send(props, R.shares(pool.owners), owner.cookie, {
+      method: "PUT",
+      body: { email: `st-${uniq()}@a.com`, role: "viewer" },
+    });
+    expect(r.status).toBe(403);
+    const vis = await send(props, R.artifact(pool.mine), member.cookie, {
+      method: "PATCH",
+      body: { visibility: "team" },
+    });
+    expect(vis.status).toBe(403);
+    const { token } = await createPat(env, member.userId, `stale ${uniq()}`);
+    await expect(connect(token, { env: H, props })).rejects.toThrow(
+      /Only members can connect agents/,
+    );
+  });
+});
+
+describe("under a suspension the owner can't make anything public", () => {
+  const pool = { a: "", b: "", c: "", d: "" };
+  const keep = `keep2-${tag}@a.com`;
+  beforeAll(async () => {
+    fake.down = false;
+    await clearBilling();
+    await cachePlan({
+      ...base,
+      tier: "business",
+      status: "active",
+      version: 1,
+    });
+    for (const k of ["a", "b", "c", "d"] as const)
+      pool[k] = await publish(owner);
+    expect(
+      (
+        await send(props, R.shares(pool.a), owner.cookie, {
+          method: "PUT",
+          body: { email: keep, role: "viewer" },
+        })
+      ).status,
+    ).toBe(200);
+    await clearBilling();
+    await cachePlan({ ...SUSPENDED, version: 2 });
+  });
+
+  it("refuses public over REST PATCH, set_visibility and publish_artifact settings", async () => {
+    const r = await send(props, R.artifact(pool.a), owner.cookie, {
+      method: "PATCH",
+      body: { visibility: "public" },
+    });
+    expect(r.status).toBe(403);
+    expect((await code(r)).error?.code).toBe("plan_read_only");
+    const { token } = await createPat(env, owner.userId, `pub ${uniq()}`);
+    const client = await connect(token, { env: H, props });
+    try {
+      const sv = await tool(client, "set_visibility", {
+        id: pool.b,
+        visibility: "public",
+      });
+      expect(sv.isError).toBe(true);
+      const ps = await tool(client, "publish_artifact", {
+        id: pool.b,
+        visibility: "public",
+      });
+      expect(ps.isError).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("still allows team and private, and removing a share", async () => {
+    for (const visibility of ["team", "private"])
+      expect(
+        (
+          await send(props, R.artifact(pool.c), owner.cookie, {
+            method: "PATCH",
+            body: { visibility },
+          })
+        ).status,
+      ).toBe(200);
+    const { token } = await createPat(env, owner.userId, `priv ${uniq()}`);
+    const client = await connect(token, { env: H, props });
+    try {
+      const sv = await tool(client, "set_visibility", {
+        id: pool.d,
+        visibility: "team",
+      });
+      expect(sv.isError ?? false).toBe(false);
+    } finally {
+      await client.close();
+    }
+    expect(
+      (
+        await send(props, R.share(pool.a, keep), owner.cookie, {
+          method: "DELETE",
+        })
+      ).status,
+    ).toBe(204);
+  });
+});

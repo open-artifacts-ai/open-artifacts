@@ -232,6 +232,7 @@ export async function publish(
     if (exists) {
       const who = callerOf(user);
       const { level, artifact: a } = await authorize(env, who, id, "publish");
+      refuseSuspendedPublic(user, input.visibility);
       if (input.spaceId !== undefined)
         throw new ApiError(
           "use_move",
@@ -1469,6 +1470,16 @@ function visibilityAudit(
 }
 
 /**
+ * A suspension is an operator's stop: nothing existing becomes public under
+ * it, the uncapped owner included (team, private and removals still pass).
+ */
+function refuseSuspendedPublic(user: Member, visibility: string | undefined) {
+  const plan = planOfMember(user);
+  if (visibility === "public" && plan?.lock && suspendedMember(user))
+    throw planError(plan.lock);
+}
+
+/**
  * title/description: editor+; visibility/capabilities/dataWriters (and the
  * deprecated allowAnonymousWrites, mapped by resolveDataWriters): owner or
  * manager. A result that is public, declares db and lets viewers write data
@@ -1503,6 +1514,7 @@ export async function patch(
     id,
     lock ? "visibility" : "publish",
   );
+  refuseSuspendedPublic(user, p.visibility);
   const sharing =
     p.visibility !== undefined ||
     p.capabilities !== undefined ||

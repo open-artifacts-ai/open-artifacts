@@ -111,7 +111,15 @@ export const planOfMember = (
 
 /** The plan lock this member was loaded with is a suspension. */
 export const suspendedMember = (m: Member | null | undefined): boolean =>
-  planOfMember(m)?.lock?.reason === "suspended";
+  isSuspended(planOfMember(m));
+
+/**
+ * The plan is locked and billing's status is suspended. Keyed on the status,
+ * not the lock reason: the outage rule (last good read over 7 days old)
+ * reports billing_unreachable and would mask a suspension.
+ */
+export const isSuspended = (plan: EffectivePlan | null | undefined): boolean =>
+  plan?.status === "suspended" && !!plan.lock;
 
 /** The one way to build a Caller: carries the member's cap. */
 export function callerOf(m: Member | null | undefined): Caller {
@@ -430,7 +438,7 @@ export function canCtx(
     // The one read of the stored columns (fail closed, #681).
     dataWriters: dataWritersOf(a),
     plan: p?.lock?.mode ?? null,
-    suspended: p?.lock?.reason === "suspended",
+    suspended: isSuspended(p),
   };
 }
 
