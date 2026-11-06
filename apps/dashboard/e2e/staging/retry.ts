@@ -12,11 +12,8 @@
 // fails either way (#1596 follow-up). A reset on a write may mean the server
 // ran it, so it stays a failing test and is never retried or passed.
 
-// One list of socket codes, shared with the red-line suite (no imports of its own).
-import {
-  isNetworkError,
-  noResponseCode,
-} from "../../../../tests/redline/src/fetch-timeout";
+// One list of socket codes, shared with the red-line suite (net-codes.ts).
+import { isNetworkError, noResponseCode } from "./net-codes";
 
 export { isNetworkError, noResponseCode };
 
