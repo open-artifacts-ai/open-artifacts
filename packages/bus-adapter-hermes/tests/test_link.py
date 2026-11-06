@@ -125,13 +125,29 @@ class OverASocket(unittest.TestCase):
         self.assertIsNot(a, b)
         self.assertEqual({h["agent_ref"] for h in d.hellos}, {"root-1", "root-2"})
         self.assertEqual({h["pid"] for h in d.hellos}, {os.getpid()})
+
+        class Queue(list):
+            def __init__(self):
+                super().__init__()
+                self.arrived = threading.Event()
+
+            def append(self, item):
+                super().append(item)
+                self.arrived.set()
+
+        queues = {}
+        for ref in ("root-1", "root-2"):
+            queues[ref] = bus.state(ref).queue = Queue()
         d.push("root-1", support.deliver_frame("mmmmmmmmmmmmmmm1", body="one"))
         d.push("root-2", support.deliver_frame("mmmmmmmmmmmmmmm2", body="two"))
+        self.assertTrue(queues["root-1"].arrived.wait(5))
+        self.assertTrue(queues["root-2"].arrived.wait(5))
+        self.assertEqual(d.got, {})  # queued is not delivered: nothing acked yet
+        self.assertIn("one", bus.turn_start("root-1", "telegram", "x")["context"])
+        self.assertIn("two", bus.turn_start("root-2", "telegram", "x")["context"])
         self.assertTrue(d.acked["root-1"].wait(5))
         self.assertTrue(d.acked["root-2"].wait(5))
         self.assertEqual(d.got, {"root-1": ["mmmmmmmmmmmmmmm1"], "root-2": ["mmmmmmmmmmmmmmm2"]})
-        self.assertIn("one", bus.turn_start("root-1", "telegram")["context"])
-        self.assertIn("two", bus.turn_start("root-2", "telegram")["context"])
 
     def test_requests_are_answered_by_id(self):
         d = FakeDaemon(self.home)

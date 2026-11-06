@@ -22,8 +22,8 @@ def register(ctx, roots=None, bus=None):
         )
 
     # Hooks get keyword arguments only, and may gain more: always take **kwargs.
-    def pre_llm_call(session_id=None, platform=None, **_kw):
-        return bus.turn_start(session_id, platform)
+    def pre_llm_call(session_id=None, platform=None, user_message=None, **_kw):
+        return bus.turn_start(session_id, platform, user_message)
 
     def on_session_end(session_id=None, **_kw):
         bus.turn_end(session_id)

@@ -52,6 +52,16 @@ class Registration(unittest.TestCase):
         ctx.hooks["on_session_finalize"][0](session_id=None, platform="cli")
         ctx.hooks["subagent_start"][0](parent_session_id="root-1", child_session_id="kid", child_role="x")
 
+    def test_pre_llm_call_passes_user_message_through(self):
+        ctx, _, bus, link = plugin()
+        bus.state("root-1").queue.append(("queued text", "mmmmmmmmmmmmmmm1"))
+        bus.state("root-1").link = link
+        hook = ctx.hooks["pre_llm_call"][0]
+        self.assertIsNone(hook(session_id="root-1", platform="telegram", user_message=[{"type": "image"}]))
+        self.assertEqual(link.acks, [])
+        self.assertEqual(hook(session_id="root-1", platform="telegram", user_message="hi"), {"context": "queued text"})
+        self.assertEqual(link.acks, ["mmmmmmmmmmmmmmm1"])
+
     def test_the_handler_takes_the_arguments_hermes_passes(self):
         ctx, *_ = plugin({"list": {"type": "roster", "agents": []}})
         out = call(ctx, "oabus_list_agents", {}, task_id="t", session_id="root-1", user_task="u", more=1)

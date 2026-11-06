@@ -46,9 +46,13 @@ class _Root:
 class Bus:
     """`inject` is ctx.inject_message; `connect` makes a Link (replaced in tests)."""
 
-    def __init__(self, roots, inject=None, connect=None, start=None, cwd=None, spawn=None):
+    def __init__(self, roots, inject=None, connect=None, start=None, cwd=None, spawn=None, current_session=None):
         self.roots = roots
         self._inject = inject
+        # The CLI's live session id: Hermes keeps HERMES_SESSION_ID in step across /resume and /new.
+        self._current_session = current_session or (lambda: os.environ.get("HERMES_SESSION_ID"))
+        # The root of the last pre_llm_call on the interactive CLI.
+        self._cli_root = None
         self._connect = connect or self._real_connect
         self._start = start if start is not None else proc_start()
         self._cwd = cwd
@@ -166,19 +170,21 @@ class Bus:
         self._spawn(lambda: self.deliver(frame, link))
 
     def deliver(self, f, link):
-        """Hands one pushed message to Hermes, then acks it; no ack when it could not be handed over."""
+        """Hands one pushed message to Hermes. It is acked only once it really reaches the model:
+        when inject_message took it, or when the next turn's context carried it."""
         root = self.state(link.ref)
         msg_id = str(f["msg_id"])
         with root.lock:
             before = root.shown.get(msg_id)
-            if before:
-                # A repeat (the ack was lost, the hub retried): ack it again, never queue it twice.
-                if before == "shown":
-                    self._ack(link, msg_id)
-                return
-            root.shown[msg_id] = "showing"
-            if len(root.shown) > SHOWN_MAX:
-                root.shown.pop(next(iter(root.shown)))
+            if before is None:
+                root.shown[msg_id] = "building"
+                self._trim(root)
+        if before == "done":
+            # A repeat (the ack was lost, or the link was gone when it was consumed): ack again.
+            self._ack(link, msg_id)
+            return
+        if before is not None:
+            return  # still being built, or queued: the next turn's context will carry it and ack it
         sender = copy.strip_terminal_controls(str(f.get("from_name", "")))
         namespace = str(f.get("namespace", ""))
         # The hub may have renamed this agent since hello: ask for the current name.
@@ -200,13 +206,23 @@ class Bus:
             # The daemon strips these too; this copy does not rely on it.
             text = copy.delivered_text({**m, "body": copy.strip_terminal_controls(str(f["body"]))})
         wrapped = wrap(sender, text)
-        if not self._hand_over(root, wrapped):
+        if self._try_inject(root, wrapped):
             with root.lock:
-                root.shown.pop(msg_id, None)
-            return  # Not handed to Hermes: no ack, so the daemon does not call it delivered.
+                root.shown[msg_id] = "done"
+            self._ack(link, msg_id)
+            return
         with root.lock:
-            root.shown[msg_id] = "shown"
-        self._ack(link, msg_id)
+            root.queue.append((wrapped, msg_id))
+            root.shown[msg_id] = "queued"
+
+    @staticmethod
+    def _trim(root):
+        # Only handled messages are forgotten; a queued one is still owed to the model.
+        while len(root.shown) > SHOWN_MAX:
+            old = next((k for k, v in root.shown.items() if v == "done"), None)
+            if old is None:
+                return
+            del root.shown[old]
 
     @staticmethod
     def _ack(link, msg_id):
@@ -215,24 +231,50 @@ class Bus:
         except LinkError:
             pass
 
+    def _ack_root(self, root, msg_id):
+        """Acks on the root's current link; with none open the message stays unacked and the
+        daemon's redelivery is acked from the `done` mark."""
+        link = root.link
+        if link is not None and not link.closed:
+            self._ack(link, msg_id)
+
+    def _is_current_cli(self, root):
+        if self._cli_root != root.ref:
+            return False
+        try:
+            current = self._current_session()
+            return bool(current) and self.roots.root_of(current) == root.ref
+        except NotOnBus:
+            return False
+
+    def _try_inject(self, root, text):
+        """Injects into the interactive CLI when it is on this root's session and idle.
+        inject_message addresses the one CLI of the process, whatever session it is on now."""
+        if self._inject is None:
+            return False
+        with root.lock:
+            idle = root.platform == "cli" and not root.busy
+        if not idle or not self._is_current_cli(root):
+            return False
+        try:
+            return bool(self._inject(text))
+        except Exception:
+            return False
+
     def _hand_over(self, root, text):
-        """Injects into an idle interactive CLI, else queues for the next turn's context."""
+        """A bus notice: injected when the CLI is idle on this root, else queued for the next turn."""
+        if self._try_inject(root, text):
+            return
         with root.lock:
-            idle_cli = root.platform == "cli" and not root.busy
-        if idle_cli and self._inject is not None:
-            try:
-                if self._inject(text):
-                    return True
-            except Exception:
-                pass
-        with root.lock:
-            root.queue.append(text)
-        return True
+            root.queue.append((text, None))
 
     # --- Hooks.
 
-    def turn_start(self, session_id, platform):
-        """pre_llm_call: the queued messages as this turn's context, or None."""
+    def turn_start(self, session_id, platform, user_message=None):
+        """pre_llm_call: the queued messages as this turn's context, or None.
+
+        Hermes drops a hook's context when the user message is not text, so
+        nothing is taken (or acked) then."""
         try:
             ref = self.roots.resolve(session_id)
         except NotOnBus:
@@ -241,9 +283,21 @@ class Bus:
         with root.lock:
             root.busy = True
             root.platform = platform or root.platform
-            out, root.queue = root.queue, []
+            if platform == "cli":
+                self._cli_root = ref
+            out = []
+            if isinstance(user_message, str):
+                out, root.queue = root.queue, []
+                for _text, msg_id in out:
+                    if msg_id:
+                        root.shown[msg_id] = "done"
         self.touch(ref)
-        return {"context": "\n\n".join(out)} if out else None
+        if not out:
+            return None
+        for _text, msg_id in out:
+            if msg_id:
+                self._ack_root(root, msg_id)
+        return {"context": "\n\n".join(t for t, _ in out)}
 
     def turn_end(self, session_id):
         """on_session_end: the end of one run_conversation call."""
