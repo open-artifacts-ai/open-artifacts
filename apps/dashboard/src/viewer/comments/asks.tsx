@@ -209,7 +209,17 @@ export function matchAgents(
   query: string,
 ): ArtifactAgent[] | null {
   const q = query.toLowerCase();
-  if (agents.some((a) => q.startsWith(`${a.name.toLowerCase()} `))) return null;
+  // A finished mention, unless a longer name still fits ("@OA " with "OA Design").
+  const done = agents.filter((a) => q.startsWith(`${a.name.toLowerCase()} `));
+  if (
+    done.length &&
+    !agents.some(
+      (a) =>
+        a.name.toLowerCase().startsWith(q) &&
+        !done.some((d) => d.key === a.key),
+    )
+  )
+    return null;
   return agents.filter((a) => a.name.toLowerCase().includes(q));
 }
 

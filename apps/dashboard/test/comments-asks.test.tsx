@@ -97,6 +97,11 @@ const viewport = (width: number) => {
       }) as unknown as MediaQueryList,
   );
 };
+const hello = () =>
+  act(async () => {
+    await waitFor(() => expect(opts.length).toBeGreaterThan(0));
+    opts.at(-1)?.onHello();
+  });
 const col = () => screen.findByRole("complementary", { name: "Comments" });
 const OWNED = (
   fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
@@ -479,5 +484,71 @@ describe("@ picker details", () => {
     expect(
       within(c).getByRole("button", { name: /Side by side/ }),
     ).toBeEnabled();
+  });
+});
+
+describe("round 2", () => {
+  it("keeps the menu while a longer name still fits ('@OA ' with OA and OA Design)", async () => {
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, () =>
+        HttpResponse.json([
+          { key: "agent:oa", name: "OA", online: true },
+          { key: "agent:oad", name: "OA Design", online: true },
+        ]),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const { c, box } = await noteBox();
+    fireEvent.change(box, { target: { value: "@OA " } });
+    const menu = await within(c).findByRole("listbox");
+    expect(
+      within(menu).getByRole("option", { name: /OA Design/ }),
+    ).toBeInTheDocument();
+    fireEvent.change(box, { target: { value: "@OA go" } });
+    expect(within(c).queryByRole("listbox")).toBeNull();
+  });
+
+  it("does not pick on Shift+Enter or during IME composition", async () => {
+    withAgents();
+    mount(viewerPath(OWNED));
+    const { c, box } = await noteBox();
+    fireEvent.change(box, { target: { value: "@OA" } });
+    await within(c).findByRole("listbox");
+    fireEvent.keyDown(box, { key: "Enter", shiftKey: true });
+    fireEvent.keyDown(box, { key: "Enter", isComposing: true });
+    expect(box).toHaveValue("@OA");
+    expect(within(c).getByRole("listbox")).toBeInTheDocument();
+  });
+
+  it("Next ask lands on an ask whose text is gone (an orphan)", async () => {
+    const textAnchor = {
+      kind: "text",
+      version: 1,
+      exact: "old words",
+      prefix: "",
+      suffix: "",
+    };
+    const t1 = askThread({ id: "t1" });
+    const t2 = askThread({ id: "t2", anchor: textAnchor });
+    (t1.comments[0] as { id: string }).id = "c1";
+    (t2.comments[0] as { id: string }).id = "c2";
+    serveThreads(() => [t1, t2]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText("Which layout?");
+    await hello();
+    await act(async () =>
+      opts
+        .at(-1)
+        ?.onCommentPositions([{ id: "t2", state: "orphan", top: null }]),
+    );
+    await within(c).findByText("On earlier text");
+    const first = c.querySelector('[data-thread="t1"]') as HTMLElement;
+    fireEvent.click(within(first).getByRole("button", { name: "Next ask" }));
+    await waitFor(() =>
+      expect(c.querySelector('[data-thread="t2"]')).toHaveAttribute(
+        "data-active",
+      ),
+    );
   });
 });

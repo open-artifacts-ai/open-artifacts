@@ -191,6 +191,8 @@ function Composer({
             }
             if (
               (e.key === "Enter" || e.key === "Tab") &&
+              !e.nativeEvent.isComposing &&
+              !e.shiftKey &&
               !e.metaKey &&
               !e.ctrlKey
             ) {
