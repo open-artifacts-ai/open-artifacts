@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.129.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.128.0...v0.129.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** link two namespaces on the hub ([#1567](https://github.com/open-artifacts-ai/open-artifacts/issues/1567), PR 1 of 3) ([#1572](https://github.com/open-artifacts-ai/open-artifacts/issues/1572)) ([e6dad03](https://github.com/open-artifacts-ai/open-artifacts/commit/e6dad03e879496a33319567ce41570bd04f3152c))
+
 ## [0.128.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.127.0...v0.128.0) (2026-11-06)
 
 
