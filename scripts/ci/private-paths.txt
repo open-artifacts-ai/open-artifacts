@@ -73,6 +73,7 @@ scripts/ci/hosted-publish-workflow.test.ts
 scripts/ci/hosted-publish.test.ts
 scripts/ci/hosted-r2-key.sh
 scripts/ci/hosted-release.test.ts
+scripts/ci/hosted-workflow-rules.test.ts
 scripts/ci/hosted-resource-ids.sh
 scripts/ci/owner-email-guard-hosted.test.ts
 scripts/ci/platform-tags.sh
@@ -96,6 +97,7 @@ scripts/ci/staging-first-gate.sh
 scripts/ci/staging-first-gate.test.ts
 scripts/ci/staging-smoke-gate.sh
 scripts/ci/staging-smoke-gate.test.ts
+scripts/ci/strict-signature-call-sites.test.ts
 scripts/ci/tag-passed-checks.sh
 scripts/ci/tag-passed-checks.test.ts
 scripts/ci/token-ping.sh
