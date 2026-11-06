@@ -265,9 +265,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     public:
       "bus code entry (RFC 8628 5.4); redirects to sign-in, checks mcp.connect",
   },
+  // #1299: the decide step is new configuration, so a plan cap (a hosted
+  // non-owner under a billing lock or suspension) refuses it (bus/cap.ts).
   "POST /bus/approve": {
     public:
-      "bus code check and decision; session, form token, mcp.connect, RL per member and IP",
+      "bus code check and decision; session, form token, mcp.connect, plan cap refuses the decide, RL per member and IP",
   },
   "GET /bus/connect": { signed: "bus machine token (oa_machine_), D1" },
   // #1300 the member's server-rendered /bus page (bus/page.ts): the handler
@@ -285,8 +287,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /bus/machines/:id/revoke": {
     public: "revoke; form CSRF, the caller's own machine only",
   },
+  // #1299: as PUT R.shareNotices, a plan cap refuses the save.
   "POST /bus/share-notices": {
-    public: "share notices; form CSRF, checks canConnect",
+    public: "share notices; form CSRF, checks canConnect, plan cap refuses",
   },
   "GET /api/v1/bus/machines": { user: "the caller's bus machines" },
   // In CAPPED_ALLOWED: a capped caller can always revoke.
@@ -320,13 +323,14 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   },
   "POST /bus/roles/confirm": {
     public:
-      "role proposal decision; interactive session, form CSRF, the caller's own hub, single use",
+      "role proposal decision; interactive session, form CSRF, plan cap refuses (#1299), the caller's own hub, single use",
   },
   // #1567: `oa-bus link` records a proposal with a bus machine token (the
   // handler verifies it: a PAT, an OAuth token or a cookie is 401); the
   // member confirms on the one-time page below, the role confirm's rules.
   "POST /api/v1/bus/links/proposals": {
-    signed: "bus machine token (oa_machine_), D1; records a proposal only",
+    signed:
+      "bus machine token (oa_machine_), D1; records a proposal only; its member under a plan cap is refused (#1299)",
   },
   "GET /bus/links/confirm": {
     public:
@@ -342,7 +346,7 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   },
   "POST /bus/links/confirm": {
     public:
-      "link decision; interactive session, form CSRF, the caller's own hub, single use",
+      "link decision; interactive session, form CSRF, plan cap refuses (#1299), the caller's own hub, single use",
   },
   "GET /api/v1/oauth-clients": { user: "the caller's grants" },
   "PATCH /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },

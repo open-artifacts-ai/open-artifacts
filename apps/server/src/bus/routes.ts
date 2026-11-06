@@ -58,8 +58,8 @@ import {
 import { getSettings } from "../services/members.js";
 import { getUser } from "../services/users.js";
 import { hmacSign, sha256Hex } from "../util/crypto.js";
-import { busConfigCap, busConfigRefusal } from "./cap.js";
 import { renderApprove, renderApproved, renderEntry } from "./approve-page.js";
+import { busConfigCap, busConfigRefusal } from "./cap.js";
 import {
   AUTHZ_AT_HEADER,
   busHubName,

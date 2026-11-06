@@ -9,7 +9,11 @@
 // FEATURES with "bus"), so these tests run a hosted install with the bus
 // feature on, which is how the routes will behave after the lift.
 import { env } from "cloudflare:workers";
-import { BUS_ROUTES, decodeServerFrame, newMachineToken } from "@oa/bus-protocol";
+import {
+  BUS_ROUTES,
+  decodeServerFrame,
+  newMachineToken,
+} from "@oa/bus-protocol";
 import { newId, R } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app.js";
@@ -40,7 +44,10 @@ import { connect, textOf, tool } from "../mcp-helpers.js";
 import { pinMiddayUtc } from "../midday.js";
 
 /** A hosted install with the bus feature on. */
-const H = { ...HOSTED_H, FEATURES: `${HOSTED_H.FEATURES},bus` } as typeof HOSTED_H;
+const H = {
+  ...HOSTED_H,
+  FEATURES: `${HOSTED_H.FEATURES},bus`,
+} as typeof HOSTED_H;
 const app = createApp();
 const APP = "http://app.localhost";
 const { s: fake, props } = fakeBilling();
@@ -100,7 +107,10 @@ async function startDevice(e: unknown = H): Promise<string> {
     app,
     new Request(`${APP}${BUS_ROUTES.device}`, {
       method: "POST",
-      headers: { "content-type": "application/json", "cf-connecting-ip": nextIp() },
+      headers: {
+        "content-type": "application/json",
+        "cf-connecting-ip": nextIp(),
+      },
       body: JSON.stringify({ machine_label: "plan-box" }),
     }),
     e,
@@ -199,7 +209,11 @@ const proposeLink = async (who: U) =>
         "content-type": "application/json",
         authorization: `Bearer ${await machineToken(who)}`,
       },
-      body: JSON.stringify({ action: "link", a: "test.local/a", b: "test.local/b" }),
+      body: JSON.stringify({
+        action: "link",
+        a: "test.local/a",
+        b: "test.local/b",
+      }),
     }),
     H,
     props,
@@ -230,7 +244,13 @@ const revokeMachine = async (who: U) => {
   await env.DB.prepare(
     "insert into bus_machines (id, user_id, label, token_hash, created_at) values (?, ?, ?, ?, ?)",
   )
-    .bind(id, who.userId, "to-revoke", await sha256Hex(newMachineToken()), Date.now())
+    .bind(
+      id,
+      who.userId,
+      "to-revoke",
+      await sha256Hex(newMachineToken()),
+      Date.now(),
+    )
     .run();
   const r = await send(props, `${R.busMachines}/${id}`, who.cookie, {
     method: "DELETE",
@@ -243,93 +263,98 @@ const PLAN_TEXT = /read-only until the plan is paid|team plan/;
 
 // ---- the capped member: every surface refuses, with the plan's own error
 
-describe.each(Object.entries(LOCKS))("a plan-capped member under %s", (_n, row) => {
-  beforeAll(() => lockTo(row));
+describe.each(Object.entries(LOCKS))(
+  "a plan-capped member under %s",
+  (_n, row) => {
+    beforeAll(() => lockTo(row));
 
-  it("cannot approve a machine: the decide step is refused and the code stays pending", async () => {
-    const { r, code } = await approveDecide(member);
-    expect(r.status).toBe(403);
-    expect(await r.text()).toMatch(PLAN_TEXT);
-    expect(await approvedAt(code)).toBeNull();
-  });
-
-  it("cannot confirm a role or a link", async () => {
-    for (const post of [confirmRole, confirmLink]) {
-      const r = await post(member);
-      expect(r.status, await r.clone().text()).toBe(403);
+    it("cannot approve a machine: the decide step is refused and the code stays pending", async () => {
+      const { r, code } = await approveDecide(member);
+      expect(r.status).toBe(403);
       expect(await r.text()).toMatch(PLAN_TEXT);
-    }
-  });
-
-  it("cannot propose a link with a machine token", async () => {
-    const r = await proposeLink(member);
-    expect(r.status).toBe(403);
-    expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
-      "plan_read_only",
-    );
-  });
-
-  it("cannot propose a role over MCP", async () => {
-    const r = await proposeRoleMcp(member);
-    expect(r.isError).toBe(true);
-    expect(textOf(r)).toMatch(/^plan_(required|read_only):/);
-  });
-
-  it("cannot save share notices (page and REST)", async () => {
-    const r = await saveShareNotices(member);
-    expect(r.status).toBe(303);
-    expect(r.headers.get("location")).toBe("/bus?error=plan");
-    const rest = await send(props, R.shareNotices, member.cookie, {
-      method: "PUT",
-      body: { addresses: [] },
-      e: H,
+      expect(await approvedAt(code)).toBeNull();
     });
-    expect(rest.status).toBe(403);
-  });
 
-  it("can still revoke a machine, and read the bus page and machine list", async () => {
-    expect((await revokeMachine(member)).status).toBe(204);
-    expect((await send(props, R.busMachines, member.cookie, { e: H })).status).toBe(200);
-    const page = await send(props, "/bus", member.cookie, { e: H });
-    expect(page.status, await page.clone().text()).toBe(200);
-  });
+    it("cannot confirm a role or a link", async () => {
+      for (const post of [confirmRole, confirmLink]) {
+        const r = await post(member);
+        expect(r.status, await r.clone().text()).toBe(403);
+        expect(await r.text()).toMatch(PLAN_TEXT);
+      }
+    });
 
-  it("keeps an existing machine connected: it upgrades and says hello", async () => {
-    // Its own member: the hub limits how often one member's machines upgrade.
-    const own = await login(`bc-${newId().slice(0, 8)}@a.com`, "member");
-    const token = await machineToken(own);
-    const res = await fetchAndWait(
-      app,
-      new Request(`${APP}${BUS_ROUTES.connect}`, {
-        headers: {
-          Upgrade: "websocket",
-          authorization: `Bearer ${token}`,
-          "cf-connecting-ip": nextIp(),
-        },
-      }),
-      H,
-      props,
-    );
-    expect(res.status).toBe(101);
-    const ws = res.webSocket as WebSocket;
-    ws.accept();
-    const first = new Promise<string>((resolve) =>
-      ws.addEventListener("message", (ev) => resolve(String(ev.data))),
-    );
-    ws.send(
-      JSON.stringify({
-        v: 1,
-        id: "h",
-        type: "hello",
-        machine_label: "plan-box",
-        client_version: "0.0.0",
-      }),
-    );
-    const d = decodeServerFrame(await first);
-    expect(d.ok && d.frame.type).toBe("hello_ok");
-    ws.close();
-  });
-});
+    it("cannot propose a link with a machine token", async () => {
+      const r = await proposeLink(member);
+      expect(r.status).toBe(403);
+      expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
+        "plan_read_only",
+      );
+    });
+
+    it("cannot propose a role over MCP", async () => {
+      const r = await proposeRoleMcp(member);
+      expect(r.isError).toBe(true);
+      expect(textOf(r)).toMatch(/^plan_(required|read_only):/);
+    });
+
+    it("cannot save share notices (page and REST)", async () => {
+      const r = await saveShareNotices(member);
+      expect(r.status).toBe(303);
+      expect(r.headers.get("location")).toBe("/bus?error=plan");
+      const rest = await send(props, R.shareNotices, member.cookie, {
+        method: "PUT",
+        body: { addresses: [] },
+        e: H,
+      });
+      expect(rest.status).toBe(403);
+    });
+
+    it("can still revoke a machine, and read the bus page and machine list", async () => {
+      expect((await revokeMachine(member)).status).toBe(204);
+      expect(
+        (await send(props, R.busMachines, member.cookie, { e: H })).status,
+      ).toBe(200);
+      const page = await send(props, "/bus", member.cookie, { e: H });
+      expect(page.status, await page.clone().text()).toBe(200);
+    });
+
+    it("keeps an existing machine connected: it upgrades and says hello", async () => {
+      // Its own member: the hub limits how often one member's machines upgrade.
+      const own = await login(`bc-${newId().slice(0, 8)}@a.com`, "member");
+      const token = await machineToken(own);
+      const res = await fetchAndWait(
+        app,
+        new Request(`${APP}${BUS_ROUTES.connect}`, {
+          headers: {
+            Upgrade: "websocket",
+            authorization: `Bearer ${token}`,
+            "cf-connecting-ip": nextIp(),
+          },
+        }),
+        H,
+        props,
+      );
+      expect(res.status).toBe(101);
+      const ws = res.webSocket as WebSocket;
+      ws.accept();
+      const first = new Promise<string>((resolve) =>
+        ws.addEventListener("message", (ev) => resolve(String(ev.data))),
+      );
+      ws.send(
+        JSON.stringify({
+          v: 1,
+          id: "h",
+          type: "hello",
+          machine_label: "plan-box",
+          client_version: "0.0.0",
+        }),
+      );
+      const d = decodeServerFrame(await first);
+      expect(d.ok && d.frame.type).toBe("hello_ok");
+      ws.close();
+    });
+  },
+);
 
 // ---- a suspension blocks the same set
 
@@ -344,9 +369,9 @@ describe("a suspended member (an operator's stop)", () => {
       expect((await post(member)).status).toBeGreaterThanOrEqual(400);
     }
     expect((await proposeLink(member)).status).toBeGreaterThanOrEqual(400);
-    expect((await proposeRoleMcp(member).catch(() => ({ isError: true }))).isError).toBe(
-      true,
-    );
+    expect(
+      (await proposeRoleMcp(member).catch(() => ({ isError: true }))).isError,
+    ).toBe(true);
     expect((await saveShareNotices(member)).headers.get("location")).not.toBe(
       "/bus?done=saved",
     );
@@ -457,9 +482,7 @@ describe("who the gate leaves alone", () => {
     expect(() => busConfigCap(capped("lapsed"))).toThrow();
     // Another cap (a guest's) is not this gate's concern: canConnect decides.
     expect(
-      busConfigRefusal(
-        withCap({ id: "g", role: "guest" } as never, "guest"),
-      ),
+      busConfigRefusal(withCap({ id: "g", role: "guest" } as never, "guest")),
     ).toBeNull();
   });
 });

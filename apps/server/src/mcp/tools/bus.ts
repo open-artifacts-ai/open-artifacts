@@ -1,11 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/server";
+import { busConfigCap } from "../../bus/cap.js";
 import { logError } from "../../log.js";
 import {
   busOn,
   proposeBusRole,
   ROLE_PROPOSAL_TTL_MIN,
 } from "../../services/bus.js";
-import { busConfigCap } from "../../bus/cap.js";
 import { guard, ok, type ToolEnv } from "../server.js";
 import { toolConfig } from "../tool-defs.js";
 

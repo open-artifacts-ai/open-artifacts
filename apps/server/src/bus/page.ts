@@ -24,12 +24,12 @@ import {
 import { logError } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { type BusView, busOn } from "../services/bus.js";
+import { busConfigRefusal } from "./cap.js";
 import {
   BUS_PAGE_TEMPLATE,
   BUS_REVOKE_TEMPLATE,
   BUS_SNIPPETS,
 } from "./page-template.js";
-import { busConfigRefusal } from "./cap.js";
 import { busOff } from "./routes.js";
 
 // The member's /bus page (#1300): their machines (revoke) and share notices,

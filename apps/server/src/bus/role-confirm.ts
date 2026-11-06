@@ -33,8 +33,8 @@ import {
   renderSignInCard,
   renderSignInHop,
 } from "./approve-page.js";
-import type { ProposalRefusalReason } from "./role-proposals.js";
 import { busConfigRefusal } from "./cap.js";
+import type { ProposalRefusalReason } from "./role-proposals.js";
 import { busOff } from "./routes.js";
 
 // #1372: the confirm link of an AI agent's role proposal

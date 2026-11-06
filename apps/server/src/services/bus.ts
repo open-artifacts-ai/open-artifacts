@@ -161,9 +161,7 @@ export const busOn = (
 ): boolean =>
   env.BUS_HUB !== undefined &&
   (env.HOSTED !== "1" ||
-    (env.FEATURES ?? "")
-      .split(",")
-      .some((f) => f.trim() === "bus"));
+    (env.FEATURES ?? "").split(",").some((f) => f.trim() === "bus"));
 
 /** The member's BusHub, or null without the binding. Never call before a D1 check (see above). */
 export function busHub(
