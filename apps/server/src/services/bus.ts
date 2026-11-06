@@ -561,7 +561,7 @@ export async function deleteBusLink(
   await linkCall(hub.deleteLink(id));
 }
 
-/** The link confirm page's path prefix; the URL is `<origin>${LINK_CONFIRM_PATH}/<secret>`. */
+/** The link confirm page's path; the URL is `<origin>${LINK_CONFIRM_PATH}#<secret>` (the fragment never reaches a server or a log, #1426). */
 export const LINK_CONFIRM_PATH = "/bus/links/confirm";
 
 const LINK_PROPOSAL_REFUSALS = {
@@ -601,7 +601,7 @@ export async function proposeBusLink(
     throw refuse(r.reason);
   }
   return {
-    confirmUrl: `${appOrigin(env)}${LINK_CONFIRM_PATH}/${secret}`,
+    confirmUrl: `${appOrigin(env)}${LINK_CONFIRM_PATH}#${secret}`,
     expiresAt: new Date(r.proposal.expiresAt).toISOString(),
   };
 }
@@ -640,7 +640,7 @@ export async function decideBusLinkProposal(
 // decision, and each expiry the hub notices, is an audit row (ids and enums
 // only: never the role name, the namespace or the link).
 
-/** The confirm page's path prefix; the link is `<origin>${ROLE_CONFIRM_PATH}/<secret>`. */
+/** The confirm page's path; the link is `<origin>${ROLE_CONFIRM_PATH}#<secret>` (the fragment never reaches a server or a log, #1426). */
 export const ROLE_CONFIRM_PATH = "/bus/roles/confirm";
 /** A link's secret: 32 random bytes, base64url (43 characters). */
 export const ROLE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -770,7 +770,7 @@ export async function proposeBusRole(
   ).run();
   return {
     proposal: p,
-    confirmUrl: `${appOrigin(env)}${ROLE_CONFIRM_PATH}/${secret}`,
+    confirmUrl: `${appOrigin(env)}${ROLE_CONFIRM_PATH}#${secret}`,
   };
 }
 

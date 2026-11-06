@@ -350,11 +350,20 @@ export function mountAuth(app: AppType): void {
     if (!role.success) throw new ApiError("bad_request", "Invalid role");
     const user = await upsertWithRole(c.env, email.data, role.data);
     const row = await getUserWithEpoch(c.env, user.id);
+    // ?fresh=1 (dev only, like the whole route): a session that stands in for
+    // a forced interactive sign-in, so the real-browser e2e of the confirm
+    // pages (#1426) can get past what a dev session is refused.
+    const fresh = c.req.query("fresh") === "1";
+    const now = Date.now();
     const sess = sessionCookie(
-      await signSession(c.env, user.id, Date.now(), {
-        provider: "dev",
-        epoch: row?.sessionEpoch ?? 0,
-      }),
+      await signSession(
+        c.env,
+        user.id,
+        now,
+        fresh
+          ? { provider: "access", epoch: row?.sessionEpoch ?? 0, authAt: now }
+          : { provider: "dev", epoch: row?.sessionEpoch ?? 0 },
+      ),
       c.env,
     );
     return redirect(safeNext(c.env, c.req.query("next")), [sess]);

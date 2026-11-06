@@ -2094,14 +2094,18 @@ export const PUBLIC_ROUTES: readonly string[] = [
   // #1372: the role proposal confirm page (an interactive cookie session of
   // the hub's member and a form token, checked by the handler;
   // bus/roles.proposals.test.ts covers each).
+  "GET /bus/roles/confirm",
   "GET /bus/roles/confirm/:token",
-  "POST /bus/roles/confirm/:token",
+  "POST /bus/roles/confirm/view",
+  "POST /bus/roles/confirm",
   // #1567: `oa-bus link`'s proposal (a machine token, checked by the
   // handler) and its confirm page (the role confirm's rules); covered by
   // bus/links.proposals.test.ts.
   "POST /api/v1/bus/links/proposals",
+  "GET /bus/links/confirm",
   "GET /bus/links/confirm/:token",
-  "POST /bus/links/confirm/:token",
+  "POST /bus/links/confirm/view",
+  "POST /bus/links/confirm",
   "GET /a/:id",
   "GET /a/:id/full",
   "GET /a/:id/v/:v",

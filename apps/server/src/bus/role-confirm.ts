@@ -10,6 +10,7 @@ import {
   checkFormCsrf,
   formCsrf,
   messagePage,
+  newNonce,
   pageResponse,
   sessionUser,
 } from "../http/pages.js";
@@ -24,15 +25,22 @@ import {
 } from "../services/bus.js";
 import { sha256Hex } from "../util/crypto.js";
 import {
+  renderConfirmPage,
+  renderDoneCard,
   renderRoleConfirm,
   renderRoleDone,
   renderRoleReauth,
+  renderSignInCard,
+  renderSignInHop,
 } from "./approve-page.js";
 import type { ProposalRefusalReason } from "./role-proposals.js";
 import { busOff } from "./routes.js";
 
 // #1372: the confirm link of an AI agent's role proposal
-// (`<origin>/bus/roles/confirm/<secret>`, from MCP bus_role_propose). The
+// (`<origin>/bus/roles/confirm#<secret>`, from MCP bus_role_propose). The
+// secret is in the URL fragment (#1426), so no request, access log or
+// referrer carries it: the page loads without it, and its script posts the
+// secret in a body. The
 // user's guardrail ("Let's do B", then "1, propose via MCP, I confirm by
 // link"): a proposal applies only here, by the member, in a browser.
 //
@@ -40,16 +48,71 @@ import { busOff } from "./routes.js";
 // or Access; never a dev or test session) with no Authorization header: a
 // PAT, an OAuth grant or a machine token is refused before anything is
 // read. The secret finds the proposal in the signed-in member's own hub
-// only, so another member's session finds nothing. GET shows it; POST, with
-// the page's form token (bound to the member and this link, valid
+// only, so another member's session finds nothing. GET serves the page;
+// POST /view (with the page's token) shows the proposal; POST, with the
+// card's form token (bound to the member and this link, valid
 // FORM_CSRF_TTL_S), confirms or rejects it once. The hub re-checks it at
 // decision time and refuses when the role moved since it was proposed.
 
 /** The form token's scope (http/pages.ts formCsrf); its handle is the secret's sha256. */
 export const ROLE_CONFIRM_SCOPE = "bus-role-confirm";
+/** The page token's scope: it authorizes the details request, before the secret is known to the server. */
+export const ROLE_CONFIRM_VIEW_SCOPE = "bus-role-confirm-view";
 const MAX_FORM_BYTES = 8 * 1024;
 
-const pathOf = (secret: string) => `${ROLE_CONFIRM_PATH}/${secret}`;
+/**
+ * What the confirm page's script reads (#1426): the card to show (escaped
+ * HTML), and whether the link is still open (`keep`: the script holds on to
+ * the secret for a sign-in round trip), under the status that says why.
+ */
+export const cardResponse = (html: string, status: number, keep = false) =>
+  new Response(JSON.stringify({ html, keep }), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "x-frame-options": "DENY",
+    },
+  });
+
+/**
+ * The JSON body of a confirm POST: its secret, its token and, to decide, the
+ * decision. Fails closed: no content-length (a chunked body), anything but
+ * plain digits, or a body that isn't a flat object of strings, is null.
+ */
+export async function readConfirmBody(
+  c: Context<AppEnv>,
+): Promise<Record<string, string> | null> {
+  const cl = c.req.header("content-length") ?? "";
+  if (!/^\d{1,9}$/.test(cl) || Number(cl) > MAX_FORM_BYTES) return null;
+  if (!(c.req.header("content-type") ?? "").startsWith("application/json"))
+    return null;
+  try {
+    const j: unknown = JSON.parse(await c.req.text());
+    if (typeof j !== "object" || j === null || Array.isArray(j)) return null;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(j)) {
+      if (typeof v !== "string") return null;
+      out[k] = v;
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/** The page whose old, path-style link (before #1426) is gone: the secret is never read. */
+export function oldFormatPage(c: Context<AppEnv>, what: string): Response {
+  return pageResponse(
+    renderRoleDone({
+      instanceHost: c.env.APP_HOST,
+      title: "This link format expired",
+      message: `This link is in an old format and no longer works. Nothing changed. ${what}`,
+      busUrl: `${appOrigin(c.env)}${BUS_ROUTES.page}`,
+    }),
+    410,
+  );
+}
 
 const page = (
   c: Context<AppEnv>,
@@ -57,9 +120,8 @@ const page = (
   message: string,
   status: number,
 ) =>
-  pageResponse(
-    renderRoleDone({
-      instanceHost: c.env.APP_HOST,
+  cardResponse(
+    renderDoneCard({
       title,
       message,
       busUrl: `${appOrigin(c.env)}${BUS_ROUTES.page}`,
@@ -181,7 +243,7 @@ function reauthUrl(c: Context<AppEnv>, path: string): string {
  * The caller, or the page that refuses them: bus off, embed, any
  * Authorization header (a PAT, an OAuth grant, a machine token), signed out
  * (GET: to sign-in and back; POST: 401), not allowed to connect agents, or
- * not an interactive sign-in. `path` is the confirm link's own path (where
+ * not an interactive sign-in. `path` is the confirm page's own path, with no secret (where
  * sign-in returns to) and `what` names the change in the refusal copy; link
  * confirmations (bus/link-confirm.ts) use the same checks.
  */
@@ -203,22 +265,37 @@ export function confirmCaller(
     };
   const user = sessionUser(c);
   if (!user) {
+    // A card, kept: the script holds on to the secret so signing in again
+    // brings the person back to this link.
     if (post)
       return {
-        response: messagePage(
-          "Signed out",
-          "Your session ended. Sign in, then open the link again.",
+        response: cardResponse(
+          renderSignInCard({
+            title: "Signed out",
+            message: "Your session ended. Sign in, then confirm again.",
+            href: `${AUTH.login}?next=${encodeURIComponent(path)}`,
+            label: "Sign in",
+          }),
           401,
+          true,
         ),
       };
+    // A 200 hop, not a 302: the browser would carry the fragment (the
+    // secret) to the sign-in, and on to Google. The page keeps it in this
+    // tab and goes to the sign-in without it.
+    const nonce = newNonce();
     return {
-      response: new Response(null, {
-        status: 302,
-        headers: {
-          location: `${AUTH.login}?next=${encodeURIComponent(path)}`,
-          "cache-control": "no-store",
-        },
-      }),
+      response: pageResponse(
+        renderSignInHop({
+          instanceHost: c.env.APP_HOST,
+          base: path,
+          go: `${AUTH.login}?next=${encodeURIComponent(path)}`,
+          nonce,
+        }),
+        200,
+        undefined,
+        nonce,
+      ),
     };
   }
   if (!canConnect(user)) return { response: busOff() };
@@ -233,7 +310,21 @@ export function confirmCaller(
   // Fresh: the form is minted (GET) and decided (POST) only within 10
   // minutes of a real sign-in, so a cookie lifted from the browser can't
   // confirm long after.
-  if (!freshSignIn(c, Date.now()))
+  if (!freshSignIn(c, Date.now())) {
+    if (post)
+      return {
+        response: cardResponse(
+          renderSignInCard({
+            title: "Sign in again",
+            message: `To confirm ${what}, sign in again first. Your last sign-in is more than 10 minutes old.`,
+            href: reauthUrl(c, path),
+            label: "Sign in again",
+          }),
+          403,
+          true,
+        ),
+      };
+    const nonce = newNonce();
     return {
       response: pageResponse(
         renderRoleReauth({
@@ -241,26 +332,79 @@ export function confirmCaller(
           userEmail: user.email,
           reauthUrl: reauthUrl(c, path),
           what,
+          stash: { base: path, nonce },
         }),
         403,
+        undefined,
+        nonce,
       ),
     };
+  }
   return { user };
 }
 
-/** The routes, literal for the red-line scan (tests/redline); ROLE_CONFIRM_PATH plus the secret. */
+/** The routes, literal for the red-line scan (tests/redline); ROLE_CONFIRM_PATH, its details and its decision. */
 export function mountRoleConfirm(app: AppType): void {
-  app.get("/bus/roles/confirm/:token", async (c) => {
-    const secret = c.req.param("token");
-    const who = confirmCaller(c, pathOf(secret), false);
+  app.get("/bus/roles/confirm", async (c) => {
+    const who = confirmCaller(c, ROLE_CONFIRM_PATH, false);
     if ("response" in who) return who.response;
+    const nonce = newNonce();
+    return pageResponse(
+      renderConfirmPage({
+        instanceHost: c.env.APP_HOST,
+        title: "Confirm a role change",
+        base: ROLE_CONFIRM_PATH,
+        csrf: await formCsrf(
+          c.env,
+          ROLE_CONFIRM_VIEW_SCOPE,
+          who.user.id,
+          "page",
+        ),
+        nonce,
+      }),
+      200,
+      undefined,
+      nonce,
+    );
+  });
+
+  // The path-style link of before #1426: a notice, the secret never read.
+  app.get("/bus/roles/confirm/:token", (c) =>
+    oldFormatPage(
+      c,
+      "Ask the agent to propose the change again for a new link.",
+    ),
+  );
+
+  app.post("/bus/roles/confirm/view", async (c) => {
+    if (busOn(c.env) && c.req.header("sec-fetch-site") === "cross-site")
+      return messagePage("Not allowed", "Cross-site request.", 403);
+    const who = confirmCaller(c, ROLE_CONFIRM_PATH, true);
+    if ("response" in who) return who.response;
+    const body = await readConfirmBody(c);
+    if (body === null) return messagePage("Not saved", "Invalid request.", 400);
+    const secret = body.secret ?? "";
+    if (
+      !(await checkFormCsrf(
+        c.env,
+        ROLE_CONFIRM_VIEW_SCOPE,
+        who.user.id,
+        "page",
+        body.csrf ?? "",
+      ))
+    )
+      return messagePage(
+        "This page expired",
+        "Nothing changed. Open the link again, then confirm.",
+        403,
+      );
     if (!ROLE_TOKEN.test(secret)) return refused(c, "unknown");
     try {
       const v = await viewBusRoleProposal(c.env, who.user.id, secret);
       if (v === null) return refused(c, "unknown");
       if (!v.ok) return refused(c, v.reason);
       const p = v.proposal;
-      return pageResponse(
+      return cardResponse(
         renderRoleConfirm({
           instanceHost: c.env.APP_HOST,
           action: p.action,
@@ -275,16 +419,16 @@ export function mountRoleConfirm(app: AppType): void {
             Math.ceil((Date.parse(p.expiresAt) - Date.now()) / 60_000),
           ),
           userEmail: who.user.email,
-          formAction: pathOf(secret),
           csrf: await formCsrf(
             c.env,
             ROLE_CONFIRM_SCOPE,
             who.user.id,
             await sha256Hex(secret),
           ),
-          switchUrl: `${AUTH.login}?next=${encodeURIComponent(pathOf(secret))}`,
+          switchUrl: `${AUTH.login}?next=${encodeURIComponent(ROLE_CONFIRM_PATH)}`,
         }),
         200,
+        true,
       );
     } catch (e) {
       logError("bus_role_confirm_failed", e);
@@ -292,39 +436,24 @@ export function mountRoleConfirm(app: AppType): void {
     }
   });
 
-  app.post("/bus/roles/confirm/:token", async (c) => {
-    const secret = c.req.param("token");
+  app.post("/bus/roles/confirm", async (c) => {
     // The page's no-referrer policy makes browsers send `Origin: null`: the
     // signed form token and the SameSite=Lax cookie carry CSRF.
     if (busOn(c.env) && c.req.header("sec-fetch-site") === "cross-site")
       return messagePage("Not allowed", "Cross-site request.", 403);
-    const who = confirmCaller(c, pathOf(secret), true);
+    const who = confirmCaller(c, ROLE_CONFIRM_PATH, true);
     if ("response" in who) return who.response;
-    // Fails closed: no content-length (a chunked body), or anything but
-    // plain digits, is refused before the body is read.
-    const cl = c.req.header("content-length") ?? "";
-    if (!/^\d{1,9}$/.test(cl) || Number(cl) > MAX_FORM_BYTES)
-      return messagePage("Not saved", "Invalid form.", 400);
-    let form: FormData;
-    try {
-      form = await c.req.raw.formData();
-    } catch {
-      return messagePage("Not saved", "Invalid form.", 400);
-    }
-    const one = (k: string): string | null => {
-      const v = form.getAll(k);
-      return v.length === 1 && typeof v[0] === "string" ? v[0] : null;
-    };
+    const body = await readConfirmBody(c);
+    if (body === null) return messagePage("Not saved", "Invalid form.", 400);
+    const secret = body.secret ?? "";
     if (!ROLE_TOKEN.test(secret)) return refused(c, "unknown");
-    const csrf = one("csrf");
     if (
-      csrf === null ||
       !(await checkFormCsrf(
         c.env,
         ROLE_CONFIRM_SCOPE,
         who.user.id,
         await sha256Hex(secret),
-        csrf,
+        body.csrf ?? "",
       ))
     )
       return messagePage(
@@ -332,7 +461,7 @@ export function mountRoleConfirm(app: AppType): void {
         "Nothing changed. Open the link again, then confirm.",
         403,
       );
-    const decision = one("decision");
+    const decision = body.decision;
     if (decision !== "confirm" && decision !== "reject")
       return messagePage("Not saved", "Invalid form.", 400);
     try {

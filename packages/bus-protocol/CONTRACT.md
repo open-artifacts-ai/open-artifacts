@@ -254,7 +254,7 @@ claims one.
   holder by bus name; the hub checks it as the dashboard write (a live agent
   of this hub, the name rules below) and binds it to that agent's id, the
   role and the holder it displaces. It changes nothing. The member confirms
-  it on its one-time link (`/bus/roles/confirm/<secret>`, 15 minutes, the
+  it on its one-time link (`/bus/roles/confirm#<secret>`, the secret in the URL fragment so no request or log carries it, 15 minutes, the
   hub keeps only the secret's sha256) in a browser session; the hub then
   applies it with the dashboard's own write, only while the role and both
   agents' names are still as proposed. The session must be a sign-in under

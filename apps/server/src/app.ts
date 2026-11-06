@@ -104,6 +104,7 @@ const SESSION_PATHS = [
   // #1372 the role proposal confirm page.
   "/bus/roles/*",
   // #1567 the link confirm page, the same.
+  "/bus/links/confirm",
   "/bus/links/confirm/*",
 ] as const;
 
