@@ -43,6 +43,33 @@ export function isNetworkError(e: unknown): boolean {
   );
 }
 
+/** The socket code of a request that got no HTTP response (not a timeout or abort). */
+export function noResponseCode(e: unknown): string | undefined {
+  if (!isNetworkError(e)) return undefined;
+  if (
+    e instanceof Error &&
+    (e.name === "AbortError" || e.name === "TimeoutError")
+  )
+    return undefined;
+  const c = e as { code?: unknown; cause?: { code?: unknown } };
+  for (const code of [c.code, c.cause?.code])
+    if (typeof code === "string" && NET_CODES.has(code)) return code;
+  return undefined;
+}
+
+/**
+ * A request that got no HTTP response for a socket reason (#1596). Names
+ * itself as infra, as tests/redline's "infra: no_response ..." does, so the
+ * report says the network failed, not the product. Still a failed test: the
+ * gate does not pass on it.
+ */
+export class InfraError extends Error {
+  constructor(reason: string, cause: unknown) {
+    super(`infra: ${reason}`, { cause });
+    this.name = "InfraError";
+  }
+}
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
@@ -53,7 +80,12 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function sendRead(
   method: string | undefined,
   send: () => Promise<Response>,
-  o: { backoff?: readonly number[]; wait?: (ms: number) => Promise<void> } = {},
+  o: {
+    backoff?: readonly number[];
+    wait?: (ms: number) => Promise<void>;
+    /** The route, for the infra reason (never a query: it may hold a code). */
+    route?: string;
+  } = {},
 ): Promise<Response> {
   const m = (method ?? "GET").toUpperCase();
   const backoff =
@@ -64,7 +96,17 @@ export async function sendRead(
       return await send();
     } catch (e) {
       const ms = backoff[i];
-      if (ms === undefined || !isNetworkError(e)) throw e;
+      if (ms === undefined || !isNetworkError(e)) {
+        // Out of tries, or a write: a socket failure is infra, named. An HTTP
+        // response never gets here; a timeout or abort keeps its own error.
+        const code = noResponseCode(e);
+        if (!code) throw e;
+        const tries = `${i + 1} ${i === 0 ? "try" : "tries"}`;
+        throw new InfraError(
+          `no_response ${code} ${m} ${o.route ?? "?"} (${tries})`,
+          e,
+        );
+      }
       await wait(ms);
     }
   }

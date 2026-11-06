@@ -34,14 +34,20 @@ export const RUN = randomBytes(3).toString("hex");
 /** __Host-oa_session on staging; oa_session on the local pair (a dev Worker). */
 const COOKIE = A.cookieName;
 
+// A POST is sent once (retry.ts); a reset before any response is infra, named.
 const post = (path: string, body: unknown, headers: Record<string, string>) =>
-  fetch(`${A.app}${path}`, {
-    method: "POST",
-    redirect: "manual",
-    headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(FETCH_MS),
-  });
+  sendRead(
+    "POST",
+    () =>
+      fetch(`${A.app}${path}`, {
+        method: "POST",
+        redirect: "manual",
+        headers: { "content-type": "application/json", ...headers },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(FETCH_MS),
+      }),
+    { route: path },
+  );
 
 /**
  * POST a /__test/* hook with rl-a's key: the raw response. Paced first
@@ -130,6 +136,7 @@ export const api = (
       },
       signal: AbortSignal.timeout(FETCH_MS),
     }),
+    { route: path },
   );
 
 /** An anonymous call to rl-a, bounded; a GET with no response is sent again. */
@@ -140,6 +147,7 @@ export const anon = (path: string, init: RequestInit = {}) =>
       redirect: "manual",
       signal: AbortSignal.timeout(FETCH_MS),
     }),
+    { route: path },
   );
 
 /** The body of a 2xx response; anything else throws with its status. */
