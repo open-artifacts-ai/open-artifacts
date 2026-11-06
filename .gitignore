@@ -30,3 +30,6 @@ blob-report/
 
 # Provisioning API staging spikes: configs rendered in CI
 spikes/provapi-staging/*.rendered.jsonc
+
+__pycache__/
+*.pyc

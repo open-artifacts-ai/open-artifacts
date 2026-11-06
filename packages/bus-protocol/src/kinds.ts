@@ -5,6 +5,7 @@ export const AGENT_KINDS = [
   "opencode",
   "pi",
   "omp",
+  "hermes",
   "codex",
 ] as const;
 export const AgentKindSchema = z.enum(AGENT_KINDS);

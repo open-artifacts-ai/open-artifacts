@@ -1,0 +1,25 @@
+{
+  "name": "@oa/bus-adapter-hermes",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:py": "python3 -m unittest discover -s tests",
+    "fixtures": "node --experimental-strip-types --no-warnings scripts/gen-fixtures.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@oa/bus-adapter-claude-code": "workspace:*",
+    "@oa/bus-ipc": "workspace:*",
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
+  }
+}
