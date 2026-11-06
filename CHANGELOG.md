@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.131.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.131.0...v0.131.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **bus-daemon:** hold a /clear handover until hello_ok ([#1582](https://github.com/open-artifacts-ai/open-artifacts/issues/1582)) ([#1585](https://github.com/open-artifacts-ai/open-artifacts/issues/1585)) ([3b88a40](https://github.com/open-artifacts-ai/open-artifacts/commit/3b88a4075db340825bac652d50d30b9467bb1846))
+* **server:** search ranks title matches first ([#1554](https://github.com/open-artifacts-ai/open-artifacts/issues/1554)) ([#1555](https://github.com/open-artifacts-ai/open-artifacts/issues/1555)) ([a21f50c](https://github.com/open-artifacts-ai/open-artifacts/commit/a21f50cea87c91b3b40288b984849c227df27a93))
+
 ## [0.131.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.130.0...v0.131.0) (2026-11-06)
 
 
