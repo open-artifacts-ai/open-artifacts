@@ -230,6 +230,87 @@ describe("/clear handover in the daemon", () => {
     });
   });
 
+  /** A daemon whose link is open but has said no hello_ok; s-old is up from its file. */
+  async function unhelloed(attest = false) {
+    const d = mkdtempSync(join(tmpdir(), "ob-clear-"));
+    write(d, 4242, "s-old", "npm-test");
+    const h = await daemonHarness({
+      ...(attest
+        ? { attest: () => ({ ok: true as const, cwd: "/repo", pid: 4242 }) }
+        : {}),
+      claude: {
+        sessionsDir: d,
+        socketsDir: join(d, "r"),
+        syncMs: 20,
+        procStart: () => os.start,
+        isRunning: () => true,
+      },
+    });
+    await upFor(h, "s-old");
+    return { h, d };
+  }
+  const helloOk = (h: Harness) =>
+    h.toDaemon({
+      id: "w",
+      type: "hello_ok",
+      machine_id: "1".repeat(16),
+      machine_label: "laptop",
+      server_version: "1",
+      caps: [BUS_CAPS.ids, BUS_CAPS.mailbox],
+    });
+
+  it("a second /clear while the first is held replaces the original, never the unannounced one (#1582)", async () => {
+    const { h, d } = await unhelloed();
+    write(d, 4242, "s-b", "b");
+    write(d, 5555, "s-mark", "mark");
+    await upFor(h, "s-mark");
+    write(d, 4242, "s-c", "c");
+    write(d, 6666, "s-mark2", "mark2");
+    await upFor(h, "s-mark2");
+    helloOk(h);
+    expect(await upFor(h, "s-c")).toMatchObject({
+      replaces: "s-old",
+      proposed_name: "npm-test",
+    });
+    expect(h.of("agent_up").some((u) => u.agent_ref === "s-b")).toBe(false);
+  });
+
+  it("a held session is not listed open in sessions before its agent_up (#1582)", async () => {
+    const { h, d } = await unhelloed();
+    write(d, 4242, "s-new", "other");
+    write(d, 5555, "s-mark", "mark");
+    await upFor(h, "s-mark");
+    await closedRef(h, "s-old");
+    for (const f of h.of("sessions")) expect(f.open).not.toContain("s-new");
+  });
+
+  it("a send from a held session waits for its agent_up, then goes after it (#1582)", async () => {
+    const { h, d } = await unhelloed(true);
+    write(d, 4242, "s-new", "other");
+    write(d, 5555, "s-mark", "mark");
+    await upFor(h, "s-mark");
+    const a = await h.adapter("s-new", {
+      kind: "claude-code",
+      cwd: "/repo",
+      pid: 4242,
+    });
+    void a.request({ type: "send", to: "peer", body: "hi" }).catch(() => {});
+    // Let the daemon take the request in before the hub speaks.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(h.of("send")).toHaveLength(0);
+    helloOk(h);
+    await h.next("send");
+    const kinds = h.frames.map((f) =>
+      f.type === "agent_up" && f.agent_ref === "s-new"
+        ? "up-new"
+        : f.type === "send"
+          ? "send"
+          : "",
+    );
+    expect(kinds.indexOf("up-new")).toBeGreaterThanOrEqual(0);
+    expect(kinds.indexOf("up-new")).toBeLessThan(kinds.indexOf("send"));
+  });
+
   it("a hub without mailbox: a handover held for hello_ok is sent without replaces", async () => {
     const d = mkdtempSync(join(tmpdir(), "ob-clear-"));
     write(d, 4242, "s-old", "npm-test");
