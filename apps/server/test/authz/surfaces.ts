@@ -506,6 +506,8 @@ const PUBLISH_BODY = (spaceId: string) => ({
   // On an existing artifact: 400 use_move, after the publish check.
   spaceId,
 });
+/** Text no artifact holds: an edit's `old` that never matches. */
+const EDIT_MISS = "\u0001no-such-text\u0001";
 /** A well-formed id for the use_move probes (never looked up). */
 const SOME_ID = "AAAAAAAAAAAAAAAA";
 /** A minimal body that passes the server's WebP check (RIFF....WEBP). */
@@ -571,6 +573,21 @@ export const SURFACES: readonly Surface[] = [
       status(201),
     ),
   ),
+  // #1540: an edit that can't match, so an allowed caller reaches edit_failed
+  // after the publish check and nothing is written.
+  {
+    ...rest(
+      "rest publish edits",
+      "publish",
+      [`POST ${ARTS}/versions`],
+      exact(
+        "POST",
+        (id) => `${A(id)}/versions`,
+        () => ({ body: { edits: [{ old: EDIT_MISS, new: "x" }] } }),
+        (r) => r.status === 400 && r.code === "edit_failed",
+      ),
+    ),
+  },
   rest(
     "rest restore_version",
     "restore",
@@ -1118,6 +1135,19 @@ export const SURFACES: readonly Surface[] = [
       "data",
     ),
     name: "mcp publish_artifact (settings only, description)",
+  },
+  // #1540: as the REST edits probe, an edit that misses.
+  {
+    ...mcp(
+      "publish_artifact",
+      "publish",
+      tool(
+        "publish_artifact",
+        (id) => ({ id, edits: [{ old: EDIT_MISS, new: "x" }] }),
+        (o) => o.isError && /^edit_failed\b/.test(o.text),
+      ),
+    ),
+    name: "mcp publish_artifact (edits)",
   },
   mcp(
     "create_upload",

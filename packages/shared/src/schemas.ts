@@ -127,6 +127,15 @@ export const InlineFileSchema = z.union([
 ]);
 export type InlineFile = z.infer<typeof InlineFileSchema>;
 
+/** One small edit (#1540): `old` must occur exactly once in the text as it stands at that step. */
+export const PublishEditSchema = z.strictObject({
+  old: z.string().min(1),
+  new: z.string(),
+});
+export type PublishEdit = z.infer<typeof PublishEditSchema>;
+/** Most edits in one publish. */
+export const MAX_EDITS = 64;
+
 const PublishShape = z.strictObject({
   id: z.string().optional(),
   title: z.string().trim().min(1).max(200).optional(),
@@ -150,6 +159,20 @@ const PublishShape = z.strictObject({
    * space_forbidden; so is any create by a capped caller.
    */
   spaceId: z.string().optional(),
+  /**
+   * #1216: publish only if this is still the artifact's current version, else
+   * 409 version_conflict (the message gives the current version). Needs `id`.
+   * A settings-only publish with it is 400 (it creates no version).
+   */
+  expectedVersion: z.number().int().min(1).optional(),
+  /**
+   * #1540: small edits to the current version's entry file (html, markdown or
+   * code), applied in order; each `old` must occur exactly once at its step,
+   * else 400 edit_failed and nothing is published. Needs `id`; not with
+   * content, files, entry, format or language. Takes the current version as
+   * its expectedVersion; other files are reused unchanged.
+   */
+  edits: z.array(PublishEditSchema).min(1).max(MAX_EDITS).optional(),
 });
 
 const refinePublish =
@@ -161,8 +184,20 @@ const refinePublish =
     const hasFiles = v.files !== undefined;
     // The MCP tool takes neither with an id: a settings-only update (#681 D),
     // checked by the server (publishSettings).
-    const settingsOnly = tool && v.id !== undefined && !hasContent && !hasFiles;
-    if (hasContent === hasFiles && !settingsOnly) {
+    const hasEdits = v.edits !== undefined;
+    const settingsOnly =
+      tool && v.id !== undefined && !hasContent && !hasFiles && !hasEdits;
+    if (hasEdits) {
+      if (v.id === undefined) issue("edits need an id", ["edits"]);
+      for (const k of [
+        "content",
+        "files",
+        "entry",
+        "format",
+        "language",
+      ] as const)
+        if (v[k] !== undefined) issue(`edits can't be combined with ${k}`, [k]);
+    } else if (hasContent === hasFiles && !settingsOnly) {
       issue("Provide exactly one of content or files", [
         hasContent ? "files" : "content",
       ]);
@@ -170,6 +205,8 @@ const refinePublish =
     if (v.id === undefined && v.title === undefined) {
       issue("title is required when id is absent", ["title"]);
     }
+    if (v.expectedVersion !== undefined && v.id === undefined)
+      issue("expectedVersion needs an id", ["expectedVersion"]);
     if (v.id !== undefined && !isId(v.id))
       issue("id is not a valid artifact id", ["id"]);
     if (hasContent && v.format === undefined && v.entry === undefined) {

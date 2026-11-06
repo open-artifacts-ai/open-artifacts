@@ -194,6 +194,14 @@
     },
     {
       "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest publish edits [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest publish edits [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > artifact rest restore_version [session]"
     },
     {
@@ -507,6 +515,10 @@
     {
       "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > artifact mcp publish_artifact (settings only, description) [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp publish_artifact (edits) [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
