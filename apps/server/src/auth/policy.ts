@@ -134,7 +134,7 @@ export type CanCtx = {
   /**
    * Hosted billing's lock on this instance (billing/plan.ts PlanLock.mode),
    * absent or null when none: shared-space artifacts are read-only, and so
-   * are the team actions on personal ones (share, move, transfer); while
+   * are the team actions on personal ones (move, transfer); while
    * read-only, anonymous data writes too. Reads are never touched.
    */
   plan?: "solo" | "readOnly" | null;
@@ -167,14 +167,17 @@ const PLAN_TEAM_ACTIONS: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
   "transfer",
 ]);
 /**
- * Never refused here: "share" also gates reading the share list, and
- * "unshare" is a removal (removing people is how a team drops back to free).
- * A new share is refused by putShare itself (requireTeamPlan).
+ * Sharing is free on every plan: viewing and changing who can open an
+ * artifact (share, unshare, visibility) is never refused by a plan lock, on
+ * any artifact the caller may share. A plan-capped member keeps it too
+ * (SHARING_ACTIONS: authz.ts authorize reads their level uncapped).
  */
 const PLAN_EXEMPT: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
   "share",
   "unshare",
+  "visibility",
 ]);
+export const SHARING_ACTIONS: ReadonlySet<PolicyAction> = PLAN_EXEMPT;
 
 /** Whether the instance's plan lock refuses `action` (reads never). */
 export function planRefuses(action: PolicyAction, ctx: CanCtx): boolean {

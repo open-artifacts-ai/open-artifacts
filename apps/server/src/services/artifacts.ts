@@ -42,12 +42,13 @@ import {
   publishTarget,
   roleRankQuery,
   roleRankSql,
+  sharingCaller,
 } from "../auth/authz.js";
 import { can, dataWritersOf } from "../auth/policy.js";
 import { requireFreeStorage } from "../billing/caps.js";
 import { creatorStmt } from "../billing/creators.js";
 import { featuresOf } from "../billing/features.js";
-import { billingActive, requireTeamPlan } from "../billing/plan.js";
+import { billingActive, planError, requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -919,6 +920,28 @@ export function withSpace<T extends ArtifactSummary>(
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
   });
+  return sharingFree(caller, out, !shared);
+}
+
+/**
+ * Sharing is free on every plan: a member capped only by the billing plan
+ * keeps `share` and `setVisibility` on their own personal artifacts (the
+ * cap lowers their level to viewer, which would turn both off). Every other
+ * action stays off.
+ */
+function sharingFree<T extends ArtifactSummary>(
+  caller: Caller,
+  out: T,
+  personal: boolean,
+): T {
+  if (
+    out.can &&
+    personal &&
+    caller.kind === "user" &&
+    capOfCaller(caller) === "plan" &&
+    out.owner?.id === caller.user.id
+  )
+    out.can = { ...out.can, share: true, setVisibility: true };
   return out;
 }
 
@@ -942,7 +965,7 @@ export function withCan<T extends ArtifactSummary>(
     move: false,
     transfer: false,
   };
-  return out;
+  return sharingFree(caller, out, true);
 }
 
 /**
@@ -1454,13 +1477,35 @@ export async function patch(
   ctx?: Ctx,
 ): Promise<ArtifactPatchResult> {
   const who = asUser(user);
-  const { level, artifact: a } = await authorize(env, who, id, "publish");
+  // Sharing is free on every plan: a plan-capped member may change who can
+  // open their artifact (visibility alone), nothing else in the PATCH.
+  const lock = capOfCaller(who) === "plan" ? planOfMember(user)?.lock : null;
+  const visibilityOnly =
+    p.visibility !== undefined &&
+    p.title === undefined &&
+    p.description === undefined &&
+    p.capabilities === undefined &&
+    p.dataWriters === undefined &&
+    p.allowAnonymousWrites === undefined;
+  if (lock && !visibilityOnly) {
+    await authorize(env, who, id, "view");
+    throw planError(lock);
+  }
+  const { level, artifact: a } = await authorize(
+    env,
+    who,
+    id,
+    lock ? "visibility" : "publish",
+  );
   const sharing =
     p.visibility !== undefined ||
     p.capabilities !== undefined ||
     p.dataWriters !== undefined ||
     p.allowAnonymousWrites !== undefined;
-  if (sharing && !can(level, "visibility", canCtx(who, a)))
+  if (
+    sharing &&
+    !can(level, "visibility", canCtx(sharingCaller(who, "visibility"), a))
+  )
     throw new ApiError("bad_request", "only the owner can change sharing");
   await refusePublicLinksOff(env, a, p.visibility);
   const dataWriters = resolveDataWriters(p, p.visibility ?? a.visibility);

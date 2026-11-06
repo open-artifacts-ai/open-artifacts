@@ -47,6 +47,7 @@ import {
   orgCan,
   type PolicyAction,
   planRefuses,
+  SHARING_ACTIONS,
   TEAM_ROLES,
 } from "./policy.js";
 
@@ -466,13 +467,22 @@ export function dataWriteRefusal(
 }
 
 /**
+ * `c` without the billing plan cap when `action` is sharing (share, unshare,
+ * visibility); `c` itself otherwise. Sharing is free on every plan.
+ */
+export const sharingCaller = (c: Caller, action: PolicyAction): Caller =>
+  c.kind === "user" && c.cap === "plan" && SHARING_ACTIONS.has(action)
+    ? { ...c, cap: null }
+    : c;
+
+/**
  * The artifact and the caller's level if they may take `action`; otherwise
  * 404 (never 403). The one check for owner-or-manager actions: never compare
  * levels for those, ask `can` (a manager fails requireAccess("owner")).
  */
 export async function authorize(
   env: Env,
-  c: Caller,
+  who: Caller,
   artifactId: string,
   action: PolicyAction,
   opts: {
@@ -482,6 +492,9 @@ export async function authorize(
     ctx?: { firstThumbnail?: boolean };
   } = {},
 ): Promise<{ level: AccessLevel; artifact: ArtifactRow }> {
+  // Sharing is free on every plan: the billing plan cap never lowers the
+  // level for it (guest and restricted caps still do).
+  const c = sharingCaller(who, action);
   let r: Access | null;
   if (opts.prefetch) {
     r = await loadAccess(env, c, artifactId, opts);

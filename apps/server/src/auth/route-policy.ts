@@ -115,7 +115,13 @@ export async function enforce(
     // Malformed ids never reach D1.
     if (!isId(id)) throw notFound();
     try {
-      await authorize(env, who, id, p.artifact, {
+      // Sharing is free: a plan-capped caller passes this floor on a route
+      // that carries sharing (the handler refuses the rest of the write).
+      const gate: Caller =
+        p.planSharing && who.kind === "user" && who.cap === "plan"
+          ? { ...who, cap: null }
+          : who;
+      await authorize(env, gate, id, p.artifact, {
         allowDeleted: p.allowDeleted,
         prefetch: true,
         ctx: p.ctx,

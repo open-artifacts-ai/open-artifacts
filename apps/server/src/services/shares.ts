@@ -10,10 +10,9 @@ import {
   viewerPath,
 } from "@oa/shared";
 import { asc, eq } from "drizzle-orm";
-import { authorize, callerOf, planOfMember } from "../auth/authz.js";
+import { authorize, callerOf } from "../auth/authz.js";
 import { authConfig, type SignInProvider } from "../auth/config.js";
 import { capOf } from "../auth/policy.js";
-import { requireTeamPlan } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -162,9 +161,8 @@ export async function putShare(
   ctx?: Pick<ExecutionContext, "waitUntil">,
 ): Promise<ShareResult> {
   const artifact = await ownerOnly(env, user, id);
-  // Hosted billing: a share to someone else is a team feature (REST and the
-  // share_artifact tool both land here). Removing a share never is.
-  requireTeamPlan(planOfMember(user));
+  // Sharing is free on every plan and under every plan lock (a mechanism to
+  // make OA viral): no plan check here, nor in the policy (PLAN_EXEMPT).
   const email = normalizeEmail(s.email);
   if (!email) throw new ApiError("bad_request", "Invalid email");
   if (email === normalizeEmail(user.email))

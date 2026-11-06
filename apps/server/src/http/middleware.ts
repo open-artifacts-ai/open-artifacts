@@ -473,6 +473,19 @@ const CAPPED_ALLOWED: readonly (readonly [string, RegExp])[] = [
   ["POST", /^\/api\/v1\/notices\/guest_shares\/dismiss$/],
 ];
 
+/**
+ * Sharing is free on every plan: a plan-capped member keeps sharing and
+ * unsharing their artifacts and changing who can open them (the PATCH is
+ * visibility only for them: services/artifacts.ts patch). The artifact rule
+ * still decides whose artifact it is. Only the plan cap: a guest or a
+ * restricted member stays read-only.
+ */
+const PLAN_CAP_SHARING: readonly (readonly [string, RegExp])[] = [
+  ["PUT", /^\/api\/v1\/artifacts\/[^/]+\/shares$/],
+  ["DELETE", /^\/api\/v1\/artifacts\/[^/]+\/shares\/[^/]+$/],
+  ["PATCH", /^\/api\/v1\/artifacts\/[^/]+$/],
+];
+
 /** The billing routes a plan-capped owner or admin may still POST. */
 const BILLING_POSTS: ReadonlySet<string> = new Set([
   R.billingCheckout,
@@ -496,6 +509,11 @@ export const readOnlyCap = (): MiddlewareHandler<AppEnv> => async (c, next) => {
   if (cap) {
     const path = c.req.path;
     if (CAPPED_ALLOWED.some(([am, re]) => am === m && re.test(path)))
+      return next();
+    if (
+      cap === "plan" &&
+      PLAN_CAP_SHARING.some(([am, re]) => am === m && re.test(path))
+    )
       return next();
     // Hosted billing's plan cap: the owner and admins can still pay
     // (Checkout, Portal, the usage report; orgCan billing.manage). Members
