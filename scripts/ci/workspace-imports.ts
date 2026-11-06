@@ -2,6 +2,7 @@
 // test job's affected-only run on pull requests) sees every dependent.
 //   node scripts/ci/workspace-imports.ts check         -> exit 1 on any undeclared import
 //   node scripts/ci/workspace-imports.ts scope <base>  -> "all" or "affected"
+//   node scripts/ci/workspace-imports.ts cycles        -> exit 1 on any dependency cycle
 //
 // A relative import that leaves its package must land in a package the
 // importer declares (dependencies, devDependencies or peerDependencies), or in
@@ -108,6 +109,33 @@ export function violations(
   return out;
 }
 
+/**
+ * Every dependency cycle among the workspace packages, one member chain each
+ * (`@oa/a -> @oa/b -> @oa/a`). A devDependency can close one that pnpm's
+ * `--filter ...[base]` then cannot order; today there are none (#1368).
+ */
+export function cycles(pkgs: Pkg[]): string[] {
+  const names = new Set(pkgs.map((p) => p.name));
+  const edges = new Map(
+    pkgs.map(
+      (p) => [p.name, [...p.deps].filter((d) => names.has(d)).sort()] as const,
+    ),
+  );
+  const out: string[] = [];
+  // Only walk cycles whose smallest member is the walk's start: every cycle has
+  // one, so each is reported once, from a fixed member, whatever order pnpm
+  // lists the packages in.
+  const walk = (start: string, node: string, path: string[]): void => {
+    for (const next of edges.get(node) ?? []) {
+      if (next === start) out.push([...path, start].join(" -> "));
+      else if (next > start && !path.includes(next))
+        walk(start, next, [...path, next]);
+    }
+  };
+  for (const name of [...names].sort()) walk(name, name, [name]);
+  return out;
+}
+
 /** "all" when a change can reach packages pnpm can't see; else "affected". */
 export const scope = (changed: string[]): "all" | "affected" =>
   changed.some(
@@ -141,6 +169,11 @@ function main(argv: string[]): number {
       );
     return v.length ? 1 : 0;
   }
+  if (cmd === "cycles") {
+    const found = cycles(workspace(root));
+    for (const c of found) console.error(c);
+    return found.length ? 1 : 0;
+  }
   if (cmd === "scope" && base) {
     const changed = git(root, ["diff", "--name-only", `${base}...HEAD`])
       .split("\n")
@@ -148,7 +181,9 @@ function main(argv: string[]): number {
     console.log(scope(changed));
     return 0;
   }
-  console.error("usage: workspace-imports.ts check | scope <base sha>");
+  console.error(
+    "usage: workspace-imports.ts check | scope <base sha> | cycles",
+  );
   return 2;
 }
 

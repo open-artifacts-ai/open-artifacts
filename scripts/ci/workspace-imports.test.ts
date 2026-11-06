@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { root, sandbox, script } from "./stubs.ts";
 import {
+  cycles,
   ownerOf,
   type Pkg,
   ROOT_PATHS,
@@ -31,6 +32,9 @@ describe("every cross-package import in the repo is declared", () => {
     expect(v.map((x) => `${x.file}: ${x.spec} (declare ${x.missing})`)).toEqual(
       [],
     );
+  });
+  it("has no workspace dependency cycle", () => {
+    expect(cycles(workspace(root))).toEqual([]);
   });
 });
 
@@ -77,6 +81,52 @@ describe("violations", () => {
     expect(ownerOf(p, "apps/server-ext/a.ts")?.name).toBe("@oa/x");
     expect(ownerOf(p, "apps/server/a.ts")?.name).toBe("@oa/server");
     expect(ownerOf(p, "design/a.html")).toBeUndefined();
+  });
+});
+
+describe("cycles", () => {
+  const chain = (...names: string[]) => names.join(" -> ");
+  it("a two-node cycle, reported once, from the same member", () => {
+    const p = [
+      pkg("packages/a", "@oa/a", ["@oa/b"]),
+      pkg("packages/b", "@oa/b", ["@oa/a"]),
+    ];
+    expect(cycles(p)).toEqual([chain("@oa/a", "@oa/b", "@oa/a")]);
+    expect(cycles([...p].reverse())).toEqual([
+      chain("@oa/a", "@oa/b", "@oa/a"),
+    ]);
+  });
+  it("a three-node cycle names every member", () => {
+    expect(
+      cycles([
+        pkg("packages/a", "@oa/a", ["@oa/b"]),
+        pkg("packages/b", "@oa/b", ["@oa/c"]),
+        pkg("packages/c", "@oa/c", ["@oa/a"]),
+      ]),
+    ).toEqual([chain("@oa/a", "@oa/b", "@oa/c", "@oa/a")]);
+  });
+  it("a self-dependency is a cycle", () => {
+    expect(cycles([pkg("packages/a", "@oa/a", ["@oa/a"])])).toEqual([
+      chain("@oa/a", "@oa/a"),
+    ]);
+  });
+  it("an acyclic graph has none, and so does a dependency outside the workspace", () => {
+    expect(
+      cycles([
+        pkg("apps/server", "@oa/server", ["@oa/shared", "zod", "@types/node"]),
+        pkg("packages/shared", "@oa/shared", ["@oa/server-utils"]),
+        pkg("packages/server-utils", "@oa/server-utils"),
+      ]),
+    ).toEqual([]);
+  });
+  it("reports every cycle in the same graph, one per line, in a fixed order", () => {
+    expect(
+      cycles([
+        pkg("packages/a", "@oa/a", ["@oa/b"]),
+        pkg("packages/b", "@oa/b", ["@oa/a"]),
+        pkg("packages/c", "@oa/c", ["@oa/c"]),
+      ]),
+    ).toEqual([chain("@oa/a", "@oa/b", "@oa/a"), chain("@oa/c", "@oa/c")]);
   });
 });
 
