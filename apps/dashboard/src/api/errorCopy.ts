@@ -32,6 +32,7 @@ const COPY: Partial<Record<ErrorCode, string>> = {
 
 /** Billing's wording; `owner` swaps "ask your instance owner" for the action. */
 const ASK = "Ask your instance owner";
+const TEAM_FEATURE = "Spaces are a team feature";
 const PLAN_LIMIT_NOUN: Record<string, string> = {
   storage_bytes: "storage",
   data_docs: "live-data documents per artifact",
@@ -46,11 +47,12 @@ const planCopy = (
   const d = e.details as { reason?: unknown; limit?: unknown; max?: unknown };
   switch (e.code) {
     case "plan_required":
+      // Sharing is free on every plan: plan_required is spaces and invites.
       if (owner && trialNeverRan)
-        return "This needs a team plan. Invite someone to start your free 14-day trial, or choose a plan.";
+        return `${TEAM_FEATURE}. Invite someone to start your free 14-day trial, or choose a plan.`;
       return owner
-        ? "This needs a paid plan. Choose a plan to continue."
-        : `This needs a paid plan. ${ASK} to choose one.`;
+        ? `${TEAM_FEATURE}. Choose a plan to continue.`
+        : `${TEAM_FEATURE}. This instance is on Free. Ask an owner to invite someone or choose a plan.`;
     case "plan_read_only":
       switch (d?.reason) {
         case "trial_ended":
@@ -63,7 +65,7 @@ const planCopy = (
             ? "This instance is read-only until billing is sorted out. Update billing to fix it."
             : `This instance is read-only until billing is sorted out. ${ASK}.`;
         case "billing_unreachable":
-          return "Team features are read-only while we restore billing. Nothing has been deleted.";
+          return "Team features are read-only while we restore billing. Reading and sharing still work. Nothing has been deleted.";
         case "suspended":
           return owner
             ? "This instance is suspended. Email support."

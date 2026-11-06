@@ -327,8 +327,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
  * to free (under any lock PATCH members refuses only a promotion or a
  * reactivation: services/members.ts patchMember). The first invite on a
  * free instance whose trial never ran passes
- * and starts the trial. Artifact writes in shared spaces, shares, moves and
- * transfers are refused per artifact (policy can, putShare).
+ * and starts the trial. Artifact writes in shared spaces, moves and
+ * transfers are refused per artifact (policy can). Sharing (share, unshare,
+ * visibility) is free on every plan and is never listed or refused.
  */
 export const TEAM_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/v1/members",

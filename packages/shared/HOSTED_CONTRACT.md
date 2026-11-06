@@ -377,13 +377,15 @@ count.
 
 Under free or read-only: everyone but the org owner is read-only (`Me.auth.cap`
 `"plan"`, `readOnly: true`; reads are kept, agents can't connect); the owner
-keeps their personal artifacts and loses the team features: invites, shares
-to others, shared spaces (create, settings, members, mappings, publishing and
+keeps their personal artifacts and loses the team features: invites, shared spaces (create, settings, members, mappings, publishing and
 writing in them), moves and transfers, directory connect, sync now, a held
 group's confirm and restricted groups, and (free only) a promotion or a
 reactivation through `PATCH R.member` (a demotion passes). While
-read-only, anonymous live-data writes stop too. Removals (a member, a share,
-a demotion while read-only) always pass. Nothing is ever deleted. The plan
+read-only, anonymous live-data writes stop too. Sharing is free on every plan
+and under every lock: sharing an artifact, unsharing it and changing its
+visibility always pass, for the owner and for a plan-capped member on their
+own artifacts (a mechanism to make OA viral). Removals (a member, a
+demotion while read-only) always pass. Nothing is ever deleted. The plan
 cap hides the trash (as any cap does).
 
 The owner and admins can always pay and see their instance: the billing

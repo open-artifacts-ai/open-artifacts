@@ -135,8 +135,8 @@ it.each([
   ],
   [
     "billing_unreachable",
-    "Team features are read-only while we restore billing. Nothing has been deleted.",
-    "Team features are read-only while we restore billing. Nothing has been deleted.",
+    "Team features are read-only while we restore billing. Reading and sharing still work. Nothing has been deleted.",
+    "Team features are read-only while we restore billing. Reading and sharing still work. Nothing has been deleted.",
   ],
   [
     undefined,
@@ -152,13 +152,13 @@ it.each([
 it("plan_required before a trial ever ran offers the trial", () => {
   const e = planErr("plan_required", reason("solo"));
   expect(errorCopy(e, "x", { owner: true, trialNeverRan: true })).toBe(
-    "This needs a team plan. Invite someone to start your free 14-day trial, or choose a plan.",
+    "Spaces are a team feature. Invite someone to start your free 14-day trial, or choose a plan.",
   );
   expect(errorCopy(e, "x", { owner: true, trialNeverRan: false })).toBe(
-    "This needs a paid plan. Choose a plan to continue.",
+    "Spaces are a team feature. Choose a plan to continue.",
   );
   expect(errorCopy(e, "x", { trialNeverRan: true })).toBe(
-    "This needs a paid plan. Ask your instance owner to choose one.",
+    "Spaces are a team feature. This instance is on Free. Ask an owner to invite someone or choose a plan.",
   );
 });
 
@@ -183,10 +183,10 @@ it("errorContext gives admins the owner wording and the trial state", () => {
 it("plan_required", () => {
   const e = planErr("plan_required", reason("solo"));
   expect(errorCopy(e, "x")).toBe(
-    "This needs a paid plan. Ask your instance owner to choose one.",
+    "Spaces are a team feature. This instance is on Free. Ask an owner to invite someone or choose a plan.",
   );
   expect(errorCopy(e, "x", { owner: true })).toBe(
-    "This needs a paid plan. Choose a plan to continue.",
+    "Spaces are a team feature. Choose a plan to continue.",
   );
 });
 
