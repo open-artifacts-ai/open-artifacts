@@ -521,6 +521,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^5.20261018.1
         version: 5.20261018.1
+      '@oa/server':
+        specifier: workspace:*
+        version: link:../server
       '@types/node':
         specifier: ^20.19.43
         version: 20.19.43
@@ -597,9 +600,6 @@ importers:
       '@oa/runtime':
         specifier: workspace:*
         version: link:../../packages/runtime
-      '@oa/scheduler':
-        specifier: workspace:*
-        version: link:../scheduler
       '@types/node':
         specifier: ^20.19.43
         version: 20.19.43
