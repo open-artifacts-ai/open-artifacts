@@ -191,7 +191,10 @@ export function mountComments(app: AppType): void {
       who.kind === "guest" && named !== undefined
         ? { ...who, name: named }
         : who;
-    const t = await addThread(c.env, artifact, w, viewer, raw.data);
+    const t = await addThread(c.env, artifact, w, viewer, raw.data, {
+      version: artifact.currentVersion,
+      ctx: execCtx(c),
+    });
     return withAnon(issued, c.json(t, 201));
   });
 
@@ -211,7 +214,10 @@ export function mountComments(app: AppType): void {
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }
         : who;
-    const out = await addReply(c.env, id, threadId, w, viewer, raw.data.body);
+    const out = await addReply(c.env, id, threadId, w, viewer, raw.data.body, {
+      version: artifact.currentVersion,
+      ctx: execCtx(c),
+    });
     return withAnon(issued, c.json(out, 201));
   });
 
@@ -292,6 +298,17 @@ export function mountComments(app: AppType): void {
     return c.body(null, 204);
   });
 }
+
+/** The request's execution context, when the runtime has one (tests may not). */
+const execCtx = (
+  c: Context<AppEnv>,
+): Pick<ExecutionContext, "waitUntil"> | undefined => {
+  try {
+    return c.executionCtx;
+  } catch {
+    return undefined;
+  }
+};
 
 /** Whether the caller's level may delete anyone's comment. */
 const modOf = (

@@ -5,6 +5,7 @@ import {
   pinAnchorSchema,
   textAnchorSchema,
 } from "./anchor.js";
+import { IdSchema } from "./schemas.js";
 
 // Comments REST contract (#682): /api/v1/artifacts/:id/comments. The shell and
 // the MSW mocks build against these; the Backend implements the same shapes.
@@ -196,3 +197,27 @@ export const ArtifactAgentSchema = z.object({
   online: z.boolean(),
 });
 export type ArtifactAgent = z.infer<typeof ArtifactAgentSchema>;
+
+/** MCP list_comments. Bounded like REST: at most 500 threads, 200 replies each (`truncated`). */
+export const ListCommentsInputSchema = z.strictObject({
+  id: IdSchema,
+  status: z.enum(["open", "resolved", "all"]).optional(),
+});
+export type ListCommentsInput = z.infer<typeof ListCommentsInputSchema>;
+
+/** MCP add_comment: a reply when `threadId` is given, else a new thread (anchor defaults to a note on the whole artifact). */
+export const AddCommentInputSchema = z.strictObject({
+  id: IdSchema,
+  body: z.string(),
+  threadId: IdSchema.optional(),
+  anchor: anchorInputSchema.optional(),
+});
+export type AddCommentInput = z.infer<typeof AddCommentInputSchema>;
+
+/** MCP resolve_comment: `resolved` false reopens the thread. */
+export const ResolveCommentInputSchema = z.strictObject({
+  id: IdSchema,
+  threadId: IdSchema,
+  resolved: z.boolean().optional(),
+});
+export type ResolveCommentInput = z.infer<typeof ResolveCommentInputSchema>;

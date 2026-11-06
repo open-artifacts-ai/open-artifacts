@@ -30,6 +30,7 @@ import {
   type CommentStatus,
   cleanGuestName,
 } from "./comment-rules.js";
+import { inBackground, notifyCommented } from "./follows.js";
 import { effectiveName } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -309,6 +310,32 @@ export async function listComments(
 
 // ------------------------------------------------------------------- writes
 
+/** Where a new comment's `comment` notice goes: after the response when there is a ctx. */
+export type Announce = {
+  /** The artifact's current version, named in the notice. */
+  version: number;
+  ctx?: Pick<ExecutionContext, "waitUntil">;
+};
+
+/** Followers hear of a new comment (once, never the author's own agents); never throws. */
+const announce = (
+  env: Env,
+  artifactId: string,
+  who: CommentWho,
+  after: Announce | undefined,
+) =>
+  after
+    ? inBackground(
+        after.ctx,
+        notifyCommented(
+          env,
+          artifactId,
+          after.version,
+          who.kind === "user" ? who.id : null,
+        ),
+      )
+    : undefined;
+
 /** A new thread: `raw` is the anchor as posted, `body` the first comment. 201 Thread. */
 export async function addThread(
   env: Env,
@@ -316,6 +343,7 @@ export async function addThread(
   who: CommentWho,
   viewer: CommentViewer,
   raw: { anchor: unknown; body: unknown },
+  after?: Announce,
 ): Promise<Thread> {
   const body = checkBody(raw.body);
   // The limit comes before any file is read, and a refused quote counts.
@@ -336,6 +364,7 @@ export async function addThread(
       body,
     }),
   );
+  await announce(env, a.id, who, after);
   return (await threadViews(env, [t], viewer))[0] as Thread;
 }
 
@@ -347,6 +376,7 @@ export async function addReply(
   who: CommentWho,
   viewer: CommentViewer,
   body: unknown,
+  after?: Announce,
 ): Promise<Comment> {
   const text = checkBody(body);
   const c = await call(() =>
@@ -357,6 +387,7 @@ export async function addReply(
       body: text,
     }),
   );
+  await announce(env, artifactId, who, after);
   return commentView(env, c, viewer);
 }
 
