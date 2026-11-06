@@ -8,11 +8,13 @@ import { FETCH_MS, LEO } from "../targets";
 // signs in, creates, or changes anything.
 
 const get = (path: string) =>
-  sendRead("GET", () =>
-    fetch(`${LEO}${path}`, {
-      redirect: "manual",
-      signal: AbortSignal.timeout(FETCH_MS),
-    }),
+  sendRead(
+    "GET",
+    () =>
+      fetch(`${LEO}${path}`, {
+        redirect: "manual",
+        signal: AbortSignal.timeout(FETCH_MS),
+      }),
     { route: path },
   );
 

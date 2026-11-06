@@ -124,29 +124,33 @@ export const api = (
   path: string,
   init: RequestInit = {},
 ) =>
-  sendRead(init.method, () =>
-    fetch(`${A.app}${path}`, {
-      ...init,
-      redirect: "manual",
-      headers: {
-        cookie: `${COOKIE}=${p.cookie}`,
-        "x-oa-request": "1",
-        ...(init.body ? { "content-type": "application/json" } : {}),
-        ...init.headers,
-      },
-      signal: AbortSignal.timeout(FETCH_MS),
-    }),
+  sendRead(
+    init.method,
+    () =>
+      fetch(`${A.app}${path}`, {
+        ...init,
+        redirect: "manual",
+        headers: {
+          cookie: `${COOKIE}=${p.cookie}`,
+          "x-oa-request": "1",
+          ...(init.body ? { "content-type": "application/json" } : {}),
+          ...init.headers,
+        },
+        signal: AbortSignal.timeout(FETCH_MS),
+      }),
     { route: path },
   );
 
 /** An anonymous call to rl-a, bounded; a GET with no response is sent again. */
 export const anon = (path: string, init: RequestInit = {}) =>
-  sendRead(init.method, () =>
-    fetch(`${A.app}${path}`, {
-      ...init,
-      redirect: "manual",
-      signal: AbortSignal.timeout(FETCH_MS),
-    }),
+  sendRead(
+    init.method,
+    () =>
+      fetch(`${A.app}${path}`, {
+        ...init,
+        redirect: "manual",
+        signal: AbortSignal.timeout(FETCH_MS),
+      }),
     { route: path },
   );
 

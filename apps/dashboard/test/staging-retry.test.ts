@@ -21,9 +21,11 @@ describe("sendRead", () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
-  it("a GET gives up after the bounded tries and throws the last error", async () => {
+  it("a GET gives up after the bounded tries and throws infra naming it", async () => {
     const send = vi.fn<() => Promise<Response>>().mockRejectedValue(reset());
-    await expect(sendRead("GET", send, noWait)).rejects.toThrow("fetch failed");
+    await expect(sendRead("GET", send, noWait)).rejects.toThrow(
+      "infra: no_response ECONNRESET",
+    );
     expect(send).toHaveBeenCalledTimes(3);
   });
 
@@ -32,7 +34,7 @@ describe("sendRead", () => {
     async (method) => {
       const send = vi.fn<() => Promise<Response>>().mockRejectedValue(reset());
       await expect(sendRead(method, send, noWait)).rejects.toThrow(
-        "fetch failed",
+        "infra: no_response ECONNRESET",
       );
       expect(send).toHaveBeenCalledTimes(1);
     },
