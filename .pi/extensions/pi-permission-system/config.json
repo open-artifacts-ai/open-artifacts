@@ -553,14 +553,6 @@
         "action": "deny",
         "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
       },
-      "git worktree add* -?f*": {
-        "action": "deny",
-        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
-      },
-      "git worktree add* -??f*": {
-        "action": "deny",
-        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
-      },
       "git worktree add*\"*": {
         "action": "deny",
         "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
@@ -594,6 +586,10 @@
         "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
       },
       "git worktree add* -B*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add* -q*": {
         "action": "deny",
         "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
       }
