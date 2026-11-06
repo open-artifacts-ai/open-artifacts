@@ -20,8 +20,61 @@ import {
 } from "../../api/comments";
 import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
-import { numbering } from "./model";
+import { pinNumbering } from "./model";
 import { type CommentsApi, useCommentsApi } from "./useComments";
+
+const touch = () =>
+  typeof window !== "undefined" &&
+  window.matchMedia?.("(pointer: coarse)").matches === true;
+
+/** "Click to place a pin" on a pointer device, "Tap to place a pin" on touch. */
+export const pinHint = () =>
+  touch() ? "Tap to place a pin" : "Click to place a pin";
+
+/** Select and Pin tools for images and pdf pages (#1490). */
+function Tools({ api }: { api: CommentsApi }) {
+  if (!api.pinFormat || !api.canComment) return null;
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex gap-2">
+        <Button
+          size="xs"
+          variant={api.mode === "select" ? "default" : "outline"}
+          aria-pressed={api.mode === "select"}
+          onClick={() => api.setMode("select")}
+        >
+          Select
+        </Button>
+        <Button
+          size="xs"
+          variant={api.mode === "pin" ? "default" : "outline"}
+          aria-pressed={api.mode === "pin"}
+          onClick={() => api.setMode("pin")}
+        >
+          Pin
+        </Button>
+      </div>
+      {api.mode === "pin" && <p className={`${TXT} ${MUTED}`}>{pinHint()}</p>}
+    </div>
+  );
+}
+
+/** Over the page while placing a pin when the list is a sheet that closed. */
+export function PinBar() {
+  const api = useCommentsApi();
+  if (api.mode !== "pin") return null;
+  return (
+    <div
+      role="status"
+      className="fixed bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-card px-3 py-1 shadow-md"
+    >
+      <span className={TXT}>{pinHint()}</span>
+      <Button size="xs" variant="ghost" onClick={() => api.setMode("select")}>
+        Select
+      </Button>
+    </div>
+  );
+}
 
 const MUTED = "text-muted-foreground";
 
@@ -314,11 +367,23 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
   if (a.kind === "note")
     return <p className={`${TXT} font-medium ${MUTED}`}>Whole page</p>;
   if (a.kind === "pin") {
-    const n = numbering(api.threads).get(t.id) ?? 1;
+    const n = pinNumbering(api.threads).get(t.id) ?? 1;
+    // Only when both hashes are known and differ (the pdf's covers the whole file).
+    const changed =
+      api.contentHash !== null && a.contentHash !== api.contentHash;
     return (
-      <p className={`${TXT} font-medium ${MUTED}`}>
-        {a.page ? `Page ${a.page} · ` : ""}Pin {n}
-      </p>
+      <div className="flex flex-col gap-1">
+        <p className={`${TXT} font-medium ${MUTED}`}>
+          {a.page ? `Page ${a.page} · ` : ""}Pin {n}
+        </p>
+        {changed && api.pinFormat && (
+          <p className={`${TXT} ${MUTED}`}>
+            {api.pinFormat === "image"
+              ? "The image changed since this was placed."
+              : "This page changed since this was placed."}
+          </p>
+        )}
+      </div>
     );
   }
   const where = a.block?.page
@@ -378,7 +443,11 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         <button
           type="button"
           className="cursor-pointer border-0 bg-transparent p-0 text-left"
-          aria-label={`Show in page: ${t.anchor.kind === "text" ? t.anchor.exact : "comment"}`}
+          aria-label={
+            t.anchor.kind === "pin"
+              ? `Show pin ${pinNumbering(api.threads).get(t.id) ?? 1} in page`
+              : `Show in page: ${t.anchor.kind === "text" ? t.anchor.exact : "comment"}`
+          }
           aria-pressed={isActive}
           onClick={() => api.select(t.id, true)}
         >
@@ -495,11 +564,17 @@ function NewThread({ api }: { api: CommentsApi }) {
           You're commenting on version {api.version}.
         </p>
       )}
-      <blockquote
-        className={`border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED} line-clamp-3 break-words`}
-      >
-        {draft.anchor.exact}
-      </blockquote>
+      {"pin" in draft ? (
+        <p className={`${TXT} font-medium ${MUTED}`}>
+          {draft.pin.page ? `Page ${draft.pin.page} · ` : ""}New pin
+        </p>
+      ) : (
+        <blockquote
+          className={`border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED} line-clamp-3 break-words`}
+        >
+          {draft.anchor.exact}
+        </blockquote>
+      )}
       <GuestName api={api} />
       <Composer
         label="Add a comment"
@@ -511,7 +586,10 @@ function NewThread({ api }: { api: CommentsApi }) {
         onSubmit={async (body) => {
           last.current = body;
           await create.mutateAsync({
-            anchor: { ...draft.anchor, kind: "text", version: api.version },
+            anchor:
+              "pin" in draft
+                ? { kind: "pin", version: api.version, ...draft.pin }
+                : { ...draft.anchor, kind: "text", version: api.version },
             body,
             ...guest,
           });
@@ -594,8 +672,14 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
           </Button>
         )}
       </div>
+      <Tools api={api} />
       {api.draft && api.canComment && (
-        <NewThread key={JSON.stringify(api.draft.anchor)} api={api} />
+        <NewThread
+          key={JSON.stringify(
+            "pin" in api.draft ? api.draft.pin : api.draft.anchor,
+          )}
+          api={api}
+        />
       )}
       {api.canComment ? (
         <NoteComposer api={api} />
@@ -620,9 +704,11 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
         </p>
       ) : none ? (
         <p className={`${TXT} ${MUTED}`}>
-          {textFormat && api.canComment
-            ? "No comments yet. Select text to add one."
-            : "No comments yet."}
+          {api.pinFormat === "image" && api.canComment
+            ? "No comments yet. Place a pin to add one."
+            : textFormat && api.canComment
+              ? "No comments yet. Select text to add one."
+              : "No comments yet."}
         </p>
       ) : (
         <>

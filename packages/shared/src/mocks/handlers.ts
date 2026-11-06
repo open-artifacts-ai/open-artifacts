@@ -441,6 +441,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       files: v.list,
       language: v.language,
       textIndexed: !v.list.some((x) => x.contentType === "application/pdf"),
+      contentHash: `h-${version}-${v.entry.replace(/[^A-Za-z0-9_-]/g, "_")}`,
       format: v.format,
     });
     a.format = v.format;
@@ -611,6 +612,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       err,
       emit: (id, open) => opts.events?.emitComments(id, open),
       rateLimit: opts.commentsRateLimit,
+      contentHash: (id, v) =>
+        versions[id]?.find((x) => x.version === v)?.contentHash,
     }),
     http.get("*/api/v1/me", () => HttpResponse.json(me)),
     http.patch("*/api/v1/me", async ({ request }) => {

@@ -60,7 +60,11 @@ export const anchorInputSchema = z.discriminatedUnion("kind", [
   textAnchorSchema.extend({
     version: textAnchorSchema.shape.version.optional(),
   }),
-  pinAnchorSchema.extend({ version: pinAnchorSchema.shape.version.optional() }),
+  // #1490: the server sets a pin's contentHash itself; a client need not send it.
+  pinAnchorSchema.extend({
+    version: pinAnchorSchema.shape.version.optional(),
+    contentHash: pinAnchorSchema.shape.contentHash.optional(),
+  }),
 ]);
 export type AnchorInput = z.infer<typeof anchorInputSchema>;
 

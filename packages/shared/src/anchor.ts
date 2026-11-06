@@ -36,7 +36,10 @@ export const pinAnchorSchema = z.strictObject({
   page: z.number().int().min(1).optional(),
   x: unit,
   y: unit,
-  contentHash: z.string().min(1).max(ANCHOR_LIMITS.contentHash),
+  contentHash: z
+    .string()
+    .max(ANCHOR_LIMITS.contentHash)
+    .regex(/^[A-Za-z0-9_-]{1,128}$/),
 });
 
 export const anchorSchema = z.discriminatedUnion("kind", [

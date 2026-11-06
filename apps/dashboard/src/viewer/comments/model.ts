@@ -12,7 +12,7 @@ export type FramePosition = {
 };
 export type Positions = ReadonlyMap<string, FramePosition>;
 
-/** Thread numbers by creation order, 1 to 9999: the frame's `n`, and "Pin 3". */
+/** Thread numbers by creation order, 1 to 9999. */
 export function numbering(threads: readonly CommentThread[]) {
   const sorted = [...threads].sort(
     (a, b) =>
@@ -20,6 +20,10 @@ export function numbering(threads: readonly CommentThread[]) {
   );
   return new Map(sorted.map((t, i) => [t.id, Math.min(i + 1, 9999)]));
 }
+
+/** Pin numbers ("Pin 3"): by creation order among pins only, so notes and text don't take one. */
+export const pinNumbering = (threads: readonly CommentThread[]) =>
+  numbering(threads.filter((t) => t.anchor.kind === "pin"));
 
 /**
  * The comments.set payload. Anchors, opaque ids and numbers only: no text, no
@@ -31,6 +35,7 @@ export function frameThreads(
   active: string | null,
 ): Extract<ShellToArtifact, { type: "comments.set" }>["threads"] {
   const n = numbering(threads);
+  const pins = pinNumbering(threads);
   const out: Extract<ShellToArtifact, { type: "comments.set" }>["threads"] = [];
   for (const t of threads) {
     if (t.anchor.kind === "note" || !CommentIdSchema.safeParse(t.id).success)
@@ -38,7 +43,7 @@ export function frameThreads(
     out.push({
       id: t.id,
       anchor: t.anchor,
-      n: n.get(t.id),
+      n: (t.anchor.kind === "pin" ? pins : n).get(t.id),
       ...(t.id === active ? { active: true } : {}),
       ...(t.status === "resolved" ? { resolved: true } : {}),
     });

@@ -297,6 +297,11 @@ export const VersionInfoSchema = z.object({
   textIndexed: z.boolean(),
   /** This version's format (old versions keep theirs after a later publish). */
   format: FormatSchema,
+  /**
+   * sha256 of the entry file, as the URL-safe characters a pin's contentHash
+   * allows (#1490, set by the server). Optional: an older server omits it.
+   */
+  contentHash: z.string().optional(),
 });
 export type VersionInfo = z.infer<typeof VersionInfoSchema>;
 

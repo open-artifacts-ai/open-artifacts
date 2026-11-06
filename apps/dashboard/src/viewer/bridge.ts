@@ -79,6 +79,10 @@ export interface BridgeOptions {
     >["positions"],
   ) => void;
   onCommentOpen?: (id: string) => void;
+  /** A click in pin mode: x and y are 0..1 of the image or page. */
+  onCommentPin?: (
+    pin: Extract<ArtifactToShell, { type: "comment.pin" }>["pin"],
+  ) => void;
 }
 
 /** A document's scroll offset and how far it could scroll. */
@@ -542,6 +546,9 @@ export function createBridge(opts: BridgeOptions) {
         break;
       case "comment.open":
         opts.onCommentOpen?.(m.id);
+        break;
+      case "comment.pin":
+        opts.onCommentPin?.(m.pin);
         break;
     }
   };

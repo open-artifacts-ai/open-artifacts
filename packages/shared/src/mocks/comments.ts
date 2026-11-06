@@ -22,6 +22,8 @@ type Deps = {
   emit: (id: string, open: number) => void;
   /** Every write answers 429 with this Retry-After (seconds). */
   rateLimit?: number;
+  /** The hash of a version's content, which the server stamps on a pin (#1490). */
+  contentHash?: (id: string, version: number) => string | undefined;
 };
 
 const iso = () => new Date().toISOString();
@@ -32,6 +34,7 @@ export function createCommentHandlers({
   err,
   emit,
   rateLimit,
+  contentHash,
 }: Deps): HttpHandler[] {
   const threads = new Map<string, CommentThread[]>();
   const mine = (): CommentAuthor => ({
@@ -163,13 +166,20 @@ export function createCommentHandlers({
       const a = art(params.id) as ArtifactSummary;
       const parsed = anchorInputSchema.safeParse(j.anchor);
       if (!parsed.success) return err("invalid_anchor", "Invalid anchor");
+      const at = parsed.data;
       const anchor =
-        parsed.data.kind === "note"
-          ? parsed.data
-          : {
-              ...parsed.data,
-              version: parsed.data.version ?? a.currentVersion,
-            };
+        at.kind === "note"
+          ? at
+          : at.kind === "pin"
+            ? {
+                ...at,
+                version: at.version ?? a.currentVersion,
+                // The server sets it; whatever a client sent is replaced.
+                contentHash:
+                  contentHash?.(a.id, at.version ?? a.currentVersion) ??
+                  "unknown",
+              }
+            : { ...at, version: at.version ?? a.currentVersion };
       const c = comment(j.body, mine());
       const t: CommentThread = {
         id: newId(),

@@ -93,6 +93,7 @@ const ver = (
   })),
   language,
   textIndexed: contentType !== "application/pdf",
+  contentHash: `h-${version}-${entry.replace(/[^A-Za-z0-9_-]/g, "_")}`,
   format:
     contentType === "text/html"
       ? "html"

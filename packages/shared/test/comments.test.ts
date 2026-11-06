@@ -137,6 +137,8 @@ describe("comment request bodies", () => {
       { ...text, version: 3 },
       pin,
       { ...pin, version: 2, page: 4 },
+      // The server stamps a pin's contentHash (#1490): a client may omit it.
+      { kind: "pin", x: 0.5, y: 0.25 },
     ])
       expect(anchorInputSchema.safeParse(a).success).toBe(true);
   });
@@ -154,6 +156,9 @@ describe("comment request bodies", () => {
       { ...pin, y: -0.1 },
       { ...pin, x: Number.NaN },
       { ...pin, contentHash: "" },
+      { ...pin, contentHash: "a b" },
+      { ...pin, contentHash: "<x>" },
+      { ...pin, contentHash: "h".repeat(129) },
     ])
       expect(anchorInputSchema.safeParse(a).success).toBe(false);
   });

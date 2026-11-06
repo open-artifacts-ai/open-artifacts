@@ -26,7 +26,11 @@ import {
 
 type Bridge = ReturnType<typeof createBridge>;
 
-export type Draft = { anchor: SelectionAnchor } | null;
+export type PinPoint = { x: number; y: number; page?: number };
+/** A comment being started: on selected text, or on a placed pin (the server stamps the pin's contentHash). */
+export type Draft = { anchor: SelectionAnchor } | { pin: PinPoint } | null;
+/** Formats that take pins (#1490); the server refuses them on html. */
+export type PinFormat = "image" | "pdf";
 
 export type CommentsApi = {
   /** Comments are on for this artifact and this viewer isn't an embed. */
@@ -39,6 +43,13 @@ export type CommentsApi = {
   artifactId: string;
   /** The version the viewer shows. */
   version: number;
+  /** The shown version's format when it takes pins, else null. */
+  pinFormat: PinFormat | null;
+  /** The shown version's content hash, when the server gave one. */
+  contentHash: string | null;
+  /** The tool in use; "pin" only where pins are offered and the viewer can comment. */
+  mode: "select" | "pin";
+  setMode: (m: "select" | "pin") => void;
   /** Viewing a pinned older version: the composer says so. */
   older: boolean;
   /** Open threads of the whole artifact. */
@@ -70,6 +81,7 @@ export type CommentsApi = {
     p: { id: string; state: FramePosition["state"]; top: number | null }[],
   ) => void;
   onOpen: (id: string) => void;
+  onPin: (p: PinPoint) => void;
   /** The frame said hello: send it the mode and threads again. */
   resync: () => void;
 };
@@ -98,9 +110,13 @@ export function useCommentsController({
   pinned,
   authed,
   readOnly = false,
+  pinFormat = null,
+  contentHash = null,
   getBridge,
   openSurface,
 }: {
+  pinFormat?: PinFormat | null;
+  contentHash?: string | null;
   /** The address names this version (not following Current). */
   pinned: boolean;
   artifact: ArtifactSummary;
@@ -146,15 +162,30 @@ export function useCommentsController({
   const [hello, setHello] = useState(0);
 
   const mayComment = canComment(artifact, authed, readOnly);
+  const [wantPin, setWantPin] = useState(false);
+  // Pin mode only where pins are offered and the viewer can comment.
+  const mode: "select" | "pin" =
+    wantPin && pinFormat !== null && mayComment ? "pin" : "select";
+  const modeRef = useRef(mode);
+  modeRef.current = mode;
+  // Esc leaves pin mode.
+  useEffect(() => {
+    if (mode !== "pin") return;
+    const k = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setWantPin(false);
+    };
+    window.addEventListener("keydown", k);
+    return () => window.removeEventListener("keydown", k);
+  }, [mode]);
   // The frame's own copy of what to draw: ids and anchors only.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `hello` re-sends after the frame reloads
   useEffect(() => {
     const b = getBridge();
     if (!b) return;
     // `?.`: older test doubles of the bridge have no comment methods.
-    b.setCommentsMode?.(enabled ? (mayComment ? "select" : "view") : "off");
+    b.setCommentsMode?.(enabled ? (mayComment ? mode : "view") : "off");
     if (enabled) b.setComments?.(frameThreads(threads, active));
-  }, [enabled, mayComment, threads, active, hello, getBridge]);
+  }, [enabled, mayComment, mode, threads, active, hello, getBridge]);
 
   const ids = useRef(new Set<string>());
   ids.current = new Set((all ?? []).map((t) => t.id));
@@ -162,6 +193,7 @@ export function useCommentsController({
     select: createGate(5, 1000),
     positions: createGate(20, 1000),
     open: createGate(5, 1000),
+    pin: createGate(5, 1000),
   });
   const dirty = useRef(false);
   const mayRef = useRef(mayComment);
@@ -187,6 +219,17 @@ export function useCommentsController({
     if (draftRef.current && dirty.current) return;
     dirty.current = false;
     setDraft({ anchor });
+    surface.current();
+  }, []);
+  const onPin = useCallback((pin: PinPoint) => {
+    // Page code can send this any time: only a click in pin mode counts, and
+    // only for a viewer who can comment.
+    if (modeRef.current !== "pin" || !mayRef.current) return;
+    if (!gates.current.pin()) return;
+    if (draftRef.current && dirty.current) return;
+    dirty.current = false;
+    setDraft({ pin });
+    setWantPin(false);
     surface.current();
   }, []);
   const onPositions = useCallback<CommentsApi["onPositions"]>((list) => {
@@ -224,6 +267,10 @@ export function useCommentsController({
       guest: !authed,
       artifactId: id,
       version,
+      pinFormat,
+      contentHash,
+      mode,
+      setMode: (m) => setWantPin(m === "pin"),
       older,
       open: q.data?.open ?? 0,
       listedOpen: older
@@ -253,6 +300,7 @@ export function useCommentsController({
       onSelect,
       onPositions,
       onOpen,
+      onPin,
       resync: () => setHello((n) => n + 1),
     }),
     [
@@ -276,9 +324,13 @@ export function useCommentsController({
       draft,
       showResolved,
       guestName,
+      pinFormat,
+      contentHash,
+      mode,
       onSelect,
       onPositions,
       onOpen,
+      onPin,
     ],
   );
 }
