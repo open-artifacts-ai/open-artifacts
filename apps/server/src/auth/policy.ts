@@ -55,7 +55,13 @@ export type PolicyAction =
   | "transfer"
   | "anonId"
   /** MCP data tools on an artifact without the db capability (B14, narrowed). */
-  | "data.seed";
+  | "data.seed"
+  /** #682: read comments: anyone who can view. */
+  | "comments.read"
+  /** #682: comment, reply, resolve and reopen; edit and delete (the handler: one's own, or an editor's). */
+  | "comments.write"
+  /** #682: delete anyone's comment: editors and up. */
+  | "comments.moderate";
 
 export type OrgAction =
   | "space.create"
@@ -316,6 +322,7 @@ const READ: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
   "data.read",
   "events",
   "subscribe",
+  "comments.read",
 ]);
 const EDIT: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
   "version.text",
@@ -357,6 +364,13 @@ export function can(
         return !ctx.anonymous && level !== "viewer";
       // Anonymous callers only reach a level on a public artifact.
       return true;
+    // Anyone who can open it comments (a signed-out caller reaches a level
+    // only on a public artifact), except a capped caller (read-only on the
+    // whole API, readOnlyCap).
+    case "comments.write":
+      return !capped;
+    case "comments.moderate":
+      return !capped && !ctx.anonymous && level !== "viewer";
     case "storage":
       return !capped && !ctx.anonymous;
     case "thumbnail.write":

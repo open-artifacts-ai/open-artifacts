@@ -946,6 +946,71 @@ export const SURFACES: readonly Surface[] = [
       },
     ),
   ),
+  // #682 comments. Writes stop at a request that fails after the access
+  // rules: no body (POST) or a malformed id (400 bad_request), so nothing is
+  // written.
+  rest(
+    "comments list",
+    "comments.read",
+    [`GET ${ARTS}/comments`],
+    read((id) => `${A(id)}/comments`, 200),
+  ),
+  rest(
+    "comments post",
+    "comments.write",
+    [`POST ${ARTS}/comments`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments`,
+      () => ({ body: {} }),
+      // An empty body fails its anchor first: invalid_anchor, still a 400.
+      (r) => r.status === 400,
+    ),
+  ),
+  rest(
+    "comments thread status",
+    "comments.write",
+    [`PATCH ${ARTS}/comments/:threadId`],
+    exact(
+      "PATCH",
+      (id) => `${A(id)}/comments/${BAD}`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "comments reply",
+    "comments.write",
+    [`POST ${ARTS}/comments/:threadId/replies`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments/${BAD}/replies`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "comments edit",
+    "comments.write",
+    [`PATCH ${ARTS}/comments/:threadId/comments/:commentId`],
+    exact(
+      "PATCH",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "comments delete",
+    "comments.write",
+    [`DELETE ${ARTS}/comments/:threadId/comments/:commentId`],
+    exact(
+      "DELETE",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}`,
+      () => ({}),
+      badRequest,
+    ),
+  ),
   rest(
     "anon id",
     "anonId",

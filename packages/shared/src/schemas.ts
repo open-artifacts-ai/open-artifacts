@@ -152,6 +152,8 @@ const PublishShape = z.strictObject({
   dataWriters: DataWritersSchema.optional(),
   /** Deprecated (#681): true means dataWriters "viewers"; false, "editors" on a public artifact. */
   allowAnonymousWrites: z.boolean().optional(),
+  /** #682: switch the built-in comments layer on or off (owner and managers). */
+  comments: z.boolean().optional(),
   /**
    * Hosted M1: the space to create the artifact in (default: the caller's
    * personal space). Create only: with the id of an existing artifact it is
