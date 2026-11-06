@@ -25,6 +25,7 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { logError } from "../log.js";
+import { lookupUserGrant } from "../mcp/oauth-api.js";
 import { b64urlEncode, sha256Hex } from "../util/crypto.js";
 import { type Via, viaKey } from "./agent-usage.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
@@ -134,6 +135,13 @@ export type BusHubRpc = {
     tokenHash: string,
     decision: "confirm" | "reject",
   ): Promise<DecideResult>;
+  /** #1403: the credentials and machines behind the pending proposals. */
+  pendingProposalSources(): Promise<{
+    credentials: string[];
+    machines: string[];
+  }>;
+  /** #1403: expires a machine's pending link proposals. */
+  expireLinkProposalsOf(machineId: string): Promise<void>;
   /** #1403: expires the pending role proposals a PAT or OAuth grant made (`t:<id>` / `g:<id>`). */
   expireRoleProposalsOf(credential: string): Promise<ProposalAudit[]>;
   /** #1372: the newest role proposals. */
@@ -618,6 +626,7 @@ export async function viewBusLinkProposal(
   if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
   const hub = busHub(env, userId);
   if (!hub) return null;
+  await sweepRevokedProposers(env, userId, hub);
   return linkCall(hub.viewLinkProposal(await sha256Hex(secret)));
 }
 
@@ -631,6 +640,7 @@ export async function decideBusLinkProposal(
   if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
   const hub = busHub(env, userId);
   if (!hub) return null;
+  await sweepRevokedProposers(env, userId, hub);
   return linkCall(hub.decideLinkProposal(await sha256Hex(secret), decision));
 }
 
@@ -708,22 +718,88 @@ export async function expireBusRoleProposalsOf(
   userId: string,
   via: Via,
 ): Promise<void> {
-  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return;
-  const hub = busHub(env, userId);
-  if (!hub) return;
   try {
-    const expired = await roleCall(hub.expireRoleProposalsOf(viaKey(via)));
-    if (expired.length === 0) return;
-    const system: AuditActor = { kind: "system", id: null };
-    await env.DB.batch(
-      expired.map((a) =>
-        audit(env, "bus.role.expired", auditTarget(userId), system, {
-          detail: detailOf(a, "credential_revoked"),
-        }),
-      ),
-    );
+    if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return;
+    const hub = busHub(env, userId);
+    if (!hub) return;
+    await expireCredential(env, userId, hub, viaKey(via));
   } catch (e) {
     logError("bus_credential_expire_failed", e);
+  }
+}
+
+/** Expires `credential`'s pending role proposals in `hub` and audits each (system actor, credential_revoked). */
+async function expireCredential(
+  env: Env,
+  userId: string,
+  hub: BusHubRpc,
+  credential: string,
+): Promise<void> {
+  const expired = await roleCall(hub.expireRoleProposalsOf(credential));
+  if (expired.length === 0) return;
+  const system: AuditActor = { kind: "system", id: null };
+  await env.DB.batch(
+    expired.map((a) =>
+      audit(env, "bus.role.expired", auditTarget(userId), system, {
+        detail: detailOf(a, "credential_revoked"),
+      }),
+    ),
+  );
+}
+
+/** Whether the credential (`t:<id>` PAT or `g:<id>` OAuth grant) of member `userId` is gone or revoked. */
+async function credentialGone(
+  env: Env,
+  userId: string,
+  credential: string,
+): Promise<boolean> {
+  const id = credential.slice(2);
+  if (credential.startsWith("t:")) {
+    const row = await stmt(
+      env.DB,
+      "select revoked_at as revokedAt from tokens where id = ?1 and user_id = ?2",
+    )
+      .bind(id, userId)
+      .first<{ revokedAt: number | null }>();
+    return row === null || row.revokedAt !== null;
+  }
+  if (credential.startsWith("g:"))
+    return (await lookupUserGrant(env, userId, id)) === null;
+  return false;
+}
+
+/**
+ * #1403: before a confirm page shows or decides a proposal, expires the
+ * pending ones whose proposer is gone: a PAT revoked or a grant ended, or a
+ * machine revoked, by any path (a bulk revoke such as an identity reset or a
+ * suspension never calls the per-credential hook, and the member may be
+ * active again inside the TTL). Role expiries are audited
+ * `credential_revoked`; link proposals have no audit rows yet (#1580). Fails
+ * closed: an error is a 500 internal (retry is safe), never a stale link.
+ */
+async function sweepRevokedProposers(
+  env: Env,
+  userId: string,
+  hub: BusHubRpc,
+): Promise<void> {
+  try {
+    const { credentials, machines } = await hub.pendingProposalSources();
+    for (const c of credentials)
+      if (await credentialGone(env, userId, c))
+        await expireCredential(env, userId, hub, c);
+    for (const m of machines) {
+      const row = await stmt(
+        env.DB,
+        "select revoked_at as revokedAt from bus_machines where id = ?1 and user_id = ?2",
+      )
+        .bind(m, userId)
+        .first<{ revokedAt: number | null }>();
+      if (row === null || row.revokedAt !== null)
+        await hub.expireLinkProposalsOf(m);
+    }
+  } catch (e) {
+    logError("bus_proposal_sweep_failed", e);
+    throw new ApiError("internal", "The bus could not be reached. Try again.");
   }
 }
 
@@ -829,6 +905,7 @@ export async function viewBusRoleProposal(
   if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
   const hub = busHub(env, userId);
   if (!hub) return null;
+  await sweepRevokedProposers(env, userId, hub);
   const r = await roleCall(hub.viewRoleProposal(await sha256Hex(secret)));
   await auditExpired(env, userId, r.expired);
   return r;
@@ -850,6 +927,7 @@ export async function decideBusRoleProposal(
   if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
   const hub = busHub(env, userId);
   if (!hub) return null;
+  await sweepRevokedProposers(env, userId, hub);
   const r = await roleCall(
     hub.decideRoleProposal(await sha256Hex(secret), decision),
   );

@@ -22,6 +22,7 @@ import { sessionCookieName, signSession } from "../../src/auth/session.js";
 import type { BusHub } from "../../src/bus/hub.js";
 import { ROLE_CONFIRM_SCOPE } from "../../src/bus/role-confirm.js";
 import { formCsrf } from "../../src/http/pages.js";
+import { revokeAllGrants } from "../../src/mcp/oauth-api.js";
 import { sha256Hex } from "../../src/util/crypto.js";
 import { trial } from "../auth-helpers.js";
 import { accessSignIn } from "../fake-access.js";
@@ -1048,6 +1049,75 @@ describe("role proposals: revoking the proposing credential (#1403)", () => {
         (r) => r.action === "bus.role.expired",
       ),
     ).toHaveLength(1);
+    d.close();
+  });
+
+  it("a bulk revoke that never calls the hook (identity reset, suspend) still ends its links: checked at view and confirm", async () => {
+    const { who, d } = await withBus();
+    const n = ns("rp");
+    const alice = await open(who.userId, d, n);
+    const a = await createPat(env, who.userId, "a");
+    const b = await createPat(env, who.userId, "b");
+    const mk = async (token: string, name: string) =>
+      proposed(
+        await propose(token, {
+          action: "set",
+          namespace: n,
+          name,
+          agent: alice.name,
+        }),
+      );
+    const viaPat = await mk(a.token, "lead-a");
+    const viaPat2 = await mk(a.token, "lead-a2");
+    const keep = await mk(b.token, "lead-b");
+    // What resetIdentity and setUserStatus do: tokens revoked in D1, the
+    // member stays (or becomes again) active; no hook runs.
+    await env.DB.prepare("update tokens set revoked_at = ? where id = ?")
+      .bind(Date.now(), a.id)
+      .run();
+    // The page that loads the link refuses, and the proposal is spent.
+    expect((await get(viaPat.secret, { cookie: who.cookie })).status).toBe(410);
+    const dead = await post(viaPat2.secret, { cookie: who.cookie }, [
+      ["csrf", await forgedCsrf(who.userId, viaPat2.secret)],
+      ["decision", "confirm"],
+    ]);
+    expect(dead.status).toBe(410);
+    expect(await roles(who.userId)).toEqual([]);
+    const byName = Object.fromEntries(
+      (await proposals(who.userId)).map((p) => [p.name, p.status]),
+    );
+    expect(byName).toEqual({
+      "lead-a": "expired",
+      "lead-a2": "expired",
+      "lead-b": "pending",
+    });
+    const rows = (await auditRows(who.userId)).filter(
+      (r) => r.action === "bus.role.expired",
+    );
+    expect(rows.map((r) => JSON.parse(r.detail).why)).toEqual([
+      "credential_revoked",
+      "credential_revoked",
+    ]);
+    expect((await confirmInBrowser(who.cookie, keep.secret)).status).toBe(200);
+    d.close();
+  });
+
+  it("a bulk OAuth grant revoke (revokeAllGrants) ends the grant's links too", async () => {
+    const { who, d } = await withBus();
+    const n = ns("rp");
+    const alice = await open(who.userId, d, n);
+    const { accessToken } = await oauthToken("", "Agent", who);
+    const p = proposed(
+      await propose(accessToken, {
+        action: "set",
+        namespace: n,
+        name: "lead",
+        agent: alice.name,
+      }),
+    );
+    await revokeAllGrants(env, who.userId);
+    expect((await get(p.secret, { cookie: who.cookie })).status).toBe(410);
+    expect((await proposals(who.userId))[0]?.status).toBe("expired");
     d.close();
   });
 

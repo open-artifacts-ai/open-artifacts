@@ -533,6 +533,52 @@ describe("link proposals: revoking the machine (#1403)", () => {
   });
 });
 
+describe("link proposals: a machine revoked in bulk (#1403)", () => {
+  it("members.ts/identity.ts revoke machines in D1 without the hub: the link still refuses at view and confirm, and other machines' links work", async () => {
+    const { userId, cookie, d, machineToken, machineId } = await withBus();
+    const other = await machine("Other", userId);
+    const od = await daemon(other.token);
+    od.send({
+      v: 1,
+      id: "h",
+      type: "hello",
+      machine_label: "Other",
+      client_version: "0.0.0",
+    });
+    await od.next();
+    const mine = await proposed(
+      await propose(machineToken, { action: "link", a: ns("ba"), b: ns("bb") }),
+    );
+    const mine2 = await proposed(
+      await propose(machineToken, { action: "link", a: ns("bc"), b: ns("bd") }),
+    );
+    const theirs = await proposed(
+      await propose(other.token, { action: "link", a: ns("be"), b: ns("bf") }),
+    );
+    await env.DB.prepare("update bus_machines set revoked_at = ? where id = ?")
+      .bind(Date.now(), machineId)
+      .run();
+    expect((await get(mine.secret, { cookie })).status).toBe(410);
+    const dead = await post(mine2.secret, { cookie }, [
+      [
+        "csrf",
+        await formCsrf(
+          env,
+          LINK_CONFIRM_SCOPE,
+          userId,
+          await sha256Hex(mine2.secret),
+        ),
+      ],
+      ["decision", "confirm"],
+    ]);
+    expect(dead.status).toBe(410);
+    expect(await links(userId)).toEqual([]);
+    expect((await confirmInBrowser(cookie, theirs.secret)).status).toBe(200);
+    d.close();
+    od.close();
+  });
+});
+
 describe("link proposals: the secret rides in the URL fragment (#1426)", () => {
   it("fragment -> details -> confirm links, with no secret in any request URL; the machine label shows", async () => {
     const { userId, cookie, d, machineToken } = await withBus();

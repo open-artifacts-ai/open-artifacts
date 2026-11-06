@@ -3231,6 +3231,42 @@ export class BusHub extends DurableObject<Env> {
     );
   }
 
+  /**
+   * #1403: who made the pending proposals: the credentials (`t:<id>` /
+   * `g:<id>`) of role proposals and the machine ids of link proposals, so the
+   * Worker can check them against D1 and the OAuth store (a bulk revoke never
+   * calls the hooks). Worker only.
+   */
+  async pendingProposalSources(): Promise<{
+    credentials: string[];
+    machines: string[];
+  }> {
+    const sql = this.ctx.storage.sql;
+    const col = (q: string) =>
+      sql
+        .exec(q, OWNER_ORG_ID)
+        .toArray()
+        .map((r) => String(Object.values(r)[0]));
+    return {
+      credentials: col(
+        "select distinct credential from role_proposals where org_id = ? and status = 'pending' and credential is not null",
+      ),
+      machines: col(
+        "select distinct machine_id from link_proposals where org_id = ? and status = 'pending'",
+      ),
+    };
+  }
+
+  /** #1403: expires the machine's pending link proposals (a machine revoked in bulk). Worker only. */
+  async expireLinkProposalsOf(machineId: string): Promise<void> {
+    expireLinkProposalsOfMachine(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      machineId,
+      this.#now(),
+    );
+  }
+
   /** #1372: the newest role proposals, for GET R.busRoles; expires the overdue ones first. Worker only. */
   async listRoleProposals(): Promise<{
     proposals: BusRoleProposal[];
