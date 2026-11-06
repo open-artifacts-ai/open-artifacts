@@ -3523,6 +3523,32 @@ export class BusHub extends DurableObject<Env> {
     }
   }
 
+  /**
+   * #1299: when `closing` was the hub's last open daemon socket, removes the
+   * hub's row from the install index (it outlives the index window while
+   * sockets exist). Fails open: a missed `gone` is bounded by closeInstall
+   * (a harmless closeAll on no sockets) and the index's cap.
+   */
+  async #goneFromIndex(closing: WebSocket): Promise<void> {
+    const open = () =>
+      this.ctx
+        .getWebSockets(DAEMON_TAG)
+        .some((w) => w !== closing && w.readyState === OPEN);
+    if (open()) return;
+    const name = this.ctx.id.name;
+    const idx = socketIndexStub(this.env);
+    if (!idx || !name) return;
+    this.#indexedAt = Number.NEGATIVE_INFINITY;
+    try {
+      await idx.gone(name);
+    } catch (e) {
+      logError("socket_index_failed", e);
+      return;
+    }
+    // A socket accepted while `gone` was in flight reported before it landed.
+    if (open()) await this.#reportToIndex();
+  }
+
   override async webSocketMessage(
     ws: WebSocket,
     message: string | ArrayBuffer,
@@ -3878,6 +3904,7 @@ export class BusHub extends DurableObject<Env> {
     if (notDaemon(this.ctx, ws)) return;
     this.#socketGone(ws);
     await this.#commitArm();
+    await this.#goneFromIndex(ws);
   }
 
   override async webSocketError(
@@ -3890,6 +3917,7 @@ export class BusHub extends DurableObject<Env> {
     if (notDaemon(this.ctx, ws)) return;
     this.#socketGone(ws);
     await this.#commitArm();
+    await this.#goneFromIndex(ws);
   }
 
   /**

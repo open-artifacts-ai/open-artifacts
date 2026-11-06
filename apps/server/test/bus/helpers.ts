@@ -18,7 +18,7 @@ import {
   PONG,
   type ServerFrame,
 } from "@oa/bus-protocol";
-import { expect } from "vitest";
+import { afterAll, expect, vi } from "vitest";
 import { type BusHub, busHubName } from "../../src/bus/hub.js";
 import type { Env } from "../../src/env.js";
 import worker from "../../src/index.js";
@@ -121,6 +121,43 @@ export function upgrade(
   );
 }
 
+const opened = new Set<Daemon>();
+
+// #1299: a hub removes its install-index row (`gone`) when its last socket
+// closes. A file that ends with sockets still closing would tear the worker
+// down with that RPC in flight, so close every daemon the file opened and
+// wait for the index to hold no bus rows.
+afterAll(async () => {
+  for (const d of opened)
+    try {
+      d.close();
+    } catch {
+      // Already closed.
+    }
+  await Promise.all([...opened].map((d) => d.closed));
+  opened.clear();
+  const ns = e.USER_PRESENCE;
+  if (!ns) return;
+  const idx = ns.get(ns.idFromName("~install"));
+  await vi
+    .waitFor(
+      async () =>
+        expect(
+          await runInDurableObject(
+            idx,
+            (_i, s: DurableObjectState) =>
+              s.storage.sql
+                .exec<{ n: number }>(
+                  "select count(*) as n from seen where substr(artifact_id, 1, 4) = 'bus:'",
+                )
+                .one().n,
+          ),
+        ).toBe(0),
+      { timeout: 3000 },
+    )
+    .catch(() => {});
+});
+
 /** A daemon socket. Every frame it receives must parse with decodeServerFrame. */
 export async function daemon(
   token: string,
@@ -164,7 +201,7 @@ export async function daemon(
       });
     });
   };
-  return {
+  const d: Daemon = {
     ws,
     raw,
     next,
@@ -172,6 +209,8 @@ export async function daemon(
     close: () => ws.close(1000, "bye"),
     closed,
   };
+  opened.add(d);
+  return d;
 }
 
 /** Consumes frames until one matches `type` (roster broadcasts may interleave). */
