@@ -112,7 +112,11 @@ async function start(hubCaps: string[] | undefined) {
 describe("/clear handover in the daemon", () => {
   it("says hello with the ids and mailbox caps", async () => {
     const { h } = await start(undefined);
-    expect(h.of("hello")[0]?.caps).toEqual([BUS_CAPS.ids, BUS_CAPS.mailbox]);
+    expect(h.of("hello")[0]?.caps).toEqual([
+      BUS_CAPS.ids,
+      BUS_CAPS.mailbox,
+      BUS_CAPS.links,
+    ]);
   });
 
   it("same pid, new session id: agent_up replaces the old ref and keeps its name", async () => {

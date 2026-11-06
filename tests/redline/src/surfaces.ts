@@ -367,6 +367,9 @@ export const INTERACTIVE_ONLY: readonly string[] = [
   // #1372: the role proposal confirm page, the same kind (PUBLIC_ROUTES).
   "GET /bus/roles/confirm/:token",
   "POST /bus/roles/confirm/:token",
+  // #1567: the link confirm page, the same kind (PUBLIC_ROUTES).
+  "GET /bus/links/confirm/:token",
+  "POST /bus/links/confirm/:token",
   // Hosted billing: Checkout, Portal and the usage report open Stripe or
   // reach billing only for a person in a browser session (billing.ts
   // requireBillingManager), so a hook-minted session is 404 here.

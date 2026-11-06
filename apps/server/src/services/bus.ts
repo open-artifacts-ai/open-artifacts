@@ -2,11 +2,18 @@ import {
   BUS_ROLE_PROPOSAL_TTL_MS,
   type BusAgent,
   type BusLink,
+  type BusLinkProposed,
   type BusMachine,
   type BusRole,
   type BusRoleProposal,
   type BusRoleProposeInput,
 } from "@oa/shared";
+import type {
+  LinkDecideResult,
+  LinkProposalAction,
+  LinkProposeResult,
+  LinkViewResult,
+} from "../bus/link-proposals.js";
 import type {
   DecideResult,
   ProposalAudit,
@@ -104,6 +111,19 @@ export type BusHubRpc = {
   >;
   /** #1567: removes a link; false when unknown. */
   deleteLink(id: string): Promise<boolean>;
+  /** #1567: records a link proposal under its link's hash; links nothing. */
+  proposeLink(
+    input: { action: LinkProposalAction; a: string; b: string },
+    machineId: string,
+    tokenHash: string,
+  ): Promise<LinkProposeResult>;
+  /** #1567: the link proposal behind a link's hash, for the confirm page. */
+  viewLinkProposal(tokenHash: string): Promise<LinkViewResult>;
+  /** #1567: confirms (applies) or rejects the proposal behind a link's hash, once. */
+  decideLinkProposal(
+    tokenHash: string,
+    decision: "confirm" | "reject",
+  ): Promise<LinkDecideResult>;
   /** #1372: records a role proposal under its link's hash; changes no role. */
   proposeRole(input: ProposeInput, tokenHash: string): Promise<ProposeResult>;
   /** #1372: the proposal behind a link's hash, for the confirm page. */
@@ -539,6 +559,76 @@ export async function deleteBusLink(
   const hub = busHub(env, userId);
   if (!hub) return;
   await linkCall(hub.deleteLink(id));
+}
+
+/** The link confirm page's path prefix; the URL is `<origin>${LINK_CONFIRM_PATH}/<secret>`. */
+export const LINK_CONFIRM_PATH = "/bus/links/confirm";
+
+const LINK_PROPOSAL_REFUSALS = {
+  rate_limited: "This machine made too many link proposals. Try again later",
+  proposal_limit:
+    "Too many link changes are waiting for the member. Confirm or let them expire first",
+  no_bus: "Connect a machine to the bus first",
+} as const;
+
+/**
+ * The machine-token route's proposal (#1567): records a link or unlink in
+ * the member's own hub and returns its one-time confirm URL (the only copy
+ * of the secret; the hub keeps its sha256). Links nothing. 400 bad_request
+ * (a namespace), 409 conflict with details { reason }.
+ */
+export async function proposeBusLink(
+  env: Env,
+  userId: string,
+  machineId: string,
+  input: { action: LinkProposalAction; a: string; b: string },
+): Promise<BusLinkProposed> {
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  const refuse = (reason: keyof typeof LINK_PROPOSAL_REFUSALS) =>
+    new ApiError("conflict", LINK_PROPOSAL_REFUSALS[reason], { reason });
+  if (!(await hasConnectedMachine(env, userId))) throw refuse("no_bus");
+  const hub = busHub(env, userId);
+  if (!hub) throw refuse("no_bus");
+  const secret = b64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
+  const r = await linkCall(
+    hub.proposeLink(input, machineId, await sha256Hex(secret)),
+  );
+  if (!r.ok) {
+    if (r.reason === "invalid")
+      throw new ApiError("bad_request", `Invalid ${r.field}`, {
+        field: r.field,
+      });
+    throw refuse(r.reason);
+  }
+  return {
+    confirmUrl: `${appOrigin(env)}${LINK_CONFIRM_PATH}/${secret}`,
+    expiresAt: new Date(r.proposal.expiresAt).toISOString(),
+  };
+}
+
+/** The link confirm page's read of the proposal behind `secret`, in the member's own hub only. null without a hub. */
+export async function viewBusLinkProposal(
+  env: Env,
+  userId: string,
+  secret: string,
+): Promise<LinkViewResult | null> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
+  const hub = busHub(env, userId);
+  if (!hub) return null;
+  return linkCall(hub.viewLinkProposal(await sha256Hex(secret)));
+}
+
+/** The link confirm page's POST: decides the proposal behind `secret`, once. null without a hub. */
+export async function decideBusLinkProposal(
+  env: Env,
+  userId: string,
+  secret: string,
+  decision: "confirm" | "reject",
+): Promise<LinkDecideResult | null> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
+  const hub = busHub(env, userId);
+  if (!hub) return null;
+  return linkCall(hub.decideLinkProposal(await sha256Hex(secret), decision));
 }
 
 // ---------------------------------------------------------- role proposals

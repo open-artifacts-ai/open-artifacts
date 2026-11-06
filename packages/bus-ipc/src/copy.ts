@@ -101,7 +101,9 @@ const quoted = (head: string, quote: string, tail: string): string => {
  * namespaces hold `to`, for `ambiguous`. `excerpt` (from `excerptOf`) is the
  * message an expired or refused notice is about; without it the quote is left
  * out. `movedTo` (from `movedName`, #1448) is the live agent a `revoked` name
- * most likely moved to: the refusal then says to try it.
+ * most likely moved to: the refusal then says to try it. `linkedNs` (from
+ * `linkedLiveNamespace`, #1567) is the linked namespace holding a live agent of
+ * that name: a `closed` or `revoked` refusal then says to pass `to_namespace`.
  */
 export function receiptText(
   r: { state: ReceiptState; reason?: ReceiptReason },
@@ -109,6 +111,7 @@ export function receiptText(
   namespaces?: number,
   excerpt?: string,
   movedTo?: string,
+  linkedNs?: string,
 ): string {
   const quote = excerpt ? `"${excerpt}"` : undefined;
   const to = sentTo;
@@ -154,6 +157,13 @@ export function receiptText(
             : `×  ${label}: your message to ${v} was not delivered.`,
           ...(said(v) ? [`   ${said(v)}`] : []),
           ...(hint ? [`   ${hint}`] : []),
+          ...(linkedNs !== undefined &&
+          (r.reason === "closed" || r.reason === "revoked")
+            ? [
+                "   A linked project has a live agent with that name:",
+                `   pass to_namespace ${linkedNs} to reach the live one.`,
+              ]
+            : []),
         ].join("\n");
       return fitLine(lines, to);
     }
@@ -183,6 +193,36 @@ export function movedName(
     }
   }
   return best;
+}
+
+/**
+ * #1567: for a send refused `closed` or `revoked` with no `to_namespace`, the
+ * namespace of the one live agent called `name` in `roster` (ignoring case);
+ * undefined when none, or when it is live in several namespaces. A hub sends
+ * rows of linked namespaces only to a socket whose hello listed the `links`
+ * cap, so any other sees none and gets no hint. An agent live under that name
+ * in the sender's own namespace would not have been refused.
+ */
+export function linkedLiveNamespace(
+  name: string,
+  roster: readonly {
+    name: string;
+    namespace: string;
+    live?: boolean;
+    state?: string;
+  }[],
+): string | undefined {
+  const l = name.toLowerCase();
+  const seen = new Set(
+    roster
+      .filter(
+        (a) =>
+          a.name.toLowerCase() === l &&
+          (a.state ?? (a.live ? "live" : "queued")) === "live",
+      )
+      .map((a) => a.namespace),
+  );
+  return seen.size === 1 ? [...seen][0] : undefined;
 }
 
 /**

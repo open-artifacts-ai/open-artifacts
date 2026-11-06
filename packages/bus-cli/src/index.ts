@@ -23,6 +23,8 @@ export type Command = (
   | { cmd: "namespace"; sub: "approve"; dir: string; yes: boolean }
   | { cmd: "namespace"; sub: "revoke"; dir: string }
   | { cmd: "namespace"; sub: "list" }
+  | { cmd: "link"; sub: "add" | "rm"; dirs: [string, string] }
+  | { cmd: "link"; sub: "list" }
   | { cmd: "version" }
 ) & {
   noColor: boolean;
@@ -41,10 +43,13 @@ const COMMANDS = new Set([
   "uninstall",
   "global",
   "namespace",
+  "link",
+  "unlink",
   "version",
 ]);
 const HARNESSES = ["claude", "opencode", "codex", "pi"];
 const GLOBAL_USAGE = `usage: ${BUS_CMD} global <add|rm> <dir>, or global list`;
+const LINK_USAGE = `usage: ${BUS_CMD} link <dir> <dir>, ${BUS_CMD} unlink <dir> <dir>, or link list`;
 const NAMESPACE_USAGE = `usage: ${BUS_CMD} namespace approve [dir], namespace revoke <dir>, or namespace list`;
 /** Flags every command takes. */
 const COMMON = new Set(["no-color", "version", "home"]);
@@ -94,7 +99,16 @@ export function parse(argv: string[]): Command {
     if (rest[max] !== undefined)
       throw new Error(`unexpected argument: ${rest[max]}`);
   }
-  const extra = cmd === "namespace" ? undefined : rest[takes];
+  if (cmd === "link" || cmd === "unlink") {
+    const n = cmd === "link" && rest[0] === "list" ? 1 : 2;
+    if (rest.length < n) throw new Error(LINK_USAGE);
+    if (rest[n] !== undefined)
+      throw new Error(`unexpected argument: ${rest[n]}`);
+  }
+  const extra =
+    cmd === "namespace" || cmd === "link" || cmd === "unlink"
+      ? undefined
+      : rest[takes];
   if (extra !== undefined) throw new Error(`unexpected argument: ${extra}`);
   // An empty path or URL must not fall back to the default home or instance.
   for (const name of ["home", "instance"] as const)
@@ -150,6 +164,18 @@ function route(cmd: string, values: Values, positionals: string[]) {
       if (sub === "approve")
         return { cmd, sub, dir: dir ?? ".", yes: values.yes };
       throw new Error(NAMESPACE_USAGE);
+    }
+    case "link":
+    case "unlink": {
+      if (cmd === "link" && positionals[0] === "list")
+        return { cmd: "link", sub: "list" };
+      const [a, b] = positionals;
+      if (!a || !b) throw new Error(LINK_USAGE);
+      return {
+        cmd: "link",
+        sub: cmd === "link" ? "add" : "rm",
+        dirs: [a, b],
+      };
     }
     case "install":
       return {

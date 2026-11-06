@@ -783,6 +783,65 @@ export function copy(style: Style) {
       ...rows.map((r) => `  ${clip(r.dir, 2)}  ${p("muted", r.namespace)}`),
     ],
 
+    // link, unlink (#1567)
+    linkNotDir: (dir: string) => fail(`${clip(dir, 20)} is not a directory.`),
+    linkSame: (a: string, b: string, namespace: string) => [
+      fail(`${clip(a, 20)} and ${clip(b, 20)} are in the same namespace.`),
+      next(
+        `Both are ${clip(namespace, 12)}. A link joins two different namespaces.`,
+      ),
+    ],
+    linkNeedLogin: () => [
+      fail("This machine is not signed in to a hub."),
+      next(`Run ${BUS_CMD} login, then try again.`),
+    ],
+    linkUnauthorized: () => [
+      fail("The hub did not accept this machine's token."),
+      next(`Run ${BUS_CMD} login, then try again.`),
+    ],
+    linkRefused: (reason: string | undefined) =>
+      reason === "rate_limited"
+        ? [
+            fail("This machine asked for too many link changes."),
+            next("Try again in an hour."),
+          ]
+        : reason === "proposal_limit"
+          ? [
+              fail("Too many link changes are waiting for you."),
+              next("Confirm or let them expire, then try again."),
+            ]
+          : reason === "no_bus"
+            ? [
+                fail("The hub has no connected machine for you yet."),
+                next(`Start the daemon with ${BUS_CMD}, then try again.`),
+              ]
+            : [fail("The hub refused the request.")],
+    linkBadReply: () => [
+      fail("The hub's answer was not a confirm link for this instance."),
+      next("Nothing was changed."),
+    ],
+    linkProposed: (
+      action: "link" | "unlink",
+      a: { dir: string; namespace: string },
+      b: { dir: string; namespace: string },
+      url: string,
+    ) => [
+      step(`${action === "link" ? "Link" : "Unlink"} these two namespaces`),
+      next(`${clip(a.namespace, 8)}  ${p("muted", clip(a.dir, 12))}`),
+      next(`${clip(b.namespace, 8)}  ${p("muted", clip(b.dir, 12))}`),
+      "",
+      next(p("accent", url)),
+      next("Open this in your browser to confirm."),
+      p(
+        "muted",
+        "   Nothing changes until you confirm. The link works once, for an hour.",
+      ),
+    ],
+    linkList: (busUrl: string) => [
+      "Links are managed on your bus page.",
+      next(p("accent", busUrl)),
+    ],
+
     // logs, mcp (DRAFT)
     noLog: (path: string) => [
       warn(`No daemon log yet at ${clip(path, 24)}`),

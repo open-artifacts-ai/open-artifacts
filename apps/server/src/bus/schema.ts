@@ -265,6 +265,26 @@ create table if not exists grants (
 );
 create index if not exists grants_b on grants(org_id, kind, ns_b);
 
+-- #1567 link proposals: a link or unlink a machine's CLI proposed for the
+-- member (bus/link-proposals.ts), decided once on its one-time confirm link.
+-- Only the secret's sha256 is kept. A new table: create-if-not-exists adds
+-- it; wipe() deletes it.
+create table if not exists link_proposals (
+  id text primary key,
+  org_id text not null,
+  token_hash text not null unique,
+  action text not null,
+  ns_a text not null,
+  ns_b text not null,
+  machine_id text not null,
+  created_at integer not null,
+  expires_at integer not null,
+  status text not null default 'pending',
+  reason text,
+  decided_at integer
+);
+create index if not exists link_proposals_machine on link_proposals(org_id, machine_id, created_at);
+
 create table if not exists meta (
   org_id text not null,
   key text not null,

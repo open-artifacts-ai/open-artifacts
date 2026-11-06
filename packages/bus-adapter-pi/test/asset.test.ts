@@ -9,6 +9,7 @@ import {
   displayKind,
   earlierStatusText,
   excerptOf,
+  linkedLiveNamespace,
   messageHeader,
   movedName,
   neutralizeBody,
@@ -351,6 +352,51 @@ describe("pi extension asset", () => {
     expect(JSON.parse(await p.call("self", {})).kind).toBe("zz");
   });
 
+  it("#1567: list_agents covers linked projects; a closed send names the linked namespace", async () => {
+    const row = (name: string, namespace: string) => ({
+      name,
+      namespace,
+      kind: "pi",
+      live: true,
+      state: "live",
+      global: false,
+    });
+    const { p } = await started((f) =>
+      f.type === "list"
+        ? {
+            type: "roster",
+            agents: [row("me", "acme/app"), row("docs", "acme/docs")],
+          }
+        : f.type === "send"
+          ? { type: "receipt", msg_id: ID, state: "refused", reason: "closed" }
+          : undefined,
+    );
+    expect(await p.call("list_agents", {})).toBe(
+      "- me (pi, acme/app)\n- docs (pi, acme/docs)",
+    );
+    await expect(
+      p.call("send_message", { to: "docs", text: "hi" }),
+    ).rejects.toThrow("pass to_namespace acme/docs to reach the live one.");
+    expect(
+      await p
+        .call("send_message", {
+          to: "docs",
+          text: "hi",
+          to_namespace: "acme/docs",
+        })
+        .catch((e: Error) => e.message),
+    ).not.toContain("to_namespace acme/docs to reach");
+  });
+
+  it("#1567: the empty list says linked ones too", async () => {
+    const { p } = await started((f) =>
+      f.type === "list" ? { type: "roster", agents: [] } : undefined,
+    );
+    expect(await p.call("list_agents", {})).toBe(
+      "No agents in your namespace and linked ones.",
+    );
+  });
+
   it("#1527: self shows the config files the daemon refused", async () => {
     const { p } = await started((f) =>
       f.type === "self"
@@ -642,6 +688,16 @@ describe("the asset's own copy matches the shared copy", () => {
     expect(copy.receiptText(revoked, to, undefined, "hi", `${to}-2`)).toBe(
       receiptText(revoked, to, undefined, "hi", `${to}-2`),
     );
+    for (const reason of ["closed", "revoked", "unknown_agent"] as const) {
+      const r = { state: "refused", reason } as const;
+      expect(copy.receiptText(r, to, undefined, "hi", undefined, "a/b")).toBe(
+        receiptText(r, to, undefined, "hi", undefined, "a/b"),
+      );
+    }
+    const live = [{ name: to, namespace: "a/b", live: true, state: "live" }];
+    expect(copy.linkedLiveNamespace(to, live)).toBe(
+      linkedLiveNamespace(to, live),
+    );
     const roster = [`${to}-3`, `${to}-2`, `${to}-2x`, "other"];
     expect(copy.movedName(to, roster)).toBe(movedName(to, roster));
   });
@@ -708,9 +764,11 @@ describe("pi late deliveries (C17)", () => {
               reason: "closed",
               late: [LATE],
             }
-        : f.type === "self"
-          ? { type: "agent", agent: null }
-          : undefined,
+        : f.type === "list"
+          ? { type: "roster", agents: [] }
+          : f.type === "self"
+            ? { type: "agent", agent: null }
+            : undefined,
     );
     expect(await p.call("send_message", { to: "e0", text: "yo" })).toBe(
       `✓  Delivered to e0.\n\n${LATE}`,

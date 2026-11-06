@@ -323,15 +323,70 @@ export function renderRoleReauth(v: {
   instanceHost: string;
   userEmail: string;
   reauthUrl: string;
+  /** What is being confirmed, in the copy (default "a role change"). */
+  what?: string;
 }): string {
   return shell(
     "Sign in again",
     v.instanceHost,
     html`<div class="card">
     <h1>Sign in again</h1>
-    <p>To confirm a role change, sign in again first. Your last sign-in is more than 10 minutes old.</p>
+    <p>To confirm ${v.what ?? "a role change"}, sign in again first. Your last sign-in is more than 10 minutes old.</p>
     <div class="who">Signed in as <b>${v.userEmail}</b></div>
     <div class="actions"><a class="primary" href="${v.reauthUrl}">Sign in again</a></div>
   </div>`,
+  );
+}
+
+export type LinkConfirmView = {
+  instanceHost: string;
+  action: "link" | "unlink";
+  a: string;
+  b: string;
+  /** True when confirming changes nothing (already linked, or no such link). */
+  noop: boolean;
+  /** The proposing machine's label (null: gone) and when, in ms. */
+  machineLabel: string | null;
+  proposedAt: number;
+  minutesLeft: number;
+  userEmail: string;
+  formAction: string;
+  csrf: string;
+  switchUrl: string;
+};
+
+/** The link confirm form (#1567): which two namespaces, link or unlink, as whom; Reject or Confirm. */
+export function renderLinkConfirm(v: LinkConfirmView): string {
+  const link = v.action === "link";
+  const left =
+    v.minutesLeft <= 1
+      ? "This link expires in about a minute."
+      : `This link expires in ${v.minutesLeft} minutes.`;
+  const noopNote = v.noop
+    ? link
+      ? "These two are already linked, so confirming changes nothing."
+      : "These two are not linked, so confirming changes nothing."
+    : null;
+  return shell(
+    link ? "Confirm a link" : "Confirm an unlink",
+    v.instanceHost,
+    html`<form class="card" method="post" action="${v.formAction}">
+    <input type="hidden" name="csrf" value="${v.csrf}">
+    <h1>${link ? "Link" : "Unlink"} <span class="mono wrap">${v.a}</span> and <span class="mono wrap">${v.b}</span>?</h1>
+    <p>A command you ran in a terminal on one of your machines asked for this. Nothing changes unless you confirm it.</p>
+    <p class="muted">Proposed from <b class="wrap">${v.machineLabel ?? "a machine that is gone"}</b> at ${new Date(v.proposedAt).toISOString().slice(0, 16).replace("T", " ")} UTC. If an agent asked you to confirm this, check that it is the machine you expect.</p>
+    <ul>
+      <li>${CHECK}<div><b>${link ? "Linked projects see each other" : "After this they no longer see each other"}</b><small>${link ? "Their agents appear in each other's lists and can message each other. Only these two: a link never chains to a third project." : "Their agents stop appearing in each other's lists and can no longer message each other."}</small></div></li>
+      <li>${CHECK}<div><b>Project</b><small class="wrap mono">${v.a}</small></div></li>
+      <li>${CHECK}<div><b>Project</b><small class="wrap mono">${v.b}</small></div></li>
+    </ul>
+    ${noopNote === null ? "" : html`<div class="note" role="note">${WARN}<span>${noopNote}</span></div>`}
+    <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
+    <div class="note" role="note">${WARN}<span>Only confirm a change you asked for. ${left}</span></div>
+    <div class="actions">
+      <button type="submit" name="decision" value="reject">Reject</button>
+      <button type="submit" name="decision" value="confirm" class="primary">Confirm</button>
+    </div>
+  </form>`,
   );
 }
