@@ -68,7 +68,7 @@ export function PinBar() {
       role="status"
       className="fixed bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-card px-3 py-1 shadow-md"
     >
-      <span className={TXT}>{pinHint()}</span>
+      <span className={`${TXT} whitespace-nowrap`}>{pinHint()}</span>
       <Button size="xs" variant="ghost" onClick={() => api.setMode("select")}>
         Select
       </Button>
