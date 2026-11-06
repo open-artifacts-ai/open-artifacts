@@ -107,7 +107,7 @@ describe("C12 adversarial", () => {
     }
     try {
       await vi.waitFor(() => expect(second.length).toBe(18), {
-        timeout: 12_000,
+        timeout: 4000,
       });
       // Written before the drop: delivered on the first link, never resent.
       expect(first).toEqual(ids.slice(0, 2));
@@ -118,7 +118,7 @@ describe("C12 adversarial", () => {
       hub.stop();
       await new Promise<void>((r) => wss.close(() => r()));
     }
-  }, 20_000);
+  });
 });
 
 describe("C12 adversarial, round 1", () => {
