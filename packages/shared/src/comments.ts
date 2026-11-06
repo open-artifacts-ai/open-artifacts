@@ -22,6 +22,72 @@ export const CommentAuthorSchema = z.object({
 });
 export type CommentAuthor = z.infer<typeof CommentAuthorSchema>;
 
+/** #1535: a person or agent key, as R.artifactAgents lists it. */
+export const COMMENT_KEY_RE = /^[A-Za-z0-9_.:-]{1,128}$/;
+export const ASK_QUESTION_MAX = 1000;
+export const ASK_LABEL_MAX = 120;
+export const ASK_DETAIL_MAX = 500;
+export const ASK_WHY_MAX = 500;
+export const ASK_OPTIONS_MIN = 2;
+export const ASK_OPTIONS_MAX = 6;
+export const ASK_TO_MAX = 10;
+export const MENTIONS_MAX = 10;
+
+const key = z.string().regex(COMMENT_KEY_RE);
+export const KeyRefSchema = z.object({ key });
+export type KeyRef = z.infer<typeof KeyRefSchema>;
+
+export const AskOptionSchema = z.object({
+  id: key,
+  label: z.string().min(1).max(ASK_LABEL_MAX),
+  detail: z.string().max(ASK_DETAIL_MAX).optional(),
+});
+export type AskOption = z.infer<typeof AskOptionSchema>;
+
+const askOptions = z
+  .array(AskOptionSchema)
+  .min(ASK_OPTIONS_MIN)
+  .max(ASK_OPTIONS_MAX)
+  .refine((o) => new Set(o.map((x) => x.id)).size === o.length, {
+    message: "Option ids must be unique",
+  });
+const askRecommended = z
+  .object({ optionId: key, why: z.string().max(ASK_WHY_MAX) })
+  .optional();
+
+/** An ask on a comment (#1535). `closed` means the thread is resolved. */
+export const CommentAskSchema = z.object({
+  question: z.string().min(1).max(ASK_QUESTION_MAX),
+  options: askOptions,
+  recommended: askRecommended,
+  to: z.array(CommentAuthorSchema),
+  answer: z
+    .object({ optionId: key, by: CommentAuthorSchema, at: z.string() })
+    .optional(),
+  closed: z.boolean(),
+});
+export type CommentAsk = z.infer<typeof CommentAskSchema>;
+
+export const MentionDeliverySchema = z.enum([
+  "delivered",
+  "queued",
+  "seen",
+  "gone",
+]);
+export const CommentMentionSchema = z.object({
+  key,
+  name: z.string(),
+  delivery: MentionDeliverySchema,
+});
+export type CommentMention = z.infer<typeof CommentMentionSchema>;
+
+export const CommentAssignedSchema = z.object({
+  key,
+  name: z.string(),
+  state: z.enum(["delivered", "queued", "seen", "done"]),
+});
+export type CommentAssigned = z.infer<typeof CommentAssignedSchema>;
+
 export const CommentSchema = z.object({
   id: z.string(),
   body: z.string(),
@@ -29,6 +95,9 @@ export const CommentSchema = z.object({
   createdAt: z.string(),
   editedAt: z.string().nullable(),
   can: z.object({ edit: z.boolean(), delete: z.boolean() }),
+  ask: CommentAskSchema.optional(),
+  mentions: z.array(CommentMentionSchema).optional(),
+  assigned: CommentAssignedSchema.optional(),
 });
 export type Comment = z.infer<typeof CommentSchema>;
 
@@ -67,14 +136,47 @@ export type AnchorInput = z.infer<typeof anchorInputSchema>;
 const commentBody = z.string().trim().min(1).max(COMMENT_BODY_MAX);
 const guestName = z.string().max(COMMENT_GUEST_NAME_MAX).optional();
 
+/** An ask as a client sends it: addressees by key. */
+export const AskInputSchema = z.object({
+  question: z.string().min(1).max(ASK_QUESTION_MAX),
+  options: askOptions,
+  recommended: askRecommended,
+  to: z.array(KeyRefSchema).min(1).max(ASK_TO_MAX),
+});
+export type AskInput = z.infer<typeof AskInputSchema>;
+
+/** Shared by NewThreadBody and ReplyBody. mentions and assign: owner and editors only (403 forbidden). */
+const extras = {
+  ask: AskInputSchema.optional(),
+  mentions: z.array(KeyRefSchema).max(MENTIONS_MAX).optional(),
+  assign: KeyRefSchema.optional(),
+};
+
 /** POST R.comments body. */
 export const NewThreadBodySchema = z.object({
   anchor: anchorInputSchema,
   body: commentBody,
   guestName,
+  ...extras,
 });
 export type NewThreadBody = z.infer<typeof NewThreadBodySchema>;
 
 /** POST R.commentReplies body. */
-export const ReplyBodySchema = z.object({ body: commentBody, guestName });
+export const ReplyBodySchema = z.object({
+  body: commentBody,
+  guestName,
+  ...extras,
+});
 export type ReplyBody = z.infer<typeof ReplyBodySchema>;
+
+/** POST R.commentAnswer body. */
+export const AnswerBodySchema = z.object({ optionId: key });
+export type AnswerBody = z.infer<typeof AnswerBodySchema>;
+
+/** GET R.artifactAgents: the agents that follow or publish to the artifact. */
+export const ArtifactAgentSchema = z.object({
+  key,
+  name: z.string(),
+  online: z.boolean(),
+});
+export type ArtifactAgent = z.infer<typeof ArtifactAgentSchema>;
