@@ -458,6 +458,76 @@ describe("comments: actions", () => {
     ).toBeInTheDocument();
   });
 
+  it("P2: the column opens on its own with no threads, and an explicit close sticks", async () => {
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(
+      await within(c).findByRole("textbox", {
+        name: "Comment on the whole page",
+      }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Comments" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+  });
+
+  it("P2: narrower than 960px the column stays closed until there is something to show", async () => {
+    viewport(800);
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: "Comments" });
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).toBeNull();
+  });
+
+  it("P2: below 960px Comments is the first tab of the side panel", async () => {
+    viewport(800);
+    mount(`${viewerPath(OWNED)}?panel=open&tab=comments`);
+    const tabs = await screen.findAllByRole("tab");
+    expect(tabs.map((t) => t.textContent)).toEqual([
+      "Comments",
+      "Versions",
+      "Share",
+      "Details",
+    ]);
+  });
+
+  it("P2: the new-comment row has Cancel, then the accent Comment, at the right", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "hello",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    const row = screen.getByRole("button", { name: "Comment" })
+      .parentElement as HTMLElement;
+    const names = [...row.querySelectorAll("button")].map((b) => b.textContent);
+    expect(names).toEqual(["Cancel", "Comment"]);
+    expect(row.className).toContain("ml-auto");
+    expect(screen.getByRole("button", { name: "Comment" }).className).toContain(
+      "--oa-accent",
+    );
+    expect(box).toBeInTheDocument();
+  });
+
   it("the Comments setting in Share turns comments off", async () => {
     const patches = calls("PATCH");
     mount(`${viewerPath(OWNED)}?panel=open&tab=share`);
@@ -653,7 +723,7 @@ describe("comments: live and signed out", () => {
       ),
     );
     mount(viewerPath(PUBLIC));
-    fireEvent.click(await screen.findByRole("button", { name: "Comments" }));
+    // The column is open by default where it has room.
     const c = await col();
     fireEvent.change(within(c).getByRole("textbox", { name: "Your name" }), {
       target: { value: "Pat" },
@@ -819,7 +889,7 @@ describe("comments: guests and Retry-After", () => {
       }),
     );
     mount(viewerPath(PUBLIC));
-    fireEvent.click(await screen.findByRole("button", { name: "Comments" }));
+    // The column is open by default where it has room.
     const c = await col();
     await waitFor(() => expect(seenTokens.length).toBeGreaterThan(0));
     // The read sent no token and minted none.
@@ -1302,7 +1372,7 @@ describe("comments: review round 1", () => {
     await hello();
     await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("view"));
     expect(setMode).not.toHaveBeenCalledWith("select");
-    fireEvent.click(await screen.findByRole("button", { name: "Comments" }));
+    // The column is open by default where it has room.
     const c = await col();
     expect(await within(c).findByText("No comments yet.")).toBeInTheDocument();
     expect(within(c).queryByText(/Select text to add one/)).toBeNull();

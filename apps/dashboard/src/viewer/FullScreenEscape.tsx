@@ -28,8 +28,8 @@ const focusVisible = (el: Element) => {
   }
 };
 
-/** The full-screen view's way back (#290, option A): a peek chip in the
-    bottom-right corner. Embedded, it opens the viewer in a new tab instead.
+/** The full-screen view's way back (#290, option A): a small floating toolbar
+    at the top right. Embedded, it opens the viewer in a new tab instead.
     `live` (the new-version pill) sits 8px to its left and precedes it in tab
     order; `gone` turns the chip into "No longer available". */
 export function FullScreenEscape({

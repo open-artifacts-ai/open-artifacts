@@ -246,10 +246,14 @@ function Viewer({
     : requestedTab === "comments" && !commentsTab
       ? "versions"
       : requestedTab;
-  // Open by default only when there is something to show.
+  // Open by default wherever the column has room (so the empty state and the
+  // whole-page box show first); narrower, only when there is something to show.
   const columnShown =
     colOpen ??
-    (cmt.threads.length > 0 || cmt.draft !== null || cmt.error != null);
+    (surface === "column" ||
+      cmt.threads.length > 0 ||
+      cmt.draft !== null ||
+      cmt.error != null);
   openSurface.current = () => {
     if (surface === "dialog") setDialogOpen(true);
     else if (surface === "panel" || panelOpen) setPanel(true, "comments");
@@ -627,6 +631,7 @@ function Viewer({
                   <Button
                     variant="outline"
                     size="xs"
+                    className="oa-fscomments"
                     aria-label={
                       commentsButton.open > 0
                         ? `Comments, ${commentsButton.open} open`

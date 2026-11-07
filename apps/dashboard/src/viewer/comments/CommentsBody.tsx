@@ -22,6 +22,7 @@ import {
   useReply,
   useSetThreadStatus,
 } from "../../api/comments";
+import { isEmbed } from "../../embed";
 import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
 import {
@@ -70,7 +71,14 @@ function Composer({
   failure,
   onDirty,
   agents,
+  buttonsRight = false,
+  lead,
 }: {
+  /** The new-comment layout: Assign on its own line, then Cancel and the
+      accent submit at the right. */
+  buttonsRight?: boolean;
+  /** Shown at the left of the button row (a guest's Sign in link). */
+  lead?: React.ReactNode;
   /** Agents the writer may @mention and assign (owners and editors only). */
   agents?: readonly ArtifactAgent[];
   /** Called when the box gains or loses text the reader typed. */
@@ -241,17 +249,15 @@ function Composer({
           {failure?.(error)}
         </p>
       )}
-      {open && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="xs" disabled={!body || busy} onClick={() => void go()}>
-            {submit}
-          </Button>
-          {extra}
-          {agents && agents.length > 0 && (
-            <label className={`flex items-center gap-1 ${TXT}`}>
+      {open &&
+        (() => {
+          const assignSel = agents && agents.length > 0 && (
+            <label
+              className={`flex items-center gap-1 ${TXT} ${buttonsRight ? "w-full" : ""}`}
+            >
               Assign to
               <select
-                className={`rounded-md border border-input bg-background px-1 py-0.5 ${TXT}`}
+                className={`min-w-0 rounded-md border border-input bg-background px-1 py-0.5 ${TXT}`}
                 value={assign}
                 onChange={(e) => setAssign(e.target.value)}
               >
@@ -263,14 +269,48 @@ function Composer({
                 ))}
               </select>
             </label>
-          )}
-          {(onCancel || !alwaysOpen) && (
+          );
+          const cancelBtn = (onCancel || !alwaysOpen) && (
             <Button size="xs" variant="ghost" onClick={cancel}>
               Cancel
             </Button>
-          )}
-        </div>
-      )}
+          );
+          if (buttonsRight)
+            return (
+              <>
+                {assignSel}
+                <div className="flex flex-wrap items-center gap-2">
+                  {lead}
+                  <div className="ml-auto flex items-center gap-2">
+                    {extra}
+                    {cancelBtn}
+                    <Button
+                      size="xs"
+                      className="bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]"
+                      disabled={!body || busy}
+                      onClick={() => void go()}
+                    >
+                      {submit}
+                    </Button>
+                  </div>
+                </div>
+              </>
+            );
+          return (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="xs"
+                disabled={!body || busy}
+                onClick={() => void go()}
+              >
+                {submit}
+              </Button>
+              {extra}
+              {assignSel}
+              {cancelBtn}
+            </div>
+          );
+        })()}
     </div>
   );
 }
@@ -646,6 +686,21 @@ function NewThread({ api }: { api: CommentsApi }) {
         placeholder="Add a comment"
         submit="Comment"
         autoFocus
+        buttonsRight
+        lead={
+          api.guest ? (
+            <a
+              className={`${TXT} text-[var(--oa-accent-fg)] underline`}
+              href={`/sign-in?next=${encodeURIComponent(
+                `${window.location.pathname}${window.location.search}`,
+              )}`}
+              target={isEmbed() ? "_blank" : undefined}
+              rel="noopener noreferrer"
+            >
+              Sign in
+            </a>
+          ) : undefined
+        }
         agents={pool}
         onDirty={api.setDraftDirty}
         onCancel={api.cancelDraft}
