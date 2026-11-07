@@ -67,6 +67,13 @@ export const ADAPTER_CAPS = {
    * listed this.
    */
   pending: "pending",
+  /**
+   * `rename` (#1635): the adapter may send a `rename` frame when its session
+   * is renamed. The daemon lists `rename` in `welcome.caps` only for an
+   * adapter that listed it, and an adapter sends the frame only to a daemon
+   * whose welcome listed it, so neither side meets a frame its decoder lacks.
+   */
+  rename: "rename",
 } as const;
 
 export const Hello = z.object({
@@ -191,6 +198,16 @@ export const SetStatus = z.object({
   label: StatusLabelSchema.optional(),
 });
 /**
+ * The session was renamed (#1635): the new bus name, already a slug. Fire and
+ * forget; the daemon tells the hub once and answers only a refusal.
+ */
+export const Rename = z.object({
+  ...base,
+  ...optIn,
+  type: z.literal("rename"),
+  name: z.string().min(1).max(64).refine(isWellFormed, WELL_FORMED),
+});
+/**
  * A local CLI asking the daemon how it is (`oa-bus status`, `install`). No
  * hello: the socket is the user's own (0600). `cwd` picks the namespace.
  */
@@ -212,6 +229,7 @@ export const AdapterFrame = z.discriminatedUnion("type", [
   Fetch,
   Ack,
   SetStatus,
+  Rename,
 ]);
 export type AdapterFrame = z.infer<typeof AdapterFrame>;
 
@@ -259,6 +277,8 @@ export const Welcome = z.object({
   bus_name: z.string(),
   namespace: z.string(),
   global: z.boolean(),
+  /** What this daemon accepts (ADAPTER_CAPS), only for an adapter that listed `rename`. */
+  caps: z.array(z.string().max(32)).max(16).optional(),
 });
 export const Receipt = z.object({
   ...base,
