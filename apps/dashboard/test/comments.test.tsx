@@ -1090,9 +1090,13 @@ describe("comments: review round 1", () => {
     await waitFor(() =>
       expect(document.querySelectorAll("iframe").length).toBeGreaterThan(1),
     );
+    // Hidden layers included: the preloaded one must not open its own column.
     expect(
-      screen.queryByRole("complementary", { name: "Comments" }),
-    ).toBeNull();
+      screen.queryAllByRole("complementary", {
+        name: "Comments",
+        hidden: true,
+      }),
+    ).toHaveLength(0);
   });
 
   it("B1: a typed reply and an open delete confirm hold a swap too", async () => {
