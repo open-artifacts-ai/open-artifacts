@@ -189,6 +189,46 @@ describe("selection button", () => {
     expect(button()).toBeNull();
   });
 
+  it("has a bubble icon, is centered under the selection end, and clamps to the viewport", async () => {
+    const width = vi
+      .spyOn(HTMLElement.prototype, "offsetWidth", "get")
+      .mockReturnValue(100);
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    const b = button();
+    expect(b?.querySelector("svg[aria-hidden='true']")).not.toBeNull();
+    expect(b?.textContent).toBe("Comment");
+    const vw = document.documentElement.clientWidth || innerWidth;
+    // rect.right = 80, width 100: centered would be 30.
+    expect(b?.style.left).toBe("30px");
+    expect(b?.style.top).toBe("126px");
+    // Near the left edge: clamped to the margin.
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, right: 10 },
+    ] as unknown as DOMRectList);
+    select(textOf("a"), 3, textOf("a"), 9);
+    expect(button()?.style.left).toBe("4px");
+    // Near the right edge: clamped to the viewport.
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, right: vw + 50 },
+    ] as unknown as DOMRectList);
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
+    width.mockRestore();
+  });
+
+  it("follows the shell theme and defaults to the system scheme", async () => {
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()?.dataset.theme).toBe("light");
+    await send({ type: "theme", theme: "dark" });
+    expect(button()?.dataset.theme).toBe("dark");
+    await send({ type: "theme", theme: "light" });
+    expect(button()?.dataset.theme).toBe("light");
+    await send({ type: "theme", theme: "sepia" });
+    expect(button()?.dataset.theme).toBe("light");
+  });
+
   it("does not show for a selection across blocks, an empty one, or when off", async () => {
     await start("select");
     select(textOf("a"), 4, textOf("b"), 6);
