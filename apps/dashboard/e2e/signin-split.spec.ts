@@ -5,7 +5,7 @@ const DIVIDER = { light: "rgb(224, 227, 232)", dark: "rgb(44, 48, 55)" };
 
 for (const scheme of ["light", "dark"] as const) {
   test.describe(scheme, () => {
-    test.use({ colorScheme: scheme });
+    test.use({ colorScheme: scheme, reducedMotion: "reduce" });
 
     test("split at 1280", async ({ page }, info) => {
       await page.setViewportSize({ width: 1280, height: 800 });
@@ -71,21 +71,17 @@ for (const scheme of ["light", "dark"] as const) {
         "font-size": "13px",
       });
 
-      // Watermark: bare mark, 360px, offset -90px, faint, decorative.
-      const mark = page.locator(".oa-split-mark");
-      await expect(mark).toHaveAttribute("aria-hidden", "true");
-      expect(
-        await q(".oa-split-mark", "opacity", "right", "bottom", "position"),
-      ).toEqual({
-        opacity: "0.08",
-        right: "-90px",
-        bottom: "-90px",
-        position: "absolute",
+      const formation = page.locator(".oa-formation");
+      await expect(formation.locator('div[aria-hidden="true"]')).toBeVisible();
+      expect(await formation.boundingBox()).toMatchObject({
+        width: 256,
+        height: 256,
       });
-      expect(await mark.boundingBox()).toMatchObject({
-        width: 360,
-        height: 360,
-      });
+      await expect(formation.locator("canvas")).toBeHidden();
+      await expect(formation.locator("svg")).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: "Replay logo animation" }),
+      ).toHaveCount(0);
 
       // Form.
       const fm = (await page.locator(".oa-split-formmark").boundingBox())!;
@@ -144,16 +140,20 @@ for (const scheme of ["light", "dark"] as const) {
       const form = (await page.locator(".oa-split-form").boundingBox())!;
       expect(brand.width).toBe(390);
       expect(brand.height).toBeGreaterThan(130);
-      expect(brand.height).toBeLessThan(200);
+      expect(brand.height).toBeLessThan(260);
       expect(form.y).toBeGreaterThanOrEqual(brand.y + brand.height - 1);
-      await expect(page.locator(".oa-split-mark")).toBeHidden();
+      expect(await page.locator(".oa-formation").boundingBox()).toMatchObject({
+        width: 72,
+        height: 72,
+      });
+      await expect(page.locator(".oa-formation svg")).toBeVisible();
       await expect(page.locator(".oa-split-formmark")).toBeHidden();
       await expect(page.locator(".oa-split-foot")).toBeHidden();
       const cs = (sel: string, p: string) =>
         page
           .locator(sel)
           .evaluate((el, k) => getComputedStyle(el)[k as never], p);
-      expect(await cs(".oa-split-pitch h2", "fontSize")).toBe("22px");
+      expect(await cs(".oa-split-pitch h2", "fontSize")).toBe("20px");
       expect(await cs(".oa-split-pitch p", "fontSize")).toBe("14px");
       expect(await cs(".oa-split-brand", "paddingTop")).toBe("20px");
       expect(await cs(".oa-split-brand", "paddingBottom")).toBe("24px");
