@@ -496,4 +496,46 @@ describe("anchors saved before blocks were separated (#1708)", () => {
     const third = createTextAnchor(fused, 8, 12, 1);
     expect(createTextResolver(spaced)(third)).toMatchObject({ start: 10 });
   });
+
+  // Hand-made anchors so that one side of the context alone decides. "item"
+  // sits three times; only the second is followed/preceded by "b"/"a".
+  const at = (text: string, a: { prefix: string; suffix: string }) =>
+    createTextResolver(text)({
+      kind: "text",
+      version: 1,
+      exact: "item",
+      ...a,
+    });
+
+  it("a fused suffix alone picks the occurrence in spaced text", () => {
+    expect(
+      at("item a item b item c", { prefix: "", suffix: "bitemc" }),
+    ).toEqual({ state: "exact", start: 7, end: 11 });
+  });
+
+  it("a fused prefix alone picks the occurrence in spaced text", () => {
+    expect(at("item a item b item c", { prefix: "itema", suffix: "" })).toEqual(
+      {
+        state: "exact",
+        start: 7,
+        end: 11,
+      },
+    );
+  });
+
+  it("a spaced suffix alone picks the occurrence in fused text", () => {
+    expect(at("itemaitembitemc", { prefix: "", suffix: " b item c" })).toEqual({
+      state: "exact",
+      start: 5,
+      end: 9,
+    });
+  });
+
+  it("a spaced prefix alone picks the occurrence in fused text", () => {
+    expect(at("itemaitembitemc", { prefix: "item a ", suffix: "" })).toEqual({
+      state: "exact",
+      start: 5,
+      end: 9,
+    });
+  });
 });
