@@ -554,6 +554,8 @@ export const uploads = sqliteTable("uploads", {
   receivedAt: integer("received_at"),
   // sha256 (hex) of the bytes the PUT stored; copied into the manifest digest at publish (#1490)
   digest: text("digest"),
+  // Client-declared checksum; digest is populated only after R2 verifies the PUT.
+  expectedSha256: text("expected_sha256"),
 });
 
 // ids handed out by create_upload before the first publish

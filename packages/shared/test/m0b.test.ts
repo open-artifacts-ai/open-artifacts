@@ -52,3 +52,16 @@ describe("M0 follow-up", () => {
     expectTypeOf<S.SearchQueryInput["q"]>().toEqualTypeOf<string>();
   });
 });
+
+it("accepts an optional client SHA-256 and rejects malformed checksums", () => {
+  const input = { path: "report.pdf", size: 3 };
+  expect(
+    S.UploadCreateInputSchema.parse({ ...input, sha256: "AB".repeat(32) })
+      .sha256,
+  ).toBe("ab".repeat(32));
+  for (const sha256 of ["", "a".repeat(63), "a".repeat(65), "g".repeat(64)])
+    expect(
+      S.UploadCreateInputSchema.safeParse({ ...input, sha256 }).success,
+    ).toBe(false);
+  expect(S.UploadCreateInputSchema.safeParse(input).success).toBe(true);
+});

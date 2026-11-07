@@ -47,7 +47,7 @@ export const TOOL_DEFS = [
     name: "create_upload",
     inputSchema: CreateUploadInputSchema,
     example: { path: "video.mp4", size: 3_000_000, contentType: "video/mp4" },
-    description: `Open Artifacts: Get a signed URL to PUT one large file (over the ${INLINE} inline limit, up to 25 MB), then publish_artifact with \`id\` = the returned artifactId and \`files: { "<path>": { uploadId } }\`. Omit artifactId to reserve a new artifact id; reuse it for the artifact's other uploads.`,
+    description: `Open Artifacts: Get a signed URL to PUT one large file (over the ${INLINE} inline limit, up to 25 MB), then publish_artifact with \`id\` = the returned artifactId and \`files: { "<path>": { uploadId } }\`. Omit artifactId to reserve a new artifact id; reuse it for the artifact's other uploads. Optional \`sha256\` is the 64-character hex SHA-256 of the exact bytes to PUT; R2 verifies it and preserves a content hash on every plan.`,
   },
   {
     name: "get_artifact",
