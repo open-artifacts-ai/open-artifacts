@@ -5862,6 +5862,32 @@ describe("W2 pause and unpause (5.5)", () => {
     expect(hostsOfInstall(s)).toEqual([inst.id, inst.id]);
   });
 
+  it("P22 (#1593): stale HOSTS and registry reads equal to the target do not skip the writes; sign-in ends enabled", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const servingEntry = s.fake.kvValues(s.regId).get(registryKey(inst.id));
+    expect(servingEntry).toBeDefined();
+    await s.mk().pause(inst.id, "closed", { kind: "delete" });
+    expect(signinOf(s, inst.id).disabled).toBe(true);
+    // Reads return the serving values, as stale reads would right after
+    // the delete wrote closed and disabled.
+    const p = s.mk({
+      cf: s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+        const req = new Request(u, init);
+        if (req.method === "GET") {
+          if (req.url.includes(`/storage/kv/namespaces/${s.hostsId}/values/`))
+            return new Response(inst.id, { status: 200 });
+          if (req.url.includes(`/storage/kv/namespaces/${s.regId}/values/`))
+            return new Response(servingEntry as string, { status: 200 });
+        }
+        return s.fake.fetch(u, init);
+      }) as typeof fetch),
+    });
+    await p.unpause(inst.id, { kind: "restore" });
+    expect(hostsOfInstall(s)).toEqual([inst.id, inst.id]);
+    expect(signinOf(s, inst.id).disabled).toBeFalsy();
+  });
+
   it("near expiry: suspend warns and goes on; resume refuses before any write", async () => {
     const s = setup();
     const inst = keep(await s.p.create(input()));

@@ -3327,7 +3327,8 @@ export class WfpProvisioner {
         "invalid_state",
       );
     const text = JSON.stringify(registryEntry({ ...entry, disabled }));
-    if (raw === text) return;
+    // Always write: the REST read can be stale for up to 60 s, so a stale
+    // value equal to `text` must not skip the PUT (P22, #1593).
     assertOwnResource(reg.title, this.env);
     await this.hold();
     await this.cf.kvPut(reg.id, registryKey(id), text);
