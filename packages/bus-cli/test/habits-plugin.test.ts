@@ -73,9 +73,16 @@ describe("setPluginHabits", () => {
     mkdirSync(dir, { recursive: true });
     const r = setPluginHabits({ home }, [hermes], true);
     expect(r.changed).toEqual([]);
-    expect(r.notes[0]).toContain("not Open Artifacts bus's");
+    expect(r.notes[0]).toContain("wasn't installed by npx @open-artifacts/bus");
     expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
     expect(pluginHabitsState({ home }, hermes)).toBe("not installed");
+  });
+  it("says so when nothing is installed", () => {
+    const home = tmp();
+    const r = setPluginHabits({ home }, [hermes], true);
+    expect(r.notes[0]).toBe(
+      `Left the Hermes plugin alone: nothing installed at ${hermesPluginDir(home, {})}.`,
+    );
   });
   it("refuses a symlinked plugin folder and writes nothing through it", () => {
     const home = tmp();
@@ -174,7 +181,9 @@ describe("install and uninstall with Hermes", () => {
     const ctx = setup();
     await install({ hub: HUB }, ctx);
     expect(existsSync(marker(ctx))).toBe(false);
-    expect(ctx.out().join("\n")).toContain("the Hermes plugin");
+    expect(ctx.out().join("\n")).toContain(
+      "The bus would add 2 habits for sessions on the bus, to the Hermes plugin:",
+    );
     expect(habitsLine(ctx)).toContain("Habits: not decided");
     expect(habitsLine(ctx)).toContain("Hermes plugin: off");
   });

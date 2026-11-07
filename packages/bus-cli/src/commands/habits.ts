@@ -156,7 +156,7 @@ function disclosure(
   const changed = pending.filter((p) => p.s.state === "changed");
   if (changed.length === 0)
     return [
-      `The bus adds ${HABITS_LINES.length} habits to ${files.join(" and ")} for sessions on the bus:`,
+      `The bus would add ${HABITS_LINES.length} habits for sessions on the bus, to ${files.join(" and ")}:`,
       ...HABITS_LINES.map((l) => `  ${l}`),
     ];
   const first = changed[0]?.s;

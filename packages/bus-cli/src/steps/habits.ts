@@ -467,7 +467,7 @@ export function setPluginHabits(
         // Off with nothing there is already the state wanted.
         if (on)
           notes.push(
-            `Left the ${p.label} plugin alone: ${dir} is ${isLink(dir) ? "a symlink" : existsSync(dir) ? "not Open Artifacts bus's" : "not installed"}.`,
+            `Left the ${p.label} plugin alone: ${isLink(dir) ? `${dir} is a symlink.` : existsSync(dir) ? `${dir} wasn't installed by ${BUS_CMD}` : `nothing installed at ${dir}.`}`,
           );
         continue;
       }
@@ -512,7 +512,7 @@ export type HabitsQuestion = {
 export const habitsQuestion = (shownFiles: string[]): HabitsQuestion => {
   const yes = `${BUS_CMD} install --habits`;
   const no = `${BUS_CMD} install --no-habits`;
-  const text = `The bus can add ${HABITS_LINES.length} habits to ${shownFiles.join(" and ")}, used only in sessions on the bus:`;
+  const text = `The bus would add ${HABITS_LINES.length} habits for sessions on the bus, to ${shownFiles.join(" and ")}:`;
   return { text, lines: HABITS_LINES.slice(), yes, no };
 };
 
