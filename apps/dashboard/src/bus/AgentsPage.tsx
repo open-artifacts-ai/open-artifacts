@@ -2,7 +2,7 @@
 // the roster, namespaces, roles and share notices.
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { muted } from "../settings/ui";
-import { NamespacesTab } from "./Namespaces";
+import { NamespacesTab } from "./NamespacesTab";
 import { AGENTS_TABS, type AgentsTab, BusLink } from "./nav";
 import { RolesTab } from "./Roles";
 import { Roster } from "./Roster";
