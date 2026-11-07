@@ -120,8 +120,8 @@ it.each([
   ],
   [
     "solo_unpaid",
-    "Publishing is paused on this instance until its Solo plan is paid. Reading, commenting and sharing still work. Ask your instance owner.",
-    "Your Solo plan is paused, so publishing and live-data writes are off. Keep publishing for $1/month or $12/year. Reading, commenting and sharing still work.",
+    "Publishing is paused until this instance's Solo plan is paid. Ask your instance owner.",
+    "Your Solo plan is paused. Keep publishing for $1/month or $12/year.",
   ],
   [
     "lapsed",
