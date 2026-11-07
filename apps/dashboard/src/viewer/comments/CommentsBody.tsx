@@ -37,7 +37,7 @@ import {
   mentionedKeys,
   mentionQuery,
 } from "./asks";
-import { numbering, pinNumbering } from "./model";
+import { numbering, pinChanged, pinNumbering } from "./model";
 import { type CommentsApi, useCommentsApi } from "./useComments";
 
 const touch = () =>
@@ -626,8 +626,7 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
   if (a.kind === "pin") {
     const n = pinNumbering(api.threads).get(t.id) ?? 1;
     // Only when both hashes are known and differ (a pdf's hash covers the whole file, so the note says file).
-    const changed =
-      api.contentHash !== null && a.contentHash !== api.contentHash;
+    const changed = pinChanged(a.contentHash, api.contentHash);
     return (
       <div className="flex flex-col gap-1">
         <p className={`${TXT} font-medium ${MUTED}`}>

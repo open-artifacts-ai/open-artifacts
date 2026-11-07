@@ -32,7 +32,7 @@ type Deps = {
   /** Every write answers 429 with this Retry-After (seconds). */
   rateLimit?: number;
   /** The hash of a version's content, which the server stamps on a pin (#1490). */
-  contentHash?: (id: string, version: number) => string | undefined;
+  contentHash?: (id: string, version: number) => string | null | undefined;
   /** Also seed an open ask addressed to the caller on "Landing page" (default off: list responses stay byte-identical to the fixtures). */
   seedAsk?: boolean;
 };
@@ -308,8 +308,9 @@ export function createCommentMock({
             ? {
                 ...d,
                 version: d.version ?? a.currentVersion,
-                // The server stamps a pin's hash; the mock keeps a fixed one.
-                contentHash: "0".repeat(64),
+                // The server stamps a pin's hash; null when the version has none.
+                contentHash:
+                  contentHash?.(a.id, d.version ?? a.currentVersion) ?? null,
               }
             : { ...d, version: d.version ?? a.currentVersion };
       const c = comment(j.body, mine());

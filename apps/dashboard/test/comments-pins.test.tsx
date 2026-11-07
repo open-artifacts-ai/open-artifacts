@@ -109,7 +109,10 @@ const CAN = {
   dataWrite: true,
 };
 
-const pinThread = (id: string, n: number, hash: string) => ({
+const H1 = "a".repeat(64);
+const H2 = "b".repeat(64);
+
+const pinThread = (id: string, n: number, hash: string | null) => ({
   id,
   anchor: { kind: "pin", version: 2, x: 0.25, y: 0.5, contentHash: hash },
   version: 2,
@@ -132,7 +135,7 @@ const pinThread = (id: string, n: number, hash: string) => ({
 /** OWNED as an image (or pdf) artifact whose shown version has this hash. */
 function asFormat(
   format: "image" | "pdf" | "html",
-  hash: string | undefined,
+  hash: string | null,
   o: { comment?: boolean; threads?: unknown[] } = {},
 ) {
   const art = fixtures.artifacts.find((a) => a.id === OWNED);
@@ -171,7 +174,7 @@ const tool = (name: string) => screen.findByRole("button", { name });
 
 describe("comments: pins on images and pdfs (#1490)", () => {
   it("offers Pin and Select on an image, and says what to do in pin mode", async () => {
-    asFormat("image", "h1");
+    asFormat("image", H1);
     mount(viewerPath(OWNED));
     await col();
     await hello();
@@ -190,7 +193,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("says Tap on a touch screen", async () => {
-    asFormat("image", "h1");
+    asFormat("image", H1);
     viewport(1280, true);
     mount(viewerPath(OWNED));
     await col();
@@ -200,7 +203,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("the frame's Esc (comment.escape) leaves pin mode", async () => {
-    asFormat("image", "h1");
+    asFormat("image", H1);
     mount(viewerPath(OWNED));
     await col();
     fireEvent.click(await tool("Pin"));
@@ -210,7 +213,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("a forged comment.escape outside pin mode does nothing", async () => {
-    asFormat("image", "h1");
+    asFormat("image", H1);
     mount(viewerPath(OWNED));
     await col();
     setMode.mockClear();
@@ -222,7 +225,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("in full screen, the first Esc leaves pin mode and the second leaves full screen", async () => {
-    asFormat("image", "h1");
+    asFormat("image", H1);
     viewport(1280);
     const router = mount(fullPath(OWNED));
     fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
@@ -240,14 +243,14 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("offers pins on a pdf but not on html", async () => {
-    asFormat("pdf", "h1");
+    asFormat("pdf", H1);
     mount(viewerPath(OWNED));
     await col();
     expect(await tool("Pin")).toBeInTheDocument();
   });
 
   it("offers no Pin tool on html", async () => {
-    asFormat("html", "h1");
+    asFormat("html", H1);
     mount(viewerPath(OWNED));
     await col();
     await screen.findByText(/No comments yet/);
@@ -255,7 +258,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("a comment.pin outside pin mode is ignored (page code can forge it)", async () => {
-    asFormat("image", "h1");
+    asFormat("image", H1);
     mount(viewerPath(OWNED));
     await col();
     await onPin({ x: 0.5, y: 0.5 });
@@ -264,7 +267,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("a comment.pin from a viewer who can't comment is ignored, and they get no tools", async () => {
-    asFormat("image", "h1", { comment: false });
+    asFormat("image", H1, { comment: false });
     mount(viewerPath(OWNED));
     await col();
     await screen.findByText(/No comments yet/);
@@ -275,7 +278,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("a placed pin becomes a draft; nothing posts until submit, and the client sends no contentHash", async () => {
-    asFormat("image", "h1");
+    asFormat("image", H1);
     const posts = calls("POST");
     mount(viewerPath(OWNED));
     await col();
@@ -299,8 +302,8 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("numbers pin cards and focuses the pin on click", async () => {
-    asFormat("image", "h1", {
-      threads: [pinThread("a", 1, "h1"), pinThread("b", 2, "h1")],
+    asFormat("image", H1, {
+      threads: [pinThread("a", 1, H1), pinThread("b", 2, H1)],
     });
     mount(viewerPath(OWNED));
     const c = await col();
@@ -313,7 +316,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("says the image or page changed only when both hashes are known and differ", async () => {
-    asFormat("image", "h2", { threads: [pinThread("a", 1, "h1")] });
+    asFormat("image", H2, { threads: [pinThread("a", 1, H1)] });
     mount(viewerPath(OWNED));
     expect(
       await screen.findByText("The image changed since this was placed."),
@@ -321,7 +324,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("says This file changed on a pdf (the hash covers the whole file)", async () => {
-    asFormat("pdf", "h2", { threads: [pinThread("a", 1, "h1")] });
+    asFormat("pdf", H2, { threads: [pinThread("a", 1, H1)] });
     mount(viewerPath(OWNED));
     expect(
       await screen.findByText("This file changed since this was placed."),
@@ -329,14 +332,21 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("says nothing when the hashes match, or the shown version's is unknown", async () => {
-    asFormat("image", "h1", { threads: [pinThread("a", 1, "h1")] });
+    asFormat("image", H1, { threads: [pinThread("a", 1, H1)] });
+    mount(viewerPath(OWNED));
+    await screen.findByText("Pin 1");
+    expect(screen.queryByText(/changed since this was placed/)).toBeNull();
+  });
+
+  it("says nothing when the pin's own hash is null, even if the version's is known", async () => {
+    asFormat("image", H2, { threads: [pinThread("a", 1, null)] });
     mount(viewerPath(OWNED));
     await screen.findByText("Pin 1");
     expect(screen.queryByText(/changed since this was placed/)).toBeNull();
   });
 
   it("says nothing when the shown version has no hash", async () => {
-    asFormat("image", undefined, { threads: [pinThread("a", 1, "h1")] });
+    asFormat("image", null, { threads: [pinThread("a", 1, H1)] });
     mount(viewerPath(OWNED));
     await screen.findByText("Pin 1");
     expect(screen.queryByText(/changed since this was placed/)).toBeNull();

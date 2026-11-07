@@ -22,6 +22,12 @@ export function numbering(threads: readonly CommentThread[]) {
 }
 
 /** Pin numbers ("Pin 3"): by creation order among pins only, so notes and text don't take one. */
+/** A null hash on either side means unknown: never claim the page changed. */
+export const pinChanged = (
+  pinHash: string | null | undefined,
+  versionHash: string | null | undefined,
+) => pinHash != null && versionHash != null && pinHash !== versionHash;
+
 export const pinNumbering = (threads: readonly CommentThread[]) =>
   numbering(threads.filter((t) => t.anchor.kind === "pin"));
 
