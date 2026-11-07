@@ -33,6 +33,31 @@ const clipped = (page: Page) =>
       ).length,
   );
 
+test("OAuth command and client tabs wrap at 390px", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/settings/connections");
+  await expect(page.getByText(/claude mcp add/)).toBeVisible();
+  // The command wraps instead of scrolling (the admin card's fix, #1128).
+  expect(await clipped(page)).toBe(0);
+  // Every client stays in view: the strip wraps onto a second row rather than
+  // scrolling "Generic" out of it (#1383).
+  const strip = await page
+    .getByRole("tablist")
+    .first()
+    .evaluate((l) => {
+      const box = l.getBoundingClientRect();
+      return {
+        scroll: l.scrollWidth - l.clientWidth,
+        outside: [...l.querySelectorAll("[role=tab]")].filter((t) => {
+          const b = t.getBoundingClientRect();
+          return b.right > box.right + 0.5 || b.left < box.left - 0.5;
+        }).length,
+      };
+    });
+  expect(strip).toEqual({ scroll: 0, outside: 0 });
+  expect(await sideScroll(page)).toBe(0);
+});
+
 test("Token tab and token-created dialog wrap their commands at 390px", async ({
   page,
 }) => {
@@ -55,13 +80,17 @@ test("Token tab and token-created dialog wrap their commands at 390px", async ({
     expect(await clipped(page)).toBe(0);
     const out = await dialog.evaluate((d) => {
       const r = d.getBoundingClientRect();
-      // The tab strip scrolls sideways by design; its tabs may sit past it.
-      return [...d.querySelectorAll("*:not([role=tablist] *)")].filter((el) => {
-        const b = el.getBoundingClientRect();
-        return b.width && (b.right > r.right + 0.5 || b.left < r.left - 0.5);
-      }).length;
+      const strip = d.querySelector("[role=tablist]");
+      return {
+        outside: [...d.querySelectorAll("*")].filter((el) => {
+          const b = el.getBoundingClientRect();
+          return b.width && (b.right > r.right + 0.5 || b.left < r.left - 0.5);
+        }).length,
+        // The strip wraps onto a second row; it never scrolls.
+        scroll: strip ? strip.scrollWidth - strip.clientWidth : 0,
+      };
     });
-    expect(out).toBe(0);
+    expect(out).toEqual({ outside: 0, scroll: 0 });
   }
   // Copy stays top-right of the save command.
   const pre = await dialog.locator("pre").first().boundingBox();

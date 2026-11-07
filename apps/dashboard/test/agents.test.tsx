@@ -91,7 +91,11 @@ describe("Agents settings", () => {
     const copy = await screen.findByRole("button", {
       name: /copy command|copy config/i,
     });
-    expect(screen.getByText(/claude mcp add/)).toBeTruthy();
+    expect(
+      [...document.querySelectorAll("pre")].some((p) =>
+        p.textContent?.includes("claude mcp add"),
+      ),
+    ).toBe(true);
     fireEvent.click(copy);
     await waitFor(() => expect(writeText).toHaveBeenCalled());
     await screen.findByText(/couldn't copy/i);
