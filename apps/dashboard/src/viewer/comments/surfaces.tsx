@@ -48,12 +48,21 @@ export function CommentsColumn({ textFormat }: { textFormat: boolean }) {
 export function CommentsDialog({
   textFormat,
   onClose,
+  pinCard = false,
 }: {
   textFormat: boolean;
   onClose: () => void;
+  /** A pin's card is the one being read: keep the sheet short so its pin stays in view (#1657). */
+  pinCard?: boolean;
 }) {
   const ref = useRef<HTMLElement>(null);
   const [full, setFull] = useState(false);
+  // #1657: reading a pin card shrinks the sheet, so the image and that pin
+  // stay visible; dragging it back up still works.
+  useEffect(() => {
+    if (pinCard) setFull(false);
+  }, [pinCard]);
+  const height = full ? "full" : pinCard ? "pin" : "half";
   const drag = useRef<number | null>(null);
   const dragged = useRef(false);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
@@ -74,8 +83,8 @@ export function CommentsDialog({
         tabIndex={-1}
         role="dialog"
         aria-label="Comments"
-        data-sheet-height={full ? "full" : "half"}
-        className={`fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
+        data-sheet-height={height}
+        className={`fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
         onFocusCapture={(e) => {
           // The phone keyboard would cover a half-height sheet.
           const t = e.target as HTMLElement;

@@ -68,6 +68,9 @@ const OVERLAY_CSS = `
 .pin{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;background:#1f5fbf;color:#fff;font:700 12px/22px system-ui,sans-serif;text-align:center;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px #0006}
 .pin.on{outline:3px solid #e0a000}
 .pin.ghost{background:#1f5fbf55;border:2px dashed #1f5fbf;box-sizing:border-box;box-shadow:none;pointer-events:none}
+/* A pin whose page changed: a dashed ring, not a colour alone, plus a title. */
+.pin.changed{outline:2px dashed #8a5a00;outline-offset:2px}
+.pin.changed.on{box-shadow:0 0 0 3px #e0a000aa,0 1px 4px #0006}
 `;
 const PAGE_CSS =
   "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}";
@@ -261,12 +264,11 @@ export function createComments(
         const y = box.top + scrollY + th.anchor.y * box.height;
         out.push({ id: th.id, state: "pin", top: clampTop(y) });
         if (!th.resolved) {
-          const d = mark(
-            isActive ? "pin on" : "pin",
-            x,
-            clampTop(y),
-            String(th.n ?? ""),
-          );
+          const cls = ["pin", isActive ? "on" : "", th.changed ? "changed" : ""]
+            .filter(Boolean)
+            .join(" ");
+          const d = mark(cls, x, clampTop(y), String(th.n ?? ""));
+          if (th.changed) d.title = "Changed since this was placed.";
           d.addEventListener("click", () => open(th.id));
         }
         continue;

@@ -205,6 +205,36 @@ describe("comments: layouts", () => {
     expect(sheet).toHaveAttribute("data-sheet-height", "full");
   });
 
+  it("a phone sheet shrinks further while a pin card is open, so its pin stays in view (#1657)", async () => {
+    viewport(400);
+    const pinThread = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({
+          threads: [pinThread],
+          open: 1,
+          truncated: false,
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    // The frame opens the pin's card: the sheet gives the image back.
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    // The handle still wins: a reader who wants the list gets the full sheet.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+  });
+
   it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {
     viewport(400);
     mount(viewerPath(OWNED));

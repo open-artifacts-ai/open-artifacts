@@ -173,22 +173,34 @@ afterEach(() => vi.restoreAllMocks());
 const tool = (name: string) => screen.findByRole("button", { name });
 
 describe("comments: pins on images and pdfs (#1490)", () => {
-  it("offers Pin and Select on an image, and says what to do in pin mode", async () => {
+  it("an image opens in Pin mode, says what to do, and Select reaches text selection", async () => {
     asFormat("image", H1);
     mount(viewerPath(OWNED));
     await col();
     await hello();
-    expect(await tool("Select")).toHaveAttribute("aria-pressed", "true");
-    expect(
-      screen.getByText("No comments yet. Place a pin to add one."),
-    ).toBeInTheDocument();
-    fireEvent.click(await tool("Pin"));
+    // #1657, spec 6: an image starts in Pin; a pdf starts in Select.
+    expect(await tool("Pin")).toHaveAttribute("aria-pressed", "true");
     expect(await screen.findByText("Click to place a pin")).toBeInTheDocument();
     expect(screen.getByText(/Esc to cancel/)).toBeInTheDocument();
     await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("pin"));
+    fireEvent.click(await tool("Select"));
+    await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("select"));
+    expect(screen.queryByText("Click to place a pin")).toBeNull();
+    // And back: Pin is one click away.
+    fireEvent.click(await tool("Pin"));
+    expect(await screen.findByText("Click to place a pin")).toBeInTheDocument();
     // Esc leaves pin mode.
     fireEvent.keyDown(document.body, { key: "Escape" });
     await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("select"));
+    expect(screen.queryByText("Click to place a pin")).toBeNull();
+  });
+
+  it("a pdf opens in Select mode (#1657)", async () => {
+    asFormat("pdf", H1);
+    mount(viewerPath(OWNED));
+    await col();
+    await hello();
+    expect(await tool("Select")).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByText("Click to place a pin")).toBeNull();
   });
 
@@ -226,7 +238,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("the frame's Esc (comment.escape) leaves pin mode", async () => {
-    asFormat("image", H1);
+    asFormat("pdf", H1);
     mount(viewerPath(OWNED));
     await col();
     fireEvent.click(await tool("Pin"));
@@ -236,7 +248,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("a forged comment.escape outside pin mode does nothing", async () => {
-    asFormat("image", H1);
+    asFormat("pdf", H1);
     mount(viewerPath(OWNED));
     await col();
     setMode.mockClear();
@@ -248,7 +260,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("in full screen, the first Esc leaves pin mode and the second leaves full screen", async () => {
-    asFormat("image", H1);
+    asFormat("pdf", H1);
     viewport(1280);
     const router = mount(fullPath(OWNED));
     fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
@@ -281,7 +293,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   });
 
   it("a comment.pin outside pin mode is ignored (page code can forge it)", async () => {
-    asFormat("image", H1);
+    asFormat("pdf", H1);
     mount(viewerPath(OWNED));
     await col();
     await onPin({ x: 0.5, y: 0.5 });
