@@ -132,6 +132,9 @@ export * from "./transports/pi.ts";
 const NOTICE_RETRY_MS = 30_000;
 /** The hub caps renames per hour; a refused one holds that agent's renames this long. */
 const RENAME_HOLD_MS = 60 * 60_000;
+/** At most this many rename frames per ref in this window. */
+const RENAME_WINDOW_MS = 60_000;
+const RENAME_WINDOW_MAX = 3;
 /** A registration the hub rate-limited is retried this late, or on the next reconnect. */
 const LIMITED_RETRY_MS = 5 * 60_000;
 /** How far back `oa-bus status` lists late deliveries. */
@@ -662,8 +665,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
 
   /** rename ids awaiting the hub's answer, to their agent_ref; cleared with the link. */
   const renameIds = new Map<string, string>();
-  /** Names a `rename` frame already carried, per ref: each goes once. */
-  const renamedTo = new Map<string, Set<string>>();
+  /** When each ref's recent `rename` frames went (a sliding window). */
+  const renameFrames = new Map<string, number[]>();
   /** After the hub's rate_limited on a rename: no rename for that ref until this time. */
   const renameHeldUntil = new Map<string, number>();
   /**
@@ -722,12 +725,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       return;
     // The hub's hourly cap answered: nothing more for this ref until the hour is out.
     if (Date.now() < (renameHeldUntil.get(rec.ref) ?? 0)) return;
-    // Never twice for one name: a name that flips back and forth cannot loop.
-    const sent = renamedTo.get(rec.ref) ?? new Set<string>();
-    if (sent.has(rec.proposedName)) {
-      rec.sentName = rec.proposedName;
-      return;
-    }
+    // At most 3 frames per ref per minute: past that the latest name waits
+    // for the window to end (the next tick retries), so a flip cannot loop.
+    const now = Date.now();
+    const recent = (renameFrames.get(rec.ref) ?? []).filter(
+      (t) => now - t < RENAME_WINDOW_MS,
+    );
+    renameFrames.set(rec.ref, recent);
+    if (recent.length >= RENAME_WINDOW_MAX) return;
     const id = frameId();
     renameIds.set(id, rec.ref);
     if (
@@ -741,8 +746,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       })
     ) {
       rec.sentName = rec.proposedName;
-      sent.add(rec.proposedName);
-      renamedTo.set(rec.ref, sent);
+      recent.push(now);
     } else renameIds.delete(id);
   };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */

@@ -159,15 +159,28 @@ describe("a session's unchanged name never loops renames (#1635)", () => {
     expect(h.of("rename")).toHaveLength(1);
   });
 
-  it("a name flipping between two real values sends one frame per distinct name", async () => {
+  it("a real A to B to A rename reaches the hub", async () => {
     const { h, d } = await start();
-    for (let i = 0; i < 5; i++) {
-      write(d, 4242, "s-a", i % 2 ? "OA Contributions" : "Other");
+    write(d, 4242, "s-a", "Other");
+    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(1));
+    write(d, 4242, "s-a", "OA Contributions");
+    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(2));
+    expect(h.of("rename")[1]?.proposed_name).toBe("OA Contributions");
+  });
+
+  it("a name flipping every tick sends at most 3 frames a minute, then the latest after the window", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { h, d } = await start();
+    for (let i = 0; i < 8; i++) {
+      write(d, 4242, "s-a", i % 2 ? "Even" : `Odd${i}`);
       await settle(80);
     }
-    expect(new Set(h.of("rename").map((r) => r.proposed_name)).size).toBe(
-      h.of("rename").length,
-    );
-    expect(h.of("rename").length).toBeLessThanOrEqual(2);
+    expect(h.of("rename")).toHaveLength(3);
+    write(d, 4242, "s-a", "Latest");
+    await settle(100);
+    expect(h.of("rename")).toHaveLength(3);
+    vi.setSystemTime(Date.now() + 61_000);
+    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(4));
+    expect(h.of("rename")[3]?.proposed_name).toBe("Latest");
   });
 });
