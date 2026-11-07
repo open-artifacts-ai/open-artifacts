@@ -60,7 +60,10 @@ class Mailbox {
   notices = 0;
   /** Deliveries whose text is still being built; they count against the cap. */
   building = 0;
-  constructor(readonly root: Root) {}
+  readonly root: Root;
+  constructor(root: Root) {
+    this.root = root;
+  }
 }
 
 export type BusDeps = {
@@ -89,7 +92,9 @@ export class Bus {
   private boxes = new Map<string, Mailbox>();
   private seq = 0;
   private readonly now: () => number;
-  constructor(private readonly deps: BusDeps) {
+  private readonly deps: BusDeps;
+  constructor(deps: BusDeps) {
+    this.deps = deps;
     this.now = deps.now ?? Date.now;
   }
 

@@ -1,8 +1,10 @@
+import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { daemonSocketPath } from "@oa/bus-adapter-claude-code";
 import { type Hello, serveDaemon } from "@oa/bus-ipc";
+import { build } from "esbuild";
 import { afterEach, expect, it } from "vitest";
 import { Bus } from "../src/bus.ts";
 import { realConnect } from "../src/link.ts";
@@ -83,3 +85,47 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
   expect(acks).toEqual(["mmmmmmmmmmmmmmm1"]);
   bus.closeAll();
 });
+
+it("does not keep its host process alive once the turn is over", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ocb-"));
+  cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const server = await serveDaemon({
+    path: daemonSocketPath(home),
+    onHello: () => ({ bus_name: "openclaw-1", namespace: "ns", global: false }),
+    onFrame: () => undefined,
+  });
+  cleanup.push(() => server.close());
+  // The sources use TypeScript that strip-only mode cannot run: bundle the child.
+  const script = join(home, "child.mjs");
+  await build({
+    entryPoints: [join(import.meta.dirname, "unref-child.ts")],
+    outfile: script,
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    mainFields: ["module", "main"],
+    banner: {
+      js: 'import { createRequire as r } from "node:module"; const require = r(import.meta.url);',
+    },
+    logLevel: "silent",
+  });
+  const child = await new Promise<{ status: number | null; out: string }>(
+    (resolve) => {
+      const p = spawn(process.execPath, [script, home], {
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+      let out = "";
+      p.stdout.on("data", (d) => {
+        out += d;
+      });
+      const kill = setTimeout(() => p.kill("SIGKILL"), 8000);
+      p.on("close", (status) => {
+        clearTimeout(kill);
+        resolve({ status, out });
+      });
+    },
+  );
+  expect(child.out.trim()).toBe("link-open");
+  expect(child.status).toBe(0);
+}, 15000);

@@ -18,12 +18,11 @@ export type Connect = (root: Root) => Promise<DaemonClient>;
 
 /** A hello the daemon refused, or a daemon that is not there. */
 export class LinkError extends Error {
-  constructor(
-    message: string,
-    readonly refused = false,
-  ) {
+  readonly refused: boolean;
+  constructor(message: string, refused = false) {
     super(message);
     this.name = "LinkError";
+    this.refused = refused;
   }
 }
 
@@ -74,6 +73,8 @@ export function realConnect(
         path: daemonSocketPath(home),
         hello,
         onError: () => {},
+        // An `openclaw agent --local` run must exit when its turn ends.
+        unref: true,
       });
     } catch (e) {
       const refused = typeof e === "object" && e !== null && "frame" in e;

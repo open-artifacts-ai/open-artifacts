@@ -56,8 +56,14 @@ export async function connectDaemon(opts: {
   requestTimeoutMs?: number;
   /** Receives errors thrown by the onDeliver callback; defaults to console.error. */
   onError?: (e: unknown) => void;
+  /**
+   * Do not keep the process alive for this connection. For an adapter that
+   * lives inside a host it must not hold open, such as a one-shot CLI run.
+   */
+  unref?: boolean;
 }): Promise<DaemonClient> {
   const sock: Socket = connect(opts.path);
+  if (opts.unref) sock.unref();
   await new Promise<void>((resolve, reject) => {
     sock.once("connect", resolve);
     sock.once("error", reject);
