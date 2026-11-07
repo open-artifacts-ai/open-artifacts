@@ -53,6 +53,7 @@ import { PlanBanner } from "./PlanBanner";
 import { QuotaBanner } from "./QuotaBanner";
 import { SyncBanner, SyncDot, syncDot } from "./SyncBanner";
 import { Toaster } from "./toast";
+import { UpdateBanner } from "./UpdateBanner";
 import { UpdateChip, UpdateDot } from "./UpdateChip";
 import { UserAvatar } from "./UserAvatar";
 import { instanceUpdate, shouldNudge } from "./update";
@@ -167,6 +168,13 @@ function Layout() {
     return (
       <main id="oa-main">
         <QuotaBanner />
+        {/* The artifact view owns its chrome; the banner sits above it, never over the frame. */}
+        {state.status === "authed" && (
+          <UpdateBanner
+            me={state.me}
+            className="px-[var(--oa-space-3)] pt-[var(--oa-space-2)] !mb-0"
+          />
+        )}
         <Outlet />
       </main>
     );
@@ -231,6 +239,11 @@ function Layout() {
               role={me?.user.role}
               plan={me?.instance.plan}
               usageOff={hasFeature(me, "usage_off")}
+              className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
+            />
+            {/* Last: notices that block work come first; one update banner only. */}
+            <UpdateBanner
+              me={me}
               className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
             />
             <Outlet />

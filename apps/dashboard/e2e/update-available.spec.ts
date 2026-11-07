@@ -28,7 +28,7 @@ test("admin: the chip opens the popover; Upgrade copies the prompt", async ({
   await expect(pop).toContainText("v0.14.2");
   await expect(pop).toContainText("v0.15.0");
   await expect(pop.getByRole("status")).toBeEmpty();
-  await pop.getByRole("button", { name: "Upgrade" }).click();
+  await pop.getByRole("button", { name: "Upgrade", exact: true }).click();
   await expect(pop.getByRole("status")).toHaveText(COPIED);
   const origin = new URL(baseURL ?? page.url()).origin;
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
@@ -57,7 +57,7 @@ test("admin: the Version card copies the same prompt", async ({
   await page.goto("/settings/instance?mock=update");
   const card = page.getByRole("region", { name: "Version" });
   await expect(card).toContainText("Update available");
-  await card.getByRole("button", { name: "Upgrade" }).click();
+  await card.getByRole("button", { name: "Upgrade", exact: true }).click();
   await expect(card.getByRole("status")).toHaveText(COPIED);
   await expect(card.getByRole("status")).toBeEmpty({ timeout: 6000 });
 });
@@ -170,7 +170,7 @@ for (const w of [1280, 390])
       .getByRole("status");
     const actions = page
       .getByRole("region", { name: "Version" })
-      .getByRole("button", { name: "Upgrade" });
+      .getByRole("button", { name: "Upgrade", exact: true });
     await expect(status).toBeAttached();
     expect((await status.boundingBox())?.height).toBe(0);
     // The settings card's padding, plus its 1px border.
