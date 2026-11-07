@@ -18,7 +18,22 @@ import {
 import type { ReactNode } from "react";
 
 /** The 13 animals lucide-react ships (ANIMALS entries with lucide: true). */
-export const LUCIDE_ANIMALS: Record<string, LucideIcon> = {
+export type LucideAnimalId =
+  | "bird"
+  | "bug"
+  | "cat"
+  | "dog"
+  | "fish"
+  | "panda"
+  | "rabbit"
+  | "rat"
+  | "shrimp"
+  | "snail"
+  | "squirrel"
+  | "turtle"
+  | "worm";
+
+export const LUCIDE_ANIMALS: Record<LucideAnimalId, LucideIcon> = {
   bird: Bird,
   bug: Bug,
   cat: Cat,
@@ -38,7 +53,7 @@ export const LUCIDE_ANIMALS: Record<string, LucideIcon> = {
  * The 45 drawn animals, path data as delivered by Design (artifact
  * mY5UdFZmpQrorDXo). Stroke only; the outer svg sets stroke and fill.
  */
-export const DRAWN: Record<string, ReactNode> = {
+export const DRAWN: Record<Exclude<AnimalId, LucideAnimalId>, ReactNode> = {
   duck: (
     <>
       <circle cx="9" cy="7" r="4" />
@@ -420,7 +435,7 @@ export function AnimalIcon({
   id: AnimalId;
   className?: string;
 }) {
-  const Lucide = LUCIDE_ANIMALS[id];
+  const Lucide = (LUCIDE_ANIMALS as Partial<Record<AnimalId, LucideIcon>>)[id];
   if (Lucide) {
     return <Lucide aria-hidden="true" className={className} />;
   }
@@ -435,7 +450,7 @@ export function AnimalIcon({
       strokeLinecap="round"
       strokeLinejoin="round"
     >
-      {DRAWN[id]}
+      {(DRAWN as Partial<Record<AnimalId, ReactNode>>)[id]}
     </svg>
   );
 }
