@@ -23,6 +23,7 @@ import { dirname, join } from "node:path";
 import { harnessSkills } from "@oa/shared/harness-skills";
 import type { Harness } from "./adapters.ts";
 import { codexHome } from "./codex.ts";
+import { hermesHome } from "./hermes.ts";
 
 /** Immediately after the frontmatter: the only file we may replace. */
 export const SKILL_MARKER =
@@ -71,6 +72,7 @@ export const skillDir = (
     pi: agents,
     omp: agents,
     codex: join(codexHome(deps.home, e), "AGENTS.md"),
+    hermes: join(hermesHome(deps.home, e), "skills"),
   }[h];
 };
 
@@ -309,7 +311,7 @@ export async function installSkill(
 /** Removes our marked files in every harness, and our Codex block, and nothing else. */
 export const uninstallSkill = (
   deps: Pick<SkillDeps, "home" | "env">,
-  harnesses: Harness[] = ["claude", "opencode", "pi", "omp", "codex"],
+  harnesses: Harness[] = ["claude", "opencode", "pi", "omp", "codex", "hermes"],
 ): SkillResult => {
   const written: string[] = [];
   const notes: string[] = [];
