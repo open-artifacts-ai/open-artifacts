@@ -1,5 +1,7 @@
 // Live versions: the R.events client (one socket, never sends, reconnects)
 // and Design's safe-swap decision table (option B).
+
+import { PRESENCE_PING, PRESENCE_PING_MS } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clampRetryHint,
@@ -11,6 +13,8 @@ import { isSafeSwap } from "../src/viewer/useLiveVersions";
 
 class FakeWS {
   static all: FakeWS[] = [];
+  static OPEN = 1;
+  readyState = 1;
   onmessage: ((e: { data: unknown }) => void) | null = null;
   onclose: ((e: { code: number }) => void) | null = null;
   send = vi.fn();
@@ -31,15 +35,17 @@ const mk = (embed = false) => {
   const onEvent = vi.fn();
   const onGone = vi.fn();
   const onDown = vi.fn();
+  const onPresence = vi.fn();
   const c = connectArtifactEvents({
     id: "abc",
     embed,
     onEvent,
+    onPresence,
     onGone,
     onDown,
   });
   vi.advanceTimersByTime(0);
-  return { c, onEvent, onGone, onDown };
+  return { c, onEvent, onGone, onDown, onPresence };
 };
 
 beforeEach(() => {
@@ -58,7 +64,7 @@ describe("events socket", () => {
     mk().c.close();
     mk(true).c.close();
     expect(FakeWS.all.map((w) => w.url)).toEqual([
-      "wss://app.test/api/v1/artifacts/abc/events",
+      "wss://app.test/api/v1/artifacts/abc/events?ping=1",
       "wss://app.test/api/v1/artifacts/abc/events?embed=1",
     ]);
   });
@@ -83,7 +89,7 @@ describe("events socket", () => {
     expect(onEvent.mock.calls[1]?.[0].restoredFrom).toBe(1);
   });
 
-  it("never sends anything on the socket", () => {
+  it("sends only a ping frame, never anything else", () => {
     const { c } = mk();
     last().frame({ type: "hello", version: 1 });
     last().closed(4408);
@@ -91,7 +97,9 @@ describe("events socket", () => {
     last().closed(1006);
     vi.advanceTimersByTime(60_000);
     c.close();
-    for (const w of FakeWS.all) expect(w.send).not.toHaveBeenCalled();
+    for (const w of FakeWS.all)
+      for (const call of w.send.mock.calls)
+        expect(call).toEqual([PRESENCE_PING]);
   });
 
   it("reconnects at once on 4408; the new hello catches up", () => {
@@ -288,5 +296,91 @@ describe("onWake (the viewer's retry trigger)", () => {
     doc.visibilityState = "visible";
     doc.dispatchEvent(new Event("visibilitychange"));
     expect(cb).toHaveBeenCalledTimes(3);
+  });
+});
+
+const entry = {
+  key: "AAAAAAAAAAAAAAAA",
+  kind: "anon",
+  name: "Anonymous Duck",
+  named: false,
+  color: 1,
+  animal: "duck",
+};
+const pings = (w: FakeWS) => w.send.mock.calls.length;
+
+describe("presence on the events socket", () => {
+  it('sends "ping" every 30 s and only "ping"', () => {
+    mk();
+    last().frame({ type: "hello", version: 1 });
+    expect(pings(last())).toBe(0);
+    vi.advanceTimersByTime(PRESENCE_PING_MS * 3);
+    expect(last().send.mock.calls).toEqual([
+      [PRESENCE_PING],
+      [PRESENCE_PING],
+      [PRESENCE_PING],
+    ]);
+  });
+
+  it("a 4408 reconnect carries ping=1 and no since", () => {
+    mk();
+    last().closed(4408);
+    expect(FakeWS.all).toHaveLength(2);
+    expect(last().url).toBe(
+      "wss://app.test/api/v1/artifacts/abc/events?ping=1",
+    );
+    expect(last().url).not.toContain("since");
+  });
+
+  it("presence frames go to onPresence with you, not onEvent", () => {
+    const { onEvent, onPresence } = mk();
+    last().frame({ type: "hello", version: 1, you: "BBBBBBBBBBBBBBBB" });
+    last().frame({ type: "presence", viewers: [entry], total: 1 });
+    expect(onEvent.mock.calls.map(([e]) => e.type)).toEqual(["hello"]);
+    expect(onPresence).toHaveBeenCalledWith(
+      { type: "presence", viewers: [entry], total: 1 },
+      "BBBBBBBBBBBBBBBB",
+    );
+  });
+
+  it("embed mode sends no ping=1 and no ping frames", () => {
+    mk(true);
+    expect(last().url).toBe(
+      "wss://app.test/api/v1/artifacts/abc/events?embed=1",
+    );
+    vi.advanceTimersByTime(PRESENCE_PING_MS * 3);
+    expect(pings(last())).toBe(0);
+  });
+
+  it("ignores pong", () => {
+    const { onEvent, onPresence } = mk();
+    last().onmessage?.({ data: "pong" });
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(onPresence).not.toHaveBeenCalled();
+  });
+
+  it("no ping after gone, after close, or while paused; resume starts exactly one interval", () => {
+    const { c } = mk();
+    const a = last();
+    a.frame({ type: "gone", reason: "changed" });
+    vi.advanceTimersByTime(PRESENCE_PING_MS * 3);
+    expect(pings(a)).toBe(0);
+    c.resume();
+    const b = last();
+    expect(b).not.toBe(a);
+    vi.advanceTimersByTime(PRESENCE_PING_MS * 2);
+    expect(pings(b)).toBe(2);
+    expect(pings(a)).toBe(0);
+    c.close();
+    vi.advanceTimersByTime(PRESENCE_PING_MS * 3);
+    expect(pings(b)).toBe(2);
+  });
+
+  it("stops pinging when the socket closes", () => {
+    mk();
+    const a = last();
+    a.closed(1006);
+    vi.advanceTimersByTime(PRESENCE_PING_MS * 3);
+    expect(pings(a)).toBe(0);
   });
 });
