@@ -9,6 +9,7 @@ import {
   renderHook,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { isSoloPaused, useCan } from "../src/auth/permissions";
@@ -115,12 +116,13 @@ it("useCan leaves the owner alone on a Solo trial", async () => {
 
 it("a paused Solo owner sees the paused prompt and no upload control", async () => {
   mountHosted("/", { billing: PAUSED });
+  const banner = within(await screen.findByTestId("plan-banner"));
   expect(
-    await screen.findByText(
-      "Paused. Your Solo plan is paused. Keep publishing for $1/month or $12/year.",
+    banner.getByText(
+      "Your Solo plan is paused. Keep publishing for $1/month or $12/year.",
     ),
   ).toBeVisible();
-  expect(screen.getByRole("link", { name: "Plan and billing" })).toBeVisible();
+  expect(banner.getByRole("link", { name: "Plan and billing" })).toBeVisible();
   expect(screen.queryByRole("button", { name: "Upload" })).toBeNull();
 });
 
@@ -130,12 +132,13 @@ it("a paused Solo member is told whom to ask, with no billing link", async () =>
     user: { ...m.user, role: "member" },
     auth: { method: "google", readOnly: true, cap: "plan", expiresAt: null },
   }));
+  const banner = within(await screen.findByTestId("plan-banner"));
   expect(
-    await screen.findByText(
-      "Paused. Publishing is paused until this instance's Solo plan is paid. Ask your instance owner.",
+    banner.getByText(
+      "Publishing is paused until this instance's Solo plan is paid. Ask your instance owner.",
     ),
   ).toBeVisible();
-  expect(screen.queryByRole("link", { name: "Plan and billing" })).toBeNull();
+  expect(banner.queryByRole("link", { name: "Plan and billing" })).toBeNull();
 });
 
 it("the mock refuses a publish with 403 plan_read_only on a paused Solo", async () => {
@@ -214,10 +217,33 @@ it("Plan and billing: a paused Solo says so and offers the upgrades", async () =
   mountHosted("/settings/plan", { billing: PAUSED });
   expect(await screen.findByText("Paused")).toBeVisible();
   expect(
-    screen.getAllByText(
+    within(screen.getByTestId("plan-banner")).getByText(
       "Your Solo plan is paused. Keep publishing for $1/month or $12/year.",
-    ).length,
-  ).toBeGreaterThan(0);
+    ),
+  ).toBeVisible();
+  expect(screen.getByRole("button", { name: "Pay $1/month" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Pay $12/year" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Upgrade to Team" })).toBeVisible();
+});
+
+it("Plan and billing: Pay $12/year starts Solo Checkout with the year interval", async () => {
+  const posts = calls("POST");
+  mountHosted("/settings/plan", { billing: TRIAL });
+  fireEvent.click(await screen.findByRole("button", { name: "Pay $12/year" }));
+  await waitFor(() =>
+    expect(lastRedirect).toHaveBeenCalledWith(
+      "https://checkout.stripe.com/c/pay/cs_test_mock_checkout_solo_year",
+    ),
+  );
+  expect(posts.find((c) => c.path.endsWith("/billing/checkout"))?.body).toEqual(
+    { tier: "solo", interval: "year" },
+  );
+});
+
+it("Plan and billing: Team and Business pay no Solo prices", async () => {
+  mountHosted("/settings/plan", { billing: TEAM });
+  await screen.findByRole("button", { name: "Manage billing" });
+  expect(screen.queryByRole("button", { name: /Pay \$/ })).toBeNull();
 });
 
 it("owners and admins reach Plan and billing while the instance is locked at the plan cap", async () => {

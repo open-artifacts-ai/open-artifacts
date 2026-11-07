@@ -4,6 +4,7 @@
 // instance. The card shows only what Me.instance.billing carries: no invoice
 // or card data (that is the Stripe portal).
 import {
+  type BillingCheckoutInput,
   type BillingTier,
   BillingUrlSchema,
   type PlanView,
@@ -21,7 +22,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useMutation } from "@tanstack/react-query";
 import { api } from "../api/client";
-import { errorCopy, readOnlyCopy } from "../api/errorCopy";
+import { errorCopy } from "../api/errorCopy";
 import { useRedirect } from "../auth/redirect";
 import { useMe } from "../auth/useMe";
 import { Notice } from "../layout/Notice";
@@ -29,7 +30,7 @@ import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { INSET, muted, SettingsCard, STACK } from "./ui";
 
-type Paid = "team" | "business";
+type Buy = Pick<BillingCheckoutInput, "tier" | "interval">;
 type Column = "solo" | "team" | "business";
 
 const NAME: Record<BillingTier, string> = {
@@ -102,18 +103,16 @@ export const planStatus = (
   b: PlanView,
 ): { pill: Status; note?: { tone: "warning" | "info"; text: string } } => {
   const solo = b.tier === "solo" || b.tier === "free";
+  // Read-only states: the app-wide banner already says why, so the card
+  // shows only the status.
   if (b.reason === "solo_unpaid")
-    return {
-      pill: { label: "Paused", tone: "warn" },
-      note: { tone: "warning", text: readOnlyCopy("solo_unpaid", true) },
-    };
+    return { pill: { label: "Paused", tone: "warn" } };
   if (b.readOnly)
     return {
       pill: {
         label: b.reason === "suspended" ? "Suspended" : "Read-only",
         tone: "bad",
       },
-      note: { tone: "warning", text: readOnlyCopy(b.reason, true) },
     };
   if (b.status === "past_due")
     return {
@@ -151,10 +150,10 @@ export function Plan() {
   const redirect = useRedirect();
   // Checkout and the portal answer a Stripe-hosted URL; we only open it.
   const go = useMutation({
-    mutationFn: (to: Paid | "portal") =>
+    mutationFn: (to: Buy | "portal") =>
       to === "portal"
         ? api.send("POST", R.billingPortal, {}, BillingUrlSchema)
-        : api.send("POST", R.billingCheckout, { tier: to }, BillingUrlSchema),
+        : api.send("POST", R.billingCheckout, to, BillingUrlSchema),
     onSuccess: ({ url }) => redirect(url),
     onError: (e: unknown) =>
       toast({
@@ -205,13 +204,37 @@ export function Plan() {
             </Button>
           ) : (
             <>
-              <Button disabled={busy} onClick={() => go.mutate("business")}>
+              {column === "solo" && (
+                <>
+                  <Button
+                    disabled={busy}
+                    onClick={() =>
+                      go.mutate({ tier: "solo", interval: "month" })
+                    }
+                  >
+                    Pay $1/month
+                  </Button>
+                  <Button
+                    disabled={busy}
+                    onClick={() =>
+                      go.mutate({ tier: "solo", interval: "year" })
+                    }
+                  >
+                    Pay $12/year
+                  </Button>
+                </>
+              )}
+              <Button
+                variant={column === "solo" ? "outline" : "default"}
+                disabled={busy}
+                onClick={() => go.mutate({ tier: "business" })}
+              >
                 Upgrade to Business
               </Button>
               <Button
                 variant="outline"
                 disabled={busy}
-                onClick={() => go.mutate("team")}
+                onClick={() => go.mutate({ tier: "team" })}
               >
                 Upgrade to Team
               </Button>

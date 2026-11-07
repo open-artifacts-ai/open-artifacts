@@ -25,7 +25,10 @@ export function PlanBanner({
   // instance (the cap "plan" is only on the other people).
   const admin = me?.user.role === "owner" || me?.user.role === "admin";
   return (
-    <div className={`mb-[var(--oa-space-3)] ${className}`}>
+    <div
+      data-testid="plan-banner"
+      className={`mb-[var(--oa-space-3)] ${className}`}
+    >
       <Notice
         tone="warning"
         compact
@@ -37,7 +40,7 @@ export function PlanBanner({
           ) : undefined
         }
       >
-        {`${billing.reason === "solo_unpaid" ? "Paused." : "Read-only."} ${readOnlyCopy(billing.reason, admin)}`}
+        {readOnlyCopy(billing.reason, admin)}
       </Notice>
     </div>
   );

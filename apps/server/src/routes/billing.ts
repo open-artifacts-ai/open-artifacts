@@ -99,9 +99,15 @@ async function stripeUrl(
 export function mountBilling(app: AppType): void {
   app.post(R.billingCheckout, async (c) => {
     requireBillingManager(c);
-    const { tier } = await jsonBody(c, BillingCheckoutInputSchema);
-    // Billing's /checkout body is { install, ts, plan } (Platform #858).
-    return c.json(await stripeUrl(c, CHECKOUT_PATH, { plan: tier }));
+    const { tier, interval } = await jsonBody(c, BillingCheckoutInputSchema);
+    // Billing's /checkout body is { install, ts, plan } (Platform #858), plus
+    // interval for solo only (month or year; hosted half, #1568).
+    return c.json(
+      await stripeUrl(c, CHECKOUT_PATH, {
+        plan: tier,
+        ...(interval ? { interval } : {}),
+      }),
+    );
   });
 
   app.post(R.billingPortal, async (c) => {

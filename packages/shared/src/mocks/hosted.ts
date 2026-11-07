@@ -653,9 +653,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       } satisfies PlanRefusalDetails);
     return planRefusal();
   };
-  const billingUrl = (kind: "checkout" | "portal") =>
+  const billingUrl = (kind: "checkout" | "portal", suffix = "") =>
     HttpResponse.json({
-      url: `https://checkout.stripe.com/c/pay/cs_test_mock_${kind}`,
+      url: `https://checkout.stripe.com/c/pay/cs_test_mock_${kind}${suffix}`,
     });
   /** Snoozed now (#412): until is still ahead (server health.ts snoozedAt). */
   const snoozedNow = (h: HeldSweep) =>
@@ -1438,7 +1438,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       if (r.error) return r.error;
       if (o.billingDown)
         return err("billing_unavailable", "Billing is unavailable");
-      return billingUrl("checkout");
+      // Solo names its interval (the schema refuses a missing one).
+      return billingUrl(
+        "checkout",
+        r.data.tier === "solo" ? `_solo_${r.data.interval}` : "",
+      );
     }),
     http.post("*/api/v1/billing/portal", ({ request }) => {
       if (o.selfHosted || c.isAnon(request) || !isAdmin()) return notFound();
