@@ -23,6 +23,8 @@ const TABS: {
   roles: Role[];
   /** Only where the instance reports a directory (hosted, or self-host with Workspace connected). */
   directory?: true;
+  /** Hosted only: the instance reports a billing plan. */
+  plan?: true;
   /** Hosted spaces admin: org admins, and members who manage a space. */
   spaces?: true;
   /** #1293: canUseBus, or revoke-only with a machine left (#1447). */
@@ -58,6 +60,12 @@ const TABS: {
     bus: true,
   },
   { to: "/settings/instance", label: "Instance", roles: ["owner", "admin"] },
+  {
+    to: "/settings/plan",
+    label: "Plan and billing",
+    roles: ["owner", "admin"],
+    plan: true,
+  },
 ];
 
 export function SettingsLayout() {
@@ -93,6 +101,7 @@ export function SettingsLayout() {
             role &&
             t.roles.includes(role) &&
             (!t.directory || directory) &&
+            (!t.plan || me?.instance.billing) &&
             (!t.spaces || canAdminSpaces(me)) &&
             (!t.bus || machines === "full" || machines === "revoke") &&
             (t.to !== "/settings/connections" || !noAgents),

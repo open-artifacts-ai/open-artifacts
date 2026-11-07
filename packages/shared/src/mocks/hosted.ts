@@ -653,9 +653,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       } satisfies PlanRefusalDetails);
     return planRefusal();
   };
-  const billingUrl = (kind: "checkout" | "portal") =>
+  const billingUrl = (kind: "checkout" | "portal", suffix = "") =>
     HttpResponse.json({
-      url: `https://checkout.stripe.com/c/pay/cs_test_mock_${kind}`,
+      url: `https://checkout.stripe.com/c/pay/cs_test_mock_${kind}${suffix}`,
     });
   /** Snoozed now (#412): until is still ahead (server health.ts snoozedAt). */
   const snoozedNow = (h: HeldSweep) =>
@@ -1438,7 +1438,11 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       if (r.error) return r.error;
       if (o.billingDown)
         return err("billing_unavailable", "Billing is unavailable");
-      return billingUrl("checkout");
+      // Solo names its interval (the schema refuses a missing one).
+      return billingUrl(
+        "checkout",
+        r.data.tier === "solo" ? `_solo_${r.data.interval}` : "",
+      );
     }),
     http.post("*/api/v1/billing/portal", ({ request }) => {
       if (o.selfHosted || c.isAnon(request) || !isAdmin()) return notFound();
@@ -1455,6 +1459,37 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         count: billing.creatorsThisMonth ?? 0,
       });
     }),
+    // -- solo_unpaid (view-only, the owner included): publishing, restoring,
+    // uploads, live-data and storage writes answer 403 plan_read_only. Reads,
+    // sharing and visibility keep working, as on the server.
+    // Data writes are refused for anonymous callers too; the rest need a
+    // sign-in first (the base handlers answer their 401).
+    ...(
+      [
+        ["post", "*/api/v1/artifacts", true],
+        ["post", "*/api/v1/artifacts/:id/versions", true],
+        ["post", "*/api/v1/artifacts/:id/versions/:v/restore", true],
+        ["post", "*/api/v1/uploads", true],
+        ["put", "*/api/v1/artifacts/:id/data", false],
+        ["put", "*/api/v1/artifacts/:id/data/*", false],
+        ["patch", "*/api/v1/artifacts/:id/data/*", false],
+        ["delete", "*/api/v1/artifacts/:id/data/*", false],
+        ["put", "*/api/v1/artifacts/:id/storage/*", true],
+        ["delete", "*/api/v1/artifacts/:id/storage/*", true],
+      ] as const
+    ).map(([method, path, signedIn]) =>
+      http[method](path, ({ request }) =>
+        !o.selfHosted &&
+        !(signedIn && c.isAnon(request)) &&
+        billing.reason === "solo_unpaid" &&
+        billing.readOnly
+          ? err("plan_read_only", "Publishing is paused", {
+              tier: billing.tier,
+              reason: "solo_unpaid",
+            } satisfies PlanRefusalDetails)
+          : undefined,
+      ),
+    ),
     http.post("*/api/v1/members", async ({ request }) => {
       if (!c.isAnon(request) && isAdmin()) {
         const refused = planRefusal();

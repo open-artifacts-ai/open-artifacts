@@ -332,11 +332,16 @@ it("the locked owner isn't read-only: controls stay enabled and refusals use the
   });
   fireEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
   await waitFor(() => expect(posts.length).toBe(1));
-  expect(
-    await screen.findByText(
-      "Your trial ended, so this instance is read-only until you pick a plan.",
-    ),
-  ).toBeVisible();
+  const copy =
+    "Your trial ended, so this instance is read-only until you pick a plan.";
+  // The refusal, not the plan banner that says the same.
+  await waitFor(() =>
+    expect(
+      screen
+        .getAllByText(copy)
+        .some((e) => !e.closest('[data-testid="plan-banner"]')),
+    ).toBe(true),
+  );
 });
 
 const asOwner = (m: Me): Me => ({ ...m, user: { ...m.user, role: "owner" } });

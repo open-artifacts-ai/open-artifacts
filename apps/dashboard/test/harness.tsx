@@ -194,8 +194,12 @@ export const wrapper = ({ children }: { children: ReactNode }) => (
     still invisible: assert toasts through this, not findBy + toBeVisible. */
 export const findVisibleToast = (text: Matcher, options?: waitForOptions) =>
   waitFor(() => {
-    const el = screen.getByText(text);
-    expect(el.closest("[data-sonner-toast]")).not.toBeNull();
+    // The plan banner can carry the same words: only a toast counts here.
+    const el = screen
+      .getAllByText(text)
+      .find((e) => e.closest("[data-sonner-toast]"));
+    expect(el).toBeDefined();
+    if (!el) throw new Error("no toast");
     expect(el).toBeVisible();
     return el;
   }, options);

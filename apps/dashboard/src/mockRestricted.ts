@@ -13,6 +13,8 @@ import { getResponse, HttpResponse, http, type RequestHandler } from "msw";
  */
 export const planLockedHandlers = (
   hosted: RequestHandler[],
+  /** ?mock=solo-paused-member: a member under an unpaid Solo's lock (cap "plan"). */
+  soloMember = false,
 ): RequestHandler[] => [
   http.get("*/api/v1/me", async ({ request }) => {
     const res = await getResponse(hosted, request);
@@ -23,18 +25,27 @@ export const planLockedHandlers = (
     };
     return HttpResponse.json({
       ...me,
-      user: { ...me.user, role: "admin" },
+      user: { ...me.user, role: soloMember ? "member" : "admin" },
       auth: { ...me.auth, readOnly: true, cap: "plan" },
       instance: {
         ...me.instance,
-        billing: {
-          tier: "trial",
-          status: null,
-          trialEndsAt: null,
-          graceUntil: null,
-          readOnly: true,
-          reason: "trial_ended",
-        },
+        billing: soloMember
+          ? {
+              tier: "solo",
+              status: null,
+              trialEndsAt: null,
+              graceUntil: null,
+              readOnly: true,
+              reason: "solo_unpaid",
+            }
+          : {
+              tier: "trial",
+              status: null,
+              trialEndsAt: null,
+              graceUntil: null,
+              readOnly: true,
+              reason: "trial_ended",
+            },
       },
     });
   }),

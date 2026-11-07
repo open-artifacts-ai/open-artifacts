@@ -12,7 +12,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
 import { qk, useOAuthClients, useTokens } from "../api/queries";
-import { useFrozen, useHosted } from "../auth/permissions";
+import { isSoloPaused, useFrozen, useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import {
@@ -217,9 +217,13 @@ export function Library({ scope }: { scope: Scope }) {
   const agents = [...seenAgents.current].sort();
   const guest = me.status === "authed" && me.me.user.role === "guest";
   const meId = me.status === "authed" ? me.me.user.id : undefined;
-  // Guests and restricted (capped) members can't create anywhere.
+  // Guests and restricted (capped) members can't create anywhere, nor can
+  // anyone on an unpaid Solo (publishing is paused for the owner too).
   const canCreate =
-    me.status === "authed" && !guest && (me.me.auth?.cap ?? null) === null;
+    me.status === "authed" &&
+    !guest &&
+    (me.me.auth?.cap ?? null) === null &&
+    !isSoloPaused(me.me);
 
   const canSetUpAgent = useCanSetUpAgent();
   // The plan lock (Design, #863): every publish is refused (readOnlyCap, and

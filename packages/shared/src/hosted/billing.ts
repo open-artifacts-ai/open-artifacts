@@ -120,12 +120,22 @@ export const PLAN_STALE_MS = 7 * 86_400_000;
 export const TRIAL_DAYS = 14;
 
 /**
- * POST R.billingCheckout body: the plan to buy. The answer is BillingUrl,
- * the Stripe Checkout page to open; nothing else.
+ * POST R.billingCheckout body: the plan to buy. Solo also names the billing
+ * interval (month or year); the billing service maps solo+month and
+ * solo+year to the Solo prices. Any other tier refuses an interval. The
+ * answer is BillingUrl, the Stripe Checkout page to open; nothing else.
  */
-export const BillingCheckoutInputSchema = z.strictObject({
-  tier: z.enum(["team", "business"]),
-});
+export const BillingIntervalSchema = z.enum(["month", "year"]);
+export type BillingInterval = z.infer<typeof BillingIntervalSchema>;
+export const BillingCheckoutInputSchema = z
+  .strictObject({
+    tier: z.enum(["solo", "team", "business"]),
+    interval: BillingIntervalSchema.optional(),
+  })
+  .refine((v) => (v.tier === "solo") === (v.interval !== undefined), {
+    message: "interval is required for solo and refused for other tiers",
+    path: ["interval"],
+  });
 export type BillingCheckoutInput = z.infer<typeof BillingCheckoutInputSchema>;
 
 /** R.billingCheckout and R.billingPortal answer: a Stripe-hosted URL only. */
