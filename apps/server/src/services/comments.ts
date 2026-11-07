@@ -15,6 +15,7 @@ import { type ArtifactRow, accessLevel, callerOf } from "../auth/authz.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
+import { logInfo } from "../log.js";
 import {
   bodyOk,
   type NewExtras,
@@ -419,10 +420,11 @@ async function resolveExtras(
   const none = { extras: undefined, agents: [], mentions: [], assign: null };
   const wantsTargets = (x.mentions?.length ?? 0) > 0 || x.assign !== undefined;
   if (!wantsTargets && !x.ask) return none;
-  if (wantsTargets && !opts.moderator)
+  // An ask notifies agents too: the same rule as mentions and assignments.
+  if ((wantsTargets || x.ask) && !opts.moderator)
     throw new ApiError(
       "forbidden",
-      "Only the owner and editors can mention or assign",
+      "Only the owner and editors can mention, assign or ask",
     );
   if (x.ask && who.kind !== "user")
     throw new ApiError("forbidden", "Sign in to ask a question");
@@ -535,13 +537,23 @@ async function deliver(
       state: stateOf(outcome.get(r.assign) ?? "dropped", true),
     });
   if (states.length === 0) return c;
-  return call(() =>
-    stub(env, a.id).commentsTargetStates({
-      threadId,
-      commentId: c.id,
-      states,
-    }),
-  );
+  try {
+    return await call(() =>
+      stub(env, a.id).commentsTargetStates({
+        threadId,
+        commentId: c.id,
+        states,
+      }),
+    );
+  } catch (e) {
+    // Deleted between the write and here: the comment was created and the
+    // notices went out, so the POST stands (a retry would notify twice).
+    if (e instanceof ApiError && e.code === "not_found") {
+      logInfo("comment_deleted_before_delivery_record");
+      return c;
+    }
+    throw e;
+  }
 }
 
 /** A new thread: `raw` is the anchor as posted, `body` the first comment. 201 Thread. */

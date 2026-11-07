@@ -39,13 +39,17 @@ const tag = newId().slice(0, 6).toLowerCase();
 class FakeBus implements NoticeDelivery {
   sent: { userId: string; notice: BusNotice }[] = [];
   outcome: DeliveryOutcome = "delivered";
+  /** Runs while a notice is being delivered (a write racing the POST). */
+  during: (() => Promise<unknown>) | null = null;
   async deliver(_e: Env, userId: string, notice: BusNotice) {
     this.sent.push({ userId, notice });
+    await this.during?.();
     return this.outcome;
   }
   clear() {
     this.sent = [];
     this.outcome = "delivered";
+    this.during = null;
   }
 }
 const bus = new FakeBus();
@@ -515,5 +519,95 @@ describe("asks", () => {
     expect(c.ask?.question).toBe("Ship it?");
     expect(c.mentions?.[0]?.delivery).toBe("delivered");
     expect(bus.sent).toHaveLength(1);
+  });
+
+  it("an ask needs the owner or an editor, like mentions", async () => {
+    const s = await setup();
+    const art = { id: s.id, format: "html", currentVersion: 1 } as never;
+    await expect(
+      addThread(
+        E,
+        art,
+        who(viewer),
+        view(viewer),
+        {
+          anchor: NOTE,
+          body: "q",
+          ask: { question: "q", options: OPTS, to: [{ key: s.claude }] },
+        },
+        { moderator: false },
+      ),
+    ).rejects.toMatchObject({ code: "forbidden" });
+    expect(bus.sent).toHaveLength(0);
+  });
+
+  it("answering is refused once the addressee's share is revoked", async () => {
+    const s = await setup();
+    const t = await ask(s.id, [viewer.userId]);
+    const cid = (t.comments[0] as Comment).id;
+    await deleteShare(E, owner.member, s.id, viewer.email);
+    const r = await answer(s.id, t.id, cid, viewer, "wide");
+    expect(r.status).toBe(404);
+    const l = (await (
+      await api(app, R.comments(s.id), owner.cookie)
+    ).json()) as CommentList;
+    expect(l.threads[0]?.comments[0]?.ask?.answer).toBeUndefined();
+  });
+
+  it("mention and assign of the same agent send one notice, of the assign kind", async () => {
+    const s = await setup();
+    const r = await post(s.id, owner, {
+      mentions: [{ key: s.claude }],
+      assign: { key: s.claude },
+    });
+    expect(r.status).toBe(201);
+    expect(bus.sent).toHaveLength(1);
+    expect(bus.sent[0]?.notice.text).toContain("work was assigned");
+    const c = ((await r.json()) as Thread).comments[0] as Comment;
+    expect(c.mentions?.[0]?.delivery).toBe("delivered");
+    expect(c.assigned?.state).toBe("delivered");
+  });
+
+  it("a comment deleted while its notices go out still answers 201, with one notice", async () => {
+    const s = await setup();
+    bus.during = async () => {
+      const l = (await (
+        await api(app, R.comments(s.id), owner.cookie)
+      ).json()) as CommentList;
+      const t = l.threads[0] as Thread;
+      await api(
+        app,
+        R.comment(s.id, t.id, (t.comments[0] as Comment).id),
+        owner.cookie,
+        { method: "DELETE" },
+      );
+    };
+    const r = await post(s.id, owner, { mentions: [{ key: s.claude }] });
+    expect(r.status).toBe(201);
+    expect(bus.sent).toHaveLength(1);
+  });
+
+  it("a signed-out reader sees mentions without owner or address", async () => {
+    const s = await setup({ visibility: "public" });
+    await post(s.id, owner, {
+      mentions: [{ key: s.claude }],
+      assign: { key: s.codex },
+    });
+    const r = await api(app, R.comments(s.id), null, {
+      headers: { "cf-connecting-ip": "198.51.100.9" },
+    });
+    expect(r.status).toBe(200);
+    const c = ((await r.json()) as CommentList).threads[0]
+      ?.comments[0] as Comment;
+    // The author is the existing public shape; the targets add nothing.
+    const text = JSON.stringify([c.mentions, c.assigned]);
+    expect(text).toContain("Claude");
+    expect(Object.keys(c.mentions?.[0] ?? {}).sort()).toEqual([
+      "delivery",
+      "key",
+      "name",
+    ]);
+    for (const leak of [owner.userId, editor.userId, "ns-", "@"])
+      expect(text).not.toContain(leak);
   });
 });
