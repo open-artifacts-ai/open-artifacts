@@ -24,14 +24,17 @@ export function AgentsPage({
   ns?: string;
 }) {
   const label = AGENTS_TABS.find((t) => t.to === tab)?.label ?? "Agents";
-  useDocumentTitle(tab === "/agents" ? "Agents" : `${label} · Agents`);
+  useDocumentTitle(
+    tab === "/agents" ? "Agent messaging" : `${label} · Agent messaging`,
+  );
   return (
     <div className="mx-auto min-w-0 max-w-[1120px]">
       <h1 className="m-0 text-[length:var(--oa-text-xl)] font-semibold">
-        Agents
+        Agent messaging
       </h1>
       <p className={`m-0 ${muted}`}>
-        Your agents on every machine. Only you see this page.
+        Let your running agents discover and message each other across machines.
+        Only you see this page.
       </p>
       <nav
         // On phones the strip wraps onto a second row instead of scrolling, so
