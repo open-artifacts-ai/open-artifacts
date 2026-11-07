@@ -169,6 +169,37 @@ describe("verifyQuote and checkAnchor", () => {
       verifyQuote(env, jsId, "html", 1, { exact: "i pops j" }),
     ).rejects.toMatchObject({ code: "anchor_not_in_version" });
   });
+  it("a quote on text the page's script renders is accepted (#1735)", async () => {
+    // The shape of the reported page: a static shell, the intro filled by script.
+    const l = await login(`cb-${newId().slice(0, 6).toLowerCase()}@x.com`);
+    const { id: js } = await publish(
+      env,
+      (await getUser(env, l.userId)) as never,
+      {
+        title: "Stepper",
+        format: "html",
+        content: `<title>Monotonic Stack Stepper</title><h1>Monotonic Stack Stepper</h1>
+<p class="lede" id="lede"></p>
+<script>document.getElementById("lede").innerHTML = 'Finds the <b>previous strictly smaller</b> element; <code>j</code> pops.';</script>`,
+      } as never,
+      null,
+      undefined,
+      "create",
+    );
+    for (const exact of [
+      "previous strictly smaller",
+      "j",
+      "Finds the previous",
+    ])
+      expect(
+        await checkAnchor(env, art(js, "html"), {
+          kind: "text",
+          exact,
+          prefix: "",
+          suffix: "",
+        }),
+      ).toMatchObject({ anchor: { kind: "text", exact } });
+  });
   it("an entry over 5 MB is not parsed: 422", async () => {
     await env.DB.prepare(
       "update versions set manifest = json_set(manifest, '$[0].size', 6000000) where artifact_id = ?",
