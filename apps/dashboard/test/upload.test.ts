@@ -129,12 +129,15 @@ describe("entries the viewer can't open", () => {
     expect(seen).toHaveLength(0);
   });
 
-  it("refuses a binary file with no viewer (a JPEG, until images open)", async () => {
+  it("refuses a binary file with no viewer (a .docx), and opens a JPEG (#779)", async () => {
     await expect(
-      uploadArtifact({ files: [binary("IMG_0042.jpg")], title: "T" }, () => {}),
+      uploadArtifact({ files: [binary("brief.docx")], title: "T" }, () => {}),
     ).rejects.toThrow(
-      "IMG_0042.jpg can't be opened here. Upload a web page, Markdown, code or a PDF.",
+      "brief.docx can't be opened here. Upload a web page, Markdown, code, a PDF or an image.",
     );
+    await expect(
+      entryRefusal("IMG_0042.jpg", binary("IMG_0042.jpg")),
+    ).resolves.toBeNull();
     expect(seen).toHaveLength(0);
   });
 

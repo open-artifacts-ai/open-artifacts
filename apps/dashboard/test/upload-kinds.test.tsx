@@ -15,7 +15,7 @@ globalThis.ResizeObserver ??= class {
   disconnect() {}
 } as unknown as typeof ResizeObserver;
 
-const KINDS = "Web pages, Markdown, code and PDFs";
+const KINDS = "Web pages, Markdown, code, PDFs and images";
 const empty = http.get(`*${R.artifacts}`, () =>
   HttpResponse.json({ items: [], nextCursor: null }),
 );
