@@ -9,6 +9,7 @@ import {
 } from "../context.ts";
 import { readMachine } from "../machine.ts";
 import { readAssets, uninstallAdapters } from "../steps/adapters.ts";
+import { removeHabits } from "../steps/habits.ts";
 import { hermesHome } from "../steps/hermes.ts";
 import { purge } from "../steps/purge.ts";
 import { uninstallSkill } from "../steps/skill.ts";
@@ -52,6 +53,15 @@ export async function uninstall(
   } catch (e) {
     say(ctx, [
       `Could not remove the skill files: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
+  // The always-on habits block goes too: only our marked block, nothing else.
+  try {
+    const habits = removeHabits({ home: ctx.userHome, env: ctx.env });
+    for (const n of habits.notes) say(ctx, [n]);
+  } catch (e) {
+    say(ctx, [
+      `Could not remove the habits block: ${e instanceof Error ? e.message : String(e)}`,
     ]);
   }
   // Quiet on success: the wiring lines above already say what was removed.
