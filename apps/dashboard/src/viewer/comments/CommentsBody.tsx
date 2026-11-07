@@ -57,6 +57,22 @@ function GuestName({ api }: { api: CommentsApi }) {
   );
 }
 
+/** A guest's way to sign in, back to this page. */
+function SignInLink() {
+  return (
+    <a
+      className={`${TXT} text-[var(--oa-accent-fg)] underline`}
+      href={`/sign-in?next=${encodeURIComponent(
+        `${window.location.pathname}${window.location.search}`,
+      )}`}
+      target={isEmbed() ? "_blank" : undefined}
+      rel="noopener noreferrer"
+    >
+      Sign in
+    </a>
+  );
+}
+
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
 function Composer({
   placeholder,
@@ -687,20 +703,7 @@ function NewThread({ api }: { api: CommentsApi }) {
         submit="Comment"
         autoFocus
         buttonsRight
-        lead={
-          api.guest ? (
-            <a
-              className={`${TXT} text-[var(--oa-accent-fg)] underline`}
-              href={`/sign-in?next=${encodeURIComponent(
-                `${window.location.pathname}${window.location.search}`,
-              )}`}
-              target={isEmbed() ? "_blank" : undefined}
-              rel="noopener noreferrer"
-            >
-              Sign in
-            </a>
-          ) : undefined
-        }
+        lead={api.guest ? <SignInLink /> : undefined}
         agents={pool}
         onDirty={api.setDraftDirty}
         onCancel={api.cancelDraft}
@@ -752,6 +755,8 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         placeholder="Comment on the whole page"
         submit="Comment"
         alwaysOpen={false}
+        buttonsRight
+        lead={api.guest ? <SignInLink /> : undefined}
         agents={pool}
         onSubmit={(body, x) =>
           create.mutateAsync({

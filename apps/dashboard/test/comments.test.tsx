@@ -725,6 +725,14 @@ describe("comments: live and signed out", () => {
     mount(viewerPath(PUBLIC));
     // The column is open by default where it has room.
     const c = await col();
+    // The whole-page box: Sign in at the left of the row, back to this page.
+    fireEvent.focus(
+      within(c).getByRole("textbox", { name: "Comment on the whole page" }),
+    );
+    // (jsdom's window.location is "/", not the memory router's path.)
+    expect(
+      within(c).getByRole("link", { name: "Sign in" }).getAttribute("href"),
+    ).toMatch(/^\/sign-in\?next=%2F/);
     fireEvent.change(within(c).getByRole("textbox", { name: "Your name" }), {
       target: { value: "Pat" },
     });
@@ -1066,6 +1074,25 @@ describe("comments: review round 1", () => {
       expect(document.querySelectorAll("iframe").length).toBeGreaterThan(1),
     );
     expect(view()).toBeNull();
+  });
+
+  it("P2: an explicit column close survives a live version swap", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await hello();
+    fireEvent.click(screen.getByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    await bump(OWNED, 97);
+    await waitFor(() =>
+      expect(document.querySelectorAll("iframe").length).toBeGreaterThan(1),
+    );
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).toBeNull();
   });
 
   it("B1: a typed reply and an open delete confirm hold a swap too", async () => {

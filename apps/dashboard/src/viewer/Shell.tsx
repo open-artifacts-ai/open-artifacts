@@ -140,6 +140,7 @@ function Viewer({
   hosted,
   plan,
   chromeless,
+  colState,
   slot,
   newer = false,
   gone = null,
@@ -152,6 +153,8 @@ function Viewer({
   onUndelete,
 }: {
   chromeless: boolean;
+  /** The column's open/closed choice, kept by the shell across version swaps. */
+  colState: [boolean | null, (v: boolean | null) => void];
   /** The live-version chip (title bar) or pill (/full); only on the shown layer. */
   slot?: ReactNode;
   newer?: boolean;
@@ -221,7 +224,7 @@ function Viewer({
   // Comments (#682). The list lives in a column beside the page, a tab of the
   // side panel, or a dialog (phones, full screen).
   const surface = useSurface(chromeless);
-  const [colOpen, setColOpen] = useState<boolean | null>(null);
+  const [colOpen, setColOpen] = colState;
   const [dialogOpen, setDialogOpen] = useState(false);
   const openSurface = useRef(() => {});
   const getBridge = useCallback(() => bridge.current, []);
@@ -688,6 +691,9 @@ function ArtifactShell({
   chromeless?: boolean;
 }) {
   const q = useArtifact(id);
+  // The comments column's open/closed choice outlives a version swap (each
+  // version's Viewer is its own keyed layer).
+  const colState = useState<boolean | null>(null);
   // In render, not an effect: child effects run first, and the viewer may
   // mount in this same commit when the info is cached.
   const prefetched = useRef(false);
@@ -809,6 +815,7 @@ function ArtifactShell({
               version={n}
               explicitVersion={v !== undefined}
               chromeless={chromeless}
+              colState={colState}
               authed={authed}
               anonymous={me.status === "anonymous"}
               readOnly={authed && me.me.auth?.readOnly === true}
