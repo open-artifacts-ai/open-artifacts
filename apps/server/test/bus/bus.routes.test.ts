@@ -907,7 +907,11 @@ describe("dashboard REST", () => {
         .status,
     ).toBe(204);
     expect((await upgrade(m.token)).status).toBe(401);
-    expect((await upgrade(other.token)).status).toBe(101);
+    const live = await upgrade(other.token);
+    expect(live.status).toBe(101);
+    const lws = live.webSocket as WebSocket;
+    lws.accept();
+    trackSocket(lws);
   });
 
   it("/me says canConnect, on GET and PATCH, from the server's rule", async () => {
