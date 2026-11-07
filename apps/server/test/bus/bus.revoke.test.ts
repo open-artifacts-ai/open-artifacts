@@ -475,6 +475,49 @@ describe("bus rows outlive the index window (#1299)", () => {
     }
   });
 
+  it("a close the hub starts reports gone itself (workerd does not call webSocketClose for it)", async () => {
+    const u = await member();
+    const name = `bus:${u.userId}`;
+    const a = await connected(u, "one");
+    expect(await rowOf(name)).not.toBeNull();
+    const hub = await hubOf(u.userId);
+    const realNs = e.USER_PRESENCE;
+    if (!realNs) throw new Error("USER_PRESENCE unbound");
+    let gones = 0;
+    const countingNs = {
+      idFromName: (n: string) => realNs.idFromName(n),
+      get: (id: DurableObjectId) => {
+        const real = realNs.get(id) as unknown as {
+          seen(n: string): Promise<void>;
+          gone(n: string): Promise<void>;
+        };
+        return {
+          seen: (n: string) => real.seen(n),
+          gone: async (n: string) => {
+            gones++;
+            await real.gone(n);
+          },
+        };
+      },
+    };
+    await runInDurableObject(hub, (inst: BusHub) => {
+      const h = inst as unknown as { env: object };
+      h.env = Object.assign(Object.create(h.env), {
+        USER_PRESENCE: countingNs,
+      });
+    });
+    await hub.closeAll("test");
+    // The hub reported before the client saw the close.
+    expect(gones).toBe(1);
+    expect(await rowOf(name)).toBeNull();
+    expect((await a.d.closed).code).toBe(4403);
+    // The client's echo does not reach webSocketClose: no second report.
+    await vi.waitFor(async () =>
+      expect((await hub.snapshot()).connected).toEqual([]),
+    );
+    expect(gones).toBe(1);
+  });
+
   it("a missing gone (the hub crashed) is harmless: closeInstall reaches the row, the cap prunes it", async () => {
     const u = await member();
     const name = `bus:${u.userId}`;
