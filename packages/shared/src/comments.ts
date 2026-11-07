@@ -141,10 +141,14 @@ export const anchorInputSchema = z.discriminatedUnion("kind", [
   textAnchorSchema.extend({
     version: textAnchorSchema.shape.version.optional(),
   }),
-  // #1490: the server sets a pin's contentHash itself; a client need not send it.
+  // The server stamps a pin's contentHash itself and overwrites a sent one (#1490);
+  // a value that is not a sha256 hex digest is refused (400 invalid_anchor).
   pinAnchorSchema.extend({
     version: pinAnchorSchema.shape.version.optional(),
-    contentHash: pinAnchorSchema.shape.contentHash.optional(),
+    contentHash: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .optional(),
   }),
 ]);
 export type AnchorInput = z.infer<typeof anchorInputSchema>;

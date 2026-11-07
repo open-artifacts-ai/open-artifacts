@@ -4,6 +4,7 @@
  * fixture, so a test or the mock app has something to show.
  */
 import { delay, type HttpHandler, HttpResponse, http } from "msw";
+import type { Anchor } from "../anchor.js";
 import {
   AnswerBodySchema,
   type ArtifactAgent,
@@ -299,20 +300,18 @@ export function createCommentMock({
       const a = art(params.id) as ArtifactSummary;
       const parsed = anchorInputSchema.safeParse(j.anchor);
       if (!parsed.success) return err("invalid_anchor", "Invalid anchor");
-      const at = parsed.data;
-      const anchor =
-        at.kind === "note"
-          ? at
-          : at.kind === "pin"
+      const d = parsed.data;
+      const anchor: Anchor =
+        d.kind === "note"
+          ? d
+          : d.kind === "pin"
             ? {
-                ...at,
-                version: at.version ?? a.currentVersion,
-                // The server sets it; whatever a client sent is replaced.
-                contentHash:
-                  contentHash?.(a.id, at.version ?? a.currentVersion) ??
-                  "unknown",
+                ...d,
+                version: d.version ?? a.currentVersion,
+                // The server stamps a pin's hash; the mock keeps a fixed one.
+                contentHash: "0".repeat(64),
               }
-            : { ...at, version: at.version ?? a.currentVersion };
+            : { ...d, version: d.version ?? a.currentVersion };
       const c = comment(j.body, mine());
       const bad2 = decorate(c, j, a.id);
       if (bad2) return bad2;
