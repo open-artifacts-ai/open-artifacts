@@ -250,7 +250,8 @@ export async function installHermes(
     sweepStaging(staging, own, deps.staging);
     const tmp = join(staging, own);
     try {
-      mkdirSync(tmp);
+      // recursive: a peer's rmdir may remove the empty staging folder after our mkdir above.
+      mkdirSync(tmp, { recursive: true });
       for (const f of files(shipped)) {
         mkdirSync(join(tmp, f, ".."), { recursive: true });
         cpSync(join(shipped, f), join(tmp, f));
