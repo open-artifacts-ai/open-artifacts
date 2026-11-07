@@ -588,11 +588,36 @@ describe("MCP tools over PAT", () => {
       expect(u).toMatch(/^http:\/\/content\.localhost\/c\/[^/]+\/.+\?dl=1$/);
   });
 
-  it("create_upload returns a signed upload URL", async () => {
+  it("create_upload returns a signed upload URL without sha256", async () => {
     const up = sc<{ uploadId: string; artifactId: string; url: string }>(
       await tool(client, "create_upload", { path: "big.bin", size: 3_000_000 }),
     );
     expect(up.url).toContain(up.uploadId);
+    expect(
+      await env.DB.prepare("select expected_sha256 from uploads where id = ?")
+        .bind(up.uploadId)
+        .first(),
+    ).toEqual({ expected_sha256: null });
+  });
+
+  it("create_upload accepts and normalizes an optional sha256", async () => {
+    const up = sc<{ uploadId: string; artifactId: string; url: string }>(
+      await tool(client, "create_upload", {
+        path: "big.bin",
+        size: 3_000_000,
+        sha256: "AB".repeat(32),
+      }),
+    );
+    expect(up.url).toContain(up.uploadId);
+    expect(
+      await env.DB.prepare("select expected_sha256 from uploads where id = ?")
+        .bind(up.uploadId)
+        .first(),
+    ).toEqual({ expected_sha256: "ab".repeat(32) });
+    const { tools } = await client.listTools();
+    expect(
+      tools.find((t) => t.name === "create_upload")?.inputSchema.properties,
+    ).toHaveProperty("sha256");
   });
 
   it("runtime docs resource is readable", async () => {
