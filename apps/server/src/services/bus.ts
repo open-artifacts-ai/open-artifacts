@@ -322,9 +322,9 @@ const ONE_OF = `select last_used_at as lastUsedAt, revoked_at as revokedAt
  * Revokes the member's machine `id` (D1, so its token is refused at once),
  * then closes its sockets on their BusHub. Idempotent: an already revoked
  * machine of theirs is closed again and resolves true. False (the route's
- * 404) when the id is unknown or another member's. Throws 500 internal when the hub
- * could not close the sockets (the token is already refused): retrying is
- * safe.
+ * 404) when the id is unknown or another member's. Throws 503
+ * revoke_not_closed when the hub could not close the sockets (the token is
+ * already refused): retrying is safe.
  */
 export async function revokeBusMachine(
   env: Env,
@@ -349,7 +349,7 @@ export async function revokeBusMachine(
   } catch (e) {
     logError("bus_revoke_close_failed", e);
     throw new ApiError(
-      "internal",
+      "revoke_not_closed",
       "The machine is revoked, but its connection could not be closed yet. Try again.",
     );
   }
