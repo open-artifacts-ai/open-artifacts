@@ -85,7 +85,7 @@ Then run `opencode mcp auth open-artifacts` and sign in.
 
 ## Codex CLI
 
-[Codex CLI supports browser OAuth](https://learn.chatgpt.com/docs/extend/mcp?surface=cli):
+[Codex CLI supports browser OAuth](https://developers.openai.com/codex/mcp/):
 
 ```sh
 codex mcp add open-artifacts --url https://artifacts.example.com/mcp
