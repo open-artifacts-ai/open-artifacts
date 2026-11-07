@@ -447,7 +447,7 @@ export async function install(
         habits: habits && {
           state: habits.state,
           files: habits.files,
-          hermes: habits.hermes ? "provided by the plugin" : null,
+          plugins: habits.plugins,
         },
         question: habits?.question ?? null,
       })}\n`,

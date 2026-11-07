@@ -2,6 +2,7 @@
 // --habits / --no-habits / --show-habits commands. The block itself, and the
 // files it goes in, are steps/habits.ts.
 
+import { join } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { checkAdapters } from "../steps/adapters.ts";
@@ -18,12 +19,21 @@ import {
   habitsQuestion,
   habitsQuestionLines,
   linkInfo,
+  PLUGIN_HARNESSES,
+  type PluginHabitsState,
+  type PluginHarness,
+  pluginHabitsState,
   removeHabits,
   setHabitsOptOut,
+  setPluginHabits,
   writeHabits,
 } from "../steps/habits.ts";
 
-export const HERMES_HABITS = "Hermes: provided by the plugin.";
+/** What a person reads once a plugin's habits are on or off. */
+export const pluginOn = (p: PluginHarness) =>
+  `Habits on in the ${p.label} plugin.`;
+export const pluginOff = (p: PluginHarness) =>
+  `Habits off in the ${p.label} plugin.`;
 
 export type HabitsMode = "yes" | "no" | "show";
 /** What the step decided, for `--json`. */
@@ -31,7 +41,9 @@ export type HabitsOutcome = {
   state: "on" | "off" | "undecided" | "changed" | "none";
   files: string[];
   question: HabitsQuestion | null;
+  /** The plugin harnesses (Hermes) wired now, with their habits state. */
   hermes: boolean;
+  plugins: Record<string, PluginHabitsState>;
 };
 
 const deps = (ctx: Ctx) => ({
@@ -40,8 +52,12 @@ const deps = (ctx: Ctx) => ({
   busHome: ctx.home,
 });
 
-/** The harnesses wired now that have an always-on file we write, and whether Hermes is wired. */
-function wired(ctx: Ctx): { targets: HabitsHarness[]; hermes: boolean } {
+/** The harnesses wired now that have an always-on file we write, and the plugin ones. */
+function wired(ctx: Ctx): {
+  targets: HabitsHarness[];
+  hermes: boolean;
+  plugins: PluginHarness[];
+} {
   const w = checkAdapters({
     home: ctx.userHome,
     busHome: ctx.home,
@@ -53,6 +69,7 @@ function wired(ctx: Ctx): { targets: HabitsHarness[]; hermes: boolean } {
   return {
     targets: HABITS_HARNESSES.filter((h) => w[h] === "configured"),
     hermes: w.hermes === "configured",
+    plugins: PLUGIN_HARNESSES.filter((p) => w[p.name] === "configured"),
   };
 }
 
@@ -67,50 +84,75 @@ const one = (ctx: Ctx, f: string) => {
 const shown = (ctx: Ctx, files: string[]) =>
   files.map((f) => one(ctx, f)).join(", ");
 
-/** `--show-habits`: the exact block, as it would be written. */
+/** "Hermes plugin: on", "off" or "not installed". */
+const pluginStateText = (ctx: Ctx, p: PluginHarness) =>
+  `${p.label} plugin: ${pluginHabitsState(deps(ctx), p)}`;
+
+/** `--show-habits`: the exact block, as it would be written, then each plugin's state. */
 const show = (ctx: Ctx): number => {
-  say(ctx, habitsBlock());
+  say(
+    ctx,
+    habitsBlock(),
+    "",
+    PLUGIN_HARNESSES.map((p) => pluginStateText(ctx, p)),
+  );
   return 0;
 };
 
 /** `--habits`: write the block for the wired harnesses and clear any opt-out. */
 function turnOn(ctx: Ctx): number {
-  const { targets, hermes } = wired(ctx);
-  if (targets.length === 0 && !hermes) {
+  const { targets, plugins } = wired(ctx);
+  if (targets.length === 0 && plugins.length === 0) {
     sayErr(ctx, [
       `No harness with an always-on instructions file is set up. Run ${BUS_CMD} install first.`,
     ]);
     return 1;
   }
   const r = writeHabits(deps(ctx), targets, { explicit: true });
+  const pl = setPluginHabits(deps(ctx), plugins, true);
   setHabitsOptOut(ctx.home, false, stamp(ctx));
   if (r.files.length > 0) say(ctx, `Habits on in ${shown(ctx, r.files)}`);
-  if (hermes) say(ctx, HERMES_HABITS);
-  for (const n of r.notes) say(ctx, n);
-  return r.notes.length > 0 && r.files.length === 0 ? 1 : 0;
+  for (const p of pl.changed) say(ctx, pluginOn(p));
+  const notes = [...r.notes, ...pl.notes];
+  for (const n of notes) say(ctx, n);
+  return notes.length > 0 && r.files.length + pl.changed.length === 0 ? 1 : 0;
 }
 
 /** `--no-habits`: remove the block everywhere and remember the choice. */
 function turnOff(ctx: Ctx): number {
   const r = removeHabits(deps(ctx));
   setHabitsOptOut(ctx.home, true, stamp(ctx));
+  const pluginMarkers = PLUGIN_HARNESSES.map((p) =>
+    join(p.dir(ctx.userHome, ctx.env), p.marker),
+  );
+  const blocks = r.files.filter((f) => !pluginMarkers.includes(f));
+  const offIn = PLUGIN_HARNESSES.filter((_, i) =>
+    r.files.includes(pluginMarkers[i] as string),
+  );
   say(
     ctx,
-    r.files.length > 0
-      ? `Habits off. Removed from ${shown(ctx, r.files)}`
+    blocks.length > 0
+      ? `Habits off. Removed from ${shown(ctx, blocks)}`
       : "Habits off. There was no block to remove.",
     "A reinstall will not add them back.",
   );
+  for (const p of offIn) say(ctx, pluginOff(p));
   for (const n of r.notes) say(ctx, n);
   return 0;
 }
 
+/** Each plugin harness's habits state, by name. */
+const pluginStates = (ctx: Ctx): Record<string, PluginHabitsState> =>
+  Object.fromEntries(
+    PLUGIN_HARNESSES.map((p) => [p.name, pluginHabitsState(deps(ctx), p)]),
+  );
+
 /** The lines a person reads before answering. */
 function disclosure(
   ctx: Ctx,
-  pending: { path: string; s: BlockState }[],
+  pending: { path: string; label?: string; s: BlockState }[],
 ): string[] {
-  const files = pending.map((p) => one(ctx, p.path));
+  const files = pending.map((p) => p.label ?? one(ctx, p.path));
   const changed = pending.filter((p) => p.s.state === "changed");
   if (changed.length === 0)
     return [
@@ -136,20 +178,31 @@ export async function habitsAfterInstall(
   ctx: Ctx,
   json: boolean,
 ): Promise<HabitsOutcome> {
-  const { targets, hermes } = wired(ctx);
+  const { targets, hermes, plugins } = wired(ctx);
   const none: HabitsOutcome = {
     state: "none",
     files: [],
     question: null,
     hermes,
+    plugins: pluginStates(ctx),
   };
   if (habitsOptedOut(ctx.home))
     return { ...none, state: "off", question: null };
-  if (targets.length === 0) return none;
-  const states = targets.map((h) => ({
-    path: habitsFileState(deps(ctx), h).path,
-    s: habitsFileState(deps(ctx), h) as BlockState,
-  }));
+  if (targets.length === 0 && plugins.length === 0) return none;
+  const states: { path: string; label?: string; s: BlockState }[] = [
+    ...targets.map((h) => ({
+      path: habitsFileState(deps(ctx), h).path,
+      s: habitsFileState(deps(ctx), h) as BlockState,
+    })),
+    // A plugin has no block to compare: its marker is there ("current") or not.
+    ...plugins.map((p) => ({
+      path: join(p.dir(ctx.userHome, ctx.env), p.marker),
+      label: `the ${p.label} plugin`,
+      s: {
+        state: pluginHabitsState(deps(ctx), p) === "on" ? "current" : "absent",
+      } as BlockState,
+    })),
+  ];
   const pending = states.filter((p) => p.s.state !== "current");
   const have = states.filter((p) => p.s.state === "current").map((p) => p.path);
   if (pending.length === 0)
@@ -157,12 +210,14 @@ export async function habitsAfterInstall(
   const changed = pending.some((p) => p.s.state === "changed");
   const state = changed ? "changed" : "undecided";
   const asked = pending.map((p) => p.path);
-  const question = habitsQuestion(asked.map((f) => one(ctx, f)));
+  const question = habitsQuestion(
+    pending.map((p) => p.label ?? one(ctx, p.path)),
+  );
   if (ctx.stdinIsTTY && ctx.readLine && !json) {
     say(ctx, "", disclosure(ctx, pending));
     // A symlink out of the home (a dotfiles or repo file) needs a typed yes: Enter is no.
     const outside = pending.some(
-      (p) => linkInfo({ home: ctx.userHome }, p.path)?.outside,
+      (p) => !p.label && linkInfo({ home: ctx.userHome }, p.path)?.outside,
     );
     const a = (
       await ctx.readLine(
@@ -186,22 +241,32 @@ export async function habitsAfterInstall(
         ),
         { explicit: a !== "" },
       );
+      const pl = setPluginHabits(
+        deps(ctx),
+        plugins.filter((p) =>
+          asked.includes(join(p.dir(ctx.userHome, ctx.env), p.marker)),
+        ),
+        true,
+      );
       if (!changed) setHabitsOptOut(ctx.home, false, stamp(ctx));
       if (r.files.length > 0) say(ctx, `Habits on in ${shown(ctx, r.files)}`);
-      for (const n of r.notes) say(ctx, n);
+      for (const p of pl.changed) say(ctx, pluginOn(p));
+      for (const n of [...r.notes, ...pl.notes]) say(ctx, n);
       return {
         ...none,
         state: "on",
         files: [...have, ...r.files],
         question: null,
+        plugins: pluginStates(ctx),
       };
     }
     if (a === "n" || a === "no") {
       // A first "no" is the user's choice; declining a changed block keeps the old one.
       if (!changed) {
         setHabitsOptOut(ctx.home, true, stamp(ctx));
+        setPluginHabits(deps(ctx), plugins, false);
         say(ctx, "Habits off. A reinstall will not add them back.");
-        return { ...none, state: "off" };
+        return { ...none, state: "off", plugins: pluginStates(ctx) };
       }
       say(ctx, "Left the habits as they were.");
       return { ...none, state, files: have, question: null };
@@ -226,12 +291,19 @@ export function habitsCommand(mode: HabitsMode, ctx: Ctx): number {
 
 /** The status and doctor line: "Habits: on in …", "off (you opted out)", or not decided. */
 export function habitsLine(ctx: Ctx): string | undefined {
-  const { targets, hermes } = wired(ctx);
+  const { targets, plugins } = wired(ctx);
   if (habitsOptedOut(ctx.home)) return "Habits: off (you opted out)";
   const on = habitsOn(deps(ctx));
-  if (on.length > 0)
-    return `Habits: on in ${shown(ctx, on)}${hermes ? "; Hermes: provided by the plugin" : ""}`;
-  if (targets.length > 0)
-    return `Habits: not decided (${BUS_CMD} install --habits to add them)`;
-  return hermes ? "Habits: Hermes: provided by the plugin" : undefined;
+  // "Hermes plugin: on" or "off", for each plugin harness in use (wired, or already on).
+  const used = PLUGIN_HARNESSES.filter(
+    (p) => plugins.includes(p) || pluginHabitsState(deps(ctx), p) === "on",
+  );
+  const states = used.map((p) => pluginStateText(ctx, p));
+  const tail = states.length > 0 ? `; ${states.join("; ")}` : "";
+  if (on.length > 0) return `Habits: on in ${shown(ctx, on)}${tail}`;
+  if (used.some((p) => pluginHabitsState(deps(ctx), p) === "on"))
+    return `Habits: ${states.join("; ")}`;
+  if (targets.length > 0 || plugins.length > 0)
+    return `Habits: not decided (${BUS_CMD} install --habits to add them)${tail}`;
+  return undefined;
 }

@@ -9,7 +9,8 @@
 //   opencode  $OPENCODE_CONFIG_DIR, else $XDG_CONFIG_HOME/opencode, else
 //             ~/.config/opencode, then AGENTS.md
 //   omp       none: its always-on file is unverified, so nothing is written
-//   hermes    none: the plugin supplies the lines itself
+//   hermes    none: the plugin adds the lines itself, only while a habits.on
+//             marker sits in its folder (PLUGIN_HARNESSES below)
 // pi's file is from pi's docs (configuration.md, "Context files"). OpenCode's is
 // from the design and its docs; no OpenCode source was available to check it.
 
@@ -23,6 +24,12 @@ import {
 import { join, resolve, sep } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { codexHome } from "./codex.ts";
+import {
+  HABITS_MARKER_TEXT,
+  HERMES_HABITS_MARKER,
+  hermesPluginDir,
+  pluginState,
+} from "./hermes.ts";
 import { brokenLink, lineIndex, targetOf, writeAtomic } from "./skill.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
@@ -359,6 +366,10 @@ export function removeHabits(
       }
     }
   }
+  // Plugin harnesses have no file above: their marker goes here (also on uninstall).
+  const p = setPluginHabits(deps, PLUGIN_HARNESSES, false);
+  for (const x of p.changed) files.push(pluginPaths(deps, x).marker);
+  notes.push(...p.notes);
   // Uninstall must not create a record in a folder that has none (it would make
   // a foreign OA_BUS_HOME look like ours to --purge).
   if (deps.busHome && existsSync(join(deps.busHome, "install.json")))
@@ -381,6 +392,103 @@ export function habitsOn(deps: HabitsDeps): string[] {
       } catch {}
     }
   return out;
+}
+
+/**
+ * Harnesses whose bus is a plugin with its own folder: they have no always-on
+ * file, so the plugin adds the lines itself while `habits.on` is in `dir`.
+ * Another plugin harness is one more row.
+ */
+export type PluginHarness = {
+  /** The key in checkAdapters' result. */
+  name: "hermes";
+  /** As shown to the user. */
+  label: string;
+  dir: (home: string, env: Env) => string;
+  marker: string;
+  /** Whether `dir` is our plugin folder (it carries our ownership marker). */
+  ours: (dir: string) => boolean;
+};
+export const PLUGIN_HARNESSES: PluginHarness[] = [
+  {
+    name: "hermes",
+    label: "Hermes",
+    dir: hermesPluginDir,
+    marker: HERMES_HABITS_MARKER,
+    ours: (dir) => pluginState(dir, undefined) !== "foreign" && !isLink(dir),
+  },
+];
+
+export type PluginHabitsState = "on" | "off" | "not installed";
+
+const pluginPaths = (deps: { home: string; env?: Env }, p: PluginHarness) => {
+  const dir = p.dir(deps.home, deps.env ?? {});
+  return { dir, marker: join(dir, p.marker) };
+};
+
+/** Whether the plugin's folder is ours and a regular directory. */
+const pluginOurs = (dir: string, p: PluginHarness): boolean => {
+  try {
+    return lstatSync(dir).isDirectory() && p.ours(dir);
+  } catch {
+    return false;
+  }
+};
+
+export function pluginHabitsState(
+  deps: { home: string; env?: Env },
+  p: PluginHarness,
+): PluginHabitsState {
+  const { dir, marker } = pluginPaths(deps, p);
+  if (!pluginOurs(dir, p)) return "not installed";
+  try {
+    return lstatSync(marker).isFile() ? "on" : "off";
+  } catch {
+    return "off";
+  }
+}
+
+/**
+ * Sets the marker in each given plugin's folder. Refuses, with a note, a
+ * folder that is not ours or is a symlink, and a marker that is a symlink.
+ * Turning off removes only the marker (a symlink is unlinked, never followed).
+ */
+export function setPluginHabits(
+  deps: { home: string; env?: Env },
+  plugins: PluginHarness[],
+  on: boolean,
+): { changed: PluginHarness[]; notes: string[] } {
+  const changed: PluginHarness[] = [];
+  const notes: string[] = [];
+  for (const p of plugins) {
+    const { dir, marker } = pluginPaths(deps, p);
+    try {
+      if (isLink(dir) || !pluginOurs(dir, p)) {
+        // Off with nothing there is already the state wanted.
+        if (on)
+          notes.push(
+            `Left the ${p.label} plugin alone: ${dir} is ${isLink(dir) ? "a symlink" : existsSync(dir) ? "not Open Artifacts bus's" : "not installed"}.`,
+          );
+        continue;
+      }
+      if (on) {
+        if (isLink(marker)) {
+          notes.push(
+            `Left the ${p.label} plugin alone: ${marker} is a symlink. Remove it, then rerun.`,
+          );
+          continue;
+        }
+        writeAtomic(marker, HABITS_MARKER_TEXT);
+        changed.push(p);
+      } else if (existsSync(marker) || isLink(marker)) {
+        rmSync(marker, { force: true });
+        changed.push(p);
+      }
+    } catch (e) {
+      notes.push(`Could not update the ${p.label} plugin: ${reason(e)}`);
+    }
+  }
+  return { changed, notes };
 }
 
 /** The opt-out lives in the install record, so a reinstall keeps it. */

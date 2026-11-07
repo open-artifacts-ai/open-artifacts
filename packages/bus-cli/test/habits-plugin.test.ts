@@ -1,0 +1,234 @@
+// The Hermes plugin's habits (#1602): the plugin adds the lines only while
+// <plugin dir>/habits.on exists, and the installer writes it only on a yes.
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { habitsLine } from "../src/commands/habits.ts";
+import { install } from "../src/commands/install.ts";
+import { uninstall } from "../src/commands/uninstall.ts";
+import {
+  PLUGIN_HARNESSES,
+  pluginHabitsState,
+  removeHabits,
+  setPluginHabits,
+} from "../src/steps/habits.ts";
+import {
+  HERMES_HABITS_MARKER,
+  HERMES_MARKER,
+  hermesPluginDir,
+  pluginHash,
+  pluginState,
+} from "../src/steps/hermes.ts";
+import { fakeCtx, HUB, LABEL, NS, status, TOKEN } from "./fake.ts";
+
+const tmp = () => mkdtempSync(join(tmpdir(), "ob-habits-plugin-"));
+const hermes = PLUGIN_HARNESSES[0] as (typeof PLUGIN_HARNESSES)[number];
+
+/** A plugin folder as the installer leaves it. */
+const ours = (home: string) => {
+  const dir = hermesPluginDir(home, {});
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, HERMES_MARKER),
+    "managed by the Open Artifacts bus installer: edits are replaced on reinstall. abc\n",
+  );
+  writeFileSync(join(dir, "bus.py"), "X = 1\n");
+  return dir;
+};
+
+describe("setPluginHabits", () => {
+  it("yes writes the marker, no removes it", () => {
+    const home = tmp();
+    const dir = ours(home);
+    expect(pluginHabitsState({ home }, hermes)).toBe("off");
+    expect(setPluginHabits({ home }, [hermes], true).changed).toEqual([hermes]);
+    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(true);
+    expect(pluginHabitsState({ home }, hermes)).toBe("on");
+    expect(setPluginHabits({ home }, [hermes], false).changed).toEqual([
+      hermes,
+    ]);
+    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
+  });
+  it("removeHabits (--no-habits, uninstall) takes the marker too", () => {
+    const home = tmp();
+    const dir = ours(home);
+    setPluginHabits({ home }, [hermes], true);
+    const r = removeHabits({ home });
+    expect(r.files).toEqual([join(dir, HERMES_HABITS_MARKER)]);
+    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
+  });
+  it("refuses a folder that is not ours", () => {
+    const home = tmp();
+    const dir = hermesPluginDir(home, {});
+    mkdirSync(dir, { recursive: true });
+    const r = setPluginHabits({ home }, [hermes], true);
+    expect(r.changed).toEqual([]);
+    expect(r.notes[0]).toContain("not Open Artifacts bus's");
+    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
+    expect(pluginHabitsState({ home }, hermes)).toBe("not installed");
+  });
+  it("refuses a symlinked plugin folder and writes nothing through it", () => {
+    const home = tmp();
+    const real = join(home, "elsewhere");
+    mkdirSync(real);
+    writeFileSync(
+      join(real, HERMES_MARKER),
+      "managed by the Open Artifacts bus installer: x\n",
+    );
+    const dir = hermesPluginDir(home, {});
+    mkdirSync(join(dir, ".."), { recursive: true });
+    symlinkSync(real, dir);
+    const r = setPluginHabits({ home }, [hermes], true);
+    expect(r.notes[0]).toContain("symlink");
+    expect(existsSync(join(real, HERMES_HABITS_MARKER))).toBe(false);
+  });
+  it("refuses a symlinked marker, and off unlinks it without following", () => {
+    const home = tmp();
+    const dir = ours(home);
+    const target = join(home, "target");
+    writeFileSync(target, "keep");
+    symlinkSync(target, join(dir, HERMES_HABITS_MARKER));
+    const r = setPluginHabits({ home }, [hermes], true);
+    expect(r.changed).toEqual([]);
+    expect(r.notes[0]).toContain("symlink");
+    expect(readFileSync(target, "utf8")).toBe("keep");
+    setPluginHabits({ home }, [hermes], false);
+    expect(readFileSync(target, "utf8")).toBe("keep");
+    expect(() => lstatSync(join(dir, HERMES_HABITS_MARKER))).toThrow();
+  });
+  it("the marker does not make the plugin stale or foreign", () => {
+    const home = tmp();
+    const dir = ours(home);
+    const shipped = tmp();
+    writeFileSync(join(shipped, "bus.py"), "X = 1\n");
+    writeFileSync(
+      join(dir, HERMES_MARKER),
+      `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
+    );
+    expect(pluginState(dir, shipped)).toBe("current");
+    setPluginHabits({ home }, [hermes], true);
+    expect(pluginHash(dir)).toBe(pluginHash(shipped));
+    expect(pluginState(dir, shipped)).toBe("current");
+  });
+});
+
+// Through the commands, with Hermes the only harness.
+const hermesOnly = (over = {}) => {
+  let enabled = false;
+  return {
+    which: (c: string) => c === "hermes",
+    exec: vi.fn(async (_cmd: string, args: string[]) => {
+      if (args[1] === "enable") enabled = true;
+      if (args[1] === "list")
+        return {
+          code: 0,
+          stdout: JSON.stringify([
+            { name: "oa-bus", status: enabled ? "enabled" : "not enabled" },
+          ]),
+          stderr: "",
+        };
+      return { code: 0, stdout: "", stderr: "" };
+    }),
+    service: {
+      kind: "launchd" as const,
+      ensure: vi.fn(async () => ({})),
+      remove: vi.fn(async () => ({ unit: "launchd" as const })),
+      cli: () => ["oa-bus"],
+    },
+    status: vi.fn(async () =>
+      status({ namespaces: [{ namespace: NS, agents: [] }] }),
+    ),
+    ...over,
+  };
+};
+const setup = (over = {}, tty = false) => {
+  const ctx = fakeCtx(hermesOnly(over), tty);
+  mkdirSync(ctx.home, { recursive: true });
+  writeFileSync(
+    join(ctx.home, "machine.json"),
+    JSON.stringify({
+      hub: HUB,
+      machine_id: "m",
+      label: LABEL,
+      machine_token: TOKEN,
+    }),
+    { mode: 0o600 },
+  );
+  return ctx;
+};
+const marker = (ctx: ReturnType<typeof fakeCtx>) =>
+  join(hermesPluginDir(ctx.userHome, ctx.env), HERMES_HABITS_MARKER);
+
+describe("install and uninstall with Hermes", () => {
+  it("no yes, no marker; the question names the Hermes plugin", async () => {
+    const ctx = setup();
+    await install({ hub: HUB }, ctx);
+    expect(existsSync(marker(ctx))).toBe(false);
+    expect(ctx.out().join("\n")).toContain("the Hermes plugin");
+    expect(habitsLine(ctx)).toContain("Habits: not decided");
+    expect(habitsLine(ctx)).toContain("Hermes plugin: off");
+  });
+  it("--habits writes it, a reinstall keeps it, --no-habits and uninstall remove it", async () => {
+    const ctx = setup();
+    await install({ hub: HUB }, ctx);
+    await install({ habits: "yes" }, ctx);
+    expect(existsSync(marker(ctx))).toBe(true);
+    expect(ctx.out().join("\n")).toContain("Habits on in the Hermes plugin.");
+    expect(habitsLine(ctx)).toBe("Habits: Hermes plugin: on");
+    // Make the plugin stale so the reinstall recopies it.
+    writeFileSync(
+      join(hermesPluginDir(ctx.userHome, ctx.env), "bus.py"),
+      "# edited\n",
+    );
+    await install({ hub: HUB }, ctx);
+    expect(existsSync(marker(ctx))).toBe(true);
+    expect(
+      readFileSync(
+        join(hermesPluginDir(ctx.userHome, ctx.env), "bus.py"),
+        "utf8",
+      ),
+    ).not.toBe("# edited\n");
+    await install({ habits: "no" }, ctx);
+    expect(existsSync(marker(ctx))).toBe(false);
+    expect(ctx.out().join("\n")).toContain("Habits off in the Hermes plugin.");
+    await install({ habits: "yes" }, ctx);
+    expect(existsSync(marker(ctx))).toBe(true);
+    await uninstall({ purge: false }, ctx);
+    expect(existsSync(hermesPluginDir(ctx.userHome, ctx.env))).toBe(false);
+  });
+  it("TTY yes in the flow writes it; no leaves it off and opts out", async () => {
+    const yes = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "y") });
+    await install({ hub: HUB }, yes);
+    expect(existsSync(marker(yes))).toBe(true);
+    const no = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "n") });
+    await install({ hub: HUB }, no);
+    expect(existsSync(marker(no))).toBe(false);
+    expect(habitsLine(no)).toBe("Habits: off (you opted out)");
+  });
+  it("a symlinked marker is refused by --habits", async () => {
+    const ctx = setup();
+    await install({ hub: HUB }, ctx);
+    const target = join(ctx.userHome, "t");
+    writeFileSync(target, "keep");
+    symlinkSync(target, marker(ctx));
+    const code = await install({ habits: "yes" }, ctx);
+    expect(code).toBe(1);
+    expect(readFileSync(target, "utf8")).toBe("keep");
+    rmSync(marker(ctx));
+  });
+  it("--show-habits lists each plugin's state, including not installed", async () => {
+    const ctx = setup();
+    await install({ habits: "show" }, ctx);
+    expect(ctx.out().join("\n")).toContain("Hermes plugin: not installed");
+  });
+});

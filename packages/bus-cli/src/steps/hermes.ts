@@ -31,10 +31,20 @@ export const HERMES_MARKER = ".oa-bus-managed";
 /** The note uninstall leaves when the folder went with no `hermes` to disable it. */
 export const HERMES_NO_CLI =
   "no hermes binary found; its config may still list oa-bus";
+/**
+ * Present in the plugin folder only when the user said yes to the always-on
+ * habits (#1602): the plugin adds them to a turn only while it exists. It is
+ * not a package file, so it never counts toward the hash, and a reinstall keeps it.
+ */
+export const HERMES_HABITS_MARKER = "habits.on";
 /** Where a copy is built before it moves into plugins/, in the Hermes home. */
 export const HERMES_STAGING = ".oa-bus-staging";
 
 type Env = Record<string, string | undefined>;
+
+/** What the marker holds; only its presence matters. */
+export const HABITS_MARKER_TEXT =
+  "The Open Artifacts bus habits are on for this plugin. Remove: oa-bus install --no-habits\n";
 
 const tilded = (home: string, v: string) =>
   v === "~" ? home : resolve(v.startsWith("~/") ? join(home, v.slice(2)) : v);
@@ -92,11 +102,16 @@ const kind = (path: string): "dir" | "file" | "link" | undefined => {
   }
 };
 
-/** Package files only: no bytecode caches, no marker, no hidden files. */
+/** Package files only: no bytecode caches, no marker, no habits marker, no hidden files. */
 function files(dir: string, rel = ""): string[] {
   const out: string[] = [];
   for (const name of readdirSync(join(dir, rel)).sort()) {
-    if (name === "__pycache__" || name.startsWith(".") || name.endsWith(".pyc"))
+    if (
+      name === "__pycache__" ||
+      name.startsWith(".") ||
+      name.endsWith(".pyc") ||
+      (rel === "" && name === HERMES_HABITS_MARKER)
+    )
       continue;
     const r = rel ? `${rel}/${name}` : name;
     if (kind(join(dir, r)) === "dir") out.push(...files(dir, r));
@@ -179,6 +194,9 @@ export async function installHermes(
       `${dest} exists and is not Open Artifacts bus's; left it untouched`,
     );
   if (state !== "current") {
+    // The user's yes to the habits lives in the folder being replaced: carry it over.
+    const keepHabits =
+      state === "stale" && kind(join(dest, HERMES_HABITS_MARKER)) === "file";
     const plugins = join(dest, "..");
     mkdirSync(plugins, { recursive: true });
     // Staged outside plugins/ (Hermes loads any folder there with a plugin.yaml),
@@ -198,6 +216,8 @@ export async function installHermes(
         join(tmp, HERMES_MARKER),
         `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
       );
+      if (keepHabits)
+        writeFileSync(join(tmp, HERMES_HABITS_MARKER), HABITS_MARKER_TEXT);
       if (state === "stale") rmSync(dest, { recursive: true, force: true });
       renameSync(tmp, dest);
     } catch (e) {
