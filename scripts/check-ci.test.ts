@@ -258,7 +258,7 @@ describe("ci.yml", () => {
     expect(uploads[1].if).toBe("failure()");
     // The spaces suite (one spec, its own server) runs whole in exactly one
     // shard per event: 2 of two on a pull request, 3 of four in the queue.
-    // The unsharded ui, landing and provisioning checks in shard 1 only.
+    // The unsharded ui and landing checks in shard 1 only.
     const shardsRunning = (name: string, pr: boolean, all: number[]) => {
       const step = steps.find(
         (s) => s.run === `bash scripts/ci/e2e.sh ${name}`,
@@ -272,7 +272,7 @@ describe("ci.yml", () => {
     };
     for (const e of events) {
       expect(shardsRunning("spaces", e.pr, e.shards)).toEqual([e.pr ? 2 : 3]);
-      for (const name of ["ui", "landing", "provisioning"]) {
+      for (const name of ["ui", "landing"]) {
         expect(shardsRunning(name, e.pr, e.shards)).toEqual([1]);
       }
     }
@@ -281,6 +281,12 @@ describe("ci.yml", () => {
     expect(s).not.toContain("secrets.");
     expect(s).not.toContain("staging");
     expect(ci("e2e.sh")).not.toContain("--with-deps");
+    // A removed package must fail the step, not match nothing and pass.
+    expect(ci("e2e.sh")).not.toContain("provisioning");
+    for (const line of ci("e2e.sh").split("\n")) {
+      if (line.includes("pnpm --filter"))
+        throw new Error(`no --fail-if-no-match: ${line}`);
+    }
     expect(ci("e2e.sh")).toContain("PLAYWRIGHT_IMAGE_VERSION");
   });
   describe("release-only fast path", () => {

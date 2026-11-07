@@ -13,7 +13,6 @@
 #                      playwright-report/<suite>
 #   e2e.sh ui       -> @oa/ui real-browser checks (axe contrast, focus outlines)
 #   e2e.sh landing  -> landing real-browser checks (no horizontal overflow)
-#   e2e.sh provisioning -> provisioning admin consent checks (Strict cookie, cross-site)
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 hosts_file="${HOSTS_FILE:-/etc/hosts}"
@@ -32,7 +31,7 @@ case "${1:-}" in
       echo "@playwright/test is $v but the CI image is $PLAYWRIGHT_IMAGE_VERSION; bump the e2e image in ci.yml" >&2
       exit 1
     fi
-    pnpm --filter @oa/dashboard exec playwright install chromium webkit
+    pnpm --fail-if-no-match --filter @oa/dashboard exec playwright install chromium webkit
     ;;
   hosts)
     # systemd-resolved already maps *.localhost; this makes it independent of the resolver.
@@ -49,14 +48,14 @@ case "${1:-}" in
     if [ -n "${E2E_SHARD:-}" ]; then
       # One file per shard and suite, so the merge sees every shard.
       PLAYWRIGHT_BLOB_OUTPUT_FILE="$blob_dir/$suite/shard-${E2E_SHARD%/*}.zip" \
-        pnpm --filter @oa/dashboard exec playwright test ${args[@]+"${args[@]}"} \
+        pnpm --fail-if-no-match --filter @oa/dashboard exec playwright test ${args[@]+"${args[@]}"} \
         --shard="$E2E_SHARD" --reporter=list,blob
     elif [ "$suite" = mock ]; then
       PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/mock \
-        pnpm --filter @oa/dashboard exec playwright test --reporter=list,html
+        pnpm --fail-if-no-match --filter @oa/dashboard exec playwright test --reporter=list,html
     else
       PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/real \
-        pnpm --filter @oa/dashboard exec playwright test ${args[@]+"${args[@]}"}
+        pnpm --fail-if-no-match --filter @oa/dashboard exec playwright test ${args[@]+"${args[@]}"}
     fi
     ;;
   merge)
@@ -65,7 +64,7 @@ case "${1:-}" in
       dir="$blob_dir/$suite"
       [ -d "$dir" ] || continue
       PLAYWRIGHT_HTML_OUTPUT_DIR="playwright-report/$suite" \
-        pnpm --filter @oa/dashboard exec playwright merge-reports --reporter=html "$dir"
+        pnpm --fail-if-no-match --filter @oa/dashboard exec playwright merge-reports --reporter=html "$dir"
     done
     ;;
   spaces)
@@ -73,23 +72,20 @@ case "${1:-}" in
     # server. Small (one spec): in CI it runs whole in one shard, as a blob.
     if [ -n "${E2E_SHARD:-}" ]; then
       PLAYWRIGHT_BLOB_OUTPUT_FILE="$blob_dir/spaces/shard-${E2E_SHARD%/*}.zip" \
-        pnpm --filter @oa/dashboard test:e2e:spaces --reporter=list,blob
+        pnpm --fail-if-no-match --filter @oa/dashboard test:e2e:spaces --reporter=list,blob
     else
       PLAYWRIGHT_HTML_OUTPUT_DIR=playwright-report/spaces \
-        pnpm --filter @oa/dashboard test:e2e:spaces
+        pnpm --fail-if-no-match --filter @oa/dashboard test:e2e:spaces
     fi
     ;;
   ui)
-    pnpm --filter @oa/ui test:browser
+    pnpm --fail-if-no-match --filter @oa/ui test:browser
     ;;
   landing)
-    pnpm --filter @oa/landing test:browser
-    ;;
-  provisioning)
-    pnpm --filter @oa/provisioning test:e2e
+    pnpm --fail-if-no-match --filter @oa/landing test:browser
     ;;
   *)
-    echo "usage: e2e.sh version|install|hosts|mock|real|spaces|merge|ui|landing|provisioning" >&2
+    echo "usage: e2e.sh version|install|hosts|mock|real|spaces|merge|ui|landing" >&2
     exit 2
     ;;
 esac

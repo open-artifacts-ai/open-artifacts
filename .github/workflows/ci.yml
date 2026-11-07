@@ -415,7 +415,7 @@ jobs:
         run: bash scripts/ci/e2e.sh real
       # One spec on its own server: whole, in exactly one shard per event
       # (shard 3 of four in the queue, the lightest real share; shard 2 of two
-      # on a pull request, since shard 1 carries ui, landing and provisioning).
+      # on a pull request, since shard 1 carries ui and landing).
       - name: Real-server suite with spaces on (local wrangler dev)
         if: ${{ !cancelled() && matrix.shard == (github.event_name == 'pull_request' && 2 || 3) && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh spaces
@@ -426,11 +426,6 @@ jobs:
       - name: Landing real-browser checks (no horizontal overflow)
         if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh landing
-      # Design v7 9A.3.2 step 3: the Strict admin cookie survives a cross-site
-      # arrival at /oauth/authorize (its own Miniflare, about a minute).
-      - name: Provisioning consent checks (cross-site, Strict cookie)
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
-        run: bash scripts/ci/e2e.sh provisioning
       - if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' }}
         uses: actions/upload-artifact@v4
         with:
