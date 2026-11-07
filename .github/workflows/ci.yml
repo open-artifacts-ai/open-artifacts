@@ -317,7 +317,7 @@ jobs:
       - name: Build the release bundle (buildBundle, dry run)
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         run: |
-          pnpm --filter @oa/provision build
+          pnpm --filter @oa/auth-core --filter @oa/bundle build
           pnpm --filter @oa/server run gen
           mkdir -p apps/server/dist-assets
           node --experimental-strip-types scripts/ci/build-release-bundle.ts "$RUNNER_TEMP/release-bundle"
@@ -327,13 +327,6 @@ jobs:
       - name: No red-line fake IdP in the release bundle
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         run: pnpm check-no-fake-idp "$RUNNER_TEMP/release-bundle"
-      # T3b N5: the real-build pin (the variants' bundles differ; release holds
-      # no hook route). Required here, so it never skips.
-      - name: Real-build pin test
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-        env:
-          OA_REQUIRE_REAL_BUILD: "1"
-        run: pnpm --filter @oa/provision exec vitest run test/release-t3b.test.ts -t "real build"
       # P3 T17 (#602): builds the release and redline bundles itself and checks
       # the test-hook seeding is absent from release. OA_REQUIRE_REAL_BUILD
       # makes a missing build fail, never skip.
@@ -452,71 +445,10 @@ jobs:
           path: apps/dashboard/test-results
           if-no-files-found: ignore
           retention-days: 14
-  # @oa/admin's Playwright tests (MSW mocks, no server, no secrets). One runner.
-  # Counted by the `e2e` check below. The image tag must match @oa/admin's
-  # @playwright/test; the digest pins the exact image (same as e2e-shard).
-  e2e-admin:
-    runs-on: ubuntu-latest
-    container:
-      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
-      options: --ipc=host
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      # Fast path for release-only PRs, as in e2e-shard (decided inside the job:
-      # a skipped job would count as failing the `e2e` aggregate).
-      - id: ro
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
-        run: |
-          rel=false
-          if [ -n "${BASE_SHA:-}" ] && [ -n "${HEAD_SHA:-}" ] \
-            && git show "$BASE_SHA:scripts/ci/release-only.ts" > "$RUNNER_TEMP/release-only.ts" 2> /dev/null \
-            && out=$(node --experimental-strip-types --no-warnings "$RUNNER_TEMP/release-only.ts" "$BASE_SHA" "$HEAD_SHA" 2> /dev/null) \
-            && [ "$out" = "release-only" ]; then
-            rel=true
-          fi
-          echo "release_only=$rel" >> "$GITHUB_OUTPUT"
-      - name: release-only change
-        if: ${{ steps.ro.outputs.release_only == 'true' }}
-        run: |
-          echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - uses: actions/setup-node@v4
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile --filter @oa/admin...
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - name: Playwright matches the image
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-        run: |
-          v="$(node -p "require('./apps/admin/node_modules/@playwright/test/package.json').version")"
-          if [ "$v" != "1.64.1" ]; then
-            echo "@playwright/test is $v but the CI image is 1.64.1; bump the e2e-admin image in ci.yml" >&2
-            exit 1
-          fi
-      - run: pnpm --filter @oa/admin test:e2e
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: admin-test-results
-          path: apps/admin/test-results
-          if-no-files-found: ignore
-          retention-days: 14
   # The required check (its name is branch protection's). Always runs, and passes
-  # only when every shard and the admin job passed: a skipped, cancelled or failed shard fails it.
+  # only when every shard passed: a skipped, cancelled or failed shard fails it.
   e2e:
-    needs: [e2e-shard, e2e-admin]
+    needs: [e2e-shard]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -524,11 +456,9 @@ jobs:
       - name: Every shard passed
         env:
           SHARDS: ${{ needs.e2e-shard.result }}
-          ADMIN: ${{ needs.e2e-admin.result }}
         run: |
           echo "e2e-shard: $SHARDS"
-          echo "e2e-admin: $ADMIN"
-          [ "$SHARDS" = success ] && [ "$ADMIN" = success ]
+          [ "$SHARDS" = success ]
       # The merged html report, also when a shard failed (that's when it's read).
       - uses: actions/checkout@v4
         if: ${{ !cancelled() }}
@@ -664,12 +594,10 @@ jobs:
           RELEASE_PLEASE="$RUNNER_TEMP/rp/node_modules/.bin/release-please" bash scripts/ci/release-dry-run.sh
   # #1056 untangle D: the public code installs, builds, typechecks and tests
   # with every private path (scripts/ci/private-paths.txt) removed.
-  # Advisory for now: it becomes required (drop continue-on-error, add it to
-  # the ruleset) once untangle A (bundle builder), B (@oa/shared/mocks) and C
-  # (the @oa/shared/provisioning contract) have merged.
+  # Required: the hosted code lives in open-artifacts-cloud now, so this proves
+  # what remains installs, builds, typechecks and tests on its own.
   public-only:
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
@@ -680,9 +608,4 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      # Advisory: the breaks show as a warning and the check stays green, since
-      # release-cadence and other "all checks green" readers count a failed
-      # check even with continue-on-error. Back to a plain failing run when it
-      # becomes required.
-      - run: |
-          bash scripts/ci/public-only.sh || echo "::warning title=public-only (advisory)::public code doesn't yet build alone without the private paths; see this job's log (#1056)"
+      - run: bash scripts/ci/public-only.sh
