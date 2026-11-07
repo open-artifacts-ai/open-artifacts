@@ -48,6 +48,30 @@ afterEach(async () => {
 
 const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
+
+/**
+ * The three B1 tests below drive a whole machine's churn over the wire: one
+ * up and one close per closed agent, then one answer read for each.
+ *
+ * Worst measured wall time of one such phase: 34 s (1020 one-shot sessions,
+ * this file alone, host load average 16 on 24 cores) and 24 s (999 ups plus
+ * 999 closes, eight copies of this file at once); per-frame arrival gaps
+ * under that load p50 23 ms, p99 48 ms, max 93 ms.
+ */
+const CHURN_PHASE_MS = 34_000;
+/**
+ * A frame wait's ceiling in a churn phase: the phase's own measured work
+ * times three (budgets are derived, never guessed). Not helpers.ts's 15 s,
+ * which is a liveness check for one frame after a little work: on run
+ * 42098416740 the phase ran healthily for ~22 s and then a single wait spent
+ * its whole 15 s, a stalled shard rather than a stalled hub (#1533). A frame
+ * that really never comes still fails the test, a stalled runner no longer
+ * fails it for being slow.
+ */
+const CHURN_FRAME_WAIT_MS = CHURN_PHASE_MS * 3;
+/** One stalled frame wait plus the phase's own work, both derived above. */
+const CHURN_TEST_MS = CHURN_FRAME_WAIT_MS + CHURN_PHASE_MS;
+
 let seq = 0;
 const id = (t: string) => `${t}${++seq}`;
 const uniq = (t: string) => `${t}-${++seq}x${Date.now() % 1e8}`;
@@ -345,126 +369,135 @@ describe("lasting mailboxes (#1295 PR A)", () => {
     p.snd.close();
   });
 
-  it("B1: a machine closing 1000+ sessions in 7 days is never locked out of new ones", async () => {
-    const t0 = base();
-    const p = await pair(t0);
-    const machineId = (
-      await sqlOf<{ m: string }>(
-        "select machine_id as m from agents where native_ref = ?",
-        p.ref,
-      )
-    )[0]?.m as string;
-    await inHub(async (i, st) => {
-      for (const ws of st.getWebSockets(machineId))
-        BusHub.setFrameTokensForTests(i, ws, 1_000_000);
-    });
-    const CYCLES = CLOSED_AGENTS_PER_MACHINE + 20;
-    for (let k = 0; k < CYCLES; k++) {
-      p.rcv.send(up(`bu${k}`, `churn_${k}`, "Churn", p.n));
-      p.rcv.send({
-        v: 1,
-        id: `bc${k}`,
-        type: "sessions",
-        open: [],
-        closed: [`churn_${k}`],
+  it(
+    "B1: a machine closing 1000+ sessions in 7 days is never locked out of new ones",
+    async () => {
+      const t0 = base();
+      const p = await pair(t0);
+      const machineId = (
+        await sqlOf<{ m: string }>(
+          "select machine_id as m from agents where native_ref = ?",
+          p.ref,
+        )
+      )[0]?.m as string;
+      await inHub(async (i, st) => {
+        for (const ws of st.getWebSockets(machineId))
+          BusHub.setFrameTokensForTests(i, ws, 1_000_000);
       });
-    }
-    for (let k = 0; k < CYCLES; ) {
-      const f = await p.rcv.next();
-      expect(f.type).not.toBe("error");
-      if (f.type === "agent_ok") k++;
-    }
-    // A fresh ref still gets in, and the closed rows stay at the cap.
-    p.rcv.send(up(id("u"), uniq("fresh"), uniq("Fresh"), p.n));
-    expect((await p.rcv.next()).type).toBe("agent_ok");
-    const closed = await sqlOf<{ n: number }>(
-      "select count(*) as n from agents where machine_id = ? and live = 0",
-      machineId,
-    );
-    expect(closed[0]?.n).toBeLessThanOrEqual(CLOSED_AGENTS_PER_MACHINE);
-    p.rcv.close();
-    p.snd.close();
-  }, 120_000);
-
-  it("B1: with pending mail on every closed row, the oldest away agent is evicted, its mail expires recipient_closed and its sender is told", async () => {
-    const t0 = base();
-    const p = await pair(t0);
-    const machineId = (
-      await sqlOf<{ m: string }>(
-        "select machine_id as m from agents where native_ref = ?",
-        p.ref,
-      )
-    )[0]?.m as string;
-    await inHub(async (i, st) => {
-      for (const ws of st.getWebSockets(machineId))
-        BusHub.setFrameTokensForTests(i, ws, 1_000_000);
-    });
-    // Mail sits on the first closed agent for real.
-    await close(p.rcv, p.ref);
-    const r = await send(p.snd, "snd", p.name, "kept");
-    expect(r.state).toBe("pending");
-    const CYCLES = CLOSED_AGENTS_PER_MACHINE - 1;
-    for (let k = 0; k < CYCLES; k++) {
-      p.rcv.send(up(`bu${k}`, `churn_${k}`, "Churn", p.n));
-      p.rcv.send({
-        v: 1,
-        id: `bc${k}`,
-        type: "sessions",
-        open: [],
-        closed: [`churn_${k}`],
-      });
-    }
-    for (let k = 0; k < CYCLES; ) {
-      const f = await p.rcv.next();
-      expect(f.type).not.toBe("error");
-      if (f.type === "agent_ok") k++;
-    }
-    // The closes are not acknowledged (only the ups are): wait until the hub
-    // has applied every one, or the last churn agent may still be open when
-    // the inboxes are seeded and it, with no inbox, is evicted instead.
-    for (let k = 0; ; k++) {
+      const CYCLES = CLOSED_AGENTS_PER_MACHINE + 20;
+      for (let k = 0; k < CYCLES; k++) {
+        p.rcv.send(up(`bu${k}`, `churn_${k}`, "Churn", p.n));
+        p.rcv.send({
+          v: 1,
+          id: `bc${k}`,
+          type: "sessions",
+          open: [],
+          closed: [`churn_${k}`],
+        });
+      }
+      for (let k = 0; k < CYCLES; ) {
+        const f = await p.rcv.next(CHURN_FRAME_WAIT_MS);
+        expect(f.type).not.toBe("error");
+        if (f.type === "agent_ok") k++;
+      }
+      // A fresh ref still gets in, and the closed rows stay at the cap.
+      p.rcv.send(up(id("u"), uniq("fresh"), uniq("Fresh"), p.n));
+      expect((await p.rcv.next(CHURN_FRAME_WAIT_MS)).type).toBe("agent_ok");
       const closed = await sqlOf<{ n: number }>(
         "select count(*) as n from agents where machine_id = ? and live = 0",
         machineId,
       );
-      if ((closed[0]?.n ?? 0) >= CYCLES + 1) break;
-      if (k > 2000) throw new Error("the closes were never applied");
-      await new Promise((res) => setTimeout(res, 5));
-    }
-    // Every closed agent now has an inbox. Seed ids are valid msg ids (an
-    // agent id has the same shape), so a sender told about one decodes it.
-    await inHub((_, st) => {
-      st.storage.sql.exec(
-        `insert into receipts (id, org_id, namespace, to_agent, to_name, from_agent, from_name, state, size, created_at, expires_at)
+      expect(closed[0]?.n).toBeLessThanOrEqual(CLOSED_AGENTS_PER_MACHINE);
+      p.rcv.close();
+      p.snd.close();
+    },
+    CHURN_TEST_MS,
+  );
+
+  it(
+    "B1: with pending mail on every closed row, the oldest away agent is evicted, its mail expires recipient_closed and its sender is told",
+    async () => {
+      const t0 = base();
+      const p = await pair(t0);
+      const machineId = (
+        await sqlOf<{ m: string }>(
+          "select machine_id as m from agents where native_ref = ?",
+          p.ref,
+        )
+      )[0]?.m as string;
+      await inHub(async (i, st) => {
+        for (const ws of st.getWebSockets(machineId))
+          BusHub.setFrameTokensForTests(i, ws, 1_000_000);
+      });
+      // Mail sits on the first closed agent for real.
+      await close(p.rcv, p.ref);
+      const r = await send(p.snd, "snd", p.name, "kept");
+      expect(r.state).toBe("pending");
+      const CYCLES = CLOSED_AGENTS_PER_MACHINE - 1;
+      for (let k = 0; k < CYCLES; k++) {
+        p.rcv.send(up(`bu${k}`, `churn_${k}`, "Churn", p.n));
+        p.rcv.send({
+          v: 1,
+          id: `bc${k}`,
+          type: "sessions",
+          open: [],
+          closed: [`churn_${k}`],
+        });
+      }
+      for (let k = 0; k < CYCLES; ) {
+        const f = await p.rcv.next(CHURN_FRAME_WAIT_MS);
+        expect(f.type).not.toBe("error");
+        if (f.type === "agent_ok") k++;
+      }
+      // The closes are not acknowledged (only the ups are): wait until the hub
+      // has applied every one, or the last churn agent may still be open when
+      // the inboxes are seeded and it, with no inbox, is evicted instead.
+      for (let k = 0; ; k++) {
+        const closed = await sqlOf<{ n: number }>(
+          "select count(*) as n from agents where machine_id = ? and live = 0",
+          machineId,
+        );
+        if ((closed[0]?.n ?? 0) >= CYCLES + 1) break;
+        if (k > 2000) throw new Error("the closes were never applied");
+        await new Promise((res) => setTimeout(res, 5));
+      }
+      // Every closed agent now has an inbox. Seed ids are valid msg ids (an
+      // agent id has the same shape), so a sender told about one decodes it.
+      await inHub((_, st) => {
+        st.storage.sql.exec(
+          `insert into receipts (id, org_id, namespace, to_agent, to_name, from_agent, from_name, state, size, created_at, expires_at)
          select a.id, a.org_id, a.namespace, a.id, a.name, s.id, s.name, 'pending', 1, ?, ?
            from agents a, (select id, name from agents where native_ref = 'snd' order by rowid desc limit 1) s
           where a.machine_id = ? and a.live = 0 and a.native_ref != ?`,
-        t0,
-        t0 + MAILBOX_RETAIN_MS,
-        machineId,
-        p.ref,
-      );
-    });
-    p.rcv.send(up(id("u"), uniq("fresh"), uniq("Fresh"), p.n));
-    expect((await p.rcv.next()).type).toBe("agent_ok");
-    const u = await waitFor(p.snd, "receipt_update");
-    expect(u).toMatchObject({
-      msg_id: r.msg_id,
-      state: "expired",
-      reason: "recipient_closed",
-    });
-    expect(
-      (await sqlOf("select id from agents where native_ref = ?", p.ref)).length,
-    ).toBe(0);
-    await inHub((_, st) => {
-      st.storage.sql.exec(
-        "delete from receipts where namespace = ? and size = 1 and id in (select id from agents)",
-        p.n,
-      );
-    });
-    p.rcv.close();
-    p.snd.close();
-  }, 120_000);
+          t0,
+          t0 + MAILBOX_RETAIN_MS,
+          machineId,
+          p.ref,
+        );
+      });
+      p.rcv.send(up(id("u"), uniq("fresh"), uniq("Fresh"), p.n));
+      expect((await p.rcv.next(CHURN_FRAME_WAIT_MS)).type).toBe("agent_ok");
+      const u = await waitFor(p.snd, "receipt_update", CHURN_FRAME_WAIT_MS);
+      expect(u).toMatchObject({
+        msg_id: r.msg_id,
+        state: "expired",
+        reason: "recipient_closed",
+      });
+      expect(
+        (await sqlOf("select id from agents where native_ref = ?", p.ref))
+          .length,
+      ).toBe(0);
+      await inHub((_, st) => {
+        st.storage.sql.exec(
+          "delete from receipts where namespace = ? and size = 1 and id in (select id from agents)",
+          p.n,
+        );
+      });
+      p.rcv.close();
+      p.snd.close();
+    },
+    CHURN_TEST_MS,
+  );
 
   it("B2: a global sender with no to_namespace gets ambiguous when two namespaces have an agent away under the name", async () => {
     const t0 = base();
@@ -525,94 +558,100 @@ describe("lasting mailboxes (#1295 PR A)", () => {
     g.close();
   });
 
-  it("B1: closed agents whose own sends are still pending never lock the machine out; other machines and live agents are untouched", async () => {
-    const t0 = base();
-    await setClock(t0);
-    const rm = await machine("Churn");
-    const lm = await machine("Leads");
-    const n = ns("lock");
-    const r = await connect(rm.token);
-    const l = await connect(lm.token);
-    const LEADS = 7;
-    const leads: string[] = [];
-    for (let k = 0; k < LEADS; k++)
-      leads.push(await reg(l, `lead${k}`, uniq("Lead"), n));
-    const live = await reg(r, "keeper", uniq("Keeper"), n);
-    for (let k = 0; k < LEADS; k++) await close(l, `lead${k}`);
-    const bystander = await reg(l, "bystander", uniq("By"), n);
-    const machineId = (
-      await sqlOf<{ m: string }>(
-        "select machine_id as m from agents where native_ref = 'keeper' order by rowid desc limit 1",
-      )
-    )[0]?.m as string;
-    await inHub(async (i, st) => {
-      for (const ws of st.getWebSockets(machineId))
-        BusHub.setFrameTokensForTests(i, ws, 1_000_000);
-    });
-    const CYCLES = CLOSED_AGENTS_PER_MACHINE + 20;
-    // One-shot sessions: each messages an away lead and closes.
-    for (let k = 0; k < CYCLES; k++) {
-      r.send(up(`ou${k}`, `shot_${k}`, "Shot", n));
-      r.send({
-        v: 1,
-        id: `os${k}`,
-        type: "send",
-        from_ref: `shot_${k}`,
-        to_name: leads[k % LEADS] as string,
-        body: "hi",
-      } as ClientFrame);
-      r.send({
-        v: 1,
-        id: `oc${k}`,
-        type: "sessions",
-        open: [],
-        closed: [`shot_${k}`],
+  it(
+    "B1: closed agents whose own sends are still pending never lock the machine out; other machines and live agents are untouched",
+    async () => {
+      const t0 = base();
+      await setClock(t0);
+      const rm = await machine("Churn");
+      const lm = await machine("Leads");
+      const n = ns("lock");
+      const r = await connect(rm.token);
+      const l = await connect(lm.token);
+      const LEADS = 7;
+      const leads: string[] = [];
+      for (let k = 0; k < LEADS; k++)
+        leads.push(await reg(l, `lead${k}`, uniq("Lead"), n));
+      const live = await reg(r, "keeper", uniq("Keeper"), n);
+      for (let k = 0; k < LEADS; k++) await close(l, `lead${k}`);
+      const bystander = await reg(l, "bystander", uniq("By"), n);
+      const machineId = (
+        await sqlOf<{ m: string }>(
+          "select machine_id as m from agents where native_ref = 'keeper' order by rowid desc limit 1",
+        )
+      )[0]?.m as string;
+      await inHub(async (i, st) => {
+        for (const ws of st.getWebSockets(machineId))
+          BusHub.setFrameTokensForTests(i, ws, 1_000_000);
       });
-    }
-    let oks = 0;
-    let pend = 0;
-    while (oks < CYCLES || pend < CYCLES) {
-      const f = await r.next();
-      expect(f.type).not.toBe("error");
-      if (f.type === "agent_ok") oks++;
-      if (f.type === "receipt") {
-        expect(f.state).toBe("pending");
-        pend++;
+      const CYCLES = CLOSED_AGENTS_PER_MACHINE + 20;
+      // One-shot sessions: each messages an away lead and closes.
+      for (let k = 0; k < CYCLES; k++) {
+        r.send(up(`ou${k}`, `shot_${k}`, "Shot", n));
+        r.send({
+          v: 1,
+          id: `os${k}`,
+          type: "send",
+          from_ref: `shot_${k}`,
+          to_name: leads[k % LEADS] as string,
+          body: "hi",
+        } as ClientFrame);
+        r.send({
+          v: 1,
+          id: `oc${k}`,
+          type: "sessions",
+          open: [],
+          closed: [`shot_${k}`],
+        });
       }
-    }
-    r.send(up(id("u"), uniq("fresh"), uniq("Fresh"), n));
-    expect((await waitFor(r, "agent_ok")).type).toBe("agent_ok");
-    // Only this machine's closed rows went; its live agent and the other
-    // machine's agents are intact.
-    const count = (q: string) =>
-      sqlOf<{ n: number }>(q).then((x) => x[0]?.n as number);
-    expect(
-      await count(
-        `select count(*) as n from agents where machine_id = '${machineId}' and live = 0`,
-      ),
-    ).toBeLessThanOrEqual(CLOSED_AGENTS_PER_MACHINE);
-    expect(
-      await count(
-        "select count(*) as n from agents where native_ref = 'keeper' and live = 1",
-      ),
-    ).toBeGreaterThanOrEqual(1);
-    expect(
-      await count(
-        `select count(*) as n from agents where native_ref like 'lead%' and machine_id != '${machineId}' and live = 0`,
-      ),
-    ).toBeGreaterThanOrEqual(LEADS);
-    expect(live).toBeTruthy();
-    expect(bystander).toBeTruthy();
-    // The evicted senders' sends stay pending; their outcome later finds no
-    // sender row and must not throw.
-    await setClock(t0 + MAILBOX_RETAIN_MS + 1000);
-    const owed =
-      "select count(*) as n from receipts where state = 'pending' and from_name like 'Shot%'";
-    for (let k = 0; k < 60 && (await count(owed)) > 0; k++) await runAlarm();
-    expect(await count(owed)).toBe(0);
-    r.close();
-    l.close();
-  }, 120_000);
+      let oks = 0;
+      let pend = 0;
+      while (oks < CYCLES || pend < CYCLES) {
+        const f = await r.next(CHURN_FRAME_WAIT_MS);
+        expect(f.type).not.toBe("error");
+        if (f.type === "agent_ok") oks++;
+        if (f.type === "receipt") {
+          expect(f.state).toBe("pending");
+          pend++;
+        }
+      }
+      r.send(up(id("u"), uniq("fresh"), uniq("Fresh"), n));
+      expect((await waitFor(r, "agent_ok", CHURN_FRAME_WAIT_MS)).type).toBe(
+        "agent_ok",
+      );
+      // Only this machine's closed rows went; its live agent and the other
+      // machine's agents are intact.
+      const count = (q: string) =>
+        sqlOf<{ n: number }>(q).then((x) => x[0]?.n as number);
+      expect(
+        await count(
+          `select count(*) as n from agents where machine_id = '${machineId}' and live = 0`,
+        ),
+      ).toBeLessThanOrEqual(CLOSED_AGENTS_PER_MACHINE);
+      expect(
+        await count(
+          "select count(*) as n from agents where native_ref = 'keeper' and live = 1",
+        ),
+      ).toBeGreaterThanOrEqual(1);
+      expect(
+        await count(
+          `select count(*) as n from agents where native_ref like 'lead%' and machine_id != '${machineId}' and live = 0`,
+        ),
+      ).toBeGreaterThanOrEqual(LEADS);
+      expect(live).toBeTruthy();
+      expect(bystander).toBeTruthy();
+      // The evicted senders' sends stay pending; their outcome later finds no
+      // sender row and must not throw.
+      await setClock(t0 + MAILBOX_RETAIN_MS + 1000);
+      const owed =
+        "select count(*) as n from receipts where state = 'pending' and from_name like 'Shot%'";
+      for (let k = 0; k < 60 && (await count(owed)) > 0; k++) await runAlarm();
+      expect(await count(owed)).toBe(0);
+      r.close();
+      l.close();
+    },
+    CHURN_TEST_MS,
+  );
 
   it("a reopen under another name downgrades the old away row to the 1 h held", async () => {
     const t0 = base();
