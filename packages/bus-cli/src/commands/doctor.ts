@@ -33,6 +33,7 @@ import {
   sandboxRisk,
 } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
+import { habitsLine } from "./habits.ts";
 import { errorTail } from "./login.ts";
 import { type Healthz, healthzBody, hostOf, updateTarget } from "./status.ts";
 
@@ -265,6 +266,10 @@ export async function doctor(ctx: Ctx): Promise<number> {
     }
     if (h === "codex") codexChecks(ctx, { pass, warn });
   }
+
+  // Not a pass or a warning: the habits are the user's choice either way.
+  const habits = habitsLine(ctx);
+  if (habits) say(ctx, habits);
 
   const allow = globalFile(ctx.home);
   const list = readGlobalDirs(allow);

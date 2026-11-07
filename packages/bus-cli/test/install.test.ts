@@ -76,6 +76,14 @@ const allHarnesses = (over: Partial<Ctx> = {}) => ({
   ...over,
 });
 
+/** The habits question for the agent's user closes a no-TTY install; it has its own tests (habits.test.ts). */
+const withoutHabitsQuestion = (lines: string[]) => {
+  const at = lines.indexOf(
+    "Installed. One question for your user before you finish:",
+  );
+  return at === -1 ? lines : lines.slice(0, at - 1);
+};
+
 const run = (ctx: Fake, opts: Parameters<typeof install>[0] = {}) =>
   install({ label: LABEL, hub: HUB, ...opts }, ctx);
 
@@ -88,7 +96,7 @@ describe("install: transcript state 1, first run", () => {
     expect(await run(ctx)).toBe(0);
     const [first, after] = transcript("## 1. First run, browser opens");
     const waiting = (first as string[]).length - 1;
-    expect(ctx.out()).toEqual([
+    expect(withoutHabitsQuestion(ctx.out())).toEqual([
       ...(first as string[]).slice(0, waiting),
       "Waiting for approval (up to 10 minutes)…",
       ...(after as string[]),
@@ -224,7 +232,7 @@ describe("install: transcript state 1, first run", () => {
       ...allHarnesses({ status: vi.fn(async () => withAgents([])) }),
     });
     await run(ctx);
-    expect(ctx.out().slice(-5)).toEqual([
+    expect(withoutHabitsQuestion(ctx.out()).slice(-5)).toEqual([
       `No agents in namespace [[accent]]${NS}[[/accent]] yet.`,
       "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes in this folder.",
       "It joins.",

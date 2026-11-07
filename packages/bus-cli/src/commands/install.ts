@@ -27,6 +27,11 @@ import {
 import { hermesEnabled } from "../steps/hermes.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
+import {
+  type HabitsMode,
+  habitsAfterInstall,
+  habitsCommand,
+} from "./habits.ts";
 import { LoginFailed, login } from "./login.ts";
 
 /** Transcript state 6: four attempts, waiting 2, 4 and 8 s between them. */
@@ -42,6 +47,10 @@ export type InstallOpts = {
   label?: string;
   /** Skip the launchd or systemd step: the user runs the daemon. */
   noService?: boolean;
+  /** --habits, --no-habits or --show-habits: only the always-on block, nothing else reruns. */
+  habits?: HabitsMode;
+  /** The result as one JSON line on stdout; the human lines go to stderr. */
+  json?: boolean;
 };
 
 const originOf = (hub: string) => {
@@ -406,8 +415,11 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
 
 export async function install(
   opts: InstallOpts & { check?: boolean },
-  ctx: Ctx,
+  realCtx: Ctx,
 ): Promise<number> {
+  if (opts.habits) return habitsCommand(opts.habits, realCtx);
+  const json = Boolean(opts.json && !opts.check);
+  const ctx: Ctx = json ? { ...realCtx, stdout: realCtx.stderr } : realCtx;
   const c = ctx.copy;
   say(ctx, c.header(ctx.version), "");
   const steps = installSteps(opts);
@@ -424,5 +436,21 @@ export async function install(
     now: ctx.now,
   });
   const skillFailed = reportSkillFailure(ctx);
-  return ok && !skillFailed ? 0 : 1;
+  // The always-on habits come last, once everything else is done: a person is
+  // asked, an agent gets a question for its user. Nothing is written unasked.
+  const habits = ok ? await habitsAfterInstall(ctx, json) : undefined;
+  const code = ok && !skillFailed ? 0 : 1;
+  if (json)
+    realCtx.stdout.write(
+      `${JSON.stringify({
+        ok: code === 0,
+        habits: habits && {
+          state: habits.state,
+          files: habits.files,
+          hermes: habits.hermes ? "provided by the plugin" : null,
+        },
+        question: habits?.question ?? null,
+      })}\n`,
+    );
+  return code;
 }
