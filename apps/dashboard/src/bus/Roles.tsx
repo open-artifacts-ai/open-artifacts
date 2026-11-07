@@ -214,6 +214,9 @@ export function RolesTab() {
     );
   if (!roles.data.live) return <Notice tone="warning">{LIVE_DOWN}</Notice>;
   const live = agents.data?.live ? agents.data.agents : [];
+  const liveIds = new Set(
+    live.filter((a) => a.state === "live").map((a) => a.id),
+  );
   const all = [
     ...new Set([
       ...live.map((a) => a.namespace),
@@ -320,7 +323,10 @@ export function RolesTab() {
                     {r.name}
                   </TableCell>
                   <TableCell>
-                    <HolderBadge r={r} />
+                    <HolderBadge
+                      r={r}
+                      live={r.agentId !== null && liveIds.has(r.agentId)}
+                    />
                   </TableCell>
                   <TableCell
                     className="text-muted-foreground"
@@ -363,13 +369,14 @@ export function RolesTab() {
   );
 }
 
-/** "Held by" as #1453 draws it: a Live badge carrying the agent's name, a
-    muted Vacant badge when nothing holds it. */
-function HolderBadge({ r }: { r: BusRole }) {
+/** "Held by" as #1453 draws it: a dot badge carrying the agent's name, the
+    green Live tone only when that agent is open now, a neutral one when it
+    isn't (or liveness can't be read); "Vacant" when nothing holds it. */
+function HolderBadge({ r, live }: { r: BusRole; live: boolean }) {
   const held = !r.vacant && r.holderName !== null;
   return (
     <StatusBadge
-      status={held ? "Live" : "Offline"}
+      status={held && live ? "Live" : "Offline"}
       text={held ? (r.holderName ?? "") : "Vacant"}
     />
   );

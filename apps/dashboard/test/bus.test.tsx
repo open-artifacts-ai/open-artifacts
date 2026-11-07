@@ -1395,4 +1395,32 @@ describe("#1453 polish", () => {
       .find((r) => r.textContent?.includes("reviewer"));
     expect(vacant).toHaveTextContent("Vacant");
   });
+
+  it("Roles: a holder that isn't open now is the neutral badge, never green Live (#1650)", async () => {
+    withBus();
+    // The manager's agent goes offline between polls.
+    const AG = agentNamed("oa-manager");
+    server.use(
+      http.get(`*${R.busAgents}`, () =>
+        HttpResponse.json({
+          live: true,
+          agents: A.map((a) =>
+            a.id === AG.id ? { ...a, state: "offline" as const } : a,
+          ),
+        }),
+      ),
+    );
+    mount("/agents/roles");
+    const t = await screen.findByRole("table", { name: "Roles" });
+    const held = within(t)
+      .getAllByRole("row")
+      .find((r) => r.textContent?.includes("manager"));
+    const badge = await waitFor(() => {
+      const el = held?.querySelector("[data-slot=badge]");
+      if (!el) throw new Error("no badge yet");
+      return el;
+    });
+    expect(badge).toHaveTextContent("oa-manager");
+    expect(badge.className).not.toContain("oa-success-soft");
+  });
 });
