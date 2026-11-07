@@ -11,6 +11,7 @@ import {
 } from "../../content/signing.js";
 import type { Env } from "../../env.js";
 import { ApiError, appOrigin, contentOrigin } from "../../http/errors.js";
+import { touchViewerAgentLater } from "../../runtime/viewer-presence-agent.js";
 import {
   getSummary,
   isSettingsOnly,
@@ -87,7 +88,15 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
           const line = `Updated the settings of ${r.id} in place (still v${r.version}, no new version): ${r.url}`;
           return ok(r.warning ? `${line} Warning: ${r.warning}` : line, r);
         }
-        const r = await publish(env, user, input, t.agentNow(), t.exec, "any");
+        const r = await publish(
+          env,
+          user,
+          input,
+          t.agentNow(),
+          t.exec,
+          "any",
+          t.touchInput(true, input.message),
+        );
         const line = `Published ${input.title ? `"${input.title}" ` : ""}${r.id} v${r.version}: ${r.url}`;
         return ok(r.warning ? `${line} Warning: ${r.warning}` : line, r);
       }),
@@ -115,6 +124,14 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
       const path = input.path ?? version.entry;
       const file = version.files.find((f) => f.path === path);
       if (!file) throw notFound();
+      // A read puts the agent on an open viewer's roster (one extra DO call,
+      // after the response).
+      touchViewerAgentLater(
+        env,
+        t.exec,
+        input.id,
+        t.touchInput(false, input.activity),
+      );
       const out: GetArtifactResult = { artifact, version };
       if (
         input.includeContent &&
@@ -214,6 +231,7 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
           input.version,
           t.agentNow(),
           t.exec,
+          t.touchInput(true),
         );
         return ok(
           `Restored v${input.version} of ${r.id} as v${r.version}: ${r.url}`,

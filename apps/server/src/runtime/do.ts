@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  AGENT_PRESENT_MS,
+  type AgentTouch,
   type Anchor,
   accessChangedCloseReason,
   COMMENT_BODY_MAX,
@@ -22,6 +24,14 @@ import {
   type ErrorCode,
   LIMITS,
   type Page,
+  PRESENCE_COALESCE_MS,
+  PRESENCE_GRACE_MS,
+  PRESENCE_KEY_RE,
+  PRESENCE_PING,
+  PRESENCE_PONG,
+  PRESENCE_STALE_MS,
+  PRESENCE_SWEEP_MS,
+  type PresenceEntry,
   planOf,
   QUERY_TOO_LARGE_MESSAGE,
   type StorageEntry,
@@ -29,6 +39,7 @@ import {
   StorageKeyNameSchema,
   StorageSetBodySchema,
 } from "@oa/shared";
+import { z } from "zod";
 import { withRetries } from "../db/retry.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
@@ -74,6 +85,13 @@ import {
   SKEW_MS,
   socketIndexStub,
 } from "./presence.js";
+import {
+  type AgentRow,
+  buildRoster,
+  fnv1a,
+  type PresenceIdentity,
+  type SeatRow,
+} from "./roster.js";
 
 // Errors cross the RPC boundary as plain Error (subclass + fields are lost), so the
 // code rides in the message: "oa:<code>:<message>". B13 maps it back with toRuntimeApiError.
@@ -414,6 +432,18 @@ create table if not exists thumb_job (
 create table if not exists access_change (
   id integer primary key check (id = 1), at integer not null
 );
+create table if not exists viewer_presence_left (
+  key text primary key, kind text not null, name text, guest integer not null,
+  since integer not null, until integer not null, actor text not null
+);
+create table if not exists viewer_presence_agent (
+  key text primary key, product text, owner text not null, owner_actor text not null,
+  label text, since integer not null, seen integer not null, last_write integer,
+  activity text
+);
+create table if not exists viewer_presence_state (
+  id integer primary key check (id = 1), hash text not null, sent_at integer not null
+);
 ${COMMENTS_SCHEMA}`;
 
 /** presence_unbound is logged once per isolate on the accept path. */
@@ -424,7 +454,18 @@ type SqlParam = string | number | null;
  * Per-socket attachment: connect time (ms); on R.events sockets also whether
  * the viewer may see publisher names (`named`, also carried as a tag).
  */
-type SocketMeta = { t: number; named?: boolean };
+type SocketMeta = {
+  t: number;
+  named?: boolean;
+  /**
+   * Viewer presence: set only once the socket passed every gate and joined
+   * the roster (a tagged socket without it is not counted). `actor` is the
+   * socket's X-OA-Actor (server-only, for revocation), `ping` whether the
+   * client pings (only those are swept as stale), `h` a hash of the last
+   * presence frame sent to it.
+   */
+  p?: SeatRow & { ping: boolean; actor: string; h?: string };
+};
 
 /**
  * R.events socket tags. Not DataNames (NAME_RE has no "~"), so they never
@@ -439,12 +480,33 @@ const EVENTS_NAMED_TAG = "~ev:named";
 const EVENTS_ANON_TAG = "~ev:anon";
 const EVENTS_USER_TAG = "~ev:u";
 const EVENTS_IP_TAG = "~ev:ip";
+/** On events sockets that may join the viewer-presence roster (see SocketMeta.p). */
+const VIEWER_PRESENCE_TAG = "~vp";
 /** Data-subscribe budget-pool tags (signed-in or ip); same "~" rule as above. */
 const DATA_USER_TAG = "~d:u";
 const DATA_IP_TAG = "~d:ip";
 /** Route → DO headers on the events upgrade: the current version and viewer class. */
 export const EVENTS_VERSION_HEADER = "X-OA-Version";
 export const EVENTS_NAMED_HEADER = "X-OA-Named";
+/**
+ * JSON PresenceIdentity of the viewer (see viewerPresenceHeader); absent:
+ * the socket is not counted and gets no presence frames (embeds).
+ */
+export const VIEWER_PRESENCE_HEADER = "X-OA-Viewer-Presence";
+/** "1": this client pings every PRESENCE_PING_MS, so the alarm may sweep it as stale. */
+export const EVENTS_PING_HEADER = "X-OA-Ping";
+const IdentityHeaderSchema = z.object({
+  key: z.string().regex(PRESENCE_KEY_RE),
+  kind: z.enum(["person", "anon"]),
+  name: z.string().max(400).nullable(),
+  guest: z.boolean(),
+});
+/** The header value: JSON with every non-ASCII character escaped (header values are Latin-1). */
+export const viewerPresenceHeader = (id: PresenceIdentity): string =>
+  JSON.stringify(id).replace(
+    /[\u007f-\uffff]/g,
+    (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
 /** Why R.events sockets get `gone`: a soft delete, or any other access change. */
 export type GoneReason = "deleted" | "changed";
 const GONE_DELETED = '{"type":"gone","reason":"deleted"}';
@@ -479,6 +541,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
     // D1 reads (the indexer, the thumbnailer) retry on a storage failure
     // (db/retry.ts), one wrapper per env.
     super(ctx, withRetries(env));
+    // The viewer-presence heartbeat: "pong" for "ping" without waking the DO
+    // (also on data sockets; harmless there).
+    ctx.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair(PRESENCE_PING, PRESENCE_PONG),
+    );
   }
 
   /** The instance's data-doc limit (env PLAN, DATA_DOC_BYTES). */
@@ -745,11 +812,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return { json, bytes };
   }
 
-  get(collection: string, id: string): DataDoc | null {
+  get(collection: string, id: string, touch?: AgentTouch): DataDoc | null {
     const row = this.readDoc(
       dataName(collection, "collection"),
       dataName(id, "id"),
     );
+    this.touchWith(touch);
     return row ? toDoc(row) : null;
   }
 
@@ -758,7 +826,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
    * (collection, id) (EXPLAIN QUERY PLAN: "SEARCH docs USING ... INDEX ...
    * (collection=?)"); no doc bodies are read.
    */
-  count(collection: string): DataCount {
+  count(collection: string, touch?: AgentTouch): DataCount {
+    const out = this.countDocs(collection);
+    this.touchWith(touch);
+    return out;
+  }
+
+  private countDocs(collection: string): DataCount {
     const c = dataName(collection, "collection");
     return {
       count: this.sql
@@ -771,7 +845,22 @@ export class ArtifactRuntime extends DurableObject<Env> {
   }
 
   /** Docs in (updated_at, id) order, keyset-paginated. */
-  list(collection: string, cursor?: string, limit?: number): Page<DataDoc> {
+  list(
+    collection: string,
+    cursor?: string,
+    limit?: number,
+    touch?: AgentTouch,
+  ): Page<DataDoc> {
+    const out = this.listDocs(collection, cursor, limit);
+    this.touchWith(touch);
+    return out;
+  }
+
+  private listDocs(
+    collection: string,
+    cursor?: string,
+    limit?: number,
+  ): Page<DataDoc> {
     const c = dataName(collection, "collection");
     const n = limitOf(limit);
     const cur = decodeCursor(cursor, ["u", "i"] as const);
@@ -798,7 +887,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
   }
 
   /** Typed equality filter, ordered by (orderBy value | updated_at, id), keyset-paginated. */
-  query(collection: string, q: DataQueryInput): Page<DataDoc> {
+  query(
+    collection: string,
+    q: DataQueryInput,
+    touch?: AgentTouch,
+  ): Page<DataDoc> {
+    const out = this.queryDocs(collection, q);
+    this.touchWith(touch);
+    return out;
+  }
+
+  private queryDocs(collection: string, q: DataQueryInput): Page<DataDoc> {
     const c = dataName(collection, "collection");
     const parsed = DataQuerySchema.safeParse(q ?? {});
     if (!parsed.success) fail("bad_request", "invalid query");
@@ -930,13 +1029,21 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return { items: items.map(toDoc), nextCursor };
   }
 
-  set(collection: string, id: string, data: unknown, actor: string): DataDoc {
-    return this.writeDoc(
+  set(
+    collection: string,
+    id: string,
+    data: unknown,
+    actor: string,
+    touch?: AgentTouch,
+  ): DataDoc {
+    const doc = this.writeDoc(
       dataName(collection, "collection"),
       dataName(id, "id"),
       data,
       actorOf(actor),
     ).doc;
+    this.touchWith(touch);
+    return doc;
   }
 
   /**
@@ -949,12 +1056,15 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     body: RawBody,
     actor: string,
+    touch?: AgentTouch,
   ): { updatedAt: string } {
     const c = dataName(collection, "collection");
     const i = dataName(id, "id");
     const a = actorOf(actor);
     const { json, bytes } = this.rawJson(body);
-    return { updatedAt: this.writeJson(c, i, json, bytes, a) };
+    const updatedAt = this.writeJson(c, i, json, bytes, a);
+    this.touchWith(touch);
+    return { updatedAt };
   }
 
   /** Shallow merge into the doc (non-object docs are replaced); a missing doc is created. */
@@ -963,8 +1073,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     patch: Record<string, unknown>,
     actor: string,
+    touch?: AgentTouch,
   ): DataDoc {
-    return this.merge(collection, id, patch, actor).doc;
+    const { doc } = this.merge(collection, id, patch, actor);
+    this.touchWith(touch);
+    return doc;
   }
 
   /** update() from the raw request body; returns the DataDoc as JSON text. */
@@ -973,6 +1086,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     body: RawBody,
     actor: string,
+    touch?: AgentTouch,
   ): string {
     const { json } = this.rawJson(body);
     const { doc, json: data } = this.merge(
@@ -981,6 +1095,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       JSON.parse(json) as Record<string, unknown>,
       actor,
     );
+    this.touchWith(touch);
     return docJson({ ...doc, data: null }, data);
   }
 
@@ -1004,7 +1119,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return this.writeDoc(c, i, { ...base, ...p.data }, a);
   }
 
-  delete(collection: string, id: string, actor: string): void {
+  delete(
+    collection: string,
+    id: string,
+    actor: string,
+    touch?: AgentTouch,
+  ): void {
     const c = dataName(collection, "collection");
     const i = dataName(id, "id");
     const a = actorOf(actor);
@@ -1034,6 +1154,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           }),
         ),
       );
+    this.touchWith(touch);
   }
 
   /**
@@ -1262,6 +1383,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     let tags: string[];
     let hello: string | null = null;
     let named: boolean | undefined;
+    let seatId: PresenceIdentity | null = null;
     if (url.pathname === "/events") {
       const v = Number(req.headers.get(EVENTS_VERSION_HEADER));
       if (!Number.isSafeInteger(v) || v < 1)
@@ -1288,7 +1410,21 @@ export class ArtifactRuntime extends DurableObject<Env> {
       )
         return new Response("Too many subscriptions", { status: 429 });
       tags.push(tag, `a:${actor}`);
-      hello = `{"type":"hello","version":${v}}`;
+      const rawSeat = req.headers.get(VIEWER_PRESENCE_HEADER);
+      if (rawSeat !== null) {
+        let parsed: z.infer<typeof IdentityHeaderSchema> | null = null;
+        try {
+          const r = IdentityHeaderSchema.safeParse(JSON.parse(rawSeat));
+          parsed = r.success ? r.data : null;
+        } catch {
+          // malformed JSON
+        }
+        if (!parsed)
+          return new Response("Invalid viewer presence", { status: 400 });
+        seatId = parsed;
+        tags.push(VIEWER_PRESENCE_TAG);
+      }
+      hello = `{"type":"hello","version":${v}${seatId ? `,"you":"${seatId.key}"` : ""}}`;
     } else {
       const r = DataNameSchema.safeParse(url.searchParams.get("collection"));
       if (!r.success)
@@ -1362,6 +1498,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
     if (hello) pair[1].send(hello);
+    if (seatId && actor !== null)
+      await this.joinViewerPresence(
+        pair[1],
+        seatId,
+        actor,
+        req.headers.get(EVENTS_PING_HEADER) === "1",
+      );
     // After the accept, as with touch: a closeInstall that runs meanwhile
     // finds the socket here, and one that missed this report gets it on its
     // second pass.
@@ -1417,6 +1560,352 @@ export class ArtifactRuntime extends DurableObject<Env> {
     }
   }
 
+  // ------------------------------------------------ viewer presence (#539)
+  // Who has the artifact open. Everything lives in socket attachments (`p`)
+  // and two small tables, so a hibernated and re-created instance rebuilds
+  // the roster from storage alone.
+
+  private metaOf(ws: WebSocket): SocketMeta | null {
+    try {
+      return ws.deserializeAttachment() as SocketMeta | null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** The counted sockets: tagged and past every gate (attachment `p`). */
+  private countedSockets(): {
+    ws: WebSocket;
+    meta: SocketMeta;
+    p: NonNullable<SocketMeta["p"]>;
+  }[] {
+    const out: ReturnType<ArtifactRuntime["countedSockets"]> = [];
+    for (const ws of this.ctx.getWebSockets(VIEWER_PRESENCE_TAG)) {
+      const meta = this.metaOf(ws);
+      if (meta?.p) out.push({ ws, meta, p: meta.p });
+    }
+    return out;
+  }
+
+  /** One seat per counted socket plus the unexpired grace rows. */
+  private presenceSeats(now: number): SeatRow[] {
+    const seats: SeatRow[] = this.countedSockets().map(({ p }) => ({
+      key: p.key,
+      kind: p.kind,
+      name: p.name,
+      guest: p.guest,
+      since: p.since,
+    }));
+    for (const r of this.sql
+      .exec<{
+        key: string;
+        kind: "person" | "anon";
+        name: string | null;
+        guest: number;
+        since: number;
+      }>(
+        "select key, kind, name, guest, since from viewer_presence_left where until > ?",
+        now,
+      )
+      .toArray())
+      seats.push({ ...r, guest: r.guest === 1 });
+    return seats;
+  }
+
+  /** The agents seen recently: rows past AGENT_PRESENT_MS are not on the roster. */
+  private agentRows(): AgentRow[] {
+    return this.sql
+      .exec<{
+        key: string;
+        product: string | null;
+        owner: string;
+        owner_actor: string;
+        label: string | null;
+        since: number;
+        seen: number;
+        last_write: number | null;
+        activity: string | null;
+      }>("select * from viewer_presence_agent")
+      .toArray()
+      .map((r) => ({
+        key: r.key,
+        product: r.product,
+        owner: r.owner,
+        ownerActor: r.owner_actor,
+        label: r.label,
+        since: r.since,
+        seen: r.seen,
+        lastWrite: r.last_write,
+        activity: r.activity,
+      }));
+  }
+
+  /**
+   * The frame every counted socket should hold now, serialized once: the base
+   * one, plus a variant for each person whose token connected an agent with a
+   * private label (only that person's own sockets get it).
+   */
+  private presenceFrames(now: number): {
+    base: string;
+    byActor: Map<string, string>;
+    sig: string;
+  } {
+    const r = buildRoster(this.presenceSeats(now), this.agentRows(), now);
+    const frame = (viewers: PresenceEntry[]) =>
+      JSON.stringify({ type: "presence", viewers, total: r.total });
+    const base = frame(r.viewers);
+    const byActor = new Map<string, string>();
+    for (const [actor, labels] of r.labels)
+      byActor.set(
+        actor,
+        frame(
+          r.viewers.map((v) => {
+            const label = v.kind === "agent" ? labels.get(v.key) : undefined;
+            return label && v.agent
+              ? { ...v, agent: { ...v.agent, label } }
+              : v;
+          }),
+        ),
+      );
+    const sig = [base, ...[...byActor].sort().flat()].join("\n");
+    return { base, byActor, sig: fnv1a(sig).toString(36) };
+  }
+
+  private presenceState(): { hash: string; sent_at: number } | undefined {
+    return this.sql
+      .exec<{ hash: string; sent_at: number }>(
+        "select hash, sent_at from viewer_presence_state where id = 1",
+      )
+      .toArray()[0];
+  }
+
+  /**
+   * Records an AI agent's request (the Worker's fire-and-forget call for a
+   * read that never reaches the DO otherwise; reads and writes that do reach
+   * it carry the touch on their own call).
+   */
+  async touchViewerAgent(t: AgentTouch): Promise<void> {
+    await this.afterViewerAgentTouch(this.recordViewerAgent(t));
+  }
+
+  /**
+   * Upserts the agent's row (synchronously: SQLite is) and returns whether
+   * anything a viewer sees changed: a new agent, one back after its window, a
+   * new activity, or a first write. `since` is kept while the agent stays
+   * present, so its place in the order holds.
+   */
+  private recordViewerAgent(t: AgentTouch): boolean {
+    const now = this.now();
+    const prev = this.sql
+      .exec<{
+        seen: number;
+        last_write: number | null;
+        activity: string | null;
+        since: number;
+      }>(
+        "select seen, last_write, activity, since from viewer_presence_agent where key = ?",
+        t.key,
+      )
+      .toArray()[0];
+    const present = prev !== undefined && now - prev.seen <= AGENT_PRESENT_MS;
+    const editing =
+      prev?.last_write != null && now - prev.last_write <= AGENT_PRESENT_MS;
+    const activity = t.activity ?? (present ? prev.activity : null);
+    this.sql.exec(
+      `insert or replace into viewer_presence_agent
+        (key, product, owner, owner_actor, label, since, seen, last_write, activity)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      t.key,
+      t.product,
+      t.owner,
+      t.ownerActor,
+      t.label,
+      present ? prev.since : now,
+      now,
+      t.write ? now : present ? (prev.last_write ?? null) : null,
+      activity,
+    );
+    return !present || activity !== prev.activity || (t.write && !editing);
+  }
+
+  /** After a touch: a changed roster is flushed, and an alarm is set for the agent's expiry. */
+  private async afterViewerAgentTouch(changed: boolean): Promise<void> {
+    if (changed) await this.viewerPresenceChanged();
+    await this.armAt(this.now() + AGENT_PRESENT_MS + 1);
+  }
+
+  /** A data call's touch, recorded in the same RPC (a read or a write that succeeded). */
+  private touchWith(touch: AgentTouch | undefined): void {
+    if (!touch) return;
+    const changed = this.recordViewerAgent(touch);
+    this.ctx.waitUntil(this.afterViewerAgentTouch(changed));
+  }
+
+  /** Test view: the grace rows and when the last frame went out. */
+  pendingViewerPresence(): { left: number; sentAt: number | null } {
+    return {
+      left: this.sql
+        .exec<{ n: number }>("select count(*) as n from viewer_presence_left")
+        .one().n,
+      sentAt: this.presenceState()?.sent_at ?? null,
+    };
+  }
+
+  /**
+   * Sends the roster to every counted socket when it changed and the
+   * coalesce window since the last frame is over. Returns when a deferred
+   * flush is due (the roster changed inside the window), else null.
+   */
+  private flushViewerPresence(): number | null {
+    const now = this.now();
+    const counted = this.countedSockets();
+    const st = this.presenceState();
+    if (counted.length === 0) {
+      // Nobody to tell; the next joiner is sent the roster directly.
+      if (st) this.sql.exec("delete from viewer_presence_state");
+      return null;
+    }
+    const frames = this.presenceFrames(now);
+    if (st?.hash === frames.sig) return null;
+    if (st && now - st.sent_at < PRESENCE_COALESCE_MS)
+      return st.sent_at + PRESENCE_COALESCE_MS;
+    for (const { ws, meta, p } of counted) {
+      const frame = frames.byActor.get(p.actor) ?? frames.base;
+      const h = fnv1a(frame).toString(36);
+      // A socket already holding this frame (the joiner) is not sent it twice.
+      if (p.h === h) continue;
+      try {
+        ws.send(frame);
+        ws.serializeAttachment({ ...meta, p: { ...p, h } });
+      } catch {
+        // closing socket
+      }
+    }
+    this.sql.exec(
+      `insert into viewer_presence_state (id, hash, sent_at) values (1, ?, ?)
+       on conflict (id) do update set hash = excluded.hash, sent_at = excluded.sent_at`,
+      frames.sig,
+      now,
+    );
+    return null;
+  }
+
+  /** Coalesced flush: now, or at the end of the window via the alarm. */
+  private async viewerPresenceChanged(): Promise<void> {
+    const due = this.flushViewerPresence();
+    if (due !== null) await this.armAt(due);
+  }
+
+  /**
+   * Adds the socket to the roster, once it passed the stale and UserPresence
+   * gates: its seat keeps the earliest arrival of its key (an open socket's,
+   * or a grace row's), it is sent the roster, and everyone else gets one
+   * coalesced frame.
+   */
+  private async joinViewerPresence(
+    ws: WebSocket,
+    id: PresenceIdentity,
+    actor: string,
+    ping: boolean,
+  ): Promise<void> {
+    // Closed while the gates ran (an access change): nothing to join.
+    if (ws.readyState > 1) return;
+    const now = this.now();
+    const left = this.sql
+      .exec<{ since: number }>(
+        "select since from viewer_presence_left where key = ? and until > ?",
+        id.key,
+        now,
+      )
+      .toArray()[0];
+    this.sql.exec("delete from viewer_presence_left where key = ?", id.key);
+    const open = this.countedSockets()
+      .filter((c) => c.ws !== ws && c.p.key === id.key)
+      .map((c) => c.p.since);
+    const since = open.length ? Math.min(...open) : (left?.since ?? now);
+    const meta = this.metaOf(ws) ?? { t: now };
+    const p = { ...id, since, ping, actor };
+    ws.serializeAttachment({ ...meta, p } satisfies SocketMeta);
+    const frames = this.presenceFrames(now);
+    const frame = frames.byActor.get(actor) ?? frames.base;
+    try {
+      ws.send(frame);
+      ws.serializeAttachment({
+        ...meta,
+        p: { ...p, h: fnv1a(frame).toString(36) },
+      } satisfies SocketMeta);
+    } catch {
+      // closing socket
+    }
+    if (ping)
+      await this.armAt(
+        Math.min(meta.t + SOCKET_TTL_MS, now + PRESENCE_SWEEP_MS),
+      );
+    await this.viewerPresenceChanged();
+  }
+
+  /** Drops the socket's seat from its attachment; returns the seat it held. */
+  private detachSeat(ws: WebSocket): NonNullable<SocketMeta["p"]> | null {
+    const meta = this.metaOf(ws);
+    if (!meta?.p) return null;
+    const { p, ...rest } = meta;
+    try {
+      ws.serializeAttachment(rest satisfies SocketMeta);
+    } catch {
+      // already closed
+    }
+    return p;
+  }
+
+  /**
+   * A counted socket closed: its face stays PRESENCE_GRACE_MS (a reload does
+   * not flicker) unless another socket holds the same key. A socket that
+   * never joined writes nothing.
+   */
+  private async leaveViewerPresence(ws: WebSocket): Promise<void> {
+    const p = this.detachSeat(ws);
+    if (!p) return;
+    if (this.countedSockets().some((c) => c.p.key === p.key)) return;
+    const until = this.now() + PRESENCE_GRACE_MS;
+    this.sql.exec(
+      `insert or replace into viewer_presence_left (key, kind, name, guest, since, until, actor)
+       values (?, ?, ?, ?, ?, ?, ?)`,
+      p.key,
+      p.kind,
+      p.name,
+      p.guest ? 1 : 0,
+      p.since,
+      until,
+      p.actor,
+    );
+    await this.armAt(until);
+  }
+
+  /** Closes the sockets that missed their pings and starts their grace. */
+  private async sweepStaleSockets(now: number): Promise<void> {
+    for (const { ws, meta, p } of this.countedSockets()) {
+      if (!p.ping) continue;
+      const last =
+        this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? meta.t;
+      if (now - last < PRESENCE_STALE_MS) continue;
+      await this.leaveViewerPresence(ws);
+      try {
+        ws.close(1001, "stale");
+      } catch {
+        // already closed
+      }
+    }
+  }
+
+  /** Forgets every seat (an access change or suspend closes all sockets). */
+  private clearViewerPresence(): void {
+    for (const ws of this.ctx.getWebSockets(VIEWER_PRESENCE_TAG))
+      this.detachSeat(ws);
+    this.sql.exec("delete from viewer_presence_left");
+    this.sql.exec("delete from viewer_presence_agent");
+    this.sql.exec("delete from viewer_presence_state");
+  }
+
   /** When closeSockets last ran (ms; an access change), or null. */
   accessChangedAt(): number | null {
     return (
@@ -1455,6 +1944,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     version: number,
     thumb = false,
     event?: VersionEvent,
+    touch?: AgentTouch,
   ): Promise<{ ms: number }> {
     if (typeof artifactId !== "string" || artifactId.length > 64)
       fail("bad_request", "invalid artifact id");
@@ -1463,6 +1953,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
     // The object's own share of index_enqueue's wall time (returned).
     const t0 = Date.now();
     if (event) this.broadcastVersion(version, event);
+    // A publish or restore by an agent: it is editing. Rides this call, so it
+    // costs no extra request.
+    if (touch) await this.afterViewerAgentTouch(this.recordViewerAgent(touch));
     const due = this.now() + INDEX_DELAY_MS;
     this.sql.exec(
       `insert into index_job (id, artifact_id, version, attempts, due, seq) values (1, ?, ?, 0, ?, 1)
@@ -1652,9 +2145,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
     // on stays dormant, unread and unattempted).
     const thumbs = serverThumbnails(this.env);
     const thumb = thumbs ? this.pendingThumbnail() : null;
-    if (!job && !thumb && sockets.length === 0) return;
+    if (
+      !job &&
+      !thumb &&
+      sockets.length === 0 &&
+      this.pendingViewerPresence().left === 0 &&
+      this.agentRows().length === 0
+    )
+      return;
     const now = this.now();
     let next = Number.POSITIVE_INFINITY;
+    await this.sweepStaleSockets(now);
     for (const ws of sockets) {
       const t = (ws.deserializeAttachment() as SocketMeta | null)?.t ?? 0;
       if (now - t >= SOCKET_TTL_MS - SOCKET_TTL_SLACK_MS) {
@@ -1665,6 +2166,31 @@ export class ArtifactRuntime extends DurableObject<Env> {
         }
       } else next = Math.min(next, t + SOCKET_TTL_MS);
     }
+    // Viewer presence: expired grace rows leave, then one coalesced frame.
+    this.sql.exec("delete from viewer_presence_left where until <= ?", now);
+    // Agents past their window leave the roster (buildRoster already drops
+    // them); the rows go, and the alarm wakes again when the next one expires
+    // or stops counting as editing.
+    this.sql.exec(
+      "delete from viewer_presence_agent where seen + ? < ?",
+      AGENT_PRESENT_MS,
+      now,
+    );
+    for (const a of this.agentRows()) {
+      next = Math.min(next, a.seen + AGENT_PRESENT_MS + 1);
+      if (a.lastWrite !== null && now - a.lastWrite <= AGENT_PRESENT_MS)
+        next = Math.min(next, a.lastWrite + AGENT_PRESENT_MS + 1);
+    }
+    const flushDue = this.flushViewerPresence();
+    if (flushDue !== null) next = Math.min(next, flushDue);
+    const graceEnd = this.sql
+      .exec<{ t: number | null }>(
+        "select min(until) as t from viewer_presence_left",
+      )
+      .one().t;
+    if (graceEnd !== null) next = Math.min(next, graceEnd);
+    if (this.countedSockets().some((c) => c.p.ping))
+      next = Math.min(next, now + PRESENCE_SWEEP_MS);
     const indexDue = !!job && (job.attempts === 0 || job.due <= now);
     if (job && indexDue) {
       const same = "where id = 1 and seq = ?";
@@ -1819,12 +2345,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
     }
   }
 
-  override webSocketClose(ws: WebSocket, code: number): void {
+  override async webSocketClose(ws: WebSocket, code: number): Promise<void> {
+    await this.leaveViewerPresence(ws);
     try {
       ws.close(code === 1005 || code === 1006 ? 1000 : code, "closed");
     } catch {
       // already closed
     }
+  }
+
+  override async webSocketError(ws: WebSocket): Promise<void> {
+    await this.leaveViewerPresence(ws);
   }
 
   /**
@@ -1845,6 +2376,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
        on conflict (id) do update set at = max(at, excluded.at)`,
       this.now(),
     );
+    this.clearViewerPresence();
     const frame = gone === "deleted" ? GONE_DELETED : GONE_CHANGED;
     for (const ws of this.ctx.getWebSockets(EVENTS_TAG)) {
       try {
@@ -1879,6 +2411,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       ...this.ctx.getWebSockets(`ea:${a}`),
     ]);
     for (const ws of socks) {
+      // No grace for a revoked person: detach first, so the close writes no row.
+      this.detachSeat(ws);
       try {
         if (this.ctx.getTags(ws).includes(EVENTS_TAG)) ws.send(GONE_CHANGED);
         ws.close(4403, why);
@@ -1886,6 +2420,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
         // already closed
       }
     }
+    this.sql.exec("delete from viewer_presence_left where actor = ?", a);
+    // Their agents go with them: a revoked person's agents leave at once.
+    this.sql.exec("delete from viewer_presence_agent where owner_actor = ?", a);
+    this.ctx.waitUntil(this.viewerPresenceChanged());
     return socks.size;
   }
 
@@ -1899,6 +2437,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
    */
   closeAllSockets(reason: string): number {
     const why = String(reason).slice(0, 120);
+    this.clearViewerPresence();
     const all = this.ctx.getWebSockets();
     for (const ws of all) {
       try {
@@ -2269,6 +2808,7 @@ type RpcMethods =
   | "closeSockets"
   | "closeActor"
   | "closeAllSockets"
+  | "touchViewerAgent"
   | "scheduleIndex"
   | "pendingIndex"
   | "storageDelete"

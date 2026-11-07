@@ -22,7 +22,11 @@ import {
 import { jsonBody, readCapped } from "../http/body.js";
 import { ApiError, contentOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
-import type { AgentAttr } from "../services/agent-usage.js";
+import {
+  type AgentTouchInput,
+  touchViewerAgentLater,
+} from "../runtime/viewer-presence-agent.js";
+import { type AgentAttr, viaKey } from "../services/agent-usage.js";
 import {
   getSummary,
   list,
@@ -109,6 +113,29 @@ const agentOf = (c: Context<AppEnv>): AgentAttr | null =>
       }
     : null;
 
+/**
+ * What a PAT caller's request tells viewer presence about its agent (a
+ * session cookie makes no touch). Always a token connection: REST has no
+ * Mcp-Session-Id.
+ */
+const touchOf = (
+  c: Context<AppEnv>,
+  write: boolean,
+  activity?: string,
+): AgentTouchInput | undefined => {
+  const agent = agentOf(c);
+  const user = c.var.user;
+  if (!agent?.via || !user) return undefined;
+  return {
+    user,
+    agent,
+    session: null,
+    connection: viaKey(agent.via),
+    write,
+    activity: activity ?? null,
+  };
+};
+
 const notFound = () => new ApiError("not_found", "Not found");
 
 /** The :id param, or 404 for anything that isn't an id. */
@@ -164,9 +191,13 @@ export function mountArtifacts(app: AppType): void {
     return c.json(await listTrash(c.env, callerOf(user), q.data));
   });
 
-  app.get(ARTIFACT, async (c) =>
-    c.json(await getSummary(c.env, caller(c), idParam(c))),
-  );
+  app.get(ARTIFACT, async (c) => {
+    const id = idParam(c);
+    const summary = await getSummary(c.env, caller(c), id);
+    const touch = touchOf(c, false);
+    if (touch) touchViewerAgentLater(c.env, execCtx(c), id, touch);
+    return c.json(summary);
+  });
 
   app.patch(ARTIFACT, async (c) => {
     const user = requireUser(c);
@@ -310,7 +341,15 @@ export function mountArtifacts(app: AppType): void {
     const id = idParam(c);
     const v = versionParam(c);
     return c.json(
-      await restoreVersion(c.env, user, id, v, agentOf(c), execCtx(c)),
+      await restoreVersion(
+        c.env,
+        user,
+        id,
+        v,
+        agentOf(c),
+        execCtx(c),
+        touchOf(c, true),
+      ),
       201,
     );
   });
@@ -378,7 +417,15 @@ export function mountArtifacts(app: AppType): void {
     const user = requireUser(c);
     const input = await publishInput(c);
     return c.json(
-      await publish(c.env, user, input, agentOf(c), execCtx(c), "create"),
+      await publish(
+        c.env,
+        user,
+        input,
+        agentOf(c),
+        execCtx(c),
+        "create",
+        touchOf(c, true, input.message),
+      ),
       201,
     );
   });
@@ -389,7 +436,15 @@ export function mountArtifacts(app: AppType): void {
     if (!isId(id)) throw new ApiError("not_found", "Not found");
     const input = await publishInput(c, id);
     return c.json(
-      await publish(c.env, user, input, agentOf(c), execCtx(c), "version"),
+      await publish(
+        c.env,
+        user,
+        input,
+        agentOf(c),
+        execCtx(c),
+        "version",
+        touchOf(c, true, input.message),
+      ),
       201,
     );
   });

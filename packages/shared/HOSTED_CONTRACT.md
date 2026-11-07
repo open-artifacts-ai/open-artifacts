@@ -96,6 +96,7 @@ Who else has an artifact open, as faces. Module: `viewer-presence.ts`.
 - **Anonymous id.** Session cookie `oa_pid` on the app origin, matching `PRESENCE_ID_RE`; the server treats it as opaque and ignores any other value.
 - **Ping.** A client opening `R.events` with `?ping=1` sends the text `ping` every `PRESENCE_PING_MS` (30 s); the server answers `pong` without waking. Such a socket with no ping for `PRESENCE_STALE_MS` (60 s) is swept (every `PRESENCE_SWEEP_MS`); a closed socket's face lingers `PRESENCE_GRACE_MS`. Sockets without `?ping=1` are never swept for silence. `ping` is the only client message allowed; any other closes with 1008.
 - **Agents.** Present for `AGENT_PRESENT_MS` (120 s) after a touch, "editing" while a write is that recent.
+- **Agent faces.** An AI agent has no socket: an artifact read, publish, restore or data call from an MCP or PAT connection touches the roster. One face per server-issued `Mcp-Session-Id` (legacy MCP only: issued at `initialize` for 2025-03-26, 2025-06-18 and 2025-11-25 clients, never minted or echoed for 2026-07-28, which has no protocol sessions), else one per connection (token or grant). `product` is an OAuth client's name; a token's label never is: it is `agent.label`, sent only to the owner's own sockets.
 
 ## CHANGED existing shapes (all fields optional, appended last)
 
