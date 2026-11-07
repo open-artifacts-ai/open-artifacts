@@ -9,6 +9,7 @@ import {
   caller,
   capOfCaller,
   interactiveSession,
+  planOfMember,
   requireUser,
 } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
@@ -98,8 +99,18 @@ async function stripeUrl(
 
 export function mountBilling(app: AppType): void {
   app.post(R.billingCheckout, async (c) => {
-    requireBillingManager(c);
+    const user = requireBillingManager(c);
     const { tier, interval } = await jsonBody(c, BillingCheckoutInputSchema);
+    // Solo prices are for a Solo instance: a Team or Business instance
+    // can't buy them (409, as a state conflict, not a bad body).
+    if (tier === "solo") {
+      const now = planOfMember(user)?.tier;
+      if (now !== "solo" && now !== "free" && now !== "trial")
+        throw new ApiError(
+          "conflict",
+          "Solo can only be bought on a Solo or trial instance",
+        );
+    }
     // Billing's /checkout body is { install, ts, plan } (Platform #858), plus
     // interval for solo only (month or year; hosted half, #1568).
     return c.json(

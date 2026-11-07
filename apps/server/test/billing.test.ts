@@ -1482,6 +1482,26 @@ describe("Me.instance.billing and the billing routes", () => {
     ).not.toHaveProperty("interval");
   });
 
+  it("checkout solo is refused (409) on a Team or Business instance, allowed on solo, free and trial", async () => {
+    const post = () =>
+      send(R.billingCheckout, owner.cookie, {
+        method: "POST",
+        body: { tier: "solo", interval: "month" },
+      });
+    const n = () => calls.filter((c) => c.path === "/checkout").length;
+    await cache({ tier: "team", version: 7 });
+    const before = n();
+    const r = await post();
+    expect(r.status).toBe(409);
+    expect(n()).toBe(before);
+    await cache({ tier: "business", version: 8 });
+    expect((await post()).status).toBe(409);
+    await cache({ tier: "solo", version: 9 });
+    expect((await post()).status).toBe(200);
+    await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 10 });
+    expect((await post()).status).toBe(200);
+  });
+
   it("checkout and portal: a Stripe URL only, signed; owner and admin only", async () => {
     await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 2 });
     const r = await send(R.billingCheckout, owner.cookie, {

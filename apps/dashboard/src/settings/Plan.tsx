@@ -177,6 +177,9 @@ export function Plan() {
   const solo = column === "solo";
   const ended = billing.readOnly && billing.reason === "trial_ended";
   const paid = billing.tier === "team" || billing.tier === "business";
+  // A lapsed paid plan restarts through Checkout: the portal can't revive a
+  // canceled subscription.
+  const lapsedPaid = paid && billing.status === "lapsed";
   const busy = go.isPending;
   return (
     <div className={STACK}>
@@ -205,10 +208,23 @@ export function Plan() {
           )}
         </dl>
         <div className="flex flex-wrap items-center gap-[var(--oa-space-2)]">
-          {paid || billing.status === "past_due" ? (
+          {(paid && !lapsedPaid) || billing.status === "past_due" ? (
             <Button disabled={busy} onClick={() => go.mutate("portal")}>
               Manage billing
             </Button>
+          ) : lapsedPaid ? (
+            (["team", "business"] as const).map((t) => (
+              <Button
+                key={t}
+                variant={t === billing.tier ? "default" : "outline"}
+                disabled={busy}
+                onClick={() => go.mutate({ tier: t })}
+              >
+                {t === billing.tier
+                  ? `Restart ${NAME[t]}`
+                  : `Switch to ${NAME[t]}`}
+              </Button>
+            ))
           ) : (
             <>
               {column === "solo" && (
@@ -248,7 +264,7 @@ export function Plan() {
               </Button>
             </>
           )}
-          {paid && (
+          {paid && !lapsedPaid && (
             <span className={muted}>
               Invoices and card are in the billing portal.
             </span>

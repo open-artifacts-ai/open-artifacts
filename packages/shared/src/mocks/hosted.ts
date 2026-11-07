@@ -1462,29 +1462,32 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     // -- solo_unpaid (view-only, the owner included): publishing, restoring,
     // uploads, live-data and storage writes answer 403 plan_read_only. Reads,
     // sharing and visibility keep working, as on the server.
-    ...[
-      ["post", "*/api/v1/artifacts"],
-      ["post", "*/api/v1/artifacts/:id/versions"],
-      ["post", "*/api/v1/artifacts/:id/versions/:v/restore"],
-      ["post", "*/api/v1/uploads"],
-      ["put", "*/api/v1/artifacts/:id/data/*"],
-      ["patch", "*/api/v1/artifacts/:id/data/*"],
-      ["delete", "*/api/v1/artifacts/:id/data/*"],
-      ["put", "*/api/v1/artifacts/:id/storage/*"],
-      ["delete", "*/api/v1/artifacts/:id/storage/*"],
-    ].map(([method, path]) =>
-      http[method as "post" | "put" | "patch" | "delete"](
-        path,
-        ({ request }) =>
-          !o.selfHosted &&
-          !c.isAnon(request) &&
-          billing.reason === "solo_unpaid" &&
-          billing.readOnly
-            ? err("plan_read_only", "Publishing is paused", {
-                tier: billing.tier,
-                reason: "solo_unpaid",
-              } satisfies PlanRefusalDetails)
-            : undefined,
+    // Data writes are refused for anonymous callers too; the rest need a
+    // sign-in first (the base handlers answer their 401).
+    ...(
+      [
+        ["post", "*/api/v1/artifacts", true],
+        ["post", "*/api/v1/artifacts/:id/versions", true],
+        ["post", "*/api/v1/artifacts/:id/versions/:v/restore", true],
+        ["post", "*/api/v1/uploads", true],
+        ["put", "*/api/v1/artifacts/:id/data", false],
+        ["put", "*/api/v1/artifacts/:id/data/*", false],
+        ["patch", "*/api/v1/artifacts/:id/data/*", false],
+        ["delete", "*/api/v1/artifacts/:id/data/*", false],
+        ["put", "*/api/v1/artifacts/:id/storage/*", true],
+        ["delete", "*/api/v1/artifacts/:id/storage/*", true],
+      ] as const
+    ).map(([method, path, signedIn]) =>
+      http[method](path, ({ request }) =>
+        !o.selfHosted &&
+        !(signedIn && c.isAnon(request)) &&
+        billing.reason === "solo_unpaid" &&
+        billing.readOnly
+          ? err("plan_read_only", "Publishing is paused", {
+              tier: billing.tier,
+              reason: "solo_unpaid",
+            } satisfies PlanRefusalDetails)
+          : undefined,
       ),
     ),
     http.post("*/api/v1/members", async ({ request }) => {

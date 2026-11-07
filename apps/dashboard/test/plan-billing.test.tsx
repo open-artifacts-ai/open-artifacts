@@ -331,3 +331,32 @@ it("Plan and billing: the footer scopes per-creator billing to Team and Business
     ),
   ).toBeVisible();
 });
+
+it("Plan and billing: a lapsed Team restarts through Checkout, its own tier primary", async () => {
+  const posts = calls("POST");
+  mountHosted("/settings/plan", {
+    billing: {
+      ...TEAM,
+      status: "lapsed",
+      readOnly: true,
+      reason: "lapsed",
+    },
+  });
+  const restart = await screen.findByRole("button", { name: "Restart Team" });
+  expect(restart.getAttribute("data-variant")).toBe("default");
+  expect(
+    screen
+      .getByRole("button", { name: "Switch to Business" })
+      .getAttribute("data-variant"),
+  ).toBe("outline");
+  expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
+  fireEvent.click(restart);
+  await waitFor(() =>
+    expect(lastRedirect).toHaveBeenCalledWith(
+      "https://checkout.stripe.com/c/pay/cs_test_mock_checkout",
+    ),
+  );
+  expect(posts.find((c) => c.path.endsWith("/billing/checkout"))?.body).toEqual(
+    { tier: "team" },
+  );
+});
