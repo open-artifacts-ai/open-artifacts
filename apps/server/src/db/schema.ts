@@ -552,6 +552,8 @@ export const uploads = sqliteTable("uploads", {
   consumed: integer("consumed").notNull().default(0),
   // set once the signed PUT stored exactly `size` bytes
   receivedAt: integer("received_at"),
+  // sha256 (hex) of the bytes the PUT stored; copied into the manifest digest at publish (#1490)
+  digest: text("digest"),
 });
 
 // ids handed out by create_upload before the first publish

@@ -101,6 +101,7 @@ const ver = (
         : contentType === "application/pdf"
           ? "pdf"
           : "code",
+  contentHash: null,
 });
 
 const members: Member[] = [

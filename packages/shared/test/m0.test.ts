@@ -323,6 +323,7 @@ describe("MCP inputs", () => {
       files: [],
       language: null,
       textIndexed: false,
+      contentHash: null,
       format: "html",
     };
     expect(

@@ -40,12 +40,12 @@ import {
   type RosterAgent,
   storedAgent,
 } from "./comment-agents.js";
-import { verifyQuote, versionFormat } from "./comment-anchor.js";
 import {
-  CONTENT_HASH_RE,
-  type CommentStatus,
-  cleanGuestName,
-} from "./comment-rules.js";
+  verifyQuote,
+  versionEntryHash,
+  versionFormat,
+} from "./comment-anchor.js";
+import { type CommentStatus, cleanGuestName } from "./comment-rules.js";
 import { effectiveName, getUser } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -138,7 +138,7 @@ export type CheckedAnchor = { anchor: Anchor; version: number };
  * Other formats get the schema check only.
  */
 export async function checkAnchor(
-  env: Pick<Env, "DB" | "FILES">,
+  env: Pick<Env, "DB" | "FILES" | "PLAN">,
   a: Pick<ArtifactRow, "id" | "format" | "currentVersion">,
   raw: unknown,
   /** Runs before the version's file is read: the caller's rate limit, so a refused quote still counts. */
@@ -152,10 +152,6 @@ export async function checkAnchor(
   if (input.kind === "note") return { anchor: input, version: current };
   const version = input.version ?? current;
   if (input.kind === "pin") {
-    if (!CONTENT_HASH_RE.test(input.contentHash))
-      throw new ApiError("invalid_anchor", "Invalid anchor", [
-        { path: ["contentHash"], message: "Invalid contentHash" },
-      ]);
     const format = await versionFormat(env, a.id, a.format, version);
     if (format === null)
       throw new ApiError(
@@ -167,7 +163,19 @@ export async function checkAnchor(
       throw new ApiError("invalid_anchor", "Pins are not available on html", [
         { path: ["kind"], message: "Pins are not available on html" },
       ]);
-    return { anchor: { ...input, version }, version };
+    // Rate limit first: the hash may cost an R2 read (a pre-digest version).
+    await beforeVerify?.();
+    // The server stamps the hash from the version's own bytes: a client's value is ignored.
+    const entry = await versionEntryHash(env, a.id, version);
+    if (entry === null)
+      throw new ApiError(
+        "anchor_not_in_version",
+        "That version has no entry file",
+      );
+    return {
+      anchor: { ...input, version, contentHash: entry.hash },
+      version,
+    };
   }
   await beforeVerify?.();
   const found = await verifyQuote(env, a.id, a.format, version, input);
