@@ -58,4 +58,21 @@ describe("gitSchemaOf", () => {
       /not a release version/,
     );
   });
+
+  // vitest runs from tests/redline, the directory CI runs the suite from.
+  it("lists a tag's migrations when run from tests/redline", async () => {
+    const { gitSchemaOf } = await import("../src/schema.ts");
+    const schema = await gitSchemaOf("0.133.0");
+    expect(schema.d1.length).toBeGreaterThan(0);
+    expect(schema.d1).toContain("0026_comments_setting.sql");
+  });
+
+  it("reports a migration a newer tag has over an older one", async () => {
+    const { gitSchemaOf } = await import("../src/schema.ts");
+    const [older, newer] = await Promise.all([
+      gitSchemaOf("0.132.1"),
+      gitSchemaOf("0.133.0"),
+    ]);
+    expect(schemaAhead(newer, older)).toContain("D1 0026_comments_setting.sql");
+  });
 });
