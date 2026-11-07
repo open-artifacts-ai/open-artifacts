@@ -181,6 +181,24 @@ describe("threads", () => {
     expect((await list(id, viewer)).threads[0]?.id).toBe(a.id);
   });
 
+  it("a pinned quote works on a page with void and self-closed tags (#1718)", async () => {
+    const id = await pub({
+      visibility: "team",
+      content:
+        "<p>The quick<br>brown fox</p><hr><img src=x><p>jumps<br/>over</p><svg/><p>the lazy dog</p>",
+    });
+    const ok = await post(id, viewer, "x", {
+      kind: "text",
+      exact: "lazy dog",
+      prefix: "WRONG",
+      suffix: "WRONG",
+    });
+    expect(ok.status).toBe(201);
+    expect((await thread(ok)).anchor).toMatchObject({
+      prefix: " quick brown fox jumps over the ",
+    });
+  });
+
   it("a text anchor is verified against the html version", async () => {
     const id = await pub({ visibility: "team" });
     const ok = await post(id, viewer, "x", {
