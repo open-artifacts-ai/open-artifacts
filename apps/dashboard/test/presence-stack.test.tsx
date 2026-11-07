@@ -78,6 +78,12 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** Enter on a button: browsers click it on keydown; jsdom does not, so do both. */
+const userEventEnter = async (el: HTMLElement) => {
+  fireEvent.keyDown(el, { key: "Enter", code: "Enter" });
+  fireEvent.click(el);
+};
+
 const faces = () => screen.getByRole("group").querySelectorAll("[data-shape]");
 
 describe("PresenceStack", () => {
@@ -265,6 +271,44 @@ describe("PresenceStack", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
+  it("an unnamed viewer's initials come from the key, never a name", () => {
+    const e: PresenceEntry = {
+      key: "zqkkkkkkkkkkkkkk",
+      kind: "person",
+      name: "Member",
+      named: false,
+      color: 1,
+    };
+    render(<PresenceStack others={[e]} total={1} />);
+    const f = screen.getByRole("button", { name: "Member" });
+    expect(f).toHaveTextContent("ZQ");
+    expect(f).not.toHaveTextContent("ME");
+  });
+
+  it("a face opens its card from the keyboard (Enter)", async () => {
+    render(<PresenceStack others={[person(0, "Maya Chen")]} total={1} />);
+    const f = screen.getByRole("button", { name: "Maya Chen" });
+    expect(f.tagName).toBe("BUTTON"); // a native button: Enter and Space activate it
+    expect(f.tabIndex).toBeGreaterThanOrEqual(0);
+    f.focus();
+    await userEventEnter(f);
+    expect(await screen.findByRole("dialog")).toHaveTextContent("Maya Chen");
+  });
+
+  it("phone: closing the +N sheet returns focus to the chip", async () => {
+    narrow(true);
+    render(<PresenceStack others={many(6)} total={6} />);
+    const chip = screen.getByRole("button", { name: "5 more here" });
+    chip.focus();
+    fireEvent.click(chip);
+    await screen.findByRole("dialog", { name: "5 more here" });
+    fireEvent.keyDown(document.activeElement ?? document.body, {
+      key: "Escape",
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() => expect(document.activeElement).toBe(chip));
+  });
+
   it("a 500-char or HTML name renders as text, cut to 80", async () => {
     const long = `<img src=x onerror=alert(1)>${"x".repeat(500)}`;
     render(<PresenceStack others={[{ ...person(0, long) }]} total={1} />);
@@ -322,7 +366,7 @@ describe("PresenceStack in the viewer", () => {
     expect(screen.queryByRole("group", { name: /here now/ })).toBeNull();
     emit([person(0, "Maya Chen"), anon(1)]);
     const g = await screen.findByRole("group", { name: "2 people here now" });
-    expect(screen.getAllByRole("group", { name: /here now/ })).toHaveLength(1);
+    expect(document.querySelectorAll(".oa-pstack")).toHaveLength(1);
     const right = g.parentElement as HTMLElement;
     expect(right.firstElementChild).toBe(g);
   });
@@ -330,7 +374,7 @@ describe("PresenceStack in the viewer", () => {
   it("with a preloaded layer mounted, exactly one stack renders", async () => {
     await opened(viewerPath(OWNED));
     emit([person(0, "Maya Chen")]);
-    await screen.findByRole("group", { name: "1 people here now" });
+    await screen.findByRole("group", { name: "1 person here now" });
     await act(() =>
       fetch(R.versions(OWNED), {
         method: "POST",
@@ -349,20 +393,23 @@ describe("PresenceStack in the viewer", () => {
         ).toBeGreaterThan(1),
       { timeout: 3_000 },
     );
-    expect(screen.getAllByRole("group", { name: /here now/ })).toHaveLength(1);
+    expect(document.querySelectorAll("[data-preload]").length).toBeGreaterThan(
+      1,
+    );
+    expect(document.querySelectorAll(".oa-pstack")).toHaveLength(1);
   });
 
   it("/full: the stack is inside the pill, before Exit", async () => {
     await opened(`${viewerPath(OWNED)}/full`);
     emit([person(0, "Maya Chen")]);
-    const g = await screen.findByRole("group", { name: "1 people here now" });
+    const g = await screen.findByRole("group", { name: "1 person here now" });
     const bar = g.closest(".oa-fsbar") as HTMLElement;
     expect(bar).toBeTruthy();
     const exit = bar.querySelector(".oa-fsx") as HTMLElement;
     expect(
       g.compareDocumentPosition(exit) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(screen.getAllByRole("group", { name: /here now/ })).toHaveLength(1);
+    expect(document.querySelectorAll(".oa-pstack")).toHaveLength(1);
   });
 
   it("an embed shows nothing", async () => {

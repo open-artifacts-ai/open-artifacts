@@ -8,6 +8,7 @@ import {
   SheetDescription,
   SheetHeader,
   SheetTitle,
+  SheetTrigger,
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -102,7 +103,7 @@ function More({
   if (narrow) {
     return (
       <Sheet open={open} onOpenChange={setOpen}>
-        {chip({ onClick: () => setOpen(true) })}
+        <SheetTrigger asChild>{chip({})}</SheetTrigger>
         <SheetContent side="bottom" className="max-h-[70vh] overflow-auto">
           <SheetHeader>
             <SheetTitle>{label}</SheetTitle>
@@ -158,7 +159,7 @@ export function PresenceStack({
       {/* biome-ignore lint/a11y/useSemanticElements: a fieldset would add form semantics and default styles; the group role is the design */}
       <div
         role="group"
-        aria-label={`${count} people here now`}
+        aria-label={`${count} ${count === 1 ? "person" : "people"} here now`}
         className="oa-pstack inline-flex items-center gap-1"
       >
         {shown.map((e) => (

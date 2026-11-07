@@ -93,7 +93,8 @@ const emit = (page: Page, id: string, viewers: unknown[]) =>
           };
         }
       ).__oaEvents.emitPresence(id, viewers, undefined),
-    { id, viewers },
+    // The server sends newest first; tests list oldest first, as shown.
+    { id, viewers: [...viewers].reverse() },
   );
 
 const open = async (page: Page, path: string, id: string) => {
@@ -112,7 +113,7 @@ for (const theme of ["light", "dark"] as const)
     await emit(page, LANDING, [MAYA, DUCK, AGENT, PRIYA]);
     const stack = page.getByRole("group", { name: "4 people here now" });
     await expect(stack).toBeVisible();
-    await expect(page.getByRole("group", { name: /here now/ })).toHaveCount(1);
+    await expect(page.locator(".oa-pstack")).toHaveCount(1);
     await expect(stack.locator("[data-shape]")).toHaveCount(4);
     await expect(stack.locator('[data-shape="square"]')).toHaveCount(1);
     const first = await page.evaluate(() =>
@@ -212,7 +213,7 @@ test("/full: the stack sits in the pill before Exit; exactly one", async ({
     .locator(".oa-fsbar")
     .getByRole("group", { name: "6 people here now" });
   await expect(stack).toBeVisible();
-  await expect(page.getByRole("group", { name: /here now/ })).toHaveCount(1);
+  await expect(page.locator(".oa-pstack")).toHaveCount(1);
   const s = (await stack.boundingBox()) as { x: number };
   const x = (await page.locator(".oa-fsx").boundingBox()) as { x: number };
   expect(s.x).toBeLessThan(x.x);
