@@ -122,7 +122,7 @@ export type CheckedAnchor = { anchor: Anchor; version: number };
  * Other formats get the schema check only.
  */
 export async function checkAnchor(
-  env: Pick<Env, "DB" | "FILES">,
+  env: Pick<Env, "DB" | "FILES" | "PLAN">,
   a: Pick<ArtifactRow, "id" | "format" | "currentVersion">,
   raw: unknown,
   /** Runs before the version's file is read: the caller's rate limit, so a refused quote still counts. */
@@ -150,13 +150,16 @@ export async function checkAnchor(
     // Rate limit first: the hash may cost an R2 read (a pre-digest version).
     await beforeVerify?.();
     // The server stamps the hash from the version's own bytes: a client's value is ignored.
-    const contentHash = await versionEntryHash(env, a.id, version);
-    if (contentHash === null)
+    const entry = await versionEntryHash(env, a.id, version);
+    if (entry === null)
       throw new ApiError(
         "anchor_not_in_version",
         "That version has no entry file",
       );
-    return { anchor: { ...input, version, contentHash }, version };
+    return {
+      anchor: { ...input, version, contentHash: entry.hash },
+      version,
+    };
   }
   await beforeVerify?.();
   const found = await verifyQuote(env, a.id, a.format, version, input);

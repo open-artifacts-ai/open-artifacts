@@ -197,12 +197,16 @@ describe("verifyQuote and checkAnchor", () => {
     )
       .bind(pdfId)
       .run();
-    const r = await checkAnchor(env, art(pdfId, "pdf"), {
-      kind: "pin",
-      x: 0.1,
-      y: 0.2,
-      contentHash: "f".repeat(64),
-    });
+    const r = await checkAnchor(
+      { ...env, PLAN: "paid" } as never,
+      art(pdfId, "pdf"),
+      {
+        kind: "pin",
+        x: 0.1,
+        y: 0.2,
+        contentHash: "f".repeat(64),
+      },
+    );
     expect(r.anchor).toMatchObject({ contentHash: await sha256Hex(PDF) });
   });
   it("a pin on a missing version is 422", async () => {

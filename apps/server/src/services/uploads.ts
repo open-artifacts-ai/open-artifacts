@@ -5,6 +5,7 @@ import {
   type Member,
   newId,
   normalizePath,
+  planOf,
   R,
   type UploadCreated,
   type UploadCreateInput,
@@ -209,18 +210,10 @@ export async function putUpload(
       .run();
   };
   let obj: R2Object | null;
-  let digest: string;
   try {
     obj = await env.FILES.put(row.r2_key, req.body, {
       httpMetadata: { contentType: row.content_type },
     });
-    // The stored bytes are hashed once more from R2: a tee into a digest
-    // stream is not supported by the runtime's pipeTo (#1490).
-    const stored = obj ? await env.FILES.get(row.r2_key) : null;
-    if (!stored) throw new Error("upload not readable after put");
-    const sink = sha256Sink();
-    await stored.body.pipeTo(sink.writable);
-    digest = await sink.hex();
   } catch (e) {
     await release();
     throw e;
@@ -234,6 +227,22 @@ export async function putUpload(
         expected: row.size,
       },
     );
+  }
+  // sha256 of the stored bytes (#1490), one more R2 read. Not on a free
+  // instance: the Workers Free 10 ms CPU limit cannot hash a large file, so
+  // its digest stays null. Any failure frees the slot for a retry.
+  let digest: string | null = null;
+  if (planOf(env.PLAN) === "paid") {
+    try {
+      const stored = await env.FILES.get(row.r2_key);
+      if (!stored) throw new Error("upload not readable after put");
+      const sink = sha256Sink();
+      await stored.body.pipeTo(sink.writable);
+      digest = await sink.hex();
+    } catch (e) {
+      await release();
+      throw e;
+    }
   }
   await env.DB.prepare(
     "update uploads set received_at = ?, digest = ? where id = ? and received_at = -1",

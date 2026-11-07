@@ -62,9 +62,10 @@ export function planLimitError(limit: PlanLimit, max: number): ApiError {
 /**
  * The instance's stored content (Manager decision R5): every version of
  * every live (not trashed) artifact, history included, each distinct blob
- * once. A blob is its content digest (an inline file, hosted:
- * services/manifest.ts) or else its R2 key (an upload; a restore reuses
- * its keys). So republishing the same bytes adds nothing, and trashing an
+ * once. A blob is its content digest (an inline file; an
+ * upload's sha256 on a paid instance, set by the PUT; services/manifest.ts)
+ * or else its R2 key (an upload on a free instance, a version from before
+ * digests; a restore reuses its keys). So republishing the same bytes adds nothing, and trashing an
  * artifact drops the blobs no live artifact still holds. One statement,
  * bounded by the cap itself (it runs only while the cap is on).
  */
