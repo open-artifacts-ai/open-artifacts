@@ -20,22 +20,35 @@ function skipped(node: Node): boolean {
   return false;
 }
 
-function textNodes(root: Node): Text[] {
-  const doc = root.ownerDocument ?? (root as Document);
-  const walker = doc.createTreeWalker(root, 4 /* SHOW_TEXT */);
-  const out: Text[] = [];
-  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-    if (!skipped(n)) out.push(n as Text);
-  }
-  return out;
-}
-
 // Elements that break a line. The server builds the text it checks a quote
-// against with a space on both sides of these (apps/server comment-anchor.ts
-// BLOCKS), so the flat text does the same: a quote across two list items then
-// reads "one two", on both sides, and not "onetwo".
+// against with a space on both sides of these and of br (apps/server
+// comment-anchor.ts BLOCKS), so the flat text does the same: a quote across two
+// list items then reads "one two", on both sides, and not "onetwo".
 const BREAKS =
   "p,div,li,ul,ol,dl,dt,dd,h1,h2,h3,h4,h5,h6,hr,tr,td,th,table,section,article,header,footer,nav,aside,main,blockquote,pre,figure,figcaption,form,fieldset,address";
+const BREAK_TAGS = new Set([...BREAKS.split(","), "br"]);
+
+/**
+ * Text nodes in document order. `brk[i]` is true when a break element (br, hr,
+ * an empty block, or the start of any block) lies between text node i-1 and i.
+ */
+function collect(root: Node): { nodes: Text[]; brk: boolean[] } {
+  const doc = root.ownerDocument ?? (root as Document);
+  const walker = doc.createTreeWalker(root, 1 | 4 /* ELEMENT | TEXT */);
+  const nodes: Text[] = [];
+  const brk: boolean[] = [];
+  let seen = false;
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    if (n.nodeType === 1) {
+      if (BREAK_TAGS.has((n as Element).localName)) seen = true;
+    } else if (!skipped(n)) {
+      nodes.push(n as Text);
+      brk.push(seen);
+      seen = false;
+    }
+  }
+  return { nodes, brk };
+}
 
 const breakOf = (n: Node): Element | null =>
   n.parentElement?.closest(BREAKS) ?? null;
@@ -50,17 +63,18 @@ const breakOf = (n: Node): Element | null =>
 export type TextIndex = { text: string; nodes: Text[]; starts: number[] };
 
 export function indexText(root: Node): TextIndex {
-  const nodes = textNodes(root);
+  const { nodes, brk } = collect(root);
   const starts: number[] = [];
   const parts: string[] = [];
   let pos = 0;
   let prev: Text | null = null;
-  for (const t of nodes) {
+  for (let i = 0; i < nodes.length; i++) {
+    const t = nodes[i];
     if (
       prev &&
       !/\s$/.test(prev.data) &&
       !/^\s/.test(t.data) &&
-      breakOf(prev) !== breakOf(t)
+      (brk[i] || breakOf(prev) !== breakOf(t))
     ) {
       parts.push(" ");
       pos++;

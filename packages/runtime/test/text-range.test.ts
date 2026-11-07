@@ -49,6 +49,27 @@ describe("text-range", () => {
     expect(rangeToOffsets(root, r, idx)).toEqual({ start: 12, end: 21 });
   });
 
+  it("separates text at a br, an hr or an empty block, as the server does", () => {
+    for (const mid of ["<br>", "<hr>", "<p></p>", "<br><br>"]) {
+      root.innerHTML = `<div>alpha${mid}beta</div>`;
+      expect(flatText(root)).toBe("alpha beta");
+    }
+    root.innerHTML = "<p>alpha <br>beta</p><p>x<b>y</b>z</p>";
+    expect(flatText(root)).toBe("alpha beta xyz");
+  });
+
+  it("snaps an offset on a separator into the nearest node (the collapsed path)", () => {
+    const idx = indexText(root);
+    const gap = idx.text.indexOf(" world");
+    expect(gap).toBe(15);
+    const r = rangeFromIndex(idx, gap, gap + 1);
+    expect(r).not.toBeNull();
+    // start snaps to the start of the next node, never a negative offset
+    expect(r?.startContainer).toBe(root.lastChild?.firstChild);
+    expect(r?.startOffset).toBe(0);
+    expect(r?.endOffset).toBe(0);
+  });
+
   it("round-trips a range across inline elements", () => {
     const b = root.querySelector("b")?.firstChild as Text;
     const r = document.createRange();
