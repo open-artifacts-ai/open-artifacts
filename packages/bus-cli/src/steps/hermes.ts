@@ -14,7 +14,6 @@ import {
   renameSync,
   rmdirSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import {
@@ -39,12 +38,23 @@ export const HERMES_STAGING = ".oa-bus-staging";
 
 type Env = Record<string, string | undefined>;
 
-/** The real path, or the lexical one when it cannot be resolved (not there yet). */
-const real = (p: string) => {
-  try {
-    return realpathSync(p);
-  } catch {
-    return p;
+/**
+ * Python's non-strict Path.resolve(): the deepest existing ancestor is
+ * realpath'd and the missing rest is appended, so a symlinked ~/.hermes still
+ * counts for a HERMES_HOME that is not there yet.
+ */
+const real = (p: string): string => {
+  const rest: string[] = [];
+  let cur = p;
+  for (;;) {
+    try {
+      return join(realpathSync(cur), ...rest.reverse());
+    } catch {
+      const up = dirname(cur);
+      if (up === cur) return p;
+      rest.push(basename(cur));
+      cur = up;
+    }
   }
 };
 
@@ -85,13 +95,19 @@ export function sweepStaging(
     const path = join(staging, name);
     let old: boolean;
     try {
-      old = now - statSync(path).mtimeMs > STAGING_STALE_MS;
+      old = now - lstatSync(path).mtimeMs > STAGING_STALE_MS;
     } catch {
       continue;
     }
     const m = STAGE_NAME.exec(name);
-    if (m ? old || !alive(Number(m[1])) : old)
-      rmSync(path, { recursive: true, force: true });
+    // A pid from another container or pid namespace can read as dead or alive;
+    // the age rule covers the alive case.
+    if (m ? old || !alive(Number(m[1])) : old) {
+      try {
+        // Removes a symlink entry itself, never its target.
+        rmSync(path, { recursive: true, force: true });
+      } catch {} // a peer's entry we cannot remove must not abort the install
+    }
   }
 }
 
@@ -246,6 +262,12 @@ export async function installHermes(
     // killed install leaves its stage behind: the next install sweeps them.
     const staging = join(plugins, "..", HERMES_STAGING);
     const own = `${process.pid}-${randomBytes(4).toString("hex")}`;
+    // A symlink or file here would make the sweep touch somewhere else.
+    const st = lstatSync(staging, { throwIfNoEntry: false });
+    if (st !== undefined && !st.isDirectory())
+      throw new Error(
+        `${staging} is not a plain folder; remove it and run the install again`,
+      );
     mkdirSync(staging, { recursive: true });
     sweepStaging(staging, own, deps.staging);
     const tmp = join(staging, own);
