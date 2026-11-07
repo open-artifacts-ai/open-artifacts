@@ -443,7 +443,6 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       files: v.list,
       language: v.language,
       textIndexed: !v.list.some((x) => x.contentType === "application/pdf"),
-      contentHash: null,
       format: v.format,
       contentHash: fakeHash(version, v.entry),
     });
