@@ -22,7 +22,7 @@ import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
-import { CommentsBody } from "./comments/CommentsBody";
+import { CommentsBody, PinBar } from "./comments/CommentsBody";
 import {
   CommentsColumn,
   CommentsDialog,
@@ -229,15 +229,25 @@ function Viewer({
   const [dialogOpen, setDialogOpen] = useState(false);
   const openSurface = useRef(() => {});
   const getBridge = useCallback(() => bridge.current, []);
+  const versionInfo = useVersionInfo(artifact.id, version).data;
+  const pinFmt =
+    versionInfo?.format ??
+    (version === artifact.currentVersion ? artifact.format : undefined);
   const cmt = useCommentsController({
     artifact,
     version,
     pinned: explicitVersion,
     authed,
     readOnly,
+    pinFormat: pinFmt === "image" || pinFmt === "pdf" ? pinFmt : null,
+    contentHash: versionInfo?.contentHash ?? null,
     getBridge,
     openSurface: () => openSurface.current(),
   });
+  // A sheet or overlay would cover the page: leave it while placing a pin.
+  useEffect(() => {
+    if (cmt.mode === "pin") setDialogOpen(false);
+  }, [cmt.mode]);
   const cmtRef = useRef(cmt);
   cmtRef.current = cmt;
   const commentsOn =
@@ -258,13 +268,22 @@ function Viewer({
       cmt.threads.length > 0 ||
       cmt.draft !== null ||
       cmt.error != null);
+  // Where the list is on screen its Pin button is the cue; otherwise (a closed
+  // column, another panel tab, a phone with no sheet) the bar is, so pin mode
+  // never runs unannounced. Hidden under the sheet too: it would overlap it.
+  const listShown =
+    surface === "dialog"
+      ? dialogOpen
+      : panelOpen
+        ? commentsTab && tab === "comments"
+        : surface === "column" && columnShown;
   openSurface.current = () => {
     if (surface === "dialog") setDialogOpen(true);
     else if (surface === "panel" || panelOpen) setPanel(true, "comments");
     else setColOpen(true);
   };
   // Latest values for the effect: the parent's key remounts this on id/version change.
-  const vformat = useVersionInfo(artifact.id, version).data?.format;
+  const vformat = versionInfo?.format;
   const formatRef = useRef(vformat);
   formatRef.current = vformat;
   const latest = useRef({ artifact, viewer, theme });
@@ -435,6 +454,8 @@ function Viewer({
       onCommentSelect: (a) => cmtRef.current.onSelect(a),
       onCommentPositions: (p) => cmtRef.current.onPositions(p),
       onCommentOpen: (id) => cmtRef.current.onOpen(id),
+      onCommentPin: (p) => cmtRef.current.onPin(p),
+      onCommentEscape: () => cmtRef.current.onEscape(),
       onPdfText: (t) => fxRef.current.onPdfText(t),
       onThumb: (b) => fxRef.current.onThumb(b),
       // The shell re-checks access: still readable, or the gone state.
@@ -619,6 +640,7 @@ function Viewer({
             />
           )}
         </div>
+        {commentsOn && !listShown && <PinBar />}
         {commentsOn && surface === "dialog" && dialogOpen && (
           <CommentsDialog
             textFormat={textFormat}
