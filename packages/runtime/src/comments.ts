@@ -378,10 +378,10 @@ export function createComments(
     // Centered under the end of the selection, kept inside the viewport.
     const vw = document.documentElement.clientWidth || innerWidth;
     const w = btn.offsetWidth;
-    const x = Math.max(
-      BTN_MARGIN,
-      Math.min(rect.right - w / 2, vw - w - BTN_MARGIN),
-    );
+    const end = nodeAtIndex(getIndex(), s.end - 1)?.parentElement;
+    const edge =
+      end && getComputedStyle(end).direction === "rtl" ? rect.left : rect.right;
+    const x = Math.max(BTN_MARGIN, Math.min(edge - w / 2, vw - w - BTN_MARGIN));
     btn.style.left = `${x + scrollX}px`;
     btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
   }
