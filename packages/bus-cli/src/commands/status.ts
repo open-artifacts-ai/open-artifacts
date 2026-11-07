@@ -10,6 +10,7 @@ import {
 } from "../context.ts";
 import { ago, forHowLong, type HubLink } from "../copy.ts";
 import { readMachine } from "../machine.ts";
+import { habitsLine } from "./habits.ts";
 import { rosters } from "./install.ts";
 
 export const hostOf = (hub: string) => {
@@ -160,6 +161,8 @@ export async function status(ctx: Ctx): Promise<number> {
     async () => (await health).version,
   );
   if (update) say(ctx, c.updateAvailable(update, st.version));
+  const habits = habitsLine(ctx);
+  if (habits) say(ctx, habits);
   // Before the hub check: a refused file explains a missing config either way.
   if (st.config_files?.length) say(ctx, configFileLines(ctx, st.config_files));
   if (st.hub !== "connected") {

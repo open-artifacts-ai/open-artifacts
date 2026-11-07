@@ -10,6 +10,7 @@ import {
 } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
+import { Check, FileText, Quote as QuoteIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import {
@@ -22,6 +23,7 @@ import {
   useReply,
   useSetThreadStatus,
 } from "../../api/comments";
+import { isEmbed } from "../../embed";
 import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
 import {
@@ -56,6 +58,22 @@ function GuestName({ api }: { api: CommentsApi }) {
   );
 }
 
+/** A guest's way to sign in, back to this page. */
+function SignInLink() {
+  return (
+    <a
+      className={`${TXT} text-[var(--oa-accent-fg)] underline`}
+      href={`/sign-in?next=${encodeURIComponent(
+        `${window.location.pathname}${window.location.search}`,
+      )}`}
+      target={isEmbed() ? "_blank" : undefined}
+      rel="noopener noreferrer"
+    >
+      Sign in
+    </a>
+  );
+}
+
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
 function Composer({
   placeholder,
@@ -69,10 +87,17 @@ function Composer({
   alwaysOpen = true,
   failure,
   onDirty,
-  agents,
+  mentionable = false,
+  buttonsRight = false,
+  lead,
 }: {
-  /** Agents the writer may @mention and assign (owners and editors only). */
-  agents?: readonly ArtifactAgent[];
+  /** Offer @mentions and Assign: the agent list is fetched once an "@" is typed. */
+  mentionable?: boolean;
+  /** The new-comment layout: Assign on its own line, then Cancel and the
+      accent submit at the right. */
+  buttonsRight?: boolean;
+  /** Shown at the left of the button row (a guest's Sign in link). */
+  lead?: React.ReactNode;
   /** Called when the box gains or loses text the reader typed. */
   onDirty?: (dirty: boolean) => void;
   placeholder: string;
@@ -87,7 +112,8 @@ function Composer({
   alwaysOpen?: boolean;
   failure?: (e: unknown) => React.ReactNode;
 }) {
-  const { capped, canMention, guest } = useCommentsApi();
+  const api = useCommentsApi();
+  const { capped, canMention, guest } = api;
   const [text, setText] = useState(initial);
   const [open, setOpen] = useState(alwaysOpen);
   const [error, setError] = useState<unknown>(null);
@@ -99,6 +125,24 @@ function Composer({
   const [menuOff, setMenuOff] = useState(false);
   const [activeOpt, setActiveOpt] = useState(0);
   const menuId = useId();
+  // The list is fetched lazily: first focus of a composer an owner/editor can
+  // use (then kept), never on column open. A transient error is retried on the
+  // next focus; a 404 (no route) stays answered.
+  const [wantAgents, setWantAgents] = useState(false);
+  const agentsQ = useArtifactAgents(
+    api.artifactId,
+    mentionable && wantAgents && api.canMention && api.canComment,
+  );
+  const agents = agentsQ.data;
+  const retryAgents = () => {
+    if (!wantAgents) setWantAgents(true);
+    if (
+      agentsQ.isError &&
+      !agentsQ.isFetching &&
+      !(agentsQ.error instanceof ApiClientError && agentsQ.error.status === 404)
+    )
+      void agentsQ.refetch();
+  };
   const query = agents?.length ? mentionQuery(text.slice(0, caret)) : null;
   const found =
     query !== null && agents && !menuOff ? matchAgents(agents, query) : null;
@@ -169,7 +213,10 @@ function Composer({
         maxLength={COMMENT_BODY_MAX}
         rows={open ? 3 : 1}
         className={TXT}
-        onFocus={() => setOpen(true)}
+        onFocus={() => {
+          setOpen(true);
+          retryAgents();
+        }}
         onChange={(e) => {
           setText(e.target.value);
           setCaret(e.target.selectionStart);
@@ -241,17 +288,15 @@ function Composer({
           {failure?.(error)}
         </p>
       )}
-      {open && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="xs" disabled={!body || busy} onClick={() => void go()}>
-            {submit}
-          </Button>
-          {extra}
-          {agents && agents.length > 0 && (
-            <label className={`flex items-center gap-1 ${TXT}`}>
+      {open &&
+        (() => {
+          const assignSel = agents && agents.length > 0 && (
+            <label
+              className={`flex items-center gap-1 ${TXT} ${buttonsRight ? "w-full" : ""}`}
+            >
               Assign to
               <select
-                className={`rounded-md border border-input bg-background px-1 py-0.5 ${TXT}`}
+                className={`min-w-0 rounded-md border border-input bg-background px-1 py-0.5 ${TXT}`}
                 value={assign}
                 onChange={(e) => setAssign(e.target.value)}
               >
@@ -263,16 +308,63 @@ function Composer({
                 ))}
               </select>
             </label>
-          )}
-          {(onCancel || !alwaysOpen) && (
+          );
+          const cancelBtn = (onCancel || !alwaysOpen) && (
             <Button size="xs" variant="ghost" onClick={cancel}>
               Cancel
             </Button>
-          )}
-        </div>
-      )}
+          );
+          if (buttonsRight)
+            return (
+              <>
+                {assignSel}
+                <div className="flex flex-wrap items-center gap-2">
+                  {lead}
+                  <div className="ml-auto flex items-center gap-2">
+                    {extra}
+                    {cancelBtn}
+                    <Button
+                      size="xs"
+                      className="bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]"
+                      disabled={!body || busy}
+                      onClick={() => void go()}
+                    >
+                      {submit}
+                    </Button>
+                  </div>
+                </div>
+              </>
+            );
+          return (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                size="xs"
+                disabled={!body || busy}
+                onClick={() => void go()}
+              >
+                {submit}
+              </Button>
+              {extra}
+              {assignSel}
+              {cancelBtn}
+            </div>
+          );
+        })()}
     </div>
   );
+}
+
+/** Up to two initials of a display name. */
+export function initials(name: string): string {
+  const w = name.trim().split(/\s+/).filter(Boolean);
+  const first = (x?: string) => Array.from(x ?? "")[0] ?? "";
+  const out =
+    w.length > 1
+      ? `${first(w[0])}${first(w[w.length - 1])}`
+      : Array.from(w[0] ?? "?")
+          .slice(0, 2)
+          .join("");
+  return out.toUpperCase();
 }
 
 function Who({
@@ -284,12 +376,34 @@ function Who({
   at: string;
   edited: boolean;
 }) {
+  const via = a.agent
+    ? a.agent.startsWith("via ")
+      ? a.agent
+      : `via ${a.agent}`
+    : null;
   return (
-    <div className="min-w-0">
-      <p className={`flex min-w-0 items-baseline gap-x-1 ${TXT}`}>
+    <div className="flex min-w-0 items-start gap-2">
+      <span
+        aria-hidden="true"
+        data-avatar=""
+        className={`flex size-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[length:var(--oa-text-xs)] font-medium text-foreground`}
+      >
+        {initials(a.name)}
+      </span>
+      <p
+        className={`m-0 flex min-w-0 items-baseline gap-x-1 self-center ${TXT}`}
+      >
         <b className="min-w-0 truncate" title={a.name}>
           {a.name}
         </b>
+        {via && (
+          <span
+            data-via=""
+            className={`${MUTED} min-w-0 truncate text-[length:var(--oa-text-xs)]`}
+          >
+            {via}
+          </span>
+        )}
         <span
           className={`${MUTED} shrink-0 whitespace-nowrap`}
           title={exactDate(at)}
@@ -298,11 +412,6 @@ function Who({
           {edited && " · edited"}
         </span>
       </p>
-      {a.agent && (
-        <p className={`${TXT} ${MUTED} break-words`}>
-          {a.agent.startsWith("via ") ? a.agent : `via ${a.agent}`}
-        </p>
-      )}
     </div>
   );
 }
@@ -442,7 +551,12 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const a = t.anchor;
   const state = api.positions.get(t.id)?.state;
   if (a.kind === "note")
-    return <p className={`${TXT} font-medium ${MUTED}`}>Whole page</p>;
+    return (
+      <p className={`flex items-center gap-1 ${TXT} font-medium ${MUTED}`}>
+        <FileText aria-hidden="true" className="size-3.5 shrink-0" />
+        Whole page
+      </p>
+    );
   if (a.kind === "pin") {
     const n = numbering(api.threads).get(t.id) ?? 1;
     return (
@@ -465,25 +579,25 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
         <p className={`${TXT} ${MUTED}`}>Text changed since this comment</p>
       )}
       <blockquote
-        className={`border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED} line-clamp-3 break-words`}
+        className={`flex items-start gap-1.5 border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED}`}
       >
-        {original ? "Original text: " : ""}
-        {original ? `“${a.exact}”` : a.exact}
+        <QuoteIcon
+          aria-hidden="true"
+          data-quote-chip=""
+          className="mt-0.5 size-3.5 shrink-0"
+        />
+        <span className="line-clamp-3 min-w-0 break-words">
+          {original ? "Original text: " : ""}
+          {original ? `“${a.exact}”` : a.exact}
+        </span>
       </blockquote>
     </div>
   );
 }
 
-/** The agents to offer in the @ picker: owners and editors only. */
-function useMentionPool(api: CommentsApi) {
-  return useArtifactAgents(api.artifactId, api.canMention && api.canComment)
-    .data;
-}
-
 function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const isActive = api.active === t.id;
   const reply = useReply(api.artifactId, api.guest);
-  const pool = useMentionPool(api);
   const status = useSetThreadStatus(api.artifactId, api.guest);
   const [statusErr, setStatusErr] = useState<unknown>(null);
   const el = useRef<HTMLLIElement>(null);
@@ -538,7 +652,11 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
           </p>
         )}
         {resolved && (
-          <p className={`${TXT} ${MUTED}`}>
+          <p
+            data-resolved-line=""
+            className={`flex items-center gap-1 ${TXT} text-green-700 dark:text-green-400`}
+          >
+            <Check aria-hidden="true" className="size-3.5 shrink-0" />
             Resolved by {t.resolvedBy?.name ?? "someone"}
             {t.resolvedAt ? ` · ${versionDate(t.resolvedAt)}` : ""}
           </p>
@@ -571,7 +689,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               label="Reply"
               placeholder="Reply"
               submit="Reply"
-              agents={pool}
+              mentionable
               onSubmit={(body, x) =>
                 reply.mutateAsync({
                   thread: t.id,
@@ -621,7 +739,6 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
 function NewThread({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
   const last = useRef("");
-  const pool = useMentionPool(api);
   const draft = api.draft;
   if (!draft) return null;
   const guest = api.guest ? { guestName: api.guestName.trim() } : {};
@@ -646,7 +763,9 @@ function NewThread({ api }: { api: CommentsApi }) {
         placeholder="Add a comment"
         submit="Comment"
         autoFocus
-        agents={pool}
+        buttonsRight
+        lead={api.guest ? <SignInLink /> : undefined}
+        mentionable
         onDirty={api.setDraftDirty}
         onCancel={api.cancelDraft}
         onSubmit={async (body, x) => {
@@ -688,7 +807,6 @@ function NewThread({ api }: { api: CommentsApi }) {
 
 function NoteComposer({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
-  const pool = useMentionPool(api);
   return (
     <div className="flex flex-col gap-2">
       {api.guest && <GuestName api={api} />}
@@ -697,7 +815,9 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         placeholder="Comment on the whole page"
         submit="Comment"
         alwaysOpen={false}
-        agents={pool}
+        buttonsRight
+        lead={api.guest ? <SignInLink /> : undefined}
+        mentionable
         onSubmit={(body, x) =>
           create.mutateAsync({
             anchor: { kind: "note" },

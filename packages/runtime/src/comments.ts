@@ -61,7 +61,8 @@ const FLASH_MS = 1200;
 
 const OVERLAY_CSS = `
 :host{all:initial}
-.btn{position:absolute;font:600 13px system-ui,sans-serif;padding:4px 10px;border:0;border-radius:6px;background:#1f5fbf;color:#fff;cursor:pointer;pointer-events:auto;box-shadow:0 2px 8px #0004}
+.btn{position:absolute;display:flex;align-items:center;gap:6px;font:500 13px/1 system-ui,sans-serif;padding:6px 10px;border:1px solid #d4d4d8;border-radius:8px;background:#fff;color:#27272a;cursor:pointer;pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.btn svg{width:14px;height:14px;flex:none}
 .mark{position:absolute;width:6px;height:16px;border-radius:2px;background:#e0a000;pointer-events:auto;cursor:pointer}
 .mark.on{background:#1f5fbf}
 .pin{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;background:#1f5fbf;color:#fff;font:700 12px/22px system-ui,sans-serif;text-align:center;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px #0006}
@@ -75,6 +76,12 @@ export interface Comments {
   flush(): void;
   dispose(): void;
 }
+
+const BUBBLE =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7l-3 3v-3h-.5a1 1 0 0 1-1-1z"/></svg>';
+/** Gap between the selection's end and the button, and the viewport margin. */
+const BTN_GAP = 6;
+const BTN_MARGIN = 4;
 
 export function createComments(
   bridge: Pick<Bridge, "on" | "send">,
@@ -360,16 +367,23 @@ export function createComments(
     const rect = rects[rects.length - 1] ?? s.range.getBoundingClientRect();
     if (!btn) {
       btn = document.createElement("button");
-      btn.textContent = "Comment";
+      btn.innerHTML = `${BUBBLE}<span>Comment</span>`;
       // Keep the selection while the button is pressed.
       btn.addEventListener("pointerdown", (e) => e.preventDefault());
       btn.addEventListener("mousedown", (e) => e.preventDefault());
       btn.addEventListener("click", onCommentClick);
       btn.className = "btn";
     }
-    btn.style.left = `${rect.right + scrollX}px`;
-    btn.style.top = `${rect.bottom + scrollY + 4}px`;
     if (!btn.isConnected) overlay().append(btn);
+    // Centered under the end of the selection, kept inside the viewport.
+    const vw = document.documentElement.clientWidth || innerWidth;
+    const w = btn.offsetWidth;
+    const x = Math.max(
+      BTN_MARGIN,
+      Math.min(rect.right - w / 2, vw - w - BTN_MARGIN),
+    );
+    btn.style.left = `${x + scrollX}px`;
+    btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
   }
 
   function onCommentClick() {

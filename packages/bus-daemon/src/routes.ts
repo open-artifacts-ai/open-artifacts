@@ -185,6 +185,8 @@ export type RouteCtx = {
     ref: string,
     reply: (f: Unframed) => unknown,
   ) => Unframed | undefined;
+  /** rename (#1635): the session's new name, from an adapter that listed the cap. */
+  renamed?: (ref: string, name: string) => void;
   /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
   configFiles?: (cwd: string, pending?: boolean) => ConfigFile[];
   /** The daemon's version, reported by `self`. */
@@ -300,6 +302,20 @@ export function routeLocal(
         code: "unauthorized",
         message: "not a delivery to this agent",
       };
+    case "rename":
+      // An adapter that did not list the cap was never told to send one.
+      if (
+        (hello.kind !== "pi" && hello.kind !== "omp") ||
+        !hello.caps?.includes(ADAPTER_CAPS.rename) ||
+        !ctx.renamed
+      )
+        return {
+          type: "error",
+          code: "bad_frame",
+          message: "rename is not supported on this connection",
+        };
+      ctx.renamed(ref, frame.name);
+      return undefined;
     case "set_status": {
       const cap = ctx.limited?.(ref);
       if (cap)

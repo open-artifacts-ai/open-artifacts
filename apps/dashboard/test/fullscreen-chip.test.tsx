@@ -9,6 +9,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeQueryClient } from "../src/api/queryClient";
@@ -86,6 +87,25 @@ describe("full-screen chip, top level", () => {
     expect(a).toHaveTextContent("Exit full screen");
     expect(a).toHaveAccessibleName(TOP);
     expect(a.querySelector("img")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("phone pill: the icons are hidden from AT and both controls keep their names", async () => {
+    mount(FULL);
+    const a = await chip();
+    const bar = a.closest(".oa-fsbar") as HTMLElement;
+    const comments = await within(bar).findByRole("button", {
+      name: /^Comments/,
+    });
+    // CSS shows only the icons at 600px and below; the names do not change.
+    expect(a).toHaveAccessibleName(TOP);
+    expect(comments.getAttribute("aria-label")).toMatch(
+      /^Comments(, \d+ open)?$/,
+    );
+    for (const el of [a, comments])
+      for (const svg of el.querySelectorAll("svg"))
+        expect(svg).toHaveAttribute("aria-hidden", "true");
+    expect(comments.querySelector("svg.oa-fsicon")).not.toBeNull();
+    expect(a.querySelector("svg.oa-fsicon")).not.toBeNull();
   });
 
   it("comes after the frame in the document", async () => {

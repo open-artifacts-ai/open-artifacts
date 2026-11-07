@@ -10,10 +10,16 @@ import {
   type UploadCreated,
   type UploadCreateInput,
 } from "@oa/shared";
-import { authorize, callerOf, capOfCaller } from "../auth/authz.js";
+import {
+  authorize,
+  callerOf,
+  capOfCaller,
+  planOfMember,
+} from "../auth/authz.js";
 import { contentKey } from "../auth/keys.js";
 import { orgCan } from "../auth/policy.js";
 import { requireFreeStorage } from "../billing/caps.js";
+import { refuseViewOnly } from "../billing/plan.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
@@ -90,6 +96,8 @@ export async function createUpload(
   const who = callerOf(user);
   // Reserving or uploading into a new artifact is a create (capped callers can't).
   const mayCreate = () => {
+    // An unpaid Solo is view-only: no new artifact, so no upload into one.
+    refuseViewOnly(planOfMember(user));
     if (!orgCan(user, "artifact.create", { cap: capOfCaller(who) }))
       throw new ApiError("space_forbidden", "You can't create artifacts");
   };

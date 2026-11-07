@@ -29,7 +29,7 @@ const html = { format: "html", content: "<p>x</p>" };
 
 const base = { trialEndsAt: 1, graceUntil: null, version: 1 };
 const LOCKS: Record<string, BillingRow> = {
-  "free (solo)": { ...base, tier: "free", status: "active" },
+  "free (solo)": { ...base, tier: "solo", status: "active" },
   trial_ended: { ...base, tier: "trial", status: "active" },
   lapsed: { ...base, tier: "team", status: "lapsed" },
   payment_failed: {

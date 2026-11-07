@@ -55,7 +55,7 @@ const gated = (e: Env, t: number) =>
   withBrokerProps({ props: fakeBilling().props }, () => readPlan(e, t));
 
 const FREE = {
-  tier: "free",
+  tier: "solo",
   status: "active",
   trialEndsAt: null,
   graceUntil: null,
@@ -80,8 +80,8 @@ describe("red line: an install speaks to billing only for itself", () => {
       await withBrokerProps({ props: other.props }, () => startTrial(H, mid)),
     ).toBe(false);
     expect(other.s.calls.map((c) => c.status)).toEqual([403]);
-    expect(other.s.row.tier).toBe("free");
-    expect((await gated(H, mid))?.tier).toBe("free");
+    expect(other.s.row.tier).toBe("solo");
+    expect((await gated(H, mid))?.tier).toBe("solo");
   });
 
   it("another install's key never verifies: 401, no trial, no usage written", async () => {
@@ -95,7 +95,7 @@ describe("red line: an install speaks to billing only for itself", () => {
     expect(b.s.calls.map((c) => [c.path, c.status])).toEqual([
       ["/trial/start", 401],
     ]);
-    expect(b.s.row.tier).toBe("free");
+    expect(b.s.row.tier).toBe("solo");
     const r = await send(b.props, R.billingUsage, owner.cookie, {
       method: "POST",
       body: {},
@@ -123,7 +123,7 @@ describe("red line: billing unreachable never unlocks", () => {
     vi.setSystemTime(after);
     expect((await plan(after))?.lock).toEqual({
       mode: "readOnly",
-      tier: "free",
+      tier: "solo",
       reason: "billing_unreachable",
     });
     // A session signed now (the first one is past its lifetime).
@@ -143,7 +143,7 @@ describe("red line: billing unreachable never unlocks", () => {
     // yet: free and solo.
     expect(await readPlan(H, mid)).toBeNull();
     expect(await gated(H, mid)).toMatchObject({
-      tier: "free",
+      tier: "solo",
       lock: { mode: "solo" },
     });
     const b = fakeBilling();

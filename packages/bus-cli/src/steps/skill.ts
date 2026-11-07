@@ -8,6 +8,7 @@
 // never before it. Ownership is read from that marker line.
 
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -17,6 +18,7 @@ import {
   renameSync,
   rmdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -110,7 +112,11 @@ const isOurs = (text: string, folder: string): boolean => {
 };
 
 /** Whole-line index of a marker, ignoring a trailing CR (CRLF files). */
-const lineIndex = (lines: string[], marker: string, from = 0): number => {
+export const lineIndex = (
+  lines: string[],
+  marker: string,
+  from = 0,
+): number => {
   for (let i = from; i < lines.length; i++)
     if (lines[i]?.replace(/\r$/, "") === marker) return i;
   return -1;
@@ -134,7 +140,7 @@ const lstatOk = (path: string): boolean => {
 };
 
 /** Is `path` a symlink whose target is missing? */
-const brokenLink = (path: string): boolean => {
+export const brokenLink = (path: string): boolean => {
   try {
     return lstatSync(path).isSymbolicLink() && !existsSync(path);
   } catch {
@@ -185,7 +191,7 @@ export async function fetchSkillText(
 }
 
 /** Follows a symlink: write through it, keep the link. */
-const targetOf = (path: string) => {
+export const targetOf = (path: string) => {
   try {
     return lstatSync(path).isSymbolicLink() ? realpathSync(path) : path;
   } catch {
@@ -195,11 +201,19 @@ const targetOf = (path: string) => {
 
 let seq = 0;
 /** Writes and cleans up on failure; a write error is a note upstream. */
-const writeAtomic = (path: string, text: string) => {
+export const writeAtomic = (path: string, text: string) => {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.oa-${process.pid}-${seq++}.tmp`;
   try {
+    // The replacement keeps the file's mode: a 0600 file must not become 0664.
+    let mode: number | undefined;
+    try {
+      mode = statSync(path).mode & 0o7777;
+    } catch {
+      // A new file: the default mode.
+    }
     writeFileSync(tmp, text);
+    if (mode !== undefined) chmodSync(tmp, mode);
     renameSync(tmp, path);
   } catch (e) {
     try {

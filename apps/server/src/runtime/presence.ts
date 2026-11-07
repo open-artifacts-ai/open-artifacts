@@ -68,6 +68,15 @@ export const SECOND_PASS_MS = LATER_PASSES_MS[0];
  * such a hub's sockets (BusHub.closeAll) instead of an artifact's.
  */
 export const BUS_INDEX_PREFIX = "bus:";
+/**
+ * #1299: a bus hub's daemon sockets are long-lived and hibernate, so its row
+ * must outlive INDEX_WINDOW_MS (the hub reports on accept, not on a timer).
+ * The hub removes its row with `gone` when its last socket closes; this cap
+ * only bounds a row whose hub crashed before it could. In practice the cap
+ * is shorter still: every deploy (release cadence) forces the hub to
+ * reconnect its sockets, and a reconnect reports again.
+ */
+export const BUS_INDEX_CAP_MS = 30 * 24 * 60 * 60 * 1000;
 
 const SCHEMA = `
 create table if not exists state (
@@ -301,7 +310,28 @@ export class UserPresence extends DurableObject<Env> {
       artifactId,
       now,
     );
-    this.sql.exec("delete from seen where seen_at < ?", now - INDEX_WINDOW_MS);
+    // bus: rows outlive the window (see BUS_INDEX_CAP_MS).
+    this.sql.exec(
+      "delete from seen where seen_at < ? and substr(artifact_id, 1, 4) != ?",
+      now - INDEX_WINDOW_MS,
+      BUS_INDEX_PREFIX,
+    );
+    this.sql.exec("delete from seen where seen_at < ?", now - BUS_INDEX_CAP_MS);
+  }
+
+  /**
+   * Install index only: a bus hub's last daemon socket closed, so its row
+   * names no live socket. Unknown names are fine.
+   */
+  gone(name: string): void {
+    this.indexOnly();
+    if (
+      typeof name !== "string" ||
+      !name.startsWith(BUS_INDEX_PREFIX) ||
+      name.length > 64
+    )
+      throw new Error("invalid bus hub name");
+    this.sql.exec("delete from seen where artifact_id = ?", name);
   }
 
   /**
@@ -361,8 +391,12 @@ export class UserPresence extends DurableObject<Env> {
   private indexed(now: number): string[] {
     return this.sql
       .exec<{ artifact_id: string }>(
-        "select artifact_id from seen where seen_at >= ? order by seen_at desc",
+        `select artifact_id from seen
+         where seen_at >= ? or (substr(artifact_id, 1, 4) = ? and seen_at >= ?)
+         order by seen_at desc`,
         now - INDEX_WINDOW_MS,
+        BUS_INDEX_PREFIX,
+        now - BUS_INDEX_CAP_MS,
       )
       .toArray()
       .map((r) => r.artifact_id);
@@ -527,6 +561,7 @@ export function presenceStub(
 /** Typed RPC view of the install-wide socket index (INSTALL_INDEX). */
 export type SocketIndexStub = {
   seen(artifactId: string): Promise<void>;
+  gone(name: string): Promise<void>;
   closeInstall(reason: string): Promise<InstallCloseResult>;
 };
 
