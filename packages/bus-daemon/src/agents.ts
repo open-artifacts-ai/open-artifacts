@@ -13,6 +13,12 @@ export type AgentRecord = {
   /** A Claude session's process start, from its session file; tells a reused pid. */
   procStart?: string;
   /**
+   * #1635: the name the session file last gave (a Claude `/rename` rewrites
+   * it). A change from this is a rename for the hub; the hub's own answer
+   * (a `-2`, a refusal) never is one. Unset: compare with `proposedName`.
+   */
+  sessionName?: string;
+  /**
    * #1295: the agent_ref this session took over from after a /clear (the same
    * live process reported a new session). Sent on `agent_up` to a hub that
    * lists `mailbox`, until the hub answers.

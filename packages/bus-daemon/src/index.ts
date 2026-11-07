@@ -656,6 +656,38 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const seenAt = new Map<string, number>();
   let seenSeq = 0;
 
+  /** rename ids awaiting the hub's answer, to their agent_ref; cleared with the link. */
+  const renameIds = new Map<string, string>();
+  /**
+   * A Claude `/rename` after connect (#1635): the session file's name changed
+   * since the last tick. One `rename` per change; the hub's answer (a `-2`,
+   * a refusal) is never read as a change, so nothing loops. A name noted
+   * while the link or the agent's registration is not ready rides the next
+   * agent_up (it carries proposedName).
+   */
+  const renameIfChanged = (rec: AgentRecord, name: string) => {
+    const was = rec.sessionName ?? rec.proposedName;
+    rec.sessionName = name;
+    if (name === was) return;
+    rec.proposedName = name;
+    if (
+      !hub.open ||
+      !hubHelloed ||
+      rec.replaces !== undefined ||
+      limited.has(rec.ref)
+    )
+      return;
+    const id = frameId();
+    renameIds.set(id, rec.ref);
+    hub.send({
+      v: 1,
+      id,
+      type: "rename",
+      agent_ref: rec.ref,
+      proposed_name: fitName(name, 64),
+      name_kind: "chosen",
+    });
+  };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
     const live = liveClaudeSessions(claudeSessions);
@@ -677,6 +709,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           prev.pid = s.pid;
           prev.procStart = s.procStart;
         }
+        renameIfChanged(prev, s.name);
         continue;
       }
       // Closed by a failed delivery and still the same process.
@@ -708,6 +741,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           global: ns.global,
           pid: s.pid,
           procStart: s.procStart,
+          sessionName: s.name,
           cwd: s.cwd,
           live: true,
         }),
@@ -803,6 +837,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           resends.up(frame.agent_ref);
           return;
         }
+        case "renamed": {
+          renameIds.delete(frame.id);
+          const agent = agents.byRef(frame.agent_ref);
+          if (agent) agent.busName = frame.bus_name;
+          return;
+        }
         case "receipt": {
           resends.untrack(frame.id);
           // A tool call's queued send waits a moment for delivered (or a refusal or expiry).
@@ -842,6 +882,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "error": {
           if (statusRelay.answer(frame)) return;
+          const renamedRef = renameIds.get(frame.id);
+          if (renamedRef !== undefined) {
+            renameIds.delete(frame.id);
+            log(
+              `the hub did not rename ${renamedRef} to its session name: ${frame.code} ${frame.message}`,
+            );
+            return;
+          }
           const up = upIds.get(frame.id);
           upIds.delete(frame.id);
           if (up !== undefined) {
@@ -933,6 +981,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // Failed retries close too: keep the first drop of this outage.
       if (hubEver) hubDroppedAt ??= Date.now();
       upIds.clear();
+      renameIds.clear();
       // The next link's hello_ok says again which hub this is.
       hubVersion = undefined;
       hubIds = false;
