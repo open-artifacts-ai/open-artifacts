@@ -64,6 +64,9 @@ export async function gitSchemaOf(version: string): Promise<Schema> {
   }
   const names = await git([
     "ls-tree",
+    // The path is repo-root-relative whatever the cwd (CI runs from
+    // tests/redline, where a cwd-relative path lists nothing).
+    "--full-tree",
     "--name-only",
     ref,
     `${MIGRATIONS_DIR}/`,
