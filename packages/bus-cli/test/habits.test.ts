@@ -1,8 +1,12 @@
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -28,6 +32,7 @@ import {
   withHabits,
   writeHabits,
 } from "../src/steps/habits.ts";
+import { writeAtomic } from "../src/steps/skill.ts";
 import { fakeCtx, HUB, LABEL, NS, status, TOKEN } from "./fake.ts";
 
 const tmp = () => mkdtempSync(join(tmpdir(), "ob-habits-"));
@@ -376,5 +381,158 @@ describe("uninstall, status and doctor", () => {
     Object.assign(d, { userHome: ctx.userHome, home: ctx.home });
     await doctor(d);
     expect(d.all().join("\n")).toContain("Habits: on in ~/.claude/CLAUDE.md");
+  });
+});
+
+describe("review fixes (#1638)", () => {
+  const modeOf = (p: string) => statSync(p).mode & 0o777;
+  const claude = (home: string) => join(home, ".claude", "CLAUDE.md");
+  const mk = (content: string, mode = 0o644) => {
+    const home = tmp();
+    const busHome = join(home, ".oa-bus");
+    mkdirSync(join(home, ".claude"));
+    writeFileSync(claude(home), content, { mode });
+    chmodSync(claude(home), mode);
+    return { home, busHome, deps: { home, busHome } };
+  };
+
+  it("writeAtomic keeps the file's mode", () => {
+    const home = tmp();
+    const f = join(home, "f");
+    writeFileSync(f, "x");
+    chmodSync(f, 0o600);
+    writeAtomic(f, "y");
+    expect(modeOf(f)).toBe(0o600);
+    expect(readFileSync(f, "utf8")).toBe("y");
+  });
+  it("write and remove keep a 0600 CLAUDE.md at 0600", () => {
+    const { home, deps } = mk("mine\n", 0o600);
+    writeHabits(deps, ["claude"]);
+    expect(modeOf(claude(home))).toBe(0o600);
+    removeHabits(deps);
+    expect(modeOf(claude(home))).toBe(0o600);
+  });
+
+  for (const original of [
+    "a\nb",
+    "a\n",
+    "a\n\n",
+    "a\n\n\n",
+    "\n",
+    "",
+    "a\r\nb",
+    "a\r\n",
+    "x\n\nmid\n",
+  ])
+    it(`install then remove restores ${JSON.stringify(original)} exactly`, () => {
+      const { home, deps } = mk(original);
+      writeHabits(deps, ["claude"]);
+      writeHabits(deps, ["claude"]);
+      removeHabits(deps);
+      expect(readFileSync(claude(home), "utf8")).toBe(original);
+    });
+
+  it("a whitespace-only user file is written back, not deleted", () => {
+    const { home, deps } = mk("  \n\n");
+    writeHabits(deps, ["claude"]);
+    removeHabits(deps);
+    expect(readFileSync(claude(home), "utf8")).toBe("  \n\n");
+  });
+  it("a file we created goes on removal", () => {
+    const home = tmp();
+    const deps = { home, busHome: join(home, ".oa-bus") };
+    writeHabits(deps, ["claude"]);
+    expect(existsSync(claude(home))).toBe(true);
+    removeHabits(deps);
+    expect(existsSync(claude(home))).toBe(false);
+  });
+  it("never deletes through a symlink, even one we wrote the target of", () => {
+    const home = tmp();
+    const deps = { home, busHome: join(home, ".oa-bus") };
+    mkdirSync(join(home, ".claude"));
+    mkdirSync(join(home, "dot"));
+    writeFileSync(join(home, "dot", "CLAUDE.md"), "\n");
+    symlinkSync(join(home, "dot", "CLAUDE.md"), claude(home));
+    writeHabits(deps, ["claude"]);
+    removeHabits(deps);
+    expect(readFileSync(join(home, "dot", "CLAUDE.md"), "utf8")).toBe("\n");
+    expect(lstatSync(claude(home)).isSymbolicLink()).toBe(true);
+  });
+  it("a record that says created does not delete through a later symlink", () => {
+    const home = tmp();
+    const deps = { home, busHome: join(home, ".oa-bus") };
+    writeHabits(deps, ["claude"]);
+    const target = join(home, "dot");
+    writeFileSync(target, readFileSync(claude(home), "utf8"));
+    rmSync(claude(home));
+    symlinkSync(target, claude(home));
+    removeHabits(deps);
+    expect(existsSync(target)).toBe(true);
+  });
+
+  it("a symlink to a target outside the home is refused unless explicit", () => {
+    const home = tmp();
+    const outside = tmp();
+    mkdirSync(join(home, ".claude"));
+    writeFileSync(join(outside, "CLAUDE.md"), "repo file\n");
+    symlinkSync(join(outside, "CLAUDE.md"), claude(home));
+    const refused = writeHabits({ home }, ["claude"]);
+    expect(refused.files).toEqual([]);
+    expect(refused.notes[0]).toContain("outside your home");
+    expect(readFileSync(join(outside, "CLAUDE.md"), "utf8")).toBe(
+      "repo file\n",
+    );
+    expect(
+      writeHabits({ home }, ["claude"], { explicit: true }).files,
+    ).toHaveLength(1);
+    expect(readFileSync(join(outside, "CLAUDE.md"), "utf8")).toContain(
+      HABITS_END,
+    );
+  });
+  it("a symlink inside the home is written through without a special yes", () => {
+    const { home, deps } = mk("");
+    rmSync(claude(home));
+    writeFileSync(join(home, "dot.md"), "d\n");
+    symlinkSync(join(home, "dot.md"), claude(home));
+    expect(writeHabits(deps, ["claude"]).files).toHaveLength(1);
+  });
+  it("disclosure and status name the symlink target; TTY Enter does not write an outside one", async () => {
+    const ctx = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "") });
+    await install({ hub: HUB }, ctx);
+    const outside = tmp();
+    const real = join(outside, "CLAUDE.md");
+    writeFileSync(real, "repo\n");
+    rmSync(claudeMd(ctx), { force: true });
+    mkdirSync(join(ctx.userHome, ".claude"), { recursive: true });
+    symlinkSync(real, claudeMd(ctx));
+    const readLine = vi.fn(async () => "");
+    const again = fakeCtx(claudeOnly({ stdinIsTTY: true, readLine }));
+    Object.assign(again, { userHome: ctx.userHome, home: ctx.home });
+    await install({ hub: HUB }, again);
+    const out = again.out().join("\n");
+    expect(out).toContain(`(symlink to ${real}, outside your home)`);
+    expect(readLine.mock.calls.length).toBe(1);
+    expect(readFileSync(real, "utf8")).toBe("repo\n");
+    const yes = fakeCtx(
+      claudeOnly({ stdinIsTTY: true, readLine: vi.fn(async () => "y") }),
+    );
+    Object.assign(yes, { userHome: ctx.userHome, home: ctx.home });
+    await install({ hub: HUB }, yes);
+    expect(readFileSync(real, "utf8")).toContain(HABITS_END);
+    expect(habitsLine(yes)).toContain(`(symlink to ${real}`);
+  });
+  it("no TTY: the question names an outside symlink", async () => {
+    const ctx = setup();
+    await install({ hub: HUB }, ctx);
+    const outside = tmp();
+    const real = join(outside, "CLAUDE.md");
+    writeFileSync(real, "repo\n");
+    mkdirSync(join(ctx.userHome, ".claude"), { recursive: true });
+    symlinkSync(real, claudeMd(ctx));
+    const again = fakeCtx(claudeOnly());
+    Object.assign(again, { userHome: ctx.userHome, home: ctx.home });
+    await install({ hub: HUB }, again);
+    expect(again.out().join("\n")).toContain("outside your home");
+    expect(readFileSync(real, "utf8")).toBe("repo\n");
   });
 });

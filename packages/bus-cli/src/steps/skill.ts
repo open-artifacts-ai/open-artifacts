@@ -8,6 +8,7 @@
 // never before it. Ownership is read from that marker line.
 
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -17,6 +18,7 @@ import {
   renameSync,
   rmdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -203,7 +205,15 @@ export const writeAtomic = (path: string, text: string) => {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.oa-${process.pid}-${seq++}.tmp`;
   try {
+    // The replacement keeps the file's mode: a 0600 file must not become 0664.
+    let mode: number | undefined;
+    try {
+      mode = statSync(path).mode & 0o7777;
+    } catch {
+      // A new file: the default mode.
+    }
     writeFileSync(tmp, text);
+    if (mode !== undefined) chmodSync(tmp, mode);
     renameSync(tmp, path);
   } catch (e) {
     try {

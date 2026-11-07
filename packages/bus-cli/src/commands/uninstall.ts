@@ -57,7 +57,11 @@ export async function uninstall(
   }
   // The always-on habits block goes too: only our marked block, nothing else.
   try {
-    const habits = removeHabits({ home: ctx.userHome, env: ctx.env });
+    const habits = removeHabits({
+      home: ctx.userHome,
+      env: ctx.env,
+      busHome: ctx.home,
+    });
     for (const n of habits.notes) say(ctx, [n]);
   } catch (e) {
     say(ctx, [

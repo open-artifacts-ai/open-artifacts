@@ -17,6 +17,7 @@ import {
   habitsOptedOut,
   habitsQuestion,
   habitsQuestionLines,
+  linkInfo,
   removeHabits,
   setHabitsOptOut,
   writeHabits,
@@ -33,7 +34,11 @@ export type HabitsOutcome = {
   hermes: boolean;
 };
 
-const deps = (ctx: Ctx) => ({ home: ctx.userHome, env: ctx.env });
+const deps = (ctx: Ctx) => ({
+  home: ctx.userHome,
+  env: ctx.env,
+  busHome: ctx.home,
+});
 
 /** The harnesses wired now that have an always-on file we write, and whether Hermes is wired. */
 function wired(ctx: Ctx): { targets: HabitsHarness[]; hermes: boolean } {
@@ -52,8 +57,15 @@ function wired(ctx: Ctx): { targets: HabitsHarness[]; hermes: boolean } {
 }
 
 const stamp = (ctx: Ctx) => new Date(ctx.now()).toISOString();
+/** A file as shown to the user; a symlink names where it points. */
+const one = (ctx: Ctx, f: string) => {
+  const link = linkInfo({ home: ctx.userHome }, f);
+  return link
+    ? `${tilde(ctx, f)} (symlink to ${tilde(ctx, link.target)}${link.outside ? ", outside your home" : ""})`
+    : tilde(ctx, f);
+};
 const shown = (ctx: Ctx, files: string[]) =>
-  files.map((f) => tilde(ctx, f)).join(", ");
+  files.map((f) => one(ctx, f)).join(", ");
 
 /** `--show-habits`: the exact block, as it would be written. */
 const show = (ctx: Ctx): number => {
@@ -70,7 +82,7 @@ function turnOn(ctx: Ctx): number {
     ]);
     return 1;
   }
-  const r = writeHabits(deps(ctx), targets);
+  const r = writeHabits(deps(ctx), targets, { explicit: true });
   setHabitsOptOut(ctx.home, false, stamp(ctx));
   if (r.files.length > 0) say(ctx, `Habits on in ${shown(ctx, r.files)}`);
   if (hermes) say(ctx, HERMES_HABITS);
@@ -98,7 +110,7 @@ function disclosure(
   ctx: Ctx,
   pending: { path: string; s: BlockState }[],
 ): string[] {
-  const files = pending.map((p) => tilde(ctx, p.path));
+  const files = pending.map((p) => one(ctx, p.path));
   const changed = pending.filter((p) => p.s.state === "changed");
   if (changed.length === 0)
     return [
@@ -145,22 +157,34 @@ export async function habitsAfterInstall(
   const changed = pending.some((p) => p.s.state === "changed");
   const state = changed ? "changed" : "undecided";
   const asked = pending.map((p) => p.path);
-  const question = habitsQuestion(asked.map((f) => tilde(ctx, f)));
+  const question = habitsQuestion(asked.map((f) => one(ctx, f)));
   if (ctx.stdinIsTTY && ctx.readLine && !json) {
     say(ctx, "", disclosure(ctx, pending));
+    // A symlink out of the home (a dotfiles or repo file) needs a typed yes: Enter is no.
+    const outside = pending.some(
+      (p) => linkInfo({ home: ctx.userHome }, p.path)?.outside,
+    );
     const a = (
       await ctx.readLine(
-        `Add them? [Y/n]   (the full block: ${BUS_CMD} install --show-habits) `,
+        `Add them? ${outside ? "[y/N]" : "[Y/n]"}   (the full block: ${BUS_CMD} install --show-habits) `,
       )
     )
       .trim()
       .toLowerCase();
+    if (a === "" && outside) {
+      say(
+        ctx,
+        "Nothing was written: a file above is a symlink outside your home, so it needs a typed y.",
+      );
+      return { ...none, state, files: have, question };
+    }
     if (a === "" || a === "y" || a === "yes") {
       const r = writeHabits(
         deps(ctx),
         targets.filter((h) =>
           asked.includes(habitsFileState(deps(ctx), h).path),
         ),
+        { explicit: a !== "" },
       );
       if (!changed) setHabitsOptOut(ctx.home, false, stamp(ctx));
       if (r.files.length > 0) say(ctx, `Habits on in ${shown(ctx, r.files)}`);
