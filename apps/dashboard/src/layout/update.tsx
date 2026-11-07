@@ -19,9 +19,21 @@ export function instanceUpdate(me: Me | null | undefined) {
 export const shouldNudge = (u: InstanceUpdate | null): u is InstanceUpdate =>
   Boolean(u?.updateAvailable && !u.custom);
 
-/** The prompt Upgrade copies; /upgrade.md is the served upgrade skill. */
-export const upgradePrompt = (host = location.origin) =>
-  `Upgrade my Open Artifacts instance at ${host}. Follow ${host}/upgrade.md`;
+/**
+ * The prompt Upgrade copies; /upgrade.md is the served upgrade skill. With the
+ * update it names both versions, and a breaking release or a custom build
+ * tells the agent to explain first and wait for the owner's yes.
+ */
+export const upgradePrompt = (host = location.origin, u?: InstanceUpdate) => {
+  if (!u)
+    return `Upgrade my Open Artifacts instance at ${host}. Follow ${host}/upgrade.md`;
+  const base = `Upgrade my Open Artifacts instance at ${host} from ${v(u.current)} to ${v(u.latestVersion)}. Follow ${host}/upgrade.md`;
+  if (u.custom)
+    return `${base} This instance runs a custom build (${u.current}): tell me what upgrading will replace before you start.`;
+  if (u.breaking === true)
+    return `${base} This release has breaking changes: tell me what they mean for my instance and wait for my yes before you start.`;
+  return base;
+};
 
 export const COPIED = "Copied, paste this into your agent";
 export const UPGRADE_GUIDE = "https://open-artifacts.com/docs/upgrade/";
