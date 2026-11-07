@@ -479,7 +479,7 @@ export function setPluginHabits(
             );
           else if (isLink(dir))
             notes.push(
-              `Left ${dir} alone: it is a symlink, so a habits marker in it was not removed.`,
+              `Left the ${p.label} plugin alone: ${dir} is a symlink, so its habits may still be on. To turn them off, delete ${dir}/${p.marker}.`,
             );
           continue;
         }

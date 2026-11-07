@@ -105,7 +105,7 @@ describe("setPluginHabits", () => {
     );
     expect(existsSync(join(real, HERMES_HABITS_MARKER))).toBe(true);
     expect(r.notes.join("\n")).toContain(
-      `Left ${linked} alone: it is a symlink`,
+      `Left the Hermes plugin alone: ${linked} is a symlink, so its habits may still be on. To turn them off, delete ${linked}/habits.on.`,
     );
   });
   it("refuses a folder that is not ours", () => {
