@@ -88,25 +88,44 @@ function occurrences(hay: string, needle: string): number[] {
   return out;
 }
 
+const isWs = (c: number) =>
+  c === 32 || (c >= 9 && c <= 13) || c === 0xa0 || c === 0xfeff;
+
+/**
+ * How much of the end of `b` ends at `aEnd` in `a`, in chars of `b`.
+ * Whitespace is skipped on both sides: a block break may be a space in one
+ * text and nothing in the other (anchors saved before blocks were separated).
+ */
 const commonSuffix = (a: string, aEnd: number, b: string): number => {
-  let n = 0;
-  while (
-    n < b.length &&
-    n < aEnd &&
-    a.charCodeAt(aEnd - 1 - n) === b.charCodeAt(b.length - 1 - n)
-  )
-    n++;
-  return n;
+  let i = aEnd - 1;
+  let j = b.length - 1;
+  while (j >= 0) {
+    if (isWs(b.charCodeAt(j))) {
+      j--;
+      continue;
+    }
+    while (i >= 0 && isWs(a.charCodeAt(i))) i--;
+    if (i < 0 || a.charCodeAt(i) !== b.charCodeAt(j)) break;
+    i--;
+    j--;
+  }
+  return b.length - 1 - j;
 };
+/** The same from the start of `b` at `aStart`, in chars of `b`. */
 const commonPrefix = (a: string, aStart: number, b: string): number => {
-  let n = 0;
-  while (
-    n < b.length &&
-    aStart + n < a.length &&
-    a.charCodeAt(aStart + n) === b.charCodeAt(n)
-  )
-    n++;
-  return n;
+  let i = aStart;
+  let j = 0;
+  while (j < b.length) {
+    if (isWs(b.charCodeAt(j))) {
+      j++;
+      continue;
+    }
+    while (i < a.length && isWs(a.charCodeAt(i))) i++;
+    if (i >= a.length || a.charCodeAt(i) !== b.charCodeAt(j)) break;
+    i++;
+    j++;
+  }
+  return j;
 };
 
 /** Newline offsets, built once per resolve and only when a tie needs them. */

@@ -364,10 +364,9 @@ export function createComments(
     while (start < end && /\s/.test(t[start])) start++;
     while (end > start && /\s/.test(t[end - 1])) end--;
     if (end <= start) return null;
-    const a = nodeAtIndex(idx, start);
-    const b = nodeAtIndex(idx, end - 1);
-    const block = blockOf(a);
-    if (!a || !b || !block || block !== blockOf(b)) return null;
+    // A selection may span blocks: the flat text separates them with a space,
+    // as the server's does, so the quote verifies and resolves the same way.
+    if (!nodeAtIndex(idx, start) || !nodeAtIndex(idx, end - 1)) return null;
     return { start, end, range };
   }
 
