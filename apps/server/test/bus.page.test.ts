@@ -475,7 +475,7 @@ describe("revoke", () => {
     expect(loc(r)).toBe("/bus?error=not_found");
   });
 
-  it("revoke throwing internal (sockets didn't close): the partial line links back to its confirm page; anything else: failed", async () => {
+  it("revoke throwing revoke_not_closed (sockets didn't close): the partial line links back to its confirm page; anything else: failed", async () => {
     const m = await login(email("revt"), "member");
     const t = await revokeToken(m.userId, "m1");
     const revoked = machine({
@@ -486,7 +486,7 @@ describe("revoke", () => {
     const internal = doubles({
       view: { machines: [revoked] },
       revoke: async () => {
-        throw new ApiError("internal", "close failed");
+        throw new ApiError("revoke_not_closed", "close failed");
       },
     });
     const r1 = await post(internal.deps, revokeUrl("m1"), m.cookie, [
@@ -588,7 +588,7 @@ describe("revoke", () => {
     const internal = doubles({
       view: { machines: [mine] },
       revoke: async () => {
-        throw new ApiError("internal", "close failed");
+        throw new ApiError("revoke_not_closed", "close failed");
       },
     });
     const t = await revokeToken(g.userId, "mine");

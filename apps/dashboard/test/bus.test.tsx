@@ -470,7 +470,8 @@ describe("Settings › Machines", () => {
     );
   });
 
-  /** DELETE answers 500; `revokes` says whether it revoked first (the list then shows it). */
+  /** DELETE answers 500; `revokes` says whether it revoked first (the list then shows it).
+      #1453: the partial case is the server's own code (revoke_not_closed, 503). */
   const failingRevoke = (revokes: boolean) => {
     const rows = M.map((m) => ({ ...m }));
     server.use(
@@ -486,12 +487,13 @@ describe("Settings › Machines", () => {
         return HttpResponse.json(
           {
             error: {
-              code: "internal",
-              message:
-                "The machine is revoked, but its connection could not be closed yet. Try again.",
+              code: revokes ? "revoke_not_closed" : "internal",
+              message: revokes
+                ? "The machine is revoked, but its connection could not be closed yet. Try again."
+                : "Internal error",
             },
           },
-          { status: 500 },
+          { status: revokes ? 503 : 500 },
         );
       }),
     );
@@ -520,7 +522,7 @@ describe("Settings › Machines", () => {
     );
   });
 
-  it("a 500 after the revoke landed (the reloaded list shows it revoked): the partial alert, and Try again reopens the dialog", async () => {
+  it("revoke_not_closed: the partial alert straight from the code, and Try again reopens the dialog", async () => {
     withBus();
     failingRevoke(true);
     await revokeWork();
@@ -896,9 +898,10 @@ describe("Agents › Namespaces", () => {
         /on 2 machines share this namespace, so their agents can see each other/,
       ),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText("on home-desktop and leo-work"),
-    ).toBeInTheDocument();
+    // #1453: "From", in body text, without the leading "on".
+    expect(screen.getByText("From")).toBeInTheDocument();
+    expect(screen.getByText("home-desktop and leo-work")).toBeInTheDocument();
+    expect(screen.queryByText("Comes from")).toBeNull();
     expect(screen.queryByText(/Give this folder its own name/)).toBeNull();
     expect(screen.queryByText(/listed under Everywhere/)).toBeNull();
   });
@@ -1293,5 +1296,103 @@ describe("Agents › Share notices", () => {
     expect(
       within(c).getByRole("button", { name: "Remove planner · notes" }),
     ).toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------- #1453 polish
+
+/** A phone viewport: shadcn's useIsMobile reads innerWidth on mount. */
+const onPhone = () => {
+  const real = window.innerWidth;
+  Object.defineProperty(window, "innerWidth", {
+    value: 390,
+    configurable: true,
+    writable: true,
+  });
+  return () =>
+    Object.defineProperty(window, "innerWidth", {
+      value: real,
+      configurable: true,
+      writable: true,
+    });
+};
+
+describe("#1453 polish", () => {
+  it("the Agents page says only you see it", async () => {
+    withBus();
+    mount("/agents");
+    expect(await primary()).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "Your agents on every machine. Only you see this page.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it.each([
+    ["/agents", "Agents sections"],
+    ["/settings/machines", "Settings sections"],
+  ])(
+    "%s: the phone tab strip wraps instead of scrolling",
+    async (path, name) => {
+      withBus();
+      mount(path);
+      const nav = await screen.findByRole("navigation", { name });
+      // #1453: every section stays in view; nothing is clipped off the edge.
+      expect(nav.className).toContain("flex-wrap");
+      expect(nav.className).not.toContain("overflow-x-auto");
+    },
+  );
+
+  it("phones: Namespaces stacks its rows and keeps agents and live", async () => {
+    withBus();
+    const restore = onPhone();
+    try {
+      mount("/agents/namespaces");
+      const list = await screen.findByRole("list", { name: "Namespaces" });
+      expect(screen.queryByRole("table", { name: "Namespaces" })).toBeNull();
+      expect(list).toHaveTextContent("Folder on home-desktop and leo-work");
+      // Both numbers the table's right-hand columns carry are in the row.
+      expect(list).toHaveTextContent("2 · 1 live");
+    } finally {
+      restore();
+    }
+  });
+
+  it("Machines: Connect a machine is the primary action", async () => {
+    withBus();
+    mount("/settings/machines");
+    const c = await screen.findByRole("region", { name: "Your machines" });
+    const connect = await within(c).findByRole("link", {
+      name: "Connect a machine",
+    });
+    expect(connect.className).toContain("bg-primary");
+  });
+
+  it("Machines: a revoked row is dimmed", async () => {
+    withBus();
+    mount("/settings/machines");
+    const t = await screen.findByRole("table", { name: "Your machines" });
+    const rows = within(t).getAllByRole("row");
+    const revoked = rows.find((r) => r.textContent?.includes(old.label));
+    const live = rows.find((r) => r.textContent?.includes(work.label));
+    expect(revoked?.className).toContain("text-muted-foreground");
+    expect(live?.className ?? "").not.toContain("text-muted-foreground");
+  });
+
+  it("Roles: Held by is the Live badge with the agent, Vacant otherwise, names monospace", async () => {
+    withBus();
+    mount("/agents/roles");
+    const t = await screen.findByRole("table", { name: "Roles" });
+    const held = within(t)
+      .getAllByRole("row")
+      .find((r) => r.textContent?.includes("manager"));
+    expect(held).toHaveTextContent("oa-manager");
+    // The name cell is monospace; the holder rides a dot badge.
+    expect(held?.querySelector("td")?.className).toContain("font-mono");
+    const vacant = within(t)
+      .getAllByRole("row")
+      .find((r) => r.textContent?.includes("reviewer"));
+    expect(vacant).toHaveTextContent("Vacant");
   });
 });

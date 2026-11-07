@@ -11,6 +11,7 @@ import {
   useIsMobile,
 } from "@oa/ui/shadcn";
 import { useState } from "react";
+import { ApiClientError } from "../api/client";
 import {
   useBusAgents,
   useBusMachines,
@@ -61,9 +62,15 @@ const lastUsed = (m: BusMachine) =>
 const liveText = (n: number | null) =>
   n === null ? "—" : n === 0 ? "None" : String(n);
 
-function ConnectLink({ label }: { label: string }) {
+function ConnectLink({
+  label,
+  primary = false,
+}: {
+  label: string;
+  primary?: boolean;
+}) {
   return (
-    <Button asChild variant="outline" size="sm">
+    <Button asChild variant={primary ? "default" : "outline"} size="sm">
       <a href={APPROVE_PATH} target="_blank" rel="noopener">
         {label}
       </a>
@@ -131,7 +138,11 @@ function Row({
   );
   if (stacked)
     return (
-      <li className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-[var(--oa-space-3)] gap-y-[2px] border-b py-[var(--oa-space-3)] last:border-b-0">
+      <li
+        className={`grid grid-cols-[minmax(0,1fr)_auto] gap-x-[var(--oa-space-3)] gap-y-[2px] border-b py-[var(--oa-space-3)] last:border-b-0 ${
+          m.revokedAt === null ? "" : "text-muted-foreground"
+        }`}
+      >
         <span className="min-w-0 truncate font-medium">{m.label}</span>
         <span className="justify-self-end">{badge}</span>
         <span className={muted}>
@@ -142,7 +153,9 @@ function Row({
       </li>
     );
   return (
-    <TableRow>
+    <TableRow
+      className={m.revokedAt === null ? undefined : "text-muted-foreground"}
+    >
       <TableCell className="font-medium">{m.label}</TableCell>
       <TableCell>{badge}</TableCell>
       {live !== undefined && <TableCell>{liveText(live)}</TableCell>}
@@ -174,9 +187,9 @@ export function Machines({ revokeOnly = false }: { revokeOnly?: boolean }) {
   const stacked = useIsMobile();
   const [pick, setPick] = useState<BusMachine | null>(null);
   /**
-   * A failed revoke, by what the reloaded list says: "partial" when it shows
-   * the machine revoked (its connection didn't close), else "maybe". Try
-   * again reopens the dialog either way.
+   * A failed revoke, by what we know: "partial" when the reply says the
+   * revoke landed and only the close failed (revoke_not_closed, #1453), else
+   * whatever the reloaded list says. Try again reopens the dialog either way.
    */
   const [failed, setFailed] = useState<{
     m: BusMachine;
@@ -198,8 +211,15 @@ export function Machines({ revokeOnly = false }: { revokeOnly?: boolean }) {
     try {
       await revoke.mutateAsync(m.id);
       toast({ title: `${m.label} revoked.`, tone: "success" });
-    } catch {
-      // A failure says nothing sure about the revoke: the reloaded list does.
+    } catch (e) {
+      // The server says which half failed: revoke_not_closed means the machine
+      // is revoked and only its open connection stayed up, so no reload is
+      // needed to say exactly what happened (#1453).
+      if (e instanceof ApiClientError && e.code === "revoke_not_closed") {
+        setFailed({ m, revoked: true });
+        return;
+      }
+      // Anything else says nothing sure about the revoke: the reloaded list does.
       const after = await q.refetch();
       const row = after.data?.machines.find((x) => x.id === m.id);
       setFailed({ m, revoked: row !== undefined && row.revokedAt !== null });
@@ -234,7 +254,7 @@ export function Machines({ revokeOnly = false }: { revokeOnly?: boolean }) {
         subtitle={machines.length ? machinesSummary(machines) : undefined}
         action={
           !revokeOnly && machines.length > 0 ? (
-            <ConnectLink label="Connect a machine" />
+            <ConnectLink label="Connect a machine" primary />
           ) : undefined
         }
       >

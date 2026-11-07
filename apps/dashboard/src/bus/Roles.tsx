@@ -31,7 +31,7 @@ import { OptionSelect } from "../settings/OptionSelect";
 import { errorText, muted, SettingsCard, STACK } from "../settings/ui";
 import { shortDate } from "./format";
 import { shortName } from "./namespaces";
-import { LIVE_DOWN } from "./ui";
+import { LIVE_DOWN, StatusBadge } from "./ui";
 
 /** PUT R.busRoles refusals (409 details.reason) as plain lines. */
 export const ROLE_REFUSALS: Record<string, string> = {
@@ -316,13 +316,11 @@ export function RolesTab() {
             <TableBody>
               {list.map((r) => (
                 <TableRow key={r.id}>
-                  <TableCell className="font-medium">{r.name}</TableCell>
+                  <TableCell className="font-mono text-[length:var(--oa-text-xs)] font-medium">
+                    {r.name}
+                  </TableCell>
                   <TableCell>
-                    {r.vacant || r.holderName === null ? (
-                      <span className="text-muted-foreground">Vacant</span>
-                    ) : (
-                      r.holderName
-                    )}
+                    <HolderBadge r={r} />
                   </TableCell>
                   <TableCell
                     className="text-muted-foreground"
@@ -365,10 +363,22 @@ export function RolesTab() {
   );
 }
 
+/** "Held by" as #1453 draws it: a Live badge carrying the agent's name, a
+    muted Vacant badge when nothing holds it. */
+function HolderBadge({ r }: { r: BusRole }) {
+  const held = !r.vacant && r.holderName !== null;
+  return (
+    <StatusBadge
+      status={held ? "Live" : "Offline"}
+      text={held ? (r.holderName ?? "") : "Vacant"}
+    />
+  );
+}
+
 function RoleRowSentence({ r, all }: { r: BusRole; all: string[] }) {
   return (
     <>
-      <b>{r.name}</b> in {shortName(r.namespace, all)}:{" "}
+      <b className="font-mono">{r.name}</b> in {shortName(r.namespace, all)}:{" "}
       {r.vacant || r.holderName === null ? "vacant" : <b>{r.holderName}</b>}
     </>
   );

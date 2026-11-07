@@ -7,6 +7,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  useIsMobile,
 } from "@oa/ui/shadcn";
 import { useBusAgents, useBusLinks, useBusRoles } from "../api/queries";
 import { LoadError } from "../layout/LoadError";
@@ -29,11 +30,13 @@ import { LIVE_DOWN } from "./ui";
 export function RoleSentence({ role }: { role: BusRole }) {
   return role.vacant || role.holderName === null ? (
     <>
-      <b>{role.name}</b> is vacant. Its holder isn't open here.
+      <b className="font-mono">{role.name}</b> is vacant. Its holder isn't open
+      here.
     </>
   ) : (
     <>
-      <b>{role.name}</b> points at <b>{role.holderName}</b>.
+      <b className="font-mono">{role.name}</b> points at{" "}
+      <b>{role.holderName}</b>.
     </>
   );
 }
@@ -85,10 +88,16 @@ function NamespacePage({
         )}
         <dl className="m-0 grid grid-cols-[160px_minmax(0,1fr)] items-center gap-x-[var(--oa-space-4)] gap-y-[var(--oa-space-3)] text-[length:var(--oa-text-sm)] max-[600px]:grid-cols-[minmax(0,1fr)] max-[600px]:gap-y-[4px]">
           <dt className="text-muted-foreground">
-            {p.kind === "repo" ? "Full path" : "Comes from"}
+            {p.kind === "repo" ? "Full path" : "From"}
           </dt>
-          <dd className="m-0 min-w-0 break-all font-mono text-[length:var(--oa-text-xs)]">
-            {p.kind === "repo" ? ns : `on ${listOf(machines)}`}
+          <dd
+            className={
+              p.kind === "repo"
+                ? "m-0 min-w-0 break-all font-mono text-[length:var(--oa-text-xs)]"
+                : "m-0 min-w-0 text-[length:var(--oa-text-sm)]"
+            }
+          >
+            {p.kind === "repo" ? ns : listOf(machines)}
           </dd>
         </dl>
         {globals && <p className={`m-0 ${muted}`}>{globals}</p>}
@@ -140,6 +149,7 @@ export function NamespacesTab({ ns }: { ns?: string }) {
   const agents = useBusAgents();
   const roles = useBusRoles();
   const links = useBusLinks();
+  const stacked = useIsMobile();
   if (agents.isPending) return <p className={`m-0 ${muted}`}>Loading…</p>;
   if (agents.isError)
     return (
@@ -184,41 +194,70 @@ export function NamespacesTab({ ns }: { ns?: string }) {
         title="Namespaces"
         subtitle="Where your running agents started. A repo's namespace comes from its git remote; any other folder uses its name."
       >
-        <Table aria-label="Namespaces">
-          <TableHeader>
-            <TableRow>
-              <TableHead>Namespace</TableHead>
-              <TableHead>In</TableHead>
-              <TableHead className="text-right">Agents</TableHead>
-              <TableHead className="text-right">Live</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
+        {stacked ? (
+          <ul aria-label="Namespaces" className="m-0 list-none p-0">
             {rows.map((n) => (
-              <TableRow key={n.ns}>
-                <TableCell className="font-medium">
+              <li
+                key={n.ns}
+                className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-[var(--oa-space-3)] gap-y-[2px] border-b py-[var(--oa-space-3)] text-[length:var(--oa-text-sm)] last:border-b-0"
+              >
+                <span className="min-w-0">
                   <BusLink
                     to="/agents/namespaces"
                     search={{ ns: n.ns }}
                     title={n.ns}
-                    className={LINK}
+                    className={`${LINK} font-medium`}
                   >
                     {n.label}
                   </BusLink>
-                </TableCell>
-                <TableCell className="text-muted-foreground">
-                  {n.where}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">
+                </span>
+                <span className="justify-self-end text-right tabular-nums">
                   {n.total}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {n.live}
-                </TableCell>
-              </TableRow>
+                  {n.live > 0 && (
+                    <span className={muted}> · {n.live} live</span>
+                  )}
+                </span>
+                <span className={`min-w-0 ${muted}`}>{n.where}</span>
+              </li>
             ))}
-          </TableBody>
-        </Table>
+          </ul>
+        ) : (
+          <Table aria-label="Namespaces">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Namespace</TableHead>
+                <TableHead>In</TableHead>
+                <TableHead className="text-right">Agents</TableHead>
+                <TableHead className="text-right">Live</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((n) => (
+                <TableRow key={n.ns}>
+                  <TableCell className="font-medium">
+                    <BusLink
+                      to="/agents/namespaces"
+                      search={{ ns: n.ns }}
+                      title={n.ns}
+                      className={LINK}
+                    >
+                      {n.label}
+                    </BusLink>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {n.where}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {n.total}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {n.live}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
       </SettingsCard>
       <LinksCard known={rows.map((r) => r.ns)} />
     </div>

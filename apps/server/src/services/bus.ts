@@ -349,7 +349,7 @@ export async function revokeBusMachine(
   } catch (e) {
     logError("bus_revoke_close_failed", e);
     throw new ApiError(
-      "internal",
+      "revoke_not_closed",
       "The machine is revoked, but its connection could not be closed yet. Try again.",
     );
   }
