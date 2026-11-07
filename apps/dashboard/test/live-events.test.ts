@@ -13,6 +13,7 @@ import { isSafeSwap } from "../src/viewer/useLiveVersions";
 
 class FakeWS {
   static all: FakeWS[] = [];
+  static CONNECTING = 0;
   static OPEN = 1;
   readyState = 1;
   onmessage: ((e: { data: unknown }) => void) | null = null;
@@ -382,5 +383,74 @@ describe("presence on the events socket", () => {
     a.closed(1006);
     vi.advanceTimersByTime(PRESENCE_PING_MS * 3);
     expect(pings(a)).toBe(0);
+  });
+
+  it("leaves no live interval after gone, close, or an abnormal close", () => {
+    const g = mk();
+    expect(vi.getTimerCount()).toBe(1); // the ping interval
+    last().frame({ type: "gone", reason: "changed" });
+    expect(vi.getTimerCount()).toBe(0);
+    g.c.close();
+
+    const c = mk();
+    c.c.close();
+    expect(vi.getTimerCount()).toBe(0);
+
+    const d = mk(); // never said hello: no retry, so nothing may be left
+    last().closed(1006);
+    expect(vi.getTimerCount()).toBe(0);
+    d.c.close();
+  });
+
+  it("a 4408 reconnect leaves exactly one interval", () => {
+    const { c } = mk();
+    last().frame({ type: "hello", version: 1 });
+    last().closed(4408);
+    expect(FakeWS.all).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(1);
+    c.close();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("a tick while connecting skips; it does not stop the interval", () => {
+    mk();
+    const w = last();
+    w.readyState = 0;
+    vi.advanceTimersByTime(PRESENCE_PING_MS);
+    expect(pings(w)).toBe(0);
+    expect(vi.getTimerCount()).toBe(1);
+    w.readyState = 1;
+    vi.advanceTimersByTime(PRESENCE_PING_MS);
+    expect(pings(w)).toBe(1);
+  });
+
+  it("a tick on a closed socket stops the interval", () => {
+    mk();
+    last().readyState = 3;
+    vi.advanceTimersByTime(PRESENCE_PING_MS);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("drops presence frames before this socket's hello", () => {
+    const { onPresence } = mk();
+    last().frame({ type: "presence", viewers: [entry], total: 1 });
+    expect(onPresence).not.toHaveBeenCalled();
+    last().frame({ type: "hello", version: 1, you: "BBBBBBBBBBBBBBBB" });
+    last().frame({ type: "presence", viewers: [entry], total: 1 });
+    expect(onPresence).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the roster when the socket drops, not on a 4408 reconnect", () => {
+    const { onPresence } = mk();
+    last().frame({ type: "hello", version: 1 });
+    last().closed(4408);
+    expect(onPresence).not.toHaveBeenCalled();
+    last().frame({ type: "hello", version: 1 });
+    last().closed(1006);
+    expect(onPresence).toHaveBeenCalledTimes(1);
+    expect(onPresence).toHaveBeenCalledWith(
+      { type: "presence", viewers: [], total: 0 },
+      undefined,
+    );
   });
 });

@@ -11,6 +11,7 @@ import { presenceId } from "./presenceId";
 
 /** The server closes near its signed-URL TTL with this: reconnect at once. */
 export const EVENTS_TTL_CLOSE = 4408;
+const EMPTY_ROSTER: PresenceFrame = { type: "presence", viewers: [], total: 0 };
 const BACKOFF_BASE_MS = 1_000;
 const BACKOFF_CAP_MS = 30_000;
 
@@ -105,9 +106,10 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
     const sock = new WebSocket(eventsUrl(opts.id, opts.embed));
     ws = sock;
     let you: string | undefined;
-    stopPing();
     if (!opts.embed) {
       pinger = setInterval(() => {
+        // Still connecting: skip this tick. Replaced or closing: stop.
+        if (ws === sock && sock.readyState === WebSocket.CONNECTING) return;
         if (ws !== sock || sock.readyState !== WebSocket.OPEN) {
           stopPing();
           return;
@@ -130,6 +132,8 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
         return;
       }
       if (f.data.type === "presence") {
+        // Before this socket's hello `you` is unknown: self would show as another viewer.
+        if (!hello) return;
         opts.onPresence?.(f.data, you);
         return;
       }
@@ -154,6 +158,8 @@ export function connectArtifactEvents(opts: ArtifactEventsOptions) {
         open();
         return;
       }
+      // The roster belongs to the dropped socket (a 4408 reconnect keeps it).
+      opts.onPresence?.(EMPTY_ROSTER, undefined);
       opts.onDown();
       if (!hello && !everHello) {
         idle = true;

@@ -9,6 +9,7 @@ import {
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ANON_ID_KEY } from "../src/viewer/anonId";
+import { connectArtifactEvents } from "../src/viewer/liveEvents";
 import { presenceId } from "../src/viewer/presenceId";
 import { useLiveVersions } from "../src/viewer/useLiveVersions";
 import { usePresence } from "../src/viewer/usePresence";
@@ -70,6 +71,32 @@ describe("presenceId", () => {
     set.mockRestore();
   });
 
+  describe("cookie attributes", () => {
+    const written = (protocol: string) => {
+      clearCookie();
+      vi.stubGlobal("location", { protocol, host: "app.test" });
+      const get = vi.spyOn(document, "cookie", "get").mockReturnValue("");
+      const set = vi
+        .spyOn(document, "cookie", "set")
+        .mockImplementation(() => {});
+      presenceId();
+      const v = set.mock.calls[0]?.[0] as string;
+      get.mockRestore();
+      set.mockRestore();
+      vi.unstubAllGlobals();
+      return v;
+    };
+    it("is a session cookie on / with SameSite=Lax", () => {
+      const v = written("http:");
+      expect(v).toMatch(/^oa_pid=[A-Za-z0-9_-]{22}; Path=\/; SameSite=Lax$/);
+      expect(v).not.toMatch(/Max-Age|Expires/i);
+    });
+    it("adds Secure only on https", () => {
+      expect(written("https:")).toMatch(/; Secure$/);
+      expect(written("http:")).not.toMatch(/Secure/);
+    });
+  });
+
   it("never throws when cookies are unavailable", () => {
     const d = vi.spyOn(document, "cookie", "get").mockImplementation(() => {
       throw new Error("denied");
@@ -99,8 +126,30 @@ describe("usePresence", () => {
     act(() => {
       events.emitPresence(ID, [B, ME, A], ME.key);
     });
-    await waitFor(() => expect(h.result.current.total).toBe(3));
+    await waitFor(() => expect(h.result.current.total).toBe(2));
     expect(h.result.current.others.map((e) => e.name)).toEqual(["Bo", "Ada"]);
+    // The server's total counts the caller; ours counts others.
+    expect(h.result.current.total).toBe(2);
+  });
+
+  it("total counts others; self is subtracted only when it is listed", () => {
+    const h = renderHook(() => usePresence());
+    act(() =>
+      h.result.current.onPresence(
+        { type: "presence", viewers: [A, ME, B], total: 3 },
+        ME.key,
+      ),
+    );
+    expect(h.result.current.total).toBe(2);
+    // Over the cap, self was cut from the list: the server's total is 250.
+    act(() =>
+      h.result.current.onPresence(
+        { type: "presence", viewers: [A, B], total: 250 },
+        ME.key,
+      ),
+    );
+    expect(h.result.current.total).toBe(250);
+    expect(h.result.current.others).toHaveLength(2);
   });
 
   it("a gone artifact clears the roster", async () => {
@@ -135,9 +184,56 @@ describe("usePresence", () => {
     );
     await waitFor(() => expect(events.connections(ID)).toBe(1));
     expect(opened).toBe(1);
-    h.rerender({ cb: () => {} });
-    h.rerender({ cb: () => {} });
-    await act(async () => {});
+    vi.useFakeTimers();
+    try {
+      h.rerender({ cb: () => {} });
+      h.rerender({ cb: () => {} });
+      // A re-run connect effect opens its socket in setTimeout(open, 0).
+      vi.advanceTimersByTime(10);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(opened).toBe(1);
+  });
+});
+
+describe("cookie before connect", () => {
+  const connect = (embed: boolean) => {
+    const order: string[] = [];
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "WebSocket",
+      class {
+        static CONNECTING = 0;
+        static OPEN = 1;
+        readyState = 0;
+        constructor() {
+          order.push("socket");
+        }
+        close() {}
+      },
+    );
+    vi.spyOn(document, "cookie", "get").mockReturnValue("");
+    const set = vi.spyOn(document, "cookie", "set").mockImplementation(() => {
+      order.push("cookie");
+    });
+    const c = connectArtifactEvents({
+      id: "abc",
+      embed,
+      onEvent() {},
+      onGone() {},
+      onDown() {},
+    });
+    vi.advanceTimersByTime(0);
+    c.close();
+    set.mockRestore();
+    vi.useRealTimers();
+    return order;
+  };
+  it("sets the cookie before the first socket exists", () => {
+    expect(connect(false)).toEqual(["cookie", "socket"]);
+  });
+  it("embed mode never touches it", () => {
+    expect(connect(true)).toEqual(["socket"]);
   });
 });
