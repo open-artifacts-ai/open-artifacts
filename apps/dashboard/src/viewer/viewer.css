@@ -592,10 +592,14 @@ a.oa-lpill-gone {
   height: 100svh;
 }
 .oa-bare > .oa-viewer,
-.oa-bare > .oa-vstack,
-.oa-bare > .oa-edge {
+.oa-bare > .oa-vstack {
   flex: 1;
   height: auto;
+  min-height: 0;
+}
+/* A tall panel grows and the page scrolls; it is never clipped at the top. */
+.oa-bare > .oa-edge {
+  flex: 1 0 auto;
   min-height: 0;
 }
 .oa-bare > .oa-vstack {

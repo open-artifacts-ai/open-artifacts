@@ -228,3 +228,37 @@ for (const [name, query, banner] of [
     });
   }
 }
+
+// Full screen has a fixed toolbar over the top-right: no banner under it.
+for (const [w, h] of [
+  [1100, 700],
+  [390, 700],
+] as const) {
+  test(`/full shows no update banner at ${w}px`, async ({ page }) => {
+    await page.setViewportSize({ width: w, height: h });
+    await page.goto(`/a/${ART}/full?mock=update`);
+    await expect(page.locator("#oa-main")).toBeVisible();
+    await page.waitForLoadState("networkidle");
+    await expect(page.getByTestId("update-banner")).toHaveCount(0);
+  });
+}
+
+// A tall edge panel in a short window grows and scrolls: its heading is reachable.
+test("edge panel on a short phone window isn't clipped at the top", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 360 });
+  await page.goto(`/a/${ART}?mock=quota`);
+  const heading = page.locator(".oa-edge h1").first();
+  await expect(heading).toBeVisible();
+  await heading.scrollIntoViewIfNeeded();
+  const b = await heading.boundingBox();
+  expect(b?.y ?? -1).toBeGreaterThanOrEqual(0);
+  // The panel's own bottom is reachable by scrolling the page.
+  const reach = await page.evaluate(() => {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    const p = document.querySelector(".oa-panel")?.getBoundingClientRect();
+    return p ? p.bottom <= window.innerHeight + 1 : false;
+  });
+  expect(reach).toBe(true);
+});

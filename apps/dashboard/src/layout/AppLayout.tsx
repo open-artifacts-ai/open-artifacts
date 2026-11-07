@@ -175,7 +175,8 @@ function Layout() {
       >
         <QuotaBanner />
         {/* The artifact view owns its chrome; the banner sits above it, never over the frame. */}
-        {state.status === "authed" && (
+        {/* Not on /full: its fixed toolbar would cover the dismiss button. */}
+        {state.status === "authed" && !isFullPath(path) && (
           <UpdateBanner
             me={state.me}
             className="!mb-0 px-5 pt-[var(--oa-space-2)]"
