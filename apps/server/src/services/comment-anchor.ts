@@ -222,11 +222,12 @@ export type EntryHash = { hash: string | null } | null;
 
 /**
  * SHA-256 (hex) of a version's entry file; null when the version does not
- * exist. The hash is the manifest digest when recorded. Otherwise (an uploaded
- * entry on a free instance, or a version from before digests) a paid instance
+ * exist. The hash is the manifest digest when recorded, including an upload's
+ * R2-verified client checksum on any plan. Without a digest (an upload without
+ * a checksum on Free, or a version from before digests), a paid instance
  * streams the bytes from R2 every time (manifests stay immutable: a written
- * digest would split STORED_BYTES' count of a kept file); a free instance (10 ms CPU) answers `hash: null`
- * (unknown) with no R2 read.
+ * digest would split STORED_BYTES' count of a kept file). Free (10 ms CPU)
+ * answers `hash: null` (unknown) with no R2 read only when the digest is absent.
  */
 export async function versionEntryHash(
   env: Pick<Env, "DB" | "FILES" | "PLAN">,
