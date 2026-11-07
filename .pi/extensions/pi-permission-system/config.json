@@ -65,7 +65,6 @@
       "pnpm run gen": "allow",
       "pnpm -C apps/server run gen": "allow",
       "pnpm --filter @oa/shared build": "allow",
-      "pnpm run test:prep": "allow",
       "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provisioning-contract --filter @oa/provision build": "allow",
       "pnpm --filter @oa/auth-core build": "allow",
       "pnpm --filter @oa/provisioning-contract build": "allow",
