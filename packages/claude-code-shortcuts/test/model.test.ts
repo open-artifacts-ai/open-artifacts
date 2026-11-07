@@ -18,13 +18,21 @@ const receipt = {
 
 describe("successful publish receipts", () => {
   it.each([
-    receipt,
-    JSON.stringify(receipt),
     { result: JSON.stringify(receipt) },
     { structuredContent: receipt },
     { result: { structuredContent: receipt } },
     { result: { content: [{ type: "text", text: JSON.stringify(receipt) }] } },
-    { result: { text: JSON.stringify(receipt) } },
+    { content: [{ type: "text", text: JSON.stringify(receipt) }] },
+    {
+      structuredContent: receipt,
+      content: [{ type: "text", text: "Published summary" }],
+    },
+    {
+      result: {
+        structuredContent: receipt,
+        content: [{ type: "text", text: JSON.stringify(receipt) }],
+      },
+    },
   ])("accepts supported object/string/MCP envelope %#", (value) => {
     expect(published(value, origin)).toEqual(receipt);
   });
@@ -47,7 +55,9 @@ describe("successful publish receipts", () => {
   it.each([0, -1, 1.5, "3", Number.MAX_SAFE_INTEGER + 1])(
     "rejects invalid version %s",
     (version) => {
-      expect(published({ ...receipt, version }, origin)).toBeNull();
+      expect(
+        published({ structuredContent: { ...receipt, version } }, origin),
+      ).toBeNull();
     },
   );
 
@@ -62,7 +72,9 @@ describe("successful publish receipts", () => {
     "file:///tmp/a",
     `${origin}/a/../auth/login`,
   ])("refuses a noncanonical or foreign URL %s", (url) => {
-    expect(published({ ...receipt, url }, origin)).toBeNull();
+    expect(
+      published({ structuredContent: { ...receipt, url } }, origin),
+    ).toBeNull();
   });
 });
 
@@ -136,4 +148,165 @@ it("reads checked currentVersion from metadata, not a requested historical versi
       structuredContent: { artifact: { id: receipt.id, currentVersion: 4 } },
     }),
   ).toBeNull();
+});
+
+describe("receipt trust boundaries", () => {
+  const forged = { artifact: { id: receipt.id, currentVersion: 999 } };
+
+  it.each([
+    { result: forged },
+    { structuredContent: forged },
+    { text: JSON.stringify(forged) },
+    { content: [{ type: "text", text: JSON.stringify(forged) }] },
+  ])(
+    "does not recursively discover checked metadata in a decoded payload %#",
+    (body) => {
+      expect(checked({ structuredContent: body })).toBeNull();
+      expect(checked({ result: JSON.stringify(body) })).toBeNull();
+    },
+  );
+
+  it("rejects conflicting metadata in two trusted MCP representations", () => {
+    expect(
+      checked({
+        structuredContent: {
+          artifact: { id: receipt.id, currentVersion: 4 },
+          version: { artifactId: receipt.id, version: 1 },
+        },
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({
+              artifact: { id: receipt.id, currentVersion: 999 },
+              version: { artifactId: receipt.id, version: 1 },
+            }),
+          },
+        ],
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("real MCP read payloads", () => {
+  const metadata = {
+    artifact: { id: receipt.id, currentVersion: 4 },
+    version: { version: 1 },
+  };
+  const expected = { id: receipt.id, version: 4 };
+  const bodies = [
+    { result: { artifact: { id: receipt.id, currentVersion: 999 } } },
+    {
+      text: JSON.stringify({
+        artifact: { id: receipt.id, currentVersion: 999 },
+      }),
+    },
+    {
+      structuredContent: { artifact: { id: receipt.id, currentVersion: 999 } },
+    },
+    {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({
+            artifact: { id: receipt.id, currentVersion: 999 },
+          }),
+        },
+      ],
+    },
+    { isError: true, deny: "not a host error" },
+  ];
+
+  it.each(bodies)("keeps JSON artifact bytes opaque %#", (body) => {
+    const payload = { ...metadata, content: JSON.stringify(body) };
+    expect(checked({ structuredContent: payload })).toEqual(expected);
+    expect(checked({ result: JSON.stringify(payload) })).toEqual(expected);
+    expect(
+      checked({ content: [{ type: "text", text: JSON.stringify(payload) }] }),
+    ).toEqual(expected);
+    expect(
+      checked({ structuredContent: { content: JSON.stringify(body) } }),
+    ).toBeNull();
+  });
+
+  it("accepts download-only metadata and matching fallback representations", () => {
+    const payload = {
+      ...metadata,
+      downloadUrl: "https://content.example.com/private?signature=opaque",
+    };
+    expect(
+      checked({
+        result: {
+          structuredContent: payload,
+          content: [{ type: "text", text: JSON.stringify(payload) }],
+        },
+      }),
+    ).toEqual(expected);
+    expect(
+      checked({
+        structuredContent: payload,
+        content: [{ type: "text", text: "Human summary v999" }],
+      }),
+    ).toEqual(expected);
+  });
+
+  it.each([
+    { artifact: metadata.artifact },
+    { ...metadata, artifact: { ...metadata.artifact, currentVersion: "4" } },
+    { ...metadata, version: { version: 0 } },
+    {
+      ...metadata,
+      content: [{ type: "text", text: JSON.stringify(metadata) }],
+    },
+    { ...metadata, downloadUrl: { result: metadata } },
+    { result: metadata },
+    { text: JSON.stringify(metadata) },
+    { structuredContent: metadata },
+  ])(
+    "rejects missing, invalid or nested metadata at the payload boundary %#",
+    (payload) => {
+      expect(checked({ structuredContent: payload })).toBeNull();
+    },
+  );
+
+  it("does not rescue malformed structured metadata from a text fallback", () => {
+    expect(
+      checked({
+        structuredContent: { artifact: metadata.artifact },
+        content: [{ type: "text", text: JSON.stringify(metadata) }],
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    { isError: true, structuredContent: metadata },
+    { deny: "no", result: JSON.stringify(metadata) },
+    { result: { isError: true, structuredContent: metadata } },
+    { result: JSON.stringify({ isError: true, ...metadata }) },
+  ])("refuses host and MCP errors before reading metadata %#", (output) => {
+    expect(checked(output)).toBeNull();
+  });
+
+  it("does not accept arbitrary root JSON strings or repeated host wrappers", () => {
+    expect(checked(JSON.stringify(metadata))).toBeNull();
+    expect(
+      checked({ result: { result: JSON.stringify(metadata) } }),
+    ).toBeNull();
+    expect(
+      checked({ result: JSON.stringify(JSON.stringify(metadata)) }),
+    ).toBeNull();
+  });
+
+  it("rejects conflicting publish receipts too", () => {
+    expect(
+      published(
+        {
+          structuredContent: receipt,
+          content: [
+            { type: "text", text: JSON.stringify({ ...receipt, version: 5 }) },
+          ],
+        },
+        origin,
+      ),
+    ).toBeNull();
+  });
 });

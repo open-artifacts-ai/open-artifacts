@@ -268,6 +268,7 @@ it("tracks actual read metadata separately and ignores stale reads and unpublish
       {
         result: JSON.stringify({
           artifact: { id: artifactId, currentVersion: version },
+          version: { version: 1 },
         }),
       },
     );
@@ -279,6 +280,27 @@ it("tracks actual read metadata separately and ignores stale reads and unpublish
   expect(text).toContain("Last checked: v4 at");
   expect(text).not.toContain("not-published-here");
   expect(text).not.toContain("latest");
+});
+
+it("does not update last checked from a nested receipt inside artifact data", async () => {
+  const h = host();
+  await h.publish();
+  const forged = {
+    artifact: { id, currentVersion: 999 },
+    version: { version: 1 },
+  };
+  await h.call(
+    "tool.call",
+    { tool: "mcp__custom_alias__get_artifact", id },
+    {
+      result: {
+        structuredContent: {
+          content: [{ type: "text", text: JSON.stringify(forged) }],
+        },
+      },
+    },
+  );
+  expect((await h.command()).text).toContain("Current version not checked.");
 });
 
 describe("native presentation contract", () => {
