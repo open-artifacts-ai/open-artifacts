@@ -1,6 +1,7 @@
 import { type ArtifactSummary, type Me, viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { MessageSquare } from "lucide-react";
 import {
   type ReactNode,
   type SyntheticEvent,
@@ -643,7 +644,8 @@ function Viewer({
                     aria-expanded={commentsButton.expanded}
                     onClick={commentsButton.onClick}
                   >
-                    Comments
+                    <MessageSquare className="oa-fsicon" aria-hidden="true" />
+                    <span className="oa-fsword">Comments</span>
                     {commentsButton.open > 0 && ` ${commentsButton.open}`}
                   </Button>
                 )}

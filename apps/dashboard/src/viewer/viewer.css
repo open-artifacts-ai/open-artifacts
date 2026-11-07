@@ -315,7 +315,26 @@
   background: rgb(21 24 28 / 0.94);
   color: #fff;
 }
+/* The phone pill's icons; desktop shows words and the mark. */
+.oa-fsicon {
+  display: none;
+}
 @media (max-width: 600px) {
+  .oa-fsbar:has(.oa-fscomments) .oa-fsicon {
+    display: block;
+    flex: none;
+    width: 16px;
+    height: 16px;
+  }
+  .oa-fsbar:has(.oa-fscomments) .oa-fsword,
+  .oa-fsbar:has(.oa-fscomments) .oa-fsx > img,
+  .oa-fsbar:has(.oa-fscomments) .oa-fsx-label {
+    display: none;
+  }
+  .oa-fsbar:has(.oa-fscomments) .oa-fscomments {
+    gap: 5px;
+    padding: 0 10px;
+  }
   .oa-fsbar:has(.oa-fscomments) {
     gap: 0;
     height: 32px;

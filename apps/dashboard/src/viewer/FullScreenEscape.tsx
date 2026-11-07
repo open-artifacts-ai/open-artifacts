@@ -1,7 +1,7 @@
 import { type ArtifactSummary, viewerPath } from "@oa/shared";
 import { brand } from "@oa/ui/brand";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { ArrowUpRight } from "lucide-react";
+import { ArrowUpRight, X } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { FullGone } from "./LiveChip";
 
@@ -126,6 +126,7 @@ export function FullScreenEscape({
           <span className="oa-fsx-label">
             {inFrame ? "Open in Open Artifacts" : "Exit full screen"}
           </span>
+          {!inFrame && <X className="oa-fsicon" aria-hidden="true" />}
           {inFrame && (
             <ArrowUpRight className="oa-fsx-arrow" aria-hidden="true" />
           )}
