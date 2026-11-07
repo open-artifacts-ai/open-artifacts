@@ -603,6 +603,35 @@ describe("pins", () => {
     expect(last("comment.open")).toMatchObject({ id: "p1" });
   });
 
+  it("marks a pin whose page changed, so the marker itself says what the card says (#1657)", async () => {
+    await start("select");
+    const pin = (changed: boolean) => ({
+      id: "p1",
+      n: 1,
+      ...(changed ? { changed: true } : {}),
+      anchor: {
+        kind: "pin" as const,
+        version: 1,
+        x: 0.5,
+        y: 0.25,
+        contentHash: "h",
+      },
+    });
+    await send({ type: "comments.set", threads: [pin(false)] });
+    const plain = roots.at(-1)?.querySelector<HTMLElement>(".pin");
+    expect(plain?.className).toBe("pin");
+    expect(plain?.title).toBe("");
+    await send({ type: "comments.set", threads: [pin(true)] });
+    const marked = roots.at(-1)?.querySelector<HTMLElement>(".pin.changed");
+    expect(marked).not.toBeNull();
+    expect(marked?.title).toBe("Changed since this was placed.");
+    // It is still the same pin: numbered, and a click still opens it.
+    expect(marked?.textContent).toBe("1");
+    marked?.click();
+    await flush();
+    expect(last("comment.open")).toMatchObject({ id: "p1" });
+  });
+
   it("draws a dimmed, unnumbered ghost pin for the one being composed, and clears it", async () => {
     await start("select");
     await send({

@@ -333,6 +333,8 @@ export const ShellToArtifactSchema = z.union([
           n: z.number().int().min(1).max(9999).optional(),
           active: z.boolean().optional(),
           resolved: z.boolean().optional(),
+          /** #1657: a pin whose page changed since it was placed (the card says so too). */
+          changed: z.boolean().optional(),
         }),
       )
       .max(COMMENT_THREADS_MAX),

@@ -21,11 +21,11 @@ export function numbering(threads: readonly CommentThread[]) {
   return new Map(sorted.map((t, i) => [t.id, Math.min(i + 1, 9999)]));
 }
 
-/** A null hash on either side means unknown: never claim the page changed. */
+/** An empty or null hash on either side means unknown: never claim the page changed. */
 export const pinChanged = (
   pinHash: string | null | undefined,
   versionHash: string | null | undefined,
-) => pinHash != null && versionHash != null && pinHash !== versionHash;
+) => Boolean(pinHash) && Boolean(versionHash) && pinHash !== versionHash;
 
 /** Pin numbers ("Pin 3"): by creation order among pins only, so notes and text don't take one. */
 export const pinNumbering = (threads: readonly CommentThread[]) =>
@@ -39,6 +39,7 @@ export const pinNumbering = (threads: readonly CommentThread[]) =>
 export function frameThreads(
   threads: readonly CommentThread[],
   active: string | null,
+  versionHash?: string | null,
 ): Extract<ShellToArtifact, { type: "comments.set" }>["threads"] {
   const n = numbering(threads);
   const pins = pinNumbering(threads);
@@ -52,6 +53,12 @@ export function frameThreads(
       n: (t.anchor.kind === "pin" ? pins : n).get(t.id),
       ...(t.id === active ? { active: true } : {}),
       ...(t.status === "resolved" ? { resolved: true } : {}),
+      // #1657: the page moved under this pin: the frame marks the pin itself,
+      // as the card says it in words.
+      ...(t.anchor.kind === "pin" &&
+      pinChanged(t.anchor.contentHash, versionHash)
+        ? { changed: true }
+        : {}),
     });
     if (out.length >= COMMENT_THREADS_MAX) break;
   }
