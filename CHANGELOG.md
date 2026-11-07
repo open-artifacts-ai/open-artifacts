@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.133.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.132.1...v0.133.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** Hermes Agent plugin adapter and hermes kind ([#1602](https://github.com/open-artifacts-ai/open-artifacts/issues/1602)) ([#1607](https://github.com/open-artifacts-ai/open-artifacts/issues/1607)) ([755e55d](https://github.com/open-artifacts-ai/open-artifacts/commit/755e55df781d17a798661eb3ed0514315c3b2457))
+* **dashboard:** asks and [@mentions](https://github.com/mentions) on the artifact page ([#1535](https://github.com/open-artifacts-ai/open-artifacts/issues/1535)) ([#1612](https://github.com/open-artifacts-ai/open-artifacts/issues/1612)) ([c82d7e5](https://github.com/open-artifacts-ai/open-artifacts/commit/c82d7e5e4bca9a874ef8c611b1c6cbdc0c32403b))
+* **mcp:** tool descriptions start with "Open Artifacts:"; publish errors say what to do next ([#1540](https://github.com/open-artifacts-ai/open-artifacts/issues/1540)) ([#1613](https://github.com/open-artifacts-ai/open-artifacts/issues/1613)) ([03ea4e6](https://github.com/open-artifacts-ai/open-artifacts/commit/03ea4e63c2fa0a332b39c8a175f71ab030d04c09))
+* **server:** comments store and REST ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#1496](https://github.com/open-artifacts-ai/open-artifacts/issues/1496)) ([d33ea44](https://github.com/open-artifacts-ai/open-artifacts/commit/d33ea44381aecf1503ba51eae4ccd35308570e85))
+
+
+### Bug Fixes
+
+* **redline:** P22 names why a restored install isn't serving; dispatch Workers Logs ([#1593](https://github.com/open-artifacts-ai/open-artifacts/issues/1593)) ([#1616](https://github.com/open-artifacts-ai/open-artifacts/issues/1616)) ([89c645e](https://github.com/open-artifacts-ai/open-artifacts/commit/89c645e4ba2329d21cccaf1fd927699239dc1bf0))
+
 ## [0.132.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.132.0...v0.132.1) (2026-11-06)
 
 
