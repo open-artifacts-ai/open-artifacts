@@ -47,7 +47,7 @@ it.each([
   // Design, 2026-10-28 (the upload refusals, #775).
   [
     "unsupported_format",
-    "This type of file can't be opened yet. Upload a web page, Markdown, code or a PDF.",
+    "This type of file can't be opened yet. Upload a web page, Markdown, code, a PDF or an image.",
   ],
   [
     "binary_entry",
@@ -119,19 +119,24 @@ it.each([
     "Your trial ended, so this instance is read-only until you pick a plan.",
   ],
   [
+    "solo_unpaid",
+    "Publishing is paused until this instance's Solo plan is paid. Ask your instance owner.",
+    "Your Solo plan is paused. Keep publishing for $1/month or $12/year.",
+  ],
+  [
     "lapsed",
     "This instance is read-only until billing is sorted out. Ask your instance owner.",
-    "This instance is read-only until billing is sorted out. Update billing to fix it.",
+    "This instance is read-only until billing is sorted out. Update billing to fix it. Reading and sharing still work. Nothing has been deleted.",
   ],
   [
     "payment_failed",
     "This instance is read-only until billing is sorted out. Ask your instance owner.",
-    "This instance is read-only until billing is sorted out. Update billing to fix it.",
+    "This instance is read-only until billing is sorted out. Update billing to fix it. Reading and sharing still work. Nothing has been deleted.",
   ],
   [
     "suspended",
     "This instance is suspended. Ask your instance owner.",
-    "This instance is suspended. Email support.",
+    "This instance is suspended. Email support. Reading still works. Nothing has been deleted.",
   ],
   [
     "billing_unreachable",
@@ -158,7 +163,7 @@ it("plan_required before a trial ever ran offers the trial", () => {
     "Spaces are a team feature. Choose a plan to continue.",
   );
   expect(errorCopy(e, "x", { trialNeverRan: true })).toBe(
-    "Spaces are a team feature. This instance is on Free. Ask an owner to invite someone or choose a plan.",
+    "Spaces are a team feature. This instance is on Solo. Ask an owner to invite someone or choose a plan.",
   );
 });
 
@@ -167,7 +172,7 @@ it("errorContext gives admins the owner wording and the trial state", () => {
     ({
       user: { role },
       auth: null,
-      instance: { billing: { tier: "free", trialEndsAt } },
+      instance: { billing: { tier: "solo", trialEndsAt } },
     }) as never;
   expect(billingContext(me("admin", null))).toEqual({
     owner: true,
@@ -183,7 +188,7 @@ it("errorContext gives admins the owner wording and the trial state", () => {
 it("plan_required", () => {
   const e = planErr("plan_required", reason("solo"));
   expect(errorCopy(e, "x")).toBe(
-    "Spaces are a team feature. This instance is on Free. Ask an owner to invite someone or choose a plan.",
+    "Spaces are a team feature. This instance is on Solo. Ask an owner to invite someone or choose a plan.",
   );
   expect(errorCopy(e, "x", { owner: true })).toBe(
     "Spaces are a team feature. Choose a plan to continue.",
@@ -198,16 +203,16 @@ it.each([
 ])("plan_limit names %s", (limit, noun) => {
   const e = planErr("plan_limit", { tier: "free", limit, max: 50 });
   expect(errorCopy(e, "x")).toBe(
-    `The free plan allows up to 50 ${noun}. Ask your instance owner about a paid plan.`,
+    `The Solo plan allows up to 50 ${noun}. Ask your instance owner about a paid plan.`,
   );
   expect(errorCopy(e, "x", { owner: true })).toBe(
-    `The free plan allows up to 50 ${noun}. Choose a paid plan to raise it.`,
+    `The Solo plan allows up to 50 ${noun}. Choose a paid plan to raise it.`,
   );
 });
 
 it("plan_limit without details falls back to a generic line", () => {
   expect(errorCopy(planErr("plan_limit"), "x")).toBe(
-    "The free plan's limit is reached. Ask your instance owner about a paid plan.",
+    "The Solo plan's limit is reached. Ask your instance owner about a paid plan.",
   );
 });
 

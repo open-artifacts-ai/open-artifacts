@@ -332,11 +332,16 @@ it("the locked owner isn't read-only: controls stay enabled and refusals use the
   });
   fireEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
   await waitFor(() => expect(posts.length).toBe(1));
-  expect(
-    await screen.findByText(
-      "Your trial ended, so this instance is read-only until you pick a plan.",
-    ),
-  ).toBeVisible();
+  const copy =
+    "Your trial ended, so this instance is read-only until you pick a plan.";
+  // The refusal, not the plan banner that says the same.
+  await waitFor(() =>
+    expect(
+      screen
+        .getAllByText(copy)
+        .some((e) => !e.closest('[data-testid="plan-banner"]')),
+    ).toBe(true),
+  );
 });
 
 const asOwner = (m: Me): Me => ({ ...m, user: { ...m.user, role: "owner" } });
@@ -354,7 +359,7 @@ it.each([
     "plan_required",
     {
       billing: {
-        tier: "free" as const,
+        tier: "solo" as const,
         status: null,
         trialEndsAt: null,
         graceUntil: null,
@@ -407,7 +412,7 @@ it("on free, a promotion refused with plan_limit shows by the member row, not as
   );
   fireEvent.click(await screen.findByRole("option", { name: /admin/i }));
   const note = await within(r).findByText(
-    /The free plan allows up to 3 storage/,
+    /The Solo plan allows up to 3 storage/,
   );
   expect(note).toBeVisible();
   // The owner (the default test caller) sees the owner wording.

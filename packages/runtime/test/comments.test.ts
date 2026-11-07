@@ -189,6 +189,31 @@ describe("selection button", () => {
     expect(button()).toBeNull();
   });
 
+  it("has a bubble icon, is centered under the selection end, and clamps to the viewport", async () => {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    const b = button();
+    expect(b?.querySelector("svg[aria-hidden='true']")).not.toBeNull();
+    expect(b?.textContent).toBe("Comment");
+    const vw = document.documentElement.clientWidth || innerWidth;
+    // rect.right = 80, width 100: centered would be 30.
+    expect(b?.style.left).toBe("30px");
+    expect(b?.style.top).toBe("126px");
+    // Near the left edge: clamped to the margin.
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, right: 10 },
+    ] as unknown as DOMRectList);
+    select(textOf("a"), 3, textOf("a"), 9);
+    expect(button()?.style.left).toBe("4px");
+    // Near the right edge: clamped to the viewport.
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, right: vw + 50 },
+    ] as unknown as DOMRectList);
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
+  });
+
   it("does not show for a selection across blocks, an empty one, or when off", async () => {
     await start("select");
     select(textOf("a"), 4, textOf("b"), 6);
@@ -523,6 +548,27 @@ describe("pins", () => {
     expect(last("comment.pin")).toMatchObject({ pin: { x: 0.5, y: 0.5 } });
   });
 
+  it("Esc in pin mode tells the shell, with no data; in other modes it does not", async () => {
+    await start("pin");
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await flush();
+    expect(last("comment.escape")).toMatchObject({
+      oa: 1,
+      type: "comment.escape",
+    });
+    await send({ type: "comments.mode", mode: "select" });
+    const before = msgs().filter((m) => m.type === "comment.escape").length;
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await flush();
+    expect(msgs().filter((m) => m.type === "comment.escape")).toHaveLength(
+      before,
+    );
+  });
+
   it("does nothing in select mode, and pins are drawn in the overlay with their number", async () => {
     await start("select");
     document
@@ -555,6 +601,22 @@ describe("pins", () => {
     roots.at(-1)?.querySelector<HTMLElement>(".pin")?.click();
     await flush();
     expect(last("comment.open")).toMatchObject({ id: "p1" });
+  });
+
+  it("draws a dimmed, unnumbered ghost pin for the one being composed, and clears it", async () => {
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [],
+      ghost: { x: 0.5, y: 0.25 },
+    });
+    const g = roots.at(-1)?.querySelector<HTMLElement>(".pin.ghost");
+    expect(g).not.toBeNull();
+    expect(g?.textContent).toBe("");
+    expect(g?.style.left).toBe("120px");
+    expect(g?.style.top).toBe("35px");
+    await send({ type: "comments.set", threads: [] });
+    expect(roots.at(-1)?.querySelector(".pin")).toBeNull();
   });
 });
 
@@ -619,6 +681,7 @@ describe("what the frame sends", () => {
       "comment.positions": ["oa", "positions", "type"],
       "comment.open": ["id", "oa", "type"],
       "comment.pin": ["oa", "pin", "type"],
+      "comment.escape": ["oa", "type"],
     };
     const seen = msgs();
     expect(seen.map((m) => m.type).sort()).toEqual([

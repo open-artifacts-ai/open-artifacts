@@ -49,6 +49,7 @@ import { ATTENTION, AttentionDot } from "./AttentionDot";
 import { CpuBanner } from "./CpuBanner";
 import { DisplayNamePrompt } from "./DisplayNamePrompt";
 import { GuestSharesBanner } from "./GuestSharesBanner";
+import { PlanBanner } from "./PlanBanner";
 import { QuotaBanner } from "./QuotaBanner";
 import { SyncBanner, SyncDot, syncDot } from "./SyncBanner";
 import { Toaster } from "./toast";
@@ -218,6 +219,10 @@ function Layout() {
                 className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
               />
             )}
+            <PlanBanner
+              me={me}
+              className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
+            />
             <GuestSharesBanner
               me={me}
               className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}

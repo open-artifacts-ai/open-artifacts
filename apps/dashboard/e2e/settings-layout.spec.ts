@@ -128,10 +128,13 @@ test("hosted: the Spaces tab sits after Members", async ({ page }) => {
     "Directory",
     "Connections",
     "Instance",
+    "Plan and billing",
   ]);
 });
 
-test("hosted tab strip at 375 scrolls without clipping", async ({ page }) => {
+test("hosted tab strip at 375 wraps without clipping (#1453)", async ({
+  page,
+}) => {
   await page.setViewportSize({ width: 375, height: 800 });
   await page.goto("/settings/profile?hosted=1");
   const nav = page.getByRole("navigation", { name: "Settings sections" });
@@ -142,26 +145,42 @@ test("hosted tab strip at 375 scrolls without clipping", async ({ page }) => {
     /^Directory/,
     "Connections",
     "Instance",
+    "Plan and billing",
   ]);
   const g = await nav.evaluate((el) => ({
     overflowX: getComputedStyle(el).overflowX,
+    wraps: getComputedStyle(el).flexWrap,
+    stripScroll: el.scrollWidth - el.clientWidth,
     sideScroll:
       document.documentElement.scrollWidth -
       document.documentElement.clientWidth,
   }));
-  expect(g.overflowX).toBe("auto");
+  // The strip wraps onto a second row: every section is in view, nothing
+  // scrolls sideways, and the page doesn't either.
+  expect(g.overflowX).not.toBe("auto");
+  expect(g.wraps).toBe("wrap");
+  expect(g.stripScroll).toBe(0);
   expect(g.sideScroll).toBe(0);
-  // The last tab is reachable by scrolling the strip, not clipped off. The
+  // Every tab, the last one included, sits inside the strip's own box. The
   // attention dots on Members and Directory arrive with their queries and
-  // widen the strip after the first scroll, so scroll again on each look: the
-  // check settles on the final layout, and a tab that can't be scrolled into
-  // view still fails.
-  const last = nav.getByRole("link", { name: "Instance" });
+  // widen the strip after the first layout, so poll on the final one.
   await expect
     .poll(async () => {
-      await last.scrollIntoViewIfNeeded();
-      const [n, l] = await Promise.all([nav.boundingBox(), last.boundingBox()]);
-      return !!(l && n && l.x + l.width <= n.x + n.width + 0.5);
+      const [n, boxes] = await Promise.all([
+        nav.boundingBox(),
+        nav.getByRole("link").evaluateAll((els) =>
+          els.map((e) => {
+            const b = e.getBoundingClientRect();
+            return { left: b.left, right: b.right };
+          }),
+        ),
+      ]);
+      return (
+        !!n &&
+        boxes.every(
+          (b) => b.left >= n.x - 0.5 && b.right <= n.x + n.width + 0.5,
+        )
+      );
     })
     .toBe(true);
 });

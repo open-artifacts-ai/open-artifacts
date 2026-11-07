@@ -28,6 +28,7 @@ import { Connections } from "./settings/Agents";
 import { Directory } from "./settings/Directory";
 import { Instance } from "./settings/Instance";
 import { Members } from "./settings/Members";
+import { Plan } from "./settings/Plan";
 import { Profile } from "./settings/Profile";
 import { Gate, SettingsLayout } from "./settings/SettingsLayout";
 import { canAdminSpaces } from "./settings/spaces/access";
@@ -312,6 +313,8 @@ const routeTree = root.addChildren([
       },
     }),
     gated("/settings/instance", ADMINS, "/settings/connections", Instance),
+    // Owners and admins, also while the plan locks the instance.
+    gated("/settings/plan", ADMINS, "/settings/connections", Plan),
     createRoute({
       getParentRoute: () => settings,
       path: "/settings/machines",

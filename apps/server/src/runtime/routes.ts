@@ -23,6 +23,7 @@ import {
   caller,
   canCtx,
   dataWriteRefusal,
+  planOfMember,
   planRefusal,
   requireAccess,
 } from "../auth/authz.js";
@@ -36,6 +37,7 @@ import {
 import { requireFreeData } from "../billing/caps.js";
 import { recordDataCreator } from "../billing/creators.js";
 import { planNow } from "../billing/features.js";
+import { refuseViewOnly } from "../billing/plan.js";
 import { cappedJson, readCapped } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
@@ -252,6 +254,10 @@ async function gate(
       "capability_denied",
       `This artifact did not declare the "${cap}" capability`,
     );
+  // Runtime storage writes are paused for everyone under the unpaid-Solo
+  // view-only lock (storage reads stay).
+  if (method === "storage.set" || method === "storage.delete")
+    refuseViewOnly(who.kind === "user" ? planOfMember(who.user) : plan);
   if (who.kind === "user") {
     // Signed-in callers asking for an anonId get the route's own 401 below.
     if (kind !== "anonId" && !allowed()) throw refused();

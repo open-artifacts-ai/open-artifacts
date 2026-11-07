@@ -338,6 +338,12 @@ export const VersionInfoSchema = z.object({
   textIndexed: z.boolean(),
   /** This version's format (old versions keep theirs after a later publish). */
   format: FormatSchema,
+  /**
+   * SHA-256 (hex) of the entry file's bytes, or null when the version has no
+   * recorded digest (an uploaded entry, or a version from before digests).
+   * Pins carry the hash the server stamped from the same bytes (#1490).
+   */
+  contentHash: z.string().nullable(),
 });
 export type VersionInfo = z.infer<typeof VersionInfoSchema>;
 

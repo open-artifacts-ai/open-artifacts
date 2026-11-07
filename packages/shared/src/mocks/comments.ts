@@ -4,6 +4,7 @@
  * fixture, so a test or the mock app has something to show.
  */
 import { delay, type HttpHandler, HttpResponse, http } from "msw";
+import type { Anchor } from "../anchor.js";
 import {
   AnswerBodySchema,
   type ArtifactAgent,
@@ -30,6 +31,8 @@ type Deps = {
   emit: (id: string, open: number) => void;
   /** Every write answers 429 with this Retry-After (seconds). */
   rateLimit?: number;
+  /** The hash of a version's content, which the server stamps on a pin (#1490). */
+  contentHash?: (id: string, version: number) => string | null | undefined;
   /** Also seed an open ask addressed to the caller on "Landing page" (default off: list responses stay byte-identical to the fixtures). */
   seedAsk?: boolean;
 };
@@ -46,6 +49,7 @@ export function createCommentMock({
   err,
   emit,
   rateLimit,
+  contentHash,
   seedAsk,
 }: Deps): {
   handlers: HttpHandler[];
@@ -296,13 +300,19 @@ export function createCommentMock({
       const a = art(params.id) as ArtifactSummary;
       const parsed = anchorInputSchema.safeParse(j.anchor);
       if (!parsed.success) return err("invalid_anchor", "Invalid anchor");
-      const anchor =
-        parsed.data.kind === "note"
-          ? parsed.data
-          : {
-              ...parsed.data,
-              version: parsed.data.version ?? a.currentVersion,
-            };
+      const d = parsed.data;
+      const anchor: Anchor =
+        d.kind === "note"
+          ? d
+          : d.kind === "pin"
+            ? {
+                ...d,
+                version: d.version ?? a.currentVersion,
+                // The server stamps a pin's hash; null when the version has none.
+                contentHash:
+                  contentHash?.(a.id, d.version ?? a.currentVersion) ?? null,
+              }
+            : { ...d, version: d.version ?? a.currentVersion };
       const c = comment(j.body, mine());
       const bad2 = decorate(c, j, a.id);
       if (bad2) return bad2;

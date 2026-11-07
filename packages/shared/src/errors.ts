@@ -63,6 +63,8 @@ export const ERROR_CODES = [
   // Publish with expectedVersion or edits (#1216, #1540).
   "version_conflict",
   "edit_failed",
+  // Bus machine revoke (#1453).
+  "revoke_not_closed",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -167,6 +169,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   version_conflict: 409,
   /** Publish with edits where an edit's `old` is not found or found more than once; details { index, reason: "not_found" | "ambiguous", count }. Nothing is published. */
   edit_failed: 400,
+  /** DELETE R.busMachine(id) where the revoke landed but the hub could not close the machine's open connection (#1453): the machine is revoked and cannot reconnect; retrying closes the connection. */
+  revoke_not_closed: 503,
 };
 
 /**

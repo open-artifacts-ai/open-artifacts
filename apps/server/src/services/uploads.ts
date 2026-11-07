@@ -5,17 +5,25 @@ import {
   type Member,
   newId,
   normalizePath,
+  planOf,
   R,
   type UploadCreated,
   type UploadCreateInput,
 } from "@oa/shared";
-import { authorize, callerOf, capOfCaller } from "../auth/authz.js";
+import {
+  authorize,
+  callerOf,
+  capOfCaller,
+  planOfMember,
+} from "../auth/authz.js";
 import { contentKey } from "../auth/keys.js";
 import { orgCan } from "../auth/policy.js";
 import { requireFreeStorage } from "../billing/caps.js";
+import { refuseViewOnly } from "../billing/plan.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
+import { sha256Sink } from "../util/digest.js";
 
 const CONTENT_TYPE =
   /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(\s*;\s*[a-z0-9_.+-]+=("[^"\\\r\n]*"|[a-z0-9_.+-]+))*$/i;
@@ -88,6 +96,8 @@ export async function createUpload(
   const who = callerOf(user);
   // Reserving or uploading into a new artifact is a create (capped callers can't).
   const mayCreate = () => {
+    // An unpaid Solo is view-only: no new artifact, so no upload into one.
+    refuseViewOnly(planOfMember(user));
     if (!orgCan(user, "artifact.create", { cap: capOfCaller(who) }))
       throw new ApiError("space_forbidden", "You can't create artifacts");
   };
@@ -226,10 +236,26 @@ export async function putUpload(
       },
     );
   }
+  // sha256 of the stored bytes (#1490), one more R2 read. Not on a free
+  // instance: the Workers Free 10 ms CPU limit cannot hash a large file, so
+  // its digest stays null. Any failure frees the slot for a retry.
+  let digest: string | null = null;
+  if (planOf(env.PLAN) === "paid") {
+    try {
+      const stored = await env.FILES.get(row.r2_key);
+      if (!stored) throw new Error("upload not readable after put");
+      const sink = sha256Sink();
+      await stored.body.pipeTo(sink.writable);
+      digest = await sink.hex();
+    } catch (e) {
+      await release();
+      throw e;
+    }
+  }
   await env.DB.prepare(
-    "update uploads set received_at = ? where id = ? and received_at = -1",
+    "update uploads set received_at = ?, digest = ? where id = ? and received_at = -1",
   )
-    .bind(now, uploadId)
+    .bind(now, digest, uploadId)
     .run();
 }
 

@@ -17,7 +17,8 @@ export const SHARE_NOTICE_MAX = 10;
  */
 export const NOTICE_SENDER = "open-artifacts";
 
-export type NoticeKind = "shared" | "changed";
+/** `comment` (#1535): an ask, mention or assignment on a comment. */
+export type NoticeKind = "shared" | "changed" | "comment";
 
 /**
  * One notice for one address in one member's bus: the shape the server

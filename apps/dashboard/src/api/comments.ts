@@ -100,15 +100,18 @@ export const useReply = (id: string, guest = false) =>
       x,
     ),
   );
+const AgentList = z.array(ArtifactAgentSchema);
 /** The agents that follow or publish to the artifact (the @ picker). Owners and editors only; a failure just means no picker. */
 export const useArtifactAgents = (id: string, enabled: boolean) =>
-  useQuery({
+  useQuery<z.infer<typeof AgentList>>({
     enabled,
     queryKey: ["comment-agents", id],
     retry: false,
     staleTime: 30_000,
-    queryFn: ({ signal }) =>
-      api.get(R.artifactAgents(id), z.array(ArtifactAgentSchema), signal),
+    // A server without the route (404) stays answered: no refetch on mount or focus.
+    refetchOnMount: (q) => q.state.status !== "error",
+    refetchOnWindowFocus: (q) => q.state.status !== "error",
+    queryFn: ({ signal }) => api.get(R.artifactAgents(id), AgentList, signal),
   });
 
 /** Tap an option on an ask. The list refetches on settle, so a 409 shows the closed ask. */

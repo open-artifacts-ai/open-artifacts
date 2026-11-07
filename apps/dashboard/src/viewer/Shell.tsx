@@ -1,6 +1,7 @@
 import { type ArtifactSummary, type Me, viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { MessageSquare } from "lucide-react";
 import {
   type ReactNode,
   type SyntheticEvent,
@@ -21,7 +22,7 @@ import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
-import { CommentsBody } from "./comments/CommentsBody";
+import { CommentsBody, PinBar } from "./comments/CommentsBody";
 import {
   CommentsColumn,
   CommentsDialog,
@@ -140,6 +141,7 @@ function Viewer({
   hosted,
   plan,
   chromeless,
+  colState,
   slot,
   newer = false,
   gone = null,
@@ -152,6 +154,8 @@ function Viewer({
   onUndelete,
 }: {
   chromeless: boolean;
+  /** The column's open/closed choice, kept by the shell across version swaps. */
+  colState: [boolean | null, (v: boolean | null) => void];
   /** The live-version chip (title bar) or pill (/full); only on the shown layer. */
   slot?: ReactNode;
   newer?: boolean;
@@ -221,19 +225,29 @@ function Viewer({
   // Comments (#682). The list lives in a column beside the page, a tab of the
   // side panel, or a dialog (phones, full screen).
   const surface = useSurface(chromeless);
-  const [colOpen, setColOpen] = useState<boolean | null>(null);
+  const [colOpen, setColOpen] = colState;
   const [dialogOpen, setDialogOpen] = useState(false);
   const openSurface = useRef(() => {});
   const getBridge = useCallback(() => bridge.current, []);
+  const versionInfo = useVersionInfo(artifact.id, version).data;
+  const pinFmt =
+    versionInfo?.format ??
+    (version === artifact.currentVersion ? artifact.format : undefined);
   const cmt = useCommentsController({
     artifact,
     version,
     pinned: explicitVersion,
     authed,
     readOnly,
+    pinFormat: pinFmt === "image" || pinFmt === "pdf" ? pinFmt : null,
+    contentHash: versionInfo?.contentHash ?? null,
     getBridge,
     openSurface: () => openSurface.current(),
   });
+  // A sheet or overlay would cover the page: leave it while placing a pin.
+  useEffect(() => {
+    if (cmt.mode === "pin") setDialogOpen(false);
+  }, [cmt.mode]);
   const cmtRef = useRef(cmt);
   cmtRef.current = cmt;
   const commentsOn =
@@ -246,17 +260,30 @@ function Viewer({
     : requestedTab === "comments" && !commentsTab
       ? "versions"
       : requestedTab;
-  // Open by default only when there is something to show.
+  // Open by default wherever the column has room (so the empty state and the
+  // whole-page box show first); narrower, only when there is something to show.
   const columnShown =
     colOpen ??
-    (cmt.threads.length > 0 || cmt.draft !== null || cmt.error != null);
+    (surface === "column" ||
+      cmt.threads.length > 0 ||
+      cmt.draft !== null ||
+      cmt.error != null);
+  // Where the list is on screen its Pin button is the cue; otherwise (a closed
+  // column, another panel tab, a phone with no sheet) the bar is, so pin mode
+  // never runs unannounced. Hidden under the sheet too: it would overlap it.
+  const listShown =
+    surface === "dialog"
+      ? dialogOpen
+      : panelOpen
+        ? commentsTab && tab === "comments"
+        : surface === "column" && columnShown;
   openSurface.current = () => {
     if (surface === "dialog") setDialogOpen(true);
     else if (surface === "panel" || panelOpen) setPanel(true, "comments");
     else setColOpen(true);
   };
   // Latest values for the effect: the parent's key remounts this on id/version change.
-  const vformat = useVersionInfo(artifact.id, version).data?.format;
+  const vformat = versionInfo?.format;
   const formatRef = useRef(vformat);
   formatRef.current = vformat;
   const latest = useRef({ artifact, viewer, theme });
@@ -427,6 +454,8 @@ function Viewer({
       onCommentSelect: (a) => cmtRef.current.onSelect(a),
       onCommentPositions: (p) => cmtRef.current.onPositions(p),
       onCommentOpen: (id) => cmtRef.current.onOpen(id),
+      onCommentPin: (p) => cmtRef.current.onPin(p),
+      onCommentEscape: () => cmtRef.current.onEscape(),
       onPdfText: (t) => fxRef.current.onPdfText(t),
       onThumb: (b) => fxRef.current.onThumb(b),
       // The shell re-checks access: still readable, or the gone state.
@@ -611,6 +640,7 @@ function Viewer({
             />
           )}
         </div>
+        {commentsOn && !listShown && <PinBar />}
         {commentsOn && surface === "dialog" && dialogOpen && (
           <CommentsDialog
             textFormat={textFormat}
@@ -627,6 +657,7 @@ function Viewer({
                   <Button
                     variant="outline"
                     size="xs"
+                    className="oa-fscomments"
                     aria-label={
                       commentsButton.open > 0
                         ? `Comments, ${commentsButton.open} open`
@@ -635,7 +666,8 @@ function Viewer({
                     aria-expanded={commentsButton.expanded}
                     onClick={commentsButton.onClick}
                   >
-                    Comments
+                    <MessageSquare className="oa-fsicon" aria-hidden="true" />
+                    <span className="oa-fsword">Comments</span>
                     {commentsButton.open > 0 && ` ${commentsButton.open}`}
                   </Button>
                 )}
@@ -683,6 +715,9 @@ function ArtifactShell({
   chromeless?: boolean;
 }) {
   const q = useArtifact(id);
+  // The comments column's open/closed choice outlives a version swap (each
+  // version's Viewer is its own keyed layer).
+  const colState = useState<boolean | null>(null);
   // In render, not an effect: child effects run first, and the viewer may
   // mount in this same commit when the info is cached.
   const prefetched = useRef(false);
@@ -804,6 +839,7 @@ function ArtifactShell({
               version={n}
               explicitVersion={v !== undefined}
               chromeless={chromeless}
+              colState={colState}
               authed={authed}
               anonymous={me.status === "anonymous"}
               readOnly={authed && me.me.auth?.readOnly === true}
