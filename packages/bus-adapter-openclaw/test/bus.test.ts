@@ -510,3 +510,74 @@ describe("a runtime that reports no model calls", () => {
     expect(bus.buildPrompt(other)?.appendSystemContext).toBe(HABITS);
   });
 });
+
+describe("a provider failure that still reports a completed model call", () => {
+  const key = { agentId: "main", sessionKey: "agent:main:main" };
+  const wrote = (
+    bus: ReturnType<typeof newBus>,
+    stopReason: string,
+    role = "assistant",
+    k = key,
+  ) => bus.messageWritten(k, { role, stopReason });
+  const run = async (stop: string[]) => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus);
+    hub.push({ id: "m1" });
+    await flush();
+    bus.buildPrompt(caller({ runId: "r1" }));
+    bus.modelCallStarted(key, { runId: "r1" });
+    for (const s of stop) wrote(bus, s);
+    ended(bus, "r1");
+    return { hub, bus };
+  };
+
+  it("acks nothing when the assistant message ended in an error, and redelivers next run", async () => {
+    const { hub, bus } = await run(["error"]);
+    expect(hub.acks).toEqual([]);
+    expect(bus.buildPrompt(caller({ runId: "r2" }))?.prependContext).toContain(
+      "m1",
+    );
+    wrote(bus, "stop");
+    ended(bus, "r2");
+    expect(hub.acks).toEqual(["m1"]);
+  });
+
+  it("treats an aborted message as a failure", async () => {
+    expect((await run(["aborted"])).hub.acks).toEqual([]);
+  });
+
+  it("acks a normal answer", async () => {
+    expect((await run(["stop"])).hub.acks).toEqual(["m1"]);
+    expect((await run(["toolUse", "stop"])).hub.acks).toEqual(["m1"]);
+  });
+
+  it("goes by the latest assistant message: an error then a fallback's answer acks", async () => {
+    expect((await run(["error", "stop"])).hub.acks).toEqual(["m1"]);
+    expect((await run(["stop", "error"])).hub.acks).toEqual([]);
+  });
+
+  it("ignores user messages, and another session's writes", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus);
+    hub.push({ id: "m1" });
+    await flush();
+    bus.buildPrompt(caller({ runId: "r1" }));
+    bus.messageWritten(key, { role: "user", stopReason: "error" });
+    wrote(bus, "error", "assistant", {
+      agentId: "main",
+      sessionKey: "agent:main:other",
+    });
+    ended(bus, "r1");
+    expect(hub.acks).toEqual(["m1"]);
+  });
+
+  it("forgets an earlier failure when a new run starts", async () => {
+    const { hub, bus } = await run(["error"]);
+    expect(hub.acks).toEqual([]);
+    bus.buildPrompt(caller({ runId: "r2" })); // a fresh run, and no assistant write yet
+    ended(bus, "r2");
+    expect(hub.acks).toEqual(["m1"]);
+  });
+});

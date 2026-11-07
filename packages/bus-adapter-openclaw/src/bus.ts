@@ -78,6 +78,15 @@ class Mailbox {
    * the root stops for the rest of the process, which caps a repeat at one.
    */
   noModelHooks = false;
+  /** The run the box last saw a prompt for. */
+  currentRunId?: string;
+  /**
+   * Whether the latest assistant message written for this session ended in an
+   * error. A provider failure (an HTTP 500) still reports model_call_ended with
+   * outcome "completed" in OpenClaw 2026.6.5 (verified on a gateway run), so
+   * the outcome alone cannot tell success from failure.
+   */
+  assistantFailed = false;
   /** Deliveries whose text is still being built; they count against the cap. */
   building = 0;
   readonly root: Root;
@@ -332,6 +341,10 @@ export class Bus {
       b.last = undefined;
     }
     if (b.noModelHooks) return undefined;
+    if (c.runId && b.currentRunId !== c.runId) {
+      b.currentRunId = c.runId;
+      b.assistantFailed = false;
+    }
     const out: PromptResult = {};
     // Without a runId nothing can be acked, so nothing is handed over.
     if (c.runId) {
@@ -371,6 +384,21 @@ export class Bus {
     return this.boxes.get(root.ref)?.noModelHooks ? NO_MODEL_HOOKS : undefined;
   }
 
+  /**
+   * before_message_write, observed only: the role and stopReason of an
+   * assistant message, never its content. An "error" or "aborted" one means the
+   * model call did not produce an answer, whatever model_call_ended says.
+   */
+  messageWritten(c: Caller, m: { role?: unknown; stopReason?: unknown }): void {
+    if (m.role !== "assistant") return;
+    const r = this.resolve(c, false);
+    if (!r.ok) return;
+    const b = this.boxes.get(r.root.ref);
+    if (b)
+      b.assistantFailed =
+        m.stopReason === "error" || m.stopReason === "aborted";
+  }
+
   /** model_call_started: the run's model calls are being reported. */
   modelCallStarted(c: Caller, ev: { runId?: string }): void {
     const r = this.resolve(c, false);
@@ -392,7 +420,7 @@ export class Bus {
     const run = b?.runs.get(ev.runId);
     if (!b || !run) return;
     b.runs.delete(ev.runId);
-    if (ev.outcome !== "completed") return;
+    if (ev.outcome !== "completed" || b.assistantFailed) return;
     for (const key of run.ids) {
       const it = b.pending.get(key);
       if (!it) continue;

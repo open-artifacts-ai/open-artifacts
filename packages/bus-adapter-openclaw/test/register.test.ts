@@ -36,6 +36,7 @@ describe("register", () => {
     await flush();
     expect(hub.connects).toEqual([]);
     expect(Object.keys(a.hooks).sort()).toEqual([
+      "before_message_write",
       "before_prompt_build",
       "model_call_ended",
       "model_call_started",
@@ -106,5 +107,21 @@ describe("register", () => {
     vi.resetModules();
     const again = await import("../src/singleton.ts");
     expect(again.processBus()).toBe(first);
+  });
+
+  it("watches message writes without changing or blocking them", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    const a = fakeApi();
+    registerBus(a.api, bus);
+    const ev = {
+      message: { role: "assistant", stopReason: "stop", content: "secret" },
+      sessionKey: "agent:main:main",
+    };
+    const before = JSON.stringify(ev);
+    expect(
+      a.hooks.before_message_write?.[0]?.(ev, { agentId: "main" }),
+    ).toBeUndefined();
+    expect(JSON.stringify(ev)).toBe(before);
   });
 });

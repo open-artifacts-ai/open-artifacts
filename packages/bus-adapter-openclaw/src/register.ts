@@ -11,6 +11,14 @@ import { TOOL_NAMES, toolsFor } from "./tools.ts";
 export function registerBus(api: PluginApi, bus: Bus): void {
   api.registerTool((ctx) => toolsFor(bus, ctx), { names: TOOL_NAMES });
   api.on("before_prompt_build", (_ev, ctx) => bus.promptBuild(ctx));
+  // Observed only (never blocks or edits): the role and stopReason of an
+  // assistant message tell a failed model call from an answered one.
+  api.on("before_message_write", (ev, ctx) => {
+    bus.messageWritten(
+      { ...ctx, sessionKey: ev.sessionKey ?? ctx.sessionKey },
+      { role: ev.message?.role, stopReason: ev.message?.stopReason },
+    );
+  });
   api.on("model_call_started", (ev, ctx) => {
     bus.modelCallStarted(
       { ...ctx, sessionKey: ev.sessionKey ?? ctx.sessionKey },
