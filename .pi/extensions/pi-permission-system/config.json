@@ -40,6 +40,7 @@
       "gh pr checkout*": "allow",
       "gh pr ready*": "allow",
       "gh pr reopen*": "allow",
+      "gh pr close*": "allow",
       "gh issue view*": "allow",
       "gh issue list*": "allow",
       "gh issue create*": "allow",
@@ -604,6 +605,46 @@
       "git worktree add* -q*": {
         "action": "deny",
         "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "gh pr close*github.com*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh pr close* -R*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh pr close*--repo*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh pr close*\"-R*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh pr close*'-R*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh issue close*github.com*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh issue close* -R*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh issue close*--repo*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh issue close*\"-R*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh issue close*'-R*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
       }
     },
     "mcp": {
