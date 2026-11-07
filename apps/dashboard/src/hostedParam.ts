@@ -26,6 +26,16 @@ const TOKENS: Record<string, HostedMockOptions> = {
       readOnly: false,
     },
   },
+  "plan-team": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      creatorsThisMonth: 4,
+      readOnly: false,
+    },
+  },
   "solo-paused": {
     billing: {
       tier: "solo",

@@ -107,14 +107,15 @@ async function startMocks() {
       ),
     );
   }
-  // ?mock=plan-locked (with ?hosted=1): a plan-locked admin; see mockRestricted.ts.
-  if (restricted === "plan-locked") {
+  // ?mock=plan-locked or solo-paused-member (with ?hosted=1): a plan-locked admin, or a member of a paused Solo; see mockRestricted.ts.
+  if (restricted === "plan-locked" || restricted === "solo-paused-member") {
     const { planLockedHandlers } = await import("./mockRestricted");
     extra.push(
       ...planLockedHandlers(
         createHandlers({
           hosted: parseHostedParam(params.get("hosted")) ?? {},
         }),
+        restricted === "solo-paused-member",
       ),
     );
   }
