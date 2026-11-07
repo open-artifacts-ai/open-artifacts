@@ -25,7 +25,7 @@ import {
   viewerPath,
 } from "@oa/shared";
 import { canConnect } from "../auth/agents.js";
-import { accessLevel, callerOf } from "../auth/authz.js";
+import { accessLevel, callerOf, capOfCaller } from "../auth/authz.js";
 import { stmt } from "../db/stmt.js";
 import { takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
@@ -386,6 +386,14 @@ const SLOT = `update follows set last_notice_at = case
   where user_id = ?1 and artifact_id = ?2 and namespace = ?3 and agent_name = ?4
   returning last_notice_at as at`;
 
+/** The counters key holding when this address last heard a `comment` for the artifact. */
+const commentKey = (userId: string, artifactId: string, to: BusAddress) =>
+  `notice:comment:${userId}:${artifactId}:${to.namespace}:${to.name}`;
+/** Claims the address's `comment` slot: a row only when none was taken in the last ?3 ms. */
+const COMMENT_CLAIM = `insert into counters (key, n, day) values (?1, ?2, '')
+  on conflict (key) do update set n = ?2 where counters.n <= ?2 - ?3
+  returning n`;
+
 /**
  * `changed`: version `version` of `artifactId` was published or restored by
  * `publisherId`. Each follower member is re-checked now; one who can't read
@@ -403,9 +411,9 @@ export async function notifyChanged(
 
 /**
  * `comment`: a comment was added to `artifactId` (current version `version`)
- * by `authorId` (null: a signed-out guest). Followers hear it as they hear
- * `changed`, except the author's own agents and with no per-window
- * coalescing: one notice per comment. The text is fixed (no name, no body).
+ * by `authorId` (null: a signed-out guest, never announced). Followers hear
+ * it as they hear `changed`, except the author's own agents, and each
+ * address at most once per artifact per CHANGED_WINDOW_MS. The text is fixed (no name, no body).
  */
 export async function notifyCommented(
   env: Env,
@@ -414,6 +422,8 @@ export async function notifyCommented(
   authorId: string | null,
   now = Date.now(),
 ): Promise<void> {
+  // A guest's comment is not announced.
+  if (authorId === null) return;
   await fanOut(env, "comment", artifactId, version, authorId, now);
 }
 
@@ -428,10 +438,16 @@ async function fanOut(
   const { results } = await stmt(
     env.DB,
     // Least recently notified first, so past FANOUT_MAX the rows left out
-    // this time come first next time.
-    `select user_id as userId, namespace, agent_name as name from follows
-     where artifact_id = ?
-     order by last_notice_at is not null, last_notice_at, user_id limit ?`,
+    // this time come first next time. `comment` notices keep their own clock
+    // (COMMENT_CLAIM's counters row), so they never move `changed`'s.
+    kind === "comment"
+      ? `select f.user_id as userId, f.namespace, f.agent_name as name from follows f
+         left join counters c on c.key = 'notice:comment:' || f.user_id || ':' || f.artifact_id || ':' || f.namespace || ':' || f.agent_name
+         where f.artifact_id = ?
+         order by c.n is not null, c.n, f.user_id limit ?`
+      : `select user_id as userId, namespace, agent_name as name from follows
+         where artifact_id = ?
+         order by last_notice_at is not null, last_notice_at, user_id limit ?`,
   )
     .bind(artifactId, FANOUT_MAX)
     .all<{ userId: string; namespace: string; name: string }>();
@@ -457,6 +473,8 @@ async function fanOut(
     }
     // Can't hold a bus now (capped): no notice; the follow stays.
     if (!canConnect(user)) continue;
+    // A comment is a write signal: a read-only (capped) member hears none.
+    if (kind === "comment" && capOfCaller(callerOf(user)) != null) continue;
     for (const to of addresses) {
       let at: number | undefined;
       if (kind === "changed") {
@@ -472,6 +490,13 @@ async function fanOut(
           .first<{ at: number }>();
         if (!slot) continue;
         at = slot.at > now ? slot.at : undefined;
+      }
+      if (kind === "comment") {
+        // At most one per address per artifact per window; the row holds the time of the last.
+        const claim = await stmt(env.DB, COMMENT_CLAIM)
+          .bind(commentKey(userId, artifactId, to), now, CHANGED_WINDOW_MS)
+          .first<{ n: number }>();
+        if (!claim) continue;
       }
       const n = notice(env, kind, artifactId, version, to, at);
       if ((await deliverNotice(env, userId, n)) === "dropped") {

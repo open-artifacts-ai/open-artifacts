@@ -20,8 +20,14 @@ import {
   installDelivery,
   type NoticeDelivery,
 } from "../src/services/bus-delivery.js";
-import { follow } from "../src/services/follows.js";
-import { putShare } from "../src/services/shares.js";
+import {
+  CHANGED_WINDOW_MS,
+  FANOUT_MAX,
+  follow,
+  notifyChanged,
+  notifyCommented,
+} from "../src/services/follows.js";
+import { deleteShare, putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
 import { connect, textOf, tool } from "./mcp-helpers.js";
@@ -100,6 +106,13 @@ const inDo = <T>(id: string, cb: (i: ArtifactRuntime) => T | Promise<T>) =>
     runtimeStub(env, id) as unknown as DurableObjectStub<ArtifactRuntime>,
     cb,
   );
+/** Notices sent for `id` once the after-response work is done. */
+const heardAll = async (id: string) => {
+  await vi.waitFor(() =>
+    expect(bus.sent.some((s) => s.notice.artifactId === id)).toBe(true),
+  );
+  return bus.sent.filter((s) => s.notice.artifactId === id).length;
+};
 const comments = (id: string) => `${R.comments(id)}`;
 
 beforeAll(async () => {
@@ -351,18 +364,120 @@ describe("the comment notice", () => {
     // A resolve is not a comment, and a refused comment is not one either.
     sc(await tool(owner.client, "resolve_comment", { id, threadId: t.id }));
     await tool(owner.client, "add_comment", { id, body: " " });
-    // REST comments notify the same way; this one is the marker that the
-    // two above sent nothing.
+    // REST comments notify the same way.
+    await follow(E, reader.userId, addr("reader-agent-2"), id);
     const r = await api(app, comments(id), owner.cookie, {
       method: "POST",
       body: { anchor: { kind: "note" }, body: "via rest" },
     });
     expect(r.status).toBe(201);
+    // The reader's first agent heard a comment a moment ago, so only a new
+    // address hears this one.
     got = await heard(id, 3);
-    expect(got.map((s) => s.userId)).toEqual([
-      reader.userId,
-      owner.userId,
-      reader.userId,
-    ]);
+    expect(got[2]?.notice.to.name).toBe("reader-agent-2");
+    expect(got[2]?.userId).toBe(reader.userId);
+  });
+
+  const forId = (id: string) =>
+    bus.sent.filter((s) => s.notice.artifactId === id);
+
+  it("at most one per address per artifact per minute", async () => {
+    const id = await pub();
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "viewer",
+    });
+    await follow(E, reader.userId, { namespace: "ns/a", name: "r1" }, id);
+    await follow(E, reader.userId, { namespace: "ns/a", name: "r2" }, id);
+    const t = Date.now();
+    await notifyCommented(E, id, 1, owner.userId, t);
+    await notifyCommented(E, id, 1, owner.userId, t + 1_000);
+    await notifyCommented(E, id, 1, owner.userId, t + 59_000);
+    // One per address (two addresses), however many comments.
+    expect(
+      forId(id)
+        .map((s) => s.notice.to.name)
+        .sort(),
+    ).toEqual(["r1", "r2"]);
+    await notifyCommented(E, id, 1, owner.userId, t + CHANGED_WINDOW_MS);
+    expect(forId(id)).toHaveLength(4);
+    // `changed` keeps its own clock.
+    await notifyChanged(E, id, 2, owner.userId, t);
+    expect(forId(id).filter((s) => s.notice.kind === "changed")).toHaveLength(
+      2,
+    );
+  });
+
+  it("goes least recently notified first, so past the cap the tail is not starved", async () => {
+    const id = await pub({ visibility: "team" });
+    const members = await Promise.all(
+      [0, 1, 2].map((i) => login(`mc-fan${i}-${tag}@x.com`)),
+    );
+    const rows: [string, string][] = [];
+    for (let i = 0; i <= FANOUT_MAX; i++)
+      rows.push([(members[i % 3] as { userId: string }).userId, `a${i}`]);
+    await E.DB.batch(
+      rows.map(([u, name]) =>
+        E.DB.prepare(
+          "insert into follows (user_id, artifact_id, namespace, agent_name, created_at) values (?, ?, 'ns', ?, 1)",
+        ).bind(u, id, name),
+      ),
+    );
+    const t = Date.now();
+    await notifyCommented(E, id, 1, owner.userId, t);
+    expect(forId(id)).toHaveLength(FANOUT_MAX);
+    const heardNames = new Set(forId(id).map((s) => s.notice.to.name));
+    const left = rows.map(([, n]) => n).filter((n) => !heardNames.has(n));
+    expect(left).toHaveLength(1);
+    await notifyCommented(E, id, 1, owner.userId, t + CHANGED_WINDOW_MS);
+    expect(forId(id)[FANOUT_MAX]?.notice.to.name).toBe(left[0]);
+  });
+
+  it("a guest's comment is not announced", async () => {
+    const id = await pub({ visibility: "public" });
+    await follow(E, owner.userId, { namespace: "ns/g", name: "o" }, id);
+    await notifyCommented(E, id, 1, null);
+    expect(forId(id)).toEqual([]);
+    const r = await api(app, comments(id), null, {
+      method: "POST",
+      headers: { "cf-connecting-ip": "198.51.100.7" },
+      body: { anchor: { kind: "note" }, body: "from a guest" },
+    });
+    expect(r.status).toBe(201);
+    // A member's comment is the marker that the guest's sent nothing first.
+    await tool(reader.client, "add_comment", { id, body: "member" });
+    expect(await heardAll(id)).toBe(1);
+  });
+
+  it("a follower who lost access gets nothing and loses the follow", async () => {
+    const id = await pub();
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "viewer",
+    });
+    await follow(E, reader.userId, { namespace: "ns/l", name: "r" }, id);
+    await deleteShare(E, owner.member, id, reader.email);
+    await notifyCommented(E, id, 1, owner.userId);
+    expect(forId(id)).toEqual([]);
+    const left = await E.DB.prepare(
+      "select count(*) n from follows where artifact_id = ?",
+    )
+      .bind(id)
+      .first<{ n: number }>();
+    expect(left?.n).toBe(0);
+  });
+
+  it("a capped (restricted) follower gets nothing", async () => {
+    const id = await pub({ visibility: "team" });
+    const m = await login(`mc-cap-${tag}@x.com`);
+    await follow(E, m.userId, { namespace: "ns/c", name: "m" }, id);
+    await notifyCommented(E, id, 1, owner.userId);
+    expect(forId(id)).toHaveLength(1);
+    bus.sent = [];
+    await E.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(m.userId)
+      .run();
+    await notifyCommented(E, id, 1, owner.userId, Date.now() + 120_000);
+    expect(forId(id)).toEqual([]);
   });
 });
