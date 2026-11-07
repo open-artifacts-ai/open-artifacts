@@ -37,7 +37,7 @@ export function CommentsColumn({ textFormat }: { textFormat: boolean }) {
   return (
     <aside
       aria-label="Comments"
-      className="flex w-[320px] flex-none flex-col overflow-y-auto border-0 border-l border-l-[var(--oa-border)] bg-card"
+      className="flex w-[340px] flex-none flex-col overflow-y-auto border-0 border-l border-l-[var(--oa-border)] bg-card"
     >
       <CommentsBody textFormat={textFormat} />
     </aside>
@@ -53,39 +53,75 @@ export function CommentsDialog({
   onClose: () => void;
 }) {
   const ref = useRef<HTMLElement>(null);
+  const [full, setFull] = useState(false);
+  const drag = useRef<number | null>(null);
+  const dragged = useRef(false);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
   useEffect(() => {
     ref.current?.focus();
     return () => opener?.focus?.();
   }, [opener]);
   return (
-    <section
-      ref={ref}
-      tabIndex={-1}
-      role="dialog"
-      aria-label="Comments"
-      className="fixed inset-x-0 bottom-0 z-30 flex max-h-[70vh] flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:max-h-none min-[601px]:w-[360px] min-[601px]:rounded-xl"
-      onKeyDown={(e) => {
-        if (e.key === "Escape" && !e.defaultPrevented) {
-          e.stopPropagation();
-          onClose();
-        }
-      }}
-    >
-      <div className={`flex items-center justify-between px-4 pt-3 ${TXT}`}>
-        <h2 className="m-0 font-medium">Comments</h2>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Close comments"
-          onClick={onClose}
+    <>
+      <div
+        data-sheet-backdrop=""
+        aria-hidden="true"
+        className="fixed inset-0 z-20 bg-black/40 min-[601px]:hidden"
+        onClick={onClose}
+      />
+      <section
+        ref={ref}
+        tabIndex={-1}
+        role="dialog"
+        aria-label="Comments"
+        data-sheet-height={full ? "full" : "half"}
+        className={`fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:data-[sheet-height=half]:h-[50vh] max-[600px]:data-[sheet-height=full]:h-[90vh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && !e.defaultPrevented) {
+            e.stopPropagation();
+            onClose();
+          }
+        }}
+      >
+        <button
+          type="button"
+          data-sheet-handle=""
+          aria-label={full ? "Shrink comments" : "Expand comments"}
+          className="flex w-full flex-none cursor-grab touch-none items-center justify-center border-0 bg-transparent py-2 min-[601px]:hidden"
+          onClick={() => {
+            if (dragged.current) dragged.current = false;
+            else setFull((f) => !f);
+          }}
+          onPointerDown={(e) => {
+            drag.current = e.clientY;
+          }}
+          onPointerUp={(e) => {
+            const from = drag.current;
+            drag.current = null;
+            if (from == null) return;
+            const dy = e.clientY - from;
+            dragged.current = Math.abs(dy) > 30;
+            if (dy < -30) setFull(true);
+            else if (dy > 30) setFull(false);
+          }}
         >
-          <X aria-hidden="true" />
-        </Button>
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-        <CommentsBody textFormat={textFormat} />
-      </div>
-    </section>
+          <span className="h-1 w-10 rounded-full bg-border" />
+        </button>
+        <div className={`flex items-center justify-between px-4 pt-3 ${TXT}`}>
+          <h2 className="m-0 font-medium">Comments</h2>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Close comments"
+            onClick={onClose}
+          >
+            <X aria-hidden="true" />
+          </Button>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <CommentsBody textFormat={textFormat} />
+        </div>
+      </section>
+    </>
   );
 }

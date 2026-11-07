@@ -10,6 +10,7 @@ import {
 } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
+import { Check, FileText, Quote as QuoteIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import {
@@ -340,6 +341,16 @@ function Composer({
   );
 }
 
+/** Up to two initials of a display name. */
+function initials(name: string): string {
+  const w = name.trim().split(/\s+/).filter(Boolean);
+  const out =
+    w.length > 1
+      ? `${w[0]?.[0]}${w[w.length - 1]?.[0]}`
+      : (w[0] ?? "?").slice(0, 2);
+  return out.toUpperCase();
+}
+
 function Who({
   a,
   at,
@@ -349,12 +360,34 @@ function Who({
   at: string;
   edited: boolean;
 }) {
+  const via = a.agent
+    ? a.agent.startsWith("via ")
+      ? a.agent
+      : `via ${a.agent}`
+    : null;
   return (
-    <div className="min-w-0">
-      <p className={`flex min-w-0 items-baseline gap-x-1 ${TXT}`}>
+    <div className="flex min-w-0 items-start gap-2">
+      <span
+        aria-hidden="true"
+        data-avatar=""
+        className={`flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-[length:var(--oa-text-xs)] font-medium ${MUTED}`}
+      >
+        {initials(a.name)}
+      </span>
+      <p
+        className={`m-0 flex min-w-0 items-baseline gap-x-1 self-center ${TXT}`}
+      >
         <b className="min-w-0 truncate" title={a.name}>
           {a.name}
         </b>
+        {via && (
+          <span
+            data-via=""
+            className={`${MUTED} min-w-0 truncate text-[length:var(--oa-text-xs)]`}
+          >
+            {via}
+          </span>
+        )}
         <span
           className={`${MUTED} shrink-0 whitespace-nowrap`}
           title={exactDate(at)}
@@ -363,11 +396,6 @@ function Who({
           {edited && " · edited"}
         </span>
       </p>
-      {a.agent && (
-        <p className={`${TXT} ${MUTED} break-words`}>
-          {a.agent.startsWith("via ") ? a.agent : `via ${a.agent}`}
-        </p>
-      )}
     </div>
   );
 }
@@ -507,7 +535,12 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const a = t.anchor;
   const state = api.positions.get(t.id)?.state;
   if (a.kind === "note")
-    return <p className={`${TXT} font-medium ${MUTED}`}>Whole page</p>;
+    return (
+      <p className={`flex items-center gap-1 ${TXT} font-medium ${MUTED}`}>
+        <FileText aria-hidden="true" className="size-3.5 shrink-0" />
+        Whole page
+      </p>
+    );
   if (a.kind === "pin") {
     const n = numbering(api.threads).get(t.id) ?? 1;
     return (
@@ -530,10 +563,17 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
         <p className={`${TXT} ${MUTED}`}>Text changed since this comment</p>
       )}
       <blockquote
-        className={`border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED} line-clamp-3 break-words`}
+        className={`flex items-start gap-1.5 border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED}`}
       >
-        {original ? "Original text: " : ""}
-        {original ? `“${a.exact}”` : a.exact}
+        <QuoteIcon
+          aria-hidden="true"
+          data-quote-chip=""
+          className="mt-0.5 size-3.5 shrink-0"
+        />
+        <span className="line-clamp-3 min-w-0 break-words">
+          {original ? "Original text: " : ""}
+          {original ? `“${a.exact}”` : a.exact}
+        </span>
       </blockquote>
     </div>
   );
@@ -597,7 +637,11 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
           </p>
         )}
         {resolved && (
-          <p className={`${TXT} ${MUTED}`}>
+          <p
+            data-resolved-line=""
+            className={`flex items-center gap-1 ${TXT} text-green-700 dark:text-green-400`}
+          >
+            <Check aria-hidden="true" className="size-3.5 shrink-0" />
             Resolved by {t.resolvedBy?.name ?? "someone"}
             {t.resolvedAt ? ` · ${versionDate(t.resolvedAt)}` : ""}
           </p>
