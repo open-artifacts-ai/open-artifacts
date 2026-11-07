@@ -114,7 +114,7 @@ const MUTED = "text-muted-foreground";
  * the named group; elsewhere these variants do nothing.
  */
 export const ACTIONS =
-  "group-data-[sheet-height=pin]/sheet:sticky group-data-[sheet-height=pin]/sheet:bottom-0 group-data-[sheet-height=pin]/sheet:z-10 group-data-[sheet-height=pin]/sheet:bg-background";
+  "group-data-[sheet-height=pin]/sheet:sticky group-data-[sheet-height=pin]/sheet:bottom-0 group-data-[sheet-height=pin]/sheet:z-10 group-data-[sheet-height=pin]/sheet:bg-inherit";
 
 /** Everything below renders comment text as React text: never HTML. */
 
