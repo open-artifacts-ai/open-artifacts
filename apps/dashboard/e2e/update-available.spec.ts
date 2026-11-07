@@ -243,17 +243,25 @@ for (const [w, h] of [
   });
 }
 
-// A tall edge panel in a short window grows and scrolls: its heading is reachable.
+// A tall edge panel in a short window grows and the page scrolls: the panel
+// starts below the banner above it instead of overlapping it, and its bottom
+// is reachable.
 test("edge panel on a short phone window isn't clipped at the top", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 390, height: 360 });
+  await page.setViewportSize({ width: 390, height: 180 });
   await page.goto(`/a/${ART}?mock=quota`);
-  const heading = page.locator(".oa-edge h1").first();
-  await expect(heading).toBeVisible();
-  await heading.scrollIntoViewIfNeeded();
-  const b = await heading.boundingBox();
-  expect(b?.y ?? -1).toBeGreaterThanOrEqual(0);
+  await page.locator(".oa-edge h1").first().waitFor();
+  const r = await page.evaluate(() => {
+    const e = document.querySelector(".oa-edge") as HTMLElement;
+    const p = document.querySelector(".oa-panel") as HTMLElement;
+    return {
+      top: p.getBoundingClientRect().top,
+      above: (e.previousElementSibling as HTMLElement).getBoundingClientRect()
+        .bottom,
+    };
+  });
+  expect(r.top).toBeGreaterThanOrEqual(r.above);
   // The panel's own bottom is reachable by scrolling the page.
   const reach = await page.evaluate(() => {
     window.scrollTo(0, document.documentElement.scrollHeight);
