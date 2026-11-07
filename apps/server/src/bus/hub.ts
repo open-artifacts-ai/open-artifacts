@@ -3306,7 +3306,7 @@ export class BusHub extends DurableObject<Env> {
   async wipe(): Promise<void> {
     let closed = 0;
     for (const ws of this.ctx.getWebSockets()) {
-      closed++;
+      if (!notDaemon(this.ctx, ws)) closed++;
       const m = machineOf(ws);
       try {
         if (m !== null)
@@ -3589,10 +3589,12 @@ export class BusHub extends DurableObject<Env> {
    * sockets exist). Fails open: a missed `gone` is bounded by closeInstall
    * (a harmless closeAll on no sockets) and the index's cap.
    *
-   * workerd calls webSocketClose only for a close the peer started, so a
-   * close this hub started (revoke, closeAll, wipe, a rate-limited or revoked
-   * socket's next frame) calls this itself, with no `closing` socket: the
-   * sockets it closed are already CLOSING, not OPEN.
+   * A peer that never echoes our close never triggers webSocketClose, so a
+   * close this hub started (revoke, closeAll, wipe, the frame that trips the
+   * rate limit or lands on a revoked or replaced socket) calls this itself,
+   * with no `closing` socket: the sockets it closed are already CLOSING, not
+   * OPEN. When the peer does echo, webSocketClose reports again; `gone` is
+   * idempotent.
    */
   async #goneFromIndex(closing?: WebSocket): Promise<void> {
     const open = () =>
@@ -3624,14 +3626,17 @@ export class BusHub extends DurableObject<Env> {
     message: string | ArrayBuffer,
   ): Promise<void> {
     if (notDaemon(this.ctx, ws)) return;
+    // Only the frame that closes the socket reports; late frames on a socket
+    // already closing (a rate-limited one keeps sending) must not each cost
+    // the shared index an RPC.
+    const wasOpen = ws.readyState === OPEN;
     if (this.#overBudget(ws)) {
-      await this.#goneFromIndex();
+      if (wasOpen && ws.readyState !== OPEN) await this.#goneFromIndex();
       return;
     }
     this.#onMessage(ws, message);
     await this.#commitArm();
-    // A frame on a revoked or replaced socket closes it here.
-    await this.#goneFromIndex();
+    if (wasOpen && ws.readyState !== OPEN) await this.#goneFromIndex();
   }
 
   /**
