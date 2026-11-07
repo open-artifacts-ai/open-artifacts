@@ -198,7 +198,7 @@ describe("pin stamping", () => {
     });
   });
 
-  it("a pre-digest pin on paid reads R2 once and writes the digest back", async () => {
+  it("a pre-digest pin on paid reads R2 and leaves the manifest alone", async () => {
     const { id } = await pub(PDF1);
     await env.DB.prepare(
       "update versions set manifest = json_remove(manifest, '$[0].digest') where artifact_id = ?",
@@ -207,7 +207,7 @@ describe("pin stamping", () => {
       .run();
     const a = await checkAnchor(paid, art(id), pin({ version: 1 }));
     expect(a.anchor).toMatchObject({ contentHash: await hex(PDF1) });
-    expect((await versions(id))[0]?.contentHash).toBe(await hex(PDF1));
+    expect((await versions(id))[0]?.contentHash).toBeNull();
   });
 
   it("a pre-digest pin on free is null with no R2 read", async () => {

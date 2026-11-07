@@ -224,8 +224,8 @@ export type EntryHash = { hash: string | null } | null;
  * SHA-256 (hex) of a version's entry file; null when the version does not
  * exist. The hash is the manifest digest when recorded. Otherwise (an uploaded
  * entry on a free instance, or a version from before digests) a paid instance
- * streams the bytes from R2 and writes the digest back to the manifest, so it
- * happens once per version; a free instance (10 ms CPU) answers `hash: null`
+ * streams the bytes from R2 every time (manifests stay immutable: a written
+ * digest would split STORED_BYTES' count of a kept file); a free instance (10 ms CPU) answers `hash: null`
  * (unknown) with no R2 read.
  */
 export async function versionEntryHash(
@@ -252,12 +252,5 @@ export async function versionEntryHash(
   if (!obj) return null;
   const sink = sha256Sink();
   await obj.body.pipeTo(sink.writable);
-  const hash = await sink.hex();
-  e.digest = hash;
-  await env.DB.prepare(
-    "update versions set manifest = ? where artifact_id = ? and version = ?",
-  )
-    .bind(JSON.stringify(list), artifactId, version)
-    .run();
-  return { hash };
+  return { hash: await sink.hex() };
 }
