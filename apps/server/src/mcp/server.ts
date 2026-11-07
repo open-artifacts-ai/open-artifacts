@@ -49,6 +49,18 @@ export type McpContext = {
   exec?: Pick<ExecutionContext, "waitUntil">;
   /** Fill agent.version from the MCP clientInfo.version (OAuth clients). */
   clientVersion?: boolean;
+  /**
+   * Which connection the request is from: `t:<tokenId>` (PAT), `g:<grantId>`
+   * (OAuth) or `c:<userId>` (a grant with no id). Viewer presence shows one
+   * face per connection when the client has no session.
+   */
+  connection: string;
+  /**
+   * The verified server-issued `Mcp-Session-Id` (its random part) of a
+   * legacy-era client; null for the 2026-07-28 era or a client that never
+   * echoed it.
+   */
+  session: string | null;
 };
 
 /** What the tool modules get: the context plus the per-call agent ref. */

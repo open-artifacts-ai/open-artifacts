@@ -28,6 +28,8 @@ const KEY_OWNERS = {
   "oa:directory-token": "directory",
   // Viewer presence: the per-artifact key a viewer shows under (#539).
   "oa:viewer-presence": "session",
+  // The Mcp-Session-Id a legacy-era MCP client is issued (#539).
+  "oa:mcp-session": "session",
 } as const satisfies Record<string, KeyOwner>;
 type KeyOwner = "session" | "content" | "directory";
 export type KeyLabel = keyof typeof KEY_OWNERS;
