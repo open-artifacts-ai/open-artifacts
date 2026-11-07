@@ -225,7 +225,10 @@ describe.each([
       method: "POST",
       body: { anchor: { kind: "note" }, body: "hello" },
     });
-    expect(c.status).toBeLessThan(300);
+    // The plan cap (non-owners, as under solo and free today) keeps a member
+    // from comments; the owner is not capped and comments.
+    if (_n === "the org owner") expect(c.status).toBeLessThan(300);
+    else expect(c.status).toBe(403);
   });
 
   it("MCP set_visibility and share_artifact keep working", async () => {
@@ -253,6 +256,77 @@ describe.each([
         })
       ).status,
     ).toBe(200);
+  });
+});
+
+describe("view-only: the solo team rules still apply", () => {
+  const ids = { inSpace: "", mine: "", spaceId: "", memberOwn: "" };
+  beforeAll(async () => {
+    await setPlan({ ...base, tier: "business", status: "active" });
+    const sp = await send(props, R.spaces, owner.cookie, {
+      method: "POST",
+      body: { name: `vo-${uniq()}` },
+    });
+    ids.spaceId = ((await sp.json()) as { id: string }).id;
+    ids.inSpace = (
+      (await (await post(owner, { spaceId: ids.spaceId })).json()) as {
+        id: string;
+      }
+    ).id;
+    ids.mine = ((await (await post(owner)).json()) as { id: string }).id;
+    ids.memberOwn = ((await (await post(member)).json()) as { id: string }).id;
+    await setPlan(UNPAID);
+  });
+
+  it("the owner can't move or transfer, nor write to an artifact in a shared space", async () => {
+    for (const r of [
+      await send(props, R.moveArtifact(ids.mine), owner.cookie, {
+        method: "POST",
+        body: { spaceId: ids.spaceId },
+      }),
+      await send(props, R.transferArtifact(ids.mine), owner.cookie, {
+        method: "POST",
+        body: { userId: member.userId },
+      }),
+      await send(props, R.artifact(ids.inSpace), owner.cookie, {
+        method: "PATCH",
+        body: { title: "renamed" },
+      }),
+    ]) {
+      expect(r.status).toBe(403);
+      expect((await errCode(r))?.code).toMatch(/^plan_/);
+    }
+  });
+
+  it("a member is plan-capped: a token is refused; sharing, visibility and revoking pass", async () => {
+    const t = await send(props, R.tokens, member.cookie, {
+      method: "POST",
+      body: { label: `x ${uniq()}` },
+    });
+    expect(t.status).toBe(403);
+    expect((await errCode(t))?.code).toBe("plan_read_only");
+    expect(
+      (
+        await send(props, R.shares(ids.memberOwn), member.cookie, {
+          method: "PUT",
+          body: { email: `o-${uniq()}@a.com`, role: "viewer" },
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await send(props, R.artifact(ids.memberOwn), member.cookie, {
+          method: "PATCH",
+          body: { visibility: "team" },
+        })
+      ).status,
+    ).toBe(200);
+    // Anything but visibility in the PATCH is refused.
+    const p = await send(props, R.artifact(ids.memberOwn), member.cookie, {
+      method: "PATCH",
+      body: { title: "nope" },
+    });
+    expect(p.status).toBe(403);
   });
 });
 

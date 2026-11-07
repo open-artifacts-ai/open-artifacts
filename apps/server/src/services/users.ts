@@ -335,9 +335,9 @@ function withEpoch(env: Env, row: UserByIdRow | null): UserWithEpoch | null {
   seedPlan(plan);
   // P2/P3's cap first; then, hosted, the plan cap: a solo or read-only
   // instance is read-only for everyone but the org owner (writes only). The
-  // unpaid-Solo view-only lock sets no cap: it binds everyone, the owner too,
-  // and pauses only publishing and live-data writes (policy planRefuses,
-  // services/artifacts.ts publish), so comments and the rest keep working.
+  // unpaid-Solo view-only lock caps non-owners the same way; it also binds
+  // the owner (no cap) for publishing and live-data writes (policy
+  // planRefuses, services/artifacts.ts refuseViewOnly).
   const cap =
     capOf(
       {
@@ -347,12 +347,7 @@ function withEpoch(env: Env, row: UserByIdRow | null): UserWithEpoch | null {
         restrictedSync: row.restrictedSync !== 0,
       },
       authConfig(env),
-    ) ??
-    (plan?.lock &&
-    plan.lock.mode !== "viewOnly" &&
-    planCapsRole(row.role as Role)
-      ? "plan"
-      : null);
+    ) ?? (plan?.lock && planCapsRole(row.role as Role) ? "plan" : null);
   return {
     user: withPlan(withCap(toMember(row), cap), plan),
     sessionEpoch: row.sessionEpoch,

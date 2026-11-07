@@ -207,7 +207,9 @@ const VIEW_ONLY_REFUSED: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
 /** Whether the instance's plan lock refuses `action` (reads never). */
 export function planRefuses(action: PolicyAction, ctx: CanCtx): boolean {
   if (!ctx.plan || READ.has(action)) return false;
-  if (ctx.plan === "viewOnly") return VIEW_ONLY_REFUSED.has(action);
+  // View-only refuses publishing and data writes for everyone, then the solo
+  // team rules apply as under the solo lock.
+  if (ctx.plan === "viewOnly" && VIEW_ONLY_REFUSED.has(action)) return true;
   if (PLAN_EXEMPT.has(action) && !(ctx.suspended && action === "visibility"))
     return false;
   if (!ctx.personal) return true;
