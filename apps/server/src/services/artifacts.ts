@@ -49,7 +49,13 @@ import { can, dataWritersOf } from "../auth/policy.js";
 import { requireFreeStorage } from "../billing/caps.js";
 import { creatorStmt } from "../billing/creators.js";
 import { featuresOf } from "../billing/features.js";
-import { billingActive, planError, requireTeamPlan } from "../billing/plan.js";
+import {
+  billingActive,
+  isViewOnly,
+  planError,
+  refuseViewOnly,
+  requireTeamPlan,
+} from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -192,6 +198,8 @@ export async function publish(
 ): Promise<PublishResult> {
   // Under a suspension nothing becomes public: create and new version alike.
   refuseSuspendedPublic(user, input.visibility);
+  // An unpaid Solo is view-only: no new artifact and no new version.
+  refuseViewOnly(planOfMember(user));
   // An edits publish plans from the current version, once it is known.
   let plan: Plan | null = input.edits ? null : planFiles(input);
   const db = env.DB;
@@ -1623,7 +1631,11 @@ export async function patch(
   const who = asUser(user);
   // Sharing is free on every plan: a plan-capped member may change who can
   // open their artifact (visibility alone), nothing else in the PATCH.
-  const lock = capOfCaller(who) === "plan" ? planOfMember(user)?.lock : null;
+  // The unpaid-Solo view-only lock sets no cap but takes the same path: sharing
+  // (visibility alone) passes, every other change is refused.
+  const planLock = planOfMember(user)?.lock;
+  const lock =
+    capOfCaller(who) === "plan" || isViewOnly(planLock) ? planLock : null;
   // An allow-list: visibility and nothing else. A suspension is not a payment
   // state: it keeps the old lock, with no sharing change.
   const visibilityOnly =
