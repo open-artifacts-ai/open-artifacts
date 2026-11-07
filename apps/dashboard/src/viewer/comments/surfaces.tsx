@@ -64,7 +64,7 @@ export function CommentsDialog({
       tabIndex={-1}
       role="dialog"
       aria-label="Comments"
-      className="fixed inset-x-0 bottom-0 z-30 flex max-h-[70vh] flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none min-[601px]:inset-x-auto min-[601px]:top-4 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:max-h-none min-[601px]:w-[360px] min-[601px]:rounded-xl"
+      className="fixed inset-x-0 bottom-0 z-30 flex max-h-[70vh] flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:max-h-none min-[601px]:w-[360px] min-[601px]:rounded-xl"
       onKeyDown={(e) => {
         if (e.key === "Escape" && !e.defaultPrevented) {
           e.stopPropagation();

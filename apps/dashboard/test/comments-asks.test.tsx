@@ -457,6 +457,8 @@ describe("@ picker details", () => {
     const c = await col();
     fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
     const box = await within(c).findByRole("textbox", { name: "Reply" });
+    // The agent list loads once an "@" is typed; Assign to comes with it.
+    fireEvent.change(box, { target: { value: "@" } });
     const select = await waitFor(() => {
       const s = within(c).getByLabelText("Assign to") as HTMLSelectElement;
       expect(s.options.length).toBeGreaterThan(1);
