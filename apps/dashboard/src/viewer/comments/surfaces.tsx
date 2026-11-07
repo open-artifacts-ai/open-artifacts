@@ -76,6 +76,11 @@ export function CommentsDialog({
         aria-label="Comments"
         data-sheet-height={full ? "full" : "half"}
         className={`fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
+        onFocusCapture={(e) => {
+          // The phone keyboard would cover a half-height sheet.
+          const t = e.target as HTMLElement;
+          if (t.tagName === "TEXTAREA" || t.tagName === "INPUT") setFull(true);
+        }}
         onKeyDown={(e) => {
           if (e.key === "Escape" && !e.defaultPrevented) {
             e.stopPropagation();

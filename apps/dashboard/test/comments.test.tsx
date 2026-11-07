@@ -192,6 +192,19 @@ describe("comments: layouts", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+  it("focusing a composer in the half-height phone sheet expands it", async () => {
+    viewport(400);
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    const box = await within(sheet).findAllByRole("textbox");
+    fireEvent.focus(box[0] as HTMLElement);
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+  });
+
   it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {
     viewport(400);
     mount(viewerPath(OWNED));

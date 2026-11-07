@@ -373,7 +373,7 @@ function Who({
       <span
         aria-hidden="true"
         data-avatar=""
-        className={`flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-[length:var(--oa-text-xs)] font-medium ${MUTED}`}
+        className={`flex size-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[length:var(--oa-text-xs)] font-medium text-foreground`}
       >
         {initials(a.name)}
       </span>
