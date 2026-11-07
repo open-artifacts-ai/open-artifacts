@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.136.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.135.0...v0.136.0) (2026-11-07)
+
+
+### Documentation
+
+* **readme:** hosted code now lives in open-artifacts-cloud ([#1056](https://github.com/open-artifacts-ai/open-artifacts/issues/1056)) ([#1733](https://github.com/open-artifacts-ai/open-artifacts/issues/1733)) ([f1ce58b](https://github.com/open-artifacts-ai/open-artifacts/commit/f1ce58ba56782be6e2595c3b63c81ff0af699e57))
+
 ## [0.135.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.134.0...v0.135.0) (2026-11-07)
 
 
