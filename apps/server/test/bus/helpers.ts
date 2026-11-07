@@ -153,7 +153,7 @@ afterAll(async () => {
                 .one().n,
           ),
         ).toBe(0),
-      { timeout: 20000 },
+      { timeout: 3000 },
     )
     .catch((err) => console.warn("bus index rows left at file end", err));
 });
