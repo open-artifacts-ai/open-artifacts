@@ -108,6 +108,14 @@ export function PinBar() {
 
 const MUTED = "text-muted-foreground";
 
+/**
+ * #1657: in the phone sheet's short height (a pin's card), the action row
+ * stays on screen instead of being cut at the bottom edge. The sheet carries
+ * the named group; elsewhere these variants do nothing.
+ */
+export const ACTIONS =
+  "group-data-[sheet-height=pin]/sheet:sticky group-data-[sheet-height=pin]/sheet:bottom-0 group-data-[sheet-height=pin]/sheet:z-10 group-data-[sheet-height=pin]/sheet:bg-background";
+
 /** Everything below renders comment text as React text: never HTML. */
 
 function GuestName({ api }: { api: CommentsApi }) {
@@ -382,7 +390,10 @@ function Composer({
           );
           if (buttonsRight)
             return (
-              <>
+              <div
+                data-oa-actions=""
+                className={`flex flex-col gap-2 ${ACTIONS}`}
+              >
                 {assignSel}
                 <div className="flex flex-wrap items-center gap-2">
                   {lead}
@@ -399,10 +410,13 @@ function Composer({
                     </Button>
                   </div>
                 </div>
-              </>
+              </div>
             );
           return (
-            <div className="flex flex-wrap items-center gap-2">
+            <div
+              data-oa-actions=""
+              className={`flex flex-wrap items-center gap-2 ${ACTIONS}`}
+            >
               <Button
                 size="xs"
                 disabled={!body || busy}

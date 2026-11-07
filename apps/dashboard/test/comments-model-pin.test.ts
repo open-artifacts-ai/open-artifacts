@@ -38,12 +38,19 @@ describe("a pin whose page changed (#1657)", () => {
     expect(wire(pin(h), "")?.changed).toBeUndefined();
   });
 
-  it("never marks a text thread, whatever the hash", () => {
+  it("never marks a text thread, even one carrying a hash the frame could see", () => {
     const text = {
       id: "t1",
       version: 1,
       status: "open" as const,
-      anchor: { kind: "text" as const, quote: "x", prefix: "", suffix: "" },
+      // Not part of a text anchor's shape; the guard, not the type, must stop it.
+      anchor: {
+        kind: "text" as const,
+        quote: "x",
+        prefix: "",
+        suffix: "",
+        contentHash: h,
+      },
       createdAt: "2026-11-05T10:00:00Z",
     };
     const out = frameThreads([text as never], null, "b".repeat(64))[0];

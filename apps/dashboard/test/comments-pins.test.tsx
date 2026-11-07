@@ -172,6 +172,34 @@ afterEach(() => vi.restoreAllMocks());
 
 const tool = (name: string) => screen.findByRole("button", { name });
 
+describe("a pin whose page changed reaches the frame (#1657)", () => {
+  it("the shell sends changed:true for a pin stamped with another version's hash", async () => {
+    asFormat("image", H2, { threads: [pinThread("p1", 1, H1)] });
+    mount(viewerPath(OWNED));
+    await col();
+    await hello();
+    await waitFor(() => {
+      const sent = setComments.mock.calls.at(-1)?.[0] as
+        | { id: string; changed?: boolean }[]
+        | undefined;
+      expect(sent?.find((t) => t.id === "p1")?.changed).toBe(true);
+    });
+  });
+
+  it("and sends no flag when the pin's hash is the shown version's", async () => {
+    asFormat("image", H1, { threads: [pinThread("p1", 1, H1)] });
+    mount(viewerPath(OWNED));
+    await col();
+    await hello();
+    await waitFor(() => {
+      const sent = setComments.mock.calls.at(-1)?.[0] as
+        | { id: string; changed?: boolean }[]
+        | undefined;
+      expect(sent?.find((t) => t.id === "p1")).not.toHaveProperty("changed");
+    });
+  });
+});
+
 describe("comments: pins on images and pdfs (#1490)", () => {
   it("an image opens in Pin mode, says what to do, and Select reaches text selection", async () => {
     asFormat("image", H1);
