@@ -35,9 +35,12 @@ const focusVisible = (el: Element) => {
 export function FullScreenEscape({
   artifact,
   live,
+  presence,
   gone = false,
 }: {
   artifact: ArtifactSummary;
+  /** Who else is here (#949): the stack at the left of the pill, before Exit. */
+  presence?: ReactNode;
   live?: ReactNode;
   gone?: boolean;
 }) {
@@ -76,6 +79,7 @@ export function FullScreenEscape({
 
   return (
     <div className="oa-fsbar">
+      {presence && <div className="oa-fspres">{presence}</div>}
       {live}
       {gone ? (
         <FullGone id={artifact.id} embed={inFrame} />

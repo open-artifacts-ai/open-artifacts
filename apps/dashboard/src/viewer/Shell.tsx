@@ -43,6 +43,7 @@ import {
   linkHost,
 } from "./navigate";
 import { isPanelTab, type PanelTab, SidePanel } from "./panels/SidePanel";
+import { PresenceStack } from "./presence/PresenceStack";
 import { RenavNotice } from "./RenavNotice";
 import { SignupNudge } from "./SignupNudge";
 import { SlowNotice } from "./SlowNotice";
@@ -144,6 +145,7 @@ function Viewer({
   chromeless,
   colState,
   slot,
+  presence,
   newer = false,
   gone = null,
   onFrame,
@@ -159,6 +161,8 @@ function Viewer({
   colState: [boolean | null, (v: boolean | null) => void];
   /** The live-version chip (title bar) or pill (/full); only on the shown layer. */
   slot?: ReactNode;
+  /** Who else is here (#949); only on the shown layer, never embedded or gone. */
+  presence?: ReactNode;
   newer?: boolean;
   gone?: Gone | null;
   /** Registers this frame's state (hello, touched) for the safe-swap rule. */
@@ -555,6 +559,7 @@ function Viewer({
                 setPanel(!(panelOpen && tab === "versions"), "versions")
               }
               live={slot}
+              presence={presence}
               newer={newer}
               gone={gone !== null}
               comments={commentsButton}
@@ -652,6 +657,7 @@ function Viewer({
         {chromeless && (
           <FullScreenEscape
             artifact={artifact}
+            presence={presence}
             live={
               <>
                 {commentsButton && (
@@ -855,6 +861,17 @@ function ArtifactShell({
                   : null
               }
               slot={shown ? slot : undefined}
+              presence={
+                shown &&
+                !embed &&
+                live.gone === null &&
+                presence.others.length > 0 ? (
+                  <PresenceStack
+                    others={presence.others}
+                    total={presence.total}
+                  />
+                ) : undefined
+              }
               newer={shown && newer}
               gone={live.gone}
               onFrame={(s) => frames.current.set(n, s)}
