@@ -279,7 +279,9 @@ describe("gate: nothing unless canConnect and busOn (capped: revoke-only Machine
       expect(
         await screen.findByRole("heading", { name: "Page not found" }),
       ).toBeInTheDocument();
-      expect(screen.queryByRole("link", { name: "Agents" })).toBeNull();
+      expect(
+        screen.queryByRole("link", { name: "Agent messaging" }),
+      ).toBeNull();
       expect(screen.queryByRole("link", { name: "Machines" })).toBeNull();
       expect(seen.filter((c) => c.path.startsWith("/api/v1/bus/"))).toEqual([]);
     });
@@ -293,7 +295,9 @@ describe("gate: nothing unless canConnect and busOn (capped: revoke-only Machine
         await screen.findByRole("heading", { name: "Page not found" }),
       ).toBeInTheDocument();
       const nav = await primary();
-      expect(within(nav).queryByRole("link", { name: "Agents" })).toBeNull();
+      expect(
+        within(nav).queryByRole("link", { name: "Agent messaging" }),
+      ).toBeNull();
       expect(
         seen.filter(
           (c) => c.path.startsWith("/api/v1/bus/") && c.path !== R.busMachines,
@@ -332,7 +336,9 @@ describe("gate: nothing unless canConnect and busOn (capped: revoke-only Machine
           await screen.findByRole("heading", { name: "Page not found" }),
         ).toBeInTheDocument();
         const nav = await primary();
-        expect(within(nav).queryByRole("link", { name: "Agents" })).toBeNull();
+        expect(
+          within(nav).queryByRole("link", { name: "Agent messaging" }),
+        ).toBeNull();
         expect(screen.queryByRole("link", { name: "Machines" })).toBeNull();
         expect(seen.filter((c) => c.path.startsWith("/api/v1/bus/"))).toEqual(
           [],
@@ -349,11 +355,13 @@ describe("gate: nothing unless canConnect and busOn (capped: revoke-only Machine
     });
   }
 
-  it("allowed: an Agents sidebar link, and Machines right after Connections in Settings", async () => {
+  it("allowed: an Agent messaging sidebar link, and Machines right after Connections in Settings", async () => {
     withBus();
     mount("/settings/profile");
     const nav = await primary();
-    const agentsLink = await within(nav).findByRole("link", { name: "Agents" });
+    const agentsLink = await within(nav).findByRole("link", {
+      name: "Agent messaging",
+    });
     expect(agentsLink).toHaveAttribute("href", "/agents");
     // Design's icon: Lucide "radio" at 16px with a 1.5px stroke.
     const svg = agentsLink.querySelector("svg.lucide-radio");
@@ -1324,7 +1332,7 @@ describe("#1453 polish", () => {
     expect(await primary()).toBeInTheDocument();
     expect(
       await screen.findByText(
-        "Your agents on every machine. Only you see this page.",
+        "Let your running agents discover and message each other across machines. Only you see this page.",
       ),
     ).toBeInTheDocument();
   });

@@ -19,6 +19,7 @@ import { useBusAgents, useBusMachines } from "../api/queries";
 import { LoadError } from "../layout/LoadError";
 import { Notice } from "../layout/Notice";
 import { relativeTime } from "../library/time";
+import { useCanSetUpAgent } from "../settings/AgentSetupCard";
 import { muted } from "../settings/ui";
 import {
   buildRail,
@@ -294,6 +295,7 @@ function RosterTable({ agents, all }: { agents: BusAgent[]; all: string[] }) {
 export function Roster({ scope: raw }: { scope?: string }) {
   const agents = useBusAgents();
   const machines = useBusMachines();
+  const canSetUpAgent = useCanSetUpAgent();
   const [filter, setFilter] = useState<Filter>("all");
   const scope = parseScope(raw);
   if (agents.isPending) return <p className={`m-0 ${muted}`}>Loading…</p>;
@@ -326,6 +328,18 @@ export function Roster({ scope: raw }: { scope?: string }) {
           <Button asChild variant="outline" size="sm">
             <BusLink to="/settings/machines">Go to Machines</BusLink>
           </Button>
+        )}
+        {noMachine && canSetUpAgent && (
+          <p className={`m-0 ${muted}`}>
+            Want an AI tool to publish or manage artifacts?{" "}
+            <BusLink
+              to="/settings/connections"
+              className="underline underline-offset-2"
+            >
+              Connect an agent to your library
+            </BusLink>
+            .
+          </p>
         )}
       </div>
     );
