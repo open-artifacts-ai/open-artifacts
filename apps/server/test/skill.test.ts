@@ -89,6 +89,24 @@ function toolSections(md: string): Map<string, string> {
 }
 
 describe("skill.md drift", () => {
+  it("caps output that is not a reply to the human", async () => {
+    expect(await skill()).toContain("stays under 140 characters");
+  });
+
+  it("tells agents every wait has a timeout", async () => {
+    const md = await skill();
+    expect(md).toContain("has a timeout");
+    expect(md).toContain("never sit idle");
+    expect(md).toContain("confirm it can land");
+  });
+
+  it("leaves the installer's habits question to the human", async () => {
+    const md = await skill();
+    expect(md).toContain("QUESTION FOR YOUR USER");
+    expect(md).toContain("(`install --habits`) only on their yes");
+    expect(md).toContain("until they answer, run neither");
+  });
+
   it("tells every page writer how links open", async () => {
     const md = await skill();
     const at = md.indexOf("\n## Writing pages\n");
