@@ -130,6 +130,8 @@ export * from "./transports/opencode.ts";
 export * from "./transports/pi.ts";
 
 const NOTICE_RETRY_MS = 30_000;
+/** The hub caps renames per hour; a refused one holds that agent's renames this long. */
+const RENAME_HOLD_MS = 60 * 60_000;
 /** A registration the hub rate-limited is retried this late, or on the next reconnect. */
 const LIMITED_RETRY_MS = 5 * 60_000;
 /** How far back `oa-bus status` lists late deliveries. */
@@ -660,6 +662,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
 
   /** rename ids awaiting the hub's answer, to their agent_ref; cleared with the link. */
   const renameIds = new Map<string, string>();
+  /** Names a `rename` frame already carried, per ref: each goes once. */
+  const renamedTo = new Map<string, Set<string>>();
+  /** After the hub's rate_limited on a rename: no rename for that ref until this time. */
+  const renameHeldUntil = new Map<string, number>();
   /**
    * A Claude `/rename` after connect (#1635): the session file's name changed
    * since the last tick. One `rename` per change; the hub's answer (a `-2`,
@@ -667,11 +673,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * while the link or the agent's registration is not ready rides the next
    * agent_up (it carries proposedName).
    */
-  const renameIfChanged = (rec: AgentRecord, name: string) => {
+  const renameIfChanged = (rec: AgentRecord, name: string, filePid: number) => {
     const was = rec.sessionName ?? rec.proposedName;
+    // Never a name nobody chose: empty, or the file's own `claude-<pid>`
+    // fallback (a file with no name, whichever process wrote it).
+    if (name === "" || name === `claude-${filePid}`) return;
     rec.sessionName = name;
-    // Never a name nobody chose: empty, or the `claude-<pid>` fallback.
-    if (name === was || name === "" || name === `claude-${rec.pid}`) return;
+    if (name === was) {
+      // A change held back (the hub's hour, a failed send) goes when it can.
+      if (rec.sentName !== rec.proposedName) flushRename(rec);
+      return;
+    }
     rec.proposedName = name;
     flushRename(rec);
   };
@@ -708,6 +720,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       limited.has(rec.ref)
     )
       return;
+    // The hub's hourly cap answered: nothing more for this ref until the hour is out.
+    if (Date.now() < (renameHeldUntil.get(rec.ref) ?? 0)) return;
+    // Never twice for one name: a name that flips back and forth cannot loop.
+    const sent = renamedTo.get(rec.ref) ?? new Set<string>();
+    if (sent.has(rec.proposedName)) {
+      rec.sentName = rec.proposedName;
+      return;
+    }
     const id = frameId();
     renameIds.set(id, rec.ref);
     if (
@@ -719,13 +739,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         proposed_name: fitName(rec.proposedName, 64),
         name_kind: "chosen",
       })
-    )
+    ) {
       rec.sentName = rec.proposedName;
-    else renameIds.delete(id);
+      sent.add(rec.proposedName);
+      renamedTo.set(rec.ref, sent);
+    } else renameIds.delete(id);
   };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
-    const live = liveClaudeSessions(claudeSessions);
+    const live = liveClaudeSessions(
+      claudeSessions,
+      (ref) => agents.byRef(ref)?.pid,
+    );
     const liveRefs = new Set(live.map((s) => s.ref));
     const livePid = (ref: string, pid: number) =>
       live.some((s) => s.ref === ref && s.pid === pid);
@@ -744,7 +769,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           prev.pid = s.pid;
           prev.procStart = s.procStart;
         }
-        renameIfChanged(prev, s.name);
+        renameIfChanged(prev, s.name, s.pid);
         continue;
       }
       // Closed by a failed delivery and still the same process.
@@ -921,6 +946,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           const renamedRef = renameIds.get(frame.id);
           if (renamedRef !== undefined) {
             renameIds.delete(frame.id);
+            if (frame.code === "rate_limited")
+              renameHeldUntil.set(renamedRef, Date.now() + RENAME_HOLD_MS);
             log(
               `the hub did not rename ${renamedRef} to its session name: ${frame.code} ${frame.message}`,
             );
@@ -1225,9 +1252,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         const prev = agents.byRef(hello.agent_ref);
         // A resumed session may beat the next sync tick: the files decide whose it is.
         if (prev?.live && prev.kind === "claude-code" && prev.pid !== pid) {
-          const live = liveClaudeSessions(claudeSessions).filter(
-            (s) => s.ref === prev.ref,
-          );
+          const live = liveClaudeSessions(claudeSessions, (r) =>
+            r === prev.ref ? prev.pid : undefined,
+          ).filter((s) => s.ref === prev.ref);
           if (
             live.some((s) => s.pid === pid) &&
             !live.some((s) => s.pid === prev.pid)
@@ -1294,7 +1321,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         // one whose session file is gone; it takes over that address.
         const files =
           hello.kind === "claude-code"
-            ? liveClaudeSessions(claudeSessions)
+            ? liveClaudeSessions(claudeSessions, (r) =>
+                r === hello.agent_ref ? pid : agents.byRef(r)?.pid,
+              )
             : [];
         const mine = files.find(
           (x) => x.ref === hello.agent_ref && x.pid === pid,

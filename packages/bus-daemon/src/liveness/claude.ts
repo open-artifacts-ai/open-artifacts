@@ -74,10 +74,29 @@ const strip = ({ stamp: _, ...s }: SessionFile): LiveClaude => s;
  * is up and its start time matches. One with no socket (cross-session
  * messaging off) can still send; it just cannot receive.
  */
-export function liveClaudeSessions(deps: ClaudeLivenessDeps): LiveClaude[] {
-  return sessionFiles(deps.dir)
-    .filter((s) => alive(s, deps))
-    .map(strip);
+export function liveClaudeSessions(
+  deps: ClaudeLivenessDeps,
+  /** The pid the caller already knows for a ref (its record's, a hello's): that file wins. */
+  preferPid?: (ref: string) => number | undefined,
+): LiveClaude[] {
+  // One file per session: a headless `claude --resume` shares the id, and
+  // its nameless file must not stand for the session (#1635).
+  const byRef = new Map<string, LiveClaude>();
+  const rank = (s: LiveClaude) =>
+    (s.pid === preferPid?.(s.ref) ? 2 : 0) +
+    (s.name !== `claude-${s.pid}` ? 1 : 0);
+  for (const s of sessionFiles(deps.dir)
+    .filter((f) => alive(f, deps))
+    .map(strip)) {
+    const cur = byRef.get(s.ref);
+    if (
+      !cur ||
+      rank(s) > rank(cur) ||
+      (rank(s) === rank(cur) && s.pid < cur.pid)
+    )
+      byRef.set(s.ref, s);
+  }
+  return [...byRef.values()];
 }
 
 /** Where to inject for one session, read fresh each time; null when it is gone. Asks the OS about that session only. */
