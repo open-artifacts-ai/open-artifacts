@@ -110,6 +110,14 @@ describe("session rename after connect (#1635)", () => {
     // Only the sync interval is faked: a tick runs when the test says so.
     vi.useFakeTimers({ toFake: ["setInterval"] });
     const { h, d } = await start(true);
+    // The hub gave s-a a suffixed name, so the file's name is not its bus name.
+    h.toDaemon({
+      v: 1,
+      id: "ok0",
+      type: "agent_ok",
+      agent_ref: "s-a",
+      bus_name: "open-artifacts-9e-2",
+    });
     write(d, 4242, "s-b", "open-artifacts-9e");
     await h.adapter("s-b", {
       kind: "claude-code",
