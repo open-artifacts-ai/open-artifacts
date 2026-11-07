@@ -21,13 +21,13 @@ export function numbering(threads: readonly CommentThread[]) {
   return new Map(sorted.map((t, i) => [t.id, Math.min(i + 1, 9999)]));
 }
 
-/** Pin numbers ("Pin 3"): by creation order among pins only, so notes and text don't take one. */
 /** A null hash on either side means unknown: never claim the page changed. */
 export const pinChanged = (
   pinHash: string | null | undefined,
   versionHash: string | null | undefined,
 ) => pinHash != null && versionHash != null && pinHash !== versionHash;
 
+/** Pin numbers ("Pin 3"): by creation order among pins only, so notes and text don't take one. */
 export const pinNumbering = (threads: readonly CommentThread[]) =>
   numbering(threads.filter((t) => t.anchor.kind === "pin"));
 

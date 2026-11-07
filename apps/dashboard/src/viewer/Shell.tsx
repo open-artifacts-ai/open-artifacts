@@ -268,6 +268,15 @@ function Viewer({
       cmt.threads.length > 0 ||
       cmt.draft !== null ||
       cmt.error != null);
+  // Where the list is on screen its Pin button is the cue; otherwise (a closed
+  // column, another panel tab, a phone with no sheet) the bar is, so pin mode
+  // never runs unannounced. Hidden under the sheet too: it would overlap it.
+  const listShown =
+    surface === "dialog"
+      ? dialogOpen
+      : panelOpen
+        ? commentsTab && tab === "comments"
+        : surface === "column" && columnShown;
   openSurface.current = () => {
     if (surface === "dialog") setDialogOpen(true);
     else if (surface === "panel" || panelOpen) setPanel(true, "comments");
@@ -631,7 +640,7 @@ function Viewer({
             />
           )}
         </div>
-        {commentsOn && surface === "dialog" && <PinBar />}
+        {commentsOn && !listShown && <PinBar />}
         {commentsOn && surface === "dialog" && dialogOpen && (
           <CommentsDialog
             textFormat={textFormat}

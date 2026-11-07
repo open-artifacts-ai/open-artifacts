@@ -192,6 +192,29 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     expect(screen.queryByText("Click to place a pin")).toBeNull();
   });
 
+  it("keeps a cue on the page when pin mode is on and the comments column is closed", async () => {
+    asFormat("image", H1);
+    mount(viewerPath(OWNED));
+    await col();
+    fireEvent.click(await tool("Pin"));
+    // The list shows its own cue: one hint, no bar.
+    expect(await screen.findAllByText("Click to place a pin")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    const bar = (await screen.findByText("Click to place a pin")).closest(
+      "[role=status]",
+    ) as HTMLElement;
+    expect(within(bar).getByText("Click to place a pin")).toBeInTheDocument();
+    fireEvent.click(within(bar).getByRole("button", { name: "Select" }));
+    await waitFor(() =>
+      expect(screen.queryByText("Click to place a pin")).toBeNull(),
+    );
+  });
+
   it("says Tap on a touch screen", async () => {
     asFormat("image", H1);
     viewport(1280, true);
