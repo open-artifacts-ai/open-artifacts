@@ -24,7 +24,17 @@ import {
   OWNER_ORG_ID,
   SWEEP_BATCH,
 } from "../../src/bus/hub.js";
-import { e, hello, hubOf, machine, ns, ready, up, upgrade } from "./helpers.js";
+import {
+  e,
+  hello,
+  hubOf,
+  machine,
+  ns,
+  ready,
+  trackSocket,
+  up,
+  upgrade,
+} from "./helpers.js";
 
 // ------------------------------------------------------------------ helpers
 //
@@ -54,6 +64,7 @@ const connectReq = (machineId: string, label = "MacBook") => ({
 
 function wire<T>(ws: WebSocket, parse: (t: string) => T | null) {
   ws.accept();
+  trackSocket(ws);
   const queue: T[] = [];
   const waiting: ((f: T) => void)[] = [];
   const seen: T[] = [];

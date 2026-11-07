@@ -28,7 +28,7 @@ import {
   SEND_KEY_RETAIN_MS,
   SWEEP_BATCH,
 } from "../../src/bus/hub.js";
-import { e, ns, up } from "./helpers.js";
+import { e, ns, trackSocket, up } from "./helpers.js";
 
 type BusHubStub = DurableObjectStub<BusHub>;
 const busNs = () => e.BUS_HUB as DurableObjectNamespace<BusHub>;
@@ -107,6 +107,7 @@ async function daemonOn(h: BusHubStub, machineId: string): Promise<D> {
   expect(res.status).toBe(101);
   const ws = res.webSocket as WebSocket;
   ws.accept();
+  trackSocket(ws);
   const q: ServerFrame[] = [];
   const w: ((f: ServerFrame) => void)[] = [];
   ws.addEventListener("message", (ev) => {
