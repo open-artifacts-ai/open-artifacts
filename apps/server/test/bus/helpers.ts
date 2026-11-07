@@ -121,6 +121,10 @@ export function upgrade(
   );
 }
 
+/** Room for the index to settle when the whole suite loads the worker pool. */
+const INDEX_SETTLE_MS = 20_000;
+const HOOK_MS = INDEX_SETTLE_MS + 10_000;
+
 const opened = new Set<Daemon>();
 const rawSockets = new Map<WebSocket, Promise<unknown>>();
 
@@ -158,11 +162,10 @@ afterAll(async () => {
       // Already closed or never accepted.
     }
   }
-  // Bounded: a socket the hub already tore down reported its close earlier.
-  await Promise.race([
-    Promise.all(closes),
-    new Promise((r) => setTimeout(r, 3000)),
-  ]);
+  // A socket the hub already tore down reported its close earlier. No
+  // shorter bound than the hook's own: giving up early is what let the worker
+  // tear down with the hub's `gone` RPC still in flight.
+  await Promise.all(closes);
   opened.clear();
   rawSockets.clear();
   const ns = e.USER_PRESENCE;
@@ -184,10 +187,13 @@ afterAll(async () => {
         )
         .one().n;
     });
-  await vi
-    .waitFor(async () => expect(await rows()).toBe(0), { timeout: 3000 })
-    .catch((err) => console.warn("bus index rows left at file end", err));
-});
+  // The close events above are the client's; the hub's `gone` report lands
+  // after them. Wait for the index to show it, and fail the file (not warn) if
+  // a row stays: that is a hub that never reported its last socket gone.
+  await vi.waitFor(async () => expect(await rows()).toBe(0), {
+    timeout: INDEX_SETTLE_MS,
+  });
+}, HOOK_MS);
 
 /** A daemon socket. Every frame it receives must parse with decodeServerFrame. */
 export async function daemon(
