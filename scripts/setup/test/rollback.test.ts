@@ -36,7 +36,10 @@ describe("deploy records the Worker version it replaces", () => {
   });
 
   it("a live Worker's version is recorded as previous", async () => {
-    const w = world({ workerVersion: "live-0", worker: { APP_HOST: "x" } });
+    const w = world({
+      workerVersion: "live-0",
+      worker: { APP_HOST: "x", CONTENT_HOST: "c.example.com" },
+    });
     expect(await run(HOSTS, w.deps, ROOT)).toBe(0);
     expect(w.state().previousWorkerVersion).toBe("live-0");
   });

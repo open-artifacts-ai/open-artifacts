@@ -110,12 +110,34 @@ async function serve(
 ): Promise<Response> {
   // URL.hostname only: port stripped; X-Forwarded-Host is ignored.
   const url = new URL(req.url);
-  if (normHost(url.hostname) === normHost(env.CONTENT_HOST ?? ""))
+  if (env.CONTENT_ROUTING && env.CONTENT_ROUTING !== "path")
+    return new Response("Not found", { status: 404 });
+  const singleHost = env.CONTENT_ROUTING === "path";
+  if (
+    singleHost &&
+    normHost(env.APP_HOST ?? "") !== normHost(env.CONTENT_HOST ?? "")
+  )
+    return new Response("Not found", { status: 404 });
+  if (
+    !singleHost &&
+    normHost(url.hostname) === normHost(env.CONTENT_HOST ?? "")
+  )
     return contentApp.fetch(req, env, ctx);
   // Another install's hostname (WfP wildcard) or a stray alias: 404 before
   // auth, OAuth, the route policy or D1. Plain body, no other headers.
   if (isForeignHost(env, url.hostname))
     return new Response("Not found", { status: 404 });
+  // Only this install's permitted app host may enter single-host content routes.
+  // Decode for classification too: an encoded reserved path must never become SPA HTML.
+  if (singleHost) {
+    let path: string;
+    try {
+      path = decodeURIComponent(url.pathname).replace(/\/+/g, "/");
+    } catch {
+      return new Response("Not found", { status: 404 });
+    }
+    if (/^\/(c|p|_oa)(\/|$)/.test(path)) return contentApp.fetch(req, env, ctx);
+  }
   const pat =
     url.pathname === MCP_PATH
       ? PAT_BEARER.exec(req.headers.get("authorization") ?? "")

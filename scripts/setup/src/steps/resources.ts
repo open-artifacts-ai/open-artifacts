@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { hostPairProblem } from "../hosts.ts";
+import { hostPairProblem, normalizeHost } from "../hosts.ts";
 import { setOnly } from "../signin.ts";
 import type { State } from "../state.ts";
 import type { Ctx, Step } from "../step.ts";
@@ -94,7 +94,11 @@ export function renderConfig(
     vars.APP_HOST !== undefined &&
     vars.CONTENT_HOST !== undefined
   ) {
-    const problem = hostPairProblem(vars.APP_HOST, vars.CONTENT_HOST);
+    const problem = hostPairProblem(
+      vars.APP_HOST,
+      vars.CONTENT_HOST,
+      vars.CONTENT_ROUTING === "path",
+    );
     if (problem) throw new Error(`rendered config: ${problem}`);
   }
   // The template stays strict JSON (e2e fixtures JSON.parse it), so the
@@ -113,7 +117,18 @@ export function renderConfig(
         throw new Error(`no value for template placeholder {{${k}}}`);
       return JSON.stringify(val).slice(1, -1);
     });
-  const out = applyTunables(text, tunables);
+  let out = applyTunables(text, tunables);
+  if (vars.CONTENT_ROUTING === "path") {
+    const config = JSON.parse(stripComments(out));
+    config.vars.CONTENT_ROUTING = "path";
+    config.routes = config.routes.filter(
+      (r: { pattern: string }, i: number, all: { pattern: string }[]) =>
+        all.findIndex(
+          (other) => normalizeHost(other.pattern) === normalizeHost(r.pattern),
+        ) === i,
+    );
+    out = `${JSON.stringify(config, null, 2)}\n`;
+  }
   JSON.parse(stripComments(out));
   if (!text.includes(`"PLAN": "${plan}"`))
     throw new Error(`rendered config must contain "PLAN": "${plan}"`);
@@ -126,6 +141,7 @@ const configVars = (s: State, ctx: Ctx) => ({
   WORKER_NAME: ctx.opts.name,
   APP_HOST: ctx.opts.appHost,
   CONTENT_HOST: ctx.opts.contentHost,
+  CONTENT_ROUTING: ctx.opts.singleHost ? "path" : undefined,
   OWNER_EMAIL: ctx.opts.ownerEmail,
   D1_NAME: names(ctx.opts.name).d1,
   D1_ID: s.d1Id,

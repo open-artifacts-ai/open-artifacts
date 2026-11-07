@@ -152,7 +152,11 @@ export function createOpener(opts: {
     // "app.example." is app.example too: compare without a trailing dot.
     const host = bareHost(u.hostname);
     const content = opts.contentOrigin?.();
-    if (content && host === bareHost(new URL(content).hostname))
+    if (
+      content &&
+      host === bareHost(new URL(content).hostname) &&
+      host !== bareHost(new URL(origin).hostname)
+    )
       return refused();
     const appHost = host === bareHost(new URL(origin).hostname);
     const path =

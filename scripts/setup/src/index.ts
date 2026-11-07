@@ -93,6 +93,7 @@ async function resolve(
       name: { type: "string" },
       "app-host": { type: "string" },
       "content-host": { type: "string" },
+      "single-host": { type: "boolean", default: false },
       "owner-email": { type: "string" },
       "account-id": { type: "string" },
       yes: { type: "boolean", default: false },
@@ -194,20 +195,29 @@ async function resolve(
         `--name ${name} conflicts with saved --name ${state.name}; confirm interactively to switch`,
       );
   }
+  if (v["single-host"] && (state.name || deployed) && state.singleHost !== true)
+    throw new Error(
+      "changing an existing installation's content routing mode is not supported; keep its separate content hostname",
+    );
+  const singleHost = v["single-host"] || state.singleHost === true;
+  const appHost = v["revoke-ci-tokens"]
+    ? (v["app-host"] ?? state.appHost ?? "")
+    : await need("--app-host", HOST, state.appHost, deployed?.appHost);
   const opts: Opts = {
+    singleHost,
     name,
     // The cleanup-only mode touches D1 by name: no hosts needed.
-    appHost: v["revoke-ci-tokens"]
-      ? (v["app-host"] ?? state.appHost ?? "")
-      : await need("--app-host", HOST, state.appHost, deployed?.appHost),
-    contentHost: v["revoke-ci-tokens"]
-      ? (v["content-host"] ?? state.contentHost ?? "")
-      : await need(
-          "--content-host",
-          HOST,
-          state.contentHost,
-          deployed?.contentHost,
-        ),
+    appHost,
+    contentHost: singleHost
+      ? valid("--content-host", v["content-host"] ?? appHost, HOST)
+      : v["revoke-ci-tokens"]
+        ? (v["content-host"] ?? state.contentHost ?? "")
+        : await need(
+            "--content-host",
+            HOST,
+            state.contentHost,
+            deployed?.contentHost,
+          ),
     ownerEmail: valid(
       "--owner-email",
       normEmail(
@@ -264,7 +274,11 @@ async function resolve(
   // Setup and every --check/--upgrade preflight: refuse a pair the server
   // can't serve (it answers APP_HOST and CONTENT_HOST only).
   if (!v["revoke-ci-tokens"]) {
-    const problem = hostPairProblem(opts.appHost, opts.contentHost);
+    const problem = hostPairProblem(
+      opts.appHost,
+      opts.contentHost,
+      opts.singleHost,
+    );
     if (problem) throw new Error(`${problem} (--app-host, --content-host)`);
   }
   // A saved default follows a changed app host; an explicit domain is kept.
@@ -374,6 +388,9 @@ export const HELP = `Usage: pnpm oa:setup [options]
                 thumbnails are read from the deployed Worker's plain-text vars and
                 bindings (never secrets). Flags win, with a note when they differ; the
                 state line and --check report data.sources (worker|flag) per value.
+  --single-host  New installs only: serve app and content on --app-host with
+                 opaque sandboxing. No --content-host needed. Existing installs
+                 keep their routing mode; switching modes is not supported.
   --token-file <p>  --access-token-file <p>  --analytics-token-file <p>
                 Read the deploy (CLOUDFLARE_API_TOKEN), Access (OA_ACCESS_TOKEN) or
                 analytics (ANALYTICS_TOKEN) token from a file instead of the env.
@@ -536,6 +553,7 @@ export async function run(
     name,
     appHost,
     contentHost,
+    singleHost: opts.singleHost,
     ownerEmail,
   });
   const noState = !prev.name;
@@ -545,6 +563,7 @@ export async function run(
   const api = makeApi(deps, wrangler);
   const accessApi = makeApi(deps, wrangler, deps.env.OA_ACCESS_TOKEN);
   const ctx: Ctx = {
+    routingVerified: steps.includes(prereqs) ? false : undefined,
     deps,
     noState,
     // --check writes nothing: no state, no rendered config.
@@ -590,6 +609,7 @@ export async function run(
   // A refused by-name run must not leave a flag that contradicts the Worker in state.json.
   let refused = false;
   const persist = () => {
+    if (ctx.routingVerified === false) return;
     if (refused && deployed)
       for (const k of Object.keys(deployed.live) as (keyof Sources)[])
         if (deployed.sources[k] === "flag") state[k] = deployed.live[k];

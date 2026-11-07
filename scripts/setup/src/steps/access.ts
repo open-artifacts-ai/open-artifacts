@@ -179,6 +179,7 @@ async function tolerateOutage(state: State, ctx: Ctx, e: unknown) {
   await verifyWorker(ctx, accountId, {
     APP_HOST: ctx.opts.appHost,
     CONTENT_HOST: ctx.opts.contentHost,
+    CONTENT_ROUTING: ctx.opts.singleHost ? "path" : undefined,
     OWNER_EMAIL: ctx.opts.ownerEmail,
     ACCESS_TEAM_DOMAIN: teamDomain,
     ACCESS_CLIENT_ID: clientId,
@@ -267,7 +268,7 @@ async function lookup(ctx: Ctx, accountId: string) {
 async function verifyWorker(
   ctx: Ctx,
   accountId: string,
-  want: Record<(typeof PINNED)[number], string>,
+  want: Record<(typeof PINNED)[number], string | undefined>,
 ) {
   const vars = await deployedVars(ctx, accountId);
   if (!vars) return;
@@ -293,6 +294,7 @@ async function record(
     await verifyWorker(ctx, state.accountId ?? "", {
       APP_HOST: ctx.opts.appHost,
       CONTENT_HOST: ctx.opts.contentHost,
+      CONTENT_ROUTING: ctx.opts.singleHost ? "path" : undefined,
       OWNER_EMAIL: ctx.opts.ownerEmail,
       ACCESS_TEAM_DOMAIN: teamDomain,
       ACCESS_CLIENT_ID: app.saas_app.client_id,

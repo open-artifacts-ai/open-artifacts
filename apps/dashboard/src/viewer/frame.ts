@@ -7,13 +7,16 @@ import { ARTIFACT_SANDBOX_ATTR, withShellNonce } from "@oa/shared";
  */
 export const SANDBOX = ARTIFACT_SANDBOX_ATTR;
 
-/** Only http(s) URLs on another origin may be framed. */
+/** Same-origin content is limited to the server's versioned content routes, never app pages. */
 export const safeContentUrl = (u: string | null) => {
   if (!u) return null;
   try {
     const p = new URL(u);
     return (p.protocol === "https:" || p.protocol === "http:") &&
-      p.origin !== location.origin
+      !p.username &&
+      !p.password &&
+      (p.origin !== location.origin ||
+        /^\/(?:c\/[^/]+\/|p\/)[^/]+\/v[1-9]\d*\/.+/.test(p.pathname))
       ? u
       : null;
   } catch {

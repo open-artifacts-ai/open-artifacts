@@ -120,15 +120,16 @@ describe("--upgrade --name without saved state", () => {
     });
   });
 
-  it("passing the flag covers a missing var", async () => {
+  it("passing an identity flag cannot bypass incomplete routing settings", async () => {
     const { APP_HOST: _, ...rest } = VARS;
     const w = ok(cloud({ worker: rest }));
-    // Past argument resolution; access then refuses an APP_HOST the Worker lacks.
+    // Past argument resolution; routing verification refuses the partial settings.
     expect(
       await run([...ONLY, "--app-host", "app.example.com"], w.deps, ROOT),
-    ).toBe(2);
+    ).toBe(1);
     expect(line(w, "args")).toBeUndefined();
-    expect(line(w, "access").message).toContain("differs in APP_HOST");
+    expect(line(w, "prereqs").message).toContain("incomplete Worker settings");
+    expect(w.ops).toEqual([]);
     expect(w.state().appHost).toBeUndefined();
   });
 
@@ -176,7 +177,7 @@ describe("--upgrade --name without saved state", () => {
     expect(w.ops).toEqual([]);
   });
 
-  it("saved state wins, is untouched, and the Worker is not read for it", async () => {
+  it("saved state wins and is untouched by the mode-only Worker check", async () => {
     const saved = {
       name: "open-artifacts",
       appHost: "saved.example.com",
@@ -196,8 +197,8 @@ describe("--upgrade --name without saved state", () => {
     // Access reports the saved host as drift (exit 2): the saved value won.
     expect(await run(argv, w.deps, ROOT)).toBe(2);
     expect(w.files.get(STATE)).toBe(before);
-    // No by-name lookup: nothing read the settings before the steps ran.
-    expect(at.filter((n) => n === 0)).toEqual([]);
+    // The early read verifies routing only; it does not replace saved identity.
+    expect(at.filter((n) => n === 0)).toHaveLength(1);
     expect(parse(w).at(-1).data?.sources).toBeUndefined();
     expect(w.state()).toEqual(saved);
   });

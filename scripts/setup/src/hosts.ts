@@ -11,6 +11,7 @@ export { normalizeHost };
 export function hostPairProblem(
   appHost: string,
   contentHost: string,
+  singleHost = false,
 ): string | null {
   for (const [k, v] of [
     ["APP_HOST", appHost],
@@ -19,7 +20,11 @@ export function hostPairProblem(
     if (normalizeHost(v) === "") return `${k} is empty`;
     if (v.includes("{{")) return `${k} is an unrendered placeholder (${v})`;
   }
+  if (singleHost)
+    return normalizeHost(appHost) === normalizeHost(contentHost)
+      ? null
+      : "--single-host requires APP_HOST and CONTENT_HOST to match";
   if (normalizeHost(appHost) === normalizeHost(contentHost))
-    return "APP_HOST and CONTENT_HOST must differ";
+    return "APP_HOST and CONTENT_HOST must differ; for an existing path-routed install pass --single-host";
   return null;
 }

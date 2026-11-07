@@ -4,6 +4,7 @@ import type { Ctx } from "./step.ts";
 export const PINNED = [
   "APP_HOST",
   "CONTENT_HOST",
+  "CONTENT_ROUTING",
   "OWNER_EMAIL",
   "ACCESS_TEAM_DOMAIN",
   "ACCESS_CLIENT_ID",

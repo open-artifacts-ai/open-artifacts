@@ -57,7 +57,7 @@ export const methodNotAllowed = () =>
 // reserved for platform internals: a JSON 404, never the SPA, except POST
 // /__oa/oauth-store/copy where it is on (mcp/oauth-copy.ts).
 const WORKER_PREFIX =
-  /^\/(api|auth|oauth|\.well-known|mcp|_oa|__oa|__test|bus)(\/|$)/;
+  /^\/(api|auth|oauth|\.well-known|mcp|c|p|_oa|__oa|__test|bus)(\/|$)/;
 
 // Text and Markdown files the Worker doesn't serve (/robots.txt, /skill.md,
 // /upgrade.md and /llms.txt are routes, matched before the fallback): a plain
