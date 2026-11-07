@@ -125,7 +125,17 @@ describe("session rename after connect (#1635)", () => {
       pid: 4242,
       proposed_name: "open-artifacts-9e",
     });
-    // Now the first tick sees the new file for an agent the hello made.
+    await vi.waitFor(() =>
+      expect(h.of("agent_up").some((u) => u.agent_ref === "s-b")).toBe(true),
+    );
+    // The hub answers the handover; then the first tick sees the new file for an agent the hello made.
+    h.toDaemon({
+      v: 1,
+      id: "ok1",
+      type: "agent_ok",
+      agent_ref: "s-b",
+      bus_name: "open-artifacts-9e-2",
+    });
     await vi.advanceTimersByTimeAsync(100);
     await vi.advanceTimersByTimeAsync(100);
     expect(h.of("rename")).toHaveLength(0);
