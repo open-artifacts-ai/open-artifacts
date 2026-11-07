@@ -108,7 +108,7 @@ describe("pi rename (#1635)", () => {
     await emit("session_info_changed");
     await emit("turn_start");
     await vi.waitFor(() => expect(d.renames(0)).toHaveLength(1));
-    expect(d.renames(0)[0].name).toBe("second-name");
+    expect(d.renames(0)[0].name).toBe("Second Name");
   });
 
   it("a turn start catches a rename when the event is missing", async () => {
@@ -126,10 +126,34 @@ describe("pi rename (#1635)", () => {
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     name = undefined;
     await emit("session_info_changed");
-    name = "!!!";
+    name = " \u0001\u007f ";
     await emit("session_info_changed");
     await new Promise((r) => setTimeout(r, 100));
     expect(d.renames(0)).toHaveLength(0);
+  });
+
+  it("keeps the name as typed: case, spaces, unicode, punctuation; strips controls; fits 64", async () => {
+    const d = await daemon(["rename"]);
+    const emit = await pi();
+    await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
+    const sent = async (n: string) => {
+      const before = d.renames(0).length;
+      name = n;
+      await emit("session_info_changed");
+      await vi.waitFor(() => expect(d.renames(0)).toHaveLength(before + 1));
+      return d.renames(0)[before].name as string;
+    };
+    expect(await sent("OA Agent Experience Renamed")).toBe(
+      "OA Agent Experience Renamed",
+    );
+    expect(await sent("  Caf\u00e9 \u00fcber (v2)!\u0007 ")).toBe(
+      "Caf\u00e9 \u00fcber (v2)!",
+    );
+    const long = await sent(`${"ab ".repeat(30)}tail`);
+    expect(long).toHaveLength(64);
+    expect(long.startsWith("ab ab")).toBe(true);
+    const emoji = await sent(`${"a".repeat(63)}\u{1F600}`);
+    expect(emoji).toBe("a".repeat(63));
   });
 
   it("sends nothing to a daemon whose welcome lacks the cap", async () => {
@@ -161,7 +185,7 @@ describe("pi rename (#1635)", () => {
       { timeout: 5_000, interval: 5 },
     );
     expect(Date.now() - t0).toBeLessThanOrEqual(10_000);
-    expect(d.frames[1][0].proposed_name).toBe("after-rename");
+    expect(d.frames[1][0].proposed_name).toBe("After Rename");
   });
 
   it("a rename while the hello is in flight is sent once the link is welcomed", async () => {
@@ -172,7 +196,7 @@ describe("pi rename (#1635)", () => {
     name = "Typed During Hello";
     await emit("session_info_changed");
     await vi.waitFor(() => expect(d.renames(0)).toHaveLength(1));
-    expect(d.renames(0)[0].name).toBe("typed-during-hello");
+    expect(d.renames(0)[0].name).toBe("Typed During Hello");
   });
 
   it("an event from another session neither renames nor changes what a reconnect proposes", async () => {
@@ -188,7 +212,7 @@ describe("pi rename (#1635)", () => {
     await vi.waitFor(() => expect(d.frames[1]?.[0]).toBeDefined(), {
       timeout: 6_000,
     });
-    expect(d.frames[1][0].proposed_name).toBe("first-name");
+    expect(d.frames[1][0].proposed_name).toBe("First Name");
   });
 
   it("omp never renames on the hub: its auto titles cannot be told from typed ones", async () => {

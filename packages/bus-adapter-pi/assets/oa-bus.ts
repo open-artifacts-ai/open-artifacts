@@ -733,15 +733,20 @@ function procStart(): string | undefined {
   }
 }
 
-/** A session name as a bus name: lowercase words joined by `-`; the kind when nothing is left. */
+/**
+ * A session name as typed (#1635), the way a Claude session's name reaches the
+ * hub: control characters stripped, trimmed, cut to 64 without splitting a
+ * surrogate pair; the kind when nothing is left. The hub's candidateName does
+ * the rest (collapses spaces, falls back when the name is not a valid bus name).
+ */
 function nameOf(title: string | undefined, kind: string): string {
-  const slug = (title ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+/, "")
-    .slice(0, 64)
-    .replace(/-+$/, "");
-  return slug || kind;
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+  let cut = (title ?? "").replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
+  cut = cut.slice(0, 64);
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  cut = (cut as string & { toWellFormed(): string }).toWellFormed().trim();
+  return cut || kind;
 }
 
 type Identity = { ref: string; cwd: string; name: string; kind: "pi" | "omp" };
