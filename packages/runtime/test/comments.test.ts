@@ -190,9 +190,7 @@ describe("selection button", () => {
   });
 
   it("has a bubble icon, is centered under the selection end, and clamps to the viewport", async () => {
-    const width = vi
-      .spyOn(HTMLElement.prototype, "offsetWidth", "get")
-      .mockReturnValue(100);
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
     const b = button();
@@ -214,19 +212,6 @@ describe("selection button", () => {
     ] as unknown as DOMRectList);
     select(textOf("a"), 4, textOf("a"), 9);
     expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
-    width.mockRestore();
-  });
-
-  it("follows the shell theme and defaults to the system scheme", async () => {
-    await start("select");
-    select(textOf("a"), 4, textOf("a"), 9);
-    expect(button()?.dataset.theme).toBe("light");
-    await send({ type: "theme", theme: "dark" });
-    expect(button()?.dataset.theme).toBe("dark");
-    await send({ type: "theme", theme: "light" });
-    expect(button()?.dataset.theme).toBe("light");
-    await send({ type: "theme", theme: "sepia" });
-    expect(button()?.dataset.theme).toBe("light");
   });
 
   it("does not show for a selection across blocks, an empty one, or when off", async () => {

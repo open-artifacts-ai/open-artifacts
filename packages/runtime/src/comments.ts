@@ -62,7 +62,6 @@ const FLASH_MS = 1200;
 const OVERLAY_CSS = `
 :host{all:initial}
 .btn{position:absolute;display:flex;align-items:center;gap:6px;font:500 13px/1 system-ui,sans-serif;padding:6px 10px;border:1px solid #d4d4d8;border-radius:8px;background:#fff;color:#27272a;cursor:pointer;pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,.12)}
-.btn[data-theme=dark]{background:#27272a;color:#f4f4f5;border-color:#52525b;box-shadow:0 2px 8px rgba(0,0,0,.45)}
 .btn svg{width:14px;height:14px;flex:none}
 .mark{position:absolute;width:6px;height:16px;border-radius:2px;background:#e0a000;pointer-events:auto;cursor:pointer}
 .mark.on{background:#1f5fbf}
@@ -87,18 +86,7 @@ const BTN_MARGIN = 4;
 export function createComments(
   bridge: Pick<Bridge, "on" | "send">,
   signal?: AbortSignal,
-  /** The shell's theme as the runtime knows it; falls back to the system scheme. */
-  initialTheme?: () => "light" | "dark" | undefined,
 ): Comments {
-  const systemDark = () => {
-    try {
-      return matchMedia("(prefers-color-scheme: dark)").matches;
-    } catch {
-      return false;
-    }
-  };
-  let theme: "light" | "dark" =
-    initialTheme?.() ?? (systemDark() ? "dark" : "light");
   const format =
     document.querySelector('meta[name="oa-format"]')?.getAttribute("content") ??
     "html";
@@ -386,7 +374,6 @@ export function createComments(
       btn.addEventListener("click", onCommentClick);
       btn.className = "btn";
     }
-    btn.dataset.theme = theme;
     if (!btn.isConnected) overlay().append(btn);
     // Centered under the end of the selection, kept inside the viewport.
     const vw = document.documentElement.clientWidth || innerWidth;
@@ -479,10 +466,7 @@ export function createComments(
 
   // ---- shell messages ----
   const off = bridge.on((m) => {
-    if (m.type === "welcome" || m.type === "theme") {
-      theme = m.theme;
-      if (btn) btn.dataset.theme = theme;
-    } else if (m.type === "comments.mode") {
+    if (m.type === "comments.mode") {
       mode = m.mode;
       if (mode === "off") {
         hideButton();
