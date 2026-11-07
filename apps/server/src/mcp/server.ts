@@ -1,5 +1,6 @@
 import { type CallToolResult, McpServer } from "@modelcontextprotocol/server";
 import {
+  type AgentTouch,
   dataLimits,
   MCP_PATH,
   type Member,
@@ -25,6 +26,10 @@ import {
 } from "../http/errors.js";
 import { logError } from "../log.js";
 import { toRuntimeApiError } from "../runtime/do.js";
+import {
+  type AgentTouchInput,
+  safeViewerAgentTouch,
+} from "../runtime/viewer-presence-agent.js";
 import { type AgentAttr, clientVersionOf } from "../services/agent-usage.js";
 import { spacesOn } from "../services/spaces.js";
 import { cpuNudge } from "../services/usage.js";
@@ -67,6 +72,14 @@ export type McpContext = {
 export type ToolEnv = McpContext & {
   caller: Caller;
   agentNow: () => AgentAttr | null;
+  /** This request's agent, for a viewer-presence touch (a publish or restore passes it on). */
+  touchInput: (write: boolean, activity?: string) => AgentTouchInput;
+  /** The touch for a data call on artifact `id`, built here and carried by its own DO call. */
+  touch: (
+    id: string,
+    write: boolean,
+    activity?: string,
+  ) => Promise<AgentTouch | undefined>;
 };
 
 /** `{ content: [one-line summary], structuredContent }`. */
@@ -141,10 +154,21 @@ export function createServer(ctx: McpContext): McpServer {
       version: clientVersionOf(server.server.getClientVersion()?.version),
     };
   };
+  const touchInput = (write: boolean, activity?: string): AgentTouchInput => ({
+    user: ctx.user,
+    agent: agentNow(),
+    session: ctx.session,
+    connection: ctx.connection,
+    write,
+    activity: activity ?? null,
+  });
   const t: ToolEnv = {
     ...ctx,
     caller: callerOf(ctx.user),
     agentNow,
+    touchInput,
+    touch: (id, write, activity) =>
+      safeViewerAgentTouch(ctx.env, id, touchInput(write, activity)),
   };
   enforceToolPolicy(server, t);
   registerArtifactTools(server, t);

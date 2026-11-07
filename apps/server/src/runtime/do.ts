@@ -1,5 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  AGENT_PRESENT_MS,
+  type AgentTouch,
   type Anchor,
   accessChangedCloseReason,
   COMMENT_BODY_MAX,
@@ -29,6 +31,7 @@ import {
   PRESENCE_PONG,
   PRESENCE_STALE_MS,
   PRESENCE_SWEEP_MS,
+  type PresenceEntry,
   planOf,
   QUERY_TOO_LARGE_MESSAGE,
   type StorageEntry,
@@ -83,6 +86,7 @@ import {
   socketIndexStub,
 } from "./presence.js";
 import {
+  type AgentRow,
   buildRoster,
   fnv1a,
   type PresenceIdentity,
@@ -431,6 +435,11 @@ create table if not exists access_change (
 create table if not exists viewer_presence_left (
   key text primary key, kind text not null, name text, guest integer not null,
   since integer not null, until integer not null, actor text not null
+);
+create table if not exists viewer_presence_agent (
+  key text primary key, product text, owner text not null, owner_actor text not null,
+  label text, since integer not null, seen integer not null, last_write integer,
+  activity text
 );
 create table if not exists viewer_presence_state (
   id integer primary key check (id = 1), hash text not null, sent_at integer not null
@@ -803,11 +812,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return { json, bytes };
   }
 
-  get(collection: string, id: string): DataDoc | null {
+  get(collection: string, id: string, touch?: AgentTouch): DataDoc | null {
     const row = this.readDoc(
       dataName(collection, "collection"),
       dataName(id, "id"),
     );
+    this.touchWith(touch);
     return row ? toDoc(row) : null;
   }
 
@@ -816,7 +826,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
    * (collection, id) (EXPLAIN QUERY PLAN: "SEARCH docs USING ... INDEX ...
    * (collection=?)"); no doc bodies are read.
    */
-  count(collection: string): DataCount {
+  count(collection: string, touch?: AgentTouch): DataCount {
+    const out = this.countDocs(collection);
+    this.touchWith(touch);
+    return out;
+  }
+
+  private countDocs(collection: string): DataCount {
     const c = dataName(collection, "collection");
     return {
       count: this.sql
@@ -829,7 +845,22 @@ export class ArtifactRuntime extends DurableObject<Env> {
   }
 
   /** Docs in (updated_at, id) order, keyset-paginated. */
-  list(collection: string, cursor?: string, limit?: number): Page<DataDoc> {
+  list(
+    collection: string,
+    cursor?: string,
+    limit?: number,
+    touch?: AgentTouch,
+  ): Page<DataDoc> {
+    const out = this.listDocs(collection, cursor, limit);
+    this.touchWith(touch);
+    return out;
+  }
+
+  private listDocs(
+    collection: string,
+    cursor?: string,
+    limit?: number,
+  ): Page<DataDoc> {
     const c = dataName(collection, "collection");
     const n = limitOf(limit);
     const cur = decodeCursor(cursor, ["u", "i"] as const);
@@ -856,7 +887,17 @@ export class ArtifactRuntime extends DurableObject<Env> {
   }
 
   /** Typed equality filter, ordered by (orderBy value | updated_at, id), keyset-paginated. */
-  query(collection: string, q: DataQueryInput): Page<DataDoc> {
+  query(
+    collection: string,
+    q: DataQueryInput,
+    touch?: AgentTouch,
+  ): Page<DataDoc> {
+    const out = this.queryDocs(collection, q);
+    this.touchWith(touch);
+    return out;
+  }
+
+  private queryDocs(collection: string, q: DataQueryInput): Page<DataDoc> {
     const c = dataName(collection, "collection");
     const parsed = DataQuerySchema.safeParse(q ?? {});
     if (!parsed.success) fail("bad_request", "invalid query");
@@ -988,13 +1029,21 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return { items: items.map(toDoc), nextCursor };
   }
 
-  set(collection: string, id: string, data: unknown, actor: string): DataDoc {
-    return this.writeDoc(
+  set(
+    collection: string,
+    id: string,
+    data: unknown,
+    actor: string,
+    touch?: AgentTouch,
+  ): DataDoc {
+    const doc = this.writeDoc(
       dataName(collection, "collection"),
       dataName(id, "id"),
       data,
       actorOf(actor),
     ).doc;
+    this.touchWith(touch);
+    return doc;
   }
 
   /**
@@ -1007,12 +1056,15 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     body: RawBody,
     actor: string,
+    touch?: AgentTouch,
   ): { updatedAt: string } {
     const c = dataName(collection, "collection");
     const i = dataName(id, "id");
     const a = actorOf(actor);
     const { json, bytes } = this.rawJson(body);
-    return { updatedAt: this.writeJson(c, i, json, bytes, a) };
+    const updatedAt = this.writeJson(c, i, json, bytes, a);
+    this.touchWith(touch);
+    return { updatedAt };
   }
 
   /** Shallow merge into the doc (non-object docs are replaced); a missing doc is created. */
@@ -1021,8 +1073,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     patch: Record<string, unknown>,
     actor: string,
+    touch?: AgentTouch,
   ): DataDoc {
-    return this.merge(collection, id, patch, actor).doc;
+    const { doc } = this.merge(collection, id, patch, actor);
+    this.touchWith(touch);
+    return doc;
   }
 
   /** update() from the raw request body; returns the DataDoc as JSON text. */
@@ -1031,6 +1086,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     id: string,
     body: RawBody,
     actor: string,
+    touch?: AgentTouch,
   ): string {
     const { json } = this.rawJson(body);
     const { doc, json: data } = this.merge(
@@ -1039,6 +1095,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       JSON.parse(json) as Record<string, unknown>,
       actor,
     );
+    this.touchWith(touch);
     return docJson({ ...doc, data: null }, data);
   }
 
@@ -1062,7 +1119,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return this.writeDoc(c, i, { ...base, ...p.data }, a);
   }
 
-  delete(collection: string, id: string, actor: string): void {
+  delete(
+    collection: string,
+    id: string,
+    actor: string,
+    touch?: AgentTouch,
+  ): void {
     const c = dataName(collection, "collection");
     const i = dataName(id, "id");
     const a = actorOf(actor);
@@ -1092,6 +1154,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
           }),
         ),
       );
+    this.touchWith(touch);
   }
 
   /**
@@ -1549,14 +1612,63 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return seats;
   }
 
-  /** The frame every counted socket should hold now, as one serialized string. */
-  private presenceFrame(now: number): string {
-    const r = buildRoster(this.presenceSeats(now), [], now);
-    return JSON.stringify({
-      type: "presence",
-      viewers: r.viewers,
-      total: r.total,
-    });
+  /** The agents seen recently: rows past AGENT_PRESENT_MS are not on the roster. */
+  private agentRows(): AgentRow[] {
+    return this.sql
+      .exec<{
+        key: string;
+        product: string | null;
+        owner: string;
+        owner_actor: string;
+        label: string | null;
+        since: number;
+        seen: number;
+        last_write: number | null;
+        activity: string | null;
+      }>("select * from viewer_presence_agent")
+      .toArray()
+      .map((r) => ({
+        key: r.key,
+        product: r.product,
+        owner: r.owner,
+        ownerActor: r.owner_actor,
+        label: r.label,
+        since: r.since,
+        seen: r.seen,
+        lastWrite: r.last_write,
+        activity: r.activity,
+      }));
+  }
+
+  /**
+   * The frame every counted socket should hold now, serialized once: the base
+   * one, plus a variant for each person whose token connected an agent with a
+   * private label (only that person's own sockets get it).
+   */
+  private presenceFrames(now: number): {
+    base: string;
+    byActor: Map<string, string>;
+    sig: string;
+  } {
+    const r = buildRoster(this.presenceSeats(now), this.agentRows(), now);
+    const frame = (viewers: PresenceEntry[]) =>
+      JSON.stringify({ type: "presence", viewers, total: r.total });
+    const base = frame(r.viewers);
+    const byActor = new Map<string, string>();
+    for (const [actor, labels] of r.labels)
+      byActor.set(
+        actor,
+        frame(
+          r.viewers.map((v) => {
+            const label = v.kind === "agent" ? labels.get(v.key) : undefined;
+            return label && v.agent
+              ? { ...v, agent: { ...v.agent, label } }
+              : v;
+          }),
+        ),
+      );
+    const sig = [base, ...[...byActor].sort().flat()].join("\n");
+    return { base, byActor, sig: fnv1a(sig).toString(36) };
   }
 
   private presenceState(): { hash: string; sent_at: number } | undefined {
@@ -1565,6 +1677,68 @@ export class ArtifactRuntime extends DurableObject<Env> {
         "select hash, sent_at from viewer_presence_state where id = 1",
       )
       .toArray()[0];
+  }
+
+  /**
+   * Records an AI agent's request (the Worker's fire-and-forget call for a
+   * read that never reaches the DO otherwise; reads and writes that do reach
+   * it carry the touch on their own call).
+   */
+  async touchViewerAgent(t: AgentTouch): Promise<void> {
+    await this.afterViewerAgentTouch(this.recordViewerAgent(t));
+  }
+
+  /**
+   * Upserts the agent's row (synchronously: SQLite is) and returns whether
+   * anything a viewer sees changed: a new agent, one back after its window, a
+   * new activity, or a first write. `since` is kept while the agent stays
+   * present, so its place in the order holds.
+   */
+  private recordViewerAgent(t: AgentTouch): boolean {
+    const now = this.now();
+    const prev = this.sql
+      .exec<{
+        seen: number;
+        last_write: number | null;
+        activity: string | null;
+        since: number;
+      }>(
+        "select seen, last_write, activity, since from viewer_presence_agent where key = ?",
+        t.key,
+      )
+      .toArray()[0];
+    const present = prev !== undefined && now - prev.seen <= AGENT_PRESENT_MS;
+    const editing =
+      prev?.last_write != null && now - prev.last_write <= AGENT_PRESENT_MS;
+    const activity = t.activity ?? (present ? prev.activity : null);
+    this.sql.exec(
+      `insert or replace into viewer_presence_agent
+        (key, product, owner, owner_actor, label, since, seen, last_write, activity)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      t.key,
+      t.product,
+      t.owner,
+      t.ownerActor,
+      t.label,
+      present ? prev.since : now,
+      now,
+      t.write ? now : present ? (prev.last_write ?? null) : null,
+      activity,
+    );
+    return !present || activity !== prev.activity || (t.write && !editing);
+  }
+
+  /** After a touch: a changed roster is flushed, and an alarm is set for the agent's expiry. */
+  private async afterViewerAgentTouch(changed: boolean): Promise<void> {
+    if (changed) await this.viewerPresenceChanged();
+    await this.armAt(this.now() + AGENT_PRESENT_MS + 1);
+  }
+
+  /** A data call's touch, recorded in the same RPC (a read or a write that succeeded). */
+  private touchWith(touch: AgentTouch | undefined): void {
+    if (!touch) return;
+    const changed = this.recordViewerAgent(touch);
+    this.ctx.waitUntil(this.afterViewerAgentTouch(changed));
   }
 
   /** Test view: the grace rows and when the last frame went out. */
@@ -1591,17 +1765,18 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (st) this.sql.exec("delete from viewer_presence_state");
       return null;
     }
-    const frame = this.presenceFrame(now);
-    const hash = fnv1a(frame).toString(36);
-    if (st?.hash === hash) return null;
+    const frames = this.presenceFrames(now);
+    if (st?.hash === frames.sig) return null;
     if (st && now - st.sent_at < PRESENCE_COALESCE_MS)
       return st.sent_at + PRESENCE_COALESCE_MS;
     for (const { ws, meta, p } of counted) {
+      const frame = frames.byActor.get(p.actor) ?? frames.base;
+      const h = fnv1a(frame).toString(36);
       // A socket already holding this frame (the joiner) is not sent it twice.
-      if (p.h === hash) continue;
+      if (p.h === h) continue;
       try {
         ws.send(frame);
-        ws.serializeAttachment({ ...meta, p: { ...p, h: hash } });
+        ws.serializeAttachment({ ...meta, p: { ...p, h } });
       } catch {
         // closing socket
       }
@@ -1609,7 +1784,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     this.sql.exec(
       `insert into viewer_presence_state (id, hash, sent_at) values (1, ?, ?)
        on conflict (id) do update set hash = excluded.hash, sent_at = excluded.sent_at`,
-      hash,
+      frames.sig,
       now,
     );
     return null;
@@ -1651,7 +1826,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
     const meta = this.metaOf(ws) ?? { t: now };
     const p = { ...id, since, ping, actor };
     ws.serializeAttachment({ ...meta, p } satisfies SocketMeta);
-    const frame = this.presenceFrame(now);
+    const frames = this.presenceFrames(now);
+    const frame = frames.byActor.get(actor) ?? frames.base;
     try {
       ws.send(frame);
       ws.serializeAttachment({
@@ -1726,6 +1902,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     for (const ws of this.ctx.getWebSockets(VIEWER_PRESENCE_TAG))
       this.detachSeat(ws);
     this.sql.exec("delete from viewer_presence_left");
+    this.sql.exec("delete from viewer_presence_agent");
     this.sql.exec("delete from viewer_presence_state");
   }
 
@@ -1767,6 +1944,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     version: number,
     thumb = false,
     event?: VersionEvent,
+    touch?: AgentTouch,
   ): Promise<{ ms: number }> {
     if (typeof artifactId !== "string" || artifactId.length > 64)
       fail("bad_request", "invalid artifact id");
@@ -1775,6 +1953,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
     // The object's own share of index_enqueue's wall time (returned).
     const t0 = Date.now();
     if (event) this.broadcastVersion(version, event);
+    // A publish or restore by an agent: it is editing. Rides this call, so it
+    // costs no extra request.
+    if (touch) await this.afterViewerAgentTouch(this.recordViewerAgent(touch));
     const due = this.now() + INDEX_DELAY_MS;
     this.sql.exec(
       `insert into index_job (id, artifact_id, version, attempts, due, seq) values (1, ?, ?, 0, ?, 1)
@@ -1968,7 +2149,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       !job &&
       !thumb &&
       sockets.length === 0 &&
-      this.pendingViewerPresence().left === 0
+      this.pendingViewerPresence().left === 0 &&
+      this.agentRows().length === 0
     )
       return;
     const now = this.now();
@@ -1986,6 +2168,19 @@ export class ArtifactRuntime extends DurableObject<Env> {
     }
     // Viewer presence: expired grace rows leave, then one coalesced frame.
     this.sql.exec("delete from viewer_presence_left where until <= ?", now);
+    // Agents past their window leave the roster (buildRoster already drops
+    // them); the rows go, and the alarm wakes again when the next one expires
+    // or stops counting as editing.
+    this.sql.exec(
+      "delete from viewer_presence_agent where seen + ? < ?",
+      AGENT_PRESENT_MS,
+      now,
+    );
+    for (const a of this.agentRows()) {
+      next = Math.min(next, a.seen + AGENT_PRESENT_MS + 1);
+      if (a.lastWrite !== null && now - a.lastWrite <= AGENT_PRESENT_MS)
+        next = Math.min(next, a.lastWrite + AGENT_PRESENT_MS + 1);
+    }
     const flushDue = this.flushViewerPresence();
     if (flushDue !== null) next = Math.min(next, flushDue);
     const graceEnd = this.sql
@@ -2226,6 +2421,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       }
     }
     this.sql.exec("delete from viewer_presence_left where actor = ?", a);
+    // Their agents go with them: a revoked person's agents leave at once.
+    this.sql.exec("delete from viewer_presence_agent where owner_actor = ?", a);
     this.ctx.waitUntil(this.viewerPresenceChanged());
     return socks.size;
   }
@@ -2611,6 +2808,7 @@ type RpcMethods =
   | "closeSockets"
   | "closeActor"
   | "closeAllSockets"
+  | "touchViewerAgent"
   | "scheduleIndex"
   | "pendingIndex"
   | "storageDelete"

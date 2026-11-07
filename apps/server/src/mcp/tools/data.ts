@@ -77,7 +77,10 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
     (i) =>
       guard(async () => {
         const s = await store(t, i.id, "data.read");
-        const doc = await runtimeCall(() => s.get(i.collection, i.docId));
+        const touch = await t.touch(i.id, false, i.activity);
+        const doc = await runtimeCall(() =>
+          s.get(i.collection, i.docId, touch),
+        );
         return ok(
           `${doc ? "Found" : "No"} document "${i.docId}" in ${where(i.id, i.collection)}`,
           { doc },
@@ -91,8 +94,9 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
     (i) =>
       guard(async () => {
         const s = await store(t, i.id, "data.read");
+        const touch = await t.touch(i.id, false, i.activity);
         const page = await runtimeCall(() =>
-          s.list(i.collection, i.cursor, i.limit),
+          s.list(i.collection, i.cursor, i.limit, touch),
         );
         return ok(
           `${page.items.length} documents in ${where(i.id, i.collection)}${page.nextCursor ? " (more: pass cursor)" : ""}`,
@@ -107,7 +111,10 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
     (i) =>
       guard(async () => {
         const s = await store(t, i.id, "data.read");
-        const page = await runtimeCall(() => s.query(i.collection, i.query));
+        const touch = await t.touch(i.id, false, i.activity);
+        const page = await runtimeCall(() =>
+          s.query(i.collection, i.query, touch),
+        );
         return ok(
           `${page.items.length} matching documents in ${where(i.id, i.collection)}${page.nextCursor ? " (more: pass cursor)" : ""}`,
           page,
@@ -122,8 +129,9 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
       guard(async () => {
         const { s, creator } = await storeOf(t, i.id, "data.write");
         await freeDataCap(t.env, s, i.collection, i.docId, true);
+        const touch = await t.touch(i.id, true, i.activity);
         const doc = await runtimeCall(() =>
-          s.set(i.collection, i.docId, i.data, actor),
+          s.set(i.collection, i.docId, i.data, actor, touch),
         );
         await counted(creator);
         return ok(`Set "${i.docId}" in ${where(i.id, i.collection)}`, doc);
@@ -137,8 +145,9 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
       guard(async () => {
         const { s, creator } = await storeOf(t, i.id, "data.write");
         await freeDataCap(t.env, s, i.collection, i.docId, true);
+        const touch = await t.touch(i.id, true, i.activity);
         const doc = await runtimeCall(() =>
-          s.update(i.collection, i.docId, i.patch, actor),
+          s.update(i.collection, i.docId, i.patch, actor, touch),
         );
         await counted(creator);
         return ok(`Updated "${i.docId}" in ${where(i.id, i.collection)}`, doc);
@@ -152,7 +161,8 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
       guard(async () => {
         const { s, creator } = await storeOf(t, i.id, "data.write");
         await freeDataCap(t.env, s, i.collection, i.docId, false);
-        await runtimeCall(() => s.delete(i.collection, i.docId, actor));
+        const touch = await t.touch(i.id, true, i.activity);
+        await runtimeCall(() => s.delete(i.collection, i.docId, actor, touch));
         await counted(creator);
         return ok(`Deleted "${i.docId}" from ${where(i.id, i.collection)}`, {
           id: i.id,

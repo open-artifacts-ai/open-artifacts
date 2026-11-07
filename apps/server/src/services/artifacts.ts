@@ -63,6 +63,10 @@ import { logError, logInfo, logWarn } from "../log.js";
 import { runtimeStub, type VersionEvent } from "../runtime/do.js";
 import { closeRuntimeSockets } from "../runtime/revoke.js";
 import {
+  type AgentTouchInput,
+  safeViewerAgentTouch,
+} from "../runtime/viewer-presence-agent.js";
+import {
   agentFor,
   isPrivateAgent,
   ownersAgent,
@@ -120,14 +124,23 @@ export async function enqueueIndex(
   version: number,
   thumb = false,
   event?: VersionEvent,
+  touch?: AgentTouchInput,
 ): Promise<void> {
   // Wall time of the stub call (placement, cold start, round trip): slow
   // hosted installs need it measured.
   const t0 = Date.now();
   let doMs: number | undefined;
   try {
-    doMs = (await runtimeStub(env, id).scheduleIndex(id, version, thumb, event))
-      .ms;
+    // An agent's publish or restore rides this same call as a presence touch.
+    doMs = (
+      await runtimeStub(env, id).scheduleIndex(
+        id,
+        version,
+        thumb,
+        event,
+        await safeViewerAgentTouch(env, id, touch),
+      )
+    ).ms;
   } catch (e) {
     logError("index_enqueue_failed", e, { artifactId: id, version });
   } finally {
@@ -194,6 +207,7 @@ export async function publish(
   agent: AgentAttr | null,
   ctx?: Ctx,
   mode: PublishMode = "any",
+  touch?: AgentTouchInput,
 ): Promise<PublishResult> {
   // Under a suspension nothing becomes public: create and new version alike.
   refuseSuspendedPublic(user, input.visibility);
@@ -607,7 +621,14 @@ export async function publish(
   await later(
     ctx,
     Promise.all([
-      enqueueIndex(env, id, version, true, versionEvent(user, agent, now)),
+      enqueueIndex(
+        env,
+        id,
+        version,
+        true,
+        versionEvent(user, agent, now),
+        touch,
+      ),
       create ? null : changedNotices(env, id, version, user.id),
     ]),
   );
@@ -1507,6 +1528,7 @@ export async function restoreVersion(
   v: number,
   agent: AgentAttr | null,
   ctx?: Ctx,
+  touch?: AgentTouchInput,
 ): Promise<PublishResult> {
   await authorize(env, asUser(user), id, "restore");
   const src = await env.DB.prepare(
@@ -1543,7 +1565,14 @@ export async function restoreVersion(
   await later(
     ctx,
     Promise.all([
-      enqueueIndex(env, id, version, true, versionEvent(user, agent, now, v)),
+      enqueueIndex(
+        env,
+        id,
+        version,
+        true,
+        versionEvent(user, agent, now, v),
+        touch,
+      ),
       changedNotices(env, id, version, user.id),
     ]),
   );
