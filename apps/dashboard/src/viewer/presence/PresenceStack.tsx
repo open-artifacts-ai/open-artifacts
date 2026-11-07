@@ -124,7 +124,7 @@ function More({
         className="w-[268px] p-1.5"
         aria-label={label}
       >
-        <div className="px-2 pb-1 pt-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+        <div className="px-2 pb-1 pt-1.5 text-xs font-semibold text-muted-foreground">
           {label}
         </div>
         {list}
@@ -134,8 +134,8 @@ function More({
 }
 
 /**
- * Who else is here (#949): 28px faces, 4px apart, no overlap, in the order the
- * server sent. `total` counts OTHERS (usePresence subtracts the caller), so
+ * Who else is here (#949): 28px faces, 4px apart, no overlap, in the order given
+ * (usePresence puts the oldest arrival first). `total` counts OTHERS (usePresence subtracts the caller), so
  * "+N" is `total` minus the faces shown, even when the list is capped.
  */
 export function PresenceStack({

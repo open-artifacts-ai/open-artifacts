@@ -3,7 +3,9 @@ import { useCallback, useState } from "react";
 
 /**
  * The roster of other viewers, fed by `useLiveVersions`' `onPresence`. `you`
- * (the caller's own key, from hello) is dropped; order is the server's.
+ * (the caller's own key, from hello) is dropped. The server sends the most
+ * recent arrival first; we reverse it, so the oldest shows first and a newcomer
+ * lands in "+N" while the visible faces stay put.
  * `total` counts OTHERS: the server's total is taken over all entries before
  * the list cap, so it always includes the caller (even when the cap cuts the
  * caller's face from `viewers`). When `you` is known, one is subtracted. A
@@ -16,7 +18,7 @@ export function usePresence() {
     total: number;
   }>({ others: [], total: 0 });
   const onPresence = useCallback((f: PresenceFrame, you?: string) => {
-    const others = f.viewers.filter((v) => v.key !== you);
+    const others = f.viewers.filter((v) => v.key !== you).reverse();
     setState({
       others,
       total: Math.max(0, f.total - (you !== undefined ? 1 : 0)),

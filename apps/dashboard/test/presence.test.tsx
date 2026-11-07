@@ -119,7 +119,7 @@ describe("usePresence", () => {
     return h;
   };
 
-  it("hides you and keeps order", async () => {
+  it("hides you and reverses the server's newest-first order (oldest first)", async () => {
     events.presenceYou = () => ME.key;
     const h = setup();
     await waitFor(() => expect(events.connections(ID)).toBe(1));
@@ -127,7 +127,7 @@ describe("usePresence", () => {
       events.emitPresence(ID, [B, ME, A], ME.key);
     });
     await waitFor(() => expect(h.result.current.total).toBe(2));
-    expect(h.result.current.others.map((e) => e.name)).toEqual(["Bo", "Ada"]);
+    expect(h.result.current.others.map((e) => e.name)).toEqual(["Ada", "Bo"]);
     // The server's total counts the caller; ours counts others.
     expect(h.result.current.total).toBe(2);
   });
@@ -150,6 +150,30 @@ describe("usePresence", () => {
     );
     expect(h.result.current.total).toBe(149);
     expect(h.result.current.others).toHaveLength(2);
+  });
+
+  it("newest-first from the server becomes oldest first; a newcomer goes last", () => {
+    const h = renderHook(() => usePresence());
+    act(() =>
+      h.result.current.onPresence({
+        type: "presence",
+        viewers: [B, A],
+        total: 2,
+      }),
+    );
+    expect(h.result.current.others.map((e) => e.name)).toEqual(["Ada", "Bo"]);
+    act(() =>
+      h.result.current.onPresence({
+        type: "presence",
+        viewers: [ME, B, A],
+        total: 3,
+      }),
+    );
+    expect(h.result.current.others.map((e) => e.name)).toEqual([
+      "Ada",
+      "Bo",
+      "Me",
+    ]);
   });
 
   it("a gone artifact clears the roster", async () => {
