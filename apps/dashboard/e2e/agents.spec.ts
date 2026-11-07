@@ -102,4 +102,16 @@ test("Token tab and token-created dialog wrap their commands at 390px", async ({
     expect(copy.x).toBeGreaterThanOrEqual(pre.x + pre.width);
     expect(copy.y - pre.y).toBeLessThan(8);
   }
+  // The body is taller than the phone screen: the dialog caps itself and
+  // scrolls, so Done stays reachable instead of hanging past the viewport.
+  const box = await dialog.evaluate((d) => ({
+    height: d.getBoundingClientRect().height,
+    scrollable: d.scrollHeight - d.clientHeight,
+    overflow: getComputedStyle(d).overflowY,
+  }));
+  expect(box.height).toBeLessThanOrEqual(844);
+  expect(box.overflow).toBe("auto");
+  expect(box.scrollable).toBeGreaterThan(0);
+  await dialog.getByRole("button", { name: "Done" }).click();
+  await expect(dialog).toBeHidden();
 });
