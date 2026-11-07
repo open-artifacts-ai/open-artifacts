@@ -4,6 +4,7 @@
 
 import type { ArtifactSummary, Me } from "@oa/shared";
 import {
+  act,
   cleanup,
   fireEvent,
   renderHook,
@@ -399,7 +400,11 @@ const geometry = (k: keyof typeof box) => ({
     if (this.dataset.slot === "table-container") box[k] = v;
   },
 });
-const observers: { disconnect: ReturnType<typeof vi.fn> }[] = [];
+const observers: {
+  disconnect: ReturnType<typeof vi.fn>;
+  observe: ReturnType<typeof vi.fn>;
+  fire: () => void;
+}[] = [];
 const fit = (scrollWidth: number, clientWidth: number, scrollLeft = 0) =>
   Object.assign(box, { scrollWidth, clientWidth, scrollLeft });
 const scrollTo = (left: number) => {
@@ -410,6 +415,7 @@ const scrollTo = (left: number) => {
 };
 
 describe("the comparison table's scroll fade", () => {
+  const realRO = globalThis.ResizeObserver;
   beforeAll(() => {
     for (const k of ["scrollWidth", "clientWidth", "scrollLeft"] as const)
       Object.defineProperty(HTMLElement.prototype, k, geometry(k));
@@ -417,12 +423,15 @@ describe("the comparison table's scroll fade", () => {
       observe = vi.fn();
       unobserve = vi.fn();
       disconnect = vi.fn();
-      constructor() {
+      fire: () => void;
+      constructor(cb: () => void) {
+        this.fire = cb;
         observers.push(this);
       }
     } as unknown as typeof ResizeObserver;
   });
   afterAll(() => {
+    globalThis.ResizeObserver = realRO;
     for (const k of ["scrollWidth", "clientWidth", "scrollLeft"] as const)
       delete (HTMLElement.prototype as unknown as Record<string, unknown>)[k];
   });
@@ -450,15 +459,45 @@ describe("the comparison table's scroll fade", () => {
     expect(screen.queryByTestId("table-fade")).toBeNull();
   });
 
-  it("disconnects its ResizeObserver on unmount", async () => {
+  it("follows a resize: the fade appears once the table starts to overflow", async () => {
+    fit(300, 300);
+    observers.length = 0;
+    mountHosted("/settings/plan", { billing: TRIAL });
+    await screen.findByRole("button", { name: "Pay $1/month" });
+    expect(screen.queryByTestId("table-fade")).toBeNull();
+    fit(600, 300);
+    act(() => {
+      for (const o of observers) o.fire();
+    });
+    await screen.findByTestId("table-fade");
+  });
+
+  it("observes the table as well as its box", async () => {
     fit(600, 300);
     observers.length = 0;
+    mountHosted("/settings/plan", { billing: TRIAL });
+    await screen.findByTestId("table-fade");
+    const seen = observers.flatMap((o) =>
+      o.observe.mock.calls.map((c) => c[0]),
+    );
+    expect(seen.some((n) => (n as HTMLElement).tagName === "TABLE")).toBe(true);
+    expect(
+      seen.some((n) => (n as HTMLElement).dataset.slot === "table-container"),
+    ).toBe(true);
+  });
+
+  it("cleans up on unmount: scroll listener removed, observer disconnected", async () => {
+    fit(600, 300);
+    observers.length = 0;
+    const remove = vi.spyOn(HTMLElement.prototype, "removeEventListener");
     mountHosted("/settings/plan", { billing: TRIAL });
     await screen.findByTestId("table-fade");
     cleanup();
     expect(observers.some((o) => o.disconnect.mock.calls.length > 0)).toBe(
       true,
     );
+    expect(remove.mock.calls.some(([type, ,]) => type === "scroll")).toBe(true);
+    remove.mockRestore();
   });
 });
 

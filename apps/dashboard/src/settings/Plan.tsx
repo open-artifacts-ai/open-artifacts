@@ -175,6 +175,9 @@ function ScrollFade({ children }: { children: ReactNode }) {
     el.addEventListener("scroll", update, { passive: true });
     const ro = new ResizeObserver(update);
     ro.observe(el);
+    // A content-width change (a font swap) resizes the table, not the box.
+    const t = el.querySelector("table");
+    if (t) ro.observe(t);
     return () => {
       el.removeEventListener("scroll", update);
       ro.disconnect();
