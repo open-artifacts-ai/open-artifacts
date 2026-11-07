@@ -1,4 +1,9 @@
-import { type ArtifactSummary, ArtifactSummarySchema, R } from "@oa/shared";
+import {
+  type ArtifactSummary,
+  ArtifactSummarySchema,
+  type PresenceFrame,
+  R,
+} from "@oa/shared";
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiClientError, api } from "../api/client";
@@ -129,8 +134,12 @@ export function useLiveVersions(o: {
   frame: () => FrameState;
   /** A menu or dialog is open (not the side panel). */
   chromeOpen: () => boolean;
+  /** Roster frames (#949). Held in a ref: a new identity never reconnects the socket. */
+  onPresence?: (f: PresenceFrame, you: string | undefined) => void;
 }) {
   const { id, embed } = o;
+  const presenceRef = useRef(o.onPresence);
+  presenceRef.current = o.onPresence;
   const qc = useQueryClient();
   const { text: announcement, announce } = useAnnouncer();
   // The version shown while following Current: the first one seen, then
@@ -317,8 +326,16 @@ export function useLiveVersions(o: {
       },
       // Deleted is final; "changed" may not concern this viewer: re-check
       // (readable: reconnect and carry on; 404: no longer available).
-      onGone: (reason: GoneReason) =>
-        reason === "deleted" ? goGone("deleted") : void check(),
+      onPresence: (f, you) => presenceRef.current?.(f, you),
+      onGone: (reason: GoneReason) => {
+        // The roster belongs to a socket that is gone: clear it.
+        presenceRef.current?.(
+          { type: "presence", viewers: [], total: 0 },
+          undefined,
+        );
+        if (reason === "deleted") goGone("deleted");
+        else void check();
+      },
       onDown: () => {
         down.current = true;
       },
