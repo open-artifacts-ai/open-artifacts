@@ -18,6 +18,8 @@ export type AgentRecord = {
    * (a `-2`, a refusal) never is one. Unset: compare with `proposedName`.
    */
   sessionName?: string;
+  /** The name the hub was last told for this agent (agent_up or rename). */
+  sentName?: string;
   /**
    * #1295: the agent_ref this session took over from after a /clear (the same
    * live process reported a new session). Sent on `agent_up` to a hub that

@@ -303,7 +303,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     const id = frameId();
     const kind = rec.kind;
     upIds.set(id, { ref: rec.ref, kind });
-    return hub.send({
+    const sent = hub.send({
       v: 1,
       id,
       type: "agent_up",
@@ -317,6 +317,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         ? { replaces: rec.replaces }
         : {}),
     });
+    if (sent) rec.sentName = rec.proposedName;
+    return sent;
   };
   /** Never a loop: one retry after a long wait; a reconnect replays it sooner. */
   const markLimited = (ref: string, message: string) => {
@@ -668,9 +670,22 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const renameIfChanged = (rec: AgentRecord, name: string) => {
     const was = rec.sessionName ?? rec.proposedName;
     rec.sessionName = name;
-    if (name === was) return;
+    // Never a name nobody chose: empty, or the `claude-<pid>` fallback.
+    if (name === was || name === "" || name === `claude-${rec.pid}`) return;
     rec.proposedName = name;
+    flushRename(rec);
+  };
+  /**
+   * Tells the hub a name it has not heard, once the agent is registered on a
+   * helloed link. Called on each change, and again after hello_ok and agent_ok
+   * for a change noted while the link or a handover was not ready.
+   */
+  const flushRename = (rec: AgentRecord) => {
     if (
+      rec.kind !== "claude-code" ||
+      !rec.live ||
+      rec.sentName === undefined ||
+      rec.sentName === rec.proposedName ||
       !hub.open ||
       !hubHelloed ||
       rec.replaces !== undefined ||
@@ -679,14 +694,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       return;
     const id = frameId();
     renameIds.set(id, rec.ref);
-    hub.send({
-      v: 1,
-      id,
-      type: "rename",
-      agent_ref: rec.ref,
-      proposed_name: fitName(name, 64),
-      name_kind: "chosen",
-    });
+    if (
+      hub.send({
+        v: 1,
+        id,
+        type: "rename",
+        agent_ref: rec.ref,
+        proposed_name: fitName(rec.proposedName, 64),
+        name_kind: "chosen",
+      })
+    )
+      rec.sentName = rec.proposedName;
+    else renameIds.delete(id);
   };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
@@ -832,6 +851,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             agent.busName = frame.bus_name;
             // Answered: the hub knows the new ref, the handover is done.
             delete agent.replaces;
+            flushRename(agent);
           }
           // Registered on this link: its sends lost to the last one go again.
           resends.up(frame.agent_ref);
@@ -933,6 +953,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
             if (rec.live && rec.replaces !== undefined) announceUp(rec);
+          for (const rec of agents.all()) flushRename(rec);
           // Queued replies go now that the link says what it supports.
           outbox.flush();
           return;
@@ -1273,6 +1294,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           global: ns.global,
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
+          ...(mine ? { sessionName: mine.name } : {}),
           cwd,
           live: true,
         });

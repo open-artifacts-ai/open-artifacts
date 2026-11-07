@@ -100,4 +100,52 @@ describe("session rename after connect (#1635)", () => {
     await settle();
     expect(h.of("rename")).toHaveLength(0);
   });
+
+  it("a hello that beats the tick after a /clear sets the name: no rename", async () => {
+    const { h, d } = await start();
+    write(d, 4242, "s-b", "open-artifacts-9e");
+    await h.adapter("s-b", {
+      kind: "claude-code",
+      cwd: "/repo",
+      pid: 4242,
+      proposed_name: "open-artifacts-9e",
+    });
+    await settle();
+    await settle();
+    expect(h.of("rename")).toHaveLength(0);
+  });
+
+  it("an empty name or the claude-<pid> fallback is not a rename", async () => {
+    const { h, d } = await start();
+    write(d, 4242, "s-a", "");
+    await settle();
+    write(d, 4242, "s-a", "claude-4242");
+    await settle();
+    expect(h.of("rename")).toHaveLength(0);
+    write(d, 4242, "s-a", "OA Bus");
+    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(1));
+    expect(h.of("rename")[0]?.proposed_name).toBe("OA Bus");
+  });
+
+  it("a rename noted before hello_ok goes once hello_ok arrives", async () => {
+    const { h, d } = await start();
+    const before = h.of("agent_up").length;
+    h.hubSock()?.close();
+    await vi.waitFor(() =>
+      expect(h.of("agent_up").length).toBeGreaterThan(before),
+    );
+    write(d, 4242, "s-a", "OA Bus");
+    await settle();
+    expect(h.of("rename")).toHaveLength(0);
+    h.toDaemon({
+      id: "w2",
+      type: "hello_ok",
+      machine_id: "1".repeat(16),
+      machine_label: "laptop",
+      server_version: "1",
+      caps: [BUS_CAPS.ids, BUS_CAPS.mailbox],
+    });
+    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(1));
+    expect(h.of("rename")[0]?.proposed_name).toBe("OA Bus");
+  });
 });
