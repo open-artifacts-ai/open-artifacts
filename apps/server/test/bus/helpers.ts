@@ -122,7 +122,7 @@ export function upgrade(
 }
 
 const opened = new Set<Daemon>();
-const rawSockets = new Set<WebSocket>();
+const rawSockets = new Map<WebSocket, Promise<unknown>>();
 
 /**
  * Registers a socket a test opened without `daemon()` (a raw upgrade, a hub
@@ -130,7 +130,10 @@ const rawSockets = new Set<WebSocket>();
  * hub's last-socket work does not run at worker teardown.
  */
 export function trackSocket<T extends WebSocket>(ws: T): T {
-  rawSockets.add(ws);
+  rawSockets.set(
+    ws,
+    new Promise((r) => ws.addEventListener("close", r, { once: true })),
+  );
   return ws;
 }
 
@@ -147,16 +150,19 @@ afterAll(async () => {
     } catch {
       // Already closed.
     }
-  for (const ws of rawSockets) {
-    if (ws.readyState === 3) continue;
-    closes.push(new Promise((r) => ws.addEventListener("close", r)));
+  for (const [ws, closed] of rawSockets) {
+    closes.push(closed);
     try {
       ws.close(1000, "bye");
     } catch {
       // Already closed or never accepted.
     }
   }
-  await Promise.all(closes);
+  // Bounded: a socket the hub already tore down reported its close earlier.
+  await Promise.race([
+    Promise.all(closes),
+    new Promise((r) => setTimeout(r, 3000)),
+  ]);
   opened.clear();
   rawSockets.clear();
   const ns = e.USER_PRESENCE;
