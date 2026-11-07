@@ -28,6 +28,8 @@ export type HelloResult = {
   bus_name: string;
   namespace: string;
   global: boolean;
+  /** ADAPTER_CAPS this daemon accepts; sent only to an adapter that listed `rename`. */
+  caps?: string[];
 };
 export type ServeOptions = {
   path: string;

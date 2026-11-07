@@ -750,6 +750,8 @@ type Link = {
   welcome: Frame;
   request: (frame: Json, timeoutMs?: number) => Promise<Frame>;
   ack: (msgId: string) => void;
+  /** #1635: tell the daemon the session's new name; false when this daemon does not take it. */
+  rename: (name: string) => boolean;
   closed: () => boolean;
   close: () => void;
 };
@@ -809,6 +811,14 @@ function open(
         }),
       // Fire-and-forget: the daemon answers an ack with nothing.
       ack: (msgId) => write({ type: "ack", id: `ack-${++seq}`, msg_id: msgId }),
+      // Only to a daemon whose welcome listed `rename`: an older one has no such frame.
+      rename: (name) => {
+        const caps = link.welcome.caps;
+        if (ended || !Array.isArray(caps) || !caps.includes("rename"))
+          return false;
+        write({ type: "rename", id: `rename-${++seq}`, name });
+        return true;
+      },
       closed: () => ended,
       close: () => {
         ended = true;
@@ -892,7 +902,8 @@ function open(
         proposed_name: id.name,
         // #1295: this asset decodes away rows and the new refusals.
         // #1525: and a config file that is pending approval.
-        caps: ["mailbox", "pending"],
+        // #1635: and may send a rename.
+        caps: ["mailbox", "pending", "rename"],
         attest: start ? { proc_start: start } : {},
       }),
     );
@@ -1015,6 +1026,9 @@ export default function oaBus(pi: Pi): void {
         }
         current = l;
         refusals = 0;
+        // Renamed while this hello was in flight (#1635).
+        if (identity.name !== id.name && identity.name !== identity.kind)
+          l.rename(identity.name);
         return l;
       },
       (e: unknown) => {
@@ -1042,6 +1056,30 @@ export default function oaBus(pi: Pi): void {
    * sets `agent`.
    */
   const subagent = (ctx: Ctx | undefined) => ctx?.agent?.kind === "sub";
+
+  /**
+   * #1635: the session was renamed (/name, --name, setSessionName). One frame
+   * per change; nothing for the fallback name. The identity carries the name,
+   * so a reconnect's hello proposes the new one.
+   */
+  const renamed = (ctx: Ctx) => {
+    if (stopped || !identity) return;
+    const id = identityOf(ctx);
+    if (id.ref !== identity.ref || id.name === identity.name) return;
+    identity = { ...identity, name: id.name };
+    if (id.name === id.kind) return;
+    // An open link tells the daemon now; a daemon without the cap, or no
+    // link, learns it from the next hello.
+    if (current && !current.closed() && current.ref === id.ref)
+      current.rename(id.name);
+  };
+  pi.on("session_info_changed", (_event, ctx) => {
+    if (!subagent(ctx)) renamed(ctx);
+  });
+  // omp may lack the event: a turn start checks too, and costs nothing unchanged.
+  pi.on("turn_start", (_event, ctx) => {
+    if (!subagent(ctx)) renamed(ctx);
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     if (subagent(ctx)) return;
