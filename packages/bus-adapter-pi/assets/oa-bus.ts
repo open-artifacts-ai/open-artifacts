@@ -734,18 +734,20 @@ function procStart(): string | undefined {
 }
 
 /**
- * A session name as typed (#1635), the way a Claude session's name reaches the
- * hub: control characters stripped, trimmed, cut to 64 without splitting a
- * surrogate pair; the kind when nothing is left. The hub's candidateName does
- * the rest (collapses spaces, falls back when the name is not a valid bus name).
+ * A session name as typed (#1635), made a valid bus name the way the hub
+ * (BusNameSchema) wants one: letters, digits, single spaces, `.` `_` `-` keep
+ * their place and case; each run of anything else (controls included) becomes
+ * `-`. Starts with a letter or digit, ends with a letter, digit, `_` or `-`,
+ * at most 64 characters; the kind when nothing is left. The hub would turn a
+ * name with any other character into `agent-N`, so none may reach it.
  */
 function nameOf(title: string | undefined, kind: string): string {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
-  let cut = (title ?? "").replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
-  cut = cut.slice(0, 64);
-  const last = cut.charCodeAt(cut.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
-  cut = (cut as string & { toWellFormed(): string }).toWellFormed().trim();
+  const cut = (title ?? "")
+    .replace(/[^A-Za-z0-9 ._-]+/g, "-")
+    .replace(/ {2,}/g, " ")
+    .replace(/^[ ._-]+/, "")
+    .slice(0, 64)
+    .replace(/[ .]+$/, "");
   return cut || kind;
 }
 

@@ -6,6 +6,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BusNameSchema } from "../../bus-protocol/src/names.ts";
 import oa_bus from "../assets/oa-bus.ts";
 
 type Frame = Record<string, unknown> & { type: string; id: string };
@@ -147,13 +148,26 @@ describe("pi rename (#1635)", () => {
       "OA Agent Experience Renamed",
     );
     expect(await sent("  Caf\u00e9 \u00fcber (v2)!\u0007 ")).toBe(
-      "Caf\u00e9 \u00fcber (v2)!",
+      "Caf- -ber -v2-",
     );
+    expect(await sent("Backend: #1583")).toBe("Backend- -1583");
     const long = await sent(`${"ab ".repeat(30)}tail`);
     expect(long).toHaveLength(64);
     expect(long.startsWith("ab ab")).toBe(true);
     const emoji = await sent(`${"a".repeat(63)}\u{1F600}`);
-    expect(emoji).toBe("a".repeat(63));
+    expect(emoji).toBe(`${"a".repeat(63)}-`);
+    let seq = 0;
+    for (const n of [
+      "OA Agent Experience Renamed",
+      "Backend: #1583",
+      "x.",
+      "..a..",
+      "- - -",
+      "!!! b !!!",
+    ]) {
+      const out = await sent(`${n} ${++seq}`);
+      expect(BusNameSchema.safeParse(out).success, out).toBe(true);
+    }
   });
 
   it("sends nothing to a daemon whose welcome lacks the cap", async () => {
