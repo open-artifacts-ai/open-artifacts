@@ -126,17 +126,17 @@ it.each([
   [
     "lapsed",
     "This instance is read-only until billing is sorted out. Ask your instance owner.",
-    "This instance is read-only until billing is sorted out. Update billing to fix it.",
+    "This instance is read-only until billing is sorted out. Update billing to fix it. Reading and sharing still work. Nothing has been deleted.",
   ],
   [
     "payment_failed",
     "This instance is read-only until billing is sorted out. Ask your instance owner.",
-    "This instance is read-only until billing is sorted out. Update billing to fix it.",
+    "This instance is read-only until billing is sorted out. Update billing to fix it. Reading and sharing still work. Nothing has been deleted.",
   ],
   [
     "suspended",
     "This instance is suspended. Ask your instance owner.",
-    "This instance is suspended. Email support.",
+    "This instance is suspended. Email support. Reading and sharing still work. Nothing has been deleted.",
   ],
   [
     "billing_unreachable",

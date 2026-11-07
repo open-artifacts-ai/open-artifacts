@@ -163,7 +163,13 @@ it("Plan and billing: a Solo trial shows its end and the two upgrades", async ()
     await screen.findByRole("heading", { name: "Plan and billing" }),
   ).toBeVisible();
   expect(screen.getAllByText("Solo").length).toBeGreaterThan(0);
-  expect(screen.getByText("Trial ends Dec 1, 2026.")).toBeVisible();
+  expect(
+    screen.getByText(
+      "Your free month ends Dec 1, 2026. Then $1/month or $12/year.",
+    ),
+  ).toBeVisible();
+  // Solo is a flat price per instance: no creator count.
+  expect(screen.queryByText("Creators this month")).toBeNull();
   expect(screen.getByRole("button", { name: "Upgrade to Team" })).toBeVisible();
   expect(
     screen.getByRole("button", { name: "Upgrade to Business" }),
@@ -285,4 +291,43 @@ it("self-hosted installs have no Plan and billing tab", async () => {
   mountHosted("/settings/profile", { selfHosted: true });
   await screen.findByRole("heading", { name: "Settings" });
   expect(screen.queryByRole("link", { name: "Plan and billing" })).toBeNull();
+});
+
+it("Plan and billing: an ended trial is titled Trial ended, with no price row", async () => {
+  mountHosted(
+    "/settings/plan",
+    {
+      billing: {
+        tier: "trial",
+        status: "lapsed",
+        trialEndsAt: null,
+        graceUntil: null,
+        readOnly: true,
+        reason: "trial_ended",
+      },
+    },
+    lockedAdmin,
+  );
+  expect(await screen.findByText("Trial ended")).toBeVisible();
+  expect(screen.queryByText("Business trial")).toBeNull();
+  expect(screen.queryByText("Price", { selector: "dt" })).toBeNull();
+});
+
+it("Plan and billing: Pay $1/month is the primary button, the rest are outline", async () => {
+  mountHosted("/settings/plan", { billing: TRIAL });
+  const month = await screen.findByRole("button", { name: "Pay $1/month" });
+  const cls = (n: string) =>
+    screen.getByRole("button", { name: n }).getAttribute("data-variant");
+  expect(month.getAttribute("data-variant")).toBe("default");
+  for (const n of ["Pay $12/year", "Upgrade to Business", "Upgrade to Team"])
+    expect(cls(n)).toBe("outline");
+});
+
+it("Plan and billing: the footer scopes per-creator billing to Team and Business", async () => {
+  mountHosted("/settings/plan", { billing: TRIAL });
+  expect(
+    await screen.findByText(
+      "Team and Business bill per creator: people who publish or edit live data in a month. Viewers are free.",
+    ),
+  ).toBeVisible();
 });

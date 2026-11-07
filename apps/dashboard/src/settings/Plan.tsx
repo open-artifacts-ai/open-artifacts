@@ -59,7 +59,7 @@ const CMP: { row: string; cells: Record<Column, string> }[] = [
   {
     row: "Price",
     cells: {
-      solo: "$1 a month or $12 a year",
+      solo: "$1 a month or $12 a year, per instance",
       team: "$10 per creator",
       business: "$25 per creator",
     },
@@ -129,9 +129,10 @@ export const planStatus = (
       pill: { label: "Trial", tone: "info" },
       note: {
         tone: "info",
-        text: `Trial ends ${date(b.trialEndsAt)}.${
-          b.tier === "trial" ? " Everything in Business is on." : ""
-        }`,
+        text:
+          b.tier === "trial"
+            ? `Trial ends ${date(b.trialEndsAt)}. Everything in Business is on.`
+            : `Your free month ends ${date(b.trialEndsAt)}. Then $1/month or $12/year.`,
       },
     };
   return { pill: { label: "Active", tone: "ok" } };
@@ -173,6 +174,8 @@ export function Plan() {
   }
   const { pill, note } = planStatus(billing);
   const column = COLUMN[billing.tier];
+  const solo = column === "solo";
+  const ended = billing.readOnly && billing.reason === "trial_ended";
   const paid = billing.tier === "team" || billing.tier === "business";
   const busy = go.isPending;
   return (
@@ -180,7 +183,7 @@ export function Plan() {
       <SettingsCard id="plan-card" title="Plan and billing">
         <div className="flex flex-wrap items-center gap-[var(--oa-space-2)]">
           <b className="text-[length:var(--oa-text-lg)]">
-            {NAME[billing.tier]}
+            {ended ? "Trial ended" : NAME[billing.tier]}
           </b>
           <Badge variant="outline" className={PILL[pill.tone]}>
             {pill.label}
@@ -188,14 +191,18 @@ export function Plan() {
         </div>
         {note && <Notice tone={note.tone}>{note.text}</Notice>}
         <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-[var(--oa-space-4)] gap-y-[var(--oa-space-1)]">
-          {billing.creatorsThisMonth !== undefined && (
+          {!solo && billing.creatorsThisMonth !== undefined && (
             <>
               <dt className={muted}>Creators this month</dt>
               <dd className="m-0">{billing.creatorsThisMonth}</dd>
             </>
           )}
-          <dt className={muted}>Price</dt>
-          <dd className="m-0">{PRICE[billing.tier]}</dd>
+          {!ended && (
+            <>
+              <dt className={muted}>Price</dt>
+              <dd className="m-0">{PRICE[billing.tier]}</dd>
+            </>
+          )}
         </dl>
         <div className="flex flex-wrap items-center gap-[var(--oa-space-2)]">
           {paid || billing.status === "past_due" ? (
@@ -215,6 +222,7 @@ export function Plan() {
                     Pay $1/month
                   </Button>
                   <Button
+                    variant="outline"
                     disabled={busy}
                     onClick={() =>
                       go.mutate({ tier: "solo", interval: "year" })
@@ -225,7 +233,7 @@ export function Plan() {
                 </>
               )}
               <Button
-                variant={column === "solo" ? "outline" : "default"}
+                variant={solo ? "outline" : "default"}
                 disabled={busy}
                 onClick={() => go.mutate({ tier: "business" })}
               >
@@ -280,8 +288,8 @@ export function Plan() {
           </TableBody>
         </Table>
         <p className={`mt-[var(--oa-space-2)] ${muted}`}>
-          Billed per creator: people who publish or edit live data in a month.
-          Viewers are free.
+          Team and Business bill per creator: people who publish or edit live
+          data in a month. Viewers are free.
         </p>
       </section>
     </div>
