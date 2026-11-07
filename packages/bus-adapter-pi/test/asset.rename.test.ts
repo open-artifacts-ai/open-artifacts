@@ -5,8 +5,8 @@ import { mkdtempSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BusNameSchema } from "@oa/bus-protocol";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import oa_bus from "../assets/oa-bus.ts";
 
 type Frame = Record<string, unknown> & { type: string; id: string };
