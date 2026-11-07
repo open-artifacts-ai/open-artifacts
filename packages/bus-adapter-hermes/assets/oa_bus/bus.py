@@ -7,6 +7,7 @@ queued.
 
 import os
 import re
+import sys
 import threading
 
 from . import copy
@@ -37,9 +38,11 @@ def codex_app_server_active():
     """
     try:
         from hermes_cli.codex_runtime_switch import get_current_runtime
-        from hermes_cli.config import load_config
+        from hermes_cli import config
 
-        return get_current_runtime(load_config()) == "codex_app_server"
+        # Read-only callers skip the defensive deepcopy; older Hermes has only load_config.
+        load = getattr(config, "load_config_readonly", None) or config.load_config
+        return get_current_runtime(load()) == "codex_app_server"
     except Exception:
         return None
 
@@ -58,7 +61,45 @@ def context_reaches_model(user_message, history):
     last = next((m for m in reversed(history) if isinstance(m, dict) and m.get("role") == "user"), None)
     # Equal text: a voice turn's API-facing content differs from its clean text, and a
     # message appended after the current one by compaction would differ too.
-    return last is not None and isinstance(last.get("content"), str) and last["content"] == user_message
+    if last is None or not isinstance(last.get("content"), str):
+        return False
+    return _is_gateway_wrapped(last["content"], user_message)
+
+
+def _is_gateway_wrapped(content, user_message):
+    """Whether `content` is `user_message` as the Hermes gateway composes it.
+
+    The gateway may prepend a timestamp (gateway/message_timestamps.py, when
+    gateway.message_timestamps is on) and then, outside it, the Telegram observed group
+    context (gateway/run.py _wrap_current_message_with_observed_context). Only those two
+    exact shapes count; any other prefix means the text is not the current turn's.
+    """
+    if content == user_message:
+        return True
+    rest = content
+    run = sys.modules.get("gateway.run")  # already loaded in a gateway process; never import it
+    obs = getattr(run, "_OBSERVED_GROUP_CONTEXT_HEADER", None)
+    cur = getattr(run, "_CURRENT_ADDRESSED_MESSAGE_HEADER", None)
+    if isinstance(obs, str) and isinstance(cur, str) and obs and cur and rest.startswith(obs + "\n"):
+        marker = "\n\n" + cur + "\n"
+        at = rest.find(marker, len(obs))
+        if at < 0:
+            return False
+        rest = rest[at + len(marker) :]
+        if rest == user_message:
+            return True
+    if not user_message or not rest.endswith(user_message):
+        return False
+    prefix = rest[: -len(user_message)]
+    if not prefix:
+        return True
+    try:
+        from gateway.message_timestamps import strip_leading_message_timestamps
+
+        # The prefix must be nothing but gateway timestamps.
+        return strip_leading_message_timestamps(prefix + "\0")[0] == "\0"
+    except Exception:
+        return False
 
 
 # Hermes has no always-on instruction file for the bus, so these two lines ride in the turn's
