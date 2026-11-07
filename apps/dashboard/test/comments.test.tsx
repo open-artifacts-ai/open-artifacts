@@ -210,6 +210,16 @@ describe("comments: layouts", () => {
     fireEvent.pointerUp(handle, { clientY: 200 });
     fireEvent.click(handle);
     expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    // A tap after a finished drag still toggles (the flag is reset on pointerdown).
+    fireEvent.pointerDown(handle, { clientY: 100 });
+    fireEvent.pointerUp(handle, { clientY: 100 });
+    fireEvent.click(handle);
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    // A cancelled pointer clears the drag: the up that follows is ignored.
+    fireEvent.pointerDown(handle, { clientY: 300 });
+    fireEvent.pointerCancel(handle);
+    fireEvent.pointerUp(handle, { clientY: 100 });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
     const backdrop = document.querySelector("[data-sheet-backdrop]");
     expect(backdrop).not.toBeNull();
     fireEvent.click(backdrop as Element);
@@ -1710,5 +1720,16 @@ describe("comments: unavailable is not forever", () => {
       screen.queryByRole("complementary", { name: "Side panel" }),
     ).toBeNull();
     expect(document.querySelector("aside[aria-label='Side panel']")).toBeNull();
+  });
+});
+
+describe("initials", () => {
+  it("keeps emoji and CJK characters whole", async () => {
+    const { initials } = await import("../src/viewer/comments/CommentsBody");
+    expect(initials("😀 Robot")).toBe("😀R");
+    expect(initials("😀")).toBe("😀");
+    expect(initials("山田 太郎")).toBe("山太");
+    expect(initials("Sam Rivera")).toBe("SR");
+    expect(initials("cursor")).toBe("CU");
   });
 });

@@ -342,12 +342,15 @@ function Composer({
 }
 
 /** Up to two initials of a display name. */
-function initials(name: string): string {
+export function initials(name: string): string {
   const w = name.trim().split(/\s+/).filter(Boolean);
+  const first = (x?: string) => Array.from(x ?? "")[0] ?? "";
   const out =
     w.length > 1
-      ? `${w[0]?.[0]}${w[w.length - 1]?.[0]}`
-      : (w[0] ?? "?").slice(0, 2);
+      ? `${first(w[0])}${first(w[w.length - 1])}`
+      : Array.from(w[0] ?? "?")
+          .slice(0, 2)
+          .join("");
   return out.toUpperCase();
 }
 
