@@ -3254,8 +3254,8 @@ export class WfpProvisioner {
   /**
    * pause and unpause: HOSTS first, then the sign-in copy, under the lease.
    * Pausing writes HOSTS first so exposure drops before anything else;
-   * unpausing reaches the same end state in the same order. Each write only
-   * when the value differs, so a rerun finishes a partial one.
+   * unpausing reaches the same end state in the same order. Each write is
+   * unconditional (a REST read can be stale), so a rerun finishes a partial one.
    */
   private async setMode(
     id: InstallId,
@@ -3268,7 +3268,9 @@ export class WfpProvisioner {
       const want = hostsValue(id, mode);
       for (const h of [row.app_host, row.content_host]) {
         const cur = await this.cf.kvGet(this.hostsKv.id, h);
-        if (cur === want) continue;
+        // Always write: kvGet is a REST read and can be stale for up to 60 s,
+        // so a stale value equal to `want` must not skip the PUT (P22, #1593).
+        // The PUT is idempotent.
         if (cur !== null && parseHostsValue(cur)?.installId !== id)
           throw new ProvisionRefused(
             `host ${h} is already taken by ${cur}`,
