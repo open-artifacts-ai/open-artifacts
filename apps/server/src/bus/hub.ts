@@ -3545,8 +3545,13 @@ export class BusHub extends DurableObject<Env> {
       logError("socket_index_failed", e);
       return;
     }
-    // A socket accepted while `gone` was in flight reported before it landed.
-    if (open()) await this.#reportToIndex();
+    // A socket accepted while `gone` was in flight reported before it landed,
+    // so its report may have been deleted; and it set the throttle, so reset
+    // it or this report would be skipped and the live socket left unindexed.
+    if (open()) {
+      this.#indexedAt = Number.NEGATIVE_INFINITY;
+      await this.#reportToIndex();
+    }
   }
 
   override async webSocketMessage(

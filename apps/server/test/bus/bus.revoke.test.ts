@@ -415,6 +415,63 @@ describe("bus rows outlive the index window (#1299)", () => {
     await expect(at((p) => p.gone("art1"))).rejects.toThrow();
   });
 
+  it("a socket accepted while gone is in flight keeps its row (the seen lands before the gone)", async () => {
+    const u = await member();
+    const name = `bus:${u.userId}`;
+    const a = await connected(u, "one");
+    expect(await rowOf(name)).not.toBeNull();
+    const hub = await hubOf(u.userId);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let goneStarted: () => void = () => {};
+    const started = new Promise<void>((r) => {
+      goneStarted = r;
+    });
+    let goneDone: () => void = () => {};
+    const finished = new Promise<void>((r) => {
+      goneDone = r;
+    });
+    const realNs = e.USER_PRESENCE;
+    if (!realNs) throw new Error("USER_PRESENCE unbound");
+    // The index as the hub sees it: `gone` waits for the gate.
+    const slowNs = {
+      idFromName: (n: string) => realNs.idFromName(n),
+      get: (id: DurableObjectId) => {
+        const real = realNs.get(id) as unknown as {
+          seen(n: string): Promise<void>;
+          gone(n: string): Promise<void>;
+        };
+        return {
+          seen: (n: string) => real.seen(n),
+          gone: async (n: string) => {
+            goneStarted();
+            await gate;
+            await real.gone(n);
+            goneDone();
+          },
+        };
+      },
+    };
+    await runInDurableObject(hub, (inst: BusHub) => {
+      const h = inst as unknown as { env: object };
+      h.env = Object.assign(Object.create(h.env), { USER_PRESENCE: slowNs });
+    });
+    try {
+      a.d.close();
+      await started;
+      // Accepted while gone is in flight: its seen lands before the gone.
+      const b = await connected(u, "two");
+      release();
+      await finished;
+      await vi.waitFor(async () => expect(await rowOf(name)).not.toBeNull());
+      b.d.close();
+    } finally {
+      release();
+    }
+  });
+
   it("a missing gone (the hub crashed) is harmless: closeInstall reaches the row, the cap prunes it", async () => {
     const u = await member();
     const name = `bus:${u.userId}`;

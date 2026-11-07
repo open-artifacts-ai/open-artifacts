@@ -72,7 +72,9 @@ export const BUS_INDEX_PREFIX = "bus:";
  * #1299: a bus hub's daemon sockets are long-lived and hibernate, so its row
  * must outlive INDEX_WINDOW_MS (the hub reports on accept, not on a timer).
  * The hub removes its row with `gone` when its last socket closes; this cap
- * only bounds a row whose hub crashed before it could.
+ * only bounds a row whose hub crashed before it could. In practice the cap
+ * is shorter still: every deploy (release cadence) forces the hub to
+ * reconnect its sockets, and a reconnect reports again.
  */
 export const BUS_INDEX_CAP_MS = 30 * 24 * 60 * 60 * 1000;
 
