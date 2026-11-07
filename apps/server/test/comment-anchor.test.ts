@@ -153,21 +153,32 @@ describe("verifyQuote and checkAnchor", () => {
     currentVersion: 1,
   });
 
-  it("passes a quote in the version and fails one only in a script", async () => {
+  it("keeps the context of a quote in the version; one only in a script is accepted with it cleared", async () => {
     expect(
-      await verifyQuote(env, id, "html", 1, { exact: "big world" }),
-    ).not.toBeNull();
-    await expect(
-      verifyQuote(env, id, "html", 1, { exact: "hidden words" }),
-    ).rejects.toMatchObject({ code: "anchor_not_in_version" });
+      await verifyQuote(env, id, "html", 1, {
+        exact: "big world",
+        prefix: "zz",
+      }),
+    ).toEqual({ prefix: "Hello ", suffix: "" });
+    expect(
+      await verifyQuote(env, id, "html", 1, {
+        exact: "hidden words",
+        prefix: "forged",
+        suffix: "forged",
+      }),
+    ).toEqual({ prefix: "", suffix: "" });
   });
-  it("script-rendered text is not in the static text (#1482, #1735)", async () => {
+  it("script-rendered text is not in the static text: the quote is accepted with prefix and suffix cleared (#1482, #1735)", async () => {
     const html =
       "<p id=\"lede\"></p><script>document.getElementById('lede').innerHTML='When <code>i</code> pops <code>j</code>'</script>";
     expect(await visibleText(html)).not.toContain("pops");
-    await expect(
-      verifyQuote(env, jsId, "html", 1, { exact: "i pops j" }),
-    ).rejects.toMatchObject({ code: "anchor_not_in_version" });
+    expect(
+      await verifyQuote(env, jsId, "html", 1, {
+        exact: "i pops j",
+        prefix: "When ",
+        suffix: "",
+      }),
+    ).toEqual({ prefix: "", suffix: "" });
   });
   it("a quote on text the page's script renders is accepted (#1735)", async () => {
     // The shape of the reported page: a static shell, the intro filled by script.
@@ -198,17 +209,41 @@ describe("verifyQuote and checkAnchor", () => {
           prefix: "",
           suffix: "",
         }),
-      ).toMatchObject({ anchor: { kind: "text", exact } });
+      ).toMatchObject({
+        anchor: { kind: "text", exact, prefix: "", suffix: "" },
+      });
+    const r = await checkAnchor(env, art(js, "html"), {
+      kind: "text",
+      exact: "j",
+      prefix: "forged",
+      suffix: "forged",
+      block: { path: "evil" },
+    });
+    expect(r.anchor).toMatchObject({ prefix: "", suffix: "" });
+    expect(r.anchor).not.toHaveProperty("block");
   });
-  it("an entry over 5 MB is not parsed: 422", async () => {
+  it("an entry over 5 MB is not parsed: the quote is accepted with its context cleared", async () => {
     await env.DB.prepare(
       "update versions set manifest = json_set(manifest, '$[0].size', 6000000) where artifact_id = ?",
     )
       .bind(big)
       .run();
-    await expect(
-      verifyQuote(env, big, "html", 1, { exact: "Hello" }),
-    ).rejects.toMatchObject({ code: "anchor_not_in_version" });
+    expect(
+      await verifyQuote(env, big, "html", 1, {
+        exact: "Hello",
+        prefix: "x",
+        suffix: "y",
+      }),
+    ).toEqual({ prefix: "", suffix: "" });
+    const r = await checkAnchor(env, art(big, "html"), {
+      kind: "text",
+      exact: "Hello",
+      prefix: "x",
+      suffix: "y",
+      block: { path: "evil" },
+    });
+    expect(r.anchor).toMatchObject({ prefix: "", suffix: "" });
+    expect(r.anchor).not.toHaveProperty("block");
   });
   it("422 for a version that does not exist", async () => {
     await expect(

@@ -235,8 +235,14 @@ describe("threads", () => {
       prefix: "",
       suffix: "",
     });
-    expect(miss.status).toBe(422);
-    expect((await errOf(miss)).code).toBe("anchor_not_in_version");
+    expect(miss.status).toBe(201);
+    const mt = await thread(miss);
+    expect(mt.anchor).toMatchObject({
+      exact: "purple cat",
+      prefix: "",
+      suffix: "",
+    });
+    expect(mt.anchor).not.toHaveProperty("block");
     const v9 = await post(id, viewer, "x", {
       kind: "text",
       version: 9,
@@ -1027,6 +1033,33 @@ describe("review fixes (#682)", () => {
     expect(bodyOk(` ${"x".repeat(2000)} `)).toBe(true);
   });
 
+  it("a quote on script-rendered html text is accepted with forged context and block cleared (#1735)", async () => {
+    const id = await pub({
+      visibility: "team",
+      format: "html",
+      content:
+        "<p id=\"x\"></p><script>document.getElementById('x').innerHTML='Finds the <b>previous smaller</b> item'</script>",
+    });
+    const r = await post(id, viewer, "x", {
+      kind: "text",
+      exact: "previous smaller",
+      prefix: "forged prefix",
+      suffix: "forged suffix",
+      block: { path: "evil/free text" },
+    });
+    expect(r.status).toBe(201);
+    const t = await thread(r);
+    expect(t.anchor).toMatchObject({
+      exact: "previous smaller",
+      prefix: "",
+      suffix: "",
+    });
+    expect(t.anchor).not.toHaveProperty("block");
+    const stored = (await list(id, viewer)).threads[0]?.anchor;
+    expect(stored).toMatchObject({ prefix: "", suffix: "" });
+    expect(stored).not.toHaveProperty("block");
+  });
+
   it("a markdown text anchor keeps its block hint", async () => {
     const id = await pub({
       visibility: "team",
@@ -1045,7 +1078,7 @@ describe("review fixes (#682)", () => {
     expect(t.anchor).toMatchObject({ block: { line: 3 } });
   });
 
-  it("the limit is taken before the quote is verified: refused quotes count (10 a minute per IP)", async () => {
+  it("the limit is taken before the quote is verified: refused quotes count (10 a minute per IP; a version that does not exist is refused)", async () => {
     const id = await pub({ visibility: "public" });
     await inDo(id, (i) => {
       i.now = () => 1_800_000_000_000;
@@ -1058,6 +1091,7 @@ describe("review fixes (#682)", () => {
         body: {
           anchor: {
             kind: "text",
+            version: 9,
             exact: "no such text",
             prefix: "",
             suffix: "",

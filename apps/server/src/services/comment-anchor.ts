@@ -6,8 +6,12 @@ import { sha256Sink } from "../util/digest.js";
 
 // Quote verification for comment anchors (#682). The html page's own code is
 // untrusted and receives anchors in the frame, so a text anchor on an html
-// version is checked against that version's visible text before it is stored:
-// a quote the page never showed is refused (422 anchor_not_in_version).
+// version is checked against that version's static visible text before it is
+// stored. A quote found there keeps its context (re-derived when off). A quote
+// not found is still accepted (#1735): the page's own script may have rendered
+// it, which the static text never holds. Its prefix and suffix are cleared
+// (and checkAnchor drops the block hint) because the page's code can forge an
+// anchor, so no context we could not check is stored.
 
 /** Visible text past this many characters is not read (a degenerate page). */
 export const MAX_VISIBLE_CHARS = 4 * 1024 * 1024;
@@ -142,17 +146,21 @@ const notIn = () =>
     "The quoted text is not in that version",
   );
 
-/** An entry over this is never parsed for verification (422). */
+/** An entry over this is never parsed for verification (the quote is accepted with its context cleared). */
 export const MAX_VERIFY_BYTES = 5 * 1024 * 1024;
 
 type VersionRow = { format: string | null; manifest: string };
 
 /**
  * Whether version `version` of the artifact exists; when its format is html,
- * its entry's visible text must hold the quote. Returns the (possibly
- * re-derived) context, or null when the version is not html (schema checks
- * only). 422 anchor_not_in_version otherwise. The MCP comment tools call this
- * with the quote and version = current.
+ * its entry's static visible text is searched for the quote. Returns the
+ * (possibly re-derived) context when the quote is found. When it is not found,
+ * or the entry is over MAX_VERIFY_BYTES and so not parsed, the quote is
+ * accepted with prefix "" and suffix "": the text may be rendered by the
+ * page's script, and context we could not check is not stored. Returns null
+ * when the version is not html (schema checks only). 422 anchor_not_in_version
+ * for a version that does not exist or an html entry file that is missing. The
+ * MCP comment tools call this with the quote and version = current.
  */
 export async function verifyQuote(
   env: Pick<Env, "DB" | "FILES">,
@@ -168,17 +176,16 @@ export async function verifyQuote(
     .first<VersionRow & { entry: string }>();
   if (!row) throw notIn();
   if ((row.format ?? artifactFormat) !== "html") return null;
+  const unchecked = { prefix: "", suffix: "" };
   const entry = (
     JSON.parse(row.manifest) as { path: string; key: string; size?: number }[]
   ).find((e) => e.path === row.entry);
-  if (entry && (entry.size ?? 0) > MAX_VERIFY_BYTES) throw notIn();
+  if (entry && (entry.size ?? 0) > MAX_VERIFY_BYTES) return unchecked;
   const body = entry ? await env.FILES.get(entry.key) : null;
-  if (body && body.size > MAX_VERIFY_BYTES) throw notIn();
+  if (body && body.size > MAX_VERIFY_BYTES) return unchecked;
   if (!body) throw notIn();
   const text = normalizeText(await visibleText(body.body));
-  const found = findQuote(text, q);
-  if (!found) throw notIn();
-  return found;
+  return findQuote(text, q) ?? unchecked;
 }
 
 /** The format of a version, or null when it does not exist. */

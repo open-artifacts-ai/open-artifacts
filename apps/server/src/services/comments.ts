@@ -134,9 +134,12 @@ export type CheckedAnchor = { anchor: Anchor; version: number };
 /**
  * An anchor as posted, checked: its schema (400 invalid_anchor), the version
  * it names (missing means current; a version that does not exist is 422
- * anchor_not_in_version) and, for a text anchor on an html version, the quote
- * (422 anchor_not_in_version; the context is re-derived when only it is off).
- * Other formats get the schema check only.
+ * anchor_not_in_version) and, for a text anchor on an html version, the quote.
+ * A quote the stored html shows keeps its context (re-derived when only it is
+ * off). A quote it does not show (text the page's script renders, or an entry
+ * too big to parse) is accepted with prefix "" and suffix "" and no block
+ * hint: the page's own code can forge an anchor, so no context we could not
+ * check is stored (#1735). Other formats get the schema check only.
  */
 export async function checkAnchor(
   env: Pick<Env, "DB" | "FILES" | "PLAN">,
