@@ -132,7 +132,7 @@ describe("usePresence", () => {
     expect(h.result.current.total).toBe(2);
   });
 
-  it("total counts others; self is subtracted only when it is listed", () => {
+  it("total counts others: self is subtracted whether or not the cap cut it", () => {
     const h = renderHook(() => usePresence());
     act(() =>
       h.result.current.onPresence(
@@ -141,14 +141,14 @@ describe("usePresence", () => {
       ),
     );
     expect(h.result.current.total).toBe(2);
-    // Over the cap, self was cut from the list: the server's total is 250.
+    // Over the cap, self was cut from the list: the server's total (150) still counts it.
     act(() =>
       h.result.current.onPresence(
-        { type: "presence", viewers: [A, B], total: 250 },
+        { type: "presence", viewers: [A, B], total: 150 },
         ME.key,
       ),
     );
-    expect(h.result.current.total).toBe(250);
+    expect(h.result.current.total).toBe(149);
     expect(h.result.current.others).toHaveLength(2);
   });
 
