@@ -280,3 +280,52 @@ test.describe("full-screen chip, coarse pointer", () => {
     await expect(page).toHaveURL(new RegExp(`/a/${ID}$`));
   });
 });
+
+test.describe("phone toolbar touch targets (#1648)", () => {
+  test.use({ hasTouch: true });
+
+  for (const id of [ID, "Gh9kLmNpQrAsTuVx"])
+    test(`Comments has a 44px target without stealing Exit taps (${id})`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: 390, height: 800 });
+      await page.goto(`/a/${id}/full`);
+      const comments = page.locator(".oa-fscomments");
+      const exit = page.locator(".oa-fsbar .oa-fsx");
+      await expect(comments).toBeVisible();
+      const b = await comments.boundingBox();
+      expect(b).not.toBeNull();
+      if (!b) return;
+      expect(b.width).toBeGreaterThanOrEqual(44);
+      // The visual pill is 32px high; the target reaches 6px above and below.
+      for (const y of [b.y - 5, b.y + b.height + 5]) {
+        expect(
+          await page.evaluate(
+            ({ x, y }) =>
+              Boolean(
+                document.elementFromPoint(x, y)?.closest(".oa-fscomments"),
+              ),
+            { x: b.x + b.width / 2, y },
+          ),
+        ).toBe(true);
+        await page.touchscreen.tap(b.x + b.width / 2, y);
+        await expect(comments).toHaveAttribute("aria-expanded", "true");
+        await page.getByRole("button", { name: "Close comments" }).tap();
+        await expect(comments).toHaveAttribute("aria-expanded", "false");
+      }
+      const e = await exit.boundingBox();
+      expect(e).not.toBeNull();
+      if (!e) return;
+      expect(
+        await page.evaluate(
+          ({ x, y }) =>
+            Boolean(document.elementFromPoint(x, y)?.closest(".oa-fscomments")),
+          { x: e.x + 1, y: e.y + e.height / 2 },
+        ),
+      ).toBe(false);
+      await exit.tap();
+      // Coarse pointers first reveal Exit; a second tap follows it.
+      if (page.url().includes("/full")) await exit.tap();
+      await expect(page).toHaveURL(new RegExp(`/a/${id}$`));
+    });
+});

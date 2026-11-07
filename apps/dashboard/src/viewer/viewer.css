@@ -332,8 +332,19 @@
     display: none;
   }
   .oa-fsbar:has(.oa-fscomments) .oa-fscomments {
+    position: relative;
+    min-width: 44px;
     gap: 5px;
     padding: 0 10px;
+  }
+  /* Extend vertically without overlapping the neighboring Exit target. */
+  .oa-fsbar:has(.oa-fscomments) .oa-fscomments::before {
+    content: "";
+    position: absolute;
+    inset: -6px 0;
+  }
+  .oa-fsbar:has(.oa-fscomments) .oa-fsx::before {
+    left: 0;
   }
   .oa-fsbar:has(.oa-fscomments) {
     gap: 0;
