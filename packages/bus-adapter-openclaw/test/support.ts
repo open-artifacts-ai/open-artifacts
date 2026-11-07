@@ -101,6 +101,7 @@ export function newBus(hub: Hub, over: Partial<BusDeps> = {}) {
     connect: hub.connect,
     stateDir: () => "/state/.openclaw",
     settleMs: 0,
+    habitsOn: () => true,
     ...over,
   });
 }

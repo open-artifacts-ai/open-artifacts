@@ -581,3 +581,49 @@ describe("a provider failure that still reports a completed model call", () => {
     expect(hub.acks).toEqual(["m1"]);
   });
 });
+
+describe("habits behind the user's yes", () => {
+  it("are not sent without the marker, but mail still flows", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub, { habitsOn: () => false });
+    await online(bus);
+    hub.push({ id: "m1" });
+    await flush();
+    const r = bus.buildPrompt(caller({ runId: "r1" }));
+    expect(r?.prependContext).toContain("body of m1");
+    expect(r?.appendSystemContext).toBeUndefined();
+    ended(bus, "r1");
+    expect(hub.acks).toEqual(["m1"]);
+    expect(bus.buildPrompt(caller({ runId: "r2" }))).toBeUndefined();
+  });
+
+  it("are sent with the marker, and only while a link is open", async () => {
+    const hub = new Hub();
+    let on = false;
+    const bus = newBus(hub, { habitsOn: () => on });
+    await online(bus);
+    expect(bus.buildPrompt(caller({ runId: "r1" }))).toBeUndefined();
+    on = true; // the marker appears: the next prompt sees it
+    expect(bus.buildPrompt(caller({ runId: "r2" }))?.appendSystemContext).toBe(
+      HABITS,
+    );
+    hub.clients[0]?.close();
+    expect(
+      bus.buildPrompt(caller({ runId: "r3" }))?.appendSystemContext,
+    ).toBeUndefined();
+  });
+
+  it("are off when no check is given, or the check throws", async () => {
+    const hub = new Hub();
+    for (const habitsOn of [
+      undefined,
+      () => {
+        throw new Error("x");
+      },
+    ]) {
+      const bus = newBus(hub, { habitsOn });
+      await online(bus);
+      expect(bus.buildPrompt(caller({ runId: "r1" }))).toBeUndefined();
+    }
+  });
+});

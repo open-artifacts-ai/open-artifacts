@@ -6,6 +6,7 @@ import { realConnect } from "../src/link.ts";
 const bus = new Bus({
   connect: realConnect({ OA_BUS_HOME: process.argv[2] }),
   stateDir: () => "/state/.openclaw",
+  habitsOn: () => true,
 });
 bus.buildPrompt({
   agentId: "main",

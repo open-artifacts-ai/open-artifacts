@@ -99,6 +99,12 @@ export type BusDeps = {
   connect: Connect;
   stateDir: () => string;
   now?: () => number;
+  /**
+   * Whether the user has said yes to the habits lines (the installer's
+   * `--habits` writes a `habits.on` marker in the plugin folder). Checked on each
+   * prompt. Absent means no.
+   */
+  habitsOn?: () => boolean;
   /** Test seam: SETTLE_MS. */
   settleMs?: number;
 };
@@ -124,6 +130,13 @@ export class Bus {
   private seq = 0;
   private readonly now: () => number;
   private readonly deps: BusDeps;
+  private habitsOn(): boolean {
+    try {
+      return this.deps.habitsOn?.() === true;
+    } catch {
+      return false;
+    }
+  }
   constructor(deps: BusDeps) {
     this.deps = deps;
     this.now = deps.now ?? Date.now;
@@ -370,7 +383,7 @@ export class Bus {
       }
       if (run) out.prependContext = run.text;
     }
-    if (this.open(b)) out.appendSystemContext = HABITS;
+    if (this.open(b) && this.habitsOn()) out.appendSystemContext = HABITS;
     return out.prependContext || out.appendSystemContext ? out : undefined;
   }
 
