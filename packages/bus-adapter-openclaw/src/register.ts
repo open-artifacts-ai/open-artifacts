@@ -9,6 +9,8 @@ import { TOOL_NAMES, toolsFor } from "./tools.ts";
  * it points at is the process's one, and connects on first use.
  */
 export function registerBus(api: PluginApi, bus: Bus): void {
+  // The route rule needs the config; assigning it opens nothing.
+  if (api.config !== undefined) bus.config = api.config;
   api.registerTool((ctx) => toolsFor(bus, ctx), { names: TOOL_NAMES });
   api.on("before_prompt_build", (_ev, ctx) => bus.promptBuild(ctx));
   // Observed only (never blocks or edits): the role and stopReason of an

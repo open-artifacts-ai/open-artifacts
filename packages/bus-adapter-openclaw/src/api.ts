@@ -4,6 +4,8 @@
 import type { Caller } from "./roots.ts";
 
 export type ToolContext = {
+  config?: unknown;
+  runtimeConfig?: unknown;
   agentId?: string;
   sessionKey?: string;
   sessionId?: string;
@@ -30,6 +32,7 @@ export type AgentTool = {
 
 export type PluginApi = {
   registrationMode?: string;
+  config?: unknown;
   registerTool(
     tool: (ctx: ToolContext) => AgentTool[] | AgentTool | null | undefined,
     opts?: { names?: string[] },

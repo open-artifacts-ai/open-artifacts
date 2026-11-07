@@ -65,6 +65,7 @@ describe("register", () => {
     // Every registration's hook fires, as if OpenClaw ran them all.
     await Promise.all(fire("before_prompt_build", { prompt: "hi" }));
     await flush();
+    fire("model_call_started", { runId: "r1", sessionKey: ctx.sessionKey });
     expect(hub.connects).toHaveLength(1);
     hub.push({ id: "m1" });
     await flush();
@@ -90,6 +91,10 @@ describe("register", () => {
     registerBus(a.api, bus);
     const ctx = caller();
     await a.hooks.before_prompt_build?.[0]?.({}, ctx);
+    a.hooks.model_call_started?.[0]?.(
+      { runId: "run-1", sessionKey: "agent:main:main" },
+      { agentId: "main" },
+    );
     await flush();
     hub.push({ id: "m1" });
     await flush();
@@ -123,5 +128,21 @@ describe("register", () => {
       a.hooks.before_message_write?.[0]?.(ev, { agentId: "main" }),
     ).toBeUndefined();
     expect(JSON.stringify(ev)).toBe(before);
+  });
+
+  it("hands the route rule the config the host registered with, so stock openai is refused", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    const a = fakeApi();
+    (a.api as { config?: unknown }).config = { models: { providers: {} } };
+    registerBus(a.api, bus);
+    expect(bus.config).toEqual({ models: { providers: {} } });
+    const out = await a.hooks.before_prompt_build?.[0]?.(
+      {},
+      { ...caller(), modelProviderId: "openai" },
+    );
+    expect(out).toBeUndefined();
+    await flush();
+    expect(hub.connects).toEqual([]);
   });
 });

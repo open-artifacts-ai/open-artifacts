@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  directShape,
   nameOf,
+  normalizeSessionKey,
   REFUSED_PROVIDERS,
   refusal,
   resolveRoot,
+  runtimeRefused,
 } from "../src/roots.ts";
 import { resolveStateDir } from "../src/state-dir.ts";
 
 const S = "/home/u/.openclaw";
 const ok = { agentId: "main", sessionKey: "agent:main:main", trigger: "user" };
-const hook = { needTrigger: true };
+const hook = { needTrigger: true, runtime: true };
 
 describe("roots", () => {
   it("is stable, and a key's case does not change it", () => {
@@ -28,44 +31,52 @@ describe("roots", () => {
     const base = ref(S, "agent:main:main");
     expect(ref("/home/u/.openclaw-eileen", "agent:main:main")).not.toBe(base);
     expect(ref(S, "agent:other:main")).not.toBe(base);
-    expect(ref(S, "agent:main:telegram:dm:42")).not.toBe(base);
+    expect(ref(S, "agent:main:telegram:direct:42")).not.toBe(base);
   });
 
   it("names the agent from the agent id and the key", () => {
     const r = resolveRoot(ok, S, hook);
     const t = resolveRoot(
-      { ...ok, sessionKey: "agent:main:telegram:dm:42" },
+      { ...ok, sessionKey: "agent:main:telegram:direct:42" },
       S,
       hook,
     );
     expect(r.ok && r.root.proposedName).toBe("openclaw-main");
-    expect(t.ok && t.root.proposedName).toBe("openclaw-main-telegram:dm:42");
+    expect(t.ok && t.root.proposedName).toBe(
+      "openclaw-main-telegram:direct:42",
+    );
   });
 
   it("keeps the display name as typed, and lowercases only the identity", () => {
     const a = resolveRoot(
-      { ...ok, agentId: "Eileen", sessionKey: "agent:Eileen:Café Chat" },
+      {
+        ...ok,
+        agentId: "Eileen",
+        sessionKey: "agent:Eileen:Telegram:direct:Café Chat",
+      },
       S,
       hook,
     );
     const b = resolveRoot(
-      { ...ok, sessionKey: "agent:eileen:café chat" },
+      { ...ok, sessionKey: "agent:eileen:telegram:direct:café chat" },
       S,
       hook,
     );
-    expect(a.ok && a.root.proposedName).toBe("openclaw-Eileen-Café Chat");
+    expect(a.ok && a.root.proposedName).toBe(
+      "openclaw-Eileen-Telegram:direct:Café Chat",
+    );
     expect(a.ok && b.ok && a.root.ref === b.root.ref).toBe(true);
   });
 
   it("strips controls, trims, caps at 64 without splitting a pair", () => {
     const c = resolveRoot(
-      { ...ok, sessionKey: "agent:main:a\u0007b" },
+      { ...ok, sessionKey: "agent:main:direct:a\u0007b" },
       S,
       hook,
     );
-    expect(c.ok && c.root.proposedName).toBe("openclaw-main-ab");
+    expect(c.ok && c.root.proposedName).toBe("openclaw-main-direct:ab");
     const long = resolveRoot(
-      { ...ok, sessionKey: `agent:main:${"x".repeat(53)}😀😀` },
+      { ...ok, sessionKey: `agent:main:direct:${"x".repeat(53)}😀😀` },
       S,
       hook,
     );
@@ -112,7 +123,10 @@ describe("roots", () => {
 
   it("does not ask a tool factory for a trigger", () => {
     expect(
-      resolveRoot({ ...ok, trigger: undefined }, S, { needTrigger: false }),
+      resolveRoot({ ...ok, trigger: undefined }, S, {
+        needTrigger: false,
+        runtime: true,
+      }),
     ).toMatchObject({ ok: true });
   });
 
@@ -129,7 +143,7 @@ describe("roots", () => {
   it("takes an ordinary provider", () => {
     expect(
       resolveRoot(
-        { ...ok, modelProviderId: "openai", modelId: "gpt-5.5" },
+        { ...ok, modelProviderId: "anthropic", modelId: "claude" },
         S,
         hook,
       ),
@@ -138,7 +152,7 @@ describe("roots", () => {
 
   it("keeps a ref a daemon accepts however odd the key", () => {
     const r = resolveRoot(
-      { ...ok, sessionKey: `agent:main:${"é/ ".repeat(80)}` },
+      { ...ok, sessionKey: `agent:main:direct:${"é/ ".repeat(80)}` },
       S,
       hook,
     );
@@ -188,5 +202,126 @@ describe("state dir", () => {
     expect(
       resolveStateDir({ OPENCLAW_HOME: "/tmp/t", HOME: "/home/u" }, home, none),
     ).toBe("/tmp/t/.openclaw");
+  });
+});
+
+describe("only the main session and direct chats (S5)", () => {
+  const key = (k: string) => resolveRoot({ ...ok, sessionKey: k }, S, hook);
+  it.each([
+    "agent:main:main",
+    "agent:main:direct:alice",
+    "agent:main:telegram:direct:42",
+    "agent:main:signal:work:direct:+15555550123",
+    "agent:eileen:main",
+  ])("allows %s", (k) => {
+    expect(key(k)).toMatchObject({ ok: true });
+  });
+
+  it.each([
+    "agent:main:telegram:group:42",
+    "agent:main:slack:channel:C123",
+    "agent:main:discord:work:group:9",
+    "agent:main:matrix:channel:!Room:example.org",
+    "agent:main:signal:group:AbC123",
+    "agent:main:slack:room:r1",
+    "agent:main:telegram:direct:42:thread:9",
+    "agent:main:telegram:group:42:thread:9",
+    "agent:main:gw1",
+    "agent:main:s9",
+    "agent:main:webhook:abc",
+    "agent:main:direct:",
+    "agent:main:telegram:direct:",
+    "main",
+  ])("refuses %s", (k) => {
+    expect(key(k)).toEqual({ ok: false, reason: refusal.badKey });
+  });
+
+  it("takes the configured main key, and only that one", () => {
+    const cfg = { session: { mainKey: "home" } };
+    const k = (sessionKey: string) =>
+      resolveRoot({ ...ok, sessionKey }, S, { ...hook, config: cfg });
+    expect(k("agent:main:home")).toMatchObject({ ok: true });
+    expect(k("agent:main:work")).toMatchObject({ ok: false });
+  });
+
+  it("directShape is what the keys of buildAgentPeerSessionKey look like", () => {
+    expect(directShape("main")).toBe(true);
+    expect(directShape("direct:x")).toBe(true);
+    expect(directShape("telegram:direct:x")).toBe(true);
+    expect(directShape("telegram:work:direct:x")).toBe(true);
+    expect(directShape("telegram:group:direct:x")).toBe(false);
+    expect(directShape("group:direct:x")).toBe(false);
+    expect(directShape("")).toBe(false);
+  });
+});
+
+describe("the key as OpenClaw normalizes it (nit)", () => {
+  it("lowercases ordinary keys", () => {
+    expect(normalizeSessionKey("Agent:Main:TELEGRAM:Direct:Alice")).toBe(
+      "agent:main:telegram:direct:alice",
+    );
+  });
+  it("keeps the case of a Signal group id and a Matrix channel or group tail", () => {
+    expect(normalizeSessionKey("Agent:Main:Signal:Group:AbC=/xY")).toBe(
+      "agent:main:signal:group:AbC=/xY",
+    );
+    expect(
+      normalizeSessionKey("agent:main:matrix:channel:!AbC:Example.org"),
+    ).toBe("agent:main:matrix:channel:!AbC:Example.org");
+    expect(
+      normalizeSessionKey("agent:main:matrix:group:!AbC:Ex.org:thread:$EvT"),
+    ).toBe("agent:main:matrix:group:!AbC:Ex.org:thread:$EvT");
+  });
+});
+
+describe("the model route (B1)", () => {
+  const stock = { models: { providers: {} } };
+  it("refuses stock openai: OpenClaw runs it on the Codex runtime by default", () => {
+    expect(runtimeRefused("openai", stock)).toBe(true);
+    expect(runtimeRefused("OpenAI", undefined)).toBe(true);
+    expect(
+      runtimeRefused("openai", {
+        models: {
+          providers: { openai: { baseUrl: "https://api.openai.com/v1" } },
+        },
+      }),
+    ).toBe(true);
+  });
+  it("allows openai behind a custom base URL, which bypasses the Codex default", () => {
+    expect(
+      runtimeRefused("openai", {
+        models: {
+          providers: { OpenAI: { baseUrl: "https://llm.example.com/v1" } },
+        },
+      }),
+    ).toBe(false);
+  });
+  it("refuses a config that names the Codex runtime anywhere", () => {
+    expect(
+      runtimeRefused("anthropic", {
+        agents: { list: [{ id: "a", agentRuntime: { id: "codex" } }] },
+      }),
+    ).toBe(true);
+    expect(
+      runtimeRefused("anthropic", {
+        agents: { list: [{ agentRuntime: { id: "openclaw" } }] },
+      }),
+    ).toBe(false);
+  });
+  it("refuses the other runtimes by provider id, and allows the rest", () => {
+    for (const p of REFUSED_PROVIDERS)
+      expect(runtimeRefused(p, stock)).toBe(true);
+    for (const p of ["anthropic", "fakeprov", "google", undefined])
+      expect(runtimeRefused(p, stock)).toBe(false);
+  });
+  it("resolveRoot refuses an openai route at prompt time, and not when only the key is wanted", () => {
+    const c = { ...ok, modelProviderId: "openai" };
+    expect(resolveRoot(c, S, { ...hook, config: stock })).toEqual({
+      ok: false,
+      reason: refusal.runtime,
+    });
+    expect(
+      resolveRoot(c, S, { needTrigger: false, runtime: false, config: stock }),
+    ).toMatchObject({ ok: true });
   });
 });

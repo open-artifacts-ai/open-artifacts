@@ -38,10 +38,10 @@ describe("tools", () => {
     expect(r?.content[0]?.text).toContain("peer");
     await tools.find((t) => t.name === "oabus_self")?.execute("c2", {});
     expect(hub.connects).toHaveLength(1);
-    toolsFor(bus, { ...ctx, sessionKey: "agent:main:telegram:dm:1" });
+    toolsFor(bus, { ...ctx, sessionKey: "agent:main:telegram:direct:1" });
     await toolsFor(bus, {
       ...ctx,
-      sessionKey: "agent:main:telegram:dm:1",
+      sessionKey: "agent:main:telegram:direct:1",
     })[0]?.execute("c3", {});
     expect(hub.connects).toHaveLength(2);
   });
@@ -66,23 +66,35 @@ describe("tools", () => {
     );
   });
 
-  it("refuses with a clear message once the root is marked as reporting no model calls", async () => {
+  it("refuse during a heartbeat run on the main session, and work again on the next user run", async () => {
     const hub = new Hub();
     const bus = newBus(hub);
-    const c = {
-      agentId: "main",
-      sessionKey: "agent:main:main",
-      trigger: "user",
-    };
-    bus.buildPrompt({ ...c, runId: "w" });
-    await new Promise((r) => setTimeout(r, 5));
-    hub.push({ id: "m1" });
-    await new Promise((r) => setTimeout(r, 5));
-    bus.buildPrompt({ ...c, runId: "r1" });
-    bus.buildPrompt({ ...c, runId: "r2" });
-    const self = toolsFor(bus, ctx).find((t) => t.name === "oabus_self");
-    await expect(self?.execute("c", {})).rejects.toThrow(
-      /does not report model calls/,
+    const c = { agentId: "main", sessionKey: "agent:main:main" };
+    const self = () => toolsFor(bus, ctx).find((t) => t.name === "oabus_self");
+    bus.buildPrompt({ ...c, trigger: "heartbeat", runId: "hb1" });
+    await expect(self()?.execute("c", {})).rejects.toThrow(
+      /only a run started by a user message/,
     );
+    expect(hub.connects).toEqual([]);
+    bus.buildPrompt({ ...c, trigger: "user", runId: "u1" });
+    await expect(self()?.execute("c", {})).resolves.toBeDefined();
   });
+
+  it("offers none on stock openai, which runs on the Codex runtime", () => {
+    const bus = newBus(new Hub());
+    expect(
+      toolsFor(bus, {
+        ...ctx,
+        activeModel: { provider: "openai" },
+        config: { models: { providers: {} } },
+      }),
+    ).toEqual([]);
+  });
+
+  it.each(["agent:main:telegram:group:42", "agent:main:slack:channel:C1"])(
+    "offers none in %s",
+    (sessionKey) => {
+      expect(toolsFor(newBus(new Hub()), { ...ctx, sessionKey })).toEqual([]);
+    },
+  );
 });

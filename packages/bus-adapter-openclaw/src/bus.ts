@@ -30,6 +30,10 @@ export const SELF_TIMEOUT_MS = 2000;
 export const WARM_MS = 1500;
 /** After the link opens, the hub's pushes need this long to start arriving. */
 export const SETTLE_MS = 100;
+/** A root nobody has used for this long gives up its link and its queue (the hub keeps the mail). */
+export const IDLE_MS = 30 * 60_000;
+/** Roots that have shown their runtime reports model calls; kept past eviction. */
+export const PROVEN_MAX = 2000;
 const RECONNECT_MS = 3000;
 const MAX_REFUSED_BACKOFF_MS = 60_000;
 
@@ -51,17 +55,24 @@ type Item = {
   text: string;
 };
 
-type Run = { ids: string[]; text: string; at: number };
-
-/** What a tool says when this root's runtime never reports model calls. */
-export const NO_MODEL_HOOKS =
-  "oa-bus: this OpenClaw runtime does not report model calls to plugins, so the bus cannot tell when mail reached the model. This session is off the bus; mail stays queued for when it can be told.";
+type Run = {
+  ids: string[];
+  text: string;
+  at: number;
+  /** The latest assistant message of the run ended in an error (set by before_message_write). */
+  failed: boolean;
+  /** A model call of the run ended in an error or a failed answer; a later completed call can still ack. */
+  errored: boolean;
+};
 
 class Mailbox {
   client?: DaemonClient;
   connecting?: Promise<DaemonClient>;
   retryAt = 0;
   refusals = 0;
+  /** A link was opened in this process: the habits decision stays put across link flaps. */
+  everLinked = false;
+  lastActive = 0;
   /** In arrival order, keyed by item key. */
   pending = new Map<string, Item>();
   /** msg id -> where it is: still being built, waiting, or acked. */
@@ -69,24 +80,10 @@ class Mailbox {
   /** runId -> what went out in that run's context. */
   runs = new Map<string, Run>();
   notices = 0;
-  /** The last run that carried mail, and whether any model-call hook fired for it. */
-  last?: { runId: string; seen: boolean };
-  /**
-   * Set when a run that carried mail saw no model_call_started or
-   * model_call_ended at all (a harness that runs prompt hooks only, such as
-   * possibly the native Codex harness under provider "openai"). Delivery to
-   * the root stops for the rest of the process, which caps a repeat at one.
-   */
-  noModelHooks = false;
   /** The run the box last saw a prompt for. */
   currentRunId?: string;
-  /**
-   * Whether the latest assistant message written for this session ended in an
-   * error. A provider failure (an HTTP 500) still reports model_call_ended with
-   * outcome "completed" in OpenClaw 2026.6.5 (verified on a gateway run), so
-   * the outcome alone cannot tell success from failure.
-   */
-  assistantFailed = false;
+  /** The run now in progress is not a user's (a heartbeat on the main session): tools refuse. */
+  nonUser = false;
   /** Deliveries whose text is still being built; they count against the cap. */
   building = 0;
   readonly root: Root;
@@ -107,6 +104,8 @@ export type BusDeps = {
   habitsOn?: () => boolean;
   /** Test seam: SETTLE_MS. */
   settleMs?: number;
+  /** Test seam: the idle sweep's period; 0 turns it off. */
+  sweepMs?: number;
 };
 
 export type PromptResult = {
@@ -142,21 +141,69 @@ export class Bus {
     this.now = deps.now ?? Date.now;
   }
 
+  /** The OpenClaw config, as the last registration saw it (set by registerBus). */
+  config?: unknown;
+  /** Roots whose runtime has reported a model call: only they are handed mail. */
+  private proven = new Set<string>();
+  private sweeper?: ReturnType<typeof setInterval>;
+
   /** Test and status use. */
   box(ref: string): Mailbox | undefined {
     return this.boxes.get(ref);
   }
 
-  resolve(c: Caller, needTrigger: boolean) {
-    return resolveRoot(c, this.deps.stateDir(), { needTrigger });
+  /**
+   * Which root a call belongs to. `prompt`: a prompt hook (user trigger, model
+   * route checked). `tool`: a tool factory (no trigger; route checked). `key`:
+   * an ack hook, by session key only, so a fallback to another runtime
+   * mid-run keeps its ack.
+   */
+  resolve(
+    c: Caller,
+    kind: "prompt" | "tool" | "key",
+    config: unknown = this.config,
+  ) {
+    return resolveRoot(c, this.deps.stateDir(), {
+      needTrigger: kind === "prompt",
+      runtime: kind !== "key",
+      config,
+    });
   }
 
   private boxOf(root: Root): Mailbox {
     const had = this.boxes.get(root.ref);
     if (had) return had;
     const b = new Mailbox(root);
+    b.lastActive = this.now();
     this.boxes.set(root.ref, b);
+    if (!this.sweeper && this.deps.sweepMs !== 0) {
+      // Started on first use, never at registration; it does not hold the process.
+      this.sweeper = setInterval(
+        () => this.evictIdle(),
+        this.deps.sweepMs ?? 60_000,
+      );
+      this.sweeper.unref?.();
+    }
     return b;
+  }
+
+  /** Closes the link and drops the queue of a root nobody has used for IDLE_MS. */
+  evictIdle(): void {
+    const cutoff = this.now() - IDLE_MS;
+    for (const [ref, b] of this.boxes) {
+      if (b.lastActive > cutoff || b.connecting) continue;
+      b.client?.close();
+      this.boxes.delete(ref);
+    }
+  }
+
+  private prove(ref: string): void {
+    this.proven.delete(ref);
+    this.proven.add(ref);
+    if (this.proven.size > PROVEN_MAX) {
+      const oldest = this.proven.values().next().value;
+      if (oldest !== undefined) this.proven.delete(oldest);
+    }
   }
 
   // --- Links.
@@ -168,6 +215,7 @@ export class Bus {
   /** The live client for the root, connecting if needed; throws LinkError. */
   async ensure(root: Root): Promise<DaemonClient> {
     const b = this.boxOf(root);
+    b.lastActive = this.now();
     if (b.client?.state === "open") return b.client;
     if (b.connecting) return b.connecting;
     const attempt = (async () => {
@@ -176,6 +224,7 @@ export class Bus {
         client.onDeliver((f) => void this.onDeliver(b, f, client));
         client.onNotice((t) => this.onNotice(b, t));
         b.client = client;
+        b.everLinked = true;
         b.refusals = 0;
         return client;
       } catch (e) {
@@ -208,6 +257,8 @@ export class Bus {
   }
 
   closeAll(): void {
+    if (this.sweeper) clearInterval(this.sweeper);
+    this.sweeper = undefined;
     for (const b of this.boxes.values()) {
       b.client?.close();
       b.client = undefined;
@@ -306,7 +357,7 @@ export class Bus {
   async promptBuild(
     c: Caller & { runId?: string },
   ): Promise<PromptResult | undefined> {
-    const r = this.resolve(c, true);
+    const r = this.resolve(c, "prompt");
     if (!r.ok) return undefined;
     await this.warm(r.root);
     return this.buildPrompt(c);
@@ -337,30 +388,37 @@ export class Bus {
 
   /**
    * The queued mail as prependContext, the same set for the same runId however
-   * often this fires, and the habits while a link is open. Never waits; a
+   * often this fires, and the habits (behind the user's marker). Never waits; a
    * closed link is reopened in the background.
+   *
+   * Mail goes out only to a root that has already reported a model call
+   * (`proven`): a runtime that fires no model_call_* hook (the Codex
+   * runtime, which stock `openai` uses; see runtimeRefused) could never ack,
+   * and its mail would be injected again every turn. Such a root is held at
+   * zero deliveries, not one. A root is proven by its first
+   * model_call_started or model_call_ended, so mail starts flowing with the
+   * root's second run.
    */
   buildPrompt(c: Caller & { runId?: string }): PromptResult | undefined {
-    const r = this.resolve(c, true);
+    // The run's trigger, for tools, which have none: a heartbeat run on the
+    // main session shares the root.
+    const any = this.resolve(c, "tool");
+    if (any.ok) this.boxOf(any.root).nonUser = c.trigger !== "user";
+    const r = this.resolve(c, "prompt");
     if (!r.ok) return undefined;
     const b = this.boxOf(r.root);
+    b.lastActive = this.now();
     this.touch(r.root);
-    if (!b.noModelHooks && c.runId && b.last && b.last.runId !== c.runId) {
-      // A new run: did the previous mail-carrying run report any model call?
-      if (!b.last.seen) {
-        b.noModelHooks = true;
-        b.runs.clear();
-      }
-      b.last = undefined;
-    }
-    if (b.noModelHooks) return undefined;
     if (c.runId && b.currentRunId !== c.runId) {
       b.currentRunId = c.runId;
-      b.assistantFailed = false;
+      // A run that failed (a failed answer, or a call that ended in an error) and
+      // was not retried to success is over: its mail goes out again.
+      for (const [id, run] of b.runs)
+        if (id !== c.runId && (run.failed || run.errored)) b.runs.delete(id);
     }
     const out: PromptResult = {};
     // Without a runId nothing can be acked, so nothing is handed over.
-    if (c.runId) {
+    if (c.runId && this.proven.has(r.root.ref)) {
       this.expire(b);
       let run = b.runs.get(c.runId);
       if (!run) {
@@ -376,14 +434,15 @@ export class Bus {
             ids: items.map((i) => i.key),
             text: items.map((i) => i.text).join("\n\n"),
             at: this.now(),
+            failed: false,
+            errored: false,
           };
           b.runs.set(c.runId, run);
-          b.last = { runId: c.runId, seen: false };
         }
       }
       if (run) out.prependContext = run.text;
     }
-    if (this.open(b) && this.habitsOn()) out.appendSystemContext = HABITS;
+    if (b.everLinked && this.habitsOn()) out.appendSystemContext = HABITS;
     return out.prependContext || out.appendSystemContext ? out : undefined;
   }
 
@@ -392,48 +451,55 @@ export class Bus {
     for (const [id, run] of b.runs) if (run.at < cutoff) b.runs.delete(id);
   }
 
-  /** Why a root's tools refuse, or undefined. */
-  blockedReason(root: Root): string | undefined {
-    return this.boxes.get(root.ref)?.noModelHooks ? NO_MODEL_HOOKS : undefined;
+  /** Whether the run now in progress on this root is a user's (tools refuse otherwise). */
+  userRun(root: Root): boolean {
+    return this.boxes.get(root.ref)?.nonUser !== true;
   }
 
   /**
    * before_message_write, observed only: the role and stopReason of an
    * assistant message, never its content. An "error" or "aborted" one means the
-   * model call did not produce an answer, whatever model_call_ended says.
+   * model call did not produce an answer, whatever model_call_ended says. It is
+   * recorded on the run the message belongs to (the root's current run: an
+   * assistant message is written before the next prompt is built), so a
+   * late model_call_ended still sees it.
    */
   messageWritten(c: Caller, m: { role?: unknown; stopReason?: unknown }): void {
     if (m.role !== "assistant") return;
-    const r = this.resolve(c, false);
+    const r = this.resolve(c, "key");
     if (!r.ok) return;
     const b = this.boxes.get(r.root.ref);
-    if (b)
-      b.assistantFailed =
-        m.stopReason === "error" || m.stopReason === "aborted";
+    const run = b?.currentRunId ? b.runs.get(b.currentRunId) : undefined;
+    if (!run) return;
+    run.failed = m.stopReason === "error" || m.stopReason === "aborted";
+    if (run.failed) run.errored = true;
   }
 
-  /** model_call_started: the run's model calls are being reported. */
-  modelCallStarted(c: Caller, ev: { runId?: string }): void {
-    const r = this.resolve(c, false);
-    if (!r.ok || !ev.runId) return;
-    const last = this.boxes.get(r.root.ref)?.last;
-    if (last && last.runId === ev.runId) last.seen = true;
+  /** model_call_started: this root's runtime reports model calls. */
+  modelCallStarted(c: Caller, _ev: { runId?: string }): void {
+    const r = this.resolve(c, "key");
+    if (r.ok) this.prove(r.root.ref);
   }
 
   /**
-   * model_call_ended. The first completed call of a run acks the mail that
-   * run carried, once per id. An error acks nothing and gives the mail back
-   * to the queue for the next run.
+   * model_call_ended. A completed call whose answer was not an error acks the
+   * mail the run carried, once per id. Anything else acks nothing and leaves the
+   * run open, so a retry or fallback that completes later in the same run can
+   * still ack; a new runId releases a failed run's mail instead.
    */
   modelCallEnded(c: Caller, ev: { runId?: string; outcome?: string }): void {
-    const r = this.resolve(c, false);
-    if (!r.ok || !ev.runId) return;
+    const r = this.resolve(c, "key");
+    if (!r.ok) return;
+    this.prove(r.root.ref);
+    if (!ev.runId) return;
     const b = this.boxes.get(r.root.ref);
-    if (b?.last && b.last.runId === ev.runId) b.last.seen = true;
     const run = b?.runs.get(ev.runId);
     if (!b || !run) return;
+    if (ev.outcome !== "completed" || run.failed) {
+      run.errored = true;
+      return;
+    }
     b.runs.delete(ev.runId);
-    if (ev.outcome !== "completed" || b.assistantFailed) return;
     for (const key of run.ids) {
       const it = b.pending.get(key);
       if (!it) continue;

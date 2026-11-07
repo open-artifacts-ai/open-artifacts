@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   HABITS,
-  NO_MODEL_HOOKS,
+  IDLE_MS,
   NOTICES_MAX,
   PENDING_MAX,
   PER_RUN_MAX,
@@ -119,7 +119,7 @@ describe("delivery", () => {
     await flush();
     bus.buildPrompt(caller({ runId: "r1" }));
     bus.modelCallEnded(
-      { agentId: "main", sessionKey: "agent:main:telegram:dm:1" },
+      { agentId: "main", sessionKey: "agent:main:telegram:direct:1" },
       { runId: "r1", outcome: "completed" },
     );
     expect(hub.acks).toEqual([]);
@@ -208,7 +208,7 @@ describe("delivery", () => {
     await online(bus);
     for (let i = 0; i < PENDING_MAX + 5; i++) hub.push({ id: `m${i}` });
     await flush();
-    const r = bus.resolve(caller(), true);
+    const r = bus.resolve(caller(), "prompt");
     expect(r.ok && bus.box(r.root.ref)?.pending.size).toBe(PENDING_MAX);
     expect(hub.acks).toEqual([]);
   });
@@ -271,14 +271,18 @@ describe("habits", () => {
     expect(bus.buildPrompt(caller({ runId: "r1" }))).toBeUndefined();
   });
 
-  it("are dropped when the link closes", async () => {
+  it("stay put when the link flaps, so the system prompt does not change between turns", async () => {
     const hub = new Hub();
     const bus = newBus(hub);
     await online(bus);
     hub.clients[0]?.close();
-    expect(
-      bus.buildPrompt(caller({ runId: "r1" }))?.appendSystemContext,
-    ).toBeUndefined();
+    hub.down = true; // and it cannot come back right now
+    expect(bus.buildPrompt(caller({ runId: "r1" }))?.appendSystemContext).toBe(
+      HABITS,
+    );
+    expect(bus.buildPrompt(caller({ runId: "r2" }))?.appendSystemContext).toBe(
+      HABITS,
+    );
   });
 });
 
@@ -364,6 +368,11 @@ describe("the first prompt of a root", () => {
     const hub = new Hub();
     hub.unacked.set("m1", { id: "m1", body: "held while down" });
     const bus = newBus(hub);
+    // The root has already reported a model call (a restarted link, not a new root).
+    bus.modelCallStarted(
+      { agentId: "main", sessionKey: "agent:main:main" },
+      { runId: "earlier" },
+    );
     const r = await bus.promptBuild(caller({ runId: "r1" }));
     expect(r?.prependContext).toContain("held while down");
     expect(r?.appendSystemContext).toBe(HABITS);
@@ -402,112 +411,247 @@ describe("the first prompt of a root", () => {
   });
 });
 
-describe("a runtime that reports no model calls", () => {
+describe("a root is handed mail only after its runtime has reported a model call", () => {
   const key = { agentId: "main", sessionKey: "agent:main:main" };
-  const started = (bus: ReturnType<typeof newBus>, runId: string) =>
-    bus.modelCallStarted(key, { runId });
   const rootOf = (bus: ReturnType<typeof newBus>) => {
-    const r = bus.resolve(caller(), true);
+    const r = bus.resolve(caller(), "prompt");
     if (!r.ok) throw new Error("refused");
     return r.root;
   };
 
-  it("delivers once, then nothing, and acks nothing (a prompt-hook-only harness)", async () => {
+  it("never injects for a prompt-hook-only runtime (the Codex runtime): zero deliveries, nothing acked, mail kept", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus, caller({ runId: "warm" }), false);
+    hub.push({ id: "m1" });
+    await flush();
+    for (const run of ["r1", "r2", "r3", "r4"])
+      expect(
+        bus.buildPrompt(caller({ runId: run }))?.prependContext,
+      ).toBeUndefined();
+    expect(hub.acks).toEqual([]);
+    expect([...(bus.box(rootOf(bus).ref)?.pending.keys() ?? [])]).toEqual([
+      "m1",
+    ]);
+  });
+
+  it("starts delivering with the second run, once a model call is reported", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus, caller({ runId: "warm" }), false);
+    hub.push({ id: "m1" });
+    await flush();
+    expect(
+      bus.buildPrompt(caller({ runId: "r1" }))?.prependContext,
+    ).toBeUndefined();
+    bus.modelCallStarted(key, { runId: "r1" });
+    bus.modelCallEnded(key, { runId: "r1", outcome: "completed" });
+    expect(bus.buildPrompt(caller({ runId: "r2" }))?.prependContext).toContain(
+      "m1",
+    );
+    bus.modelCallEnded(key, { runId: "r2", outcome: "completed" });
+    expect(hub.acks).toEqual(["m1"]);
+  });
+
+  it("is proved by a call that ended in an error too, and not by a message write alone", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus, caller({ runId: "warm" }), false);
+    hub.push({ id: "m1" });
+    await flush();
+    bus.buildPrompt(caller({ runId: "r1" }));
+    bus.messageWritten(key, { role: "assistant", stopReason: "stop" });
+    expect(
+      bus.buildPrompt(caller({ runId: "r2" }))?.prependContext,
+    ).toBeUndefined();
+    bus.modelCallEnded(key, { runId: "r2", outcome: "error" });
+    expect(bus.buildPrompt(caller({ runId: "r3" }))?.prependContext).toContain(
+      "m1",
+    );
+  });
+
+  it("does not die on ordinary failures: a /stop, a cooldown, a dropped hook leave a proven root working", async () => {
     const hub = new Hub();
     const bus = newBus(hub);
     await online(bus);
     hub.push({ id: "m1" });
+    await flush();
+    bus.buildPrompt(caller({ runId: "r1" })); // carried m1, then nothing reported at all
+    bus.buildPrompt(caller({ runId: "r2" }));
+    bus.buildPrompt(caller({ runId: "r3" }));
+    hub.push({ id: "m2" });
+    await flush();
+    // r1 is still open (no outcome yet), so m1 waits; m2 is not stuck behind a dead root.
+    expect(bus.buildPrompt(caller({ runId: "r4" }))?.prependContext).toContain(
+      "m2",
+    );
+    expect(bus.buildPrompt(caller({ runId: "r4" }))?.appendSystemContext).toBe(
+      HABITS,
+    );
+  });
+
+  it("is per root and survives the idle eviction of the root", async () => {
+    const hub = new Hub();
+    let t = 1000;
+    const bus = newBus(hub, { now: () => t });
+    await online(bus);
+    t += IDLE_MS + 1;
+    bus.evictIdle();
+    expect(bus.box(rootOf(bus).ref)).toBeUndefined();
+    hub.push({ id: "m1" });
+    bus.buildPrompt(caller({ runId: "again" }));
     await flush();
     expect(bus.buildPrompt(caller({ runId: "r1" }))?.prependContext).toContain(
       "m1",
     );
-    // No model_call_started or model_call_ended for r1. The next run:
-    expect(bus.buildPrompt(caller({ runId: "r2" }))).toBeUndefined();
-    expect(bus.blockedReason(rootOf(bus))).toBe(NO_MODEL_HOOKS);
+    const other = caller({ sessionKey: "agent:main:direct:bob", runId: "o1" });
+    await online(bus, other, false);
     hub.push({ id: "m2" });
     await flush();
-    expect(bus.buildPrompt(caller({ runId: "r3" }))).toBeUndefined();
-    expect(await bus.promptBuild(caller({ runId: "r4" }))).toBeUndefined();
+    expect(bus.buildPrompt(other)?.prependContext).toBeUndefined();
+  });
+});
+
+describe("a failure inside a run", () => {
+  const key = { agentId: "main", sessionKey: "agent:main:main" };
+  const setup = async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus);
+    hub.push({ id: "m1" });
+    await flush();
+    return { hub, bus };
+  };
+
+  it("keeps a failed call's run open so a retry in the same run can still ack (S4)", async () => {
+    const { hub, bus } = await setup();
+    const first = bus.buildPrompt(caller({ runId: "r1" }));
+    bus.modelCallStarted(key, { runId: "r1" });
+    bus.modelCallEnded(key, { runId: "r1", outcome: "error" }); // the first attempt failed
     expect(hub.acks).toEqual([]);
-    // The mail is still pending, never dropped.
-    const box = bus.box(rootOf(bus).ref);
-    expect([...(box?.pending.keys() ?? [])]).toEqual(["m1", "m2"]);
-  });
-
-  it("leaves a normal run alone", async () => {
-    const hub = new Hub();
-    const bus = newBus(hub);
-    await online(bus);
-    hub.push({ id: "m1" });
-    await flush();
-    bus.buildPrompt(caller({ runId: "r1" }));
-    started(bus, "r1");
-    ended(bus, "r1");
-    hub.push({ id: "m2" });
-    await flush();
-    expect(bus.buildPrompt(caller({ runId: "r2" }))?.prependContext).toContain(
-      "m2",
-    );
-    expect(bus.blockedReason(rootOf(bus))).toBeUndefined();
+    // The retry in the same run: the same prompt, once more.
+    expect(bus.buildPrompt(caller({ runId: "r1" }))).toEqual(first);
+    bus.modelCallStarted(key, { runId: "r1" });
+    bus.modelCallEnded(key, { runId: "r1", outcome: "completed" });
     expect(hub.acks).toEqual(["m1"]);
+    expect(
+      bus.buildPrompt(caller({ runId: "r2" }))?.prependContext,
+    ).toBeUndefined();
   });
 
-  it("does not count a run that started a model call and ended in an error", async () => {
-    const hub = new Hub();
-    const bus = newBus(hub);
-    await online(bus);
-    hub.push({ id: "m1" });
-    await flush();
+  it("gives a failed run's mail back when a new runId arrives (S4)", async () => {
+    const { hub, bus } = await setup();
     bus.buildPrompt(caller({ runId: "r1" }));
-    started(bus, "r1");
-    ended(bus, "r1", "error");
+    bus.modelCallEnded(key, { runId: "r1", outcome: "error" });
     expect(bus.buildPrompt(caller({ runId: "r2" }))?.prependContext).toContain(
       "m1",
     );
-    expect(bus.blockedReason(rootOf(bus))).toBeUndefined();
+    expect(hub.acks).toEqual([]);
+    // r1's late success report finds nothing to ack, and does not ack r2's mail.
+    bus.modelCallEnded(key, { runId: "r1", outcome: "completed" });
+    expect(hub.acks).toEqual([]);
+    bus.modelCallEnded(key, { runId: "r2", outcome: "completed" });
+    expect(hub.acks).toEqual(["m1"]);
   });
 
-  it("does not count a run that only started a call", async () => {
+  it("records a failed answer on its own run, not on the root (S3)", async () => {
+    const { hub, bus } = await setup();
+    bus.buildPrompt(caller({ runId: "r1" }));
+    bus.messageWritten(key, { role: "assistant", stopReason: "error" });
+    // The next run's prompt is built before r1's async model_call_ended arrives.
+    const next = bus.buildPrompt(caller({ runId: "r2" }));
+    expect(next?.prependContext).toContain("m1"); // r1 failed: its mail goes out again
+    bus.modelCallEnded(key, { runId: "r1", outcome: "completed" }); // late, for the failed run
+    expect(hub.acks).toEqual([]);
+    bus.messageWritten(key, { role: "assistant", stopReason: "stop" });
+    bus.modelCallEnded(key, { runId: "r2", outcome: "completed" });
+    expect(hub.acks).toEqual(["m1"]);
+  });
+
+  it("a good run's late model_call_ended still acks after the next prompt was built (S3)", async () => {
+    const { hub, bus } = await setup();
+    bus.buildPrompt(caller({ runId: "r1" }));
+    bus.messageWritten(key, { role: "assistant", stopReason: "stop" });
+    expect(
+      bus.buildPrompt(caller({ runId: "r2" }))?.prependContext,
+    ).toBeUndefined();
+    bus.modelCallEnded(key, { runId: "r1", outcome: "completed" });
+    expect(hub.acks).toEqual(["m1"]);
+  });
+
+  it("acks by the session key even when the model route changed mid-run (S6)", async () => {
+    const { hub, bus } = await setup();
+    bus.buildPrompt(caller({ runId: "r1" }));
+    bus.modelCallEnded(
+      { ...key, modelProviderId: "claude-cli" },
+      { runId: "r1", outcome: "completed" },
+    );
+    expect(hub.acks).toEqual(["m1"]);
+    // At prompt time the route still refuses.
+    expect(
+      bus.buildPrompt(caller({ runId: "r2", modelProviderId: "claude-cli" })),
+    ).toBeUndefined();
+  });
+});
+
+describe("heartbeat and idle", () => {
+  it("tools refuse during a non-user run on the root, and work again on the next user run (nit)", async () => {
     const hub = new Hub();
     const bus = newBus(hub);
     await online(bus);
-    hub.push({ id: "m1" });
-    await flush();
-    bus.buildPrompt(caller({ runId: "r1" }));
-    started(bus, "r1");
-    bus.buildPrompt(caller({ runId: "r2" }));
-    expect(bus.blockedReason(rootOf(bus))).toBeUndefined();
+    const r = bus.resolve(caller(), "prompt");
+    if (!r.ok) throw new Error("refused");
+    expect(bus.userRun(r.root)).toBe(true);
+    bus.buildPrompt(caller({ trigger: "heartbeat", runId: "hb" }));
+    expect(bus.userRun(r.root)).toBe(false);
+    bus.buildPrompt(caller({ runId: "u1" }));
+    expect(bus.userRun(r.root)).toBe(true);
   });
 
-  it("does not trip on the same run's repeated prompts, or on a run that carried no mail", async () => {
+  it("evicts a root idle for IDLE_MS: link closed, queue dropped, the hub keeps the mail (S5)", async () => {
     const hub = new Hub();
-    const bus = newBus(hub);
-    await online(bus);
-    bus.buildPrompt(caller({ runId: "r0" }));
-    bus.buildPrompt(caller({ runId: "r1" }));
-    hub.push({ id: "m1" });
-    await flush();
-    bus.buildPrompt(caller({ runId: "r2" }));
-    bus.buildPrompt(caller({ runId: "r2" }));
-    bus.buildPrompt(caller({ runId: "r2" }));
-    expect(bus.blockedReason(rootOf(bus))).toBeUndefined();
-  });
-
-  it("is per root: another session still gets its mail", async () => {
-    const hub = new Hub();
-    const bus = newBus(hub);
+    let t = 1000;
+    const bus = newBus(hub, { now: () => t });
     await online(bus);
     hub.push({ id: "m1" });
     await flush();
-    bus.buildPrompt(caller({ runId: "r1" }));
-    bus.buildPrompt(caller({ runId: "r2" }));
-    expect(bus.blockedReason(rootOf(bus))).toBe(NO_MODEL_HOOKS);
-    const other = caller({
-      sessionKey: "agent:main:telegram:dm:1",
-      runId: "o1",
-    });
-    await online(bus, other);
-    expect(bus.buildPrompt(other)?.appendSystemContext).toBe(HABITS);
+    t += IDLE_MS - 10;
+    bus.evictIdle();
+    const r = bus.resolve(caller(), "prompt");
+    if (!r.ok) throw new Error("refused");
+    expect(bus.box(r.root.ref)).toBeDefined(); // not idle long enough
+    t += 20;
+    bus.evictIdle();
+    expect(bus.box(r.root.ref)).toBeUndefined();
+    expect(hub.clients[0]?.state).toBe("closed");
+    expect(hub.unacked.has("m1")).toBe(true);
+    // Used again: a fresh link, and the hub's mail comes back.
+    bus.buildPrompt(caller({ runId: "x" }));
+    await flush();
+    expect(bus.buildPrompt(caller({ runId: "y" }))?.prependContext).toContain(
+      "m1",
+    );
+  });
+
+  it("a push does not keep a root alive; a prompt does", async () => {
+    const hub = new Hub();
+    let t = 1000;
+    const bus = newBus(hub, { now: () => t });
+    await online(bus);
+    t += IDLE_MS - 10;
+    hub.push({ id: "m1" });
+    await flush();
+    t += 20;
+    bus.evictIdle();
+    const r = bus.resolve(caller(), "prompt");
+    if (!r.ok) throw new Error("refused");
+    expect(bus.box(r.root.ref)).toBeUndefined();
+    await online(bus, caller({ runId: "w2" }));
+    t += IDLE_MS - 10;
+    bus.buildPrompt(caller({ runId: "w3" }));
+    t += 20;
+    bus.evictIdle();
+    expect(bus.box(r.root.ref)).toBeDefined();
   });
 });
 
@@ -567,7 +711,7 @@ describe("a provider failure that still reports a completed model call", () => {
     bus.messageWritten(key, { role: "user", stopReason: "error" });
     wrote(bus, "error", "assistant", {
       agentId: "main",
-      sessionKey: "agent:main:other",
+      sessionKey: "agent:main:direct:other",
     });
     ended(bus, "r1");
     expect(hub.acks).toEqual(["m1"]);
@@ -597,7 +741,7 @@ describe("habits behind the user's yes", () => {
     expect(bus.buildPrompt(caller({ runId: "r2" }))).toBeUndefined();
   });
 
-  it("are sent with the marker, and only while a link is open", async () => {
+  it("are sent with the marker once a link has been opened", async () => {
     const hub = new Hub();
     let on = false;
     const bus = newBus(hub, { habitsOn: () => on });
@@ -608,9 +752,11 @@ describe("habits behind the user's yes", () => {
       HABITS,
     );
     hub.clients[0]?.close();
-    expect(
-      bus.buildPrompt(caller({ runId: "r3" }))?.appendSystemContext,
-    ).toBeUndefined();
+    expect(bus.buildPrompt(caller({ runId: "r3" }))?.appendSystemContext).toBe(
+      HABITS,
+    );
+    on = false; // the user took the marker away: off at once
+    expect(bus.buildPrompt(caller({ runId: "r4" }))).toBeUndefined();
   });
 
   it("are off when no check is given, or the check throws", async () => {

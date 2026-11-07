@@ -2,6 +2,7 @@ import { callTool, TOOLS } from "@oa/bus-adapter-claude-code";
 import type { AgentTool, ToolContext } from "./api.ts";
 import type { Bus } from "./bus.ts";
 import { LinkError } from "./link.ts";
+import { refusal } from "./roots.ts";
 
 /** The five bus tools, named as Pi and Hermes name them (#1448): the MCP tools behind an `oabus_` prefix. */
 export const TOOL_NAMES = TOOLS.map((t) => `oabus_${t.name}`);
@@ -23,7 +24,8 @@ export function toolsFor(bus: Bus, ctx: ToolContext): AgentTool[] {
       modelId: ctx.activeModel?.modelId,
       workspaceDir: ctx.workspaceDir,
     },
-    false,
+    "tool",
+    ctx.runtimeConfig ?? ctx.config ?? bus.config,
   );
   if (!r.ok) return [];
   const root = r.root;
@@ -33,8 +35,8 @@ export function toolsFor(bus: Bus, ctx: ToolContext): AgentTool[] {
     description: t.description,
     parameters: t.inputSchema,
     async execute(_id, params, signal) {
-      const blocked = bus.blockedReason(root);
-      if (blocked) throw new Error(blocked);
+      // A heartbeat or other automatic run on this root must not drive the bus.
+      if (!bus.userRun(root)) throw new Error(refusal.trigger);
       try {
         const client = await bus.ensure(root);
         const out = await callTool(

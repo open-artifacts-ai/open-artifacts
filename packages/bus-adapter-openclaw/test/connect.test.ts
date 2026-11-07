@@ -74,6 +74,10 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
   });
   expect(hellos[0]?.agent_ref).toMatch(/^oa-[0-9a-f]{40}$/);
   expect(hellos[0]?.attest.proc_start).toBeTruthy();
+  bus.modelCallStarted(
+    { agentId: "main", sessionKey: "agent:main:main" },
+    { runId: "w" },
+  );
   const r = bus.buildPrompt(caller({ runId: "r1" }));
   expect(r?.prependContext).toContain("over the socket");
   bus.modelCallEnded(

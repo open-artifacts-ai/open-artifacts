@@ -101,14 +101,28 @@ export function newBus(hub: Hub, over: Partial<BusDeps> = {}) {
     connect: hub.connect,
     stateDir: () => "/state/.openclaw",
     settleMs: 0,
+    sweepMs: 0,
     habitsOn: () => true,
     ...over,
   });
 }
 
-/** Connects the root (a first turn) and lets the hub's pushes land. */
-export async function online(bus: Bus, c = caller({ runId: "warm" })) {
+/**
+ * Connects the root (a first turn) and lets the hub's pushes land. By default
+ * the root has also reported a model call, as an ordinary runtime does on its
+ * first run, so mail flows; pass `proven: false` for a root that has not.
+ */
+export async function online(
+  bus: Bus,
+  c = caller({ runId: "warm" }),
+  proven = true,
+) {
   bus.buildPrompt(c);
+  if (proven)
+    bus.modelCallStarted(
+      { agentId: c.agentId, sessionKey: c.sessionKey as string },
+      { runId: c.runId },
+    );
   await flush();
   return c;
 }
