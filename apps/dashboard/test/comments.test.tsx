@@ -20,6 +20,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { ACTIONS, ACTIONS_PLAIN } from "../src/viewer/comments/CommentsBody";
 import {
   calls,
   events,
@@ -451,6 +452,15 @@ describe("comments: actions", () => {
     expect(actions).not.toBeNull();
     expect(actions.className).toContain(
       "group-data-[sheet-height=pin]/sheet:sticky",
+    );
+    // Floating over scrolling text needs an opaque surface, never an inherited
+    // one: a card's own, and the sheet's in the note composer (#1696).
+    expect(actions.className).toContain(
+      "group-data-[sheet-height=pin]/sheet:bg-background",
+    );
+    expect(ACTIONS).not.toContain("bg-inherit");
+    expect(ACTIONS_PLAIN).toContain(
+      "group-data-[sheet-height=pin]/sheet:bg-card",
     );
     expect(
       await within(c).findByText("Agreed, shorter is better."),
