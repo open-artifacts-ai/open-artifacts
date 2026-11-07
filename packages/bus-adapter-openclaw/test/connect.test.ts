@@ -61,7 +61,7 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
     connect: realConnect({ OA_BUS_HOME: home }),
     stateDir: () => "/state/.openclaw",
   });
-  bus.promptBuild(caller({ runId: "w", workspaceDir: "/work/space" }));
+  bus.buildPrompt(caller({ runId: "w", workspaceDir: "/work/space" }));
   await new Promise((r) => setTimeout(r, 300));
   expect(push).toBeDefined();
   expect(hellos).toHaveLength(1);
@@ -74,7 +74,7 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
   });
   expect(hellos[0]?.agent_ref).toMatch(/^oa-[0-9a-f]{40}$/);
   expect(hellos[0]?.attest.proc_start).toBeTruthy();
-  const r = bus.promptBuild(caller({ runId: "r1" }));
+  const r = bus.buildPrompt(caller({ runId: "r1" }));
   expect(r?.prependContext).toContain("over the socket");
   bus.modelCallEnded(
     { agentId: "main", sessionKey: "agent:main:main" },

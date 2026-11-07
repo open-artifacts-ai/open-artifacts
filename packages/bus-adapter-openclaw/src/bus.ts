@@ -23,6 +23,13 @@ export const NOTICES_MAX = 50;
 export const RUN_TTL_MS = 15 * 60_000;
 /** A delivery waits this long for the current bus name before using the welcome's. */
 export const SELF_TIMEOUT_MS = 2000;
+/**
+ * A root's first prompt waits this long for the link, and for the mail the hub
+ * holds for it, so mail that was waiting at (re)start goes out with that turn.
+ */
+export const WARM_MS = 1500;
+/** After the link opens, the hub's pushes need this long to start arriving. */
+export const SETTLE_MS = 100;
 const RECONNECT_MS = 3000;
 const MAX_REFUSED_BACKOFF_MS = 60_000;
 
@@ -70,6 +77,8 @@ export type BusDeps = {
   connect: Connect;
   stateDir: () => string;
   now?: () => number;
+  /** Test seam: SETTLE_MS. */
+  settleMs?: number;
 };
 
 export type PromptResult = {
@@ -255,11 +264,48 @@ export class Bus {
   // --- Hooks.
 
   /**
-   * before_prompt_build. The queued mail as prependContext, the same set for
-   * the same runId however often this fires, and the habits while a link is
-   * open. Refused callers get nothing and open no link.
+   * before_prompt_build. A root with no open link gets a short wait for one
+   * (and for the mail the hub holds), then the prompt as buildPrompt makes it.
+   * Refused callers get nothing and open no link.
    */
-  promptBuild(c: Caller & { runId?: string }): PromptResult | undefined {
+  async promptBuild(
+    c: Caller & { runId?: string },
+  ): Promise<PromptResult | undefined> {
+    const r = this.resolve(c, true);
+    if (!r.ok) return undefined;
+    await this.warm(r.root);
+    return this.buildPrompt(c);
+  }
+
+  private async warm(root: Root): Promise<void> {
+    const b = this.boxOf(root);
+    if (this.open(b) || this.now() < b.retryAt) return;
+    const sleep = (ms: number) =>
+      new Promise<void>((res) => {
+        const t = setTimeout(res, ms);
+        t.unref?.();
+      });
+    const deadline = Date.now() + WARM_MS;
+    const linked = await Promise.race([
+      this.ensure(root).then(
+        () => true,
+        () => false,
+      ),
+      sleep(WARM_MS).then(() => false),
+    ]);
+    if (!linked) return;
+    await sleep(this.deps.settleMs ?? SETTLE_MS);
+    // Deliveries still building their text (the current-name lookup).
+    while (b.building > 0 && Date.now() < deadline + SELF_TIMEOUT_MS)
+      await sleep(10);
+  }
+
+  /**
+   * The queued mail as prependContext, the same set for the same runId however
+   * often this fires, and the habits while a link is open. Never waits; a
+   * closed link is reopened in the background.
+   */
+  buildPrompt(c: Caller & { runId?: string }): PromptResult | undefined {
     const r = this.resolve(c, true);
     if (!r.ok) return undefined;
     const b = this.boxOf(r.root);

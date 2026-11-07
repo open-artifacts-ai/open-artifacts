@@ -7,7 +7,7 @@ const bus = new Bus({
   connect: realConnect({ OA_BUS_HOME: process.argv[2] }),
   stateDir: () => "/state/.openclaw",
 });
-bus.promptBuild({
+bus.buildPrompt({
   agentId: "main",
   sessionKey: "agent:main:main",
   trigger: "user",
@@ -15,7 +15,7 @@ bus.promptBuild({
 });
 await new Promise((r) => setTimeout(r, 400));
 console.log(
-  bus.promptBuild({
+  bus.buildPrompt({
     agentId: "main",
     sessionKey: "agent:main:main",
     trigger: "user",

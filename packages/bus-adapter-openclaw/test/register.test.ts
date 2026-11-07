@@ -61,14 +61,14 @@ describe("register", () => {
       regs.flatMap((r) => r.hooks[name]?.map((h) => h(ev, ctx)));
 
     // Every registration's hook fires, as if OpenClaw ran them all.
-    fire("before_prompt_build", { prompt: "hi" });
+    await Promise.all(fire("before_prompt_build", { prompt: "hi" }));
     await flush();
     expect(hub.connects).toHaveLength(1);
     hub.push({ id: "m1" });
     await flush();
-    const results = fire("before_prompt_build", { prompt: "hi" }) as {
-      prependContext?: string;
-    }[];
+    const results = (await Promise.all(
+      fire("before_prompt_build", { prompt: "hi" }),
+    )) as { prependContext?: string }[];
     expect(results).toHaveLength(3);
     expect(new Set(results.map((r) => r.prependContext)).size).toBe(1);
     expect(results[0]?.prependContext).toContain("body of m1");
@@ -87,11 +87,11 @@ describe("register", () => {
     const a = fakeApi();
     registerBus(a.api, bus);
     const ctx = caller();
-    a.hooks.before_prompt_build?.[0]?.({}, ctx);
+    await a.hooks.before_prompt_build?.[0]?.({}, ctx);
     await flush();
     hub.push({ id: "m1" });
     await flush();
-    a.hooks.before_prompt_build?.[0]?.({}, ctx);
+    await a.hooks.before_prompt_build?.[0]?.({}, ctx);
     a.hooks.model_call_ended?.[0]?.(
       { runId: "run-1", sessionKey: "agent:main:main", outcome: "completed" },
       { agentId: "main" },

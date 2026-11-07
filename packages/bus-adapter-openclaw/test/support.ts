@@ -100,13 +100,14 @@ export function newBus(hub: Hub, over: Partial<BusDeps> = {}) {
   return new Bus({
     connect: hub.connect,
     stateDir: () => "/state/.openclaw",
+    settleMs: 0,
     ...over,
   });
 }
 
 /** Connects the root (a first turn) and lets the hub's pushes land. */
 export async function online(bus: Bus, c = caller({ runId: "warm" })) {
-  bus.promptBuild(c);
+  bus.buildPrompt(c);
   await flush();
   return c;
 }
