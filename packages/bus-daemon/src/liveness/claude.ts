@@ -69,6 +69,13 @@ const alive = (s: SessionFile, deps: ClaudeLivenessDeps) =>
 
 const strip = ({ stamp: _, ...s }: SessionFile): LiveClaude => s;
 
+/** Every live session file, one per process: a membership test, never deduped. */
+export function liveClaudeFiles(deps: ClaudeLivenessDeps): LiveClaude[] {
+  return sessionFiles(deps.dir)
+    .filter((s) => alive(s, deps))
+    .map(strip);
+}
+
 /**
  * Claude sessions that are running now, from `~/.claude/sessions`: the process
  * is up and its start time matches. One with no socket (cross-session
@@ -83,11 +90,10 @@ export function liveClaudeSessions(
   // its nameless file must not stand for the session (#1635).
   const byRef = new Map<string, LiveClaude>();
   const rank = (s: LiveClaude) =>
-    (s.pid === preferPid?.(s.ref) ? 2 : 0) +
+    (s.pid === preferPid?.(s.ref) ? 4 : 0) +
+    (s.socketPath !== "" ? 2 : 0) +
     (s.name !== `claude-${s.pid}` ? 1 : 0);
-  for (const s of sessionFiles(deps.dir)
-    .filter((f) => alive(f, deps))
-    .map(strip)) {
+  for (const s of liveClaudeFiles(deps)) {
     const cur = byRef.get(s.ref);
     if (
       !cur ||

@@ -68,6 +68,7 @@ import {
   cachedProcStart,
   claudeTarget,
   isRunning,
+  liveClaudeFiles,
   liveClaudeSessions,
 } from "./liveness/claude.ts";
 import { type Namespace, resolveNamespace } from "./namespace.ts";
@@ -292,6 +293,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // Every close goes through here: a closed agent's rate limit mark goes with it.
     for (const ref of limited.keys())
       if (!agents.byRef(ref)?.live) clearLimited(ref);
+    for (const m of [renameFrames, renameHeldUntil])
+      for (const ref of m.keys()) if (!agents.byRef(ref)?.live) m.delete(ref);
     return hub.send({ v: 1, id: frameId(), type: "sessions", ...sessions() });
   };
   /** agent_up ids awaiting the hub's answer, to their agent_ref and the kind sent; cleared with the link. */
@@ -664,7 +667,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let seenSeq = 0;
 
   /** rename ids awaiting the hub's answer, to their agent_ref; cleared with the link. */
-  const renameIds = new Map<string, string>();
+  const renameIds = new Map<string, { ref: string; prevSent?: string }>();
   /** When each ref's recent `rename` frames went (a sliding window). */
   const renameFrames = new Map<string, number[]>();
   /** After the hub's rate_limited on a rename: no rename for that ref until this time. */
@@ -734,7 +737,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     renameFrames.set(rec.ref, recent);
     if (recent.length >= RENAME_WINDOW_MAX) return;
     const id = frameId();
-    renameIds.set(id, rec.ref);
+    renameIds.set(id, { ref: rec.ref, prevSent: rec.sentName });
     if (
       hub.send({
         v: 1,
@@ -947,11 +950,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "error": {
           if (statusRelay.answer(frame)) return;
-          const renamedRef = renameIds.get(frame.id);
-          if (renamedRef !== undefined) {
+          const renamed = renameIds.get(frame.id);
+          if (renamed !== undefined) {
+            const renamedRef = renamed.ref;
             renameIds.delete(frame.id);
-            if (frame.code === "rate_limited")
+            if (frame.code === "rate_limited") {
               renameHeldUntil.set(renamedRef, Date.now() + RENAME_HOLD_MS);
+              // Refused, not told: the same name goes once the hold is out.
+              const a = agents.byRef(renamedRef);
+              if (a) a.sentName = renamed.prevSent;
+            }
             log(
               `the hub did not rename ${renamedRef} to its session name: ${frame.code} ${frame.message}`,
             );
@@ -1256,9 +1264,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         const prev = agents.byRef(hello.agent_ref);
         // A resumed session may beat the next sync tick: the files decide whose it is.
         if (prev?.live && prev.kind === "claude-code" && prev.pid !== pid) {
-          const live = liveClaudeSessions(claudeSessions, (r) =>
-            r === prev.ref ? prev.pid : undefined,
-          ).filter((s) => s.ref === prev.ref);
+          const live = liveClaudeFiles(claudeSessions).filter(
+            (s) => s.ref === prev.ref,
+          );
           if (
             live.some((s) => s.pid === pid) &&
             !live.some((s) => s.pid === prev.pid)
@@ -1512,6 +1520,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
 
   const sync = () => {
+    // A rename held back (the hub's hour, the 3-a-minute window) goes when it
+    // can; Pi and omp have no session file to prompt it.
+    for (const rec of agents.all()) if (rec.live) flushRename(rec);
     for (const [what, fn] of [
       ["claude", syncClaude],
       ["opencode", syncOpenCode],

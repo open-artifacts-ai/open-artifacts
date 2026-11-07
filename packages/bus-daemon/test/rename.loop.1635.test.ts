@@ -107,11 +107,10 @@ describe("a session's unchanged name never loops renames (#1635)", () => {
     }
     await settle(100);
     expect(h.of("rename")).toHaveLength(1);
-    // An hour on, the current name goes.
+    // An hour on, the latest name held back goes, with no new change.
     vi.setSystemTime(Date.now() + 61 * 60_000);
-    write(d, 4242, "s-a", "Later");
     await vi.waitFor(() => expect(h.of("rename")).toHaveLength(2));
-    expect(h.of("rename")[1]?.proposed_name).toBe("Later");
+    expect(h.of("rename")[1]?.proposed_name).toBe("A6");
   });
 
   it("a suffixed bus name from the hub never repeats a rename across ticks or reconnects", async () => {
@@ -182,5 +181,56 @@ describe("a session's unchanged name never loops renames (#1635)", () => {
     vi.setSystemTime(Date.now() + 61_000);
     await vi.waitFor(() => expect(h.of("rename")).toHaveLength(4));
     expect(h.of("rename")[3]?.proposed_name).toBe("Latest");
+  });
+
+  it("a name the hub refused with rate_limited goes again after the hour, with no new change", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const { h, d } = await start();
+    write(d, 4242, "s-a", "OA Bus");
+    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(1));
+    h.toDaemon({
+      v: 1,
+      id: h.of("rename")[0]?.id as string,
+      type: "error",
+      code: "rate_limited",
+      message: "Too many renames",
+    });
+    await settle();
+    expect(h.of("rename")).toHaveLength(1);
+    vi.setSystemTime(Date.now() + 61 * 60_000);
+    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(2));
+    expect(h.of("rename")[1]?.proposed_name).toBe("OA Bus");
+  });
+
+  it("one file per ref prefers the one with a socket; the membership list keeps every file", async () => {
+    const { liveClaudeFiles, liveClaudeSessions } = await import(
+      "../src/liveness/claude.ts"
+    );
+    const d = mkdtempSync(join(tmpdir(), "ob-rank-"));
+    const file = (pid: number, extra: object) =>
+      writeFileSync(
+        join(d, `${pid}.json`),
+        JSON.stringify({
+          pid,
+          sessionId: "s-z",
+          procStart: `t${pid}`,
+          name: "Named",
+          cwd: "/repo",
+          ...extra,
+        }),
+      );
+    file(3000, {}); // headless: lower pid, no socket
+    file(4242, { messagingSocketPath: "/tmp/x.sock" });
+    const deps = {
+      dir: d,
+      procStart: (pid: number) => `t${pid}`,
+      isRunning: () => true,
+    };
+    expect(liveClaudeSessions(deps).map((s) => s.pid)).toEqual([4242]);
+    expect(
+      liveClaudeFiles(deps)
+        .map((s) => s.pid)
+        .sort(),
+    ).toEqual([3000, 4242]);
   });
 });
