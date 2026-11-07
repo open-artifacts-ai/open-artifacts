@@ -251,7 +251,7 @@ describe("pi extension asset", () => {
       agent_ref: "pi-sess-1",
       pid: process.pid,
       cwd: "/work/repo",
-      proposed_name: "my-pi",
+      proposed_name: "My Pi",
       caps: ["mailbox", "pending", "rename"],
       attest: { proc_start: procStartOf(process.pid) },
     });
@@ -652,7 +652,7 @@ describe("pi extension asset", () => {
     const d = await fakeDaemon(home);
     const p = fakePi();
     oa_bus(p.pi as never);
-    await p.emit("session_start", ctx("pi-sess-4", "!!!"));
+    await p.emit("session_start", ctx("pi-sess-4", " \u0001 "));
     await vi.waitFor(() =>
       expect(d.conns[0]?.frames[0]).toMatchObject({ proposed_name: "pi" }),
     );
