@@ -4,6 +4,7 @@
 
 import type { ArtifactSummary, Me } from "@oa/shared";
 import {
+  act,
   cleanup,
   fireEvent,
   renderHook,
@@ -11,7 +12,7 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { expect, it, vi } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { isSoloPaused, useCan } from "../src/auth/permissions";
 import { planStatus } from "../src/settings/Plan";
 import {
@@ -388,12 +389,116 @@ it("Plan and billing: a lapsed Business card names Business", async () => {
   ).toBeVisible();
 });
 
-it("Plan and billing: the comparison table has a phone-only scroll fade", async () => {
-  mountHosted("/settings/plan", { billing: TRIAL });
-  const fade = await screen.findByTestId("table-fade");
-  expect(fade.className).toContain("min-[480px]:hidden");
-  expect(fade.className).toContain("pointer-events-none");
-  expect(fade.getAttribute("aria-hidden")).toBe("true");
+/** Scroll geometry for the table's scroll box (jsdom has no layout). */
+const box = { scrollWidth: 0, clientWidth: 0, scrollLeft: 0 };
+const geometry = (k: keyof typeof box) => ({
+  configurable: true,
+  get(this: HTMLElement) {
+    return this.dataset.slot === "table-container" ? box[k] : 0;
+  },
+  set(this: HTMLElement, v: number) {
+    if (this.dataset.slot === "table-container") box[k] = v;
+  },
+});
+const observers: {
+  disconnect: ReturnType<typeof vi.fn>;
+  observe: ReturnType<typeof vi.fn>;
+  fire: () => void;
+}[] = [];
+const fit = (scrollWidth: number, clientWidth: number, scrollLeft = 0) =>
+  Object.assign(box, { scrollWidth, clientWidth, scrollLeft });
+const scrollTo = (left: number) => {
+  box.scrollLeft = left;
+  fireEvent.scroll(
+    document.querySelector('[data-slot="table-container"]') as HTMLElement,
+  );
+};
+
+describe("the comparison table's scroll fade", () => {
+  const realRO = globalThis.ResizeObserver;
+  beforeAll(() => {
+    for (const k of ["scrollWidth", "clientWidth", "scrollLeft"] as const)
+      Object.defineProperty(HTMLElement.prototype, k, geometry(k));
+    globalThis.ResizeObserver = class {
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+      fire: () => void;
+      constructor(cb: () => void) {
+        this.fire = cb;
+        observers.push(this);
+      }
+    } as unknown as typeof ResizeObserver;
+  });
+  afterAll(() => {
+    globalThis.ResizeObserver = realRO;
+    for (const k of ["scrollWidth", "clientWidth", "scrollLeft"] as const)
+      delete (HTMLElement.prototype as unknown as Record<string, unknown>)[k];
+  });
+
+  it("shows while the table overflows, hides at the scroll end, is inert", async () => {
+    fit(600, 300);
+    mountHosted("/settings/plan", { billing: TRIAL });
+    const fade = await screen.findByTestId("table-fade");
+    expect(fade.className).toContain("pointer-events-none");
+    expect(fade.getAttribute("aria-hidden")).toBe("true");
+    scrollTo(150);
+    expect(screen.getByTestId("table-fade")).toBeVisible();
+    // The last column is in view (within 1px): the fade is gone.
+    scrollTo(299.5);
+    await waitFor(() => expect(screen.queryByTestId("table-fade")).toBeNull());
+    // Scrolling back brings it back.
+    scrollTo(0);
+    await screen.findByTestId("table-fade");
+  });
+
+  it("is absent when the table doesn't overflow", async () => {
+    fit(300, 300);
+    mountHosted("/settings/plan", { billing: TRIAL });
+    await screen.findByRole("button", { name: "Pay $1/month" });
+    expect(screen.queryByTestId("table-fade")).toBeNull();
+  });
+
+  it("follows a resize: the fade appears once the table starts to overflow", async () => {
+    fit(300, 300);
+    observers.length = 0;
+    mountHosted("/settings/plan", { billing: TRIAL });
+    await screen.findByRole("button", { name: "Pay $1/month" });
+    expect(screen.queryByTestId("table-fade")).toBeNull();
+    fit(600, 300);
+    act(() => {
+      for (const o of observers) o.fire();
+    });
+    await screen.findByTestId("table-fade");
+  });
+
+  it("observes the table as well as its box", async () => {
+    fit(600, 300);
+    observers.length = 0;
+    mountHosted("/settings/plan", { billing: TRIAL });
+    await screen.findByTestId("table-fade");
+    const seen = observers.flatMap((o) =>
+      o.observe.mock.calls.map((c) => c[0]),
+    );
+    expect(seen.some((n) => (n as HTMLElement).tagName === "TABLE")).toBe(true);
+    expect(
+      seen.some((n) => (n as HTMLElement).dataset.slot === "table-container"),
+    ).toBe(true);
+  });
+
+  it("cleans up on unmount: scroll listener removed, observer disconnected", async () => {
+    fit(600, 300);
+    observers.length = 0;
+    const remove = vi.spyOn(HTMLElement.prototype, "removeEventListener");
+    mountHosted("/settings/plan", { billing: TRIAL });
+    await screen.findByTestId("table-fade");
+    cleanup();
+    expect(observers.some((o) => o.disconnect.mock.calls.length > 0)).toBe(
+      true,
+    );
+    expect(remove.mock.calls.some(([type, ,]) => type === "scroll")).toBe(true);
+    remove.mockRestore();
+  });
 });
 
 it("planStatus: a lapsed solo_unpaid plan reads Paused", () => {

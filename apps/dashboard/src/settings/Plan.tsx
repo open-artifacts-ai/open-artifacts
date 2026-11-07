@@ -21,6 +21,7 @@ import {
   TableRow,
 } from "@oa/ui/shadcn";
 import { useMutation } from "@tanstack/react-query";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
 import { useRedirect } from "../auth/redirect";
@@ -155,6 +156,47 @@ const PILL: Record<Status["tone"], string> = {
   info: "bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)]",
 };
 
+/**
+ * Wraps a shadcn Table: a right-edge fade shows only while the table's scroll
+ * box overflows and isn't scrolled to the end, so it says "more this way" and
+ * never dims the last column once it is in view.
+ */
+function ScrollFade({ children }: { children: ReactNode }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [more, setMore] = useState(false);
+  useEffect(() => {
+    const el = box.current?.querySelector<HTMLElement>(
+      '[data-slot="table-container"]',
+    );
+    if (!el) return;
+    const update = () =>
+      setMore(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    // A content-width change (a font swap) resizes the table, not the box.
+    const t = el.querySelector("table");
+    if (t) ro.observe(t);
+    return () => {
+      el.removeEventListener("scroll", update);
+      ro.disconnect();
+    };
+  }, []);
+  return (
+    <div ref={box} className="relative">
+      {children}
+      {more && (
+        <div
+          aria-hidden="true"
+          data-testid="table-fade"
+          className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[var(--oa-bg)] to-transparent"
+        />
+      )}
+    </div>
+  );
+}
+
 export function Plan() {
   useDocumentTitle("Plan and billing");
   const state = useMe();
@@ -285,7 +327,7 @@ export function Plan() {
         aria-label="Compare plans"
         className={`relative min-w-0 ${INSET} px-0`}
       >
-        <div className="relative">
+        <ScrollFade>
           <Table>
             <TableHeader>
               <TableRow>
@@ -319,13 +361,7 @@ export function Plan() {
               ))}
             </TableBody>
           </Table>
-          {/* A phone cuts the table at the right edge: the fade says it scrolls. */}
-          <div
-            aria-hidden="true"
-            data-testid="table-fade"
-            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[var(--oa-bg)] to-transparent min-[480px]:hidden"
-          />
-        </div>
+        </ScrollFade>
         <p className={`mt-[var(--oa-space-2)] ${muted}`}>
           Team and Business bill per creator: people who publish or edit live
           data in a month. Viewers are free.
