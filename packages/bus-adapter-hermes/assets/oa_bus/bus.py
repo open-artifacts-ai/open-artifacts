@@ -93,11 +93,14 @@ def _is_gateway_wrapped(content, user_message):
     prefix = rest[: -len(user_message)]
     if not prefix:
         return True
+    # The gateway loads it for every text message before the turn runs; never import it here
+    # (this runs under the plugin's lock).
+    strip = getattr(sys.modules.get("gateway.message_timestamps"), "strip_leading_message_timestamps", None)
+    if not callable(strip):
+        return False
     try:
-        from gateway.message_timestamps import strip_leading_message_timestamps
-
         # The prefix must be nothing but gateway timestamps.
-        return strip_leading_message_timestamps(prefix + "\0")[0] == "\0"
+        return strip(prefix + "\0")[0] == "\0"
     except Exception:
         return False
 
