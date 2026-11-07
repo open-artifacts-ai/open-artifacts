@@ -56,7 +56,7 @@ const ctx = (id = "pi-sess-r") => ({
 });
 type C = ReturnType<typeof ctx>;
 
-async function pi() {
+async function pi(awaitStart = true) {
   const handlers = new Map<string, ((e: unknown, c: C) => unknown)[]>();
   oa_bus({
     registerTool: () => {},
@@ -68,7 +68,8 @@ async function pi() {
     for (const h of handlers.get(e) ?? []) await h({}, c);
   };
   shutdowns.push(() => emit("session_shutdown"));
-  await emit("session_start");
+  const started = emit("session_start");
+  if (awaitStart) await started;
   return emit;
 }
 
@@ -165,7 +166,8 @@ describe("pi rename (#1635)", () => {
 
   it("a rename while the hello is in flight is sent once the link is welcomed", async () => {
     const d = await daemon(["rename"], 300);
-    const emit = await pi();
+    // Not awaited: session_start resolves only once the welcome arrives.
+    const emit = await pi(false);
     await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
     name = "Typed During Hello";
     await emit("session_info_changed");
