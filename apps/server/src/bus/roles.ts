@@ -239,6 +239,15 @@ export function putRole(
   if (!c.ok) return c;
   const lname = name.toLowerCase();
   const id = c.existing?.id ?? newId();
+  // #1346: a vacated role loses its reach; a new member confirmation is
+  // needed once it has a holder again. Re-pointing to another agent keeps it.
+  if (agentId === null)
+    sql.exec(
+      "delete from reach_grants where org_id = ? and role_ns = ? and lname = ?",
+      orgId,
+      namespace,
+      lname,
+    );
   sql.exec(
     `insert into roles (id, org_id, namespace, name, lname, agent_id, set_at) values (?, ?, ?, ?, ?, ?, ?)
      on conflict (org_id, namespace, lname) do update set name = excluded.name, agent_id = excluded.agent_id, set_at = excluded.set_at`,
@@ -261,6 +270,14 @@ export function deleteRole(
   orgId: string,
   id: string,
 ): boolean {
+  // #1346: the role's reach goes with it.
+  sql.exec(
+    `delete from reach_grants where org_id = ? and (role_ns, lname) in
+       (select namespace, lname from roles where org_id = ? and id = ?)`,
+    orgId,
+    orgId,
+    id,
+  );
   return (
     sql.exec("delete from roles where org_id = ? and id = ?", orgId, id)
       .rowsWritten > 0
