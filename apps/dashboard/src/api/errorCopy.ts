@@ -63,7 +63,7 @@ export const readOnlyCopy = (reason: unknown, owner: boolean): string => {
       return "Team features are read-only while we restore billing. Reading and sharing still work. Nothing has been deleted.";
     case "suspended":
       return owner
-        ? "This instance is suspended. Email support. Reading and sharing still work. Nothing has been deleted."
+        ? "This instance is suspended. Email support. Reading still works. Nothing has been deleted."
         : `This instance is suspended. ${ASK}.`;
     default:
       return owner

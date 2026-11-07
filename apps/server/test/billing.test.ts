@@ -1500,6 +1500,8 @@ describe("Me.instance.billing and the billing routes", () => {
     expect((await post()).status).toBe(200);
     await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 10 });
     expect((await post()).status).toBe(200);
+    await cache({ tier: "free", version: 11 });
+    expect((await post()).status).toBe(200);
   });
 
   it("checkout and portal: a Stripe URL only, signed; owner and admin only", async () => {

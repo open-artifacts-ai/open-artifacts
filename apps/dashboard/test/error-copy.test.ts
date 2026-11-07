@@ -136,7 +136,7 @@ it.each([
   [
     "suspended",
     "This instance is suspended. Ask your instance owner.",
-    "This instance is suspended. Email support. Reading and sharing still work. Nothing has been deleted.",
+    "This instance is suspended. Email support. Reading still works. Nothing has been deleted.",
   ],
   [
     "billing_unreachable",
