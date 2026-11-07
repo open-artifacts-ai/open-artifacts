@@ -32,7 +32,7 @@ const extOf = (path: string) => {
 export const heicCopy = (name: string) =>
   `${name} can't be opened here. Export it as JPEG or PNG, then upload it again.`;
 export const unsupportedCopy = (name: string) =>
-  `${name} can't be opened here. Upload ${KINDS}.`;
+  `${name} can't be uploaded. Upload ${KINDS}.`;
 
 /** NUL or invalid UTF-8 in the first 8 KB: not text (the server's own rule). */
 async function isBinary(file: Blob): Promise<boolean> {

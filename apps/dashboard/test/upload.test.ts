@@ -133,7 +133,7 @@ describe("entries the viewer can't open", () => {
     await expect(
       uploadArtifact({ files: [binary("brief.docx")], title: "T" }, () => {}),
     ).rejects.toThrow(
-      "brief.docx can't be opened here. Upload a web page, Markdown, code, a PDF or an image.",
+      "brief.docx can't be uploaded. Upload a web page, Markdown, code, a PDF or an image.",
     );
     await expect(
       entryRefusal("IMG_0042.jpg", binary("IMG_0042.jpg")),
