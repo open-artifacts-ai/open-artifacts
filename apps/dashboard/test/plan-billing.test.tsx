@@ -13,6 +13,7 @@ import {
 } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import { isSoloPaused, useCan } from "../src/auth/permissions";
+import { planStatus } from "../src/settings/Plan";
 import {
   arts,
   calls,
@@ -358,5 +359,55 @@ it("Plan and billing: a lapsed Team restarts through Checkout, its own tier prim
   );
   expect(posts.find((c) => c.path.endsWith("/billing/checkout"))?.body).toEqual(
     { tier: "team" },
+  );
+});
+
+it("Plan and billing: a lapsed Team card says why, with no date it doesn't carry", async () => {
+  mountHosted("/settings/plan", {
+    billing: { ...TEAM, status: "lapsed", readOnly: true, reason: "lapsed" },
+  });
+  expect(
+    await screen.findByText("Your Team plan ended. Restart it to edit again."),
+  ).toBeVisible();
+});
+
+it("Plan and billing: a lapsed Business card names Business", async () => {
+  mountHosted("/settings/plan", {
+    billing: {
+      ...TEAM,
+      tier: "business",
+      status: "lapsed",
+      readOnly: true,
+      reason: "lapsed",
+    },
+  });
+  expect(
+    await screen.findByText(
+      "Your Business plan ended. Restart it to edit again.",
+    ),
+  ).toBeVisible();
+});
+
+it("Plan and billing: the comparison table has a phone-only scroll fade", async () => {
+  mountHosted("/settings/plan", { billing: TRIAL });
+  const fade = await screen.findByTestId("table-fade");
+  expect(fade.className).toContain("min-[480px]:hidden");
+  expect(fade.className).toContain("pointer-events-none");
+  expect(fade.getAttribute("aria-hidden")).toBe("true");
+});
+
+it("planStatus: a lapsed solo_unpaid plan reads Paused", () => {
+  expect(planStatus(PAUSED).pill).toEqual({ label: "Paused", tone: "warn" });
+});
+
+it("planStatus: a past_due Team gets the past-due note", () => {
+  const r = planStatus({
+    ...TEAM,
+    status: "past_due",
+    graceUntil: "2026-11-20T00:00:00.000Z",
+  });
+  expect(r.pill.label).toBe("Past due");
+  expect(r.note?.text).toBe(
+    "Payment failed. Update your card by Nov 20, 2026. After that, this instance becomes read-only.",
   );
 });
