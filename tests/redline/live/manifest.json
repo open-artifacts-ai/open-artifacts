@@ -890,6 +890,14 @@
     },
     {
       "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/bus/ping [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > org GET /api/v1/bus/ping [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > org GET /api/v1/bus/agents [session]"
     },
     {

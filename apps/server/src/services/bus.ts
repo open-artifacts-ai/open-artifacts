@@ -75,6 +75,8 @@ export const busCloseKind = (reason: string): BusCloseKind =>
 
 /** What the Worker calls on a member's BusHub (bus/hub.ts), typed here so callers need not load the DO. */
 export type BusHubRpc = {
+  /** True; touches no storage (the reserved ping hub). */
+  ping(): Promise<true>;
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(): Promise<{ connected: string[]; agents: BusAgent[] }>;
   /** Closes the machine's sockets and drains its agents; false when unknown or already revoked. */
@@ -171,6 +173,24 @@ export function busHub(
   const ns = env.BUS_HUB;
   if (!ns) return null;
   return ns.get(ns.idFromName(`bus:${userId}`)) as unknown as BusHubRpc;
+}
+
+/**
+ * #1299: the reserved hub the PAT-callable ping touches. Never a member's:
+ * a user id is never "~ping", so `bus:${userId}` cannot equal it.
+ */
+export const BUS_PING_HUB_NAME = "bus:~ping";
+
+/**
+ * #1299: whether the reserved ping hub (never a member's) answers within
+ * BUS_HUB_TIMEOUT_MS. Throws not_found while the bus is off.
+ */
+export async function busPing(env: Env): Promise<boolean> {
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  const ns = env.BUS_HUB;
+  if (!ns) throw new ApiError("not_found", "Not found");
+  const hub = ns.get(ns.idFromName(BUS_PING_HUB_NAME)) as unknown as BusHubRpc;
+  return (await within(hub.ping(), BUS_HUB_TIMEOUT_MS)) === true;
 }
 
 /** `p`, or null once `ms` passes (the promise keeps running; its rejection is logged). */

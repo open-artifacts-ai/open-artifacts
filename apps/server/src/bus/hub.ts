@@ -3057,6 +3057,11 @@ export class BusHub extends DurableObject<Env> {
     hub.#maxLinks = max ?? BUS_LINK_MAX;
   }
 
+  /** #1299: answers true. No storage access, no alarm; the hosted canary's liveness probe. */
+  ping(): true {
+    return true;
+  }
+
   /** #1567: the member's links between namespaces, for the dashboard. Worker only. */
   async listLinks(): Promise<BusLink[]> {
     return listLinks(this.ctx.storage.sql, OWNER_ORG_ID, this.#maxLinks);
