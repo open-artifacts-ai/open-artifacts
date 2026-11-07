@@ -14,7 +14,7 @@ const sockets: Socket[] = [];
 let home: string;
 const shutdowns: (() => Promise<void>)[] = [];
 
-async function daemon(caps: string[] | undefined) {
+async function daemon(caps: string[] | undefined, welcomeDelayMs = 0) {
   const frames: Frame[][] = [];
   const server = createServer((sock) => {
     const mine: Frame[] = [];
@@ -27,10 +27,12 @@ async function daemon(caps: string[] | undefined) {
         const f = JSON.parse(buf.slice(0, i)) as Frame;
         buf = buf.slice(i + 1);
         mine.push(f);
-        if (f.type === "hello")
-          sock.write(
-            `${JSON.stringify({ v: 1, id: f.id, type: "welcome", agent_ref: f.agent_ref, bus_name: "x", namespace: "ns", global: false, ...(caps ? { caps } : {}) })}\n`,
-          );
+        if (f.type === "hello") {
+          const welcome = `${JSON.stringify({ v: 1, id: f.id, type: "welcome", agent_ref: f.agent_ref, bus_name: "x", namespace: "ns", global: false, ...(caps ? { caps } : {}) })}\n`;
+          if (welcomeDelayMs)
+            setTimeout(() => sock.write(welcome), welcomeDelayMs);
+          else sock.write(welcome);
+        }
       }
     });
   });
@@ -46,12 +48,11 @@ async function daemon(caps: string[] | undefined) {
 }
 
 let name: string | undefined;
-const ctx = () => ({
+let agent: { kind: string } | undefined;
+const ctx = (id = "pi-sess-r") => ({
   cwd: "/work/repo",
-  sessionManager: {
-    getSessionId: () => "pi-sess-r",
-    getSessionName: () => name,
-  },
+  sessionManager: { getSessionId: () => id, getSessionName: () => name },
+  ...(agent ? { agent } : {}),
 });
 type C = ReturnType<typeof ctx>;
 
@@ -63,8 +64,8 @@ async function pi() {
       handlers.set(e, [...(handlers.get(e) ?? []), h]),
     sendMessage: () => {},
   } as never);
-  const emit = async (e: string) => {
-    for (const h of handlers.get(e) ?? []) await h({}, ctx());
+  const emit = async (e: string, c: C = ctx()) => {
+    for (const h of handlers.get(e) ?? []) await h({}, c);
   };
   shutdowns.push(() => emit("session_shutdown"));
   await emit("session_start");
@@ -75,6 +76,7 @@ beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "ob-pir-"));
   vi.stubEnv("OA_BUS_HOME", home);
   name = "First Name";
+  agent = undefined;
 });
 afterEach(async () => {
   for (const s of shutdowns.splice(0)) await s();
@@ -159,5 +161,43 @@ describe("pi rename (#1635)", () => {
     );
     expect(Date.now() - t0).toBeLessThanOrEqual(10_000);
     expect(d.frames[1][0].proposed_name).toBe("after-rename");
+  });
+
+  it("a rename while the hello is in flight is sent once the link is welcomed", async () => {
+    const d = await daemon(["rename"], 300);
+    const emit = await pi();
+    await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
+    name = "Typed During Hello";
+    await emit("session_info_changed");
+    await vi.waitFor(() => expect(d.renames(0)).toHaveLength(1));
+    expect(d.renames(0)[0].name).toBe("typed-during-hello");
+  });
+
+  it("an event from another session neither renames nor changes what a reconnect proposes", async () => {
+    const d = await daemon(["rename"]);
+    const emit = await pi();
+    await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
+    name = "Other Session Name";
+    await emit("session_info_changed", ctx("some-other-session"));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(d.renames(0)).toHaveLength(0);
+    name = "First Name";
+    d.drop();
+    await vi.waitFor(() => expect(d.frames[1]?.[0]).toBeDefined(), {
+      timeout: 6_000,
+    });
+    expect(d.frames[1][0].proposed_name).toBe("first-name");
+  });
+
+  it("omp never renames on the hub: its auto titles cannot be told from typed ones", async () => {
+    agent = { kind: "main" };
+    const d = await daemon(["rename"]);
+    const emit = await pi();
+    await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
+    name = "Auto Title";
+    await emit("session_info_changed");
+    await emit("turn_start");
+    await new Promise((r) => setTimeout(r, 100));
+    expect(d.renames(0)).toHaveLength(0);
   });
 });

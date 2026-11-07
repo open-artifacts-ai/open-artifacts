@@ -1064,6 +1064,10 @@ export default function oaBus(pi: Pi): void {
    */
   const renamed = (ctx: Ctx) => {
     if (stopped || !identity) return;
+    // omp titles a session itself ("auto") after its first message, and its
+    // extension context does not say whether a name was typed by the user:
+    // so omp never renames on the hub. (pi has no auto titles.)
+    if (identity.kind === "omp") return;
     const id = identityOf(ctx);
     if (id.ref !== identity.ref || id.name === identity.name) return;
     identity = { ...identity, name: id.name };
@@ -1076,7 +1080,7 @@ export default function oaBus(pi: Pi): void {
   pi.on("session_info_changed", (_event, ctx) => {
     if (!subagent(ctx)) renamed(ctx);
   });
-  // omp may lack the event: a turn start checks too, and costs nothing unchanged.
+  // A turn start checks too (cheap when unchanged); omp is skipped in renamed().
   pi.on("turn_start", (_event, ctx) => {
     if (!subagent(ctx)) renamed(ctx);
   });

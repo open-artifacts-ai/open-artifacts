@@ -304,7 +304,11 @@ export function routeLocal(
       };
     case "rename":
       // An adapter that did not list the cap was never told to send one.
-      if (!hello.caps?.includes(ADAPTER_CAPS.rename) || !ctx.renamed)
+      if (
+        (hello.kind !== "pi" && hello.kind !== "omp") ||
+        !hello.caps?.includes(ADAPTER_CAPS.rename) ||
+        !ctx.renamed
+      )
         return {
           type: "error",
           code: "bad_frame",

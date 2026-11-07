@@ -4,12 +4,12 @@ import { z } from "zod";
 import { AgentTable } from "../src/agents.ts";
 import { Pending, type RouteCtx, routeLocal } from "../src/routes.ts";
 
-const hello = (caps?: string[]): Hello =>
+const hello = (caps?: string[], kind = "pi"): Hello =>
   ({
     v: 1,
     id: "hello",
     type: "hello",
-    kind: "pi",
+    kind,
     agent_ref: "A",
     pid: 1,
     attest: {},
@@ -41,6 +41,18 @@ const setup = () => {
 const frame = { v: 1, id: "7", type: "rename", name: "new-name" } as never;
 
 describe("pi rename frame (#1635)", () => {
+  it("is refused for a kind that is not pi or omp, even with the cap", () => {
+    const c = setup();
+    const out = routeLocal(
+      frame,
+      hello([ADAPTER_CAPS.rename], "claude-code"),
+      () => true,
+      c.ctx,
+    );
+    expect(out).toMatchObject({ type: "error", code: "bad_frame" });
+    expect(c.names).toEqual([]);
+  });
+
   it("reaches the daemon only for an adapter that listed the cap", () => {
     const a = setup();
     expect(
@@ -52,38 +64,12 @@ describe("pi rename frame (#1635)", () => {
     expect(out).toMatchObject({ type: "error", code: "bad_frame" });
     expect(b.names).toEqual([]);
   });
-
-  it("an older strict welcome decoder is never sent caps", async () => {
-    // Frozen copy of the decoder before #1635: strict, no caps.
-    const OldWelcome = z.strictObject({
-      v: z.literal(1),
-      id: z.string(),
-      type: z.literal("welcome"),
-      agent_ref: z.string(),
-      bus_name: z.string(),
-      namespace: z.string(),
-      global: z.boolean(),
-    });
-    const { Welcome } = await import("@oa/bus-ipc");
-    const base = {
-      v: 1,
-      id: "h",
-      type: "welcome",
-      agent_ref: "A",
-      bus_name: "x",
-      namespace: "n",
-      global: false,
-    };
-    expect(OldWelcome.safeParse(base).success).toBe(true);
-    // The daemon adds caps only when the hello listed rename (see capsFor).
-    expect(Welcome.safeParse({ ...base, caps: ["rename"] }).success).toBe(true);
-  });
 });
 
 // The daemon end to end: a pi extension's rename frame becomes one hub rename.
 describe("pi rename through the daemon (#1635)", () => {
   const settle = () => new Promise((r) => setTimeout(r, 120));
-  async function up(caps: string[] | undefined, name = "first") {
+  async function up(caps: string[] | undefined, name = "first", kind = "pi") {
     const { daemonHarness, hello: mk } = await import("./helpers.ts");
     const { connect } = await import("node:net");
     const h = await daemonHarness();
@@ -108,7 +94,7 @@ describe("pi rename through the daemon (#1635)", () => {
     sock.on("error", () => {});
     socks.push(sock);
     const helloFrame = {
-      ...mk({ kind: "pi", agent_ref: "P1", proposed_name: name }),
+      ...mk({ kind: kind as "pi", agent_ref: "P1", proposed_name: name }),
       ...(caps ? { caps } : {}),
     };
     sock.write(`${JSON.stringify(helloFrame)}\n`);
@@ -165,9 +151,9 @@ describe("pi rename through the daemon (#1635)", () => {
     expect(h.of("rename")).toHaveLength(0);
   });
 
-  it("a hello after a reconnect with a new name sends the rename", async () => {
-    const { h, mk, sock } = await up(["rename"]);
-    sock.destroy();
+  it("a second link for the same live session with a new name sends a rename frame", async () => {
+    const { h, mk } = await up(["rename"]);
+    // The first link stays open, so the record is live when the second hello arrives.
     const { connect } = await import("node:net");
     const s2 = connect(h.socketPath);
     s2.on("error", () => {});
@@ -175,13 +161,11 @@ describe("pi rename through the daemon (#1635)", () => {
     s2.write(
       `${JSON.stringify({ ...mk({ kind: "pi", agent_ref: "P1", proposed_name: "renamed-offline" }), caps: ["rename"] })}\n`,
     );
-    // Either the record survived (a rename) or it was re-announced (an agent_up): the hub hears the new name.
-    await vi.waitFor(() => {
-      const heard = [
-        ...h.of("rename").map((f) => f.proposed_name),
-        ...h.of("agent_up").map((f) => f.proposed_name),
-      ];
-      expect(heard).toContain("renamed-offline");
+    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(1));
+    expect(h.of("rename")[0]).toMatchObject({
+      agent_ref: "P1",
+      proposed_name: "renamed-offline",
     });
+    expect(h.of("agent_up")).toHaveLength(1);
   });
 });

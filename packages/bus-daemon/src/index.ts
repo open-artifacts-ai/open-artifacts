@@ -1188,6 +1188,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     onHello: (hello, closed) => {
       /** welcome.caps (#1635): only to an adapter that listed `rename`. */
       const capsFor = (h: typeof hello) =>
+        (h.kind === "pi" || h.kind === "omp") &&
         h.caps?.includes(ADAPTER_CAPS.rename)
           ? { caps: [ADAPTER_CAPS.rename] }
           : {};
