@@ -2,11 +2,19 @@ import {
   BUS_ROLE_PROPOSAL_TTL_MS,
   type BusAgent,
   type BusLink,
+  type BusLinkProposed,
   type BusMachine,
   type BusRole,
   type BusRoleProposal,
   type BusRoleProposeInput,
+  parseFeatures,
 } from "@oa/shared";
+import type {
+  LinkDecideResult,
+  LinkProposalAction,
+  LinkProposeResult,
+  LinkViewResult,
+} from "../bus/link-proposals.js";
 import type {
   DecideResult,
   ProposalAudit,
@@ -18,7 +26,9 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { logError } from "../log.js";
+import { lookupUserGrant } from "../mcp/oauth-api.js";
 import { b64urlEncode, sha256Hex } from "../util/crypto.js";
+import { type Via, viaKey } from "./agent-usage.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
 
 // The bus's D1 side and the dashboard's reads of a member's BusHub (#1291).
@@ -104,6 +114,19 @@ export type BusHubRpc = {
   >;
   /** #1567: removes a link; false when unknown. */
   deleteLink(id: string): Promise<boolean>;
+  /** #1567: records a link proposal under its link's hash; links nothing. */
+  proposeLink(
+    input: { action: LinkProposalAction; a: string; b: string },
+    machineId: string,
+    tokenHash: string,
+  ): Promise<LinkProposeResult>;
+  /** #1567: the link proposal behind a link's hash, for the confirm page. */
+  viewLinkProposal(tokenHash: string): Promise<LinkViewResult>;
+  /** #1567: confirms (applies) or rejects the proposal behind a link's hash, once. */
+  decideLinkProposal(
+    tokenHash: string,
+    decision: "confirm" | "reject",
+  ): Promise<LinkDecideResult>;
   /** #1372: records a role proposal under its link's hash; changes no role. */
   proposeRole(input: ProposeInput, tokenHash: string): Promise<ProposeResult>;
   /** #1372: the proposal behind a link's hash, for the confirm page. */
@@ -113,6 +136,15 @@ export type BusHubRpc = {
     tokenHash: string,
     decision: "confirm" | "reject",
   ): Promise<DecideResult>;
+  /** #1403: the credentials and machines behind the pending proposals. */
+  pendingProposalSources(): Promise<{
+    credentials: string[];
+    machines: string[];
+  }>;
+  /** #1403: expires a machine's pending link proposals. */
+  expireLinkProposalsOf(machineId: string): Promise<void>;
+  /** #1403: expires the pending role proposals a PAT or OAuth grant made (`t:<id>` / `g:<id>`). */
+  expireRoleProposalsOf(credential: string): Promise<ProposalAudit[]>;
   /** #1372: the newest role proposals. */
   listRoleProposals(): Promise<{
     proposals: BusRoleProposal[];
@@ -120,9 +152,16 @@ export type BusHubRpc = {
   }>;
 };
 
-/** True when the bus routes answer: BUS_HUB bound, and not a hosted install (until #1299). */
-export const busOn = (env: Pick<Env, "BUS_HUB" | "HOSTED">): boolean =>
-  env.BUS_HUB !== undefined && env.HOSTED !== "1";
+/**
+ * True when the bus routes answer: BUS_HUB bound, and not a hosted install
+ * (until #1299), unless the install's provisioned FEATURES carry "bus" (the
+ * interim switch for staging and the red line; dropped at the gate lift).
+ */
+export const busOn = (
+  env: Pick<Env, "BUS_HUB" | "HOSTED" | "FEATURES">,
+): boolean =>
+  env.BUS_HUB !== undefined &&
+  (env.HOSTED !== "1" || parseFeatures(env.FEATURES).includes("bus"));
 
 /** The member's BusHub, or null without the binding. Never call before a D1 check (see above). */
 export function busHub(
@@ -283,9 +322,9 @@ const ONE_OF = `select last_used_at as lastUsedAt, revoked_at as revokedAt
  * Revokes the member's machine `id` (D1, so its token is refused at once),
  * then closes its sockets on their BusHub. Idempotent: an already revoked
  * machine of theirs is closed again and resolves true. False (the route's
- * 404) when the id is unknown or another member's. Throws 500 internal when the hub
- * could not close the sockets (the token is already refused): retrying is
- * safe.
+ * 404) when the id is unknown or another member's. Throws 503
+ * revoke_not_closed when the hub could not close the sockets (the token is
+ * already refused): retrying is safe.
  */
 export async function revokeBusMachine(
   env: Env,
@@ -310,7 +349,7 @@ export async function revokeBusMachine(
   } catch (e) {
     logError("bus_revoke_close_failed", e);
     throw new ApiError(
-      "internal",
+      "revoke_not_closed",
       "The machine is revoked, but its connection could not be closed yet. Try again.",
     );
   }
@@ -541,6 +580,78 @@ export async function deleteBusLink(
   await linkCall(hub.deleteLink(id));
 }
 
+/** The link confirm page's path; the URL is `<origin>${LINK_CONFIRM_PATH}#<secret>` (the fragment never reaches a server or a log, #1426). */
+export const LINK_CONFIRM_PATH = "/bus/links/confirm";
+
+const LINK_PROPOSAL_REFUSALS = {
+  rate_limited: "This machine made too many link proposals. Try again later",
+  proposal_limit:
+    "Too many link changes are waiting for the member. Confirm or let them expire first",
+  no_bus: "Connect a machine to the bus first",
+} as const;
+
+/**
+ * The machine-token route's proposal (#1567): records a link or unlink in
+ * the member's own hub and returns its one-time confirm URL (the only copy
+ * of the secret; the hub keeps its sha256). Links nothing. 400 bad_request
+ * (a namespace), 409 conflict with details { reason }.
+ */
+export async function proposeBusLink(
+  env: Env,
+  userId: string,
+  machineId: string,
+  input: { action: LinkProposalAction; a: string; b: string },
+): Promise<BusLinkProposed> {
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  const refuse = (reason: keyof typeof LINK_PROPOSAL_REFUSALS) =>
+    new ApiError("conflict", LINK_PROPOSAL_REFUSALS[reason], { reason });
+  if (!(await hasConnectedMachine(env, userId))) throw refuse("no_bus");
+  const hub = busHub(env, userId);
+  if (!hub) throw refuse("no_bus");
+  const secret = b64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
+  const r = await linkCall(
+    hub.proposeLink(input, machineId, await sha256Hex(secret)),
+  );
+  if (!r.ok) {
+    if (r.reason === "invalid")
+      throw new ApiError("bad_request", `Invalid ${r.field}`, {
+        field: r.field,
+      });
+    throw refuse(r.reason);
+  }
+  return {
+    confirmUrl: `${appOrigin(env)}${LINK_CONFIRM_PATH}#${secret}`,
+    expiresAt: new Date(r.proposal.expiresAt).toISOString(),
+  };
+}
+
+/** The link confirm page's read of the proposal behind `secret`, in the member's own hub only. null without a hub. */
+export async function viewBusLinkProposal(
+  env: Env,
+  userId: string,
+  secret: string,
+): Promise<LinkViewResult | null> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
+  const hub = busHub(env, userId);
+  if (!hub) return null;
+  await sweepRevokedProposers(env, userId, hub);
+  return linkCall(hub.viewLinkProposal(await sha256Hex(secret)));
+}
+
+/** The link confirm page's POST: decides the proposal behind `secret`, once. null without a hub. */
+export async function decideBusLinkProposal(
+  env: Env,
+  userId: string,
+  secret: string,
+  decision: "confirm" | "reject",
+): Promise<LinkDecideResult | null> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
+  const hub = busHub(env, userId);
+  if (!hub) return null;
+  await sweepRevokedProposers(env, userId, hub);
+  return linkCall(hub.decideLinkProposal(await sha256Hex(secret), decision));
+}
+
 // ---------------------------------------------------------- role proposals
 //
 // #1372, the user's guardrail ("Let's do B", then "1, propose via MCP, I
@@ -550,7 +661,7 @@ export async function deleteBusLink(
 // decision, and each expiry the hub notices, is an audit row (ids and enums
 // only: never the role name, the namespace or the link).
 
-/** The confirm page's path prefix; the link is `<origin>${ROLE_CONFIRM_PATH}/<secret>`. */
+/** The confirm page's path; the link is `<origin>${ROLE_CONFIRM_PATH}#<secret>` (the fragment never reaches a server or a log, #1426). */
 export const ROLE_CONFIRM_PATH = "/bus/roles/confirm";
 /** A link's secret: 32 random bytes, base64url (43 characters). */
 export const ROLE_TOKEN = /^[A-Za-z0-9_-]{43}$/;
@@ -603,6 +714,103 @@ async function auditExpired(
   );
 }
 
+/**
+ * #1403: a PAT or OAuth grant was revoked: its pending role proposals expire
+ * at once, each audited bus.role.expired with why `credential_revoked`. A
+ * best effort after the revoke itself (which already refuses the credential):
+ * a hub that can't be reached is logged, and the proposals still lapse at
+ * their TTL. No hub (no machine ever connected) holds none.
+ */
+export async function expireBusRoleProposalsOf(
+  env: Env,
+  userId: string,
+  via: Via,
+): Promise<void> {
+  try {
+    if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return;
+    const hub = busHub(env, userId);
+    if (!hub) return;
+    await expireCredential(env, userId, hub, viaKey(via));
+  } catch (e) {
+    logError("bus_credential_expire_failed", e);
+  }
+}
+
+/** Expires `credential`'s pending role proposals in `hub` and audits each (system actor, credential_revoked). */
+async function expireCredential(
+  env: Env,
+  userId: string,
+  hub: BusHubRpc,
+  credential: string,
+): Promise<void> {
+  const expired = await roleCall(hub.expireRoleProposalsOf(credential));
+  if (expired.length === 0) return;
+  const system: AuditActor = { kind: "system", id: null };
+  await env.DB.batch(
+    expired.map((a) =>
+      audit(env, "bus.role.expired", auditTarget(userId), system, {
+        detail: detailOf(a, "credential_revoked"),
+      }),
+    ),
+  );
+}
+
+/** Whether the credential (`t:<id>` PAT or `g:<id>` OAuth grant) of member `userId` is gone or revoked. */
+async function credentialGone(
+  env: Env,
+  userId: string,
+  credential: string,
+): Promise<boolean> {
+  const id = credential.slice(2);
+  if (credential.startsWith("t:")) {
+    const row = await stmt(
+      env.DB,
+      "select revoked_at as revokedAt from tokens where id = ?1 and user_id = ?2",
+    )
+      .bind(id, userId)
+      .first<{ revokedAt: number | null }>();
+    return row === null || row.revokedAt !== null;
+  }
+  if (credential.startsWith("g:"))
+    return (await lookupUserGrant(env, userId, id)) === null;
+  return false;
+}
+
+/**
+ * #1403: before a confirm page shows or decides a proposal, expires the
+ * pending ones whose proposer is gone: a PAT revoked or a grant ended, or a
+ * machine revoked, by any path (a bulk revoke such as an identity reset or a
+ * suspension never calls the per-credential hook, and the member may be
+ * active again inside the TTL). Role expiries are audited
+ * `credential_revoked`; link proposals have no audit rows yet (#1580). Fails
+ * closed: an error is a 500 internal (retry is safe), never a stale link.
+ */
+async function sweepRevokedProposers(
+  env: Env,
+  userId: string,
+  hub: BusHubRpc,
+): Promise<void> {
+  try {
+    const { credentials, machines } = await hub.pendingProposalSources();
+    for (const c of credentials)
+      if (await credentialGone(env, userId, c))
+        await expireCredential(env, userId, hub, c);
+    for (const m of machines) {
+      const row = await stmt(
+        env.DB,
+        "select revoked_at as revokedAt from bus_machines where id = ?1 and user_id = ?2",
+      )
+        .bind(m, userId)
+        .first<{ revokedAt: number | null }>();
+      if (row === null || row.revokedAt !== null)
+        await hub.expireLinkProposalsOf(m);
+    }
+  } catch (e) {
+    logError("bus_proposal_sweep_failed", e);
+    throw new ApiError("internal", "The bus could not be reached. Try again.");
+  }
+}
+
 /** The member's hub for a proposal call, or a `no_bus` conflict (404 while the bus is off). */
 async function proposalHub(env: Env, userId: string): Promise<BusHubRpc> {
   if (!busOn(env)) throw new ApiError("not_found", "Not found");
@@ -626,6 +834,8 @@ export async function proposeBusRole(
   env: Env,
   userId: string,
   input: BusRoleProposeInput,
+  /** The PAT or OAuth grant the request authenticated with (#1403): revoking it expires the proposal. */
+  via?: Via,
 ): Promise<{ proposal: BusRoleProposal; confirmUrl: string }> {
   if (input.action === "set" && input.agent === undefined)
     throw new ApiError("bad_request", "agent is required to set a role", {
@@ -644,6 +854,7 @@ export async function proposeBusRole(
         namespace: input.namespace,
         name: input.name,
         agent: input.agent ?? null,
+        credential: via ? viaKey(via) : null,
       },
       await sha256Hex(secret),
     ),
@@ -680,7 +891,7 @@ export async function proposeBusRole(
   ).run();
   return {
     proposal: p,
-    confirmUrl: `${appOrigin(env)}${ROLE_CONFIRM_PATH}/${secret}`,
+    confirmUrl: `${appOrigin(env)}${ROLE_CONFIRM_PATH}#${secret}`,
   };
 }
 
@@ -702,6 +913,7 @@ export async function viewBusRoleProposal(
   if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
   const hub = busHub(env, userId);
   if (!hub) return null;
+  await sweepRevokedProposers(env, userId, hub);
   const r = await roleCall(hub.viewRoleProposal(await sha256Hex(secret)));
   await auditExpired(env, userId, r.expired);
   return r;
@@ -723,6 +935,7 @@ export async function decideBusRoleProposal(
   if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
   const hub = busHub(env, userId);
   if (!hub) return null;
+  await sweepRevokedProposers(env, userId, hub);
   const r = await roleCall(
     hub.decideRoleProposal(await sha256Hex(secret), decision),
   );

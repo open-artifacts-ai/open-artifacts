@@ -221,6 +221,15 @@ export const ArtifactToShellSchema = z.union([
     type: z.literal("comment.open"),
     id: CommentIdSchema,
   }),
+  /**
+   * Esc pressed in the frame while in pin mode: leave pin mode. Carries no
+   * data; the shell acts only when it is in pin mode.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("comment.escape"),
+  }),
   /** A click in pin mode on an image or pdf page; x and y are 0..1 of the image or page. */
   z.strictObject({
     oa: z.literal(1),
@@ -327,6 +336,14 @@ export const ShellToArtifactSchema = z.union([
         }),
       )
       .max(COMMENT_THREADS_MAX),
+    /** A pin being composed (#1490): drawn dimmed and unnumbered; coordinates only. */
+    ghost: z
+      .strictObject({
+        x: z.number().min(0).max(1),
+        y: z.number().min(0).max(1),
+        page: z.number().int().min(1).max(100_000).optional(),
+      })
+      .optional(),
   }),
   /** Scroll the thread's highlight or pin into view and flash it. */
   z.strictObject({

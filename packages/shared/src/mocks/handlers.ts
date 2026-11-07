@@ -24,7 +24,11 @@
 import { delay, type HttpHandler, HttpResponse, http } from "msw";
 import type { z } from "zod";
 import {
+  BUS_LINK_MAX,
+  BUS_LINKS_PER_NAMESPACE,
   type BusAddress,
+  type BusLink,
+  BusLinkPutSchema,
   type BusRole,
   BusRolePutSchema,
   ShareNoticeAgentsSchema,
@@ -90,9 +94,9 @@ import {
   isHeic,
   textHead,
 } from "../sniff.js";
-import { createCommentHandlers } from "./comments.js";
+import { createCommentMock } from "./comments.js";
 import type { ArtifactEventsMock } from "./events.js";
-import { BUS_FIXTURE_NOW, fixtures } from "./fixtures.js";
+import { BUS_FIXTURE_NOW, fakeHash, fixtures } from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
 
 export type MockOptions = {
@@ -104,6 +108,8 @@ export type MockOptions = {
   update?: InstanceUpdate | null;
   /** Comments writes answer 429 with this Retry-After, in seconds (#682). */
   commentsRateLimit?: number;
+  /** Seed an open ask for the caller on "Landing page" (#1535). */
+  commentAsks?: boolean;
   /**
    * The R.events mock (createArtifactEvents()): hello reports the store's
    * currentVersion; publish/restore emit `version`, delete and
@@ -355,6 +361,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const busMachines: BusMachine[] = opts.bus ? f.busMachines.map(at) : [];
   let busAgents: BusAgent[] = opts.bus ? f.busAgents.map(at) : [];
   let busRoles: BusRole[] = opts.bus ? f.busRoles.map(at) : [];
+  let busLinks: BusLink[] = opts.bus ? f.busLinks.map(at) : [];
   const busRoleProposals = opts.bus ? f.busRoleProposals.map(at) : [];
   const data = new Map<string, Map<string, Map<string, DataDoc>>>();
   const storage = new Map<string, Map<string, StorageEntry>>();
@@ -437,6 +444,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       language: v.language,
       textIndexed: !v.list.some((x) => x.contentType === "application/pdf"),
       format: v.format,
+      contentHash: fakeHash(version, v.entry),
     });
     a.format = v.format;
     for (const [p, b] of v.bodies) files.set(`${a.id}/${version}/${p}`, b);
@@ -571,7 +579,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       // Signed-URL uploads carry no session; public artifact reads are anonymous-OK.
       const needsAuth = mutating
         ? !/^\/uploads\/[^/]+$/.test(path)
-        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search|bus\/(share-notices|machines|agents|roles))\/?$/.test(
+        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search|bus\/(share-notices|machines|agents|roles|links))\/?$/.test(
             path,
           );
       // Runtime routes (data/storage) check access first, as on the server:
@@ -597,16 +605,20 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     }),
   ];
 
+  const commentMock = createCommentMock({
+    artifacts,
+    me,
+    err,
+    emit: (id, open) => opts.events?.emitComments(id, open),
+    rateLimit: opts.commentsRateLimit,
+    seedAsk: opts.commentAsks,
+    contentHash: (id, v) =>
+      versions[id]?.find((x) => x.version === v)?.contentHash,
+  });
   return [
     ...pre,
     ...(h?.handlers ?? []),
-    ...createCommentHandlers({
-      artifacts,
-      me,
-      err,
-      emit: (id, open) => opts.events?.emitComments(id, open),
-      rateLimit: opts.commentsRateLimit,
-    }),
+    ...commentMock.handlers,
     http.get("*/api/v1/me", () => HttpResponse.json(me)),
     http.patch("*/api/v1/me", async ({ request }) => {
       const r = await body(request, MePatchSchema);
@@ -702,6 +714,40 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       busRoles = busRoles.filter((x) => x.id !== p.id);
       return noContent();
     }),
+    // #1567: links, ordered by a then b.
+    http.get(`*${R.busLinks}`, () =>
+      HttpResponse.json({ links: busLinks, live: opts.bus === true }),
+    ),
+    // Idempotent; equal namespaces are 400; past the caps (total, or per namespace) 409 link_limit.
+    http.put(`*${R.busLinks}`, async ({ request }) => {
+      const r = await body(request, BusLinkPutSchema);
+      if (r.error) return r.error;
+      if (r.data.a === r.data.b)
+        return err("bad_request", "Invalid namespaces", {
+          field: "namespaces",
+        });
+      const [a, b] =
+        r.data.a < r.data.b ? [r.data.a, r.data.b] : [r.data.b, r.data.a];
+      const had = busLinks.find((l) => l.a === a && l.b === b);
+      if (had) return HttpResponse.json({ link: had });
+      const per = (ns: string) =>
+        busLinks.filter((l) => l.a === ns || l.b === ns).length;
+      if (
+        busLinks.length >= BUS_LINK_MAX ||
+        per(a) >= BUS_LINKS_PER_NAMESPACE ||
+        per(b) >= BUS_LINKS_PER_NAMESPACE
+      )
+        return err("conflict", "Too many links", { reason: "link_limit" });
+      const link: BusLink = { id: newId(), a, b, createdAt: iso() };
+      busLinks = [...busLinks, link].sort((x, y) =>
+        x.a < y.a ? -1 : x.a > y.a ? 1 : x.b < y.b ? -1 : x.b > y.b ? 1 : 0,
+      );
+      return HttpResponse.json({ link });
+    }),
+    http.delete(`*${R.busLinks}/:id`, ({ params: p }) => {
+      busLinks = busLinks.filter((x) => x.id !== p.id);
+      return noContent();
+    }),
     http.get("*/api/v1/artifacts", ({ request }) => {
       if (isAnon(request))
         return err("unauthorized", "Authentication required");
@@ -717,7 +763,19 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           .filter((a) => !h?.hidden(a.id))
           .filter((a) => (inSpace ? inSpace(a.space) : matches(a, q)))
           .filter((a) => !inSpace || matches(a, withScope(q, "all")))
-          .map((a) => redactArt(a, request)),
+          .filter(
+            (a) =>
+              p.data.filter === undefined ||
+              (p.data.filter === "needs_answer"
+                ? commentMock.asksForYou(a.id) > 0
+                : commentMock.waitingOnAgents(a.id)),
+          )
+          .map((a) => {
+            const asksForYou = commentMock.asksForYou(a.id);
+            return asksForYou > 0
+              ? { ...redactArt(a, request), asksForYou }
+              : redactArt(a, request);
+          }),
         q,
       );
     }),
@@ -746,17 +804,19 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       if (!existing && r.data.id && !reserved.has(r.data.id))
         return err(
           "bad_request",
-          "use POST /versions to publish a new version",
+          "No artifact you can publish to has this id, and it was not reserved for you. Leave id out to create a new artifact, or call create_upload without artifactId to reserve one.",
           { path: "id", reason: "not_reserved" },
         );
       if (!existing && r.data.id && r.data.title === undefined)
-        return badRequest("title is required when creating an artifact");
+        return badRequest(
+          "title is required when creating an artifact. Add a title and publish again.",
+        );
       // REST create never upserts, as on the server: a new version is
       // POST /versions.
       if (existing)
         return err(
           "bad_request",
-          "use POST /versions to publish a new version",
+          "This id already has an artifact. Publish a new version with POST /versions, or leave id out to create a new artifact.",
           { path: "id", reason: "not_reserved" },
         );
       const now = iso();

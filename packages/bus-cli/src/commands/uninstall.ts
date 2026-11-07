@@ -9,6 +9,8 @@ import {
 } from "../context.ts";
 import { readMachine } from "../machine.ts";
 import { readAssets, uninstallAdapters } from "../steps/adapters.ts";
+import { removeHabits } from "../steps/habits.ts";
+import { hermesHome } from "../steps/hermes.ts";
 import { purge } from "../steps/purge.ts";
 import { uninstallSkill } from "../steps/skill.ts";
 import { hostOf } from "./status.ts";
@@ -53,7 +55,27 @@ export async function uninstall(
       `Could not remove the skill files: ${e instanceof Error ? e.message : String(e)}`,
     ]);
   }
+  // The always-on habits block goes too: only our marked block, nothing else.
+  try {
+    const habits = removeHabits({
+      home: ctx.userHome,
+      env: ctx.env,
+      busHome: ctx.home,
+    });
+    for (const n of habits.notes) say(ctx, [n]);
+  } catch (e) {
+    say(ctx, [
+      `Could not remove the habits block: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
   // Quiet on success: the wiring lines above already say what was removed.
+  if (r.hermesNoCli)
+    say(
+      ctx,
+      c.hermesNoCli(
+        tilde(ctx, join(hermesHome(ctx.userHome, ctx.env), "config.yaml")),
+      ),
+    );
   if (r.folderOnly.includes("opencode")) say(ctx, c.removedPluginFolder());
   if (r.removed.length + r.folderOnly.length === 0) say(ctx, c.noneWired());
   for (const s of r.skipped)

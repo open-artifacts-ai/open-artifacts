@@ -93,7 +93,9 @@ async function publishInput(
     (raw as { id?: unknown }).id = id;
   const r = PublishInputSchema.safeParse(raw);
   if (r.success) return r.data;
-  if (raw && typeof raw === "object") planFiles(raw as PublishInput);
+  // Edits plan from the stored version, not the body: the schema's issues say what is wrong.
+  if (raw && typeof raw === "object" && !("edits" in raw))
+    planFiles(raw as PublishInput);
   throw new ApiError("bad_request", "Invalid request body", r.error.issues);
 }
 

@@ -32,6 +32,8 @@ import {
   readToml,
   sandboxRisk,
 } from "../steps/codex.ts";
+import { hermesEnabled } from "../steps/hermes.ts";
+import { habitsLine } from "./habits.ts";
 import { errorTail } from "./login.ts";
 import { type Healthz, healthzBody, hostOf, updateTarget } from "./status.ts";
 
@@ -220,7 +222,14 @@ export async function doctor(ctx: Ctx): Promise<number> {
     codexApp: ctx.codexApp,
     busBin: ctx.service.argv?.(),
   });
-  for (const h of ["claude", "opencode", "pi", "omp", "codex"] as Harness[]) {
+  for (const h of [
+    "claude",
+    "opencode",
+    "pi",
+    "omp",
+    "codex",
+    "hermes",
+  ] as Harness[]) {
     if (wiring[h] === "absent") continue;
     let version: string | undefined;
     if (h === "opencode") {
@@ -235,7 +244,16 @@ export async function doctor(ctx: Ctx): Promise<number> {
         continue;
       }
     }
-    if (wiring[h] === "configured") pass(c.wired(h, version));
+    if (
+      wiring[h] === "configured" &&
+      (h !== "hermes" ||
+        (await hermesEnabled({
+          home: ctx.userHome,
+          env: ctx.env,
+          exec: ctx.exec,
+        })))
+    )
+      pass(c.wired(h, version));
     else fail(c.notWired(h));
     if (h === "claude") {
       const settings = join(
@@ -248,6 +266,10 @@ export async function doctor(ctx: Ctx): Promise<number> {
     }
     if (h === "codex") codexChecks(ctx, { pass, warn });
   }
+
+  // Not a pass or a warning: the habits are the user's choice either way.
+  const habits = habitsLine(ctx);
+  if (habits) say(ctx, habits);
 
   const allow = globalFile(ctx.home);
   const list = readGlobalDirs(allow);

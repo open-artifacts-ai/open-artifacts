@@ -44,6 +44,10 @@ export const TUNABLES: Record<string, Tunable> = {
   ANON_WRITES_PER_MIN: { check: int(1, 600) },
   DATA_DOC_BYTES: { check: int(1) },
   DATA_DAILY_WRITES: { check: int(1) },
+  // Hosted free-plan caps (self-serve billing): unset means off.
+  FREE_STORAGE_BYTES: { check: int(1) },
+  FREE_DATA_DOCS: { check: int(1) },
+  FREE_DATA_DAILY_WRITES: { check: int(1) },
 };
 
 /** The canonical form of a valid value: EMBED_ORIGINS gets lowercase hosts, no :443, no duplicates. */

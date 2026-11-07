@@ -1,4 +1,4 @@
-import type { BusRole, BusRoleProposal } from "../bus-notices.js";
+import type { BusLink, BusRole, BusRoleProposal } from "../bus-notices.js";
 import type {
   ArtifactSummary,
   BusAgent,
@@ -93,6 +93,7 @@ const ver = (
   })),
   language,
   textIndexed: contentType !== "application/pdf",
+  contentHash: fakeHash(version, entry),
   format:
     contentType === "text/html"
       ? "html"
@@ -102,6 +103,14 @@ const ver = (
           ? "pdf"
           : "code",
 });
+
+/** A fake sha256 (64 hex), distinct per version and entry (#1490). */
+export const fakeHash = (version: number, entry: string) =>
+  [...`${version}:${entry}`]
+    .map((c) => c.charCodeAt(0).toString(16).padStart(2, "0"))
+    .join("")
+    .padEnd(64, "0")
+    .slice(0, 64);
 
 const members: Member[] = [
   { ...ada, role: "owner", lastSeenAt: "2026-01-03T10:00:00.000Z" },
@@ -131,6 +140,8 @@ export const fixtures: {
   busAgents: BusAgent[];
   /** #1293: role addresses (served with `bus: true`): one held, one vacant. */
   busRoles: BusRole[];
+  /** #1567: namespace links (served with `bus: true`): one, between two repos. */
+  busLinks: BusLink[];
   /** #1293: one pending role proposal (served with `bus: true`). */
   busRoleProposals: BusRoleProposal[];
 } = {
@@ -417,6 +428,14 @@ export const fixtures: {
       holderName: null,
       vacant: true,
       setAt: "2026-01-01T10:00:00.000Z",
+    },
+  ],
+  busLinks: [
+    {
+      id: "BlA1nPqRsTu4vWxY",
+      a: "github.com/open-artifacts-ai/open-artifacts",
+      b: "github.com/open-artifacts-ai/open-bus",
+      createdAt: "2026-01-02T08:00:00.000Z",
     },
   ],
   busRoleProposals: [

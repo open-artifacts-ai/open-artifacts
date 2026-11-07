@@ -1,0 +1,5 @@
+{
+  "_doc": "Billing D1 migration lock (scripts/ops/check-migration-lock.mjs). Not frozen: billing has never been deployed, so 0001 may still change. The PR that first deploys oa-s-billing sets frozen to true and pins every migration's sha256; from then on a pinned file never changes (add a new migration) and the deploy wrapper refuses an unfrozen or mismatched lock.",
+  "frozen": false,
+  "pins": {}
+}

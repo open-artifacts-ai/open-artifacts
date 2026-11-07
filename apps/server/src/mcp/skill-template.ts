@@ -98,7 +98,7 @@ const tools = (spaces: boolean): string =>
     .map(
       (t) => `### ${t.name}
 
-${descriptionFor(t.name, spaces)}
+${descriptionFor(t.name, spaces).replace(/^Open Artifacts: /, "")}
 
 Parameters (? = optional): ${params(t.inputSchema)}
 

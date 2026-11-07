@@ -249,8 +249,12 @@ describe("probe cases (derived from Backend's surfaces)", () => {
     // confirm page), not a way out.
     expect(INTERACTIVE_ONLY.filter((r) => PUBLIC_ROUTES.includes(r))).toEqual([
       "POST /bus/share-notices",
-      "GET /bus/roles/confirm/:token",
-      "POST /bus/roles/confirm/:token",
+      "GET /bus/roles/confirm",
+      "POST /bus/roles/confirm/view",
+      "POST /bus/roles/confirm",
+      "GET /bus/links/confirm",
+      "POST /bus/links/confirm/view",
+      "POST /bus/links/confirm",
     ]);
   });
 

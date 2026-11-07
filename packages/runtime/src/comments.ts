@@ -61,11 +61,13 @@ const FLASH_MS = 1200;
 
 const OVERLAY_CSS = `
 :host{all:initial}
-.btn{position:absolute;font:600 13px system-ui,sans-serif;padding:4px 10px;border:0;border-radius:6px;background:#1f5fbf;color:#fff;cursor:pointer;pointer-events:auto;box-shadow:0 2px 8px #0004}
+.btn{position:absolute;display:flex;align-items:center;gap:6px;font:500 13px/1 system-ui,sans-serif;padding:6px 10px;border:1px solid #d4d4d8;border-radius:8px;background:#fff;color:#27272a;cursor:pointer;pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.btn svg{width:14px;height:14px;flex:none}
 .mark{position:absolute;width:6px;height:16px;border-radius:2px;background:#e0a000;pointer-events:auto;cursor:pointer}
 .mark.on{background:#1f5fbf}
 .pin{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;background:#1f5fbf;color:#fff;font:700 12px/22px system-ui,sans-serif;text-align:center;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px #0006}
 .pin.on{outline:3px solid #e0a000}
+.pin.ghost{background:#1f5fbf55;border:2px dashed #1f5fbf;box-sizing:border-box;box-shadow:none;pointer-events:none}
 `;
 const PAGE_CSS =
   "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}";
@@ -75,6 +77,12 @@ export interface Comments {
   flush(): void;
   dispose(): void;
 }
+
+const BUBBLE =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7l-3 3v-3h-.5a1 1 0 0 1-1-1z"/></svg>';
+/** Gap between the selection's end and the button, and the viewport margin. */
+const BTN_GAP = 6;
+const BTN_MARGIN = 4;
 
 export function createComments(
   bridge: Pick<Bridge, "on" | "send">,
@@ -86,6 +94,7 @@ export function createComments(
   const hasPins = format === "image" || format === "pdf";
   let mode: Mode = "off";
   let threads: Thread[] = [];
+  let ghost: { x: number; y: number; page?: number } | undefined;
   /** Text index of the body, rebuilt when the text version or the body changes. */
   let index: TextIndex | null = null;
   let indexVer = -1;
@@ -281,6 +290,18 @@ export function createComments(
         d.addEventListener("click", () => open(th.id));
       }
     }
+    if (ghost) {
+      const box = pinBox({ kind: "pin", page: ghost.page } as Extract<
+        Anchor,
+        { kind: "pin" }
+      >);
+      if (box)
+        mark(
+          "pin ghost",
+          box.left + scrollX + ghost.x * box.width,
+          clampTop(box.top + scrollY + ghost.y * box.height),
+        );
+    }
     if (marks.length || layer)
       overlay().replaceChildren(...marks, ...(btn?.isConnected ? [btn] : []));
     return out;
@@ -360,16 +381,23 @@ export function createComments(
     const rect = rects[rects.length - 1] ?? s.range.getBoundingClientRect();
     if (!btn) {
       btn = document.createElement("button");
-      btn.textContent = "Comment";
+      btn.innerHTML = `${BUBBLE}<span>Comment</span>`;
       // Keep the selection while the button is pressed.
       btn.addEventListener("pointerdown", (e) => e.preventDefault());
       btn.addEventListener("mousedown", (e) => e.preventDefault());
       btn.addEventListener("click", onCommentClick);
       btn.className = "btn";
     }
-    btn.style.left = `${rect.right + scrollX}px`;
-    btn.style.top = `${rect.bottom + scrollY + 4}px`;
     if (!btn.isConnected) overlay().append(btn);
+    // Centered under the end of the selection, kept inside the viewport.
+    const vw = document.documentElement.clientWidth || innerWidth;
+    const w = btn.offsetWidth;
+    const x = Math.max(
+      BTN_MARGIN,
+      Math.min(rect.right - w / 2, vw - w - BTN_MARGIN),
+    );
+    btn.style.left = `${x + scrollX}px`;
+    btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
   }
 
   function onCommentClick() {
@@ -450,6 +478,12 @@ export function createComments(
     if (best) open(best.id);
   }
 
+  // Esc in pin mode: the frame holds focus after a click, so tell the shell.
+  function onKey(e: KeyboardEvent) {
+    if (e.key === "Escape" && mode === "pin")
+      bridge.send({ oa: 1, type: "comment.escape" });
+  }
+
   // ---- shell messages ----
   const off = bridge.on((m) => {
     if (m.type === "comments.mode") {
@@ -464,6 +498,7 @@ export function createComments(
       }
     } else if (m.type === "comments.set") {
       threads = m.threads;
+      ghost = m.ghost;
       slots = null;
       report(true);
     } else if (m.type === "comments.focus") {
@@ -529,6 +564,7 @@ export function createComments(
   });
   document.addEventListener("selectionchange", onSelectionChange);
   document.addEventListener("click", onClick, true);
+  document.addEventListener("keydown", onKey, true);
   addEventListener("resize", onResize, { passive: true });
   addEventListener("scroll", onScroll, { passive: true });
 
@@ -537,6 +573,7 @@ export function createComments(
     observer?.disconnect();
     document.removeEventListener("selectionchange", onSelectionChange);
     document.removeEventListener("click", onClick, true);
+    document.removeEventListener("keydown", onKey, true);
     removeEventListener("resize", onResize);
     removeEventListener("scroll", onScroll);
     clearTimeout(mutTimer);

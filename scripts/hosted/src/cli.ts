@@ -75,6 +75,7 @@ export const RETIRED_COMMANDS = [
   "ci-token-sweep",
   "signup-redrive",
   "redline-creds",
+  "billing-backfill",
 ] as const;
 
 export const COMMANDS = ["status", "publish-release", "publish-floor"] as const;

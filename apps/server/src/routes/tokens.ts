@@ -15,6 +15,7 @@ import { tokens } from "../db/schema.js";
 import type { Env } from "../env.js";
 import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
+import { expireBusRoleProposalsOf } from "../services/bus.js";
 import { sha256Hex } from "../util/crypto.js";
 import type { AppType } from "./index.js";
 
@@ -141,6 +142,11 @@ export function mountTokens(app: AppType): void {
       )
       .returning({ id: tokens.id });
     if (res.length === 0) throw new ApiError("not_found", "Not found");
+    // #1403: the pending bus role proposals this PAT made lapse with it.
+    await expireBusRoleProposalsOf(c.env, user.id, {
+      kind: "token",
+      id: c.req.param("id"),
+    });
     return c.body(null, 204);
   });
 }

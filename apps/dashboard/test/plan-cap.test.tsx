@@ -354,7 +354,7 @@ it.each([
     "plan_required",
     {
       billing: {
-        tier: "free" as const,
+        tier: "solo" as const,
         status: null,
         trialEndsAt: null,
         graceUntil: null,
@@ -407,7 +407,7 @@ it("on free, a promotion refused with plan_limit shows by the member row, not as
   );
   fireEvent.click(await screen.findByRole("option", { name: /admin/i }));
   const note = await within(r).findByText(
-    /The free plan allows up to 3 storage/,
+    /The Solo plan allows up to 3 storage/,
   );
   expect(note).toBeVisible();
   // The owner (the default test caller) sees the owner wording.

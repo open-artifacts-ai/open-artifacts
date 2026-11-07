@@ -95,12 +95,19 @@ export const NO_REFERRER: ReadonlySet<string> = new Set([
   AUTH.callback,
   AUTH.callbackGoogle,
   R.directoryCallback,
+  // The confirm pages (#1372, #1567) hold their link's secret in the URL
+  // fragment (#1426), which a Referer never carries; no referrer anyway.
+  "/bus/roles/confirm",
+  "/bus/links/confirm",
 ]);
 /**
- * Path prefixes that also send no referrer: a role proposal's confirm link
- * carries its secret in the path (#1372, bus/role-confirm.ts).
+ * Path prefixes that also send no referrer: the old confirm links carried the
+ * secret in the path (before #1426); their notice page sends none either.
  */
-export const NO_REFERRER_PREFIXES: readonly string[] = ["/bus/roles/confirm/"];
+export const NO_REFERRER_PREFIXES: readonly string[] = [
+  "/bus/roles/confirm/",
+  "/bus/links/confirm/",
+];
 
 /**
  * `frameAncestors` (a pre-validated source list from frameOpts) replaces

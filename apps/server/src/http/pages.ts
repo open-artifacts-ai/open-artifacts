@@ -14,15 +14,36 @@ import type { AppEnv } from "./middleware.js";
 export const PAGE_CSP =
   "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; base-uri 'none'; frame-ancestors 'none'";
 
-/** A per-user HTML page: never cached, never framed, PAGE_CSP. */
+/**
+ * PAGE_CSP for a page with one inline script (#1426): only the script with
+ * this nonce runs, and it may call this origin only.
+ */
+export const scriptPageCsp = (nonce: string) =>
+  `${PAGE_CSP}; script-src 'nonce-${nonce}'; connect-src 'self'; form-action 'none'`;
+
+/** A fresh CSP nonce. */
+export const newNonce = (): string =>
+  btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+
+/**
+ * A per-user HTML page: never cached, never framed, PAGE_CSP (with a script
+ * nonce, scriptPageCsp).
+ */
 export function pageResponse(
   body: string,
   status: number,
   headers?: Headers,
+  scriptNonce?: string,
 ): Response {
   const h = new Headers(headers);
   h.set("content-type", "text/html; charset=utf-8");
-  h.set("content-security-policy", PAGE_CSP);
+  h.set(
+    "content-security-policy",
+    scriptNonce ? scriptPageCsp(scriptNonce) : PAGE_CSP,
+  );
   h.set("cache-control", "no-store");
   h.set("x-frame-options", "DENY");
   return new Response(body, { status, headers: h });

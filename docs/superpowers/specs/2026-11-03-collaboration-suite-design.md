@@ -320,7 +320,7 @@ Sketch; the full design lands with the fast follow.
   dashboard write is (a live agent of the member's own hub, the name rules,
   minted, chosen and held former names) and changes nothing. It stores the
   role, namespace, both agents' ids and their names as proposed. The tool
-  returns a one-time link, `/bus/roles/confirm/<secret>` (256 random bits;
+  returns a one-time link, `/bus/roles/confirm#<secret>` (in the URL fragment since #1426; 256 random bits;
   the hub stores only its sha256), that expires after 15 minutes. The
   member opens it in a browser and sees the role, its namespace, the holder
   it displaces and the new one, by the names stored at proposal time, then

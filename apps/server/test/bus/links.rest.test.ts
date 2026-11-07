@@ -10,6 +10,7 @@ import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
 import { BusHub } from "../../src/bus/hub.js";
 import { api, errOf, fetchAndWait } from "../helpers.js";
+import { limiter } from "../mcp-helpers.js";
 import { daemon, e, hubOf, machine, member, ns } from "./helpers.js";
 
 const app = createApp();
@@ -207,5 +208,41 @@ describe("links REST (#1567)", () => {
     const put = await call(R.busLinks, "PUT", { a: "x/y", b: "x/z" });
     expect(put.status).toBe(409);
     expect((await call(R.busLink("nope"), "DELETE")).status).toBe(204);
+  });
+
+  it("PUT and DELETE are rate-limited per member (#1358): over the limit is 429 rate_limited, normal use passes, reads are free", async () => {
+    const { who, d } = await withBus();
+    const l = limiter(3);
+    const ev = { ...env, ...l };
+    const call = (path: string, method: string, body?: unknown) =>
+      fetchAndWait(
+        app,
+        new Request(`http://app.localhost${path}`, {
+          method,
+          headers: {
+            "x-oa-request": "1",
+            cookie: who.cookie,
+            ...(body === undefined
+              ? {}
+              : { "content-type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+        ev,
+      );
+    for (let i = 0; i < 3; i++) {
+      expect((await call(R.busLinks, "GET")).status).toBe(200);
+    }
+    expect([...l.counts.keys()]).toEqual([]);
+    const put = (n: string) =>
+      call(R.busLinks, "PUT", { a: ns(`${n}a`), b: ns(`${n}b`) });
+    expect((await put("1")).status).toBe(200);
+    expect((await call(`${R.busLinks}/nope`, "DELETE")).status).toBe(204);
+    expect((await put("2")).status).toBe(200);
+    const over = await put("3");
+    expect(over.status).toBe(429);
+    expect((await errOf(over)).code).toBe("rate_limited");
+    expect((await call(`${R.busLinks}/nope`, "DELETE")).status).toBe(429);
+    d.close();
   });
 });

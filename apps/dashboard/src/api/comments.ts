@@ -1,15 +1,18 @@
 import {
   ANON_ID_HEADER,
+  ArtifactAgentSchema,
   COMMENT_BODY_MAX,
   type Comment,
   CommentListSchema,
   CommentSchema,
   CommentThreadSchema,
+  MENTIONS_MAX,
   type NewThreadBody,
   R,
   type ReplyBody,
 } from "@oa/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { z } from "zod";
 import {
   isAnonToken,
   loadAnonToken,
@@ -86,12 +89,48 @@ export const useReply = (id: string, guest = false) =>
     api.send(
       "POST",
       R.commentReplies(id, v.thread),
-      { body: v.body, ...(v.guestName ? { guestName: v.guestName } : {}) },
+      {
+        body: v.body,
+        ...(v.guestName ? { guestName: v.guestName } : {}),
+        ...(v.mentions?.length ? { mentions: v.mentions } : {}),
+        ...(v.assign ? { assign: v.assign } : {}),
+      },
       CommentSchema,
       undefined,
       x,
     ),
   );
+const AgentList = z.array(ArtifactAgentSchema);
+/** The agents that follow or publish to the artifact (the @ picker). Owners and editors only; a failure just means no picker. */
+export const useArtifactAgents = (id: string, enabled: boolean) =>
+  useQuery<z.infer<typeof AgentList>>({
+    enabled,
+    queryKey: ["comment-agents", id],
+    retry: false,
+    staleTime: 30_000,
+    // A server without the route (404) stays answered: no refetch on mount or focus.
+    refetchOnMount: (q) => q.state.status !== "error",
+    refetchOnWindowFocus: (q) => q.state.status !== "error",
+    queryFn: ({ signal }) => api.get(R.artifactAgents(id), AgentList, signal),
+  });
+
+/** Tap an option on an ask. The list refetches on settle, so a 409 shows the closed ask. */
+export const useAnswerAsk = (id: string) =>
+  useRefetching(
+    id,
+    false,
+    false,
+    (v: { thread: string; comment: string; optionId: string }, x) =>
+      api.send(
+        "POST",
+        R.commentAnswer(id, v.thread, v.comment),
+        { optionId: v.optionId },
+        CommentSchema,
+        undefined,
+        x,
+      ),
+  );
+
 export const useSetThreadStatus = (id: string, guest = false) =>
   useRefetching(
     id,
@@ -137,6 +176,9 @@ export const useDeleteComment = (id: string, guest = false) =>
     ),
   );
 
+/** More agents @mentioned than one comment may carry. */
+export class TooManyMentions extends Error {}
+
 /** "5 seconds", "2 minutes": a Retry-After rounded up. */
 const wait = (s: number) =>
   s <= 90
@@ -145,6 +187,8 @@ const wait = (s: number) =>
 
 /** The copy for a failed comment call (Product's strings where the spec has them). */
 export function commentError(e: unknown, capped = false): string {
+  if (e instanceof TooManyMentions)
+    return `Mention at most ${MENTIONS_MAX} agents in one comment.`;
   const code = e instanceof ApiClientError ? e.code : null;
   // A capped (guest or restricted) member's writes are refused as read-only:
   // the server answers 404, and says nothing about a missing comment.
@@ -177,4 +221,17 @@ export function commentError(e: unknown, capped = false): string {
     default:
       return "Couldn't post your comment. Try again.";
   }
+}
+
+/** Copy for a failed answer: 403 not asked, 409 closed, 400 unknown option. */
+export function answerError(e: unknown): string {
+  const status = e instanceof ApiClientError ? e.status : 0;
+  if (status === 403)
+    return "Only the people this ask is addressed to can answer.";
+  if (status === 409)
+    return "The agent already closed this ask, so it can't be changed.";
+  if (status === 400)
+    return "That option isn't on this ask any more. Reload to see the current ones.";
+  if (status === 404) return "That ask is gone.";
+  return "Couldn't send your answer. Try again.";
 }

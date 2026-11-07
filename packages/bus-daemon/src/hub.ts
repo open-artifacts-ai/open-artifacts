@@ -183,7 +183,7 @@ export class HubConnection {
         // Reply ids: the hub then names each sender's agent (deliver.from_id).
         // Mailboxes: the hub then sends queued/since, away rows and the new
         // refusals, and honours agent_up.replaces (#1295).
-        caps: [BUS_CAPS.ids, BUS_CAPS.mailbox],
+        caps: [BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.links],
       });
       this.#guard("sessions", () => {
         this.send({

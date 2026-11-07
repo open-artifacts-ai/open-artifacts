@@ -10,6 +10,8 @@ export type Command = (
       check: boolean;
       noOpen: boolean;
       noService: boolean;
+      habits?: "yes" | "no" | "show";
+      json?: boolean;
     }
   | { cmd: "login"; hub?: string; noOpen: boolean }
   | { cmd: "daemon"; hub?: string; home?: string }
@@ -23,6 +25,8 @@ export type Command = (
   | { cmd: "namespace"; sub: "approve"; dir: string; yes: boolean }
   | { cmd: "namespace"; sub: "revoke"; dir: string }
   | { cmd: "namespace"; sub: "list" }
+  | { cmd: "link"; sub: "add" | "rm"; dirs: [string, string] }
+  | { cmd: "link"; sub: "list" }
   | { cmd: "version" }
 ) & {
   noColor: boolean;
@@ -41,16 +45,29 @@ const COMMANDS = new Set([
   "uninstall",
   "global",
   "namespace",
+  "link",
+  "unlink",
   "version",
 ]);
 const HARNESSES = ["claude", "opencode", "codex", "pi"];
 const GLOBAL_USAGE = `usage: ${BUS_CMD} global <add|rm> <dir>, or global list`;
+const LINK_USAGE = `usage: ${BUS_CMD} link <dir> <dir>, ${BUS_CMD} unlink <dir> <dir>, or link list`;
 const NAMESPACE_USAGE = `usage: ${BUS_CMD} namespace approve [dir], namespace revoke <dir>, or namespace list`;
 /** Flags every command takes. */
 const COMMON = new Set(["no-color", "version", "home"]);
 /** Each command's own flags. */
 const FLAGS: Record<string, string[]> = {
-  install: ["instance", "no-open", "yes", "check", "no-service"],
+  install: [
+    "instance",
+    "no-open",
+    "yes",
+    "check",
+    "no-service",
+    "habits",
+    "no-habits",
+    "show-habits",
+    "json",
+  ],
   login: ["instance", "no-open"],
   daemon: ["instance"],
   uninstall: ["purge"],
@@ -72,6 +89,10 @@ export function parse(argv: string[]): Command {
       yes: { type: "boolean", short: "y", default: false },
       check: { type: "boolean", default: false },
       "no-service": { type: "boolean", default: false },
+      habits: { type: "boolean", default: false },
+      "no-habits": { type: "boolean", default: false },
+      "show-habits": { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
       purge: { type: "boolean", default: false },
       version: { type: "boolean", short: "v", default: false },
       "no-color": { type: "boolean", default: false },
@@ -94,7 +115,16 @@ export function parse(argv: string[]): Command {
     if (rest[max] !== undefined)
       throw new Error(`unexpected argument: ${rest[max]}`);
   }
-  const extra = cmd === "namespace" ? undefined : rest[takes];
+  if (cmd === "link" || cmd === "unlink") {
+    const n = cmd === "link" && rest[0] === "list" ? 1 : 2;
+    if (rest.length < n) throw new Error(LINK_USAGE);
+    if (rest[n] !== undefined)
+      throw new Error(`unexpected argument: ${rest[n]}`);
+  }
+  const extra =
+    cmd === "namespace" || cmd === "link" || cmd === "unlink"
+      ? undefined
+      : rest[takes];
   if (extra !== undefined) throw new Error(`unexpected argument: ${extra}`);
   // An empty path or URL must not fall back to the default home or instance.
   for (const name of ["home", "instance"] as const)
@@ -120,6 +150,10 @@ type Values = {
   yes: boolean;
   check: boolean;
   "no-service": boolean;
+  habits: boolean;
+  "no-habits": boolean;
+  "show-habits": boolean;
+  json: boolean;
   purge: boolean;
 };
 
@@ -151,6 +185,18 @@ function route(cmd: string, values: Values, positionals: string[]) {
         return { cmd, sub, dir: dir ?? ".", yes: values.yes };
       throw new Error(NAMESPACE_USAGE);
     }
+    case "link":
+    case "unlink": {
+      if (cmd === "link" && positionals[0] === "list")
+        return { cmd: "link", sub: "list" };
+      const [a, b] = positionals;
+      if (!a || !b) throw new Error(LINK_USAGE);
+      return {
+        cmd: "link",
+        sub: cmd === "link" ? "add" : "rm",
+        dirs: [a, b],
+      };
+    }
     case "install":
       return {
         cmd,
@@ -159,6 +205,8 @@ function route(cmd: string, values: Values, positionals: string[]) {
         check: values.check,
         noOpen: values["no-open"],
         noService: values["no-service"],
+        ...habitsMode(values),
+        ...(values.json ? { json: true } : {}),
       };
     case "status":
     case "logs":
@@ -168,4 +216,16 @@ function route(cmd: string, values: Values, positionals: string[]) {
     default:
       throw new Error(`unknown command: ${cmd}`);
   }
+}
+
+/** At most one of --habits, --no-habits, --show-habits. */
+function habitsMode(v: Values): { habits?: "yes" | "no" | "show" } {
+  const asked = [
+    v.habits && "yes",
+    v["no-habits"] && "no",
+    v["show-habits"] && "show",
+  ].filter(Boolean) as ("yes" | "no" | "show")[];
+  if (asked.length > 1)
+    throw new Error("use only one of --habits, --no-habits, --show-habits");
+  return asked[0] ? { habits: asked[0] } : {};
 }

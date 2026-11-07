@@ -8,7 +8,12 @@ import {
   QUOTA_MESSAGE,
 } from "@oa/shared";
 import { createMcpHandler } from "agents/mcp/server";
-import { type Caller, callerOf, withAccessCache } from "../auth/authz.js";
+import {
+  type Caller,
+  callerOf,
+  planOfMember,
+  withAccessCache,
+} from "../auth/authz.js";
 import { enforce, TOOL_POLICY } from "../auth/route-policy.js";
 import type { Env } from "../env.js";
 import {
@@ -326,7 +331,8 @@ function enforceToolPolicy(server: McpServer, t: ToolEnv): void {
     if (
       name === "publish_artifact" &&
       t.caller.kind === "user" &&
-      t.caller.cap === "plan" &&
+      (t.caller.cap === "plan" ||
+        planOfMember(t.caller.user)?.lock?.mode === "viewOnly") &&
       isVisibilityOnlyCall(args)
     )
       p = TOOL_POLICY.set_visibility;

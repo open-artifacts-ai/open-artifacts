@@ -194,6 +194,14 @@
     },
     {
       "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest publish edits [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact rest publish edits [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > artifact rest restore_version [session]"
     },
     {
@@ -327,6 +335,70 @@
     {
       "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > artifact data count [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments list [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments list [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments post [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments post [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments thread status [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments thread status [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments reply [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments reply [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments edit [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments edit [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments delete [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments delete [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments answer [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments answer [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact artifact agents [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact artifact agents [pat]"
     },
     {
       "file": "live/surfaces.test.ts",
@@ -507,6 +579,10 @@
     {
       "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > artifact mcp publish_artifact (settings only, description) [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact mcp publish_artifact (edits) [pat]"
     },
     {
       "file": "live/surfaces.test.ts",

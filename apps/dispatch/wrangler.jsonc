@@ -26,7 +26,10 @@
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts-staging.app"
       },
       // Installs reach the brokers only through BrokerGate stubs built on
-      // these (a same-zone fetch to a broker Route fails; see the gate).
+      // these (a same-zone fetch to a broker Route fails; see the gates).
+      // No BILLING binding yet: it and the billing deploy target land
+      // together in the cloud repo. Without it dispatch hands installs no
+      // billing gate.
       "services": [
         { "binding": "AUTH_BROKER", "service": "oa-s-auth-broker" },
         { "binding": "DIRECTORY_BROKER", "service": "oa-s-directory-broker" }
@@ -48,7 +51,10 @@
         "DIRECTORY_BROKER_ORIGIN": "https://directory.open-artifacts.app"
       },
       // Installs reach the brokers only through BrokerGate stubs built on
-      // these (a same-zone fetch to a broker Route fails; see the gate).
+      // these (a same-zone fetch to a broker Route fails; see the gates).
+      // No BILLING binding yet: it and the billing deploy target land
+      // together in the cloud repo. Without it dispatch hands installs no
+      // billing gate.
       "services": [
         { "binding": "AUTH_BROKER", "service": "oa-p-auth-broker" },
         { "binding": "DIRECTORY_BROKER", "service": "oa-p-directory-broker" }

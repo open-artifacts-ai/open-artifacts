@@ -11,13 +11,20 @@ import { box, glyph, paint, type Style, type Tone } from "./term.ts";
 export const WIDTH = 80;
 const MIN = 10 * 60_000;
 
-export type HarnessName = "claude" | "opencode" | "pi" | "omp" | "codex";
+export type HarnessName =
+  | "claude"
+  | "opencode"
+  | "pi"
+  | "omp"
+  | "codex"
+  | "hermes";
 export const HARNESS_LABEL: Record<HarnessName, string> = {
   claude: "Claude Code",
   opencode: "OpenCode",
   pi: "Pi",
   omp: "oh-my-pi",
   codex: "Codex",
+  hermes: "Hermes",
 };
 /** The dashboard's labels for AGENT_KINDS. */
 export const KIND_LABEL: Record<AgentKind, string> = {
@@ -25,6 +32,7 @@ export const KIND_LABEL: Record<AgentKind, string> = {
   opencode: "OpenCode",
   pi: "Pi",
   omp: "oh-my-pi",
+  hermes: "Hermes",
   codex: "Codex",
 };
 /** A known kind's label; any other kind shows as its own token (C26h). */
@@ -221,7 +229,7 @@ export function copy(style: Style) {
         )}`,
       ),
     noHarness: () => [
-      warn("No Claude Code, OpenCode, Pi, oh-my-pi or Codex found"),
+      warn("No Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes found"),
       next(`Install one, then run ${BUS_CMD} again.`),
     ],
     restarted: () => done("Restarted the OpenCode service to load the plugin"),
@@ -239,6 +247,16 @@ export function copy(style: Style) {
         "No codex binary found, so the bus can't wake an idle Codex thread.",
       ),
       next(`Install the Codex CLI, then run ${BUS_CMD} again.`),
+    ],
+    // After the configured line, when the Hermes plugin was copied and enabled.
+    hermesRestart: () =>
+      next("Restart running Hermes sessions and gateways to load the plugin."),
+    // After uninstall removed the Hermes plugin folder with no hermes binary to disable it.
+    hermesNoCli: (config: string) => [
+      warn("Hermes isn't on PATH, so oa-bus may still be enabled in Hermes."),
+      next(
+        `Run hermes plugins disable oa-bus, or remove oa-bus from plugins.enabled in ${config}.`,
+      ),
     ],
     opencodeNotRunning: () =>
       done("OpenCode service not running; it loads the plugin when it starts"),
@@ -355,7 +373,8 @@ export function copy(style: Style) {
       const lead = "No agents in namespace ";
       return [
         `${lead}${p("accent", clip(namespace, len(lead) + 5))} yet.`,
-        "Start Claude Code, OpenCode, Pi, oh-my-pi or Codex in this folder and it joins.",
+        "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes in this folder.",
+        "It joins.",
       ];
     },
     // 7. status: messages delivered after send_message stopped waiting.
@@ -781,6 +800,65 @@ export function copy(style: Style) {
     nsList: (rows: { dir: string; namespace: string }[]) => [
       `${rows.length} approved ${rows.length === 1 ? "namespace" : "namespaces"}`,
       ...rows.map((r) => `  ${clip(r.dir, 2)}  ${p("muted", r.namespace)}`),
+    ],
+
+    // link, unlink (#1567)
+    linkNotDir: (dir: string) => fail(`${clip(dir, 20)} is not a directory.`),
+    linkSame: (a: string, b: string, namespace: string) => [
+      fail(`${clip(a, 20)} and ${clip(b, 20)} are in the same namespace.`),
+      next(
+        `Both are ${clip(namespace, 12)}. A link joins two different namespaces.`,
+      ),
+    ],
+    linkNeedLogin: () => [
+      fail("This machine is not signed in to a hub."),
+      next(`Run ${BUS_CMD} login, then try again.`),
+    ],
+    linkUnauthorized: () => [
+      fail("The hub did not accept this machine's token."),
+      next(`Run ${BUS_CMD} login, then try again.`),
+    ],
+    linkRefused: (reason: string | undefined) =>
+      reason === "rate_limited"
+        ? [
+            fail("This machine asked for too many link changes."),
+            next("Try again in an hour."),
+          ]
+        : reason === "proposal_limit"
+          ? [
+              fail("Too many link changes are waiting for you."),
+              next("Confirm or let them expire, then try again."),
+            ]
+          : reason === "no_bus"
+            ? [
+                fail("The hub has no connected machine for you yet."),
+                next(`Start the daemon with ${BUS_CMD}, then try again.`),
+              ]
+            : [fail("The hub refused the request.")],
+    linkBadReply: () => [
+      fail("The hub's answer was not a confirm link for this instance."),
+      next("Nothing was changed."),
+    ],
+    linkProposed: (
+      action: "link" | "unlink",
+      a: { dir: string; namespace: string },
+      b: { dir: string; namespace: string },
+      url: string,
+    ) => [
+      step(`${action === "link" ? "Link" : "Unlink"} these two namespaces`),
+      next(`${clip(a.namespace, 8)}  ${p("muted", clip(a.dir, 12))}`),
+      next(`${clip(b.namespace, 8)}  ${p("muted", clip(b.dir, 12))}`),
+      "",
+      next(p("accent", url)),
+      next("Open this in your browser to confirm."),
+      p(
+        "muted",
+        "   Nothing changes until you confirm. The link works once, for an hour.",
+      ),
+    ],
+    linkList: (busUrl: string) => [
+      "Links are managed on your bus page.",
+      next(p("accent", busUrl)),
     ],
 
     // logs, mcp (DRAFT)

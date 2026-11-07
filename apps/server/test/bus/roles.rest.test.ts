@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
 import { api, errOf, fetchAndWait } from "../helpers.js";
+import { limiter } from "../mcp-helpers.js";
 import { daemon, e, hubOf, machine, member, ns, waitFor } from "./helpers.js";
 
 const app = createApp();
@@ -295,5 +296,42 @@ describe("roles REST (#1296)", () => {
     });
     expect(put.status).toBe(409);
     expect((await call(R.busRole("nope"), "DELETE")).status).toBe(204);
+  });
+
+  it("PUT and DELETE are rate-limited per member (#1358): over the limit is 429 rate_limited, normal use passes, reads are free", async () => {
+    const n = ns("rl");
+    const { who, d, agentId } = await withAgent(n);
+    const l = limiter(3);
+    const ev = { ...env, ...l };
+    const call = (path: string, method: string, body?: unknown) =>
+      fetchAndWait(
+        app,
+        new Request(`http://app.localhost${path}`, {
+          method,
+          headers: {
+            "x-oa-request": "1",
+            cookie: who.cookie,
+            ...(body === undefined
+              ? {}
+              : { "content-type": "application/json" }),
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+        ev,
+      );
+    for (let i = 0; i < 3; i++) {
+      expect((await call(R.busRoles, "GET")).status).toBe(200);
+    }
+    expect([...l.counts.keys()]).toEqual([]);
+    const put = (name: string) =>
+      call(R.busRoles, "PUT", { namespace: n, name, agentId });
+    expect((await put("lead-a")).status).toBe(200);
+    expect((await call(R.busRole("nope"), "DELETE")).status).toBe(204);
+    expect((await put("lead-b")).status).toBe(200);
+    const over = await put("lead-c");
+    expect(over.status).toBe(429);
+    expect((await errOf(over)).code).toBe("rate_limited");
+    expect((await call(R.busRole("nope"), "DELETE")).status).toBe(429);
+    d.close();
   });
 });

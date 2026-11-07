@@ -31,7 +31,7 @@ import { OptionSelect } from "../settings/OptionSelect";
 import { errorText, muted, SettingsCard, STACK } from "../settings/ui";
 import { shortDate } from "./format";
 import { shortName } from "./namespaces";
-import { LIVE_DOWN } from "./ui";
+import { LIVE_DOWN, StatusBadge } from "./ui";
 
 /** PUT R.busRoles refusals (409 details.reason) as plain lines. */
 export const ROLE_REFUSALS: Record<string, string> = {
@@ -214,6 +214,9 @@ export function RolesTab() {
     );
   if (!roles.data.live) return <Notice tone="warning">{LIVE_DOWN}</Notice>;
   const live = agents.data?.live ? agents.data.agents : [];
+  const liveIds = new Set(
+    live.filter((a) => a.state === "live").map((a) => a.id),
+  );
   const all = [
     ...new Set([
       ...live.map((a) => a.namespace),
@@ -316,13 +319,14 @@ export function RolesTab() {
             <TableBody>
               {list.map((r) => (
                 <TableRow key={r.id}>
-                  <TableCell className="font-medium">{r.name}</TableCell>
+                  <TableCell className="font-mono text-[length:var(--oa-text-xs)] font-medium">
+                    {r.name}
+                  </TableCell>
                   <TableCell>
-                    {r.vacant || r.holderName === null ? (
-                      <span className="text-muted-foreground">Vacant</span>
-                    ) : (
-                      r.holderName
-                    )}
+                    <HolderBadge
+                      r={r}
+                      live={r.agentId !== null && liveIds.has(r.agentId)}
+                    />
                   </TableCell>
                   <TableCell
                     className="text-muted-foreground"
@@ -365,10 +369,23 @@ export function RolesTab() {
   );
 }
 
+/** "Held by" as #1453 draws it: a dot badge carrying the agent's name, the
+    green Live tone only when that agent is open now, a neutral one when it
+    isn't (or liveness can't be read); "Vacant" when nothing holds it. */
+function HolderBadge({ r, live }: { r: BusRole; live: boolean }) {
+  const held = !r.vacant && r.holderName !== null;
+  return (
+    <StatusBadge
+      status={held && live ? "Live" : "Offline"}
+      text={held ? (r.holderName ?? "") : "Vacant"}
+    />
+  );
+}
+
 function RoleRowSentence({ r, all }: { r: BusRole; all: string[] }) {
   return (
     <>
-      <b>{r.name}</b> in {shortName(r.namespace, all)}:{" "}
+      <b className="font-mono">{r.name}</b> in {shortName(r.namespace, all)}:{" "}
       {r.vacant || r.holderName === null ? "vacant" : <b>{r.holderName}</b>}
     </>
   );

@@ -52,6 +52,16 @@ import {
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
+  decideLinkProposal,
+  expireLinkProposalsOfMachine,
+  type LinkDecideResult,
+  type LinkProposalAction,
+  type LinkProposeResult,
+  type LinkViewResult,
+  proposeLink,
+  viewLinkProposal,
+} from "./link-proposals.js";
+import {
   addLink,
   isLinked,
   linkedNamespaces,
@@ -62,6 +72,7 @@ import {
 import {
   type DecideResult,
   decideProposal,
+  expireByCredential,
   expireProposals,
   listProposals,
   type ProposalAudit,
@@ -3090,6 +3101,68 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
+   * #1567: records a link or unlink `machineId`'s CLI proposed, under
+   * `tokenHash` (the sha256 of its confirm link's secret). Links nothing.
+   * Worker only (services/bus.ts proposeBusLink, from the machine-token route).
+   */
+  async proposeLink(
+    input: { action: LinkProposalAction; a: string; b: string },
+    machineId: string,
+    tokenHash: string,
+  ): Promise<LinkProposeResult> {
+    const r = proposeLink(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      input,
+      machineId,
+      tokenHash,
+      this.#now(),
+      newId,
+    );
+    logEvent("link_proposed", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /** #1567: the link proposal behind `tokenHash`, for the confirm page. Worker only. */
+  async viewLinkProposal(tokenHash: string): Promise<LinkViewResult> {
+    return viewLinkProposal(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      tokenHash,
+      this.#now(),
+    );
+  }
+
+  /**
+   * #1567: confirms (applies, through addLink or removeLink) or rejects the
+   * proposal behind `tokenHash`, once. Worker only, and only from the
+   * confirm page's POST (bus/link-confirm.ts: a browser session and its form
+   * token). Both sides' sockets hear `roster_changed` when a link changed.
+   */
+  async decideLinkProposal(
+    tokenHash: string,
+    decision: "confirm" | "reject",
+  ): Promise<LinkDecideResult> {
+    const { changed, ...r } = decideLinkProposal(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      tokenHash,
+      decision,
+      this.#now(),
+      newId,
+      this.#maxLinks,
+    );
+    if (changed)
+      notifyRoster(this.ctx, {
+        namespaces: [changed.a, changed.b],
+        global: false,
+        linksOnly: true,
+      });
+    logEvent("link_decided", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /**
    * #1372: records an AI agent's role proposal under `tokenHash` (the
    * sha256 of its confirm link's secret, minted by the Worker). Changes no
    * role. Worker only (services/bus.ts proposeBusRole, from MCP).
@@ -3143,6 +3216,55 @@ export class BusHub extends DurableObject<Env> {
     );
     logEvent("role_decided", r.ok ? { ok: 1 } : { reason: r.reason });
     return r;
+  }
+
+  /**
+   * #1403: expires the pending role proposals `credential` (`t:<id>` or
+   * `g:<id>`) made, for the revoke of that PAT or OAuth grant. Worker only.
+   */
+  async expireRoleProposalsOf(credential: string): Promise<ProposalAudit[]> {
+    return expireByCredential(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      credential,
+      this.#now(),
+    );
+  }
+
+  /**
+   * #1403: who made the pending proposals: the credentials (`t:<id>` /
+   * `g:<id>`) of role proposals and the machine ids of link proposals, so the
+   * Worker can check them against D1 and the OAuth store (a bulk revoke never
+   * calls the hooks). Worker only.
+   */
+  async pendingProposalSources(): Promise<{
+    credentials: string[];
+    machines: string[];
+  }> {
+    const sql = this.ctx.storage.sql;
+    const col = (q: string) =>
+      sql
+        .exec(q, OWNER_ORG_ID)
+        .toArray()
+        .map((r) => String(Object.values(r)[0]));
+    return {
+      credentials: col(
+        "select distinct credential from role_proposals where org_id = ? and status = 'pending' and credential is not null",
+      ),
+      machines: col(
+        "select distinct machine_id from link_proposals where org_id = ? and status = 'pending'",
+      ),
+    };
+  }
+
+  /** #1403: expires the machine's pending link proposals (a machine revoked in bulk). Worker only. */
+  async expireLinkProposalsOf(machineId: string): Promise<void> {
+    expireLinkProposalsOfMachine(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      machineId,
+      this.#now(),
+    );
   }
 
   /** #1372: the newest role proposals, for GET R.busRoles; expires the overdue ones first. Worker only. */
@@ -3271,6 +3393,8 @@ export class BusHub extends DurableObject<Env> {
     if (typeof id !== "string" || !isId(id)) return false;
     const sql = this.ctx.storage.sql;
     const now = this.#now();
+    // #1403: its pending link proposals die with it, even on a repeat call.
+    expireLinkProposalsOfMachine(sql, OWNER_ORG_ID, id, now);
     const res = sql.exec(
       "update machines set revoked_at = ? where id = ? and org_id = ? and revoked_at is null",
       now,
@@ -3449,6 +3573,37 @@ export class BusHub extends DurableObject<Env> {
       this.#indexedAt = now;
     } catch (e) {
       logError("socket_index_failed", e);
+    }
+  }
+
+  /**
+   * #1299: when `closing` was the hub's last open daemon socket, removes the
+   * hub's row from the install index (it outlives the index window while
+   * sockets exist). Fails open: a missed `gone` is bounded by closeInstall
+   * (a harmless closeAll on no sockets) and the index's cap.
+   */
+  async #goneFromIndex(closing: WebSocket): Promise<void> {
+    const open = () =>
+      this.ctx
+        .getWebSockets(DAEMON_TAG)
+        .some((w) => w !== closing && w.readyState === OPEN);
+    if (open()) return;
+    const name = this.ctx.id.name;
+    const idx = socketIndexStub(this.env);
+    if (!idx || !name) return;
+    this.#indexedAt = Number.NEGATIVE_INFINITY;
+    try {
+      await idx.gone(name);
+    } catch (e) {
+      logError("socket_index_failed", e);
+      return;
+    }
+    // A socket accepted while `gone` was in flight reported before it landed,
+    // so its report may have been deleted; and it set the throttle, so reset
+    // it or this report would be skipped and the live socket left unindexed.
+    if (open()) {
+      this.#indexedAt = Number.NEGATIVE_INFINITY;
+      await this.#reportToIndex();
     }
   }
 
@@ -3807,6 +3962,7 @@ export class BusHub extends DurableObject<Env> {
     if (notDaemon(this.ctx, ws)) return;
     this.#socketGone(ws);
     await this.#commitArm();
+    await this.#goneFromIndex(ws);
   }
 
   override async webSocketError(
@@ -3819,6 +3975,7 @@ export class BusHub extends DurableObject<Env> {
     if (notDaemon(this.ctx, ws)) return;
     this.#socketGone(ws);
     await this.#commitArm();
+    await this.#goneFromIndex(ws);
   }
 
   /**

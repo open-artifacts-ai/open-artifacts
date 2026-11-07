@@ -1,5 +1,5 @@
 // #1293: Agents › Namespaces, and one namespace's page.
-import type { BusAgent, BusRole } from "@oa/shared";
+import type { BusAgent, BusLink as BusLinkRow, BusRole } from "@oa/shared";
 import {
   Table,
   TableBody,
@@ -7,12 +7,14 @@ import {
   TableHead,
   TableHeader,
   TableRow,
+  useIsMobile,
 } from "@oa/ui/shadcn";
-import { useBusAgents, useBusRoles } from "../api/queries";
+import { useBusAgents, useBusLinks, useBusRoles } from "../api/queries";
 import { LoadError } from "../layout/LoadError";
 import { Notice } from "../layout/Notice";
 import { muted, SettingsCard, STACK } from "../settings/ui";
 import { shortDate } from "./format";
+import { LinksCard, linkedTo } from "./Links";
 import {
   buildRail,
   globalsFrom,
@@ -28,11 +30,13 @@ import { LIVE_DOWN } from "./ui";
 export function RoleSentence({ role }: { role: BusRole }) {
   return role.vacant || role.holderName === null ? (
     <>
-      <b>{role.name}</b> is vacant. Its holder isn't open here.
+      <b className="font-mono">{role.name}</b> is vacant. Its holder isn't open
+      here.
     </>
   ) : (
     <>
-      <b>{role.name}</b> points at <b>{role.holderName}</b>.
+      <b className="font-mono">{role.name}</b> points at{" "}
+      <b>{role.holderName}</b>.
     </>
   );
 }
@@ -41,10 +45,12 @@ function NamespacePage({
   ns,
   agents,
   roles,
+  links,
 }: {
   ns: string;
   agents: BusAgent[];
   roles: BusRole[] | undefined;
+  links: BusLinkRow[];
 }) {
   const all = [...new Set(agents.map((a) => a.namespace))];
   const here = agents.filter((a) => a.namespace === ns && !a.global);
@@ -54,6 +60,7 @@ function NamespacePage({
   const machines = [...new Set(here.map((a) => a.machineLabel))].sort();
   const name = shortName(ns, all);
   const mine = (roles ?? []).filter((r) => r.namespace === ns);
+  const linked = linkedTo(links, ns);
   const count = `${here.length} agent${here.length === 1 ? "" : "s"}, ${live} live`;
   return (
     <div className={STACK}>
@@ -81,13 +88,28 @@ function NamespacePage({
         )}
         <dl className="m-0 grid grid-cols-[160px_minmax(0,1fr)] items-center gap-x-[var(--oa-space-4)] gap-y-[var(--oa-space-3)] text-[length:var(--oa-text-sm)] max-[600px]:grid-cols-[minmax(0,1fr)] max-[600px]:gap-y-[4px]">
           <dt className="text-muted-foreground">
-            {p.kind === "repo" ? "Full path" : "Comes from"}
+            {p.kind === "repo" ? "Full path" : "From"}
           </dt>
-          <dd className="m-0 min-w-0 break-all font-mono text-[length:var(--oa-text-xs)]">
-            {p.kind === "repo" ? ns : `on ${listOf(machines)}`}
+          <dd
+            className={
+              p.kind === "repo"
+                ? "m-0 min-w-0 break-all font-mono text-[length:var(--oa-text-xs)]"
+                : "m-0 min-w-0 text-[length:var(--oa-text-sm)]"
+            }
+          >
+            {p.kind === "repo" ? ns : listOf(machines)}
           </dd>
         </dl>
         {globals && <p className={`m-0 ${muted}`}>{globals}</p>}
+        {linked.length > 0 && (
+          <p className="m-0 text-[length:var(--oa-text-sm)]">
+            Linked with{" "}
+            {listOf(linked.map((n) => shortName(n, [...all, ...linked])))}.{" "}
+            <BusLink to="/agents/namespaces" className={LINK}>
+              Manage links
+            </BusLink>
+          </p>
+        )}
         <p className="m-0 text-[length:var(--oa-text-sm)]">
           <BusLink to="/agents" search={{ in: `ns:${ns}` }} className={LINK}>
             See its agents
@@ -126,6 +148,8 @@ function NamespacePage({
 export function NamespacesTab({ ns }: { ns?: string }) {
   const agents = useBusAgents();
   const roles = useBusRoles();
+  const links = useBusLinks();
+  const stacked = useIsMobile();
   if (agents.isPending) return <p className={`m-0 ${muted}`}>Loading…</p>;
   if (agents.isError)
     return (
@@ -144,6 +168,7 @@ export function NamespacesTab({ ns }: { ns?: string }) {
         ns={ns}
         agents={list}
         roles={roles.data?.live ? roles.data.roles : undefined}
+        links={links.data?.live ? links.data.links : []}
       />
     );
   const rail = buildRail(list);
@@ -163,44 +188,78 @@ export function NamespacesTab({ ns }: { ns?: string }) {
       </p>
     );
   return (
-    <SettingsCard
-      id="oa-nss-h"
-      title="Namespaces"
-      subtitle="Where your running agents started. A repo's namespace comes from its git remote; any other folder uses its name."
-    >
-      <Table aria-label="Namespaces">
-        <TableHeader>
-          <TableRow>
-            <TableHead>Namespace</TableHead>
-            <TableHead>In</TableHead>
-            <TableHead className="text-right">Agents</TableHead>
-            <TableHead className="text-right">Live</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((n) => (
-            <TableRow key={n.ns}>
-              <TableCell className="font-medium">
-                <BusLink
-                  to="/agents/namespaces"
-                  search={{ ns: n.ns }}
-                  title={n.ns}
-                  className={LINK}
-                >
-                  {n.label}
-                </BusLink>
-              </TableCell>
-              <TableCell className="text-muted-foreground">{n.where}</TableCell>
-              <TableCell className="text-right tabular-nums">
-                {n.total}
-              </TableCell>
-              <TableCell className="text-right tabular-nums">
-                {n.live}
-              </TableCell>
-            </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    </SettingsCard>
+    <div className={STACK}>
+      <SettingsCard
+        id="oa-nss-h"
+        title="Namespaces"
+        subtitle="Where your running agents started. A repo's namespace comes from its git remote; any other folder uses its name."
+      >
+        {stacked ? (
+          <ul aria-label="Namespaces" className="m-0 list-none p-0">
+            {rows.map((n) => (
+              <li
+                key={n.ns}
+                className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-[var(--oa-space-3)] gap-y-[2px] border-b py-[var(--oa-space-3)] text-[length:var(--oa-text-sm)] last:border-b-0"
+              >
+                <span className="min-w-0">
+                  <BusLink
+                    to="/agents/namespaces"
+                    search={{ ns: n.ns }}
+                    title={n.ns}
+                    className={`${LINK} font-medium`}
+                  >
+                    {n.label}
+                  </BusLink>
+                </span>
+                <span className="justify-self-end text-right tabular-nums">
+                  {n.total}
+                  {n.live > 0 && (
+                    <span className={muted}> · {n.live} live</span>
+                  )}
+                </span>
+                <span className={`min-w-0 ${muted}`}>{n.where}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <Table aria-label="Namespaces">
+            <TableHeader>
+              <TableRow>
+                <TableHead>Namespace</TableHead>
+                <TableHead>In</TableHead>
+                <TableHead className="text-right">Agents</TableHead>
+                <TableHead className="text-right">Live</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((n) => (
+                <TableRow key={n.ns}>
+                  <TableCell className="font-medium">
+                    <BusLink
+                      to="/agents/namespaces"
+                      search={{ ns: n.ns }}
+                      title={n.ns}
+                      className={LINK}
+                    >
+                      {n.label}
+                    </BusLink>
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {n.where}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {n.total}
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums">
+                    {n.live}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </SettingsCard>
+      <LinksCard known={rows.map((r) => r.ns)} />
+    </div>
   );
 }

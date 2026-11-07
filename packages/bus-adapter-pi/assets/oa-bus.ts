@@ -178,6 +178,7 @@ function receiptText(
   namespaces?: number,
   excerpt?: string,
   movedTo?: string,
+  linkedNs?: string,
 ): string {
   const quote = excerpt ? `"${excerpt}"` : undefined;
   const to = sentTo;
@@ -223,10 +224,40 @@ function receiptText(
             : `×  ${label}: your message to ${v} was not delivered.`,
           ...(said(v) ? [`   ${said(v)}`] : []),
           ...(hint ? [`   ${hint}`] : []),
+          ...(linkedNs !== undefined &&
+          (r.reason === "closed" || r.reason === "revoked")
+            ? [
+                "   A linked project has a live agent with that name:",
+                `   pass to_namespace ${linkedNs} to reach the live one.`,
+              ]
+            : []),
         ].join("\n");
       return fitLine(lines, to);
     }
   }
+}
+
+/** @oa/bus-ipc linkedLiveNamespace (#1567): the one namespace with a live agent called `name`. */
+function linkedLiveNamespace(
+  name: string,
+  roster: readonly {
+    name: string;
+    namespace: string;
+    live?: boolean;
+    state?: string;
+  }[],
+): string | undefined {
+  const l = name.toLowerCase();
+  const seen = new Set(
+    roster
+      .filter(
+        (a) =>
+          a.name.toLowerCase() === l &&
+          (a.state ?? (a.live ? "live" : "queued")) === "live",
+      )
+      .map((a) => a.namespace),
+  );
+  return seen.size === 1 ? [...seen][0] : undefined;
 }
 
 /**
@@ -488,6 +519,7 @@ export const copy = {
   selfText,
   receiptText,
   movedName,
+  linkedLiveNamespace,
   excerptOf,
   stripTerminalControls,
   neutralizeBody,
@@ -508,7 +540,7 @@ const TOOLS = [
     name: "oabus_list_agents",
     label: "Open Artifacts bus: list agents",
     description:
-      "List the agents you can message, in your Open Artifacts bus namespace.",
+      "List the agents you can message, in your Open Artifacts bus namespace and linked ones.",
     parameters: none,
   },
   {
@@ -523,7 +555,7 @@ const TOOLS = [
         to_namespace: {
           type: "string",
           description:
-            "The recipient's namespace, when a global agent's target name exists in several.",
+            "The recipient's namespace, when the target name exists in several: a global agent's, or a linked project's.",
         },
       },
       required: ["to", "text"],
@@ -718,6 +750,8 @@ type Link = {
   welcome: Frame;
   request: (frame: Json, timeoutMs?: number) => Promise<Frame>;
   ack: (msgId: string) => void;
+  /** #1635: tell the daemon the session's new name; false when this daemon does not take it. */
+  rename: (name: string) => boolean;
   closed: () => boolean;
   close: () => void;
 };
@@ -777,6 +811,14 @@ function open(
         }),
       // Fire-and-forget: the daemon answers an ack with nothing.
       ack: (msgId) => write({ type: "ack", id: `ack-${++seq}`, msg_id: msgId }),
+      // Only to a daemon whose welcome listed `rename`: an older one has no such frame.
+      rename: (name) => {
+        const caps = link.welcome.caps;
+        if (ended || !Array.isArray(caps) || !caps.includes("rename"))
+          return false;
+        write({ type: "rename", id: `rename-${++seq}`, name });
+        return true;
+      },
       closed: () => ended,
       close: () => {
         ended = true;
@@ -860,7 +902,8 @@ function open(
         proposed_name: id.name,
         // #1295: this asset decodes away rows and the new refusals.
         // #1525: and a config file that is pending approval.
-        caps: ["mailbox", "pending"],
+        // #1635: and may send a rename.
+        caps: ["mailbox", "pending", "rename"],
         attest: start ? { proc_start: start } : {},
       }),
     );
@@ -983,6 +1026,13 @@ export default function oaBus(pi: Pi): void {
         }
         current = l;
         refusals = 0;
+        // Renamed while this hello was in flight (#1635).
+        if (
+          identity.kind !== "omp" &&
+          identity.name !== id.name &&
+          identity.name !== identity.kind
+        )
+          l.rename(identity.name);
         return l;
       },
       (e: unknown) => {
@@ -1010,6 +1060,34 @@ export default function oaBus(pi: Pi): void {
    * sets `agent`.
    */
   const subagent = (ctx: Ctx | undefined) => ctx?.agent?.kind === "sub";
+
+  /**
+   * #1635: the session was renamed (/name, --name, setSessionName). One frame
+   * per change; nothing for the fallback name. The identity carries the name,
+   * so a reconnect's hello proposes the new one.
+   */
+  const renamed = (ctx: Ctx) => {
+    if (stopped || !identity) return;
+    // omp titles a session itself ("auto") after its first message, and its
+    // extension context does not say whether a name was typed by the user:
+    // so omp never renames on the hub. (pi has no auto titles.)
+    if (identity.kind === "omp") return;
+    const id = identityOf(ctx);
+    if (id.ref !== identity.ref || id.name === identity.name) return;
+    identity = { ...identity, name: id.name };
+    if (id.name === id.kind) return;
+    // An open link tells the daemon now; a daemon without the cap, or no
+    // link, learns it from the next hello.
+    if (current && !current.closed() && current.ref === id.ref)
+      current.rename(id.name);
+  };
+  pi.on("session_info_changed", (_event, ctx) => {
+    if (!subagent(ctx)) renamed(ctx);
+  });
+  // A turn start checks too (cheap when unchanged); omp is skipped in renamed().
+  pi.on("turn_start", (_event, ctx) => {
+    if (!subagent(ctx)) renamed(ctx);
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     if (subagent(ctx)) return;
@@ -1061,7 +1139,7 @@ export default function oaBus(pi: Pi): void {
               ),
             )
             .join("\n")
-        : "No agents in your namespace.";
+        : "No agents in your namespace and linked ones.";
     }
     if (name === "oabus_send_message") {
       const to = String(args.to ?? "");
@@ -1092,7 +1170,12 @@ export default function oaBus(pi: Pi): void {
         receipt.reason === "revoked"
           ? await movedTo(to, namespace, link)
           : undefined;
-      const out = receiptText(receipt, to, n, excerptOf(body), moved);
+      const linked =
+        (receipt.reason === "closed" || receipt.reason === "revoked") &&
+        !namespace
+          ? await linkedLive(to, link)
+          : undefined;
+      const out = receiptText(receipt, to, n, excerptOf(body), moved, linked);
       if (receipt.state === "refused" || receipt.state === "expired")
         throw new Error(out);
       return out;
@@ -1205,6 +1288,26 @@ async function movedTo(
         .filter((a) => namespace === undefined || a.namespace === namespace)
         .map((a) => String(a.name)),
     );
+  } catch {
+    return undefined;
+  }
+}
+
+/** #1567: the linked namespace with a live agent called `name`; undefined when none or the roster is unavailable. */
+async function linkedLive(
+  name: string,
+  link: Link,
+): Promise<string | undefined> {
+  try {
+    const r = await link.request({ type: "list" });
+    if (r.type !== "roster") return undefined;
+    const agents = ((r.agents ?? []) as Json[]).map((a) => ({
+      name: String(a.name),
+      namespace: String(a.namespace),
+      ...(typeof a.live === "boolean" ? { live: a.live } : {}),
+      ...(typeof a.state === "string" ? { state: a.state } : {}),
+    }));
+    return linkedLiveNamespace(name, agents);
   } catch {
     return undefined;
   }

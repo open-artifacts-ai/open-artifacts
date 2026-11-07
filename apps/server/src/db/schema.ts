@@ -331,6 +331,11 @@ export const artifacts = sqliteTable(
      * for one release, so a rollback keeps public pages as they were.
      */
     dataWriters: text("data_writers").notNull().default("viewers"),
+    /**
+     * #682: the built-in comments layer, 1 on (the default) or 0 off. The
+     * CHECK is inline in 0025's ADD COLUMN, as for data_writers.
+     */
+    comments: integer("comments").notNull().default(1),
     hasThumbnail: integer("has_thumbnail").notNull().default(0),
     /** The version thumbs/{id}.webp depicts; null = unknown (pre-0005) or none. */
     thumbnailVersion: integer("thumbnail_version"),
@@ -547,6 +552,8 @@ export const uploads = sqliteTable("uploads", {
   consumed: integer("consumed").notNull().default(0),
   // set once the signed PUT stored exactly `size` bytes
   receivedAt: integer("received_at"),
+  // sha256 (hex) of the bytes the PUT stored; copied into the manifest digest at publish (#1490)
+  digest: text("digest"),
 });
 
 // ids handed out by create_upload before the first publish

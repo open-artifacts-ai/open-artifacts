@@ -134,8 +134,12 @@ const NOTICE_RETRY_MS = 30_000;
 const LIMITED_RETRY_MS = 5 * 60_000;
 /** How far back `oa-bus status` lists late deliveries. */
 const LATE_WINDOW_MS = 60 * 60_000;
-/** Pi and omp (a Pi fork) run the same extension: it lives as long as its connection and receives on it. */
-const piLike = (kind: string) => kind === "pi" || kind === "omp";
+/**
+ * Pi and omp (a Pi fork) run the same extension; Hermes runs a plugin that
+ * speaks the same protocol. Each lives as long as its connection and receives on it.
+ */
+const piLike = (kind: string) =>
+  kind === "pi" || kind === "omp" || kind === "hermes";
 
 export type DaemonDeps = {
   transports?: Partial<Record<AgentRecord["kind"], DeliverFn>>;
@@ -264,8 +268,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Each Pi session's open extension connections, newest last: Pi receives on them. */
   const piLinks = new Map<string, Map<Hello, (f: DaemonFrame) => void>>();
 
+  /**
+   * A /clear handover not yet announced: it waits for hello_ok (#1582), so the
+   * hub knows nothing of the ref and nothing may name it before.
+   */
+  const held = (ref: string): boolean => {
+    const rec = agents.byRef(ref);
+    return rec?.replaces !== undefined && !hubHelloed;
+  };
+  /** Whom a new session replaces: B's own predecessor while B is still unannounced. */
+  const handoverOf = (old: AgentRecord): string =>
+    old.replaces !== undefined && !hubHelloed ? old.replaces : old.ref;
   const sessions = () => ({
-    open: agents.openRefs(),
+    open: agents.openRefs().filter((r) => !held(r)),
     closed: agents.closedRefs(),
   });
   const announceSessions = () => {
@@ -281,10 +296,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** The cap each refused agent hit. */
   const caps = new Map<string, AgentCap>();
   const announceUp = (rec: AgentRecord) => {
+    // A /clear handover waits for hello_ok: only then is it known whether the
+    // hub takes `replaces`, and an agent_up sent without it is the
+    // handover lost for good (#1582). hello_ok announces it.
+    if (rec.replaces !== undefined && !hubHelloed) return false;
     const id = frameId();
     const kind = rec.kind;
     upIds.set(id, { ref: rec.ref, kind });
-    return hub.send({
+    const sent = hub.send({
       v: 1,
       id,
       type: "agent_up",
@@ -298,6 +317,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         ? { replaces: rec.replaces }
         : {}),
     });
+    if (sent) rec.sentName = rec.proposedName;
+    return sent;
   };
   /** Never a loop: one retry after a long wait; a reconnect replays it sooner. */
   const markLimited = (ref: string, message: string) => {
@@ -462,6 +483,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     onUnsent?: () => void,
   ): boolean => {
     if (f.type !== "send") return hub.send(f, onUnsent);
+    // Its sender is not announced yet (#1582): kept, in order, until hello_ok.
+    if (held(f.from_ref)) {
+      outbox.push({ frame: f, native });
+      return true;
+    }
     const from = agents.byRef(f.from_ref);
     // Named, not implied: a resend is judged in the namespace the send was
     // made in, even if the sender has moved since. An explicit own namespace
@@ -492,6 +518,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     opencode: (agent, text, msgId) => opencode.notify(agent, text, msgId),
     pi: (agent, text, msgId) => pi.notify(agent, text, msgId),
     omp: (agent, text, msgId) => pi.notify(agent, text, msgId),
+    hermes: (agent, text, msgId) => pi.notify(agent, text, msgId),
     codex: (agent, text, msgId) => codex.notify(agent, text, msgId),
     ...deps.notifiers,
   };
@@ -532,15 +559,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * is sent, from what the hub then says it supports (hubIds), never frozen
    * at queue time.
    */
-  type QueuedReply = { frame: SendFrame; peerId?: string };
+  type QueuedReply = { frame: SendFrame; peerId?: string; native?: boolean };
   const withTo = (r: QueuedReply): SendFrame =>
     hubIds && r.peerId ? { ...r.frame, to_id: r.peerId } : r.frame;
   // A Claude reply must not be lost to a hub reconnect. It waits for the
   // link's hello_ok, so it knows whether the hub takes to_id.
   const outbox = new Outbox<QueuedReply>({
     send: (r, unsent) =>
-      hub.open && hubVersion !== undefined
-        ? sendToHub(withTo(r), true, unsent)
+      hub.open && hubVersion !== undefined && !held(r.frame.from_ref)
+        ? sendToHub(withTo(r), r.native ?? true, unsent)
         : false,
     stale: (r) => !agents.byRef(r.frame.from_ref)?.live,
     log,
@@ -631,6 +658,71 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const seenAt = new Map<string, number>();
   let seenSeq = 0;
 
+  /** rename ids awaiting the hub's answer, to their agent_ref; cleared with the link. */
+  const renameIds = new Map<string, string>();
+  /**
+   * A Claude `/rename` after connect (#1635): the session file's name changed
+   * since the last tick. One `rename` per change; the hub's answer (a `-2`,
+   * a refusal) is never read as a change, so nothing loops. A name noted
+   * while the link or the agent's registration is not ready rides the next
+   * agent_up (it carries proposedName).
+   */
+  const renameIfChanged = (rec: AgentRecord, name: string) => {
+    const was = rec.sessionName ?? rec.proposedName;
+    rec.sessionName = name;
+    // Never a name nobody chose: empty, or the `claude-<pid>` fallback.
+    if (name === was || name === "" || name === `claude-${rec.pid}`) return;
+    rec.proposedName = name;
+    flushRename(rec);
+  };
+  /**
+   * A Pi or omp session renamed (#1635), told by its extension on `rename` or
+   * by a reconnecting hello. The same rules as Claude: one frame per change,
+   * never an empty name or the kind the extension falls back to.
+   */
+  const renameFromAdapter = (rec: AgentRecord, name: string) => {
+    const was = rec.sessionName ?? rec.proposedName;
+    rec.sessionName = name;
+    if (name === was || name === "" || name === rec.kind) return;
+    rec.proposedName = name;
+    flushRename(rec);
+  };
+  /**
+   * Tells the hub a name it has not heard, once the agent is registered on a
+   * helloed link. Called on each change, and again after hello_ok and agent_ok
+   * for a change noted while the link or a handover was not ready.
+   */
+  const flushRename = (rec: AgentRecord) => {
+    if (
+      !(
+        rec.kind === "claude-code" ||
+        rec.kind === "pi" ||
+        rec.kind === "omp"
+      ) ||
+      !rec.live ||
+      rec.sentName === undefined ||
+      rec.sentName === rec.proposedName ||
+      !hub.open ||
+      !hubHelloed ||
+      rec.replaces !== undefined ||
+      limited.has(rec.ref)
+    )
+      return;
+    const id = frameId();
+    renameIds.set(id, rec.ref);
+    if (
+      hub.send({
+        v: 1,
+        id,
+        type: "rename",
+        agent_ref: rec.ref,
+        proposed_name: fitName(rec.proposedName, 64),
+        name_kind: "chosen",
+      })
+    )
+      rec.sentName = rec.proposedName;
+    else renameIds.delete(id);
+  };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
     const live = liveClaudeSessions(claudeSessions);
@@ -652,6 +744,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           prev.pid = s.pid;
           prev.procStart = s.procStart;
         }
+        renameIfChanged(prev, s.name);
         continue;
       }
       // Closed by a failed delivery and still the same process.
@@ -674,7 +767,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (old) takenOver.add(old.ref);
       announceUp(
         agents.up({
-          ...(old ? { replaces: old.ref } : {}),
+          ...(old ? { replaces: handoverOf(old) } : {}),
           ref: s.ref,
           kind: "claude-code",
           proposedName: old?.busName ?? s.name,
@@ -683,6 +776,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           global: ns.global,
           pid: s.pid,
           procStart: s.procStart,
+          sessionName: s.name,
           cwd: s.cwd,
           live: true,
         }),
@@ -734,6 +828,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       opencode: (agent, mail) => opencode.deliver(agent, mail),
       pi: (agent, mail) => pi.deliver(agent, mail),
       omp: (agent, mail) => pi.deliver(agent, mail),
+      hermes: (agent, mail) => pi.deliver(agent, mail),
       codex: (agent, mail) => codex.deliver(agent, mail),
       ...deps.transports,
     },
@@ -747,6 +842,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubIds = false;
   /** The hub's last hello_ok listed BUS_CAPS.mailbox: agent_up may carry `replaces`. */
   let hubMailbox = false;
+  /** This link has had its hello_ok (reset when the link drops). */
+  let hubHelloed = false;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
   let hubVersion: string | undefined;
   const hub = new HubConnection({
@@ -770,9 +867,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             agent.busName = frame.bus_name;
             // Answered: the hub knows the new ref, the handover is done.
             delete agent.replaces;
+            flushRename(agent);
           }
           // Registered on this link: its sends lost to the last one go again.
           resends.up(frame.agent_ref);
+          return;
+        }
+        case "renamed": {
+          renameIds.delete(frame.id);
+          const agent = agents.byRef(frame.agent_ref);
+          if (agent) agent.busName = frame.bus_name;
           return;
         }
         case "receipt": {
@@ -814,6 +918,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "error": {
           if (statusRelay.answer(frame)) return;
+          const renamedRef = renameIds.get(frame.id);
+          if (renamedRef !== undefined) {
+            renameIds.delete(frame.id);
+            log(
+              `the hub did not rename ${renamedRef} to its session name: ${frame.code} ${frame.message}`,
+            );
+            return;
+          }
           const up = upIds.get(frame.id);
           upIds.delete(frame.id);
           if (up !== undefined) {
@@ -853,6 +965,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // A reply names its agent (to_id) only to a hub that said it can.
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
+          hubHelloed = true;
+          // Handovers that waited for this: announce them now (#1582).
+          for (const rec of agents.all())
+            if (rec.live && rec.replaces !== undefined) announceUp(rec);
+          for (const rec of agents.all()) flushRename(rec);
           // Queued replies go now that the link says what it supports.
           outbox.flush();
           return;
@@ -901,11 +1018,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // Failed retries close too: keep the first drop of this outage.
       if (hubEver) hubDroppedAt ??= Date.now();
       upIds.clear();
+      renameIds.clear();
       // The next link's hello_ok says again which hub this is.
       hubVersion = undefined;
       hubIds = false;
       // A replay before the next hello_ok must not carry `replaces`.
       hubMailbox = false;
+      hubHelloed = false;
       statusRelay.dropped();
       receipts.release();
       // A send not yet answered waits for the next link; anything else fails now.
@@ -1067,6 +1186,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       };
     },
     onHello: (hello, closed) => {
+      /** welcome.caps (#1635): only to an adapter that listed `rename`. */
+      const capsFor = (h: typeof hello) =>
+        (h.kind === "pi" || h.kind === "omp") &&
+        h.caps?.includes(ADAPTER_CAPS.rename)
+          ? { caps: [ADAPTER_CAPS.rename] }
+          : {};
       // Only codex may leave it out: its cwd comes from the rollout (C26j).
       if (hello.cwd === undefined && hello.kind !== "codex")
         return { error: "cwd is required" };
@@ -1139,10 +1264,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           conns.set(prev.ref, (conns.get(prev.ref) ?? 0) + 1);
           // Pi is told on its connection, which exists only once welcomed (onOpen).
           if (!piLike(hello.kind)) tellOwed(prev.ref);
+          // A rename made while the link was down (#1635).
+          if (hello.proposed_name !== undefined && prev.kind === "pi")
+            renameFromAdapter(prev, hello.proposed_name);
           return {
             bus_name: prev.busName,
             namespace: prev.namespace,
             global: prev.global,
+            ...capsFor(hello),
           };
         }
         // Claude's session file names its cwd; other kinds state one.
@@ -1182,7 +1311,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         seenAt.set(hello.agent_ref, ++seenSeq);
         if (old) takenOver.add(old.ref);
         const rec = agents.up({
-          ...(old ? { replaces: old.ref } : {}),
+          ...(old ? { replaces: handoverOf(old) } : {}),
           ref: hello.agent_ref,
           kind: hello.kind,
           proposedName: old?.busName ?? proposedName,
@@ -1191,6 +1320,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           global: ns.global,
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
+          ...(mine ? { sessionName: mine.name } : {}),
           cwd,
           live: true,
         });
@@ -1203,6 +1333,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           bus_name: rec.busName,
           namespace: rec.namespace,
           global: rec.global,
+          ...capsFor(hello),
         };
       };
       // A connection gone during the wait admits nothing: no agent, no conns.
@@ -1238,6 +1369,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           limited.has(ref) ? (caps.get(ref) ?? "machine") : undefined,
         version,
         configFiles,
+        renamed: (ref, name) => {
+          const rec = agents.byRef(ref);
+          if (rec) renameFromAdapter(rec, name);
+        },
         // The self tool's status: the agent's own row on its roster.
         ownRow: (ref) => {
           const me = agents.byRef(ref);

@@ -4,7 +4,14 @@
  * The harnesses the bus installer wires today: one table. The server renders
  * `/skill.md?harness=` from it; the installer will read it in PR 2 of #1456.
  */
-export const HARNESSES = ["claude", "codex", "opencode", "pi", "omp"] as const;
+export const HARNESSES = [
+  "claude",
+  "codex",
+  "opencode",
+  "pi",
+  "omp",
+  "hermes",
+] as const;
 export type Harness = (typeof HARNESSES)[number];
 
 export type HarnessSkill = {
@@ -39,6 +46,12 @@ export const harnessSkills: Record<Harness, HarnessSkill> = {
   },
   omp: {
     skillPath: "~/.agents/skills/open-artifacts/SKILL.md",
+  },
+  // The plugin's tools carry an `oabus_` prefix (packages/bus-adapter-hermes/assets/oa_bus/tools.py).
+  // The path is under HERMES_HOME when that is set; the installer resolves it.
+  hermes: {
+    skillPath: "~/.hermes/skills/open-artifacts/SKILL.md",
+    busToolName: (tool) => `oabus_${tool}`,
   },
 };
 

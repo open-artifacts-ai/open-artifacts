@@ -68,6 +68,19 @@ describe("the published oa-bus package", () => {
   it("ships dist and assets only", () => {
     expect(files.sort()).toEqual([
       "package/assets/oa-bus.ts",
+      ...[
+        "__init__.py",
+        "bus.py",
+        "copy.py",
+        "frames.py",
+        "link.py",
+        "plugin.py",
+        "plugin.yaml",
+        "roots.py",
+        "sockpath.py",
+        "tools.py",
+        "wrap.py",
+      ].map((f) => `package/assets/oa_bus/${f}`),
       "package/assets/opencode-tui/tui.js",
       "package/dist/index.js",
       "package/package.json",

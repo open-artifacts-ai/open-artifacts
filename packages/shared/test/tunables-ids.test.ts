@@ -27,4 +27,18 @@ describe("tunables", () => {
       );
     }
   });
+  it("the free-plan caps: positive integers up to 2^53-1", () => {
+    for (const n of [
+      "FREE_STORAGE_BYTES",
+      "FREE_DATA_DOCS",
+      "FREE_DATA_DAILY_WRITES",
+    ]) {
+      const check = TUNABLES[n]?.check;
+      expect(check, n).toBeDefined();
+      for (const ok of ["1", String(2 ** 53 - 1)])
+        expect(check?.(ok), `${n}=${ok}`).toBeUndefined();
+      for (const bad of ["0", "-1", "1.5", String(2 ** 53), "1e3", " 1", "x"])
+        expect(check?.(bad), `${n}=${bad}`).toBeTypeOf("string");
+    }
+  });
 });

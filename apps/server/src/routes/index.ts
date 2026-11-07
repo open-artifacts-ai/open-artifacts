@@ -1,4 +1,5 @@
 import type { Hono } from "hono";
+import { mountLinkConfirm } from "../bus/link-confirm.js";
 import { mountBusPage } from "../bus/page.js";
 import { mountRoleConfirm } from "../bus/role-confirm.js";
 import { mountBus } from "../bus/routes.js";
@@ -13,6 +14,7 @@ import { mountAudit } from "./audit.js";
 import { mountAuth } from "./auth.js";
 import { mountBilling } from "./billing.js";
 import { mountCodes } from "./codes.js";
+import { mountComments } from "./comments.js";
 import { mountDirectory } from "./directory.js";
 import { mountMe } from "./me.js";
 import { mountMembers } from "./members.js";
@@ -44,6 +46,7 @@ export function mountRoutes(app: AppType): void {
   mountShares(app);
   mountSearch(app);
   mountRuntime(app);
+  mountComments(app);
   mountTokens(app);
   mountUsage(app);
   mountAudit(app);
@@ -52,6 +55,7 @@ export function mountRoutes(app: AppType): void {
   mountOAuth(app);
   mountBus(app);
   mountRoleConfirm(app);
+  mountLinkConfirm(app);
   mountBusPage(app, {
     busView,
     busMachine,
