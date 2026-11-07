@@ -132,7 +132,7 @@ describe("comment schemas", () => {
 
 describe("comment request bodies", () => {
   const text = { kind: "text", exact: "a", prefix: "", suffix: "" };
-  const pin = { kind: "pin", x: 0.5, y: 0.25, contentHash: "h" };
+  const pin = { kind: "pin", x: 0.5, y: 0.25, contentHash: "a".repeat(64) };
 
   it("accepts an anchor with or without version; note needs none", () => {
     for (const a of [
@@ -141,6 +141,7 @@ describe("comment request bodies", () => {
       { ...text, version: 3 },
       pin,
       { ...pin, version: 2, page: 4 },
+      { kind: "pin", x: 0.5, y: 0.25 },
     ])
       expect(anchorInputSchema.safeParse(a).success).toBe(true);
   });
@@ -158,6 +159,8 @@ describe("comment request bodies", () => {
       { ...pin, y: -0.1 },
       { ...pin, x: Number.NaN },
       { ...pin, contentHash: "" },
+      { ...pin, contentHash: "h" },
+      { ...pin, contentHash: "A".repeat(64) },
     ])
       expect(anchorInputSchema.safeParse(a).success).toBe(false);
   });

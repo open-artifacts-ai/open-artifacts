@@ -93,6 +93,7 @@ const ver = (
   })),
   language,
   textIndexed: contentType !== "application/pdf",
+  contentHash: fakeHash(version, entry),
   format:
     contentType === "text/html"
       ? "html"
@@ -102,6 +103,14 @@ const ver = (
           ? "pdf"
           : "code",
 });
+
+/** A fake sha256 (64 hex), distinct per version and entry (#1490). */
+export const fakeHash = (version: number, entry: string) =>
+  [...`${version}:${entry}`]
+    .map((c) => c.charCodeAt(0).toString(16).padStart(2, "0"))
+    .join("")
+    .padEnd(64, "0")
+    .slice(0, 64);
 
 const members: Member[] = [
   { ...ada, role: "owner", lastSeenAt: "2026-01-03T10:00:00.000Z" },

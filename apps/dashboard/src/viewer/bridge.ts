@@ -79,6 +79,11 @@ export interface BridgeOptions {
     >["positions"],
   ) => void;
   onCommentOpen?: (id: string) => void;
+  /** A click in pin mode: x and y are 0..1 of the image or page. */
+  onCommentEscape?: () => void;
+  onCommentPin?: (
+    pin: Extract<ArtifactToShell, { type: "comment.pin" }>["pin"],
+  ) => void;
 }
 
 /** A document's scroll offset and how far it could scroll. */
@@ -543,6 +548,12 @@ export function createBridge(opts: BridgeOptions) {
       case "comment.open":
         opts.onCommentOpen?.(m.id);
         break;
+      case "comment.escape":
+        opts.onCommentEscape?.();
+        break;
+      case "comment.pin":
+        opts.onCommentPin?.(m.pin);
+        break;
     }
   };
 
@@ -594,8 +605,14 @@ export function createBridge(opts: BridgeOptions) {
     },
     setComments(
       threads: Extract<ShellToArtifact, { type: "comments.set" }>["threads"],
+      ghost?: { x: number; y: number; page?: number },
     ) {
-      reply({ oa: 1, type: "comments.set", threads });
+      reply({
+        oa: 1,
+        type: "comments.set",
+        threads,
+        ...(ghost ? { ghost } : {}),
+      });
     },
     focusComment(threadId: string) {
       reply({ oa: 1, type: "comments.focus", id: threadId });

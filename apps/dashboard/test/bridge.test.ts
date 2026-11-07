@@ -365,6 +365,7 @@ describe("comments (#682)", () => {
       onCommentSelect: vi.fn(),
       onCommentPositions: vi.fn(),
       onCommentOpen: vi.fn(),
+      onCommentPin: vi.fn(),
     };
     live.push(createBridge(o));
     return o;
@@ -385,6 +386,16 @@ describe("comments (#682)", () => {
     expect(o.onCommentPositions).toHaveBeenCalledWith([
       { id: "t1", state: "exact", top: 5 },
     ]);
+  });
+
+  it("forwards a valid comment.pin and drops one that fails the schema", () => {
+    const o = withCb();
+    send({ oa: 1, type: "comment.pin", pin: { x: 0.5, y: 0.25, page: 2 } });
+    expect(o.onCommentPin).toHaveBeenCalledWith({ x: 0.5, y: 0.25, page: 2 });
+    send({ oa: 1, type: "comment.pin", pin: { x: 1.5, y: 0 } });
+    send({ oa: 1, type: "comment.pin", pin: { x: 0, y: 0, text: "hi" } });
+    send({ oa: 1, type: "comment.pin", pin: { x: 0, y: 0 } }, { raw: true });
+    expect(o.onCommentPin).toHaveBeenCalledTimes(1);
   });
 
   it("drops comment messages that fail the shared schemas, or lack the nonce", () => {

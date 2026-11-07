@@ -7,6 +7,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { filesFromDrop, filterIgnored } from "./collect";
+import { convertHeicPhotos } from "./heic";
 import { KINDS_LINE } from "./openable";
 import { UploadDialog } from "./UploadDialog";
 import "./upload.css";
@@ -52,9 +53,17 @@ export function DropZone({
   const busy = useRef(false);
   busy.current = batch !== null;
   const nextBatch = useRef(0);
-  const start = useCallback((f: File[]) => {
-    if (f.length === 0) return toast({ title: "No files to upload" });
-    setBatch({ n: nextBatch.current++, files: f });
+  const start = useCallback((picked: File[]) => {
+    if (picked.length === 0) return toast({ title: "No files to upload" });
+    // #779: an iPhone photo is converted before the dialog sees it, so its
+    // name, entry and title all read as the JPEG it becomes.
+    void convertHeicPhotos(picked).then(({ files: next, converted }) => {
+      if (converted.length > 0)
+        toast({
+          title: `${converted.length} HEIC photo${converted.length === 1 ? "" : "s"} converted to JPEG`,
+        });
+      setBatch({ n: nextBatch.current++, files: next });
+    });
   }, []);
   const filePicker = useRef<HTMLInputElement>(null);
   const folderPicker = useRef<HTMLInputElement>(null);

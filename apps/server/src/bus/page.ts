@@ -527,7 +527,7 @@ export function mountBusPage(app: AppType, deps: BusPageDeps): void {
         return backError("not_found");
     } catch (e) {
       logError("bus_revoke_failed", e);
-      return e instanceof ApiError && e.code === "internal"
+      return e instanceof ApiError && e.code === "revoke_not_closed"
         ? back(`error=${REVOKE_FAILED}&m=${encodeURIComponent(id)}`)
         : backError("failed");
     }

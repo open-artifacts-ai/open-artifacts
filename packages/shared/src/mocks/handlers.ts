@@ -96,7 +96,7 @@ import {
 } from "../sniff.js";
 import { createCommentMock } from "./comments.js";
 import type { ArtifactEventsMock } from "./events.js";
-import { BUS_FIXTURE_NOW, fixtures } from "./fixtures.js";
+import { BUS_FIXTURE_NOW, fakeHash, fixtures } from "./fixtures.js";
 import { createHostedMock, type HostedMockOptions } from "./hosted.js";
 
 export type MockOptions = {
@@ -444,6 +444,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       language: v.language,
       textIndexed: !v.list.some((x) => x.contentType === "application/pdf"),
       format: v.format,
+      contentHash: fakeHash(version, v.entry),
     });
     a.format = v.format;
     for (const [p, b] of v.bodies) files.set(`${a.id}/${version}/${p}`, b);
@@ -611,6 +612,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     emit: (id, open) => opts.events?.emitComments(id, open),
     rateLimit: opts.commentsRateLimit,
     seedAsk: opts.commentAsks,
+    contentHash: (id, v) =>
+      versions[id]?.find((x) => x.version === v)?.contentHash,
   });
   return [
     ...pre,

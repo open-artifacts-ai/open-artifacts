@@ -50,7 +50,6 @@ import { requireFreeStorage } from "../billing/caps.js";
 import { creatorStmt } from "../billing/creators.js";
 import { featuresOf } from "../billing/features.js";
 import {
-  billingActive,
   isViewOnly,
   planError,
   refuseViewOnly,
@@ -404,7 +403,7 @@ export async function publish(
     id,
     user.id,
     plan,
-    { digest: billingActive(env) },
+    { digest: true },
   );
   mark();
   // The inline content is in R2 now: drop the plan's copies so they don't
@@ -1377,6 +1376,10 @@ export async function listVersions(
     language: v.language,
     textIndexed: v.text_indexed === 1,
     format: v.format,
+    contentHash:
+      (JSON.parse(v.manifest) as ManifestEntry[]).find(
+        (e) => e.path === v.entry,
+      )?.digest ?? null,
   }));
 }
 

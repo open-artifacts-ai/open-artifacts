@@ -1,6 +1,7 @@
-import { CONTEXT_CHARS } from "@oa/shared";
+import { CONTEXT_CHARS, planOf } from "@oa/shared";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
+import { sha256Sink } from "../util/digest.js";
 
 // Quote verification for comment anchors (#682). The html page's own code is
 // untrusted and receives anchors in the frame, so a text anchor on an html
@@ -214,4 +215,42 @@ export async function versionFormat(
     .bind(artifactId, version)
     .first<{ format: string | null }>();
   return row ? (row.format ?? artifactFormat) : null;
+}
+
+/** The pin hash lookup's answer: the version's entry sha256, null (unknown), or missing version. */
+export type EntryHash = { hash: string | null } | null;
+
+/**
+ * SHA-256 (hex) of a version's entry file; null when the version does not
+ * exist. The hash is the manifest digest when recorded. Otherwise (an uploaded
+ * entry on a free instance, or a version from before digests) a paid instance
+ * streams the bytes from R2 every time (manifests stay immutable: a written
+ * digest would split STORED_BYTES' count of a kept file); a free instance (10 ms CPU) answers `hash: null`
+ * (unknown) with no R2 read.
+ */
+export async function versionEntryHash(
+  env: Pick<Env, "DB" | "FILES" | "PLAN">,
+  artifactId: string,
+  version: number,
+): Promise<EntryHash> {
+  const row = await env.DB.prepare(
+    "select entry, manifest from versions where artifact_id = ? and version = ?",
+  )
+    .bind(artifactId, version)
+    .first<{ entry: string; manifest: string }>();
+  if (!row) return null;
+  const list = JSON.parse(row.manifest) as {
+    path: string;
+    key: string;
+    digest?: string;
+  }[];
+  const e = list.find((m) => m.path === row.entry);
+  if (!e) return null;
+  if (e.digest) return { hash: e.digest };
+  if (planOf(env.PLAN) !== "paid") return { hash: null };
+  const obj = await env.FILES.get(e.key);
+  if (!obj) return null;
+  const sink = sha256Sink();
+  await obj.body.pipeTo(sink.writable);
+  return { hash: await sink.hex() };
 }
