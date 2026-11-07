@@ -126,7 +126,10 @@ export function TitleBar({
   newer = false,
   gone = false,
   comments,
+  presence,
 }: {
+  /** Who else is here (#949): first in the right group; absent when nobody is. */
+  presence?: ReactNode;
   /** The Comments button (#682): the open count, and what it toggles. Absent when comments are off. */
   comments?: { open: number; expanded: boolean; onClick: () => void };
   artifact: ArtifactSummary;
@@ -263,6 +266,7 @@ export function TitleBar({
         )}
       </div>
       <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%]">
+        {presence}
         {comments && (
           <ShButton
             variant="outline"
