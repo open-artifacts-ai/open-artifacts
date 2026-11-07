@@ -67,6 +67,7 @@ const OVERLAY_CSS = `
 .mark.on{background:#1f5fbf}
 .pin{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;background:#1f5fbf;color:#fff;font:700 12px/22px system-ui,sans-serif;text-align:center;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px #0006}
 .pin.on{outline:3px solid #e0a000}
+.pin.ghost{background:#1f5fbf55;border:2px dashed #1f5fbf;box-sizing:border-box;box-shadow:none;pointer-events:none}
 `;
 const PAGE_CSS =
   "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}";
@@ -93,6 +94,7 @@ export function createComments(
   const hasPins = format === "image" || format === "pdf";
   let mode: Mode = "off";
   let threads: Thread[] = [];
+  let ghost: { x: number; y: number; page?: number } | undefined;
   /** Text index of the body, rebuilt when the text version or the body changes. */
   let index: TextIndex | null = null;
   let indexVer = -1;
@@ -287,6 +289,18 @@ export function createComments(
         );
         d.addEventListener("click", () => open(th.id));
       }
+    }
+    if (ghost) {
+      const box = pinBox({ kind: "pin", page: ghost.page } as Extract<
+        Anchor,
+        { kind: "pin" }
+      >);
+      if (box)
+        mark(
+          "pin ghost",
+          box.left + scrollX + ghost.x * box.width,
+          clampTop(box.top + scrollY + ghost.y * box.height),
+        );
     }
     if (marks.length || layer)
       overlay().replaceChildren(...marks, ...(btn?.isConnected ? [btn] : []));
@@ -484,6 +498,7 @@ export function createComments(
       }
     } else if (m.type === "comments.set") {
       threads = m.threads;
+      ghost = m.ghost;
       slots = null;
       report(true);
     } else if (m.type === "comments.focus") {

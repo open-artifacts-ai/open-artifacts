@@ -192,8 +192,10 @@ export function useCommentsController({
     if (!b) return;
     // `?.`: older test doubles of the bridge have no comment methods.
     b.setCommentsMode?.(enabled ? (mayComment ? mode : "view") : "off");
-    if (enabled) b.setComments?.(frameThreads(threads, active));
-  }, [enabled, mayComment, mode, threads, active, hello, getBridge]);
+    // A pin being composed is drawn as a ghost until it posts or is cancelled.
+    const pin = draft && "pin" in draft ? draft.pin : undefined;
+    if (enabled) b.setComments?.(frameThreads(threads, active), pin);
+  }, [enabled, mayComment, mode, threads, active, draft, hello, getBridge]);
 
   const ids = useRef(new Set<string>());
   ids.current = new Set((all ?? []).map((t) => t.id));

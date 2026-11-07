@@ -605,8 +605,14 @@ export function createBridge(opts: BridgeOptions) {
     },
     setComments(
       threads: Extract<ShellToArtifact, { type: "comments.set" }>["threads"],
+      ghost?: { x: number; y: number; page?: number },
     ) {
-      reply({ oa: 1, type: "comments.set", threads });
+      reply({
+        oa: 1,
+        type: "comments.set",
+        threads,
+        ...(ghost ? { ghost } : {}),
+      });
     },
     focusComment(threadId: string) {
       reply({ oa: 1, type: "comments.focus", id: threadId });

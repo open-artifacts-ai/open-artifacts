@@ -336,6 +336,14 @@ export const ShellToArtifactSchema = z.union([
         }),
       )
       .max(COMMENT_THREADS_MAX),
+    /** A pin being composed (#1490): drawn dimmed and unnumbered; coordinates only. */
+    ghost: z
+      .strictObject({
+        x: z.number().min(0).max(1),
+        y: z.number().min(0).max(1),
+        page: z.number().int().min(1).max(100_000).optional(),
+      })
+      .optional(),
   }),
   /** Scroll the thread's highlight or pin into view and flash it. */
   z.strictObject({

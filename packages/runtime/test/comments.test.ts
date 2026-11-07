@@ -602,6 +602,22 @@ describe("pins", () => {
     await flush();
     expect(last("comment.open")).toMatchObject({ id: "p1" });
   });
+
+  it("draws a dimmed, unnumbered ghost pin for the one being composed, and clears it", async () => {
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [],
+      ghost: { x: 0.5, y: 0.25 },
+    });
+    const g = roots.at(-1)?.querySelector<HTMLElement>(".pin.ghost");
+    expect(g).not.toBeNull();
+    expect(g?.textContent).toBe("");
+    expect(g?.style.left).toBe("120px");
+    expect(g?.style.top).toBe("35px");
+    await send({ type: "comments.set", threads: [] });
+    expect(roots.at(-1)?.querySelector(".pin")).toBeNull();
+  });
 });
 
 describe("the page is left alone", () => {

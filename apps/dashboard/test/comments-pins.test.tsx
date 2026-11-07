@@ -324,6 +324,32 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     expect(sent.anchor).not.toHaveProperty("contentHash");
   });
 
+  it("shows a ghost pin at the click while composing, cleared on cancel and on post", async () => {
+    asFormat("image", H1);
+    mount(viewerPath(OWNED));
+    await col();
+    const ghost = () =>
+      setComments.mock.calls.at(-1)?.[1] as
+        | { x: number; y: number }
+        | undefined;
+    fireEvent.click(await tool("Pin"));
+    await onPin({ x: 0.25, y: 0.75 });
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    await waitFor(() => expect(ghost()).toEqual({ x: 0.25, y: 0.75 }));
+    // Cancel removes it.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(ghost()).toBeUndefined());
+    // Place again and post: the real pin replaces it.
+    fireEvent.click(await tool("Pin"));
+    await onPin({ x: 0.5, y: 0.5 });
+    const box2 = await screen.findByRole("textbox", { name: "Add a comment" });
+    await waitFor(() => expect(ghost()).toEqual({ x: 0.5, y: 0.5 }));
+    fireEvent.change(box2, { target: { value: "Here" } });
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(ghost()).toBeUndefined());
+    expect(box).toBeDefined();
+  });
+
   it("numbers pin cards and focuses the pin on click", async () => {
     asFormat("image", H1, {
       threads: [pinThread("a", 1, H1), pinThread("b", 2, H1)],
