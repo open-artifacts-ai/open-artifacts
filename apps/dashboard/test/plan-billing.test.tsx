@@ -360,3 +360,36 @@ it("Plan and billing: a lapsed Team restarts through Checkout, its own tier prim
     { tier: "team" },
   );
 });
+
+it("Plan and billing: a lapsed Team card says why, with no date it doesn't carry", async () => {
+  mountHosted("/settings/plan", {
+    billing: { ...TEAM, status: "lapsed", readOnly: true, reason: "lapsed" },
+  });
+  expect(
+    await screen.findByText("Your Team plan ended. Restart it to edit again."),
+  ).toBeVisible();
+});
+
+it("Plan and billing: a lapsed Business card names Business", async () => {
+  mountHosted("/settings/plan", {
+    billing: {
+      ...TEAM,
+      tier: "business",
+      status: "lapsed",
+      readOnly: true,
+      reason: "lapsed",
+    },
+  });
+  expect(
+    await screen.findByText(
+      "Your Business plan ended. Restart it to edit again.",
+    ),
+  ).toBeVisible();
+});
+
+it("Plan and billing: the comparison table has a phone-only scroll fade", async () => {
+  mountHosted("/settings/plan", { billing: TRIAL });
+  const fade = await screen.findByTestId("table-fade");
+  expect(fade.className).toContain("min-[480px]:hidden");
+  expect(fade.getAttribute("aria-hidden")).toBe("true");
+});

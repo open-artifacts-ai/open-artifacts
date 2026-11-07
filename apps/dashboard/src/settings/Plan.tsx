@@ -107,6 +107,16 @@ export const planStatus = (
   // shows only the status.
   if (b.reason === "solo_unpaid")
     return { pill: { label: "Paused", tone: "warn" } };
+  // PlanView carries no end date for a lapsed plan (trialEndsAt and graceUntil
+  // are the trial's and the grace period's), so the note names none.
+  if (b.status === "lapsed" && (b.tier === "team" || b.tier === "business"))
+    return {
+      pill: { label: "Read-only", tone: "bad" },
+      note: {
+        tone: "warning",
+        text: `Your ${NAME[b.tier]} plan ended. Restart it to edit again.`,
+      },
+    };
   if (b.readOnly)
     return {
       pill: {
@@ -271,38 +281,51 @@ export function Plan() {
           )}
         </div>
       </SettingsCard>
-      <section aria-label="Compare plans" className={`min-w-0 ${INSET} px-0`}>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead />
-              {(["solo", "team", "business"] as const).map((c) => (
-                <TableHead
-                  key={c}
-                  aria-current={c === column ? "true" : undefined}
-                  className={c === column ? "bg-[var(--oa-accent-soft)]" : ""}
-                >
-                  {c === "solo" ? "Solo" : c === "team" ? "Team" : "Business"}
-                </TableHead>
-              ))}
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {CMP.map((r) => (
-              <TableRow key={r.row}>
-                <TableHead scope="row">{r.row}</TableHead>
+      <section
+        aria-label="Compare plans"
+        className={`relative min-w-0 ${INSET} px-0`}
+      >
+        <div className="relative">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead />
                 {(["solo", "team", "business"] as const).map((c) => (
-                  <TableCell
+                  <TableHead
                     key={c}
+                    aria-current={c === column ? "true" : undefined}
                     className={c === column ? "bg-[var(--oa-accent-soft)]" : ""}
                   >
-                    {r.cells[c]}
-                  </TableCell>
+                    {c === "solo" ? "Solo" : c === "team" ? "Team" : "Business"}
+                  </TableHead>
                 ))}
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {CMP.map((r) => (
+                <TableRow key={r.row}>
+                  <TableHead scope="row">{r.row}</TableHead>
+                  {(["solo", "team", "business"] as const).map((c) => (
+                    <TableCell
+                      key={c}
+                      className={
+                        c === column ? "bg-[var(--oa-accent-soft)]" : ""
+                      }
+                    >
+                      {r.cells[c]}
+                    </TableCell>
+                  ))}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+          {/* A phone cuts the table at the right edge: the fade says it scrolls. */}
+          <div
+            aria-hidden="true"
+            data-testid="table-fade"
+            className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[var(--oa-bg)] to-transparent min-[480px]:hidden"
+          />
+        </div>
         <p className={`mt-[var(--oa-space-2)] ${muted}`}>
           Team and Business bill per creator: people who publish or edit live
           data in a month. Viewers are free.
