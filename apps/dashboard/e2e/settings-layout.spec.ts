@@ -128,6 +128,7 @@ test("hosted: the Spaces tab sits after Members", async ({ page }) => {
     "Directory",
     "Connections",
     "Instance",
+    "Plan and billing",
   ]);
 });
 
@@ -144,6 +145,7 @@ test("hosted tab strip at 375 wraps without clipping (#1453)", async ({
     /^Directory/,
     "Connections",
     "Instance",
+    "Plan and billing",
   ]);
   const g = await nav.evaluate((el) => ({
     overflowX: getComputedStyle(el).overflowX,
