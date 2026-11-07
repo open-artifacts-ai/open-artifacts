@@ -117,6 +117,7 @@ describe("verifyQuote and checkAnchor", () => {
   let mdId: string;
   let big: string;
   let pdfId: string;
+  let jsId: string;
   beforeAll(async () => {
     const l = await login(`ca-${newId().slice(0, 6).toLowerCase()}@x.com`);
     const m = await getUser(env, l.userId);
@@ -139,6 +140,12 @@ describe("verifyQuote and checkAnchor", () => {
     mdId = (await mk("markdown", "# Hi\n\nplain")).id;
     big = (await mk("html", "<p>Hello</p>")).id;
     pdfId = (await mk("pdf", PDF)).id;
+    jsId = (
+      await mk(
+        "html",
+        "<p id=\"lede\"></p><script>document.getElementById('lede').innerHTML='When <code>i</code> pops <code>j</code>'</script>",
+      )
+    ).id;
   });
   const art = (a: string, format: string) => ({
     id: a,
@@ -152,6 +159,14 @@ describe("verifyQuote and checkAnchor", () => {
     ).not.toBeNull();
     await expect(
       verifyQuote(env, id, "html", 1, { exact: "hidden words" }),
+    ).rejects.toMatchObject({ code: "anchor_not_in_version" });
+  });
+  it("script-rendered text is not in the static text (#1482, #1735)", async () => {
+    const html =
+      "<p id=\"lede\"></p><script>document.getElementById('lede').innerHTML='When <code>i</code> pops <code>j</code>'</script>";
+    expect(await visibleText(html)).not.toContain("pops");
+    await expect(
+      verifyQuote(env, jsId, "html", 1, { exact: "i pops j" }),
     ).rejects.toMatchObject({ code: "anchor_not_in_version" });
   });
   it("an entry over 5 MB is not parsed: 422", async () => {
