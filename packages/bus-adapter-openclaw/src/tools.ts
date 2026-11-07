@@ -33,6 +33,8 @@ export function toolsFor(bus: Bus, ctx: ToolContext): AgentTool[] {
     description: t.description,
     parameters: t.inputSchema,
     async execute(_id, params, signal) {
+      const blocked = bus.blockedReason(root);
+      if (blocked) throw new Error(blocked);
       try {
         const client = await bus.ensure(root);
         const out = await callTool(

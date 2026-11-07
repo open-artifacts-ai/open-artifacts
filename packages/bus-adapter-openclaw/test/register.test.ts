@@ -38,6 +38,7 @@ describe("register", () => {
     expect(Object.keys(a.hooks).sort()).toEqual([
       "before_prompt_build",
       "model_call_ended",
+      "model_call_started",
     ]);
     expect(a.tools).toHaveLength(1);
     expect(a.tools[0]?.names).toEqual(TOOL_NAMES);

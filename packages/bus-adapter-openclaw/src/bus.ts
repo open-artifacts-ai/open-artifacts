@@ -53,6 +53,10 @@ type Item = {
 
 type Run = { ids: string[]; text: string; at: number };
 
+/** What a tool says when this root's runtime never reports model calls. */
+export const NO_MODEL_HOOKS =
+  "oa-bus: this OpenClaw runtime does not report model calls to plugins, so the bus cannot tell when mail reached the model. This session is off the bus; mail stays queued for when it can be told.";
+
 class Mailbox {
   client?: DaemonClient;
   connecting?: Promise<DaemonClient>;
@@ -65,6 +69,15 @@ class Mailbox {
   /** runId -> what went out in that run's context. */
   runs = new Map<string, Run>();
   notices = 0;
+  /** The last run that carried mail, and whether any model-call hook fired for it. */
+  last?: { runId: string; seen: boolean };
+  /**
+   * Set when a run that carried mail saw no model_call_started or
+   * model_call_ended at all (a harness that runs prompt hooks only, such as
+   * possibly the native Codex harness under provider "openai"). Delivery to
+   * the root stops for the rest of the process, which caps a repeat at one.
+   */
+  noModelHooks = false;
   /** Deliveries whose text is still being built; they count against the cap. */
   building = 0;
   readonly root: Root;
@@ -310,6 +323,15 @@ export class Bus {
     if (!r.ok) return undefined;
     const b = this.boxOf(r.root);
     this.touch(r.root);
+    if (!b.noModelHooks && c.runId && b.last && b.last.runId !== c.runId) {
+      // A new run: did the previous mail-carrying run report any model call?
+      if (!b.last.seen) {
+        b.noModelHooks = true;
+        b.runs.clear();
+      }
+      b.last = undefined;
+    }
+    if (b.noModelHooks) return undefined;
     const out: PromptResult = {};
     // Without a runId nothing can be acked, so nothing is handed over.
     if (c.runId) {
@@ -330,6 +352,7 @@ export class Bus {
             at: this.now(),
           };
           b.runs.set(c.runId, run);
+          b.last = { runId: c.runId, seen: false };
         }
       }
       if (run) out.prependContext = run.text;
@@ -343,6 +366,19 @@ export class Bus {
     for (const [id, run] of b.runs) if (run.at < cutoff) b.runs.delete(id);
   }
 
+  /** Why a root's tools refuse, or undefined. */
+  blockedReason(root: Root): string | undefined {
+    return this.boxes.get(root.ref)?.noModelHooks ? NO_MODEL_HOOKS : undefined;
+  }
+
+  /** model_call_started: the run's model calls are being reported. */
+  modelCallStarted(c: Caller, ev: { runId?: string }): void {
+    const r = this.resolve(c, false);
+    if (!r.ok || !ev.runId) return;
+    const last = this.boxes.get(r.root.ref)?.last;
+    if (last && last.runId === ev.runId) last.seen = true;
+  }
+
   /**
    * model_call_ended. The first completed call of a run acks the mail that
    * run carried, once per id. An error acks nothing and gives the mail back
@@ -352,6 +388,7 @@ export class Bus {
     const r = this.resolve(c, false);
     if (!r.ok || !ev.runId) return;
     const b = this.boxes.get(r.root.ref);
+    if (b?.last && b.last.runId === ev.runId) b.last.seen = true;
     const run = b?.runs.get(ev.runId);
     if (!b || !run) return;
     b.runs.delete(ev.runId);

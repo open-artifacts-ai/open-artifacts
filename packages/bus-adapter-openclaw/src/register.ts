@@ -11,6 +11,12 @@ import { TOOL_NAMES, toolsFor } from "./tools.ts";
 export function registerBus(api: PluginApi, bus: Bus): void {
   api.registerTool((ctx) => toolsFor(bus, ctx), { names: TOOL_NAMES });
   api.on("before_prompt_build", (_ev, ctx) => bus.promptBuild(ctx));
+  api.on("model_call_started", (ev, ctx) => {
+    bus.modelCallStarted(
+      { ...ctx, sessionKey: ev.sessionKey ?? ctx.sessionKey },
+      { runId: ev.runId ?? ctx.runId },
+    );
+  });
   api.on("model_call_ended", (ev, ctx) => {
     bus.modelCallEnded(
       { ...ctx, sessionKey: ev.sessionKey ?? ctx.sessionKey },

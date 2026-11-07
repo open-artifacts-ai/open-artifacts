@@ -39,6 +39,13 @@ export type PluginApi = {
     handler: (ev: { prompt?: string }, ctx: HookContext) => unknown,
   ): void;
   on(
+    hook: "model_call_started",
+    handler: (
+      ev: { runId?: string; sessionKey?: string },
+      ctx: HookContext,
+    ) => unknown,
+  ): void;
+  on(
     hook: "model_call_ended",
     handler: (
       ev: { runId?: string; sessionKey?: string; outcome?: string },

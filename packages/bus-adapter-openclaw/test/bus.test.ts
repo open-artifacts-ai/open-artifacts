@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   HABITS,
+  NO_MODEL_HOOKS,
   NOTICES_MAX,
   PENDING_MAX,
   PER_RUN_MAX,
@@ -165,6 +166,10 @@ describe("delivery", () => {
     hub.push({ id: "m1" });
     await flush();
     bus.buildPrompt(caller({ runId: "r1" }));
+    bus.modelCallStarted(
+      { agentId: "main", sessionKey: "agent:main:main" },
+      { runId: "r1" },
+    ); // started, never ended
     t += RUN_TTL_MS + 1;
     expect(bus.buildPrompt(caller({ runId: "r2" }))?.prependContext).toContain(
       "m1",
@@ -394,5 +399,114 @@ describe("the first prompt of a root", () => {
       await bus.promptBuild(caller({ sessionKey: "agent:main:subagent:x" })),
     ).toBeUndefined();
     expect(hub.connects).toEqual([]);
+  });
+});
+
+describe("a runtime that reports no model calls", () => {
+  const key = { agentId: "main", sessionKey: "agent:main:main" };
+  const started = (bus: ReturnType<typeof newBus>, runId: string) =>
+    bus.modelCallStarted(key, { runId });
+  const rootOf = (bus: ReturnType<typeof newBus>) => {
+    const r = bus.resolve(caller(), true);
+    if (!r.ok) throw new Error("refused");
+    return r.root;
+  };
+
+  it("delivers once, then nothing, and acks nothing (a prompt-hook-only harness)", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus);
+    hub.push({ id: "m1" });
+    await flush();
+    expect(bus.buildPrompt(caller({ runId: "r1" }))?.prependContext).toContain(
+      "m1",
+    );
+    // No model_call_started or model_call_ended for r1. The next run:
+    expect(bus.buildPrompt(caller({ runId: "r2" }))).toBeUndefined();
+    expect(bus.blockedReason(rootOf(bus))).toBe(NO_MODEL_HOOKS);
+    hub.push({ id: "m2" });
+    await flush();
+    expect(bus.buildPrompt(caller({ runId: "r3" }))).toBeUndefined();
+    expect(await bus.promptBuild(caller({ runId: "r4" }))).toBeUndefined();
+    expect(hub.acks).toEqual([]);
+    // The mail is still pending, never dropped.
+    const box = bus.box(rootOf(bus).ref);
+    expect([...(box?.pending.keys() ?? [])]).toEqual(["m1", "m2"]);
+  });
+
+  it("leaves a normal run alone", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus);
+    hub.push({ id: "m1" });
+    await flush();
+    bus.buildPrompt(caller({ runId: "r1" }));
+    started(bus, "r1");
+    ended(bus, "r1");
+    hub.push({ id: "m2" });
+    await flush();
+    expect(bus.buildPrompt(caller({ runId: "r2" }))?.prependContext).toContain(
+      "m2",
+    );
+    expect(bus.blockedReason(rootOf(bus))).toBeUndefined();
+    expect(hub.acks).toEqual(["m1"]);
+  });
+
+  it("does not count a run that started a model call and ended in an error", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus);
+    hub.push({ id: "m1" });
+    await flush();
+    bus.buildPrompt(caller({ runId: "r1" }));
+    started(bus, "r1");
+    ended(bus, "r1", "error");
+    expect(bus.buildPrompt(caller({ runId: "r2" }))?.prependContext).toContain(
+      "m1",
+    );
+    expect(bus.blockedReason(rootOf(bus))).toBeUndefined();
+  });
+
+  it("does not count a run that only started a call", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus);
+    hub.push({ id: "m1" });
+    await flush();
+    bus.buildPrompt(caller({ runId: "r1" }));
+    started(bus, "r1");
+    bus.buildPrompt(caller({ runId: "r2" }));
+    expect(bus.blockedReason(rootOf(bus))).toBeUndefined();
+  });
+
+  it("does not trip on the same run's repeated prompts, or on a run that carried no mail", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus);
+    bus.buildPrompt(caller({ runId: "r0" }));
+    bus.buildPrompt(caller({ runId: "r1" }));
+    hub.push({ id: "m1" });
+    await flush();
+    bus.buildPrompt(caller({ runId: "r2" }));
+    bus.buildPrompt(caller({ runId: "r2" }));
+    bus.buildPrompt(caller({ runId: "r2" }));
+    expect(bus.blockedReason(rootOf(bus))).toBeUndefined();
+  });
+
+  it("is per root: another session still gets its mail", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus);
+    hub.push({ id: "m1" });
+    await flush();
+    bus.buildPrompt(caller({ runId: "r1" }));
+    bus.buildPrompt(caller({ runId: "r2" }));
+    expect(bus.blockedReason(rootOf(bus))).toBe(NO_MODEL_HOOKS);
+    const other = caller({
+      sessionKey: "agent:main:telegram:dm:1",
+      runId: "o1",
+    });
+    await online(bus, other);
+    expect(bus.buildPrompt(other)?.appendSystemContext).toBe(HABITS);
   });
 });

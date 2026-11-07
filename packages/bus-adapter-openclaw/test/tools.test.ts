@@ -65,4 +65,24 @@ describe("tools", () => {
       /^oa-bus: .*not reachable/,
     );
   });
+
+  it("refuses with a clear message once the root is marked as reporting no model calls", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    const c = {
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      trigger: "user",
+    };
+    bus.buildPrompt({ ...c, runId: "w" });
+    await new Promise((r) => setTimeout(r, 5));
+    hub.push({ id: "m1" });
+    await new Promise((r) => setTimeout(r, 5));
+    bus.buildPrompt({ ...c, runId: "r1" });
+    bus.buildPrompt({ ...c, runId: "r2" });
+    const self = toolsFor(bus, ctx).find((t) => t.name === "oabus_self");
+    await expect(self?.execute("c", {})).rejects.toThrow(
+      /does not report model calls/,
+    );
+  });
 });
