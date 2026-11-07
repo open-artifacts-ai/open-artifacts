@@ -145,7 +145,7 @@ async function toMe(
   me.instance.tier = !me.instance.hosted
     ? null
     : plan
-      ? plan.tier === "free"
+      ? plan.tier === "free" || plan.tier === "solo"
         ? null
         : plan.tier
       : provisioned;

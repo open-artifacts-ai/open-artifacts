@@ -49,7 +49,13 @@ import { can, dataWritersOf } from "../auth/policy.js";
 import { requireFreeStorage } from "../billing/caps.js";
 import { creatorStmt } from "../billing/creators.js";
 import { featuresOf } from "../billing/features.js";
-import { billingActive, planError, requireTeamPlan } from "../billing/plan.js";
+import {
+  billingActive,
+  isViewOnly,
+  planError,
+  refuseViewOnly,
+  requireTeamPlan,
+} from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { artifacts, shares, spaces, users } from "../db/schema.js";
 import type { Env } from "../env.js";
@@ -67,7 +73,13 @@ import {
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { audit, userActor } from "./audit.js";
 import { deleteFollowsStmt, notifyChanged } from "./follows.js";
-import { type ManifestEntry, materialize, planFiles } from "./manifest.js";
+import {
+  type ManifestEntry,
+  materialize,
+  type Plan,
+  planEdits,
+  planFiles,
+} from "./manifest.js";
 import { getSettings } from "./members.js";
 import { ftsFilter, seedSearchStmt, syncTitleStmt } from "./search.js";
 import { requireSpaces } from "./spaces.js";
@@ -186,7 +198,10 @@ export async function publish(
 ): Promise<PublishResult> {
   // Under a suspension nothing becomes public: create and new version alike.
   refuseSuspendedPublic(user, input.visibility);
-  const plan = planFiles(input);
+  // An unpaid Solo is view-only: no new artifact and no new version.
+  refuseViewOnly(planOfMember(user));
+  // An edits publish plans from the current version, once it is known.
+  let plan: Plan | null = input.edits ? null : planFiles(input);
   const db = env.DB;
   const now = Date.now();
   // Wall ms per step (D1 checks, R2, the batch, the DO calls): hosted
@@ -216,6 +231,10 @@ export async function publish(
    * visibility (`after`), so a stale resend never undoes a concurrent change.
    */
   let cas: { before: Guard; after: Guard } | null = null;
+  /** The artifact's current version when read (an existing artifact). */
+  let seen = 0;
+  /** `cas` guards the visibility; it may also carry the version (#1216). */
+  let visCas = false;
   /** The new artifact's space (create): the caller's personal space by default. */
   let spaceId = user.id;
   if (input.id === undefined) {
@@ -237,15 +256,17 @@ export async function publish(
       if (input.spaceId !== undefined)
         throw new ApiError(
           "use_move",
-          "spaceId is only for new artifacts; move an existing one with POST /move",
+          "spaceId is only for new artifacts. Leave spaceId out to publish a new version, or move the artifact from the dashboard.",
           { path: "spaceId", reason: "use_move" },
         );
       create = false;
+      seen = a.currentVersion;
       const sharing =
         input.visibility !== undefined ||
         input.capabilities !== undefined ||
         input.dataWriters !== undefined ||
-        input.allowAnonymousWrites !== undefined;
+        input.allowAnonymousWrites !== undefined ||
+        input.comments !== undefined;
       if (sharing && !can(level, "visibility", canCtx(who, a)))
         throw new ApiError("bad_request", "only the owner can change sharing");
       await refusePublicLinksOff(env, a, input.visibility);
@@ -264,6 +285,7 @@ export async function publish(
             [input.visibility, a.spaceId],
           ],
         };
+      visCas = cas !== null;
       capabilities = { ...CAPS, ...(JSON.parse(a.capabilities) as object) };
       prior = { visibility: a.visibility, dataWriters: dataWritersOf(a) };
       dataWriters = resolveDataWriters(input, input.visibility ?? a.visibility);
@@ -287,7 +309,7 @@ export async function publish(
         if (mode === "create")
           throw new ApiError(
             "bad_request",
-            "use POST /versions to publish a new version",
+            "No artifact you can publish to has this id, and it was not reserved for you. Leave id out to create a new artifact, or call create_upload without artifactId to reserve one.",
             { path: "id", reason: "not_reserved" },
           );
         throw notFound();
@@ -295,10 +317,57 @@ export async function publish(
       reserved = true;
     }
   }
+  // #1216: the version the caller saw; an edits publish takes the one it reads.
+  if (create && (input.expectedVersion !== undefined || input.edits))
+    throw new ApiError(
+      "bad_request",
+      input.edits
+        ? "edits need an existing artifact with a version. Publish the content or files first, then send edits with its id."
+        : "expectedVersion needs an existing artifact. Leave it out when creating, or pass the id of an artifact you have already published.",
+      {
+        path: input.edits ? "edits" : "expectedVersion",
+        reason: "needs_version",
+      },
+    );
+  const expected = input.expectedVersion ?? (input.edits ? seen : undefined);
+  if (expected !== undefined && expected !== seen) throw versionConflict(seen);
+  if (!plan && input.edits) {
+    const cur = await db
+      .prepare(
+        `select v.entry, v.manifest, v.language, coalesce(v.format, a.format) as format
+         from versions v join artifacts a on a.id = v.artifact_id
+         where v.artifact_id = ? and v.version = ?`,
+      )
+      .bind(id, seen)
+      .first<{
+        entry: string;
+        manifest: string;
+        language: string | null;
+        format: Format;
+      }>();
+    if (!cur) throw notFound();
+    plan = await planEdits(env, input.edits, cur);
+  }
+  if (!plan) throw notFound();
+  if (expected !== undefined)
+    cas = {
+      before: [
+        `${cas?.before[0] ?? ""} and current_version = ?`,
+        [...(cas?.before[1] ?? []), expected],
+      ],
+      // The bump is already applied when the version insert reads it. This
+      // clause can match for a loser (another writer made expected + 1); the
+      // versions primary key (artifact_id, version) is the real backstop: the
+      // duplicate insert fails the whole batch (see staleVersion).
+      after: [
+        `${cas?.after[0] ?? ""} and current_version = ?`,
+        [...(cas?.after[1] ?? []), expected + 1],
+      ],
+    };
   if (create && input.title === undefined)
     throw new ApiError(
       "bad_request",
-      "title is required when creating an artifact",
+      "title is required when creating an artifact. Add a title and publish again.",
       {
         path: "title",
         reason: "missing",
@@ -368,8 +437,8 @@ export async function publish(
       db
         .prepare(
           `insert into artifacts (id, owner_id, space_id, title, description, format, visibility,
-             current_version, capabilities, data_writers, allow_anonymous_writes, created_at, updated_at)
-           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ? where 1${links}${
+             current_version, capabilities, data_writers, allow_anonymous_writes, comments, created_at, updated_at)
+           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ? where 1${links}${
              role.sql ? ` and ${role.sql} >= 2` : ""
            }${guard}`,
         )
@@ -387,6 +456,7 @@ export async function publish(
           dataWriters,
           // Kept in step for one release (#681): a rollback reads it.
           dataWriters === "viewers" ? 1 : 0,
+          input.comments === false ? 0 : 1,
           now,
           now,
           ...(links ? [spaceId] : []),
@@ -412,6 +482,10 @@ export async function publish(
       ["visibility", input.visibility],
       ["capabilities", input.capabilities && caps],
       ["data_writers", dataWriters],
+      [
+        "comments",
+        input.comments === undefined ? undefined : input.comments ? 1 : 0,
+      ],
       // Kept in step for one release (#681): a rollback reads it.
       [
         "allow_anonymous_writes",
@@ -475,11 +549,16 @@ export async function publish(
     await cleanup();
     const msg = String((e as Error)?.message);
     if (msg.includes("UNIQUE constraint failed: artifacts.id"))
-      throw new ApiError("conflict", "Artifact already exists");
+      throw new ApiError(
+        "conflict",
+        "Artifact already exists. Publish a new version with its id, or leave id out to create a new artifact.",
+      );
     // A lost compare-and-set whose row already had the new visibility: the
     // version insert met the other writer's version row.
     if (cas && msg.includes("UNIQUE constraint failed: versions"))
-      throw changed();
+      throw expected !== undefined
+        ? await staleVersion(env, id, expected)
+        : changed();
     throw e;
   }
   mark();
@@ -489,16 +568,32 @@ export async function publish(
     // re-check) or an upload was used.
     if (create)
       throw n
-        ? new ApiError("conflict", "An upload was already used")
+        ? new ApiError(
+            "conflict",
+            "An upload was already used. Create a new one with create_upload.",
+          )
         : changed();
+    if (expected !== undefined) {
+      const row = await db
+        .prepare(
+          "select current_version as v from artifacts where id = ? and deleted_at is null",
+        )
+        .bind(id)
+        .first<{ v: number }>();
+      if (!row) throw notFound();
+      if (row.v !== expected) throw versionConflict(row.v);
+    }
     const live = await db
       .prepare("select 1 from artifacts where id = ? and deleted_at is null")
       .bind(id)
       .first();
     if (live)
-      throw cas
+      throw visCas
         ? changed()
-        : new ApiError("conflict", "An upload was already used");
+        : new ApiError(
+            "conflict",
+            "An upload was already used. Create a new one with create_upload.",
+          );
     throw notFound();
   }
   // Access changed: close first (gone "changed"), awaited, so a socket that
@@ -576,8 +671,33 @@ const notFound = () => new ApiError("not_found", "Not found");
 const LINKS_STILL_ON =
   " and not exists (select 1 from spaces where id = artifacts.space_id and kind = 'shared' and public_links = 0)";
 /** A compare-and-set lost to a concurrent change (#484). */
+/** 409 version_conflict (#1216): `current` is the artifact's current version. */
+const versionConflict = (current: number) =>
+  new ApiError(
+    "version_conflict",
+    `Version ${current} is current. Read it with get_artifact and apply your change to it.`,
+    { currentVersion: current },
+  );
+
+/** The conflict for a lost race on `expected`: reads the version that won. */
+async function staleVersion(
+  env: Env,
+  id: string,
+  expected: number,
+): Promise<ApiError> {
+  const row = await env.DB.prepare(
+    "select current_version as v from artifacts where id = ? and deleted_at is null",
+  )
+    .bind(id)
+    .first<{ v: number }>();
+  return row ? versionConflict(Math.max(row.v, expected)) : notFound();
+}
+
 const changed = () =>
-  new ApiError("conflict", "The artifact changed while saving; try again");
+  new ApiError(
+    "conflict",
+    "The artifact changed while saving. Read it again with get_artifact and publish again.",
+  );
 /** An SQL fragment appended to a WHERE, and its arguments. */
 type Guard = [string, unknown[]];
 const bad = (message: string, path?: string) =>
@@ -712,6 +832,7 @@ export function toSummary(
     dataWriters: dataWritersOf(a),
     // Deprecated (#681): derived for one release.
     allowAnonymousWrites: dataWritersOf(a) === "viewers",
+    comments: a.comments === 1,
   };
 }
 
@@ -886,6 +1007,18 @@ export const spaceCols = (
 });
 
 /**
+ * `comments` after `can`, the schema's key order (responses are byte-equal to
+ * their schema's parse).
+ */
+function commentsLast<T extends ArtifactSummary>(out: T): T {
+  const c = out.comments;
+  if (c === undefined) return out;
+  delete out.comments;
+  out.comments = c;
+  return out;
+}
+
+/**
  * Hosted M1: `space` (and `can` with it) go on artifact responses for
  * signed-in callers while spaces are on (getSummary, list, search; never
  * anonymous). Without spaces, `decorate` still sets `can` (withCan).
@@ -923,7 +1056,8 @@ export function withSpace<T extends ArtifactSummary>(
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
   });
-  return sharingFree(caller, out, !shared, sp?.rank ?? 0);
+  out.can.comment = !capOfCaller(caller) && out.comments !== false;
+  return commentsLast(sharingFree(caller, out, !shared, sp?.rank ?? 0));
 }
 
 /**
@@ -971,8 +1105,9 @@ export function withCan<T extends ArtifactSummary>(
     }),
     move: false,
     transfer: false,
+    comment: !capOfCaller(caller) && out.comments !== false,
   };
-  return sharingFree(caller, out, true);
+  return commentsLast(sharingFree(caller, out, true));
 }
 
 /**
@@ -1496,7 +1631,11 @@ export async function patch(
   const who = asUser(user);
   // Sharing is free on every plan: a plan-capped member may change who can
   // open their artifact (visibility alone), nothing else in the PATCH.
-  const lock = capOfCaller(who) === "plan" ? planOfMember(user)?.lock : null;
+  // The unpaid-Solo view-only lock sets no cap but takes the same path: sharing
+  // (visibility alone) passes, every other change is refused.
+  const planLock = planOfMember(user)?.lock;
+  const lock =
+    capOfCaller(who) === "plan" || isViewOnly(planLock) ? planLock : null;
   // An allow-list: visibility and nothing else. A suspension is not a payment
   // state: it keeps the old lock, with no sharing change.
   const visibilityOnly =
@@ -1520,7 +1659,8 @@ export async function patch(
     p.visibility !== undefined ||
     p.capabilities !== undefined ||
     p.dataWriters !== undefined ||
-    p.allowAnonymousWrites !== undefined;
+    p.allowAnonymousWrites !== undefined ||
+    p.comments !== undefined;
   if (
     sharing &&
     !can(level, "visibility", canCtx(sharingCaller(who, "visibility"), a))
@@ -1542,6 +1682,7 @@ export async function patch(
       "capabilities = json_patch(capabilities, ?)",
       JSON.stringify(p.capabilities),
     );
+  if (p.comments !== undefined) set("comments = ?", p.comments ? 1 : 0);
   if (dataWriters !== undefined) {
     set("data_writers = ?", dataWriters);
     // Kept in step for one release (#681): a rollback reads it.
@@ -1588,7 +1729,8 @@ export async function patch(
 export const isSettingsOnly = (input: PublishInput): boolean =>
   input.id !== undefined &&
   input.content === undefined &&
-  input.files === undefined;
+  input.files === undefined &&
+  input.edits === undefined;
 
 /**
  * MCP publish_artifact with `id` and no content or files (#681 D): updates
@@ -1617,6 +1759,7 @@ export async function publishSettings(
     capabilities,
     dataWriters,
     allowAnonymousWrites,
+    comments,
   } = input;
   const p: ArtifactPatch = Object.fromEntries(
     Object.entries({
@@ -1627,21 +1770,28 @@ export async function publishSettings(
       capabilities,
       dataWriters,
       allowAnonymousWrites,
+      comments,
     }).filter(([, v]) => v !== undefined),
   );
+  if (input.expectedVersion !== undefined)
+    throw new ApiError(
+      "bad_request",
+      "expectedVersion guards a new version, and a settings-only publish makes none. Remove it, or pass content, files or edits to publish a version.",
+      { path: "expectedVersion", reason: "no_version" },
+    );
   if (input.spaceId !== undefined) {
     // After the access check, as publish does: 404 before use_move.
     await authorize(env, asUser(user), id, "publish");
     throw new ApiError(
       "use_move",
-      "spaceId is only for new artifacts; move an existing one with POST /move",
+      "spaceId is only for new artifacts. Leave spaceId out to publish a new version, or move the artifact from the dashboard.",
       { path: "spaceId", reason: "use_move" },
     );
   }
   if (Object.keys(p).length === 0)
     throw new ApiError(
       "bad_request",
-      "Nothing to change: pass content or files to publish a version, or title, description, visibility, capabilities or dataWriters to update the artifact in place",
+      "Nothing to change: pass content or files to publish a version, or title, description, visibility, capabilities, dataWriters or comments to update the artifact in place",
       { path: "id", reason: "missing" },
     );
   // An id the caller reserved (create_upload) with no artifact yet: only the

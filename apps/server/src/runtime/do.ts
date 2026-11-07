@@ -1,6 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  type Anchor,
   accessChangedCloseReason,
+  COMMENT_BODY_MAX,
   DATA_LIMIT_DEFAULTS,
   type DataChange,
   DataChangeSchema,
@@ -31,6 +33,10 @@ import { withRetries } from "../db/retry.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError } from "../log.js";
+import {
+  COMMENTS_MAX_REPLIES,
+  type CommentStatus,
+} from "../services/comment-rules.js";
 import { indexVersionOrThrow } from "../services/search.js";
 import {
   captureThumbnail,
@@ -38,6 +44,30 @@ import {
   THUMB,
   type ThumbResult,
 } from "../services/thumbs.js";
+import {
+  askRow,
+  bodyOk,
+  COMMENTS_SCHEMA,
+  deleteExtras,
+  getComment,
+  getThread,
+  insertComment,
+  insertExtras,
+  insertThread,
+  listThreads,
+  type NewExtras,
+  openCount,
+  replyCount,
+  rootId,
+  type StoredActor,
+  type StoredComment,
+  type StoredList,
+  type StoredThread,
+  setAnswer,
+  setTargetState,
+  threadExists,
+  touchThread,
+} from "./comments-store.js";
 import {
   INDEX_REPORT_MS,
   presenceStub,
@@ -384,7 +414,7 @@ create table if not exists thumb_job (
 create table if not exists access_change (
   id integer primary key check (id = 1), at integer not null
 );
-`;
+${COMMENTS_SCHEMA}`;
 
 /** presence_unbound is logged once per isolate on the accept path. */
 let unboundLogged = false;
@@ -1881,6 +1911,329 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return all.length;
   }
 
+  // ------------------------------------------------------------ comments (#682)
+
+  /** Comments per person per minute; per signed-out IP; per artifact per day. */
+  static readonly COMMENTS_PER_MIN = 30;
+  static readonly COMMENTS_PER_MIN_IP = 10;
+  static readonly COMMENTS_PER_DAY = 1000;
+
+  /** Comments per rate key in the current minute; in memory, as `rate`. */
+  private commentRate = new Map<string, number>();
+  private commentMinute = -1;
+
+  /**
+   * Counts one new comment for `key` ("u:{id}" or "ip:{key}"): 429
+   * rate_limited past the minute cap (the message ends "[retry:N]", seconds to
+   * the next minute) or the artifact's daily cap. Inside the write's
+   * transaction, so a refused comment counts for nothing.
+   */
+  private countComment(key: string, daily = true): void {
+    const t = this.now();
+    const minute = Math.floor(t / MINUTE_MS);
+    if (minute !== this.commentMinute) {
+      this.commentRate.clear();
+      this.commentMinute = minute;
+    }
+    const k = rateKey(key);
+    const n = (this.commentRate.get(k) ?? 0) + 1;
+    const cap = k.startsWith("ip:")
+      ? ArtifactRuntime.COMMENTS_PER_MIN_IP
+      : ArtifactRuntime.COMMENTS_PER_MIN;
+    if (n > cap) {
+      const wait = Math.max(
+        1,
+        Math.ceil(((minute + 1) * MINUTE_MS - t) / 1000),
+      );
+      fail(
+        "rate_limited",
+        `Too many comments. Try again in a minute. [retry:${wait}]`,
+      );
+    }
+    if (!daily) {
+      this.commentRate.set(k, n);
+      return;
+    }
+    const day = Math.floor(t / DAY_MS);
+    const { n: today } = this.sql
+      .exec<{ n: number }>(
+        `insert into comment_limits (id, day, n) values (1, ?, 1)
+         on conflict (id) do update set
+           n = case when day = excluded.day then n + 1 else 1 end, day = excluded.day
+         returning n`,
+        day,
+      )
+      .one();
+    if (today > ArtifactRuntime.COMMENTS_PER_DAY) {
+      const wait = Math.max(1, Math.ceil(((day + 1) * DAY_MS - t) / 1000));
+      fail(
+        "rate_limited",
+        `Too many comments on this artifact today. [retry:${wait}]`,
+      );
+    }
+    this.commentRate.set(k, n);
+  }
+
+  /** The events sockets learn only how many threads are open: no text, ids or names. */
+  private broadcastComments(): void {
+    const msg = JSON.stringify({ type: "comments", open: openCount(this.sql) });
+    for (const ws of this.ctx.getWebSockets(EVENTS_TAG)) {
+      try {
+        ws.send(msg);
+      } catch {
+        // closing socket
+      }
+    }
+  }
+
+  private checkBody(body: string): void {
+    if (!bodyOk(body))
+      fail(
+        "invalid_body",
+        `A comment is 1 to ${COMMENT_BODY_MAX} characters after trimming`,
+      );
+  }
+
+  /** Threads by newest activity (at most 500, 200 replies each) and the open count. */
+  commentsList(status: CommentStatus | "all"): StoredList {
+    this.ensureSchema();
+    return listThreads(this.sql, status);
+  }
+
+  /** One thread, or not_found. */
+  commentsGet(threadId: string): StoredThread {
+    this.ensureSchema();
+    const t = getThread(this.sql, threadId);
+    if (!t) fail("not_found", "Not found");
+    return t;
+  }
+
+  /**
+   * Takes one comment's worth of the limits (minute per person or IP, day per
+   * artifact) without storing anything: the route calls it before it reads a
+   * version's file to verify a quote, so a refused quote counts.
+   */
+  commentsTake(rate: string): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() => this.countComment(rate));
+  }
+
+  /** A new thread with its root comment. `rate`: "u:{id}" or "ip:{key}"; `counted`: commentsTake already took it. */
+  commentsAdd(a: {
+    actor: StoredActor;
+    rate: string;
+    counted?: boolean;
+    anchor: Anchor;
+    version: number;
+    body: string;
+    /** #1535: the ask, mentions and assignment, already resolved by the service. */
+    extras?: NewExtras;
+  }): StoredThread {
+    this.checkBody(a.body);
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      if (!a.counted) this.countComment(a.rate);
+      return insertThread(this.sql, this.iso(), a);
+    });
+    this.broadcastComments();
+    return out;
+  }
+
+  /** A reply. It never reopens a resolved thread. At most COMMENTS_MAX_REPLIES a thread (409 conflict). */
+  commentsReply(a: {
+    threadId: string;
+    actor: StoredActor;
+    rate: string;
+    body: string;
+    extras?: NewExtras;
+  }): StoredComment {
+    this.checkBody(a.body);
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      if (!threadExists(this.sql, a.threadId)) fail("not_found", "Not found");
+      if (replyCount(this.sql, a.threadId) >= COMMENTS_MAX_REPLIES)
+        fail("conflict", "This thread has reached its reply limit");
+      this.countComment(a.rate);
+      const now = this.iso();
+      const c = insertComment(this.sql, now, a.threadId, a.actor, a.body);
+      if (a.extras) insertExtras(this.sql, a.threadId, c.id, a.extras);
+      touchThread(this.sql, a.threadId, now);
+      return getComment(this.sql, a.threadId, c.id) as StoredComment;
+    });
+    this.broadcastComments();
+    return out;
+  }
+
+  /**
+   * Answers an ask (#1535). Not found without one; forbidden unless the caller
+   * is an addressee (the person, or the member whose agent was asked); conflict
+   * once the thread is resolved (the ask is closed); bad_request for an
+   * option the ask does not have. The answer may be changed until then.
+   */
+  commentsAnswer(a: {
+    threadId: string;
+    commentId: string;
+    by: StoredActor;
+    optionId: string;
+    rate: string;
+  }): StoredComment {
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      this.countComment(a.rate, false);
+      const r = askRow(this.sql, a.threadId, a.commentId);
+      if (!r) fail("not_found", "Not found");
+      const asked =
+        a.by.kind === "user" &&
+        r.ask.to.some(
+          (p) => (p.kind === "user" ? p.key : p.owner) === a.by.ref,
+        );
+      if (!asked) fail("forbidden", "Only the people asked can answer");
+      if (r.status === "resolved") fail("conflict", "This ask is closed");
+      if (!r.ask.options.some((o) => o.id === a.optionId))
+        fail("bad_request", "Unknown option");
+      const now = this.iso();
+      setAnswer(this.sql, a.commentId, {
+        optionId: a.optionId,
+        by: a.by,
+        at: now,
+      });
+      touchThread(this.sql, a.threadId, now);
+      return getComment(this.sql, a.threadId, a.commentId) as StoredComment;
+    });
+    this.broadcastComments();
+    return out;
+  }
+
+  /** Records how a mention or the assignment was delivered (the service, after it tried). */
+  commentsTargetStates(a: {
+    threadId: string;
+    commentId: string;
+    states: { kind: "mention" | "assign"; key: string; state: string }[];
+  }): StoredComment {
+    this.ensureSchema();
+    return this.ctx.storage.transactionSync(() => {
+      for (const s of a.states)
+        setTargetState(this.sql, a.commentId, s.kind, s.key, s.state);
+      const c = getComment(this.sql, a.threadId, a.commentId);
+      if (!c) fail("not_found", "Not found");
+      return c;
+    });
+  }
+
+  /** Resolve or reopen; the same status again changes nothing. */
+  commentsStatus(a: {
+    threadId: string;
+    status: CommentStatus;
+    actor: StoredActor;
+    /** The caller's rate key ("u:{id}" or "ip:{key}"): counts against the minute limit only. */
+    rate?: string;
+  }): StoredThread {
+    this.ensureSchema();
+    let changed = false;
+    const out = this.ctx.storage.transactionSync(() => {
+      if (a.rate) this.countComment(a.rate, false);
+      const t = getThread(this.sql, a.threadId);
+      if (!t) fail("not_found", "Not found");
+      if (t.status === a.status) return t;
+      changed = true;
+      const now = this.iso();
+      if (a.status === "resolved")
+        this.sql.exec(
+          "update comment_threads set status = 'resolved', resolved_by = ?, resolved_at = ?, activity_at = ? where id = ?",
+          JSON.stringify(a.actor),
+          now,
+          now,
+          a.threadId,
+        );
+      else
+        this.sql.exec(
+          "update comment_threads set status = 'open', resolved_by = null, resolved_at = null, activity_at = ? where id = ?",
+          now,
+          a.threadId,
+        );
+      return getThread(this.sql, a.threadId) as StoredThread;
+    });
+    if (changed) this.broadcastComments();
+    return out;
+  }
+
+  /** Edits a comment: its author only (forbidden otherwise). Sets editedAt. */
+  commentsEdit(a: {
+    threadId: string;
+    commentId: string;
+    by: { kind: "user" | "guest"; ref: string };
+    body: string;
+    /** The caller's rate key ("u:{id}" or "ip:{key}"): counts against the minute limit only. */
+    rate?: string;
+  }): StoredComment {
+    this.checkBody(a.body);
+    this.ensureSchema();
+    const out = this.ctx.storage.transactionSync(() => {
+      if (a.rate) this.countComment(a.rate, false);
+      const row = this.sql
+        .exec<{ author: string }>(
+          "select author from comments where id = ? and thread_id = ?",
+          a.commentId,
+          a.threadId,
+        )
+        .toArray()[0];
+      if (!row) fail("not_found", "Not found");
+      const who = JSON.parse(row.author) as StoredActor;
+      if (who.kind !== a.by.kind || who.ref !== a.by.ref)
+        fail("forbidden", "Only the author can edit a comment");
+      const now = this.iso();
+      this.sql.exec(
+        "update comments set body = ?, edited_at = ? where id = ?",
+        a.body.trim(),
+        now,
+        a.commentId,
+      );
+      return getComment(this.sql, a.threadId, a.commentId) as StoredComment;
+    });
+    this.broadcastComments();
+    return out;
+  }
+
+  /**
+   * Deletes a comment: its author, or a moderator (the route decides, from
+   * the caller's level). Deleting the root deletes the thread and its replies.
+   */
+  commentsDelete(a: {
+    threadId: string;
+    commentId: string;
+    by: { kind: "user" | "guest"; ref: string } | null;
+    moderator: boolean;
+    /** The caller's rate key ("u:{id}" or "ip:{key}"): counts against the minute limit only. */
+    rate?: string;
+  }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() => {
+      if (a.rate) this.countComment(a.rate, false);
+      const row = this.sql
+        .exec<{ author: string }>(
+          "select author from comments where id = ? and thread_id = ?",
+          a.commentId,
+          a.threadId,
+        )
+        .toArray()[0];
+      if (!row) fail("not_found", "Not found");
+      const who = JSON.parse(row.author) as StoredActor;
+      const mine =
+        a.by !== null && who.kind === a.by.kind && who.ref === a.by.ref;
+      if (!mine && !a.moderator)
+        fail("forbidden", "Only the author or an editor can delete a comment");
+      if (rootId(this.sql, a.threadId) === a.commentId) {
+        this.sql.exec("delete from comments where thread_id = ?", a.threadId);
+        deleteExtras(this.sql, { threadId: a.threadId });
+        this.sql.exec("delete from comment_threads where id = ?", a.threadId);
+      } else {
+        this.sql.exec("delete from comments where id = ?", a.commentId);
+        deleteExtras(this.sql, { commentId: a.commentId });
+      }
+    });
+    this.broadcastComments();
+  }
+
   /** Wipes all data (called by purge). The schema is recreated lazily on next use. */
   async destroy(): Promise<void> {
     for (const ws of this.ctx.getWebSockets()) {
@@ -1920,6 +2273,16 @@ type RpcMethods =
   | "pendingIndex"
   | "storageDelete"
   | "storageList"
+  | "commentsList"
+  | "commentsGet"
+  | "commentsTake"
+  | "commentsAdd"
+  | "commentsReply"
+  | "commentsAnswer"
+  | "commentsTargetStates"
+  | "commentsStatus"
+  | "commentsEdit"
+  | "commentsDelete"
   | "destroy";
 
 /**

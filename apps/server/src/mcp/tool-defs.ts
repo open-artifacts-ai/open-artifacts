@@ -41,96 +41,96 @@ export const TOOL_DEFS = [
       content: "# Q3\n\nRevenue is up.",
       message: "First draft",
     },
-    description: `Publish an artifact, or a new version when \`id\` is given. Pass \`content\` (one file, with \`format\`) or \`files\` (path → text, or { base64 } for binary, or { uploadId } from create_upload) plus \`entry\`. The entry decides the format: html, markdown, code (known text files), pdf or image (.png, .jpg, .jpeg, .gif, .webp or .svg; one file, the image); a name that implies none publishes as code when its bytes are UTF-8 text and is otherwise refused with unsupported_format, as is a HEIC photo; an entry whose bytes don't fit its format (binary as code, a pdf without %PDF, an image without its extension's signature or uploaded with another contentType) is refused with binary_entry. Inline content (content, text and base64 together) is limited to ${INLINE}; for more, call create_upload, PUT the bytes to its url, then pass { uploadId } in \`files\`. To create it in a shared space, pass \`spaceId\` from list_spaces (new artifacts only). To change only settings (title, description, visibility, capabilities, dataWriters), pass \`id\` with those and no content or files: they update in place and no version is created. ${DATA_WRITERS_NOTE} Returns id, version and view URL.`,
+    description: `Open Artifacts: Publish an artifact, or a new version when \`id\` is given. Pass \`content\` (one file, with \`format\`) or \`files\` (path → text, or { base64 } for binary, or { uploadId } from create_upload) plus \`entry\`. The entry decides the format: html, markdown, code (known text files), pdf or image (.png, .jpg, .jpeg, .gif, .webp or .svg; one file, the image); a name that implies none publishes as code when its bytes are UTF-8 text and is otherwise refused with unsupported_format, as is a HEIC photo; an entry whose bytes don't fit its format (binary as code, a pdf without %PDF, an image without its extension's signature or uploaded with another contentType) is refused with binary_entry. Inline content (content, text and base64 together) is limited to ${INLINE}; for more, call create_upload, PUT the bytes to its url, then pass { uploadId } in \`files\`. To create it in a shared space, pass \`spaceId\` from list_spaces (new artifacts only). To change only settings (title, description, visibility, capabilities, dataWriters), pass \`id\` with those and no content or files: they update in place and no version is created. To change a few lines of an html, markdown or code artifact, pass \`id\` and \`edits\` ([{ old, new }]) instead of content or files. The server applies them in order to the current version's entry file and reuses the other files; each \`old\` must occur exactly once at its step, or nothing is published (edit_failed names the edit). To avoid overwriting another agent's change, pass \`expectedVersion\` (the version you read): if it is no longer current, the publish is refused with version_conflict and the current version. Edits always check the version they read. A settings-only publish with \`expectedVersion\` is refused (it makes no version). ${DATA_WRITERS_NOTE} Returns id, version and view URL.`,
   },
   {
     name: "create_upload",
     inputSchema: CreateUploadInputSchema,
     example: { path: "video.mp4", size: 3_000_000, contentType: "video/mp4" },
-    description: `Get a signed URL to PUT one large file (over the ${INLINE} inline limit, up to 25 MB), then publish_artifact with \`id\` = the returned artifactId and \`files: { "<path>": { uploadId } }\`. Omit artifactId to reserve a new artifact id; reuse it for the artifact's other uploads.`,
+    description: `Open Artifacts: Get a signed URL to PUT one large file (over the ${INLINE} inline limit, up to 25 MB), then publish_artifact with \`id\` = the returned artifactId and \`files: { "<path>": { uploadId } }\`. Omit artifactId to reserve a new artifact id; reuse it for the artifact's other uploads.`,
   },
   {
     name: "get_artifact",
     inputSchema: GetArtifactInputSchema,
     example: { id: ID, path: "index.html" },
     description:
-      "Read an artifact's metadata (with its space and what you may do, when spaces are on) and one version (latest by default). Returns a file's text inline when it is text and at most 1 MB; otherwise a short-lived downloadUrl. Download URLs expire after 10 minutes; call get_artifact again for a fresh one.",
+      "Open Artifacts: Read an artifact's metadata (with its space and what you may do, when spaces are on) and one version (latest by default). Returns a file's text inline when it is text and at most 1 MB; otherwise a short-lived downloadUrl. Download URLs expire after 10 minutes; call get_artifact again for a fresh one.",
   },
   {
     name: "list_artifacts",
     inputSchema: ListQuerySchema,
     example: { scope: "mine", format: "html", limit: 10 },
     description:
-      "List artifacts you can see, newest first. Filter by scope, format, visibility, owner, agent, agentVia (one of your own connections, g:<grantId> or t:<tokenId>) or updatedSince; page with cursor.",
+      "Open Artifacts: List artifacts you can see, newest first. Filter by scope, format, visibility, owner, agent, agentVia (one of your own connections, g:<grantId> or t:<tokenId>) or updatedSince; page with cursor.",
   },
   {
     name: "search_artifacts",
     inputSchema: SearchQuerySchema,
     example: { q: "roadmap" },
     description:
-      "Full-text search artifact titles, descriptions and content. Returns matches with snippets; page with cursor.",
+      "Open Artifacts: Full-text search artifact titles, descriptions and content. Returns matches with snippets; page with cursor.",
   },
   {
     name: "list_versions",
     inputSchema: ListVersionsInputSchema,
     example: { id: ID },
     description:
-      "List an artifact's versions, newest first, up to 20 per page. When the result has a nextCursor, pass it as `cursor` for older versions.",
+      "Open Artifacts: List an artifact's versions, newest first, up to 20 per page. When the result has a nextCursor, pass it as `cursor` for older versions.",
   },
   {
     name: "restore_version",
     inputSchema: RestoreVersionInputSchema,
     example: { id: ID, version: 2 },
     description:
-      "Restore an earlier version by publishing a copy of it as the new latest version.",
+      "Open Artifacts: Restore an earlier version by publishing a copy of it as the new latest version.",
   },
   {
     name: "share_artifact",
     inputSchema: ShareArtifactInputSchema,
     example: { id: ID, email: "sam@example.com", role: "viewer" },
     description:
-      "Share an artifact with an email address as viewer or editor. Owner or space manager only.",
+      "Open Artifacts: Share an artifact with an email address as viewer or editor. Owner or space manager only.",
   },
   {
     name: "unshare_artifact",
     inputSchema: UnshareInputSchema,
     example: { id: ID, email: "sam@example.com" },
     description:
-      "Remove an email address's share. Owner or space manager only.",
+      "Open Artifacts: Remove an email address's share. Owner or space manager only.",
   },
   {
     name: "set_visibility",
     inputSchema: SetVisibilityInputSchema,
     example: { id: ID, visibility: "team" },
-    description: `Set who can open an artifact: private (you and shares), team (all members) or public (anyone with the link). Owner or space manager only. ${DATA_WRITERS_NOTE}`,
+    description: `Open Artifacts: Set who can open an artifact: private (you and shares), team (all members) or public (anyone with the link). Owner or space manager only. ${DATA_WRITERS_NOTE}`,
   },
   {
     name: "delete_artifact",
     inputSchema: IdInputSchema,
     example: { id: ID },
     description:
-      "Delete an artifact. Restore it from Trash in the dashboard, or with undelete_artifact, within 30 days. Owner or space manager only.",
+      "Open Artifacts: Delete an artifact. Restore it from Trash in the dashboard, or with undelete_artifact, within 30 days. Owner or space manager only.",
   },
   {
     name: "undelete_artifact",
     inputSchema: IdInputSchema,
     example: { id: ID },
     description:
-      "Restore a deleted artifact from the trash, within 30 days of its deletion. Its personal owner, or in a shared space that space's manager.",
+      "Open Artifacts: Restore a deleted artifact from the trash, within 30 days of its deletion. Its personal owner, or in a shared space that space's manager.",
   },
   {
     name: "artifact_data_get",
     inputSchema: ArtifactDataGetInputSchema,
     example: { id: ID, collection: "votes", docId: "sam" },
     description:
-      "Read one document from an artifact's live-page data collection.",
+      "Open Artifacts: Read one document from an artifact's live-page data collection.",
   },
   {
     name: "artifact_data_list",
     inputSchema: ArtifactDataListInputSchema,
     example: { id: ID, collection: "votes", limit: 50 },
     description:
-      "List documents in an artifact's live-page data collection; page with cursor.",
+      "Open Artifacts: List documents in an artifact's live-page data collection; page with cursor.",
   },
   {
     name: "artifact_data_query",
@@ -141,7 +141,7 @@ export const TOOL_DEFS = [
       query: { where: { choice: "yes" }, limit: 20 },
     },
     description:
-      "Query an artifact's live-page data collection with equality `where`, `orderBy`, `order` and `limit`.",
+      "Open Artifacts: Query an artifact's live-page data collection with equality `where`, `orderBy`, `order` and `limit`.",
   },
   {
     name: "artifact_data_set",
@@ -153,7 +153,7 @@ export const TOOL_DEFS = [
       data: { choice: "yes" },
     },
     description:
-      "Create or replace a document in an artifact's live-page data collection. Anyone who can view the artifact may write (as on the page itself).",
+      "Open Artifacts: Create or replace a document in an artifact's live-page data collection. Anyone who can view the artifact may write (as on the page itself).",
   },
   {
     name: "artifact_data_update",
@@ -165,21 +165,21 @@ export const TOOL_DEFS = [
       patch: { choice: "no" },
     },
     description:
-      "Merge top-level fields into a document in an artifact's live-page data collection. Anyone who can view the artifact may write (as on the page itself).",
+      "Open Artifacts: Merge top-level fields into a document in an artifact's live-page data collection. Anyone who can view the artifact may write (as on the page itself).",
   },
   {
     name: "artifact_data_delete",
     inputSchema: ArtifactDataDeleteInputSchema,
     example: { id: ID, collection: "votes", docId: "sam" },
     description:
-      "Delete a document from an artifact's live-page data collection. Anyone who can view the artifact may write (as on the page itself).",
+      "Open Artifacts: Delete a document from an artifact's live-page data collection. Anyone who can view the artifact may write (as on the page itself).",
   },
   {
     name: "list_spaces",
     inputSchema: ListSpacesInputSchema,
     example: {},
     description:
-      "List the spaces you can publish into: your personal space first, then shared spaces where you are an editor or manager. Pass a space's id as publish_artifact's spaceId.",
+      "Open Artifacts: List the spaces you can publish into: your personal space first, then shared spaces where you are an editor or manager. Pass a space's id as publish_artifact's spaceId.",
   },
   {
     name: "bus_role_propose",
@@ -190,7 +190,7 @@ export const TOOL_DEFS = [
       name: "backend-lead",
       agent: "alice",
     },
-    description: `Propose a change to one of your bus role addresses: \`set\` points the role (\`namespace\`, \`name\`) at your open agent named \`agent\` there (creating the role, or re-pointing it), \`clear\` removes the role. Nothing changes until you confirm it: this returns a link to open in your browser, signed in, within ${BUS_ROLE_PROPOSAL_TTL_MS / 60_000} minutes; it works once. Give the link to the person, who confirms it after a fresh sign-in; no agent credential can. Only on an instance with the bus, for your own agents.`,
+    description: `Open Artifacts: Propose a change to one of your bus role addresses: \`set\` points the role (\`namespace\`, \`name\`) at your open agent named \`agent\` there (creating the role, or re-pointing it), \`clear\` removes the role. Nothing changes until you confirm it: this returns a link to open in your browser, signed in, within ${BUS_ROLE_PROPOSAL_TTL_MS / 60_000} minutes; it works once. Give the link to the person, who confirms it after a fresh sign-in; no agent credential can. Only on an instance with the bus, for your own agents.`,
   },
 ] as const;
 

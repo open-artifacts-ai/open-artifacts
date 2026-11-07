@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.133.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.132.1...v0.133.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** Hermes Agent plugin adapter and hermes kind ([#1602](https://github.com/open-artifacts-ai/open-artifacts/issues/1602)) ([#1607](https://github.com/open-artifacts-ai/open-artifacts/issues/1607)) ([755e55d](https://github.com/open-artifacts-ai/open-artifacts/commit/755e55df781d17a798661eb3ed0514315c3b2457))
+* **dashboard:** asks and [@mentions](https://github.com/mentions) on the artifact page ([#1535](https://github.com/open-artifacts-ai/open-artifacts/issues/1535)) ([#1612](https://github.com/open-artifacts-ai/open-artifacts/issues/1612)) ([c82d7e5](https://github.com/open-artifacts-ai/open-artifacts/commit/c82d7e5e4bca9a874ef8c611b1c6cbdc0c32403b))
+* **mcp:** tool descriptions start with "Open Artifacts:"; publish errors say what to do next ([#1540](https://github.com/open-artifacts-ai/open-artifacts/issues/1540)) ([#1613](https://github.com/open-artifacts-ai/open-artifacts/issues/1613)) ([03ea4e6](https://github.com/open-artifacts-ai/open-artifacts/commit/03ea4e63c2fa0a332b39c8a175f71ab030d04c09))
+* **server:** comments store and REST ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#1496](https://github.com/open-artifacts-ai/open-artifacts/issues/1496)) ([d33ea44](https://github.com/open-artifacts-ai/open-artifacts/commit/d33ea44381aecf1503ba51eae4ccd35308570e85))
+
+
+### Bug Fixes
+
+* **redline:** P22 names why a restored install isn't serving; dispatch Workers Logs ([#1593](https://github.com/open-artifacts-ai/open-artifacts/issues/1593)) ([#1616](https://github.com/open-artifacts-ai/open-artifacts/issues/1616)) ([89c645e](https://github.com/open-artifacts-ai/open-artifacts/commit/89c645e4ba2329d21cccaf1fd927699239dc1bf0))
+
+## [0.132.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.132.0...v0.132.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **bus:** rate-limit role and link writes; revoking a credential expires its proposals ([#1358](https://github.com/open-artifacts-ai/open-artifacts/issues/1358), [#1403](https://github.com/open-artifacts-ai/open-artifacts/issues/1403)) ([#1601](https://github.com/open-artifacts-ai/open-artifacts/issues/1601)) ([f5108f7](https://github.com/open-artifacts-ai/open-artifacts/commit/f5108f7a93c8466270ab18b9c177e28f6354d47f))
+
+## [0.132.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.131.1...v0.132.0) (2026-11-06)
+
+
+### Features
+
+* **billing:** hosted billing stack (inert; for the cloud sync) ([#1591](https://github.com/open-artifacts-ai/open-artifacts/issues/1591)) ([123915f](https://github.com/open-artifacts-ai/open-artifacts/commit/123915fb2201faa8da0f16e616563597db6d7692))
+* publish with expectedVersion and small edits ([#1216](https://github.com/open-artifacts-ai/open-artifacts/issues/1216), [#1540](https://github.com/open-artifacts-ai/open-artifacts/issues/1540)) ([#1548](https://github.com/open-artifacts-ai/open-artifacts/issues/1548)) ([7421670](https://github.com/open-artifacts-ai/open-artifacts/commit/7421670672e7d3281ada17d4a9532300fe3e7a99))
+* **shared:** asks and [@mentions](https://github.com/mentions) contract for comments ([#1535](https://github.com/open-artifacts-ai/open-artifacts/issues/1535)) ([#1587](https://github.com/open-artifacts-ai/open-artifacts/issues/1587)) ([f8b3ec9](https://github.com/open-artifacts-ai/open-artifacts/commit/f8b3ec9bf87caac5581ecd1b8ee87454124c21d4))
+
+
+### Bug Fixes
+
+* **bus-daemon:** c12 link-drop test no longer advances the faked clock ([#1522](https://github.com/open-artifacts-ai/open-artifacts/issues/1522)) ([#1599](https://github.com/open-artifacts-ai/open-artifacts/issues/1599)) ([c91ff73](https://github.com/open-artifacts-ai/open-artifacts/commit/c91ff73d8115055ace1754aec8132b2edd33ddf6))
+* **bus:** confirm links carry their secret in the URL fragment ([#1426](https://github.com/open-artifacts-ai/open-artifacts/issues/1426)) ([#1586](https://github.com/open-artifacts-ai/open-artifacts/issues/1586)) ([a02c182](https://github.com/open-artifacts-ai/open-artifacts/commit/a02c182de5271197ac28105ecc96212c8fefd93e))
+* **redline:** T19 transport resets are infra, named ([#1596](https://github.com/open-artifacts-ai/open-artifacts/issues/1596)) ([#1597](https://github.com/open-artifacts-ai/open-artifacts/issues/1597)) ([907af1e](https://github.com/open-artifacts-ai/open-artifacts/commit/907af1eced6b3633f7c5a5bdbb02c93e76f7b951))
+* **server:** deterministic search order on bm25 ties (unbreaks main) ([#1598](https://github.com/open-artifacts-ai/open-artifacts/issues/1598)) ([c1a2ef3](https://github.com/open-artifacts-ai/open-artifacts/commit/c1a2ef31590e93d1e3462ae6c67e8a503688a8c3))
+
+## [0.131.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.131.0...v0.131.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **bus-daemon:** hold a /clear handover until hello_ok ([#1582](https://github.com/open-artifacts-ai/open-artifacts/issues/1582)) ([#1585](https://github.com/open-artifacts-ai/open-artifacts/issues/1585)) ([3b88a40](https://github.com/open-artifacts-ai/open-artifacts/commit/3b88a4075db340825bac652d50d30b9467bb1846))
+* **server:** search ranks title matches first ([#1554](https://github.com/open-artifacts-ai/open-artifacts/issues/1554)) ([#1555](https://github.com/open-artifacts-ai/open-artifacts/issues/1555)) ([a21f50c](https://github.com/open-artifacts-ai/open-artifacts/commit/a21f50cea87c91b3b40288b984849c227df27a93))
+
 ## [0.131.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.130.0...v0.131.0) (2026-11-06)
 
 

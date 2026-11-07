@@ -1,6 +1,7 @@
 import { type ArtifactSummary, type Me, viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { MessageSquare } from "lucide-react";
 import {
   type ReactNode,
   type SyntheticEvent,
@@ -140,6 +141,7 @@ function Viewer({
   hosted,
   plan,
   chromeless,
+  colState,
   slot,
   newer = false,
   gone = null,
@@ -152,6 +154,8 @@ function Viewer({
   onUndelete,
 }: {
   chromeless: boolean;
+  /** The column's open/closed choice, kept by the shell across version swaps. */
+  colState: [boolean | null, (v: boolean | null) => void];
   /** The live-version chip (title bar) or pill (/full); only on the shown layer. */
   slot?: ReactNode;
   newer?: boolean;
@@ -221,7 +225,7 @@ function Viewer({
   // Comments (#682). The list lives in a column beside the page, a tab of the
   // side panel, or a dialog (phones, full screen).
   const surface = useSurface(chromeless);
-  const [colOpen, setColOpen] = useState<boolean | null>(null);
+  const [colOpen, setColOpen] = colState;
   const [dialogOpen, setDialogOpen] = useState(false);
   const openSurface = useRef(() => {});
   const getBridge = useCallback(() => bridge.current, []);
@@ -256,10 +260,14 @@ function Viewer({
     : requestedTab === "comments" && !commentsTab
       ? "versions"
       : requestedTab;
-  // Open by default only when there is something to show.
+  // Open by default wherever the column has room (so the empty state and the
+  // whole-page box show first); narrower, only when there is something to show.
   const columnShown =
     colOpen ??
-    (cmt.threads.length > 0 || cmt.draft !== null || cmt.error != null);
+    (surface === "column" ||
+      cmt.threads.length > 0 ||
+      cmt.draft !== null ||
+      cmt.error != null);
   openSurface.current = () => {
     if (surface === "dialog") setDialogOpen(true);
     else if (surface === "panel" || panelOpen) setPanel(true, "comments");
@@ -640,6 +648,7 @@ function Viewer({
                   <Button
                     variant="outline"
                     size="xs"
+                    className="oa-fscomments"
                     aria-label={
                       commentsButton.open > 0
                         ? `Comments, ${commentsButton.open} open`
@@ -648,7 +657,8 @@ function Viewer({
                     aria-expanded={commentsButton.expanded}
                     onClick={commentsButton.onClick}
                   >
-                    Comments
+                    <MessageSquare className="oa-fsicon" aria-hidden="true" />
+                    <span className="oa-fsword">Comments</span>
                     {commentsButton.open > 0 && ` ${commentsButton.open}`}
                   </Button>
                 )}
@@ -696,6 +706,9 @@ function ArtifactShell({
   chromeless?: boolean;
 }) {
   const q = useArtifact(id);
+  // The comments column's open/closed choice outlives a version swap (each
+  // version's Viewer is its own keyed layer).
+  const colState = useState<boolean | null>(null);
   // In render, not an effect: child effects run first, and the viewer may
   // mount in this same commit when the info is cached.
   const prefetched = useRef(false);
@@ -817,6 +830,7 @@ function ArtifactShell({
               version={n}
               explicitVersion={v !== undefined}
               chromeless={chromeless}
+              colState={colState}
               authed={authed}
               anonymous={me.status === "anonymous"}
               readOnly={authed && me.me.auth?.readOnly === true}

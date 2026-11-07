@@ -150,6 +150,31 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           TEST_SHARD: ${{ matrix.shard }}
         run: bash scripts/ci/test-affected.sh
+      # #1602: the Hermes plugin is Python, standard library only. Run in the
+      # rest shard when bus-ipc or the plugin changed; the path filter is decided
+      # here, never by a workflow `paths:` filter or a job `if:`, and any error in
+      # the diff means run.
+      - id: hermes
+        name: Did bus-ipc or the Hermes plugin change?
+        if: ${{ matrix.shard == 'rest' && steps.ro.outputs.release_only != 'true' }}
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          run=true
+          if [ "$EVENT" != workflow_dispatch ] && [ -n "${BASE_SHA:-}" ] \
+            && files="$(git diff --name-only "$BASE_SHA"...HEAD)" \
+            && ! grep -qE '^(packages/bus-ipc/|packages/bus-adapter-hermes/|\.github/workflows/ci\.yml$)' <<< "$files"; then
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@v5
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.hermes.outputs.run == 'true' }}
+        with:
+          python-version: "3.11"
+      - name: Hermes plugin tests
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.hermes.outputs.run == 'true' }}
+        run: python3 -m unittest discover -s packages/bus-adapter-hermes/tests
   # The required check (its name is branch protection's). Always runs, and
   # passes only when every shard passed: a skipped, cancelled or failed shard
   # fails it.

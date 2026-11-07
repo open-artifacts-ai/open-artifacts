@@ -78,9 +78,12 @@ const RPC_ALLOWLIST = [
   "decideRoleProposal",
   "deleteLink",
   "deleteRole",
+  "expireLinkProposalsOf",
+  "expireRoleProposalsOf",
   "listLinks",
   "listRoleProposals",
   "listRoles",
+  "pendingProposalSources",
   "proposeLink",
   "proposeRole",
   "putLink",
@@ -240,6 +243,10 @@ describe("hub machines", () => {
       new BusHub(s, e);
     });
     expect((await mirror(h)).map((r) => r.label)).toEqual(["Keep"]);
+    // freshHub has no name, so it keeps no index row to await; wait for the
+    // close itself so the file does not end with it in flight.
+    const closed = closedOf(ws);
     ws.close(1000, "done");
+    await closed;
   });
 });

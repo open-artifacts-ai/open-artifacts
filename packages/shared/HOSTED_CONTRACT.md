@@ -84,7 +84,7 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `InstanceSignInSchema` | `{ mode: access \| direct, providers: (access \| google \| email)[] }` |
 | `AuthMethodSchema` | `access \| google \| code \| pat \| oauth \| dev \| test` |
 | `MeAuthSchema` | `{ method, readOnly, cap, expiresAt }` |
-| `ArtifactCanSchema`, `ARTIFACT_ACTIONS`, `ArtifactAction` | `{ edit, share, setVisibility, delete, transfer, move, dataWrite }`. P3's internal superset is `PolicyAction`, so the names don't clash |
+| `ArtifactCanSchema`, `ARTIFACT_ACTIONS`, `ArtifactAction` | `{ edit, share, setVisibility, delete, transfer, move, dataWrite, comment? }`. P3's internal superset is `PolicyAction`, so the names don't clash |
 | `artifactCan(level, { personal, cap })` | The P3 action table as one function (server and mocks). `dataWrite` is false for guests and restricted members; ordinary viewers keep it (the artifact still needs the `db`/`storage` capability) |
 
 ## Presence (both tiers)
@@ -121,8 +121,12 @@ Who else has an artifact open, as faces. Module: `viewer-presence.ts`.
 | `ArtifactEvent.hello` | `you?: PresenceKey`: the caller's own presence key (16 chars of `[A-Za-z0-9_-]`), so a client drops its own face |
 | `ArtifactEventSchema` | `presence` frame, appended after `gone`: `{ type: "presence", viewers, total }` (see Presence, both tiers) |
 | `GetArtifactInput`, `ArtifactData*Input` (MCP get_artifact and the six data tools) | `activity?: string` (at most 80 chars): what the agent says it is doing, shown on its presence card |
-| `AuditActionSchema` | `bus.role.proposed`, `bus.role.confirmed`, `bus.role.refused`, `bus.role.expired` (#1372, self-host bus only: an AI agent proposed a role change over MCP, the member confirmed or refused it on its link, or the link ran out). Target `user` (the member whose bus it is); `detail { proposalId, action }` plus `roleId`, `agentId`, `priorAgentId` when set and `why` on a refusal (`rejected`, `changed`, `name_taken`, `agent_not_open`, `role_limit`, `used`, `expired`). Ids and enums only; never the role name, namespace or link. Actor: the member (proposed: their PAT or OAuth grant; confirmed and refused: their browser session), or `system` for an expiry |
+| `AuditActionSchema` | `bus.role.proposed`, `bus.role.confirmed`, `bus.role.refused`, `bus.role.expired` (#1372, self-host bus only: an AI agent proposed a role change over MCP, the member confirmed or refused it on its link, or the link ran out). Target `user` (the member whose bus it is); `detail { proposalId, action }` plus `roleId`, `agentId`, `priorAgentId` when set and `why` on a refusal (`rejected`, `changed`, `name_taken`, `agent_not_open`, `role_limit`, `used`, `expired`) or on an expiry caused by revoking the PAT or OAuth grant that proposed (`credential_revoked`, #1403). Ids and enums only; never the role name, namespace or link. Actor: the member (proposed: their PAT or OAuth grant; confirmed and refused: their browser session), or `system` for an expiry |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |
+
+## Comments (#682, `comments.ts`)
+
+`ArtifactSummary.comments` (boolean, default true; `PATCH`/publish `comments`, owner and managers) and `can.comment` (false when off, and for capped callers). Routes: `R.comments`, `R.commentThread`, `R.commentReplies`, `R.comment`. Comments live in the artifact's runtime store, never in page data. R.events sockets get `{ "type": "comments", "open": n }` on any change (not in `ArtifactEventSchema`; clients ignore unknown types). Embed requests get 403 `forbidden`.
 
 ## Guest share notices (`hosted/core.ts`, parity 2)
 
@@ -234,6 +238,7 @@ line, never twice. A non-null `cap` still limits access to viewer.
 | `GET R.artifacts` | `ListQuery` | `scope` adds `space` (needs `spaceId`) and `spaces`; `mine` = personal space; `spaceId` narrows any scope (another user's personal space: 400 `space_personal`; unknown, or a shared space where the caller has no role: 404, never an empty page) |
 | `GET R.search` | `SearchQuery` | optional `spaceId`, as the list's |
 | `POST R.artifacts` | `PublishInput` (`spaceId?`) | `spaceId` on create only (existing id: 400 `use_move`); default personal space; unknown, another user's personal space, or a shared space the caller can't see: 404; seen but not allowed: 403 `space_forbidden` (also any create by a capped caller); `visibility: "public"` where the space's publicLinks is off: 403 `public_links_off` (echoing it on an already public artifact passes). A visibility change is compare-and-set: a concurrent change or move is 409 `conflict` |
+| `POST R.versions(id)` | `PublishInput` (`expectedVersion?`, `edits?`) | `expectedVersion`: refused with 409 `version_conflict` unless it is the current version (compare-and-set in the version allocation, so of two concurrent publishes with the same value one wins). `edits` (1 to 64 `{old, new}`, with the id, not with content, files, entry, format or language): applied in order to the current version's entry file (html, markdown or code; a pdf or image: 400), other files reused unchanged; a miss or double match: 400 `edit_failed`; always checks the version it read. A settings-only MCP publish with `expectedVersion`: 400 `bad_request` (no version to guard) |
 | `PATCH R.artifact(id)` | `ArtifactPatch` | `visibility: "public"` where publicLinks is off: 403 `public_links_off` |
 | `POST R.moveArtifact(id)` | `MoveArtifactInput {spaceId}` → `ArtifactSummary` | manager/owner on the artifact (else 404); shared target only (the caller's own personal space: 400 `space_personal`; anyone else's: 404); editor+ in target (else 403 `space_forbidden`). A public artifact moved into a space with publicLinks off becomes `team` in the same batch and its anonymous sockets close (the toggle itself never rewrites or revokes); the returned summary shows `visibility: "team"`. Compare-and-set on the space and visibility read: a concurrent change is 409 `conflict`. Audited `artifact.move` |
 | `POST R.transferArtifact(id)` | `TransferArtifactInput {userId}` → `ArtifactSummary` | `level === "owner"` only, personal (else 404; a manager can't); successor active, non-guest, non-restricted (400 `invalid_successor`); former owner keeps an editor share; audited `artifact.transfer` |
@@ -305,6 +310,8 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `space_not_empty` | 409 | delete a space that still holds artifacts (trash counts) |
 | `public_links_off` | 403 | make an artifact public in a space whose publicLinks is off |
 | `use_move` | 400 | `spaceId` on publish to an existing artifact |
+| `version_conflict` | 409 | publish with `expectedVersion` (or `edits`, which takes the version it read) when the artifact's current version differs; details `{ currentVersion }`; nothing is published (#1216, #1540) |
+| `edit_failed` | 400 | publish with `edits` where an `old` is not found or found more than once in the text at its step; details `{ index, reason: "not_found" \| "ambiguous", count }`; nothing is published (#1540) |
 | `invalid_successor` | 400 | transfer target isn't an active, non-guest, non-restricted member |
 | `member_active` | 409 | member transfer on an active non-guest member |
 | `directory_sync_off` | 409 | mapping or restricted-group change while sync is off or frozen (also Sync now) |
@@ -327,6 +334,11 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `managed_by_org_mapping` | 409 | `DELETE R.spaceMember` on a member whose only role here is an Every space group's, or a `PUT R.spaceMember` below that role (sync live or frozen). Details `ManagedByOrgMappingDetails { userId, everyRole }`. Message: "This role comes from an Every space group. Change it in Settings › Spaces › Every space." |
 | `member_synced` | 409 | `DELETE R.spaceMember` on a synced-only row while sync is live. UI copy: "This person comes from a Google group. Remove them from the group in Google, or change their role here." |
 | `unsupported_format` | 400 | publish (`R.artifacts`, `R.versions`, MCP `publish_artifact`) with no `format` whose entry name implies none (`inferFormat` returns `image` for `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, and `code` only for known text: the `LANGUAGES` keys, `PLAIN_TEXT_EXTENSIONS`, Makefile, Dockerfile; else null) and whose bytes aren't UTF-8 text. When the name implies none but the bytes are text (a `LICENSE`, `.gitignore`), the publish goes ahead as `code`, language `"text"`. Details `{ path, reason: "no_viewer" }`; message `UNSUPPORTED_FORMAT_MESSAGE`. A HEIC/HEIF entry (named `.heic`/`.heif`, or an ISO BMFF `ftyp` at byte 4 with brand `heic`, `heix`, `hevc`, `heim`, `heis`, `mif1` or `msf1`) is refused whatever the `format`: details `{ path, reason: "heic" }`, message `HEIC_MESSAGE`. Nothing is written or consumed |
+| `invalid_anchor` | 400 | `POST R.comments` with an anchor that fails its schema (or a pin `contentHash` outside `[A-Za-z0-9_-]{1,128}`); details: the issues (#682) |
+| `invalid_body` | 400 | a comment body empty after trim, or over 2,000 characters (#682) |
+| `anchor_not_in_version` | 422 | a text anchor whose quote is not in the html version it names, or a version that does not exist (#682) |
+| `comments_off` | 403 | any comments route on an artifact whose `comments` setting is off (#682) |
+| `forbidden` | 403 | a comment route the caller may open but not take: editing another's comment, deleting without being the author or an editor, any comments route from an embed (#682) |
 | `binary_entry` | 400 | the entry's content doesn't fit its format (`sniff.ts` `checkEntry`, first 8 KB): for `code`, `markdown` and `html` the bytes decide: UTF-8 text (no NUL, valid UTF-8) passes whatever its first bytes or declared upload type. Bytes that fail are refused with reason `binary` (a known signature), else `content_type` (an upload declared `image/*` other than svg, `audio/*` or `video/*`; `application/octet-stream` claims nothing), else `not_text`. A `pdf` must start with `%PDF` (`not_pdf`). An `image` must carry its extension's signature (JPEG `FF D8 FF`, PNG, `GIF87a`/`GIF89a`, WebP `RIFF....WEBP`; else `not_image`, also for an entry with no image extension), an `.svg` must be UTF-8 text with an `<svg>` root (`not_svg`), and an upload's declared type must be the extension's (`content_type`; `application/octet-stream` claims nothing). An `image` publish with more than one file is 400 `bad_request` `{ path: "files", reason: "image_single_file" }`. Details `{ path, reason }`. An uploaded entry costs one R2 range read. Nothing is written or consumed |
 
 ## Self-serve billing (`hosted/billing.ts`, post-M1)
@@ -351,9 +363,9 @@ Which tier applies (in this order):
    trial allowed) until the first good read, never unenforced.
 
 Features (`Me.instance.features` and every check) follow that tier at read
-time through `TIER_FEATURES` (the trial and free report Business's; hosted
+time through `TIER_FEATURES` (the trial, solo and free report Business's; hosted
 adds `usage_off`), not the provisioned `FEATURES`. `Me.instance.tier` is the
-same tier (null for free). Business to Team swaps `sync_google` for
+same tier (null for solo and free). Business to Team swaps `sync_google` for
 `sync_frozen`: the binding and synced rows stay, sync stops. Every kick,
 feed and RPC hands DirectorySync the effective directory mode (frozen while
 locked too), so its alarm calls nothing and fails nothing (no
@@ -362,7 +374,7 @@ locked too), so its alarm calls nothing and fails nothing (no
 
 `Me.instance.billing` (`PlanView`; not `plan`, which is the Workers plan):
 `{ tier, status, trialEndsAt, graceUntil, creatorsThisMonth?, readOnly, reason? }`.
-`tier` free | trial | team | business; `status` active | past_due | lapsed |
+`tier` solo | free | trial | team | business (free is the pre-Solo value: hosted billing that predates Solo still answers it, with today's rules, and the hosted half moves billing to answer solo); `status` active | past_due | lapsed |
 suspended. Everyone gets `tier`, `readOnly`, `reason`. `status`,
 `trialEndsAt`, `graceUntil` (ISO) and `creatorsThisMonth` go to the org
 owner and admins only, the plan cap included; everyone else gets null and no
@@ -370,7 +382,8 @@ count.
 
 | State | What it does | `reason` |
 |---|---|---|
-| free | solo: one person and their agents. Team features answer `plan_required`; the first invite passes while the trial never ran and starts the 14-day trial | `solo` |
+| solo or free, active, or past_due within `graceUntil` | one person and their agents ($1/month or $12/year after a 30-day no-card trial). Team features answer `plan_required`; the first invite passes while the Business trial never ran and starts the 14-day trial. Billing MUST report a Solo whose 30-day trial ended with no card as status `lapsed` | `solo` |
+| solo lapsed, or solo past_due past grace | **view-only** for everyone, the org owner included (lock mode `viewOnly`, `readOnly: true`): publishing (a new artifact or version, REST and MCP) and live-data writes (artifact data set, update, delete, anonymous visitors too), uploads for a new artifact, restoring a version, and runtime storage writes (PUT and DELETE) answer 403 `plan_read_only`; team features answer `plan_read_only` too, and the Business trial does not start. Every read, sharing and visibility, the owner's and admins' billing POSTs, revoking tokens and machines, and profile edits keep working. Non-owners carry the `plan` cap as under solo (so a member's other writes, comments included, are refused); the owner has no cap, and the lock binds them for publishing and live-data writes | `solo_unpaid` |
 | trial (until `trialEndsAt`), team, business, past_due within `graceUntil` | today's behaviour | none |
 | trial ended, lapsed, past_due past grace, suspended | read-only (`readOnly: true`): team features answer `plan_read_only` | `trial_ended`, `lapsed`, `payment_failed`, `suspended` |
 | billing unreachable over 7 days (`PLAN_STALE_MS`) | read-only; never falls back upward | `billing_unreachable` |

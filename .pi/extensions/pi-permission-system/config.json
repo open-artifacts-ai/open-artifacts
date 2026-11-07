@@ -58,12 +58,17 @@
       "git switch *": "allow",
       "git merge --no-edit origin/main": "allow",
       "git worktree remove -- *": "allow",
+      "git worktree add *": "allow",
       "pnpm exec vitest *": "allow",
       "pnpm -s typecheck": "allow",
       "pnpm lint *": "allow",
       "pnpm run gen": "allow",
       "pnpm -C apps/server run gen": "allow",
       "pnpm --filter @oa/shared build": "allow",
+      "pnpm run test:prep": "allow",
+      "pnpm test:prep": "allow",
+      "pnpm lint": "allow",
+      "pnpm -s lint": "allow",
       "gh run rerun*": "ask",
       "gh api *-f*": "ask",
       "gh api *-F*": "ask",
@@ -543,6 +548,54 @@
       "git -C * worktree remove* -f*": {
         "action": "deny",
         "reason": "Forcing a worktree removal can drop uncommitted work: commit and push first, then remove without --force, or ask your human."
+      },
+      "git worktree add*--f*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add* -f*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*\"*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*'*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*\\*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*$*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*`*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*{*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*[*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add*\t*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add* -B*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "git worktree add* -q*": {
+        "action": "deny",
+        "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
       }
     },
     "mcp": {

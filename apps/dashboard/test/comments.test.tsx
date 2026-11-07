@@ -2,13 +2,24 @@ import { ANON_ID_HEADER, R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import {
   act,
+  configure,
   fireEvent,
+  getConfig,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import {
   calls,
   events,
@@ -18,6 +29,7 @@ import {
   server,
   wait,
 } from "./harness";
+import { FIRST_LOAD_MS } from "./timeouts";
 
 type Opts = {
   iframe: HTMLIFrameElement;
@@ -54,6 +66,15 @@ vi.mock("../src/viewer/bridge", async () => {
 });
 
 installHarness();
+
+// Most waits here follow a write: the PATCH or POST, then the list refetch it
+// invalidates (a second round trip through MSW), then the render. Each hop is
+// CPU-bound and slows about 30x on a loaded runner (#1004), which can pass
+// setup.ts's 5 s asyncUtilTimeout. Stay under the test timeout so a wait that
+// never resolves still reports its own failure.
+const defaultAsyncTimeout = getConfig().asyncUtilTimeout;
+beforeAll(() => configure({ asyncUtilTimeout: FIRST_LOAD_MS }));
+afterAll(() => configure({ asyncUtilTimeout: defaultAsyncTimeout }));
 
 const OWNED = (
   fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
@@ -168,6 +189,53 @@ describe("comments: layouts", () => {
       await within(sheet).findByText("Can we tighten this headline?"),
     ).toBeInTheDocument();
     fireEvent.keyDown(sheet, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("focusing a composer in the half-height phone sheet expands it", async () => {
+    viewport(400);
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    const box = await within(sheet).findAllByRole("textbox");
+    fireEvent.focus(box[0] as HTMLElement);
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+  });
+
+  it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {
+    viewport(400);
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    fireEvent.click(screen.getByRole("button", { name: "Shrink comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    // Dragging the handle up goes to full height; the click that follows does not undo it.
+    const handle = screen.getByRole("button", { name: "Expand comments" });
+    fireEvent.pointerDown(handle, { clientY: 300 });
+    fireEvent.pointerUp(handle, { clientY: 200 });
+    fireEvent.click(handle);
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    // A tap after a finished drag still toggles (the flag is reset on pointerdown).
+    fireEvent.pointerDown(handle, { clientY: 100 });
+    fireEvent.pointerUp(handle, { clientY: 100 });
+    fireEvent.click(handle);
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    // A cancelled pointer clears the drag: the up that follows is ignored.
+    fireEvent.pointerDown(handle, { clientY: 300 });
+    fireEvent.pointerCancel(handle);
+    fireEvent.pointerUp(handle, { clientY: 100 });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    const backdrop = document.querySelector("[data-sheet-backdrop]");
+    expect(backdrop).not.toBeNull();
+    fireEvent.click(backdrop as Element);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -365,9 +433,10 @@ describe("comments: actions", () => {
     const card = (await within(c).findByText("Looks good overall.")).closest(
       "[data-thread]",
     ) as HTMLElement;
-    expect(
-      within(card).getByText(/Resolved by Sam Rivera/),
-    ).toBeInTheDocument();
+    const line = within(card).getByText(/Resolved by Sam Rivera/);
+    expect(line).toBeInTheDocument();
+    expect(line.className).toMatch(/text-green-/);
+    expect(line.querySelector("svg")).not.toBeNull();
     fireEvent.click(within(card).getByRole("button", { name: "Reopen" }));
     await waitFor(() => expect(patches[0]?.body).toEqual({ status: "open" }));
     expect(await within(c).findByText("2 open")).toBeInTheDocument();
@@ -435,6 +504,106 @@ describe("comments: actions", () => {
     expect(
       within(root).getByText("Delete this thread? Its replies go too."),
     ).toBeInTheDocument();
+  });
+
+  it("P2: opening the column fetches no agents; focusing a composer fetches once", async () => {
+    const agentCalls: string[] = [];
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, ({ request }) => {
+        agentCalls.push(request.url);
+        return HttpResponse.json(
+          { error: { code: "not_found", message: "no" } },
+          { status: 404 },
+        );
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    await wait(50);
+    expect(agentCalls).toHaveLength(0);
+    fireEvent.focus(box);
+    await waitFor(() => expect(agentCalls).toHaveLength(1));
+    // A 404 is final: more typing or focus asks again for nothing, and no picker shows.
+    fireEvent.blur(box);
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: "hello @" } });
+    fireEvent.change(box, { target: { value: "hello @O" } });
+    await wait(50);
+    expect(agentCalls).toHaveLength(1);
+    expect(within(c).queryByRole("listbox")).toBeNull();
+  });
+
+  it("P2: the column opens on its own with no threads, and an explicit close sticks", async () => {
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(
+      await within(c).findByRole("textbox", {
+        name: "Comment on the whole page",
+      }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Comments" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+  });
+
+  it("P2: narrower than 960px the column stays closed until there is something to show", async () => {
+    viewport(800);
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: "Comments" });
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).toBeNull();
+  });
+
+  it("P2: below 960px Comments is the first tab of the side panel", async () => {
+    viewport(800);
+    mount(`${viewerPath(OWNED)}?panel=open&tab=comments`);
+    const tabs = await screen.findAllByRole("tab");
+    expect(tabs.map((t) => t.textContent)).toEqual([
+      "Comments",
+      "Versions",
+      "Share",
+      "Details",
+    ]);
+  });
+
+  it("P2: the new-comment row has Cancel, then the accent Comment, at the right", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "hello",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    const row = screen.getByRole("button", { name: "Comment" })
+      .parentElement as HTMLElement;
+    const names = [...row.querySelectorAll("button")].map((b) => b.textContent);
+    expect(names).toEqual(["Cancel", "Comment"]);
+    expect(row.className).toContain("ml-auto");
+    expect(screen.getByRole("button", { name: "Comment" }).className).toContain(
+      "--oa-accent",
+    );
+    expect(box).toBeInTheDocument();
   });
 
   it("the Comments setting in Share turns comments off", async () => {
@@ -632,8 +801,16 @@ describe("comments: live and signed out", () => {
       ),
     );
     mount(viewerPath(PUBLIC));
-    fireEvent.click(await screen.findByRole("button", { name: "Comments" }));
+    // The column is open by default where it has room.
     const c = await col();
+    // The whole-page box: Sign in at the left of the row, back to this page.
+    fireEvent.focus(
+      within(c).getByRole("textbox", { name: "Comment on the whole page" }),
+    );
+    // (jsdom's window.location is "/", not the memory router's path.)
+    expect(
+      within(c).getByRole("link", { name: "Sign in" }).getAttribute("href"),
+    ).toMatch(/^\/sign-in\?next=%2F/);
     fireEvent.change(within(c).getByRole("textbox", { name: "Your name" }), {
       target: { value: "Pat" },
     });
@@ -798,7 +975,7 @@ describe("comments: guests and Retry-After", () => {
       }),
     );
     mount(viewerPath(PUBLIC));
-    fireEvent.click(await screen.findByRole("button", { name: "Comments" }));
+    // The column is open by default where it has room.
     const c = await col();
     await waitFor(() => expect(seenTokens.length).toBeGreaterThan(0));
     // The read sent no token and minted none.
@@ -975,6 +1152,29 @@ describe("comments: review round 1", () => {
       expect(document.querySelectorAll("iframe").length).toBeGreaterThan(1),
     );
     expect(view()).toBeNull();
+  });
+
+  it("P2: an explicit column close survives a live version swap", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await hello();
+    fireEvent.click(screen.getByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    await bump(OWNED, 97);
+    await waitFor(() =>
+      expect(document.querySelectorAll("iframe").length).toBeGreaterThan(1),
+    );
+    // Hidden layers included: the preloaded one must not open its own column.
+    expect(
+      screen.queryAllByRole("complementary", {
+        name: "Comments",
+        hidden: true,
+      }),
+    ).toHaveLength(0);
   });
 
   it("B1: a typed reply and an open delete confirm hold a swap too", async () => {
@@ -1182,9 +1382,13 @@ describe("comments: review round 1", () => {
     expect(when.className).toMatch(/whitespace-nowrap/);
     expect(when.className).toMatch(/shrink-0/);
     expect(line.querySelector("b")?.className).toMatch(/truncate/);
-    // "via <agent>" is its own line under the name, not beside the time.
-    expect(line.contains(within(c).getByText("via Claude Code"))).toBe(false);
-    expect(line.nextElementSibling?.textContent).toBe("via Claude Code");
+    // "via <agent>" sits on the name's line, small and muted.
+    const via = within(c).getByText("via Claude Code");
+    expect(line.contains(via)).toBe(true);
+    expect(via.className).toMatch(/text-muted-foreground/);
+    expect(via.className).toMatch(/truncate/);
+    // An initials avatar leads the name.
+    expect(row.querySelector("[data-avatar]")).not.toBeNull();
   });
 
   const art = (over: object) =>
@@ -1281,7 +1485,7 @@ describe("comments: review round 1", () => {
     await hello();
     await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("view"));
     expect(setMode).not.toHaveBeenCalledWith("select");
-    fireEvent.click(await screen.findByRole("button", { name: "Comments" }));
+    // The column is open by default where it has room.
     const c = await col();
     expect(await within(c).findByText("No comments yet.")).toBeInTheDocument();
     expect(within(c).queryByText(/Select text to add one/)).toBeNull();
@@ -1530,5 +1734,16 @@ describe("comments: unavailable is not forever", () => {
       screen.queryByRole("complementary", { name: "Side panel" }),
     ).toBeNull();
     expect(document.querySelector("aside[aria-label='Side panel']")).toBeNull();
+  });
+});
+
+describe("initials", () => {
+  it("keeps emoji and CJK characters whole", async () => {
+    const { initials } = await import("../src/viewer/comments/CommentsBody");
+    expect(initials("😀 Robot")).toBe("😀R");
+    expect(initials("😀")).toBe("😀");
+    expect(initials("山田 太郎")).toBe("山太");
+    expect(initials("Sam Rivera")).toBe("SR");
+    expect(initials("cursor")).toBe("CU");
   });
 });

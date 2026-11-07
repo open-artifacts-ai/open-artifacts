@@ -6,7 +6,7 @@ import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import type { Member as OaMember } from "@oa/shared";
 import { R } from "@oa/shared";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app.js";
 import {
   AUTHZ_AT_HEADER,
@@ -17,6 +17,8 @@ import {
   SKEW_MS,
 } from "../../src/bus/hub.js";
 import {
+  BUS_INDEX_CAP_MS,
+  INDEX_WINDOW_MS,
   INSTALL_INDEX,
   type UserPresence,
 } from "../../src/runtime/presence.js";
@@ -335,6 +337,165 @@ describe("install suspend closes bus sockets (the install index)", () => {
     ).closeInstall("suspended");
     expect(r.closed).toBeGreaterThanOrEqual(1);
     expect((await a.d.closed).code).toBe(4403);
+  });
+});
+
+describe("bus rows outlive the index window (#1299)", () => {
+  const index = () => {
+    const pns = e.USER_PRESENCE;
+    if (!pns) throw new Error("USER_PRESENCE unbound");
+    return pns.get(
+      pns.idFromName(INSTALL_INDEX),
+    ) as unknown as DurableObjectStub<UserPresence>;
+  };
+  const rowOf = (name: string) =>
+    runInDurableObject(
+      index(),
+      (_i, s: DurableObjectState) =>
+        s.storage.sql
+          .exec<{ seen_at: number }>(
+            "select seen_at from seen where artifact_id = ?",
+            name,
+          )
+          .toArray()[0]?.seen_at ?? null,
+    );
+  // Pins the index clock at BASE and runs fn; restores the real clock.
+  const BASE = 1_800_000_000_000;
+  const at = <T>(
+    fn: (p: UserPresence, s: DurableObjectState) => T | Promise<T>,
+  ): Promise<T> =>
+    runInDurableObject(index(), async (p, s) => {
+      const real = p.now;
+      p.now = () => BASE;
+      try {
+        return await fn(p, s);
+      } finally {
+        p.now = real;
+      }
+    });
+  const age = (name: string, ms: number) =>
+    at((_p, s) => {
+      s.storage.sql.exec(
+        "update seen set seen_at = ? where artifact_id = ?",
+        BASE - ms,
+        name,
+      );
+    });
+
+  it("a socket opened more than the window before closeInstall is still closed", async () => {
+    const u = await member();
+    const a = await connected(u);
+    await age(`bus:${u.userId}`, INDEX_WINDOW_MS * 5);
+    await at((p) => p.closeInstall("suspended"));
+    expect((await a.d.closed).code).toBe(4403);
+  });
+
+  it("gone removes the row; the hub calls it when its last socket closes", async () => {
+    const u = await member();
+    const name = `bus:${u.userId}`;
+    const a = await connected(u, "one");
+    const b = await connected(u, "two");
+    expect(await rowOf(name)).not.toBeNull();
+    const hub = await hubOf(u.userId);
+    a.d.close();
+    await vi.waitFor(async () =>
+      expect((await hub.snapshot()).connected).toEqual([b.id]),
+    );
+    // One machine still connected: the row stays.
+    expect(await rowOf(name)).not.toBeNull();
+    b.d.close();
+    await vi.waitFor(async () => expect(await rowOf(name)).toBeNull());
+    // A new connection reports again (the throttle was reset).
+    const c = await connected(u, "three");
+    expect(await rowOf(name)).not.toBeNull();
+    c.d.close();
+    await at((p) => p.gone(name));
+    expect(await rowOf(name)).toBeNull();
+    await at((p) => p.gone(name));
+    await expect(at((p) => p.gone("art1"))).rejects.toThrow();
+  });
+
+  it("a socket accepted while gone is in flight keeps its row (the seen lands before the gone)", async () => {
+    const u = await member();
+    const name = `bus:${u.userId}`;
+    const a = await connected(u, "one");
+    expect(await rowOf(name)).not.toBeNull();
+    const hub = await hubOf(u.userId);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let goneStarted: () => void = () => {};
+    const started = new Promise<void>((r) => {
+      goneStarted = r;
+    });
+    let goneDone: () => void = () => {};
+    const finished = new Promise<void>((r) => {
+      goneDone = r;
+    });
+    const realNs = e.USER_PRESENCE;
+    if (!realNs) throw new Error("USER_PRESENCE unbound");
+    // The index as the hub sees it: `gone` waits for the gate.
+    const slowNs = {
+      idFromName: (n: string) => realNs.idFromName(n),
+      get: (id: DurableObjectId) => {
+        const real = realNs.get(id) as unknown as {
+          seen(n: string): Promise<void>;
+          gone(n: string): Promise<void>;
+        };
+        return {
+          seen: (n: string) => real.seen(n),
+          gone: async (n: string) => {
+            goneStarted();
+            await gate;
+            await real.gone(n);
+            goneDone();
+          },
+        };
+      },
+    };
+    await runInDurableObject(hub, (inst: BusHub) => {
+      const h = inst as unknown as { env: object };
+      h.env = Object.assign(Object.create(h.env), { USER_PRESENCE: slowNs });
+    });
+    try {
+      a.d.close();
+      await started;
+      // Accepted while gone is in flight: its seen lands before the gone.
+      const b = await connected(u, "two");
+      release();
+      await finished;
+      await vi.waitFor(async () => expect(await rowOf(name)).not.toBeNull());
+      b.d.close();
+    } finally {
+      release();
+    }
+  });
+
+  it("a missing gone (the hub crashed) is harmless: closeInstall reaches the row, the cap prunes it", async () => {
+    const u = await member();
+    const name = `bus:${u.userId}`;
+    await at((p) => p.seen(name));
+    await age(name, INDEX_WINDOW_MS * 5);
+    // No socket on the hub: closeInstall counts the row and closes nothing.
+    const r = await at((p) => p.closeInstall("suspended"));
+    expect(r.artifacts).toBeGreaterThanOrEqual(1);
+    expect(await rowOf(name)).not.toBeNull();
+    // Past the cap, the next seen prunes it.
+    await age(name, BUS_INDEX_CAP_MS + 1);
+    await at((p) => p.seen("bus:other"));
+    expect(await rowOf(name)).toBeNull();
+    await at((p) => p.gone("bus:other"));
+  });
+
+  it("non-bus rows prune past the window as before", async () => {
+    const name = `art-${Date.now()}`;
+    await at((p) => p.seen(name));
+    await age(name, INDEX_WINDOW_MS + 1);
+    await at((p) => p.seen("bus:keeps"));
+    expect(await rowOf(name)).toBeNull();
+    expect(await rowOf("bus:keeps")).not.toBeNull();
+    await at((p) => p.gone("bus:keeps"));
   });
 });
 

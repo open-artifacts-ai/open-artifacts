@@ -4,43 +4,33 @@
 // times with a short backoff, so a poll keeps polling. A write is never sent
 // twice, and an answer that arrived (2xx, 4xx or 5xx) is returned as is, so a
 // refusal can't turn into a pass.
+//
+// A request that got no response for a socket reason is thrown as InfraError,
+// whose message names the network ("infra: no_response ECONNRESET ..."). That
+// is a label on a failing test and nothing more: T19's Playwright result does
+// not reach red-line's infra count (tests/redline src/report.ts), and the gate
+// fails either way (#1596 follow-up). A reset on a write may mean the server
+// ran it, so it stays a failing test and is never retried or passed.
+
+// One list of socket codes, shared with the red-line suite (net-codes.ts).
+import { isNetworkError, noResponseCode } from "./net-codes";
+
+export { isNetworkError, noResponseCode };
 
 /** The waits before the second and third tries, as in tests/redline/src/http.ts. */
 export const READ_BACKOFF_MS = [250, 1000] as const;
 
-const NET_CODES = new Set([
-  "ECONNRESET",
-  "ECONNREFUSED",
-  "EPIPE",
-  "ETIMEDOUT",
-  "ENOTFOUND",
-  "EAI_AGAIN",
-  "UND_ERR_SOCKET",
-  "UND_ERR_CONNECT_TIMEOUT",
-  "UND_ERR_HEADERS_TIMEOUT",
-  "UND_ERR_BODY_TIMEOUT",
-  "UND_ERR_CLOSED",
-]);
-
 /**
- * True when `e` means the request got no response: undici's TypeError "fetch
- * failed" or "terminated", a socket code, or an abort or timeout. Never an
- * HTTP status. A copy of tests/redline/src/fetch-timeout.ts isNetworkError.
+ * A request that got no HTTP response for a socket reason (#1596). Names
+ * itself as infra in its message, as tests/redline's "infra: no_response ..."
+ * does. A label only: the test still fails and the gate fails with it. The
+ * server may have run a write whose connection was reset.
  */
-export function isNetworkError(e: unknown): boolean {
-  if (!(e instanceof Error)) return false;
-  if (
-    e instanceof TypeError &&
-    (e.message === "fetch failed" || e.message === "terminated")
-  )
-    return true;
-  if (e.name === "AbortError" || e.name === "TimeoutError") return true;
-  const code = (e as { code?: unknown }).code;
-  const cause = (e as { cause?: { code?: unknown } }).cause?.code;
-  return (
-    (typeof code === "string" && NET_CODES.has(code)) ||
-    (typeof cause === "string" && NET_CODES.has(cause))
-  );
+export class InfraError extends Error {
+  constructor(reason: string, cause: unknown) {
+    super(`infra: ${reason}`, { cause });
+    this.name = "InfraError";
+  }
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -53,7 +43,12 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export async function sendRead(
   method: string | undefined,
   send: () => Promise<Response>,
-  o: { backoff?: readonly number[]; wait?: (ms: number) => Promise<void> } = {},
+  o: {
+    backoff?: readonly number[];
+    wait?: (ms: number) => Promise<void>;
+    /** The route, for the infra reason (never a query: it may hold a code). */
+    route?: string;
+  } = {},
 ): Promise<Response> {
   const m = (method ?? "GET").toUpperCase();
   const backoff =
@@ -64,7 +59,17 @@ export async function sendRead(
       return await send();
     } catch (e) {
       const ms = backoff[i];
-      if (ms === undefined || !isNetworkError(e)) throw e;
+      if (ms === undefined || !isNetworkError(e)) {
+        // Out of tries, or a write: a socket failure is infra, named. An HTTP
+        // response never gets here; a timeout or abort keeps its own error.
+        const code = noResponseCode(e);
+        if (!code) throw e;
+        const tries = `${i + 1} ${i === 0 ? "try" : "tries"}`;
+        throw new InfraError(
+          `no_response ${code} ${m} ${o.route ?? "?"} (${tries})`,
+          e,
+        );
+      }
       await wait(ms);
     }
   }

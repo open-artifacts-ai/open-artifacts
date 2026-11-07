@@ -634,21 +634,21 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         tier: billing.tier,
         reason: billing.reason ?? "lapsed",
       } satisfies PlanRefusalDetails);
-    if (billing.tier === "free" && billing.trialEndsAt !== null)
+    if (billing.tier === "solo" && billing.trialEndsAt !== null)
       return err("plan_required", "Inviting people needs a team plan", {
-        tier: "free",
+        tier: "solo",
         reason: "solo",
       } satisfies PlanRefusalDetails);
     return null;
   };
   /**
    * The server's planGate on a team route other than an invite (TEAM_ROUTES):
-   * a free instance is refused whether or not its trial ran.
+   * a Solo instance is refused whether or not its trial ran.
    */
   const teamRefusal = (): Response | null => {
-    if (!o.selfHosted && billing.tier === "free" && !billing.readOnly)
+    if (!o.selfHosted && billing.tier === "solo" && !billing.readOnly)
       return err("plan_required", "This needs a team plan", {
-        tier: "free",
+        tier: "solo",
         reason: "solo",
       } satisfies PlanRefusalDetails);
     return planRefusal();

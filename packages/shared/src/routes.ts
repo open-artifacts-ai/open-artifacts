@@ -195,6 +195,11 @@ export const R = {
   /** PATCH { body } -> Comment; DELETE -> 204 (the root's deletes the thread). */
   comment: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}`,
+  /** POST AnswerBody { optionId } -> Comment (#1535). Addressees only (403 forbidden); 409 conflict once the ask is closed (thread resolved); the answer may change before that; 400 bad_request for an unknown optionId. */
+  commentAnswer: (id: string, thread: string, comment: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/answer`,
+  /** GET -> ArtifactAgent[] (followers and publishers) (#1535). */
+  artifactAgents: (id: string) => `${A}/${seg(id)}/agents`,
   /** GET Upgrade: websocket; frames are DataChange */
   dataSubscribe: (id: string, col: string) =>
     `${A}/${seg(id)}/data-subscribe?collection=${seg(col)}`,

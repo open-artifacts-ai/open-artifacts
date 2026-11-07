@@ -64,7 +64,10 @@ type Roster = Extract<ServerFrame, { type: "roster" }>;
  * A daemon on a new machine of the owner (or `userId`) that said hello,
  * listing BUS_CAPS.rename unless `caps` is false (an old client).
  */
-async function at(caps = true, userId?: string): Promise<Daemon> {
+async function at(
+  caps: boolean | string[] = true,
+  userId?: string,
+): Promise<Daemon> {
   const m = await machine("MacBook", userId);
   const d = await daemon(m.token);
   d.send({
@@ -73,7 +76,9 @@ async function at(caps = true, userId?: string): Promise<Daemon> {
     type: "hello",
     machine_label: "MacBook",
     client_version: "0.0.0",
-    ...(caps ? { caps: [BUS_CAPS.rename] } : {}),
+    ...(caps === false
+      ? {}
+      : { caps: caps === true ? [BUS_CAPS.rename] : caps }),
   });
   await waitFor(d, "hello_ok");
   return d;
@@ -279,6 +284,20 @@ async function churn(d: Daemon, ref: string, times: number): Promise<string> {
 }
 
 describe("rename (R393b)", () => {
+  it("a daemon without the rename cap (ids, mailbox, links) renames its agent; list shows the new name (#1635)", async () => {
+    const d = await at([BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.links]);
+    const n = ns("rn");
+    const a = uniq("Alpha");
+    const b = uniq("Bravo");
+    await reg(d, "s", uniq("Sender"), n);
+    await reg(d, "a", a, n);
+    expect(await renamed(d, "a", b)).toMatchObject({ bus_name: b });
+    const ro = await list(d, "s");
+    expect(row(ro, b)).toBeDefined();
+    expect(row(ro, a)).toBeUndefined();
+    d.close();
+  });
+
   it("A→B: renamed with former; a send to A is delivered to it, with to_name B", async () => {
     const d = await at();
     const n = ns("rn");

@@ -23,6 +23,7 @@ const summary = {
   capabilities: { db: false, viewer: false, storage: false },
   dataWriters: "editors",
   allowAnonymousWrites: false,
+  comments: true,
 };
 
 describe("runtime params/results", () => {

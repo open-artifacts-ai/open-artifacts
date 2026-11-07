@@ -55,7 +55,13 @@ export type PolicyAction =
   | "transfer"
   | "anonId"
   /** MCP data tools on an artifact without the db capability (B14, narrowed). */
-  | "data.seed";
+  | "data.seed"
+  /** #682: read comments: anyone who can view. */
+  | "comments.read"
+  /** #682: comment, reply, resolve and reopen; edit and delete (the handler: one's own, or an editor's). */
+  | "comments.write"
+  /** #682: delete anyone's comment: editors and up. */
+  | "comments.moderate";
 
 export type OrgAction =
   | "space.create"
@@ -137,7 +143,7 @@ export type CanCtx = {
    * are the team actions on personal ones (move, transfer); while
    * read-only, anonymous data writes too. Reads are never touched.
    */
-  plan?: "solo" | "readOnly" | null;
+  plan?: "solo" | "readOnly" | "viewOnly" | null;
   /**
    * The lock is a suspension (PlanLock.reason): not a payment state, so
    * sharing is not free under it (only share-list reads and removals pass).
@@ -184,9 +190,26 @@ const PLAN_EXEMPT: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
 ]);
 export const SHARING_ACTIONS: ReadonlySet<PolicyAction> = PLAN_EXEMPT;
 
+/**
+ * What the unpaid-Solo view-only lock (PlanLock.mode "viewOnly") refuses on
+ * an artifact, for EVERYONE (the owner and anonymous visitors included):
+ * publishing and live-data writes. Everything else, sharing included, passes.
+ */
+const VIEW_ONLY_REFUSED: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
+  "publish",
+  "restore",
+  "upload",
+  "data.write",
+  "data.reset",
+  "data.seed",
+]);
+
 /** Whether the instance's plan lock refuses `action` (reads never). */
 export function planRefuses(action: PolicyAction, ctx: CanCtx): boolean {
   if (!ctx.plan || READ.has(action)) return false;
+  // View-only refuses publishing and data writes for everyone, then the solo
+  // team rules apply as under the solo lock.
+  if (ctx.plan === "viewOnly" && VIEW_ONLY_REFUSED.has(action)) return true;
   if (PLAN_EXEMPT.has(action) && !(ctx.suspended && action === "visibility"))
     return false;
   if (!ctx.personal) return true;
@@ -316,6 +339,7 @@ const READ: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
   "data.read",
   "events",
   "subscribe",
+  "comments.read",
 ]);
 const EDIT: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
   "version.text",
@@ -357,6 +381,13 @@ export function can(
         return !ctx.anonymous && level !== "viewer";
       // Anonymous callers only reach a level on a public artifact.
       return true;
+    // Anyone who can open it comments (a signed-out caller reaches a level
+    // only on a public artifact), except a capped caller (read-only on the
+    // whole API, readOnlyCap).
+    case "comments.write":
+      return !capped;
+    case "comments.moderate":
+      return !capped && !ctx.anonymous && level !== "viewer";
     case "storage":
       return !capped && !ctx.anonymous;
     case "thumbnail.write":

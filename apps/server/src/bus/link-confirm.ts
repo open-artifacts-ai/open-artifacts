@@ -7,6 +7,7 @@ import {
   checkFormCsrf,
   formCsrf,
   messagePage,
+  newNonce,
   pageResponse,
 } from "../http/pages.js";
 import { logError } from "../log.js";
@@ -18,12 +19,24 @@ import {
   viewBusLinkProposal,
 } from "../services/bus.js";
 import { sha256Hex } from "../util/crypto.js";
-import { renderLinkConfirm, renderRoleDone } from "./approve-page.js";
+import {
+  renderConfirmPage,
+  renderDoneCard,
+  renderLinkConfirm,
+} from "./approve-page.js";
+import { busConfigRefusal } from "./cap.js";
 import type { LinkRefusalReason } from "./link-proposals.js";
-import { confirmCaller } from "./role-confirm.js";
+import {
+  cardResponse,
+  confirmCaller,
+  oldFormatPage,
+  readConfirmBody,
+} from "./role-confirm.js";
 
 // #1567: the confirm link of `oa-bus link` / `oa-bus unlink`
-// (`<origin>/bus/links/confirm/<secret>`). The CLI holds only a machine
+// (`<origin>/bus/links/confirm#<secret>`; the secret is in the URL fragment,
+// so no request, log or referrer carries it, #1426: the page loads without
+// it and its script posts it in a body). The CLI holds only a machine
 // token, which must never mint reach, so a link or unlink applies only here,
 // by the member, in a browser: the same checks as the role confirm page
 // (bus/role-confirm.ts confirmCaller: an interactive cookie session, no
@@ -33,10 +46,9 @@ import { confirmCaller } from "./role-confirm.js";
 
 /** The form token's scope (http/pages.ts formCsrf); its handle is the secret's sha256. */
 export const LINK_CONFIRM_SCOPE = "bus-link-confirm";
-const MAX_FORM_BYTES = 8 * 1024;
+/** The page token's scope: it authorizes the details request. */
+export const LINK_CONFIRM_VIEW_SCOPE = "bus-link-confirm-view";
 const WHAT = "a link change";
-
-const pathOf = (secret: string) => `${LINK_CONFIRM_PATH}/${secret}`;
 
 const page = (
   c: Context<AppEnv>,
@@ -44,9 +56,8 @@ const page = (
   message: string,
   status: number,
 ) =>
-  pageResponse(
-    renderRoleDone({
-      instanceHost: c.env.APP_HOST,
+  cardResponse(
+    renderDoneCard({
       title,
       message,
       busUrl: `${appOrigin(c.env)}${BUS_ROUTES.page}`,
@@ -99,19 +110,65 @@ const failed = () =>
     500,
   );
 
-/** The routes, literal for the red-line scan (tests/redline); LINK_CONFIRM_PATH plus the secret. */
+/** The routes, literal for the red-line scan (tests/redline); LINK_CONFIRM_PATH, its details and its decision. */
 export function mountLinkConfirm(app: AppType): void {
-  app.get("/bus/links/confirm/:token", async (c) => {
-    const secret = c.req.param("token");
-    const who = confirmCaller(c, pathOf(secret), false, WHAT);
+  app.get("/bus/links/confirm", async (c) => {
+    const who = confirmCaller(c, LINK_CONFIRM_PATH, false, WHAT);
     if ("response" in who) return who.response;
+    const nonce = newNonce();
+    return pageResponse(
+      renderConfirmPage({
+        instanceHost: c.env.APP_HOST,
+        title: "Confirm a link change",
+        base: LINK_CONFIRM_PATH,
+        csrf: await formCsrf(
+          c.env,
+          LINK_CONFIRM_VIEW_SCOPE,
+          who.user.id,
+          "page",
+        ),
+        nonce,
+      }),
+      200,
+      undefined,
+      nonce,
+    );
+  });
+
+  // The path-style link of before #1426: a notice, the secret never read.
+  app.get("/bus/links/confirm/:token", (c) =>
+    oldFormatPage(c, "Run the command again for a new link."),
+  );
+
+  app.post("/bus/links/confirm/view", async (c) => {
+    if (c.req.header("sec-fetch-site") === "cross-site")
+      return messagePage("Not allowed", "Cross-site request.", 403);
+    const who = confirmCaller(c, LINK_CONFIRM_PATH, true, WHAT);
+    if ("response" in who) return who.response;
+    const body = await readConfirmBody(c);
+    if (body === null) return messagePage("Not saved", "Invalid request.", 400);
+    const secret = body.secret ?? "";
+    if (
+      !(await checkFormCsrf(
+        c.env,
+        LINK_CONFIRM_VIEW_SCOPE,
+        who.user.id,
+        "page",
+        body.csrf ?? "",
+      ))
+    )
+      return messagePage(
+        "This page expired",
+        "Nothing changed. Open the link again, then confirm.",
+        403,
+      );
     if (!ROLE_TOKEN.test(secret)) return refused(c, "unknown");
     try {
       const v = await viewBusLinkProposal(c.env, who.user.id, secret);
       if (v === null) return refused(c, "unknown");
       if (!v.ok) return refused(c, v.reason);
       const p = v.proposal;
-      return pageResponse(
+      return cardResponse(
         renderLinkConfirm({
           instanceHost: c.env.APP_HOST,
           action: p.action,
@@ -125,16 +182,16 @@ export function mountLinkConfirm(app: AppType): void {
             Math.ceil((p.expiresAt - Date.now()) / 60_000),
           ),
           userEmail: who.user.email,
-          formAction: pathOf(secret),
           csrf: await formCsrf(
             c.env,
             LINK_CONFIRM_SCOPE,
             who.user.id,
             await sha256Hex(secret),
           ),
-          switchUrl: `${AUTH.login}?next=${encodeURIComponent(pathOf(secret))}`,
+          switchUrl: `${AUTH.login}?next=${encodeURIComponent(LINK_CONFIRM_PATH)}`,
         }),
         200,
+        true,
       );
     } catch (e) {
       logError("bus_link_confirm_failed", e);
@@ -142,37 +199,28 @@ export function mountLinkConfirm(app: AppType): void {
     }
   });
 
-  app.post("/bus/links/confirm/:token", async (c) => {
-    const secret = c.req.param("token");
+  app.post("/bus/links/confirm", async (c) => {
     // The page sends no referrer (Origin: null): the signed form token and
     // the SameSite=Lax cookie carry CSRF, as the role confirm page.
     if (c.req.header("sec-fetch-site") === "cross-site")
       return messagePage("Not allowed", "Cross-site request.", 403);
-    const who = confirmCaller(c, pathOf(secret), true, WHAT);
+    const who = confirmCaller(c, LINK_CONFIRM_PATH, true, WHAT);
     if ("response" in who) return who.response;
-    const cl = c.req.header("content-length") ?? "";
-    if (!/^\d{1,9}$/.test(cl) || Number(cl) > MAX_FORM_BYTES)
-      return messagePage("Not saved", "Invalid form.", 400);
-    let form: FormData;
-    try {
-      form = await c.req.raw.formData();
-    } catch {
-      return messagePage("Not saved", "Invalid form.", 400);
-    }
-    const one = (k: string): string | null => {
-      const v = form.getAll(k);
-      return v.length === 1 && typeof v[0] === "string" ? v[0] : null;
-    };
+    // #1299: confirming (or rejecting) new configuration is refused under a
+    // plan cap; the GET pages and the view stay readable.
+    const capped = busConfigRefusal(who.user);
+    if (capped) return messagePage("Not saved", capped.message, 403);
+    const body = await readConfirmBody(c);
+    if (body === null) return messagePage("Not saved", "Invalid form.", 400);
+    const secret = body.secret ?? "";
     if (!ROLE_TOKEN.test(secret)) return refused(c, "unknown");
-    const csrf = one("csrf");
     if (
-      csrf === null ||
       !(await checkFormCsrf(
         c.env,
         LINK_CONFIRM_SCOPE,
         who.user.id,
         await sha256Hex(secret),
-        csrf,
+        body.csrf ?? "",
       ))
     )
       return messagePage(
@@ -180,7 +228,7 @@ export function mountLinkConfirm(app: AppType): void {
         "Nothing changed. Open the link again, then confirm.",
         403,
       );
-    const decision = one("decision");
+    const decision = body.decision;
     if (decision !== "confirm" && decision !== "reject")
       return messagePage("Not saved", "Invalid form.", 400);
     try {

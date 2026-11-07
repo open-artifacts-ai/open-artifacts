@@ -8,7 +8,7 @@ Tool inputs are JSON Schema. Each tool returns plain text plus structured output
 
 ## Publishing
 
-`publish_artifact` creates an artifact, or publishes a new version when you pass `id`. Pass exactly one of `content` or `files`. To change only settings (`title`, `description`, `visibility`, `capabilities`, or `dataWriters`), pass `id` with neither: the artifact updates in place, no version is created, and `message` is ignored.
+`publish_artifact` creates an artifact, or publishes a new version when you pass `id`. Pass exactly one of `content` or `files`, or `edits` to change a few lines of the current version. To change only settings (`title`, `description`, `visibility`, `capabilities`, or `dataWriters`), pass `id` with neither: the artifact updates in place, no version is created, and `message` is ignored.
 
 | Field | Notes |
 |---|---|
@@ -21,11 +21,14 @@ Tool inputs are JSON Schema. Each tool returns plain text plus structured output
 | `entry` | The file to open first. With `files`, it defaults to `index.html`, then `README.md`, then the first file. |
 | `language` | Optional, for `code`. Taken from the entry file's extension when it's left out. |
 | `message` | Optional change note for this version. Up to 500 characters. |
+| `expectedVersion` | Optional, with `id`. Publish only if this is still the artifact's current version; otherwise nothing is published and the call fails with version_conflict, naming the current version. Read the artifact again and re-apply your change. A settings-only publish with it is refused with bad_request, since it creates no version. |
+| `edits` | Optional, with `id` instead of `content` or `files`: 1 to 64 `{ "old": "...", "new": "..." }` changes to the entry file of an html, markdown or code artifact. The server applies them in order to the current version and publishes the next one, reusing every other file. Each `old` must occur exactly once in the text at its step, or nothing is published and the call fails with edit_failed, naming the edit's index. Not with `entry`, `format` or `language`. It checks the version it read, as `expectedVersion` does; a stated `expectedVersion` must match it. |
 | `spaceId` | Optional, new artifacts only. Publishes into a shared space where you're an editor or manager. Leave it out to publish to your personal space. On an existing artifact it fails with use_move; move it instead. |
 | `visibility` | `private`, `team`, or `public`. A new artifact without it gets the instance's default visibility, which is `private` unless an admin changed it. |
 | `capabilities` | The [runtime API](/docs/runtime-api/) features the page may use: `{ "db": true, "viewer": true, "storage": true }`. Each defaults to `false`. |
 | `dataWriters` | Who can change the page's live data: `viewers` (anyone who can view it) or `editors`. Defaults to `viewers`. |
 | `allowAnonymousWrites` | Deprecated; use `dataWriters`. `true` sets `viewers`; `false` on a public artifact sets `editors`. |
+| `comments` | Optional, on by default. Owners and managers only. `false` turns the comments panel off for this artifact, so nobody can read or add comments on it. `true` turns it back on. |
 
 Only the artifact's creator can change `visibility`, `capabilities`, or `dataWriters` when publishing a new version; editors can publish the rest.
 

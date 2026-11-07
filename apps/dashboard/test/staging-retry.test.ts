@@ -1,7 +1,7 @@
 // T19's api helper (e2e/staging/retry.ts): a read that got no response is
 // tried again; a write never is, and an answer that arrived is returned as is.
 import { describe, expect, it, vi } from "vitest";
-import { isNetworkError, sendRead } from "../e2e/staging/retry";
+import { InfraError, isNetworkError, sendRead } from "../e2e/staging/retry";
 
 /** What undici throws when the connection is cut: TypeError, cause ECONNRESET. */
 const reset = () =>
@@ -21,9 +21,11 @@ describe("sendRead", () => {
     expect(send).toHaveBeenCalledTimes(2);
   });
 
-  it("a GET gives up after the bounded tries and throws the last error", async () => {
+  it("a GET gives up after the bounded tries and throws infra naming it", async () => {
     const send = vi.fn<() => Promise<Response>>().mockRejectedValue(reset());
-    await expect(sendRead("GET", send, noWait)).rejects.toThrow("fetch failed");
+    await expect(sendRead("GET", send, noWait)).rejects.toThrow(
+      "infra: no_response ECONNRESET",
+    );
     expect(send).toHaveBeenCalledTimes(3);
   });
 
@@ -32,7 +34,7 @@ describe("sendRead", () => {
     async (method) => {
       const send = vi.fn<() => Promise<Response>>().mockRejectedValue(reset());
       await expect(sendRead(method, send, noWait)).rejects.toThrow(
-        "fetch failed",
+        "infra: no_response ECONNRESET",
       );
       expect(send).toHaveBeenCalledTimes(1);
     },
@@ -77,4 +79,59 @@ it("isNetworkError: a cut connection and a timeout, never a plain error", () => 
   expect(isNetworkError(reset())).toBe(true);
   expect(isNetworkError(new DOMException("t", "TimeoutError"))).toBe(true);
   expect(isNetworkError(new Error("x"))).toBe(false);
+});
+
+// #1596: a socket failure before any response is infra, named; an answer is not.
+describe("sendRead infra classification", () => {
+  it("a write that is reset is infra, named, and sent once", async () => {
+    const send = vi.fn<() => Promise<Response>>().mockRejectedValue(reset());
+    const e = await sendRead("POST", send, {
+      ...noWait,
+      route: "/api/x",
+    }).catch((x) => x);
+    expect(e).toBeInstanceOf(InfraError);
+    expect(e.message).toBe("infra: no_response ECONNRESET POST /api/x (1 try)");
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("a GET reset on every try is infra after the bounded tries", async () => {
+    const send = vi.fn<() => Promise<Response>>().mockRejectedValue(reset());
+    const e = await sendRead("GET", send, { ...noWait, route: "/r" }).catch(
+      (x) => x,
+    );
+    expect(e).toBeInstanceOf(InfraError);
+    expect(e.message).toContain("no_response ECONNRESET GET /r (3 tries)");
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["POST", "GET"])("an HTTP 500 on %s stays a response", async (m) => {
+    const send = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValue(new Response(null, { status: 500 }));
+    expect((await sendRead(m, send, noWait)).status).toBe(500);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("a success passes", async () => {
+    const send = vi
+      .fn<() => Promise<Response>>()
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    expect((await sendRead("POST", send, noWait)).status).toBe(200);
+  });
+
+  it("a timeout is not reclassified", async () => {
+    const t = new DOMException("t", "TimeoutError");
+    const send = vi.fn<() => Promise<Response>>().mockRejectedValue(t);
+    await expect(sendRead("POST", send, noWait)).rejects.toBe(t);
+  });
+
+  it("an AbortError whose cause is ETIMEDOUT is not reclassified", async () => {
+    const a = Object.assign(new DOMException("aborted", "AbortError"), {
+      cause: Object.assign(new Error("connect ETIMEDOUT"), {
+        code: "ETIMEDOUT",
+      }),
+    });
+    const send = vi.fn<() => Promise<Response>>().mockRejectedValue(a);
+    await expect(sendRead("POST", send, noWait)).rejects.toBe(a);
+  });
 });

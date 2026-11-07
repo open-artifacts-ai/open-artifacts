@@ -127,5 +127,10 @@ export async function alertConditions(
       },
       input.now,
     )),
+    // Opened and cleared by their own checks (billing-health.ts, the nightly
+    // email-quota step in index.ts); here they are unknown, so this tick only
+    // retries an email that is owed.
+    billing_unreachable: { open: null, rows: [] },
+    email_quota: { open: null, rows: [] },
   };
 }

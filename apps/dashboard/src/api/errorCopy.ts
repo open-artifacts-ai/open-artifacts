@@ -52,13 +52,18 @@ const planCopy = (
         return `${TEAM_FEATURE}. Invite someone to start your free 14-day trial, or choose a plan.`;
       return owner
         ? `${TEAM_FEATURE}. Choose a plan to continue.`
-        : `${TEAM_FEATURE}. This instance is on Free. Ask an owner to invite someone or choose a plan.`;
+        : `${TEAM_FEATURE}. This instance is on Solo. Ask an owner to invite someone or choose a plan.`;
     case "plan_read_only":
       switch (d?.reason) {
         case "trial_ended":
           return owner
             ? "Your trial ended, so this instance is read-only until you pick a plan."
             : "Your trial ended, so this instance is read-only until the owner picks a plan.";
+        case "solo_unpaid":
+          // The view-only lock: publishing is paused.
+          return owner
+            ? "Your Solo plan is paused. Keep publishing for $1/month or $12/year."
+            : `Publishing is paused until this instance's Solo plan is paid. ${ASK}.`;
         case "lapsed":
         case "payment_failed":
           return owner
@@ -78,8 +83,8 @@ const planCopy = (
     case "plan_limit": {
       const raise = typeof d?.max === "number" && typeof d?.limit === "string";
       const what = raise
-        ? `The free plan allows up to ${d.max} ${PLAN_LIMIT_NOUN[d.limit as string] ?? d.limit}.`
-        : "The free plan's limit is reached.";
+        ? `The Solo plan allows up to ${d.max} ${PLAN_LIMIT_NOUN[d.limit as string] ?? d.limit}.`
+        : "The Solo plan's limit is reached.";
       return owner
         ? `${what} Choose a paid plan${raise ? " to raise it" : ""}.`
         : `${what} ${ASK} about a paid plan.`;
@@ -108,7 +113,7 @@ export type ErrorContext = {
   cap?: NonNullable<Me["auth"]>["cap"];
   /** The caller is the org owner or an admin (uncapped): billing copy says what they can do. */
   owner?: boolean;
-  /** A free instance whose trial never ran (trialEndsAt null): plan_required offers the trial. */
+  /** A Solo instance whose trial never ran (trialEndsAt null): plan_required offers the trial. */
   trialNeverRan?: boolean;
   /** The error shows on the Directory page itself. */
   onDirectoryPage?: boolean;
@@ -131,7 +136,7 @@ export const billingContext = (
     ...(owner && billing
       ? {
           trialNeverRan:
-            billing.tier === "free" && billing.trialEndsAt === null,
+            billing.tier === "solo" && billing.trialEndsAt === null,
         }
       : {}),
   };

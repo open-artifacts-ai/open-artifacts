@@ -46,6 +46,8 @@ export type ProposeInput = {
   name: string;
   /** The new holder's bus name (set only). */
   agent: string | null;
+  /** The PAT (`t:<id>`) or OAuth grant (`g:<id>`) that proposed; null when unknown (#1403). */
+  credential?: string | null;
 };
 
 /** The ids an audit row may carry (never names): services/bus.ts audits them. */
@@ -223,6 +225,35 @@ export function expireProposals(
   return gone;
 }
 
+/**
+ * #1403: expires every pending proposal `credential` (`t:<id>` or `g:<id>`)
+ * made, at once, for the revoke of that PAT or grant. Decided proposals,
+ * other credentials' and ones with no credential recorded are untouched.
+ * Returns the newly expired, for their audit rows.
+ */
+export function expireByCredential(
+  sql: SqlStorage,
+  orgId: string,
+  credential: string,
+  now: number,
+): ProposalAudit[] {
+  return all<{
+    id: string;
+    action: BusRoleProposalAction;
+    roleId: string | null;
+    agentId: string | null;
+    priorAgentId: string | null;
+  }>(
+    sql,
+    `update role_proposals set status = 'expired', decided_at = ?
+      where org_id = ? and status = 'pending' and credential = ?
+      returning id, action, role_id as roleId, agent_id as agentId, prior_agent_id as priorAgentId`,
+    now,
+    orgId,
+    credential,
+  ).map(auditOf);
+}
+
 /** The newest proposals (pending or decided), newest first, for GET R.busRoles. */
 export function listProposals(
   sql: SqlStorage,
@@ -313,8 +344,8 @@ export function propose(
   const id = newId();
   sql.exec(
     `insert into role_proposals (id, org_id, token_hash, action, namespace, name, lname,
-       role_id, agent_id, agent_name, prior_agent_id, prior_holder_name, created_at, expires_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       role_id, agent_id, agent_name, prior_agent_id, prior_holder_name, created_at, expires_at, credential)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id,
     orgId,
     tokenHash,
@@ -329,6 +360,7 @@ export function propose(
     nameOf(sql, orgId, priorAgentId),
     now,
     now + BUS_ROLE_PROPOSAL_TTL_MS,
+    input.credential ?? null,
   );
   const row = byHash(sql, orgId, tokenHash);
   if (row === null) throw new Error("proposal row missing after write");

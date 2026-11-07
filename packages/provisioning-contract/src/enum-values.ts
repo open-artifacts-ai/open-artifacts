@@ -194,5 +194,7 @@ export const ALERT_KEYS = [
   "token_invalid",
   "fleet_halted",
   "version_skew",
+  "billing_unreachable",
+  "email_quota",
 ] as const;
 export type AlertKey = (typeof ALERT_KEYS)[number];

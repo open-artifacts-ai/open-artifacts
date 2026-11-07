@@ -381,6 +381,7 @@ describe("skill.md drift", () => {
     for (const [h, tool] of [
       ["codex", "mcp__oa_bus__send_message"],
       ["opencode", "oa_bus_send_message"],
+      ["hermes", "oabus_send_message"],
     ] as const) {
       const md = await (await get(`${APP}/skill.md?harness=${h}`)).text();
       expect(md).toContain(`\`${tool}\` is send_message`);
@@ -478,8 +479,8 @@ describe("skill.md drift", () => {
         "create a new upload instead of reusing that id",
       ])
         expect(doc, `${label}: ${phrase}`).toContain(phrase);
-      // Backend has not built these yet: the skill must not teach them.
-      expect(doc).not.toContain("`edits`");
+      // `edits` shipped with #1548 (the tool description teaches it). The
+      // check is named expectedVersion; the issue's working name never ships.
       expect(doc).not.toContain("baseVersion");
     }
   });
