@@ -214,15 +214,6 @@ body {
   font-size: 13px;
   color: var(--oa-text-muted);
 }
-.oa-split-mark {
-  position: absolute;
-  right: -90px;
-  bottom: -90px;
-  width: 360px;
-  height: 360px;
-  opacity: 0.08;
-  pointer-events: none;
-}
 .oa-split-form {
   display: flex;
   align-items: center;
@@ -311,12 +302,41 @@ body {
     font-size: 14px;
   }
   .oa-split-foot,
-  .oa-split-mark,
   .oa-split-formmark {
     display: none !important;
   }
   .oa-split-form {
     align-items: flex-start;
     padding: 32px 16px;
+  }
+}
+
+/* Formation replaces the cropped watermark while the form remains available. */
+.oa-split-identity {
+  margin-block: 28px;
+}
+.oa-split-identity .oa-split-pitch {
+  margin: 32px 0 0;
+}
+.oa-formation {
+  width: 256px;
+  max-width: 100%;
+}
+@media (max-width: 860px) {
+  .oa-split-identity {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    margin: 24px 0 0;
+  }
+  .oa-formation {
+    width: 72px;
+    flex: 0 0 72px;
+  }
+  .oa-split-identity .oa-split-pitch {
+    margin: 0;
+  }
+  .oa-split-identity .oa-split-pitch h2 {
+    font-size: 20px;
   }
 }
