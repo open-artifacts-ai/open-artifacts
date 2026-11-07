@@ -32,10 +32,17 @@ const all = <T extends Row>(
 const GRANT_COLS =
   "id, role_ns as roleNamespace, role_name as roleName, target_ns as namespace, created_at as createdAt";
 
+/** True when the hub has any grant: every lookup below returns at once when not. */
+const anyReach = (sql: SqlStorage, orgId: string): boolean =>
+  all(sql, "select 1 as x from reach_grants where org_id = ? limit 1", orgId)
+    .length > 0;
+
 /**
  * The namespaces the roles held by agent `agentId` reach, sorted: the
- * agent's reach set R. Roles are matched by their holder id, so a vacant role
- * gives its (former) holder nothing once another agent holds it.
+ * agent's reach set R. The agent must be live, non-global and in its role's
+ * namespace (the holder, as listRoles and holderOf read it): a holder that
+ * moved to another namespace, or flipped global, has none while the role
+ * reads vacant. [] when there are no grants.
  */
 export function reachNamespaces(
   sql: SqlStorage,
@@ -43,9 +50,11 @@ export function reachNamespaces(
   agentId: string,
   max = BUS_REACH_MAX,
 ): string[] {
+  if (!anyReach(sql, orgId)) return [];
   return all<{ ns: string }>(
     sql,
     `select distinct g.target_ns as ns from roles r
+       join agents a on a.id = r.agent_id and a.live = 1 and a.global = 0 and a.namespace = r.namespace
        join reach_grants g on g.org_id = r.org_id and g.role_ns = r.namespace and g.lname = r.lname
       where r.org_id = ? and r.agent_id = ? and g.mode = 'reach'
       order by ns limit ?`,
@@ -57,7 +66,8 @@ export function reachNamespaces(
 
 /**
  * The live agents whose roles reach namespace `ns`, as ids: the holders that
- * must hear about a change in `ns`. Bounded by `max` (reach_grants_target).
+ * must hear about a change in `ns` (same holder rule as reachNamespaces).
+ * Bounded by `max` (reach_grants_target).
  */
 export function holdersReaching(
   sql: SqlStorage,
@@ -65,11 +75,13 @@ export function holdersReaching(
   ns: string,
   max = BUS_REACH_MAX,
 ): string[] {
+  if (!anyReach(sql, orgId)) return [];
   return all<{ id: string }>(
     sql,
     `select distinct r.agent_id as id from reach_grants g
        join roles r on r.org_id = g.org_id and r.namespace = g.role_ns and r.lname = g.lname
-      where g.org_id = ? and g.mode = 'reach' and g.target_ns = ? and r.agent_id is not null
+       join agents a on a.id = r.agent_id and a.live = 1 and a.global = 0 and a.namespace = r.namespace
+      where g.org_id = ? and g.mode = 'reach' and g.target_ns = ?
       limit ?`,
     orgId,
     ns,
@@ -77,17 +89,23 @@ export function holdersReaching(
   ).map((r) => r.id);
 }
 
-/** True when agent `holderId` holds a role that reaches `ns`. */
+/**
+ * True when agent `holderId` holds a role that reaches `ns` and is still in
+ * that role's namespace as a non-global agent. Live or away: the reply path
+ * may leave mail for an away holder.
+ */
 export function holderReaches(
   sql: SqlStorage,
   orgId: string,
   holderId: string,
   ns: string,
 ): boolean {
+  if (!anyReach(sql, orgId)) return false;
   return (
     all(
       sql,
       `select 1 as x from roles r
+         join agents a on a.id = r.agent_id and a.global = 0 and a.namespace = r.namespace
          join reach_grants g on g.org_id = r.org_id and g.role_ns = r.namespace and g.lname = r.lname
         where r.org_id = ? and r.agent_id = ? and g.mode = 'reach' and g.target_ns = ? limit 1`,
       orgId,

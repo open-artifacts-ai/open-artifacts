@@ -7,6 +7,7 @@
 import { BUS_CAPS, type ClientFrame, type ServerFrame } from "@oa/bus-protocol";
 import { BUS_REACH_MAX, BUS_REACH_PER_ROLE } from "@oa/shared";
 import { describe, expect, it } from "vitest";
+import { OWNER_ORG_ID } from "../../src/bus/hub.js";
 import { addReach, reachNamespaces } from "../../src/bus/reach.js";
 import {
   type Daemon,
@@ -25,7 +26,7 @@ type Receipt = Extract<ServerFrame, { type: "receipt" }>;
 type Roster = Extract<ServerFrame, { type: "roster" }>;
 type Deliver = Extract<ServerFrame, { type: "deliver" }>;
 
-const REACH = [BUS_CAPS.reach, BUS_CAPS.ids, BUS_CAPS.mailbox];
+const REACH = [BUS_CAPS.reach, BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.rename];
 
 async function connect(caps: string[] | undefined): Promise<Daemon> {
   const m = await machine("MacBook");
@@ -309,6 +310,104 @@ describe("the role is the key", () => {
     w.close();
   });
 });
+
+describe("the holder is read from where it is now", () => {
+  const reachOf = async (name: string) => {
+    const id = await idOf(name);
+    return inOwnerHub((st) =>
+      reachNamespaces(st.storage.sql, OWNER_ORG_ID, id),
+    );
+  };
+
+  it("a holder that moves to another namespace keeps no reach, either way", async () => {
+    const w = await world();
+    expect(await reachOf(w.hn)).toEqual([w.y]);
+    const z = ns("rz");
+    w.dh.send(up(`u${++seq}`, "h", w.hn, z));
+    await waitFor(w.dh, "agent_ok");
+    expect(await reachOf(w.hn)).toEqual([]);
+    expect((await send(w.dh, "h", w.bn)).reason).toBe("unknown_agent");
+    expect((await send(w.db, "b", w.hn, w.x)).state).toBe("refused");
+    expect((await send(w.db, "b", w.hn, z)).state).toBe("refused");
+    // Back home, the role reads held again and reach returns.
+    w.dh.send(up(`u${++seq}`, "h", w.hn, w.x));
+    await waitFor(w.dh, "agent_ok");
+    expect(await reachOf(w.hn)).toEqual([w.y]);
+    expect((await send(w.dh, "h", w.bn)).state).toBe("pending");
+    w.close();
+  });
+
+  it("a holder that flips global loses reach until it flips back", async () => {
+    const w = await world();
+    w.dh.send(up(`u${++seq}`, "h", w.hn, w.x, true));
+    await waitFor(w.dh, "agent_ok");
+    expect(await reachOf(w.hn)).toEqual([]);
+    w.dh.send(up(`u${++seq}`, "h", w.hn, w.x, false));
+    await waitFor(w.dh, "agent_ok");
+    expect(await reachOf(w.hn)).toEqual([w.y]);
+    w.close();
+  });
+});
+
+describe("the reply path by every name", () => {
+  it("leaves mail for an away holder", async () => {
+    const w = await world();
+    w.dh.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "h" });
+    await waitUntilAway(w);
+    const r = await send(w.db, "b", w.hn, w.x);
+    expect(r.state).not.toBe("refused");
+    // The peer is not reachable the same way.
+    expect((await send(w.db, "b", w.pn, w.x)).state).toBe("refused");
+    w.close();
+  });
+
+  it("answers a pre-rename former name", async () => {
+    const w = await world();
+    const fresh = uniq("renamed");
+    w.dh.send({
+      v: 1,
+      id: `r${++seq}`,
+      type: "rename",
+      agent_ref: "h",
+      proposed_name: fresh,
+      name_kind: "chosen",
+    });
+    await waitFor(w.dh, "renamed");
+    expect((await send(w.db, "b", w.hn, w.x)).state).toBe("pending");
+    expect((await send(w.db, "b", fresh, w.x)).state).toBe("pending");
+    // A former name of the peer, who has no reach, stays refused.
+    w.dp.send({
+      v: 1,
+      id: `r${++seq}`,
+      type: "rename",
+      agent_ref: "p",
+      proposed_name: uniq("pr"),
+      name_kind: "chosen",
+    });
+    await waitFor(w.dp, "renamed");
+    expect((await send(w.db, "b", w.pn, w.x)).state).toBe("refused");
+    w.close();
+  });
+
+  it("answers the role's own name", async () => {
+    const w = await world();
+    expect((await send(w.db, "b", "lead", w.x)).state).toBe("pending");
+    // A role with no reach to Y is not an address from Y.
+    await holds(w.x, "other", w.pn);
+    expect((await send(w.db, "b", "other", w.x)).state).toBe("refused");
+    w.close();
+  });
+});
+
+async function waitUntilAway(w: { x: string; hn: string }) {
+  const hub = await hubOf();
+  for (let i = 0; i < 200; i++) {
+    const open = (await hub.snapshot()).agents.some((a) => a.name === w.hn);
+    if (!open) return;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error("holder never went away");
+}
 
 describe("caps", () => {
   it("a holder on a socket without reach sees today's isolation", async () => {

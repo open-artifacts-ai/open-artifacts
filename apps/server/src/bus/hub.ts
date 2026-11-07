@@ -569,10 +569,13 @@ function rosterAudience(
           id,
           OWNER_ORG_ID,
         )) {
-          if (!reachMachines.has(row.machineId)) continue;
+          if (!reachMachines.has(row.machineId) || wanted.has(row.namespace))
+            continue;
           const cur = out.get(row.machineId);
-          if (cur === changed) continue;
-          if (cur) {
+          // `changed` itself is shared by every global machine: copy, never push.
+          if (cur === changed)
+            out.set(row.machineId, [...changed, row.namespace]);
+          else if (cur) {
             if (!cur.includes(row.namespace)) cur.push(row.namespace);
           } else out.set(row.machineId, [row.namespace]);
         }
@@ -2275,17 +2278,28 @@ function resolveTarget(
       // same refusal, so it cannot probe what exists in another namespace.
       const hit = liveGlobalHomedIn(sql, toNamespace, lname);
       if (hit) return { ok: true, agent: hit };
-      // #1346: the reply path. The live agent `lname` in X whose role reaches
-      // the sender's namespace may be answered, by that one agent only
-      // (reach-capable sender; the holder is not in the sender's roster).
+      // #1346: the reply path. The agent in X whose role reaches the sender's
+      // namespace may be answered, by that one agent only, however it is
+      // named: its live or away name, a former name, or the role's own name
+      // (a reach-capable sender; the holder is not in the sender's roster).
       if (withReach) {
-        const holder = liveVisibleIn(sql, toNamespace, lname);
-        if (
-          holder &&
-          holder.global !== 1 &&
-          holderReaches(sql, OWNER_ORG_ID, holder.id, sender.namespace)
-        )
-          return { ok: true, agent: holder };
+        const back = (r: Resolution | null): Resolution | null =>
+          r?.ok &&
+          r.agent.global !== 1 &&
+          holderReaches(sql, OWNER_ORG_ID, r.agent.id, sender.namespace)
+            ? r
+            : null;
+        const reply =
+          back(resolveRoleIn(sql, OWNER_ORG_ID, toNamespace, lname)) ??
+          back(
+            (() => {
+              const h = liveVisibleIn(sql, toNamespace, lname);
+              return h ? { ok: true as const, agent: h } : null;
+            })(),
+          ) ??
+          back(awayAgent(sql, toNamespace, lname, now)) ??
+          back(formerIn({ ns: toNamespace }));
+        if (reply) return reply;
       }
       return formerIn({ homedIn: toNamespace }) ?? refused("other_namespace");
     }
@@ -3144,13 +3158,16 @@ export class BusHub extends DurableObject<Env> {
    */
   #withReachNotice<R>(fn: () => R): R {
     const sql = this.ctx.storage.sql;
+    // Each granted role with its effective holder (live, non-global, in the
+    // role's namespace; '' when vacant): what reach is read from.
     const snap = () =>
       new Set(
         all<{ k: string }>(
           sql,
-          `select g.role_ns || char(0) || g.lname || char(0) || coalesce(r.agent_id, '') as k
+          `select g.role_ns || char(0) || g.lname || char(0) || coalesce(a.id, '') as k
              from (select distinct role_ns, lname from reach_grants where org_id = ?) g
-             left join roles r on r.org_id = ? and r.namespace = g.role_ns and r.lname = g.lname`,
+             left join roles r on r.org_id = ? and r.namespace = g.role_ns and r.lname = g.lname
+             left join agents a on a.id = r.agent_id and a.live = 1 and a.global = 0 and a.namespace = r.namespace`,
           OWNER_ORG_ID,
           OWNER_ORG_ID,
         ).map((r) => r.k),
@@ -3159,10 +3176,24 @@ export class BusHub extends DurableObject<Env> {
     const out = fn();
     const after = snap();
     const changed = new Set<string>();
-    for (const k of before)
-      if (!after.has(k)) changed.add(k.split("\0")[0] ?? "");
-    for (const k of after)
-      if (!before.has(k)) changed.add(k.split("\0")[0] ?? "");
+    const holders = new Set<string>();
+    for (const k of [
+      ...[...before].filter((k) => !after.has(k)),
+      ...[...after].filter((k) => !before.has(k)),
+    ]) {
+      const [ns, , id] = k.split("\0");
+      if (ns) changed.add(ns);
+      if (id) holders.add(id);
+    }
+    // The holder's own machine hears it where the holder is now, which may
+    // not be the role's namespace (it moved).
+    if (holders.size > 0)
+      for (const r of all<{ namespace: string }>(
+        sql,
+        "select distinct namespace from agents where id in (select value from json_each(?)) and live = 1",
+        JSON.stringify([...holders]),
+      ))
+        changed.add(r.namespace);
     if (changed.size > 0)
       notifyRoster(this.ctx, {
         namespaces: [...changed],
@@ -3959,7 +3990,9 @@ export class BusHub extends DurableObject<Env> {
         // ref takes over the old one's agent row (address, former names, mail).
         if (f.replaces !== undefined && mailboxGated(ws))
           takeOver(sql, machineId, f.replaces, f.agent_ref, this.#now());
-        const { reply, change, arms } = agentUp(sql, machineId, f, this.#now());
+        const { reply, change, arms } = this.#withReachNotice(() =>
+          agentUp(sql, machineId, f, this.#now()),
+        );
         for (const t of arms) this.#arm(t);
         sendFrame(ws, reply);
         notifyRoster(this.ctx, change, ws);
@@ -3975,7 +4008,9 @@ export class BusHub extends DurableObject<Env> {
         return;
       }
       case "agent_down": {
-        const a = agentDown(sql, machineId, f.agent_ref, this.#now());
+        const a = this.#withReachNotice(() =>
+          agentDown(sql, machineId, f.agent_ref, this.#now()),
+        );
         if (a === null) return;
         this.#closeSessions([a.id]);
         notifyRoster(
