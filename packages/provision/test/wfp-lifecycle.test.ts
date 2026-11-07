@@ -5778,10 +5778,17 @@ describe("W2 pause and unpause (5.5)", () => {
     expect((await s.fake.fetch(`https://${inst.appHost}/healthz`)).status).toBe(
       404,
     );
-    // Again: no KV write.
+    // Again: the same end state. HOSTS is rewritten (a REST read can be
+    // stale, so the PUT is never skipped), the values do not change.
     const n = s.fake.log.length;
     await s.mk().pause(inst.id, "paused", { kind: "suspend" });
-    expect(kvPuts(s, n)).toEqual([]);
+    expect(kvPuts(s, n).filter((e) => e.path.includes(s.hostsId))).toHaveLength(
+      2,
+    );
+    expect(hostsOfInstall(s)).toEqual([
+      `paused:${inst.id}`,
+      `paused:${inst.id}`,
+    ]);
     // closed from paused: the same install's value in another mode.
     await s.mk().pause(inst.id, "closed", { kind: "delete" });
     expect(hostsOfInstall(s)).toEqual([
@@ -5824,6 +5831,61 @@ describe("W2 pause and unpause (5.5)", () => {
     expect(provisionErrorCode(e)).toBe("slug_taken");
     expect(signinOf(s, inst.id).disabled).toBeUndefined();
     expect(s.row(inst.id)).toMatchObject({ state: "active", lease: null });
+  });
+
+  it("P22 (#1593): a stale REST read equal to the target does not skip the HOSTS write", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    await s.mk().pause(inst.id, "closed", { kind: "delete" });
+    expect(hostsOfInstall(s)).toEqual([
+      `closed:${inst.id}`,
+      `closed:${inst.id}`,
+    ]);
+    // Every HOSTS read returns the serving value, as a stale read would
+    // right after the delete wrote closed.
+    const p = s.mk({
+      cf: s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+        const req = new Request(u, init);
+        if (
+          req.method === "GET" &&
+          req.url.includes(`/storage/kv/namespaces/${s.hostsId}/values/`)
+        )
+          return new Response(inst.id, { status: 200 });
+        return s.fake.fetch(u, init);
+      }) as typeof fetch),
+    });
+    const n = s.fake.log.length;
+    await p.unpause(inst.id, { kind: "restore" });
+    expect(kvPuts(s, n).filter((e) => e.path.includes(s.hostsId))).toHaveLength(
+      2,
+    );
+    expect(hostsOfInstall(s)).toEqual([inst.id, inst.id]);
+  });
+
+  it("P22 (#1593): stale HOSTS and registry reads equal to the target do not skip the writes; sign-in ends enabled", async () => {
+    const s = setup();
+    const inst = keep(await s.p.create(input()));
+    const servingEntry = s.fake.kvValues(s.regId).get(registryKey(inst.id));
+    expect(servingEntry).toBeDefined();
+    await s.mk().pause(inst.id, "closed", { kind: "delete" });
+    expect(signinOf(s, inst.id).disabled).toBe(true);
+    // Reads return the serving values, as stale reads would right after
+    // the delete wrote closed and disabled.
+    const p = s.mk({
+      cf: s.cfWith((async (u: RequestInfo | URL, init?: RequestInit) => {
+        const req = new Request(u, init);
+        if (req.method === "GET") {
+          if (req.url.includes(`/storage/kv/namespaces/${s.hostsId}/values/`))
+            return new Response(inst.id, { status: 200 });
+          if (req.url.includes(`/storage/kv/namespaces/${s.regId}/values/`))
+            return new Response(servingEntry as string, { status: 200 });
+        }
+        return s.fake.fetch(u, init);
+      }) as typeof fetch),
+    });
+    await p.unpause(inst.id, { kind: "restore" });
+    expect(hostsOfInstall(s)).toEqual([inst.id, inst.id]);
+    expect(signinOf(s, inst.id).disabled).toBeFalsy();
   });
 
   it("near expiry: suspend warns and goes on; resume refuses before any write", async () => {
