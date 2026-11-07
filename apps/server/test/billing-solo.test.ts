@@ -61,16 +61,17 @@ describe("effectivePlan: solo", () => {
     }
   });
 
-  it("tier free is unpaid in any status but suspended", () => {
-    for (const status of ["active", "past_due", "lapsed"] as const) {
-      const p = plan({ tier: "free", status, graceUntil: mid + DAY });
-      expect(p.lock).toEqual({
-        mode: "viewOnly",
-        tier: "free",
-        reason: "solo_unpaid",
-      });
-      expect(p.trialEligible).toBe(false);
-    }
+  it("tier free is the pre-Solo tier: today's rules, never view-only", () => {
+    const p = plan({ tier: "free", status: "active" });
+    expect(p.lock).toEqual({ mode: "solo", tier: "free", reason: "solo" });
+    expect(plan({ tier: "free", status: "active" }).trialEligible).toBe(true);
+    expect(
+      plan({ tier: "free", status: "active", trialEndsAt: 1 }).trialEligible,
+    ).toBe(false);
+    expect(plan({ tier: "free", status: "lapsed" }).lock).toMatchObject({
+      mode: "readOnly",
+      reason: "lapsed",
+    });
     expect(plan({ tier: "free", status: "suspended" }).lock).toMatchObject({
       mode: "readOnly",
       reason: "suspended",
@@ -184,6 +185,7 @@ describe.each([
         content: "<p>m</p>",
       });
       expect(r.isError).toBe(true);
+      expect(JSON.stringify(r)).toContain("plan_read_only");
     } finally {
       await client.close();
     }
@@ -327,6 +329,127 @@ describe("view-only: the solo team rules still apply", () => {
       body: { title: "nope" },
     });
     expect(p.status).toBe(403);
+  });
+});
+
+describe("view-only: the owner's other write paths", () => {
+  const ids = { art: "", data: "", pub: "" };
+  beforeAll(async () => {
+    await setPlan({ ...base, tier: "business", status: "active" });
+    const mk = async (b: Record<string, unknown> = {}) =>
+      ((await (await post(owner, b)).json()) as { id: string }).id;
+    ids.art = await mk();
+    ids.data = await mk({ capabilities: { db: true, storage: true } });
+    ids.pub = await mk({
+      capabilities: { db: true },
+      visibility: "public",
+      dataWriters: "viewers",
+    });
+    await setPlan(UNPAID);
+  });
+  const refused = async (r: Response) => {
+    expect(r.status).toBe(403);
+    expect((await errCode(r))?.code).toBe("plan_read_only");
+  };
+
+  it("an anonymous data write on a public artifact is refused", async () => {
+    await refused(
+      await send(props, R.dataDoc(ids.pub, "votes", uniq()), null, {
+        method: "PUT",
+        raw: '{"v":1}',
+      }),
+    );
+  });
+
+  it("restore, uploads, data reset and storage writes are refused; storage reads pass", async () => {
+    await refused(
+      await send(props, R.restoreVersion(ids.art, 1), owner.cookie, {
+        method: "POST",
+      }),
+    );
+    await refused(
+      await send(props, R.uploads, owner.cookie, {
+        method: "POST",
+        body: { path: "a.png", size: 3, contentType: "image/png" },
+      }),
+    );
+    await refused(
+      await send(props, R.uploads, owner.cookie, {
+        method: "POST",
+        body: {
+          artifactId: ids.art,
+          path: "a.png",
+          size: 3,
+          contentType: "image/png",
+        },
+      }),
+    );
+    await refused(
+      await send(props, R.dataReset(ids.data), owner.cookie, {
+        method: "PUT",
+        body: { collections: {} },
+      }),
+    );
+    const key = R.storageKey(ids.data, "k");
+    await refused(
+      await send(props, key, owner.cookie, { method: "PUT", raw: "{}" }),
+    );
+    await refused(await send(props, key, owner.cookie, { method: "DELETE" }));
+    const get = await send(props, key, owner.cookie);
+    expect([200, 404]).toContain(get.status);
+    expect((await errCode(get))?.code).not.toBe("plan_read_only");
+  });
+
+  it("MCP publish_artifact {id, visibility} passes", async () => {
+    const { token } = await createPat(env, owner.userId, `vis ${uniq()}`);
+    const client = await connect(token, { env: H, props });
+    try {
+      const r = await tool(client, "publish_artifact", {
+        id: ids.art,
+        visibility: "private",
+      });
+      expect(r.isError ?? false).toBe(false);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("a member revoking their own token passes", async () => {
+    await setPlan({ ...base, tier: "business", status: "active" });
+    const t = await send(props, R.tokens, member.cookie, {
+      method: "POST",
+      body: { label: `r ${uniq()}` },
+    });
+    const tokenId = ((await t.json()) as { id: string }).id;
+    await setPlan(UNPAID);
+    expect(
+      (await send(props, R.token(tokenId), member.cookie, { method: "DELETE" }))
+        .status,
+    ).toBe(204);
+  });
+});
+
+describe("tier free behaves as before Solo", () => {
+  const FREE: BillingRow = {
+    ...base,
+    trialEndsAt: null,
+    tier: "free",
+    status: "active",
+  };
+  it("the solo lock; the first invite starts the trial; the owner can publish", async () => {
+    await setPlan(FREE);
+    expect((await post(owner)).status).toBe(201);
+    const sp = await send(props, R.spaces, owner.cookie, {
+      method: "POST",
+      body: { name: `sp-${uniq()}` },
+    });
+    expect((await errCode(sp))?.code).toBe("plan_required");
+    const inv = await send(props, R.members, owner.cookie, {
+      method: "POST",
+      body: { email: `inv-${uniq()}@a.com`, role: "member" },
+    });
+    expect(inv.status).toBeLessThan(300);
+    expect(fake.calls.some((c) => c.path === "/trial/start")).toBe(true);
   });
 });
 

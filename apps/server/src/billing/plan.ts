@@ -155,7 +155,9 @@ export function effectivePlan(
     ...(reason ? { reason } : {}),
     lock: reason && mode ? { mode, tier: base.tier, reason } : null,
     trialEligible:
-      mode === "solo" && base.tier === "solo" && base.trialEndsAt === null,
+      mode === "solo" &&
+      (base.tier === "solo" || base.tier === "free") &&
+      base.trialEndsAt === null,
   });
   // OUR outage: the last good read is over 7 days old (or, with none, the
   // failures began over 7 days ago). Never upward: read-only.
@@ -163,9 +165,9 @@ export function effectivePlan(
   const since = good >= 0 ? good : (check?.failingSince ?? null);
   if (since !== null && now - since > PLAN_STALE_MS)
     return out("billing_unreachable", "readOnly");
-  // Solo, or the transition tier free: a lapse (or a past-due grace that is
-  // over) is view-only, not the team read-only.
-  const unpaidSolo = base.tier === "solo" || base.tier === "free";
+  // Solo only: a lapse (or a past-due grace that is over) is view-only, not
+  // the team read-only. The pre-Solo tier free keeps today's rules.
+  const unpaidSolo = base.tier === "solo";
   switch (base.status) {
     case "suspended":
       return out("suspended", "readOnly");
@@ -191,10 +193,8 @@ export function effectivePlan(
       (base.trialEndsAt !== null && now > base.trialEndsAt))
   )
     return out("trial_ended", "readOnly");
-  // Tier free (the transition value, any status not handled above) means no
-  // Solo subscription and no paid tier: unpaid.
-  if (base.tier === "free") return out("solo_unpaid", "viewOnly");
-  if (base.tier === "solo") return out("solo", "solo");
+  // free is the pre-Solo tier: the solo lock, as before Solo existed.
+  if (base.tier === "free" || base.tier === "solo") return out("solo", "solo");
   return out(null, null);
 }
 
@@ -278,6 +278,15 @@ export function planError(lock: PlanLock): ApiError {
 /** `lock` is the unpaid-Solo view-only lock (binds everyone, the owner too). */
 export const isViewOnly = (lock: PlanLock | null | undefined): boolean =>
   lock?.mode === "viewOnly";
+
+/**
+ * The one refusal for publishing and writes under the view-only lock:
+ * 403 plan_read_only (never 404), for everyone, the org owner included.
+ */
+export function refuseViewOnly(plan: EffectivePlan | null | undefined): void {
+  const lock = plan?.lock;
+  if (lock && isViewOnly(lock)) throw planError(lock);
+}
 
 /**
  * Team features (an invite, a shared space and its members, mappings and

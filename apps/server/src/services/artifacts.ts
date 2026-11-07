@@ -53,6 +53,7 @@ import {
   billingActive,
   isViewOnly,
   planError,
+  refuseViewOnly,
   requireTeamPlan,
 } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
@@ -198,7 +199,7 @@ export async function publish(
   // Under a suspension nothing becomes public: create and new version alike.
   refuseSuspendedPublic(user, input.visibility);
   // An unpaid Solo is view-only: no new artifact and no new version.
-  refuseViewOnly(user);
+  refuseViewOnly(planOfMember(user));
   // An edits publish plans from the current version, once it is known.
   let plan: Plan | null = input.edits ? null : planFiles(input);
   const db = env.DB;
@@ -1602,18 +1603,6 @@ function visibilityAudit(
       },
     },
   );
-}
-
-/**
- * The unpaid-Solo view-only lock (PlanLock "viewOnly") pauses publishing for
- * everyone, the org owner included: 403 plan_read_only. The one check for a
- * new artifact and a new version, REST and MCP (a settings-only change goes
- * through patch, which lets sharing pass). Live-data writes are refused in
- * policy planRefuses.
- */
-function refuseViewOnly(user: Member) {
-  const lock = planOfMember(user)?.lock;
-  if (lock && isViewOnly(lock)) throw planError(lock);
 }
 
 /**
