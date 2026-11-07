@@ -8,6 +8,7 @@ it("accepts exactly the known kinds", () => {
     "pi",
     "omp",
     "hermes",
+    "openclaw",
     "codex",
   ]);
   for (const k of AGENT_KINDS) expect(AgentKindSchema.parse(k)).toBe(k);
