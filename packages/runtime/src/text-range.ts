@@ -30,21 +30,47 @@ function textNodes(root: Node): Text[] {
   return out;
 }
 
+// Elements that break a line. The server builds the text it checks a quote
+// against with a space on both sides of these (apps/server comment-anchor.ts
+// BLOCKS), so the flat text does the same: a quote across two list items then
+// reads "one two", on both sides, and not "onetwo".
+const BREAKS =
+  "p,div,li,ul,ol,dl,dt,dd,h1,h2,h3,h4,h5,h6,hr,tr,td,th,table,section,article,header,footer,nav,aside,main,blockquote,pre,figure,figcaption,form,fieldset,address";
+
+const breakOf = (n: Node): Element | null =>
+  n.parentElement?.closest(BREAKS) ?? null;
+
 /**
- * The text nodes under a root with their flat start offsets. Build it once per
- * text version; every offset-to-range lookup is then a binary search.
+ * The text nodes under a root with their flat start offsets. Where two
+ * consecutive text nodes sit in different blocks and neither side already has
+ * whitespace there, the flat text holds one extra space that belongs to no
+ * node, so offsets are not always contiguous. Build it once per text version;
+ * every offset-to-range lookup is then a binary search.
  */
 export type TextIndex = { text: string; nodes: Text[]; starts: number[] };
 
 export function indexText(root: Node): TextIndex {
   const nodes = textNodes(root);
   const starts: number[] = [];
+  const parts: string[] = [];
   let pos = 0;
+  let prev: Text | null = null;
   for (const t of nodes) {
+    if (
+      prev &&
+      !/\s$/.test(prev.data) &&
+      !/^\s/.test(t.data) &&
+      breakOf(prev) !== breakOf(t)
+    ) {
+      parts.push(" ");
+      pos++;
+    }
     starts.push(pos);
+    parts.push(t.data);
     pos += t.data.length;
+    prev = t;
   }
-  return { text: nodes.map((t) => t.data).join(""), nodes, starts };
+  return { text: parts.join(""), nodes, starts };
 }
 
 export function flatText(root: Node): string {
@@ -54,24 +80,22 @@ export function flatText(root: Node): string {
 const PRECEDING = 2;
 
 // Flat-text offset of a DOM boundary point.
-function pointOffset(nodes: Text[], node: Node, offset: number): number {
-  let sum = 0;
+function pointOffset(index: TextIndex, node: Node, offset: number): number {
+  const { nodes, starts } = index;
   if (node.nodeType === 3) {
-    for (const t of nodes) {
-      if (t === node) return sum + offset;
-      sum += t.data.length;
-    }
-    return sum;
+    const i = nodes.indexOf(node as Text);
+    return i < 0 ? index.text.length : starts[i] + offset;
   }
   const boundary = node.childNodes[offset] ?? null;
+  let k = 0;
   for (const t of nodes) {
     const before = boundary
       ? (boundary.compareDocumentPosition(t) & PRECEDING) !== 0
       : node.contains(t) || (node.compareDocumentPosition(t) & PRECEDING) !== 0;
     if (!before) break;
-    sum += t.data.length;
+    k++;
   }
-  return sum;
+  return k === 0 ? 0 : endOf(index, k - 1);
 }
 
 /** Offsets of a range, or null if it is not inside root. */
@@ -85,14 +109,16 @@ export function rangeToOffsets(
     !root.contains(range.endContainer)
   )
     return null;
-  const nodes = index?.nodes ?? textNodes(root);
+  const idx = index ?? indexText(root);
   return {
-    start: pointOffset(nodes, range.startContainer, range.startOffset),
-    end: pointOffset(nodes, range.endContainer, range.endOffset),
+    start: pointOffset(idx, range.startContainer, range.startOffset),
+    end: pointOffset(idx, range.endContainer, range.endOffset),
   };
 }
 
-const endOf = (i: TextIndex, k: number) => i.starts[k] + i.nodes[k].data.length;
+function endOf(i: TextIndex, k: number) {
+  return i.starts[k] + i.nodes[k].data.length;
+}
 
 /** A Range for text offsets in an index, or null if they fall outside its text. */
 export function rangeFromIndex(
@@ -123,8 +149,9 @@ export function rangeFromIndex(
   if (si >= nodes.length || ei >= nodes.length) return null;
   const doc = nodes[si].ownerDocument;
   const r = doc.createRange();
-  r.setStart(nodes[si], start - starts[si]);
-  r.setEnd(nodes[ei], end - starts[ei]);
+  // An offset on a separator (no node of its own) snaps into the nearest node.
+  r.setStart(nodes[si], Math.max(0, start - starts[si]));
+  r.setEnd(nodes[ei], Math.max(0, end - starts[ei]));
   return r;
 }
 
