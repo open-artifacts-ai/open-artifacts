@@ -49,10 +49,17 @@ describe("visible text", () => {
       ),
     ).toBe("one two three");
   });
-  it("leaves an unknown entity as written", () => {
-    expect(decodeEntities("&nosuch; &#0; &#xD800;")).toBe(
-      "&nosuch; &#0; &#xD800;",
+  it("leaves an unknown name as written; invalid numbers become U+FFFD", () => {
+    expect(decodeEntities("&nosuch; &#0; &#xD800; &#x110000;")).toBe(
+      "&nosuch; \uFFFD \uFFFD \uFFFD",
     );
+  });
+  it("decodes the full named set, legacy forms and windows-1252 numbers", () => {
+    expect(
+      decodeEntities(
+        "&le; &ge; &ne; &rarr; &hellip; &nbsp;| &copy &amp &#128;",
+      ),
+    ).toBe("\u2264 \u2265 \u2260 \u2192 \u2026 \u00a0| \u00a9 & \u20ac");
   });
 });
 
@@ -254,5 +261,33 @@ describe("verifyQuote and checkAnchor", () => {
         contentHash: "abc",
       }),
     ).rejects.toMatchObject({ code: "invalid_anchor" });
+  });
+});
+
+describe("quotes on a page with named entities (#1735)", () => {
+  const html =
+    '<h1>Next smaller element</h1><p class="intro">For each index <code>i</code>, find the first <code>j &gt; i</code> with <code>arr[j]</code> &le; <code>arr[i]</code>. We track <b>both</b> the stack and <code>nxt[j]</code>; if none exists, <code>nxt = n</code>.</p>';
+  const exact =
+    "For each index i, find the first j > i with arr[j] \u2264 arr[i]. We track both the stack and nxt[j]; if none exists, nxt = n.";
+  it("finds the paragraph quote with a non-ascii entity", async () => {
+    const t = normalizeText(await visibleText(html));
+    expect(findQuote(t, { exact })).not.toBeNull();
+  });
+  it("finds a quote that crosses two blocks", async () => {
+    const t = normalizeText(await visibleText(html));
+    const q = { exact: "smaller element For each index i, find the first" };
+    expect(findQuote(t, q)).not.toBeNull();
+  });
+  it("finds ge, ne, rarr, hellip, nbsp and a legacy copy", async () => {
+    const t = normalizeText(
+      await visibleText(
+        "<p>a &ge; b &ne; c &rarr; d&hellip; e&nbsp;f &copy 2026</p>",
+      ),
+    );
+    expect(
+      findQuote(t, {
+        exact: "a \u2265 b \u2260 c \u2192 d\u2026 e f \u00a9 2026",
+      }),
+    ).not.toBeNull();
   });
 });

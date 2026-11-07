@@ -199,6 +199,21 @@ describe("threads", () => {
     });
   });
 
+  it("a text comment on a quote with a named entity is accepted (#1735)", async () => {
+    const id = await pub({
+      visibility: "team",
+      content:
+        "<p><code>arr[j]</code> &le; <code>arr[i]</code> and &copy 2026</p>",
+    });
+    const ok = await post(id, viewer, "x", {
+      kind: "text",
+      exact: "arr[j] \u2264 arr[i] and \u00a9 2026",
+      prefix: "",
+      suffix: "",
+    });
+    expect(ok.status).toBe(201);
+  });
+
   it("a text anchor is verified against the html version", async () => {
     const id = await pub({ visibility: "team" });
     const ok = await post(id, viewer, "x", {

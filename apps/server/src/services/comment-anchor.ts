@@ -1,4 +1,5 @@
 import { CONTEXT_CHARS, planOf } from "@oa/shared";
+import { decodeHTML } from "entities";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { sha256Sink } from "../util/digest.js";
@@ -15,51 +16,16 @@ export const MAX_VISIBLE_CHARS = 4 * 1024 * 1024;
 export const normalizeText = (s: string): string =>
   s.replace(/\s+/g, " ").trim();
 
-const NAMED: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  nbsp: " ",
-  ndash: "–",
-  mdash: "—",
-  hellip: "…",
-  lsquo: "‘",
-  rsquo: "’",
-  ldquo: "“",
-  rdquo: "”",
-  copy: "©",
-  reg: "®",
-  trade: "™",
-  laquo: "«",
-  raquo: "»",
-  bull: "•",
-  middot: "·",
-  times: "×",
-  euro: "€",
-  pound: "£",
-  yen: "¥",
-  cent: "¢",
-  deg: "°",
-  plusmn: "±",
-  frac12: "½",
-};
-
-/** Decodes the entities of one text node: named (a common set), decimal and hex. */
+/**
+ * Decodes the character references of one text node the way a browser does:
+ * every HTML5 named entity, the legacy forms without a semicolon (&copy),
+ * and numeric references (U+0000, surrogates and values past U+10FFFF become
+ * U+FFFD; &#128; to &#159; use the windows-1252 table). An unknown name stays
+ * as written. The client quote comes from the rendered page, so the two
+ * sides must agree on every entity (#1735).
+ */
 export function decodeEntities(s: string): string {
-  if (!s.includes("&")) return s;
-  return s.replace(
-    /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([A-Za-z][A-Za-z0-9]{1,8}));/g,
-    (whole, dec?: string, hex?: string, name?: string) => {
-      if (name !== undefined) return NAMED[name] ?? whole;
-      const cp =
-        dec !== undefined ? Number(dec) : Number.parseInt(hex ?? "", 16);
-      if (!Number.isFinite(cp) || cp < 1 || cp > 0x10ffff) return whole;
-      if (cp >= 0xd800 && cp <= 0xdfff) return whole;
-      return String.fromCodePoint(cp);
-    },
-  );
+  return s.includes("&") ? decodeHTML(s) : s;
 }
 
 /** Elements whose text is never visible. */

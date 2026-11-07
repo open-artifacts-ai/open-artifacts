@@ -235,6 +235,9 @@ importers:
       drizzle-orm:
         specifier: ^0.45.4
         version: 0.45.4(@cloudflare/workers-types@5.20261018.1)
+      entities:
+        specifier: 8.1.0
+        version: 8.1.0
       hono:
         specifier: ^4.13.13
         version: 4.13.13
