@@ -192,6 +192,53 @@ describe("comments: layouts", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
+  it("focusing a composer in the half-height phone sheet expands it", async () => {
+    viewport(400);
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    const box = await within(sheet).findAllByRole("textbox");
+    fireEvent.focus(box[0] as HTMLElement);
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+  });
+
+  it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {
+    viewport(400);
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    fireEvent.click(screen.getByRole("button", { name: "Shrink comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    // Dragging the handle up goes to full height; the click that follows does not undo it.
+    const handle = screen.getByRole("button", { name: "Expand comments" });
+    fireEvent.pointerDown(handle, { clientY: 300 });
+    fireEvent.pointerUp(handle, { clientY: 200 });
+    fireEvent.click(handle);
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    // A tap after a finished drag still toggles (the flag is reset on pointerdown).
+    fireEvent.pointerDown(handle, { clientY: 100 });
+    fireEvent.pointerUp(handle, { clientY: 100 });
+    fireEvent.click(handle);
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    // A cancelled pointer clears the drag: the up that follows is ignored.
+    fireEvent.pointerDown(handle, { clientY: 300 });
+    fireEvent.pointerCancel(handle);
+    fireEvent.pointerUp(handle, { clientY: 100 });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    const backdrop = document.querySelector("[data-sheet-backdrop]");
+    expect(backdrop).not.toBeNull();
+    fireEvent.click(backdrop as Element);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
   it("shows no Comments button, column or frame highlights when the setting is off", async () => {
     server.use(
       http.get(`*${R.artifact(OWNED)}`, () =>
@@ -386,9 +433,10 @@ describe("comments: actions", () => {
     const card = (await within(c).findByText("Looks good overall.")).closest(
       "[data-thread]",
     ) as HTMLElement;
-    expect(
-      within(card).getByText(/Resolved by Sam Rivera/),
-    ).toBeInTheDocument();
+    const line = within(card).getByText(/Resolved by Sam Rivera/);
+    expect(line).toBeInTheDocument();
+    expect(line.className).toMatch(/text-green-/);
+    expect(line.querySelector("svg")).not.toBeNull();
     fireEvent.click(within(card).getByRole("button", { name: "Reopen" }));
     await waitFor(() => expect(patches[0]?.body).toEqual({ status: "open" }));
     expect(await within(c).findByText("2 open")).toBeInTheDocument();
@@ -1333,9 +1381,13 @@ describe("comments: review round 1", () => {
     expect(when.className).toMatch(/whitespace-nowrap/);
     expect(when.className).toMatch(/shrink-0/);
     expect(line.querySelector("b")?.className).toMatch(/truncate/);
-    // "via <agent>" is its own line under the name, not beside the time.
-    expect(line.contains(within(c).getByText("via Claude Code"))).toBe(false);
-    expect(line.nextElementSibling?.textContent).toBe("via Claude Code");
+    // "via <agent>" sits on the name's line, small and muted.
+    const via = within(c).getByText("via Claude Code");
+    expect(line.contains(via)).toBe(true);
+    expect(via.className).toMatch(/text-muted-foreground/);
+    expect(via.className).toMatch(/truncate/);
+    // An initials avatar leads the name.
+    expect(row.querySelector("[data-avatar]")).not.toBeNull();
   });
 
   const art = (over: object) =>
@@ -1681,5 +1733,16 @@ describe("comments: unavailable is not forever", () => {
       screen.queryByRole("complementary", { name: "Side panel" }),
     ).toBeNull();
     expect(document.querySelector("aside[aria-label='Side panel']")).toBeNull();
+  });
+});
+
+describe("initials", () => {
+  it("keeps emoji and CJK characters whole", async () => {
+    const { initials } = await import("../src/viewer/comments/CommentsBody");
+    expect(initials("😀 Robot")).toBe("😀R");
+    expect(initials("😀")).toBe("😀");
+    expect(initials("山田 太郎")).toBe("山太");
+    expect(initials("Sam Rivera")).toBe("SR");
+    expect(initials("cursor")).toBe("CU");
   });
 });
