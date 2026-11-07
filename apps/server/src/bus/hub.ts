@@ -3057,7 +3057,7 @@ export class BusHub extends DurableObject<Env> {
     hub.#maxLinks = max ?? BUS_LINK_MAX;
   }
 
-  /** #1299: answers true. No storage access, no alarm; the hosted canary's liveness probe. */
+  /** #1299: answers true. Reads no member data and arms no alarm (the constructor still creates the schema); the hosted canary's liveness probe. */
   ping(): true {
     return true;
   }

@@ -75,7 +75,7 @@ export const busCloseKind = (reason: string): BusCloseKind =>
 
 /** What the Worker calls on a member's BusHub (bus/hub.ts), typed here so callers need not load the DO. */
 export type BusHubRpc = {
-  /** True; touches no storage (the reserved ping hub). */
+  /** True; reads no member data and arms no alarm (the reserved ping hub). */
   ping(): Promise<true>;
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(): Promise<{ connected: string[]; agents: BusAgent[] }>;

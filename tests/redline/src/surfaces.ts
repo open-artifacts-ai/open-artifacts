@@ -205,6 +205,9 @@ export const HOSTED_FEATURES: readonly string[] = ["spaces", "usage_off"];
  */
 export const BUS_TOOLS: readonly string[] = ["bus_role_propose"];
 
+/** Instance routes that answer 404 while the bus is off, so no success leg on a hosted install. */
+export const BUS_OFF_ROUTES: readonly string[] = ["GET /api/v1/bus/ping"];
+
 /**
  * Routes whose success leg needs a connected Google directory: the
  * callback answers 404 without the connector, and a mapping delete needs a
@@ -233,7 +236,7 @@ const WHY: Record<DropWhy, string> = {
   "feature-off":
     "hidden on hosted installs (a FEATURES flag every hosted install sets turns it off: 404 for everyone), so crossCheck has no success leg",
   "bus-off":
-    "the bus is off on every hosted install (HOSTED=1 until #1299), so its MCP tool isn't offered there and crossCheck has no success leg",
+    "the bus is off on every hosted install (HOSTED=1 until #1299), so its MCP tool isn't offered there and its ping route is 404 (the same as a refusal): crossCheck has no success leg",
   "no-directory":
     "needs a connected Google directory (the connector, or a mapping row only it creates); the red-line installs have none, so crossCheck has no success leg",
 };
@@ -294,6 +297,8 @@ export const EXCLUDED_ROUTES: Readonly<Record<string, string>> = {
     "owner-only (the broker check): no admin success leg",
   "POST /api/v1/notices/guest_summary/dismiss":
     "owner-only (the guest summary notice, parity 2): no admin success leg",
+  "GET /api/v1/bus/ping":
+    "bus-off: 404 on every hosted install (the bus is off until #1299), the same as a refusal; no success leg",
   "GET /api/v1/directory/callback":
     "needs the Google directory connector (404 without it)",
   "GET /api/v1/artifacts/:id/anon-id":
@@ -652,6 +657,24 @@ export const DROPPED: Readonly<
     why: "real-only",
     coveredBy: [INSTANCE],
   },
+  // #1299: the matrix calls it as every caller (bus on in the test pool); its
+  // own tests prove the 404 while the bus is off and the reserved hub name.
+  "org GET /api/v1/bus/ping": {
+    why: "bus-off",
+    coveredBy: [
+      INSTANCE,
+      {
+        file: "apps/server/test/bus/bus.routes.test.ts",
+        describe: "GET /api/v1/bus/ping (#1299)",
+        test: "is 404 while the bus is off, before any hub is touched: unbound, or hosted without FEATURES bus",
+      },
+      {
+        file: "apps/server/test/bus/bus.routes.test.ts",
+        describe: "GET /api/v1/bus/ping (#1299)",
+        test: "uses the reserved hub name, never the caller's hub",
+      },
+    ],
+  },
   // #1372: the matrix calls it as every caller (bus on in the test pool);
   // its own tests prove it only proposes.
   "artifact mcp bus_role_propose": {
@@ -917,6 +940,10 @@ export function derive(): Derived {
       HOSTED_FEATURES.includes(p.offWhen)
     ) {
       drop(name, [s.route], "feature-off");
+      continue;
+    }
+    if (BUS_OFF_ROUTES.includes(s.route)) {
+      drop(name, [s.route], "bus-off");
       continue;
     }
     if ((NO_DIRECTORY.org as readonly string[]).includes(s.route)) {

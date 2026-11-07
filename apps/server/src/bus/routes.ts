@@ -686,7 +686,12 @@ export function mountBus(app: AppType): void {
   app.get(R.busPing, async (c) => {
     requireUser(c);
     if (!(await busPing(c.env)))
-      throw new ApiError("internal", "Bus hub did not answer");
+      throw new ApiError(
+        "storage_unavailable",
+        "Temporarily unavailable. Try again shortly.",
+        undefined,
+        { "retry-after": "5" },
+      );
     return c.json({ ok: true });
   });
   app.get(R.busAgents, async (c) => {
