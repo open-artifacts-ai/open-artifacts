@@ -45,7 +45,7 @@ import {
 import { fetchAndWait, login } from "../helpers.js";
 import { connect, textOf, tool } from "../mcp-helpers.js";
 import { pinMiddayUtc } from "../midday.js";
-import { daemon, hello, ns, up, waitFor } from "./helpers.js";
+import { daemon, hello, ns, trackSocket, up, waitFor } from "./helpers.js";
 
 /** A hosted install with the bus feature on (FEATURES "bus"). */
 const H = {
@@ -358,6 +358,7 @@ describe.each(Object.entries(LOCKS))(
       expect(res.status).toBe(101);
       const ws = res.webSocket as WebSocket;
       ws.accept();
+      trackSocket(ws);
       const first = new Promise<string>((resolve) =>
         ws.addEventListener("message", (ev) => resolve(String(ev.data))),
       );

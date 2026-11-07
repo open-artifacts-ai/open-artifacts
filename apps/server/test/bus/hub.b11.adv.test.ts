@@ -30,7 +30,7 @@ import {
   OWNER_ORG_ID,
 } from "../../src/bus/hub.js";
 import { logError, logInfo } from "../../src/log.js";
-import { e, hello, ns, up } from "./helpers.js";
+import { e, hello, ns, trackSocket, up } from "./helpers.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -56,6 +56,7 @@ type D = {
 
 function wire(ws: WebSocket, decode: boolean): Omit<D, "send"> {
   ws.accept();
+  trackSocket(ws);
   const queue: ServerFrame[] = [];
   const waiting: ((f: ServerFrame) => void)[] = [];
   const seen: ServerFrame[] = [];

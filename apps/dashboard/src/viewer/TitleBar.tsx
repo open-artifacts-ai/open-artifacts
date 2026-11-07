@@ -16,7 +16,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Maximize2 } from "lucide-react";
+import { Maximize2, MessageSquare } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
 import {
@@ -276,6 +276,7 @@ export function TitleBar({
             onClick={comments.onClick}
           >
             {/* A space in the text: the visible label must read "Comments 3", inside the name "Comments, 3 open". */}
+            <MessageSquare aria-hidden="true" className="size-3.5" />
             Comments{" "}
             {comments.open > 0 && (
               <span className="rounded-full bg-primary px-1.5 text-[length:var(--oa-text-xs)] text-primary-foreground">

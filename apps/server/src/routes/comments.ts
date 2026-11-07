@@ -1,6 +1,7 @@
 import type { AccessLevel } from "@oa/shared";
 import {
   ANON_ID_HEADER,
+  AnswerBodySchema,
   isId,
   NewThreadBodySchema,
   ReplyBodySchema,
@@ -20,6 +21,8 @@ import type { AgentAttr } from "../services/agent-usage.js";
 import {
   addReply,
   addThread,
+  answerAsk,
+  artifactAgents,
   type CommentViewer,
   type CommentWho,
   deleteComment,
@@ -42,6 +45,8 @@ const COMMENTS = `${ART}/comments`;
 const THREAD = `${COMMENTS}/:threadId`;
 const REPLIES = `${THREAD}/replies`;
 const COMMENT = `${THREAD}/comments/:commentId`;
+const ANSWER = `${COMMENT}/answer`;
+const AGENTS = `${ART}/agents`;
 
 /** A body is at most 2,000 characters; the anchor adds under 3 KB. */
 const MAX_BODY = 32 * 1024;
@@ -179,19 +184,18 @@ export function mountComments(app: AppType): void {
     const { id, artifact, who: cw, level } = await open(c, "comments.write");
     const raw = NewThreadBodySchema.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
-    const { who, viewer, issued } = await identity(
-      c,
-      id,
-      true,
-      modOf(cw, level, artifact),
-    );
+    const moderator = modOf(cw, level, artifact);
+    mayTarget(raw.data, moderator);
+    const { who, viewer, issued } = await identity(c, id, true, moderator);
     if (!who) throw new ApiError("unauthorized", "Sign in to comment");
     const named = raw.data.guestName;
     const w: CommentWho =
       who.kind === "guest" && named !== undefined
         ? { ...who, name: named }
         : who;
-    const t = await addThread(c.env, artifact, w, viewer, raw.data);
+    const t = await addThread(c.env, artifact, w, viewer, raw.data, {
+      moderator,
+    });
     return withAnon(issued, c.json(t, 201));
   });
 
@@ -200,18 +204,25 @@ export function mountComments(app: AppType): void {
     const threadId = idParam(c, "threadId");
     const raw = ReplyBodySchema.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
-    const { who, viewer, issued } = await identity(
-      c,
-      id,
-      true,
-      modOf(cw, level, artifact),
-    );
+    const moderator = modOf(cw, level, artifact);
+    mayTarget(raw.data, moderator);
+    const { who, viewer, issued } = await identity(c, id, true, moderator);
     if (!who) throw new ApiError("unauthorized", "Sign in to comment");
     const w: CommentWho =
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }
         : who;
-    const out = await addReply(c.env, id, threadId, w, viewer, raw.data.body);
+    const { mentions, assign } = raw.data;
+    const out = await addReply(
+      c.env,
+      id,
+      threadId,
+      w,
+      viewer,
+      raw.data.body,
+      { mentions, assign },
+      { moderator },
+    );
     return withAnon(issued, c.json(out, 201));
   });
 
@@ -276,6 +287,45 @@ export function mountComments(app: AppType): void {
     return c.json(out);
   });
 
+  app.post(ANSWER, async (c) => {
+    const { id, who: cw, level, artifact } = await open(c, "comments.write");
+    const threadId = idParam(c, "threadId");
+    const commentId = idParam(c, "commentId");
+    const raw = AnswerBodySchema.safeParse(await jsonOf(c));
+    if (!raw.success) return bad(raw.error.issues);
+    // Never minted: a guest has no key, so is never one of the people asked
+    // (the DO answers 403 after 404, as for a signed-in stranger).
+    const { who: signed, viewer } = await identity(
+      c,
+      id,
+      false,
+      modOf(cw, level, artifact),
+    );
+    const who: CommentWho = signed ?? {
+      kind: "guest",
+      short: viewer.short ?? "",
+      rate: guestRate(c),
+    };
+    const out = await answerAsk(
+      c.env,
+      id,
+      threadId,
+      commentId,
+      who,
+      viewer,
+      raw.data.optionId,
+    );
+    return c.json(out);
+  });
+
+  // The agents that can be mentioned or assigned: for the owner and editors,
+  // who may; everyone else sees none (they are other people's agents).
+  app.get(AGENTS, async (c) => {
+    const { id, who: cw, level, artifact } = await open(c, "comments.read");
+    if (!modOf(cw, level, artifact)) return c.json([]);
+    return c.json(await artifactAgents(c.env, id, c.var.user?.id ?? null));
+  });
+
   app.delete(COMMENT, async (c) => {
     const {
       id,
@@ -291,6 +341,18 @@ export function mountComments(app: AppType): void {
     await deleteComment(c.env, id, threadId, commentId, actor, moderator);
     return c.body(null, 204);
   });
+}
+
+/** 403 forbidden for mentions or an assignment from anyone but the owner and editors. */
+function mayTarget(
+  b: { mentions?: unknown[]; assign?: unknown },
+  moderator: boolean,
+): void {
+  if (((b.mentions?.length ?? 0) > 0 || b.assign !== undefined) && !moderator)
+    throw new ApiError(
+      "forbidden",
+      "Only the owner and editors can mention or assign",
+    );
 }
 
 /** Whether the caller's level may delete anyone's comment. */

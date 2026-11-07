@@ -125,7 +125,17 @@ export async function enforce(
         !suspendedMember(who.user)
           ? { ...who, cap: null }
           : who;
-      await authorize(env, gate, id, p.artifact, {
+      // The unpaid-Solo view-only lock refuses "publish" for everyone, so on a
+      // route that carries sharing the floor is the sharing level (the
+      // handler, patch, refuses everything but visibility).
+      const action =
+        p.planSharing &&
+        p.artifact === "publish" &&
+        planOfMember(who.kind === "user" ? who.user : null)?.lock?.mode ===
+          "viewOnly"
+          ? "visibility"
+          : p.artifact;
+      await authorize(env, gate, id, action, {
         allowDeleted: p.allowDeleted,
         prefetch: true,
         ctx: p.ctx,

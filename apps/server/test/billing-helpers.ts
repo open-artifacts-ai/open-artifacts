@@ -97,7 +97,7 @@ export function fakeBilling(install = INSTALL) {
           ),
         );
       if (path === "/trial/start") {
-        if (s.row.tier === "free" && s.row.trialEndsAt === null)
+        if (s.row.tier === "solo" && s.row.trialEndsAt === null)
           s.row = {
             ...s.row,
             tier: "trial",

@@ -38,8 +38,7 @@ import { ApiError } from "../http/errors.js";
 //
 // With the gate (planOfRaw): the billing tier, i.e. the cached answer, with
 // the 7-day last-good rule. With no answer yet, the provisioned TIER is the
-// last good tier; with neither, free (solo, trial allowed), never
-// unenforced.
+// last good tier; with neither, solo (trial allowed), never unenforced.
 //
 // Features (Me.instance.features and every check) follow the plan's tier at
 // read time through TIER_FEATURES, not the provisioned FEATURES (planFeatures).
@@ -101,13 +100,18 @@ export function parseStored<T>(
 /**
  * What the plan locks, for everyone but the org owner (the "plan" cap) and
  * for the owner's team features:
- * - solo: a free instance. Team features answer plan_required; an invite is
+ * - solo: a Solo instance. Team features answer plan_required; an invite is
  *   allowed while the trial was never used (it starts the trial).
  * - readOnly: team features are read-only (plan_read_only). Nothing is
  *   deleted; removals (a member) still pass. Sharing is never locked.
+ * - viewOnly: an unpaid Solo (reason solo_unpaid). Binds EVERYONE, the org
+ *   owner included: publishing and live-data writes are refused (403
+ *   plan_read_only, planRefuses and publish), team features as under solo.
+ *   Non-owners carry the "plan" cap as under solo. Reads, sharing and billing
+ *   keep working.
  */
 export type PlanLock = {
-  mode: "solo" | "readOnly";
+  mode: "solo" | "readOnly" | "viewOnly";
   tier: BillingTier;
   reason: PlanReason;
 };
@@ -120,13 +124,13 @@ export type EffectivePlan = {
   readOnly: boolean;
   reason?: PlanReason;
   lock: PlanLock | null;
-  /** Free and the trial never started: the first invite starts it. */
+  /** Solo and the trial never started: the first invite starts it. */
   trialEligible: boolean;
 };
 
 /**
  * The plan from the cached answer and the read attempts. With no answer yet,
- * the provisioned TIER (free when unset) is the last good tier. The 7 days
+ * the provisioned TIER (solo when unset) is the last good tier. The 7 days
  * run from the last good read (the answer's asOf, or a good read of an older
  * version), else from the first failed read.
  */
@@ -137,7 +141,7 @@ export function effectivePlan(
   now: number,
 ): EffectivePlan {
   const base = last ?? {
-    tier: parseTier(envTier) ?? ("free" as const),
+    tier: parseTier(envTier) ?? ("solo" as const),
     status: "active" as const,
     trialEndsAt: null,
     graceUntil: null,
@@ -147,11 +151,13 @@ export function effectivePlan(
     status: base.status,
     trialEndsAt: base.trialEndsAt,
     graceUntil: base.graceUntil,
-    readOnly: mode === "readOnly",
+    readOnly: mode === "readOnly" || mode === "viewOnly",
     ...(reason ? { reason } : {}),
     lock: reason && mode ? { mode, tier: base.tier, reason } : null,
     trialEligible:
-      mode === "solo" && base.tier === "free" && base.trialEndsAt === null,
+      mode === "solo" &&
+      (base.tier === "solo" || base.tier === "free") &&
+      base.trialEndsAt === null,
   });
   // OUR outage: the last good read is over 7 days old (or, with none, the
   // failures began over 7 days ago). Never upward: read-only.
@@ -159,17 +165,23 @@ export function effectivePlan(
   const since = good >= 0 ? good : (check?.failingSince ?? null);
   if (since !== null && now - since > PLAN_STALE_MS)
     return out("billing_unreachable", "readOnly");
+  // Solo only: a lapse (or a past-due grace that is over) is view-only, not
+  // the team read-only. The pre-Solo tier free keeps today's rules.
+  const unpaidSolo = base.tier === "solo";
   switch (base.status) {
     case "suspended":
       return out("suspended", "readOnly");
     case "lapsed":
+      if (unpaidSolo) return out("solo_unpaid", "viewOnly");
       return out(base.tier === "trial" ? "trial_ended" : "lapsed", "readOnly");
     case "past_due":
       // Grace runs until graceUntil; billing sets it with past_due. Fail
       // closed on a missing date: the grace is 7 days from the answer (past_due
       // only ever comes from a billing answer).
       if (now > (base.graceUntil ?? (last?.asOf ?? now) + PLAN_STALE_MS))
-        return out("payment_failed", "readOnly");
+        return unpaidSolo
+          ? out("solo_unpaid", "viewOnly")
+          : out("payment_failed", "readOnly");
       break;
   }
   // A billing answer for a trial with no end date counts as ended (fail
@@ -181,7 +193,8 @@ export function effectivePlan(
       (base.trialEndsAt !== null && now > base.trialEndsAt))
   )
     return out("trial_ended", "readOnly");
-  if (base.tier === "free") return out("solo", "solo");
+  // free is the pre-Solo tier: the solo lock, as before Solo existed.
+  if (base.tier === "free" || base.tier === "solo") return out("solo", "solo");
   return out(null, null);
 }
 
@@ -202,7 +215,7 @@ export function planOfRaw(
   if (!(o.gate ?? billingGate() !== null)) return null;
   const last = parseStored(TierAnswerSchema, plan);
   const c = parseStored(PlanCheckSchema, check);
-  // The billing tier, with the last-good rule. No answer and no TIER: free
+  // The billing tier, with the last-good rule. No answer and no TIER: solo
   // (solo, trial allowed) until the first good read, never unenforced.
   return effectivePlan(last, c, env.TIER, now);
 }
@@ -212,13 +225,14 @@ const HOSTED_FLAGS: readonly EnvFeatureFlag[] = ["usage_off"];
 
 /**
  * The feature flags for `plan`'s tier (TIER_FEATURES; the trial is
- * Business, and a free instance reports the trial's features: its team
+ * Business, and a solo or free instance reports the trial's features: its team
  * features are refused by the solo lock, so the paywall can show them). A
  * downgrade to Team swaps sync_google for sync_frozen: nothing is deleted
  * or disconnected. A lapse keeps the tier's features, read-only (the lock).
  */
 export function planFeatures(plan: EffectivePlan): EnvFeatureFlag[] {
-  const tier = plan.tier === "free" ? "trial" : plan.tier;
+  const tier =
+    plan.tier === "free" || plan.tier === "solo" ? "trial" : plan.tier;
   return [...TIER_FEATURES[tier], ...HOSTED_FLAGS];
 }
 
@@ -242,10 +256,16 @@ export async function readPlan(
 /** The refusal for a team-feature write under `lock`. */
 export function planError(lock: PlanLock): ApiError {
   const details: PlanRefusalDetails = { tier: lock.tier, reason: lock.reason };
+  if (lock.mode === "viewOnly")
+    return new ApiError(
+      "plan_read_only",
+      "Publishing is paused until this instance's Solo plan is paid.",
+      details,
+    );
   return lock.mode === "solo"
     ? new ApiError(
         "plan_required",
-        "This needs a team plan: a free instance is for one person",
+        "This needs a team plan: a Solo instance is for one person",
         details,
       )
     : new ApiError(
@@ -255,11 +275,24 @@ export function planError(lock: PlanLock): ApiError {
       );
 }
 
+/** `lock` is the unpaid-Solo view-only lock (binds everyone, the owner too). */
+export const isViewOnly = (lock: PlanLock | null | undefined): boolean =>
+  lock?.mode === "viewOnly";
+
+/**
+ * The one refusal for publishing and writes under the view-only lock:
+ * 403 plan_read_only (never 404), for everyone, the org owner included.
+ */
+export function refuseViewOnly(plan: EffectivePlan | null | undefined): void {
+  const lock = plan?.lock;
+  if (lock && isViewOnly(lock)) throw planError(lock);
+}
+
 /**
  * Team features (an invite, a shared space and its members, mappings and
- * moves) need a plan; sharing an artifact never does (free on every plan): plan_required on a free
+ * moves) need a plan; sharing an artifact never does (free on every plan): plan_required on a solo
  * instance, plan_read_only while read-only. `invite`: the first invite on a
- * free instance whose trial never ran passes (it starts the trial).
+ * solo instance whose trial never ran passes (it starts the trial).
  */
 export function requireTeamPlan(
   plan: EffectivePlan | null,
