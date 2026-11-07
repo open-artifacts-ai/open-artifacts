@@ -3190,16 +3190,9 @@ export class BusHub extends DurableObject<Env> {
 
   // ------------------------------------------------------------------ reach
 
-  #maxReach = BUS_REACH_MAX;
-
-  /** Tests only (static, not RPC): the reach cap (null: BUS_REACH_MAX). */
-  static setMaxReachForTests(hub: BusHub, max: number | null): void {
-    hub.#maxReach = max ?? BUS_REACH_MAX;
-  }
-
   /** #1346: the member's reach grants. Worker only. */
   async listReach(): Promise<ReachGrant[]> {
-    return listReach(this.ctx.storage.sql, OWNER_ORG_ID, this.#maxReach);
+    return listReach(this.ctx.storage.sql, OWNER_ORG_ID, BUS_REACH_MAX);
   }
 
   /**
@@ -3220,7 +3213,7 @@ export class BusHub extends DurableObject<Env> {
       target,
       this.#now(),
       newId,
-      this.#maxReach,
+      BUS_REACH_MAX,
     );
     if (r.ok && r.created)
       notifyRoster(this.ctx, {

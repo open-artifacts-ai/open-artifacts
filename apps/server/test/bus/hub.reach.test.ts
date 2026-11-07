@@ -267,16 +267,20 @@ describe("resolution", () => {
 });
 
 describe("the role is the key", () => {
-  it("a vacated role gives no reach and loses its grants", async () => {
+  it("a vacated role gives no reach but keeps its grants; a new holder gets them", async () => {
     const w = await world();
     expect((await send(w.dh, "h", w.bn)).state).toBe("pending");
-    const r = await (await hubOf()).putRole(w.x, "lead", null);
-    expect(r.ok).toBe(true);
+    const hub = await hubOf();
+    expect((await hub.putRole(w.x, "lead", null)).ok).toBe(true);
     expect((await send(w.dh, "h", w.bn)).reason).toBe("unknown_agent");
     expect(names(await list(w.dh, "h"))).toEqual([w.hn, w.pn].sort());
-    expect(
-      (await (await hubOf()).listReach()).some((g) => g.roleNamespace === w.x),
-    ).toBe(false);
+    expect((await hub.listReach()).some((g) => g.roleNamespace === w.x)).toBe(
+      true,
+    );
+    // Re-pointed to another agent, the reach works again.
+    await holds(w.x, "lead", w.pn);
+    expect((await send(w.dp, "p", w.bn)).state).toBe("pending");
+    expect((await send(w.dh, "h", w.bn)).reason).toBe("unknown_agent");
     w.close();
   });
 
