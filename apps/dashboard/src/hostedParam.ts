@@ -15,6 +15,28 @@ const TOKENS: Record<string, HostedMockOptions> = {
   "scope-missing": { unhealthy: true, unhealthyState: "scope_missing" },
   "customer-mismatch": { unhealthy: true, unhealthyState: "customer_mismatch" },
   trial: { tier: "trial" },
+  // Solo: in its 30-day trial, and unpaid (view-only, the owner included).
+  solo: {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: "2026-12-01T00:00:00.000Z",
+      graceUntil: null,
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  "solo-paused": {
+    billing: {
+      tier: "solo",
+      status: "lapsed",
+      trialEndsAt: null,
+      graceUntil: null,
+      creatorsThisMonth: 1,
+      readOnly: true,
+      reason: "solo_unpaid",
+    },
+  },
   team: { tier: "team" },
   business: { tier: "business" },
   frozen: { directory: "frozen" },
@@ -55,7 +77,7 @@ const TOKENS: Record<string, HostedMockOptions> = {
 /**
  * Mock-only: `?hosted=` turns on the hosted mocks. Comma tokens: 1 (defaults),
  * access, email-only, turnstile, unhealthy (backoff), auth-failed,
- * scope-missing, customer-mismatch, trial, team, business, frozen, sync-off,
+ * scope-missing, customer-mismatch, trial, solo, solo-paused, team, business, frozen, sync-off,
  * admin (you are an admin, not the owner), guest-notices (an Access-only
  * install with parity 2's notices, spaces off), guest-departed (the same, one
  * guest owner has left), spaces-on, workspace-change (the confirm

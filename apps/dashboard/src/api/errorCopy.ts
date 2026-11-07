@@ -39,6 +39,39 @@ const PLAN_LIMIT_NOUN: Record<string, string> = {
   data_daily_writes: "live-data writes per day",
 };
 
+/**
+ * Why the instance is read-only (PlanReason), for the banner and the refusal
+ * toast. `owner` swaps "ask your instance owner" for the action.
+ */
+export const readOnlyCopy = (reason: unknown, owner: boolean): string => {
+  switch (reason) {
+    case "trial_ended":
+      return owner
+        ? "Your trial ended, so this instance is read-only until you pick a plan."
+        : "Your trial ended, so this instance is read-only until the owner picks a plan.";
+    case "solo_unpaid":
+      // The view-only lock: publishing is paused.
+      return owner
+        ? "Your Solo plan is paused. Keep publishing for $1/month or $12/year."
+        : `Publishing is paused until this instance's Solo plan is paid. ${ASK}.`;
+    case "lapsed":
+    case "payment_failed":
+      return owner
+        ? "This instance is read-only until billing is sorted out. Update billing to fix it."
+        : `This instance is read-only until billing is sorted out. ${ASK}.`;
+    case "billing_unreachable":
+      return "Team features are read-only while we restore billing. Reading and sharing still work. Nothing has been deleted.";
+    case "suspended":
+      return owner
+        ? "This instance is suspended. Email support."
+        : `This instance is suspended. ${ASK}.`;
+    default:
+      return owner
+        ? "This instance is read-only right now."
+        : `This instance is read-only right now. ${ASK}.`;
+  }
+};
+
 const planCopy = (
   e: ApiClientError,
   owner: boolean,
@@ -54,32 +87,7 @@ const planCopy = (
         ? `${TEAM_FEATURE}. Choose a plan to continue.`
         : `${TEAM_FEATURE}. This instance is on Solo. Ask an owner to invite someone or choose a plan.`;
     case "plan_read_only":
-      switch (d?.reason) {
-        case "trial_ended":
-          return owner
-            ? "Your trial ended, so this instance is read-only until you pick a plan."
-            : "Your trial ended, so this instance is read-only until the owner picks a plan.";
-        case "solo_unpaid":
-          // The view-only lock: publishing is paused.
-          return owner
-            ? "Your Solo plan is paused. Keep publishing for $1/month or $12/year."
-            : `Publishing is paused until this instance's Solo plan is paid. ${ASK}.`;
-        case "lapsed":
-        case "payment_failed":
-          return owner
-            ? "This instance is read-only until billing is sorted out. Update billing to fix it."
-            : `This instance is read-only until billing is sorted out. ${ASK}.`;
-        case "billing_unreachable":
-          return "Team features are read-only while we restore billing. Reading and sharing still work. Nothing has been deleted.";
-        case "suspended":
-          return owner
-            ? "This instance is suspended. Email support."
-            : `This instance is suspended. ${ASK}.`;
-        default:
-          return owner
-            ? "This instance is read-only right now."
-            : `This instance is read-only right now. ${ASK}.`;
-      }
+      return readOnlyCopy(d?.reason, owner);
     case "plan_limit": {
       const raise = typeof d?.max === "number" && typeof d?.limit === "string";
       const what = raise
