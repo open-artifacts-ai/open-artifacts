@@ -120,7 +120,7 @@ describe("precedence: BILLING present, then absent, then nothing", () => {
 
   it("BILLING present, no TIER and nothing read: free and solo, the trial allowed", async () => {
     expect(await withGate(() => readPlan(H, mid))).toMatchObject({
-      tier: "free",
+      tier: "solo",
       lock: { mode: "solo", reason: "solo" },
       trialEligible: true,
     });
@@ -271,7 +271,7 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
       reason: "lapsed",
     });
     expect(lapsed.instance.features).toContain("sync_frozen");
-    await cachePlan(row({ tier: "free", trialEndsAt: 1, version: 6 }), mid);
+    await cachePlan(row({ tier: "solo", trialEndsAt: 1, version: 6 }), mid);
     expect((await getMe(owner.cookie)).instance.tier).toBeNull();
     expect(await counts()).toEqual(before);
     expect(
@@ -311,7 +311,7 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
     // A lapse and free: paused, nothing disconnected.
     for (const r of [
       row({ tier: "team", status: "lapsed", version: 3 }),
-      row({ tier: "free", trialEndsAt: 1, version: 4 }),
+      row({ tier: "solo", trialEndsAt: 1, version: 4 }),
     ]) {
       b.s.row = r;
       await cachePlan(r, mid);
@@ -354,7 +354,7 @@ describe("the gate's team routes", () => {
     await cachePlan(row({ tier: "team", status: "lapsed", version: 2 }), mid);
     for (const f of DIRECTORY_WRITES)
       expect(await code(await f())).toBe("plan_read_only");
-    await cachePlan(row({ tier: "free", trialEndsAt: 1, version: 3 }), mid);
+    await cachePlan(row({ tier: "solo", trialEndsAt: 1, version: 3 }), mid);
     for (const f of DIRECTORY_WRITES)
       expect(await code(await f())).toBe("plan_required");
   });
@@ -374,7 +374,7 @@ describe("the gate's team routes", () => {
         method: "PATCH",
         body: { role },
       });
-    await cachePlan(row({ tier: "free", trialEndsAt: 1, version: 1 }), mid);
+    await cachePlan(row({ tier: "solo", trialEndsAt: 1, version: 1 }), mid);
     // A demotion, then the same role again: pass.
     expect((await patch("member")).status).toBe(200);
     expect((await patch("member")).status).toBe(200);
@@ -403,7 +403,7 @@ function uniq() {
 // ------------------------------------------------------ free-tier caps
 
 describe("free-tier caps: config, off until set", () => {
-  const FREE = row({ tier: "free", trialEndsAt: 1, version: 1 });
+  const FREE = row({ tier: "solo", trialEndsAt: 1, version: 1 });
   const publish = (e: Env) =>
     send(props, R.artifacts, owner.cookie, {
       method: "POST",

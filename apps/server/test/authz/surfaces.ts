@@ -1001,6 +1001,23 @@ export const SURFACES: readonly Surface[] = [
     ),
   ),
   rest(
+    "comments answer",
+    "comments.write",
+    [`POST ${ARTS}/comments/:threadId/comments/:commentId/answer`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}/answer`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "artifact agents",
+    "comments.read",
+    [`GET ${ARTS}/agents`],
+    read((id) => `${A(id)}/agents`, 200),
+  ),
+  rest(
     "comments delete",
     "comments.write",
     [`DELETE ${ARTS}/comments/:threadId/comments/:commentId`],

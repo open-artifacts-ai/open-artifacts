@@ -60,12 +60,23 @@ export function SearchBox() {
   useEffect(() => () => clearTimeout(timer.current), [pathname]);
   const go = (search: object) =>
     void navigate({ to: "/search", search, replace: onSearch } as never);
+  // An emptied box leaves the results page for the library: /search with no
+  // query has nothing to show (#1640).
+  const leave = (space?: string) =>
+    void navigate({
+      to: "/",
+      search: space ? { space } : {},
+      replace: true,
+    } as never);
   const withScope = (q: string) => (scope ? { q, space: scope.id } : { q });
   const unscope = () => {
     if (!scope) return;
     setUnscoped(scope.id);
     clearTimeout(timer.current);
-    if (onSearch) go(value.trim() ? { q: value } : {});
+    if (onSearch) {
+      if (value.trim()) go({ q: value });
+      else leave();
+    }
     input.current?.focus();
   };
   return (
@@ -125,7 +136,7 @@ export function SearchBox() {
           setValue(q);
           clearTimeout(timer.current);
           if (!q.trim()) {
-            if (onSearch) go(scope ? { space: scope.id } : {});
+            if (onSearch) leave(scope?.id);
             return;
           }
           timer.current = setTimeout(

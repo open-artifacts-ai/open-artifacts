@@ -119,7 +119,7 @@ const gate = {
     if (path === "/trial/start") {
       if (trialAnswer)
         return Response.json({ ...trialAnswer, asOf: Date.now() });
-      if (row.tier === "free" && row.trialEndsAt === null)
+      if (row.tier === "solo" && row.trialEndsAt === null)
         row = {
           ...row,
           tier: "trial",
@@ -251,15 +251,15 @@ describe("effectivePlan", () => {
   });
 
   it("free is solo; trial and paid active are unlocked", () => {
-    const free = effectivePlan(at({ tier: "free" }, mid), null, undefined, mid);
+    const free = effectivePlan(at({ tier: "solo" }, mid), null, undefined, mid);
     expect(free).toMatchObject({
       readOnly: false,
       reason: "solo",
       trialEligible: true,
     });
-    expect(free.lock).toEqual({ mode: "solo", tier: "free", reason: "solo" });
+    expect(free.lock).toEqual({ mode: "solo", tier: "solo", reason: "solo" });
     const used = effectivePlan(
-      at({ tier: "free", trialEndsAt: mid - DAY }, mid),
+      at({ tier: "solo", trialEndsAt: mid - DAY }, mid),
       null,
       undefined,
       mid,
@@ -331,7 +331,7 @@ describe("effectivePlan", () => {
     expect(planOfRaw(T, null, null, mid, { gate: true })?.lock).toBeNull();
     expect(planOfRaw(T, null, null, mid, { gate: false })).toBeNull();
     row = {
-      tier: "free",
+      tier: "solo",
       status: "active",
       trialEndsAt: null,
       graceUntil: null,
@@ -365,7 +365,7 @@ describe("effectivePlan", () => {
     );
     // A stale free instance does not become solo-and-writable: read-only.
     expect(
-      effectivePlan(at({ tier: "free" }, edge - 1), null, undefined, mid),
+      effectivePlan(at({ tier: "solo" }, edge - 1), null, undefined, mid),
     ).toMatchObject({
       readOnly: true,
       reason: "billing_unreachable",
@@ -381,7 +381,7 @@ describe("effectivePlan", () => {
 
   it("no answer and no TIER: free (solo, trial allowed), never unenforced (S3)", () => {
     expect(planOfRaw(H, null, null, mid, { gate: true })).toMatchObject({
-      tier: "free",
+      tier: "solo",
       reason: "solo",
       lock: { mode: "solo" },
       trialEligible: true,
@@ -509,7 +509,7 @@ describe("tier read and cache", () => {
     ).toEqual({ n: 0 });
     expect(calls).toEqual([]);
     expect(await readPlan(TEAM, mid + 30 * DAY)).toBeNull();
-    await cache({ tier: "free", trialEndsAt: 1, version: 4 }, mid);
+    await cache({ tier: "solo", trialEndsAt: 1, version: 4 }, mid);
     expect(await readPlan(TEAM, mid + 30 * DAY)).toBeNull();
   });
 
@@ -537,7 +537,7 @@ describe("tier read and cache", () => {
   it("billing's no-row default (version 0) never overrides a provisioned TIER", async () => {
     const TEAM = { ...H, TIER: "team" } as Env;
     row = {
-      tier: "free",
+      tier: "solo",
       status: "active",
       trialEndsAt: null,
       graceUntil: null,
@@ -558,7 +558,7 @@ describe("tier read and cache", () => {
     ).toBe("stored");
     expect(
       (await withBrokerProps({ props: PROPS }, () => readPlan(H, mid)))?.tier,
-    ).toBe("free");
+    ).toBe("solo");
   });
 
   it("self-hosted never calls billing", async () => {
@@ -577,7 +577,7 @@ describe("plan enforcement", () => {
 
   it("free: the first invite passes and starts the trial with a signed POST", async () => {
     row = {
-      tier: "free",
+      tier: "solo",
       status: "active",
       trialEndsAt: null,
       graceUntil: null,
@@ -599,7 +599,7 @@ describe("plan enforcement", () => {
 
   it("free: an invite passes only if the trial starts; billing down is 503 billing_unavailable and no user is left", async () => {
     row = {
-      tier: "free",
+      tier: "solo",
       status: "active",
       trialEndsAt: null,
       graceUntil: null,
@@ -671,7 +671,7 @@ describe("plan enforcement", () => {
 
   it("free: when /trial/start says the trial was already used, the invite is 403 plan_required with the plan details, not 503; no user", async () => {
     row = {
-      tier: "free",
+      tier: "solo",
       status: "active",
       trialEndsAt: null,
       graceUntil: null,
@@ -688,7 +688,7 @@ describe("plan enforcement", () => {
     expect(r.status).toBe(403);
     expect(await errOf(r)).toMatchObject({
       code: "plan_required",
-      details: { tier: "free", reason: "solo" },
+      details: { tier: "solo", reason: "solo" },
     });
     expect(
       await env.DB.prepare("select 1 from users where email = ?")
@@ -699,7 +699,7 @@ describe("plan enforcement", () => {
 
   it("free, trial never ran: restoring a removed member takes the invite's path (409 on invite, restore starts the trial; billing down is 503)", async () => {
     row = {
-      tier: "free",
+      tier: "solo",
       status: "active",
       trialEndsAt: null,
       graceUntil: null,
@@ -740,7 +740,7 @@ describe("plan enforcement", () => {
 
   it("HOSTED=1 with no BILLING gate and no TIER is inert: invite, share, agents and spaces work as on main; Me has no billing; billing routes 404", async () => {
     // Even a cached lapse is ignored without the gate.
-    await cache({ tier: "free", status: "lapsed", trialEndsAt: 1, version: 3 });
+    await cache({ tier: "solo", status: "lapsed", trialEndsAt: 1, version: 3 });
     const admin = await login(`ng-admin-${tag}@a.com`, "admin");
     const mem = await login(`ng-mem-${tag}@a.com`, "member");
     const ng = (
@@ -833,7 +833,7 @@ describe("plan enforcement", () => {
     });
     const G = { ...H, DB } as Env;
     // A cached plan exists (an old binding): a gateless request ignores it.
-    await cache({ tier: "free", status: "lapsed", trialEndsAt: 1, version: 3 });
+    await cache({ tier: "solo", status: "lapsed", trialEndsAt: 1, version: 3 });
     const go = (path: string, init: RequestInit = {}) =>
       fetchAndWait(
         app,
@@ -874,7 +874,7 @@ describe("plan enforcement", () => {
   });
 
   it("free after the trial: invites are 403 plan_required; nothing is created", async () => {
-    await cache({ tier: "free", trialEndsAt: mid - DAY, version: 2 });
+    await cache({ tier: "solo", trialEndsAt: mid - DAY, version: 2 });
     const email = `inv2-${tag}@a.com`;
     const r = await send(R.members, owner.cookie, {
       method: "POST",
@@ -883,7 +883,7 @@ describe("plan enforcement", () => {
     expect(r.status).toBe(403);
     expect(await errOf(r)).toMatchObject({
       code: "plan_required",
-      details: { tier: "free", reason: "solo" },
+      details: { tier: "solo", reason: "solo" },
     });
     expect(
       await env.DB.prepare("select 1 from users where email = ?")
@@ -912,7 +912,7 @@ describe("plan enforcement", () => {
   });
 
   it("free: everyone but the owner is read-only (cap plan); the owner's own artifacts stay writable", async () => {
-    await cache({ tier: "free", trialEndsAt: mid - DAY, version: 2 });
+    await cache({ tier: "solo", trialEndsAt: mid - DAY, version: 2 });
     const me = await getMe(member.cookie);
     expect(me.auth).toMatchObject({ readOnly: true, cap: "plan" });
     const denied = await publish(member.cookie);
@@ -1084,7 +1084,7 @@ describe("plan enforcement", () => {
         method: "PUT",
         raw: '{"v":1}',
       });
-    await cache({ tier: "free", version: 2 });
+    await cache({ tier: "solo", version: 2 });
     const ok = await anon();
     expect([200, 429]).toContain(ok.status);
     await readOnly();

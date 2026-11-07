@@ -386,6 +386,22 @@
     },
     {
       "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments answer [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact comments answer [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact artifact agents [session]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
+      "name": "surface probes (cross-install) > artifact artifact agents [pat]"
+    },
+    {
+      "file": "live/surfaces.test.ts",
       "name": "surface probes (cross-install) > artifact data query [session]"
     },
     {

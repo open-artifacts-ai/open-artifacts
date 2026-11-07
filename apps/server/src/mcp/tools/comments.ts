@@ -75,9 +75,12 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
   server.registerTool("add_comment", toolConfig("add_comment"), (i) =>
     guard(async () => {
       const { artifact, viewer, who } = await open(i.id, "comments.write");
-      const after = {
-        version: artifact.currentVersion,
-        ...(t.exec ? { ctx: t.exec } : {}),
+      const opts = {
+        moderator: viewer.moderator === true,
+        after: {
+          version: artifact.currentVersion,
+          ...(t.exec ? { ctx: t.exec } : {}),
+        },
       };
       if (i.threadId !== undefined) {
         if (i.anchor !== undefined)
@@ -86,7 +89,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             "A reply has no anchor. Drop `anchor`, or drop `threadId` to start a new thread.",
           );
         const comment = await threadOf(
-          addReply(env, i.id, i.threadId, who, viewer, i.body, after),
+          addReply(env, i.id, i.threadId, who, viewer, i.body, {}, opts),
         );
         return ok(`Replied in thread ${i.threadId} on ${i.id}.`, {
           threadId: i.threadId,
@@ -99,7 +102,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         who,
         viewer,
         { anchor: i.anchor ?? { kind: "note" }, body: i.body },
-        after,
+        opts,
       );
       return ok(`Started thread ${thread.id} on ${i.id}.`, { thread });
     }),

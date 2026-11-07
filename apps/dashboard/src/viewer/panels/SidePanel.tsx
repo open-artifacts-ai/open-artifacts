@@ -18,7 +18,7 @@ import { Details } from "./Details";
 import { Share } from "./Share";
 import { refocusPending, VERSIONS_PANEL_ID, Versions } from "./Versions";
 
-export const PANEL_TABS = ["versions", "share", "details", "comments"] as const;
+export const PANEL_TABS = ["comments", "versions", "share", "details"] as const;
 export type PanelTab = (typeof PANEL_TABS)[number];
 export const isPanelTab = (t: unknown): t is PanelTab =>
   PANEL_TABS.includes(t as PanelTab);

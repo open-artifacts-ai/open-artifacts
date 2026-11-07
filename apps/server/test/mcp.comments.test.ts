@@ -341,7 +341,7 @@ describe("the comment notice", () => {
     // Only the follower who is not the author hears it.
     let got = await heard(id, 1);
     expect(got.map((s) => [s.userId, s.notice.kind, s.notice.to.name])).toEqual(
-      [[reader.userId, "comment", "reader-agent"]],
+      [[reader.userId, "commented", "reader-agent"]],
     );
     const n = got[0]?.notice as BusNotice;
     expect(n.text).toContain("has a new comment");
@@ -479,5 +479,32 @@ describe("the comment notice", () => {
       .run();
     await notifyCommented(E, id, 1, owner.userId, Date.now() + 120_000);
     expect(forId(id)).toEqual([]);
+  });
+
+  it("an agent already told by a mention is not told again as a follower", async () => {
+    const id = await pub();
+    const heardBy = (name: string) =>
+      forId(id).filter((s) => s.notice.to.name === name);
+    await follow(E, owner.userId, { namespace: "ns/m", name: "mentioned" }, id);
+    await follow(E, owner.userId, { namespace: "ns/m", name: "bystander" }, id);
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "editor",
+    });
+    const agents = await api(app, R.artifactAgents(id), reader.cookie);
+    const roster = (await agents.json()) as { key: string; name: string }[];
+    const key = roster.find((a) => a.name.startsWith("mentioned"))?.key;
+    expect(key).toBeTruthy();
+    const r = await api(app, comments(id), reader.cookie, {
+      method: "POST",
+      body: { anchor: { kind: "note" }, body: "hey", mentions: [{ key }] },
+    });
+    expect(r.status).toBe(201);
+    await vi.waitFor(() => expect(heardBy("bystander")).toHaveLength(1));
+    // The mention's own notice (kind comment) only; no follower notice on top.
+    expect(heardBy("mentioned").map((s) => s.notice.kind)).toEqual(["comment"]);
+    expect(heardBy("bystander").map((s) => s.notice.kind)).toEqual([
+      "commented",
+    ]);
   });
 });

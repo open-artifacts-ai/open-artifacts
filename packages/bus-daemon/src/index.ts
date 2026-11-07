@@ -303,7 +303,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     const id = frameId();
     const kind = rec.kind;
     upIds.set(id, { ref: rec.ref, kind });
-    return hub.send({
+    const sent = hub.send({
       v: 1,
       id,
       type: "agent_up",
@@ -317,6 +317,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         ? { replaces: rec.replaces }
         : {}),
     });
+    if (sent) rec.sentName = rec.proposedName;
+    return sent;
   };
   /** Never a loop: one retry after a long wait; a reconnect replays it sooner. */
   const markLimited = (ref: string, message: string) => {
@@ -656,6 +658,71 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const seenAt = new Map<string, number>();
   let seenSeq = 0;
 
+  /** rename ids awaiting the hub's answer, to their agent_ref; cleared with the link. */
+  const renameIds = new Map<string, string>();
+  /**
+   * A Claude `/rename` after connect (#1635): the session file's name changed
+   * since the last tick. One `rename` per change; the hub's answer (a `-2`,
+   * a refusal) is never read as a change, so nothing loops. A name noted
+   * while the link or the agent's registration is not ready rides the next
+   * agent_up (it carries proposedName).
+   */
+  const renameIfChanged = (rec: AgentRecord, name: string) => {
+    const was = rec.sessionName ?? rec.proposedName;
+    rec.sessionName = name;
+    // Never a name nobody chose: empty, or the `claude-<pid>` fallback.
+    if (name === was || name === "" || name === `claude-${rec.pid}`) return;
+    rec.proposedName = name;
+    flushRename(rec);
+  };
+  /**
+   * A Pi or omp session renamed (#1635), told by its extension on `rename` or
+   * by a reconnecting hello. The same rules as Claude: one frame per change,
+   * never an empty name or the kind the extension falls back to.
+   */
+  const renameFromAdapter = (rec: AgentRecord, name: string) => {
+    const was = rec.sessionName ?? rec.proposedName;
+    rec.sessionName = name;
+    if (name === was || name === "" || name === rec.kind) return;
+    rec.proposedName = name;
+    flushRename(rec);
+  };
+  /**
+   * Tells the hub a name it has not heard, once the agent is registered on a
+   * helloed link. Called on each change, and again after hello_ok and agent_ok
+   * for a change noted while the link or a handover was not ready.
+   */
+  const flushRename = (rec: AgentRecord) => {
+    if (
+      !(
+        rec.kind === "claude-code" ||
+        rec.kind === "pi" ||
+        rec.kind === "omp"
+      ) ||
+      !rec.live ||
+      rec.sentName === undefined ||
+      rec.sentName === rec.proposedName ||
+      !hub.open ||
+      !hubHelloed ||
+      rec.replaces !== undefined ||
+      limited.has(rec.ref)
+    )
+      return;
+    const id = frameId();
+    renameIds.set(id, rec.ref);
+    if (
+      hub.send({
+        v: 1,
+        id,
+        type: "rename",
+        agent_ref: rec.ref,
+        proposed_name: fitName(rec.proposedName, 64),
+        name_kind: "chosen",
+      })
+    )
+      rec.sentName = rec.proposedName;
+    else renameIds.delete(id);
+  };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
     const live = liveClaudeSessions(claudeSessions);
@@ -677,6 +744,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           prev.pid = s.pid;
           prev.procStart = s.procStart;
         }
+        renameIfChanged(prev, s.name);
         continue;
       }
       // Closed by a failed delivery and still the same process.
@@ -708,6 +776,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           global: ns.global,
           pid: s.pid,
           procStart: s.procStart,
+          sessionName: s.name,
           cwd: s.cwd,
           live: true,
         }),
@@ -798,9 +867,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             agent.busName = frame.bus_name;
             // Answered: the hub knows the new ref, the handover is done.
             delete agent.replaces;
+            flushRename(agent);
           }
           // Registered on this link: its sends lost to the last one go again.
           resends.up(frame.agent_ref);
+          return;
+        }
+        case "renamed": {
+          renameIds.delete(frame.id);
+          const agent = agents.byRef(frame.agent_ref);
+          if (agent) agent.busName = frame.bus_name;
           return;
         }
         case "receipt": {
@@ -842,6 +918,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "error": {
           if (statusRelay.answer(frame)) return;
+          const renamedRef = renameIds.get(frame.id);
+          if (renamedRef !== undefined) {
+            renameIds.delete(frame.id);
+            log(
+              `the hub did not rename ${renamedRef} to its session name: ${frame.code} ${frame.message}`,
+            );
+            return;
+          }
           const up = upIds.get(frame.id);
           upIds.delete(frame.id);
           if (up !== undefined) {
@@ -885,6 +969,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
             if (rec.live && rec.replaces !== undefined) announceUp(rec);
+          for (const rec of agents.all()) flushRename(rec);
           // Queued replies go now that the link says what it supports.
           outbox.flush();
           return;
@@ -933,6 +1018,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // Failed retries close too: keep the first drop of this outage.
       if (hubEver) hubDroppedAt ??= Date.now();
       upIds.clear();
+      renameIds.clear();
       // The next link's hello_ok says again which hub this is.
       hubVersion = undefined;
       hubIds = false;
@@ -1100,6 +1186,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       };
     },
     onHello: (hello, closed) => {
+      /** welcome.caps (#1635): only to an adapter that listed `rename`. */
+      const capsFor = (h: typeof hello) =>
+        (h.kind === "pi" || h.kind === "omp") &&
+        h.caps?.includes(ADAPTER_CAPS.rename)
+          ? { caps: [ADAPTER_CAPS.rename] }
+          : {};
       // Only codex may leave it out: its cwd comes from the rollout (C26j).
       if (hello.cwd === undefined && hello.kind !== "codex")
         return { error: "cwd is required" };
@@ -1172,10 +1264,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           conns.set(prev.ref, (conns.get(prev.ref) ?? 0) + 1);
           // Pi is told on its connection, which exists only once welcomed (onOpen).
           if (!piLike(hello.kind)) tellOwed(prev.ref);
+          // A rename made while the link was down (#1635).
+          if (hello.proposed_name !== undefined && prev.kind === "pi")
+            renameFromAdapter(prev, hello.proposed_name);
           return {
             bus_name: prev.busName,
             namespace: prev.namespace,
             global: prev.global,
+            ...capsFor(hello),
           };
         }
         // Claude's session file names its cwd; other kinds state one.
@@ -1224,6 +1320,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           global: ns.global,
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
+          ...(mine ? { sessionName: mine.name } : {}),
           cwd,
           live: true,
         });
@@ -1236,6 +1333,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           bus_name: rec.busName,
           namespace: rec.namespace,
           global: rec.global,
+          ...capsFor(hello),
         };
       };
       // A connection gone during the wait admits nothing: no agent, no conns.
@@ -1271,6 +1369,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           limited.has(ref) ? (caps.get(ref) ?? "machine") : undefined,
         version,
         configFiles,
+        renamed: (ref, name) => {
+          const rec = agents.byRef(ref);
+          if (rec) renameFromAdapter(rec, name);
+        },
         // The self tool's status: the agent's own row on its roster.
         ownRow: (ref) => {
           const me = agents.byRef(ref);
