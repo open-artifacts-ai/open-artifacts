@@ -281,7 +281,7 @@ test.describe("full-screen chip, coarse pointer", () => {
   });
 });
 
-test.describe("phone toolbar touch targets (#1648)", () => {
+test.describe("phone toolbar touch targets", () => {
   test.use({ hasTouch: true });
 
   for (const id of [ID, "Gh9kLmNpQrAsTuVx"])
