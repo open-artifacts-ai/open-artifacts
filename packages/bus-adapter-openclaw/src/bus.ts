@@ -61,6 +61,8 @@ type Run = {
   at: number;
   /** The latest assistant message of the run ended in an error (set by before_message_write). */
   failed: boolean;
+  /** A model_call_started or model_call_ended arrived for this run. */
+  seen: boolean;
   /** A model call of the run ended in an error or a failed answer; a later completed call can still ack. */
   errored: boolean;
 };
@@ -191,7 +193,9 @@ export class Bus {
   evictIdle(): void {
     const cutoff = this.now() - IDLE_MS;
     for (const [ref, b] of this.boxes) {
-      if (b.lastActive > cutoff || b.connecting) continue;
+      this.expire(b);
+      // Never a root with a run still open.
+      if (b.lastActive > cutoff || b.connecting || b.runs.size > 0) continue;
       b.client?.close();
       this.boxes.delete(ref);
     }
@@ -357,6 +361,7 @@ export class Bus {
   async promptBuild(
     c: Caller & { runId?: string },
   ): Promise<PromptResult | undefined> {
+    this.noteTrigger(c);
     const r = this.resolve(c, "prompt");
     if (!r.ok) return undefined;
     await this.warm(r.root);
@@ -387,6 +392,16 @@ export class Bus {
   }
 
   /**
+   * The run's trigger, for tools, which have none: a heartbeat run on the main
+   * session shares the root, and its tools must refuse. Done before the prompt
+   * check, which returns early for a non-user run.
+   */
+  private noteTrigger(c: Caller): void {
+    const any = this.resolve(c, "tool");
+    if (any.ok) this.boxOf(any.root).nonUser = c.trigger !== "user";
+  }
+
+  /**
    * The queued mail as prependContext, the same set for the same runId however
    * often this fires, and the habits (behind the user's marker). Never waits; a
    * closed link is reopened in the background.
@@ -400,10 +415,7 @@ export class Bus {
    * root's second run.
    */
   buildPrompt(c: Caller & { runId?: string }): PromptResult | undefined {
-    // The run's trigger, for tools, which have none: a heartbeat run on the
-    // main session shares the root.
-    const any = this.resolve(c, "tool");
-    if (any.ok) this.boxOf(any.root).nonUser = c.trigger !== "user";
+    this.noteTrigger(c);
     const r = this.resolve(c, "prompt");
     if (!r.ok) return undefined;
     const b = this.boxOf(r.root);
@@ -415,6 +427,17 @@ export class Bus {
       // was not retried to success is over: its mail goes out again.
       for (const [id, run] of b.runs)
         if (id !== c.runId && (run.failed || run.errored)) b.runs.delete(id);
+      // A run that carried mail and saw no model-call event at all before this
+      // run began: the runtime has stopped reporting (a session switched to
+      // the Codex runtime by an agentRuntime override, for one). Back to
+      // withholding; the mail stays pending, and the next model_call_* event
+      // proves the root again.
+      for (const [id, run] of b.runs)
+        if (id !== c.runId && !run.seen) {
+          b.runs.clear();
+          this.proven.delete(r.root.ref);
+          break;
+        }
     }
     const out: PromptResult = {};
     // Without a runId nothing can be acked, so nothing is handed over.
@@ -434,6 +457,7 @@ export class Bus {
             ids: items.map((i) => i.key),
             text: items.map((i) => i.text).join("\n\n"),
             at: this.now(),
+            seen: false,
             failed: false,
             errored: false,
           };
@@ -469,6 +493,7 @@ export class Bus {
     const r = this.resolve(c, "key");
     if (!r.ok) return;
     const b = this.boxes.get(r.root.ref);
+    if (b) b.lastActive = this.now();
     const run = b?.currentRunId ? b.runs.get(b.currentRunId) : undefined;
     if (!run) return;
     run.failed = m.stopReason === "error" || m.stopReason === "aborted";
@@ -476,9 +501,20 @@ export class Bus {
   }
 
   /** model_call_started: this root's runtime reports model calls. */
-  modelCallStarted(c: Caller, _ev: { runId?: string }): void {
+  modelCallStarted(c: Caller, ev: { runId?: string }): void {
     const r = this.resolve(c, "key");
-    if (r.ok) this.prove(r.root.ref);
+    if (!r.ok) return;
+    this.prove(r.root.ref);
+    this.activity(r.root.ref, ev.runId);
+  }
+
+  /** A model-call hook arrived for the root: it is in use, and the run (if it carried mail) was reported on. */
+  private activity(ref: string, runId?: string): void {
+    const b = this.boxes.get(ref);
+    if (!b) return;
+    b.lastActive = this.now();
+    const run = runId ? b.runs.get(runId) : undefined;
+    if (run) run.seen = true;
   }
 
   /**
@@ -491,6 +527,7 @@ export class Bus {
     const r = this.resolve(c, "key");
     if (!r.ok) return;
     this.prove(r.root.ref);
+    this.activity(r.root.ref, ev.runId);
     if (!ev.runId) return;
     const b = this.boxes.get(r.root.ref);
     const run = b?.runs.get(ev.runId);

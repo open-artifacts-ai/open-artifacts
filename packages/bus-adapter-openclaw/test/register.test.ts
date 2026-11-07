@@ -145,4 +145,33 @@ describe("register", () => {
     await flush();
     expect(hub.connects).toEqual([]);
   });
+
+  it("heartbeat runs get no working tools, through the real hook path (S1)", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    const a = fakeApi();
+    registerBus(a.api, bus);
+    const toolCtx = { agentId: "main", sessionKey: "agent:main:main" };
+    const selfTool = () =>
+      (
+        a.tools[0]?.factory(toolCtx) as {
+          name: string;
+          execute: (id: string, p: object) => Promise<unknown>;
+        }[]
+      ).find((t) => t.name === "oabus_self");
+    // OpenClaw runs the hook for a heartbeat on the main session: the hook
+    // itself refuses it (no mail, no link), and the tools must refuse too.
+    const hb = await a.hooks.before_prompt_build?.[0]?.(
+      {},
+      { ...caller({ trigger: "heartbeat", runId: "hb" }) },
+    );
+    expect(hb).toBeUndefined();
+    await expect(selfTool()?.execute("c", {})).rejects.toThrow(
+      /only a run started by a user message/,
+    );
+    expect(hub.connects).toEqual([]);
+    // The next user run on the same root works again.
+    await a.hooks.before_prompt_build?.[0]?.({}, caller({ runId: "u1" }));
+    await expect(selfTool()?.execute("c", {})).resolves.toBeDefined();
+  });
 });
