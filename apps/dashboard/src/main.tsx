@@ -217,18 +217,54 @@ async function startMocks() {
       }),
     );
   // ?mock=update: v0.14.2 with v0.15.0 out; ?mock=uptodate and ?mock=custom
-  // (a -dev build): a check with nothing to upgrade to.
+  // (a -dev build): a check with nothing to upgrade to. The upgrade notice's
+  // states (#1628): update-breaking, update-stale (released 20 days ago),
+  // update-custom-older (a custom build behind the latest release) and
+  // update-custom-current (a -dev build of the latest version: no notice).
   const checkedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+  const published = (days: number) =>
+    new Date(Date.now() - days * 86_400_000).toISOString();
   const updates = {
     update: { current: "0.14.2", custom: false, updateAvailable: true },
     uptodate: { current: "0.15.0", custom: false, updateAvailable: false },
     custom: { current: "0.15.0-dev", custom: true, updateAvailable: false },
+    "update-breaking": {
+      current: "0.14.2",
+      custom: false,
+      updateAvailable: true,
+      breaking: true,
+    },
+    "update-stale": {
+      current: "0.14.2",
+      custom: false,
+      updateAvailable: true,
+      latestPublishedAt: published(20),
+    },
+    "update-custom-older": {
+      current: "0.14.0-dev+4f2a9c1",
+      custom: true,
+      updateAvailable: false,
+      breaking: null,
+    },
+    "update-custom-breaking": {
+      current: "0.14.0-dev+4f2a9c1",
+      custom: true,
+      updateAvailable: false,
+      breaking: true,
+    },
+    "update-custom-current": {
+      current: "0.15.0-dev+4f2a9c1",
+      custom: true,
+      updateAvailable: false,
+      breaking: null,
+    },
   } as const;
   const u = updates[params.get("mock") as keyof typeof updates];
   const update = u && {
-    ...u,
     latestVersion: "0.15.0",
     breaking: false,
+    latestPublishedAt: published(2),
+    ...u,
     notesUrl:
       "https://github.com/open-artifacts-ai/open-artifacts/releases/tag/v0.15.0",
     checkedAt,

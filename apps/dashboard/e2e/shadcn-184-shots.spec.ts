@@ -145,7 +145,10 @@ for (const scheme of ["light", "dark"] as const)
           Object.defineProperty(navigator, "clipboard", { value: undefined }),
         );
         await page.goto("/settings/instance?mock=update");
-        await page.getByRole("button", { name: "Upgrade" }).first().click();
+        await page
+          .getByRole("button", { name: "Upgrade", exact: true })
+          .first()
+          .click();
         const toast = page
           .getByRole("alert")
           .filter({ hasText: "Couldn't copy" });
