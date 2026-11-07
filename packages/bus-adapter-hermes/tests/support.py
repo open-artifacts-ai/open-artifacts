@@ -81,3 +81,18 @@ def deliver_frame(msg_id="mmmmmmmmmmmmmmm1", body="hi", from_name="peer"):
 def inline_spawn(fn):
     """Runs background work at once, so a test needs no waiting."""
     fn()
+
+
+def habits_marker(on=True):
+    """A habits.on path in a temp dir removed at exit; the file exists when `on`."""
+    import atexit
+    import shutil
+    import tempfile
+
+    d = tempfile.mkdtemp()
+    atexit.register(shutil.rmtree, d, True)
+    path = os.path.join(d, "habits.on")
+    if on:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("on\n")
+    return path
