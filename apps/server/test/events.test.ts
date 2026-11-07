@@ -61,17 +61,30 @@ const ip = () => `198.51.100.${(++ipSeq % 250) + 1}`;
 
 type Sock = {
   ws: WebSocket;
+  /** Every frame but presence ones (see `roster`). */
   frames: ArtifactEvent[];
+  /** The presence frames, in order. */
+  roster: Extract<ArtifactEvent, { type: "presence" }>[];
   next: () => Promise<ArtifactEvent>;
+  nextRoster: () => Promise<Extract<ArtifactEvent, { type: "presence" }>>;
   closed: Promise<number>;
 };
 
 function wrap(ws: WebSocket): Sock {
+  type Roster = Extract<ArtifactEvent, { type: "presence" }>;
   const frames: ArtifactEvent[] = [];
+  const roster: Roster[] = [];
   const waiters: ((f: ArtifactEvent) => void)[] = [];
+  const rosterWaiters: ((f: Roster) => void)[] = [];
   let read = 0;
+  let readRoster = 0;
   ws.addEventListener("message", (e) => {
     const f = ArtifactEventSchema.parse(JSON.parse(String(e.data)));
+    if (f.type === "presence") {
+      roster.push(f);
+      rosterWaiters.shift()?.(f);
+      return;
+    }
     frames.push(f);
     waiters.shift()?.(f);
   });
@@ -82,12 +95,18 @@ function wrap(ws: WebSocket): Sock {
   return {
     ws,
     frames,
+    roster,
     closed,
     next: () => {
       const i = read++;
       const f = frames[i];
       if (f) return Promise.resolve(f);
       return new Promise((res) => waiters.push(res));
+    },
+    nextRoster: () => {
+      const f = roster[readRoster++];
+      if (f) return Promise.resolve(f);
+      return new Promise((res) => rosterWaiters.push(res));
     },
   };
 }
@@ -138,7 +157,7 @@ describe("events socket", () => {
     const id = await pub({ visibility: "team" });
     await restPublish(id, owner, "<p>2</p>");
     const s = await sock(id, viewer);
-    expect(await s.next()).toEqual({ type: "hello", version: 2 });
+    expect(await s.next()).toMatchObject({ type: "hello", version: 2 });
     const no = await api(app, R.events(id), viewer.cookie);
     expect(no.status).toBe(426);
     s.ws.close();
@@ -382,7 +401,7 @@ describe("events socket", () => {
     const id = await pub({ visibility: "team" });
     await restPublish(id, owner, "<p>2</p>");
     const s = await sock(id, viewer);
-    expect(await s.next()).toEqual({ type: "hello", version: 2 });
+    expect(await s.next()).toMatchObject({ type: "hello", version: 2 });
     const r = await api(app, R.restoreVersion(id, 1), owner.cookie, {
       method: "POST",
     });
@@ -617,4 +636,187 @@ describe("events socket: access changes and budgets", () => {
     expect(await status(open(id, owner))).toBe(101);
     for (const s of held) s.ws.close();
   }, 60_000); // ~100 upgrades: slow when the whole suite shares the CPU
+});
+
+describe("events socket: presence", () => {
+  const clocks = new Map<string, number>();
+  /** Steps the artifact's clock past the coalesce window, so each join is sent at once. */
+  const tick = async (id: string) => {
+    const t = (clocks.get(id) ?? 1_900_000_000_000) + 1100;
+    clocks.set(id, t);
+    await runInDurableObject(
+      runtimeStub(env, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (i) => {
+        i.now = () => t;
+      },
+    );
+  };
+  const join = async (
+    id: string,
+    u: U | null,
+    headers: Record<string, string> = {},
+    path?: string,
+    isCounted = true,
+  ) => {
+    await tick(id);
+    const s = await sock(id, u, headers, path);
+    await s.next();
+    // A counted socket's own roster follows the hello.
+    if (isCounted) await s.nextRoster();
+    return s;
+  };
+  const pid = (c: string) => `oa_pid=${c.repeat(20)}`;
+  const faces = (s: Sock) =>
+    (s.roster.at(-1)?.viewers ?? []).map((v) => `${v.kind}:${v.name}`);
+  const counted = (id: string) =>
+    runInDurableObject(
+      runtimeStub(env, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) =>
+        state.getWebSockets("~vp").map(
+          (w) =>
+            (
+              w.deserializeAttachment() as {
+                p?: { ping: boolean };
+              }
+            ).p?.ping,
+        ),
+    );
+
+  it("two tabs of one signed-in person show once to a third viewer", async () => {
+    const id = await pub({ visibility: "team" });
+    const t1 = await join(id, owner);
+    const t2 = await join(id, owner);
+    const v = await join(id, viewer);
+    expect(faces(v)).toEqual(["person:Member", `person:${ownerName()}`]);
+    expect(v.roster.at(-1)?.total).toBe(2);
+    for (const s of [t1, t2, v]) s.ws.close();
+  });
+
+  it("an anonymous viewer shows as Anonymous <Animal>; two tabs with one oa_pid show once", async () => {
+    const id = await pub({ visibility: "public" });
+    const a1 = await join(id, null, { cookie: pid("a") });
+    const a2 = await join(id, null, { cookie: pid("a") });
+    const b = await join(id, null, { cookie: pid("b") });
+    expect(b.roster.at(-1)?.total).toBe(2);
+    for (const f of faces(b)) expect(f).toMatch(/^anon:Anonymous [A-Z]/);
+    for (const s of [a1, a2, b]) s.ws.close();
+  });
+
+  it("the anonymous frame never carries the anonId, the oa_pid or the IP", async () => {
+    const id = await pub({ visibility: "public" });
+    const addr = "198.51.100.200";
+    const a = await join(id, null, {
+      cookie: `${pid("c")}; oa.anonId=anon-secret-value`,
+      "cf-connecting-ip": addr,
+    });
+    const b = await join(id, null, { cookie: pid("d") });
+    const text = JSON.stringify([...a.roster, ...b.roster]);
+    for (const leak of ["c".repeat(20), "anon-secret-value", "198.51.100.200"])
+      expect(text).not.toContain(leak);
+    expect(text).not.toContain("ip:");
+    a.ws.close();
+    b.ws.close();
+  });
+
+  it('a guest and a stranger on a public link see names but never emails ("Member" for a nameless owner)', async () => {
+    const plain = await mk("ev-plain", "member");
+    const id = (
+      await publish(
+        env,
+        plain.member,
+        {
+          title: "pl",
+          format: "html",
+          content: "<p>1</p>",
+          visibility: "public",
+        } as never,
+        null,
+        undefined,
+        "create",
+      )
+    ).id;
+    const o = await join(id, plain);
+    const g = await join(id, guest);
+    const x = await join(id, null);
+    expect(faces(x)).toEqual(
+      expect.arrayContaining(["person:Member", "person:Guest"]),
+    );
+    const text = JSON.stringify([...g.roster, ...x.roster]);
+    expect(text).not.toContain(plain.email);
+    expect(text).not.toContain(guest.email);
+    expect(text).not.toContain("@");
+    for (const s of [o, g, x]) s.ws.close();
+  });
+
+  it("the presence key differs per artifact for the same person", async () => {
+    const one = await pub({ visibility: "team" });
+    const two = await pub({ visibility: "team" });
+    const a = await join(one, owner);
+    const b = await join(two, owner);
+    const ka = a.roster[0];
+    const kb = b.roster[0];
+    expect(ka?.viewers[0]?.key).toMatch(/^[A-Za-z0-9_-]{16}$/);
+    expect(ka?.viewers[0]?.key).not.toBe(kb.viewers[0]?.key);
+    a.ws.close();
+    b.ws.close();
+  });
+
+  it("a malformed or 65-char oa_pid gives a per-socket face, not an error", async () => {
+    const id = await pub({ visibility: "public" });
+    const bad = [
+      `oa_pid=short`,
+      `oa_pid=${"x".repeat(65)}`,
+      "oa_pid=bad!chars!!!!!!!!!!",
+    ];
+    const socks: Sock[] = [];
+    for (const cookie of bad) socks.push(await join(id, null, { cookie }));
+    expect(socks.at(-1)?.roster.at(-1)?.total).toBe(3);
+    for (const s of socks) s.ws.close();
+  });
+
+  it("embed sockets (?embed=1 alone, X-OA-Embed alone, and both) are not counted and get no presence frames", async () => {
+    const id = await pub({ visibility: "public" });
+    const person = await join(id, null, { cookie: pid("e") });
+    const e1 = await join(id, null, {}, `${R.events(id)}?embed=1`, false);
+    const e2 = await join(id, null, { "x-oa-embed": "1" }, undefined, false);
+    const e3 = await join(
+      id,
+      null,
+      { "x-oa-embed": "1" },
+      `${R.events(id)}?embed=1`,
+      false,
+    );
+    for (const e of [e1, e2, e3]) {
+      expect(e.frames[0]).not.toHaveProperty("you");
+      expect(e.roster).toHaveLength(0);
+    }
+    expect(await counted(id)).toHaveLength(1);
+    expect(person.roster.at(-1)?.total).toBe(1);
+    for (const s of [person, e1, e2, e3]) s.ws.close();
+  });
+
+  it("?ping=1 reaches the DO as X-OA-Ping; any other value is treated as not pinging", async () => {
+    const id = await pub({ visibility: "public" });
+    const a = await join(
+      id,
+      null,
+      { cookie: pid("f") },
+      `${R.events(id)}?ping=1`,
+    );
+    const b = await join(
+      id,
+      null,
+      { cookie: pid("g") },
+      `${R.events(id)}?ping=yes`,
+    );
+    const c = await join(
+      id,
+      null,
+      { cookie: pid("h") },
+      `${R.events(id)}?ping=0`,
+    );
+    const d = await join(id, null, { cookie: pid("i") });
+    expect(await counted(id)).toEqual([true, false, false, false]);
+    for (const s of [a, b, c, d]) s.ws.close();
+  });
 });

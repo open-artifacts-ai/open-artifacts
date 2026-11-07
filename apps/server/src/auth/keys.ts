@@ -26,6 +26,8 @@ const KEY_OWNERS = {
   // From DIRECTORY_TOKEN_KEY instead (directoryKey below): the AES-GCM key
   // sealing the directory refresh token at rest.
   "oa:directory-token": "directory",
+  // Viewer presence: the per-artifact key a viewer shows under (#539).
+  "oa:viewer-presence": "session",
 } as const satisfies Record<string, KeyOwner>;
 type KeyOwner = "session" | "content" | "directory";
 export type KeyLabel = keyof typeof KEY_OWNERS;

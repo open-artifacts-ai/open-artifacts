@@ -8,6 +8,9 @@ import {
   dataResetTooLargeMessage,
   isId,
   METHOD_CAPABILITY,
+  newId,
+  PRESENCE_COOKIE,
+  PRESENCE_ID_RE,
   planOf,
   RUNTIME_PARAMS,
   type RuntimeMethod,
@@ -15,6 +18,7 @@ import {
   type Visibility,
 } from "@oa/shared";
 import type { Context } from "hono";
+import { getCookie } from "hono/cookie";
 import { HTTPException } from "hono/http-exception";
 import {
   accessLevel,
@@ -39,19 +43,26 @@ import { recordDataCreator } from "../billing/creators.js";
 import { planNow } from "../billing/features.js";
 import { refuseViewOnly } from "../billing/plan.js";
 import { cappedJson, readCapped } from "../http/body.js";
+import { isEmbedRequest } from "../http/embed.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import type { AppType } from "../routes/index.js";
+import { publicName } from "../services/agent-display.js";
 import { type AnonId, resolveAnonId } from "./anon-id.js";
 import {
   ACTOR_HEADER,
   AUTHZ_AT_HEADER,
   EVENTS_NAMED_HEADER,
+  EVENTS_PING_HEADER,
   EVENTS_VERSION_HEADER,
   publicActor,
   runtimeCall,
   runtimeStub,
+  VIEWER_PRESENCE_HEADER,
+  viewerPresenceHeader,
 } from "./do.js";
+import type { PresenceIdentity } from "./roster.js";
+import { viewerPresenceKey } from "./viewer-presence-key.js";
 
 // Literals so Hono infers params; must equal R.data* / R.storage* in @oa/shared.
 const ART = "/api/v1/artifacts/:id";
@@ -554,6 +565,36 @@ export function mountRuntime(app: AppType): void {
     }
     if (c.req.header("upgrade")?.toLowerCase() !== "websocket")
       return c.text("Expected WebSocket upgrade", 426);
+    // Viewer presence (#539): embeds are not counted (and ?embed=1 only drops
+    // the user in caller(), so who alone can't tell an embed from a plain
+    // anonymous viewer). A person shows under their user id; an anonymous
+    // viewer under the oa_pid cookie, or one face per socket without a valid
+    // one. Nothing but the opaque per-artifact key leaves the route.
+    let presence: PresenceIdentity | null = null;
+    if (!isEmbedRequest(c.req.raw)) {
+      if (who.kind === "user") {
+        presence = {
+          key: await viewerPresenceKey(c.env, artifactId, `u:${who.user.id}`),
+          kind: "person",
+          name: publicName(who.user),
+          guest: who.user.role === "guest",
+        };
+      } else {
+        const pid = getCookie(c, PRESENCE_COOKIE);
+        presence = {
+          key: await viewerPresenceKey(
+            c.env,
+            artifactId,
+            pid !== undefined && PRESENCE_ID_RE.test(pid)
+              ? `p:${pid}`
+              : `s:${newId()}`,
+          ),
+          kind: "anon",
+          name: null,
+          guest: false,
+        };
+      }
+    }
     return runtimeStub(c.env, artifactId).fetch(
       "https://runtime.invalid/events",
       {
@@ -563,6 +604,11 @@ export function mountRuntime(app: AppType): void {
           [AUTHZ_AT_HEADER]: String(authzAt),
           [EVENTS_VERSION_HEADER]: String(r.artifact.currentVersion),
           [EVENTS_NAMED_HEADER]: named ? "1" : "0",
+          // Only "1" means this client pings; anything else is not swept.
+          [EVENTS_PING_HEADER]: c.req.query("ping") === "1" ? "1" : "0",
+          ...(presence
+            ? { [VIEWER_PRESENCE_HEADER]: viewerPresenceHeader(presence) }
+            : {}),
         },
       },
     );
