@@ -85,7 +85,7 @@ Variants inside state 1:
   When Pi and oh-my-pi share an extension folder (PI_CODING_AGENT_DIR), the
   configured line is followed by, indented 3 and `muted`:
   `Pi and oh-my-pi share one extension folder, so one file serves both.` None found:
-  `!  No Claude Code, OpenCode, Pi, oh-my-pi or Codex found` and, indented 3,
+  `!  No Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes found` and, indented 3,
   `Install one, then run npx @open-artifacts/bus again.` (`warning`, the install still
   succeeds).
 - Codex is found by `codex` on PATH, `${CODEX_HOME:-~/.codex}`, or
@@ -102,7 +102,7 @@ Variants inside state 1:
   `[[warning]]![[/warning]]  Skipped Codex: ~/.codex/config.toml is not valid TOML`
   then, indented 3, `Fix it, then run npx @open-artifacts/bus again.`
 - No agents yet: `No agents in namespace [[accent]]<namespace>[[/accent]] yet.` then
-  `Start Claude Code, OpenCode, Pi, oh-my-pi or Codex in this folder and it joins.` and no table.
+  `Start Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes in this folder.` then `It joins.` and no table.
   One agent: `1 agent in namespace …`. With nothing queued the meta is
   `N live` alone; it never reads `0 queued`.
 - The `queued` footnote prints only when a row is queued. Rows are `live` or

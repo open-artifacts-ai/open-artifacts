@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/server";
+import { busConfigCap } from "../../bus/cap.js";
 import { logError } from "../../log.js";
 import {
   busOn,
@@ -20,6 +21,8 @@ export function registerBusTools(server: McpServer, t: ToolEnv): void {
     toolConfig("bus_role_propose"),
     (input) =>
       guard(async () => {
+        // #1299: proposing new configuration is refused under a plan cap.
+        busConfigCap(t.user);
         const via = t.agentNow()?.via;
         // No PAT or grant id to attach: a revoke can't end this proposal.
         if (!via) logError("bus_role_propose_no_credential");

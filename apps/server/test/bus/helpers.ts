@@ -125,8 +125,13 @@ export function upgrade(
 export async function daemon(
   token: string,
   extra: Record<string, string> = {},
+  /** Opens the upgrade another way (e.g. a hosted env with ctx.props). */
+  open: (token: string, extra: Record<string, string>) => Promise<Response> = (
+    t,
+    x,
+  ) => upgrade(t, x),
 ): Promise<Daemon> {
-  const res = await upgrade(token, extra);
+  const res = await open(token, extra);
   expect(res.status).toBe(101);
   const ws = res.webSocket as WebSocket;
   ws.accept();
