@@ -42,14 +42,20 @@ export const REFUSED_PROVIDERS: ReadonlySet<string> = new Set([
 
 const KEY = /^agent:([^:]+):(.+)$/;
 
-const SLUG_MAX = 64;
-const slug = (s: string): string =>
-  s
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+/, "")
-    .slice(0, SLUG_MAX)
-    .replace(/-+$/, "");
+/**
+ * A name as typed, like Pi's (#1703): control characters stripped, trimmed, cut
+ * to 64 without splitting a surrogate pair; the kind when nothing is left. The
+ * hub's own name rules do the rest. Never lowercased: only the identity key is.
+ */
+export function nameOf(title: string, kind = "openclaw"): string {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+  let cut = title.replace(/[\u0000-\u001f\u007f-\u009f]/g, "").trim();
+  cut = cut.slice(0, 64);
+  const last = cut.charCodeAt(cut.length - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
+  cut = (cut as string & { toWellFormed(): string }).toWellFormed().trim();
+  return cut || kind;
+}
 
 export const refusal = {
   noKey:
@@ -100,10 +106,13 @@ export function resolveRoot(
       .update(JSON.stringify([stateDir, agentId, key]))
       .digest("hex")
       .slice(0, 40);
-  const name =
-    slug(
-      tail === "main" ? `openclaw-${agentId}` : `openclaw-${agentId}-${tail}`,
-    ) || "openclaw";
+  // The display name keeps the key's own case; the ref above does not.
+  const shown = /^agent:([^:]+):(.+)$/i.exec(raw.trim());
+  const name = nameOf(
+    tail === "main"
+      ? `openclaw-${shown?.[1] ?? agentId}`
+      : `openclaw-${shown?.[1] ?? agentId}-${shown?.[2] ?? tail}`,
+  );
   return {
     ok: true,
     root: {

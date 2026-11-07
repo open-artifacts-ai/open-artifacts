@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { REFUSED_PROVIDERS, refusal, resolveRoot } from "../src/roots.ts";
+import {
+  nameOf,
+  REFUSED_PROVIDERS,
+  refusal,
+  resolveRoot,
+} from "../src/roots.ts";
 import { resolveStateDir } from "../src/state-dir.ts";
 
 const S = "/home/u/.openclaw";
@@ -11,7 +16,7 @@ describe("roots", () => {
     const a = resolveRoot(ok, S, hook);
     const b = resolveRoot({ ...ok, sessionKey: "Agent:Main:MAIN" }, S, hook);
     expect(a).toMatchObject({ ok: true });
-    expect(a).toEqual(b);
+    expect(a.ok && b.ok && a.root.ref === b.root.ref).toBe(true);
     if (a.ok) expect(a.root.ref).toMatch(/^oa-[0-9a-f]{40}$/);
   });
 
@@ -34,7 +39,43 @@ describe("roots", () => {
       hook,
     );
     expect(r.ok && r.root.proposedName).toBe("openclaw-main");
-    expect(t.ok && t.root.proposedName).toBe("openclaw-main-telegram-dm-42");
+    expect(t.ok && t.root.proposedName).toBe("openclaw-main-telegram:dm:42");
+  });
+
+  it("keeps the display name as typed, and lowercases only the identity", () => {
+    const a = resolveRoot(
+      { ...ok, agentId: "Eileen", sessionKey: "agent:Eileen:Café Chat" },
+      S,
+      hook,
+    );
+    const b = resolveRoot(
+      { ...ok, sessionKey: "agent:eileen:café chat" },
+      S,
+      hook,
+    );
+    expect(a.ok && a.root.proposedName).toBe("openclaw-Eileen-Café Chat");
+    expect(a.ok && b.ok && a.root.ref === b.root.ref).toBe(true);
+  });
+
+  it("strips controls, trims, caps at 64 without splitting a pair", () => {
+    const c = resolveRoot(
+      { ...ok, sessionKey: "agent:main:a\u0007b" },
+      S,
+      hook,
+    );
+    expect(c.ok && c.root.proposedName).toBe("openclaw-main-ab");
+    const long = resolveRoot(
+      { ...ok, sessionKey: `agent:main:${"x".repeat(53)}😀😀` },
+      S,
+      hook,
+    );
+    const n = long.ok ? long.root.proposedName : "";
+    expect(n.length).toBeLessThanOrEqual(64);
+    expect(/[\ud800-\udbff](?![\udc00-\udfff])/.test(n)).toBe(false);
+  });
+
+  it("nameOf falls back to the kind", () => {
+    expect(nameOf("\u0001  ")).toBe("openclaw");
   });
 
   it.each([
