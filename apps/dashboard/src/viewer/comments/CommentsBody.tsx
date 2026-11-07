@@ -125,14 +125,23 @@ function Composer({
   const [menuOff, setMenuOff] = useState(false);
   const [activeOpt, setActiveOpt] = useState(0);
   const menuId = useId();
-  // The list is fetched lazily: first "@" typed (then kept), never on open.
-  const typedAt = mentionQuery(text.slice(0, caret)) !== null;
+  // The list is fetched lazily: first focus of a composer an owner/editor can
+  // use (then kept), never on column open. A transient error is retried on the
+  // next focus; a 404 (no route) stays answered.
   const [wantAgents, setWantAgents] = useState(false);
-  if (typedAt && !wantAgents) setWantAgents(true);
-  const agents = useArtifactAgents(
+  const agentsQ = useArtifactAgents(
     api.artifactId,
     mentionable && wantAgents && api.canMention && api.canComment,
-  ).data;
+  );
+  const agents = agentsQ.data;
+  const retryAgents = () => {
+    if (!wantAgents) setWantAgents(true);
+    else if (
+      agentsQ.isError &&
+      !(agentsQ.error instanceof ApiClientError && agentsQ.error.status === 404)
+    )
+      void agentsQ.refetch();
+  };
   const query = agents?.length ? mentionQuery(text.slice(0, caret)) : null;
   const found =
     query !== null && agents && !menuOff ? matchAgents(agents, query) : null;
@@ -203,7 +212,10 @@ function Composer({
         maxLength={COMMENT_BODY_MAX}
         rows={open ? 3 : 1}
         className={TXT}
-        onFocus={() => setOpen(true)}
+        onFocus={() => {
+          setOpen(true);
+          retryAgents();
+        }}
         onChange={(e) => {
           setText(e.target.value);
           setCaret(e.target.selectionStart);
@@ -582,7 +594,6 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
   );
 }
 
-/** The agents to offer in the @ picker: owners and editors only. */
 function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const isActive = api.active === t.id;
   const reply = useReply(api.artifactId, api.guest);

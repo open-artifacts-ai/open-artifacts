@@ -506,7 +506,7 @@ describe("comments: actions", () => {
     ).toBeInTheDocument();
   });
 
-  it("P2: opening the column and focusing a composer fetches no agents until an @ is typed", async () => {
+  it("P2: opening the column fetches no agents; focusing a composer fetches once", async () => {
     const agentCalls: string[] = [];
     server.use(
       http.get(`*${R.artifactAgents(OWNED)}`, ({ request }) => {
@@ -522,13 +522,14 @@ describe("comments: actions", () => {
     const box = await within(c).findByRole("textbox", {
       name: "Comment on the whole page",
     });
-    fireEvent.focus(box);
-    fireEvent.change(box, { target: { value: "hello" } });
     await wait(50);
     expect(agentCalls).toHaveLength(0);
-    fireEvent.change(box, { target: { value: "hello @" } });
+    fireEvent.focus(box);
     await waitFor(() => expect(agentCalls).toHaveLength(1));
-    // A 404 is final: more typing asks again for nothing, and no picker shows.
+    // A 404 is final: more typing or focus asks again for nothing, and no picker shows.
+    fireEvent.blur(box);
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: "hello @" } });
     fireEvent.change(box, { target: { value: "hello @O" } });
     await wait(50);
     expect(agentCalls).toHaveLength(1);

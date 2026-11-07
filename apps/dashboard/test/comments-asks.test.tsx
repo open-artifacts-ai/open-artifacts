@@ -457,8 +457,8 @@ describe("@ picker details", () => {
     const c = await col();
     fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
     const box = await within(c).findByRole("textbox", { name: "Reply" });
-    // The agent list loads once an "@" is typed; Assign to comes with it.
-    fireEvent.change(box, { target: { value: "@" } });
+    // The agent list loads on focus; Assign to comes with it, no "@" needed.
+    fireEvent.focus(box);
     const select = await waitFor(() => {
       const s = within(c).getByLabelText("Assign to") as HTMLSelectElement;
       expect(s.options.length).toBeGreaterThan(1);
@@ -563,6 +563,124 @@ describe("round 2", () => {
         "data-active",
       ),
     );
+  });
+});
+
+describe("agent list loads on composer focus", () => {
+  const agentCalls = () => {
+    const n = { count: 0 };
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, () => {
+        n.count++;
+        return HttpResponse.json(AGENTS);
+      }),
+    );
+    return n;
+  };
+  const wholePage = async (c: HTMLElement) =>
+    within(c).findByRole("textbox", { name: "Comment on the whole page" });
+
+  it("makes no /agents call when the column opens", async () => {
+    const n = agentCalls();
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await wholePage(c);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(n.count).toBe(0);
+  });
+
+  it("calls once on focus for an owner and shows Assign to without typing @", async () => {
+    const n = agentCalls();
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await wholePage(c);
+    fireEvent.focus(box);
+    await waitFor(() => {
+      const s = within(c).getByLabelText("Assign to") as HTMLSelectElement;
+      expect(s.options.length).toBeGreaterThan(1);
+    });
+    fireEvent.blur(box);
+    fireEvent.focus(box);
+    expect(n.count).toBe(1);
+  });
+
+  it("makes no call for a viewer who can't mention", async () => {
+    const n = agentCalls();
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({
+          ...fixtures.artifacts.find((a) => a.id === OWNED),
+          access: "viewer",
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: true,
+            comment: true,
+          },
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await wholePage(c);
+    fireEvent.focus(box);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(n.count).toBe(0);
+    expect(within(c).queryByLabelText("Assign to")).toBeNull();
+  });
+
+  it("retries a 5xx on the next focus but never a 404", async () => {
+    let hits = 0;
+    let status = 500;
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, () => {
+        hits++;
+        return status === 200
+          ? HttpResponse.json(AGENTS)
+          : HttpResponse.json(
+              { error: { code: "internal", message: "boom" } },
+              { status },
+            );
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await wholePage(c);
+    fireEvent.focus(box);
+    await waitFor(() => expect(hits).toBe(1));
+    expect(within(c).queryByLabelText("Assign to")).toBeNull();
+    status = 200;
+    fireEvent.blur(box);
+    fireEvent.focus(box);
+    await within(c).findByLabelText("Assign to");
+    expect(hits).toBe(2);
+  });
+
+  it("does not refetch after a 404", async () => {
+    let hits = 0;
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, () => {
+        hits++;
+        return HttpResponse.json(
+          { error: { code: "not_found", message: "no" } },
+          { status: 404 },
+        );
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await wholePage(c);
+    fireEvent.focus(box);
+    await waitFor(() => expect(hits).toBe(1));
+    fireEvent.blur(box);
+    fireEvent.focus(box);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(hits).toBe(1);
+    expect(within(c).queryByLabelText("Assign to")).toBeNull();
   });
 });
 
