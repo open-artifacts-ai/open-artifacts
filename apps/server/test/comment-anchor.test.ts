@@ -37,6 +37,18 @@ describe("visible text", () => {
   it("counts nested text once, and keeps inline text fused", async () => {
     expect(await text("<p>a <b>b</b>c</p><p>d</p>")).toBe("a bc d");
   });
+  it("handles void and self-closed elements (#1718)", async () => {
+    expect(await text("<p>a<br>b<hr>c<img src=x>d<div/>e<br/>f</p>")).toBe(
+      "a b cd e f",
+    );
+  });
+  it("a void or self-closed element in a hidden set never sticks the counter", async () => {
+    expect(
+      await text(
+        "<template><br><hr><img src=x></template><p>one</p><noscript><br/></noscript><p>two</p><svg/><p>three</p>",
+      ),
+    ).toBe("one two three");
+  });
   it("leaves an unknown entity as written", () => {
     expect(decodeEntities("&nosuch; &#0; &#xD800;")).toBe(
       "&nosuch; &#0; &#xD800;",

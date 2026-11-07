@@ -72,6 +72,18 @@
     "description": "Open Artifacts: Delete a document from a collection."
   },
   {
+    "name": "list_comments",
+    "description": "List the comment threads on an artifact, with their comments and whether each is open or resolved."
+  },
+  {
+    "name": "add_comment",
+    "description": "Comment on an artifact: start a thread, or reply to one with threadId."
+  },
+  {
+    "name": "resolve_comment",
+    "description": "Mark a comment thread resolved, or reopen it."
+  },
+  {
     "name": "list_spaces",
     "description": "Open Artifacts: List the spaces you can publish into: your personal space first, then shared spaces where you are an editor or manager. Pass a space's id as publish_artifact's spaceId."
   }

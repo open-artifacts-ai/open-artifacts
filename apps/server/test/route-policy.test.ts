@@ -131,6 +131,8 @@ describe("enforcement", () => {
       Object.assign(args, { email: "z@y.com", role: "viewer" });
     if (name === "unshare_artifact") args.email = "z@y.com";
     if (name === "set_visibility") args.visibility = "public";
+    if (name === "add_comment") args.body = "hi";
+    if (name === "resolve_comment") args.threadId = "AAAAAAAAAAAAAAAA";
     if (name.startsWith("artifact_data_"))
       Object.assign(args, { collection: "c" });
     if (

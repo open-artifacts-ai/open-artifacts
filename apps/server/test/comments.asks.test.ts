@@ -42,6 +42,9 @@ class FakeBus implements NoticeDelivery {
   /** Runs while a notice is being delivered (a write racing the POST). */
   during: (() => Promise<unknown>) | null = null;
   async deliver(_e: Env, userId: string, notice: BusNotice) {
+    // The follower notice of a new comment (#682, after the response) is not
+    // what these tests are about: they count mentions, asks and assignments.
+    if (notice.kind === "commented") return "delivered" as const;
     this.sent.push({ userId, notice });
     await this.during?.();
     return this.outcome;

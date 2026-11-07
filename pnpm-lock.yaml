@@ -412,6 +412,9 @@ importers:
       '@oa/bus-ipc':
         specifier: workspace:*
         version: link:../bus-ipc
+      '@oa/bus-protocol':
+        specifier: workspace:*
+        version: link:../bus-protocol
       '@types/node':
         specifier: ^22.19.0
         version: 22.20.5
