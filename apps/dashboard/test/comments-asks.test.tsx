@@ -660,6 +660,29 @@ describe("agent list loads on composer focus", () => {
     expect(hits).toBe(2);
   });
 
+  it("retries a 5xx on another composer's first focus", async () => {
+    let hits = 0;
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, () => {
+        hits++;
+        return HttpResponse.json(
+          { error: { code: "internal", message: "boom" } },
+          { status: 500 },
+        );
+      }),
+    );
+    serveThreads(() => [askThread({}, {})]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await wholePage(c);
+    fireEvent.focus(box);
+    await waitFor(() => expect(hits).toBe(1));
+    fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
+    const reply = await within(c).findByRole("textbox", { name: "Reply" });
+    fireEvent.focus(reply);
+    await waitFor(() => expect(hits).toBe(2));
+  });
+
   it("does not refetch after a 404", async () => {
     let hits = 0;
     server.use(

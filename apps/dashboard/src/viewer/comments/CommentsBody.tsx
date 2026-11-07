@@ -136,8 +136,9 @@ function Composer({
   const agents = agentsQ.data;
   const retryAgents = () => {
     if (!wantAgents) setWantAgents(true);
-    else if (
+    if (
       agentsQ.isError &&
+      !agentsQ.isFetching &&
       !(agentsQ.error instanceof ApiClientError && agentsQ.error.status === 404)
     )
       void agentsQ.refetch();
