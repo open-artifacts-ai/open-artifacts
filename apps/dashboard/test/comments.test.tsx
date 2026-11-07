@@ -458,6 +458,35 @@ describe("comments: actions", () => {
     ).toBeInTheDocument();
   });
 
+  it("P2: opening the column and focusing a composer fetches no agents until an @ is typed", async () => {
+    const agentCalls: string[] = [];
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, ({ request }) => {
+        agentCalls.push(request.url);
+        return HttpResponse.json(
+          { error: { code: "not_found", message: "no" } },
+          { status: 404 },
+        );
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: "hello" } });
+    await wait(50);
+    expect(agentCalls).toHaveLength(0);
+    fireEvent.change(box, { target: { value: "hello @" } });
+    await waitFor(() => expect(agentCalls).toHaveLength(1));
+    // A 404 is final: more typing asks again for nothing, and no picker shows.
+    fireEvent.change(box, { target: { value: "hello @O" } });
+    await wait(50);
+    expect(agentCalls).toHaveLength(1);
+    expect(within(c).queryByRole("listbox")).toBeNull();
+  });
+
   it("P2: the column opens on its own with no threads, and an explicit close sticks", async () => {
     server.use(
       http.get("*/api/v1/artifacts/:id/comments", () =>

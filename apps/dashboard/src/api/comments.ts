@@ -107,6 +107,9 @@ export const useArtifactAgents = (id: string, enabled: boolean) =>
     queryKey: ["comment-agents", id],
     retry: false,
     staleTime: 30_000,
+    // A server without the route (404) stays answered: no refetch on mount or focus.
+    refetchOnMount: (q) => q.state.status !== "error",
+    refetchOnWindowFocus: (q) => q.state.status !== "error",
     queryFn: ({ signal }) =>
       api.get(R.artifactAgents(id), z.array(ArtifactAgentSchema), signal),
   });

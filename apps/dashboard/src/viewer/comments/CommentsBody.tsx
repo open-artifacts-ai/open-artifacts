@@ -86,17 +86,17 @@ function Composer({
   alwaysOpen = true,
   failure,
   onDirty,
-  agents,
+  mentionable = false,
   buttonsRight = false,
   lead,
 }: {
+  /** Offer @mentions and Assign: the agent list is fetched once an "@" is typed. */
+  mentionable?: boolean;
   /** The new-comment layout: Assign on its own line, then Cancel and the
       accent submit at the right. */
   buttonsRight?: boolean;
   /** Shown at the left of the button row (a guest's Sign in link). */
   lead?: React.ReactNode;
-  /** Agents the writer may @mention and assign (owners and editors only). */
-  agents?: readonly ArtifactAgent[];
   /** Called when the box gains or loses text the reader typed. */
   onDirty?: (dirty: boolean) => void;
   placeholder: string;
@@ -111,7 +111,8 @@ function Composer({
   alwaysOpen?: boolean;
   failure?: (e: unknown) => React.ReactNode;
 }) {
-  const { capped, canMention, guest } = useCommentsApi();
+  const api = useCommentsApi();
+  const { capped, canMention, guest } = api;
   const [text, setText] = useState(initial);
   const [open, setOpen] = useState(alwaysOpen);
   const [error, setError] = useState<unknown>(null);
@@ -123,6 +124,14 @@ function Composer({
   const [menuOff, setMenuOff] = useState(false);
   const [activeOpt, setActiveOpt] = useState(0);
   const menuId = useId();
+  // The list is fetched lazily: first "@" typed (then kept), never on open.
+  const typedAt = mentionQuery(text.slice(0, caret)) !== null;
+  const [wantAgents, setWantAgents] = useState(false);
+  if (typedAt && !wantAgents) setWantAgents(true);
+  const agents = useArtifactAgents(
+    api.artifactId,
+    mentionable && wantAgents && api.canMention && api.canComment,
+  ).data;
   const query = agents?.length ? mentionQuery(text.slice(0, caret)) : null;
   const found =
     query !== null && agents && !menuOff ? matchAgents(agents, query) : null;
@@ -531,15 +540,9 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
 }
 
 /** The agents to offer in the @ picker: owners and editors only. */
-function useMentionPool(api: CommentsApi) {
-  return useArtifactAgents(api.artifactId, api.canMention && api.canComment)
-    .data;
-}
-
 function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const isActive = api.active === t.id;
   const reply = useReply(api.artifactId, api.guest);
-  const pool = useMentionPool(api);
   const status = useSetThreadStatus(api.artifactId, api.guest);
   const [statusErr, setStatusErr] = useState<unknown>(null);
   const el = useRef<HTMLLIElement>(null);
@@ -627,7 +630,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               label="Reply"
               placeholder="Reply"
               submit="Reply"
-              agents={pool}
+              mentionable
               onSubmit={(body, x) =>
                 reply.mutateAsync({
                   thread: t.id,
@@ -677,7 +680,6 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
 function NewThread({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
   const last = useRef("");
-  const pool = useMentionPool(api);
   const draft = api.draft;
   if (!draft) return null;
   const guest = api.guest ? { guestName: api.guestName.trim() } : {};
@@ -704,7 +706,7 @@ function NewThread({ api }: { api: CommentsApi }) {
         autoFocus
         buttonsRight
         lead={api.guest ? <SignInLink /> : undefined}
-        agents={pool}
+        mentionable
         onDirty={api.setDraftDirty}
         onCancel={api.cancelDraft}
         onSubmit={async (body, x) => {
@@ -746,7 +748,6 @@ function NewThread({ api }: { api: CommentsApi }) {
 
 function NoteComposer({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
-  const pool = useMentionPool(api);
   return (
     <div className="flex flex-col gap-2">
       {api.guest && <GuestName api={api} />}
@@ -757,7 +758,7 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         alwaysOpen={false}
         buttonsRight
         lead={api.guest ? <SignInLink /> : undefined}
-        agents={pool}
+        mentionable
         onSubmit={(body, x) =>
           create.mutateAsync({
             anchor: { kind: "note" },
