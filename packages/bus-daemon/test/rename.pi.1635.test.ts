@@ -122,6 +122,49 @@ describe("pi rename through the daemon (#1635)", () => {
     );
   });
 
+  it("never lists the cap for a claude-code or opencode hello", async () => {
+    for (const kind of ["claude-code", "opencode"]) {
+      const c = await up(["rename"], "x", kind);
+      const welcome = c.lines.find((l) => l.type === "welcome");
+      expect(welcome, kind).toBeDefined();
+      expect(welcome, kind).not.toHaveProperty("caps");
+    }
+  });
+
+  it("the daemon's welcome to a no-cap hello decodes with the strict decoder of main", async () => {
+    // Frozen from origin/main's Welcome (before #1635): strict, no caps.
+    const OldWelcome = z.strictObject({
+      v: z.literal(1),
+      id: z.string(),
+      type: z.literal("welcome"),
+      agent_ref: z.string(),
+      bus_name: z.string(),
+      namespace: z.string(),
+      global: z.boolean(),
+    });
+    const c = await up(["mailbox"]);
+    const welcome = c.lines.find((l) => l.type === "welcome");
+    expect(OldWelcome.safeParse(welcome).success).toBe(true);
+  });
+
+  it("a second link with a new name renames a pi session but never an omp one", async () => {
+    for (const [kind, want] of [
+      ["pi", 1],
+      ["omp", 0],
+    ] as const) {
+      const { h, mk } = await up(["rename"], "first", kind);
+      const { connect } = await import("node:net");
+      const s2 = connect(h.socketPath);
+      s2.on("error", () => {});
+      socks.push(s2);
+      s2.write(
+        `${JSON.stringify({ ...mk({ kind, agent_ref: "P1", proposed_name: "auto-title" }), caps: ["rename"] })}\n`,
+      );
+      await settle();
+      expect(h.of("rename"), kind).toHaveLength(want);
+    }
+  });
+
   it("sends one hub rename per change; unchanged, empty and fallback send none", async () => {
     const { h, rename } = await up(["rename"]);
     rename("pi");

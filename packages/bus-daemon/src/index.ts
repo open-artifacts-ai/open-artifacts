@@ -1265,10 +1265,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // Pi is told on its connection, which exists only once welcomed (onOpen).
           if (!piLike(hello.kind)) tellOwed(prev.ref);
           // A rename made while the link was down (#1635).
-          if (
-            hello.proposed_name !== undefined &&
-            (prev.kind === "pi" || prev.kind === "omp")
-          )
+          if (hello.proposed_name !== undefined && prev.kind === "pi")
             renameFromAdapter(prev, hello.proposed_name);
           return {
             bus_name: prev.busName,

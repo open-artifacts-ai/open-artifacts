@@ -202,4 +202,16 @@ describe("pi rename (#1635)", () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(d.renames(0)).toHaveLength(0);
   });
+
+  it("omp: a title that changes while the hello is in flight is not sent", async () => {
+    agent = { kind: "main" };
+    const d = await daemon(["rename"], 300);
+    const emit = await pi(false);
+    await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
+    // omp titles the session itself; a second session_start sees the new title.
+    name = "Auto Title";
+    void emit("session_start");
+    await new Promise((r) => setTimeout(r, 600));
+    expect(d.renames(0)).toHaveLength(0);
+  });
 });

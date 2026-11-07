@@ -1027,7 +1027,11 @@ export default function oaBus(pi: Pi): void {
         current = l;
         refusals = 0;
         // Renamed while this hello was in flight (#1635).
-        if (identity.name !== id.name && identity.name !== identity.kind)
+        if (
+          identity.kind !== "omp" &&
+          identity.name !== id.name &&
+          identity.name !== identity.kind
+        )
           l.rename(identity.name);
         return l;
       },
