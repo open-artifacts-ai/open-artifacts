@@ -42,9 +42,10 @@ export const freeCapsOf = (
   data_daily_writes: positive(env.FREE_DATA_DAILY_WRITES),
 });
 
-/** The caps that apply now: hosted, on the free tier; else null. */
+/** The caps that apply now: hosted, on the solo (or transition free) tier; else null. */
 export function activeFreeCaps(env: Env): FreeCaps | null {
-  if (!billingActive(env) || scopedPlan()?.tier !== "free") return null;
+  const tier = scopedPlan()?.tier;
+  if (!billingActive(env) || (tier !== "free" && tier !== "solo")) return null;
   const caps = freeCapsOf(env);
   return Object.values(caps).some((v) => v !== null) ? caps : null;
 }
@@ -54,7 +55,7 @@ export function planLimitError(limit: PlanLimit, max: number): ApiError {
   const details: PlanLimitDetails = { tier: "free", limit, max };
   return new ApiError(
     "plan_limit",
-    "This free instance has reached its limit. Delete what you no longer need, or ask the owner to move to a team plan.",
+    "This Solo instance has reached its limit. Delete what you no longer need, or ask the owner to move to a team plan.",
     details,
   );
 }

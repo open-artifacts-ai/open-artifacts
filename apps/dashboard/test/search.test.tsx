@@ -116,10 +116,14 @@ describe("Search", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/"));
   });
 
-  it("clearing the box on /search drops q", async () => {
+  it("clearing the box on /search returns to the full library (#1640)", async () => {
     const router = mount("/search?q=notes");
     fireEvent.change(await box(), { target: { value: "" } });
-    await waitFor(() => expect(router.state.location.searchStr).toBe(""));
-    expect(router.state.location.pathname).toBe("/search");
+    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+    expect(router.state.location.searchStr).toBe("");
+    // The library's own list is back, not the empty search prompt.
+    expect(
+      await screen.findByRole("link", { name: arts[0]?.title as string }),
+    ).toBeInTheDocument();
   });
 });

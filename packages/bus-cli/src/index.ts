@@ -10,6 +10,8 @@ export type Command = (
       check: boolean;
       noOpen: boolean;
       noService: boolean;
+      habits?: "yes" | "no" | "show";
+      json?: boolean;
     }
   | { cmd: "login"; hub?: string; noOpen: boolean }
   | { cmd: "daemon"; hub?: string; home?: string }
@@ -55,7 +57,17 @@ const NAMESPACE_USAGE = `usage: ${BUS_CMD} namespace approve [dir], namespace re
 const COMMON = new Set(["no-color", "version", "home"]);
 /** Each command's own flags. */
 const FLAGS: Record<string, string[]> = {
-  install: ["instance", "no-open", "yes", "check", "no-service"],
+  install: [
+    "instance",
+    "no-open",
+    "yes",
+    "check",
+    "no-service",
+    "habits",
+    "no-habits",
+    "show-habits",
+    "json",
+  ],
   login: ["instance", "no-open"],
   daemon: ["instance"],
   uninstall: ["purge"],
@@ -77,6 +89,10 @@ export function parse(argv: string[]): Command {
       yes: { type: "boolean", short: "y", default: false },
       check: { type: "boolean", default: false },
       "no-service": { type: "boolean", default: false },
+      habits: { type: "boolean", default: false },
+      "no-habits": { type: "boolean", default: false },
+      "show-habits": { type: "boolean", default: false },
+      json: { type: "boolean", default: false },
       purge: { type: "boolean", default: false },
       version: { type: "boolean", short: "v", default: false },
       "no-color": { type: "boolean", default: false },
@@ -134,6 +150,10 @@ type Values = {
   yes: boolean;
   check: boolean;
   "no-service": boolean;
+  habits: boolean;
+  "no-habits": boolean;
+  "show-habits": boolean;
+  json: boolean;
   purge: boolean;
 };
 
@@ -185,6 +205,8 @@ function route(cmd: string, values: Values, positionals: string[]) {
         check: values.check,
         noOpen: values["no-open"],
         noService: values["no-service"],
+        ...habitsMode(values),
+        ...(values.json ? { json: true } : {}),
       };
     case "status":
     case "logs":
@@ -194,4 +216,16 @@ function route(cmd: string, values: Values, positionals: string[]) {
     default:
       throw new Error(`unknown command: ${cmd}`);
   }
+}
+
+/** At most one of --habits, --no-habits, --show-habits. */
+function habitsMode(v: Values): { habits?: "yes" | "no" | "show" } {
+  const asked = [
+    v.habits && "yes",
+    v["no-habits"] && "no",
+    v["show-habits"] && "show",
+  ].filter(Boolean) as ("yes" | "no" | "show")[];
+  if (asked.length > 1)
+    throw new Error("use only one of --habits, --no-habits, --show-habits");
+  return asked[0] ? { habits: asked[0] } : {};
 }

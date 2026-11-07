@@ -16,7 +16,7 @@ import {
   ToggleGroupItem,
 } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { ApiClientError, api } from "../api/client";
 import {
   qk,
@@ -79,34 +79,24 @@ function SnippetTabs({
     list.findIndex((s) => s.agent === picked),
     0,
   );
-  const listRef = useRef<HTMLDivElement>(null);
   return (
     <Tabs
       value={String(current)}
-      onValueChange={(v) => {
-        setPicked(list[Number(v)]?.agent);
-        // The strip scrolls sideways on phones; keep the picked tab in view
-        // (clicks and arrow keys alike).
-        listRef.current?.children[Number(v)]?.scrollIntoView?.({
-          block: "nearest",
-          inline: "nearest",
-        });
-      }}
+      onValueChange={(v) => setPicked(list[Number(v)]?.agent)}
       className={`min-w-0 ${GAP}`}
     >
-      {/* The strip scrolls, so it clips anything outside it: the hairline is
-          an inset shadow, the underline sits at the bottom edge, and the
-          focus ring is inset. */}
+      {/* On phones the strip wraps onto a second row instead of scrolling, so
+          every client stays in view. The hairline is an inset shadow, the
+          underline sits at the bottom edge, and the focus ring is inset. */}
       <TabsList
-        ref={listRef}
         variant="line"
-        className="h-[34px] w-full justify-start gap-[var(--oa-space-4)] overflow-x-auto rounded-none p-0 shadow-[inset_0_-1px_0_var(--color-border)] [scrollbar-width:none]"
+        className="w-full flex-wrap justify-start gap-x-[var(--oa-space-4)] gap-y-[var(--oa-space-1)] rounded-none p-0 shadow-[inset_0_-1px_0_var(--color-border)] group-data-[orientation=horizontal]/tabs:h-auto"
       >
         {list.map(({ agent }, i) => (
           <TabsTrigger
             key={agent}
             value={String(i)}
-            className="h-full flex-none px-0 text-[length:var(--oa-text-sm)] group-data-[orientation=horizontal]/tabs:after:bottom-0 group-data-[orientation=horizontal]/tabs:after:h-[2px] focus-visible:outline-offset-[-2px]"
+            className="h-[34px] flex-none px-0 text-[length:var(--oa-text-sm)] group-data-[orientation=horizontal]/tabs:after:bottom-0 group-data-[orientation=horizontal]/tabs:after:h-[2px] focus-visible:outline-offset-[-2px]"
           >
             {agent}
           </TabsTrigger>
@@ -133,7 +123,7 @@ function SnippetTabs({
                   code={s.code}
                   label={s.language === "bash" ? "Copy command" : "Copy config"}
                   disabled={frozen}
-                  wrap={variant === "token"}
+                  wrap
                 />
               )}
             </>
