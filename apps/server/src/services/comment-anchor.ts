@@ -69,6 +69,20 @@ const BLOCKS =
   "p, div, li, ul, ol, dl, dt, dd, h1, h2, h3, h4, h5, h6, br, hr, tr, td, th, table, section, article, header, footer, nav, aside, main, blockquote, pre, figure, figcaption, form, fieldset, address";
 
 /**
+ * Registers an end tag handler. False for a void or self-closed element
+ * (br, hr, img, svg/): workerd has no canHaveContent or selfClosing to ask
+ * and onEndTag throws "No end tag" there.
+ */
+function onEnd(e: Element, fn: () => void): boolean {
+  try {
+    e.onEndTag(fn);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The visible text of an html document: script, style, template, noscript and
  * title skipped, entities decoded, blocks separated by a space. Not
  * normalised: pass it through normalizeText.
@@ -89,15 +103,14 @@ export async function visibleText(
     .on(HIDDEN, {
       element(e) {
         hidden++;
-        // A void or self-closed element has no end tag handler.
-        if (e.onEndTag) e.onEndTag(() => void hidden--);
-        else hidden--;
+        // A void or self-closed element has no end tag: onEndTag throws.
+        if (!onEnd(e, () => void hidden--)) hidden--;
       },
     })
     .on(BLOCKS, {
       element(e) {
         push(" ");
-        if (e.onEndTag) e.onEndTag(() => push(" "));
+        onEnd(e, () => push(" "));
       },
     })
     .on("*", {
