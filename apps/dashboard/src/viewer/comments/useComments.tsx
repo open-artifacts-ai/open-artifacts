@@ -32,6 +32,8 @@ export type CommentsApi = {
   /** Comments are on for this artifact and this viewer isn't an embed. */
   enabled: boolean;
   canComment: boolean;
+  /** Owner or editor, signed in: may @mention and assign agents (the server refuses anyone else). */
+  canMention: boolean;
   /** A guest or restricted member: the server refuses their writes as read-only. */
   capped: boolean;
   /** Not signed in: composers ask for a display name. */
@@ -220,6 +222,11 @@ export function useCommentsController({
     () => ({
       enabled,
       canComment: mayComment,
+      canMention:
+        authed &&
+        !readOnly &&
+        (artifact.can?.edit ??
+          (artifact.access === "owner" || artifact.access === "editor")),
       capped: readOnly,
       guest: !authed,
       artifactId: id,
@@ -258,6 +265,8 @@ export function useCommentsController({
     [
       enabled,
       mayComment,
+      artifact.can?.edit,
+      artifact.access,
       readOnly,
       authed,
       id,

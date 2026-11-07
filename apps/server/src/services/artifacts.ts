@@ -248,7 +248,7 @@ export async function publish(
       if (input.spaceId !== undefined)
         throw new ApiError(
           "use_move",
-          "spaceId is only for new artifacts; move an existing one with POST /move",
+          "spaceId is only for new artifacts. Leave spaceId out to publish a new version, or move the artifact from the dashboard.",
           { path: "spaceId", reason: "use_move" },
         );
       create = false;
@@ -301,7 +301,7 @@ export async function publish(
         if (mode === "create")
           throw new ApiError(
             "bad_request",
-            "use POST /versions to publish a new version",
+            "No artifact you can publish to has this id, and it was not reserved for you. Leave id out to create a new artifact, or call create_upload without artifactId to reserve one.",
             { path: "id", reason: "not_reserved" },
           );
         throw notFound();
@@ -314,8 +314,8 @@ export async function publish(
     throw new ApiError(
       "bad_request",
       input.edits
-        ? "edits need an existing artifact with a version"
-        : "expectedVersion needs an existing artifact",
+        ? "edits need an existing artifact with a version. Publish the content or files first, then send edits with its id."
+        : "expectedVersion needs an existing artifact. Leave it out when creating, or pass the id of an artifact you have already published.",
       {
         path: input.edits ? "edits" : "expectedVersion",
         reason: "needs_version",
@@ -359,7 +359,7 @@ export async function publish(
   if (create && input.title === undefined)
     throw new ApiError(
       "bad_request",
-      "title is required when creating an artifact",
+      "title is required when creating an artifact. Add a title and publish again.",
       {
         path: "title",
         reason: "missing",
@@ -541,7 +541,10 @@ export async function publish(
     await cleanup();
     const msg = String((e as Error)?.message);
     if (msg.includes("UNIQUE constraint failed: artifacts.id"))
-      throw new ApiError("conflict", "Artifact already exists");
+      throw new ApiError(
+        "conflict",
+        "Artifact already exists. Publish a new version with its id, or leave id out to create a new artifact.",
+      );
     // A lost compare-and-set whose row already had the new visibility: the
     // version insert met the other writer's version row.
     if (cas && msg.includes("UNIQUE constraint failed: versions"))
@@ -557,7 +560,10 @@ export async function publish(
     // re-check) or an upload was used.
     if (create)
       throw n
-        ? new ApiError("conflict", "An upload was already used")
+        ? new ApiError(
+            "conflict",
+            "An upload was already used. Create a new one with create_upload.",
+          )
         : changed();
     if (expected !== undefined) {
       const row = await db
@@ -576,7 +582,10 @@ export async function publish(
     if (live)
       throw visCas
         ? changed()
-        : new ApiError("conflict", "An upload was already used");
+        : new ApiError(
+            "conflict",
+            "An upload was already used. Create a new one with create_upload.",
+          );
     throw notFound();
   }
   // Access changed: close first (gone "changed"), awaited, so a socket that
@@ -677,7 +686,10 @@ async function staleVersion(
 }
 
 const changed = () =>
-  new ApiError("conflict", "The artifact changed while saving; try again");
+  new ApiError(
+    "conflict",
+    "The artifact changed while saving. Read it again with get_artifact and publish again.",
+  );
 /** An SQL fragment appended to a WHERE, and its arguments. */
 type Guard = [string, unknown[]];
 const bad = (message: string, path?: string) =>
@@ -1760,7 +1772,7 @@ export async function publishSettings(
     await authorize(env, asUser(user), id, "publish");
     throw new ApiError(
       "use_move",
-      "spaceId is only for new artifacts; move an existing one with POST /move",
+      "spaceId is only for new artifacts. Leave spaceId out to publish a new version, or move the artifact from the dashboard.",
       { path: "spaceId", reason: "use_move" },
     );
   }

@@ -1,75 +1,75 @@
 [
   {
     "name": "publish_artifact",
-    "description": "Create an artifact, or publish a new version of one by id, from inline content or a map of files. Pass spaceId to create it in a shared space."
+    "description": "Open Artifacts: Create an artifact, or publish a new version of one by id, from inline content or a map of files. Pass spaceId to create it in a shared space."
   },
   {
     "name": "get_artifact",
-    "description": "Get an artifact's metadata and the content of a version (the latest by default)."
+    "description": "Open Artifacts: Get an artifact's metadata and the content of a version (the latest by default)."
   },
   {
     "name": "list_artifacts",
-    "description": "List artifacts, filtered by owner, format, visibility, agent, or update time."
+    "description": "Open Artifacts: List artifacts, filtered by owner, format, visibility, agent, or update time."
   },
   {
     "name": "search_artifacts",
-    "description": "Full-text search over titles, descriptions, and extracted text."
+    "description": "Open Artifacts: Full-text search over titles, descriptions, and extracted text."
   },
   {
     "name": "list_versions",
-    "description": "List an artifact's versions, with the agent and change note for each."
+    "description": "Open Artifacts: List an artifact's versions, with the agent and change note for each."
   },
   {
     "name": "restore_version",
-    "description": "Restore an earlier version. The restore creates a new version."
+    "description": "Open Artifacts: Restore an earlier version. The restore creates a new version."
   },
   {
     "name": "share_artifact",
-    "description": "Share an artifact with an email address as viewer or editor."
+    "description": "Open Artifacts: Share an artifact with an email address as viewer or editor."
   },
   {
     "name": "unshare_artifact",
-    "description": "Remove a person's access to an artifact."
+    "description": "Open Artifacts: Remove a person's access to an artifact."
   },
   {
     "name": "set_visibility",
-    "description": "Set an artifact to private, team, or public."
+    "description": "Open Artifacts: Set an artifact to private, team, or public."
   },
   {
     "name": "delete_artifact",
-    "description": "Delete an artifact. Restore it from Trash in the dashboard, or with undelete_artifact, within 30 days."
+    "description": "Open Artifacts: Delete an artifact. Restore it from Trash in the dashboard, or with undelete_artifact, within 30 days."
   },
   {
     "name": "undelete_artifact",
-    "description": "Restore a deleted artifact from the trash within 30 days."
+    "description": "Open Artifacts: Restore a deleted artifact from the trash within 30 days."
   },
   {
     "name": "create_upload",
-    "description": "Get a signed upload URL for files too large to publish inline."
+    "description": "Open Artifacts: Get a signed upload URL for files too large to publish inline."
   },
   {
     "name": "artifact_data_get",
-    "description": "Read one document from an artifact's live-page data."
+    "description": "Open Artifacts: Read one document from an artifact's live-page data."
   },
   {
     "name": "artifact_data_list",
-    "description": "List documents in a collection of an artifact's live-page data."
+    "description": "Open Artifacts: List documents in a collection of an artifact's live-page data."
   },
   {
     "name": "artifact_data_query",
-    "description": "Find documents in a collection that match a filter."
+    "description": "Open Artifacts: Find documents in a collection that match a filter."
   },
   {
     "name": "artifact_data_set",
-    "description": "Create or replace a document in a collection."
+    "description": "Open Artifacts: Create or replace a document in a collection."
   },
   {
     "name": "artifact_data_update",
-    "description": "Merge fields into an existing document."
+    "description": "Open Artifacts: Merge fields into an existing document."
   },
   {
     "name": "artifact_data_delete",
-    "description": "Delete a document from a collection."
+    "description": "Open Artifacts: Delete a document from a collection."
   },
   {
     "name": "list_comments",
@@ -85,6 +85,6 @@
   },
   {
     "name": "list_spaces",
-    "description": "List the spaces you can publish into: your personal space first, then shared spaces where you are an editor or manager. Pass a space's id as publish_artifact's spaceId."
+    "description": "Open Artifacts: List the spaces you can publish into: your personal space first, then shared spaces where you are an editor or manager. Pass a space's id as publish_artifact's spaceId."
   }
 ]

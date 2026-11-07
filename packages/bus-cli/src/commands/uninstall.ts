@@ -9,6 +9,7 @@ import {
 } from "../context.ts";
 import { readMachine } from "../machine.ts";
 import { readAssets, uninstallAdapters } from "../steps/adapters.ts";
+import { hermesHome } from "../steps/hermes.ts";
 import { purge } from "../steps/purge.ts";
 import { uninstallSkill } from "../steps/skill.ts";
 import { hostOf } from "./status.ts";
@@ -54,6 +55,13 @@ export async function uninstall(
     ]);
   }
   // Quiet on success: the wiring lines above already say what was removed.
+  if (r.hermesNoCli)
+    say(
+      ctx,
+      c.hermesNoCli(
+        tilde(ctx, join(hermesHome(ctx.userHome, ctx.env), "config.yaml")),
+      ),
+    );
   if (r.folderOnly.includes("opencode")) say(ctx, c.removedPluginFolder());
   if (r.removed.length + r.folderOnly.length === 0) say(ctx, c.noneWired());
   for (const s of r.skipped)

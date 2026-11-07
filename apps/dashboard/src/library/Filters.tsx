@@ -29,6 +29,11 @@ const FORMATS = [
   { value: ALL, label: "All formats" },
   ...FormatSchema.options.map((value) => ({ value, label: LABEL[value] })),
 ];
+const WAITING = [
+  { value: ALL, label: "All" },
+  { value: "needs_answer", label: "Needs your answer" },
+  { value: "waiting_on_agents", label: "Waiting on agents" },
+];
 const TEXT = "text-[length:var(--oa-text-sm)]";
 const ITEM = `h-[30px] px-[var(--oa-space-3)] ${TEXT}`;
 
@@ -36,6 +41,9 @@ export type FilterProps = {
   format: Format | undefined;
   agent: string | undefined;
   agents: string[];
+  /** #1535: the waiting-on filter. */
+  waiting?: "needs_answer" | "waiting_on_agents";
+  onWaiting: (f: "needs_answer" | "waiting_on_agents" | undefined) => void;
   /** The agentVia filter (#589) and its connection's name, shown in the Agent select. */
   via?: { label: string };
   view: "grid" | "list";
@@ -147,7 +155,38 @@ export function Filters(p: FilterProps) {
           ))}
         </SelectContent>
       </Select>
-      {(p.format || p.agent || p.via) && (
+      {/* Three toggles don't fit a phone: a select there, like Format. */}
+      <Choice
+        label="Waiting on"
+        options={WAITING}
+        value={p.waiting ?? ALL}
+        onChange={(v) =>
+          p.onWaiting(v === ALL ? undefined : (v as "needs_answer"))
+        }
+        className="max-[600px]:hidden"
+      />
+      <Select
+        value={p.waiting ?? ALL}
+        onValueChange={(v) =>
+          p.onWaiting(v === ALL ? undefined : (v as "needs_answer"))
+        }
+      >
+        <SelectTrigger
+          aria-label="Waiting on"
+          size="sm"
+          className={`min-w-[140px] min-[601px]:hidden ${TEXT}`}
+        >
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent position="popper">
+          {WAITING.map((f) => (
+            <SelectItem key={f.value} value={f.value} className={TEXT}>
+              {f.label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {(p.format || p.agent || p.via || p.waiting) && (
         <Button variant="ghost" size="sm" className={TEXT} onClick={p.onClear}>
           Clear filters
         </Button>

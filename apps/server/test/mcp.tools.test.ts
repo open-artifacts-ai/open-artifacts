@@ -311,7 +311,7 @@ describe("MCP tools over PAT", () => {
       files: { "a.png": { base64: jpeg } },
     });
     expect(textOf(png)).toBe(
-      'binary_entry: "a.png" is a JPEG image, so it can\'t be shown as a PNG image.',
+      'binary_entry: "a.png" is a JPEG image, so it can\'t be shown as a PNG image. Publish a real PNG file, or name the file for its real type.',
     );
     const b = await tool(client, "publish_artifact", {
       title: "photo",
@@ -321,7 +321,7 @@ describe("MCP tools over PAT", () => {
     });
     expect(b.isError).toBe(true);
     expect(textOf(b)).toBe(
-      'binary_entry: "photo.txt" is a JPEG image, not text, so it can\'t be shown as code.',
+      'binary_entry: "photo.txt" is a JPEG image, not text, so it can\'t be shown as code. Publish UTF-8 text, or name the file for its real type.',
     );
     const p = await tool(client, "publish_artifact", {
       title: "doc",
@@ -329,7 +329,7 @@ describe("MCP tools over PAT", () => {
       content: "not a pdf",
     });
     expect(textOf(p)).toBe(
-      "binary_entry: \"document.pdf\" doesn't start with %PDF, so it can't be shown as a PDF.",
+      "binary_entry: \"document.pdf\" doesn't start with %PDF, so it can't be shown as a PDF. Publish a real PDF, or name the file for its real type.",
     );
   });
 
@@ -918,6 +918,17 @@ describe("tool manifest", () => {
     expect(manifest.map((t) => t.name).sort()).toEqual(
       [...SPACES_TOOLS, ...BUS_TOOLS].sort(),
     );
+  });
+
+  it('every tool description starts with "Open Artifacts:", with or without spaces', () => {
+    for (const d of TOOL_DEFS) {
+      expect(d.description, d.name).toMatch(/^Open Artifacts: \S/);
+      expect(descriptionFor(d.name, false), d.name).toMatch(
+        /^Open Artifacts: \S/,
+      );
+    }
+    for (const t of manifest)
+      expect(t.description, t.name).toMatch(/^Open Artifacts: \S/);
   });
 
   it("tool descriptions and instructions state the current inline limit", () => {

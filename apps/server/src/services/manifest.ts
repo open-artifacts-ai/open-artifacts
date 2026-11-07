@@ -70,16 +70,43 @@ export type Plan = {
   byBytes?: true;
 };
 
+/** What each bad_request reason says to do next (#1540); others fall back to a generic fix. */
+const REASON_TEXT: Record<string, string> = {
+  invalid_upload:
+    "This upload was already used or has expired. Create a new one with create_upload.",
+  upload_incomplete:
+    "The bytes for this upload have not arrived. PUT the file to the upload url, then publish again.",
+  reserved_name:
+    "That file name is reserved. Rename the file and publish again.",
+  duplicate: "Two files have the same path. Give each file its own path.",
+  case_collision:
+    "Two paths differ only by letter case. Rename one so they differ by more than case.",
+  empty: "No files were given. Pass at least one file in files.",
+  invalid_base64:
+    "The base64 is not valid. Re-encode the file as standard base64 and publish again.",
+  not_reserved:
+    "No artifact you can publish to has this id, and it was not reserved for you. Leave id out to create a new artifact, or call create_upload without artifactId to reserve one.",
+};
 const bad = (path: string, reason: string, message?: string) =>
-  new ApiError("bad_request", message ?? `Invalid file "${path}": ${reason}`, {
-    path,
-    reason,
-  });
+  new ApiError(
+    "bad_request",
+    message ??
+      REASON_TEXT[reason] ??
+      `Invalid file "${path}" (${reason}). Fix that file and publish again.`,
+    {
+      path,
+      reason,
+    },
+  );
 const tooLarge = (path: string, limit: number) =>
-  new ApiError("too_large", `"${path}" exceeds the ${limit}-byte limit`, {
-    path,
-    reason: "too_large",
-  });
+  new ApiError(
+    "too_large",
+    `"${path}" exceeds the ${limit}-byte limit. Split it, or publish a smaller file.`,
+    {
+      path,
+      reason: "too_large",
+    },
+  );
 /** Inline bytes over LIMITS.inlineBytes: 413 with the create_upload hint (C3). */
 const inlineTooLarge = (path: string) =>
   new ApiError("too_large", INLINE_TOO_LARGE_MESSAGE, {
@@ -220,10 +247,18 @@ export function planFiles(input: PublishInput): Plan {
   if (content !== undefined) {
     if (typeof content !== "string") throw bad("content", "invalid");
     if (files !== undefined)
-      throw bad("files", "content_and_files", "Provide content or files");
+      throw bad(
+        "files",
+        "content_and_files",
+        "Pass either content or files, not both.",
+      );
     const entryIn = input.entry === undefined ? undefined : norm(input.entry);
     if (!input.format && entryIn === undefined)
-      throw bad("format", "missing", "content requires format or entry");
+      throw bad(
+        "format",
+        "missing",
+        "content requires format or entry. Add format (html, markdown, code), or use files with entry.",
+      );
     const inferred = input.format ?? inferFormat(entryIn as string);
     const byBytes = !inferred;
     const format = inferred ?? "code";
@@ -245,7 +280,11 @@ export function planFiles(input: PublishInput): Plan {
   }
 
   if (files === null || typeof files !== "object" || Array.isArray(files))
-    throw bad("files", "invalid", "Provide content or files");
+    throw bad(
+      "files",
+      "invalid",
+      "Provide content or files. Pass content with format, or files with entry.",
+    );
   const record = files as Record<string, unknown>;
   const keys = Object.keys(record);
   if (keys.length === 0) throw bad("files", "empty");
@@ -253,7 +292,7 @@ export function planFiles(input: PublishInput): Plan {
     throw bad(
       "files",
       "too_many_files",
-      `files exceeds ${LIMITS.filesPerVersion} entries`,
+      `files exceeds ${LIMITS.filesPerVersion} entries. Publish fewer files, or bundle some into one.`,
     );
   const byPath = new Map<string, string>(); // normalized → original key
   for (const key of keys) {
@@ -272,7 +311,7 @@ export function planFiles(input: PublishInput): Plan {
       throw bad(
         input.entry,
         "missing_entry",
-        `entry "${input.entry}" is not in files`,
+        `entry "${input.entry}" is not in files. Set entry to one of the paths in files.`,
       );
   } else {
     entry = byPath.has("index.html")
@@ -289,7 +328,7 @@ export function planFiles(input: PublishInput): Plan {
       if (++inline > MAX_INLINE_FILES)
         throw new ApiError(
           "too_large",
-          `publish more than ${MAX_INLINE_FILES} inline files via uploads`,
+          `Too many inline files (over ${MAX_INLINE_FILES}). Send the extra files through create_upload and pass their uploadId.`,
           { path: "files", reason: "too_many_inline_files" },
         );
   }
@@ -391,14 +430,22 @@ export async function planEdits(
     });
   const entries = JSON.parse(cur.manifest) as ManifestEntry[];
   const entryFile = entries.find((m) => m.path === cur.entry);
-  if (!entryFile) throw new ApiError("internal", "The entry file is missing");
+  if (!entryFile)
+    throw new ApiError(
+      "internal",
+      "The entry file is missing. Publish the whole artifact again with content or files.",
+    );
   if (entryFile.size > EDIT_MAX_BYTES)
     throw editsRefused(
       "too_large",
       `The entry file is over ${EDIT_MAX_BYTES} bytes, too large for edits. Publish the whole file instead.`,
     );
   const obj = await env.FILES.get(entryFile.key);
-  if (!obj) throw new ApiError("internal", "The entry file is missing");
+  if (!obj)
+    throw new ApiError(
+      "internal",
+      "The entry file is missing. Publish the whole artifact again with content or files.",
+    );
   let text: string;
   try {
     text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(

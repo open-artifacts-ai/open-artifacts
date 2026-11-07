@@ -75,6 +75,31 @@ function boot() {
   return { c, shell, frame, sent };
 }
 
+/**
+ * Worst measured wall time of one full re-anchor pass over this fixture (100
+ * anchors over a 40,000-word page): the 91-105 ms a frame costs when the 1 s
+ * max wait fires, measured on a 24-core host quiet and with the package suite
+ * plus 4 CPU hogs (90.6-105.3 ms over 10 runs). The first pass, on
+ * `comments.set`, costs the same (99-108 ms).
+ */
+const ANCHOR_PASS_MS = 105;
+/**
+ * The work: `comments.set`'s first pass, then one pass per frame in the worst
+ * case (this page mutates every frame, so every frame may re-anchor).
+ */
+const ANCHOR_PASSES = 1 + 30;
+/**
+ * Slack over ANCHOR_PASS_MS for a runner slower than the worst one measured: a
+ * CI shard takes this test 2.0 s where it takes 0.43 s here (4.6x).
+ */
+const ANCHOR_HEADROOM = 3;
+/**
+ * Per-test timeout from its own work: passes x worst pass x headroom (9,765
+ * ms). The 5 s default is 1.5x the worst-case work (31 x 105 ms = 3,255 ms),
+ * which is what made this case flake on a loaded runner (#1575).
+ */
+const ANCHOR_TIMEOUT_MS = ANCHOR_PASSES * ANCHOR_PASS_MS * ANCHOR_HEADROOM;
+
 describe("many anchors", () => {
   beforeEach(() => {
     resolved.calls = 0;
@@ -105,28 +130,32 @@ describe("many anchors", () => {
     c.dispose();
   });
 
-  it("a page that mutates every frame re-resolves on the timer only, and still re-anchors", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-    const threads = pageAndThreads();
-    const { c, shell, frame } = boot();
-    shell({ type: "comments.mode", mode: "select" });
-    shell({ type: "comments.set", threads });
-    expect(resolved.builds).toBe(1);
-    const p = document.querySelector("p") as HTMLElement;
-    for (let i = 0; i < 30; i++) {
-      p.append("x"); // a mutation between every pair of scroll frames
-      await flush();
-      window.dispatchEvent(new Event("scroll"));
-      frame();
-      await vi.advanceTimersByTimeAsync(100); // never 150 ms quiet: only the max wait fires
-    }
-    // 3 s of constant change: the 1 s max wait fires about 3 times, never per frame
-    expect(resolved.builds).toBeGreaterThanOrEqual(2);
-    expect(resolved.builds).toBeLessThanOrEqual(5);
-    // once the page settles, the trailing timer lands one more
-    const before = resolved.builds;
-    await vi.advanceTimersByTimeAsync(200);
-    expect(resolved.builds).toBeLessThanOrEqual(before + 1);
-    c.dispose();
-  });
+  it(
+    "a page that mutates every frame re-resolves on the timer only, and still re-anchors",
+    async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      const threads = pageAndThreads();
+      const { c, shell, frame } = boot();
+      shell({ type: "comments.mode", mode: "select" });
+      shell({ type: "comments.set", threads });
+      expect(resolved.builds).toBe(1);
+      const p = document.querySelector("p") as HTMLElement;
+      for (let i = 0; i < 30; i++) {
+        p.append("x"); // a mutation between every pair of scroll frames
+        await flush();
+        window.dispatchEvent(new Event("scroll"));
+        frame();
+        await vi.advanceTimersByTimeAsync(100); // never 150 ms quiet: only the max wait fires
+      }
+      // 3 s of constant change: the 1 s max wait fires about 3 times, never per frame
+      expect(resolved.builds).toBeGreaterThanOrEqual(2);
+      expect(resolved.builds).toBeLessThanOrEqual(5);
+      // once the page settles, the trailing timer lands one more
+      const before = resolved.builds;
+      await vi.advanceTimersByTimeAsync(200);
+      expect(resolved.builds).toBeLessThanOrEqual(before + 1);
+      c.dispose();
+    },
+    ANCHOR_TIMEOUT_MS,
+  );
 });

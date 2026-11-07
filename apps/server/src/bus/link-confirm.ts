@@ -24,6 +24,7 @@ import {
   renderDoneCard,
   renderLinkConfirm,
 } from "./approve-page.js";
+import { busConfigRefusal } from "./cap.js";
 import type { LinkRefusalReason } from "./link-proposals.js";
 import {
   cardResponse,
@@ -205,6 +206,10 @@ export function mountLinkConfirm(app: AppType): void {
       return messagePage("Not allowed", "Cross-site request.", 403);
     const who = confirmCaller(c, LINK_CONFIRM_PATH, true, WHAT);
     if ("response" in who) return who.response;
+    // #1299: confirming (or rejecting) new configuration is refused under a
+    // plan cap; the GET pages and the view stay readable.
+    const capped = busConfigRefusal(who.user);
+    if (capped) return messagePage("Not saved", capped.message, 403);
     const body = await readConfirmBody(c);
     if (body === null) return messagePage("Not saved", "Invalid form.", 400);
     const secret = body.secret ?? "";
