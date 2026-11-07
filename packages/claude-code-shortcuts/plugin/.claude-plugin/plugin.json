@@ -1,0 +1,22 @@
+{
+  "name": "open-artifacts-shortcuts",
+  "version": "0.1.0",
+  "description": "Session artifact links above the Claude Code prompt, from successful Open Artifacts publishes.",
+  "userConfig": {
+    "instanceUrl": {
+      "type": "string",
+      "title": "Open Artifacts instance URL",
+      "description": "Your HTTPS instance URL or MCP URL. Local development may use http://localhost."
+    },
+    "mcpServer": {
+      "type": "string",
+      "title": "MCP tool namespace",
+      "description": "The server namespace in mcp__<namespace>__publish_artifact. Match your existing connection; this plugin does not add one.",
+      "default": "open-artifacts"
+    }
+  },
+  "author": {
+    "name": "Open Artifacts contributors"
+  },
+  "license": "MIT"
+}
