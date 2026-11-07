@@ -24,6 +24,7 @@ import {
 import { logError } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { type BusView, busOn } from "../services/bus.js";
+import { busConfigRefusal } from "./cap.js";
 import {
   BUS_PAGE_TEMPLATE,
   BUS_REVOKE_TEMPLATE,
@@ -82,6 +83,7 @@ const ERRORS = {
   bad_form: "That didn't save. Reload the page and try again.",
   not_allowed:
     "You can't change share notices. You can still revoke machines here.",
+  plan: "Team features are read-only until the plan is paid. Share notices can't be changed now; nothing was deleted.",
   failed: "Something went wrong and nothing changed. Try again in a minute.",
 } as const;
 type ErrorCode = keyof typeof ERRORS;
@@ -549,6 +551,9 @@ export function mountBusPage(app: AppType, deps: BusPageDeps): void {
         return failedPage();
       }
     }
+    // #1299: saving share notices is configuration; a plan cap refuses it
+    // (existing notices keep delivering).
+    if (busConfigRefusal(p.user)) return backError("plan");
     const decode = (vs: FormDataEntryValue[]) => {
       const out = new Map<string, BusAddress>();
       for (const v of vs) {
