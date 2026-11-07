@@ -735,15 +735,20 @@ function procStart(): string | undefined {
 
 /**
  * A session name as typed (#1635), made a valid bus name the way the hub
- * (BusNameSchema) wants one: letters, digits, single spaces, `.` `_` `-` keep
- * their place and case; each run of anything else (controls included) becomes
- * `-`. Starts with a letter or digit, ends with a letter, digit, `_` or `-`,
- * at most 64 characters; the kind when nothing is left. The hub would turn a
- * name with any other character into `agent-N`, so none may reach it.
+ * (BusNameSchema) wants one. Accents fold away (NFKD, combining marks
+ * dropped). Letters, digits, single spaces, `.` `_` `-` keep their place and
+ * case. A run of any other character becomes `-` only between two kept
+ * non-space characters (`docs/readme` gives `docs-readme`); elsewhere it is
+ * dropped. Starts with a letter or digit, ends with a letter, digit, `_` or
+ * `-`, at most 64 characters; the kind when nothing is left. The hub would
+ * turn a name with any other character into `agent-N`.
  */
 function nameOf(title: string | undefined, kind: string): string {
   const cut = (title ?? "")
-    .replace(/[^A-Za-z0-9 ._-]+/g, "-")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/([A-Za-z0-9._-])[^A-Za-z0-9 ._-]+(?=[A-Za-z0-9._-])/g, "$1-")
+    .replace(/[^A-Za-z0-9 ._-]+/g, "")
     .replace(/ {2,}/g, " ")
     .replace(/^[ ._-]+/, "")
     .slice(0, 64)

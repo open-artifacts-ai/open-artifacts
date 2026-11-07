@@ -148,14 +148,16 @@ describe("pi rename (#1635)", () => {
       "OA Agent Experience Renamed",
     );
     expect(await sent("  Caf\u00e9 \u00fcber (v2)!\u0007 ")).toBe(
-      "Caf- -ber -v2-",
+      "Cafe uber v2",
     );
-    expect(await sent("Backend: #1583")).toBe("Backend- -1583");
+    expect(await sent("Backend: #1583")).toBe("Backend 1583");
+    expect(await sent("OA Backend's lead")).toBe("OA Backend-s lead");
+    expect(await sent("docs/readme")).toBe("docs-readme");
     const long = await sent(`${"ab ".repeat(30)}tail`);
     expect(long).toHaveLength(64);
     expect(long.startsWith("ab ab")).toBe(true);
     const emoji = await sent(`${"a".repeat(63)}\u{1F600}`);
-    expect(emoji).toBe(`${"a".repeat(63)}-`);
+    expect(emoji).toBe("a".repeat(63));
     let seq = 0;
     for (const n of [
       "OA Agent Experience Renamed",
