@@ -7,6 +7,8 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,6 +28,7 @@ import {
   hermesEnabled,
   hermesHome,
   hermesPluginDir,
+  pidAlive,
 } from "../src/steps/hermes.ts";
 import { installSkill, skillDir, uninstallSkill } from "../src/steps/skill.ts";
 
@@ -477,14 +480,66 @@ describe("an active Hermes profile", () => {
 });
 
 describe("a killed install", () => {
+  const old = (path: string) => {
+    const t = new Date(Date.now() - 60 * 60 * 1000);
+    utimesSync(path, t, t);
+  };
+
   it("stages outside plugins/, and the next install sweeps what was left", async () => {
     const s = setup();
     const staging = join(s.home, ".hermes/.oa-bus-staging");
     // What a SIGKILL mid-copy leaves: a staged plugin with a manifest.
+    put(join(staging, "999999-abcd/plugin.yaml"), "name: oa-bus\n");
     put(join(staging, "dead/plugin.yaml"), "name: oa-bus\n");
-    await installAdapters(s.deps);
+    old(join(staging, "dead"));
+    await installAdapters({
+      ...s.deps,
+      staging: { alive: (pid) => pid !== 999999 },
+    });
     expect(existsSync(staging)).toBe(false);
     expect(ls(join(s.home, ".hermes/plugins"))).toEqual(["oa-bus"]);
+  });
+
+  it("leaves a live peer's fresh entry, and an unknown fresh one", async () => {
+    const s = setup();
+    const staging = join(s.home, ".hermes/.oa-bus-staging");
+    put(join(staging, "4242-beef/plugin.yaml"), "name: oa-bus\n");
+    put(join(staging, "other/plugin.yaml"), "name: oa-bus\n");
+    await installAdapters({ ...s.deps, staging: { alive: () => true } });
+    expect(ls(staging)).toEqual(["4242-beef", "other"]);
+    expect(ls(join(s.home, ".hermes/plugins"))).toEqual(["oa-bus"]);
+  });
+
+  it("sweeps an old entry even when its pid looks alive", async () => {
+    const s = setup();
+    const staging = join(s.home, ".hermes/.oa-bus-staging");
+    put(join(staging, "4242-beef/plugin.yaml"), "name: oa-bus\n");
+    old(join(staging, "4242-beef"));
+    await installAdapters({ ...s.deps, staging: { alive: () => true } });
+    expect(existsSync(staging)).toBe(false);
+  });
+
+  it("pidAlive: this process is alive, an exited one is not", () => {
+    expect(pidAlive(process.pid)).toBe(true);
+    expect(pidAlive(2 ** 22 + 12345)).toBe(false);
+  });
+});
+
+describe("a symlinked HERMES_HOME", () => {
+  it("resolves under ~/.hermes like the direct path (active_profile followed)", () => {
+    const home = tmp("oa-hermes-link-");
+    const root = join(home, ".hermes");
+    put(join(root, "active_profile"), "work\n");
+    mkdirSync(join(root, "profiles/work"), { recursive: true });
+    const link = join(home, "elsewhere");
+    symlinkSync(root, link);
+    const direct = hermesHome(home, { HERMES_HOME: root });
+    expect(direct).toBe(join(root, "profiles/work"));
+    expect(hermesHome(home, { HERMES_HOME: link })).toBe(direct);
+  });
+
+  it("falls back to the lexical path when it does not exist", () => {
+    expect(hermesHome("/h", { HERMES_HOME: "/nope/x" })).toBe("/nope/x");
   });
 });
 

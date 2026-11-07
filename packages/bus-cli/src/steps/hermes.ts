@@ -10,8 +10,11 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import {
@@ -36,6 +39,62 @@ export const HERMES_STAGING = ".oa-bus-staging";
 
 type Env = Record<string, string | undefined>;
 
+/** The real path, or the lexical one when it cannot be resolved (not there yet). */
+const real = (p: string) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+
+/** A staged copy older than this is abandoned, whatever its pid says (pid reuse, other hosts). */
+export const STAGING_STALE_MS = 10 * 60 * 1000;
+const STAGE_NAME = /^(\d+)-[0-9a-f]+$/;
+
+/** Whether a process exists: EPERM means it does, ESRCH that it does not. */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Removes staged copies a killed install left, and only those: an entry is
+ * stale when its pid is dead or it is older than STAGING_STALE_MS; a name not
+ * ours is swept only when old. A live peer's fresh entry, and `own`, stay.
+ */
+export function sweepStaging(
+  staging: string,
+  own: string,
+  o: { now?: number; alive?: (pid: number) => boolean } = {},
+): void {
+  const now = o.now ?? Date.now();
+  const alive = o.alive ?? pidAlive;
+  let names: string[];
+  try {
+    names = readdirSync(staging);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === own) continue;
+    const path = join(staging, name);
+    let old: boolean;
+    try {
+      old = now - statSync(path).mtimeMs > STAGING_STALE_MS;
+    } catch {
+      continue;
+    }
+    const m = STAGE_NAME.exec(name);
+    if (m ? old || !alive(Number(m[1])) : old)
+      rmSync(path, { recursive: true, force: true });
+  }
+}
+
 const tilded = (home: string, v: string) =>
   v === "~" ? home : resolve(v.startsWith("~/") ? join(home, v.slice(2)) : v);
 
@@ -56,7 +115,8 @@ export function hermesHome(home: string, env: Env): string {
   const base = given ?? native;
   const root = (() => {
     if (given === undefined) return native;
-    const rel = relative(native, given);
+    // Hermes resolves both sides (Path.resolve) for this check only.
+    const rel = relative(real(native), real(given));
     // Under ~/.hermes: that is the root, whatever the folder is called.
     if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)))
       return native;
@@ -185,9 +245,10 @@ export async function installHermes(
     // but in the same Hermes home, so the rename stays on one filesystem. A
     // killed install leaves its stage behind: the next install sweeps them.
     const staging = join(plugins, "..", HERMES_STAGING);
-    rmSync(staging, { recursive: true, force: true });
+    const own = `${process.pid}-${randomBytes(4).toString("hex")}`;
     mkdirSync(staging, { recursive: true });
-    const tmp = join(staging, randomBytes(4).toString("hex"));
+    sweepStaging(staging, own, deps.staging);
+    const tmp = join(staging, own);
     try {
       mkdirSync(tmp);
       for (const f of files(shipped)) {
@@ -204,7 +265,10 @@ export async function installHermes(
       rmSync(tmp, { recursive: true, force: true });
       throw e;
     } finally {
-      rmSync(staging, { recursive: true, force: true });
+      // Only the folder itself, and only when no peer is staging in it.
+      try {
+        rmdirSync(staging);
+      } catch {}
     }
   }
   // Enable only a plugin Hermes does not list as enabled, so a reinstall never
