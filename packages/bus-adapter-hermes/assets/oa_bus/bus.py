@@ -361,6 +361,11 @@ class Bus:
 
     # --- Hooks.
 
+    def _habits_on(self):
+        """A regular habits.on file, not a symlink: the same test the installer makes."""
+        p = self._habits_marker
+        return os.path.isfile(p) and not os.path.islink(p)
+
     def turn_start(self, session_id, platform, user_message=None, conversation_history=None):
         """pre_llm_call: the queued messages as this turn's context, or None.
 
@@ -387,7 +392,7 @@ class Bus:
                 # Only while the bus is really connected for this root: the link opens in
                 # the background (touch), so a root's first turn goes without.
                 habits = (root.link is not None and not root.link.closed
-                          and os.path.exists(self._habits_marker))
+                          and self._habits_on())
         self.touch(ref)
         if not out and not habits:
             return None

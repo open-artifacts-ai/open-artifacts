@@ -507,6 +507,19 @@ class Habits(unittest.TestCase):
         os.remove(e.bus._habits_marker)
         self.assertIsNone(e.turn("root-1", "telegram", "x"))
 
+    def test_a_symlinked_marker_gives_no_habits(self):
+        e = Env(habits=False)
+        e.link()
+        target = support.habits_marker()
+        os.symlink(target, e.bus._habits_marker)
+        self.assertIsNone(e.turn("root-1", "telegram", "x"))
+
+    def test_a_directory_named_habits_on_gives_no_habits(self):
+        e = Env(habits=False)
+        e.link()
+        os.mkdir(e.bus._habits_marker)
+        self.assertIsNone(e.turn("root-1", "telegram", "x"))
+
     def test_the_default_marker_is_next_to_the_plugin(self):
         from oa_bus import bus as bus_mod
 

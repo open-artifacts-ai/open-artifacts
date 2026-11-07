@@ -28,6 +28,7 @@ import {
   HABITS_MARKER_TEXT,
   HERMES_HABITS_MARKER,
   hermesPluginDir,
+  hermesPluginDirs,
   pluginState,
 } from "./hermes.ts";
 import { brokenLink, lineIndex, targetOf, writeAtomic } from "./skill.ts";
@@ -405,6 +406,8 @@ export type PluginHarness = {
   /** As shown to the user. */
   label: string;
   dir: (home: string, env: Env) => string;
+  /** Every folder the plugin may be in, across profiles: turning off sweeps them all. */
+  dirs: (home: string, env: Env) => string[];
   marker: string;
   /** Whether `dir` is our plugin folder (it carries our ownership marker). */
   ours: (dir: string) => boolean;
@@ -414,6 +417,7 @@ export const PLUGIN_HARNESSES: PluginHarness[] = [
     name: "hermes",
     label: "Hermes",
     dir: hermesPluginDir,
+    dirs: hermesPluginDirs,
     marker: HERMES_HABITS_MARKER,
     ours: (dir) => pluginState(dir, undefined) !== "foreign" && !isLink(dir),
   },
@@ -461,31 +465,40 @@ export function setPluginHabits(
   const changed: PluginHarness[] = [];
   const notes: string[] = [];
   for (const p of plugins) {
-    const { dir, marker } = pluginPaths(deps, p);
-    try {
-      if (isLink(dir) || !pluginOurs(dir, p)) {
-        // Off with nothing there is already the state wanted.
-        if (on)
-          notes.push(
-            `Left the ${p.label} plugin alone: ${isLink(dir) ? `${dir} is a symlink.` : existsSync(dir) ? `${dir} wasn't installed by ${BUS_CMD}` : `nothing installed at ${dir}.`}`,
-          );
-        continue;
-      }
-      if (on) {
-        if (isLink(marker)) {
-          notes.push(
-            `Left the ${p.label} plugin alone: ${marker} is a symlink. Remove it, then rerun.`,
-          );
+    // On: the active profile's folder. Off: every profile's, so no marker is left behind.
+    const dirs = on
+      ? [pluginPaths(deps, p).dir]
+      : p.dirs(deps.home, deps.env ?? {});
+    for (const dir of dirs) {
+      const marker = join(dir, p.marker);
+      try {
+        if (isLink(dir) || !pluginOurs(dir, p)) {
+          if (on)
+            notes.push(
+              `Left the ${p.label} plugin alone: ${isLink(dir) ? `${dir} is a symlink.` : existsSync(dir) ? `${dir} wasn't installed by ${BUS_CMD}` : `nothing installed at ${dir}.`}`,
+            );
+          else if (isLink(dir))
+            notes.push(
+              `Left ${dir} alone: it is a symlink, so a habits marker in it was not removed.`,
+            );
           continue;
         }
-        writeAtomic(marker, HABITS_MARKER_TEXT);
-        changed.push(p);
-      } else if (existsSync(marker) || isLink(marker)) {
-        rmSync(marker, { force: true });
-        changed.push(p);
+        if (on) {
+          if (isLink(marker)) {
+            notes.push(
+              `Left the ${p.label} plugin alone: ${marker} is a symlink. Remove it, then rerun.`,
+            );
+            continue;
+          }
+          writeAtomic(marker, HABITS_MARKER_TEXT);
+          if (!changed.includes(p)) changed.push(p);
+        } else if (existsSync(marker) || isLink(marker)) {
+          rmSync(marker, { force: true });
+          if (!changed.includes(p)) changed.push(p);
+        }
+      } catch (e) {
+        notes.push(`Could not update the ${p.label} plugin: ${reason(e)}`);
       }
-    } catch (e) {
-      notes.push(`Could not update the ${p.label} plugin: ${reason(e)}`);
     }
   }
   return { changed, notes };

@@ -41,8 +41,7 @@ export type HabitsOutcome = {
   state: "on" | "off" | "undecided" | "changed" | "none";
   files: string[];
   question: HabitsQuestion | null;
-  /** The plugin harnesses (Hermes) wired now, with their habits state. */
-  hermes: boolean;
+  /** Each plugin harness's habits state (Hermes: on, off, not installed). */
   plugins: Record<string, PluginHabitsState>;
 };
 
@@ -55,7 +54,6 @@ const deps = (ctx: Ctx) => ({
 /** The harnesses wired now that have an always-on file we write, and the plugin ones. */
 function wired(ctx: Ctx): {
   targets: HabitsHarness[];
-  hermes: boolean;
   plugins: PluginHarness[];
 } {
   const w = checkAdapters({
@@ -68,7 +66,6 @@ function wired(ctx: Ctx): {
   });
   return {
     targets: HABITS_HARNESSES.filter((h) => w[h] === "configured"),
-    hermes: w.hermes === "configured",
     plugins: PLUGIN_HARNESSES.filter((p) => w[p.name] === "configured"),
   };
 }
@@ -178,12 +175,11 @@ export async function habitsAfterInstall(
   ctx: Ctx,
   json: boolean,
 ): Promise<HabitsOutcome> {
-  const { targets, hermes, plugins } = wired(ctx);
+  const { targets, plugins } = wired(ctx);
   const none: HabitsOutcome = {
     state: "none",
     files: [],
     question: null,
-    hermes,
     plugins: pluginStates(ctx),
   };
   if (habitsOptedOut(ctx.home))

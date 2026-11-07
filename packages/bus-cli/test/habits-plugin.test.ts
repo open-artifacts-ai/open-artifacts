@@ -67,6 +67,47 @@ describe("setPluginHabits", () => {
     expect(r.files).toEqual([join(dir, HERMES_HABITS_MARKER)]);
     expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
   });
+  it("off sweeps the root and every profile, and notes a symlinked one", () => {
+    const home = tmp();
+    const root = join(home, ".hermes");
+    const mk = (base: string) => {
+      const d = join(base, "plugins", "oa-bus");
+      mkdirSync(d, { recursive: true });
+      writeFileSync(
+        join(d, HERMES_MARKER),
+        "managed by the Open Artifacts bus installer: x\n",
+      );
+      writeFileSync(join(d, HERMES_HABITS_MARKER), "on\n");
+      return d;
+    };
+    const a = mk(root);
+    const b = mk(join(root, "profiles", "work"));
+    const c = mk(join(root, "profiles", "play"));
+    // A foreign folder keeps its marker; a symlinked profile dir is skipped with a note.
+    const foreign = join(root, "profiles", "other", "plugins", "oa-bus");
+    mkdirSync(foreign, { recursive: true });
+    writeFileSync(join(foreign, HERMES_HABITS_MARKER), "mine\n");
+    const real = join(home, "real");
+    mkdirSync(real);
+    writeFileSync(
+      join(real, HERMES_MARKER),
+      "managed by the Open Artifacts bus installer: x\n",
+    );
+    writeFileSync(join(real, HERMES_HABITS_MARKER), "on\n");
+    const linked = join(root, "profiles", "linked", "plugins", "oa-bus");
+    mkdirSync(join(linked, ".."), { recursive: true });
+    symlinkSync(real, linked);
+    const r = removeHabits({ home });
+    for (const d of [a, b, c])
+      expect(existsSync(join(d, HERMES_HABITS_MARKER))).toBe(false);
+    expect(readFileSync(join(foreign, HERMES_HABITS_MARKER), "utf8")).toBe(
+      "mine\n",
+    );
+    expect(existsSync(join(real, HERMES_HABITS_MARKER))).toBe(true);
+    expect(r.notes.join("\n")).toContain(
+      `Left ${linked} alone: it is a symlink`,
+    );
+  });
   it("refuses a folder that is not ours", () => {
     const home = tmp();
     const dir = hermesPluginDir(home, {});

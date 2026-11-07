@@ -64,14 +64,7 @@ export function hermesHome(home: string, env: Env): string {
   if (given !== undefined && basename(dirname(given)) === "profiles")
     return given;
   const base = given ?? native;
-  const root = (() => {
-    if (given === undefined) return native;
-    const rel = relative(native, given);
-    // Under ~/.hermes: that is the root, whatever the folder is called.
-    if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)))
-      return native;
-    return given;
-  })();
+  const root = hermesRoot(home, env);
   if (env.HERMES_S6_SUPERVISED_CHILD) return base;
   try {
     const name = readFileSync(join(root, "active_profile"), "utf8")
@@ -83,6 +76,34 @@ export function hermesHome(home: string, env: Env): string {
     }
   } catch {}
   return base;
+}
+
+/**
+ * The root all profiles live under (`<root>/profiles/<name>`), by the same
+ * rules as hermesHome: a HERMES_HOME inside `profiles/` has its grandparent
+ * as root; one under ~/.hermes means ~/.hermes; any other is its own root.
+ */
+export function hermesRoot(home: string, env: Env): string {
+  const native = join(home, ".hermes");
+  const v = env.HERMES_HOME?.trim();
+  const given = v ? tilded(home, v) : undefined;
+  if (given === undefined) return native;
+  if (basename(dirname(given)) === "profiles") return dirname(dirname(given));
+  const rel = relative(native, given);
+  // Under ~/.hermes: that is the root, whatever the folder is called.
+  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return native;
+  return given;
+}
+
+/** Every plugin folder a profile of this Hermes root may hold: the root's own, then each profile's. */
+export function hermesPluginDirs(home: string, env: Env): string[] {
+  const root = hermesRoot(home, env);
+  const out = [join(root, "plugins", HERMES_PLUGIN_NAME)];
+  try {
+    for (const name of readdirSync(join(root, "profiles")).sort())
+      out.push(join(root, "profiles", name, "plugins", HERMES_PLUGIN_NAME));
+  } catch {}
+  return out;
 }
 
 /** The env Hermes's CLI runs with, so it and our files agree on the home. */
