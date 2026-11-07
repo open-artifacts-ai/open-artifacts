@@ -46,6 +46,7 @@ import {
   versionFormat,
 } from "./comment-anchor.js";
 import { type CommentStatus, cleanGuestName } from "./comment-rules.js";
+import { addressKey, inBackground, notifyCommented } from "./follows.js";
 import { effectiveName, getUser } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -391,6 +392,36 @@ export async function listComments(
 
 // ------------------------------------------------------------------- writes
 
+/** Where a new comment's `comment` notice goes: after the response when there is a ctx. */
+export type Announce = {
+  /** The artifact's current version, named in the notice. */
+  version: number;
+  ctx?: Pick<ExecutionContext, "waitUntil">;
+};
+
+/** Followers hear of a new comment (once, never the author's own agents); never throws. */
+const announce = (
+  env: Env,
+  artifactId: string,
+  who: CommentWho,
+  after: Announce | undefined,
+  /** The comment's mentions, ask and assignment: those agents already heard of it. */
+  r?: Resolved,
+) =>
+  after
+    ? inBackground(
+        after.ctx,
+        notifyCommented(
+          env,
+          artifactId,
+          after.version,
+          who.kind === "user" ? who.id : null,
+          Date.now(),
+          new Set((r?.agents ?? []).map((x) => addressKey(x.agent.address))),
+        ),
+      )
+    : undefined;
+
 /** What a comment may carry besides its body (#1535). `ask` is for the MCP tool: no REST body takes it. */
 export type CommentExtras = {
   mentions?: KeyRef[];
@@ -399,7 +430,11 @@ export type CommentExtras = {
 };
 
 /** Who may mention, assign and ask. `moderator`: the owner or an editor. */
-export type ExtrasOpts = { moderator?: boolean };
+export type ExtrasOpts = {
+  moderator?: boolean;
+  /** Followers hear of the new comment (#682); absent: nobody is told. */
+  after?: Announce;
+};
 
 type Resolved = {
   extras: NewExtras | undefined;
@@ -599,6 +634,7 @@ export async function addThread(
     const sent = await deliver(env, a, t.id, root, r);
     t.comments[0] = sent;
   }
+  await announce(env, a.id, who, opts.after, r);
   return (await threadViews(env, [t], viewer))[0] as Thread;
 }
 
@@ -624,7 +660,10 @@ export async function addReply(
       ...(r.extras ? { extras: r.extras } : {}),
     }),
   );
-  if (r.agents.length === 0) return commentView(env, c, viewer);
+  if (r.agents.length === 0) {
+    await announce(env, artifactId, who, opts.after, r);
+    return commentView(env, c, viewer);
+  }
   const row = await stmt(
     env.DB,
     "select current_version as v from artifacts where id = ?",
@@ -632,7 +671,9 @@ export async function addReply(
     .bind(artifactId)
     .first<{ v: number }>();
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
-  return commentView(env, await deliver(env, a, threadId, c, r), viewer);
+  const sent = await deliver(env, a, threadId, c, r);
+  await announce(env, artifactId, who, opts.after, r);
+  return commentView(env, sent, viewer);
 }
 
 /**
