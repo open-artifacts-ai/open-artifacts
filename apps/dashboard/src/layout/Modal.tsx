@@ -38,7 +38,10 @@ export function Modal({
       <DialogContent
         // Radix warns about a missing description unless this is explicit.
         {...(description ? {} : { "aria-describedby": undefined })}
-        className={`gap-[var(--oa-space-4)] sm:max-w-[440px] ${sheetOnPhone ? SHEET : ""}`}
+        // The card is centered at a fixed spot, so a body taller than a phone
+        // screen (the token-created dialog, #1383) would put its footer past
+        // the viewport with nothing to scroll: cap it and let it scroll.
+        className={`max-h-[calc(100dvh-2rem)] gap-[var(--oa-space-4)] overflow-y-auto sm:max-w-[440px] ${sheetOnPhone ? SHEET : ""}`}
         // No Radix Trigger (the dialog is controlled), so put focus back on
         // whatever opened it, as a trigger would.
         onOpenAutoFocus={() => {

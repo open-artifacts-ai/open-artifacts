@@ -47,6 +47,8 @@ async function dispatch(cmd: Command, ctx: Ctx): Promise<number | undefined> {
           noOpen: cmd.noOpen,
           check: cmd.check,
           noService: cmd.noService,
+          habits: cmd.habits,
+          json: cmd.json,
         },
         ctx,
       );

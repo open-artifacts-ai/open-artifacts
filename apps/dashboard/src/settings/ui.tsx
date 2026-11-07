@@ -117,7 +117,29 @@ export function CodeBlock({
   );
 }
 
-/** `wrap` breaks long lines (anywhere) instead of scrolling them. */
+/** Wrapped lines break at spaces first; a word breaks only when it outruns the
+    box alone (the same rule as the admin card's snippets). */
+const Words = ({ code }: { code: string }) => {
+  // Keys are each word's offset in the code: unique and stable, where an array
+  // index is neither.
+  let at = 0;
+  return code.split(/(\s+)/).map((part) => {
+    const key = at;
+    at += part.length;
+    return /^\s*$/.test(part) ? (
+      part
+    ) : (
+      <span
+        key={key}
+        className="inline-block max-w-full [overflow-wrap:anywhere]"
+      >
+        {part}
+      </span>
+    );
+  });
+};
+
+/** `wrap` breaks long lines (at words, then anywhere) instead of scrolling. */
 export function Code({
   code,
   label,
@@ -141,7 +163,7 @@ export function Code({
             : "overflow-x-auto"
         }`}
       >
-        <code>{code}</code>
+        <code>{wrap ? <Words code={code} /> : code}</code>
       </pre>
     </CodeBlock>
   );
