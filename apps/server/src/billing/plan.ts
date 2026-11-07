@@ -105,10 +105,10 @@ export function parseStored<T>(
  * - readOnly: team features are read-only (plan_read_only). Nothing is
  *   deleted; removals (a member) still pass. Sharing is never locked.
  * - viewOnly: an unpaid Solo (reason solo_unpaid). Binds EVERYONE, the org
- *   owner included, and no one is capped by it (no "plan" cap): publishing
- *   and live-data writes are refused (403 plan_read_only, planRefuses and
- *   publish), team features as under solo. Reads, comments, asks, sharing
- *   and billing all keep working.
+ *   owner included: publishing and live-data writes are refused (403
+ *   plan_read_only, planRefuses and publish), team features as under solo.
+ *   Non-owners carry the "plan" cap as under solo. Reads, sharing and billing
+ *   keep working.
  */
 export type PlanLock = {
   mode: "solo" | "readOnly" | "viewOnly";
@@ -259,7 +259,7 @@ export function planError(lock: PlanLock): ApiError {
   if (lock.mode === "viewOnly")
     return new ApiError(
       "plan_read_only",
-      "Your Solo plan isn't paid. You can still read, comment and share; publishing is paused until you add a card.",
+      "Publishing is paused until this instance's Solo plan is paid.",
       details,
     );
   return lock.mode === "solo"

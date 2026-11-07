@@ -60,7 +60,7 @@ const planCopy = (
             ? "Your trial ended, so this instance is read-only until you pick a plan."
             : "Your trial ended, so this instance is read-only until the owner picks a plan.";
         case "solo_unpaid":
-          // The view-only lock: reads, comments and sharing still work.
+          // The view-only lock: publishing is paused.
           return owner
             ? "Your Solo plan is paused. Keep publishing for $1/month or $12/year."
             : `Publishing is paused until this instance's Solo plan is paid. ${ASK}.`;
