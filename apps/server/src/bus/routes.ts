@@ -43,6 +43,7 @@ import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import {
   busOn,
+  busPing,
   deleteBusLink,
   deleteBusRole,
   listBusAgents,
@@ -680,6 +681,18 @@ export function mountBus(app: AppType): void {
     const id = c.req.param("id") ?? "";
     if (!(await revokeBusMachine(c.env, user.id, id))) throw notFound();
     return c.body(null, 204);
+  });
+  // #1299: the hosted canary's probe. Reads the reserved hub, never the caller's.
+  app.get(R.busPing, async (c) => {
+    requireUser(c);
+    if (!(await busPing(c.env)))
+      throw new ApiError(
+        "storage_unavailable",
+        "Temporarily unavailable. Try again shortly.",
+        undefined,
+        { "retry-after": "5" },
+      );
+    return c.json({ ok: true });
   });
   app.get(R.busAgents, async (c) => {
     const user = requireUser(c);

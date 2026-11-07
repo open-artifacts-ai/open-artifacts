@@ -2098,6 +2098,7 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   // CAPPED_ALLOWED); agents need mcp.connect.
   ["GET /api/v1/bus/machines", U, [200]],
   ["DELETE /api/v1/bus/machines/:id", U],
+  ["GET /api/v1/bus/ping", U, [200]],
   ["GET /api/v1/bus/agents", org("mcp.connect"), [200]],
   // #1296: role addresses; writes also need a cookie session (the handler).
   ["GET /api/v1/bus/roles", org("mcp.connect"), [200]],

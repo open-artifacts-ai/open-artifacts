@@ -643,6 +643,7 @@ describe("RPC surface", () => {
       "listRoleProposals",
       "listRoles",
       "pendingProposalSources",
+      "ping",
       "proposeLink",
       "proposeRole",
       "putLink",

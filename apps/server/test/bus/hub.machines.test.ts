@@ -87,6 +87,7 @@ const RPC_ALLOWLIST = [
   "listRoleProposals",
   "listRoles",
   "pendingProposalSources",
+  "ping",
   "proposeLink",
   "proposeRole",
   "putLink",
