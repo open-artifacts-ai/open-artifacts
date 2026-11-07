@@ -23,6 +23,7 @@ import {
   type Member,
   machine,
   member,
+  trackSocket,
   upgrade,
   waitFor,
   workerFetch,
@@ -725,6 +726,7 @@ describe("GET /bus/connect: the machine token and nothing else", () => {
     expect(r.status).toBe(101);
     const ws = r.webSocket as WebSocket;
     ws.accept();
+    trackSocket(ws);
     const got = new Promise<string>((res) =>
       ws.addEventListener("message", (m) => res(String(m.data))),
     );
@@ -1001,6 +1003,7 @@ describe("dashboard REST", () => {
     const r = await upgrade(m.token);
     const ws = r.webSocket as WebSocket;
     ws.accept();
+    trackSocket(ws);
     const j = (await (await api(app, R.busMachines, erin.cookie)).json()) as {
       machines: {
         id: string;
