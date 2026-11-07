@@ -41,6 +41,7 @@ import {
   machine,
   member,
   ns,
+  trackSocket,
   up,
   upgrade,
   waitFor,
@@ -233,8 +234,10 @@ describe("revocation closes bus sockets", () => {
     expect(early.headers.get("retry-after")).not.toBeNull();
     const late = await ask(Date.now() + SKEW_MS + 1000);
     expect(late.status).toBe(101);
-    late.webSocket?.accept();
-    late.webSocket?.close();
+    const lws = late.webSocket as WebSocket;
+    lws.accept();
+    trackSocket(lws);
+    lws.close();
   });
 });
 
@@ -559,6 +562,7 @@ describe("two members: one bus each", () => {
     expect(r.status).toBe(101);
     const ws = r.webSocket as WebSocket;
     ws.accept();
+    trackSocket(ws);
     const ids = async (uid: string) =>
       runInDurableObject(
         await hubOf(uid),

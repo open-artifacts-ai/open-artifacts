@@ -102,6 +102,7 @@ const ver = (
         : contentType === "application/pdf"
           ? "pdf"
           : "code",
+  contentHash: null,
 });
 
 /** A fake sha256 (64 hex), distinct per version and entry (#1490). */

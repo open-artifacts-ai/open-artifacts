@@ -50,7 +50,6 @@ import { requireFreeStorage } from "../billing/caps.js";
 import { creatorStmt } from "../billing/creators.js";
 import { featuresOf } from "../billing/features.js";
 import {
-  billingActive,
   isViewOnly,
   planError,
   refuseViewOnly,

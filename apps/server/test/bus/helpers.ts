@@ -122,39 +122,70 @@ export function upgrade(
 }
 
 const opened = new Set<Daemon>();
+const rawSockets = new Map<WebSocket, Promise<unknown>>();
+
+/**
+ * Registers a socket a test opened without `daemon()` (a raw upgrade, a hub
+ * stub forward). The file's afterAll closes it and waits for the close, so the
+ * hub's last-socket work does not run at worker teardown.
+ */
+export function trackSocket<T extends WebSocket>(ws: T): T {
+  rawSockets.set(
+    ws,
+    new Promise((r) => ws.addEventListener("close", r, { once: true })),
+  );
+  return ws;
+}
 
 // #1299: a hub removes its install-index row (`gone`) when its last socket
 // closes. A file that ends with sockets still closing would tear the worker
-// down with that RPC in flight, so close every daemon the file opened and
-// wait for the index to hold no bus rows.
+// down with that RPC in flight (vitest: "Closing rpc while resolve was
+// pending"), so close every socket the file opened and wait for the index to
+// hold no bus rows.
 afterAll(async () => {
+  const closes: Promise<unknown>[] = [...opened].map((d) => d.closed);
   for (const d of opened)
     try {
       d.close();
     } catch {
       // Already closed.
     }
-  await Promise.all([...opened].map((d) => d.closed));
+  for (const [ws, closed] of rawSockets) {
+    closes.push(closed);
+    try {
+      ws.close(1000, "bye");
+    } catch {
+      // Already closed or never accepted.
+    }
+  }
+  // Bounded: a socket the hub already tore down reported its close earlier.
+  await Promise.race([
+    Promise.all(closes),
+    new Promise((r) => setTimeout(r, 3000)),
+  ]);
   opened.clear();
+  rawSockets.clear();
   const ns = e.USER_PRESENCE;
   if (!ns) return;
   const idx = ns.get(ns.idFromName("~install"));
+  const rows = (): Promise<number> =>
+    runInDurableObject(idx, (_i, s: DurableObjectState) => {
+      // The index creates its tables on first use; a file that never opened a
+      // socket has none, and no rows to wait for.
+      const has = s.storage.sql
+        .exec<{ n: number }>(
+          "select count(*) as n from sqlite_master where name = 'seen'",
+        )
+        .one().n;
+      if (!has) return 0;
+      return s.storage.sql
+        .exec<{ n: number }>(
+          "select count(*) as n from seen where substr(artifact_id, 1, 4) = 'bus:'",
+        )
+        .one().n;
+    });
   await vi
-    .waitFor(
-      async () =>
-        expect(
-          await runInDurableObject(
-            idx,
-            (_i, s: DurableObjectState) =>
-              s.storage.sql
-                .exec<{ n: number }>(
-                  "select count(*) as n from seen where substr(artifact_id, 1, 4) = 'bus:'",
-                )
-                .one().n,
-          ),
-        ).toBe(0),
-      { timeout: 3000 },
-    )
+    .waitFor(async () => expect(await rows()).toBe(0), { timeout: 3000 })
     .catch((err) => console.warn("bus index rows left at file end", err));
 });
 

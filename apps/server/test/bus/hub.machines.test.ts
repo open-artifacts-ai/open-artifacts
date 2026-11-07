@@ -4,6 +4,7 @@
 // query plans (machines and tokens are D1 bus_machines rows now). Kept: the
 // hub's machine mirror (written on first accept), revokeMachine, connected
 // liveness (now snapshot().connected), the RPC surface and the schema.
+
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { newId } from "@oa/bus-protocol";
@@ -18,6 +19,7 @@ import {
 } from "../../src/bus/hub.js";
 import { HUB_SCHEMA } from "../../src/bus/schema.js";
 import type { Env } from "../../src/env.js";
+import { trackSocket } from "./helpers.js";
 
 const e = env as unknown as Env;
 
@@ -51,6 +53,7 @@ async function connect(
   expect(r.status).toBe(101);
   const ws = r.webSocket as WebSocket;
   ws.accept();
+  trackSocket(ws);
   return ws;
 }
 

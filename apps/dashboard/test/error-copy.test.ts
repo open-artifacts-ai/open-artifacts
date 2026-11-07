@@ -47,7 +47,7 @@ it.each([
   // Design, 2026-10-28 (the upload refusals, #775).
   [
     "unsupported_format",
-    "This type of file can't be opened yet. Upload a web page, Markdown, code or a PDF.",
+    "This type of file can't be opened yet. Upload a web page, Markdown, code, a PDF or an image.",
   ],
   [
     "binary_entry",
