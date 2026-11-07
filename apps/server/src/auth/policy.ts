@@ -143,7 +143,7 @@ export type CanCtx = {
    * are the team actions on personal ones (move, transfer); while
    * read-only, anonymous data writes too. Reads are never touched.
    */
-  plan?: "solo" | "readOnly" | null;
+  plan?: "solo" | "readOnly" | "viewOnly" | null;
   /**
    * The lock is a suspension (PlanLock.reason): not a payment state, so
    * sharing is not free under it (only share-list reads and removals pass).
@@ -190,9 +190,24 @@ const PLAN_EXEMPT: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
 ]);
 export const SHARING_ACTIONS: ReadonlySet<PolicyAction> = PLAN_EXEMPT;
 
+/**
+ * What the unpaid-Solo view-only lock (PlanLock.mode "viewOnly") refuses on
+ * an artifact, for EVERYONE (the owner and anonymous visitors included):
+ * publishing and live-data writes. Everything else, sharing included, passes.
+ */
+const VIEW_ONLY_REFUSED: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
+  "publish",
+  "restore",
+  "upload",
+  "data.write",
+  "data.reset",
+  "data.seed",
+]);
+
 /** Whether the instance's plan lock refuses `action` (reads never). */
 export function planRefuses(action: PolicyAction, ctx: CanCtx): boolean {
   if (!ctx.plan || READ.has(action)) return false;
+  if (ctx.plan === "viewOnly") return VIEW_ONLY_REFUSED.has(action);
   if (PLAN_EXEMPT.has(action) && !(ctx.suspended && action === "visibility"))
     return false;
   if (!ctx.personal) return true;
