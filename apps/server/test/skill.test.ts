@@ -103,7 +103,8 @@ describe("skill.md drift", () => {
   it("leaves the installer's habits question to the human", async () => {
     const md = await skill();
     expect(md).toContain("QUESTION FOR YOUR USER");
-    expect(md).toContain("`--habits` only on their yes");
+    expect(md).toContain("(`install --habits`) only on their yes");
+    expect(md).toContain("until they answer, run neither");
   });
 
   it("tells every page writer how links open", async () => {
