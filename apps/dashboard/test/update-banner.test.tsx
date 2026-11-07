@@ -210,3 +210,24 @@ it("an admin who isn't the owner sees it too", async () => {
   mount("/");
   expect(await banner()).toHaveTextContent("v0.15.0 is out");
 });
+
+it("a custom build with a breaking release: the custom copy in the warning tone, breaking first in the prompt", async () => {
+  serve(u({ ...CUSTOM, current: "0.14.0-dev+4f2a9c1", breaking: true }));
+  const write = clipboard();
+  mount("/");
+  const b = await banner();
+  expect(b).toHaveTextContent(
+    "This is a custom build (0.14.0-dev+4f2a9c1). The latest release is v0.15.0.",
+  );
+  expect(b.querySelector("[data-slot=alert]")?.className).toContain(
+    "bg-warning-soft",
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Copy upgrade prompt" }));
+  const prompt = (write.mock.calls as unknown as string[][])[0]?.[0] ?? "";
+  expect(prompt.indexOf("This release has breaking changes")).toBeGreaterThan(
+    0,
+  );
+  expect(prompt.indexOf("This release has breaking changes")).toBeLessThan(
+    prompt.indexOf("This instance runs a custom build"),
+  );
+});

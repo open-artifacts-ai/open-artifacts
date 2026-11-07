@@ -246,6 +246,12 @@ async function startMocks() {
       updateAvailable: false,
       breaking: null,
     },
+    "update-custom-breaking": {
+      current: "0.14.0-dev+4f2a9c1",
+      custom: true,
+      updateAvailable: false,
+      breaking: true,
+    },
     "update-custom-current": {
       current: "0.15.0-dev+4f2a9c1",
       custom: true,

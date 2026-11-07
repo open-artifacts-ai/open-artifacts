@@ -178,7 +178,7 @@ function Layout() {
         {state.status === "authed" && (
           <UpdateBanner
             me={state.me}
-            className="px-[var(--oa-space-3)] pt-[var(--oa-space-2)] !mb-0"
+            className="!mb-0 px-5 pt-[var(--oa-space-2)]"
           />
         )}
         <Outlet />

@@ -28,11 +28,15 @@ export const upgradePrompt = (host = location.origin, u?: InstanceUpdate) => {
   if (!u)
     return `Upgrade my Open Artifacts instance at ${host}. Follow ${host}/upgrade.md`;
   const base = `Upgrade my Open Artifacts instance at ${host} from ${v(u.current)} to ${v(u.latestVersion)}. Follow ${host}/upgrade.md`;
-  if (u.custom)
-    return `${base} This instance runs a custom build (${u.current}): tell me what upgrading will replace before you start.`;
-  if (u.breaking === true)
-    return `${base} This release has breaking changes: tell me what they mean for my instance and wait for my yes before you start.`;
-  return base;
+  // Breaking first: a custom build can also be behind a breaking release.
+  const breaking =
+    u.breaking === true
+      ? " This release has breaking changes: tell me what they mean for my instance and wait for my yes before you start."
+      : "";
+  const custom = u.custom
+    ? ` This instance runs a custom build (${u.current}): tell me what upgrading will replace before you start.`
+    : "";
+  return `${base}${breaking}${custom}`;
 };
 
 export const COPIED = "Copied, paste this into your agent";

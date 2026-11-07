@@ -59,6 +59,21 @@ describe("upgradePrompt", () => {
       `Upgrade my Open Artifacts instance at ${H} from v0.14.2 to v0.15.0. Follow ${H}/upgrade.md This release has breaking changes: tell me what they mean for my instance and wait for my yes before you start.`,
     );
   });
+  it("custom behind a breaking release: both suffixes, breaking first", () => {
+    expect(
+      upgradePrompt(
+        H,
+        u({
+          custom: true,
+          current: "0.14.0-dev+4f2a9c1",
+          updateAvailable: false,
+          breaking: true,
+        }),
+      ),
+    ).toBe(
+      `Upgrade my Open Artifacts instance at ${H} from v0.14.0-dev+4f2a9c1 to v0.15.0. Follow ${H}/upgrade.md This release has breaking changes: tell me what they mean for my instance and wait for my yes before you start. This instance runs a custom build (0.14.0-dev+4f2a9c1): tell me what upgrading will replace before you start.`,
+    );
+  });
   it("custom: names the build and asks what gets replaced", () => {
     expect(
       upgradePrompt(

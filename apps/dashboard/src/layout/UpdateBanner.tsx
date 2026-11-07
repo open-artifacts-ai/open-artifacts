@@ -93,36 +93,42 @@ export function UpdateBanner({
       data-testid="update-banner"
       className={`mb-[var(--oa-space-3)] ${className}`}
     >
-      <Notice tone={n.variant === "breaking" ? "warning" : "info"} compact>
-        {/* The text takes the first line or two on a phone; the actions drop to their own row. */}
+      <Notice tone={update.breaking === true ? "warning" : "info"} compact>
+        {/* The text, then the actions as one group that wraps as a unit: beside the text, or all on row 2, never split. On a phone the text takes the first line or two and the group its own rows. */}
         <div className="flex w-full flex-wrap items-center gap-x-[var(--oa-space-3)] gap-y-[var(--oa-space-2)] text-[length:var(--oa-text-sm)]">
-          <span className="min-w-0 max-[600px]:basis-full">
+          <span className="min-w-0 flex-[1_1_20rem] max-[600px]:basis-full">
             <Line variant={n.variant} u={update} />
           </span>
-          <Button
-            size="sm"
-            variant="outline"
-            className="min-h-8"
-            onClick={copy}
-          >
-            Copy upgrade prompt
-          </Button>
-          <NotesLink href={update.notesUrl} />
-          {n.dismiss === "remind" ? (
-            <button type="button" className={`${LINK} ml-auto`} onClick={hide}>
-              Remind me tomorrow
-            </button>
-          ) : (
+          <div className="flex shrink-0 grow items-center gap-[var(--oa-space-3)] max-[600px]:basis-full max-[600px]:flex-wrap">
             <Button
-              variant="ghost"
-              size="icon-sm"
-              className="ml-auto"
-              aria-label="Hide until the next release"
-              onClick={hide}
+              size="sm"
+              variant="outline"
+              className="min-h-8"
+              onClick={copy}
             >
-              <XIcon aria-hidden="true" />
+              Copy upgrade prompt
             </Button>
-          )}
+            <NotesLink href={update.notesUrl} />
+            {n.dismiss === "remind" ? (
+              <button
+                type="button"
+                className={`${LINK} ml-auto`}
+                onClick={hide}
+              >
+                Remind me tomorrow
+              </button>
+            ) : (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="ml-auto"
+                aria-label="Hide until the next release"
+                onClick={hide}
+              >
+                <XIcon aria-hidden="true" />
+              </Button>
+            )}
+          </div>
         </div>
       </Notice>
     </div>
