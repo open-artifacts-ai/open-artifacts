@@ -54,14 +54,18 @@ export async function createUpload(
       },
     );
   if (!Number.isSafeInteger(input.size) || input.size <= 0)
-    throw new ApiError("bad_request", "Invalid size", {
-      path: input.path,
-      reason: "invalid_size",
-    });
+    throw new ApiError(
+      "bad_request",
+      "Invalid size. Pass size as the exact number of bytes in the file, a whole number above 0.",
+      {
+        path: input.path,
+        reason: "invalid_size",
+      },
+    );
   if (input.size > LIMITS.fileBytes)
     throw new ApiError(
       "too_large",
-      `Files are limited to ${LIMITS.fileBytes} bytes`,
+      `Files are limited to ${LIMITS.fileBytes} bytes. Split the file or publish a smaller one.`,
       {
         path: input.path,
         reason: "too_large",
@@ -69,10 +73,14 @@ export async function createUpload(
     );
   const contentType = input.contentType ?? contentTypeFor(p.path);
   if (contentType.length > 200 || !CONTENT_TYPE.test(contentType))
-    throw new ApiError("bad_request", "Invalid contentType", {
-      path: input.path,
-      reason: "invalid_content_type",
-    });
+    throw new ApiError(
+      "bad_request",
+      "Invalid contentType. Use a MIME type such as text/html or application/pdf.",
+      {
+        path: input.path,
+        reason: "invalid_content_type",
+      },
+    );
   // A missing or short key fails here, before any row is written.
   await signingKey(env);
   const db = env.DB;
@@ -176,7 +184,7 @@ export async function putUpload(
   )
     throw new ApiError(
       "bad_request",
-      "Content-Length must equal the declared size",
+      "Content-Length must equal the declared size. Send exactly the declared number of bytes, or create a new upload with the right size.",
       {
         expected: row.size,
       },
@@ -188,7 +196,10 @@ export async function putUpload(
     .bind(uploadId)
     .run();
   if (!claim.meta.changes)
-    throw new ApiError("conflict", "Upload already received");
+    throw new ApiError(
+      "conflict",
+      "Upload already received. Create a new one with create_upload to send different bytes.",
+    );
   const release = async () => {
     await env.FILES.delete(row.r2_key).catch(() => {});
     await env.DB.prepare(
@@ -218,7 +229,7 @@ export async function putUpload(
     await release();
     throw new ApiError(
       "bad_request",
-      "Body size must equal the declared size",
+      "Body size must equal the declared size. Send exactly the declared number of bytes, or create a new upload with the right size.",
       {
         expected: row.size,
       },

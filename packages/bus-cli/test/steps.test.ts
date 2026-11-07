@@ -88,6 +88,7 @@ describe("checkAdapters", () => {
       pi: "missing",
       omp: "missing",
       codex: "missing",
+      hermes: "absent",
     });
     expect(checkAdapters({ home: h, which: () => false })).toEqual({
       claude: "absent",
@@ -95,6 +96,7 @@ describe("checkAdapters", () => {
       pi: "absent",
       omp: "absent",
       codex: "absent",
+      hermes: "absent",
     });
     writeFileSync(join(h, ".claude.json"), "{ not json");
     expect(checkAdapters({ home: h, which: all }).claude).toBe("missing");
@@ -119,6 +121,7 @@ describe("checkAdapters", () => {
       pi: "configured",
       omp: "configured",
       codex: "configured",
+      hermes: "absent",
     });
   });
 });

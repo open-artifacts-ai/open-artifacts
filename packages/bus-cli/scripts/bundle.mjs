@@ -67,6 +67,11 @@ writeFileSync(
     version,
   ),
 );
+// The Hermes plugin folder: package files only, no bytecode caches.
+cpSync(at("../bus-adapter-hermes/assets/oa_bus"), at("assets/oa_bus"), {
+  recursive: true,
+  filter: (src) => !src.includes("__pycache__") && !src.endsWith(".pyc"),
+});
 cpSync(
   at("../bus-adapter-opencode/assets/opencode-tui/tui.js"),
   at("assets/opencode-tui/tui.js"),

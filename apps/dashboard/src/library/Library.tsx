@@ -153,6 +153,7 @@ export function Library({ scope }: { scope: Scope }) {
     agentVia?: string;
     space?: string;
     view?: View;
+    filter?: "needs_answer" | "waiting_on_agents";
   };
   // The root route passes unvalidated params through: only a well-formed via.
   const agentVia = AgentViaSchema.safeParse(s.agentVia).success
@@ -173,6 +174,7 @@ export function Library({ scope }: { scope: Scope }) {
     agent,
     agentVia,
     space: space?.id,
+    filter: s.filter,
   });
   // A space-scoped 404: the caller's role in it is gone (or the space is), and
   // /me is stale. Refetch /me so it leaves the sidebar; the notice outlives the
@@ -226,7 +228,7 @@ export function Library({ scope }: { scope: Scope }) {
   const frozen = useFrozen();
   const sentinel = useSentinel(q);
 
-  const filtered = Boolean(s.format || agent || agentVia);
+  const filtered = Boolean(s.format || agent || agentVia || s.filter);
   const canPublishHere =
     personal || myRole === "editor" || myRole === "manager";
   const uploadSpace = useUploadSpace(space?.id);
@@ -277,12 +279,19 @@ export function Library({ scope }: { scope: Scope }) {
         format={s.format}
         agent={agent}
         agents={agents}
+        waiting={s.filter}
+        onWaiting={(filter) => set({ filter })}
         via={agentVia === undefined ? undefined : { label: viaName ?? "" }}
         view={view}
         onFormat={(format) => set({ format })}
         onAgent={(agent) => set({ agent, agentVia: undefined })}
         onClear={() =>
-          set({ format: undefined, agent: undefined, agentVia: undefined })
+          set({
+            format: undefined,
+            agent: undefined,
+            agentVia: undefined,
+            filter: undefined,
+          })
         }
         onView={(v) => {
           storeView(v);

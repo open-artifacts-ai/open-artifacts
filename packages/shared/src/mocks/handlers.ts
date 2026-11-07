@@ -802,17 +802,19 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       if (!existing && r.data.id && !reserved.has(r.data.id))
         return err(
           "bad_request",
-          "use POST /versions to publish a new version",
+          "No artifact you can publish to has this id, and it was not reserved for you. Leave id out to create a new artifact, or call create_upload without artifactId to reserve one.",
           { path: "id", reason: "not_reserved" },
         );
       if (!existing && r.data.id && r.data.title === undefined)
-        return badRequest("title is required when creating an artifact");
+        return badRequest(
+          "title is required when creating an artifact. Add a title and publish again.",
+        );
       // REST create never upserts, as on the server: a new version is
       // POST /versions.
       if (existing)
         return err(
           "bad_request",
-          "use POST /versions to publish a new version",
+          "This id already has an artifact. Publish a new version with POST /versions, or leave id out to create a new artifact.",
           { path: "id", reason: "not_reserved" },
         );
       const now = iso();

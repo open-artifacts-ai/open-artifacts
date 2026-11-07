@@ -83,7 +83,10 @@ export type DirectoryMode = z.infer<typeof DirectoryModeSchema>;
  * content_revocation: uid-bound /c/ content tokens re-check the user's
  * status (a space's publicLinks is never part of the /p/ check: off only
  * refuses new public links);
- * usage_off: hosted, the Usage page and R.usage are 404.
+ * usage_off: hosted, the Usage page and R.usage are 404;
+ * bus: the agent bus answers on a hosted install (HOSTED=1 turns it off
+ * otherwise; #1299's interim switch, dropped at the gate lift). Read from the
+ * env (parseFeatures), never from the plan's tier flags.
  *
  * All but guests_read_only come from the FEATURES env (comma list, set per
  * tier by provisioning; self-hosted default empty = today's behaviour).
@@ -98,6 +101,7 @@ export const FEATURE_FLAGS = [
   "guests_read_only",
   "content_revocation",
   "usage_off",
+  "bus",
 ] as const;
 export const FeatureFlagSchema = z.enum(FEATURE_FLAGS);
 export type FeatureFlag = z.infer<typeof FeatureFlagSchema>;

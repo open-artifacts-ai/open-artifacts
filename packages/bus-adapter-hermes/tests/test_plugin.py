@@ -3,7 +3,7 @@ import unittest
 
 import support
 from oa_bus import register
-from oa_bus.bus import Bus
+from oa_bus.bus import HABITS, Bus
 from oa_bus.roots import NO_SESSION, SUBAGENT, UNRESOLVED, Roots
 
 NAMES = [
@@ -65,7 +65,7 @@ class Registration(unittest.TestCase):
         hist = [{"role": "user", "content": "hi"}]
         self.assertEqual(
             hook(session_id="root-1", platform="telegram", user_message="hi", conversation_history=hist),
-            {"context": "queued text"},
+            {"context": f"queued text\n\n{HABITS}"},
         )
         self.assertEqual(link.acks, ["mmmmmmmmmmmmmmm1"])
 

@@ -11,13 +11,20 @@ import { box, glyph, paint, type Style, type Tone } from "./term.ts";
 export const WIDTH = 80;
 const MIN = 10 * 60_000;
 
-export type HarnessName = "claude" | "opencode" | "pi" | "omp" | "codex";
+export type HarnessName =
+  | "claude"
+  | "opencode"
+  | "pi"
+  | "omp"
+  | "codex"
+  | "hermes";
 export const HARNESS_LABEL: Record<HarnessName, string> = {
   claude: "Claude Code",
   opencode: "OpenCode",
   pi: "Pi",
   omp: "oh-my-pi",
   codex: "Codex",
+  hermes: "Hermes",
 };
 /** The dashboard's labels for AGENT_KINDS. */
 export const KIND_LABEL: Record<AgentKind, string> = {
@@ -222,7 +229,7 @@ export function copy(style: Style) {
         )}`,
       ),
     noHarness: () => [
-      warn("No Claude Code, OpenCode, Pi, oh-my-pi or Codex found"),
+      warn("No Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes found"),
       next(`Install one, then run ${BUS_CMD} again.`),
     ],
     restarted: () => done("Restarted the OpenCode service to load the plugin"),
@@ -240,6 +247,16 @@ export function copy(style: Style) {
         "No codex binary found, so the bus can't wake an idle Codex thread.",
       ),
       next(`Install the Codex CLI, then run ${BUS_CMD} again.`),
+    ],
+    // After the configured line, when the Hermes plugin was copied and enabled.
+    hermesRestart: () =>
+      next("Restart running Hermes sessions and gateways to load the plugin."),
+    // After uninstall removed the Hermes plugin folder with no hermes binary to disable it.
+    hermesNoCli: (config: string) => [
+      warn("Hermes isn't on PATH, so oa-bus may still be enabled in Hermes."),
+      next(
+        `Run hermes plugins disable oa-bus, or remove oa-bus from plugins.enabled in ${config}.`,
+      ),
     ],
     opencodeNotRunning: () =>
       done("OpenCode service not running; it loads the plugin when it starts"),
@@ -356,7 +373,8 @@ export function copy(style: Style) {
       const lead = "No agents in namespace ";
       return [
         `${lead}${p("accent", clip(namespace, len(lead) + 5))} yet.`,
-        "Start Claude Code, OpenCode, Pi, oh-my-pi or Codex in this folder and it joins.",
+        "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes in this folder.",
+        "It joins.",
       ];
     },
     // 7. status: messages delivered after send_message stopped waiting.
