@@ -69,10 +69,9 @@ describe("gitSchemaOf", () => {
 
   it("reports a migration a newer tag has over an older one", async () => {
     const { gitSchemaOf } = await import("../src/schema.ts");
-    const [older, newer] = await Promise.all([
-      gitSchemaOf("0.132.1"),
-      gitSchemaOf("0.133.0"),
-    ]);
+    // Sequential: concurrent fetches in a shallow clone collide on shallow.lock.
+    const older = await gitSchemaOf("0.132.1");
+    const newer = await gitSchemaOf("0.133.0");
     expect(schemaAhead(newer, older)).toContain("D1 0026_comments_setting.sql");
   });
 });
