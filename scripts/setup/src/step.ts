@@ -5,6 +5,8 @@ import type { State } from "./state.ts";
 import type { VersionInfo } from "./version-guard.ts";
 
 export type Opts = {
+  /** Explicit opt-in: content paths share the application origin. */
+  singleHost?: boolean;
   name: string;
   appHost: string;
   contentHost: string;
@@ -62,6 +64,8 @@ export type Opts = {
   revokeCi: boolean;
 };
 export type Ctx = {
+  /** Persist state only after the live content routing mode has been verified. */
+  routingVerified?: boolean;
   deps: Deps;
   fs: Fs;
   root: string;

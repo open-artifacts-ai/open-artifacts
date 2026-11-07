@@ -33,7 +33,10 @@ export const PORT = Number(process.env.OA_E2E_PORT ?? 8787);
 // never match dev's http origin (token audience mismatch). The content host
 // keeps a separate origin for the app/content split.
 export const APP_HOST = `localhost:${PORT}`;
-export const CONTENT_HOST = `content.localhost:${PORT}`;
+export const CONTENT_HOST =
+  process.env.OA_E2E_SINGLE_HOST === "1"
+    ? APP_HOST
+    : `content.localhost:${PORT}`;
 export const APP = `http://${APP_HOST}`;
 /**
  * A page on another loopback origin that frames `?src=` (an /a/<id>/full on
@@ -95,6 +98,9 @@ export function devConfig(): Record<string, unknown> {
   cfg.vars = {
     ...cfg.vars,
     ENVIRONMENT: "dev",
+    ...(process.env.OA_E2E_SINGLE_HOST === "1"
+      ? { CONTENT_ROUTING: "path" }
+      : {}),
     // A test-only page that frames /a/<id>/full (artifact-links.spec, embed mode).
     EMBED_ORIGINS: EMBEDDER,
     EMBED_ALLOW_SAME_SITE: "1",

@@ -129,6 +129,8 @@ export interface Env {
   // vars
   APP_HOST: string;
   CONTENT_HOST: string;
+  /** Opt-in single-origin delivery; unset preserves distinct content host routing. */
+  CONTENT_ROUTING?: string;
   OWNER_EMAIL: string;
   ENVIRONMENT: "dev" | "production";
   ACCESS_TEAM_DOMAIN: string;

@@ -172,3 +172,53 @@ describe("the Worker answers only its own hosts", () => {
     ).toBe(404);
   });
 });
+
+describe("single-host content routing", () => {
+  const over = { CONTENT_HOST: "app.localhost", CONTENT_ROUTING: "path" };
+  it("keeps health and OAuth on the app handler", async () => {
+    expect((await get("http://app.localhost/healthz", over)).status).toBe(200);
+    const r = await get(
+      "http://app.localhost/.well-known/oauth-authorization-server",
+      over,
+    );
+    expect(r.status).toBe(200);
+    expect(r.headers.get("content-security-policy") ?? "").not.toContain(
+      "sandbox",
+    );
+  });
+  it("reserves content paths including misses without an app fallback", async () => {
+    for (const path of [
+      "/c/nope",
+      "/p/nope",
+      "/_oa/nope.js",
+      "/%63/nope",
+      "/c%2fnope",
+      "//c/nope",
+      "/p/%2F/nope",
+    ]) {
+      const r = await get(`http://app.localhost${path}`, over);
+      expect(r.status).toBe(404);
+      expect(r.headers.get("content-security-policy")).toContain("sandbox");
+      expect(r.headers.get("set-cookie")).toBeNull();
+    }
+  });
+  it("does not route foreign hosts as single-host content", async () => {
+    const r = await get("http://foreign.test/c/nope", over);
+    expect(r.status).toBe(404);
+    expect(await r.text()).toBe("Not found");
+  });
+});
+
+describe("single-host invalid configuration", () => {
+  it.each([
+    { CONTENT_ROUTING: "unknown" },
+    { CONTENT_ROUTING: "path", CONTENT_HOST: "other.localhost" },
+    { CONTENT_ROUTING: "path", APP_HOST: "", CONTENT_HOST: "" },
+  ])("fails closed before app or content for %j", async (over) => {
+    for (const path of ["/healthz", "/c/nope", "/oauth/token"]) {
+      const r = await get(`http://app.localhost${path}`, over);
+      expect(r.status).toBe(404);
+      expect(await r.text()).toBe("Not found");
+    }
+  });
+});

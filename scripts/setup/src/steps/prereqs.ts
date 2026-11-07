@@ -1,4 +1,5 @@
 import { type Api, makeApi } from "../cf.ts";
+import { hostPairProblem } from "../hosts.ts";
 import { decide, detectPlan, warnings } from "../plan.ts";
 import { providersOf, type Signin } from "../signin.ts";
 import type { State } from "../state.ts";
@@ -18,6 +19,7 @@ import {
   unknownLiveMessage,
   versionInfo,
 } from "../version-guard.ts";
+import { currentVersion, workerBindings } from "../worker.ts";
 import { reusesDeployToken } from "./secrets.ts";
 
 /** Hosts lacking a zone, found by check and reported by apply. */
@@ -244,6 +246,44 @@ export const prereqs: Step = {
     if (!accounts.some((a) => a.id === id))
       throw new Error(`--account-id ${id} is not in \`wrangler whoami\``);
     state.accountId = id;
+    // Verify before resources/config/state writes, including stateless runs with
+    // every identity flag supplied. Unreadable settings cannot prove the mode.
+    const bindings = await workerBindings(ctx, id);
+    if (bindings) {
+      const incomplete = () =>
+        new Error(
+          "cannot verify content routing from incomplete Worker settings",
+        );
+      if (bindings.length === 0) throw incomplete();
+      // Secret-only drafts can be resumed only with proof of no deployment.
+      if (bindings.every((b) => b.type === "secret_text")) {
+        if (await currentVersion(ctx.api, ctx.opts.name, id))
+          throw incomplete();
+      } else {
+        const live = new Map(
+          bindings
+            .filter((b) => b.type === "plain_text")
+            .map((b) => [b.name, b.text]),
+        );
+        const app = live.get("APP_HOST");
+        const content = live.get("CONTENT_HOST");
+        if (!app?.trim() || !content?.trim()) throw incomplete();
+        const routing = live.get("CONTENT_ROUTING");
+        if (routing && routing !== "path")
+          throw new Error(`unknown deployed CONTENT_ROUTING: ${routing}`);
+        const problem = hostPairProblem(app, content, routing === "path");
+        if (problem)
+          throw new Error(`invalid deployed host configuration: ${problem}`);
+        if ((routing === "path") !== Boolean(ctx.opts.singleHost))
+          throw new Error(
+            "changing an existing installation's content routing mode is not supported; " +
+              (routing === "path"
+                ? "keep --single-host and matching app/content hostnames"
+                : "keep its separate content hostname"),
+          );
+      }
+    }
+    ctx.routingVerified = true;
     const plan = await detectPlan(ctx, id);
     const extra = await decide(state, ctx, plan);
     const confirmed = plan !== "paid" && ctx.opts.planVar === "paid";

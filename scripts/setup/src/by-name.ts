@@ -129,6 +129,7 @@ export async function fromWorker(
   const plan = vars.get("PLAN");
   const domain = vars.get("EMAIL_FROM")?.split("@")[1];
   Object.assign(state, {
+    singleHost: vars.get("CONTENT_ROUTING") === "path",
     team: has("send_email"),
     ...(has("send_email") ? { email: true } : {}),
     ...(domain ? { emailDomain: domain } : {}),

@@ -182,7 +182,11 @@ describe("downgrade guard", () => {
   });
 
   it("also guards from saved state when the live read is unavailable", async () => {
-    const w = world({ subscriptions: PAID, settingsFail: true });
+    const w = world({
+      subscriptions: PAID,
+      settingsFail: true,
+      settingsFailAfter: 1,
+    });
     expect(await run([...BASE, "--solo"], w.deps, ROOT)).toBe(0);
     w.setSubscriptions(FREE);
     w.lines.length = 0;
@@ -225,6 +229,7 @@ describe("fix round 1", () => {
     expect(await run([...BASE, "--solo"], w.deps, ROOT)).toBe(2);
     expect(w.state().planVar).toBe("paid");
     opts.settingsFail = true;
+    opts.settingsFailAfter = 1;
     w.lines.length = 0;
     await run([...BASE, "--solo", "--upgrade"], w.deps, ROOT);
     expect(planOf(w)).toBe("paid");
@@ -237,6 +242,7 @@ describe("fix round 1", () => {
     w.files.set(STATE, JSON.stringify(st));
     w.setSubscriptions(undefined);
     opts.settingsFail = true;
+    opts.settingsFailAfter = 1;
     w.lines.length = 0;
     expect(await run([...BASE, "--solo", "--upgrade"], w.deps, ROOT)).toBe(2);
     expect(line(w, "deploy").status).toBe("action_required");

@@ -140,6 +140,8 @@ type World = {
   settingsForbidden?: boolean;
   /** GET worker settings answers 500. */
   settingsFail?: boolean;
+  /** Allow this many settings reads after whoami before the simulated 500. */
+  settingsFailAfter?: number;
   /** GET worker settings answers 200 with no bindings (a partial response). */
   settingsPartial?: boolean;
   /** Process env handed to the setup run. */
@@ -257,6 +259,7 @@ export function world(w: World = {}) {
   /** Live version ids, newest first; deploys add `ver-<n>`, rollbacks re-promote one. */
   const versions: string[] = w.workerVersion ? [w.workerVersion] : [];
   let deployCount = 0;
+  let settingsReads = 0;
   let published = 0;
   let dryRuns = 0;
   /** The content of the last publish (kept when a test clears mcpCalls). */
@@ -572,8 +575,10 @@ export function world(w: World = {}) {
         versions.unshift(`ver-${++deployCount}`);
         stdout = `Uploaded x\nDeployed x triggers\nCurrent Version ID: ${versions[0]}\n`;
         deployedConfig = c.files.get(join(ROOT, "apps/server/wrangler.jsonc"));
-      } else if (a === "whoami --json") stdout = WHOAMI(acct.accounts);
-      else if (a === "auth token --json")
+      } else if (a === "whoami --json") {
+        settingsReads = 0;
+        stdout = WHOAMI(acct.accounts);
+      } else if (a === "auth token --json")
         stdout = '{"type":"oauth","token":"t"}';
       else if (kind === "d1 create")
         acct.d1.push({ uuid: `d1-${acct.d1.length}`, name: rest });
@@ -592,7 +597,15 @@ export function world(w: World = {}) {
       const auth = new Headers(init?.headers).get("authorization");
       const body = init?.body ? JSON.parse(String(init.body)) : undefined;
       const q = (k: string) => u.searchParams.get(k);
-      if (u.host === appHost) {
+      // The fake's signed content URLs use /s/sig; in path mode they must
+      // reach its content handler before the same-host app fallback.
+      const singleHostContent =
+        appHost === contentHost &&
+        deployedConfig &&
+        JSON.parse(stripComments(deployedConfig)).vars?.CONTENT_ROUTING ===
+          "path" &&
+        u.pathname.startsWith("/s/");
+      if (u.host === appHost && !singleHostContent) {
         if (u.pathname === "/healthz") {
           hits.push("GET /healthz");
           if (w.healthzDown) throw new Error("fetch failed");
@@ -913,7 +926,12 @@ export function world(w: World = {}) {
       const settings = p.match(/\/workers\/scripts\/([^/]+)\/settings$/);
       if (settings && m === "GET" && w.settingsForbidden)
         return envelope(null, 403, [{ message: "Authentication error" }]);
-      if (settings && m === "GET" && w.settingsFail)
+      if (
+        settings &&
+        m === "GET" &&
+        w.settingsFail &&
+        settingsReads++ >= (w.settingsFailAfter ?? 0)
+      )
         return envelope(null, 500, [{ message: "internal error" }]);
       if (settings && m === "GET" && w.settingsPartial) return envelope({});
       if (settings && m === "GET") {
@@ -921,7 +939,7 @@ export function world(w: World = {}) {
           ? JSON.parse(stripComments(deployedConfig))
           : undefined;
         const cfg = full ? full.vars : w.worker;
-        if (!cfg && !secrets)
+        if (!cfg && !secrets?.length && !w.workerBindings?.length)
           return envelope(null, 404, [
             {
               code: 10007,

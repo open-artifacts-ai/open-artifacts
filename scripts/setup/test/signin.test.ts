@@ -154,7 +154,7 @@ describe("setup keeps direct sign-in vars across upgrades", () => {
   });
 
   it("a fresh install with unreadable settings (no Worker yet) still deploys", async () => {
-    const w = world({ settingsFail: true });
+    const w = world({ settingsFail: true, settingsFailAfter: 1 });
     expect(await run([...HOSTS, "--plan", "free"], w.deps, ROOT)).toBe(0);
     expect(deploys(w)).toContain("deploy");
   });
@@ -170,10 +170,15 @@ describe("setup keeps direct sign-in vars across upgrades", () => {
 
 describe("M2: an existing Worker whose settings can't be read is never deployed", () => {
   const cases: [string, Parameters<typeof world>[0], string[], boolean][] = [
-    ["unreadable, full setup, saved state", { settingsFail: true }, [], true],
+    [
+      "unreadable, full setup, saved state",
+      { settingsFail: true, settingsFailAfter: 1 },
+      [],
+      true,
+    ],
     [
       "unreadable, --upgrade, saved state",
-      { settingsFail: true },
+      { settingsFail: true, settingsFailAfter: 1 },
       ["--upgrade"],
       true,
     ],
@@ -204,7 +209,7 @@ describe("M2: an existing Worker whose settings can't be read is never deployed"
       );
       expect(code).not.toBe(0);
       expect(w.lines.join("\n")).toMatch(
-        /setup never deploys an existing Worker without its sign-in vars/,
+        /setup never deploys an existing Worker without its sign-in vars|cannot verify content routing from incomplete Worker settings/,
       );
       expect(deploys(w)).toEqual([]);
       expect(w.deployed()).toBe(before);
@@ -212,30 +217,27 @@ describe("M2: an existing Worker whose settings can't be read is never deployed"
 
   it("install mode, no state, an empty settings read and an existing Worker: refused before any deploy call", async () => {
     const w = world({ settingsPartial: true, workerVersion: "ver-live" });
-    expect(await run([...HOSTS, "--plan", "free"], w.deps, ROOT)).toBe(2);
-    expect(line(w, "deploy").message).toMatch(
-      /refusing to deploy: the live Worker's settings came back with no bindings/,
-    );
+    expect(await run([...HOSTS, "--plan", "free"], w.deps, ROOT)).toBe(1);
+    expect(line(w, "prereqs").message).toContain("incomplete Worker settings");
     expect(deploys(w)).toEqual([]);
     expect(w.deployed()).toBeUndefined();
   });
 
-  it("install mode, no state, an empty settings read and no Worker: a fresh install still deploys", async () => {
+  it("install mode, no state: an empty 200 cannot prove a fresh Worker", async () => {
     const w = world({ settingsPartial: true });
-    expect(await run([...HOSTS, "--plan", "free"], w.deps, ROOT)).toBe(0);
-    expect(deploys(w)).toContain("deploy");
+    expect(await run([...HOSTS, "--plan", "free"], w.deps, ROOT)).toBe(1);
+    expect(line(w, "prereqs").message).toContain("incomplete Worker settings");
+    expect(deploys(w)).toEqual([]);
   });
 
-  it("the deploy step names the reason", async () => {
+  it("the prerequisite check names incomplete settings before deploy", async () => {
     const o: Parameters<typeof world>[0] = {};
     const w = world(o);
     expect(await run(HOSTS, w.deps, ROOT)).toBe(0);
     o.settingsPartial = true;
     w.lines.length = 0;
-    expect(await run(HOSTS, w.deps, ROOT)).toBe(2);
-    expect(line(w, "deploy").message).toMatch(
-      /refusing to deploy: the live Worker's settings came back with no bindings/,
-    );
+    expect(await run(HOSTS, w.deps, ROOT)).toBe(1);
+    expect(line(w, "prereqs").message).toContain("incomplete Worker settings");
   });
 });
 
@@ -243,6 +245,10 @@ describe("M1: live values are carried byte for byte or refused", () => {
   const live = (name: string, text: string) =>
     world({
       secrets: ["GOOGLE_CLIENT_SECRET"],
+      worker: {
+        APP_HOST: "app.example.com",
+        CONTENT_HOST: "a.b.usercontent.example.com",
+      },
       workerBindings: [{ type: "plain_text", name, text }],
     });
   for (const [name, text, flag] of [
@@ -292,6 +298,10 @@ describe("M1: live values are carried byte for byte or refused", () => {
     for (const type of ["secret_text", "json"]) {
       const w = world({
         secrets: ["GOOGLE_CLIENT_SECRET"],
+        worker: {
+          APP_HOST: "app.example.com",
+          CONTENT_HOST: "a.b.usercontent.example.com",
+        },
         workerBindings: [{ type, name: "GOOGLE_CLIENT_ID" }],
       });
       expect(await run(HOSTS, w.deps, ROOT), type).not.toBe(0);
@@ -368,6 +378,10 @@ describe("fail closed before any deploy call", () => {
 
   it("an invalid value on the live Worker is refused, not carried", async () => {
     const w = world({
+      worker: {
+        APP_HOST: "app.example.com",
+        CONTENT_HOST: "a.b.usercontent.example.com",
+      },
       workerBindings: [
         { type: "plain_text", name: "AUTH_DOMAIN_JOIN", text: "open" },
       ],

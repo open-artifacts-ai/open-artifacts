@@ -2,6 +2,8 @@ import { join } from "node:path";
 import type { Fs } from "./cf.ts";
 
 export type State = {
+  /** Explicit opt-in: content paths share the application origin. */
+  singleHost?: boolean;
   name?: string;
   accountId?: string;
   appHost?: string;

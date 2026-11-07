@@ -58,3 +58,15 @@ describe("rendered config names both hosts", () => {
       ).toThrow(new RegExp(k));
   });
 });
+
+it("renders one route only for explicitly selected path routing", () => {
+  const c = JSON.parse(
+    renderConfig(TEMPLATE, {
+      ...VARS,
+      CONTENT_HOST: VARS.APP_HOST,
+      CONTENT_ROUTING: "path",
+    }),
+  );
+  expect(c.routes).toEqual([{ pattern: VARS.APP_HOST, custom_domain: true }]);
+  expect(c.vars.CONTENT_ROUTING).toBe("path");
+});

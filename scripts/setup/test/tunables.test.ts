@@ -250,7 +250,7 @@ describe("saved values are re-validated", () => {
 
 describe("unreadable live vars", () => {
   it("warns naming the allowlisted vars not in state or flags", async () => {
-    const w2 = world({ settingsFail: true });
+    const w2 = world({ settingsFail: true, settingsFailAfter: 1 });
     const code = await run(
       [...HOSTS, "--plan", "free", "--var", "ANON_WRITES_PER_MIN=5"],
       w2.deps,
@@ -291,6 +291,10 @@ describe("live values are validated", () => {
 
   it("setup notes 'ignored invalid live NAME' and does not render it", async () => {
     const w = world({
+      worker: {
+        APP_HOST: "app.example.com",
+        CONTENT_HOST: "a.b.usercontent.example.com",
+      },
       workerBindings: [
         { type: "plain_text", name: "ANON_WRITES_PER_MIN", text: "9999" },
       ],
@@ -418,6 +422,10 @@ describe("setup --var", () => {
 
   it("keeps a live (dashboard-set) value missing from state, with a note", async () => {
     const w = world({
+      worker: {
+        APP_HOST: "app.example.com",
+        CONTENT_HOST: "a.b.usercontent.example.com",
+      },
       workerBindings: [{ type: "plain_text", name: "PUBLIC_HOME", text: ID }],
     });
     expect(await run(HOSTS, w.deps, ROOT)).toBe(0);
@@ -428,6 +436,10 @@ describe("setup --var", () => {
 
   it("the flag beats the live value, with no kept note", async () => {
     const w = world({
+      worker: {
+        APP_HOST: "app.example.com",
+        CONTENT_HOST: "a.b.usercontent.example.com",
+      },
       workerBindings: [
         { type: "plain_text", name: "ANON_WRITES_PER_MIN", text: "50" },
       ],
@@ -439,6 +451,10 @@ describe("setup --var", () => {
 
   it("--var NAME= clears a live value", async () => {
     const w = world({
+      worker: {
+        APP_HOST: "app.example.com",
+        CONTENT_HOST: "a.b.usercontent.example.com",
+      },
       workerBindings: [{ type: "plain_text", name: "PUBLIC_HOME", text: ID }],
     });
     const code = await run([...HOSTS, "--var", "PUBLIC_HOME="], w.deps, ROOT);
