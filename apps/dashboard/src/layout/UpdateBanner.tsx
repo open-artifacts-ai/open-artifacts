@@ -20,21 +20,17 @@ import {
   type DismissStore,
   dismissNotice,
   type NoticeVariant,
+  sessionStore,
   upgradeNotice,
 } from "./upgradeNotice";
 
-/** localStorage, or a page-lifetime stand-in where it is blocked. */
-const fallback = new Map<string, string>();
-const memory: DismissStore = {
-  getItem: (k) => fallback.get(k) ?? null,
-  setItem: (k, val) => void fallback.set(k, val),
-};
+/** localStorage, or the in-memory stand-in where it is blocked. */
 const browserStore = (): DismissStore => {
   try {
     localStorage.getItem("oa.upgrade.probe");
     return localStorage;
   } catch {
-    return memory;
+    return sessionStore;
   }
 };
 

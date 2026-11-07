@@ -166,7 +166,13 @@ function Layout() {
     );
   if (bareRoute(path))
     return (
-      <main id="oa-main">
+      // The artifact view owns its height: a flex column of the viewport, so a
+      // banner above the viewer takes its own height out of the viewer's
+      // instead of pushing the bottom of the frame below the fold.
+      <main
+        id="oa-main"
+        className={path.toLowerCase().startsWith("/a/") ? "oa-bare" : undefined}
+      >
         <QuotaBanner />
         {/* The artifact view owns its chrome; the banner sits above it, never over the frame. */}
         {state.status === "authed" && (

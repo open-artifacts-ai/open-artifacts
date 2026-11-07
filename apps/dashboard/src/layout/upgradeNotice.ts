@@ -67,11 +67,14 @@ export function upgradeNotice(
   }
   const dismiss: DismissMode = sticky(update, now) ? "remind" : "x";
   if (dismiss === "x") {
-    if (store.getItem(dismissedKey(update.latestVersion)) !== null)
+    if (read(store, dismissedKey(update.latestVersion)) !== null)
       return { show: false };
   } else {
-    const until = Number(store.getItem(remindKey(update.latestVersion)));
-    if (Number.isFinite(until) && until > now) return { show: false };
+    const until = Number(read(store, remindKey(update.latestVersion)));
+    // Only a reminder this banner could have set (at most a day ahead): a
+    // clock that was wrong once, or junk, never hides it for long.
+    if (Number.isFinite(until) && until > now && until - now <= REMIND_MS)
+      return { show: false };
   }
   return { show: true, variant, dismiss };
 }
@@ -83,6 +86,24 @@ export function dismissNotice(
   now: number,
   store: DismissStore,
 ) {
-  if (mode === "x") store.setItem(dismissedKey(update.latestVersion), "1");
-  else store.setItem(remindKey(update.latestVersion), String(now + REMIND_MS));
+  const [key, value] =
+    mode === "x"
+      ? [dismissedKey(update.latestVersion), "1"]
+      : [remindKey(update.latestVersion), String(now + REMIND_MS)];
+  try {
+    store.setItem(key, value);
+  } catch {
+    // Storage is full or blocked: hide it for this page session anyway.
+    sessionStore.setItem(key, value);
+  }
 }
+
+const read = (store: DismissStore, key: string) =>
+  store.getItem(key) ?? sessionStore.getItem(key);
+
+/** The in-memory stand-in: the notice reads it when the browser's store can't be written. */
+const session = new Map<string, string>();
+export const sessionStore: DismissStore = {
+  getItem: (k) => session.get(k) ?? null,
+  setItem: (k, val) => void session.set(k, val),
+};

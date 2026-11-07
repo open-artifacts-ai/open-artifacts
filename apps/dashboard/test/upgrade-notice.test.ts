@@ -205,6 +205,25 @@ describe("upgradeNotice: remind me tomorrow (24 h)", () => {
         .show,
     ).toBe(true);
   });
+  it("a reminder more than a day ahead isn't honored", () => {
+    const store = memory();
+    store.setItem("oa.upgrade.remind.0.15.0", String(NOW + 10 * DAY));
+    expect(upgradeNotice(sticky, NOW, store).show).toBe(true);
+  });
+  it("a store that refuses writes still hides it for the session", () => {
+    const store: DismissStore = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+    };
+    const other = u({ breaking: true, latestVersion: "9.9.9" });
+    dismissNotice(other, "remind", NOW, store);
+    expect(upgradeNotice(other, NOW + 1, store).show).toBe(false);
+    const x = u({ latestVersion: "9.9.8" });
+    dismissNotice(x, "x", NOW, store);
+    expect(upgradeNotice(x, NOW, store).show).toBe(false);
+  });
   it("a junk stored value doesn't hide it", () => {
     const store = memory();
     store.setItem("oa.upgrade.remind.0.15.0", "soon");

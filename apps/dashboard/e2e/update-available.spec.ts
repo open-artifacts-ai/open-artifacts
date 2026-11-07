@@ -192,3 +192,39 @@ for (const w of [1280, 390])
     await expect(status).toBeEmpty({ timeout: 6000 });
     await expect.poll(gap).toBe(pad);
   });
+
+// The artifact view is a viewport-tall column: a banner above the viewer takes
+// its height out of the viewer's, so the page never scrolls (#1628).
+const ART = "De6gHjKmNp7qRsTu";
+for (const [name, query, banner] of [
+  ["with the update banner", "mock=update", true],
+  ["without a banner", "", false],
+  ["with the quota banner", "mock=quota", false],
+] as const) {
+  for (const [w, h] of [
+    [1100, 700],
+    [390, 700],
+  ] as const) {
+    test(`artifact view ${name} at ${w}px doesn't scroll the page`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: w, height: h });
+      await page.goto(`/a/${ART}${query ? `?${query}` : ""}`);
+      // The quota mock fails the artifact load: its banner is what shows.
+      if (query === "mock=quota")
+        await expect(
+          page.getByText("Daily free-plan limit reached", { exact: false }),
+        ).toBeVisible();
+      else
+        await expect(
+          page.getByRole("heading", { name: "Meeting notes" }),
+        ).toBeVisible();
+      if (banner) await expect(page.getByTestId("update-banner")).toBeVisible();
+      const g = await page.evaluate(() => ({
+        scroll: (document.scrollingElement as Element).scrollHeight,
+        inner: window.innerHeight,
+      }));
+      expect(g.scroll).toBeLessThanOrEqual(g.inner);
+    });
+  }
+}

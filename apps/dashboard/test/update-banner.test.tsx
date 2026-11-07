@@ -204,3 +204,9 @@ it("shows on settings pages too", async () => {
     expect(screen.getAllByText(/Update available/).length).toBeGreaterThan(0),
   );
 });
+
+it("an admin who isn't the owner sees it too", async () => {
+  serve(UPDATE, "admin");
+  mount("/");
+  expect(await banner()).toHaveTextContent("v0.15.0 is out");
+});
