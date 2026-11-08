@@ -13,6 +13,13 @@ const SHORT_QUOTE = 16;
 const SPOT_SLACK = 16;
 /** Most char comparisons the partial-match step may spend on one anchor. */
 const LCS_BUDGET = 2_000_000;
+/**
+ * Most char comparisons the partial-match step may spend across every anchor
+ * resolved through one resolver (one resolve pass). Past it, an anchor that
+ * would need the step is collapsed (or orphan) instead, so many unfound
+ * quotes cannot freeze the page (#1735).
+ */
+const TOTAL_LCS_BUDGET = 16_000_000;
 /** Occurrence lists are capped so a degenerate needle stays linear. */
 const MAX_OCCURRENCES = 20000;
 
@@ -220,7 +227,8 @@ function longestCommon(
 /**
  * A resolver for one text. Build it once per text version: the whitespace-
  * normalized copy and the line index are made lazily, once, and shared by
- * every anchor resolved through it.
+ * every anchor resolved through it, as is the TOTAL_LCS_BUDGET of partial-
+ * match comparisons: anchors past it collapse instead of going partial.
  */
 export function createTextResolver(
   text: string,
@@ -231,6 +239,7 @@ export function createTextResolver(
     return normed;
   };
   const getLine = lineOf(text);
+  let spent = 0;
 
   return (anchor) => {
     const { exact, prefix, suffix } = anchor;
@@ -409,8 +418,10 @@ export function createTextResolver(
       at = ends.length ? ends[0] : starts[0];
     } else at = from;
 
-    // 3. What survives of the quote near that spot (skipped over budget).
-    if (to > from && (to - from) * len <= LCS_BUDGET) {
+    // 3. What survives of the quote near that spot (skipped over either budget).
+    const cost = (to - from) * len;
+    if (to > from && cost <= LCS_BUDGET && spent + cost <= TOTAL_LCS_BUDGET) {
+      spent += cost;
       const { start, len: n } = longestCommon(text, from, to, exact);
       const s = snap(text, start, 1);
       const e = snap(text, start + n, -1);
@@ -437,8 +448,9 @@ export function createTextResolver(
  * - partial: no whole quote, but a piece of at least minSurvivingChars(...)
  *   sits where the prefix/suffix say the quote was. Among several context
  *   pairs, the one whose gap is closest to the quote's old length wins. The
- *   comparison spends at most 2M char comparisons; over that it is skipped and
- *   the result is collapsed.
+ *   comparison spends at most 2M char comparisons per anchor, and at most 16M
+ *   across all anchors resolved through one createTextResolver; over either it
+ *   is skipped and the result is collapsed.
  * - collapsed: nothing of the quote, but the old spot is found from the
  *   prefix and/or suffix. `at` is the offset where the quote used to start.
  *   An empty prefix or suffix (a document edge) says nothing while the other

@@ -565,3 +565,39 @@ describe("a short quote placed by context (#1735)", () => {
     expect(text.indexOf("j")).not.toBe(at);
   });
 });
+
+describe("partial-match work per resolve pass (#1735)", () => {
+  it("500 anchors of 1000 unfound chars: the first get partial, those past the total budget collapse", () => {
+    let seed = 12345;
+    const rnd = (n: number) => {
+      let s = "";
+      for (let i = 0; i < n; i++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        s += String.fromCharCode(97 + ((seed >> 8) % 26));
+      }
+      return s;
+    };
+    const parts: string[] = [];
+    const anchors: Parameters<typeof resolveTextAnchor>[1][] = [];
+    for (let i = 0; i < 500; i++) {
+      const prefix = rnd(32);
+      const piece = rnd(400);
+      parts.push(prefix, piece, rnd(300), " ");
+      anchors.push({
+        kind: "text",
+        version: 1,
+        exact: piece + rnd(600),
+        prefix,
+        suffix: "",
+      });
+    }
+    const resolve = createTextResolver(parts.join(""));
+    const states = anchors.map((a) => resolve(a).state);
+    expect(states.slice(0, 4).every((s) => s === "partial")).toBe(true);
+    expect(states.slice(-100).every((s) => s === "collapsed")).toBe(true);
+    expect(states.filter((s) => s === "partial").length).toBeLessThan(20);
+    expect(states.every((s) => s === "partial" || s === "collapsed")).toBe(
+      true,
+    );
+  });
+});

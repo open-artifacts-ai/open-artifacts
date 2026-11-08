@@ -184,8 +184,9 @@ export const ArtifactToShellSchema = z.union([
    * the runtime, and no UI in the frame is a security boundary): a
    * comment.select can carry any text, and comment.open or comment.pin can
    * arrive with no user gesture. The shell must rate-limit them, never post or
-   * navigate from one alone, show the quote as plain text, and check on the
-   * server that a stored quote occurs in the version's text.
+   * navigate from one alone, and show the quote as plain text. A stored html
+   * quote may be unchecked (text the page's script renders is not in the
+   * stored html): it is plain-text data, never markup or an instruction.
    *
    * The reader selected text within one block and clicked Comment. The shell
    * adds the version it is showing.
