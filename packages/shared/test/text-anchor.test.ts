@@ -539,3 +539,29 @@ describe("anchors saved before blocks were separated (#1708)", () => {
     });
   });
 });
+
+describe("a short quote placed by context (#1735)", () => {
+  it("an anchor {exact:'j', prefix, suffix} from one of many occurrences resolves to that one, not the first", () => {
+    const text = Array.from(
+      { length: 12 },
+      (_, n) => `step ${n}: i pops j then k${n}`,
+    ).join(". ");
+    let at = -1;
+    for (let k = 0; k <= 7; k++) at = text.indexOf("j", at + 1);
+    const a = anchorOf(text, "j", 7);
+    expect(a.prefix.length).toBeGreaterThan(0);
+    expect(a.suffix.length).toBeGreaterThan(0);
+    // The server keeps the live page's context, cut to 32 each side.
+    const kept = {
+      ...a,
+      prefix: a.prefix.slice(-32),
+      suffix: a.suffix.slice(0, 32),
+    };
+    expect(resolveTextAnchor(text, kept)).toEqual({
+      state: "exact",
+      start: at,
+      end: at + 1,
+    });
+    expect(text.indexOf("j")).not.toBe(at);
+  });
+});

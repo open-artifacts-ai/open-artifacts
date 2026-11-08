@@ -153,7 +153,7 @@ describe("verifyQuote and checkAnchor", () => {
     currentVersion: 1,
   });
 
-  it("keeps the context of a quote in the version; one only in a script is accepted with it cleared", async () => {
+  it("keeps the context of a quote in the version; one only in a script is accepted with the given context", async () => {
     expect(
       await verifyQuote(env, id, "html", 1, {
         exact: "big world",
@@ -163,12 +163,28 @@ describe("verifyQuote and checkAnchor", () => {
     expect(
       await verifyQuote(env, id, "html", 1, {
         exact: "hidden words",
-        prefix: "forged",
-        suffix: "forged",
+        prefix: "given",
+        suffix: "ctx",
       }),
-    ).toEqual({ prefix: "", suffix: "" });
+    ).toEqual({ prefix: "given", suffix: "ctx" });
+    const long = "0123456789".repeat(7);
+    expect(
+      await verifyQuote(env, id, "html", 1, {
+        exact: "hidden words",
+        prefix: long,
+        suffix: long,
+      }),
+    ).toEqual({ prefix: long.slice(-32), suffix: long.slice(0, 32) });
+    // A cut never lands inside a surrogate pair.
+    const e = "😀".repeat(40);
+    const cut = await verifyQuote(env, id, "html", 1, {
+      exact: "hidden words",
+      prefix: e,
+      suffix: e,
+    });
+    expect(cut).toEqual({ prefix: "😀".repeat(16), suffix: "😀".repeat(16) });
   });
-  it("script-rendered text is not in the static text: the quote is accepted with prefix and suffix cleared (#1482, #1735)", async () => {
+  it("script-rendered text is not in the static text: the quote is accepted with its given context (#1482, #1735)", async () => {
     const html =
       "<p id=\"lede\"></p><script>document.getElementById('lede').innerHTML='When <code>i</code> pops <code>j</code>'</script>";
     expect(await visibleText(html)).not.toContain("pops");
@@ -176,9 +192,9 @@ describe("verifyQuote and checkAnchor", () => {
       await verifyQuote(env, jsId, "html", 1, {
         exact: "i pops j",
         prefix: "When ",
-        suffix: "",
+        suffix: " end",
       }),
-    ).toEqual({ prefix: "", suffix: "" });
+    ).toEqual({ prefix: "When ", suffix: " end" });
   });
   it("a quote on text the page's script renders is accepted (#1735)", async () => {
     // The shape of the reported page: a static shell, the intro filled by script.
@@ -206,11 +222,11 @@ describe("verifyQuote and checkAnchor", () => {
         await checkAnchor(env, art(js, "html"), {
           kind: "text",
           exact,
-          prefix: "",
-          suffix: "",
+          prefix: "ab",
+          suffix: "cd",
         }),
       ).toMatchObject({
-        anchor: { kind: "text", exact, prefix: "", suffix: "" },
+        anchor: { kind: "text", exact, prefix: "ab", suffix: "cd" },
       });
     const r = await checkAnchor(env, art(js, "html"), {
       kind: "text",
@@ -219,10 +235,10 @@ describe("verifyQuote and checkAnchor", () => {
       suffix: "forged",
       block: { path: "evil" },
     });
-    expect(r.anchor).toMatchObject({ prefix: "", suffix: "" });
+    expect(r.anchor).toMatchObject({ prefix: "forged", suffix: "forged" });
     expect(r.anchor).not.toHaveProperty("block");
   });
-  it("an entry over 5 MB is not parsed: the quote is accepted with its context cleared", async () => {
+  it("an entry over 5 MB is not parsed: the quote is accepted with its given context", async () => {
     await env.DB.prepare(
       "update versions set manifest = json_set(manifest, '$[0].size', 6000000) where artifact_id = ?",
     )
@@ -234,7 +250,7 @@ describe("verifyQuote and checkAnchor", () => {
         prefix: "x",
         suffix: "y",
       }),
-    ).toEqual({ prefix: "", suffix: "" });
+    ).toEqual({ prefix: "x", suffix: "y" });
     const r = await checkAnchor(env, art(big, "html"), {
       kind: "text",
       exact: "Hello",
@@ -242,7 +258,7 @@ describe("verifyQuote and checkAnchor", () => {
       suffix: "y",
       block: { path: "evil" },
     });
-    expect(r.anchor).toMatchObject({ prefix: "", suffix: "" });
+    expect(r.anchor).toMatchObject({ prefix: "x", suffix: "y" });
     expect(r.anchor).not.toHaveProperty("block");
   });
   it("422 for a version that does not exist", async () => {

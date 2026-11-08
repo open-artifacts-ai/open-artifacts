@@ -9,9 +9,10 @@ import { sha256Sink } from "../util/digest.js";
 // version is checked against that version's static visible text before it is
 // stored. A quote found there keeps its context (re-derived when off). A quote
 // not found is still accepted (#1735): the page's own script may have rendered
-// it, which the static text never holds. Its prefix and suffix are cleared
-// (and checkAnchor drops the block hint) because the page's code can forge an
-// anchor, so no context we could not check is stored.
+// it, which the static text never holds. Its prefix and suffix are kept as
+// the live page sent them, cut to CONTEXT_CHARS each side (the client resolver
+// needs them to place a short quote that occurs many times), and checkAnchor
+// drops the block hint. The context is as unchecked as `exact` itself.
 
 /** Visible text past this many characters is not read (a degenerate page). */
 export const MAX_VISIBLE_CHARS = 4 * 1024 * 1024;
@@ -140,13 +141,29 @@ export function findQuote(
   };
 }
 
+/**
+ * The client's context for a quote we cannot check: the last CONTEXT_CHARS of
+ * the prefix and the first CONTEXT_CHARS of the suffix, never splitting a
+ * surrogate pair.
+ */
+export function capContext(q: Quote): { prefix: string; suffix: string } {
+  const prefix = q.prefix ?? "";
+  const suffix = q.suffix ?? "";
+  return {
+    prefix: prefix.slice(
+      snap(prefix, Math.max(0, prefix.length - CONTEXT_CHARS), 1),
+    ),
+    suffix: suffix.slice(0, snap(suffix, CONTEXT_CHARS, -1)),
+  };
+}
+
 const notIn = () =>
   new ApiError(
     "anchor_not_in_version",
     "The quoted text is not in that version",
   );
 
-/** An entry over this is never parsed for verification (the quote is accepted with its context cleared). */
+/** An entry over this is never parsed for verification (the quote is accepted with its context capped, not checked). */
 export const MAX_VERIFY_BYTES = 5 * 1024 * 1024;
 
 type VersionRow = { format: string | null; manifest: string };
@@ -156,8 +173,9 @@ type VersionRow = { format: string | null; manifest: string };
  * its entry's static visible text is searched for the quote. Returns the
  * (possibly re-derived) context when the quote is found. When it is not found,
  * or the entry is over MAX_VERIFY_BYTES and so not parsed, the quote is
- * accepted with prefix "" and suffix "": the text may be rendered by the
- * page's script, and context we could not check is not stored. Returns null
+ * accepted with the prefix and suffix as sent, cut to the last and first
+ * CONTEXT_CHARS characters: the text may be rendered by the page's script, so
+ * the context cannot be checked, and the client resolver needs it. Returns null
  * when the version is not html (schema checks only). 422 anchor_not_in_version
  * for a version that does not exist or an html entry file that is missing. The
  * MCP comment tools call this with the quote and version = current.
@@ -176,7 +194,7 @@ export async function verifyQuote(
     .first<VersionRow & { entry: string }>();
   if (!row) throw notIn();
   if ((row.format ?? artifactFormat) !== "html") return null;
-  const unchecked = { prefix: "", suffix: "" };
+  const unchecked = capContext(q);
   const entry = (
     JSON.parse(row.manifest) as { path: string; key: string; size?: number }[]
   ).find((e) => e.path === row.entry);

@@ -1033,7 +1033,7 @@ describe("review fixes (#682)", () => {
     expect(bodyOk(` ${"x".repeat(2000)} `)).toBe(true);
   });
 
-  it("a quote on script-rendered html text is accepted with forged context and block cleared (#1735)", async () => {
+  it("a quote on script-rendered html text is accepted with its context capped to 32 and no block (#1735)", async () => {
     const id = await pub({
       visibility: "team",
       format: "html",
@@ -1043,20 +1043,23 @@ describe("review fixes (#682)", () => {
     const r = await post(id, viewer, "x", {
       kind: "text",
       exact: "previous smaller",
-      prefix: "forged prefix",
-      suffix: "forged suffix",
+      prefix: `${"p".repeat(32)}live prefix`.padStart(64, "z"),
+      suffix: `live suffix${"s".repeat(32)}`.padEnd(64, "z"),
       block: { path: "evil/free text" },
     });
     expect(r.status).toBe(201);
     const t = await thread(r);
     expect(t.anchor).toMatchObject({
       exact: "previous smaller",
-      prefix: "",
-      suffix: "",
+      prefix: `${"p".repeat(32)}live prefix`.padStart(64, "z").slice(-32),
+      suffix: `live suffix${"s".repeat(32)}`.padEnd(64, "z").slice(0, 32),
     });
     expect(t.anchor).not.toHaveProperty("block");
     const stored = (await list(id, viewer)).threads[0]?.anchor;
-    expect(stored).toMatchObject({ prefix: "", suffix: "" });
+    expect(stored).toMatchObject({
+      prefix: expect.stringMatching(/^.{32}$/),
+      suffix: expect.stringMatching(/^.{32}$/),
+    });
     expect(stored).not.toHaveProperty("block");
   });
 
