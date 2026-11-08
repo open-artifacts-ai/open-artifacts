@@ -89,6 +89,8 @@ const BTN_MARGIN = 4;
 /** #1732: the shell's touch bar (48px) plus a 12px gap; the selection's last line stays above it. */
 const BAR_CLEAR = 48 + 12;
 const SELECTION_MS = 100;
+/** How long a collapsed selection stays usable for the shell's command. */
+const KEPT_MS = 1500;
 
 export function createComments(
   bridge: Pick<Bridge, "on" | "send">,
@@ -121,6 +123,7 @@ export function createComments(
   /** The last non-empty selection (#1732): iOS can collapse it before the shell's command arrives. */
   let kept: { start: number; end: number; ver: number } | null = null;
   let selTimer: ReturnType<typeof setTimeout> | undefined;
+  let keptTimer: ReturnType<typeof setTimeout> | undefined;
   let selSent: { has: boolean; bottom: number } = { has: false, bottom: 0 };
 
   // ---- overlay: one host under <html>, closed shadow root ----
@@ -395,8 +398,18 @@ export function createComments(
       const rects = s.range.getClientRects();
       const r = rects[rects.length - 1] ?? s.range.getBoundingClientRect();
       bottom = Math.min(10_000_000, Math.max(-10_000_000, r.bottom));
-      const over = bottom - (innerHeight - BAR_CLEAR);
-      if (coarse() && over > 0 && selSent.bottom !== bottom) scrollBy(0, over);
+      // Only when the bar first appears: never while the reader drags a handle.
+      const vh = globalThis.visualViewport?.height ?? innerHeight;
+      const over = bottom - (vh - BAR_CLEAR);
+      if (coarse() && over > 0 && !selSent.has) scrollBy(0, over);
+      clearTimeout(keptTimer);
+    } else if (kept) {
+      // A collapse is forgotten after the tap window, so a stale quote never
+      // comes back on a later command.
+      clearTimeout(keptTimer);
+      keptTimer = setTimeout(() => {
+        kept = null;
+      }, KEPT_MS);
     }
     const has = !!s;
     if (selSent.has === has && selSent.bottom === bottom) return;
@@ -629,6 +642,7 @@ export function createComments(
     clearTimeout(mutTimer);
     clearTimeout(flashTimer);
     clearTimeout(selTimer);
+    clearTimeout(keptTimer);
     if (raf) cancelAnimationFrame(raf);
     const reg = highlights();
     reg?.delete("oa-comment");

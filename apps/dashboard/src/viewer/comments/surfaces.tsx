@@ -47,14 +47,29 @@ export function useSurface(chromeless: boolean): Surface {
  * selected in the frame. Drawn by the shell (the frame's own button is off on
  * touch). The polite region announces once, when the bar appears.
  */
+const ANNOUNCE_MS = 10_000;
+
 export function SelectionBar() {
   const api = useCommentsApi();
   const touch = useCoarsePointer();
   const show = touch && api.hasSelection;
+  // Announce when the bar appears, at most once per ANNOUNCE_MS: page code
+  // can flip the selection state as often as it likes.
+  const [say, setSay] = useState(false);
+  const lastSaid = useRef(0);
+  useEffect(() => {
+    if (!show) {
+      setSay(false);
+      return;
+    }
+    if (Date.now() - lastSaid.current < ANNOUNCE_MS) return;
+    lastSaid.current = Date.now();
+    setSay(true);
+  }, [show]);
   return (
     <>
       <div role="status" className="sr-only">
-        {show ? "Comment on selection available" : ""}
+        {say ? "Comment on selection available" : ""}
       </div>
       {show && (
         // The bar is the chrome surface; the 48px accent button sits above the

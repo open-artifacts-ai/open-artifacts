@@ -1956,6 +1956,46 @@ describe("comment on selection (#1732)", () => {
     expect(b).not.toHaveTextContent("1");
   });
 
+  it("no bar over the open side panel (review of #1757)", async () => {
+    viewport(800, true);
+    mount(`${viewerPath(OWNED)}?panel=open&tab=versions`);
+    await hello();
+    await screen.findByRole("button", { name: /^Comment/ });
+    await select(true);
+    expect(bar()).toBeNull();
+  });
+
+  it("the header still opens the list when the frame has nothing to quote (review of #1757)", async () => {
+    viewport(1280, false);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: "Comments, 1 open" });
+    // Page code claims a selection; the frame then has nothing to send.
+    await select(true);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Comment on selection" }),
+    );
+    expect(commentOnSelection).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByRole("complementary", { name: "Comments" }),
+    ).toBeInTheDocument();
+  });
+
+  it("announces the bar at most once in a while, however often the page flips it (review of #1757)", async () => {
+    viewport(400, true);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: /^Comments/ });
+    await select(true);
+    expect(
+      screen.getByText("Comment on selection available"),
+    ).toBeInTheDocument();
+    await select(false);
+    await select(true);
+    expect(bar()).toBeInTheDocument();
+    expect(screen.queryByText("Comment on selection available")).toBeNull();
+  });
+
   it("view-only readers get no bar and no button change", async () => {
     viewport(400, true);
     server.use(

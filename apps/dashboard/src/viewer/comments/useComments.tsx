@@ -271,6 +271,9 @@ export function useCommentsController({
   const commentOnSelection = useCallback(() => {
     getBridge()?.commentOnSelection?.();
     setSelected(false);
+    // Also open the list: page code can claim a selection, so the header
+    // button must still reach comments when the frame has nothing to quote.
+    surface.current();
   }, [getBridge]);
   // A mode change or a lost right drops the offer.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset on these

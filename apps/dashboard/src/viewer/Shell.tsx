@@ -650,7 +650,10 @@ function Viewer({
           )}
         </div>
         {commentsOn && !listShown && <PinBar />}
-        {commentsOn && !chromeless && <SelectionBar />}
+        {commentsOn &&
+          !chromeless &&
+          !panelOpen &&
+          !(surface === "dialog" && dialogOpen) && <SelectionBar />}
         {commentsOn && surface === "dialog" && dialogOpen && (
           <CommentsDialog
             textFormat={textFormat}

@@ -237,6 +237,35 @@ describe("selection state for the shell (#1732)", () => {
     expect(by).toHaveBeenCalledWith(0, 30);
   });
 
+  it("touch: scrolls once when the bar appears, not while a handle is dragged (review of #1757)", async () => {
+    pointer(true);
+    vi.stubGlobal("innerHeight", 600);
+    const by = vi.fn();
+    vi.stubGlobal("scrollBy", by);
+    Object.assign(rect, { bottom: 570 });
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    expect(by).toHaveBeenCalledTimes(1);
+    Object.assign(rect, { bottom: 580 });
+    select(textOf("a"), 4, textOf("a"), 10);
+    await wait100();
+    expect(by).toHaveBeenCalledTimes(1);
+  });
+
+  it("a collapsed selection is forgotten after the tap window (review of #1757)", async () => {
+    pointer(true);
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    getSelection()?.removeAllRanges();
+    document.dispatchEvent(new Event("selectionchange"));
+    await wait100();
+    await new Promise((r) => setTimeout(r, 1600));
+    await send({ type: "comments.comment" });
+    expect(last("comment.select")).toBeUndefined();
+  });
+
   it("touch: does not scroll when clear of the bar", async () => {
     pointer(true);
     vi.stubGlobal("innerHeight", 600);
