@@ -1,0 +1,13 @@
+# open-artifacts
+
+> Official repository and documentation index for open-artifacts-ai/open-artifacts.
+
+## Core Resources
+
+- [GitHub Repository](https://github.com/open-artifacts-ai/open-artifacts): Source code, documentation, and issue tracker.
+- [Website](https://open-artifacts.com): Official website and documentation.
+
+## AI Agent & LLM Indexing
+
+- Structured following the standard /llms.txt specification for AI search engines and coding assistants.
+- Validated via [AccessGuard AI-Readiness Suite](https://ronanchnlps-bit.github.io/).
