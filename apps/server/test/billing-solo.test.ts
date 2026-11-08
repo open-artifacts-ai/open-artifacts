@@ -549,7 +549,7 @@ describe("no BILLING gate: no plan, nothing changes", () => {
 });
 
 describe("view-only: an uncapped editor on someone else's artifact", () => {
-  const ids = { shared: "" };
+  const ids = { shared: "", none: "", viewer: "" };
   let stranger: U;
   beforeAll(async () => {
     stranger = await login(`stranger-${tag}@a.com`, "member");
@@ -560,7 +560,30 @@ describe("view-only: an uncapped editor on someone else's artifact", () => {
       body: { email: `owner-${tag}@a.com`, role: "editor" },
     });
     expect(s.status).toBe(200);
+    ids.none = ((await (await post(member)).json()) as { id: string }).id;
+    ids.viewer = ((await (await post(member)).json()) as { id: string }).id;
+    const v = await send(props, R.shares(ids.viewer), member.cookie, {
+      method: "PUT",
+      body: { email: `owner-${tag}@a.com`, role: "viewer" },
+    });
+    expect(v.status).toBe(200);
     await setPlan(UNPAID);
+  });
+
+  it("the org owner with no access at all gets 404, not the plan error", async () => {
+    const p = await send(props, R.artifact(ids.none), owner.cookie, {
+      method: "PATCH",
+      body: { title: "renamed" },
+    });
+    expect(p.status).toBe(404);
+  });
+
+  it("the org owner with only a viewer share gets 404", async () => {
+    const p = await send(props, R.artifact(ids.viewer), owner.cookie, {
+      method: "PATCH",
+      body: { title: "renamed" },
+    });
+    expect(p.status).toBe(404);
   });
 
   it("gets the 403 plan error on a non-visibility PATCH, not a 404", async () => {

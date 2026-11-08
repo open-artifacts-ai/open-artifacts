@@ -58,7 +58,7 @@ export type PlanReason = z.infer<typeof PlanReasonSchema>;
 /**
  * Me.instance.billing (hosted only; absent self-hosted and on older servers).
  * Everyone sees tier, readOnly and reason (the banner). status, trialEndsAt,
- * graceUntil and creatorsThisMonth are billing details: the org owner and
+ * soloTrialEndsAt, graceUntil and creatorsThisMonth are billing details: the org owner and
  * admins only; null (creatorsThisMonth absent) for everyone else.
  */
 export const PlanViewSchema = z.object({

@@ -376,12 +376,14 @@ locked too), so its alarm calls nothing and fails nothing (no
 `sync_google` back. No transition deletes anything.
 
 `Me.instance.billing` (`PlanView`; not `plan`, which is the Workers plan):
-`{ tier, status, trialEndsAt, graceUntil, creatorsThisMonth?, readOnly, reason? }`.
+`{ tier, status, trialEndsAt, soloTrialEndsAt?, graceUntil, creatorsThisMonth?, readOnly, reason? }`.
 `tier` solo | free | trial | team | business (free is the pre-Solo value: hosted billing that predates Solo still answers it, with today's rules, and the hosted half moves billing to answer solo); `status` active | past_due | lapsed |
 suspended. Everyone gets `tier`, `readOnly`, `reason`. `status`,
-`trialEndsAt`, `graceUntil` (ISO) and `creatorsThisMonth` go to the org
-owner and admins only, the plan cap included; everyone else gets null and no
-count.
+`trialEndsAt`, `soloTrialEndsAt`, `graceUntil` (ISO) and `creatorsThisMonth`
+go to the org owner and admins only, the plan cap included; everyone else gets
+null and no count. `trialEndsAt` is the Business trial's alone (a Solo row
+with one is a used Business trial); `soloTrialEndsAt` is the Solo 30-day
+trial's end, optional, absent when billing's answer predates it.
 
 | State | What it does | `reason` |
 |---|---|---|

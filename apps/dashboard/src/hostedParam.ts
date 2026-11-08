@@ -21,7 +21,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
       tier: "solo",
       status: "active",
       trialEndsAt: null,
-      soloTrialEndsAt: "2026-12-01T00:00:00.000Z",
+      // 20 days out, so the note always shows.
+      soloTrialEndsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
       graceUntil: null,
       creatorsThisMonth: 1,
       readOnly: false,

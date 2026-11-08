@@ -12,7 +12,15 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { isSoloPaused, useCan } from "../src/auth/permissions";
 import { planStatus } from "../src/settings/Plan";
 import {
@@ -161,6 +169,12 @@ it("the mock refuses a publish with 403 plan_read_only on a paused Solo", async 
 });
 
 it("Plan and billing: a Solo trial shows its end and the two upgrades", async () => {
+  // The note hides a date already past: pin Date (timers stay real).
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-09T12:00:00.000Z"));
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
   mountHosted("/settings/plan", { billing: TRIAL });
   expect(
     await screen.findByRole("heading", { name: "Plan and billing" }),
