@@ -9,7 +9,10 @@ import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BusHub, NOTICE_HOLD_MS, NOTICES_MAX } from "../../src/bus/hub.js";
 import { hubNoticeDelivery } from "../../src/services/bus.js";
-import { deliverNotice as viaWorker } from "../../src/services/bus-delivery.js";
+import {
+  newDeliveryScope,
+  deliverNotice as viaWorker,
+} from "../../src/services/bus-delivery.js";
 import { noticeText } from "../../src/services/follows.js";
 import {
   type Daemon,
@@ -150,8 +153,12 @@ describe("hub notice delivery (#1317)", () => {
       expect(f.body).toBe(n.text);
       expect(f.from_id).toBeUndefined();
       expect(f.notice).toBeUndefined();
+      // The daemon acks every deliver: the hub ignores it (no receipt, no reply).
+      s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
     }
-    // Fire and forget: no receipt, no mail row, and an ack for it is ignored.
+    await settled(s.d, s.ref);
+    expect(framesSeen(s.d).filter((f) => f.type === "error")).toEqual([]);
+    // Fire and forget: no receipt, no mail row.
     expect(
       await inHub(s.userId, (_, st) => [
         st.storage.sql.exec("select count(*) as n from receipts").one().n,
@@ -369,16 +376,234 @@ describe("hub notice delivery (#1317)", () => {
     s.d.ws.send(JSON.stringify(frame));
     const err = await waitFor(s.d, "error");
     expect(err.code).toBe("bad_frame");
-    // A send by an agent shows its own name, never the reserved one.
-    const other = uniq("peer");
-    s.d.send(up(id("u"), id("ref3"), other, s.namespace));
+    // An agent's own send shows its own name, never the reserved one.
+    const peerRef = id("ref3");
+    const peer = uniq("peer");
+    s.d.send(up(id("u"), peerRef, peer, s.namespace));
     await waitFor(s.d, "agent_ok");
+    s.d.send({
+      v: 1,
+      id: id("sd"),
+      type: "send",
+      from_ref: s.ref,
+      to_name: peer,
+      body: "hi",
+    });
+    const got = await waitFor(s.d, "deliver");
+    expect(got.from_name).toBe(s.name);
+    expect(got.from_name).not.toBe(NOTICE_SENDER);
     expect(await waiting(s.userId)).toBe(0);
-    await settled(s.d, s.ref);
-    expect(delivers(s.d).filter((f) => f.from_name === NOTICE_SENDER)).toEqual(
-      [],
-    );
     expect(stub).toBeDefined();
+  });
+});
+
+/** A second machine of the same member with one agent; returns its daemon and handles. */
+async function addMachine(
+  userId: string,
+  namespace: string,
+  name: string,
+  global = false,
+) {
+  const mach = await machine("Desktop", userId);
+  const d = await daemon(mach.token);
+  d.send(hello(id("h")));
+  await waitFor(d, "hello_ok");
+  const ref = id("ref");
+  d.send(up(id("u"), ref, name, namespace, global));
+  const ok = await waitFor(d, "agent_ok");
+  return { d, ref, token: mach.token, machineId: mach.id, name: ok.bus_name };
+}
+
+const seedNotice = (
+  userId: string,
+  r: {
+    toNs: string;
+    name: string;
+    key: string;
+    notBefore: number;
+    expiresAt: number;
+    parked: number;
+  },
+) =>
+  inHub(userId, (_, st) =>
+    st.storage.sql.exec(
+      `insert into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked)
+       values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      r.toNs,
+      r.name.toLowerCase(),
+      r.key,
+      newId(),
+      `Open Artifacts: seeded ${r.key}`,
+      r.notBefore,
+      r.expiresAt,
+      r.parked,
+    ),
+  );
+
+describe("notices reach only the addressed agent (#1317)", () => {
+  it("sends to the addressed machine's socket, never another machine's", async () => {
+    const s = await setup();
+    const other = await addMachine(s.userId, s.namespace, uniq("other"));
+    const stub = await hubOf(s.userId);
+    const n = note({ namespace: s.namespace, name: s.name });
+    expect(await stub.deliverNotice(n)).toBe("delivered");
+    expect((await waitFor(s.d, "deliver")).body).toBe(n.text);
+    await settled(other.d, other.ref);
+    expect(delivers(other.d)).toEqual([]);
+    // And the other way round, for a notice to the second machine's agent.
+    const m = note({ namespace: s.namespace, name: other.name });
+    expect(await stub.deliverNotice(m)).toBe("delivered");
+    expect((await waitFor(other.d, "deliver")).body).toBe(m.text);
+    await settled(s.d, s.ref);
+    expect(delivers(s.d).map((f) => f.body)).toEqual([n.text]);
+  });
+
+  it("a live delivery removes the waiting notice it replaces (no second send at the old time)", async () => {
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    const to = { namespace: s.namespace, name: s.name };
+    const key = uniq("art");
+    expect(
+      await stub.deliverNotice(
+        note(to, { artifactId: key, notBefore: t + 60_000 }),
+      ),
+    ).toBe("held");
+    const live = note(to, { artifactId: key });
+    expect(await stub.deliverNotice(live)).toBe("delivered");
+    expect(await waiting(s.userId)).toBe(0);
+    await setClock(s.userId, t + 60_001);
+    await runAlarm(s.userId);
+    await settled(s.d, s.ref);
+    expect(delivers(s.d).map((f) => f.body)).toEqual([live.text]);
+  });
+
+  it("an expired parked notice is not sent on reconnect", async () => {
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    await goOffline(s.d, s.machineId, s.userId);
+    expect(
+      await stub.deliverNotice(note({ namespace: s.namespace, name: s.name })),
+    ).toBe("held");
+    // Past the hour, no alarm has run yet: the flush itself must not send it.
+    await setClock(s.userId, t + NOTICE_HOLD_MS + 1);
+    const d2 = await daemon(s.token);
+    d2.send(hello(id("h")));
+    await waitFor(d2, "hello_ok");
+    d2.send(up(id("u"), s.ref, s.name, s.namespace));
+    await waitFor(d2, "agent_ok");
+    await settled(d2, s.ref);
+    expect(delivers(d2)).toEqual([]);
+  });
+
+  it("the alarm parks a due notice whose machine is offline, and does not spin on it", async () => {
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    const to = { namespace: s.namespace, name: s.name };
+    // Due later, machine offline by then.
+    expect(await stub.deliverNotice(note(to, { notBefore: t + 60_000 }))).toBe(
+      "held",
+    );
+    await goOffline(s.d, s.machineId, s.userId);
+    await setClock(s.userId, t + 60_001);
+    await runAlarm(s.userId);
+    expect(
+      await inHub(
+        s.userId,
+        (_, st) =>
+          st.storage.sql.exec("select parked from notices").one().parked,
+      ),
+    ).toBe(1);
+    // The next alarm is the expiry, not "now": nothing is re-swept in a loop.
+    const next = await inHub(s.userId, (_, st) => st.storage.getAlarm());
+    expect(next).toBeGreaterThan(t + 60_001 + 1000);
+  });
+
+  it("a notice resolving to another agent (a global of the same name) is not sent to the one reconnecting", async () => {
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    // A second agent of the same name in another namespace, then made global:
+    // the address (s.namespace, name) now resolves to it, not to s's agent.
+    const other = await addMachine(s.userId, ns("elsewhere"), uniq("zz"));
+    await inHub(s.userId, (_, st) => {
+      st.storage.sql.exec(
+        "update agents set name = ?, global = 1 where machine_id = ?",
+        s.name,
+        other.machineId,
+      );
+    });
+    await seedNotice(s.userId, {
+      toNs: s.namespace,
+      name: s.name,
+      key: "k1",
+      notBefore: t - 1,
+      expiresAt: t + NOTICE_HOLD_MS,
+      parked: 1,
+    });
+    await goOffline(s.d, s.machineId, s.userId);
+    const d2 = await daemon(s.token);
+    d2.send(hello(id("h")));
+    await waitFor(d2, "hello_ok");
+    d2.send(up(id("u"), s.ref, s.name, s.namespace));
+    await waitFor(d2, "agent_ok");
+    await settled(d2, s.ref);
+    expect(delivers(d2)).toEqual([]);
+  });
+
+  it("reaches a global agent from any address that names it, on reconnect", async () => {
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    const gname = uniq("glob");
+    const g = await addMachine(s.userId, ns("home"), gname, true);
+    const stub = await hubOf(s.userId);
+    await goOffline(g.d, g.machineId, s.userId);
+    // Addressed in a namespace that is not its home.
+    const n = note({ namespace: s.namespace, name: g.name });
+    expect(await stub.deliverNotice(n)).toBe("held");
+    const d2 = await daemon(g.token);
+    d2.send(hello(id("h")));
+    await waitFor(d2, "hello_ok");
+    d2.send(up(id("u"), g.ref, g.name, ns("home"), true));
+    const f = await waitFor(d2, "deliver");
+    expect(f.body).toBe(n.text);
+    expect(f.from_name).toBe(NOTICE_SENDER);
+  });
+
+  it("sends more than one flush batch: the rest go out from the alarm, not stranded", async () => {
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    await goOffline(s.d, s.machineId, s.userId);
+    const total = 150;
+    for (let k = 0; k < total; k++)
+      await seedNotice(s.userId, {
+        toNs: s.namespace,
+        name: s.name,
+        key: `k${k}`,
+        notBefore: t - 1,
+        expiresAt: t + NOTICE_HOLD_MS,
+        parked: 1,
+      });
+    const d2 = await daemon(s.token);
+    d2.send(hello(id("h")));
+    await waitFor(d2, "hello_ok");
+    d2.send(up(id("u"), s.ref, s.name, s.namespace));
+    await waitFor(d2, "agent_ok");
+    await settled(d2, s.ref);
+    expect(delivers(d2)).toHaveLength(100);
+    expect(await waiting(s.userId)).toBe(total - 100);
+    for (let i = 0; i < 5 && (await waiting(s.userId)) > 0; i++)
+      await runAlarm(s.userId);
+    expect(await waiting(s.userId)).toBe(0);
+    await settled(d2, s.ref);
+    expect(delivers(d2)).toHaveLength(total);
   });
 });
 
@@ -411,6 +636,23 @@ describe("hubNoticeDelivery (the Worker adapter, #1317)", () => {
     await machine("Never", m.userId);
     expect(await hubNoticeDelivery.deliver(env, m.userId, n)).toBe("dropped");
     expect(touched).toEqual([]);
+  });
+
+  it("asks D1 once per member per fan-out when given a scope", async () => {
+    const s = await setup();
+    const to = { namespace: s.namespace, name: s.name };
+    const scope = newDeliveryScope();
+    expect(await hubNoticeDelivery.deliver(e, s.userId, note(to), scope)).toBe(
+      "delivered",
+    );
+    const first = scope.hasBus.get(s.userId);
+    expect(first).toBeDefined();
+    expect(await hubNoticeDelivery.deliver(e, s.userId, note(to), scope)).toBe(
+      "delivered",
+    );
+    // The second delivery reused the first's answer; no scope, nothing kept.
+    expect(scope.hasBus.get(s.userId)).toBe(first);
+    expect(scope.hasBus.size).toBe(1);
   });
 
   it("drops when the bus is off", async () => {

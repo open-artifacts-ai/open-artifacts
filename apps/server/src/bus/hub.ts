@@ -5183,6 +5183,17 @@ export class BusHub extends DurableObject<Env> {
       );
       sendFrame(ws, noticeFrame(agent, r.text));
     }
+    // A full batch: more may wait. Hand the rest to the alarm (it sends in
+    // bounded steps to this live socket) instead of leaving them parked.
+    if (rows.length >= NOTICE_FLUSH_BATCH) {
+      sql.exec(
+        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked = 1",
+        agent.name.toLowerCase(),
+        agent.namespace,
+        agent.global === 1 ? 1 : 0,
+      );
+      this.#arm(now + 1);
+    }
   }
 
   /**

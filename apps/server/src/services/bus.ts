@@ -31,7 +31,11 @@ import { lookupUserGrant } from "../mcp/oauth-api.js";
 import { b64urlEncode, sha256Hex } from "../util/crypto.js";
 import { type Via, viaKey } from "./agent-usage.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
-import type { DeliveryOutcome, NoticeDelivery } from "./bus-delivery.js";
+import type {
+  DeliveryOutcome,
+  DeliveryScope,
+  NoticeDelivery,
+} from "./bus-delivery.js";
 
 // The bus's D1 side and the dashboard's reads of a member's BusHub (#1291).
 // A BusHub exists only for a member with a machine that has connected at
@@ -403,9 +407,14 @@ export async function hasConnectedMachine(
  * machines cannot connect, so their notices wait out the hold and expire.
  */
 export const hubNoticeDelivery: NoticeDelivery = {
-  async deliver(env, userId, notice) {
-    if (!busOn(env) || !(await hasConnectedMachine(env, userId)))
-      return "dropped";
+  async deliver(env, userId, notice, scope?: DeliveryScope) {
+    if (!busOn(env)) return "dropped";
+    let has = scope?.hasBus.get(userId);
+    if (!has) {
+      has = hasConnectedMachine(env, userId);
+      scope?.hasBus.set(userId, has);
+    }
+    if (!(await has)) return "dropped";
     const hub = busHub(env, userId);
     if (!hub) return "dropped";
     try {
