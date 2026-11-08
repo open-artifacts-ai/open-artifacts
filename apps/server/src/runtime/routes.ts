@@ -1,4 +1,5 @@
 import {
+  type AgentTouch,
   ANON_ID_HEADER,
   DataNameSchema,
   DataQuerySchema,
@@ -8,6 +9,9 @@ import {
   dataResetTooLargeMessage,
   isId,
   METHOD_CAPABILITY,
+  newId,
+  PRESENCE_COOKIE,
+  PRESENCE_ID_RE,
   planOf,
   RUNTIME_PARAMS,
   type RuntimeMethod,
@@ -15,6 +19,7 @@ import {
   type Visibility,
 } from "@oa/shared";
 import type { Context } from "hono";
+import { getCookie } from "hono/cookie";
 import { HTTPException } from "hono/http-exception";
 import {
   accessLevel,
@@ -31,6 +36,7 @@ import {
   can,
   capsOf,
   dataWriteCreates,
+  isGuestRole,
   namedEvents,
   type PolicyAction,
 } from "../auth/policy.js";
@@ -39,19 +45,27 @@ import { recordDataCreator } from "../billing/creators.js";
 import { planNow } from "../billing/features.js";
 import { refuseViewOnly } from "../billing/plan.js";
 import { cappedJson, readCapped } from "../http/body.js";
+import { isEmbedRequest } from "../http/embed.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import type { AppType } from "../routes/index.js";
+import { publicName } from "../services/agent-display.js";
 import { type AnonId, resolveAnonId } from "./anon-id.js";
 import {
   ACTOR_HEADER,
   AUTHZ_AT_HEADER,
   EVENTS_NAMED_HEADER,
+  EVENTS_PING_HEADER,
   EVENTS_VERSION_HEADER,
   publicActor,
   runtimeCall,
   runtimeStub,
+  VIEWER_PRESENCE_HEADER,
+  viewerPresenceHeader,
 } from "./do.js";
+import type { PresenceIdentity } from "./roster.js";
+import { safeViewerAgentTouch } from "./viewer-presence-agent.js";
+import { viewerPresenceKey } from "./viewer-presence-key.js";
 
 // Literals so Hono infers params; must equal R.data* / R.storage* in @oa/shared.
 const ART = "/api/v1/artifacts/:id";
@@ -355,6 +369,31 @@ const jsonText = (text: string) =>
 
 const stub = (c: C, g: Gate) => runtimeStub(c.env, g.artifactId);
 
+/**
+ * A PAT caller's presence touch (an AI agent), carried by the data call's own
+ * DO request. A session cookie, an anonymous viewer and an embed make none.
+ */
+const touchOf = (
+  c: C,
+  g: Gate,
+  write: boolean,
+): Promise<AgentTouch | undefined> => {
+  const { tokenId, tokenLabel, user } = c.var;
+  if (!tokenId || !tokenLabel || !user) return Promise.resolve(undefined);
+  return safeViewerAgentTouch(c.env, g.artifactId, {
+    user,
+    agent: {
+      name: tokenLabel,
+      version: null,
+      via: { kind: "token", id: tokenId },
+    },
+    session: null,
+    connection: `t:${tokenId}`,
+    write,
+    activity: null,
+  });
+};
+
 /** Hosted billing's free-tier data caps (billing/caps.ts), before a write. */
 const freeDataCap = (c: C, g: Gate, col: string, id: string, adds: boolean) =>
   requireFreeData(
@@ -380,8 +419,9 @@ export function mountRuntime(app: AppType): void {
     });
     if (!p.success) throw new ApiError("bad_request", "Invalid list request");
     const { collection, cursor, limit: n } = p.data;
+    const touch = await touchOf(c, g, false);
     return c.json(
-      await runtimeCall(() => stub(c, g).list(collection, cursor, n)),
+      await runtimeCall(() => stub(c, g).list(collection, cursor, n, touch)),
     );
   });
 
@@ -390,7 +430,8 @@ export function mountRuntime(app: AppType): void {
   app.get(COUNT, async (c) => {
     const g = await gate(c, "db.list", "read");
     const col = name(c.req.param("col"), "collection");
-    return c.json(await runtimeCall(() => stub(c, g).count(col)));
+    const touch = await touchOf(c, g, false);
+    return c.json(await runtimeCall(() => stub(c, g).count(col, touch)));
   });
 
   // A read, but POST: the query is a JSON body.
@@ -398,14 +439,16 @@ export function mountRuntime(app: AppType): void {
     const g = await gate(c, "db.query", "read");
     const col = name(c.req.param("col"), "collection");
     const q = await cappedJson(c, DataQuerySchema, MAX_QUERY_BODY);
-    return c.json(await runtimeCall(() => stub(c, g).query(col, q)));
+    const touch = await touchOf(c, g, false);
+    return c.json(await runtimeCall(() => stub(c, g).query(col, q, touch)));
   });
 
   app.get(DOC, async (c) => {
     const g = await gate(c, "db.get", "read");
     const col = name(c.req.param("col"), "collection");
     const id = name(c.req.param("doc"), "document id");
-    const d = await runtimeCall(() => stub(c, g).get(col, id));
+    const touch = await touchOf(c, g, false);
+    const d = await runtimeCall(() => stub(c, g).get(col, id, touch));
     if (!d) throw new ApiError("not_found", "Not found");
     return c.json(d);
   });
@@ -416,8 +459,9 @@ export function mountRuntime(app: AppType): void {
     const id = name(c.req.param("doc"), "document id");
     await freeDataCap(c, g, col, id, true);
     const body = await readDocBody(c);
+    const touch = await touchOf(c, g, true);
     const { updatedAt } = await runtimeCall(() =>
-      stub(c, g).setRaw(col, id, toBuffer(body), g.actor),
+      stub(c, g).setRaw(col, id, toBuffer(body), g.actor, touch),
     );
     await countCreator(c, g);
     // The DataDoc, with the (DO-validated) body bytes spliced in unparsed.
@@ -442,8 +486,9 @@ export function mountRuntime(app: AppType): void {
     const id = name(c.req.param("doc"), "document id");
     await freeDataCap(c, g, col, id, true);
     const body = await rawBody(c);
+    const touch = await touchOf(c, g, true);
     const out = await runtimeCall(() =>
-      stub(c, g).updateRaw(col, id, body, g.actor),
+      stub(c, g).updateRaw(col, id, body, g.actor, touch),
     );
     await countCreator(c, g);
     return withAnon(g, jsonText(out));
@@ -454,7 +499,8 @@ export function mountRuntime(app: AppType): void {
     const col = name(c.req.param("col"), "collection");
     const id = name(c.req.param("doc"), "document id");
     await freeDataCap(c, g, col, id, false);
-    await runtimeCall(() => stub(c, g).delete(col, id, g.actor));
+    const touch = await touchOf(c, g, true);
+    await runtimeCall(() => stub(c, g).delete(col, id, g.actor, touch));
     await countCreator(c, g);
     return withAnon(g, c.body(null, 204));
   });
@@ -554,6 +600,36 @@ export function mountRuntime(app: AppType): void {
     }
     if (c.req.header("upgrade")?.toLowerCase() !== "websocket")
       return c.text("Expected WebSocket upgrade", 426);
+    // Viewer presence (#539): embeds are not counted (and ?embed=1 only drops
+    // the user in caller(), so who alone can't tell an embed from a plain
+    // anonymous viewer). A person shows under their user id; an anonymous
+    // viewer under the oa_pid cookie, or one face per socket without a valid
+    // one. Nothing but the opaque per-artifact key leaves the route.
+    let presence: PresenceIdentity | null = null;
+    if (!isEmbedRequest(c.req.raw)) {
+      if (who.kind === "user") {
+        presence = {
+          key: await viewerPresenceKey(c.env, artifactId, `u:${who.user.id}`),
+          kind: "person",
+          name: publicName(who.user),
+          guest: isGuestRole(who.user.role),
+        };
+      } else {
+        const pid = getCookie(c, PRESENCE_COOKIE);
+        presence = {
+          key: await viewerPresenceKey(
+            c.env,
+            artifactId,
+            pid !== undefined && PRESENCE_ID_RE.test(pid)
+              ? `p:${pid}`
+              : `s:${newId()}`,
+          ),
+          kind: "anon",
+          name: null,
+          guest: false,
+        };
+      }
+    }
     return runtimeStub(c.env, artifactId).fetch(
       "https://runtime.invalid/events",
       {
@@ -563,6 +639,11 @@ export function mountRuntime(app: AppType): void {
           [AUTHZ_AT_HEADER]: String(authzAt),
           [EVENTS_VERSION_HEADER]: String(r.artifact.currentVersion),
           [EVENTS_NAMED_HEADER]: named ? "1" : "0",
+          // Only "1" means this client pings; anything else is not swept.
+          [EVENTS_PING_HEADER]: c.req.query("ping") === "1" ? "1" : "0",
+          ...(presence
+            ? { [VIEWER_PRESENCE_HEADER]: viewerPresenceHeader(presence) }
+            : {}),
         },
       },
     );

@@ -79,6 +79,7 @@ import {
   mcpResource,
   mcpUnauthorized,
 } from "./server.js";
+import { connectionOf, withMcpSession } from "./session.js";
 import { escapeHtml, fillTemplate } from "./template.js";
 
 export { OAUTH, oauthApi } from "./oauth-api.js";
@@ -160,17 +161,21 @@ const apiHandler = {
     let server: ReturnType<typeof createServer> | undefined;
     // Audit rows from these tools name the grant (by id, never the token).
     const res = await withCred({ kind: "oauth_grant", id: grantId }, () =>
-      mcpHandler(env, () => {
-        server = createServer({
-          env,
-          user,
-          sessionEpoch: row.sessionEpoch,
-          agent,
-          exec: ctx,
-          clientVersion: true,
-        });
-        return server;
-      })(capped, env, ctx),
+      withMcpSession(capped, env, user.id, (session) =>
+        mcpHandler(env, () => {
+          server = createServer({
+            env,
+            user,
+            sessionEpoch: row.sessionEpoch,
+            agent,
+            exec: ctx,
+            clientVersion: true,
+            connection: connectionOf(agent, user.id),
+            session,
+          });
+          return server;
+        })(capped, env, ctx),
+      ),
     );
     if (grantId) {
       const version = clientVersionOf(

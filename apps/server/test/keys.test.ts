@@ -48,6 +48,8 @@ describe("deriveKey", () => {
       "oa:content-url",
       "oa:upload",
       "oa:directory-token",
+      "oa:viewer-presence",
+      "oa:mcp-session",
     ]);
   });
 
