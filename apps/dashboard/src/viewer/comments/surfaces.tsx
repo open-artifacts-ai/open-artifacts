@@ -63,9 +63,8 @@ export function SelectionBar() {
           <button
             type="button"
             className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg border-0 bg-[var(--oa-accent)] font-semibold text-[var(--oa-accent-text)] text-[15px] hover:bg-[var(--oa-accent-fg)]"
-            // Keep the frame's selection while the bar is pressed.
-            onPointerDown={(e) => e.preventDefault()}
-            onMouseDown={(e) => e.preventDefault()}
+            // No preventDefault on press: WebKit then drops the tap's click.
+            // The frame keeps the last selection if this tap collapses it.
             onClick={api.commentOnSelection}
           >
             <MessageSquare className="size-[18px]" aria-hidden="true" />
