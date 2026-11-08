@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.136.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.136.0...v0.136.1) (2026-11-08)
+
+
+### Bug Fixes
+
+* **comments:** quotes on script-rendered text and every html entity ([#1735](https://github.com/open-artifacts-ai/open-artifacts/issues/1735)) ([#1737](https://github.com/open-artifacts-ai/open-artifacts/issues/1737)) ([0e89b29](https://github.com/open-artifacts-ai/open-artifacts/commit/0e89b298b211dd835a4a243dba932c978515bd91))
+
 ## [0.136.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.135.0...v0.136.0) (2026-11-07)
 
 
