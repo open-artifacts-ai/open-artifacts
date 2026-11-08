@@ -759,6 +759,58 @@ describe("comments: errors", () => {
     );
   });
 
+  it("starts closed on a wide screen even with open threads (#1731)", async () => {
+    mount(viewerPath(OWNED));
+    const btn = await screen.findByRole("button", { name: "Comments, 1 open" });
+    await hello();
+    await wait(100);
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).toBeNull();
+    expect(btn).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(btn);
+    expect(
+      await screen.findByRole("complementary", { name: "Comments" }),
+    ).toBeInTheDocument();
+  });
+
+  it("a selection in the page opens the closed column on a draft (#1731)", async () => {
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: "Comments, 1 open" });
+    await hello();
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).toBeNull();
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "headline",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    const c = await screen.findByRole("complementary", { name: "Comments" });
+    expect(
+      within(c).getByRole("textbox", { name: "Add a comment" }),
+    ).toBeInTheDocument();
+  });
+
+  it("a list that fails to load opens the column on its own (#1731)", async () => {
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json(
+          { error: { code: "internal", message: "x" } },
+          { status: 500 },
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await screen.findByRole("complementary", { name: "Comments" });
+    expect(
+      await within(c).findByText("Couldn't load comments."),
+    ).toBeInTheDocument();
+  });
+
   it("a list that fails to load offers Retry", async () => {
     server.use(
       http.get("*/api/v1/artifacts/:id/comments", () =>
@@ -863,7 +915,6 @@ describe("comments: live and signed out", () => {
       ),
     );
     mount(viewerPath(PUBLIC));
-    // The column is open by default where it has room.
     const c = await col();
     // The whole-page box: Sign in at the left of the row, back to this page.
     fireEvent.focus(
@@ -1037,7 +1088,6 @@ describe("comments: guests and Retry-After", () => {
       }),
     );
     mount(viewerPath(PUBLIC));
-    // The column is open by default where it has room.
     const c = await col();
     await waitFor(() => expect(seenTokens.length).toBeGreaterThan(0));
     // The read sent no token and minted none.
@@ -1547,7 +1597,6 @@ describe("comments: review round 1", () => {
     await hello();
     await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("view"));
     expect(setMode).not.toHaveBeenCalledWith("select");
-    // The column is open by default where it has room.
     const c = await col();
     expect(await within(c).findByText("No comments yet.")).toBeInTheDocument();
     expect(within(c).queryByText(/Select text to add one/)).toBeNull();

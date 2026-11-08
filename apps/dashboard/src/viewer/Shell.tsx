@@ -266,8 +266,9 @@ function Viewer({
       ? "versions"
       : requestedTab;
   // Closed until asked for (#1731): the Comments button, a selection, a pin or
-  // a thread's highlight opens it (each calls openSurface).
-  const columnShown = colOpen ?? false;
+  // a thread's highlight opens it (each calls openSurface). A list that fails
+  // to load opens it too, so the failure and its Retry are seen.
+  const columnShown = colOpen ?? cmt.error != null;
   // Where the list is on screen its Pin button is the cue; otherwise (a closed
   // column, another panel tab, a phone with no sheet) the bar is, so pin mode
   // never runs unannounced. Hidden under the sheet too: it would overlap it.
