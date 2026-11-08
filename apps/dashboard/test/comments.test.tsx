@@ -244,6 +244,64 @@ describe("comments: layouts", () => {
     expect(sheet).toHaveAttribute("data-sheet-height", "pin");
   });
 
+  it("the short pin sheet floats the open card's action row in the sheet, clear of the home indicator (#1711)", async () => {
+    viewport(400);
+    const posts = calls("POST");
+    const pin = (id: string, y: number) => ({
+      ...oneThread,
+      id,
+      anchor: { kind: "pin", version: 1, x: 0.5, y, contentHash: null },
+    });
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({
+          threads: [pin("p1", 0.4), pin("p2", 0.7)],
+          open: 2,
+          truncated: false,
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 2 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    // No card is open yet, so nothing floats and the sheet has no outlet.
+    expect(sheet.querySelector("[data-oa-action-outlet]")).toBeNull();
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    // The outlet is a direct child of the sheet's scroller, stuck to its
+    // bottom edge: the row stays in view for a long thread scrolled to its top.
+    const outlet = await waitFor(() => {
+      const el = sheet.querySelector("[data-oa-action-outlet]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(outlet.parentElement?.className).toContain("overflow-y-auto");
+    expect(outlet.className).toContain("sticky");
+    expect(outlet.className).toContain("bottom-0");
+    // And it clears a phone's home indicator.
+    expect(outlet.className).toContain("safe-area-inset-bottom");
+    // The row moved out of the card, and still acts for it.
+    const row = await within(outlet).findByRole("button", { name: "Reply" });
+    expect(row.closest("[data-oa-actions]")).not.toBeNull();
+    const card = sheet.querySelector('[data-thread="p1"]') as HTMLElement;
+    expect(card.contains(row)).toBe(false);
+    fireEvent.change(within(card).getByRole("textbox", { name: "Reply" }), {
+      target: { value: "Floats" },
+    });
+    fireEvent.click(within(outlet).getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.body).toEqual({ body: "Floats" });
+    // A sheet the reader expands keeps the row in the card, where the reader
+    // can see the box it belongs to.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(sheet.querySelector("[data-oa-action-outlet]")).toBeNull();
+    expect(
+      within(card as HTMLElement).getByRole("button", { name: "Reply" }),
+    ).toBeInTheDocument();
+  });
+
   it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {
     viewport(400);
     mount(viewerPath(OWNED));

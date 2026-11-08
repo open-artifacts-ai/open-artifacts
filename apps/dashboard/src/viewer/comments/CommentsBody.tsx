@@ -12,6 +12,7 @@ import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
 import { Check, FileText, Quote as QuoteIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ApiClientError } from "../../api/client";
 import {
   commentError,
@@ -26,6 +27,7 @@ import {
 import { isEmbed } from "../../embed";
 import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
+import { useActionRowSlot } from "./actionRow";
 import {
   AskBlock,
   asksForMe,
@@ -167,6 +169,7 @@ function Composer({
   onDirty,
   mentionable = false,
   actions = ACTIONS,
+  float = false,
   buttonsRight = false,
   lead,
 }: {
@@ -174,6 +177,8 @@ function Composer({
   mentionable?: boolean;
   /** The action row's own surface while it floats in the short sheet (#1657). */
   actions?: string;
+  /** Let the sheet's outlet take the row while it is short (#1711). */
+  float?: boolean;
   /** The new-comment layout: Assign on its own line, then Cancel and the
       accent submit at the right. */
   buttonsRight?: boolean;
@@ -215,6 +220,10 @@ function Composer({
     mentionable && wantAgents && api.canMention && api.canComment,
   );
   const agents = agentsQ.data;
+  // #1711: in the short pin sheet the sheet's own outlet takes the row, so it
+  // stays at the sheet's bottom for a long thread too. The outlet carries the
+  // surface, the padding and the safe-area inset; the card keeps it elsewhere.
+  const slot = useActionRowSlot(float && open);
   const retryAgents = () => {
     if (!wantAgents) setWantAgents(true);
     if (
@@ -395,34 +404,35 @@ function Composer({
               Cancel
             </Button>
           );
-          if (buttonsRight)
-            return (
-              <div
-                data-oa-actions=""
-                className={`flex flex-col gap-2 ${actions}`}
-              >
-                {assignSel}
-                <div className="flex flex-wrap items-center gap-2">
-                  {lead}
-                  <div className="ml-auto flex items-center gap-2">
-                    {extra}
-                    {cancelBtn}
-                    <Button
-                      size="xs"
-                      className="bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]"
-                      disabled={!body || busy}
-                      onClick={() => void go()}
-                    >
-                      {submit}
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            );
-          return (
+          // Portaled into the sheet's outlet, the row keeps its layout and
+          // drops its own surface: the outlet is the surface (#1711).
+          const surface = slot ? "" : actions;
+          const row = buttonsRight ? (
             <div
               data-oa-actions=""
-              className={`flex flex-wrap items-center gap-2 ${actions}`}
+              className={`flex flex-col gap-2 ${surface}`}
+            >
+              {assignSel}
+              <div className="flex flex-wrap items-center gap-2">
+                {lead}
+                <div className="ml-auto flex items-center gap-2">
+                  {extra}
+                  {cancelBtn}
+                  <Button
+                    size="xs"
+                    className="bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]"
+                    disabled={!body || busy}
+                    onClick={() => void go()}
+                  >
+                    {submit}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div
+              data-oa-actions=""
+              className={`flex flex-wrap items-center gap-2 ${surface}`}
             >
               <Button
                 size="xs"
@@ -436,6 +446,7 @@ function Composer({
               {cancelBtn}
             </div>
           );
+          return slot ? createPortal(row, slot) : row;
         })()}
     </div>
   );
@@ -792,6 +803,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               placeholder="Reply"
               submit="Reply"
               mentionable
+              float
               onSubmit={(body, x) =>
                 reply.mutateAsync({
                   thread: t.id,

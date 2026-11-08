@@ -2,6 +2,7 @@ import { Button } from "@oa/ui/shadcn";
 import { X } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { TXT } from "../ui";
+import { ActionRowOutlet, ActionRowProvider } from "./actionRow";
 import { CommentsBody } from "./CommentsBody";
 
 /** Where the comments list lives (Design's 1C + 3D). */
@@ -139,9 +140,15 @@ export function CommentsDialog({
             <X aria-hidden="true" />
           </Button>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-          <CommentsBody textFormat={textFormat} />
-        </div>
+        <ActionRowProvider>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            <CommentsBody textFormat={textFormat} />
+            {/* #1711: in the short pin sheet the active card's action row
+                floats here, at the bottom of the sheet, for a long thread
+                too, and clear of a phone's home indicator. */}
+            {height === "pin" && <ActionRowOutlet />}
+          </div>
+        </ActionRowProvider>
       </section>
     </>
   );
