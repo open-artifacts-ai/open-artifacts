@@ -2267,9 +2267,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
       );
     // An alarm armed during the awaits above (a viewer closing mid-index: the
     // grace; an agent touch) can be earlier than `next`, which was computed
-    // before them. Never move it later.
+    // before them. Never move it later. Only a future alarm counts: the stored
+    // one can still be the (due) alarm that started this run.
     const armed = await this.ctx.storage.getAlarm();
-    if (armed !== null && armed < next) next = armed;
+    if (armed !== null && armed > now && armed < next) next = armed;
     if (next !== Number.POSITIVE_INFINITY)
       await this.ctx.storage.setAlarm(next);
   }
