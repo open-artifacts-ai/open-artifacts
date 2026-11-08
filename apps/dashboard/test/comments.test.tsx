@@ -20,6 +20,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { ACTIONS, ACTIONS_PLAIN } from "../src/viewer/comments/CommentsBody";
 import {
   calls,
   events,
@@ -203,6 +204,44 @@ describe("comments: layouts", () => {
     const box = await within(sheet).findAllByRole("textbox");
     fireEvent.focus(box[0] as HTMLElement);
     expect(sheet).toHaveAttribute("data-sheet-height", "full");
+  });
+
+  it("a phone sheet shrinks further while a pin card is open, so its pin stays in view (#1657)", async () => {
+    viewport(400);
+    const pin = (id: string, y: number) => ({
+      ...oneThread,
+      id,
+      anchor: { kind: "pin", version: 1, x: 0.5, y, contentHash: null },
+    });
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({
+          threads: [pin("p1", 0.4), pin("p2", 0.7)],
+          open: 2,
+          truncated: false,
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 2 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    // The frame opens the pin's card: the sheet gives the image back.
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    // The handle still wins: a reader who wants the list gets the full sheet.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    // Opening a card from full shrinks it again, and moving pin to pin too
+    // (the effect keys on the pin, not on "a pin is open").
+    await act(async () => opts.at(-1)?.onCommentOpen("p2"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
   });
 
   it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {
@@ -406,6 +445,23 @@ describe("comments: actions", () => {
     const c = await col();
     // Two comments: collapsed to a count until the card is selected.
     fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    // #1657: in the phone sheet's short height the action row stays on screen.
+    const actions = within(c)
+      .getByRole("button", { name: "Reply" })
+      .closest("[data-oa-actions]") as HTMLElement;
+    expect(actions).not.toBeNull();
+    expect(actions.className).toContain(
+      "group-data-[sheet-height=pin]/sheet:sticky",
+    );
+    // Floating over scrolling text needs an opaque surface, never an inherited
+    // one: a card's own, and the sheet's in the note composer (#1696).
+    expect(actions.className).toContain(
+      "group-data-[sheet-height=pin]/sheet:bg-background",
+    );
+    expect(ACTIONS).not.toContain("bg-inherit");
+    expect(ACTIONS_PLAIN).toContain(
+      "group-data-[sheet-height=pin]/sheet:bg-card",
+    );
     expect(
       await within(c).findByText("Agreed, shorter is better."),
     ).toBeInTheDocument();

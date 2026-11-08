@@ -10,7 +10,9 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -36,6 +38,79 @@ export const HERMES_STAGING = ".oa-bus-staging";
 
 type Env = Record<string, string | undefined>;
 
+/**
+ * Python's non-strict Path.resolve(): the deepest existing ancestor is
+ * realpath'd and the missing rest is appended, so a symlinked ~/.hermes still
+ * counts for a HERMES_HOME that is not there yet.
+ */
+const real = (p: string): string => {
+  const rest: string[] = [];
+  let cur = p;
+  for (;;) {
+    try {
+      return join(realpathSync(cur), ...rest.reverse());
+    } catch {
+      const up = dirname(cur);
+      if (up === cur) return p;
+      rest.push(basename(cur));
+      cur = up;
+    }
+  }
+};
+
+/** A staged copy older than this is abandoned, whatever its pid says (pid reuse, other hosts). */
+export const STAGING_STALE_MS = 10 * 60 * 1000;
+const STAGE_NAME = /^(\d+)-[0-9a-f]+$/;
+
+/** Whether a process exists: EPERM means it does, ESRCH that it does not. */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Removes staged copies a killed install left, and only those: an entry is
+ * stale when its pid is dead or it is older than STAGING_STALE_MS; a name not
+ * ours is swept only when old. A live peer's fresh entry, and `own`, stay.
+ */
+export function sweepStaging(
+  staging: string,
+  own: string,
+  o: { now?: number; alive?: (pid: number) => boolean } = {},
+): void {
+  const now = o.now ?? Date.now();
+  const alive = o.alive ?? pidAlive;
+  let names: string[];
+  try {
+    names = readdirSync(staging);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === own) continue;
+    const path = join(staging, name);
+    let old: boolean;
+    try {
+      old = now - lstatSync(path).mtimeMs > STAGING_STALE_MS;
+    } catch {
+      continue;
+    }
+    const m = STAGE_NAME.exec(name);
+    // A pid from another container or pid namespace can read as dead or alive;
+    // the age rule covers the alive case.
+    if (m ? old || !alive(Number(m[1])) : old) {
+      try {
+        // Removes a symlink entry itself, never its target.
+        rmSync(path, { recursive: true, force: true });
+      } catch {} // a peer's entry we cannot remove must not abort the install
+    }
+  }
+}
+
 const tilded = (home: string, v: string) =>
   v === "~" ? home : resolve(v.startsWith("~/") ? join(home, v.slice(2)) : v);
 
@@ -56,7 +131,8 @@ export function hermesHome(home: string, env: Env): string {
   const base = given ?? native;
   const root = (() => {
     if (given === undefined) return native;
-    const rel = relative(native, given);
+    // Hermes resolves both sides (Path.resolve) for this check only.
+    const rel = relative(real(native), real(given));
     // Under ~/.hermes: that is the root, whatever the folder is called.
     if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)))
       return native;
@@ -185,11 +261,19 @@ export async function installHermes(
     // but in the same Hermes home, so the rename stays on one filesystem. A
     // killed install leaves its stage behind: the next install sweeps them.
     const staging = join(plugins, "..", HERMES_STAGING);
-    rmSync(staging, { recursive: true, force: true });
+    const own = `${process.pid}-${randomBytes(4).toString("hex")}`;
+    // A symlink or file here would make the sweep touch somewhere else.
+    const st = lstatSync(staging, { throwIfNoEntry: false });
+    if (st !== undefined && !st.isDirectory())
+      throw new Error(
+        `${staging} is not a plain folder; remove it and run the install again`,
+      );
     mkdirSync(staging, { recursive: true });
-    const tmp = join(staging, randomBytes(4).toString("hex"));
+    sweepStaging(staging, own, deps.staging);
+    const tmp = join(staging, own);
     try {
-      mkdirSync(tmp);
+      // recursive: a peer's rmdir may remove the empty staging folder after our mkdir above.
+      mkdirSync(tmp, { recursive: true });
       for (const f of files(shipped)) {
         mkdirSync(join(tmp, f, ".."), { recursive: true });
         cpSync(join(shipped, f), join(tmp, f));
@@ -204,7 +288,10 @@ export async function installHermes(
       rmSync(tmp, { recursive: true, force: true });
       throw e;
     } finally {
-      rmSync(staging, { recursive: true, force: true });
+      // Only the folder itself, and only when no peer is staging in it.
+      try {
+        rmdirSync(staging);
+      } catch {}
     }
   }
   // Enable only a plugin Hermes does not list as enabled, so a reinstall never

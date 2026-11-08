@@ -214,10 +214,8 @@ describe("selection button", () => {
     expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
   });
 
-  it("does not show for a selection across blocks, an empty one, or when off", async () => {
+  it("does not show for an empty selection or when off", async () => {
     await start("select");
-    select(textOf("a"), 4, textOf("b"), 6);
-    expect(button()).toBeNull();
     select(textOf("a"), 3, textOf("a"), 4); // one space
     expect(button()).toBeNull();
     await send({ type: "comments.mode", mode: "off" });
@@ -225,10 +223,14 @@ describe("selection button", () => {
     expect(button()).toBeNull();
   });
 
-  it("treats a triple-click (end at the start of the next block) as one block", async () => {
+  it("a triple-click (end at the start of the next block) quotes only the first block", async () => {
     await start("select");
     select(textOf("a"), 0, textOf("b"), 0);
-    expect(button()).not.toBeNull();
+    button()?.click();
+    await flush();
+    expect(last("comment.select")).toMatchObject({
+      anchor: { exact: "The quick brown fox jumps over the lazy dog." },
+    });
   });
 
   it("stays hidden until the shell sends a mode", async () => {
@@ -603,6 +605,35 @@ describe("pins", () => {
     expect(last("comment.open")).toMatchObject({ id: "p1" });
   });
 
+  it("marks a pin whose page changed, so the marker itself says what the card says (#1657)", async () => {
+    await start("select");
+    const pin = (changed: boolean) => ({
+      id: "p1",
+      n: 1,
+      ...(changed ? { changed: true } : {}),
+      anchor: {
+        kind: "pin" as const,
+        version: 1,
+        x: 0.5,
+        y: 0.25,
+        contentHash: "h",
+      },
+    });
+    await send({ type: "comments.set", threads: [pin(false)] });
+    const plain = roots.at(-1)?.querySelector<HTMLElement>(".pin");
+    expect(plain?.className).toBe("pin");
+    expect(plain?.title).toBe("");
+    await send({ type: "comments.set", threads: [pin(true)] });
+    const marked = roots.at(-1)?.querySelector<HTMLElement>(".pin.changed");
+    expect(marked).not.toBeNull();
+    expect(marked?.title).toBe("Changed since this was placed.");
+    // It is still the same pin: numbered, and a click still opens it.
+    expect(marked?.textContent).toBe("1");
+    marked?.click();
+    await flush();
+    expect(last("comment.open")).toMatchObject({ id: "p1" });
+  });
+
   it("draws a dimmed, unnumbered ghost pin for the one being composed, and clears it", async () => {
     await start("select");
     await send({
@@ -700,4 +731,90 @@ describe("what the frame sends", () => {
     for (const p of pos.positions)
       expect(Object.keys(p).sort()).toEqual(["id", "state", "top"]);
   });
+});
+
+describe("a selection spanning several elements (#1708)", () => {
+  const cases: {
+    name: string;
+    html: string;
+    from: [string, number];
+    to: [string, number];
+    exact: string;
+    first: string;
+    last: string;
+  }[] = [
+    {
+      name: "two list items",
+      html: "<ul><li id=x>First item</li><li id=y>Second item</li></ul>",
+      from: ["x", 6],
+      to: ["y", 6],
+      exact: "item Second",
+      first: "item",
+      last: "Second",
+    },
+    {
+      name: "two paragraphs",
+      html: "<p id=x>Alpha beta</p><p id=y>Gamma delta</p>",
+      from: ["x", 6],
+      to: ["y", 5],
+      exact: "beta Gamma",
+      first: "beta",
+      last: "Gamma",
+    },
+    {
+      name: "two table cells",
+      html: "<table><tr><td id=x>Left cell</td><td id=y>Right cell</td></tr></table>",
+      from: ["x", 5],
+      to: ["y", 5],
+      exact: "cell Right",
+      first: "cell",
+      last: "Right",
+    },
+    {
+      name: "a span inside one item that ends in the next item",
+      html: "<ul><li><span id=x>First <b>item</b></span></li><li id=y>Second item</li></ul>",
+      from: ["x", 3],
+      to: ["y", 6],
+      exact: "st item Second",
+      first: "st ",
+      last: "Second",
+    },
+  ];
+  for (const c of cases) {
+    it(`shows the button, saves one anchor and re-highlights both sides: ${c.name}`, async () => {
+      document.body.innerHTML = c.html;
+      const text = (id: string) => {
+        const el = document.getElementById(id) as Element;
+        const w = document.createTreeWalker(el, 4);
+        return w.nextNode() as Text;
+      };
+      await start("select");
+      select(text(c.from[0]), c.from[1], text(c.to[0]), c.to[1]);
+      expect(button()).not.toBeNull();
+      button()?.click();
+      await flush();
+      const m = last("comment.select") as unknown as {
+        anchor: { exact: string; prefix: string; suffix: string };
+      };
+      expect(m.anchor.exact).toBe(c.exact);
+
+      // A fresh frame state: the anchor resolves exactly and paints the whole range.
+      await send({
+        type: "comments.set",
+        threads: [
+          { id: "t1", anchor: { ...m.anchor, kind: "text", version: 1 } },
+        ],
+      });
+      expect(last("comment.positions")).toMatchObject({
+        positions: [{ id: "t1", state: "exact" }],
+      });
+      const ranges = highlights.get("oa-comment")?.ranges ?? [];
+      expect(ranges).toHaveLength(1);
+      const r = ranges[0];
+      expect(r.startContainer).toBe(text(c.from[0]));
+      expect(r.endContainer).toBe(text(c.to[0]));
+      expect(r.toString().startsWith(c.first)).toBe(true);
+      expect(r.toString().endsWith(c.last)).toBe(true);
+    });
+  }
 });

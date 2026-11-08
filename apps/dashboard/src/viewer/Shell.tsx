@@ -244,6 +244,11 @@ function Viewer({
     getBridge,
     openSurface: () => openSurface.current(),
   });
+  // The card being read is a pin's: the phone sheet shortens so its pin stays
+  // in view (#1657).
+  const pinCard =
+    cmt.threads.find((t) => t.id === cmt.active && t.anchor.kind === "pin")
+      ?.id ?? null;
   // A sheet or overlay would cover the page: leave it while placing a pin.
   useEffect(() => {
     if (cmt.mode === "pin") setDialogOpen(false);
@@ -644,6 +649,7 @@ function Viewer({
         {commentsOn && surface === "dialog" && dialogOpen && (
           <CommentsDialog
             textFormat={textFormat}
+            pinCard={pinCard}
             onClose={() => setDialogOpen(false)}
           />
         )}

@@ -72,7 +72,7 @@ describe("pi rename through the daemon (#1635)", () => {
   async function up(caps: string[] | undefined, name = "first", kind = "pi") {
     const { daemonHarness, hello: mk } = await import("./helpers.ts");
     const { connect } = await import("node:net");
-    const h = await daemonHarness();
+    const h = await daemonHarness({ claude: { syncMs: 20 } });
     h.toDaemon({
       id: "w",
       type: "hello_ok",
@@ -210,5 +210,22 @@ describe("pi rename through the daemon (#1635)", () => {
       proposed_name: "renamed-offline",
     });
     expect(h.of("agent_up")).toHaveLength(1);
+  });
+
+  it("a pi name held by the 3-a-minute window goes after it, from the watcher (#1635)", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { h, rename } = await up(["rename"]);
+      for (const [i, n] of ["n1", "n2", "n3", "n4"].entries())
+        rename(n, `r${i}`);
+      await vi.waitFor(() => expect(h.of("rename")).toHaveLength(3));
+      await settle();
+      expect(h.of("rename")).toHaveLength(3);
+      vi.setSystemTime(Date.now() + 61_000);
+      await vi.waitFor(() => expect(h.of("rename")).toHaveLength(4));
+      expect(h.of("rename")[3]?.proposed_name).toBe("n4");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -8,5 +8,5 @@
     "checkJs": true
   },
   "include": ["scripts/**/*.ts", "scripts/**/*.mjs", "vitest.config.ts"],
-  "exclude": ["scripts/hosted/**", "**/node_modules/**"]
+  "exclude": ["**/node_modules/**"]
 }

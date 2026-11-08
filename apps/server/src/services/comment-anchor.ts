@@ -1,12 +1,18 @@
 import { CONTEXT_CHARS, planOf } from "@oa/shared";
+import { decodeHTML } from "entities";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { sha256Sink } from "../util/digest.js";
 
 // Quote verification for comment anchors (#682). The html page's own code is
 // untrusted and receives anchors in the frame, so a text anchor on an html
-// version is checked against that version's visible text before it is stored:
-// a quote the page never showed is refused (422 anchor_not_in_version).
+// version is checked against that version's static visible text before it is
+// stored. A quote found there keeps its context (re-derived when off). A quote
+// not found is still accepted (#1735): the page's own script may have rendered
+// it, which the static text never holds. Its prefix and suffix are kept as
+// the live page sent them, cut to CONTEXT_CHARS each side (the client resolver
+// needs them to place a short quote that occurs many times), and checkAnchor
+// drops the block hint. The context is as unchecked as `exact` itself.
 
 /** Visible text past this many characters is not read (a degenerate page). */
 export const MAX_VISIBLE_CHARS = 4 * 1024 * 1024;
@@ -15,51 +21,16 @@ export const MAX_VISIBLE_CHARS = 4 * 1024 * 1024;
 export const normalizeText = (s: string): string =>
   s.replace(/\s+/g, " ").trim();
 
-const NAMED: Record<string, string> = {
-  amp: "&",
-  lt: "<",
-  gt: ">",
-  quot: '"',
-  apos: "'",
-  nbsp: " ",
-  ndash: "–",
-  mdash: "—",
-  hellip: "…",
-  lsquo: "‘",
-  rsquo: "’",
-  ldquo: "“",
-  rdquo: "”",
-  copy: "©",
-  reg: "®",
-  trade: "™",
-  laquo: "«",
-  raquo: "»",
-  bull: "•",
-  middot: "·",
-  times: "×",
-  euro: "€",
-  pound: "£",
-  yen: "¥",
-  cent: "¢",
-  deg: "°",
-  plusmn: "±",
-  frac12: "½",
-};
-
-/** Decodes the entities of one text node: named (a common set), decimal and hex. */
+/**
+ * Decodes the character references of one text node the way a browser does:
+ * every HTML5 named entity, the legacy forms without a semicolon (&copy),
+ * and numeric references (U+0000, surrogates and values past U+10FFFF become
+ * U+FFFD; &#128; to &#159; use the windows-1252 table). An unknown name stays
+ * as written. The client quote comes from the rendered page, so the two
+ * sides must agree on every entity (#1735).
+ */
 export function decodeEntities(s: string): string {
-  if (!s.includes("&")) return s;
-  return s.replace(
-    /&(?:#(\d{1,7})|#[xX]([0-9a-fA-F]{1,6})|([A-Za-z][A-Za-z0-9]{1,8}));/g,
-    (whole, dec?: string, hex?: string, name?: string) => {
-      if (name !== undefined) return NAMED[name] ?? whole;
-      const cp =
-        dec !== undefined ? Number(dec) : Number.parseInt(hex ?? "", 16);
-      if (!Number.isFinite(cp) || cp < 1 || cp > 0x10ffff) return whole;
-      if (cp >= 0xd800 && cp <= 0xdfff) return whole;
-      return String.fromCodePoint(cp);
-    },
-  );
+  return s.includes("&") ? decodeHTML(s) : s;
 }
 
 /** Elements whose text is never visible. */
@@ -67,6 +38,20 @@ const HIDDEN = "script, style, template, noscript, title";
 /** Elements that break a line: a space on both sides, so words don't fuse. */
 const BLOCKS =
   "p, div, li, ul, ol, dl, dt, dd, h1, h2, h3, h4, h5, h6, br, hr, tr, td, th, table, section, article, header, footer, nav, aside, main, blockquote, pre, figure, figcaption, form, fieldset, address";
+
+/**
+ * Registers an end tag handler. False for a void or self-closed element
+ * (br, hr, img, svg/): workerd has no canHaveContent or selfClosing to ask
+ * and onEndTag throws "No end tag" there.
+ */
+function onEnd(e: Element, fn: () => void): boolean {
+  try {
+    e.onEndTag(fn);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * The visible text of an html document: script, style, template, noscript and
@@ -89,15 +74,14 @@ export async function visibleText(
     .on(HIDDEN, {
       element(e) {
         hidden++;
-        // A void or self-closed element has no end tag handler.
-        if (e.onEndTag) e.onEndTag(() => void hidden--);
-        else hidden--;
+        // A void or self-closed element has no end tag: onEndTag throws.
+        if (!onEnd(e, () => void hidden--)) hidden--;
       },
     })
     .on(BLOCKS, {
       element(e) {
         push(" ");
-        if (e.onEndTag) e.onEndTag(() => push(" "));
+        onEnd(e, () => push(" "));
       },
     })
     .on("*", {
@@ -157,23 +141,44 @@ export function findQuote(
   };
 }
 
+/**
+ * The client's context for a quote we cannot check: the last CONTEXT_CHARS of
+ * the prefix and the first CONTEXT_CHARS of the suffix, never splitting a
+ * surrogate pair.
+ */
+export function capContext(q: Quote): { prefix: string; suffix: string } {
+  const prefix = q.prefix ?? "";
+  const suffix = q.suffix ?? "";
+  return {
+    prefix: prefix.slice(
+      snap(prefix, Math.max(0, prefix.length - CONTEXT_CHARS), 1),
+    ),
+    suffix: suffix.slice(0, snap(suffix, CONTEXT_CHARS, -1)),
+  };
+}
+
 const notIn = () =>
   new ApiError(
     "anchor_not_in_version",
     "The quoted text is not in that version",
   );
 
-/** An entry over this is never parsed for verification (422). */
+/** An entry over this is never parsed for verification (the quote is accepted with its context capped, not checked). */
 export const MAX_VERIFY_BYTES = 5 * 1024 * 1024;
 
 type VersionRow = { format: string | null; manifest: string };
 
 /**
  * Whether version `version` of the artifact exists; when its format is html,
- * its entry's visible text must hold the quote. Returns the (possibly
- * re-derived) context, or null when the version is not html (schema checks
- * only). 422 anchor_not_in_version otherwise. The MCP comment tools call this
- * with the quote and version = current.
+ * its entry's static visible text is searched for the quote. Returns the
+ * (possibly re-derived) context when the quote is found. When it is not found,
+ * or the entry is over MAX_VERIFY_BYTES and so not parsed, the quote is
+ * accepted with the prefix and suffix as sent, cut to the last and first
+ * CONTEXT_CHARS characters: the text may be rendered by the page's script, so
+ * the context cannot be checked, and the client resolver needs it. Returns null
+ * when the version is not html (schema checks only). 422 anchor_not_in_version
+ * for a version that does not exist or an html entry file that is missing. The
+ * MCP comment tools call this with the quote and version = current.
  */
 export async function verifyQuote(
   env: Pick<Env, "DB" | "FILES">,
@@ -189,17 +194,16 @@ export async function verifyQuote(
     .first<VersionRow & { entry: string }>();
   if (!row) throw notIn();
   if ((row.format ?? artifactFormat) !== "html") return null;
+  const unchecked = capContext(q);
   const entry = (
     JSON.parse(row.manifest) as { path: string; key: string; size?: number }[]
   ).find((e) => e.path === row.entry);
-  if (entry && (entry.size ?? 0) > MAX_VERIFY_BYTES) throw notIn();
+  if (entry && (entry.size ?? 0) > MAX_VERIFY_BYTES) return unchecked;
   const body = entry ? await env.FILES.get(entry.key) : null;
-  if (body && body.size > MAX_VERIFY_BYTES) throw notIn();
+  if (body && body.size > MAX_VERIFY_BYTES) return unchecked;
   if (!body) throw notIn();
   const text = normalizeText(await visibleText(body.body));
-  const found = findQuote(text, q);
-  if (!found) throw notIn();
-  return found;
+  return findQuote(text, q) ?? unchecked;
 }
 
 /** The format of a version, or null when it does not exist. */

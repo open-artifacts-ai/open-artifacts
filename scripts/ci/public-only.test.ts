@@ -237,21 +237,19 @@ describe("private-paths.txt", () => {
 
 describe("ci.yml public-only job", () => {
   const w = parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"));
-  it("runs the script and is advisory", () => {
+  it("runs the script and is required", () => {
     const job = w.jobs["public-only"];
     expect(job).toBeDefined();
-    expect(job["continue-on-error"]).toBe(true);
+    expect(job["continue-on-error"]).toBeUndefined();
     expect(JSON.stringify(job.steps)).toContain(
       "bash scripts/ci/public-only.sh",
     );
   });
-  it("while advisory, a failing run is a warning and never fails the check", () => {
+  it("a failing run fails the check", () => {
     const step = w.jobs["public-only"].steps.find((s: { run?: string }) =>
       s.run?.includes("bash scripts/ci/public-only.sh"),
     );
-    expect(step.run).toMatch(
-      /bash scripts\/ci\/public-only\.sh \|\| echo "::warning /,
-    );
+    expect(step.run).toBe("bash scripts/ci/public-only.sh");
   });
   it("leaves every required job blocking", () => {
     for (const j of [
@@ -262,6 +260,7 @@ describe("ci.yml public-only job", () => {
       "e2e",
       "no-test-hooks",
       "authz-matrix",
+      "public-only",
     ])
       expect(w.jobs[j]?.["continue-on-error"], j).toBeUndefined();
   });

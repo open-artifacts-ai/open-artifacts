@@ -68,6 +68,12 @@ export function attest(hello: Hello, deps: AttestDeps = {}): Attest {
       }
       return { ok: true };
     }
+    case "openclaw":
+      // The hub learns the kind first (#1693); the daemon admits it in a later release.
+      return {
+        ok: false,
+        reason: "openclaw is not supported by this daemon yet",
+      };
     case "codex":
       // Without the daemon's one wait for a late call line: runDaemon awaits `attest` itself.
       if (deps.codex) return deps.codex.attestNow(hello);
