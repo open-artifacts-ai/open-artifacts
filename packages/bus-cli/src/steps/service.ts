@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BUS_CMD } from "@oa/bus-protocol";
 import type { Service, ServiceProblem } from "../context.ts";
 import type { Deps } from "../deps.ts";
 import type { Env } from "../term.ts";
@@ -143,11 +144,69 @@ const code = await main(process.argv.slice(2));
 if (code !== undefined) process.exit(code);
 `;
 
+/** A POSIX sh single-quoted word. */
+const shQuote = (v: string) => `'${oneLine(v).replaceAll("'", `'\\''`)}'`;
+
+const DEFAULT_NODE_DIRS = [
+  "/usr/local/bin",
+  "/opt/homebrew/bin",
+  "/usr/bin",
+  `"\${HOME:-/nonexistent}/.local/bin"`,
+  `"\${HOME:-/nonexistent}/n/bin"`,
+];
+
+/**
+ * `<home>/bin/node`: what the unit and every harness entry run instead of an
+ * absolute node. It execs the node install ran under while that still works,
+ * else `node` on PATH, else the usual places (launchd and systemd start with a
+ * minimal PATH), so a Node upgrade or move cannot break the bus (#1729).
+ * Skips its own folder, so a PATH holding `<home>/bin` cannot loop. It reads
+ * no config and logs nothing but the one line below.
+ */
+export function launcherText(
+  recorded: string,
+  /** Shell words: the places a node may be when PATH has none. */
+  usual: string[] = DEFAULT_NODE_DIRS,
+): string {
+  return `#!/bin/sh
+# Written by oa-bus install. Runs a working node, so a Node upgrade or move does not break the bus.
+# A probe that lands back here (a symlinked PATH entry) must not loop.
+if [ -n "$OA_BUS_NODE_PROBE" ]; then exit 127; fi
+recorded=${shQuote(recorded)}
+# Builtins only: a minimal PATH may hold no dirname.
+case $0 in */*) here=\${0%/*} ;; *) here=. ;; esac
+here=$(cd "$here" && pwd)
+ok() {
+  [ -f "$1" ] && [ -x "$1" ] && [ "\${1%/*}" != "$here" ] && OA_BUS_NODE_PROBE=1 "$1" --version >/dev/null 2>&1
+}
+if ok "$recorded"; then exec "$recorded" "$@"; fi
+oldifs=$IFS
+IFS=:
+for d in $PATH; do
+  if [ -n "$d" ] && ok "$d/node"; then IFS=$oldifs; exec "$d/node" "$@"; fi
+done
+IFS=$oldifs
+for d in ${usual.join(" ")}; do
+  if ok "$d/node"; then exec "$d/node" "$@"; fi
+done
+echo "oa-bus: Node.js not found. Install Node, then run: ${BUS_CMD} install" >&2
+exit 127
+`;
+}
+
+/** The launcher's path under a bus home. */
+export const launcherOf = (home: string) => join(home, "bin", "node");
+
 /**
  * Replaces `<home>/bin` with a copy of `src`; returns the entry to run. The
- * home and bin are 0700: whoever can write them picks what launchd runs.
+ * home and bin are 0700: whoever can write them picks what launchd runs. With
+ * `node`, also writes the launcher (`launcherOf(home)`) that finds a node.
  */
-export function installCli(home: string, src: CliSource): string {
+export function installCli(
+  home: string,
+  src: CliSource,
+  node?: string,
+): string {
   const bin = join(home, "bin");
   const tmp = `${bin}.${process.pid}.tmp`;
   mkdirSync(home, { recursive: true, mode: 0o700 });
@@ -162,6 +221,10 @@ export function installCli(home: string, src: CliSource): string {
         cpSync(join(pkg, name), join(tmp, name), { recursive: true });
   } else writeFileSync(join(tmp, entryName(src)), shim(src));
   chmodSync(tmp, 0o700);
+  if (node !== undefined) {
+    writeFileSync(join(tmp, "node"), launcherText(node), { mode: 0o700 });
+    chmodSync(join(tmp, "node"), 0o700);
+  }
   if (!existsSync(join(tmp, "package.json")))
     writeFileSync(join(tmp, "package.json"), '{ "type": "module" }\n');
   rmSync(bin, { recursive: true, force: true });
@@ -302,6 +365,10 @@ export function systemService(d: ServiceDeps): Service {
         : undefined;
   const home = () => resolve(d.home());
   const names = () => serviceNames(home(), d.userHome);
+  // win32 has no sh: it keeps the node install ran under.
+  const launcherNode = () => (d.platform === "win32" ? undefined : d.execPath);
+  const nodeOf = (h: string) =>
+    d.platform === "win32" ? d.execPath : launcherOf(h);
   const entryOf = () => join(home(), "bin", entryName(d.source()));
   const installFile = () => join(home(), "install.json");
   const record = (): Record_ => {
@@ -409,7 +476,7 @@ export function systemService(d: ServiceDeps): Service {
       const src = d.source();
       const logs = join(h, "logs");
       const u: Unit = {
-        node: d.execPath,
+        node: nodeOf(h),
         entry: join(h, "bin", entryName(src)),
         env: {
           PATH: d.env.PATH ?? DEFAULT_PATH,
@@ -434,7 +501,7 @@ export function systemService(d: ServiceDeps): Service {
         await systemctl("stop", names().unit);
       const left = await stopDaemon();
       if (left !== undefined) return { running: left };
-      installCli(h, src);
+      installCli(h, src, launcherNode());
       mkdirSync(logs, { recursive: true, mode: 0o700 });
       const f = fresh();
       // XDG_CONFIG_HOME moved since the last install: drop the old unit.
@@ -523,7 +590,10 @@ export function systemService(d: ServiceDeps): Service {
     },
 
     cli() {
-      const argv = [d.execPath, installCli(home(), d.source())];
+      const argv = [
+        nodeOf(home()),
+        installCli(home(), d.source(), launcherNode()),
+      ];
       // The harness entries run this argv, with or without a service
       // (--no-service): argv() reads it back.
       updateInstallFile(installFile(), { cli: argv });
@@ -538,7 +608,7 @@ export function systemService(d: ServiceDeps): Service {
         r.length === 2 &&
         r.every((x) => typeof x === "string")
         ? (r as string[])
-        : [d.execPath, entryOf()];
+        : [nodeOf(home()), entryOf()];
     },
 
     env() {

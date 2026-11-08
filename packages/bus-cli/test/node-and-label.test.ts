@@ -7,7 +7,7 @@ import { install } from "../src/commands/install.ts";
 import { login } from "../src/commands/login.ts";
 import { noService } from "../src/context.ts";
 import { defaultMachineLabel } from "../src/machine-label.ts";
-import { systemService } from "../src/steps/service.ts";
+import { launcherText, systemService } from "../src/steps/service.ts";
 import { fakeCtx } from "./fake.ts";
 
 describe("defaultMachineLabel (#1448 item 2)", () => {
@@ -142,6 +142,34 @@ describe("pinned node check in doctor (#1448 item 4)", () => {
     expect(await svc.checkNode?.()).toEqual({
       node: "/opt/homebrew/bin/node",
       reason: expect.stringContaining("libicui18n"),
+    });
+  });
+
+  it("the launcher with no node anywhere: doctor's probe reports its one line (#1729)", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const exec = async (cmd: string, args: string[]) => {
+      try {
+        const stdout = execFileSync(cmd, args, {
+          env: { PATH: "" },
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        return { code: 0, stdout, stderr: "" };
+      } catch (e) {
+        const x = e as { status: number; stderr: string };
+        return { code: x.status, stdout: "", stderr: x.stderr };
+      }
+    };
+    const { ctx, svc } = mk(exec as never);
+    const bin = join(ctx.home, "bin");
+    mkdirSync(bin, { recursive: true });
+    const launcher = join(bin, "node");
+    writeFileSync(launcher, launcherText("/gone/node", []), { mode: 0o700 });
+    record(ctx.home, launcher);
+    expect(await svc.checkNode?.()).toEqual({
+      node: launcher,
+      reason:
+        "oa-bus: Node.js not found. Install Node, then run: npx @open-artifacts/bus install",
     });
   });
 
