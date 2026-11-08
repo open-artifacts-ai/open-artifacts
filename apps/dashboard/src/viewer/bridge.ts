@@ -9,6 +9,7 @@ import {
   LIMITS,
   METHOD_CAPABILITY,
   PageSchema,
+  PROTOCOL_PIN_CHANGED,
   parseArtifactMessage,
   R,
   RUNTIME_PARAMS,
@@ -177,6 +178,8 @@ export function createBridge(opts: BridgeOptions) {
   let minting: Promise<void> | null = null;
   const subs = new Map<string, Sub>();
   let disposed = false;
+  /** The frame's `hello` protocol, 0 until it says hello (#1698). */
+  let frameProtocol = 0;
   let thumbPending = false;
   let lostFired = false;
   let inFlight = 0;
@@ -489,6 +492,7 @@ export function createBridge(opts: BridgeOptions) {
     if (!m || m.nonce !== current.nonce) return;
     switch (m.type) {
       case "hello":
+        frameProtocol = m.protocol;
         reply({
           oa: 1,
           type: "welcome",
@@ -610,7 +614,13 @@ export function createBridge(opts: BridgeOptions) {
       reply({
         oa: 1,
         type: "comments.set",
-        threads,
+        // #1698: a runtime older than this shell rejects the whole message
+        // over one field it does not know, and every pin would vanish. Leave
+        // out what that runtime cannot read; it draws the pins unmarked.
+        threads:
+          frameProtocol >= PROTOCOL_PIN_CHANGED
+            ? threads
+            : threads.map(({ changed: _, ...t }) => t),
         ...(ghost ? { ghost } : {}),
       });
     },

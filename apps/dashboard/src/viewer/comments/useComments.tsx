@@ -51,6 +51,8 @@ export type CommentsApi = {
   contentHash: string | null;
   /** The tool in use; "pin" only where pins are offered and the viewer can comment. */
   mode: "select" | "pin";
+  /** The reader turned Pin on themselves (not the default an image opens in). */
+  pinChosen: boolean;
   setMode: (m: "select" | "pin") => void;
   /** Viewing a pinned older version: the composer says so. */
   older: boolean;
@@ -170,15 +172,21 @@ export function useCommentsController({
   // reader's choice, once made, holds for this view.
   const [wantPin, setWantPin] = useState<boolean | null>(null);
   const pins = wantPin ?? pinFormat === "image";
+  // #1698: a pin mode the reader turned on is theirs to keep and to leave with
+  // Esc; the one an image opens in is only a default, so Esc goes on to close
+  // what it was aimed at (full screen, the phone sheet).
+  const pinChosen = wantPin === true;
+  const chosenRef = useRef(pinChosen);
+  chosenRef.current = pinChosen;
   // Pin mode only where pins are offered and the viewer can comment.
   const mode: "select" | "pin" =
     pins && pinFormat !== null && mayComment ? "pin" : "select";
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  // Esc leaves pin mode first. Capture phase, and stopped: in full screen the
-  // exit handler is on the document too, and must not also run.
+  // Esc leaves a pin mode the reader chose. Capture phase, and stopped: in full
+  // screen the exit handler is on the document too, and must not also run.
   useEffect(() => {
-    if (mode !== "pin") return;
+    if (mode !== "pin" || !pinChosen) return;
     const k = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
@@ -187,7 +195,7 @@ export function useCommentsController({
     };
     document.addEventListener("keydown", k, true);
     return () => document.removeEventListener("keydown", k, true);
-  }, [mode]);
+  }, [mode, pinChosen]);
   // The frame's own copy of what to draw: ids and anchors only.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `hello` re-sends after the frame reloads
   useEffect(() => {
@@ -253,10 +261,15 @@ export function useCommentsController({
     if (draftRef.current && dirty.current) return;
     dirty.current = false;
     setDraft({ pin });
-    setWantPin(false);
+    // #1698: a chosen pin mode holds for the view, so the next pin is one
+    // click away; the default an image opens in falls back to Select.
+    if (!chosenRef.current) setWantPin(false);
     surface.current();
   }, []);
-  const onEscape = useCallback(() => setWantPin(false), []);
+  const onEscape = useCallback(() => {
+    // Same rule as the shell's own Esc: only a chosen pin mode is left.
+    if (chosenRef.current) setWantPin(false);
+  }, []);
   const onPositions = useCallback<CommentsApi["onPositions"]>((list) => {
     if (!gates.current.positions()) return;
     const next = new Map<string, FramePosition>();
@@ -300,6 +313,7 @@ export function useCommentsController({
       pinFormat,
       contentHash,
       mode,
+      pinChosen,
       setMode: (m) => setWantPin(m === "pin"),
       older,
       open: q.data?.open ?? 0,
@@ -360,6 +374,7 @@ export function useCommentsController({
       pinFormat,
       contentHash,
       mode,
+      pinChosen,
       onSelect,
       onPositions,
       onOpen,
