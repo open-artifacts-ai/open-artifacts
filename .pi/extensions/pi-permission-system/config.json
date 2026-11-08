@@ -78,6 +78,7 @@
       "pnpm test:prep": "allow",
       "pnpm lint": "allow",
       "pnpm -s lint": "allow",
+      "sleep *": "allow",
       "gh run rerun*": "ask",
       "gh api *-f*": "ask",
       "gh api *-F*": "ask",
@@ -90,6 +91,8 @@
       "gh api*$*": "ask",
       "gh api*`*": "ask",
       "gh api*{*": "ask",
+      "sleep*$*": "ask",
+      "sleep*`*": "ask",
       "git push --force*": {
         "action": "deny",
         "reason": "Force-pushing needs your human: push a new commit on top, or ask them with the exact command."
