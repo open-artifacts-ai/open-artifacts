@@ -35,8 +35,8 @@ const tmp = () => mkdtempSync(join(tmpdir(), "ob-habits-plugin-"));
 const hermes = PLUGIN_HARNESSES[0] as (typeof PLUGIN_HARNESSES)[number];
 
 /** A plugin folder as the installer leaves it. */
-const ours = (home: string) => {
-  const dir = hermesPluginDir(home, {});
+const ours = (home: string, env: Record<string, string> = {}) => {
+  const dir = hermesPluginDir(home, env);
   mkdirSync(dir, { recursive: true });
   writeFileSync(
     join(dir, HERMES_MARKER),
@@ -58,6 +58,26 @@ describe("setPluginHabits", () => {
       hermes,
     ]);
     expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
+  });
+  it.each([
+    ["plain", false],
+    ["symlinked", true],
+  ])("no reaches a HERMES_HOME under a %s ~/.hermes", (_name, linked) => {
+    const home = tmp();
+    const root = linked ? join(tmp(), "hermes") : join(home, ".hermes");
+    mkdirSync(root, { recursive: true });
+    if (linked) symlinkSync(root, join(home, ".hermes"));
+    const env = { HERMES_HOME: join(root, "custom") };
+    const dir = ours(home, env);
+    expect(setPluginHabits({ home, env }, [hermes], true).changed).toEqual([
+      hermes,
+    ]);
+    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(true);
+    expect(setPluginHabits({ home, env }, [hermes], false).changed).toEqual([
+      hermes,
+    ]);
+    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
+    expect(pluginHabitsState({ home, env }, hermes)).toBe("off");
   });
   it("removeHabits (--no-habits, uninstall) takes the marker too", () => {
     const home = tmp();

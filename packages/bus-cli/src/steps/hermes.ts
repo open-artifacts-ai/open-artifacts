@@ -171,7 +171,10 @@ export function hermesRoot(home: string, env: Env): string {
   return given;
 }
 
-/** Every plugin folder a profile of this Hermes root may hold: the root's own, then each profile's. */
+/**
+ * Every plugin folder of this Hermes: the root's own, each profile's, and the
+ * active one, which a HERMES_HOME under ~/.hermes keeps outside both.
+ */
 export function hermesPluginDirs(home: string, env: Env): string[] {
   const root = hermesRoot(home, env);
   const out = [join(root, "plugins", HERMES_PLUGIN_NAME)];
@@ -179,6 +182,8 @@ export function hermesPluginDirs(home: string, env: Env): string[] {
     for (const name of readdirSync(join(root, "profiles")).sort())
       out.push(join(root, "profiles", name, "plugins", HERMES_PLUGIN_NAME));
   } catch {}
+  const active = hermesPluginDir(home, env);
+  if (!out.includes(active)) out.push(active);
   return out;
 }
 
