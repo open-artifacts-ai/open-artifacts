@@ -16,8 +16,8 @@ on:
         required: false
         type: boolean
         default: false
-# No workflow-wide grant: every job sets its own permissions (T3b). Only
-# hosted-attach may write contents; no job has actions: write.
+# No workflow-wide grant: every job sets its own permissions (T3b).
+# No job has actions: write.
 permissions: {}
 jobs:
   release-please:
@@ -45,7 +45,7 @@ jobs:
       # Only the release commit's own run creates GitHub releases. The action
       # reads main's head, not this run's sha, so a run queued behind the
       # concurrency group could otherwise create a release whose tag is not
-      # its head_sha, and tag-passed-checks.sh would refuse that tag. The
+      # its head_sha, and the release gates would refuse that tag. The
       # release commit is the merge commit of the one merged release PR still
       # labelled "autorelease: pending". A pending release PR merged before
       # this commit never got its own run (batched by the merge queue, or
@@ -62,13 +62,13 @@ jobs:
           issues=$(gh api "repos/$REPO/issues?state=closed&labels=autorelease:%20pending&per_page=100") || fail "could not list pending release PRs"
           # One page, no pagination: a full page could hide the pending PR.
           count=$(jq -r 'length' <<< "$issues") || fail "could not read pending release PRs"
-          [ "$count" -lt 100 ] || fail "pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery"
+          [ "$count" -lt 100 ] || fail "pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud"
           nums=$(jq -r '[.[] | select(.pull_request.merged_at != null) | .number] | join(" ")' <<< "$issues") || fail "could not read pending release PRs"
           read -ra pending <<< "$nums"
           if [ "${#pending[@]}" -eq 0 ]; then
             echo "is_release=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          [ "${#pending[@]}" -eq 1 ] || fail "more than one merged release PR is pending (${pending[*]}): see docs/ops/hosted.md, Release recovery"
+          [ "${#pending[@]}" -eq 1 ] || fail "more than one merged release PR is pending (${pending[*]}): see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud"
           n=${pending[0]}
           merge=$(gh api "repos/$REPO/pulls/$n" -q .merge_commit_sha) || fail "could not read #$n"
           [[ "$merge" =~ ^[0-9a-f]{40}$ ]] || fail "could not read #$n's merge commit"
@@ -81,7 +81,7 @@ jobs:
             echo "Release commit $merge (#$n) is newer; its own run creates the release."
             echo "is_release=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          fail "release commit $merge (#$n) has no own run: see docs/ops/hosted.md, Release recovery"
+          fail "release commit $merge (#$n) has no own run: see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud"
       - id: rp
         uses: googleapis/release-please-action@v4
         with:
@@ -214,7 +214,7 @@ jobs:
       - name: Build the release bundle (buildBundle, dry run)
         if: steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false'
         run: |
-          pnpm --filter @oa/provision build
+          pnpm --filter @oa/auth-core --filter @oa/bundle build
           pnpm --filter @oa/server run gen
           mkdir -p apps/server/dist-assets
           node --experimental-strip-types scripts/ci/build-release-bundle.ts "$RUNNER_TEMP/release-bundle" --variant release
@@ -390,324 +390,6 @@ jobs:
       - name: Verify the release is live (with the demo)
         if: ${{ vars.DEMO_ENABLED == 'true' }}
         run: node --experimental-strip-types scripts/ci/verify-release.ts --tag "$TAG" --repo "$GITHUB_REPOSITORY" --demo-url https://demo.open-artifacts.com ${SKIP_PROD:+"$SKIP_PROD"}
-  # ---------- hosted release files (T3b) ----------
-  # Stable releases only. CI signs and never uploads to Cloudflare: the signed
-  # tars and .sig.json files are attached to the GitHub release, and
-  # publishRelease (on a laptop, the env's R2 API token) verifies them and copies
-  # them to R2. The signing key never shares a job with installed code.
-  hosted-guard:
-    needs: [release-please]
-    # always(): on workflow_dispatch the release-please job is skipped.
-    if: ${{ always() && github.ref == 'refs/heads/main' && ((github.event_name == 'push' && needs.release-please.outputs.release_created == 'true') || github.event_name == 'workflow_dispatch') }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      sha: ${{ steps.resolve.outputs.sha }}
-      tag: ${{ steps.resolve.outputs.tag }}
-      version: ${{ steps.resolve.outputs.version }}
-    steps:
-      - id: resolve
-        name: Resolve the tag to one commit on main, matching package.json
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
-        run: |
-          set -euo pipefail
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "$TAG is not a stable vX.Y.Z tag"; exit 1; }
-          pre=$(gh release view "$TAG" --repo "$REPO" --json isPrerelease -q .isPrerelease)
-          [ "$pre" = "false" ] || { echo "$TAG is a pre-release; no hosted release files"; exit 1; }
-          # <tag>^{commit}, resolved once here; every later job checks out this SHA.
-          ref=$(gh api "repos/$REPO/git/ref/tags/$TAG")
-          sha=$(jq -r .object.sha <<< "$ref")
-          type=$(jq -r .object.type <<< "$ref")
-          for _ in 1 2 3 4; do
-            [ "$type" = tag ] || break
-            obj=$(gh api "repos/$REPO/git/tags/$sha")
-            sha=$(jq -r .object.sha <<< "$obj")
-            type=$(jq -r .object.type <<< "$obj")
-          done
-          if [ "$type" != commit ] || ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "$TAG does not resolve to a commit"
-            exit 1
-          fi
-          # L4: main's branch SHA, never the bare name (a tag named main would win).
-          main_sha=$(gh api "repos/$REPO/git/ref/heads/main" -q .object.sha)
-          [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] || { echo "could not read main"; exit 1; }
-          status=$(gh api "repos/$REPO/compare/$main_sha...$sha" -q .status)
-          case "$status" in
-            behind|identical) ;;
-            *) echo "$TAG ($sha) is not on main (compare: $status)"; exit 1 ;;
-          esac
-          version=$(gh api -H "Accept: application/vnd.github.raw+json" "repos/$REPO/contents/package.json?ref=$sha" | jq -r .version)
-          [ "$version" = "${TAG#v}" ] || { echo "package.json at $sha is $version, not ${TAG#v}"; exit 1; }
-          # L5: the release commit itself: the release's target (when a SHA),
-          # and the commit where package.json's version changed.
-          target=$(gh api "repos/$REPO/releases/tags/$TAG" -q .target_commitish)
-          if [[ "$target" =~ ^[0-9a-f]{40}$ ]] && [ "$target" != "$sha" ]; then
-            echo "$TAG points at $sha but its release targets $target"; exit 1
-          fi
-          parent=$(gh api "repos/$REPO/commits/$sha" -q '.parents[0].sha')
-          prev=$(gh api -H "Accept: application/vnd.github.raw+json" "repos/$REPO/contents/package.json?ref=$parent" | jq -r .version)
-          [ "$prev" != "$version" ] || { echo "package.json's version did not change in $sha; not the release commit"; exit 1; }
-          { echo "sha=$sha"; echo "tag=$TAG"; echo "version=$version"; } >> "$GITHUB_OUTPUT"
-  hosted-build:
-    needs: [hosted-guard]
-    if: ${{ !cancelled() && needs.hosted-guard.result == 'success' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.hosted-guard.outputs.sha }}
-          persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      # No dependency cache: a main-scoped pnpm store would feed the signed bytes.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-      - run: pnpm install --frozen-lockfile
-      # The server reports <version> only when v<version> points at HEAD, and a
-      # checkout by SHA has no tags: fetch this one and check it is this commit.
-      - name: Fetch the release tag
-        env:
-          TAG: ${{ needs.hosted-guard.outputs.tag }}
-          GUARD_SHA: ${{ needs.hosted-guard.outputs.sha }}
-        run: |
-          set -euo pipefail
-          git fetch --no-tags --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG"
-          test "$(git rev-parse "$TAG^{commit}")" = "$GUARD_SHA"
-      - name: Build both variants and the release files, with manifest.json
-        env:
-          GUARD_SHA: ${{ needs.hosted-guard.outputs.sha }}
-        run: |
-          pnpm --filter @oa/provision build
-          pnpm --filter @oa/server build
-          node --experimental-strip-types scripts/ci/build-hosted-release.ts "$RUNNER_TEMP/hosted" --commit "$GUARD_SHA"
-      - name: The built server reports exactly the release version
-        env:
-          VERSION: ${{ needs.hosted-guard.outputs.version }}
-        run: grep -Fqx "export const VERSION = \"$VERSION\";" apps/server/src/version.gen.ts
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: hosted-release
-          path: ${{ runner.temp }}/hosted
-          if-no-files-found: error
-          retention-days: 7
-  hosted-check:
-    needs: [hosted-guard, hosted-build]
-    if: ${{ !cancelled() && needs.hosted-guard.result == 'success' && needs.hosted-build.result == 'success' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    outputs:
-      bundle_sha256: ${{ steps.check.outputs.bundle_sha256 }}
-      manifest_sha256: ${{ steps.check.outputs.manifest_sha256 }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.hosted-guard.outputs.sha }}
-          persist-credentials: false
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-      # No dependency cache: a main-scoped pnpm store would feed the signed bytes.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-      - run: pnpm install --frozen-lockfile
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: hosted-release
-          path: ${{ runner.temp }}/hosted
-      # The hashes are recomputed from the bytes check-no-test-hooks ran on,
-      # before and after, and handed to hosted-sign.
-      - id: check
-        name: Verify manifest.json, then no test hooks in the release bundle
-        run: |
-          set -euo pipefail
-          before=$(node --experimental-strip-types --no-warnings scripts/ci/check-hosted-release.ts "$RUNNER_TEMP/hosted")
-          pnpm check-no-test-hooks "$RUNNER_TEMP/hosted/release"
-          pnpm check-no-fake-idp "$RUNNER_TEMP/hosted/release"
-          after=$(node --experimental-strip-types --no-warnings scripts/ci/check-hosted-release.ts "$RUNNER_TEMP/hosted")
-          [ "$before" = "$after" ] || { echo "the artifact changed during the check"; exit 1; }
-          echo "$after" >> "$GITHUB_OUTPUT"
-  hosted-sign-staging:
-    needs: [hosted-guard, hosted-build, hosted-check]
-    if: ${{ !cancelled() && needs.hosted-guard.result == 'success' && needs.hosted-build.result == 'success' && needs.hosted-check.result == 'success' }}
-    runs-on: ubuntu-latest
-    # The staging key lives only in this GitHub Environment (main only, no admin bypass, no approval step).
-    environment: hosted-staging
-    permissions:
-      contents: read
-    concurrency:
-      group: hosted-sign-staging-${{ needs.hosted-guard.outputs.tag }}
-      cancel-in-progress: false
-    outputs:
-      staging_signed: ${{ steps.sign.outputs.staging_signed }}
-      staging_release_signature: ${{ steps.sign.outputs.staging_release_signature }}
-      staging_release_tar_sha256: ${{ steps.sign.outputs.staging_release_tar_sha256 }}
-      staging_release_record_sha256: ${{ steps.sign.outputs.staging_release_record_sha256 }}
-      staging_redline_signature: ${{ steps.sign.outputs.staging_redline_signature }}
-      staging_redline_tar_sha256: ${{ steps.sign.outputs.staging_redline_tar_sha256 }}
-      staging_redline_record_sha256: ${{ steps.sign.outputs.staging_redline_record_sha256 }}
-    # Exactly these steps: no install, no other action, node:* imports only.
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.hosted-guard.outputs.sha }}
-          persist-credentials: false
-      # Decision 4 (Manager review), H-N22: Node 22 from .nvmrc via setup-node
-      # pinned by SHA, no cache; plain .mjs, no strip-types. The key is only in
-      # the sign step's env.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-      - name: Assert Node 22
-        run: v=$(node --version); case "$v" in v22.*) ;; *) echo "expected Node 22, got $v" >&2; exit 1;; esac
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: hosted-release
-          path: ${{ runner.temp }}/hosted
-      - id: sign
-        name: Sign (the key goes in on stdin only)
-        env:
-          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
-          SIGN_ENV: staging
-          VERSION: ${{ needs.hosted-guard.outputs.version }}
-          GUARD_SHA: ${{ needs.hosted-guard.outputs.sha }}
-          MANIFEST_SHA256: ${{ needs.hosted-check.outputs.manifest_sha256 }}
-          BUNDLE_SHA256: ${{ needs.hosted-check.outputs.bundle_sha256 }}
-        run: |
-          set -euo pipefail
-          printf '%s' "$RELEASE_SIGNING_KEY" | node scripts/ci/sign-release.mjs --dir "$RUNNER_TEMP/hosted" --env "$SIGN_ENV" --version "$VERSION" --manifest-sha256 "$MANIFEST_SHA256" --bundle-sha256 "$BUNDLE_SHA256" --commit "$GUARD_SHA" --lockfile pnpm-lock.yaml --out "$RUNNER_TEMP/signed" >> "$GITHUB_OUTPUT"
-  hosted-sign-prod:
-    needs: [hosted-guard, hosted-build, hosted-check]
-    if: ${{ !cancelled() && needs.hosted-guard.result == 'success' && needs.hosted-build.result == 'success' && needs.hosted-check.result == 'success' }}
-    runs-on: ubuntu-latest
-    # The prod key lives only in this GitHub Environment (main only, no admin bypass, no approval step: the checks before it are the gate).
-    environment: hosted-prod
-    permissions:
-      contents: read
-    concurrency:
-      group: hosted-sign-prod-${{ needs.hosted-guard.outputs.tag }}
-      cancel-in-progress: false
-    outputs:
-      prod_signed: ${{ steps.sign.outputs.prod_signed }}
-      prod_release_signature: ${{ steps.sign.outputs.prod_release_signature }}
-      prod_release_tar_sha256: ${{ steps.sign.outputs.prod_release_tar_sha256 }}
-      prod_release_record_sha256: ${{ steps.sign.outputs.prod_release_record_sha256 }}
-    # Exactly these steps: no install, no other action, node:* imports only.
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.hosted-guard.outputs.sha }}
-          persist-credentials: false
-      # Decision 4 (Manager review), H-N22: Node 22 from .nvmrc via setup-node
-      # pinned by SHA, no cache; plain .mjs, no strip-types. The key is only in
-      # the sign step's env.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-      - name: Assert Node 22
-        run: v=$(node --version); case "$v" in v22.*) ;; *) echo "expected Node 22, got $v" >&2; exit 1;; esac
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: hosted-release
-          path: ${{ runner.temp }}/hosted
-      - id: sign
-        name: Sign (the key goes in on stdin only)
-        env:
-          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
-          SIGN_ENV: prod
-          VERSION: ${{ needs.hosted-guard.outputs.version }}
-          GUARD_SHA: ${{ needs.hosted-guard.outputs.sha }}
-          MANIFEST_SHA256: ${{ needs.hosted-check.outputs.manifest_sha256 }}
-          BUNDLE_SHA256: ${{ needs.hosted-check.outputs.bundle_sha256 }}
-        run: |
-          set -euo pipefail
-          printf '%s' "$RELEASE_SIGNING_KEY" | node scripts/ci/sign-release.mjs --dir "$RUNNER_TEMP/hosted" --env "$SIGN_ENV" --version "$VERSION" --manifest-sha256 "$MANIFEST_SHA256" --bundle-sha256 "$BUNDLE_SHA256" --commit "$GUARD_SHA" --lockfile pnpm-lock.yaml --out "$RUNNER_TEMP/signed" >> "$GITHUB_OUTPUT"
-  hosted-attach-staging:
-    needs: [hosted-guard, hosted-build, hosted-check, hosted-sign-staging]
-    if: ${{ !cancelled() && needs.hosted-guard.result == 'success' && needs.hosted-check.result == 'success' && needs.hosted-sign-staging.result == 'success' && needs.hosted-sign-staging.outputs.staging_signed == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    concurrency:
-      group: hosted-attach-staging-${{ needs.hosted-guard.outputs.tag }}
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.hosted-guard.outputs.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: hosted-release
-          path: ${{ runner.temp }}/hosted
-      # Rebuilt from the same verified bytes; refused unless the tar and the
-      # record hash to what hosted-sign-staging signed and the signature verifies
-      # (pinned key). Refuses if any staging asset is already on the release.
-      - name: Attach the signed staging release files to the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ needs.hosted-guard.outputs.tag }}
-          VERSION: ${{ needs.hosted-guard.outputs.version }}
-          GUARD_SHA: ${{ needs.hosted-guard.outputs.sha }}
-          MANIFEST_SHA256: ${{ needs.hosted-check.outputs.manifest_sha256 }}
-          BUNDLE_SHA256: ${{ needs.hosted-check.outputs.bundle_sha256 }}
-          RELEASE: ${{ needs.hosted-sign-staging.outputs.staging_release_signature }}:${{ needs.hosted-sign-staging.outputs.staging_release_tar_sha256 }}:${{ needs.hosted-sign-staging.outputs.staging_release_record_sha256 }}
-          REDLINE: ${{ needs.hosted-sign-staging.outputs.staging_redline_signature }}:${{ needs.hosted-sign-staging.outputs.staging_redline_tar_sha256 }}:${{ needs.hosted-sign-staging.outputs.staging_redline_record_sha256 }}
-        run: |
-          set -euo pipefail
-          existing=$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[].name' | grep '^oa-release-staging-' || true)
-          [ -z "$existing" ] || { echo "the release already has staging assets: $existing"; exit 1; }
-          node scripts/ci/assemble-release.mjs --dir "$RUNNER_TEMP/hosted" --env staging --version "$VERSION" --manifest-sha256 "$MANIFEST_SHA256" --bundle-sha256 "$BUNDLE_SHA256" --commit "$GUARD_SHA" --lockfile pnpm-lock.yaml --out "$RUNNER_TEMP/signed" --release "$RELEASE" --redline "$REDLINE"
-          gh release upload "$TAG" --repo "$REPO" "$RUNNER_TEMP"/signed/oa-release-staging-*
-  hosted-attach-prod:
-    needs: [hosted-guard, hosted-build, hosted-check, hosted-sign-prod]
-    if: ${{ !cancelled() && needs.hosted-guard.result == 'success' && needs.hosted-check.result == 'success' && needs.hosted-sign-prod.result == 'success' && needs.hosted-sign-prod.outputs.prod_signed == 'true' }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    concurrency:
-      group: hosted-attach-prod-${{ needs.hosted-guard.outputs.tag }}
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.hosted-guard.outputs.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version-file: .nvmrc
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: hosted-release
-          path: ${{ runner.temp }}/hosted
-      # Rebuilt from the same verified bytes; refused unless the tar and the
-      # record hash to what hosted-sign-prod signed and the signature verifies
-      # (pinned key). Refuses if any prod asset is already on the release.
-      - name: Attach the signed prod release files to the GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ needs.hosted-guard.outputs.tag }}
-          VERSION: ${{ needs.hosted-guard.outputs.version }}
-          GUARD_SHA: ${{ needs.hosted-guard.outputs.sha }}
-          MANIFEST_SHA256: ${{ needs.hosted-check.outputs.manifest_sha256 }}
-          BUNDLE_SHA256: ${{ needs.hosted-check.outputs.bundle_sha256 }}
-          RELEASE: ${{ needs.hosted-sign-prod.outputs.prod_release_signature }}:${{ needs.hosted-sign-prod.outputs.prod_release_tar_sha256 }}:${{ needs.hosted-sign-prod.outputs.prod_release_record_sha256 }}
-        run: |
-          set -euo pipefail
-          existing=$(gh release view "$TAG" --repo "$REPO" --json assets -q '.assets[].name' | grep '^oa-release-prod-' || true)
-          [ -z "$existing" ] || { echo "the release already has prod assets: $existing"; exit 1; }
-          node scripts/ci/assemble-release.mjs --dir "$RUNNER_TEMP/hosted" --env prod --version "$VERSION" --manifest-sha256 "$MANIFEST_SHA256" --bundle-sha256 "$BUNDLE_SHA256" --commit "$GUARD_SHA" --lockfile pnpm-lock.yaml --out "$RUNNER_TEMP/signed" --release "$RELEASE"
-          gh release upload "$TAG" --repo "$REPO" "$RUNNER_TEMP"/signed/oa-release-prod-*
   # ---------- npm: @open-artifacts/bus (#1301) ----------
   # Stable releases only, from the release commit on main. The package's
   # version stays 0.0.0 (and "private": true) in the repository, so nothing

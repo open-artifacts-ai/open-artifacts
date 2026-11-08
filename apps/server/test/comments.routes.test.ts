@@ -181,6 +181,39 @@ describe("threads", () => {
     expect((await list(id, viewer)).threads[0]?.id).toBe(a.id);
   });
 
+  it("a pinned quote works on a page with void and self-closed tags (#1718)", async () => {
+    const id = await pub({
+      visibility: "team",
+      content:
+        "<p>The quick<br>brown fox</p><hr><img src=x><p>jumps<br/>over</p><svg/><p>the lazy dog</p>",
+    });
+    const ok = await post(id, viewer, "x", {
+      kind: "text",
+      exact: "lazy dog",
+      prefix: "WRONG",
+      suffix: "WRONG",
+    });
+    expect(ok.status).toBe(201);
+    expect((await thread(ok)).anchor).toMatchObject({
+      prefix: " quick brown fox jumps over the ",
+    });
+  });
+
+  it("a text comment on a quote with a named entity is accepted (#1735)", async () => {
+    const id = await pub({
+      visibility: "team",
+      content:
+        "<p><code>arr[j]</code> &le; <code>arr[i]</code> and &copy 2026</p>",
+    });
+    const ok = await post(id, viewer, "x", {
+      kind: "text",
+      exact: "arr[j] \u2264 arr[i] and \u00a9 2026",
+      prefix: "",
+      suffix: "",
+    });
+    expect(ok.status).toBe(201);
+  });
+
   it("a text anchor is verified against the html version", async () => {
     const id = await pub({ visibility: "team" });
     const ok = await post(id, viewer, "x", {
@@ -202,8 +235,14 @@ describe("threads", () => {
       prefix: "",
       suffix: "",
     });
-    expect(miss.status).toBe(422);
-    expect((await errOf(miss)).code).toBe("anchor_not_in_version");
+    expect(miss.status).toBe(201);
+    const mt = await thread(miss);
+    expect(mt.anchor).toMatchObject({
+      exact: "purple cat",
+      prefix: "",
+      suffix: "",
+    });
+    expect(mt.anchor).not.toHaveProperty("block");
     const v9 = await post(id, viewer, "x", {
       kind: "text",
       version: 9,
@@ -994,6 +1033,36 @@ describe("review fixes (#682)", () => {
     expect(bodyOk(` ${"x".repeat(2000)} `)).toBe(true);
   });
 
+  it("a quote on script-rendered html text is accepted with its context capped to 32 and no block (#1735)", async () => {
+    const id = await pub({
+      visibility: "team",
+      format: "html",
+      content:
+        "<p id=\"x\"></p><script>document.getElementById('x').innerHTML='Finds the <b>previous smaller</b> item'</script>",
+    });
+    const r = await post(id, viewer, "x", {
+      kind: "text",
+      exact: "previous smaller",
+      prefix: `${"p".repeat(32)}live prefix`.padStart(64, "z"),
+      suffix: `live suffix${"s".repeat(32)}`.padEnd(64, "z"),
+      block: { path: "evil/free text" },
+    });
+    expect(r.status).toBe(201);
+    const t = await thread(r);
+    expect(t.anchor).toMatchObject({
+      exact: "previous smaller",
+      prefix: `${"p".repeat(32)}live prefix`.padStart(64, "z").slice(-32),
+      suffix: `live suffix${"s".repeat(32)}`.padEnd(64, "z").slice(0, 32),
+    });
+    expect(t.anchor).not.toHaveProperty("block");
+    const stored = (await list(id, viewer)).threads[0]?.anchor;
+    expect(stored).toMatchObject({
+      prefix: expect.stringMatching(/^.{32}$/),
+      suffix: expect.stringMatching(/^.{32}$/),
+    });
+    expect(stored).not.toHaveProperty("block");
+  });
+
   it("a markdown text anchor keeps its block hint", async () => {
     const id = await pub({
       visibility: "team",
@@ -1012,7 +1081,7 @@ describe("review fixes (#682)", () => {
     expect(t.anchor).toMatchObject({ block: { line: 3 } });
   });
 
-  it("the limit is taken before the quote is verified: refused quotes count (10 a minute per IP)", async () => {
+  it("the limit is taken before the quote is verified: refused quotes count (10 a minute per IP; a version that does not exist is refused)", async () => {
     const id = await pub({ visibility: "public" });
     await inDo(id, (i) => {
       i.now = () => 1_800_000_000_000;
@@ -1025,6 +1094,7 @@ describe("review fixes (#682)", () => {
         body: {
           anchor: {
             kind: "text",
+            version: 9,
             exact: "no such text",
             prefix: "",
             suffix: "",

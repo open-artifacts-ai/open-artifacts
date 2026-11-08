@@ -645,6 +645,12 @@ export const InstanceUpdateSchema = z.object({
   notesUrl: z.string(),
   /** When the last good check ran (ISO). */
   checkedAt: z.string(),
+  /**
+   * When the latest release was published (ISO); null when unknown (the
+   * rate-limited fallback check). Optional: older servers omit it. The
+   * dashboard's upgrade notice treats null as "not old".
+   */
+  latestPublishedAt: z.string().nullable().optional(),
 });
 export type InstanceUpdate = z.infer<typeof InstanceUpdateSchema>;
 
