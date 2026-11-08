@@ -956,7 +956,15 @@ function NoteComposer({ api }: { api: CommentsApi }) {
 }
 
 /** The list, header and composers: one body for the column, panel tab and sheet. */
-export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
+export function CommentsBody({
+  textFormat = true,
+  /** Grow to fill the surface. Off in the phone sheet's short height, where the
+      action row's outlet follows the list as a sibling (#1711). */
+  grow = true,
+}: {
+  textFormat?: boolean;
+  grow?: boolean;
+}) {
   const api = useCommentsApi();
   const resolvedCount = api.threads.filter(
     (t) => t.status === "resolved",
@@ -968,11 +976,13 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
   const none = api.threads.length === 0;
   const forMe = asksForMe([...api.ordered, ...api.orphans]);
   return (
-    // #1711: `flex-none`: in the short sheet the body keeps its content height
-    // (no grow, no shrink, no zero basis), so the action row's outlet sits
-    // after it, stuck to the sheet's bottom, instead of riding up to the
-    // sheet's top when a card is scrolled into view.
-    <div className="flex min-h-0 flex-none flex-col gap-3 p-4">
+    // #1711: in the short sheet the list keeps its content height (`flex-none`:
+    // no grow, no shrink, no zero basis), so the action row's outlet sits after
+    // it, stuck to the sheet's bottom, instead of riding up to the sheet's top
+    // when a card is scrolled into view. Every other surface grows as before.
+    <div
+      className={`flex min-h-0 ${grow ? "flex-1" : "flex-none"} flex-col gap-3 p-4`}
+    >
       <div className={`flex items-center justify-between gap-2 ${TXT}`}>
         <span>
           {api.listedOpen} open
