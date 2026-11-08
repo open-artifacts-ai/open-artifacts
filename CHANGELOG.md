@@ -1,5 +1,74 @@
 # Changelog
 
+## [0.136.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.136.0...v0.136.1) (2026-11-08)
+
+
+### Bug Fixes
+
+* **comments:** quotes on script-rendered text and every html entity ([#1735](https://github.com/open-artifacts-ai/open-artifacts/issues/1735)) ([#1737](https://github.com/open-artifacts-ai/open-artifacts/issues/1737)) ([0e89b29](https://github.com/open-artifacts-ai/open-artifacts/commit/0e89b298b211dd835a4a243dba932c978515bd91))
+
+## [0.136.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.135.0...v0.136.0) (2026-11-07)
+
+
+### Documentation
+
+* **readme:** hosted code now lives in open-artifacts-cloud ([#1056](https://github.com/open-artifacts-ai/open-artifacts/issues/1056)) ([#1733](https://github.com/open-artifacts-ai/open-artifacts/issues/1733)) ([f1ce58b](https://github.com/open-artifacts-ai/open-artifacts/commit/f1ce58ba56782be6e2595c3b63c81ff0af699e57))
+
+## [0.135.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.134.0...v0.135.0) (2026-11-07)
+
+
+### Features
+
+* **bus-protocol:** hub accepts agent kind openclaw ([#1693](https://github.com/open-artifacts-ai/open-artifacts/issues/1693), split A) ([#1725](https://github.com/open-artifacts-ai/open-artifacts/issues/1725)) ([c2f3656](https://github.com/open-artifacts-ai/open-artifacts/commit/c2f3656a28dfb78d2930b4892cfb2f57ba009b66))
+* **bus:** PAT-callable /api/v1/bus/ping for the hosted canary ([#1299](https://github.com/open-artifacts-ai/open-artifacts/issues/1299), PR 3) ([#1682](https://github.com/open-artifacts-ai/open-artifacts/issues/1682)) ([36827c4](https://github.com/open-artifacts-ai/open-artifacts/commit/36827c42177ba9d07bc53e3b2645179819ac6f0b))
+* **dashboard:** self-host upgrade banner with a copy-paste agent prompt ([#1628](https://github.com/open-artifacts-ai/open-artifacts/issues/1628)) ([#1691](https://github.com/open-artifacts-ai/open-artifacts/issues/1691)) ([52b8736](https://github.com/open-artifacts-ai/open-artifacts/commit/52b87364c416e25c3be3842b4d07b94f4a4a0264))
+* **mcp:** list_comments, add_comment, resolve_comment and the comment notice ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#1644](https://github.com/open-artifacts-ai/open-artifacts/issues/1644)) ([d500100](https://github.com/open-artifacts-ai/open-artifacts/commit/d5001004c7b9a2e4e5ffc1ac94163258d2b72396))
+
+
+### Bug Fixes
+
+* **bus-cli:** Hermes install sweeps only stale staging; realpath the ~/.hermes check ([#1621](https://github.com/open-artifacts-ai/open-artifacts/issues/1621)) ([#1688](https://github.com/open-artifacts-ai/open-artifacts/issues/1688)) ([ad48f71](https://github.com/open-artifacts-ai/open-artifacts/commit/ad48f715192020e155d1146f7ac22b897675385c))
+* **bus-daemon:** accept late acks while the link is live ([#1610](https://github.com/open-artifacts-ai/open-artifacts/issues/1610)) ([#1687](https://github.com/open-artifacts-ai/open-artifacts/issues/1687)) ([bb83f66](https://github.com/open-artifacts-ai/open-artifacts/commit/bb83f66a40ac4502a6d38f0b8444f701dd6001c0))
+* **bus-hermes:** drain mail into gateway turns with group context or timestamps ([#1611](https://github.com/open-artifacts-ai/open-artifacts/issues/1611)) ([#1686](https://github.com/open-artifacts-ai/open-artifacts/issues/1686)) ([23602b4](https://github.com/open-artifacts-ai/open-artifacts/commit/23602b4a2467d59d17c591bf1354fa753d8240ee))
+* **bus:** a Claude session's unchanged name never loops renames ([#1635](https://github.com/open-artifacts-ai/open-artifacts/issues/1635)) ([#1701](https://github.com/open-artifacts-ai/open-artifacts/issues/1701)) ([de9a517](https://github.com/open-artifacts-ai/open-artifacts/commit/de9a5175060df2bdc42c0169322dc4d92064d49e))
+* **bus:** a pi session keeps its typed name on the bus ([#1635](https://github.com/open-artifacts-ai/open-artifacts/issues/1635)) ([#1703](https://github.com/open-artifacts-ai/open-artifacts/issues/1703)) ([e96522a](https://github.com/open-artifacts-ai/open-artifacts/commit/e96522a8f120f8f4e3fdd4b7aaa8bd50f8834d44))
+* **comments:** pinned comments work on pages with &lt;br&gt; and &lt;hr&gt; ([#1718](https://github.com/open-artifacts-ai/open-artifacts/issues/1718)) ([#1722](https://github.com/open-artifacts-ai/open-artifacts/issues/1722)) ([d1bf7f6](https://github.com/open-artifacts-ai/open-artifacts/commit/d1bf7f6524a9ce79a86f54ae273b3e54a5b507bf))
+* **comments:** pins start in Pin on images, keep the phone sheet short, and mark a changed pin ([#1696](https://github.com/open-artifacts-ai/open-artifacts/issues/1696)) ([cb851f5](https://github.com/open-artifacts-ai/open-artifacts/commit/cb851f55a840e9fe2e96dde5846a31b06594faf6))
+* **dashboard:** disambiguate namespace component imports on macOS ([#1656](https://github.com/open-artifacts-ai/open-artifacts/issues/1656)) ([33f0335](https://github.com/open-artifacts-ai/open-artifacts/commit/33f03352bd493ad9267cd36543d732bf7b5abc95))
+* **provision:** always write HOSTS on a mode change (P22, [#1593](https://github.com/open-artifacts-ai/open-artifacts/issues/1593)) ([#1695](https://github.com/open-artifacts-ai/open-artifacts/issues/1695)) ([10c032a](https://github.com/open-artifacts-ai/open-artifacts/commit/10c032a2182c933eac0b0d77ffa7cb9a7a4421b0))
+* **redline:** read migrations from the repo root in schemaAhead ([#1692](https://github.com/open-artifacts-ai/open-artifacts/issues/1692)) ([#1694](https://github.com/open-artifacts-ai/open-artifacts/issues/1694)) ([d8359a4](https://github.com/open-artifacts-ai/open-artifacts/commit/d8359a406fc4c296f6ab7f4e27f0ea482dea6ca3))
+* **runtime:** comment on a selection that spans several elements ([#1708](https://github.com/open-artifacts-ai/open-artifacts/issues/1708)) ([#1712](https://github.com/open-artifacts-ai/open-artifacts/issues/1712)) ([356ad2f](https://github.com/open-artifacts-ai/open-artifacts/commit/356ad2f8bd4d74bb184f5c1c7d0ba398626b416b))
+
+## [0.134.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.133.0...v0.134.0) (2026-11-07)
+
+
+### Features
+
+* **billing:** Solo plan, public half: solo tier and view-only lock ([#1568](https://github.com/open-artifacts-ai/open-artifacts/issues/1568)) ([#1633](https://github.com/open-artifacts-ai/open-artifacts/issues/1633)) ([f81f676](https://github.com/open-artifacts-ai/open-artifacts/commit/f81f67646d4d5b2966cc49aa8b19f06ad92fa514))
+* **bus-cli:** always-on bus habits, written only with the user's yes ([#1583](https://github.com/open-artifacts-ai/open-artifacts/issues/1583)) ([#1638](https://github.com/open-artifacts-ai/open-artifacts/issues/1638)) ([5a92182](https://github.com/open-artifacts-ai/open-artifacts/commit/5a92182eb305e74b8db047a88fc466ce9e8be9d8))
+* **comments:** pins on images and PDFs ([#1490](https://github.com/open-artifacts-ai/open-artifacts/issues/1490)) ([#1589](https://github.com/open-artifacts-ai/open-artifacts/issues/1589)) ([83cbba2](https://github.com/open-artifacts-ai/open-artifacts/commit/83cbba276adfa6d8287e61fb971f3f7e5818e3fb))
+* **comments:** version contentHash; server stamps pin hashes ([#1490](https://github.com/open-artifacts-ai/open-artifacts/issues/1490)) ([#1622](https://github.com/open-artifacts-ai/open-artifacts/issues/1622)) ([30a979f](https://github.com/open-artifacts-ai/open-artifacts/commit/30a979fcedf4fe83225257e1dda66e2ddaaac677))
+* **dashboard:** Plan and billing screens; paused Solo controls ([#953](https://github.com/open-artifacts-ai/open-artifacts/issues/953), [#1639](https://github.com/open-artifacts-ai/open-artifacts/issues/1639)) ([#1676](https://github.com/open-artifacts-ai/open-artifacts/issues/1676)) ([41ba652](https://github.com/open-artifacts-ai/open-artifacts/commit/41ba6526d2bd1a6eefe70ccaff8287cc537616a5))
+* **dashboard:** uploads open images, and a HEIC photo becomes a JPEG ([#1654](https://github.com/open-artifacts-ai/open-artifacts/issues/1654)) ([6537711](https://github.com/open-artifacts-ai/open-artifacts/commit/653771133a2401c18f050a4356090b87225fa082))
+* **skill:** terse background output, wait timeouts, and the installer's habits question ([#1578](https://github.com/open-artifacts-ai/open-artifacts/issues/1578)) ([6013a63](https://github.com/open-artifacts-ai/open-artifacts/commit/6013a63309d7abb680ddf6ff02ff9f53dfb6aee6))
+
+
+### Bug Fixes
+
+* **bus:** a pi session rename reaches the hub ([#1635](https://github.com/open-artifacts-ai/open-artifacts/issues/1635)) ([#1646](https://github.com/open-artifacts-ai/open-artifacts/issues/1646)) ([c057292](https://github.com/open-artifacts-ai/open-artifacts/commit/c0572925b981947ee6ec0800bd8c681283530679))
+* **bus:** a session rename after connect reaches the hub ([#1635](https://github.com/open-artifacts-ai/open-artifacts/issues/1635)) ([#1636](https://github.com/open-artifacts-ai/open-artifacts/issues/1636)) ([fd5c528](https://github.com/open-artifacts-ai/open-artifacts/commit/fd5c528cfc77a081e5d6de859444c5e27dabb30b))
+* **bus:** long-lived bus sockets stay in the install index, so suspend closes them ([#1299](https://github.com/open-artifacts-ai/open-artifacts/issues/1299), PR 1) ([#1609](https://github.com/open-artifacts-ai/open-artifacts/issues/1609)) ([21ff37e](https://github.com/open-artifacts-ai/open-artifacts/commit/21ff37e064cfa12108ded2292936f22e8c306cfb))
+* **bus:** no work outlives a closed bus socket at test teardown ([#1299](https://github.com/open-artifacts-ai/open-artifacts/issues/1299)) ([#1652](https://github.com/open-artifacts-ai/open-artifacts/issues/1652)) ([a9f0ee5](https://github.com/open-artifacts-ai/open-artifacts/commit/a9f0ee56037c210f96be4cb7e2c7cf2ca4b45cea))
+* **bus:** the [#1453](https://github.com/open-artifacts-ai/open-artifacts/issues/1453) polish pass on the Agents and Machines pages ([#1650](https://github.com/open-artifacts-ai/open-artifacts/issues/1650)) ([2740258](https://github.com/open-artifacts-ai/open-artifacts/commit/2740258a2a174b54410add27a9017af8a30543bd))
+* **comments:** load agents on composer focus so Assign to shows without typing @ ([#1653](https://github.com/open-artifacts-ai/open-artifacts/issues/1653)) ([0d84c0c](https://github.com/open-artifacts-ai/open-artifacts/commit/0d84c0c8f20c626cc877ff91e7615df5ddacbef1))
+* **dashboard:** clearing the search box returns to the library ([#1640](https://github.com/open-artifacts-ai/open-artifacts/issues/1640)) ([#1641](https://github.com/open-artifacts-ai/open-artifacts/issues/1641)) ([f64459d](https://github.com/open-artifacts-ai/open-artifacts/commit/f64459de065af6f5706f165469b27070e251419a))
+* **dashboard:** member Agents page wraps its command and client tabs at 390px ([#1634](https://github.com/open-artifacts-ai/open-artifacts/issues/1634)) ([303c2f0](https://github.com/open-artifacts-ai/open-artifacts/commit/303c2f01e02b2c2b63f260d4ba7142ccd4981262))
+* **dashboard:** plan page phone table cue, lapsed note ([#1677](https://github.com/open-artifacts-ai/open-artifacts/issues/1677)) ([#1679](https://github.com/open-artifacts-ai/open-artifacts/issues/1679)) ([ed7374e](https://github.com/open-artifacts-ai/open-artifacts/commit/ed7374e59fc08ea5c691b34cfae9fe7ef4b911cc))
+* **dashboard:** plan table fade only while it can scroll ([#1680](https://github.com/open-artifacts-ai/open-artifacts/issues/1680)) ([#1683](https://github.com/open-artifacts-ai/open-artifacts/issues/1683)) ([68d535d](https://github.com/open-artifacts-ai/open-artifacts/commit/68d535d46ab3bb0941f005f5537757aa07d4da60))
+* **runtime:** selection Comment button matches the design and the viewer theme ([#1647](https://github.com/open-artifacts-ai/open-artifacts/issues/1647)) ([8faee8f](https://github.com/open-artifacts-ai/open-artifacts/commit/8faee8fc76c903a3deba1b480b509fd411b82ad5))
+* **viewer:** comments P2 design gaps (composer row, tab order, column default, full-screen toolbar) ([#1649](https://github.com/open-artifacts-ai/open-artifacts/issues/1649)) ([e21015a](https://github.com/open-artifacts-ai/open-artifacts/commit/e21015a5c9290adce20af464a014bf3919f32664))
+* **viewer:** comments P3 design gaps (avatars, resolved line, via inline, column, phone sheet) ([#1651](https://github.com/open-artifacts-ai/open-artifacts/issues/1651)) ([d011cc7](https://github.com/open-artifacts-ai/open-artifacts/commit/d011cc78b72462470fb62bde873741680b7fdf98))
+
 ## [0.133.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.132.1...v0.133.0) (2026-11-06)
 
 

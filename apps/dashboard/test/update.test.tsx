@@ -1,7 +1,13 @@
 // "Update available" (Design's A + B): admins see it, members and a null update don't.
 import { type InstanceUpdate, R } from "@oa/shared";
 import { createHandlers, fixtures } from "@oa/shared/mocks";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { COPIED, upgradePrompt } from "../src/layout/update";
@@ -70,12 +76,12 @@ describe("Settings → Instance Version card", () => {
     expect(up).toHaveAccessibleDescription(
       /Upgrade copies this prompt\. Paste it into any AI agent/,
     );
-    const status = screen.getByRole("status");
+    const status = within(c).getByRole("status");
     expect(status).toBeEmptyDOMElement();
     fireEvent.click(up);
     await waitFor(() => expect(write).toHaveBeenCalledWith(PROMPT));
     expect(await screen.findByText(COPIED)).toBeInTheDocument();
-    const notes = screen.getByRole("link", { name: /Release notes/ });
+    const notes = within(c).getByRole("link", { name: /Release notes/ });
     expect(notes).toHaveAttribute("href", NEWER.notesUrl);
     expect(notes).toHaveAttribute("target", "_blank");
     expect(notes).toHaveTextContent("(opens in new tab)");
@@ -85,12 +91,12 @@ describe("Settings → Instance Version card", () => {
     serve(NEWER);
     clipboard();
     mount("/settings/instance");
-    await card();
+    const c = await card();
     vi.useFakeTimers({ shouldAdvanceTime: true });
     fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
     expect(await screen.findByText(COPIED)).toBeInTheDocument();
     await act(() => vi.advanceTimersByTimeAsync(4100));
-    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    expect(within(c).getByRole("status")).toBeEmptyDOMElement();
   });
 
   it("up to date: Running, You're on the latest version, Checked; no prompt", async () => {

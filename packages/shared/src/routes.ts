@@ -89,6 +89,7 @@ export const R = {
   oauthClient: (grantId: string) => `/api/v1/oauth-clients/${seg(grantId)}`,
   /** GET -> BusMachines: the caller's own bus machines (#1291). Never a token. */
   busMachines: "/api/v1/bus/machines",
+  busPing: "/api/v1/bus/ping",
   /** DELETE -> 204: revoke one of the caller's machines (idempotent; another member's or unknown: 404). */
   busMachine: (id: string) => `/api/v1/bus/machines/${seg(id)}`,
   /** GET -> BusAgents: the caller's open bus agents (canConnect; else 404). Empty when the bus is off. */

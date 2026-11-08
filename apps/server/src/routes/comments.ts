@@ -195,6 +195,7 @@ export function mountComments(app: AppType): void {
         : who;
     const t = await addThread(c.env, artifact, w, viewer, raw.data, {
       moderator,
+      after: { version: artifact.currentVersion, ctx: execCtx(c) },
     });
     return withAnon(issued, c.json(t, 201));
   });
@@ -221,7 +222,10 @@ export function mountComments(app: AppType): void {
       viewer,
       raw.data.body,
       { mentions, assign },
-      { moderator },
+      {
+        moderator,
+        after: { version: artifact.currentVersion, ctx: execCtx(c) },
+      },
     );
     return withAnon(issued, c.json(out, 201));
   });
@@ -342,6 +346,17 @@ export function mountComments(app: AppType): void {
     return c.body(null, 204);
   });
 }
+
+/** The request's execution context, when the runtime has one (tests may not). */
+const execCtx = (
+  c: Context<AppEnv>,
+): Pick<ExecutionContext, "waitUntil"> | undefined => {
+  try {
+    return c.executionCtx;
+  } catch {
+    return undefined;
+  }
+};
 
 /** 403 forbidden for mentions or an assignment from anyone but the owner and editors. */
 function mayTarget(

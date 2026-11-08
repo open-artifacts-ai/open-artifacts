@@ -318,6 +318,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "GET /api/v1/bus/machines": { user: "the caller's bus machines" },
   // In CAPPED_ALLOWED: a capped caller can always revoke.
   "DELETE /api/v1/bus/machines/:id": { user: "the caller's bus machines" },
+  // #1299: the hosted canary's probe of the reserved ping hub; a read, so a
+  // plan cap never blocks it. 404 while the bus is off.
+  "GET /api/v1/bus/ping": { user: "the bus hub's liveness; no member data" },
   "GET /api/v1/bus/agents": { org: "mcp.connect" },
   // #1296 role addresses; PUT and DELETE browser sessions only (handler).
   "GET /api/v1/bus/roles": { org: "mcp.connect" },
@@ -460,6 +463,9 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   artifact_data_set: art("data.write"),
   artifact_data_update: art("data.write"),
   artifact_data_delete: art("data.write"),
+  list_comments: art("comments.read"),
+  add_comment: art("comments.write"),
+  resolve_comment: art("comments.write"),
   list_spaces: { user: "the caller's own publishable spaces" },
   // #1372: proposes only (the caller's own hub); offered while the bus is on.
   bus_role_propose: { org: "mcp.connect" },

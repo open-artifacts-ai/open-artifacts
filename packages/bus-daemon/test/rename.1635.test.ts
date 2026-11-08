@@ -79,6 +79,7 @@ describe("session rename after connect (#1635)", () => {
   });
 
   it("a refusal is logged, not retried, and a later change goes again", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
     const { h, d } = await start();
     write(d, 4242, "s-a", "OA Bus");
     await vi.waitFor(() => expect(h.of("rename")).toHaveLength(1));
@@ -91,7 +92,11 @@ describe("session rename after connect (#1635)", () => {
     });
     await settle();
     expect(h.of("rename")).toHaveLength(1);
+    // The hub's hour holds this agent's renames (#1635): a change goes once it is out.
     write(d, 4242, "s-a", "OA Bus 2");
+    await settle();
+    expect(h.of("rename")).toHaveLength(1);
+    vi.setSystemTime(Date.now() + 61 * 60_000);
     await vi.waitFor(() => expect(h.of("rename")).toHaveLength(2));
     expect(h.of("rename")[1]?.proposed_name).toBe("OA Bus 2");
   });

@@ -15,6 +15,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
 import { CODES_PER_IP, RL_KEYS } from "../../src/bus/routes.js";
+import { BUS_PING_HUB_NAME } from "../../src/services/bus.js";
 import { api, errOf, fetchAndWait } from "../helpers.js";
 import { limiter } from "../mcp-helpers.js";
 import {
@@ -1019,5 +1020,89 @@ describe("dashboard REST", () => {
     expect(j.machines[0]?.lastUsedAt).not.toBeNull();
     ws.close();
     void waitFor;
+  });
+});
+
+describe("GET /api/v1/bus/ping (#1299)", () => {
+  const ping = (headers: Record<string, string>, ev: unknown = env) =>
+    fetchAndWait(
+      app,
+      new Request(`http://app.localhost${R.busPing}`, { headers }),
+      ev,
+    );
+
+  it("answers { ok: true } to a PAT when the bus is on", async () => {
+    const m = await member();
+    const pat = (await createPat(env, m.userId, "ping")).token;
+    const r = await ping({ authorization: `Bearer ${pat}` });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ ok: true });
+  });
+
+  it("is 401 without a credential", async () => {
+    expect((await ping({})).status).toBe(401);
+  });
+
+  /** `env` with BUS_HUB wrapped so each idFromName call is recorded. */
+  const spied = (names: string[], extra: Record<string, unknown> = {}) => {
+    const ns = env.BUS_HUB as NonNullable<typeof env.BUS_HUB>;
+    return {
+      ...env,
+      ...extra,
+      BUS_HUB: new Proxy(ns, {
+        get(t, k) {
+          if (k === "idFromName")
+            return (n: string) => {
+              names.push(n);
+              return t.idFromName(n);
+            };
+          const v = Reflect.get(t, k);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }),
+    };
+  };
+
+  it("is 404 while the bus is off, before any hub is touched: unbound, or hosted without FEATURES bus", async () => {
+    const m = await member();
+    const pat = (await createPat(env, m.userId, "ping-off")).token;
+    const auth = { authorization: `Bearer ${pat}` };
+    const names: string[] = [];
+    const un = await ping(auth, { ...env, BUS_HUB: undefined });
+    expect(un.status).toBe(404);
+    const ho = await ping(auth, spied(names, { HOSTED: "1" }));
+    expect(ho.status).toBe(404);
+    expect(((await ho.json()) as { error: { code: string } }).error.code).toBe(
+      "not_found",
+    );
+    expect(names).toEqual([]);
+  });
+
+  it("uses the reserved hub name, never the caller's hub", async () => {
+    const m = await member();
+    const pat = (await createPat(env, m.userId, "ping-hub")).token;
+    const names: string[] = [];
+    const r = await ping({ authorization: `Bearer ${pat}` }, spied(names));
+    expect(r.status).toBe(200);
+    expect(names).toEqual([BUS_PING_HUB_NAME]);
+    expect(names).not.toContain(`bus:${m.userId}`);
+  });
+
+  it("is 503 storage_unavailable with retry-after when the hub does not answer in time", async () => {
+    const m = await member();
+    const pat = (await createPat(env, m.userId, "ping-slow")).token;
+    const slow = {
+      ...env,
+      BUS_HUB: {
+        idFromName: (n: string) => n,
+        get: () => ({ ping: () => new Promise(() => {}) }),
+      },
+    };
+    const r = await ping({ authorization: `Bearer ${pat}` }, slow);
+    expect(r.status).toBe(503);
+    expect(r.headers.get("retry-after")).toBe("5");
+    expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
+      "storage_unavailable",
+    );
   });
 });

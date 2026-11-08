@@ -18,7 +18,7 @@ beforeEach(() => {
 
 describe("text-range", () => {
   it("flattens text nodes in document order", () => {
-    expect(flatText(root)).toBe("Hello brave newworld 😀 end");
+    expect(flatText(root)).toBe("Hello brave new world 😀 end");
   });
 
   it("leaves out script, style, noscript, template and textarea text", () => {
@@ -26,7 +26,7 @@ describe("text-range", () => {
       "beforeend",
       "<style>p{color:red}</style><script>var a=1</script><noscript>nojs</noscript><template>tpl</template><textarea>secret</textarea><input type=hidden value=hid><p>tail</p>",
     );
-    expect(flatText(root)).toBe("Hello brave newworld \u{1F600} endtail");
+    expect(flatText(root)).toBe("Hello brave new world \u{1F600} end tail");
     const text = flatText(root);
     const r = offsetsToRange(root, text.indexOf("tail"), text.length);
     expect(r?.toString()).toBe("tail");
@@ -34,6 +34,40 @@ describe("text-range", () => {
       start: text.indexOf("tail"),
       end: text.length,
     });
+  });
+
+  it("separates blocks with one space that no node owns, and maps offsets across it", () => {
+    const text = flatText(root);
+    expect(text.indexOf("new world")).toBe(12);
+    const idx = indexText(root);
+    // offset 15 is the separator: a range ending there stops after "new".
+    expect(rangeFromIndex(idx, 12, 15)?.toString()).toBe("new");
+    expect(rangeFromIndex(idx, 16, 21)?.toString()).toBe("world");
+    const r = document.createRange();
+    r.setStart(root.firstChild?.lastChild as Text, 1);
+    r.setEnd(root.lastChild?.firstChild as Text, 5);
+    expect(rangeToOffsets(root, r, idx)).toEqual({ start: 12, end: 21 });
+  });
+
+  it("separates text at a br, an hr or an empty block, as the server does", () => {
+    for (const mid of ["<br>", "<hr>", "<p></p>", "<br><br>"]) {
+      root.innerHTML = `<div>alpha${mid}beta</div>`;
+      expect(flatText(root)).toBe("alpha beta");
+    }
+    root.innerHTML = "<p>alpha <br>beta</p><p>x<b>y</b>z</p>";
+    expect(flatText(root)).toBe("alpha beta xyz");
+  });
+
+  it("snaps an offset on a separator into the nearest node (the collapsed path)", () => {
+    const idx = indexText(root);
+    const gap = idx.text.indexOf(" world");
+    expect(gap).toBe(15);
+    const r = rangeFromIndex(idx, gap, gap + 1);
+    expect(r).not.toBeNull();
+    // start snaps to the start of the next node, never a negative offset
+    expect(r?.startContainer).toBe(root.lastChild?.firstChild);
+    expect(r?.startOffset).toBe(0);
+    expect(r?.endOffset).toBe(0);
   });
 
   it("round-trips a range across inline elements", () => {
@@ -99,9 +133,12 @@ describe("text-range", () => {
       "<i>tail</i><svg><style>.a{fill:red}</style><script>var x</script></svg>",
     );
     const idx = indexText(root);
-    expect(idx.text).toBe("Hello brave newworld \u{1F600} endtail");
+    expect(idx.text).toBe("Hello brave new world \u{1F600} end tail");
     expect(rangeFromIndex(idx, 6, 11)?.toString()).toBe("brave");
-    expect(rangeFromIndex(idx, 0, idx.text.length)?.toString()).toBe(idx.text);
+    // A Range holds the nodes' text only; the block separators are not in it.
+    expect(rangeFromIndex(idx, 0, idx.text.length)?.toString()).toBe(
+      idx.nodes.map((n) => n.data).join(""),
+    );
     expect(rangeFromIndex(idx, 0, idx.text.length + 1)).toBeNull();
     expect(nodeAtIndex(idx, 7)?.data).toBe("brave");
     expect(nodeAtIndex(idx, idx.text.length)).toBeNull();
@@ -119,6 +156,6 @@ describe("text-range", () => {
     g.textContent = "visible";
     svg.append(g);
     root.append(svg);
-    expect(flatText(root)).toBe("Hello brave newworld \u{1F600} endvisible");
+    expect(flatText(root)).toBe("Hello brave new world \u{1F600} end visible");
   });
 });

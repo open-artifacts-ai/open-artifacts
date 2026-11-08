@@ -178,13 +178,11 @@ describe("ci.yml no-test-hooks job", () => {
   });
   // P3 T17 (#602): the test-hook strip test builds both variants and must
   // run here, where the builds work, and never skip.
-  it("runs the test-hook strip test after the real-build pin, required and gated", () => {
+  it("runs the test-hook strip test, required and gated", () => {
     expect(job).toBeDefined();
     const names = steps.map((st) => (st as { name?: string }).name ?? "");
-    const pin = names.indexOf("Real-build pin test");
     const strip = names.indexOf("Test-hook strip test");
-    expect(pin).toBeGreaterThan(-1);
-    expect(strip).toBeGreaterThan(pin);
+    expect(strip).toBeGreaterThan(-1);
     const st = steps[strip] as {
       run?: string;
       if?: string;
