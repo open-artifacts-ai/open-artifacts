@@ -128,7 +128,13 @@ const hello = () =>
     await waitFor(() => expect(opts.length).toBeGreaterThan(0));
     opts.at(-1)?.onHello();
   });
-const col = () => screen.findByRole("complementary", { name: "Comments" });
+/** The column starts closed (#1731): open it with the Comments button. */
+const col = async () => {
+  const b = await screen.findByRole("button", { name: /^Comments/ });
+  if (!screen.queryByRole("complementary", { name: "Comments" }))
+    fireEvent.click(b);
+  return screen.findByRole("complementary", { name: "Comments" });
+};
 const threadIds = () =>
   [...document.querySelectorAll("[data-thread]")].map((e) =>
     e.getAttribute("data-thread"),

@@ -265,14 +265,9 @@ function Viewer({
     : requestedTab === "comments" && !commentsTab
       ? "versions"
       : requestedTab;
-  // Open by default wherever the column has room (so the empty state and the
-  // whole-page box show first); narrower, only when there is something to show.
-  const columnShown =
-    colOpen ??
-    (surface === "column" ||
-      cmt.threads.length > 0 ||
-      cmt.draft !== null ||
-      cmt.error != null);
+  // Closed until asked for (#1731): the Comments button, a selection, a pin or
+  // a thread's highlight opens it (each calls openSurface).
+  const columnShown = colOpen ?? false;
   // Where the list is on screen its Pin button is the cue; otherwise (a closed
   // column, another panel tab, a phone with no sheet) the bar is, so pin mode
   // never runs unannounced. Hidden under the sheet too: it would overlap it.
