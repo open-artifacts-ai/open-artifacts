@@ -176,13 +176,13 @@ const MAX_SOCKETS_PER_ACTOR = 20;
 const SOCKET_TTL_MS = LIMITS.signedUrlTtlSec * 1000;
 /** The alarm also closes sockets this close to their TTL, batching alarms (≤1/min). */
 const SOCKET_TTL_SLACK_MS = 60_000;
+/** An unchanged agent row is rewritten at most this often (its window is AGENT_PRESENT_MS). */
+const AGENT_SEEN_REFRESH_MS = 10_000;
 /**
  * Search indexing (C3) runs this long after scheduleIndex, from the alarm:
  * a burst of publishes indexes only the newest version, and the alarm runs
  * after the publishing isolate's burst is over.
  */
-/** An unchanged agent row is rewritten at most this often (its window is AGENT_PRESENT_MS). */
-const AGENT_SEEN_REFRESH_MS = 10_000;
 export const INDEX_DELAY_MS = LIMITS.indexDebounceMs;
 /** Index attempts per version before {evt:"index_failed"}. */
 export const INDEX_MAX_ATTEMPTS = 5;
