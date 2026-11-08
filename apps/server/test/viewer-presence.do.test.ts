@@ -564,27 +564,34 @@ describe("viewer presence: alarm and agent touches (review fixes)", () => {
     await a.next("presence");
     await stubOf(id).scheduleIndex("art-1", 1);
     const closeAt = T0 + PRESENCE_COALESCE_MS + 1000;
+    let release = () => {};
+    let inIndexer = false;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
     await inDo(id, (i) => {
       i.indexer = async () => {
-        i.now = () => closeAt;
-        b.ws.close(1000);
-        // The DO's close handler ran once the grace row is there.
-        for (let n = 0; n < 500 && i.pendingViewerPresence().left === 0; n++)
-          await new Promise((r) => setTimeout(r, 0));
+        inIndexer = true;
+        await gate;
       };
     });
     await clock(id, closeAt);
-    await inDo(id, (i) => {
-      const run = i.indexer;
-      i.indexer = async (...x) => {
-        await run(...x);
-        i.now = () => closeAt;
-      };
-    });
-    await alarm(id);
+    const ran = alarm(id);
+    for (let n = 0; n < 500 && !(await inDo(id, () => inIndexer)); n++);
+    expect(inIndexer).toBe(true);
+    // The viewer closes while the alarm is inside the indexer's await.
+    b.ws.close(1000);
+    await b.closed;
+    for (
+      let n = 0;
+      n < 500 && (await inDo(id, (i) => i.pendingViewerPresence().left)) === 0;
+      n++
+    );
+    release();
+    await ran;
     const armed = await inDo(id, (_i, s) => s.storage.getAlarm());
     expect(armed).not.toBeNull();
-    expect(armed as number).toBeLessThanOrEqual(closeAt + PRESENCE_GRACE_MS);
+    expect(armed as number).toBe(closeAt + PRESENCE_GRACE_MS);
   });
 
   it("an unchanged touch inside 10 s writes no row; a changed field writes and notifies", async () => {
@@ -592,7 +599,7 @@ describe("viewer presence: alarm and agent touches (review fixes)", () => {
     await clock(id, T0);
     const a = await joined(id, "a");
     await stubOf(id).touchViewerAgent(touch());
-    await a.next("presence");
+    await a.settle();
     await clock(id, T0 + 5000);
     await stubOf(id).touchViewerAgent(touch());
     expect(await agentRow(id)).toEqual([{ seen: T0 }]);
@@ -603,7 +610,9 @@ describe("viewer presence: alarm and agent touches (review fixes)", () => {
     await stubOf(id).touchViewerAgent(touch({ activity: "Reading" }));
     expect(await agentRow(id)).toEqual([{ seen: T0 + 11_000 }]);
     await clock(id, T0 + 12_000);
-    await stubOf(id).touchViewerAgent(touch({ activity: "Reading", write: true }));
+    await stubOf(id).touchViewerAgent(
+      touch({ activity: "Reading", write: true }),
+    );
     expect(await agentRow(id)).toEqual([{ seen: T0 + 12_000 }]);
   });
 

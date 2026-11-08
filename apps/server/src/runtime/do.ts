@@ -1728,7 +1728,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       t.ownerActor === prev.owner_actor &&
       activity === prev.activity &&
       (!t.write ||
-        (prev.last_write != null && now - prev.last_write < AGENT_SEEN_REFRESH_MS))
+        (prev.last_write != null &&
+          now - prev.last_write < AGENT_SEEN_REFRESH_MS))
     )
       return false;
     this.sql.exec(
