@@ -67,6 +67,12 @@ export const PlanViewSchema = z.object({
   status: BillingStatusSchema.nullable(),
   /** ISO; the trial's end (set once a trial started). Owner and admins; null for others. */
   trialEndsAt: z.string().nullable(),
+  /**
+   * ISO; the Solo trial's end. Separate from trialEndsAt, which is the
+   * Business trial's only. Owner and admins; null for others; absent when
+   * billing's answer predates it.
+   */
+  soloTrialEndsAt: z.string().nullable().optional(),
   /** ISO; while past_due, the grace period's end. Owner and admins; null for others. */
   graceUntil: z.string().nullable(),
   /** Distinct creators this UTC calendar month so far (CREATOR definition). Owner and admins only. */

@@ -46,6 +46,14 @@ describe("effectivePlan: solo", () => {
     expect(plan({ trialEndsAt: mid - DAY }).trialEligible).toBe(false);
   });
 
+  it("soloTrialEndsAt rides along and never touches trialEligible", () => {
+    const p = plan({ soloTrialEndsAt: mid + DAY });
+    expect(p.soloTrialEndsAt).toBe(mid + DAY);
+    expect(p.trialEndsAt).toBeNull();
+    expect(p.trialEligible).toBe(true);
+    expect(plan({}).soloTrialEndsAt).toBeUndefined();
+  });
+
   it("lapsed, and past_due after grace, are view-only: solo_unpaid", () => {
     for (const p of [
       plan({ status: "lapsed" }),

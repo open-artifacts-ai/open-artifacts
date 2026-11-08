@@ -135,15 +135,23 @@ export const planStatus = (
         }. After that, this instance becomes read-only.`,
       },
     };
-  if ((b.tier === "trial" || solo) && b.trialEndsAt)
+  // trialEndsAt is the Business trial's only: a Solo row with one is a used
+  // Business trial and shows no note. The Solo month has its own date, and a
+  // date already past (a paid Solo) shows nothing.
+  if (b.tier === "trial" && b.trialEndsAt)
     return {
       pill: { label: "Trial", tone: "info" },
       note: {
         tone: "info",
-        text:
-          b.tier === "trial"
-            ? `Trial ends ${date(b.trialEndsAt)}. Everything in Business is on.`
-            : `Your free month ends ${date(b.trialEndsAt)}. Then $1/month or $12/year.`,
+        text: `Trial ends ${date(b.trialEndsAt)}. Everything in Business is on.`,
+      },
+    };
+  if (solo && b.soloTrialEndsAt && Date.parse(b.soloTrialEndsAt) > Date.now())
+    return {
+      pill: { label: "Trial", tone: "info" },
+      note: {
+        tone: "info",
+        text: `Your free month ends ${date(b.soloTrialEndsAt)}. Then $1/month or $12/year.`,
       },
     };
   return { pill: { label: "Active", tone: "ok" } };
