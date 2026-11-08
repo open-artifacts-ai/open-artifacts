@@ -1,0 +1,1 @@
+ALTER TABLE `uploads` ADD `expected_sha256` text;
