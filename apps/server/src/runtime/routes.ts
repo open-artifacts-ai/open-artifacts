@@ -36,6 +36,7 @@ import {
   can,
   capsOf,
   dataWriteCreates,
+  isGuestRole,
   namedEvents,
   type PolicyAction,
 } from "../auth/policy.js";
@@ -611,7 +612,7 @@ export function mountRuntime(app: AppType): void {
           key: await viewerPresenceKey(c.env, artifactId, `u:${who.user.id}`),
           kind: "person",
           name: publicName(who.user),
-          guest: who.user.role === "guest",
+          guest: isGuestRole(who.user.role),
         };
       } else {
         const pid = getCookie(c, PRESENCE_COOKIE);
