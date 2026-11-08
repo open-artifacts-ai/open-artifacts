@@ -4,6 +4,7 @@ import {
   type BusLink,
   type BusLinkProposed,
   type BusMachine,
+  type BusNotice,
   type BusRole,
   type BusRoleProposal,
   type BusRoleProposeInput,
@@ -30,6 +31,7 @@ import { lookupUserGrant } from "../mcp/oauth-api.js";
 import { b64urlEncode, sha256Hex } from "../util/crypto.js";
 import { type Via, viaKey } from "./agent-usage.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
+import type { DeliveryOutcome, NoticeDelivery } from "./bus-delivery.js";
 
 // The bus's D1 side and the dashboard's reads of a member's BusHub (#1291).
 // A BusHub exists only for a member with a machine that has connected at
@@ -77,6 +79,8 @@ export const busCloseKind = (reason: string): BusCloseKind =>
 export type BusHubRpc = {
   /** True; reads no member data and arms no alarm (the reserved ping hub). */
   ping(): Promise<true>;
+  /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */
+  deliverNotice(notice: BusNotice): Promise<DeliveryOutcome>;
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(): Promise<{ connected: string[]; agents: BusAgent[] }>;
   /** Closes the machine's sockets and drains its agents; false when unknown or already revoked. */
@@ -389,6 +393,32 @@ export async function hasConnectedMachine(
     .first<{ x: number }>();
   return r !== null;
 }
+
+/**
+ * #1317: the Worker's NoticeDelivery: carries one notice to the member's
+ * BusHub. "dropped" without touching a hub when the bus is off, the member
+ * has no machine that ever connected (so no hub is created for them), the
+ * hub is slow (BUS_HUB_TIMEOUT_MS) or it fails. A plan cap (#1299) does not
+ * stop it: capped members' machines keep receiving; a suspended member's
+ * machines cannot connect, so their notices wait out the hold and expire.
+ */
+export const hubNoticeDelivery: NoticeDelivery = {
+  async deliver(env, userId, notice) {
+    if (!busOn(env) || !(await hasConnectedMachine(env, userId)))
+      return "dropped";
+    const hub = busHub(env, userId);
+    if (!hub) return "dropped";
+    try {
+      return (
+        (await within(hub.deliverNotice(notice), BUS_HUB_TIMEOUT_MS)) ??
+        "dropped"
+      );
+    } catch (e) {
+      logError("bus_notice_failed", e);
+      return "dropped";
+    }
+  },
+};
 
 /**
  * Erase (#1204): deletes everything the member's BusHub holds (machine
