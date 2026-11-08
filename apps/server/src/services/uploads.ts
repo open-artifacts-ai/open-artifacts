@@ -134,8 +134,8 @@ export async function createUpload(
   stmts.push(
     db
       .prepare(
-        `insert into uploads (id, artifact_id, user_id, r2_key, size, content_type, path, created_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `insert into uploads (id, artifact_id, user_id, r2_key, size, content_type, path, created_at, expected_sha256)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         uploadId,
@@ -146,6 +146,7 @@ export async function createUpload(
         contentType,
         p.path,
         now,
+        input.sha256 ?? null,
       ),
   );
   await db.batch(stmts);
@@ -179,10 +180,15 @@ export async function putUpload(
   if (!(await hmacVerify(await signingKey(env), `${uploadId}:${exp}`, sig)))
     throw notFound();
   const row = await env.DB.prepare(
-    "select r2_key, size, content_type from uploads where id = ? and consumed = 0",
+    "select r2_key, size, content_type, expected_sha256 from uploads where id = ? and consumed = 0",
   )
     .bind(uploadId)
-    .first<{ r2_key: string; size: number; content_type: string }>();
+    .first<{
+      r2_key: string;
+      size: number;
+      content_type: string;
+      expected_sha256: string | null;
+    }>();
   if (!row) throw notFound();
   const len = req.headers.get("content-length");
   if (
@@ -221,9 +227,19 @@ export async function putUpload(
   try {
     obj = await env.FILES.put(row.r2_key, req.body, {
       httpMetadata: { contentType: row.content_type },
+      ...(row.expected_sha256 ? { sha256: row.expected_sha256 } : {}),
     });
   } catch (e) {
     await release();
+    if (
+      row.expected_sha256 &&
+      e instanceof Error &&
+      /\(10037\)$/.test(e.message)
+    )
+      throw new ApiError(
+        "bad_request",
+        "Upload SHA-256 does not match the declared checksum. Send the original bytes or create a new upload with their checksum.",
+      );
     throw e;
   }
   if (!obj || obj.size !== row.size) {
@@ -236,11 +252,10 @@ export async function putUpload(
       },
     );
   }
-  // sha256 of the stored bytes (#1490), one more R2 read. Not on a free
-  // instance: the Workers Free 10 ms CPU limit cannot hash a large file, so
-  // its digest stays null. Any failure frees the slot for a retry.
-  let digest: string | null = null;
-  if (planOf(env.PLAN) === "paid") {
+  // R2 verified the supplied checksum while storing the bytes. Without one,
+  // paid plans reread and hash; Free keeps null to stay within its CPU budget.
+  let digest: string | null = row.expected_sha256;
+  if (!digest && planOf(env.PLAN) === "paid") {
     try {
       const stored = await env.FILES.get(row.r2_key);
       if (!stored) throw new Error("upload not readable after put");
