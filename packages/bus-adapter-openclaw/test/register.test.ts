@@ -154,7 +154,7 @@ describe("register", () => {
     const toolCtx = { agentId: "main", sessionKey: "agent:main:main" };
     const selfTool = () =>
       (
-        a.tools[0]?.factory(toolCtx) as {
+        (a.tools[0]?.factory(toolCtx) ?? []) as {
           name: string;
           execute: (id: string, p: object) => Promise<unknown>;
         }[]
