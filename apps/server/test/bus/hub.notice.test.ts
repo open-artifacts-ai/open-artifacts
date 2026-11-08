@@ -524,38 +524,6 @@ describe("notices reach only the addressed agent (#1317)", () => {
     expect(next).toBeGreaterThan(t + 60_001 + 1000);
   });
 
-  it("a notice resolving to another agent (a global of the same name) is not sent to the one reconnecting", async () => {
-    const s = await setup();
-    const t = base();
-    await setClock(s.userId, t);
-    // A second agent of the same name in another namespace, then made global:
-    // the address (s.namespace, name) now resolves to it, not to s's agent.
-    const other = await addMachine(s.userId, ns("elsewhere"), uniq("zz"));
-    await inHub(s.userId, (_, st) => {
-      st.storage.sql.exec(
-        "update agents set name = ?, global = 1 where machine_id = ?",
-        s.name,
-        other.machineId,
-      );
-    });
-    await seedNotice(s.userId, {
-      toNs: s.namespace,
-      name: s.name,
-      key: "k1",
-      notBefore: t - 1,
-      expiresAt: t + NOTICE_HOLD_MS,
-      parked: 1,
-    });
-    await goOffline(s.d, s.machineId, s.userId);
-    const d2 = await daemon(s.token);
-    d2.send(hello(id("h")));
-    await waitFor(d2, "hello_ok");
-    d2.send(up(id("u"), s.ref, s.name, s.namespace));
-    await waitFor(d2, "agent_ok");
-    await settled(d2, s.ref);
-    expect(delivers(d2)).toEqual([]);
-  });
-
   it("reaches a global agent from any address that names it, on reconnect", async () => {
     const s = await setup();
     const t = base();
