@@ -196,7 +196,7 @@ export const TOOL_DEFS = [
     inputSchema: AddCommentInputSchema,
     example: { id: ID, body: "Is this figure for Q3?" },
     description:
-      'Open Artifacts: comment on an artifact you can open. Without `threadId` it starts a thread: `anchor` is { kind: "note" } (the default, the whole artifact), a text anchor { kind: "text", exact, prefix, suffix } (on html, a quote the stored page does not show is accepted with its prefix and suffix kept from the live page, at most 32 characters each side, and no block hint) or a pin. With `threadId` it replies (no anchor). `body` is 1 to 2,000 characters. Subject to the same rate limits as the web app (rate_limited: wait, then retry).',
+      'Open Artifacts: comment on an artifact you can open. Without `threadId` it starts a thread: `anchor` is { kind: "note" } (the default, the whole artifact), a text anchor { kind: "text", exact, prefix, suffix } (on html, a quote the stored page does not show is accepted with its prefix and suffix kept from the live page, at most 32 characters each side, and no block hint) or a pin. With `threadId` it replies (no anchor). `body` is 1 to 2,000 characters. Subject to the same rate limits as the web app (rate_limited: wait, then retry). `ask` turns the comment into a question put to people or agents (owner and editors only; forbidden otherwise): { question, options: [{ id, label, detail? }], recommended?: { optionId, why }, to: [{ key }] } with `to` keys from the artifact\'s followers or people who can read it; it works on a new thread or a reply. Addressees answer with one option.',
   },
   {
     name: "resolve_comment",

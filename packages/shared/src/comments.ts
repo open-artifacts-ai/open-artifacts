@@ -219,6 +219,8 @@ export const AddCommentInputSchema = z.strictObject({
   body: z.string(),
   threadId: IdSchema.optional(),
   anchor: anchorInputSchema.optional(),
+  /** Turns the comment into an ask (#1535): owner and editors only. */
+  ask: AskInputSchema.optional(),
 });
 export type AddCommentInput = z.infer<typeof AddCommentInputSchema>;
 
