@@ -393,7 +393,7 @@ describe("hubNoticeDelivery (the Worker adapter, #1317)", () => {
   it("drops for a member with no bus, without creating a hub", async () => {
     const m = await member();
     const touched: string[] = [];
-    const ns_ = e.BUS_HUB as DurableObjectNamespace;
+    const ns_ = e.BUS_HUB as unknown as DurableObjectNamespace;
     const spy = {
       idFromName: (n: string) => {
         touched.push(n);
