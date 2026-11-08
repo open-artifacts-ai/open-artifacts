@@ -108,6 +108,18 @@ export function PinBar() {
 
 const MUTED = "text-muted-foreground";
 
+/**
+ * #1657: in the phone sheet's short height (a pin's card), the action row
+ * stays on screen instead of being cut at the bottom edge. The sheet carries
+ * the named group; elsewhere these variants do nothing. The row needs its own
+ * surface while it floats (content scrolls under it), and that surface is the
+ * one it sits on: a thread card's, or the sheet's in the note composer.
+ */
+const STICKY =
+  "group-data-[sheet-height=pin]/sheet:sticky group-data-[sheet-height=pin]/sheet:bottom-0 group-data-[sheet-height=pin]/sheet:z-10";
+export const ACTIONS = `${STICKY} group-data-[sheet-height=pin]/sheet:bg-background`;
+export const ACTIONS_PLAIN = `${STICKY} group-data-[sheet-height=pin]/sheet:bg-card`;
+
 /** Everything below renders comment text as React text: never HTML. */
 
 function GuestName({ api }: { api: CommentsApi }) {
@@ -154,11 +166,14 @@ function Composer({
   failure,
   onDirty,
   mentionable = false,
+  actions = ACTIONS,
   buttonsRight = false,
   lead,
 }: {
   /** Offer @mentions and Assign: the agent list is fetched once an "@" is typed. */
   mentionable?: boolean;
+  /** The action row's own surface while it floats in the short sheet (#1657). */
+  actions?: string;
   /** The new-comment layout: Assign on its own line, then Cancel and the
       accent submit at the right. */
   buttonsRight?: boolean;
@@ -382,7 +397,10 @@ function Composer({
           );
           if (buttonsRight)
             return (
-              <>
+              <div
+                data-oa-actions=""
+                className={`flex flex-col gap-2 ${actions}`}
+              >
                 {assignSel}
                 <div className="flex flex-wrap items-center gap-2">
                   {lead}
@@ -399,10 +417,13 @@ function Composer({
                     </Button>
                   </div>
                 </div>
-              </>
+              </div>
             );
           return (
-            <div className="flex flex-wrap items-center gap-2">
+            <div
+              data-oa-actions=""
+              className={`flex flex-wrap items-center gap-2 ${actions}`}
+            >
               <Button
                 size="xs"
                 disabled={!body || busy}
@@ -906,6 +927,7 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         submit="Comment"
         alwaysOpen={false}
         buttonsRight
+        actions={ACTIONS_PLAIN}
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
         onSubmit={(body, x) =>

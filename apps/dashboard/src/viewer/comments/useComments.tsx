@@ -166,10 +166,13 @@ export function useCommentsController({
   const [hello, setHello] = useState(0);
 
   const mayComment = canComment(artifact, authed, readOnly);
-  const [wantPin, setWantPin] = useState(false);
+  // #1657: an image opens in Pin mode and a pdf in Select (spec 6); the
+  // reader's choice, once made, holds for this view.
+  const [wantPin, setWantPin] = useState<boolean | null>(null);
+  const pins = wantPin ?? pinFormat === "image";
   // Pin mode only where pins are offered and the viewer can comment.
   const mode: "select" | "pin" =
-    wantPin && pinFormat !== null && mayComment ? "pin" : "select";
+    pins && pinFormat !== null && mayComment ? "pin" : "select";
   const modeRef = useRef(mode);
   modeRef.current = mode;
   // Esc leaves pin mode first. Capture phase, and stopped: in full screen the
@@ -194,8 +197,19 @@ export function useCommentsController({
     b.setCommentsMode?.(enabled ? (mayComment ? mode : "view") : "off");
     // A pin being composed is drawn as a ghost until it posts or is cancelled.
     const pin = draft && "pin" in draft ? draft.pin : undefined;
-    if (enabled) b.setComments?.(frameThreads(threads, active), pin);
-  }, [enabled, mayComment, mode, threads, active, draft, hello, getBridge]);
+    if (enabled)
+      b.setComments?.(frameThreads(threads, active, contentHash), pin);
+  }, [
+    enabled,
+    mayComment,
+    mode,
+    threads,
+    active,
+    draft,
+    contentHash,
+    hello,
+    getBridge,
+  ]);
 
   const ids = useRef(new Set<string>());
   ids.current = new Set((all ?? []).map((t) => t.id));

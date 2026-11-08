@@ -258,7 +258,7 @@ describe("ci.yml", () => {
     expect(uploads[1].if).toBe("failure()");
     // The spaces suite (one spec, its own server) runs whole in exactly one
     // shard per event: 2 of two on a pull request, 3 of four in the queue.
-    // The unsharded ui, landing and provisioning checks in shard 1 only.
+    // The unsharded ui and landing checks in shard 1 only.
     const shardsRunning = (name: string, pr: boolean, all: number[]) => {
       const step = steps.find(
         (s) => s.run === `bash scripts/ci/e2e.sh ${name}`,
@@ -272,7 +272,7 @@ describe("ci.yml", () => {
     };
     for (const e of events) {
       expect(shardsRunning("spaces", e.pr, e.shards)).toEqual([e.pr ? 2 : 3]);
-      for (const name of ["ui", "landing", "provisioning"]) {
+      for (const name of ["ui", "landing"]) {
         expect(shardsRunning(name, e.pr, e.shards)).toEqual([1]);
       }
     }
@@ -281,6 +281,8 @@ describe("ci.yml", () => {
     expect(s).not.toContain("secrets.");
     expect(s).not.toContain("staging");
     expect(ci("e2e.sh")).not.toContain("--with-deps");
+    // The deleted hosted package has no step left.
+    expect(ci("e2e.sh")).not.toContain("provisioning");
     expect(ci("e2e.sh")).toContain("PLAYWRIGHT_IMAGE_VERSION");
   });
   describe("release-only fast path", () => {
@@ -298,7 +300,6 @@ describe("ci.yml", () => {
       "test-shard",
       "build",
       "e2e-shard",
-      "e2e-admin",
       "authz-matrix",
     ];
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
@@ -320,16 +321,14 @@ describe("ci.yml", () => {
       expect(w.jobs["test-shard"].needs).toBeUndefined();
       expect(w.jobs["e2e-shard"].if).toBeUndefined();
       expect(w.jobs["e2e-shard"].needs).toBeUndefined();
-      expect(w.jobs["e2e-admin"].if).toBeUndefined();
-      expect(w.jobs["e2e-admin"].needs).toBeUndefined();
       expect(w.jobs.changes).toBeUndefined();
     });
     // The one exception, and why it can't pass by being skipped: `e2e` always
     // runs (never skipped), and its first, ungated step fails unless every
     // shard succeeded, so a skipped, cancelled or failed shard fails it.
-    it("e2e is the aggregate of the shards and the admin job: always runs, passes only when all passed", () => {
+    it("e2e is the aggregate of the shards: always runs, passes only when all passed", () => {
       const job = w.jobs.e2e;
-      expect(job.needs).toEqual(["e2e-shard", "e2e-admin"]);
+      expect(job.needs).toEqual(["e2e-shard"]);
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(job.if).toBe("${{ always() }}");
       const [gate] = steps("e2e");
@@ -337,11 +336,7 @@ describe("ci.yml", () => {
       expect(gate["continue-on-error"]).toBeUndefined();
       // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
       expect(gate.env.SHARDS).toBe("${{ needs.e2e-shard.result }}");
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
-      expect(gate.env.ADMIN).toBe("${{ needs.e2e-admin.result }}");
-      expect(gate.run).toMatch(
-        /^\[ "\$SHARDS" = success \] && \[ "\$ADMIN" = success \]$/m,
-      );
+      expect(gate.run).toMatch(/^\[ "\$SHARDS" = success \]$/m);
       expect(JSON.stringify(job)).not.toContain("secrets.");
     });
     // Same for `test` (#965): it always runs, and its first, ungated step
@@ -450,14 +445,12 @@ describe("ci.yml", () => {
       expect(raw).not.toMatch(/contains\(.*labels/);
     });
   });
-  // H-RD: provision's src and dist import @oa/auth-core/domains, which node
-  // resolves to auth-core's dist. A job that runs provision code must build it
-  // first (`pnpm --filter @oa/provision build` does, or build auth-core).
-  it("every job that runs provision tests or its dist builds @oa/auth-core first", () => {
-    const usesProvision =
-      /@oa\/provision (?:exec vitest|test)\b|scripts\/ci\/build-(?:release-bundle|hosted-release)\.ts/;
-    const builds =
-      /--filter @oa\/(?:provision|auth-core) build\b|--filter @oa\/auth-core\b[^\n]*\bbuild\b/;
+  // H-RD: the bundle builder imports @oa/auth-core/domains, which node
+  // resolves to auth-core's dist. A job that runs the builder must build it
+  // first.
+  it("every job that runs the release bundle builder builds @oa/auth-core first", () => {
+    const usesProvision = /scripts\/ci\/build-release-bundle\.ts/;
+    const builds = /--filter @oa\/auth-core\b[^\n]*\bbuild\b/;
     const seen: string[] = [];
     for (const name of readdirSync(join(root, ".github/workflows")).filter(
       (f) => f.endsWith(".yml"),
@@ -855,7 +848,7 @@ if [ -n "$q" ]; then jq -r "$q" <<< "$body"; else printf '%s\\n' "$body"; fi
         log: r.stdout + r.stderr,
       };
     };
-    const NO_OWN_RUN = `release commit ${OTHER} (#1256) has no own run: see docs/ops/hosted.md, Release recovery`;
+    const NO_OWN_RUN = `release commit ${OTHER} (#1256) has no own run: see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud`;
 
     it("skip-github-release is wired to the kind step, which runs before the action", () => {
       const steps = rpSteps();
@@ -922,7 +915,7 @@ if [ -n "$q" ]; then jq -r "$q" <<< "$body"; else printf '%s\\n' "$body"; fi
       expect(full.code).toBe(1);
       expect(full.output).toBe("");
       expect(full.log).toContain(
-        "::error::pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery\n",
+        "::error::pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud\n",
       );
       expect(
         runKind({ issues: [pr(1256), ...closed(98)], merge: SHA }),

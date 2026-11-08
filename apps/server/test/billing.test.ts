@@ -893,6 +893,24 @@ describe("plan enforcement", () => {
     expect(calls.some((c) => c.path === "/trial/start")).toBe(false);
   });
 
+  it("free: a capped member reads comments over MCP but cannot add or resolve one (#682)", async () => {
+    await cache({ tier: "free", trialEndsAt: mid - DAY, version: 2 });
+    const id = await idOf(await publish(owner.cookie, { visibility: "team" }));
+    const { token } = await createPat(env, member.userId, "capped comments");
+    const client = await connect(token, { env: H, props: PROPS });
+    const listed = await tool(client, "list_comments", { id });
+    expect(listed.isError, textOf(listed)).toBeFalsy();
+    for (const [name, args] of [
+      ["add_comment", { body: "hi" }],
+      ["resolve_comment", { threadId: "AAAAAAAAAAAAAAAA" }],
+    ] as const) {
+      const r = await tool(client, name, { id, ...args });
+      expect(r.isError, name).toBe(true);
+      expect(textOf(r), name).toMatch(/^plan_required\b/);
+    }
+    await client.close();
+  });
+
   it("free: everyone but the owner is read-only (cap plan); the owner's own artifacts stay writable", async () => {
     await cache({ tier: "solo", trialEndsAt: mid - DAY, version: 2 });
     const me = await getMe(member.cookie);

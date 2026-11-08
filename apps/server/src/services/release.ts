@@ -305,5 +305,6 @@ export function instanceUpdate(
         ? s.notesUrl
         : `https://github.com/${RELEASE_REPO}/releases`,
     checkedAt: new Date(s.checkedAt).toISOString(),
+    latestPublishedAt: typeof s.publishedAt === "string" ? s.publishedAt : null,
   };
 }

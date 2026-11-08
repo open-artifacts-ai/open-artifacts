@@ -270,7 +270,31 @@ describe("instanceUpdate (semver, breaking range, custom builds)", () => {
       breaking: false,
       notesUrl: `${NOTES}v${latest}`,
       checkedAt: "2026-10-20T00:00:00.000Z",
+      latestPublishedAt: null,
     });
+  });
+
+  it("latestPublishedAt: the stored publishedAt, else null", () => {
+    const withDate = (publishedAt: unknown) =>
+      JSON.stringify({
+        ...JSON.parse(raw("0.4.0")),
+        publishedAt,
+      });
+    expect(
+      instanceUpdate("owner", withDate("2026-10-19T12:00:00Z"), "0.3.0")
+        ?.latestPublishedAt,
+    ).toBe("2026-10-19T12:00:00Z");
+    expect(
+      instanceUpdate("owner", withDate(null), "0.3.0")?.latestPublishedAt,
+    ).toBeNull();
+    expect(
+      instanceUpdate("owner", withDate(42), "0.3.0")?.latestPublishedAt,
+    ).toBeNull();
+    // A custom build gets it too: the notice needs the release's age.
+    expect(
+      instanceUpdate("owner", withDate("2026-10-19T12:00:00Z"), "0.3.0-dev")
+        ?.latestPublishedAt,
+    ).toBe("2026-10-19T12:00:00Z");
   });
 
   it.each([

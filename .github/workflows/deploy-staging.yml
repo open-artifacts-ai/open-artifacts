@@ -84,7 +84,7 @@ jobs:
   # deploy counts) opens one `blocker` issue, "Staging smoke red on main",
   # assigned to vars.OA_ALERT_GITHUB_LOGIN, or comments on it @-mentioning
   # that login; a green run closes it; a cancelled run does nothing.
-  # Prod promotion reads the runs themselves (scripts/ci/staging-smoke-gate.sh).
+  # Prod promotion reads the runs themselves (the hosted repo's staging-smoke-gate.sh).
   report:
     needs: [deploy, smoke]
     if: ${{ always() && github.ref == 'refs/heads/main' }}
