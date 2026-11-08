@@ -1,8 +1,9 @@
 import { Button } from "@oa/ui/shadcn";
-import { X } from "lucide-react";
+import { MessageSquare, X } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { TXT } from "../ui";
 import { CommentsBody } from "./CommentsBody";
+import { useCommentsApi } from "./useComments";
 
 /** Where the comments list lives (Design's 1C + 3D). */
 export type Surface = "column" | "panel" | "dialog";
@@ -20,6 +21,15 @@ const media = (q: string) => ({
 });
 const wide = media(WIDE_QUERY);
 const phone = media(PHONE_QUERY);
+const coarse = media("(pointer: coarse)");
+const narrow = media("(max-width: 599.98px)");
+
+/** Touch input (#1732). */
+export const useCoarsePointer = () =>
+  useSyncExternalStore(coarse.subscribe, coarse.get, () => false);
+/** Below 600px: the header button's short label. */
+export const useNarrow = () =>
+  useSyncExternalStore(narrow.subscribe, narrow.get, () => false);
 
 /**
  * A margin column beside the page from 960px; below that, a tab of the side
@@ -30,6 +40,37 @@ export function useSurface(chromeless: boolean): Surface {
   const isPhone = useSyncExternalStore(phone.subscribe, phone.get, () => false);
   if (chromeless || isPhone) return "dialog";
   return isWide ? "column" : "panel";
+}
+
+/**
+ * #1732: on touch, a full-width bar at the bottom of the viewer while text is
+ * selected in the frame. Drawn by the shell (the frame's own button is off on
+ * touch). The polite region announces once, when the bar appears.
+ */
+export function SelectionBar() {
+  const api = useCommentsApi();
+  const touch = useCoarsePointer();
+  const show = touch && api.hasSelection;
+  return (
+    <>
+      <div role="status" className="sr-only">
+        {show ? "Comment on selection available" : ""}
+      </div>
+      {show && (
+        <button
+          type="button"
+          className="fixed inset-x-0 bottom-0 z-20 flex min-h-12 w-full animate-in items-center justify-center gap-2 border-0 bg-primary pb-[env(safe-area-inset-bottom)] font-medium text-primary-foreground text-sm duration-200 slide-in-from-bottom motion-reduce:animate-none!"
+          // Keep the frame's selection while the bar is pressed.
+          onPointerDown={(e) => e.preventDefault()}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={api.commentOnSelection}
+        >
+          <MessageSquare className="size-4" aria-hidden="true" />
+          Comment on selection
+        </button>
+      )}
+    </>
+  );
 }
 
 /** The margin column: cards in document order beside the frame. */

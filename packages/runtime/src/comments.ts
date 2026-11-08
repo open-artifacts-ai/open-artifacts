@@ -86,6 +86,9 @@ const BUBBLE =
 /** Gap between the selection's end and the button, and the viewport margin. */
 const BTN_GAP = 6;
 const BTN_MARGIN = 4;
+/** #1732: the shell's touch bar (48px) plus a 12px gap; the selection's last line stays above it. */
+const BAR_CLEAR = 48 + 12;
+const SELECTION_MS = 100;
 
 export function createComments(
   bridge: Pick<Bridge, "on" | "send">,
@@ -111,6 +114,14 @@ export function createComments(
   let flashId: string | undefined;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
   const lastPositions = new Map<string, Pos>();
+  /** Touch: the shell draws the Comment bar, so the floating button stays off. */
+  const coarse = () =>
+    typeof matchMedia === "function" &&
+    matchMedia("(pointer: coarse)").matches === true;
+  /** The last non-empty selection (#1732): iOS can collapse it before the shell's command arrives. */
+  let kept: { start: number; end: number; ver: number } | null = null;
+  let selTimer: ReturnType<typeof setTimeout> | undefined;
+  let selSent: { has: boolean; bottom: number } = { has: false, bottom: 0 };
 
   // ---- overlay: one host under <html>, closed shadow root ----
   let host: HTMLElement | undefined;
@@ -338,7 +349,12 @@ export function createComments(
       if (b) showButton();
     });
   };
-  const onSelectionChange = () => schedule(false, true);
+  const onSelectionChange = () => {
+    schedule(false, true);
+    if (mode !== "select") return;
+    clearTimeout(selTimer);
+    selTimer = setTimeout(reportSelection, SELECTION_MS);
+  };
   const onResize = () => schedule(true, true);
   const onScroll = () => schedule(true, false);
 
@@ -370,12 +386,30 @@ export function createComments(
     return { start, end, range };
   }
 
+  /** Tell the shell whether text is selected, and keep its last line clear of the bar. */
+  function reportSelection() {
+    const s = mode === "select" ? selection() : null;
+    let bottom = 0;
+    if (s) {
+      kept = { start: s.start, end: s.end, ver: textVer };
+      const rects = s.range.getClientRects();
+      const r = rects[rects.length - 1] ?? s.range.getBoundingClientRect();
+      bottom = Math.min(10_000_000, Math.max(-10_000_000, r.bottom));
+      const over = bottom - (innerHeight - BAR_CLEAR);
+      if (coarse() && over > 0 && selSent.bottom !== bottom) scrollBy(0, over);
+    }
+    const has = !!s;
+    if (selSent.has === has && selSent.bottom === bottom) return;
+    selSent = { has, bottom };
+    bridge.send({ oa: 1, type: "comment.selection", has, bottom });
+  }
+
   function hideButton() {
     btn?.remove();
   }
 
   function showButton() {
-    if (mode !== "select") return hideButton();
+    if (mode !== "select" || coarse()) return hideButton();
     const s = selection();
     if (!s) return hideButton();
     const rects = s.range.getClientRects();
@@ -402,7 +436,12 @@ export function createComments(
   }
 
   function onCommentClick() {
-    const s = selection();
+    const live = selection();
+    const s =
+      live ??
+      (kept && kept.ver === textVer
+        ? { start: kept.start, end: kept.end }
+        : null);
     if (!s) return hideButton();
     const block: BlockHint = {};
     if (format === "pdf") {
@@ -432,7 +471,10 @@ export function createComments(
     );
     bridge.send({ oa: 1, type: "comment.select", anchor });
     getSelection()?.removeAllRanges();
+    kept = null;
     hideButton();
+    clearTimeout(selTimer);
+    reportSelection();
   }
 
   // ---- clicks on the page: pin placement and highlight hits ----
@@ -489,6 +531,11 @@ export function createComments(
   const off = bridge.on((m) => {
     if (m.type === "comments.mode") {
       mode = m.mode;
+      if (mode !== "select") {
+        kept = null;
+        clearTimeout(selTimer);
+        reportSelection();
+      }
       if (mode === "off") {
         hideButton();
         clearPaint();
@@ -502,6 +549,8 @@ export function createComments(
       ghost = m.ghost;
       slots = null;
       report(true);
+    } else if (m.type === "comments.comment") {
+      if (mode === "select") onCommentClick();
     } else if (m.type === "comments.focus") {
       const p = lastPositions.get(m.id);
       if (p?.top != null) scrollTo(0, Math.max(0, p.top - innerHeight / 3));
@@ -579,6 +628,7 @@ export function createComments(
     removeEventListener("scroll", onScroll);
     clearTimeout(mutTimer);
     clearTimeout(flashTimer);
+    clearTimeout(selTimer);
     if (raf) cancelAnimationFrame(raf);
     const reg = highlights();
     reg?.delete("oa-comment");

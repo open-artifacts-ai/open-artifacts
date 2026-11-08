@@ -26,6 +26,7 @@ import { CommentsBody, PinBar } from "./comments/CommentsBody";
 import {
   CommentsColumn,
   CommentsDialog,
+  SelectionBar,
   useSurface,
 } from "./comments/surfaces";
 import {
@@ -457,6 +458,7 @@ function Viewer({
       onCommentOpen: (id) => cmtRef.current.onOpen(id),
       onCommentPin: (p) => cmtRef.current.onPin(p),
       onCommentEscape: () => cmtRef.current.onEscape(),
+      onCommentSelection: (has) => cmtRef.current.onSelection(has),
       onPdfText: (t) => fxRef.current.onPdfText(t),
       onThumb: (b) => fxRef.current.onThumb(b),
       // The shell re-checks access: still readable, or the gone state.
@@ -517,7 +519,7 @@ function Viewer({
     vformat ??
     (version === artifact.currentVersion ? artifact.format : undefined);
   const textFormat = fmt !== "pdf" && fmt !== "image";
-  const commentsButton = commentsOn
+  const listButton = commentsOn
     ? surface === "column"
       ? {
           open: cmt.listedOpen,
@@ -538,6 +540,12 @@ function Viewer({
             onClick: () => setDialogOpen((o) => !o),
           }
     : undefined;
+  // #1732: while text is selected the button is the same action as the bar.
+  const commentsButton = listButton && {
+    ...listButton,
+    selecting: cmt.hasSelection,
+    onClick: cmt.hasSelection ? cmt.commentOnSelection : listButton.onClick,
+  };
   return (
     <CommentsProvider value={cmt}>
       <div className="oa-viewer">
@@ -642,6 +650,7 @@ function Viewer({
           )}
         </div>
         {commentsOn && !listShown && <PinBar />}
+        {commentsOn && !chromeless && <SelectionBar />}
         {commentsOn && surface === "dialog" && dialogOpen && (
           <CommentsDialog
             textFormat={textFormat}

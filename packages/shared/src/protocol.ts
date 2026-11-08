@@ -231,6 +231,19 @@ export const ArtifactToShellSchema = z.union([
     nonce,
     type: z.literal("comment.escape"),
   }),
+  /**
+   * Whether text is selected, for the shell's touch "Comment on selection"
+   * bar and header button (#1732). `bottom` is the selection's last rect
+   * bottom in frame pixels. A hint from page code: it only ever shows a bar
+   * whose tap asks the frame to run its own Comment path.
+   */
+  z.strictObject({
+    oa: z.literal(1),
+    nonce,
+    type: z.literal("comment.selection"),
+    has: z.boolean(),
+    bottom: z.number().finite().min(-10_000_000).max(10_000_000),
+  }),
   /** A click in pin mode on an image or pdf page; x and y are 0..1 of the image or page. */
   z.strictObject({
     oa: z.literal(1),
@@ -348,6 +361,8 @@ export const ShellToArtifactSchema = z.union([
       })
       .optional(),
   }),
+  /** The reader tapped the shell's "Comment on selection": run the frame's Comment path (#1732). */
+  z.strictObject({ oa: z.literal(1), type: z.literal("comments.comment") }),
   /** Scroll the thread's highlight or pin into view and flash it. */
   z.strictObject({
     oa: z.literal(1),
