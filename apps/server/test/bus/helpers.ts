@@ -211,10 +211,10 @@ afterAll(async () => {
         )
         .one().n;
     });
-  // A client close is only the echo of the hub's: the hub's webSocketClose
-  // (and the `gone` it sends) runs after it. Wait until every hub this file
-  // touched holds no open daemon socket, so that handler has started before the
-  // worker can tear down.
+  // A client close is only the echo of the hub's: the hub's work after it (the
+  // `gone` it sends) runs later. Wait until every hub this file touched holds
+  // no open daemon socket and has no index call in flight, so the worker is
+  // not torn down with one pending.
   for (const uid of touchedUsers) {
     const ns = e.BUS_HUB;
     if (!ns) break;
@@ -229,6 +229,13 @@ afterAll(async () => {
                 .length,
           ),
         ).toBe(0),
+      { timeout: INDEX_SETTLE_MS },
+    );
+    // A hub-started close does not wait for the echo: its index report may
+    // still be on the wire after no socket is open.
+    await vi.waitFor(
+      async () =>
+        expect(await (hub as unknown as BusHub).indexInFlight()).toBe(0),
       { timeout: INDEX_SETTLE_MS },
     );
   }

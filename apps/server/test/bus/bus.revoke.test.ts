@@ -475,7 +475,7 @@ describe("bus rows outlive the index window (#1299)", () => {
     }
   });
 
-  it("a close the hub starts reports gone itself (workerd does not call webSocketClose for it)", async () => {
+  it("a close the hub starts reports gone itself", async () => {
     const u = await member();
     const name = `bus:${u.userId}`;
     const a = await connected(u, "one");
