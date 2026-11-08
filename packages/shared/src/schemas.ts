@@ -913,6 +913,11 @@ export const UploadCreateInputSchema = z.strictObject({
   path: z.string(),
   size: z.number().int().positive(),
   contentType: z.string().optional(),
+  sha256: z
+    .string()
+    .regex(/^[a-fA-F0-9]{64}$/)
+    .toLowerCase()
+    .optional(),
 });
 export type UploadCreateInput = z.infer<typeof UploadCreateInputSchema>;
 

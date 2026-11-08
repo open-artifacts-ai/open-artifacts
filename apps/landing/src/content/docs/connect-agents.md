@@ -85,7 +85,18 @@ Then run `opencode mcp auth open-artifacts` and sign in.
 
 ## Codex CLI
 
-Codex reads the token from the environment only. In `~/.codex/config.toml`:
+[Codex CLI supports browser OAuth](https://developers.openai.com/codex/mcp/):
+
+```sh
+codex mcp add open-artifacts --url https://artifacts.example.com/mcp
+codex mcp login open-artifacts
+```
+
+Sign in with your instance account in the browser, then run `codex mcp list` to check the connection. No PAT or `OA_TOKEN` is needed. If an existing config sets `bearer_token_env_var`, remove that setting before using OAuth.
+
+### Token fallback
+
+If OAuth is unavailable, use setup's `codexToken` snippet. In `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.open-artifacts]
