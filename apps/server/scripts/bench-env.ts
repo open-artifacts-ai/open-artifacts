@@ -373,8 +373,19 @@ export class DOState {
   getTags(ws: FakeSocket) {
     return ws.tags;
   }
+  /** The runtime answers the presence ping itself; the node proxy has no such layer. */
+  setWebSocketAutoResponse() {}
   waitUntil() {}
 }
+
+/** workerd global the DO constructor uses for its presence auto-response; Node has none. */
+const g = globalThis as { WebSocketRequestResponsePair?: unknown };
+g.WebSocketRequestResponsePair ??= class {
+  constructor(
+    readonly request: string,
+    readonly response: string,
+  ) {}
+};
 
 type DOClass = new (state: DOState, env: unknown) => Record<string, unknown>;
 
