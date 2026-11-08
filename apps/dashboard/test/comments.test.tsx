@@ -279,6 +279,9 @@ describe("comments: layouts", () => {
     expect(outlet.parentElement?.className).toContain("overflow-y-auto");
     expect(outlet.className).toContain("sticky");
     expect(outlet.className).toContain("bottom-0");
+    // The list keeps its content height: when a card is scrolled into view, a
+    // shrunk body would carry the row up to the sheet's top instead.
+    expect(outlet.previousElementSibling?.className).toContain("shrink-0");
     // And it clears a phone's home indicator.
     expect(outlet.className).toContain("safe-area-inset-bottom");
     // The row moved out of the card, and still acts for it.

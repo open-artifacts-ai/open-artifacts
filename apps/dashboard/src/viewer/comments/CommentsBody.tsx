@@ -968,7 +968,10 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
   const none = api.threads.length === 0;
   const forMe = asksForMe([...api.ordered, ...api.orphans]);
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+    // #1711: `shrink-0`: in the short sheet the body keeps its content height,
+    // so the action row's outlet sits after it (stuck to the sheet's bottom)
+    // instead of riding up when a card is scrolled into view.
+    <div className="flex min-h-0 shrink-0 flex-1 flex-col gap-3 p-4">
       <div className={`flex items-center justify-between gap-2 ${TXT}`}>
         <span>
           {api.listedOpen} open
