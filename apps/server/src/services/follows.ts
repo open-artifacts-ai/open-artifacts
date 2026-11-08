@@ -461,8 +461,13 @@ async function fanOut(
          where artifact_id = ?
          order by last_notice_at is not null, last_notice_at, user_id limit ?`,
   )
-    .bind(artifactId, FANOUT_MAX)
+    .bind(artifactId, FANOUT_MAX + 1)
     .all<{ userId: string; namespace: string; name: string }>();
+  // One row past the limit tells us followers were left out this time.
+  if (results.length > FANOUT_MAX) {
+    results.length = FANOUT_MAX;
+    logInfo("fanout_limit_hit", { kind, artifactId, limit: FANOUT_MAX });
+  }
   const byUser = new Map<string, BusAddress[]>();
   for (const r of results) {
     if (kind === "changed" && !shouldNotifyFollower(r.userId, actorId ?? ""))
@@ -495,6 +500,10 @@ async function fanOut(
     if (kind === "commented" && capOfCaller(callerOf(user)) != null) continue;
     for (const to of addresses) {
       if (skip.has(addressKey(to))) continue;
+      if (Date.now() > deadline) {
+        logInfo("fanout_out_of_time", { kind, artifactId });
+        break;
+      }
       let at: number | undefined;
       if (kind === "changed") {
         const slot = await stmt(env.DB, SLOT)
