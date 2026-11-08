@@ -539,3 +539,36 @@ describe("no BILLING gate: no plan, nothing changes", () => {
     expect(me.instance.billing).toBeUndefined();
   });
 });
+
+describe("view-only: an uncapped editor on someone else's artifact", () => {
+  const ids = { shared: "" };
+  let stranger: U;
+  beforeAll(async () => {
+    stranger = await login(`stranger-${tag}@a.com`, "member");
+    await setPlan({ ...base, tier: "business", status: "active" });
+    ids.shared = ((await (await post(member)).json()) as { id: string }).id;
+    const s = await send(props, R.shares(ids.shared), member.cookie, {
+      method: "PUT",
+      body: { email: `owner-${tag}@a.com`, role: "editor" },
+    });
+    expect(s.status).toBe(200);
+    await setPlan(UNPAID);
+  });
+
+  it("gets the 403 plan error on a non-visibility PATCH, not a 404", async () => {
+    const p = await send(props, R.artifact(ids.shared), owner.cookie, {
+      method: "PATCH",
+      body: { title: "renamed" },
+    });
+    expect(p.status).toBe(403);
+    expect((await errCode(p))?.code).toBe("plan_read_only");
+  });
+
+  it("someone with no access at all still gets 404", async () => {
+    const p = await send(props, R.artifact(ids.shared), stranger.cookie, {
+      method: "PATCH",
+      body: { title: "renamed" },
+    });
+    expect(p.status).toBe(404);
+  });
+});
