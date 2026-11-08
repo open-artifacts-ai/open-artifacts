@@ -419,7 +419,7 @@ live artifact, history included, each distinct blob once (an inline file by
 its content digest, an upload by its key), trashed artifacts excluded),
 `FREE_DATA_DOCS` (live-data docs per artifact), `FREE_DATA_DAILY_WRITES`
 (live-data writes per artifact per UTC day). On the free tier only, past one:
-403 `plan_limit`, details `PlanLimitDetails { tier: "free", limit, max }`
+403 `plan_limit`, details `PlanLimitDetails { tier: "solo", limit, max }` (a server from before Solo sent tier "free", still accepted)
 (`limit` storage_bytes | data_docs | data_daily_writes).
 
 A creator (the bill) is a user who published a version, or wrote live data
