@@ -374,12 +374,53 @@ export function createComments(
     btn?.remove();
   }
 
+  /** The last rect of the selection: the button hangs under the end of it. */
+  function endRect(): DOMRect | null {
+    const s = selection();
+    if (!s) return null;
+    const rects = s.range.getClientRects();
+    return (rects[rects.length - 1] ?? s.range.getBoundingClientRect()) || null;
+  }
+
+  /** Centered under the end of the selection, kept inside the viewport. */
+  function place(rect: DOMRect) {
+    if (!btn) return;
+    const vw = document.documentElement.clientWidth || innerWidth;
+    const w = btn.offsetWidth;
+    const x = Math.max(
+      BTN_MARGIN,
+      Math.min(rect.right - w / 2, vw - w - BTN_MARGIN),
+    );
+    btn.style.left = `${x + scrollX}px`;
+    btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
+  }
+
+  /**
+   * The width is measured when the button shows, but a webfont can swap in
+   * later and change it, leaving the button off center until the next
+   * selection (#1648). Once the fonts settle, place it again if it is still up.
+   */
+  let fontsWait: Promise<unknown> | null = null;
+  function placeAfterFonts() {
+    const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
+    if (!fonts?.ready || fonts.status === "loaded") return;
+    if (fontsWait) return;
+    fontsWait = fonts.ready
+      .then(() => {
+        fontsWait = null;
+        if (mode !== "select" || !btn?.isConnected) return;
+        const rect = endRect();
+        if (rect) place(rect);
+      })
+      .catch(() => {
+        fontsWait = null;
+      });
+  }
+
   function showButton() {
     if (mode !== "select") return hideButton();
-    const s = selection();
-    if (!s) return hideButton();
-    const rects = s.range.getClientRects();
-    const rect = rects[rects.length - 1] ?? s.range.getBoundingClientRect();
+    const rect = endRect();
+    if (!rect) return hideButton();
     if (!btn) {
       btn = document.createElement("button");
       btn.innerHTML = `${BUBBLE}<span>Comment</span>`;
@@ -390,15 +431,8 @@ export function createComments(
       btn.className = "btn";
     }
     if (!btn.isConnected) overlay().append(btn);
-    // Centered under the end of the selection, kept inside the viewport.
-    const vw = document.documentElement.clientWidth || innerWidth;
-    const w = btn.offsetWidth;
-    const x = Math.max(
-      BTN_MARGIN,
-      Math.min(rect.right - w / 2, vw - w - BTN_MARGIN),
-    );
-    btn.style.left = `${x + scrollX}px`;
-    btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
+    place(rect);
+    placeAfterFonts();
   }
 
   function onCommentClick() {

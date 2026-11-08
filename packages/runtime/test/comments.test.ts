@@ -46,6 +46,26 @@ const frames = () => {
 const button = () =>
   roots.at(-1)?.querySelector<HTMLButtonElement>(".btn") ?? null;
 
+/** jsdom has no FontFaceSet: a stub whose `ready` the test settles (#1648). */
+function fonts() {
+  let settle: () => void = () => {};
+  const ready = new Promise<void>((r) => {
+    settle = r;
+  });
+  const set = (status: "loading" | "loaded") =>
+    Object.defineProperty(document, "fonts", {
+      value: { status, ready },
+      configurable: true,
+    });
+  set("loading");
+  return {
+    load() {
+      set("loaded");
+      settle();
+    },
+  };
+}
+
 function select(node: Node, a: number, node2: Node = node, b: number = a) {
   const r = document.createRange();
   r.setStart(node, a);
@@ -101,6 +121,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   ctl.abort();
+  Reflect.deleteProperty(document, "fonts");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   roots.length = 0;
@@ -186,6 +207,40 @@ describe("selection button", () => {
       "prefix",
       "suffix",
     ]);
+    expect(button()).toBeNull();
+  });
+
+  it("places the button again when a webfont swaps in (#1648)", async () => {
+    // A wide first measurement: centered would be 80 - 150, so it clamps to
+    // the margin. The font then loads and the label narrows to 100.
+    let w = 300;
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+      () => w,
+    );
+    const f = fonts();
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()?.style.left).toBe("4px");
+    w = 100;
+    f.load();
+    await flush();
+    expect(button()?.style.left).toBe("30px");
+  });
+
+  it("leaves the button alone when it is gone by the time the fonts settle (#1648)", async () => {
+    let w = 300;
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
+      () => w,
+    );
+    const f = fonts();
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()).not.toBeNull();
+    await send({ type: "comments.mode", mode: "off" });
+    expect(button()).toBeNull();
+    w = 100;
+    f.load();
+    await flush();
     expect(button()).toBeNull();
   });
 
