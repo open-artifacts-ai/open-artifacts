@@ -495,10 +495,20 @@ describe("viewer presence: gates and cleanup", () => {
     await a.closed;
     expect(await count("viewer_presence_left")).toEqual({ n: 0 });
     expect(await count("viewer_presence_state")).toEqual({ n: 0 });
-    // closeAllSockets (the platform suspend) adds no grace rows either.
+    // closeAllSockets (the platform suspend) adds no grace rows either. The
+    // close handlers are driven inside the DO, right after the close, so the
+    // count can't be read before they ran.
     const c = await joined(id, "c", { authzAt: Date.now() + SKEW_MS + 1000 });
-    await stubOf(id).closeAllSockets("suspend");
+    const left = await inDo(id, async (i, s) => {
+      const sockets = s.getWebSockets();
+      i.closeAllSockets("suspend");
+      for (const ws of sockets) await i.webSocketClose(ws, 4403);
+      return s.storage.sql
+        .exec("select count(*) as n from viewer_presence_left")
+        .one();
+    });
     await c.closed;
+    expect(left).toEqual({ n: 0 });
     expect(await count("viewer_presence_left")).toEqual({ n: 0 });
     await stubOf(id).destroy();
   });
@@ -521,5 +531,96 @@ describe("viewer presence: gates and cleanup", () => {
       expect(text).not.toContain(uid);
       expect(text).not.toContain("@");
     }
+  });
+});
+
+const touch = (over: Record<string, unknown> = {}) => ({
+  key: key("g"),
+  product: "Claude Code",
+  owner: "Evie",
+  ownerActor: "u:owner",
+  label: null,
+  write: false,
+  activity: null,
+  ...over,
+});
+const agentRow = (id: string) =>
+  inDo(id, (_i, s) =>
+    s.storage.sql
+      .exec<{ seen: number }>(
+        "select seen from viewer_presence_agent where key = ?",
+        key("g"),
+      )
+      .toArray(),
+  );
+
+describe("viewer presence: alarm and agent touches (review fixes)", () => {
+  it("a viewer closing while the alarm indexes keeps the grace alarm", async () => {
+    const id = fresh();
+    await clock(id, T0);
+    const a = await joined(id, "a");
+    await clock(id, T0 + PRESENCE_COALESCE_MS);
+    const b = await joined(id, "b");
+    await a.next("presence");
+    await stubOf(id).scheduleIndex("art-1", 1);
+    const closeAt = T0 + PRESENCE_COALESCE_MS + 1000;
+    await inDo(id, (i) => {
+      i.indexer = async () => {
+        i.now = () => closeAt;
+        b.ws.close(1000);
+        // The DO's close handler ran once the grace row is there.
+        for (let n = 0; n < 500 && i.pendingViewerPresence().left === 0; n++)
+          await new Promise((r) => setTimeout(r, 0));
+      };
+    });
+    await clock(id, closeAt);
+    await inDo(id, (i) => {
+      const run = i.indexer;
+      i.indexer = async (...x) => {
+        await run(...x);
+        i.now = () => closeAt;
+      };
+    });
+    await alarm(id);
+    const armed = await inDo(id, (_i, s) => s.storage.getAlarm());
+    expect(armed).not.toBeNull();
+    expect(armed as number).toBeLessThanOrEqual(closeAt + PRESENCE_GRACE_MS);
+  });
+
+  it("an unchanged touch inside 10 s writes no row; a changed field writes and notifies", async () => {
+    const id = fresh();
+    await clock(id, T0);
+    const a = await joined(id, "a");
+    await stubOf(id).touchViewerAgent(touch());
+    await a.next("presence");
+    await clock(id, T0 + 5000);
+    await stubOf(id).touchViewerAgent(touch());
+    expect(await agentRow(id)).toEqual([{ seen: T0 }]);
+    await clock(id, T0 + 10_000);
+    await stubOf(id).touchViewerAgent(touch());
+    expect(await agentRow(id)).toEqual([{ seen: T0 + 10_000 }]);
+    await clock(id, T0 + 11_000);
+    await stubOf(id).touchViewerAgent(touch({ activity: "Reading" }));
+    expect(await agentRow(id)).toEqual([{ seen: T0 + 11_000 }]);
+    await clock(id, T0 + 12_000);
+    await stubOf(id).touchViewerAgent(touch({ activity: "Reading", write: true }));
+    expect(await agentRow(id)).toEqual([{ seen: T0 + 12_000 }]);
+  });
+
+  it("a throwing presence record neither fails the write nor loses the index job", async () => {
+    const id = fresh();
+    await inDo(id, (i) => {
+      (i as unknown as { recordViewerAgent: () => never }).recordViewerAgent =
+        () => {
+          throw new Error("presence storage down");
+        };
+    });
+    const doc = await stubOf(id).set("c", "d1", { a: 1 }, "u:x", touch());
+    expect((doc as { id: string }).id).toBe("d1");
+    await stubOf(id).scheduleIndex("art-2", 3, false, undefined, touch());
+    expect(await stubOf(id).pendingIndex()).toMatchObject({
+      artifactId: "art-2",
+      version: 3,
+    });
   });
 });

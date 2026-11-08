@@ -181,6 +181,8 @@ const SOCKET_TTL_SLACK_MS = 60_000;
  * a burst of publishes indexes only the newest version, and the alarm runs
  * after the publishing isolate's burst is over.
  */
+/** An unchanged agent row is rewritten at most this often (its window is AGENT_PRESENT_MS). */
+const AGENT_SEEN_REFRESH_MS = 10_000;
 export const INDEX_DELAY_MS = LIMITS.indexDebounceMs;
 /** Index attempts per version before {evt:"index_failed"}. */
 export const INDEX_MAX_ATTEMPTS = 5;
@@ -1702,8 +1704,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
         last_write: number | null;
         activity: string | null;
         since: number;
+        product: string | null;
+        owner: string | null;
+        owner_actor: string | null;
+        label: string | null;
       }>(
-        "select seen, last_write, activity, since from viewer_presence_agent where key = ?",
+        "select seen, last_write, activity, since, product, owner, owner_actor, label from viewer_presence_agent where key = ?",
         t.key,
       )
       .toArray()[0];
@@ -1711,6 +1717,20 @@ export class ArtifactRuntime extends DurableObject<Env> {
     const editing =
       prev?.last_write != null && now - prev.last_write <= AGENT_PRESENT_MS;
     const activity = t.activity ?? (present ? prev.activity : null);
+    // Nothing changed and the row is fresh: no write (the window is 120 s, so
+    // a row refreshed every AGENT_SEEN_REFRESH_MS is as good as one per call).
+    if (
+      present &&
+      now - prev.seen < AGENT_SEEN_REFRESH_MS &&
+      t.product === prev.product &&
+      t.label === prev.label &&
+      t.owner === prev.owner &&
+      t.ownerActor === prev.owner_actor &&
+      activity === prev.activity &&
+      (!t.write ||
+        (prev.last_write != null && now - prev.last_write < AGENT_SEEN_REFRESH_MS))
+    )
+      return false;
     this.sql.exec(
       `insert or replace into viewer_presence_agent
         (key, product, owner, owner_actor, label, since, seen, last_write, activity)
@@ -1737,8 +1757,18 @@ export class ArtifactRuntime extends DurableObject<Env> {
   /** A data call's touch, recorded in the same RPC (a read or a write that succeeded). */
   private touchWith(touch: AgentTouch | undefined): void {
     if (!touch) return;
-    const changed = this.recordViewerAgent(touch);
-    this.ctx.waitUntil(this.afterViewerAgentTouch(changed));
+    // After a committed write: a presence storage error is logged, never the
+    // caller's failure.
+    try {
+      const changed = this.recordViewerAgent(touch);
+      this.ctx.waitUntil(
+        this.afterViewerAgentTouch(changed).catch((e) =>
+          logError("viewer_presence_touch_failed", e, {}),
+        ),
+      );
+    } catch (e) {
+      logError("viewer_presence_touch_failed", e, {});
+    }
   }
 
   /** Test view: the grace rows and when the last frame went out. */
@@ -1955,7 +1985,6 @@ export class ArtifactRuntime extends DurableObject<Env> {
     if (event) this.broadcastVersion(version, event);
     // A publish or restore by an agent: it is editing. Rides this call, so it
     // costs no extra request.
-    if (touch) await this.afterViewerAgentTouch(this.recordViewerAgent(touch));
     const due = this.now() + INDEX_DELAY_MS;
     this.sql.exec(
       `insert into index_job (id, artifact_id, version, attempts, due, seq) values (1, ?, ?, 0, ?, 1)
@@ -1982,6 +2011,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
         due,
       );
     await this.armAt(due);
+    // After the job row, so a failing touch can't lose the job.
+    if (touch) {
+      try {
+        await this.afterViewerAgentTouch(this.recordViewerAgent(touch));
+      } catch (e) {
+        logError("viewer_presence_touch_failed", e, {});
+      }
+    }
     // Returned, not logged: a DO's console doesn't reach the dispatch tail.
     return { ms: Date.now() - t0 };
   }
@@ -2227,6 +2264,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
         next,
         indexDue && pendingThumb.attempts === 0 ? this.now() : pendingThumb.due,
       );
+    // An alarm armed during the awaits above (a viewer closing mid-index: the
+    // grace; an agent touch) can be earlier than `next`, which was computed
+    // before them. Never move it later.
+    const armed = await this.ctx.storage.getAlarm();
+    if (armed !== null && armed < next) next = armed;
     if (next !== Number.POSITIVE_INFINITY)
       await this.ctx.storage.setAlarm(next);
   }
