@@ -539,3 +539,65 @@ describe("anchors saved before blocks were separated (#1708)", () => {
     });
   });
 });
+
+describe("a short quote placed by context (#1735)", () => {
+  it("an anchor {exact:'j', prefix, suffix} from one of many occurrences resolves to that one, not the first", () => {
+    const text = Array.from(
+      { length: 12 },
+      (_, n) => `step ${n}: i pops j then k${n}`,
+    ).join(". ");
+    let at = -1;
+    for (let k = 0; k <= 7; k++) at = text.indexOf("j", at + 1);
+    const a = anchorOf(text, "j", 7);
+    expect(a.prefix.length).toBeGreaterThan(0);
+    expect(a.suffix.length).toBeGreaterThan(0);
+    // The server keeps the live page's context, cut to 32 each side.
+    const kept = {
+      ...a,
+      prefix: a.prefix.slice(-32),
+      suffix: a.suffix.slice(0, 32),
+    };
+    expect(resolveTextAnchor(text, kept)).toEqual({
+      state: "exact",
+      start: at,
+      end: at + 1,
+    });
+    expect(text.indexOf("j")).not.toBe(at);
+  });
+});
+
+describe("partial-match work per resolve pass (#1735)", () => {
+  it("500 anchors of 1000 unfound chars: the first get partial, those past the total budget collapse", () => {
+    let seed = 12345;
+    const rnd = (n: number) => {
+      let s = "";
+      for (let i = 0; i < n; i++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        s += String.fromCharCode(97 + ((seed >> 8) % 26));
+      }
+      return s;
+    };
+    const parts: string[] = [];
+    const anchors: Parameters<typeof resolveTextAnchor>[1][] = [];
+    for (let i = 0; i < 500; i++) {
+      const prefix = rnd(32);
+      const piece = rnd(400);
+      parts.push(prefix, piece, rnd(300), " ");
+      anchors.push({
+        kind: "text",
+        version: 1,
+        exact: piece + rnd(600),
+        prefix,
+        suffix: "",
+      });
+    }
+    const resolve = createTextResolver(parts.join(""));
+    const states = anchors.map((a) => resolve(a).state);
+    expect(states.slice(0, 4).every((s) => s === "partial")).toBe(true);
+    expect(states.slice(-100).every((s) => s === "collapsed")).toBe(true);
+    expect(states.filter((s) => s === "partial").length).toBeLessThan(20);
+    expect(states.every((s) => s === "partial" || s === "collapsed")).toBe(
+      true,
+    );
+  });
+});

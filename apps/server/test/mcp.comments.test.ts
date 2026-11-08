@@ -216,8 +216,12 @@ describe("comment tools over MCP", () => {
         suffix: "",
       },
     });
-    expect(bad.isError).toBe(true);
-    expect(textOf(bad)).toMatch(/^anchor_not_in_version\b/);
+    expect(bad.isError).toBeFalsy();
+    expect(sc<{ thread: Thread }>(bad).thread.anchor).toMatchObject({
+      exact: "not in the page",
+      prefix: "",
+      suffix: "",
+    });
     const rest = await api(app, comments(id), owner.cookie, {
       method: "POST",
       body: {
@@ -230,7 +234,7 @@ describe("comment tools over MCP", () => {
         body: "nope",
       },
     });
-    expect(rest.status).toBe(422);
+    expect(rest.status).toBe(201);
   });
 
   it("refuses an empty body, a reply with an anchor and a missing thread, saying what to do", async () => {

@@ -49,10 +49,17 @@ describe("visible text", () => {
       ),
     ).toBe("one two three");
   });
-  it("leaves an unknown entity as written", () => {
-    expect(decodeEntities("&nosuch; &#0; &#xD800;")).toBe(
-      "&nosuch; &#0; &#xD800;",
+  it("leaves an unknown name as written; invalid numbers become U+FFFD", () => {
+    expect(decodeEntities("&nosuch; &#0; &#xD800; &#x110000;")).toBe(
+      "&nosuch; \uFFFD \uFFFD \uFFFD",
     );
+  });
+  it("decodes the full named set, legacy forms and windows-1252 numbers", () => {
+    expect(
+      decodeEntities(
+        "&le; &ge; &ne; &rarr; &hellip; &nbsp;| &copy &amp &#128;",
+      ),
+    ).toBe("\u2264 \u2265 \u2260 \u2192 \u2026 \u00a0| \u00a9 & \u20ac");
   });
 });
 
@@ -110,6 +117,7 @@ describe("verifyQuote and checkAnchor", () => {
   let mdId: string;
   let big: string;
   let pdfId: string;
+  let jsId: string;
   beforeAll(async () => {
     const l = await login(`ca-${newId().slice(0, 6).toLowerCase()}@x.com`);
     const m = await getUser(env, l.userId);
@@ -132,6 +140,12 @@ describe("verifyQuote and checkAnchor", () => {
     mdId = (await mk("markdown", "# Hi\n\nplain")).id;
     big = (await mk("html", "<p>Hello</p>")).id;
     pdfId = (await mk("pdf", PDF)).id;
+    jsId = (
+      await mk(
+        "html",
+        "<p id=\"lede\"></p><script>document.getElementById('lede').innerHTML='When <code>i</code> pops <code>j</code>'</script>",
+      )
+    ).id;
   });
   const art = (a: string, format: string) => ({
     id: a,
@@ -139,23 +153,113 @@ describe("verifyQuote and checkAnchor", () => {
     currentVersion: 1,
   });
 
-  it("passes a quote in the version and fails one only in a script", async () => {
+  it("keeps the context of a quote in the version; one only in a script is accepted with the given context", async () => {
     expect(
-      await verifyQuote(env, id, "html", 1, { exact: "big world" }),
-    ).not.toBeNull();
-    await expect(
-      verifyQuote(env, id, "html", 1, { exact: "hidden words" }),
-    ).rejects.toMatchObject({ code: "anchor_not_in_version" });
+      await verifyQuote(env, id, "html", 1, {
+        exact: "big world",
+        prefix: "zz",
+      }),
+    ).toEqual({ prefix: "Hello ", suffix: "" });
+    expect(
+      await verifyQuote(env, id, "html", 1, {
+        exact: "hidden words",
+        prefix: "given",
+        suffix: "ctx",
+      }),
+    ).toEqual({ prefix: "given", suffix: "ctx" });
+    const long = "0123456789".repeat(7);
+    expect(
+      await verifyQuote(env, id, "html", 1, {
+        exact: "hidden words",
+        prefix: long,
+        suffix: long,
+      }),
+    ).toEqual({ prefix: long.slice(-32), suffix: long.slice(0, 32) });
+    // A cut never lands inside a surrogate pair.
+    const e = "😀".repeat(40);
+    const cut = await verifyQuote(env, id, "html", 1, {
+      exact: "hidden words",
+      prefix: e,
+      suffix: e,
+    });
+    expect(cut).toEqual({ prefix: "😀".repeat(16), suffix: "😀".repeat(16) });
   });
-  it("an entry over 5 MB is not parsed: 422", async () => {
+  it("script-rendered text is not in the static text: the quote is accepted with its given context (#1482, #1735)", async () => {
+    const html =
+      "<p id=\"lede\"></p><script>document.getElementById('lede').innerHTML='When <code>i</code> pops <code>j</code>'</script>";
+    expect(await visibleText(html)).not.toContain("pops");
+    expect(
+      await verifyQuote(env, jsId, "html", 1, {
+        exact: "i pops j",
+        prefix: "When ",
+        suffix: " end",
+      }),
+    ).toEqual({ prefix: "When ", suffix: " end" });
+  });
+  it("a quote on text the page's script renders is accepted (#1735)", async () => {
+    // The shape of the reported page: a static shell, the intro filled by script.
+    const l = await login(`cb-${newId().slice(0, 6).toLowerCase()}@x.com`);
+    const { id: js } = await publish(
+      env,
+      (await getUser(env, l.userId)) as never,
+      {
+        title: "Stepper",
+        format: "html",
+        content: `<title>Monotonic Stack Stepper</title><h1>Monotonic Stack Stepper</h1>
+<p class="lede" id="lede"></p>
+<script>document.getElementById("lede").innerHTML = 'Finds the <b>previous strictly smaller</b> element; <code>j</code> pops.';</script>`,
+      } as never,
+      null,
+      undefined,
+      "create",
+    );
+    for (const exact of [
+      "previous strictly smaller",
+      "j",
+      "Finds the previous",
+    ])
+      expect(
+        await checkAnchor(env, art(js, "html"), {
+          kind: "text",
+          exact,
+          prefix: "ab",
+          suffix: "cd",
+        }),
+      ).toMatchObject({
+        anchor: { kind: "text", exact, prefix: "ab", suffix: "cd" },
+      });
+    const r = await checkAnchor(env, art(js, "html"), {
+      kind: "text",
+      exact: "j",
+      prefix: "forged",
+      suffix: "forged",
+      block: { path: "evil" },
+    });
+    expect(r.anchor).toMatchObject({ prefix: "forged", suffix: "forged" });
+    expect(r.anchor).not.toHaveProperty("block");
+  });
+  it("an entry over 5 MB is not parsed: the quote is accepted with its given context", async () => {
     await env.DB.prepare(
       "update versions set manifest = json_set(manifest, '$[0].size', 6000000) where artifact_id = ?",
     )
       .bind(big)
       .run();
-    await expect(
-      verifyQuote(env, big, "html", 1, { exact: "Hello" }),
-    ).rejects.toMatchObject({ code: "anchor_not_in_version" });
+    expect(
+      await verifyQuote(env, big, "html", 1, {
+        exact: "Hello",
+        prefix: "x",
+        suffix: "y",
+      }),
+    ).toEqual({ prefix: "x", suffix: "y" });
+    const r = await checkAnchor(env, art(big, "html"), {
+      kind: "text",
+      exact: "Hello",
+      prefix: "x",
+      suffix: "y",
+      block: { path: "evil" },
+    });
+    expect(r.anchor).toMatchObject({ prefix: "x", suffix: "y" });
+    expect(r.anchor).not.toHaveProperty("block");
   });
   it("422 for a version that does not exist", async () => {
     await expect(
@@ -254,5 +358,33 @@ describe("verifyQuote and checkAnchor", () => {
         contentHash: "abc",
       }),
     ).rejects.toMatchObject({ code: "invalid_anchor" });
+  });
+});
+
+describe("quotes on a page with named entities (#1735)", () => {
+  const html =
+    '<h1>Next smaller element</h1><p class="intro">For each index <code>i</code>, find the first <code>j &gt; i</code> with <code>arr[j]</code> &le; <code>arr[i]</code>. We track <b>both</b> the stack and <code>nxt[j]</code>; if none exists, <code>nxt = n</code>.</p>';
+  const exact =
+    "For each index i, find the first j > i with arr[j] \u2264 arr[i]. We track both the stack and nxt[j]; if none exists, nxt = n.";
+  it("finds the paragraph quote with a non-ascii entity", async () => {
+    const t = normalizeText(await visibleText(html));
+    expect(findQuote(t, { exact })).not.toBeNull();
+  });
+  it("finds a quote that crosses two blocks", async () => {
+    const t = normalizeText(await visibleText(html));
+    const q = { exact: "smaller element For each index i, find the first" };
+    expect(findQuote(t, q)).not.toBeNull();
+  });
+  it("finds ge, ne, rarr, hellip, nbsp and a legacy copy", async () => {
+    const t = normalizeText(
+      await visibleText(
+        "<p>a &ge; b &ne; c &rarr; d&hellip; e&nbsp;f &copy 2026</p>",
+      ),
+    );
+    expect(
+      findQuote(t, {
+        exact: "a \u2265 b \u2260 c \u2192 d\u2026 e f \u00a9 2026",
+      }),
+    ).not.toBeNull();
   });
 });
