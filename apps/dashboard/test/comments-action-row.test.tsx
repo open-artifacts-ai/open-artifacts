@@ -39,6 +39,7 @@ describe("comments: the sheet's action row outlet", () => {
     expect(outlet).not.toHaveClass("hidden");
     expect(outlet.className).toContain("sticky");
     expect(outlet.className).toContain("bottom-0");
+    expect(outlet.className).toContain("mt-auto");
     expect(outlet.className).toContain("safe-area-inset-bottom");
     // Released: the row goes back to the card.
     view.rerender(<Sheet active={false} />);

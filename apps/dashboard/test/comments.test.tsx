@@ -279,9 +279,14 @@ describe("comments: layouts", () => {
     expect(outlet.parentElement?.className).toContain("overflow-y-auto");
     expect(outlet.className).toContain("sticky");
     expect(outlet.className).toContain("bottom-0");
-    // The list keeps its content height: when a card is scrolled into view, a
-    // shrunk body would carry the row up to the sheet's top instead.
-    expect(outlet.previousElementSibling?.className).toContain("shrink-0");
+    // The list keeps its content height (`flex-none`: no shrink, and no zero
+    // basis either): when a card is scrolled into view, a compressed body would
+    // carry the row up to the sheet's top instead.
+    const body = outlet.previousElementSibling as HTMLElement;
+    expect(body.className).toContain("flex-none");
+    expect(body.className).not.toContain("flex-1");
+    // A short list still leaves the row at the sheet's bottom edge.
+    expect(outlet.className).toContain("mt-auto");
     // And it clears a phone's home indicator.
     expect(outlet.className).toContain("safe-area-inset-bottom");
     // The row moved out of the card, and still acts for it.
@@ -289,6 +294,18 @@ describe("comments: layouts", () => {
     expect(row.closest("[data-oa-actions]")).not.toBeNull();
     const card = sheet.querySelector('[data-thread="p1"]') as HTMLElement;
     expect(card.contains(row)).toBe(false);
+    // Scrolled: the card is scrolled into view (its own autoscroll), and the
+    // row is still the outlet's, not carried back into the card.
+    const scroller = outlet.parentElement as HTMLElement;
+    Object.defineProperty(scroller, "scrollTop", {
+      value: 240,
+      configurable: true,
+      writable: true,
+    });
+    fireEvent.scroll(scroller);
+    await wait(30);
+    expect(card.contains(row)).toBe(false);
+    expect(outlet.contains(row)).toBe(true);
     fireEvent.change(within(card).getByRole("textbox", { name: "Reply" }), {
       target: { value: "Floats" },
     });

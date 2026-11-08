@@ -78,7 +78,9 @@ export function ActionRowOutlet() {
       data-oa-action-outlet=""
       className={
         slot?.holder
-          ? "sticky bottom-0 z-10 flex flex-col gap-2 border-0 border-t border-t-border bg-card px-4 pt-3 pb-[calc(0.75rem_+_env(safe-area-inset-bottom))]"
+          ? // `mt-auto`: a short list leaves the row at the sheet's bottom
+            // edge, where `sticky bottom-0` keeps it for a long one.
+            "sticky bottom-0 z-10 mt-auto flex flex-col gap-2 border-0 border-t border-t-border bg-card px-4 pt-3 pb-[calc(0.75rem_+_env(safe-area-inset-bottom))]"
           : "hidden"
       }
     />
