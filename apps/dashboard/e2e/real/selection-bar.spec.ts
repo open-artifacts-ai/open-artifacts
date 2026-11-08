@@ -55,10 +55,12 @@ for (const scheme of ["light", "dark"] as const)
       await expect(
         page.getByRole("button", { name: "Comment", exact: true }),
       ).toBeVisible();
-      if (shots)
+      if (shots) {
+        await page.waitForTimeout(400); // past the 200 ms slide
         await page.screenshot({
           path: `${shots}/selected-390-${scheme}-${info.project.name}.png`,
         });
+      }
 
       // Clearing the selection hides the bar.
       await artifactFrame(page)
