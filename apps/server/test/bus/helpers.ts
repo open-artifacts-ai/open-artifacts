@@ -211,13 +211,13 @@ afterAll(async () => {
         )
         .one().n;
     });
-  // A client close is only the echo of the hub's, and a hub-started close
-  // leaves the socket CLOSING with the hub's handler still to run: the echo
-  // (afterAll's own close) fires webSocketClose and its `gone` later. Wait
-  // until every hub this file touched holds no daemon socket at all (no
-  // readyState filter: CLOSING counts), then until its handlers and index
+  // A client close is only the echo of the hub's: the hub's work after it
+  // (the `gone` it sends) runs later. Wait until every hub this file touched
+  // holds no OPEN daemon socket, then until its close/error handlers and index
   // calls are done (indexInFlight 0), so the worker is not torn down with one
-  // pending.
+  // pending. A CLOSING socket whose peer never echoes never fires
+  // webSocketClose, so it cannot be waited on; the window left is an echo
+  // still in flight, which this does not gate.
   for (const uid of touchedUsers) {
     const ns = e.BUS_HUB;
     if (!ns) break;
@@ -227,7 +227,9 @@ afterAll(async () => {
         expect(
           await runInDurableObject(
             hub,
-            (_i, s: DurableObjectState) => s.getWebSockets("daemon").length,
+            (_i, s: DurableObjectState) =>
+              s.getWebSockets("daemon").filter((w) => w.readyState === 1)
+                .length,
           ),
         ).toBe(0),
       { timeout: INDEX_SETTLE_MS },
