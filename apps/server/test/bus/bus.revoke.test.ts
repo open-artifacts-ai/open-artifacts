@@ -511,11 +511,9 @@ describe("bus rows outlive the index window (#1299)", () => {
     expect(gones).toBe(1);
     expect(await rowOf(name)).toBeNull();
     expect((await a.d.closed).code).toBe(4403);
-    // The client's echo does not reach webSocketClose: no second report.
-    await vi.waitFor(async () =>
-      expect((await hub.snapshot()).connected).toEqual([]),
-    );
-    expect(gones).toBe(1);
+    // The client's echo (afterAll's close) reaches webSocketClose later; its
+    // `gone` is idempotent, and afterAll waits for that handler.
+    expect((await hub.snapshot()).connected).toEqual([]);
   });
 
   it("a missing gone (the hub crashed) is harmless: closeInstall reaches the row, the cap prunes it", async () => {
