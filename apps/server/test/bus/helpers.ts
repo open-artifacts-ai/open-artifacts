@@ -235,7 +235,9 @@ afterAll(async () => {
     // still be on the wire after no socket is open.
     await vi.waitFor(
       async () =>
-        expect(await (hub as unknown as BusHub).indexInFlight()).toBe(0),
+        expect(
+          await runInDurableObject(hub, (i: BusHub) => i.indexInFlight),
+        ).toBe(0),
       { timeout: INDEX_SETTLE_MS },
     );
   }

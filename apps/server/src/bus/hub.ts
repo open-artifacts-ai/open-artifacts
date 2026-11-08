@@ -3580,27 +3580,24 @@ export class BusHub extends DurableObject<Env> {
     const name = this.ctx.id.name;
     const idx = socketIndexStub(this.env);
     if (!idx || !name) return;
-    this.#indexInFlight++;
+    this.indexInFlight++;
     try {
       await idx.seen(name);
       this.#indexedAt = now;
     } catch (e) {
       logError("socket_index_failed", e);
     } finally {
-      this.#indexInFlight--;
+      this.indexInFlight--;
     }
   }
 
-  /** Index calls (seen, gone) this instance has started and not finished. */
-  #indexInFlight = 0;
-
   /**
-   * How many install-index calls are in flight (tests: a file's afterAll waits
-   * for 0, so the worker is not torn down with an RPC pending).
+   * Index calls (seen, gone) this instance has started and not finished. A
+   * plain instance field, not a prototype member, so Workers RPC does not
+   * expose it. Tests read it inside the DO (runInDurableObject); a file's
+   * afterAll waits for 0 so the worker is not torn down with an RPC pending.
    */
-  indexInFlight(): number {
-    return this.#indexInFlight;
-  }
+  indexInFlight = 0;
 
   /**
    * #1299: when `closing` was the hub's last open daemon socket, removes the
@@ -3625,14 +3622,14 @@ export class BusHub extends DurableObject<Env> {
     const idx = socketIndexStub(this.env);
     if (!idx || !name) return;
     this.#indexedAt = Number.NEGATIVE_INFINITY;
-    this.#indexInFlight++;
+    this.indexInFlight++;
     try {
       await idx.gone(name);
     } catch (e) {
       logError("socket_index_failed", e);
       return;
     } finally {
-      this.#indexInFlight--;
+      this.indexInFlight--;
     }
     // A socket accepted while `gone` was in flight reported before it landed,
     // so its report may have been deleted; and it set the throttle, so reset
