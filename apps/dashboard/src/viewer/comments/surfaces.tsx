@@ -57,17 +57,21 @@ export function SelectionBar() {
         {show ? "Comment on selection available" : ""}
       </div>
       {show && (
-        <button
-          type="button"
-          className="fixed inset-x-0 bottom-0 z-20 flex min-h-12 w-full animate-in items-center justify-center gap-2 border-0 bg-primary pb-[env(safe-area-inset-bottom)] font-medium text-primary-foreground text-sm duration-200 slide-in-from-bottom motion-reduce:animate-none!"
-          // Keep the frame's selection while the bar is pressed.
-          onPointerDown={(e) => e.preventDefault()}
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={api.commentOnSelection}
-        >
-          <MessageSquare className="size-4" aria-hidden="true" />
-          Comment on selection
-        </button>
+        // The bar is the chrome surface; the 48px accent button sits above the
+        // home indicator (Design's final: plain bar, no quote line).
+        <div className="fixed inset-x-0 bottom-0 z-20 animate-in border-t border-t-border bg-card px-3 pt-2 pb-[calc(0.5rem_+_env(safe-area-inset-bottom))] duration-200 slide-in-from-bottom motion-reduce:animate-none!">
+          <button
+            type="button"
+            className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg border-0 bg-[var(--oa-accent)] font-semibold text-[var(--oa-accent-text)] text-[15px] hover:bg-[var(--oa-accent-fg)]"
+            // Keep the frame's selection while the bar is pressed.
+            onPointerDown={(e) => e.preventDefault()}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={api.commentOnSelection}
+          >
+            <MessageSquare className="size-[18px]" aria-hidden="true" />
+            Comment on selection
+          </button>
+        </div>
       )}
     </>
   );

@@ -273,9 +273,13 @@ export function TitleBar({
       <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%]">
         {comments && (
           <ShButton
-            variant={comments.selecting ? "default" : "outline"}
+            variant="outline"
             size="xs"
-            className={SM}
+            className={
+              comments.selecting
+                ? `${SM} border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)] hover:bg-[var(--oa-accent-soft)] hover:text-[var(--oa-accent-fg)]`
+                : SM
+            }
             aria-label={
               comments.selecting
                 ? narrow

@@ -1874,7 +1874,7 @@ describe("comment on selection (#1732)", () => {
   const bar = () =>
     screen
       .queryAllByRole("button", { name: "Comment on selection" })
-      .find((b) => b.className.includes("fixed")) ?? null;
+      .find((b) => b.parentElement?.className.includes("fixed")) ?? null;
 
   it("touch: a full-width bar appears with the selection, announces once, and hides when it clears", async () => {
     viewport(400, true);
@@ -1884,7 +1884,8 @@ describe("comment on selection (#1732)", () => {
     expect(bar()).toBeNull();
     await select(true);
     expect(bar()).toBeInTheDocument();
-    expect(bar()?.className).toContain("fixed");
+    expect(bar()?.parentElement?.className).toContain("fixed");
+    expect(bar()?.parentElement?.className).toContain("safe-area-inset-bottom");
     expect(
       screen.getByText("Comment on selection available"),
     ).toBeInTheDocument();
