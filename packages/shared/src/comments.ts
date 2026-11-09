@@ -45,13 +45,19 @@ export const AskOptionSchema = z.object({
 });
 export type AskOption = z.infer<typeof AskOptionSchema>;
 
-const askOptions = z
-  .array(AskOptionSchema)
-  .min(ASK_OPTIONS_MIN)
-  .max(ASK_OPTIONS_MAX)
-  .refine((o) => new Set(o.map((x) => x.id)).size === o.length, {
-    message: "Option ids must be unique",
-  });
+const optionRules = <T extends z.ZodType<{ id: string }>>(item: T) =>
+  z
+    .array(item)
+    .min(ASK_OPTIONS_MIN)
+    .max(ASK_OPTIONS_MAX)
+    .refine((o) => new Set(o.map((x) => x.id)).size === o.length, {
+      message: "Option ids must be unique",
+    });
+const askOptions = optionRules(AskOptionSchema);
+/** An option as a client sends it: the label is trimmed and must not be blank. */
+const AskInputOptionSchema = AskOptionSchema.extend({
+  label: z.string().trim().min(1).max(ASK_LABEL_MAX),
+});
 const askRecommended = z
   .object({ optionId: key, why: z.string().max(ASK_WHY_MAX) })
   .optional();
@@ -163,8 +169,8 @@ const guestName = z.string().max(COMMENT_GUEST_NAME_MAX).optional();
  */
 export const AskInputSchema = z
   .object({
-    question: z.string().min(1).max(ASK_QUESTION_MAX),
-    options: askOptions,
+    question: z.string().trim().min(1).max(ASK_QUESTION_MAX),
+    options: optionRules(AskInputOptionSchema),
     recommended: askRecommended,
     to: z.array(KeyRefSchema).min(1).max(ASK_TO_MAX),
   })

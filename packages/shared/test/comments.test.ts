@@ -428,6 +428,17 @@ describe("asks, mentions and assign (#1535)", () => {
       bad({ ...ask("u"), options: [opts[0], { id: "a", label: "dup" }] }),
     ).toBe(false);
     expect(bad({ ...ask("u"), question: "q".repeat(1001) })).toBe(false);
+    expect(bad({ ...ask("u"), question: "   " })).toBe(false);
+    expect(
+      bad({ ...ask("u"), options: [opts[0], { id: "b", label: " \t " }] }),
+    ).toBe(false);
+    const trimmed = AskInputSchema.parse({
+      ...ask("u"),
+      question: "  Which?  ",
+      options: [{ ...opts[0], label: "  A  " }, opts[1]],
+    });
+    expect(trimmed.question).toBe("Which?");
+    expect(trimmed.options[0]?.label).toBe("A");
     expect(
       bad({
         ...ask("u"),

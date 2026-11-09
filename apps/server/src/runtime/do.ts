@@ -66,6 +66,7 @@ import {
   setAnswer,
   setTargetState,
   threadExists,
+  threadStatus,
   touchThread,
 } from "./comments-store.js";
 import {
@@ -2053,6 +2054,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (!threadExists(this.sql, a.threadId)) fail("not_found", "Not found");
       if (replyCount(this.sql, a.threadId) >= COMMENTS_MAX_REPLIES)
         fail("conflict", "This thread has reached its reply limit");
+      if (a.extras?.ask && threadStatus(this.sql, a.threadId) === "resolved")
+        fail(
+          "conflict",
+          "This thread is resolved, so an ask on it could not be answered. Reopen it with resolve_comment { resolved: false }, or ask in a new thread.",
+        );
       this.countComment(a.rate);
       const now = this.iso();
       const c = insertComment(this.sql, now, a.threadId, a.actor, a.body);
