@@ -223,7 +223,7 @@ describe("follow frames (BUS_CAPS.follow)", () => {
     expect(u.code).toBe("not_found");
   });
 
-  it("follow_limit at the member's cap; an existing follow still answers", async () => {
+  it("at the member's cap, dead rows are cleared (#1766) and an existing follow still answers", async () => {
     expect(MAX_FOLLOWS).toBe(FOLLOW_LIMIT);
     const s = await setup(["follow"]);
     const art = await artifactOf(s.m.userId);
@@ -241,22 +241,23 @@ describe("follow frames (BUS_CAPS.follow)", () => {
         ).bind(s.m.userId, art, `fill${i}`, i),
       ),
     );
-    const r = await ask(
-      s,
-      { type: "follow", from_ref: a?.ref, artifact: other },
-      "error",
-    );
-    expect(r.code).toBe("follow_limit");
+    // An existing follow answers without touching anything.
     await ask(
       s,
       { type: "follow", from_ref: a?.ref, artifact: art },
       "followed",
     );
-    // `following` never lists more than the cap.
-    expect(
-      (await ask(s, { type: "following", from_ref: a?.ref }, "follows")).follows
-        .length,
-    ).toBeLessThanOrEqual(MAX_FOLLOWS);
+    expect(await rows(s.m.userId)).toHaveLength(FOLLOW_LIMIT);
+    // The fill rows belong to no agent: a new follow clears them. (The
+    // refusal with live rows is in hub.follow-rekey.test.ts.)
+    await ask(
+      s,
+      { type: "follow", from_ref: a?.ref, artifact: other },
+      "followed",
+    );
+    expect((await rows(s.m.userId)).map((r) => r.artifactId).sort()).toEqual(
+      [art, other].sort(),
+    );
   });
 
   it("an old client (no follow cap) gets bad_frame, as an older hub would, and no row", async () => {

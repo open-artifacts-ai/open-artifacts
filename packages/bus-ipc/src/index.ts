@@ -12,6 +12,7 @@ export {
   displayKind,
   earlierStatusText,
   excerptOf,
+  FOLLOW_DAEMON_BAD_FRAME,
   FOLLOW_OLD_DAEMON,
   fitName,
   followingText,

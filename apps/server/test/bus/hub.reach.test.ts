@@ -361,6 +361,18 @@ describe("the reply path by every name", () => {
     w.close();
   });
 
+  it("#1349: answers the role's own name while its holder is away, only if the role reaches the sender", async () => {
+    const w = await world();
+    await holds(w.x, "other", w.pn);
+    w.dh.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "h" });
+    await waitUntilAway(w);
+    const r = await send(w.db, "b", "lead", w.x);
+    expect(r).toMatchObject({ state: "pending", queued: "away" });
+    // A role with no reach to Y stays refused, its holder live or away.
+    expect((await send(w.db, "b", "other", w.x)).state).toBe("refused");
+    w.close();
+  });
+
   it("answers a pre-rename former name", async () => {
     const w = await world();
     const fresh = uniq("renamed");

@@ -26,11 +26,20 @@ export const USAGE_PATH = "/usage";
 export const CHECKOUT_PATH = "/checkout";
 export const PORTAL_PATH = "/portal";
 
+/** The one billing refusal code a caller may act on: the month itself is bad. */
+export const BILLING_REFUSAL_CODES = ["bad_month"] as const;
+export type BillingRefusalCode = (typeof BILLING_REFUSAL_CODES)[number];
+
 /** Nothing reached billing, or it answered with a failure we can't act on. */
 export class BillingUnavailableError extends Error {
   constructor(
     /** A fixed category, safe to log: no_gate, unconfigured, gate_refused, stale, network, retry, http_<status>, bad_answer. */
     public why: string,
+    /**
+     * Billing's own error code, set only for a non-gate 400 whose small JSON
+     * body is exactly an allowlisted code (BILLING_REFUSAL_CODES); else unset.
+     */
+    public code?: BillingRefusalCode,
   ) {
     super(`billing unavailable: ${why}`);
     this.name = "BillingUnavailableError";
@@ -94,6 +103,23 @@ async function isRetry(res: Response): Promise<boolean> {
 }
 
 /**
+ * A 400's allowlisted billing code from its small JSON body ({ error }), or
+ * undefined (unparseable, oversized or any other code). Reads the body.
+ */
+async function refusalCode(
+  res: Response,
+): Promise<BillingRefusalCode | undefined> {
+  try {
+    const t = await res.text();
+    if (t.length > 256) return undefined;
+    const j = JSON.parse(t) as { error?: unknown } | null;
+    return BILLING_REFUSAL_CODES.find((c) => c === j?.error);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * One call through the gate: the JSON answer of a 2xx, else
  * BillingUnavailableError. Never logs a body, header or URL.
  */
@@ -127,9 +153,12 @@ export async function billingCall(
     // the same signed body once.
     if (!refused && res.status === 503 && (await isRetry(res)))
       throw new BillingUnavailableError("retry");
+    const code =
+      !refused && res.status === 400 ? await refusalCode(res) : undefined;
     await res.body?.cancel().catch(() => {});
     throw new BillingUnavailableError(
       refused ? "gate_refused" : `http_${res.status}`,
+      code,
     );
   }
   try {

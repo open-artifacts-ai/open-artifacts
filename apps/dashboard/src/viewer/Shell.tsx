@@ -7,6 +7,7 @@ import {
   type SyntheticEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -22,6 +23,7 @@ import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
+import { asksForMe, nextAskFor } from "./comments/asks";
 import { CommentsBody, PinBar } from "./comments/CommentsBody";
 import {
   CommentsColumn,
@@ -499,6 +501,12 @@ function Viewer({
     bridge.current?.setArtifact(artifact);
   }, [artifact.capabilities, artifact.dataWriters, artifact.visibility]);
 
+  const asks = useMemo(() => {
+    const all = [...cmt.ordered, ...cmt.orphans];
+    return all.some((t) => t.comments.some((c) => c.ask))
+      ? { count: asksForMe(all).length }
+      : undefined;
+  }, [cmt.ordered, cmt.orphans]);
   if ((content.notFound || signedOut) && isEmbed())
     return <NotPublic id={artifact.id} />;
   if (content.notFound) return <NotFound />;
@@ -546,6 +554,19 @@ function Viewer({
     selecting: cmt.hasSelection,
     onClick: cmt.hasSelection ? cmt.commentOnSelection : listButton.onClick,
   };
+  // #1614: "N asks for you" opens the comments surface (never toggles it shut) and steps to the next ask.
+  const asksButton =
+    commentsOn && asks
+      ? {
+          count: asks.count,
+          onClick: () => {
+            const id = nextAskFor(cmt, cmt.active, { includeSelf: true });
+            if (!id) return;
+            openSurface.current();
+            cmt.reveal(id);
+          },
+        }
+      : undefined;
   return (
     <CommentsProvider value={cmt}>
       <div className="oa-viewer">
@@ -566,6 +587,7 @@ function Viewer({
               newer={newer}
               gone={gone !== null}
               comments={commentsButton}
+              asks={asksButton}
             />
             <SignupNudge
               authed={authed}

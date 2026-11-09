@@ -207,17 +207,13 @@ export type ClaudeTransportOptions = {
   returnIndexFile?: string;
   /** Test seam: the clock for the reply TTL. */
   now?: () => number;
-  /**
-   * Whether the hub said it names writers (hello_ok listed BUS_CAPS.ids).
-   * Only then is a revived socket that does not know its writer refused; an
-   * older hub never names one, so the TTL alone guards its replies.
-   */
-  hubIds?: () => boolean;
   log?: (msg: string) => void;
   /**
    * A native reply from `agentRef`'s session to `peerName` in `namespace`.
    * `peerId` is the agent that wrote, when the hub named it: the reply must
-   * reach only that agent.
+   * reach only that agent. `unnamed` is set when the socket was revived
+   * without knowing who wrote: the caller refuses it once it knows whether the
+   * hub names writers (an older hub never does, so the TTL alone guards it).
    */
   onReply?: (
     agentRef: string,
@@ -225,6 +221,7 @@ export type ClaudeTransportOptions = {
     body: string,
     namespace: string,
     peerId?: string,
+    unnamed?: boolean,
   ) => void;
   /**
    * A native reply not sent: the mail it answers is older than RETURN_TTL_MS,
@@ -454,20 +451,26 @@ export class ClaudeTransport {
       )?.[1] ?? content
     ).trim();
     if (!body) return;
-    // Past the mail TTL, or revived without its agent's id, the name may now
-    // belong to another agent: refused, and the session is told.
-    if (
-      this.#now() - sink.at > RETURN_TTL_MS ||
-      (sink.revived &&
-        sink.fromId === undefined &&
-        (this.opts.hubIds?.() ?? false))
-    ) {
+    // Past the mail TTL the name may now belong to another agent: refused,
+    // and the session is told. A revived socket that does not know its writer
+    // is decided when the reply is sent, not here (`unnamed`).
+    if (this.#now() - sink.at > RETURN_TTL_MS) {
       this.opts.onReplyRefused?.(sink.agentRef, sink.peerName);
       return;
     }
-    if (sink.fromId === undefined)
-      this.opts.onReply?.(sink.agentRef, sink.peerName, body, sink.namespace);
-    else
+    if (sink.fromId === undefined) {
+      if (sink.revived)
+        this.opts.onReply?.(
+          sink.agentRef,
+          sink.peerName,
+          body,
+          sink.namespace,
+          undefined,
+          true,
+        );
+      else
+        this.opts.onReply?.(sink.agentRef, sink.peerName, body, sink.namespace);
+    } else
       this.opts.onReply?.(
         sink.agentRef,
         sink.peerName,

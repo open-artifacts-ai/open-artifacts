@@ -9,10 +9,11 @@ import os
 import re
 import sys
 import threading
+import unicodedata
 
 from . import copy
 from .link import Link, LinkError, retry_delay_s
-from .roots import NotOnBus
+from .roots import NotOnBus, hermes_session_title
 from .sockpath import proc_start
 from .wrap import wrap
 
@@ -22,12 +23,33 @@ SHOWN_MAX = 1000
 SELF_TIMEOUT_S = 2.0
 
 
-def name_of(title, kind="hermes"):
-    """A session name as a bus name: lowercase words joined by `-`; the kind when nothing is left."""
-    slug = re.sub(r"[^a-z0-9]+", "-", (title or "").lower())
+def slug_of(text, kind="hermes"):
+    """A derived name (the directory) as a bus name: lowercase words joined by `-`; the kind when nothing is left."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower())
     slug = re.sub(r"^-+", "", slug)[:64]
     slug = re.sub(r"-+$", "", slug)
     return slug or kind
+
+
+def name_of(title, kind="hermes"):
+    """A session title as a bus name (#1704), as typed.
+
+    The same rules the pi adapter follows (#1703). Accents fold away. Letters,
+    digits, single spaces, `.` `_` `-` keep their place and case. A run of any
+    other character (controls included) becomes `-` only between two kept
+    non-space characters, and is dropped elsewhere. Starts with a letter or
+    digit, ends with a letter, digit, `_` or `-`, at most 64 characters (the
+    hub counts characters, and every kept one is ASCII); the kind when nothing
+    is left.
+    """
+    t = unicodedata.normalize("NFKD", title or "")
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    t = re.sub(r"([A-Za-z0-9._-])[^A-Za-z0-9 ._-]+(?=[A-Za-z0-9._-])", r"\1-", t)
+    t = re.sub(r"[^A-Za-z0-9 ._-]+", "", t)
+    t = re.sub(r" {2,}", " ", t)
+    t = re.sub(r"^[ ._-]+", "", t)[:64]
+    t = re.sub(r"[ .]+$", "", t)
+    return t or kind
 
 
 def codex_app_server_active():
@@ -66,13 +88,56 @@ def context_reaches_model(user_message, history):
     return _is_gateway_wrapped(last["content"], user_message)
 
 
+# gateway/run_turn_runner.py _prepare_turn_message prepends this, as an inline literal (Hermes
+# has no constant for it), to the current message after an interrupted tool call.
+_TOOL_TAIL_NOTE = (
+    "[System note: A new message has arrived. The conversation "
+    "history contains pending tool outputs from an interrupted turn. "
+    "IGNORE those pending results. Address the user's NEW message "
+    "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
+)
+_NOTE_PROBE = "\0"
+
+
+def _resume_note_prefixes():
+    """Every exact prefix Hermes's own build_resume_recovery_note puts before a user message.
+
+    The note names the reason, so it is built for each phrase it has (restart, shutdown, and
+    the generic one) with a probe message and cut off at the probe. Empty when Hermes's
+    builder is missing or does not behave as expected, so nothing is recognised then.
+    """
+    build = getattr(sys.modules.get("gateway.run"), "build_resume_recovery_note", None)
+    if not callable(build):
+        return []
+    prefixes = []
+    for reason in ("restart_timeout", "shutdown_timeout", None):
+        try:
+            full = build(reason, _NOTE_PROBE)
+        except Exception:
+            return []
+        tail = "\n\n" + _NOTE_PROBE
+        if not isinstance(full, str) or not full.startswith("[System note:") or not full.endswith(tail):
+            return []
+        prefixes.append(full[: -len(_NOTE_PROBE)])
+    return prefixes
+
+
+def _strip_recovery_note(rest):
+    """`rest` without one leading Hermes recovery note (resume or interrupted tool call), if it has one."""
+    for prefix in (*_resume_note_prefixes(), _TOOL_TAIL_NOTE):
+        if rest.startswith(prefix):
+            return rest[len(prefix) :]
+    return rest
+
+
 def _is_gateway_wrapped(content, user_message):
     """Whether `content` is `user_message` as the Hermes gateway composes it.
 
     The gateway may prepend a timestamp (gateway/message_timestamps.py, when
     gateway.message_timestamps is on) and then, outside it, the Telegram observed group
-    context (gateway/run.py _wrap_current_message_with_observed_context). Only those two
-    exact shapes count; any other prefix means the text is not the current turn's.
+    context (gateway/run.py _wrap_current_message_with_observed_context), and between them
+    a recovery note after an interrupted turn (gateway/run_turn_runner.py). Only those exact
+    shapes count; any other prefix means the text is not the current turn's.
     """
     if content == user_message:
         return True
@@ -88,6 +153,9 @@ def _is_gateway_wrapped(content, user_message):
         rest = rest[at + len(marker) :]
         if rest == user_message:
             return True
+    rest = _strip_recovery_note(rest)
+    if rest == user_message:
+        return True
     if not user_message or not rest.endswith(user_message):
         return False
     prefix = rest[: -len(user_message)]
@@ -135,8 +203,10 @@ class Bus:
     """`inject` is ctx.inject_message; `connect` makes a Link (replaced in tests)."""
 
     def __init__(self, roots, inject=None, connect=None, start=None, cwd=None, spawn=None,
-                 current_session=None, codex_runtime=None, habits_marker=None):
+                 current_session=None, codex_runtime=None, habits_marker=None, title_of=None):
         self.roots = roots
+        # The user-set session title of a root, or None.
+        self._title_of = title_of or hermes_session_title
         self._habits_marker = habits_marker or HABITS_MARKER
         self._codex_runtime = codex_runtime or codex_app_server_active
         self._inject = inject
@@ -164,7 +234,8 @@ class Bus:
         return Link(
             root.ref,
             cwd,
-            name_of(f"hermes-{base}" if base else None),
+            # The user's own title as typed; else the directory, as before.
+            name_of(self._title_of(root.ref), slug_of(f"hermes-{base}" if base else None)),
             self._start,
             os.getpid(),
             on_deliver,
