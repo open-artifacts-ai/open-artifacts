@@ -325,13 +325,31 @@ export function mentionedKeys(
   return keys;
 }
 
-/** Drops every whole `@name` (and one following space each) from the text. */
-export function removeMention(text: string, name: string): string {
+const MENTION_END = "(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))";
+
+/** Drops every `@name` that `mentionedKeys` would count (same boundary), with a
+    trailing `'s` and one space. An `@name` that is the start of a longer agent's
+    name is left alone. */
+export function removeMention(
+  text: string,
+  name: string,
+  agents: readonly ArtifactAgent[] = [],
+): string {
+  const longer = agents
+    .filter(
+      (a) =>
+        a.name.length > name.length &&
+        a.name.toLowerCase().startsWith(name.toLowerCase()),
+    )
+    .map((a) => new RegExp(`^@${esc(a.name)}${MENTION_END}`, "i"));
   const re = new RegExp(
-    `(^|\\s)@${esc(name)}(?=$|[\\s.,;:!?)\\]'\u2019-])\\s?`,
+    `(^|\\s)@${esc(name)}${MENTION_END}(?:['\u2019]s)?\\s?`,
     "gi",
   );
-  return text.replace(re, (_m, lead: string) => lead);
+  return text.replace(re, (m, lead: string, at: number) => {
+    const rest = text.slice(at + lead.length);
+    return longer.some((l) => l.test(rest)) ? m : lead;
+  });
 }
 
 /** Who gets notified: the mentioned agents plus the assignee, once each. */
@@ -375,7 +393,7 @@ export function MentionChips({
               <button
                 type="button"
                 aria-label={`Remove mention of ${a.name}`}
-                className="rounded-full px-1 leading-none hover:bg-background/60"
+                className="inline-flex min-h-6 min-w-6 items-center justify-center rounded-full leading-none hover:bg-background/60"
                 onClick={() => onRemove(a)}
               >
                 ×

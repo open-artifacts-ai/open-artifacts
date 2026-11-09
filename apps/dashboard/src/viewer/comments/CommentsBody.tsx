@@ -217,6 +217,11 @@ function Composer({
     mentionable && wantAgents && api.canMention && api.canComment,
   );
   const agents = agentsQ.data;
+  // An assignee that left the list is no longer shown, so it is not sent.
+  useEffect(() => {
+    if (assign && agents && !agents.some((a) => a.key === assign))
+      setAssign("");
+  }, [assign, agents]);
   const retryAgents = () => {
     if (!wantAgents) setWantAgents(true);
     if (
@@ -279,6 +284,7 @@ function Composer({
   };
   const cancel = () => {
     setText(initial);
+    setAssign("");
     setError(null);
     if (!alwaysOpen) setOpen(false);
     onCancel?.();
@@ -370,7 +376,7 @@ function Composer({
           text={text}
           agents={agents}
           assign={assign}
-          onRemove={(a) => setText((t) => removeMention(t, a.name))}
+          onRemove={(a) => setText((t) => removeMention(t, a.name, agents))}
         />
       )}
       {error != null && (
@@ -382,20 +388,22 @@ function Composer({
       {open &&
         (() => {
           const assignSel = agents && agents.length > 0 && (
-            <div
-              className={`flex flex-wrap items-center gap-x-3 gap-y-1 ${TXT} ${buttonsRight ? "w-full" : ""}`}
+            <fieldset
+              className={`m-0 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 border-0 p-0 ${TXT} ${buttonsRight ? "w-full" : ""}`}
             >
+              <legend className="sr-only">Assign to</legend>
               {agents.map((a) => (
                 <label key={a.key} className="flex items-center gap-1">
                   <input
                     type="checkbox"
                     checked={assign === a.key}
+                    disabled={busy}
                     onChange={(e) => setAssign(e.target.checked ? a.key : "")}
                   />
                   Assign to {a.name}
                 </label>
               ))}
-            </div>
+            </fieldset>
           );
           const cancelBtn = (onCancel || !alwaysOpen) && (
             <Button size="xs" variant="ghost" onClick={cancel}>

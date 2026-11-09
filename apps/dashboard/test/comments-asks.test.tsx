@@ -759,6 +759,43 @@ describe("@ picker details", () => {
     });
   });
 
+  it("removes only the mentions mentionedKeys would count", () => {
+    const bob = { key: "agent:bob", name: "Bob", online: true };
+    const smith = { key: "agent:bs", name: "Bob Smith", online: true };
+    const both = [bob, smith];
+    expect(removeMention("hi @Bob and @Bob.", "Bob", both)).toBe("hi and .");
+    expect(removeMention("hi @Bob-x ok", "Bob", both)).toBe("hi @Bob-x ok");
+    expect(removeMention("hi @Bob-Smith", "Bob", both)).toBe("hi @Bob-Smith");
+    expect(removeMention("hi @Bob's idea", "Bob", both)).toBe("hi idea");
+    expect(removeMention("hi @Bob Smith go", "Bob", both)).toBe(
+      "hi @Bob Smith go",
+    );
+    expect(removeMention("hi @Bob Smith go", "Bob Smith", both)).toBe("hi go");
+  });
+
+  it("clears the assignee when the composer is cancelled", async () => {
+    withAgents();
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const name = "Comment on the whole page";
+    const box = await within(c).findByRole("textbox", { name });
+    fireEvent.focus(box);
+    fireEvent.click(await within(c).findByLabelText("Assign to OA Design"));
+    expect(
+      (within(c).getByLabelText("Assign to OA Design") as HTMLInputElement)
+        .checked,
+    ).toBe(true);
+    fireEvent.click(await within(c).findByRole("button", { name: "Cancel" }));
+    fireEvent.focus(within(c).getByRole("textbox", { name }));
+    expect(
+      (
+        (await within(c).findByLabelText(
+          "Assign to OA Design",
+        )) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
+  });
+
   it("marks agents online or offline in text, not colour alone", async () => {
     withAgents();
     mount(viewerPath(OWNED));
