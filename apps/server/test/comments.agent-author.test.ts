@@ -134,20 +134,15 @@ describe("comment author kind (#1789)", () => {
 
   it("a guest stays a guest", async () => {
     const id = await pub();
-    await api(app, `/api/v1/artifacts/${id}`, owner.cookie, {
+    const pr = await api(app, `/api/v1/artifacts/${id}`, owner.cookie, {
       method: "PATCH",
       body: { visibility: "public" },
     });
+    expect(pr.status).toBe(200);
     const r = await post(id, null, { guestName: "Ada" });
-    if (r.status === 201) {
-      const t = (await r.json()) as Thread;
-      expect(t.comments[0]?.author).toMatchObject({
-        kind: "guest",
-        name: "Ada",
-      });
-    } else {
-      expect([401, 403, 404]).toContain(r.status);
-    }
+    expect(r.status).toBe(201);
+    const t = (await r.json()) as Thread;
+    expect(t.comments[0]?.author).toMatchObject({ kind: "guest", name: "Ada" });
   });
 
   it("an old stored comment with an agent maps to the agent kind at read time", async () => {
@@ -236,5 +231,50 @@ describe("comment author kind (#1789)", () => {
     expect(ok.status).toBe(200);
     const del = await api(app, path, owner.cookie, { method: "DELETE" });
     expect([200, 204]).toContain(del.status);
+  });
+
+  it("for is the member's real name, and a resolve by a token is an agent", async () => {
+    const id = await pub();
+    const mate = await mk("ag-named");
+    await E.DB.prepare("update users set display_name = ? where id = ?")
+      .bind("Dana Rivera", mate.userId)
+      .run();
+    const { token } = await createPat(E, mate.userId, "named bot");
+    const t = (await (await post(id, token)).json()) as Thread;
+    expect(t.comments[0]?.author).toMatchObject({
+      kind: "agent",
+      name: "named bot",
+      for: "Dana Rivera",
+    });
+    const r = await api(app, `${R.comments(id)}/${t.id}`, token, {
+      method: "PATCH",
+      body: { status: "resolved" },
+    });
+    expect(r.status).toBe(200);
+    const out = (await r.json()) as Thread;
+    expect(out.resolvedBy).toMatchObject({
+      kind: "agent",
+      name: "named bot",
+      for: "Dana Rivera",
+      me: true,
+    });
+    const seen = (await list(id, other.cookie)).threads[0];
+    expect(seen?.resolvedBy).toMatchObject({ kind: "agent", me: false });
+  });
+
+  it("a token with a blank label is still an agent, named Agent", async () => {
+    const id = await pub();
+    const { token } = await createPat(E, owner.userId, "   ");
+    const t = (await (await post(id, token)).json()) as Thread;
+    expect(t.comments[0]?.author).toMatchObject({
+      kind: "agent",
+      name: "Agent",
+    });
+    const { token: t2 } = await createPat(E, owner.userId, "");
+    const u = (await (await post(id, t2)).json()) as Thread;
+    expect(u.comments[0]?.author).toMatchObject({
+      kind: "agent",
+      name: "Agent",
+    });
   });
 });
