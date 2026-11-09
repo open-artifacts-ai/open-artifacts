@@ -277,7 +277,7 @@ describe("effectivePlan", () => {
       ).toBeNull();
   });
 
-  it("an ended trial, a lapse, a suspension and past due beyond grace are read-only", () => {
+  it("a passed trial is Solo; a lapsed trial, a lapse, a suspension and past due beyond grace are read-only", () => {
     const ro = (r: Partial<StoredPlan>) =>
       effectivePlan(at(r, mid), null, undefined, mid);
     // #1756: a passed Business trial is Solo until billing answers, not read-only.

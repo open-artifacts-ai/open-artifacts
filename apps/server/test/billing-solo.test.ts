@@ -162,11 +162,46 @@ describe("effectivePlan: a cached Business trial that has passed", () => {
     expect(plan({ tier: "trial", trialEndsAt: mid }).lock).toBeNull();
   });
 
-  it("billing's next answer wins over the passed trial", () => {
-    expect(plan({ tier: "team" }).lock).toBeNull();
-    expect(plan({ tier: "solo", trialEndsAt: mid - 1 }).lock?.mode).toBe(
-      "solo",
-    );
+  it("billing's next answer wins over the passed trial (version rule)", async () => {
+    const read = async () => {
+      const r = await env.DB.prepare(
+        "select (select value from settings where key = 'billing.plan') as plan, (select value from settings where key = 'billing.check') as \"check\"",
+      ).first<{ plan: string | null; check: string | null }>();
+      return planOfRaw(H as unknown as Env, r?.plan, r?.check, mid, {
+        gate: true,
+      });
+    };
+    await clearBilling();
+    try {
+      await cachePlan(
+        { ...passed, status: "active", graceUntil: null, version: 1 },
+        mid,
+      );
+      expect((await read())?.lock?.mode).toBe("solo");
+      await cachePlan(
+        {
+          tier: "solo",
+          status: "lapsed",
+          trialEndsAt: mid - 1,
+          graceUntil: null,
+          version: 2,
+        },
+        mid,
+      );
+      expect((await read())?.lock).toEqual({
+        mode: "viewOnly",
+        tier: "solo",
+        reason: "solo_unpaid",
+      });
+      // An older version never replaces it.
+      await cachePlan(
+        { ...passed, status: "active", graceUntil: null, version: 1 },
+        mid + 1,
+      );
+      expect((await read())?.lock?.mode).toBe("viewOnly");
+    } finally {
+      await clearBilling();
+    }
   });
 
   it("without the gate there is no plan; a provisioned TIER=trial with no answer is untouched", () => {
