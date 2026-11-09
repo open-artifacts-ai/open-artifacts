@@ -21,9 +21,9 @@ import {
 // shell sends anchors, opaque ids, pin numbers and flags; the frame sends
 // anchors it built from the page's own text, ids, states and pixel offsets.
 // Nothing here adds a node to the page tree except one overlay host under
-// <html> (its UI sits in a shadow root) and one <style> in the head for the
-// highlight rules (#1473: an adopted sheet could be dropped by the page), and
-// highlights use the CSS Custom Highlight API. This is tidiness, not a security
+// <html> (its UI sits in a shadow root), and highlights use the CSS Custom
+// Highlight API with an adopted stylesheet (an inline <style> would be blocked
+// by a page's `style-src 'self'`). This is tidiness, not a security
 // boundary: the page's own script shares this window, so it can see every
 // message, reach the overlay and forge every message the frame sends. The
 // shell must treat them all as hints.
@@ -148,28 +148,36 @@ export function createComments(
   };
 
   /**
-   * The page's highlight rules. A `<style>` element rather than an adopted
-   * sheet (#1473): a page that rewrites `document.adoptedStyleSheets` used to
-   * take the highlights with it, and re-adopting could only happen at the next
-   * paint, so they stayed unstyled in between. Nothing a page does to its
-   * adopted sheets touches this element, and a removal is put back from the
-   * mutation observer.
+   * The page's highlight rules: an adopted sheet, never an inline `<style>`.
+   * An artifact page can ship a CSP that blocks inline styles
+   * (`style-src 'self'`), and constructable sheets are not subject to it
+   * (#1473 review). A page that rewrites `document.adoptedStyleSheets` takes
+   * ours with it, so it is adopted again by anything that can notice: a paint,
+   * a page mutation, a click or a selection change.
    */
-  let pageStyle: HTMLStyleElement | undefined;
-  const ensurePageStyle = () => {
-    if (!document.head) return;
-    if (pageStyle?.isConnected) return;
-    if (!pageStyle) {
-      pageStyle = document.createElement("style");
-      pageStyle.setAttribute("data-oa", "highlights");
-      pageStyle.textContent = PAGE_CSS;
+  let sheet: CSSStyleSheet | undefined;
+  const adoptSheet = () => {
+    if (typeof CSSStyleSheet === "undefined") return;
+    if (!sheet) {
+      try {
+        sheet = new CSSStyleSheet();
+        sheet.replaceSync(PAGE_CSS);
+      } catch {
+        return;
+      }
     }
-    document.head.append(pageStyle);
+    // Never rebuilt after a failed adoption: the sheet is created once.
+    if (document.adoptedStyleSheets.includes(sheet)) return;
+    try {
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    } catch {
+      // No setter (older engines, jsdom): nothing to adopt into.
+    }
   };
 
   const highlights = (): Registry | undefined => {
     if (typeof CSS === "undefined" || !("highlights" in CSS)) return undefined;
-    ensurePageStyle();
+    adoptSheet();
     return (CSS as unknown as { highlights: Registry }).highlights;
   };
 
@@ -367,6 +375,7 @@ export function createComments(
     });
   };
   const onSelectionChange = () => {
+    adoptSheet();
     schedule(false, true);
     if (mode !== "select") return;
     clearTimeout(selTimer);
@@ -545,6 +554,7 @@ export function createComments(
   // ---- clicks on the page: pin placement and highlight hits ----
   function onClick(e: MouseEvent) {
     if (mode === "off" || e.composedPath()[0] === host) return;
+    adoptSheet();
     if (mode === "pin") {
       if (!hasPins) return;
       const target = e.target instanceof Element ? e.target : null;
@@ -676,9 +686,9 @@ export function createComments(
     );
   };
   const onMutation = (records: MutationRecord[]) => {
-    // A page that clears the head (or picks our style out) gets it back here,
-    // before the next paint has to (#1473 review).
-    ensurePageStyle();
+    // A page that rewrote `adoptedStyleSheets` may not repaint anything: the
+    // observer is the first thing to notice (#1473 review).
+    adoptSheet();
     if (records.every(ours)) return;
     textVer++;
     const now = Date.now();
@@ -730,7 +740,10 @@ export function createComments(
     const reg = highlights();
     reg?.delete("oa-comment");
     reg?.delete("oa-comment-active");
-    pageStyle?.remove();
+    if (sheet)
+      document.adoptedStyleSheets = document.adoptedStyleSheets.filter(
+        (s) => s !== sheet,
+      );
     host?.remove();
   };
   // #1473: a signal that was already aborted never fires `abort`, so the host,

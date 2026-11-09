@@ -16,7 +16,12 @@ let emit: (m: ShellToArtifact) => void;
 let b: CommentsBridge;
 let ctl: AbortController;
 let highlights: Map<string, unknown>;
+let sheets: CSSStyleSheet[];
 const realParent = window.parent;
+const realAdopted = Object.getOwnPropertyDescriptor(
+  Document.prototype,
+  "adoptedStyleSheets",
+);
 
 const PAGE = "<p id=a>The quick brown fox.</p>";
 
@@ -40,11 +45,26 @@ const flush = async () => {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 };
 
+/**
+ * jsdom's `adoptedStyleSheets` is a getter, so the runtime's assignment throws
+ * there and nothing is ever adopted. Shadow it with a settable pair; in a
+ * browser the runtime assigns the same array.
+ */
+function stubbableSheets() {
+  Object.defineProperty(document, "adoptedStyleSheets", {
+    configurable: true,
+    get: () => sheets,
+    set: (v: CSSStyleSheet[]) => {
+      sheets = [...v];
+    },
+  });
+}
+
 beforeEach(() => {
   ctl = new AbortController();
   sent = [];
+  sheets = [];
   document.body.innerHTML = PAGE;
-  document.head.replaceChildren();
   b = bridge();
   emit = b.emit;
   highlights = new Map();
@@ -67,6 +87,7 @@ beforeEach(() => {
     value: { postMessage: () => {} },
     configurable: true,
   });
+  stubbableSheets();
 });
 
 afterEach(() => {
@@ -77,8 +98,8 @@ afterEach(() => {
     value: realParent,
     configurable: true,
   });
+  if (realAdopted) Reflect.deleteProperty(document, "adoptedStyleSheets");
   document.body.replaceChildren();
-  document.head.replaceChildren();
   document.documentElement.querySelectorAll(":scope > div").forEach((d) => {
     d.remove();
   });
@@ -101,41 +122,43 @@ const show = async (extra: Record<string, unknown> = {}) => {
   await flush();
 };
 
-const pageStyle = () =>
-  document.head.querySelector("style[data-oa=highlights]");
-
-describe("comments: the page's highlight rules (#1473)", () => {
-  it("live in a style element the page's adopted sheets cannot take away", async () => {
+describe("comments: the highlight sheet (#1473)", () => {
+  it("adopts the sheet, never an inline style a CSP would block", async () => {
     createComments(b, ctl.signal);
     await show();
     expect(highlights.has("oa-comment")).toBe(true);
-    const style = pageStyle();
-    expect(style?.textContent).toContain("::highlight(oa-comment)");
-    // What broke it before: a page rewriting adoptedStyleSheets took the
-    // highlights with it, and only a later paint put them back.
-    document.adoptedStyleSheets = [];
-    expect(pageStyle()).not.toBeNull();
-    expect(pageStyle()).toBe(style);
+    expect(sheets).toHaveLength(1);
+    // An inline <style> in the head would be the runtime's business only if the
+    // page allowed inline styles; the sheet is not subject to style-src.
+    expect(document.head.querySelector("style")).toBeNull();
   });
 
-  it("are put back when something removes the style element", async () => {
+  it("adopts the same sheet again after a page rewrites adoptedStyleSheets", async () => {
     createComments(b, ctl.signal);
     await show();
-    const style = pageStyle();
-    style?.remove();
-    expect(pageStyle()).toBeNull();
-    // Any page mutation puts them back, before the next paint has to.
+    const first = sheets[0];
+    // A page rewriting the list takes ours with it; no paint may follow, so the
+    // observer, a click and a selection change each put it back.
+    sheets = [];
     document.body.append(document.createElement("span"));
     await flush();
-    expect(pageStyle()).not.toBeNull();
+    expect(sheets).toEqual([first]);
+    sheets = [];
+    document.body.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, clientX: 5, clientY: 5 }),
+    );
+    expect(sheets).toEqual([first]);
+    sheets = [];
+    document.dispatchEvent(new Event("selectionchange"));
+    expect(sheets).toEqual([first]);
   });
 
-  it("go with dispose, and so does any later flush", async () => {
+  it("dispose drops the sheet, and a later flush() does nothing", async () => {
     const comments = createComments(b, ctl.signal);
     await show();
-    expect(highlights.size).toBeGreaterThan(0);
+    expect(sheets).toHaveLength(1);
     ctl.abort();
-    expect(pageStyle()).toBeNull();
+    expect(sheets).toEqual([]);
     expect(highlights.has("oa-comment")).toBe(false);
     const before = sent.length;
     comments.flush();
@@ -143,12 +166,11 @@ describe("comments: the page's highlight rules (#1473)", () => {
     expect(document.documentElement.querySelector(":scope > div")).toBeNull();
   });
 
-  it("paint without a highlight registry, and without throwing", async () => {
+  it("paints without a highlight registry, and without throwing", async () => {
     vi.stubGlobal("CSS", {});
     createComments(b, ctl.signal);
     await show();
-    // No registry: no styling to add, and nothing to add it to.
-    expect(pageStyle()).toBeNull();
+    expect(sheets).toEqual([]);
     expect(sent.some((m) => m.type === "comment.positions")).toBe(true);
   });
 });

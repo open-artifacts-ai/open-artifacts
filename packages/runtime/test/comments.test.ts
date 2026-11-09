@@ -967,19 +967,9 @@ describe("the page is left alone", () => {
     });
     select(textOf("a"), 4, textOf("a"), 9);
     expect(button()).not.toBeNull();
-    // The body is untouched. The head gains exactly one style element, and only
-    // for the highlight rules (#1473: an adopted sheet could be dropped by the
-    // page and would then be restyled only at the next paint).
-    expect(document.body.outerHTML).toBe(before[1]);
-    const styles = document.head.querySelectorAll("style[data-oa=highlights]");
-    expect(styles).toHaveLength(1);
-    expect(styles[0]?.textContent).toContain("::highlight(oa-comment)");
-    expect(
-      document.head.outerHTML.replace(
-        /<style data-oa="highlights">[\s\S]*?<\/style>/,
-        "",
-      ),
-    ).toBe(before[0]);
+    // Nothing in the page changed: the highlight rules live in an adopted
+    // sheet, and a page's CSP (style-src 'self') would block an inline style.
+    expect(snap()).toEqual(before);
     const added = Array.from(document.documentElement.childNodes).filter(
       (n) => !htmlKids.includes(n),
     );
@@ -988,7 +978,6 @@ describe("the page is left alone", () => {
     expect((added[0] as Element).childNodes).toHaveLength(0); // everything is in the shadow root
     ctl.abort();
     expect(Array.from(document.documentElement.childNodes)).toEqual(htmlKids);
-    expect(document.head.querySelector("style[data-oa=highlights]")).toBeNull();
   });
 });
 
