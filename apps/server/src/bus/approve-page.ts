@@ -369,19 +369,21 @@ try{history.replaceState(null,"",base)}catch(e){}return h}
 try{var o=JSON.parse(sessionStorage.getItem(K)||"null");if(o&&Date.now()-o.t<36e5)return o.s}catch(e){}
 return ""}
 function clear(){try{sessionStorage.removeItem(K)}catch(e){}}
-function send(url,body){return fetch(url,{method:"POST",credentials:"same-origin",cache:"no-store",
+var NONE="Something went wrong. Nothing changed. Reload the page to try again.",
+UNKNOWN="We could not confirm this finished. Check before trying again, then reload the page.";
+function show(t){c.className="slot card";c.textContent=t}
+function send(url,body,decide){return fetch(url,{method:"POST",credentials:"same-origin",cache:"no-store",
 headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.text().then(function(t){
 var j=null;try{j=JSON.parse(t)}catch(e){}
 if(j&&typeof j.html==="string"){c.className="slot";c.innerHTML=j.html;if(!j.keep)clear();return}
-c.className="slot card";c.textContent="Something went wrong. Nothing changed. Reload the page to try again."})})}
-function fail(){c.className="slot card";c.textContent="Something went wrong. Nothing changed. Reload the page to try again."}
+show(decide?UNKNOWN:NONE)})}).catch(function(){show(decide?UNKNOWN:NONE)})}
 var s=secret();
-if(!s){c.className="slot card";c.textContent="This page needs the whole link. Open the link the command or the agent gave you, not just this page's address."}
-else send(base+"/view",{secret:s,csrf:vcsrf}).catch(fail);
+if(!s){show("This page needs the whole link. Open the link the command or the agent gave you, not just this page's address.")}
+else send(base+"/view",{secret:s,csrf:vcsrf});
 c.addEventListener("submit",function(e){e.preventDefault();
 var f=e.target,d=e.submitter&&e.submitter.value,s2=secret();
 if(!s2||!d)return;
-send(base,{secret:s2,csrf:f.elements.csrf.value,decision:d}).catch(fail)});
+send(base,{secret:s2,csrf:f.elements.csrf.value,decision:d},true)});
 })();`;
 
 /** What sign-in needs to bring the member back: keeps the fragment's secret, then goes to `loginUrl`. */
