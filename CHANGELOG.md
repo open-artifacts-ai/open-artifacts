@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.139.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.138.0...v0.139.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** follow, unfollow and following from the local client ([#1317](https://github.com/open-artifacts-ai/open-artifacts/issues/1317), step 2) ([#1767](https://github.com/open-artifacts-ai/open-artifacts/issues/1767)) ([c57475b](https://github.com/open-artifacts-ai/open-artifacts/commit/c57475bc1ebff5df6bbd3ca16919a1f4e204315a))
+
 ## [0.138.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.137.0...v0.138.0) (2026-11-09)
 
 
