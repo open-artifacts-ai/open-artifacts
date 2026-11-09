@@ -485,37 +485,38 @@ function Who({
           {initials(a.name)}
         </span>
       )}
-      <p
-        className={`m-0 flex min-w-0 items-baseline gap-x-1 self-center ${TXT}`}
-      >
-        <b className="min-w-0 truncate" title={a.name}>
-          {a.name}
-        </b>
-        {isAgent && (
+      <div className="flex min-w-0 flex-col self-center">
+        <p className={`m-0 flex min-w-0 items-baseline gap-x-1 ${TXT}`}>
+          <b className="min-w-0 truncate" title={a.name}>
+            {a.name}
+          </b>
+          {isAgent && (
+            <span
+              data-agent-tag=""
+              className="shrink-0 rounded-full border border-primary/30 bg-primary/10 px-1.5 text-[length:var(--oa-text-xs)] text-foreground"
+            >
+              agent
+            </span>
+          )}
           <span
-            data-agent-tag=""
-            className="shrink-0 rounded-full border border-primary/30 bg-primary/10 px-1.5 text-[length:var(--oa-text-xs)] text-foreground"
+            className={`${MUTED} shrink-0 whitespace-nowrap`}
+            title={exactDate(at)}
           >
-            agent
+            {versionDate(at)}
+            {edited && " · edited"}
           </span>
-        )}
+        </p>
+        {/* #1789 (Design): "for <person>" on its own muted line, so the agent's
+          name keeps the row in a narrow column. */}
         {isAgent && a.for && (
           <span
             data-for=""
-            // Gives up its width long before the agent's name does.
-            className={`${MUTED} min-w-0 shrink-[100] truncate text-[length:var(--oa-text-xs)]`}
+            className={`${MUTED} min-w-0 truncate text-[length:var(--oa-text-xs)]`}
           >
             for {a.for}
           </span>
         )}
-        <span
-          className={`${MUTED} shrink-0 whitespace-nowrap`}
-          title={exactDate(at)}
-        >
-          {versionDate(at)}
-          {edited && " · edited"}
-        </span>
-      </p>
+      </div>
     </div>
   );
 }

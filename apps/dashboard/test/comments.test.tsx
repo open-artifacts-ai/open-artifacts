@@ -1516,7 +1516,9 @@ describe("comments: review round 1", () => {
     expect(when.className).toMatch(/shrink-0/);
     expect(line.querySelector("b")?.className).toMatch(/truncate/);
     expect(forEl.className).toMatch(/truncate/);
-    expect(line.contains(forEl)).toBe(true);
+    // #1789 (Design): "for <person>" is its own line under the name row.
+    expect(line.contains(forEl)).toBe(false);
+    expect(line.parentElement?.contains(forEl)).toBe(true);
   });
 
   const art = (over: object) =>
