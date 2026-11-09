@@ -1,6 +1,5 @@
 import type {
   ArtifactAgent,
-  CommentAssigned,
   CommentMention,
   Comment as CommentT,
   CommentThread,
@@ -15,11 +14,10 @@ import { versionDate } from "../versionDate";
 const MUTED = "text-muted-foreground";
 
 /** What the composer sends beyond the text. */
-export type Extras = { mentions: KeyRef[]; assign?: KeyRef };
+export type Extras = { mentions: KeyRef[] };
 
 export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
-  ...(x.assign ? { assign: x.assign } : {}),
 });
 
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
@@ -43,20 +41,9 @@ const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
     : d === "gone"
       ? `${name} is gone · mention another agent`
       : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
-const assignedLine = (name: string, st: CommentAssigned["state"]) =>
-  st === "queued"
-    ? `Assigned to ${name}, who is ${OFFLINE}`
-    : `Assigned to ${name}: ${
-        st === "done"
-          ? "Delivered → Seen → Done"
-          : st === "seen"
-            ? "Delivered → Seen"
-            : "Delivered"
-      }`;
-
-/** Delivery of each mention and the assignment, in plain words. Names are text, never HTML. */
+/** Delivery of each mention, in plain words. Names are text, never HTML. */
 export function Delivery({ c }: { c: CommentT }) {
-  if (!c.mentions?.length && !c.assigned) return null;
+  if (!c.mentions?.length) return null;
   return (
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>
       {c.mentions?.map((m) => (
@@ -64,11 +51,6 @@ export function Delivery({ c }: { c: CommentT }) {
           {deliveryLine(m.name, m.delivery)}
         </li>
       ))}
-      {c.assigned && (
-        <li data-assigned={c.assigned.key}>
-          {assignedLine(c.assigned.name, c.assigned.state)}
-        </li>
-      )}
     </ul>
   );
 }
@@ -352,14 +334,12 @@ export function removeMention(
   });
 }
 
-/** Who gets notified: the mentioned agents plus the assignee, once each. */
+/** Who gets notified: the mentioned agents. */
 export function notifyNames(
   text: string,
   agents: readonly ArtifactAgent[],
-  assign: string,
 ): string[] {
   const keys = new Set(mentionedKeys(text, agents));
-  if (assign) keys.add(assign);
   return agents.filter((a) => keys.has(a.key)).map((a) => a.name);
 }
 
@@ -367,17 +347,15 @@ export function notifyNames(
 export function MentionChips({
   text,
   agents,
-  assign,
   onRemove,
 }: {
   text: string;
   agents: readonly ArtifactAgent[];
-  assign: string;
   onRemove: (a: ArtifactAgent) => void;
 }) {
   const keys = mentionedKeys(text, agents);
   const chips = agents.filter((a) => keys.includes(a.key));
-  const names = notifyNames(text, agents, assign);
+  const names = notifyNames(text, agents);
   if (names.length === 0) return null;
   return (
     <div className={`flex flex-col gap-1 ${TXT}`}>
