@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.137.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.136.1...v0.137.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** Hermes habits only behind the user's --habits yes (habits.on marker) ([#1602](https://github.com/open-artifacts-ai/open-artifacts/issues/1602)) ([#1715](https://github.com/open-artifacts-ai/open-artifacts/issues/1715)) ([910a0f3](https://github.com/open-artifacts-ai/open-artifacts/commit/910a0f3bcc8b01a56ed6ad6fadda4615fe202dae))
+* **bus:** OpenClaw plugin adapter and openclaw kind ([#1693](https://github.com/open-artifacts-ai/open-artifacts/issues/1693)) ([#1714](https://github.com/open-artifacts-ai/open-artifacts/issues/1714)) ([b26d6c8](https://github.com/open-artifacts-ai/open-artifacts/commit/b26d6c82809bedf2594ab463f708ccf4a9332202))
+* **uploads:** verify optional client SHA-256 with R2 ([#1669](https://github.com/open-artifacts-ai/open-artifacts/issues/1669)) ([da8e78a](https://github.com/open-artifacts-ai/open-artifacts/commit/da8e78ac66c192b5ff4d646237965f055801c730))
+* **viewer:** comments column starts closed ([#1731](https://github.com/open-artifacts-ai/open-artifacts/issues/1731)) ([#1747](https://github.com/open-artifacts-ai/open-artifacts/issues/1747)) ([383f8c3](https://github.com/open-artifacts-ai/open-artifacts/commit/383f8c3442a3750c53e0ee6c30c55c5a34488e98))
+
+
+### Bug Fixes
+
+* **billing:** Solo follow-ups: plan error for view-only editors, solo plan_limit tier, Solo trial date ([#1639](https://github.com/open-artifacts-ai/open-artifacts/issues/1639), [#1568](https://github.com/open-artifacts-ai/open-artifacts/issues/1568)) ([#1753](https://github.com/open-artifacts-ai/open-artifacts/issues/1753)) ([c625428](https://github.com/open-artifacts-ai/open-artifacts/commit/c625428a01bdd967a8e09fc872235027b42336e5))
+* **setup:** default Codex CLI instructions to OAuth ([#1664](https://github.com/open-artifacts-ai/open-artifacts/issues/1664)) ([c8177c2](https://github.com/open-artifacts-ai/open-artifacts/commit/c8177c271069e62af02275096fbe77c7396f3d33))
+
 ## [0.136.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.136.0...v0.136.1) (2026-11-08)
 
 
