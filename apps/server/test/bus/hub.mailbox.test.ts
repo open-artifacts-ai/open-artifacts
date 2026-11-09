@@ -147,7 +147,7 @@ describe("lasting mailboxes (#1295 PR A)", () => {
     p.snd.close();
   });
 
-  it("2: another agent_ref proposing the reserved name gets -2 and none of the mail", async () => {
+  it("2: another agent_ref proposing the reserved name takes it over, with the queued mail (#1742)", async () => {
     const t0 = base();
     const p = await pair(t0);
     await close(p.rcv, p.ref);
@@ -155,9 +155,9 @@ describe("lasting mailboxes (#1295 PR A)", () => {
     expect(r.state).toBe("pending");
     const om = await machine("Other");
     const o = await connect(om.token);
-    expect(await reg(o, uniq("other"), p.name, p.n)).toBe(`${p.name}-2`);
-    await new Promise((res) => setTimeout(res, 50));
-    expect(o.raw.some((t) => t.includes('"deliver"'))).toBe(false);
+    expect(await reg(o, uniq("other"), p.name, p.n)).toBe(p.name);
+    const d = await waitFor(o, "deliver");
+    expect(d.msg_id).toBe(r.msg_id);
     o.close();
     p.rcv.close();
     p.snd.close();
