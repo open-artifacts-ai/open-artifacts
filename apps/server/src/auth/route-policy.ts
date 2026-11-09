@@ -2,7 +2,7 @@ import { isId } from "@oa/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { matchedRoutes } from "hono/route";
 import { featuresOf, planNow } from "../billing/features.js";
-import { planError, requireTeamPlan } from "../billing/plan.js";
+import { isViewOnly, planError, requireTeamPlan } from "../billing/plan.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, resolveSession } from "../http/middleware.js";
 import {
@@ -143,9 +143,15 @@ export async function enforce(
     } catch (e) {
       // Hosted billing: a member under the plan cap whose role would allow
       // this gets the clear 403, not 404 (they can see the artifact).
+      // The view-only lock binds uncapped callers too (the owner included):
+      // one who can edit the artifact but misses the sharing floor gets the
+      // 403 as well. Someone with no real access still gets the 404.
+      const memberLock =
+        write && who.kind === "user" ? planOfMember(who.user)?.lock : null;
       const lock =
-        write && who.kind === "user" && who.cap === "plan"
-          ? planOfMember(who.user)?.lock
+        who.kind === "user" &&
+        (who.cap === "plan" || (!who.cap && isViewOnly(memberLock)))
+          ? memberLock
           : null;
       if (
         lock &&

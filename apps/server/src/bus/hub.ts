@@ -39,8 +39,10 @@ import {
   BUS_ROLE_MAX,
   type BusAgent,
   type BusLink,
+  type BusNotice,
   type BusRole,
   type BusRoleProposal,
+  NOTICE_SENDER,
 } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logError, logInfo } from "../log.js";
@@ -50,6 +52,7 @@ import {
   busCloseKind,
   MAX_ACTIVE_MACHINES,
 } from "../services/bus.js";
+import type { DeliveryOutcome } from "../services/bus-delivery.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
@@ -1026,6 +1029,8 @@ type Scope = { namespace: string; global: boolean };
 type Assigned = {
   name: string;
   mint: { lname: string; name: string; lbase: string } | null;
+  /** #1742: the away agent whose reservation of `name` the newcomer takes over (takeAwayName). */
+  reclaim?: string;
 };
 
 /**
@@ -1042,13 +1047,28 @@ function assignName(
   selfId: string,
   now: number,
   kind: NameKind = "chosen",
+  reclaim?: { kind: string },
 ): Assigned {
   if (kind === "default")
     return mintName(sql, namespace, proposed, global, selfId, now);
   const free = (n: string) =>
     !nameTaken(sql, namespace, n, global, selfId, now);
-  for (const base of new Set([candidateName(proposed), FALLBACK_BUS_NAME])) {
+  const asked = candidateName(proposed);
+  for (const base of new Set([asked, FALLBACK_BUS_NAME])) {
     if (free(base)) return { name: base, mint: null };
+    // #1742: only the exact chosen name is ever taken back, never a suffix.
+    if (reclaim && base === asked) {
+      const from = awayHolder(
+        sql,
+        namespace,
+        base,
+        global,
+        selfId,
+        reclaim.kind,
+        now,
+      );
+      if (from !== null) return { name: base, mint: null, reclaim: from };
+    }
     for (let n = 2; n <= MAX_NAME_SUFFIX; n++) {
       const next = suffixName(base, n);
       if (free(next)) return { name: next, mint: null };
@@ -1061,6 +1081,159 @@ function assignName(
     );
     if (free(next)) return { name: next, mint: null };
   }
+}
+
+/**
+ * #1742: the agent whose `away` reservation is the ONLY thing keeping the
+ * chosen `name` from `selfId`, when that agent is closed, on a machine
+ * that is not revoked, of `kind`, and reserved the name in exactly this scope; else null. Anything
+ * else blocks as in nameTaken: a live holder, any other former row (held,
+ * chosen, another agent's, another scope's), a role, a name minted for
+ * anyone else (a minted name is never reclaimed), and a harness fallback
+ * name (below). Writes nothing; runs only
+ * when the name is taken. Two bounded probes on former_names_lname.
+ */
+function awayHolder(
+  sql: SqlStorage,
+  namespace: string,
+  name: string,
+  global: boolean,
+  selfId: string,
+  kind: string,
+  now: number,
+): string | null {
+  const lname = name.toLowerCase();
+  // Only a name someone gave the session. A harness fallback is never
+  // reclaimed (the daemon sends no name_kind, so it reads as chosen): the
+  // kind itself (codex, opencode, pi, omp, hermes, openclaw...), `<kind>-...`
+  // (Hermes proposes `hermes-<cwd>`), the hub's `agent`, Claude's
+  // `claude-<digits>`. An unrelated new thread of that kind must not take
+  // over its mail.
+  if (
+    lname === kind ||
+    lname.startsWith(`${kind}-`) ||
+    lname === FALLBACK_BUS_NAME ||
+    /^claude-\d+$/.test(lname)
+  )
+    return null;
+  const rows = all<{
+    agentId: string;
+    kind: string;
+    global: number;
+    namespace: string;
+    live: number | null;
+    agentKind: string | null;
+    revoked: number | null;
+  }>(
+    sql,
+    `select f.agent_id as agentId, f.kind as kind, f.global as global, f.namespace as namespace,
+            a.live as live, a.kind as agentKind,
+            (m.revoked_at is not null) as revoked
+       from former_names f indexed by former_names_lname
+       left join agents a on a.id = f.agent_id
+       left join machines m on m.id = a.machine_id
+      where f.org_id = ? and f.lname = ? and f.expires_at > ?
+        and f.kind in ('chosen', 'held', 'away') and f.agent_id is not ?${global ? "" : " and (f.namespace = ? or f.global = 1)"}
+      limit 2`,
+    OWNER_ORG_ID,
+    lname,
+    now,
+    selfId,
+    ...(global ? [] : [namespace]),
+  );
+  const r = rows[0];
+  if (
+    rows.length !== 1 ||
+    !r ||
+    r.kind !== "away" ||
+    r.global !== (global ? 1 : 0) ||
+    (!global && r.namespace !== namespace) ||
+    r.live !== 0 ||
+    r.agentKind !== kind ||
+    r.revoked === 1
+  )
+    return null;
+  // Nothing else holds it: no live agent, no role, and no minted name (the
+  // old agent's own included, which nameTaken skips for it).
+  if (nameTaken(sql, namespace, name, global, r.agentId, now)) return null;
+  const minted = one(
+    sql,
+    "select 1 as x from minted_names where org_id = ? and lname = ?",
+    OWNER_ORG_ID,
+    lname,
+  );
+  return minted === null ? r.agentId : null;
+}
+
+/**
+ * #1742: the newcomer `toId` takes `name` over from the away agent `fromId`
+ * (awayHolder said it may). The away reservation is released, so the name
+ * resolves only to the newcomer, and the mail still queued for the old row
+ * (pending, inside its session) moves to the newcomer, oldest first, as much
+ * as the newcomer's own mailbox caps allow (the rest stays with the old row
+ * and expires on its TTL). Moved receipts are renumbered past every rowid,
+ * keeping their order, because the newcomer's session boundary
+ * (session_start_rowid) is above them: it must receive them, and it must not
+ * be able to see anything the old session had acked. Acked bodies never
+ * move: they are deleted, the old row keeps none. Returns the moved msg_ids.
+ * Bounded by MAILBOX_PENDING_CAP.
+ */
+function takeAwayName(
+  sql: SqlStorage,
+  fromId: string,
+  toId: string,
+  name: string,
+  namespace: string,
+  global: boolean,
+  now: number,
+): string[] {
+  sql.exec(
+    "delete from former_names where agent_id = ? and kind = 'away' and lname = ? and global = ? and (global = 1 or namespace = ?)",
+    fromId,
+    name.toLowerCase(),
+    global ? 1 : 0,
+    namespace,
+  );
+  while (deleteDeliveredBodies(sql, fromId, 500) >= 500) {
+    // Next page.
+  }
+  const have = one<{ n: number; b: number }>(
+    sql,
+    "select count(*) as n, coalesce(sum(size), 0) as b from (select size from receipts indexed by receipts_to where to_agent = ? and state = 'pending' limit ?)",
+    toId,
+    MAILBOX_PENDING_CAP,
+  );
+  const moved = all<{ id: string; rid: number }>(
+    sql,
+    `select id, rid from (
+       select r.id as id, r.rowid as rid, count(*) over w as n, sum(r.size) over w as b
+         from receipts r indexed by receipts_to
+         join agents a on a.id = r.to_agent
+        where r.to_agent = ? and r.state = 'pending' and r.rowid > a.session_start_rowid
+       window w as (order by r.rowid)
+     ) where n <= ? and b <= ? order by rid`,
+    fromId,
+    MAILBOX_PENDING_CAP - (have?.n ?? 0),
+    MAILBOX_BYTES_CAP - (have?.b ?? 0),
+  );
+  const first = moved[0];
+  if (!first) return [];
+  const top =
+    one<{ n: number }>(sql, "select max(rowid) as n from receipts")?.n ?? 0;
+  const ids = JSON.stringify(moved.map((m) => m.id));
+  sql.exec(
+    "update receipts set to_agent = ?, to_name = ?, rowid = rowid + ? where id in (select value from json_each(?))",
+    toId,
+    name,
+    top + 1 - first.rid,
+    ids,
+  );
+  sql.exec(
+    "update mail set to_agent = ? where id in (select value from json_each(?))",
+    toId,
+    ids,
+  );
+  return moved.map((m) => m.id);
 }
 
 /** Random tries at a 4-hex suffix before the suffix grows to 8 hex. */
@@ -1362,6 +1535,8 @@ function agentUp(
   change: RosterChange;
   rowChanged: boolean;
   arms: number[];
+  /** #1742: msg_ids that moved to this agent from an away row it took the name from. */
+  moved: string[];
 } {
   const existing = one<{
     id: string;
@@ -1429,6 +1604,7 @@ function agentUp(
     id,
     now,
     f.name_kind,
+    { kind: f.kind },
   );
   const wasLive = existing?.live === 1;
   const to: Scope = { namespace: f.namespace, global: f.global };
@@ -1509,6 +1685,19 @@ function agentUp(
   // names reserved in the old scope, where they resolve to no one.
   if (existing && !sameScope) keepScopedNames(sql, id, now);
   commitName(sql, id, assigned, to, now);
+  // #1742: a name only an away row of a closed session held.
+  const moved =
+    assigned.reclaim === undefined
+      ? []
+      : takeAwayName(
+          sql,
+          assigned.reclaim,
+          id,
+          name,
+          f.namespace,
+          f.global,
+          now,
+        );
   // #1295: an `away` row the reopen did not take back (another name or
   // scope) falls back to the 1 h hold a close used to leave.
   if (existing && !wasLive) {
@@ -1539,6 +1728,7 @@ function agentUp(
   return {
     rowChanged,
     arms,
+    moved,
     reply: {
       v: 1,
       id: f.id,
@@ -2928,6 +3118,58 @@ function senderRef(f: ClientFrame): string | null {
     : null;
 }
 
+/** #1317: waiting server notices a hub keeps; a notice over it is dropped (a replace of a waiting one is not). */
+export const NOTICES_MAX = 500;
+/** #1317: how long an offline machine's notice waits (the v1 rule). */
+export const NOTICE_HOLD_MS = HOUR_MS;
+/** #1317: notices one agent_up sends, so a reconnect stays one bounded step. */
+const NOTICE_FLUSH_BATCH = 100;
+
+type NoticeRow = {
+  toNs: string;
+  toLname: string;
+  ckey: string;
+  text: string;
+};
+const NOTICE_COLS = "to_ns as toNs, to_lname as toLname, ckey, text";
+
+/** #1317: the shape deliverNotice trusts: the Worker is the only caller, but the hub still checks. */
+function wellFormedNotice(n: BusNotice): boolean {
+  return (
+    typeof n === "object" &&
+    n !== null &&
+    n.from === NOTICE_SENDER &&
+    typeof n.id === "string" &&
+    typeof n.text === "string" &&
+    n.text.length > 0 &&
+    utf8Bytes(n.text) <= LIMITS.inlineBodyBytes &&
+    typeof n.coalesceKey === "string" &&
+    n.coalesceKey.length > 0 &&
+    n.coalesceKey.length <= 128 &&
+    typeof n.to === "object" &&
+    n.to !== null &&
+    typeof n.to.namespace === "string" &&
+    n.to.namespace.length > 0 &&
+    typeof n.to.name === "string" &&
+    n.to.name.length > 0 &&
+    (n.notBefore === undefined || Number.isFinite(n.notBefore))
+  );
+}
+
+/** #1317: one notice as a deliver frame from the reserved sender; no receipt, no mail row, no from_id. */
+function noticeFrame(agent: AgentRow, text: string): ServerFrame {
+  return {
+    v: 1,
+    id: frameId(),
+    type: "deliver",
+    msg_id: newId(),
+    to_ref: agent.nativeRef,
+    from_name: NOTICE_SENDER,
+    namespace: agent.namespace,
+    body: text,
+  };
+}
+
 /**
  * The bus hub: one SQLite Durable Object per member (#1291). Reached only
  * through the Worker: GET /bus/connect forwards a verified daemon upgrade,
@@ -2980,6 +3222,7 @@ export class BusHub extends DurableObject<Env> {
             or exists (select 1 from agents indexed by agents_closed where live = 0)
             or exists (select 1 from agents indexed by agents_status_due where status_due is not null)
             or exists (select 1 from former_names)
+            or exists (select 1 from notices)
             or exists (select 1 from rename_rl)
             or exists (select 1 from machines where ${OFFLINE_LIVE_WHERE})
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)
@@ -3268,6 +3511,22 @@ export class BusHub extends DurableObject<Env> {
     return gone !== null;
   }
 
+  /**
+   * #1317: one server notice for one address in this member's bus, sent as
+   * the reserved sender through a `deliver` frame (no receipt, no mail row).
+   * Contract: services/bus-delivery.ts. Never throws for an outcome.
+   */
+  async deliverNotice(n: BusNotice): Promise<DeliveryOutcome> {
+    let outcome: DeliveryOutcome = "dropped";
+    try {
+      if (wellFormedNotice(n)) outcome = this.#acceptNotice(n);
+    } catch (e) {
+      logError("bus_notice_failed", e);
+    }
+    await this.#commitArm();
+    return outcome;
+  }
+
   /** #1299: answers true. Reads no member data and arms no alarm (the constructor still creates the schema); the hosted canary's liveness probe. */
   ping(): true {
     return true;
@@ -3522,7 +3781,9 @@ export class BusHub extends DurableObject<Env> {
    * send keys, meta) and its alarm, and starts again empty. Idempotent.
    */
   async wipe(): Promise<void> {
+    let closed = 0;
     for (const ws of this.ctx.getWebSockets()) {
+      if (!notDaemon(this.ctx, ws)) closed++;
       const m = machineOf(ws);
       try {
         if (m !== null)
@@ -3547,6 +3808,7 @@ export class BusHub extends DurableObject<Env> {
     this.ctx.storage.sql.exec(HUB_SCHEMA);
     migrateHub(this.ctx.storage.sql);
     logEvent("wiped");
+    if (closed > 0) await this.#goneFromIndex();
   }
 
   async closeAll(
@@ -3590,6 +3852,7 @@ export class BusHub extends DurableObject<Env> {
     // `reason` is a fixed string from the caller; not logged (ids and counts only).
     void reason;
     logEvent("close_all", { closed: n, kind });
+    if (n > 0) await this.#goneFromIndex();
     return n;
   }
 
@@ -3623,7 +3886,9 @@ export class BusHub extends DurableObject<Env> {
 
     // Marked first (as a replaced socket is), so a frame still in flight is
     // never processed and the close that lands later runs no bookkeeping.
+    let closed = 0;
     for (const ws of this.ctx.getWebSockets(id)) {
+      closed++;
       try {
         ws.serializeAttachment({
           machineId: id,
@@ -3666,6 +3931,7 @@ export class BusHub extends DurableObject<Env> {
 
     notifyRoster(this.ctx, change);
     await this.#commitArm();
+    if (closed > 0) await this.#goneFromIndex();
     return true;
   }
 
@@ -3786,21 +4052,39 @@ export class BusHub extends DurableObject<Env> {
     const name = this.ctx.id.name;
     const idx = socketIndexStub(this.env);
     if (!idx || !name) return;
+    this.indexInFlight++;
     try {
       await idx.seen(name);
       this.#indexedAt = now;
     } catch (e) {
       logError("socket_index_failed", e);
+    } finally {
+      this.indexInFlight--;
     }
   }
+
+  /**
+   * Index calls (seen, gone) and close/error handlers this instance has started and not finished. A
+   * plain instance field, not a prototype member, so Workers RPC does not
+   * expose it. Tests read it inside the DO (runInDurableObject); a file's
+   * afterAll waits for 0 so the worker is not torn down with an RPC pending.
+   */
+  indexInFlight = 0;
 
   /**
    * #1299: when `closing` was the hub's last open daemon socket, removes the
    * hub's row from the install index (it outlives the index window while
    * sockets exist). Fails open: a missed `gone` is bounded by closeInstall
    * (a harmless closeAll on no sockets) and the index's cap.
+   *
+   * A peer that never echoes our close never triggers webSocketClose, so a
+   * close this hub started (revoke, closeAll, wipe, the frame that trips the
+   * rate limit or lands on a revoked or replaced socket) calls this itself,
+   * with no `closing` socket: the sockets it closed are already CLOSING, not
+   * OPEN. When the peer does echo, webSocketClose reports again; `gone` is
+   * idempotent.
    */
-  async #goneFromIndex(closing: WebSocket): Promise<void> {
+  async #goneFromIndex(closing?: WebSocket): Promise<void> {
     const open = () =>
       this.ctx
         .getWebSockets(DAEMON_TAG)
@@ -3810,17 +4094,22 @@ export class BusHub extends DurableObject<Env> {
     const idx = socketIndexStub(this.env);
     if (!idx || !name) return;
     this.#indexedAt = Number.NEGATIVE_INFINITY;
+    this.indexInFlight++;
     try {
       await idx.gone(name);
     } catch (e) {
       logError("socket_index_failed", e);
       return;
+    } finally {
+      this.indexInFlight--;
     }
+    // Always reset: a `seen` that returned while `gone` was in flight set the
+    // throttle after the row was deleted, and an accept within INDEX_REPORT_MS
+    // would then skip its report and leave a live socket with no row.
+    this.#indexedAt = Number.NEGATIVE_INFINITY;
     // A socket accepted while `gone` was in flight reported before it landed,
-    // so its report may have been deleted; and it set the throttle, so reset
-    // it or this report would be skipped and the live socket left unindexed.
+    // so its report may have been deleted: report again.
     if (open()) {
-      this.#indexedAt = Number.NEGATIVE_INFINITY;
       await this.#reportToIndex();
     }
   }
@@ -3830,9 +4119,17 @@ export class BusHub extends DurableObject<Env> {
     message: string | ArrayBuffer,
   ): Promise<void> {
     if (notDaemon(this.ctx, ws)) return;
-    if (this.#overBudget(ws)) return;
+    // Only the frame that closes the socket reports; late frames on a socket
+    // already closing (a rate-limited one keeps sending) must not each cost
+    // the shared index an RPC.
+    const wasOpen = ws.readyState === OPEN;
+    if (this.#overBudget(ws)) {
+      if (wasOpen && ws.readyState !== OPEN) await this.#goneFromIndex();
+      return;
+    }
     this.#onMessage(ws, message);
     await this.#commitArm();
+    if (wasOpen && ws.readyState !== OPEN) await this.#goneFromIndex();
   }
 
   /**
@@ -3990,16 +4287,18 @@ export class BusHub extends DurableObject<Env> {
         // ref takes over the old one's agent row (address, former names, mail).
         if (f.replaces !== undefined && mailboxGated(ws))
           takeOver(sql, machineId, f.replaces, f.agent_ref, this.#now());
-        const { reply, change, arms } = this.#withReachNotice(() =>
+        const { reply, change, arms, moved } = this.#withReachNotice(() =>
           agentUp(sql, machineId, f, this.#now()),
         );
         for (const t of arms) this.#arm(t);
+        this.#adoptHeld(moved, registeredAgent(sql, machineId, f.agent_ref));
         sendFrame(ws, reply);
         notifyRoster(this.ctx, change, ws);
         const a = registeredAgent(sql, machineId, f.agent_ref);
         if (a) {
           // Its queued mail, then what it missed as a sender.
           this.#flush(ws, a);
+          this.#flushNoticesFor(ws, a);
           if (this.#replay(a.id)) {
             this.#replayQueue.add(a.id);
             this.#arm(this.#now() + 1);
@@ -4101,6 +4400,7 @@ export class BusHub extends DurableObject<Env> {
       agent.id,
       now,
       f.name_kind,
+      { kind: agent.kind },
     );
     const name = assigned.name;
     const reply = {
@@ -4140,8 +4440,34 @@ export class BusHub extends DurableObject<Env> {
       agent.id,
     );
     commitName(sql, agent.id, assigned, at, now);
+    // #1742: the name was an away row's; its queued mail is this agent's now.
+    const moved =
+      assigned.reclaim === undefined
+        ? []
+        : takeAwayName(
+            sql,
+            assigned.reclaim,
+            agent.id,
+            name,
+            agent.namespace,
+            global,
+            now,
+          );
     sendFrame(ws, { ...reply, former });
     notifyRoster(this.ctx, { namespaces: [agent.namespace], global }, ws);
+    if (moved.length > 0) {
+      this.#adoptHeld(moved, agent);
+      this.#flush(ws, agent);
+    }
+  }
+
+  /** #1742: a held (pushed, unacked) body of a moved receipt now belongs to its new recipient. */
+  #adoptHeld(moved: string[], to: AgentRow | null): void {
+    if (to === null) return;
+    for (const id of moved) {
+      const h = this.#held.get(id);
+      if (h) h.toAgent = to.id;
+    }
   }
 
   /**
@@ -4180,26 +4506,39 @@ export class BusHub extends DurableObject<Env> {
   }
 
   override async webSocketClose(ws: WebSocket, code: number): Promise<void> {
-    // 1005/1006 are never sent on the wire.
-    closeSocket(ws, code === 1005 || code === 1006 ? 1000 : code, "closed");
-    // A socket this DO never accepted has no bookkeeping.
-    if (notDaemon(this.ctx, ws)) return;
-    this.#socketGone(ws);
-    await this.#commitArm();
-    await this.#goneFromIndex(ws);
+    // Counted from entry: a hub-started close leaves the socket CLOSING and
+    // the index idle until the client's echo lands here, so a test teardown
+    // must wait for the whole handler, not only its index call.
+    this.indexInFlight++;
+    try {
+      // 1005/1006 are never sent on the wire.
+      closeSocket(ws, code === 1005 || code === 1006 ? 1000 : code, "closed");
+      // A socket this DO never accepted has no bookkeeping.
+      if (notDaemon(this.ctx, ws)) return;
+      this.#socketGone(ws);
+      await this.#commitArm();
+      await this.#goneFromIndex(ws);
+    } finally {
+      this.indexInFlight--;
+    }
   }
 
   override async webSocketError(
     ws: WebSocket,
     _error?: unknown,
   ): Promise<void> {
-    // Closed first, as in webSocketClose: a socket left OPEN would still count
-    // as connected (machineOnline) in the push #socketGone triggers.
-    closeSocket(ws, 1011, "error");
-    if (notDaemon(this.ctx, ws)) return;
-    this.#socketGone(ws);
-    await this.#commitArm();
-    await this.#goneFromIndex(ws);
+    this.indexInFlight++;
+    try {
+      // Closed first, as in webSocketClose: a socket left OPEN would still
+      // count as connected (machineOnline) in the push #socketGone triggers.
+      closeSocket(ws, 1011, "error");
+      if (notDaemon(this.ctx, ws)) return;
+      this.#socketGone(ws);
+      await this.#commitArm();
+      await this.#goneFromIndex(ws);
+    } finally {
+      this.indexInFlight--;
+    }
   }
 
   /**
@@ -4365,6 +4704,9 @@ export class BusHub extends DurableObject<Env> {
     );
     // A reply (`to_id`) goes only to the agent it answers: never to whoever
     // holds the name now (wireReason shows agent_gone only to an ids socket).
+    // One exception, after the send: a reply already queued to an away agent
+    // follows its name to a restarted session that reclaims it (#1742,
+    // takeAwayName moves the queued mail), as the sender was told "queued".
     // Role resolution stays inside resolveTarget, before this check.
     if (f.to_id !== undefined && (!res.ok || res.agent.id !== f.to_id)) {
       refuseSend(ws, f.id, "agent_gone");
@@ -5241,6 +5583,157 @@ export class BusHub extends DurableObject<Env> {
     this.#heldBytes -= h.cost;
   }
 
+  // ----------------------------------------------------------------- notices
+
+  #acceptNotice(n: BusNotice): DeliveryOutcome {
+    const sql = this.ctx.storage.sql;
+    const now = this.#now();
+    const lname = n.to.name.toLowerCase();
+    const agent = liveVisibleIn(sql, n.to.namespace, lname);
+    const key = [n.to.namespace, lname, n.coalesceKey] as const;
+    // No live session at the address: nothing is kept (and a waiting notice
+    // for it is stale, so it goes too).
+    if (!agent) {
+      sql.exec(
+        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+        ...key,
+      );
+      return "dropped";
+    }
+    const socket = liveSocket(this.ctx, agent.machineId);
+    const notBefore = n.notBefore ?? now;
+    if (socket && notBefore <= now) {
+      sql.exec(
+        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+        ...key,
+      );
+      sendFrame(socket, noticeFrame(agent, n.text));
+      return "delivered";
+    }
+    const exists =
+      one<{ x: number }>(
+        sql,
+        "select 1 as x from notices where to_ns = ? and to_lname = ? and ckey = ?",
+        ...key,
+      ) !== null;
+    if (!exists) {
+      const held =
+        one<{ n: number }>(sql, "select count(*) as n from notices")?.n ?? 0;
+      if (held >= NOTICES_MAX) {
+        logEvent("notice_dropped", { reason: "cap" });
+        return "dropped";
+      }
+    }
+    const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
+    // Due with no live socket: parked until the machine's agent_up.
+    const parked = notBefore <= now ? 1 : 0;
+    sql.exec(
+      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked)
+       values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ...key,
+      n.id,
+      n.text,
+      notBefore,
+      expiresAt,
+      parked,
+    );
+    this.#arm(parked === 1 ? expiresAt : notBefore);
+    this.#arm(expiresAt);
+    return "held";
+  }
+
+  /**
+   * Sends the waiting notices addressed to `agent` that are due, when it
+   * has a live socket: the reconnect (agent_up) path, which also reaches
+   * parked ones. Bounded by NOTICE_FLUSH_BATCH.
+   */
+  #flushNoticesFor(ws: WebSocket, agent: AgentRow): void {
+    const sql = this.ctx.storage.sql;
+    const now = this.#now();
+    const rows = all<NoticeRow>(
+      sql,
+      `select ${NOTICE_COLS} from notices where to_lname = ? and not_before <= ? and expires_at > ?
+         and (to_ns = ? or ?) order by not_before limit ?`,
+      agent.name.toLowerCase(),
+      now,
+      now,
+      agent.namespace,
+      agent.global === 1 ? 1 : 0,
+      NOTICE_FLUSH_BATCH,
+    );
+    for (const r of rows) {
+      // The address resolves to this agent now, or the notice is not its.
+      if (liveVisibleIn(sql, r.toNs, r.toLname)?.id !== agent.id) continue;
+      sql.exec(
+        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+        r.toNs,
+        r.toLname,
+        r.ckey,
+      );
+      sendFrame(ws, noticeFrame(agent, r.text));
+    }
+    // A full batch: more may wait. Hand the rest to the alarm (it sends in
+    // bounded steps to this live socket) instead of leaving them parked.
+    if (rows.length >= NOTICE_FLUSH_BATCH) {
+      sql.exec(
+        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked = 1",
+        agent.name.toLowerCase(),
+        agent.namespace,
+        agent.global === 1 ? 1 : 0,
+      );
+      this.#arm(now + 1);
+    }
+  }
+
+  /**
+   * The alarm's step for notices: expired ones go; due ones are sent to a
+   * live socket, dropped when the address has no live agent, and parked when
+   * the machine is offline (its agent_up sends them). True when the batch
+   * was full.
+   */
+  #sweepNotices(now: number): boolean {
+    const sql = this.ctx.storage.sql;
+    const gone = purge(
+      sql,
+      "delete from notices where rowid in (select rowid from notices where expires_at <= ? limit ?) returning rowid",
+      now,
+    );
+    const due = all<NoticeRow>(
+      sql,
+      `select ${NOTICE_COLS} from notices where parked = 0 and not_before <= ? order by not_before limit ?`,
+      now,
+      BATCH,
+    );
+    for (const r of due) {
+      const agent = liveVisibleIn(sql, r.toNs, r.toLname);
+      const socket = agent && liveSocket(this.ctx, agent.machineId);
+      if (agent && socket) {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          r.toNs,
+          r.toLname,
+          r.ckey,
+        );
+        sendFrame(socket, noticeFrame(agent, r.text));
+      } else if (agent) {
+        sql.exec(
+          "update notices set parked = 1 where to_ns = ? and to_lname = ? and ckey = ?",
+          r.toNs,
+          r.toLname,
+          r.ckey,
+        );
+      } else {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          r.toNs,
+          r.toLname,
+          r.ckey,
+        );
+      }
+    }
+    return gone || due.length >= BATCH;
+  }
+
   // ------------------------------------------------------------------- alarm
 
   /** Asks for the alarm at `t` (the earliest ask wins); committed after the event. */
@@ -5343,6 +5836,9 @@ export class BusHub extends DurableObject<Env> {
     if (statuses.length >= BATCH) more = true;
     this.#statusChanged(statuses);
 
+    // 5c. #1317: server notices due or expired.
+    if (this.#sweepNotices(now)) more = true;
+
     // 6. Housekeeping: B14 send keys
     // past SEND_KEY_RETAIN_MS, and final receipts told over 24 h ago (or never told, final over 24 h ago: keyed
     // on final_at, so a receipt finalized in this run is never deleted in it).
@@ -5418,6 +5914,8 @@ export class BusHub extends DurableObject<Env> {
       this.#purgeDeadline(),
       nextStatusDue(sql),
       min("select min(expires_at) as t from former_names"),
+      min("select min(not_before) as t from notices where parked = 0"),
+      min("select min(expires_at) as t from notices"),
       min("select min(at) as t from rename_rl", HOUR_MS),
       this.#offlineReapDeadline(),
     ].filter((t): t is number => t !== null);

@@ -68,6 +68,9 @@ const OVERLAY_CSS = `
 .pin{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;background:#1f5fbf;color:#fff;font:700 12px/22px system-ui,sans-serif;text-align:center;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px #0006}
 .pin.on{outline:3px solid #e0a000}
 .pin.ghost{background:#1f5fbf55;border:2px dashed #1f5fbf;box-sizing:border-box;box-shadow:none;pointer-events:none}
+/* A pin whose page changed: a dashed ring, not a colour alone, plus a title. */
+.pin.changed{outline:2px dashed #8a5a00;outline-offset:2px}
+.pin.changed.on{box-shadow:0 0 0 3px #e0a000aa,0 1px 4px #0006}
 `;
 const PAGE_CSS =
   "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}";
@@ -83,6 +86,11 @@ const BUBBLE =
 /** Gap between the selection's end and the button, and the viewport margin. */
 const BTN_GAP = 6;
 const BTN_MARGIN = 4;
+/** #1732: the shell's touch bar (48px) plus a 12px gap; the selection's last line stays above it. */
+const BAR_CLEAR = 48 + 12;
+const SELECTION_MS = 100;
+/** How long a collapsed selection stays usable for the shell's command. */
+const KEPT_MS = 1500;
 
 export function createComments(
   bridge: Pick<Bridge, "on" | "send">,
@@ -108,6 +116,15 @@ export function createComments(
   let flashId: string | undefined;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
   const lastPositions = new Map<string, Pos>();
+  /** Touch: the shell draws the Comment bar, so the floating button stays off. */
+  const coarse = () =>
+    typeof matchMedia === "function" &&
+    matchMedia("(pointer: coarse)").matches === true;
+  /** The last non-empty selection (#1732): iOS can collapse it before the shell's command arrives. */
+  let kept: { start: number; end: number; ver: number } | null = null;
+  let selTimer: ReturnType<typeof setTimeout> | undefined;
+  let keptTimer: ReturnType<typeof setTimeout> | undefined;
+  let selSent: { has: boolean; bottom: number } = { has: false, bottom: 0 };
 
   // ---- overlay: one host under <html>, closed shadow root ----
   let host: HTMLElement | undefined;
@@ -261,12 +278,11 @@ export function createComments(
         const y = box.top + scrollY + th.anchor.y * box.height;
         out.push({ id: th.id, state: "pin", top: clampTop(y) });
         if (!th.resolved) {
-          const d = mark(
-            isActive ? "pin on" : "pin",
-            x,
-            clampTop(y),
-            String(th.n ?? ""),
-          );
+          const cls = ["pin", isActive ? "on" : "", th.changed ? "changed" : ""]
+            .filter(Boolean)
+            .join(" ");
+          const d = mark(cls, x, clampTop(y), String(th.n ?? ""));
+          if (th.changed) d.title = "Changed since this was placed.";
           d.addEventListener("click", () => open(th.id));
         }
         continue;
@@ -336,7 +352,12 @@ export function createComments(
       if (b) showButton();
     });
   };
-  const onSelectionChange = () => schedule(false, true);
+  const onSelectionChange = () => {
+    schedule(false, true);
+    if (mode !== "select") return;
+    clearTimeout(selTimer);
+    selTimer = setTimeout(reportSelection, SELECTION_MS);
+  };
   const onResize = () => schedule(true, true);
   const onScroll = () => schedule(true, false);
 
@@ -362,11 +383,38 @@ export function createComments(
     while (start < end && /\s/.test(t[start])) start++;
     while (end > start && /\s/.test(t[end - 1])) end--;
     if (end <= start) return null;
-    const a = nodeAtIndex(idx, start);
-    const b = nodeAtIndex(idx, end - 1);
-    const block = blockOf(a);
-    if (!a || !b || !block || block !== blockOf(b)) return null;
+    // A selection may span blocks: the flat text separates them with a space,
+    // as the server's does, so the quote verifies and resolves the same way.
+    if (!nodeAtIndex(idx, start) || !nodeAtIndex(idx, end - 1)) return null;
     return { start, end, range };
+  }
+
+  /** Tell the shell whether text is selected, and keep its last line clear of the bar. */
+  function reportSelection() {
+    const s = mode === "select" ? selection() : null;
+    let bottom = 0;
+    if (s) {
+      kept = { start: s.start, end: s.end, ver: textVer };
+      const rects = s.range.getClientRects();
+      const r = rects[rects.length - 1] ?? s.range.getBoundingClientRect();
+      bottom = Math.min(10_000_000, Math.max(-10_000_000, r.bottom));
+      // Only when the bar first appears: never while the reader drags a handle.
+      const vh = globalThis.visualViewport?.height ?? innerHeight;
+      const over = bottom - (vh - BAR_CLEAR);
+      if (coarse() && over > 0 && !selSent.has) scrollBy(0, over);
+      clearTimeout(keptTimer);
+    } else if (kept) {
+      // A collapse is forgotten after the tap window, so a stale quote never
+      // comes back on a later command.
+      clearTimeout(keptTimer);
+      keptTimer = setTimeout(() => {
+        kept = null;
+      }, KEPT_MS);
+    }
+    const has = !!s;
+    if (selSent.has === has && selSent.bottom === bottom) return;
+    selSent = { has, bottom };
+    bridge.send({ oa: 1, type: "comment.selection", has, bottom });
   }
 
   function hideButton() {
@@ -374,7 +422,7 @@ export function createComments(
   }
 
   function showButton() {
-    if (mode !== "select") return hideButton();
+    if (mode !== "select" || coarse()) return hideButton();
     const s = selection();
     if (!s) return hideButton();
     const rects = s.range.getClientRects();
@@ -401,7 +449,12 @@ export function createComments(
   }
 
   function onCommentClick() {
-    const s = selection();
+    const live = selection();
+    const s =
+      live ??
+      (kept && kept.ver === textVer
+        ? { start: kept.start, end: kept.end }
+        : null);
     if (!s) return hideButton();
     const block: BlockHint = {};
     if (format === "pdf") {
@@ -431,7 +484,10 @@ export function createComments(
     );
     bridge.send({ oa: 1, type: "comment.select", anchor });
     getSelection()?.removeAllRanges();
+    kept = null;
     hideButton();
+    clearTimeout(selTimer);
+    reportSelection();
   }
 
   // ---- clicks on the page: pin placement and highlight hits ----
@@ -488,6 +544,11 @@ export function createComments(
   const off = bridge.on((m) => {
     if (m.type === "comments.mode") {
       mode = m.mode;
+      if (mode !== "select") {
+        kept = null;
+        clearTimeout(selTimer);
+        reportSelection();
+      }
       if (mode === "off") {
         hideButton();
         clearPaint();
@@ -501,6 +562,8 @@ export function createComments(
       ghost = m.ghost;
       slots = null;
       report(true);
+    } else if (m.type === "comments.comment") {
+      if (mode === "select") onCommentClick();
     } else if (m.type === "comments.focus") {
       const p = lastPositions.get(m.id);
       if (p?.top != null) scrollTo(0, Math.max(0, p.top - innerHeight / 3));
@@ -578,6 +641,8 @@ export function createComments(
     removeEventListener("scroll", onScroll);
     clearTimeout(mutTimer);
     clearTimeout(flashTimer);
+    clearTimeout(selTimer);
+    clearTimeout(keptTimer);
     if (raf) cancelAnimationFrame(raf);
     const reg = highlights();
     reg?.delete("oa-comment");

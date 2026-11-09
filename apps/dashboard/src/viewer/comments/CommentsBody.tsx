@@ -108,6 +108,18 @@ export function PinBar() {
 
 const MUTED = "text-muted-foreground";
 
+/**
+ * #1657: in the phone sheet's short height (a pin's card), the action row
+ * stays on screen instead of being cut at the bottom edge. The sheet carries
+ * the named group; elsewhere these variants do nothing. The row needs its own
+ * surface while it floats (content scrolls under it), and that surface is the
+ * one it sits on: a thread card's, or the sheet's in the note composer.
+ */
+const STICKY =
+  "group-data-[sheet-height=pin]/sheet:sticky group-data-[sheet-height=pin]/sheet:bottom-0 group-data-[sheet-height=pin]/sheet:z-10";
+export const ACTIONS = `${STICKY} group-data-[sheet-height=pin]/sheet:bg-background`;
+export const ACTIONS_PLAIN = `${STICKY} group-data-[sheet-height=pin]/sheet:bg-card`;
+
 /** Everything below renders comment text as React text: never HTML. */
 
 function GuestName({ api }: { api: CommentsApi }) {
@@ -154,11 +166,14 @@ function Composer({
   failure,
   onDirty,
   mentionable = false,
+  actions = ACTIONS,
   buttonsRight = false,
   lead,
 }: {
-  /** Offer @mentions and Assign: the agent list is fetched once an "@" is typed. */
+  /** Offer @mentions and Assign: the agent list is fetched on the composer's first focus. */
   mentionable?: boolean;
+  /** The action row's own surface while it floats in the short sheet (#1657). */
+  actions?: string;
   /** The new-comment layout: Assign on its own line, then Cancel and the
       accent submit at the right. */
   buttonsRight?: boolean;
@@ -382,7 +397,10 @@ function Composer({
           );
           if (buttonsRight)
             return (
-              <>
+              <div
+                data-oa-actions=""
+                className={`flex flex-col gap-2 ${actions}`}
+              >
                 {assignSel}
                 <div className="flex flex-wrap items-center gap-2">
                   {lead}
@@ -399,10 +417,13 @@ function Composer({
                     </Button>
                   </div>
                 </div>
-              </>
+              </div>
             );
           return (
-            <div className="flex flex-wrap items-center gap-2">
+            <div
+              data-oa-actions=""
+              className={`flex flex-wrap items-center gap-2 ${actions}`}
+            >
               <Button
                 size="xs"
                 disabled={!body || busy}
@@ -493,10 +514,13 @@ function CommentRow({
   c: CommentT;
   root: boolean;
 }) {
-  const pending = asksForMe([...api.ordered, ...api.orphans]).filter(
-    (id) => id !== thread.id,
-  );
-  const nextAsk = pending[0];
+  // Page order (whole-page asks, then by position, then earlier text), wrapping around.
+  const order = [...api.ordered, ...api.orphans].map((t) => t.id);
+  const pending = new Set(asksForMe([...api.ordered, ...api.orphans]));
+  const at = order.indexOf(thread.id);
+  const nextAsk = [...order.slice(at + 1), ...order.slice(0, Math.max(at, 0))]
+    .filter((id) => id !== thread.id)
+    .find((id) => pending.has(id));
   const edit = useEditComment(api.artifactId, api.guest);
   const del = useDeleteComment(api.artifactId, api.guest);
   const [menu, setMenu] = useState(false);
@@ -566,6 +590,7 @@ function CommentRow({
           thread={thread}
           c={c}
           next={nextAsk ? () => api.select(nextAsk, true) : undefined}
+          reply={api.canComment ? () => api.select(thread.id, true) : undefined}
         />
       ) : (
         <p className={`whitespace-pre-wrap break-words ${TXT}`}>{c.body}</p>
@@ -614,6 +639,7 @@ function CommentRow({
 
 /** What the card says about where its quote went (from the frame's state). */
 function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
+  const isAsk = !!t.comments[0]?.ask;
   const a = t.anchor;
   const state = api.positions.get(t.id)?.state;
   if (a.kind === "note")
@@ -653,7 +679,9 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
     <div className="flex flex-col gap-1">
       {where && <p className={`${TXT} ${MUTED}`}>{where}</p>}
       {state === "partial" && (
-        <p className={`${TXT} ${MUTED}`}>Text changed since this comment</p>
+        <p className={`${TXT} ${MUTED}`}>
+          Text changed since this {isAsk ? "ask" : "comment"}
+        </p>
       )}
       <blockquote
         className={`flex items-start gap-1.5 border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED}`}
@@ -906,6 +934,7 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         submit="Comment"
         alwaysOpen={false}
         buttonsRight
+        actions={ACTIONS_PLAIN}
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
         onSubmit={(body, x) =>

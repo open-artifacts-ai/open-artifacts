@@ -53,6 +53,7 @@ import { PlanBanner } from "./PlanBanner";
 import { QuotaBanner } from "./QuotaBanner";
 import { SyncBanner, SyncDot, syncDot } from "./SyncBanner";
 import { Toaster } from "./toast";
+import { UpdateBanner } from "./UpdateBanner";
 import { UpdateChip, UpdateDot } from "./UpdateChip";
 import { UserAvatar } from "./UserAvatar";
 import { instanceUpdate, shouldNudge } from "./update";
@@ -165,8 +166,22 @@ function Layout() {
     );
   if (bareRoute(path))
     return (
-      <main id="oa-main">
+      // The artifact view owns its height: a flex column of the viewport, so a
+      // banner above the viewer takes its own height out of the viewer's
+      // instead of pushing the bottom of the frame below the fold.
+      <main
+        id="oa-main"
+        className={path.toLowerCase().startsWith("/a/") ? "oa-bare" : undefined}
+      >
         <QuotaBanner />
+        {/* The artifact view owns its chrome; the banner sits above it, never over the frame. */}
+        {/* Not on /full: its fixed toolbar would cover the dismiss button. */}
+        {state.status === "authed" && !isFullPath(path) && (
+          <UpdateBanner
+            me={state.me}
+            className="!mb-0 px-5 pt-[var(--oa-space-2)]"
+          />
+        )}
         <Outlet />
       </main>
     );
@@ -231,6 +246,11 @@ function Layout() {
               role={me?.user.role}
               plan={me?.instance.plan}
               usageOff={hasFeature(me, "usage_off")}
+              className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
+            />
+            {/* Last: notices that block work come first; one update banner only. */}
+            <UpdateBanner
+              me={me}
               className={/^\/settings(\/|$)/i.test(path) ? MEASURE : ""}
             />
             <Outlet />

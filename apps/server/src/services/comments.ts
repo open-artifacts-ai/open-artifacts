@@ -46,6 +46,7 @@ import {
   versionFormat,
 } from "./comment-anchor.js";
 import { type CommentStatus, cleanGuestName } from "./comment-rules.js";
+import { addressKey, inBackground, notifyCommented } from "./follows.js";
 import { effectiveName, getUser } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -133,9 +134,13 @@ export type CheckedAnchor = { anchor: Anchor; version: number };
 /**
  * An anchor as posted, checked: its schema (400 invalid_anchor), the version
  * it names (missing means current; a version that does not exist is 422
- * anchor_not_in_version) and, for a text anchor on an html version, the quote
- * (422 anchor_not_in_version; the context is re-derived when only it is off).
- * Other formats get the schema check only.
+ * anchor_not_in_version) and, for a text anchor on an html version, the quote.
+ * A quote the stored html shows keeps its context (re-derived when only it is
+ * off). A quote it does not show (text the page's script renders, or an entry
+ * too big to parse) is accepted with the live page's prefix and suffix, cut
+ * to CONTEXT_CHARS each side, and no block hint: the context is as unchecked
+ * as the quote, and the client resolver needs it to place a short quote
+ * (#1735). Other formats get the schema check only.
  */
 export async function checkAnchor(
   env: Pick<Env, "DB" | "FILES" | "PLAN">,
@@ -391,6 +396,36 @@ export async function listComments(
 
 // ------------------------------------------------------------------- writes
 
+/** Where a new comment's `comment` notice goes: after the response when there is a ctx. */
+export type Announce = {
+  /** The artifact's current version, named in the notice. */
+  version: number;
+  ctx?: Pick<ExecutionContext, "waitUntil">;
+};
+
+/** Followers hear of a new comment (once, never the author's own agents); never throws. */
+const announce = (
+  env: Env,
+  artifactId: string,
+  who: CommentWho,
+  after: Announce | undefined,
+  /** The comment's mentions, ask and assignment: those agents already heard of it. */
+  r?: Resolved,
+) =>
+  after
+    ? inBackground(
+        after.ctx,
+        notifyCommented(
+          env,
+          artifactId,
+          after.version,
+          who.kind === "user" ? who.id : null,
+          Date.now(),
+          new Set((r?.agents ?? []).map((x) => addressKey(x.agent.address))),
+        ),
+      )
+    : undefined;
+
 /** What a comment may carry besides its body (#1535). `ask` is for the MCP tool: no REST body takes it. */
 export type CommentExtras = {
   mentions?: KeyRef[];
@@ -399,7 +434,11 @@ export type CommentExtras = {
 };
 
 /** Who may mention, assign and ask. `moderator`: the owner or an editor. */
-export type ExtrasOpts = { moderator?: boolean };
+export type ExtrasOpts = {
+  moderator?: boolean;
+  /** Followers hear of the new comment (#682); absent: nobody is told. */
+  after?: Announce;
+};
 
 type Resolved = {
   extras: NewExtras | undefined;
@@ -511,6 +550,9 @@ const stateOf = (
       ? "queued"
       : "gone";
 
+/** The most a comment POST waits, in total, for its notices to reach their hubs. */
+export const NOTICE_BUDGET_MS = 2500;
+
 /**
  * Sends the notices of a written comment and records how each mention and the
  * assignment went. Returns the comment as then stored.
@@ -525,11 +567,28 @@ async function deliver(
   if (r.agents.length === 0) return c;
   const version = Math.max(1, a.currentVersion);
   const outcome = new Map<string, DeliveryState>();
-  for (const { agent, kind } of r.agents)
-    outcome.set(
-      agent.key,
-      await notifyAgent(env, a.id, version, c.id, kind, agent),
+  // Concurrent, and the POST waits NOTICE_BUDGET_MS at most in total: a
+  // stalled hub reads "dropped" (its notice may still arrive; "gone" for a
+  // mention, "queued" for an assignment).
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<DeliveryState>((res) => {
+    timer = setTimeout(() => res("dropped"), NOTICE_BUDGET_MS);
+  });
+  try {
+    const outs = await Promise.all(
+      r.agents.map(({ agent, kind }) =>
+        Promise.race([
+          notifyAgent(env, a.id, version, c.id, kind, agent),
+          late,
+        ]),
+      ),
     );
+    r.agents.forEach(({ agent }, i) => {
+      outcome.set(agent.key, outs[i] ?? "dropped");
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   const states: { kind: "mention" | "assign"; key: string; state: string }[] =
     [];
   for (const key of r.mentions)
@@ -599,6 +658,7 @@ export async function addThread(
     const sent = await deliver(env, a, t.id, root, r);
     t.comments[0] = sent;
   }
+  await announce(env, a.id, who, opts.after, r);
   return (await threadViews(env, [t], viewer))[0] as Thread;
 }
 
@@ -624,7 +684,10 @@ export async function addReply(
       ...(r.extras ? { extras: r.extras } : {}),
     }),
   );
-  if (r.agents.length === 0) return commentView(env, c, viewer);
+  if (r.agents.length === 0) {
+    await announce(env, artifactId, who, opts.after, r);
+    return commentView(env, c, viewer);
+  }
   const row = await stmt(
     env.DB,
     "select current_version as v from artifacts where id = ?",
@@ -632,7 +695,9 @@ export async function addReply(
     .bind(artifactId)
     .first<{ v: number }>();
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
-  return commentView(env, await deliver(env, a, threadId, c, r), viewer);
+  const sent = await deliver(env, a, threadId, c, r);
+  await announce(env, artifactId, who, opts.after, r);
+  return commentView(env, sent, viewer);
 }
 
 /**

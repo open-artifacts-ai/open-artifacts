@@ -129,6 +129,74 @@ describe("slugs", () => {
     expect(slugError("billing")).toBe("slug_reserved");
   });
 
+  describe("issue #1011 look-alike and role names", () => {
+    it.each([
+      "admins",
+      "administrator",
+      "root",
+      "superuser",
+      "sysadmin",
+      "owner",
+      "team",
+      "staff",
+      "official",
+      "support",
+      "help",
+      "helpdesk",
+      "contact",
+      "security",
+      "abuse",
+      "trust",
+      "safety",
+      "legal",
+      "privacy",
+      "compliance",
+      "postmaster",
+      "hostmaster",
+      "webmaster",
+      "noreply",
+      "no-reply",
+      "info",
+      "smtp",
+      "imap",
+      "pop",
+      "mx",
+      "account",
+      "accounts",
+      "signin",
+      "sign-in",
+      "register",
+      "password",
+      "verify",
+      "oauth",
+      "id",
+      "identity",
+      "open-artifacts",
+      "openartifacts",
+      "artifacts",
+      "dashboard",
+      "console",
+      "cdn",
+      "assets",
+      "static",
+      "files",
+      "health",
+      "test",
+      "dev",
+      "internal",
+      "ns1",
+      "ns2",
+      "signup",
+      "status",
+      "admin",
+    ])("%s is reserved", (name) => {
+      expect(slugError(name)).toBe("slug_reserved");
+    });
+    it.each(["leo", "rl-a", "rl-b", "demo"])("%s stays valid", (name) => {
+      expect(slugError(name)).toBeNull();
+    });
+  });
+
   it("inputs take any short slug, so policy can say slug_* or confirm_mismatch", () => {
     const rid = "req_0123456789abcdef";
     for (const slug of ["admin", "Bad_Slug", "xn--abc"])

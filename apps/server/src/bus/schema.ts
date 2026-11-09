@@ -312,6 +312,25 @@ create table if not exists meta (
   value text not null,
   primary key (org_id, key)
 );
+
+-- #1317: server notices waiting for their address (a notBefore not reached,
+-- or a machine offline). One row per (address, coalesce key); a newer notice
+-- replaces it. Written only by BusHub.deliverNotice; no frame reaches it.
+-- parked: due, but the machine had no live socket (sent on its agent_up).
+create table if not exists notices (
+  to_ns text not null,
+  to_lname text not null,
+  ckey text not null,
+  id text not null,
+  text text not null,
+  not_before integer not null,
+  expires_at integer not null,
+  parked integer not null default 0,
+  primary key (to_ns, to_lname, ckey)
+);
+create index if not exists notices_due on notices(parked, not_before);
+create index if not exists notices_expiry on notices(expires_at);
+create index if not exists notices_name on notices(to_lname);
 `;
 
 const HUB_SCHEMA_B7_INDEXES = `

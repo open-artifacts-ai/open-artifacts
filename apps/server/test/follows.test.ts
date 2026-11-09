@@ -8,7 +8,16 @@ import {
   newId,
   R,
 } from "@oa/shared";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
@@ -25,6 +34,7 @@ import {
 } from "../src/services/bus-delivery.js";
 import {
   CHANGED_WINDOW_MS,
+  FANOUT_BUDGET_MS,
   FANOUT_MAX,
   follow,
   following,
@@ -434,6 +444,32 @@ describe("member erase", () => {
 });
 
 describe("the fan-out budget", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("stops sending once FANOUT_BUDGET_MS has passed, inside one member's addresses too", async () => {
+    const owner = await mk("fb-owner");
+    const id = await create(owner, { visibility: "team" });
+    const m = await mk("fb-m");
+    await E.DB.batch(
+      ["a", "b", "c"].map((name) =>
+        E.DB.prepare(
+          "insert into follows (user_id, artifact_id, namespace, agent_name, created_at) values (?, ?, 'ns', ?, 1)",
+        ).bind(m.userId, id, name),
+      ),
+    );
+    // The first delivery "takes" longer than the whole budget.
+    let skew = 0;
+    const real = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => real() + skew);
+    const deliver = bus.deliver.bind(bus);
+    vi.spyOn(bus, "deliver").mockImplementation(async (...a) => {
+      skew += FANOUT_BUDGET_MS + 1;
+      return deliver(...a);
+    });
+    await notifyChanged(E, id, 2, owner.userId, real());
+    expect(bus.sent).toHaveLength(1);
+  });
+
   it(`handles at most ${FANOUT_MAX} follows per run, least recently notified first, and doesn't fail`, async () => {
     const owner = await mk("fo-owner");
     const id = await create(owner, { visibility: "team" });

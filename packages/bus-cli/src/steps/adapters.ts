@@ -76,6 +76,8 @@ export type AdapterDeps = {
   exec: Exec;
   /** The Codex desktop app's bundle; undefined where there is none to look for. */
   codexApp?: string;
+  /** Test seam for the Hermes staging sweep: the clock and the pid check. */
+  staging?: { now?: number; alive?: (pid: number) => boolean };
 };
 
 export type Skipped = { harness: Harness; reason: string };

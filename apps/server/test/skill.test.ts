@@ -807,3 +807,9 @@ describe("query_too_large is documented (review item 23)", () => {
     expect(SKILL_TEMPLATE).toContain("Keep collections small");
   });
 });
+
+it("teaches client checksums and unchanged-byte uploads in the served skill", () => {
+  expect(SKILL_TEMPLATE).toContain("sha256sum file");
+  expect(SKILL_TEMPLATE).toContain("shasum -a 256 file");
+  expect(SKILL_TEMPLATE).toContain("do not modify the file after hashing");
+});

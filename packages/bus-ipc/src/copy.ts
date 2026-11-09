@@ -128,7 +128,7 @@ export function receiptText(
       const tail = (v: string) =>
         r.reason === "recipient_closed"
           ? `was not delivered because ${v} closed first.`
-          : `was not taken within ${RETAIN}.`;
+          : `was not confirmed as delivered. Mail waits at most ${RETAIN}.`;
       const head = (v: string) => `×  Expired: your message to ${v}`;
       if (!quote) return fitLine((v) => `${head(v)} ${tail(v)}`, to);
       return fitLine((v) => quoted(head(v), quote, tail(v)), to);

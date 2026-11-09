@@ -638,6 +638,7 @@ describe("RPC surface", () => {
       "deleteLink",
       "deleteReach",
       "deleteRole",
+      "deliverNotice",
       "expireLinkProposalsOf",
       "expireRoleProposalsOf",
       "listLinks",

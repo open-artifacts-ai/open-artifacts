@@ -41,15 +41,22 @@ class FakeBus implements NoticeDelivery {
   outcome: DeliveryOutcome = "delivered";
   /** Runs while a notice is being delivered (a write racing the POST). */
   during: (() => Promise<unknown>) | null = null;
+  /** A notice this returns true for never finishes delivering (a stalled hub). */
+  stall: ((n: BusNotice) => boolean) | null = null;
   async deliver(_e: Env, userId: string, notice: BusNotice) {
+    // The follower notice of a new comment (#682, after the response) is not
+    // what these tests are about: they count mentions, asks and assignments.
+    if (notice.kind === "commented") return "delivered" as const;
     this.sent.push({ userId, notice });
     await this.during?.();
+    if (this.stall?.(notice)) await new Promise<never>(() => {});
     return this.outcome;
   }
   clear() {
     this.sent = [];
     this.outcome = "delivered";
     this.during = null;
+    this.stall = null;
   }
 }
 const bus = new FakeBus();
@@ -242,6 +249,23 @@ describe("mentions and assignments", () => {
       await post(s.id, owner, { mentions: [{ key: s.claude }] })
     ).json()) as Thread;
     expect(b.comments[0]?.mentions?.[0]?.delivery).toBe("gone");
+  });
+
+  it("a stalled hub cannot hold the POST past the notice budget; the rest still read their outcome", async () => {
+    const s = await setup();
+    bus.stall = (n) => n.to.name === "Claude";
+    const r = await post(s.id, editor, {
+      mentions: [{ key: s.claude }, { key: s.codex }],
+    });
+    expect(r.status).toBe(201);
+    // The stalled hub never answers: only the shared budget lets this POST return.
+    const t = (await r.json()) as Thread;
+    const m = Object.fromEntries(
+      (t.comments[0]?.mentions ?? []).map((x) => [x.name, x.delivery]),
+    );
+    // The stalled one reads "gone" (its outcome is unknown: dropped); the other is exact.
+    expect(m).toEqual({ Claude: "gone", Codex: "delivered" });
+    expect(bus.sent).toHaveLength(2);
   });
 
   it("assigns on a reply, and resolving the thread marks it done", async () => {

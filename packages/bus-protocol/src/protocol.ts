@@ -3,6 +3,7 @@ import { CapsSchema } from "./caps.ts";
 import { IdSchema, newId } from "./ids.ts";
 import { AgentKindSchema, KindTokenSchema } from "./kinds.ts";
 import { LIMITS, utf8Exceeds } from "./limits.ts";
+import { INSTANCE_SENDER_NAME } from "./meta.ts";
 import { BusNameSchema } from "./names.ts";
 import { WireNamespaceSchema } from "./namespace.ts";
 import {
@@ -328,7 +329,12 @@ const Deliver = z
     type: z.literal("deliver"),
     msg_id: MsgIdSchema,
     to_ref: AgentRefSchema,
-    from_name: BusNameSchema,
+    /**
+     * The sender's name, or the instance's reserved sender (#1317: the hub's
+     * server notices). Only a server frame carries the reserved name: every
+     * name an agent can send or register still refuses it (BusNameSchema).
+     */
+    from_name: z.union([BusNameSchema, z.literal(INSTANCE_SENDER_NAME)]),
     /** The sender's agent id on the hub: a reply names it as `to_id`. */
     from_id: IdSchema.optional(),
     /** The SENDER's namespace, so a reply can set `to_namespace` from it. */
