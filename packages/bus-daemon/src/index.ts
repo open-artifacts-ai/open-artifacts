@@ -78,6 +78,7 @@ import {
   opencodePresenceDir,
   openSessions,
 } from "./presence/opencode.ts";
+import { proposeReach } from "./reach.ts";
 import { Resends } from "./resend.ts";
 import { type AgentCap, capOf, Pending, routeLocal } from "./routes.ts";
 import {
@@ -190,6 +191,10 @@ export type DaemonDeps = {
   resendTimer?: Timer;
   resendNow?: () => number;
   hub?: Partial<Pick<HubOptions, "backoffMs" | "pingMs" | "stableMs" | "pace">>;
+  /** The HTTP client for the reach proposal (#1346); tests bring a fake one. */
+  fetch?: typeof fetch;
+  /** How long the hub gets to answer a reach proposal; default REACH_TIMEOUT_MS. */
+  reachTimeoutMs?: number;
   claude?: {
     sessionsDir?: string;
     socketsDir?: string;
@@ -1245,6 +1250,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ...(h.caps?.includes(ADAPTER_CAPS.follow)
             ? [ADAPTER_CAPS.follow]
             : []),
+          // #1346: the proposal goes to the hub over HTTP; no hub cap.
+          ...(h.caps?.includes(ADAPTER_CAPS.reach) ? [ADAPTER_CAPS.reach] : []),
         ];
         return listed.length > 0 ? { caps: listed } : {};
       };
@@ -1427,6 +1434,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           limited.has(ref) ? (caps.get(ref) ?? "machine") : undefined,
         version,
         configFiles,
+        proposeReach: (ref, namespaces) =>
+          proposeReach({
+            hub: cfg.hub,
+            token: cfg.machine_token,
+            nativeRef: ref,
+            namespaces,
+            fetch: deps.fetch,
+            timeoutMs: deps.reachTimeoutMs,
+            log,
+          }),
         followSupport: () =>
           !hub.open || !hubHelloed ? "down" : hubFollow ? "ok" : "old_hub",
         renamed: (ref, name) => {

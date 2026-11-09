@@ -4,6 +4,7 @@ import {
   LIMITS,
   MAILBOX_PENDING_CAP,
   MAILBOX_RETAIN_MS,
+  REACH_PROPOSAL_MAX,
   type ReceiptReason,
   type ReceiptState,
 } from "@oa/bus-protocol";
@@ -440,6 +441,46 @@ export const followingText = (
 /** What an agent sees when its daemon is too old for the follow frames. */
 export const FOLLOW_OLD_DAEMON =
   "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus.";
+
+/** The `propose_reach` result (#1346). Nothing has changed; the person confirms on the link. */
+export const reachProposedText = (
+  namespaces: readonly string[],
+  url: string,
+  expiresAt: string,
+): string =>
+  `Proposed: let your role reach ${namespaces.join(", ")}. Nothing has changed. Give the person this link to confirm it in their browser, signed in (it works once and expires at ${expiresAt}): ${url}`;
+
+/**
+ * The `propose_reach` tool's namespaces, checked before anything is sent: 1 to
+ * 10, each a namespace as `list_agents` shows it (lowercase letters, digits
+ * and . _ ~ / -). An `error` is the tool's own text.
+ */
+export const reachNamespacesOf = (
+  value: unknown,
+): { namespaces: string[] } | { error: string } => {
+  const list = Array.isArray(value)
+    ? value.map((v) => (typeof v === "string" ? v.trim() : ""))
+    : [];
+  if (list.length < 1 || list.length > REACH_PROPOSAL_MAX)
+    return {
+      error: `oa-bus: namespaces: give 1 to ${REACH_PROPOSAL_MAX} namespaces. Nothing was asked.`,
+    };
+  const bad = list.find(
+    (n) =>
+      n.length < 1 ||
+      n.length > LIMITS.maxNamespaceChars ||
+      !/^[a-z0-9._~/-]+$/.test(n),
+  );
+  if (bad !== undefined)
+    return {
+      error: `oa-bus: namespaces: "${bad.slice(0, 40)}" is not a namespace. Use one as list_agents shows it. Nothing was asked.`,
+    };
+  return { namespaces: [...new Set(list)] };
+};
+
+/** What an agent sees when its daemon is too old for the reach frames. */
+export const REACH_OLD_DAEMON =
+  "This oa-bus daemon is too old to ask for reach. Ask the user to update oa-bus.";
 
 /** A status at least this old says how old it is (AC5c; Design-approved). */
 export const STATUS_STALE_MS = 10 * 60_000;
