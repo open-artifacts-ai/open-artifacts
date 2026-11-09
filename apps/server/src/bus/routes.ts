@@ -40,7 +40,7 @@ import {
   pageResponse,
   sessionUser,
 } from "../http/pages.js";
-import { logInfo } from "../log.js";
+import { logError, logInfo } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import {
@@ -707,7 +707,11 @@ export function mountBus(app: AppType): void {
     // The caller's own dropped-notice count for today rides along (#1317): one D1 read, no hub call.
     const [view, droppedNotices] = await Promise.all([
       listBusAgents(c.env, user.id),
-      droppedToday(c.env, user.id),
+      // Best effort: a D1 failure here never fails the Agents list.
+      droppedToday(c.env, user.id).catch((e) => {
+        logError("bus_dropped_count_failed", e);
+        return 0;
+      }),
     ]);
     return c.json({ ...view, droppedNotices });
   });

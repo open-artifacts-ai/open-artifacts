@@ -1003,6 +1003,35 @@ describe("dashboard REST", () => {
     expect(await read(me.cookie)).toBe(0);
   });
 
+  it("a D1 failure reading the dropped count never fails the agents list (#1317)", async () => {
+    const me = await member();
+    const db = new Proxy(e.DB, {
+      get(t, k) {
+        if (k === "prepare")
+          return (sql: string) => {
+            if (sql.includes("from counters where key"))
+              throw new Error("d1 down");
+            return t.prepare(sql);
+          };
+        const v = Reflect.get(t, k) as unknown;
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const r = await fetchAndWait(
+      app,
+      new Request(`http://app.localhost${R.busAgents}`, {
+        headers: { cookie: me.cookie },
+      }),
+      { ...env, DB: db },
+    );
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({
+      agents: [],
+      live: true,
+      droppedNotices: 0,
+    });
+  });
+
   it("GET agents for a member whose machines never connected: no agents, live (the hub's state is known)", async () => {
     const fay = await member();
     await machine("never", fay.userId);
