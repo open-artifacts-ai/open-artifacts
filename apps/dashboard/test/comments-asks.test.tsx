@@ -24,6 +24,7 @@ import {
   mentionedKeys,
   mentionQuery,
   nextAskFor,
+  removeMention,
 } from "../src/viewer/comments/asks";
 import {
   calls,
@@ -536,7 +537,7 @@ describe("@mentions in the composer", () => {
     });
   });
 
-  it("renders each mention's delivery and the assignment", async () => {
+  it("renders each mention's delivery", async () => {
     const t = askThread();
     const root = t.comments[0] as Record<string, unknown>;
     delete root.ask;
@@ -544,7 +545,6 @@ describe("@mentions in the composer", () => {
       { key: "agent:a", name: "OA Product", delivery: "queued" },
       { key: "agent:b", name: "OA Design", delivery: "seen" },
     ];
-    root.assigned = { key: "agent:a", name: "OA Product", state: "done" };
     serveThreads(() => [t]);
     mount(viewerPath(OWNED));
     const c = await col();
@@ -559,9 +559,7 @@ describe("@mentions in the composer", () => {
       ),
     ).toBeInTheDocument();
     expect(within(c).getByText("OA Design: Seen")).toBeInTheDocument();
-    expect(
-      within(c).getByText("Assigned to OA Product: Done"),
-    ).toBeInTheDocument();
+    expect(within(c).queryByText(/Assigned to/)).toBeNull();
   });
 });
 
@@ -694,31 +692,76 @@ describe("@ picker details", () => {
     expect(posts).toHaveLength(0);
   });
 
-  it("sends Assign to with a reply", async () => {
+  it("lists who will be notified and removes chips", async () => {
     withAgents();
-    serveThreads(() => [askThread({}, {})]);
     const posts = calls("POST");
     mount(viewerPath(OWNED));
     const c = await col();
-    fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
-    const box = await within(c).findByRole("textbox", { name: "Reply" });
-    // The agent list loads on focus; Assign to comes with it, no "@" needed.
+    const box = await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
     fireEvent.focus(box);
-    const select = await waitFor(() => {
-      const s = within(c).getByLabelText("Assign to") as HTMLSelectElement;
-      expect(s.options.length).toBeGreaterThan(1);
-      return s;
+    await waitFor(() => {
+      fireEvent.change(box, { target: { value: "@", selectionStart: 1 } });
+      expect(within(c).getByRole("listbox")).toBeTruthy();
     });
-    fireEvent.change(select, { target: { value: "agent:design" } });
-    fireEvent.change(box, { target: { value: "please do it" } });
+    expect(within(c).queryByText(/Assign to/)).toBeNull();
+    fireEvent.change(box, {
+      target: { value: "@OA Design and @OA Product go", selectionStart: 29 },
+    });
+    expect(
+      within(c).getByText("Will notify OA Product, OA Design"),
+    ).toBeTruthy();
     fireEvent.click(
-      within(c).getByRole("button", { name: "Reply", hidden: false }),
+      within(c).getByRole("button", { name: "Remove mention of OA Product" }),
     );
+    expect(box).toHaveValue("@OA Design and go");
+    expect(within(c).getByText("Will notify OA Design")).toBeTruthy();
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(posts.length).toBeGreaterThan(0));
-    expect(posts[0]?.body).toMatchObject({
-      body: "please do it",
-      assign: { key: "agent:design" },
+    const sent = posts[0]?.body as Record<string, unknown>;
+    expect(sent.mentions).toEqual([{ key: "agent:design" }]);
+    expect(sent).not.toHaveProperty("assign");
+  });
+
+  it("removes only the mentions mentionedKeys would count", () => {
+    const bob = { key: "agent:bob", name: "Bob", online: true };
+    const smith = { key: "agent:bs", name: "Bob Smith", online: true };
+    const both = [bob, smith];
+    expect(removeMention("hi @Bob and @Bob.", "Bob", both)).toBe("hi and.");
+    expect(removeMention("hi @Bob.", "Bob", both)).toBe("hi.");
+    expect(removeMention("@Bob @Bob x", "Bob", both)).toBe("x");
+    expect(removeMention("a @Bob @Bob b", "Bob", both)).toBe("a b");
+    const cpp = { key: "agent:cpp", name: "C++ Bot", online: true };
+    expect(removeMention("go @C++ Bot now", "C++ Bot", [cpp])).toBe("go now");
+    expect(removeMention("go @C++ Bot's way", "C++ Bot", [cpp])).toBe("go way");
+    expect(removeMention("hi @Bob-x ok", "Bob", both)).toBe("hi @Bob-x ok");
+    expect(removeMention("hi @Bob-Smith", "Bob", both)).toBe("hi @Bob-Smith");
+    expect(removeMention("hi @Bob's idea", "Bob", both)).toBe("hi idea");
+    expect(removeMention("hi @Bob Smith go", "Bob", both)).toBe(
+      "hi @Bob Smith go",
+    );
+    expect(removeMention("hi @Bob Smith go", "Bob Smith", both)).toBe("hi go");
+  });
+
+  it("marks agents online or offline in text, not colour alone", async () => {
+    withAgents();
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
     });
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: "@OA", selectionStart: 3 } });
+    const menu = await within(c).findByRole("listbox", {
+      name: "Agents on this page",
+    });
+    expect(
+      within(menu).getByRole("option", { name: /OA Product.*online/ }),
+    ).toBeTruthy();
+    expect(
+      within(menu).getByRole("option", { name: /OA Design.*offline/ }),
+    ).toBeTruthy();
   });
 
   it("does not resend the answer already picked", async () => {
@@ -839,16 +882,13 @@ describe("agent list loads on composer focus", () => {
     expect(n.count).toBe(0);
   });
 
-  it("calls once on focus for an owner and shows Assign to without typing @", async () => {
+  it("calls once on focus for an owner", async () => {
     const n = agentCalls();
     mount(viewerPath(OWNED));
     const c = await col();
     const box = await wholePage(c);
     fireEvent.focus(box);
-    await waitFor(() => {
-      const s = within(c).getByLabelText("Assign to") as HTMLSelectElement;
-      expect(s.options.length).toBeGreaterThan(1);
-    });
+    await waitFor(() => expect(n.count).toBe(1));
     fireEvent.blur(box);
     fireEvent.focus(box);
     expect(n.count).toBe(1);
@@ -880,7 +920,6 @@ describe("agent list loads on composer focus", () => {
     fireEvent.focus(box);
     await new Promise((r) => setTimeout(r, 50));
     expect(n.count).toBe(0);
-    expect(within(c).queryByLabelText("Assign to")).toBeNull();
   });
 
   it("retries a 5xx on the next focus but never a 404", async () => {
@@ -902,12 +941,10 @@ describe("agent list loads on composer focus", () => {
     const box = await wholePage(c);
     fireEvent.focus(box);
     await waitFor(() => expect(hits).toBe(1));
-    expect(within(c).queryByLabelText("Assign to")).toBeNull();
     status = 200;
     fireEvent.blur(box);
     fireEvent.focus(box);
-    await within(c).findByLabelText("Assign to");
-    expect(hits).toBe(2);
+    await waitFor(() => expect(hits).toBe(2));
   });
 
   it("retries a 5xx on another composer's first focus", async () => {
@@ -953,7 +990,6 @@ describe("agent list loads on composer focus", () => {
     fireEvent.focus(box);
     await new Promise((r) => setTimeout(r, 50));
     expect(hits).toBe(1);
-    expect(within(c).queryByLabelText("Assign to")).toBeNull();
   });
 });
 
@@ -988,6 +1024,15 @@ describe("round 3 copy", () => {
     expect(
       within(c).getByText("Only the owner and editors can wake agents."),
     ).toBeInTheDocument();
+  });
+});
+
+describe("removeMention", () => {
+  it("keeps the line break before a removed mention", () => {
+    expect(removeMention("hi\n@Bob there", "Bob")).toBe("hi\n there");
+  });
+  it("removes every mention of the name", () => {
+    expect(removeMention("@Bob hi @bob, ok", "Bob")).toBe("hi, ok");
   });
 });
 

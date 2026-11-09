@@ -2239,6 +2239,14 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /bus/links/confirm/:token",
   "POST /bus/links/confirm/view",
   "POST /bus/links/confirm",
+  // #1346: an agent's reach proposal (a machine token, checked by the
+  // handler) and its confirm page (the same rules); covered by
+  // bus/reach.proposals.test.ts.
+  "POST /api/v1/bus/reach/proposals",
+  "GET /bus/reach/confirm",
+  "GET /bus/reach/confirm/:token",
+  "POST /bus/reach/confirm/view",
+  "POST /bus/reach/confirm",
   "GET /a/:id",
   "GET /a/:id/full",
   "GET /a/:id/v/:v",

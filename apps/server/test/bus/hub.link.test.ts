@@ -4,10 +4,10 @@
 // identity_id survives a rename and moves with a reclaimed name on the same
 // machine only. Waits are signals (the reply frame), never sleeps; time is
 // BusHub.setTestClock, reset after each test.
-import { runInDurableObject } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, type ClientFrame } from "@oa/bus-protocol";
 import { describe, expect, it } from "vitest";
-import { BusHub } from "../../src/bus/hub.js";
+import { BusHub, OFFLINE_REAP_MS } from "../../src/bus/hub.js";
 import {
   type Daemon,
   daemon,
@@ -212,5 +212,131 @@ describe("identity_id and a reclaimed name (#1822, #1742)", () => {
     expect(after?.identityId).toBeDefined();
     expect(after?.identityId).not.toBe(before?.identityId);
     await setClock(s.m.userId, null);
+  });
+});
+
+// Every way a session's link ends takes its proof hash with it (the CLOSE_CLEAR
+// of hub.ts), and a hash names one live session.
+describe("the proof ends with the session (#1822)", () => {
+  const proofRow = (userId: string, ref: string) =>
+    rows(
+      userId,
+      "select proof_hash as p, live from agents where native_ref = ? order by rowid desc limit 1",
+      ref,
+    );
+
+  it("revoking the machine clears the proof", async () => {
+    const s = await scene();
+    await reg(s.d, "r1", "Lead", s.ns);
+    await bind(s.d, "r1", hashOf("7"));
+    expect(await lookup(s.m.userId, hashOf("7"))).not.toBeNull();
+    const hub = await hubOf(s.m.userId);
+    expect(await hub.revokeMachine(s.mach.id)).toBe(true);
+    expect(await lookup(s.m.userId, hashOf("7"))).toBeNull();
+    expect(await proofRow(s.m.userId, "r1")).toEqual([{ p: null, live: 0 }]);
+  });
+
+  it("agent_down clears the proof", async () => {
+    const s = await scene();
+    await reg(s.d, "r1", "Lead", s.ns);
+    await bind(s.d, "r1", hashOf("8"));
+    s.d.send({ v: 1, id: id("dn"), type: "agent_down", agent_ref: "r1" });
+    for (;;) {
+      const r = await proofRow(s.m.userId, "r1");
+      if (r[0]?.live === 0) break;
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    expect(await lookup(s.m.userId, hashOf("8"))).toBeNull();
+    expect(await proofRow(s.m.userId, "r1")).toEqual([{ p: null, live: 0 }]);
+  });
+
+  it("takeOver (a /clear: agent_up with replaces) clears the old session's proof", async () => {
+    const s = await scene([BUS_CAPS.link, BUS_CAPS.mailbox]);
+    await reg(s.d, "old", "Lead", s.ns);
+    await bind(s.d, "old", hashOf("9"));
+    expect(await lookup(s.m.userId, hashOf("9"))).not.toBeNull();
+    s.d.send({
+      ...up(id("u"), "new", "Lead", s.ns),
+      replaces: "old",
+    } as ClientFrame);
+    await waitFor(s.d, "agent_ok");
+    expect(await lookup(s.m.userId, hashOf("9"))).toBeNull();
+    expect(
+      await rows(
+        s.m.userId,
+        "select count(*) as n from agents where proof_hash is not null",
+      ),
+    ).toEqual([{ n: 0 }]);
+  });
+
+  it("the offline sweep clears the proof", async () => {
+    const s = await scene();
+    const t0 = Date.now() + 3_600_000 + ++seq * 1000;
+    await setClock(s.m.userId, t0);
+    await reg(s.d, "r1", "Lead", s.ns);
+    await bind(s.d, "r1", hashOf("a"));
+    s.d.close();
+    await s.d.closed;
+    for (;;) {
+      const r = await rows(
+        s.m.userId,
+        "select disconnected_at as t from machines where id = ?",
+        s.mach.id,
+      );
+      if (typeof r[0]?.t === "number") break;
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    // Still linked while the machine is only offline.
+    expect(await lookup(s.m.userId, hashOf("a"))).not.toBeNull();
+    await setClock(s.m.userId, t0 + OFFLINE_REAP_MS);
+    await runInDurableObject(
+      await hubOf(s.m.userId),
+      async (_: BusHub, st: DurableObjectState) => {
+        if ((await st.storage.getAlarm()) === null)
+          await st.storage.setAlarm(t0 + OFFLINE_REAP_MS);
+      },
+    );
+    await runDurableObjectAlarm(await hubOf(s.m.userId));
+    expect(await proofRow(s.m.userId, "r1")).toEqual([{ p: null, live: 0 }]);
+    expect(await lookup(s.m.userId, hashOf("a"))).toBeNull();
+    await setClock(s.m.userId, null);
+  });
+
+  it("binding a hash another session holds takes it off that session", async () => {
+    const s = await scene();
+    await reg(s.d, "r1", "Lead", s.ns);
+    await reg(s.d, "r2", "Other", s.ns);
+    await bind(s.d, "r1", hashOf("b"));
+    const first = await lookup(s.m.userId, hashOf("b"));
+    await bind(s.d, "r2", hashOf("b"));
+    const second = await lookup(s.m.userId, hashOf("b"));
+    expect(second?.name).not.toBe(first?.name);
+    expect(second?.identityId).not.toBe(first?.identityId);
+    expect(await proofRow(s.m.userId, "r1")).toEqual([{ p: null, live: 1 }]);
+    expect(
+      await rows(
+        s.m.userId,
+        "select count(*) as n from agents where proof_hash = ?",
+        hashOf("b"),
+      ),
+    ).toEqual([{ n: 1 }]);
+  });
+
+  it("the lookup ignores a row that is not live, even if a hash is left on it", async () => {
+    const s = await scene();
+    await reg(s.d, "r1", "Lead", s.ns);
+    await bind(s.d, "r1", hashOf("c"));
+    expect(await lookup(s.m.userId, hashOf("c"))).not.toBeNull();
+    await rows(
+      s.m.userId,
+      "update agents set live = 0 where native_ref = 'r1' returning id",
+    );
+    expect(
+      await rows(
+        s.m.userId,
+        "select proof_hash as p from agents where native_ref = 'r1'",
+      ),
+    ).toEqual([{ p: hashOf("c") }]);
+    expect(await lookup(s.m.userId, hashOf("c"))).toBeNull();
   });
 });

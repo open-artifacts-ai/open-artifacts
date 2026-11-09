@@ -225,4 +225,57 @@ describe("reply ids in the daemon", () => {
     expect(sent).toMatchObject({ to_name: "alice", body: "pong" });
     expect(sent).not.toHaveProperty("to_id");
   });
+
+  /** A daemon before ids recorded alice with no agent id; its return socket is revived. */
+  const revivedIdless = (hubCaps: string[] | undefined) => {
+    const key = "s4242\u0000ns\u0000alice\u0000";
+    return {
+      path: (d: string) => join(d, "r", `${sha(key).slice(0, 8)}.sock`),
+      session: () =>
+        session(hubCaps, (dd) => {
+          const file = join(dd, "claude-return.json");
+          writeFileSync(
+            file,
+            JSON.stringify({
+              [key]: {
+                agentRef: "s4242",
+                namespace: "ns",
+                peerName: "alice",
+                at: Date.now(),
+              },
+            }),
+            { mode: 0o600 },
+          );
+          return file;
+        }),
+    };
+  };
+
+  it("a revived id-less reply made before hello_ok is refused when the hub then lists ids", async () => {
+    const r = revivedIdless(undefined);
+    const { h, d, seen } = await r.session();
+    await vi.waitFor(() => expect(existsSync(r.path(d))).toBe(true));
+    await reconnect(h);
+    await answer(r.path(d), reply(join(d, "c.sock"), "pong"));
+    await new Promise((x) => setTimeout(x, 50));
+    expect(h.of("send")).toEqual([]); // queued: no hello_ok on the new link yet
+    h.toDaemon(helloOk([BUS_CAPS.ids]));
+    await vi.waitFor(() =>
+      expect(seen.map((x) => x.content).join("\n")).toMatch(
+        /Information: your reply to alice was not sent/,
+      ),
+    );
+    await new Promise((x) => setTimeout(x, 50));
+    expect(h.of("send")).toEqual([]);
+  });
+
+  it("a revived id-less reply goes by name to a hub that lists no ids", async () => {
+    const r = revivedIdless(undefined);
+    const { h, d } = await r.session();
+    await vi.waitFor(() => expect(existsSync(r.path(d))).toBe(true));
+    await answer(r.path(d), reply(join(d, "c.sock"), "pong"));
+    const sent = await h.next("send");
+    expect(sent).toMatchObject({ to_name: "alice", body: "pong" });
+    expect(sent).not.toHaveProperty("to_id");
+  });
 });

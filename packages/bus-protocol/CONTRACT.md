@@ -143,6 +143,13 @@ A session proves which bus agent it is on `/mcp` with a random proof in the
 `X-OA-Agent-Proof-Token` header (43 base64url characters). The client sends
 the proof's hash, never the proof, over the machine's socket.
 
+A harness that cannot set a header (Hermes, OpenClaw) sends the same proof as
+the reserved tool argument `_oa_agent_proof` (`LINK_PROOF_ARG`) on a
+`tools/call`. The Worker removes it before the tool sees the call, on every
+call, and the header wins when both are present. In a JSON-RPC batch every
+`tools/call` must carry the same value, else the request is unlinked. Other
+methods are never read.
+
 - `hello.caps` listing `link`: the hub then answers `link_bind` and lists
   `link` in `hello_ok.caps`. Any other socket gets `bad_frame`, as an older
   hub does. A client sends it only when `hello_ok.caps` listed `link`.

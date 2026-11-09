@@ -44,6 +44,7 @@ import {
   codexAttestor,
   codexHome,
 } from "./codex-attest.ts";
+import { codexThreadNames } from "./codex-names.ts";
 import {
   type Config,
   claudeReturnDir,
@@ -109,6 +110,7 @@ import { PiTransport } from "./transports/pi.ts";
 export * from "./agents.ts";
 export * from "./attest.ts";
 export * from "./codex-attest.ts";
+export * from "./codex-names.ts";
 export * from "./config.ts";
 export * from "./config-issues.ts";
 export * from "./dedupe.ts";
@@ -447,6 +449,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       oc.uncertainFile ?? join(home(), "opencode-uncertain.json"),
     ),
   });
+  /** Where Codex keeps its thread names (#1748). */
+  const codexIndexHome = cx.home ?? codexHome();
   const codex = new CodexTransport({
     resolve:
       cx.resolveBin ??
@@ -456,7 +460,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           path: process.env.PATH,
         })),
     run: cx.run ?? execCodex(),
-    home: cx.home ?? codexHome(),
+    home: codexIndexHome,
     wakes: cx.wakes ?? codexHostWakes,
     queued: new HeldStore(cx.queuedFile ?? join(home(), "codex-queued.json")),
     log,
@@ -586,16 +590,30 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * is sent, from what the hub then says it supports (hubIds), never frozen
    * at queue time.
    */
-  type QueuedReply = { frame: SendFrame; peerId?: string; native?: boolean };
+  type QueuedReply = {
+    frame: SendFrame;
+    peerId?: string;
+    native?: boolean;
+    /** From a revived socket that did not know who wrote: refused if the hub names writers. */
+    unnamed?: boolean;
+  };
   const withTo = (r: QueuedReply): SendFrame =>
     hubIds && r.peerId ? { ...r.frame, to_id: r.peerId } : r.frame;
   // A Claude reply must not be lost to a hub reconnect. It waits for the
   // link's hello_ok, so it knows whether the hub takes to_id.
   const outbox = new Outbox<QueuedReply>({
-    send: (r, unsent) =>
-      hub.open && hubVersion !== undefined && !held(r.frame.from_ref)
-        ? sendToHub(withTo(r), r.native ?? true, unsent)
-        : false,
+    send: (r, unsent) => {
+      if (!hub.open || hubVersion === undefined || held(r.frame.from_ref))
+        return false;
+      // Revived without its writer's id, to a hub that names writers: the name
+      // may now belong to another agent, so refuse and tell the session.
+      if (r.unnamed && hubIds) {
+        const agent = agents.byRef(r.frame.from_ref);
+        if (agent) void claude.notify(agent, replyGoneText(r.frame.to_name));
+        return true;
+      }
+      return sendToHub(withTo(r), r.native ?? true, unsent);
+    },
     stale: (r) => !agents.byRef(r.frame.from_ref)?.live,
     log,
   });
@@ -615,7 +633,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     target: (ref) => claudeTarget(ref, claudeSessions),
     // A native reply is a message from the session: the sink names the sender, never the frame.
     // Every reply names the peer's namespace (the deliver's), so a same-named local peer cannot get it.
-    onReply: (agentRef, peerName, text, namespace, peerId) => {
+    onReply: (agentRef, peerName, text, namespace, peerId, unnamed) => {
       // A lone surrogate costs one character, not the reply.
       if (!isWellFormed(text))
         log(
@@ -637,10 +655,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       }
       // Only the agent that wrote, never whoever holds the name now: to_id
       // is added at send time (withTo).
-      outbox.push({ frame: f, ...(peerId ? { peerId } : {}) });
+      outbox.push({
+        frame: f,
+        ...(peerId ? { peerId } : {}),
+        ...(unnamed ? { unnamed } : {}),
+      });
     },
     // A reply the daemon would not send: the session is told, as information.
-    hubIds: () => hubIds,
     onReplyRefused: (agentRef, peerName) => {
       const agent = agents.byRef(agentRef);
       if (agent) void claude.notify(agent, replyGoneText(peerName));
@@ -734,7 +755,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       !(
         rec.kind === "claude-code" ||
         rec.kind === "pi" ||
-        rec.kind === "omp"
+        rec.kind === "omp" ||
+        rec.kind === "codex"
       ) ||
       !rec.live ||
       rec.sentName === undefined ||
@@ -794,6 +816,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       pendingProofs.delete(rec.pid);
       rec.linkHash = p.hash;
       sendLink(rec);
+    }
+  };
+  /**
+   * A Codex `/rename` (#1748): the thread's name in Codex's session index
+   * changed. The same rules as Pi: one frame per change, a thread with no name
+   * stays as it was. Reads the index only while a Codex thread is live.
+   */
+  const renameCodexThreads = () => {
+    const live = agents.all().filter((a) => a.kind === "codex" && a.live);
+    if (!live.length) return;
+    const names = codexThreadNames(codexIndexHome);
+    for (const rec of live) {
+      const name = names.get(rec.ref);
+      if (name !== undefined) renameFromAdapter(rec, name);
     }
   };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
@@ -1439,7 +1475,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             error: `namespace is not valid on the wire: ${ns.namespace}`,
           };
         attested(pid);
-        const proposedName = hello.proposed_name ?? hello.agent_ref;
+        // A Codex thread the user named registers under that name (#1748).
+        const codexName =
+          hello.kind === "codex"
+            ? codexThreadNames(codexIndexHome).get(hello.agent_ref)
+            : undefined;
+        const proposedName =
+          codexName ?? hello.proposed_name ?? hello.agent_ref;
         // /clear (#1295): this new session runs in the process of a live
         // one whose session file is gone; it takes over that address.
         const files =
@@ -1477,6 +1519,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ...((prev?.linkHash ?? old?.linkHash) !== undefined
             ? { linkHash: (prev?.linkHash ?? old?.linkHash) as string }
             : {}),
+          ...(codexName !== undefined ? { sessionName: codexName } : {}),
           cwd,
           live: true,
         });
@@ -1626,6 +1669,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * thread loaded, not that a user is watching (the shared daemon keeps threads).
    */
   const syncCodex = () => {
+    renameCodexThreads();
     const live = agents
       .all()
       .filter((a) => a.kind === "codex" && a.live)

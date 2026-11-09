@@ -12,6 +12,7 @@
 // browser REST path's own functions, so putRole's checks run again then.
 // It is decided once: applied, refused or expired.
 import {
+  BUS_REACH_PER_ROLE,
   BUS_ROLE_MAX,
   BUS_ROLE_PROPOSAL_TTL_MS,
   BUS_ROLE_PROPOSALS_LISTED,
@@ -21,6 +22,7 @@ import {
   type BusRoleProposalAction,
 } from "@oa/shared";
 import { iso } from "./dto.js";
+import { reachOfRole } from "./reach.js";
 import { checkRole, deleteRole, putRole, type RoleRefusal } from "./roles.js";
 
 /** Decided proposals kept for the dashboard: at most this many, and none older than RETAIN_MS. */
@@ -84,7 +86,17 @@ export type ProposalRefusalReason =
   | "role_limit";
 
 export type ViewResult =
-  | { ok: true; proposal: BusRoleProposal; expired: ProposalAudit[] }
+  | {
+      ok: true;
+      proposal: BusRoleProposal;
+      /**
+       * #1346: the namespaces the role reaches now, sorted. A re-point or a
+       * removal changes who holds that reach (or ends it), so the card lists
+       * it: an agent's proposal can't hand over reach unseen.
+       */
+      reach: string[];
+      expired: ProposalAudit[];
+    }
   | {
       ok: false;
       reason: ProposalRefusalReason;
@@ -439,7 +451,16 @@ export function viewProposal(
     };
   const why = blocker(sql, orgId, p, now, maxRoles);
   return why === null
-    ? { ok: true, proposal: dto, expired }
+    ? {
+        ok: true,
+        proposal: dto,
+        // A new role has none (the grants go with the role).
+        reach:
+          p.action === "set"
+            ? []
+            : reachOfRole(sql, orgId, p.namespace, p.lname, BUS_REACH_PER_ROLE),
+        expired,
+      }
     : { ok: false, reason: why, proposal: dto, expired };
 }
 

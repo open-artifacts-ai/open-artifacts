@@ -32,11 +32,13 @@ import {
   Delivery,
   type Extras,
   extrasBody,
+  MentionChips,
   MentionMenu,
   matchAgents,
   mentionedKeys,
   mentionQuery,
   nextAskFor,
+  removeMention,
 } from "./asks";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { type CommentsApi, useCommentsApi } from "./useComments";
@@ -172,12 +174,11 @@ function Composer({
   buttonsRight = false,
   lead,
 }: {
-  /** Offer @mentions and Assign: the agent list is fetched on the composer's first focus. */
+  /** Offer @mentions: the agent list is fetched on the composer's first focus. */
   mentionable?: boolean;
   /** The action row's own surface while it floats in the short sheet (#1657). */
   actions?: string;
-  /** The new-comment layout: Assign on its own line, then Cancel and the
-      accent submit at the right. */
+  /** The new-comment layout: Cancel and the accent submit at the right. */
   buttonsRight?: boolean;
   /** Shown at the left of the button row (a guest's Sign in link). */
   lead?: React.ReactNode;
@@ -204,7 +205,6 @@ function Composer({
   const once = useRef(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState(0);
-  const [assign, setAssign] = useState("");
   const [menuOff, setMenuOff] = useState(false);
   const [activeOpt, setActiveOpt] = useState(0);
   const menuId = useId();
@@ -265,10 +265,8 @@ function Composer({
       const mentions = keys.map((key) => ({ key }));
       await onSubmit(body, {
         mentions,
-        ...(assign ? { assign: { key: assign } } : {}),
       });
       setText("");
-      setAssign("");
       if (!alwaysOpen) setOpen(false);
     } catch (e) {
       setError(e);
@@ -365,6 +363,13 @@ function Composer({
           onPick={pick}
         />
       )}
+      {agents && agents.length > 0 && (
+        <MentionChips
+          text={text}
+          agents={agents}
+          onRemove={(a) => setText((t) => removeMention(t, a.name, agents))}
+        />
+      )}
       {error != null && (
         <p role="alert" className={`${TXT} text-destructive`}>
           {commentError(error, capped)}
@@ -373,25 +378,6 @@ function Composer({
       )}
       {open &&
         (() => {
-          const assignSel = agents && agents.length > 0 && (
-            <label
-              className={`flex items-center gap-1 ${TXT} ${buttonsRight ? "w-full" : ""}`}
-            >
-              Assign to
-              <select
-                className={`min-w-0 rounded-md border border-input bg-background px-1 py-0.5 ${TXT}`}
-                value={assign}
-                onChange={(e) => setAssign(e.target.value)}
-              >
-                <option value="">No one</option>
-                {agents.map((a) => (
-                  <option key={a.key} value={a.key}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          );
           const cancelBtn = (onCancel || !alwaysOpen) && (
             <Button size="xs" variant="ghost" onClick={cancel}>
               Cancel
@@ -403,7 +389,6 @@ function Composer({
                 data-oa-actions=""
                 className={`flex flex-col gap-2 ${actions}`}
               >
-                {assignSel}
                 <div className="flex flex-wrap items-center gap-2">
                   {lead}
                   <div className="ml-auto flex items-center gap-2">
@@ -434,7 +419,6 @@ function Composer({
                 {submit}
               </Button>
               {extra}
-              {assignSel}
               {cancelBtn}
             </div>
           );

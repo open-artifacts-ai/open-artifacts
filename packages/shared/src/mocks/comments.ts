@@ -213,7 +213,7 @@ export function createCommentMock({
     k === me.user.id
       ? mine()
       : agentOf(k)
-        ? { kind: "user", id: k, name: agentOf(k)?.name ?? k, me: false }
+        ? { kind: "agent", id: k, name: agentOf(k)?.name ?? k, me: false }
         : { ...other, id: k };
   /**
    * Ask, mentions and assign from a parsed body onto a new comment. mentions
