@@ -21,6 +21,7 @@ import {
   vi,
 } from "vitest";
 import { ACTIONS, ACTIONS_PLAIN } from "../src/viewer/comments/CommentsBody";
+import { fullPath } from "../src/viewer/paths";
 import {
   calls,
   events,
@@ -256,6 +257,79 @@ describe("comments: layouts", () => {
     expect(sheet).toHaveAttribute("data-sheet-height", "full");
     await act(async () => opts.at(-1)?.onCommentOpen("p1"));
     expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+  });
+
+  it("the short pin sheet drops the whole-page box, so the pinned card is the only thing there (#1783)", async () => {
+    // The short height exists to read one pinned card (#1657). The whole-page
+    // box above the list filled it and left the open card below the fold:
+    // the reader saw an action row with no card above it.
+    viewport(390);
+    const [c1] = oneThread.comments;
+    const pin = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+      comments: [
+        { ...c1, id: "c1", body: "Which pin is this?" },
+        { ...c1, id: "c2", body: "The one on the button." },
+      ],
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [pin], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    const wholePage = () =>
+      within(sheet).queryByRole("textbox", {
+        name: "Comment on the whole page",
+      });
+    // Half height: the box is part of the list.
+    expect(wholePage()).not.toBeNull();
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    // Short: no whole-page box, and the pinned card with its reply is there,
+    // so the reader is not left with only an action row.
+    expect(wholePage()).toBeNull();
+    expect(within(sheet).getByText("Which pin is this?")).toBeInTheDocument();
+    expect(
+      within(sheet).getByText("The one on the button."),
+    ).toBeInTheDocument();
+    expect(
+      within(sheet).getByRole("button", { name: "Reply" }),
+    ).toBeInTheDocument();
+    // A taller sheet brings the box back.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(wholePage()).not.toBeNull();
+  });
+
+  it("the wide overlay keeps the whole-page box with a pin card open (#1783)", async () => {
+    // Only the phone's short sheet drops it; the >=601px overlay is not that.
+    viewport(1280);
+    const pin = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [pin], open: 1, truncated: false }),
+      ),
+    );
+    mount(fullPath(OWNED));
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    const overlay = await screen.findByRole("dialog", { name: "Comments" });
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(
+      within(overlay).getByRole("textbox", {
+        name: "Comment on the whole page",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {

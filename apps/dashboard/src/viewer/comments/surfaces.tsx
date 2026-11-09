@@ -123,6 +123,10 @@ export function CommentsDialog({
     if (pinCard) setFull(false);
   }, [pinCard]);
   const height = full ? "full" : pinCard ? "pin" : "half";
+  // #1783: only the phone sheet's short height drops the whole-page box; the
+  // wide overlay and the taller phone heights keep it.
+  const onPhone = useSyncExternalStore(phone.subscribe, phone.get, () => false);
+  const shortSheet = onPhone && height === "pin";
   const drag = useRef<number | null>(null);
   const dragged = useRef(false);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
@@ -199,7 +203,7 @@ export function CommentsDialog({
           </Button>
         </div>
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-          <CommentsBody textFormat={textFormat} />
+          <CommentsBody textFormat={textFormat} short={shortSheet} />
         </div>
       </section>
     </>

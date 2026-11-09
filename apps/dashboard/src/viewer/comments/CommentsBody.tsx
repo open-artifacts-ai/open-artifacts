@@ -951,7 +951,14 @@ function NoteComposer({ api }: { api: CommentsApi }) {
 }
 
 /** The list, header and composers: one body for the column, panel tab and sheet. */
-export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
+export function CommentsBody({
+  textFormat = true,
+  /** The phone sheet's short height, kept for reading one pinned card (#1783). */
+  short = false,
+}: {
+  textFormat?: boolean;
+  short?: boolean;
+}) {
   const api = useCommentsApi();
   const resolvedCount = api.threads.filter(
     (t) => t.status === "resolved",
@@ -992,11 +999,14 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
           api={api}
         />
       )}
-      {api.canComment ? (
-        <NoteComposer api={api} />
-      ) : (
-        api.guest && <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
-      )}
+      {/* #1783: the short sheet is for the pinned card, so the whole-page box
+          is not there; dragging the sheet up to half brings it back. */}
+      {!short &&
+        (api.canComment ? (
+          <NoteComposer api={api} />
+        ) : (
+          api.guest && <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
+        ))}
       {api.error != null && !api.threads.length ? (
         <div role="alert" className={`flex flex-col gap-2 ${TXT}`}>
           <p>Couldn't load comments.</p>
