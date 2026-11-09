@@ -4,6 +4,7 @@ import {
   type DaemonClient,
   earlierStatusText,
   excerptOf,
+  FOLLOW_DAEMON_BAD_FRAME,
   FOLLOW_OLD_DAEMON,
   followingText,
   followText,
@@ -310,7 +311,13 @@ async function followTool(
   if (r.type === "followed") return text(followText(r.url));
   if (r.type === "unfollowed") return text(unfollowText(r.removed, artifact));
   if (r.type === "follows") return text(followingText(r.follows));
-  if (r.type === "error" && r.code === "bad_frame")
+  // Only a daemon that does not know the frame; its own refusals say what they are.
+  if (
+    r.type === "error" &&
+    r.code === "bad_frame" &&
+    r.message !== FOLLOW_DAEMON_BAD_FRAME.noCap &&
+    r.message !== FOLLOW_DAEMON_BAD_FRAME.wire
+  )
     return text(FOLLOW_OLD_DAEMON, true);
   return failed(r);
 }

@@ -37,24 +37,27 @@ describe("Library: asks for you", () => {
     await waitFor(() => expect(screen.getAllByRole("article")).toHaveLength(1));
   });
 
-  it("filters by Waiting on agents", async () => {
+  it("has no Waiting on agents filter and ignores a stale one in the URL", async () => {
     const reqs = calls("GET");
-    mount("/");
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Waiting on agents" }),
+    mount("/?filter=waiting_on_agents");
+    await screen.findByRole("button", { name: "Needs your answer" });
+    expect(
+      screen.queryByRole("button", { name: "Waiting on agents" }),
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
     );
-    await waitFor(() =>
-      expect(
-        reqs.some((u) => u.search.get("filter") === "waiting_on_agents"),
-      ).toBe(true),
-    );
+    expect(
+      reqs.some((u) => u.search.get("filter") === "waiting_on_agents"),
+    ).toBe(false);
   });
 
   it("marks the active chip and says which asks are missing when empty", async () => {
     server.use(http.get(`*${R.artifacts}`, () => page([], null)));
     mount("/");
     const chip = await screen.findByRole("button", {
-      name: "Waiting on agents",
+      name: "Needs your answer",
     });
     expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
       "aria-pressed",
@@ -62,10 +65,6 @@ describe("Library: asks for you", () => {
     );
     fireEvent.click(chip);
     await waitFor(() => expect(chip).toHaveAttribute("aria-pressed", "true"));
-    expect(
-      await screen.findByText("No asks waiting on agents."),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Needs your answer" }));
     expect(
       await screen.findByText("No asks need your answer."),
     ).toBeInTheDocument();

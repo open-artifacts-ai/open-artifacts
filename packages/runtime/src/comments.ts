@@ -421,12 +421,58 @@ export function createComments(
     btn?.remove();
   }
 
+  /** The last rect of the selection: the button hangs under the end of it. */
+  function endRect(): DOMRect | null {
+    const s = selection();
+    if (!s) return null;
+    const rects = s.range.getClientRects();
+    return (rects[rects.length - 1] ?? s.range.getBoundingClientRect()) || null;
+  }
+
+  /** Centered under the end of the selection, kept inside the viewport. */
+  function place(rect: DOMRect) {
+    if (!btn) return;
+    const vw = document.documentElement.clientWidth || innerWidth;
+    const w = btn.offsetWidth;
+    const x = Math.max(
+      BTN_MARGIN,
+      Math.min(rect.right - w / 2, vw - w - BTN_MARGIN),
+    );
+    btn.style.left = `${x + scrollX}px`;
+    btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
+  }
+
+  /**
+   * A webfont that swaps in after the button shows reflows the page, which
+   * moves the selection's rect; the button would sit off center until the next
+   * selection (#1648). Its own width cannot change (the overlay is a closed
+   * shadow root with `:host{all:initial}` and a system-ui font), so what is
+   * placed again is the button, from a fresh rect. Later batches and a lazy
+   * `@font-face` fire `loadingdone` too, which is why the listener is on the
+   * font set rather than a one-shot `ready`. Other late reflows (images,
+   * layout shift) still need a ResizeObserver: not this fix.
+   */
+  function onFontsLoaded() {
+    if (mode !== "select" || !btn?.isConnected) return;
+    const rect = endRect();
+    if (rect) place(rect);
+  }
+
+  function fontSet(): FontFaceSet | undefined {
+    // A hostile page can define `document.fonts` with a throwing getter.
+    try {
+      return (
+        (document as Document & { fonts?: FontFaceSet }).fonts ?? undefined
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
   function showButton() {
     if (mode !== "select" || coarse()) return hideButton();
-    const s = selection();
-    if (!s) return hideButton();
-    const rects = s.range.getClientRects();
-    const rect = rects[rects.length - 1] ?? s.range.getBoundingClientRect();
+    const rect = endRect();
+    if (!rect) return hideButton();
     if (!btn) {
       btn = document.createElement("button");
       btn.innerHTML = `${BUBBLE}<span>Comment</span>`;
@@ -437,15 +483,7 @@ export function createComments(
       btn.className = "btn";
     }
     if (!btn.isConnected) overlay().append(btn);
-    // Centered under the end of the selection, kept inside the viewport.
-    const vw = document.documentElement.clientWidth || innerWidth;
-    const w = btn.offsetWidth;
-    const x = Math.max(
-      BTN_MARGIN,
-      Math.min(rect.right - w / 2, vw - w - BTN_MARGIN),
-    );
-    btn.style.left = `${x + scrollX}px`;
-    btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
+    place(rect);
   }
 
   function onCommentClick() {
@@ -642,8 +680,12 @@ export function createComments(
   addEventListener("resize", onResize, { passive: true });
   addEventListener("scroll", onScroll, { passive: true });
 
+  const fonts = fontSet();
+  fonts?.addEventListener?.("loadingdone", onFontsLoaded);
+
   const dispose = () => {
     off();
+    fonts?.removeEventListener?.("loadingdone", onFontsLoaded);
     observer?.disconnect();
     document.removeEventListener("selectionchange", onSelectionChange);
     document.removeEventListener("click", onClick, true);
