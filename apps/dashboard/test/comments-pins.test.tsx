@@ -127,6 +127,7 @@ const pinThread = (id: string, n: number, hash: string | null) => ({
       author: { kind: "guest", name: "Guest", me: false },
       createdAt: `2026-11-05T10:0${n}:00Z`,
       editedAt: null,
+      typed: false,
       can: { edit: false, delete: false },
     },
   ],
