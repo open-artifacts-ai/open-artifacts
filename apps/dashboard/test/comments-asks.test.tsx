@@ -262,6 +262,47 @@ describe("asks on the comments column", () => {
     expect(within(c).getByRole("button", { name: /List only/ })).toBeEnabled();
   });
 
+  it("Change, then another option, sends the new answer and locks again once it lands", async () => {
+    let picked = "b";
+    let sent: unknown;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          answer: {
+            optionId: picked,
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+          },
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          sent = await request.json();
+          picked = "a";
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText(/You picked B/);
+    fireEvent.click(within(c).getByRole("button", { name: "Change" }));
+    fireEvent.click(within(c).getByRole("button", { name: /List only/ }));
+    await waitFor(() => expect(sent).toEqual({ optionId: "a" }));
+    expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
+    // The new answer ends Change mode: the others lock again.
+    expect(
+      within(c).getByRole("button", { name: /Side by side/ }),
+    ).toBeDisabled();
+    expect(
+      within(c).getByRole("button", { name: "Change" }),
+    ).toBeInTheDocument();
+  });
+
   it("clears an answer error once the ask shows as answered from elsewhere", async () => {
     let answered = false;
     serveThreads(() => [
@@ -365,7 +406,8 @@ describe("asks on the comments column", () => {
     fireEvent.click(
       await within(c).findByRole("button", { name: /Show resolved/ }),
     );
-    const line = await within(c).findByRole("button", { name: /Show ▾/ });
+    const line = await within(c).findByRole("button", { name: /Show$/ });
+    // The triangle is decoration: the name ends in "Show", not the glyph.
     expect(line).toHaveTextContent(/Which layout\? Side by side · you, .+/);
     // versionDate, not a 24-hour HH:MM.
     expect(line.textContent).not.toMatch(/\d\d:\d\d/);
@@ -603,6 +645,10 @@ describe("@ picker details", () => {
     expect(mentionedKeys("hi @Bob's idea", [bob])).toEqual(["agent:bob"]);
     expect(mentionedKeys("hi @Bob- ok", [bob])).toEqual(["agent:bob"]);
     expect(mentionedKeys("hi @Bobby", [bob])).toEqual([]);
+    // A hyphen joined to more name is not Bob (review of #1763).
+    expect(mentionedKeys("hi @Bob-Smith here", [bob])).toEqual([]);
+    expect(mentionedKeys("hi @Bob.", [bob])).toEqual(["agent:bob"]);
+    expect(mentionedKeys("mail me@Bob today", [bob])).toEqual([]);
     expect(mentionQuery("hi @Bob-")).toBe("Bob");
     expect(mentionQuery("hi @Bob's")).toBeNull();
     expect(mentionQuery("hi @OA Pro")).toBe("OA Pro");

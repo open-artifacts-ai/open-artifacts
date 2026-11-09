@@ -122,7 +122,8 @@ export function AskBlock({
           {versionDate(ask.answer?.at ?? "")}
         </span>
         <span className="shrink-0 font-semibold">
-          {open ? "Hide ▴" : "Show ▾"}
+          {open ? "Hide" : "Show"}{" "}
+          <span aria-hidden="true">{open ? "▴" : "▾"}</span>
         </span>
       </button>
       {reply && (
@@ -185,7 +186,6 @@ export function AskBlock({
                     }}
                   >
                     <span
-                      aria-hidden="true"
                       data-option-key=""
                       className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
                     >
@@ -304,7 +304,7 @@ export function mentionedKeys(
   const keys: string[] = [];
   for (const a of [...agents].sort((x, y) => y.name.length - x.name.length)) {
     const re = new RegExp(
-      `(^|\\s)@${esc(a.name)}(?=$|[\\s.,;:!?)\\]-]|['\u2019]s(?!\\w))`,
+      `(^|\\s)@${esc(a.name)}(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))`,
       "i",
     );
     const m = re.exec(rest);
