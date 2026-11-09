@@ -76,7 +76,12 @@ const ownGroup = (): GroupCheck => ({
 export function readOwnFile(
   file: string,
   uid: number | undefined = process.getuid?.(),
-  opts: { allowGroupWrite?: boolean; group?: GroupCheck } = {},
+  opts: {
+    allowGroupWrite?: boolean;
+    group?: GroupCheck;
+    /** A larger file is refused unread. */
+    maxBytes?: number;
+  } = {},
 ): OwnFile {
   let fd: number;
   try {
@@ -99,6 +104,8 @@ export function readOwnFile(
     if (!st.isFile()) return { state: "unsafe", why: "is not a regular file" };
     if (uid !== undefined && st.uid !== uid)
       return { state: "unsafe", why: "belongs to another user" };
+    if (opts.maxBytes !== undefined && st.size > opts.maxBytes)
+      return { state: "unsafe", why: "is too large" };
     if (opts.allowGroupWrite) {
       if (st.mode & 0o002)
         return { state: "unsafe", why: "is writable by everyone" };
