@@ -19,7 +19,7 @@ export const CommentAuthorSchema = z.object({
    * server sets it; no client input can.
    */
   kind: z.enum(["user", "guest", "agent"]),
-  /** A user's id; for an agent, the member it acts for. */
+  /** A user's id; for an agent, the member it acts for (in an ask's `to`, the agent's roster key). */
   id: z.string().optional(),
   /** An agent's own name (never the person's), a guest's name, or a user's name. */
   name: z.string(),

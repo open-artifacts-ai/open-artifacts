@@ -72,11 +72,11 @@ async function jsonOf(c: Context<AppEnv>): Promise<unknown> {
   }
 }
 
-/** REST attribution: the PAT label when authenticated by token. */
+/** REST attribution: a token is an agent, named by its label (a blank one reads "Agent"). */
 const agentOf = (c: Context<AppEnv>): AgentAttr | null =>
-  c.var.tokenId && c.var.tokenLabel
+  c.var.tokenId
     ? {
-        name: c.var.tokenLabel,
+        name: c.var.tokenLabel ?? "",
         version: null,
         via: { kind: "token", id: c.var.tokenId },
       }
