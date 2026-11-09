@@ -49,6 +49,9 @@ export type BusNotice = {
   coalesceKey: string;
   /** Hold until then (ms epoch); absent: deliver now. */
   notBefore?: number;
+  /** `comment` notices (#1535): the thread and comment the notice is about, server-generated ids only, for list_comments and add_comment. */
+  threadId?: string;
+  commentId?: string;
 };
 
 const BUS_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,62}[A-Za-z0-9_-])?$/;

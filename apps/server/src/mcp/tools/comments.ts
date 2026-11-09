@@ -89,7 +89,16 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
             "A reply has no anchor. Drop `anchor`, or drop `threadId` to start a new thread.",
           );
         const comment = await threadOf(
-          addReply(env, i.id, i.threadId, who, viewer, i.body, {}, opts),
+          addReply(
+            env,
+            i.id,
+            i.threadId,
+            who,
+            viewer,
+            i.body,
+            i.ask ? { ask: i.ask } : {},
+            opts,
+          ),
         );
         return ok(`Replied in thread ${i.threadId} on ${i.id}.`, {
           threadId: i.threadId,
@@ -101,7 +110,11 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         artifact,
         who,
         viewer,
-        { anchor: i.anchor ?? { kind: "note" }, body: i.body },
+        {
+          anchor: i.anchor ?? { kind: "note" },
+          body: i.body,
+          ...(i.ask ? { ask: i.ask } : {}),
+        },
         opts,
       );
       return ok(`Started thread ${thread.id} on ${i.id}.`, { thread });
