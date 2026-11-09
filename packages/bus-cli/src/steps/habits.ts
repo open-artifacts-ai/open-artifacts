@@ -594,8 +594,26 @@ export function setPluginHabits(
       if (d.k === "absent") continue;
       if (d.k === "error") {
         left(
-          `Could not reach the ${p.label} plugin folder ${dir} (${d.code}): its habits may still be on.`,
+          `Couldn't reach the ${p.label} plugin folder ${dir} (${d.code}), so its habits may still be on there.`,
         );
+        continue;
+      }
+      if (d.k === "file") {
+        done.add(dir);
+        continue;
+      }
+      // Looked at before ownership: an unreadable folder must not read as "not ours".
+      // Through a symlink the path resolves to what is behind it.
+      const m = probe(marker);
+      if (m.k === "error") {
+        left(
+          `Couldn't reach ${marker} (${m.code}), so ${p.label} habits may still be on there.`,
+        );
+        continue;
+      }
+      // Nothing there, or a folder: the plugin needs a plain file, so habits are off.
+      if (m.k === "absent" || m.k === "dir") {
+        done.add(dir);
         continue;
       }
       if (d.k === "link") {
@@ -605,19 +623,8 @@ export function setPluginHabits(
         continue;
       }
       // Not a folder of ours: nothing of ours is there to remove.
-      if (d.k === "file" || !(p.offOurs ?? p.ours)(dir)) {
+      if (!(p.offOurs ?? p.ours)(dir)) {
         done.add(dir);
-        continue;
-      }
-      const m = probe(marker);
-      if (m.k === "absent") {
-        done.add(dir);
-        continue;
-      }
-      if (m.k === "error") {
-        left(
-          `Could not reach ${marker} (${m.code}): ${p.label} habits may still be on there.`,
-        );
         continue;
       }
       try {

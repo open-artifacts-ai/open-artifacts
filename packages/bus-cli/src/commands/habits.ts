@@ -127,7 +127,7 @@ function turnOff(ctx: Ctx): number {
     say(
       ctx,
       ...(blocks.length > 0 ? [`Removed from ${shown(ctx, blocks)}`] : []),
-      "Habits are not off everywhere. A reinstall will not add them back.",
+      "Habits are still on in some places (see below). Your opt-out is saved, so a reinstall won't add them back.",
     );
     for (const p of offIn) say(ctx, pluginOff(p));
     for (const n of r.notes) say(ctx, n);
@@ -271,7 +271,7 @@ export async function habitsAfterInstall(
         if (off.incomplete) {
           say(
             ctx,
-            "Habits are not off everywhere. A reinstall will not add them back.",
+            "Habits are still on in some places (see below). Your opt-out is saved, so a reinstall won't add them back.",
           );
           for (const n of off.notes) say(ctx, n);
           return { ...none, state: "on", plugins: pluginStates(ctx) };
