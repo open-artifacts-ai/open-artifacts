@@ -624,7 +624,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     if (o.selfHosted) return undefined;
     if (isAdmin()) return { ...billing };
     const { creatorsThisMonth: _, ...rest } = billing;
-    return { ...rest, status: null, trialEndsAt: null, graceUntil: null };
+    return {
+      ...rest,
+      status: null,
+      trialEndsAt: null,
+      ...("soloTrialEndsAt" in rest ? { soloTrialEndsAt: null } : {}),
+      graceUntil: null,
+    };
   };
   /** The server's plan refusal for an invite, or null. */
   const planRefusal = (): Response | null => {

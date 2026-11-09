@@ -114,6 +114,15 @@ async function toMe(
         details && plan.trialEndsAt !== null
           ? new Date(plan.trialEndsAt).toISOString()
           : null,
+      // Solo's trial end: only when the answer carried one.
+      ...(plan.soloTrialEndsAt !== undefined
+        ? {
+            soloTrialEndsAt:
+              details && plan.soloTrialEndsAt !== null
+                ? new Date(plan.soloTrialEndsAt).toISOString()
+                : null,
+          }
+        : {}),
       graceUntil:
         details && plan.graceUntil !== null
           ? new Date(plan.graceUntil).toISOString()

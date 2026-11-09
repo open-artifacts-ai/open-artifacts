@@ -12,6 +12,9 @@ NAMES = [
     "oabus_fetch",
     "oabus_self",
     "oabus_set_status",
+    "oabus_follow",
+    "oabus_unfollow",
+    "oabus_following",
 ]
 AGENT = {"name": "a", "namespace": "ns", "kind": "hermes", "live": True, "global": False}
 
@@ -20,7 +23,8 @@ def plugin(replies=None, known=None):
     known = known or {"root-1": "root-1", "rot": "root-1"}
     ctx = support.FakeCtx()
     roots = Roots(known.get)
-    bus = Bus(roots, inject=ctx.inject_message, spawn=support.inline_spawn, start="t")
+    bus = Bus(roots, inject=ctx.inject_message, spawn=support.inline_spawn, start="t",
+               habits_marker=support.habits_marker())
     link = support.FakeLink(ref="root-1", replies=replies or {})
     bus.ensure = lambda ref: link
     register(ctx, roots=roots, bus=bus)
@@ -137,6 +141,32 @@ class Tools(unittest.TestCase):
         out = call(ctx, "oabus_set_status", {"state": "working", "label": " a \n b​ "}, session_id="root-1")
         self.assertEqual(out, 'Your status is now working: "a b". The user sees it as your own report.')
         self.assertEqual(link.requests[0]["label"], "a b")
+
+    def test_follow_sends_the_artifact_only_and_says_what_the_agent_gets(self):
+        entry = {"artifact_id": "abc", "url": "https://x.test/a/abc", "followed_at": "2026-11-09T10:00:00.000Z"}
+        ctx, _, _, link = plugin({"follow": {"type": "followed", **entry}})
+        out = call(ctx, "oabus_follow", {"artifact": " https://x.test/a/abc ", "name": "other"}, session_id="root-1")
+        self.assertEqual(out, "Following https://x.test/a/abc. You get a notice here when it changes.")
+        self.assertEqual(
+            [{k: v for k, v in r.items() if k != "late"} for r in link.requests],
+            [{"type": "follow", "artifact": "https://x.test/a/abc"}],
+        )
+
+    def test_unfollow_and_following(self):
+        entry = {"artifact_id": "abc", "url": "https://x.test/a/abc", "followed_at": "2026-11-09T10:00:00.000Z"}
+        ctx, *_ = plugin({"unfollow": {"type": "unfollowed", "removed": False}, "following": {"type": "follows", "follows": [entry]}})
+        self.assertEqual(call(ctx, "oabus_unfollow", {"artifact": "abc"}, session_id="root-1"), "You were not following abc.")
+        self.assertEqual(call(ctx, "oabus_following", session_id="root-1"), "https://x.test/a/abc (since 2026-11-09T10:00:00.000Z)")
+
+    def test_follow_refusals(self):
+        ctx, _, _, link = plugin({"follow": {"type": "error", "code": "not_found", "message": "Not found"}})
+        self.assertEqual(json.loads(call(ctx, "oabus_follow", {"artifact": "abc"}, session_id="root-1")), {"error": "oa-bus: Not found"})
+        empty = json.loads(call(ctx, "oabus_follow", {"artifact": " "}, session_id="root-1"))
+        self.assertIn("artifact is required", empty["error"])
+        self.assertEqual(len(link.requests), 1)
+        old, *_ = plugin({"following": {"type": "error", "code": "bad_frame", "message": "Invalid input"}})
+        out = json.loads(call(old, "oabus_following", session_id="root-1"))
+        self.assertEqual(out, {"error": "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus."})
 
     def test_self_prints_the_agent_entry(self):
         ctx, *_ = plugin({"self": {"type": "agent", "agent": AGENT}})

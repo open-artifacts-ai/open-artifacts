@@ -130,7 +130,18 @@ def _base(frame, types):
 
 # --- Frames the plugin sends.
 
-ADAPTER_TYPES = ("hello", "send", "list", "self", "fetch", "ack", "set_status")
+ADAPTER_TYPES = (
+    "hello",
+    "send",
+    "list",
+    "self",
+    "fetch",
+    "ack",
+    "set_status",
+    "follow",
+    "unfollow",
+    "following",
+)
 
 
 def check_adapter_frame(frame):
@@ -184,10 +195,17 @@ def check_adapter_frame(frame):
             lambda v: _is_str(v, 1, 128) and len([*v]) <= 64 and v == v.strip(),
             "a label of 1 to 64 characters",
         )
+    elif t == "follow" or t == "unfollow":
+        _need(
+            frame,
+            "artifact",
+            lambda v: _is_str(v, 1, 2048) and well_formed(v),
+            "a well-formed artifact id or link",
+        )
     elif t == "self":
         if "row" in frame and frame["row"] is not True:
             _fail("row: expected true")
-    if t in ("send", "list", "self", "fetch", "set_status"):
+    if t in ("send", "list", "self", "fetch", "set_status", "follow", "unfollow", "following"):
         _opt(frame, "late", lambda v: v is True, "true")
     return frame
 
@@ -204,6 +222,9 @@ DAEMON_TYPES = (
     "notice",
     "error",
     "status_set",
+    "followed",
+    "unfollowed",
+    "follows",
 )
 
 
@@ -280,6 +301,26 @@ def parse_daemon_frame(frame):
     elif t == "error":
         _need(frame, "code", _is_str, "a string")
         _need(frame, "message", _is_str, "a string")
+    elif t == "followed":
+        _need(frame, "artifact_id", _is_str, "a string")
+        _need(frame, "url", _is_str, "a string")
+        _need(frame, "followed_at", _is_str, "a string")
+    elif t == "unfollowed":
+        _need(frame, "removed", lambda v: isinstance(v, bool), "a boolean")
+    elif t == "follows":
+        _need(
+            frame,
+            "follows",
+            lambda v: isinstance(v, list)
+            and all(
+                isinstance(f, dict)
+                and _is_str(f.get("artifact_id"))
+                and _is_str(f.get("url"))
+                and _is_str(f.get("followed_at"))
+                for f in v
+            ),
+            "a list of follows",
+        )
     elif t == "status_set":
         _opt(
             frame,

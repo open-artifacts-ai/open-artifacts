@@ -88,6 +88,12 @@ export type CommentsApi = {
   onPin: (p: PinPoint) => void;
   /** Esc in the frame: leaves pin mode (page code can send it; it only ever leaves). */
   onEscape: () => void;
+  /** #1732: text is selected in the frame and the reader may comment on it (Select mode). */
+  hasSelection: boolean;
+  /** The frame's selection state (a hint from page code; only ever offers the tap). */
+  onSelection: (has: boolean) => void;
+  /** Tap on "Comment on selection": the frame runs its own Comment path. */
+  commentOnSelection: () => void;
   /** The frame said hello: send it the mode and threads again. */
   resync: () => void;
 };
@@ -176,6 +182,7 @@ export function useCommentsController({
   const [showResolved, setShowResolved] = useState(false);
   const [guestName, setGuestName] = useState("");
   const [hello, setHello] = useState(0);
+  const [selected, setSelected] = useState(false);
 
   const mayComment = canComment(artifact, authed, readOnly);
   // #1657: an image opens in Pin mode and a pdf in Select (spec 6); the
@@ -290,6 +297,20 @@ export function useCommentsController({
     // Same rule as the shell's own Esc: only a chosen pin mode is left.
     if (chosenRef.current) setWantPin(false);
   }, []);
+  const onSelection = useCallback((has: boolean) => {
+    // Only where the reader may comment, in Select mode; page code can send this any time.
+    setSelected(has && mayRef.current && modeRef.current === "select");
+  }, []);
+  const commentOnSelection = useCallback(() => {
+    getBridge()?.commentOnSelection?.();
+    setSelected(false);
+    // Also open the list: page code can claim a selection, so the header
+    // button must still reach comments when the frame has nothing to quote.
+    surface.current();
+  }, [getBridge]);
+  // A mode change or a lost right drops the offer.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset on these
+  useEffect(() => setSelected(false), [mode, mayComment, enabled]);
   const onPositions = useCallback<CommentsApi["onPositions"]>((list) => {
     if (!gates.current.positions()) return;
     const next = new Map<string, FramePosition>();
@@ -366,7 +387,13 @@ export function useCommentsController({
       onOpen,
       onPin,
       onEscape,
-      resync: () => setHello((n) => n + 1),
+      hasSelection: selected,
+      onSelection,
+      commentOnSelection,
+      resync: () => {
+        setSelected(false);
+        setHello((n) => n + 1);
+      },
     }),
     [
       enabled,
@@ -400,6 +427,9 @@ export function useCommentsController({
       onOpen,
       onPin,
       onEscape,
+      selected,
+      onSelection,
+      commentOnSelection,
     ],
   );
 }

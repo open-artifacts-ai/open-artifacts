@@ -261,6 +261,14 @@ export function deleteRole(
   orgId: string,
   id: string,
 ): boolean {
+  // #1346: the role's reach goes with it.
+  sql.exec(
+    `delete from reach_grants where org_id = ? and (role_ns, lname) in
+       (select namespace, lname from roles where org_id = ? and id = ?)`,
+    orgId,
+    orgId,
+    id,
+  );
   return (
     sql.exec("delete from roles where org_id = ? and id = ?", orgId, id)
       .rowsWritten > 0

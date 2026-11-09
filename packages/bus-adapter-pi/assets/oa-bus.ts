@@ -195,7 +195,7 @@ function receiptText(
       const tail = (v: string) =>
         r.reason === "recipient_closed"
           ? `was not delivered because ${v} closed first.`
-          : `was not taken within ${RETAIN}.`;
+          : `was not confirmed as delivered. Mail waits at most ${RETAIN}.`;
       const head = (v: string) => `×  Expired: your message to ${v}`;
       if (!quote) return fitLine((v) => `${head(v)} ${tail(v)}`, to);
       return fitLine((v) => quoted(head(v), quote, tail(v)), to);
@@ -396,6 +396,28 @@ const statusSetText = (state: string, label?: string): string =>
 const earlierStatusText = (message: string): string =>
   `Your previous status did not reach the user. ${message}`;
 
+/** The `follow` result (#1317). */
+const followText = (url: string): string =>
+  `Following ${url}. You get a notice here when it changes.`;
+
+/** The `unfollow` result. */
+const unfollowText = (removed: boolean, artifact: string): string =>
+  removed
+    ? `Stopped following ${artifact}.`
+    : `You were not following ${artifact}.`;
+
+/** The `following` result: one line per artifact, newest first. */
+const followingText = (
+  follows: readonly { url: string; followed_at: string }[],
+): string =>
+  follows.length
+    ? follows.map((f) => `${f.url} (since ${f.followed_at})`).join("\n")
+    : "You are not following any artifacts.";
+
+/** What an agent sees when its daemon is too old for the follow frames. */
+const FOLLOW_OLD_DAEMON =
+  "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus.";
+
 /** @oa/bus-protocol BAD_NS_CHARS: control, bidi and zero-width characters. */
 const BAD_LABEL_CHARS =
   // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting them is the point
@@ -513,6 +535,10 @@ export const copy = {
   statusLabelTooLong,
   statusSetText,
   earlierStatusText,
+  followText,
+  unfollowText,
+  followingText,
+  FOLLOW_OLD_DAEMON,
   displayKind,
   statusSaysText,
   rosterLine,
@@ -601,6 +627,35 @@ const TOOLS = [
       required: ["state"],
       additionalProperties: false,
     },
+  },
+  {
+    name: "oabus_follow",
+    label: "Open Artifacts bus: follow artifact",
+    description:
+      "Follow an Open Artifacts artifact, by id or link, to get a notice when it changes.",
+    parameters: {
+      type: "object",
+      properties: { artifact: { type: "string" } },
+      required: ["artifact"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "oabus_unfollow",
+    label: "Open Artifacts bus: unfollow artifact",
+    description: "Stop following an artifact, by id or link.",
+    parameters: {
+      type: "object",
+      properties: { artifact: { type: "string" } },
+      required: ["artifact"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "oabus_following",
+    label: "Open Artifacts bus: list follows",
+    description: "List the artifacts you follow.",
+    parameters: none,
   },
 ] as const;
 
@@ -915,7 +970,7 @@ function open(
         // #1295: this asset decodes away rows and the new refusals.
         // #1525: and a config file that is pending approval.
         // #1635: and may send a rename.
-        caps: ["mailbox", "pending", "rename"],
+        caps: ["mailbox", "pending", "rename", "follow"],
         attest: start ? { proc_start: start } : {},
       }),
     );
@@ -1202,9 +1257,40 @@ export default function oaBus(pi: Pi): void {
       return stripTerminalControls(String(r.body));
     }
     if (name === "oabus_set_status") return statusTool(args, link);
+    if (
+      name === "oabus_follow" ||
+      name === "oabus_unfollow" ||
+      name === "oabus_following"
+    )
+      return followTool(name.slice("oabus_".length), args, link);
     const r = await link.request({ type: "self", row: true });
     if (r.type !== "agent") failed(r);
     return selfText((r.agent ?? null) as Json | null);
+  };
+
+  /** follow, unfollow and following (#1317). Refusals are the hub's or daemon's copy, as-is. */
+  const followTool = async (
+    name: string,
+    args: Json,
+    link: Link,
+  ): Promise<string> => {
+    const artifact =
+      typeof args.artifact === "string" ? args.artifact.trim() : "";
+    if (name !== "following" && !artifact)
+      throw new Error("oa-bus: artifact is required (an id or a link)");
+    const r = await link.request(
+      name === "following" ? { type: name } : { type: name, artifact },
+    );
+    if (r.type === "followed") return followText(String(r.url));
+    if (r.type === "unfollowed")
+      return unfollowText(r.removed === true, artifact);
+    if (r.type === "follows")
+      return followingText(
+        (r.follows ?? []) as { url: string; followed_at: string }[],
+      );
+    if (r.type === "error" && r.code === "bad_frame")
+      throw new Error(FOLLOW_OLD_DAEMON);
+    return failed(r);
   };
 
   /** set_status. Arguments are checked first. Refusals are the daemon's copy, as-is. */

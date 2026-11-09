@@ -14,7 +14,8 @@
         "proposed_name": "hermes-proj",
         "caps": [
           "mailbox",
-          "pending"
+          "pending",
+          "follow"
         ],
         "attest": {
           "proc_start": "Fri Nov  6 21:00:00 2026"
@@ -115,6 +116,32 @@
         "id": "1",
         "type": "set_status",
         "state": "idle"
+      }
+    },
+    {
+      "name": "follow",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "follow",
+        "artifact": "https://x.test/a/abc"
+      }
+    },
+    {
+      "name": "unfollow",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "unfollow",
+        "artifact": "abc"
+      }
+    },
+    {
+      "name": "following",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "following"
       }
     }
   ],
@@ -230,6 +257,23 @@
         "id": "1",
         "type": "set_status",
         "state": "asleep"
+      }
+    },
+    {
+      "name": "follow with no artifact",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "follow"
+      }
+    },
+    {
+      "name": "unfollow with an empty artifact",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "unfollow",
+        "artifact": ""
       }
     },
     {

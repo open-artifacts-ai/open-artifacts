@@ -1,3 +1,4 @@
+import os
 import unittest
 
 import support
@@ -15,7 +16,7 @@ M1, M2 = "mmmmmmmmmmmmmmm1", "mmmmmmmmmmmmmmm2"
 class Env:
     """A bus with two roots; `current` is the session the CLI is on right now (HERMES_SESSION_ID)."""
 
-    def __init__(self, inject_result=True, inject=None):
+    def __init__(self, inject_result=True, inject=None, habits=True):
         self.ctx = support.FakeCtx(inject_result)
         self.current = "root-1"
         self.codex = False
@@ -28,6 +29,7 @@ class Env:
             start="t",
             current_session=lambda: self.current,
             codex_runtime=lambda: self.codex,
+            habits_marker=support.habits_marker(habits),
         )
 
     def turn(self, sid, platform, msg="x", history="same"):
@@ -481,6 +483,50 @@ class Habits(unittest.TestCase):
         self.assertTrue(out.endswith("\n\n" + HABITS))
         self.assertIn("later", out)
         self.assertEqual(out.count(HABITS), 1)
+
+    def test_without_the_marker_there_are_no_habits(self):
+        e = Env(habits=False)
+        e.link()
+        self.assertIsNone(e.turn("root-1", "telegram", "x"))
+
+    def test_without_the_marker_the_mail_still_comes(self):
+        e = Env(habits=False)
+        link = e.link()
+        e.bus.deliver(support.deliver_frame(M1, body="later"), link)
+        out = e.turn("root-1", "telegram", "x")["context"]
+        self.assertIn("later", out)
+        self.assertNotIn(HABITS, out)
+
+    def test_the_marker_is_checked_on_every_turn(self):
+        e = Env(habits=False)
+        e.link()
+        self.assertIsNone(e.turn("root-1", "telegram", "x"))
+        with open(e.bus._habits_marker, "w", encoding="utf-8") as f:
+            f.write("on\n")
+        self.assertEqual(e.turn("root-1", "telegram", "x"), {"context": HABITS})
+        os.remove(e.bus._habits_marker)
+        self.assertIsNone(e.turn("root-1", "telegram", "x"))
+
+    def test_a_symlinked_marker_gives_no_habits(self):
+        e = Env(habits=False)
+        e.link()
+        target = support.habits_marker()
+        os.symlink(target, e.bus._habits_marker)
+        self.assertIsNone(e.turn("root-1", "telegram", "x"))
+
+    def test_a_directory_named_habits_on_gives_no_habits(self):
+        e = Env(habits=False)
+        e.link()
+        os.mkdir(e.bus._habits_marker)
+        self.assertIsNone(e.turn("root-1", "telegram", "x"))
+
+    def test_the_default_marker_is_next_to_the_plugin(self):
+        from oa_bus import bus as bus_mod
+
+        self.assertEqual(
+            bus_mod.HABITS_MARKER,
+            os.path.join(os.path.dirname(os.path.abspath(bus_mod.__file__)), "habits.on"),
+        )
 
     def test_no_open_link_means_no_habits(self):
         e = Env()

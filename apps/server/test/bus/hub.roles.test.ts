@@ -600,14 +600,15 @@ describe("a vacant role (#1296)", () => {
       state: "refused",
       reason: "role_vacant",
     });
-    // The held name: another agent gets -2, and no role takes it.
-    expect(await reg(d, "x", alice, n)).toBe(`${alice}-2`);
+    // The away name: no role takes it.
     expect(await put(uid, n, alice, null)).toEqual({
       ok: false,
       reason: "name_taken",
     });
     // #1295: the closed agent's mailbox still takes mail while it is away.
     expect((await send(d, "s", alice)).state).toBe("pending");
+    // A restarted session takes the away name back (#1742).
+    expect(await reg(d, "x", alice, n)).toBe(alice);
     d.close();
   });
 

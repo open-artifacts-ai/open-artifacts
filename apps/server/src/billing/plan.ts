@@ -65,6 +65,12 @@ export const TierAnswerSchema = z.object({
   tier: BillingTierSchema,
   status: BillingStatusSchema,
   trialEndsAt: z.number().int().nullable(),
+  /**
+   * End of the Solo 30-day trial (ms). Separate from trialEndsAt, which stays
+   * the Business trial's: trialEligible reads "Business trial never used" off
+   * trialEndsAt === null. Absent from an answer that predates it.
+   */
+  soloTrialEndsAt: z.number().int().nullable().optional(),
   graceUntil: z.number().int().nullable(),
   version: z.number().int().nonnegative(),
   asOf: z.number().int().positive(),
@@ -120,6 +126,8 @@ export type EffectivePlan = {
   tier: BillingTier;
   status: BillingStatus;
   trialEndsAt: number | null;
+  /** The Solo trial's end; absent when the answer carried none. */
+  soloTrialEndsAt?: number | null;
   graceUntil: number | null;
   readOnly: boolean;
   reason?: PlanReason;
@@ -150,6 +158,9 @@ export function effectivePlan(
     tier: base.tier,
     status: base.status,
     trialEndsAt: base.trialEndsAt,
+    ...("soloTrialEndsAt" in base && base.soloTrialEndsAt !== undefined
+      ? { soloTrialEndsAt: base.soloTrialEndsAt }
+      : {}),
     graceUntil: base.graceUntil,
     readOnly: mode === "readOnly" || mode === "viewOnly",
     ...(reason ? { reason } : {}),

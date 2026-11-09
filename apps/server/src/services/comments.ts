@@ -550,6 +550,9 @@ const stateOf = (
       ? "queued"
       : "gone";
 
+/** The most a comment POST waits, in total, for its notices to reach their hubs. */
+export const NOTICE_BUDGET_MS = 2500;
+
 /**
  * Sends the notices of a written comment and records how each mention and the
  * assignment went. Returns the comment as then stored.
@@ -564,11 +567,28 @@ async function deliver(
   if (r.agents.length === 0) return c;
   const version = Math.max(1, a.currentVersion);
   const outcome = new Map<string, DeliveryState>();
-  for (const { agent, kind } of r.agents)
-    outcome.set(
-      agent.key,
-      await notifyAgent(env, a.id, version, c.id, kind, agent),
+  // Concurrent, and the POST waits NOTICE_BUDGET_MS at most in total: a
+  // stalled hub reads "dropped" (its notice may still arrive; "gone" for a
+  // mention, "queued" for an assignment).
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<DeliveryState>((res) => {
+    timer = setTimeout(() => res("dropped"), NOTICE_BUDGET_MS);
+  });
+  try {
+    const outs = await Promise.all(
+      r.agents.map(({ agent, kind }) =>
+        Promise.race([
+          notifyAgent(env, a.id, version, c.id, kind, agent),
+          late,
+        ]),
+      ),
     );
+    r.agents.forEach(({ agent }, i) => {
+      outcome.set(agent.key, outs[i] ?? "dropped");
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   const states: { kind: "mention" | "assign"; key: string; state: string }[] =
     [];
   for (const key of r.mentions)
