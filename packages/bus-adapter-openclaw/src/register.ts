@@ -13,6 +13,10 @@ export function registerBus(api: PluginApi, bus: Bus): void {
   if (api.config !== undefined) bus.config = api.config;
   api.registerTool((ctx) => toolsFor(bus, ctx), { names: TOOL_NAMES });
   api.on("before_prompt_build", (_ev, ctx) => bus.promptBuild(ctx));
+  // #1822: the reserved proof argument, on calls to this instance's MCP tools only.
+  api.on("before_tool_call", (ev, ctx) =>
+    bus.toolCall(ev, { runId: ev?.runId ?? ctx?.runId }),
+  );
   // Observed only (never blocks or edits): the role and stopReason of an
   // assistant message tell a failed model call from an answered one.
   api.on("before_message_write", (ev, ctx) => {

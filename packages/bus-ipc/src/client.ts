@@ -20,7 +20,8 @@ export type DaemonClient = {
       | "set_status"
       | "follow"
       | "unfollow"
-      | "following";
+      | "following"
+      | "link_proof";
     id?: string;
     to?: string;
     /** send: the target's namespace (`to_namespace` on the hub wire). */
@@ -34,6 +35,8 @@ export type DaemonClient = {
     row?: true;
     /** follow, unfollow: an artifact id or link. */
     artifact?: string;
+    /** link_proof: the sha256 hex of this root's proof (needs the welcome's `link` cap). */
+    hash?: string;
     /** A tool call: the reply carries this agent's late-delivery notices. */
     late?: true;
   }) => Promise<DaemonFrame>;

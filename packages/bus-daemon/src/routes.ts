@@ -208,6 +208,11 @@ export type RouteCtx = {
    * Without it, refused as `down`.
    */
   followSupport?: () => "ok" | "old_hub" | "down";
+  /**
+   * link_proof (#1856): the proof hash of the agent `ref`, taken from its own
+   * hello'd connection. True when a live record took it.
+   */
+  linked?: (ref: string, hash: string) => boolean;
   /** rename (#1635): the session's new name, from an adapter that listed the cap. */
   renamed?: (ref: string, name: string) => void;
   /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
@@ -339,6 +344,16 @@ export function routeLocal(
         };
       ctx.renamed(ref, frame.name);
       return undefined;
+    case "link_proof":
+      // Bound to the connection's own agent: the frame names none. An adapter
+      // that did not list the cap was never told to send one.
+      if (!hello.caps?.includes(ADAPTER_CAPS.link) || !ctx.linked)
+        return {
+          type: "error",
+          code: "bad_frame",
+          message: "link_proof is not supported on this connection",
+        };
+      return { type: "link_proofed", bound: ctx.linked(ref, frame.hash) };
     case "set_status": {
       const cap = ctx.limited?.(ref);
       if (cap)
