@@ -78,7 +78,7 @@ async function bound(proof: string) {
   return m;
 }
 
-function spyHubs() {
+function spyHubs(over?: Partial<BusHubRpc>) {
   const real = e.BUS_HUB as unknown as DurableObjectNamespace;
   const asked: string[] = [];
   const BUS_HUB = {
@@ -86,7 +86,7 @@ function spyHubs() {
       asked.push(n);
       return real.idFromName(n);
     },
-    get: (id: DurableObjectId) => real.get(id),
+    get: (id: DurableObjectId) => (over ? { ...over } : real.get(id)),
   };
   return { asked, ev: E({ BUS_HUB }) };
 }
@@ -141,7 +141,7 @@ describe("/mcp entry points ask the credential owner's hub (#1822)", () => {
 // cannot set a per-session header. Only tools/call is read; the key is always
 // removed before the handler (and so before schema validation, audit rows and
 // error text) sees the body.
-const bodies: Request[] = [];
+const bodies: { text(): Promise<string> }[] = [];
 
 /** Records a clone of every request the real MCP handler receives. */
 function watchBodies() {
@@ -437,7 +437,7 @@ describe("/mcp proof by tool argument (#1856)", () => {
       () => Promise.reject(new Error("boom")),
       () => new Promise<never>(() => {}),
     ]) {
-      const { ev } = spyHubs({ agentByProof } as never);
+      const { ev } = spyHubs({ agentByProof });
       watchBodies();
       const t0 = Date.now();
       const r = await callWorker(
