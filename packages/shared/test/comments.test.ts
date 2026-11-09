@@ -305,7 +305,6 @@ describe("comments mock", () => {
       expect(ApiErrorSchema.parse(await r.json()).error.code).toBe(
         "invalid_body",
       );
-      "not_an_ask",
     }
   });
 
