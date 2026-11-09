@@ -193,8 +193,12 @@ export async function startTrialAnswer(
   }
 }
 
-/** Free, the trial never started, and someone besides the owner is here: the tick retries the trial. */
-const TRIAL_PENDING = `select 1 from users where status = 'active' and role != 'owner' limit 1`;
+/**
+ * Free, the trial never started, and a member or admin besides the owner is
+ * here: the tick retries the trial. Never a guest (a code sign-in or a share
+ * makes one; sharing is free on every plan, so no guest starts a trial).
+ */
+const TRIAL_PENDING = `select 1 from users where status = 'active' and role in ('member', 'admin') limit 1`;
 
 /**
  * The scheduler tick's billing step: read the tier; when the instance is
