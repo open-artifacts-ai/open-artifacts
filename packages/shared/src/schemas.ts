@@ -720,6 +720,10 @@ const isUnsafeNameChar = (cp: number) =>
   (cp >= 0x2060 && cp <= 0x2069) ||
   cp === 0xfeff;
 
+/** Default-ignorable and filler code points: invisible, so they only disguise a name (#1822). */
+export const NAME_FILLERS =
+  /[\p{Default_Ignorable_Code_Point}\u115F\u1160\u3164\uFFA0]/u;
+
 /** A user-chosen display name: trimmed, 1–80 characters, no control/bidi/zero-width characters. */
 export const DisplayNameSchema = z
   .string()
@@ -729,7 +733,8 @@ export const DisplayNameSchema = z
   .refine(
     (s) => ![...s].some((ch) => isUnsafeNameChar(ch.codePointAt(0) ?? 0)),
     "Name contains invalid characters",
-  );
+  )
+  .refine((s) => !NAME_FILLERS.test(s), "Name contains invalid characters");
 
 export const MePatchSchema = z.strictObject({ displayName: DisplayNameSchema });
 export type MePatch = z.infer<typeof MePatchSchema>;

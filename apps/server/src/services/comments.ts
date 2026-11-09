@@ -32,6 +32,7 @@ import {
   forLine,
   type NameClashes,
   nameClashes,
+  plainAgentName,
   shownName,
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
@@ -295,19 +296,31 @@ const authorView = (
   return { kind: "user", id: a.ref, name: u ? shownName(u) : "Member", me };
 };
 
-/** Every active member's name, once, for the lookalike check. */
+/** Per isolate: the name map and when it was built; stale up to CLASH_TTL_MS is fine. */
+const CLASH_TTL_MS = 60_000;
+let clashCache: { at: number; map: NameClashes } | null = null;
+/** For tests: forget the cached name map. */
+export const resetNameClashCache = (): void => {
+  clashCache = null;
+};
+
+/** Every member's name, removed ones too (their names stay reserved), cached. */
 async function allClashes(env: Env): Promise<NameClashes> {
+  if (clashCache && Date.now() - clashCache.at < CLASH_TTL_MS)
+    return clashCache.map;
   const { results } = await env.DB.prepare(
-    "select id, email, name, display_name as displayName from users where status = 'active'",
+    "select id, email, name, display_name as displayName from users",
   ).all<{
     id: string;
     email: string;
     name: string;
     displayName: string | null;
   }>();
-  return nameClashes(
+  const map = nameClashes(
     results.map((r) => ({ id: r.id, email: r.email, name: effectiveName(r) })),
   );
+  clashCache = { at: Date.now(), map };
+  return map;
 }
 
 /** Whether a comment shows an agent by name (then `for` needs the clash check). */
@@ -391,7 +404,24 @@ const agentName = (
 ): string =>
   faceViewer(viewer).guest && !(viewer.userId && viewer.userId === owner?.id)
     ? agentOwnedBy(owner, clash)
-    : bus;
+    : plainAgentName(bus);
+
+const escRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** A body with each "@<stored name>" of a mention swapped for the name shown (one pass). */
+const maskBody = (body: string, pairs: [string, string][]): string => {
+  const changed = pairs.filter(([from, to]) => from !== to);
+  if (changed.length === 0) return body;
+  const to = new Map(changed.map(([f, t]) => [`@${f}`, `@${t}`]));
+  const re = new RegExp(
+    [...to.keys()]
+      .sort((x, y) => y.length - x.length)
+      .map(escRe)
+      .join("|"),
+    "gu",
+  );
+  return body.replace(re, (m) => to.get(m) ?? m);
+};
 
 const commentOf = (
   c: StoredComment,
@@ -399,9 +429,23 @@ const commentOf = (
   users: Ctx,
 ): Comment => {
   const author = authorView(c.author, viewer, users);
+  const shown = (c.mentions ?? []).map((m) =>
+    agentName(
+      m.name,
+      m.owner ? users.users.get(m.owner) : undefined,
+      viewer,
+      users.clash,
+    ),
+  );
   return {
     id: c.id,
-    body: c.body,
+    body: maskBody(
+      c.body,
+      (c.mentions ?? []).map((m, i): [string, string] => [
+        m.name,
+        shown[i] ?? m.name,
+      ]),
+    ),
     author,
     createdAt: c.createdAt,
     editedAt: c.editedAt,
@@ -428,14 +472,9 @@ const commentOf = (
       : {}),
     ...(c.mentions?.length
       ? {
-          mentions: c.mentions.map((m) => ({
+          mentions: c.mentions.map((m, i) => ({
             key: m.key,
-            name: agentName(
-              m.name,
-              m.owner ? users.users.get(m.owner) : undefined,
-              viewer,
-              users.clash,
-            ),
+            name: shown[i] ?? m.name,
             ...(m.owner
               ? {
                   for: forLine(

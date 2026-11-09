@@ -3,16 +3,23 @@ import { env } from "cloudflare:workers";
 import {
   type BusNotice,
   type CommentList,
+  DisplayNameSchema,
   type Member,
   newId,
   R,
   type CommentThread as Thread,
 } from "@oa/shared";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
+import {
+  memberTag,
+  plainAgentName,
+  readsAsAgent,
+  skeleton,
+} from "../src/services/agent-display.js";
 import { publish } from "../src/services/artifacts.js";
 import {
   type DeliveryOutcome,
@@ -26,6 +33,7 @@ import {
   type CommentViewer,
   type CommentWho,
   listComments,
+  resetNameClashCache,
 } from "../src/services/comments.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
@@ -123,6 +131,8 @@ const inDo = <T>(id: string, cb: (i: ArtifactRuntime) => T | Promise<T>) =>
   );
 
 describe("agent faces (#1822)", () => {
+  beforeEach(() => resetNameClashCache());
+
   it("a linked author: bus name, product from the kind, animal, never the identity id", async () => {
     const owner = await mk("f-own", newName());
     const other = await mk("f-oth");
@@ -201,15 +211,17 @@ describe("agent faces (#1822)", () => {
     expect(x?.author.animal).toEqual(y?.author.animal);
   });
 
-  it("a name that collides: signed-in sees the email, a guest sees A member's agent", async () => {
+  it("a name that collides: signed-in sees a member tag, a guest sees A member's agent", async () => {
     // "Leo" with a Cyrillic o, and a case and width variant.
     const real = await mk("f-real", `Leo Urbina ${tag}`);
     const fake = await mk("f-fake", `LEО  URBINA ${tag}`);
     const id = await pub(fake);
     await post(id, fake, agentWho(fake, IDENT));
     const seen = await first(id, signedIn(real));
-    expect(seen?.author.for).toBe(`LEО URBINA ${tag} (${fake.email})`);
-    expect(seen?.author.for).toContain(fake.email);
+    expect(seen?.author.for).toBe(
+      `LEО URBINA ${tag} (member ${memberTag(fake.userId)})`,
+    );
+    expect(JSON.stringify(seen)).not.toContain(fake.email);
     const g = await first(id, GUEST);
     expect(g?.author.name).toBe("A member's agent");
     expect(g?.author.for).toBe("Member");
@@ -219,7 +231,7 @@ describe("agent faces (#1822)", () => {
     await post(id2, fake, agentWho(fake));
     expect((await first(id2, GUEST))?.author.name).toBe("A member's agent");
     expect((await first(id2, signedIn(real)))?.author.for).toContain(
-      fake.email,
+      "(member ",
     );
   });
 
@@ -265,7 +277,7 @@ describe("agent faces (#1822)", () => {
       signedIn(owner),
       {
         anchor: { kind: "note" },
-        body: "hi",
+        body: "hi @Runner and @Runner2",
         mentions: [{ key, for: "Evil", owner: "x" } as never],
         ask: {
           question: "ok?",
@@ -290,6 +302,11 @@ describe("agent faces (#1822)", () => {
     expect(g?.mentions?.[0]?.name).toBe(`${nm}'s agent`);
     expect(g?.ask?.to[0]?.name).toBe(`${nm}'s agent`);
     expect(JSON.stringify(g)).not.toContain("Runner");
+    // The body says the shown name too, for a guest and through MCP-style reads.
+    expect(g?.body).toBe(`hi @${nm}'s agent and @${nm}'s agent2`);
+    expect((await first(id, signedIn(owner)))?.body).toBe(
+      "hi @Runner and @Runner2",
+    );
     // A mention row from before the owner was stored has no for.
     await inDo(id, (i) => {
       (i as unknown as { ctx: DurableObjectState }).ctx.storage.sql.exec(
@@ -351,5 +368,76 @@ describe("guest names (#1822)", () => {
   it("keeps an ordinary name", () => {
     expect(cleanGuestName("Agent Smith")).toBe("Agent Smith");
     expect(cleanGuestName("Jess")).toBe("Jess");
+  });
+});
+
+describe("lookalikes and agent-shaped names (#1822)", () => {
+  beforeEach(() => resetNameClashCache());
+
+  it("skeleton folds fillers, I and l, and the added lookalikes", () => {
+    expect(skeleton("AIice")).toBe(skeleton("Alice"));
+    expect(skeleton("Al\u3164i\u200bce")).toBe(skeleton("Alice"));
+    expect(skeleton("Al\u115F\uFFA0ice")).toBe(skeleton("Alice"));
+    expect(skeleton("\u0585\u0251\u029F")).toBe(skeleton("oal"));
+    expect(skeleton("\u043F")).toBe(skeleton("n"));
+  });
+
+  it("DisplayNameSchema rejects fillers and default-ignorable points", () => {
+    for (const bad of [
+      "Al\u3164ice",
+      "Al\u115Fice",
+      "Al\u1160ice",
+      "Al\uFFA0ice",
+      "Al\u00adice",
+    ])
+      expect(DisplayNameSchema.safeParse(bad).success).toBe(false);
+    expect(DisplayNameSchema.safeParse("Alice").success).toBe(true);
+  });
+
+  it("a removed member's name stays reserved, and is not shown as active", async () => {
+    const gone = await mk("f-gone", `Rae Gone ${tag}`);
+    await E.DB.prepare("update users set status = 'removed' where id = ?")
+      .bind(gone.userId)
+      .run();
+    const live = await mk("f-live", `RAE GONE ${tag}`);
+    const id = await pub(live);
+    await post(id, live, agentWho(live, IDENT));
+    const seen = await first(id, signedIn(await mk("f-oth")));
+    expect(seen?.author.for).toBe(
+      `RAE GONE ${tag} (member ${memberTag(live.userId)})`,
+    );
+    expect((await first(id, GUEST))?.author.name).toBe("A member's agent");
+  });
+
+  it("an agent that reads as a person's agent shows the product, or Agent", async () => {
+    for (const n of [
+      "Bob's agent",
+      "Bob\u2019s Agent.",
+      "B\u043eb\u02bcs  agent!!",
+    ])
+      expect(readsAsAgent(n)).toBe(true);
+    expect(readsAsAgent("Agent Smith")).toBe(false);
+    expect(plainAgentName("Bob's agent", "Codex")).toBe("Codex");
+    expect(plainAgentName("Bob's agent")).toBe("Agent");
+    const owner = await mk("f-own", newName());
+    const id = await pub(owner);
+    await post(
+      id,
+      owner,
+      agentWho(owner, { ...IDENT, name: "Zed\u2019s agent." }),
+    );
+    const c = await first(id, signedIn(await mk("f-oth")));
+    expect(c?.author.name).toBe("Claude Code");
+    const id2 = await pub(owner);
+    await post(
+      id2,
+      owner,
+      agentWho(owner, { ...IDENT, name: "Zed's agent", kind: "x" }),
+    );
+    expect((await first(id2, signedIn(owner)))?.author.name).toBe("Agent");
+  });
+
+  it("the guest-name check uses the same folding", () => {
+    expect(cleanGuestName("Z\u0435d\u2019s agent.")).toBe("Guest");
   });
 });

@@ -8,6 +8,7 @@ import {
   type AgentRef,
   ANIMALS,
   type CommentAuthor,
+  NAME_FILLERS,
   PRESENCE_PALETTE_SIZE,
   stripNameControls,
 } from "@oa/shared";
@@ -150,6 +151,10 @@ const LOOKALIKE: Record<string, string> = {
   κ: "k",
   ν: "v",
   ο: "o",
+  օ: "o",
+  ɑ: "a",
+  ʟ: "l",
+  п: "n",
   ρ: "p",
   τ: "t",
   υ: "u",
@@ -163,26 +168,51 @@ const LOOKALIKE: Record<string, string> = {
   "|": "l",
 };
 
-/** A name's skeleton: NFKC, no marks, case folded, lookalikes mapped, letters and digits only. */
-export const skeleton = (name: string): string =>
+const FILLERS = new RegExp(NAME_FILLERS.source, "gu");
+
+/** A name with controls and invisible fillers gone, marks off, case and lookalikes folded. */
+const fold = (name: string): string =>
   [
     ...stripNameControls(name)
+      .replace(FILLERS, "")
       .normalize("NFKC")
       .normalize("NFD")
       .replace(/\p{M}/gu, "")
+      .replace(FILLERS, "")
       .toLowerCase()
       .toUpperCase()
       .toLowerCase(),
   ]
     .map((c) => LOOKALIKE[c] ?? c)
-    .join("")
+    .join("");
+
+/**
+ * A name's skeleton, best effort (not a full confusables table): folded,
+ * capital I and small l one letter, letters and digits only.
+ */
+export const skeleton = (name: string): string =>
+  fold(name)
+    .replace(/i/g, "l")
     .replace(/[^\p{L}\p{N}]/gu, "");
+
+/** A name ending in "'s agent" after folding: any apostrophe, case, trailing punctuation. */
+const AGENT_SUFFIX = /['\u2018\u2019\u02bc\u2032\u00b4`]\s*s\s*agent$/u;
+export const readsAsAgent = (name: string): boolean =>
+  AGENT_SUFFIX.test(fold(name).replace(/[\p{P}\p{S}\s]+$/u, ""));
+
+/** A name an agent may show: one that reads as a person's agent shows the product, or "Agent". */
+export const plainAgentName = (name: string, product?: string): string =>
+  readsAsAgent(name) ? (product ?? "Agent") : name;
+
+/** A short stable tag for a member, from the id; never the email. */
+export const memberTag = (id: string): string =>
+  fnv1a(`tag:${id}`).toString(16).padStart(8, "0").slice(0, 6);
 
 type Member = { id: string; name: string | null; email: string };
 
 /**
- * Whose names are ambiguous: skeleton to the active members who have it. Built
- * once per read from every active member, then asked per owner.
+ * Whose names are ambiguous: skeleton to the members who have it, removed ones too
+ * (a removed person's name stays reserved). Built once per read, then asked per owner.
  */
 export type NameClashes = Map<string, Set<string>>;
 
@@ -199,7 +229,7 @@ export const nameClashes = (members: Iterable<Member>): NameClashes => {
   return out;
 };
 
-/** Another active member has this member's name (or a lookalike of it). */
+/** Another member has this member's name (or a lookalike of it). */
 export const clashes = (c: NameClashes, u: Member): boolean => {
   const n = publicName(u);
   if (n === null) return false;
@@ -212,7 +242,7 @@ export type FaceViewer = { userId: string | null; guest: boolean };
 
 /**
  * "for <this>" on an agent: the owner's name when it is theirs alone; on a
- * clash "<name> (<email>)" to a signed-in member and "Member" to a guest, so no
+ * clash "<name> (member <tag>)" to a signed-in member and "Member" to a guest, so no
  * agent reads as another person's. No owner row reads "Member".
  */
 export const forLine = (
@@ -222,7 +252,7 @@ export const forLine = (
 ): string => {
   if (!u) return "Member";
   if (!clashes(c, u)) return shownName(u);
-  return v.guest ? "Member" : `${shownName(u)} (${u.email})`;
+  return v.guest ? "Member" : `${shownName(u)} (member ${memberTag(u.id)})`;
 };
 
 /** "<owner>'s agent"; MEMBERS_AGENT when the owner is unknown, nameless or clashes. */
@@ -251,8 +281,8 @@ export function agentFace(
     me,
   };
   if (a.identity) {
-    const bus = cleanName(a.identity.name) ?? "Agent";
     const product = PRODUCTS[a.identity.kind];
+    const bus = plainAgentName(cleanName(a.identity.name) ?? "Agent", product);
     return {
       ...base,
       name: v.guest && !me ? agentOwnedBy(owner, c) : bus,
@@ -263,7 +293,7 @@ export function agentFace(
   }
   const name =
     !isPrivateAgent(a.via) || me
-      ? a.name
+      ? plainAgentName(a.name)
       : owner
         ? agentOwnedBy(owner, c)
         : agentFor(
