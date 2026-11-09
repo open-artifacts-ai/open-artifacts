@@ -137,7 +137,7 @@ export type ErrorContext = {
   capped?: boolean;
   /** Me.auth.cap, when capped: "plan" is a locked instance, not a view-only account. */
   cap?: NonNullable<Me["auth"]>["cap"];
-  /** The caller is the org owner or an admin (uncapped): billing copy says what they can do. */
+  /** The caller is the org owner or an admin (any cap: admins carry "plan" under every lock): billing copy says what they can do. */
   owner?: boolean;
   /** A Solo instance whose trial never ran (trialEndsAt null): plan_required offers the trial. */
   trialNeverRan?: boolean;
@@ -151,16 +151,16 @@ export type ErrorContext = {
 };
 
 /**
- * The billing part of an ErrorContext from Me: owners and admins (uncapped)
+ * The billing part of an ErrorContext from Me: owners and admins
  * can open Plan and billing, so they read the owner wording; trialNeverRan
  * only means anything to them (others see trialEndsAt as null).
  */
 export const billingContext = (
   me: Me | null | undefined,
 ): Pick<ErrorContext, "owner" | "trialNeverRan"> => {
-  const owner =
-    (me?.user.role === "owner" || me?.user.role === "admin") &&
-    me.auth?.cap == null;
+  // The same rule as the read-only banner: owners and admins reach Plan and
+  // billing. Admins carry the plan cap under every lock, so the cap isn't asked.
+  const owner = me?.user.role === "owner" || me?.user.role === "admin";
   const billing = me?.instance?.billing;
   return {
     owner,

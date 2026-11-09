@@ -109,6 +109,9 @@ for (const width of WIDTHS) {
         "Inviting people is a team feature. Choose a plan to continue.",
       ),
     ).toBeVisible();
+    await expect(
+      dialog.getByRole("link", { name: "Choose a plan" }),
+    ).toHaveAttribute("href", "/settings/plan");
     await expect(dialog).not.toContainText("Spaces");
     await expect(dialog).toHaveCSS("opacity", "1");
     await noSideScroll(page);

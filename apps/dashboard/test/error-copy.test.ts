@@ -209,6 +209,26 @@ it("errorContext gives admins the owner wording and the trial state", () => {
   expect(billingContext(me("member", null)).owner).toBe(false);
 });
 
+it("billingContext follows the banner: an admin with the plan cap is an owner (L3)", () => {
+  const me = (role: string, cap: string | null) =>
+    ({
+      user: { role },
+      auth: { method: "google", readOnly: !!cap, cap, expiresAt: null },
+      instance: { billing: { tier: "solo", trialEndsAt: null } },
+    }) as never;
+  expect(billingContext(me("admin", "plan")).owner).toBe(true);
+  expect(billingContext(me("owner", null)).owner).toBe(true);
+  expect(billingContext(me("member", "plan")).owner).toBe(false);
+  // The toast then reads as the banner does: an action, not "ask an owner".
+  expect(
+    errorCopy(planErr("plan_read_only", reason("lapsed")), "x", {
+      ...billingContext(me("admin", "plan")),
+    }),
+  ).toBe(
+    "Your plan has lapsed. This instance is read-only. Manage billing to restart it.",
+  );
+});
+
 it("plan_required", () => {
   const e = planErr("plan_required", reason("solo"));
   expect(errorCopy(e, "x")).toBe(

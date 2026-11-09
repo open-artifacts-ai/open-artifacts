@@ -1,12 +1,19 @@
 // #1838-#1841, #1844: the read-only banner says one thing per reason, with the
 // right button (or none), for the owner and for a member; and an invite the
 // plan refuses says it is the invite. Copy: Design's Self-serve screens v6,
-// decision 3, word for word.
+// decision 3, word for word for lapsed, payment_failed, suspended and
+// billing_unreachable. trial_ended and solo_unpaid keep their earlier copy (the
+// audit lists them as OK); the invite refusal's wording has no approved string.
 
 import type { Me, PlanView } from "@oa/shared";
+import { R } from "@oa/shared";
+import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
+import { ApiClientError } from "../src/api/client";
 import { SUPPORT_EMAIL } from "../src/layout/PlanBanner";
+import { restoreRefusal } from "../src/settings/Members";
 import { installHarness, mountHosted } from "./harness";
 
 installHarness();
@@ -95,18 +102,6 @@ describe("the read-only banner, per reason", () => {
     });
   }
 
-  it("lapsed and payment_failed owners get different lines", () => {
-    expect(LINES.lapsed.owner).not.toBe(LINES.payment_failed.owner);
-    expect(LINES.lapsed.member).not.toBe(LINES.payment_failed.member);
-  });
-
-  it("every member line says what still works (#1844)", () => {
-    for (const reason of ["lapsed", "payment_failed"] as const)
-      expect(LINES[reason].member).toMatch(
-        /Reading and sharing still work\. Nothing has been deleted\.$/,
-      );
-  });
-
   it("trial_ended keeps its copy and the Plan and billing button", async () => {
     mountHosted("/", {
       billing: { ...locked("trial_ended"), tier: "trial" },
@@ -153,15 +148,161 @@ describe("an invite the plan refuses (#1838)", () => {
       target: { value: "ana@example.com" },
     });
     fireEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    const alert = await within(dialog).findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Inviting people is a team feature. Choose a plan to continue.",
+    );
+    // An owner's "Choose a plan" goes to Plan and billing.
     expect(
-      await within(dialog).findByText(
-        "Inviting people is a team feature. Choose a plan to continue.",
-      ),
-    ).toBeVisible();
+      within(alert).getByRole("link", { name: "Choose a plan" }),
+    ).toHaveAttribute("href", "/settings/plan");
     expect(within(dialog).queryByText(/Spaces/)).toBeNull();
     // One message, in the dialog: no second toast with the server's wording.
     await waitFor(() =>
       expect(document.querySelector("[data-sonner-toast]")).toBeNull(),
     );
+  });
+});
+
+const SOLO_USED: PlanView = {
+  tier: "solo",
+  status: "active",
+  trialEndsAt: "2026-10-01T00:00:00.000Z",
+  soloTrialEndsAt: null,
+  graceUntil: null,
+  creatorsThisMonth: 1,
+  readOnly: false,
+  reason: "solo",
+};
+const planRequired = () =>
+  new ApiClientError("plan_required" as never, "server text", 403, {
+    tier: "solo",
+    reason: "solo",
+  });
+const meAs = (role: string, cap: string | null) =>
+  ({
+    user: { role },
+    auth: { method: "google", readOnly: cap !== null, cap, expiresAt: null },
+    instance: { billing: SOLO_USED },
+  }) as unknown as Me;
+
+describe("a refused restore (#1838)", () => {
+  it("names the invite for an owner, not Spaces and not 'ask an owner'", () => {
+    const text = restoreRefusal(
+      planRequired(),
+      "Gus",
+      undefined,
+      meAs("owner", null),
+    );
+    expect(text).toBe(
+      "Inviting people is a team feature. Choose a plan to continue.",
+    );
+  });
+
+  it("an admin, who carries the plan cap, reads the owner wording too", () => {
+    expect(
+      restoreRefusal(planRequired(), "Gus", undefined, meAs("admin", "plan")),
+    ).toBe("Inviting people is a team feature. Choose a plan to continue.");
+  });
+
+  it("a member is told to ask an owner", () => {
+    expect(
+      restoreRefusal(planRequired(), "Gus", undefined, meAs("member", "plan")),
+    ).toBe(
+      "Inviting people is a team feature. This instance is on Solo. Ask an owner to choose a plan.",
+    );
+  });
+
+  it("shows on the row when the server refuses the confirm", async () => {
+    const gone = {
+      id: "Gx0001AbCdEfGhIj",
+      email: "gus@outside.example",
+      name: "Gus Gone",
+      role: "member",
+      lastSeenAt: null,
+      status: "removed",
+      identities: [],
+      restriction: null,
+    };
+    mountHosted("/settings/members", { billing: SOLO_USED }, undefined, [
+      http.get(`*${R.members}`, ({ request }) =>
+        HttpResponse.json(
+          new URL(request.url).searchParams.get("status")
+            ? [gone]
+            : fixtures.members,
+        ),
+      ),
+      http.get(`*${R.memberTransfer(gone.id)}`, () =>
+        HttpResponse.json({ live: 0, deleted: 0 }),
+      ),
+      http.post(`*${R.memberRestore(gone.id)}`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "plan_required",
+              message: "server text",
+              details: { tier: "solo", reason: "solo" },
+            },
+          },
+          { status: 403 },
+        ),
+      ),
+    ]);
+    fireEvent.click(await screen.findByRole("button", { name: "Removed (1)" }));
+    fireEvent.click(await screen.findByRole("button", { name: /^Restore / }));
+    fireEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", {
+        name: "Restore",
+      }),
+    );
+    expect(
+      await screen.findByText(
+        "Inviting people is a team feature. Choose a plan to continue.",
+      ),
+    ).toBeVisible();
+  });
+});
+
+describe("the invite dialog while the request is out (L1)", () => {
+  it("can't be closed until the answer comes, so a refusal is never lost", async () => {
+    let answer: (r: Response) => void = () => {};
+    const held = new Promise<Response>((res) => {
+      answer = res;
+    });
+    mountHosted("/settings/members", { billing: SOLO_USED }, undefined, [
+      http.post(`*${R.members}`, () => held),
+    ]);
+    fireEvent.click(await screen.findByRole("button", { name: "Add member" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Email"), {
+      target: { value: "ana@example.com" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("button", { name: "Cancel" }),
+      ).toBeDisabled(),
+    );
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    answer(
+      HttpResponse.json(
+        {
+          error: {
+            code: "plan_required",
+            message: "server text",
+            details: { tier: "solo", reason: "solo" },
+          },
+        },
+        { status: 403 },
+      ),
+    );
+    expect(
+      await within(screen.getByRole("dialog")).findByRole("alert"),
+    ).toHaveTextContent("Inviting people is a team feature.");
+    // Settled: Cancel works again.
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 });
