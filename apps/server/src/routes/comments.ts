@@ -207,10 +207,13 @@ export function mountComments(app: AppType): void {
     if (!raw.success) return bad(raw.error.issues);
     const moderator = modOf(cw, level, artifact);
     // toAsker stands alone (400), before the owner-and-editor check on mentions.
-    if (raw.data.toAsker && (raw.data.mentions?.length ?? 0) > 0)
+    if (
+      raw.data.toAsker &&
+      ((raw.data.mentions?.length ?? 0) > 0 || raw.data.assign !== undefined)
+    )
       throw new ApiError(
         "bad_request",
-        "toAsker cannot be combined with mentions",
+        "toAsker cannot be combined with mentions or assign",
       );
     mayTarget(raw.data, moderator);
     const { who, viewer, issued } = await identity(c, id, true, moderator);

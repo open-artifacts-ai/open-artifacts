@@ -60,6 +60,7 @@ import {
   listThreads,
   type NewExtras,
   openCount,
+  refundAsker,
   replyCount,
   rootId,
   type StoredActor,
@@ -68,6 +69,7 @@ import {
   type StoredThread,
   setAnswer,
   setTargetState,
+  spendAsker,
   threadExists,
   threadStatus,
   touchThread,
@@ -2078,6 +2080,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
         )
       )
         extras = { ...extras, asker: undefined };
+      else if (extras?.asker) spendAsker(this.sql, a.threadId, now);
       const c = insertComment(this.sql, now, a.threadId, a.actor, a.body);
       if (extras) insertExtras(this.sql, a.threadId, c.id, extras);
       touchThread(this.sql, a.threadId, now);
@@ -2150,6 +2153,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (!c) fail("not_found", "Not found");
       return c;
     });
+  }
+
+  /** Gives back the asker notice a reply spent (#1614) when its delivery found no session. `at` is the reply's createdAt. */
+  commentsAskerRefund(a: { threadId: string; at: string }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      refundAsker(this.sql, a.threadId, a.at),
+    );
   }
 
   /** Resolve or reopen; the same status again changes nothing. */
@@ -2257,6 +2268,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (rootId(this.sql, a.threadId) === a.commentId) {
         this.sql.exec("delete from comments where thread_id = ?", a.threadId);
         deleteExtras(this.sql, { threadId: a.threadId });
+        this.sql.exec(
+          "delete from comment_asker_notices where thread_id = ?",
+          a.threadId,
+        );
         this.sql.exec("delete from comment_threads where id = ?", a.threadId);
       } else {
         this.sql.exec("delete from comments where id = ?", a.commentId);
@@ -2312,6 +2327,7 @@ type RpcMethods =
   | "commentsReply"
   | "commentsAnswer"
   | "commentsTargetStates"
+  | "commentsAskerRefund"
   | "commentsStatus"
   | "commentsEdit"
   | "commentsDelete"

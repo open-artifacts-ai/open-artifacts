@@ -1,6 +1,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
+  ANON_ID_HEADER,
   type ArtifactAgent,
   type BusNotice,
   type Comment,
@@ -19,7 +20,11 @@ import {
   type NoticeDelivery,
 } from "../src/services/bus-delivery.js";
 import { ASKER_NOTICES_MAX } from "../src/services/comment-rules.js";
-import { addThread, type CommentWho } from "../src/services/comments.js";
+import {
+  addReply,
+  addThread,
+  type CommentWho,
+} from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { getUser } from "../src/services/users.js";
 import { api, errOf, login } from "./helpers.js";
@@ -81,7 +86,7 @@ const OPTS = [
   { id: "compact", label: "Compact hero" },
 ];
 
-async function setup() {
+async function setup(extra: Record<string, unknown> = {}) {
   const a = await publish(
     E,
     owner.member,
@@ -89,6 +94,7 @@ async function setup() {
       title: "doc",
       format: "html",
       content: "<p>The quick brown fox</p>",
+      ...extra,
     } as never,
     null,
     undefined,
@@ -244,7 +250,7 @@ describe("reply toAsker (#1614)", () => {
     expect(list.threads.every((x) => x.comments.length === 1)).toBe(true);
   });
 
-  it("400 when combined with mentions, for a viewer and for the owner", async () => {
+  it("400 when combined with mentions or assign, for a viewer and for the owner", async () => {
     const s = await setup();
     const t = await askBy(s.id, asAgent(owner), owner);
     bus.clear();
@@ -297,9 +303,9 @@ describe("reply toAsker (#1614)", () => {
       runInDurableObject(
         runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
         (_i, state) => {
-          // Age every stored reply past the window (the DO's own SQLite).
+          // Age the thread's last notice past the window (the DO's own SQLite).
           state.storage.sql.exec(
-            "update comments set created_at = '2000-01-01T00:00:00.000Z'",
+            "update comment_asker_notices set last_at = '2000-01-01T00:00:00.000Z'",
           );
         },
       );
@@ -310,5 +316,117 @@ describe("reply toAsker (#1614)", () => {
       );
     }
     expect(toAsker()).toHaveLength(ASKER_NOTICES_MAX);
+  });
+
+  it("the service refuses mentions or assign with toAsker too", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner);
+    for (const extras of [
+      { toAsker: true, mentions: [{ key: s.codex }] },
+      { toAsker: true, assign: { key: s.codex } },
+    ])
+      await expect(
+        addReply(
+          E,
+          s.id,
+          t.id,
+          asPerson(viewer),
+          { userId: viewer.userId, short: null, moderator: false },
+          "x",
+          extras,
+        ),
+      ).rejects.toMatchObject({ code: "bad_request" });
+    expect(bus.sent).toHaveLength(0);
+  });
+
+  it("an unknown thread is 404 for a member and for a guest", async () => {
+    const s = await setup({ visibility: "public" });
+    const missing = newId();
+    expect((await reply(s.id, missing, viewer, { toAsker: true })).status).toBe(
+      404,
+    );
+    const g = await api(app, R.commentReplies(s.id, missing), null, {
+      method: "POST",
+      body: { body: "x", toAsker: true },
+      headers: { "cf-connecting-ip": "198.51.100.40" },
+    });
+    expect(g.status).toBe(404);
+  });
+
+  it("replying and deleting in a loop never gives the bound back, for a member", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner);
+    bus.clear();
+    for (let i = 0; i < 4; i++) {
+      const res = await reply(s.id, t.id, viewer, { toAsker: true });
+      expect(res.status).toBe(201);
+      const c = (await res.json()) as Comment;
+      expect(
+        (
+          await api(
+            app,
+            `${R.comments(s.id)}/${t.id}/comments/${c.id}`,
+            viewer.cookie,
+            {
+              method: "DELETE",
+            },
+          )
+        ).status,
+      ).toBe(204);
+    }
+    expect(toAsker()).toHaveLength(1);
+  });
+
+  it("replying and deleting in a loop never gives the bound back, for a guest", async () => {
+    const s = await setup({ visibility: "public" });
+    const t = await askBy(s.id, asAgent(owner), owner);
+    bus.clear();
+    const ip = "198.51.100.41";
+    let token: string | null = null;
+    for (let i = 0; i < 3; i++) {
+      const res = await api(app, R.commentReplies(s.id, t.id), null, {
+        method: "POST",
+        body: { body: "from a guest", toAsker: true },
+        headers: {
+          "cf-connecting-ip": ip,
+          ...(token ? { [ANON_ID_HEADER]: token } : {}),
+        },
+      });
+      expect(res.status).toBe(201);
+      token ??= res.headers.get(ANON_ID_HEADER);
+      const c = (await res.json()) as Comment;
+      expect(
+        (
+          await api(app, `${R.comments(s.id)}/${t.id}/comments/${c.id}`, null, {
+            method: "DELETE",
+            headers: {
+              "cf-connecting-ip": ip,
+              [ANON_ID_HEADER]: token as string,
+            },
+          })
+        ).status,
+      ).toBe(204);
+    }
+    expect(toAsker()).toHaveLength(1);
+  });
+
+  it("a reply whose agents all read gone does not spend the bound", async () => {
+    const s = await setup();
+    const t = await askBy(s.id, asAgent(owner), owner);
+    bus.outcome = "dropped";
+    const first = (await (
+      await reply(s.id, t.id, viewer, { toAsker: true })
+    ).json()) as Comment;
+    expect(first.mentions?.[0]?.delivery).toBe("gone");
+    bus.outcome = "delivered";
+    const second = (await (
+      await reply(s.id, t.id, viewer, { toAsker: true })
+    ).json()) as Comment;
+    expect(second.mentions?.[0]?.delivery).toBe("delivered");
+    // Now it is spent: a third inside the window tells no one.
+    const third = (await (
+      await reply(s.id, t.id, viewer, { toAsker: true })
+    ).json()) as Comment;
+    expect(third.mentions).toBeUndefined();
   });
 });

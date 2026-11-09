@@ -439,7 +439,7 @@ export type CommentExtras = {
   mentions?: KeyRef[];
   assign?: KeyRef;
   ask?: AskInput;
-  /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions or ask. */
+  /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions, assign or ask. */
   toAsker?: boolean;
 };
 
@@ -783,10 +783,14 @@ export async function addReply(
   const text = checkBody(body);
   let r: Resolved;
   if (extras.toAsker) {
-    if ((extras.mentions?.length ?? 0) > 0 || extras.ask !== undefined)
+    if (
+      (extras.mentions?.length ?? 0) > 0 ||
+      extras.assign !== undefined ||
+      extras.ask !== undefined
+    )
       throw new ApiError(
         "bad_request",
-        "toAsker cannot be combined with mentions or ask",
+        "toAsker cannot be combined with mentions, assign or ask",
       );
     r = await resolveToAsker(env, artifactId, threadId);
   } else r = await resolveExtras(env, artifactId, who, extras, opts);
@@ -816,6 +820,16 @@ export async function addReply(
     .first<{ v: number }>();
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
   const sent = await deliver(env, a, threadId, c, r);
+  // The bound is spent when a notice goes out or is held; a reply whose agents
+  // all read "gone" (no session, or a stalled hub) gives it back (#1614).
+  if (
+    extras.toAsker &&
+    sent.mentions?.length &&
+    sent.mentions.every((m) => m.state === "gone")
+  )
+    await call(() =>
+      stub(env, artifactId).commentsAskerRefund({ threadId, at: c.createdAt }),
+    ).catch(() => undefined);
   await announce(env, artifactId, who, opts.after, r);
   return commentView(env, sent, viewer);
 }

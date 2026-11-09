@@ -41,6 +41,9 @@ create table if not exists comment_targets (
   primary key (comment_id, kind, key)
 );
 create index if not exists comment_targets_thread on comment_targets (thread_id);
+create table if not exists comment_asker_notices (
+  thread_id text primary key, last_at text not null, prev_at text, n integer not null
+);
 create table if not exists comment_limits (
   id integer primary key check (id = 1), day integer not null, n integer not null
 );
@@ -376,9 +379,10 @@ export function insertExtras(
 }
 
 /**
- * Whether a reply to the ask's author may notify its agents now (#1614): none
- * yet within `sinceIso` on this thread, and fewer than `max` in all. One
- * notice per thread per window is the bound; a thread's total is capped too.
+ * The bound on notices to an ask's author's agents (#1614), kept per thread
+ * in its own row: deleting a reply never gives it back. `due`: none within
+ * `sinceIso` and fewer than `max` in all. `spendAsker` records one notice at
+ * `at` (the reply's time), keeping the earlier time so a refund can restore it.
  */
 export function askerNoticeDue(
   sql: SqlStorage,
@@ -387,16 +391,39 @@ export function askerNoticeDue(
   max: number,
 ): boolean {
   const r = sql
-    .exec<{ total: number; recent: number }>(
-      `select count(distinct g.comment_id) as total,
-         count(distinct case when c.created_at >= ? then g.comment_id end) as recent
-       from comment_targets g join comments c on c.id = g.comment_id
-       where g.thread_id = ? and g.kind = 'asker'`,
-      sinceIso,
+    .exec<{ last_at: string; n: number }>(
+      "select last_at, n from comment_asker_notices where thread_id = ?",
       threadId,
     )
-    .one();
-  return r.recent === 0 && r.total < max;
+    .toArray()[0];
+  return !r || (r.last_at < sinceIso && r.n < max);
+}
+
+export function spendAsker(
+  sql: SqlStorage,
+  threadId: string,
+  at: string,
+): void {
+  sql.exec(
+    `insert into comment_asker_notices (thread_id, last_at, prev_at, n) values (?, ?, null, 1)
+     on conflict (thread_id) do update set prev_at = last_at, last_at = excluded.last_at, n = n + 1`,
+    threadId,
+    at,
+  );
+}
+
+/** Gives back the notice spent at `at` (only while it is still the last one). */
+export function refundAsker(
+  sql: SqlStorage,
+  threadId: string,
+  at: string,
+): void {
+  sql.exec(
+    `update comment_asker_notices set last_at = coalesce(prev_at, '0'), prev_at = null, n = n - 1
+     where thread_id = ? and last_at = ? and n > 0`,
+    threadId,
+    at,
+  );
 }
 
 /** Sets one mention's or the assignment's state. */
