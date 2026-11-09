@@ -112,6 +112,13 @@ export async function creatorCount(env: Env, month: string): Promise<number> {
 /** settings key: the last month whose final report billing accepted. */
 export const USAGE_SENT_KEY = "billing.usage.sent";
 /**
+ * settings key: months billing refused for good (a 4xx about the month
+ * itself), comma-separated, oldest first, the last USAGE_SKIPPED_MAX kept.
+ * USAGE_SENT_KEY moves past them, so they are never retried.
+ */
+export const USAGE_SKIPPED_KEY = "billing.usage.skipped";
+const USAGE_SKIPPED_MAX = 24;
+/**
  * settings key: the month of the first good /tier read (store.ts refreshPlan,
  * insert or ignore). The first usage report starts no earlier, so months from
  * before billing went live are never sent.
@@ -141,14 +148,45 @@ export async function sendUsage(
   return r.data;
 }
 
+/**
+ * True when billing refused `month` itself: a 4xx other than 401/403 (a bad
+ * or foreign signature, which is true of every month), 408 and 429 (try
+ * again), and not the gate's own refusal (`gate_refused`). 5xx and network
+ * failures are transient and never skip a month.
+ */
+function refusedForGood(e: unknown): e is BillingUnavailableError {
+  if (!(e instanceof BillingUnavailableError)) return false;
+  const m = /^http_(4\d\d)$/.exec(e.why);
+  if (!m) return false;
+  return !["401", "403", "408", "429"].includes(m[1] as string);
+}
+
+/** Records `month` as skipped; returns how many months are now on the list. */
+async function recordSkipped(env: Env, month: string): Promise<number> {
+  const row = await env.DB.prepare("select value from settings where key = ?1")
+    .bind(USAGE_SKIPPED_KEY)
+    .first<{ value: string }>();
+  const months = [...(row?.value ? row.value.split(",") : []), month].slice(
+    -USAGE_SKIPPED_MAX,
+  );
+  await env.DB.prepare(
+    `insert into settings (key, value) values (?1, ?2)
+     on conflict (key) do update set value = excluded.value`,
+  )
+    .bind(USAGE_SKIPPED_KEY, months.join(","))
+    .run();
+  return months.length;
+}
+
 /** The most months one tick catches up (a stuck report never loops forever). */
 const USAGE_CATCH_UP_MAX = 24;
 
 /**
  * The scheduler tick's monthly report: every month after the last accepted
  * one (USAGE_SENT_KEY) up to the previous month, oldest first, each one's
- * final list, stopping at the first billing refuses (the next tick retries
- * from there). With nothing sent yet, from the oldest month with creators,
+ * final list. A 4xx about the month (not 401/403/408/429) skips it for good
+ * (USAGE_SKIPPED_KEY); any other failure stops the tick and the next one
+ * retries from there. With nothing sent yet, from the oldest month with creators,
  * no earlier than the month billing first answered (LIVE_KEY).
  * Never throws.
  */
@@ -188,7 +226,16 @@ export async function usageTick(env: Env, now: number): Promise<void> {
     )
       months.push(m);
     for (const month of months) {
-      await sendUsage(env, month, now);
+      try {
+        await sendUsage(env, month, now);
+      } catch (e) {
+        if (!refusedForGood(e)) throw e;
+        // Billing refused this month itself: skip it so later months still
+        // go, and never retry it. A second skipped month raises the alert key.
+        const count = await recordSkipped(env, month);
+        logWarn("billing_usage_skipped", undefined, { month, why: e.why });
+        if (count >= 2) logWarn("billing_usage_skipping", undefined, { count });
+      }
       await env.DB.prepare(
         `insert into settings (key, value) values (?1, ?2)
          on conflict (key) do update set value = excluded.value where settings.value < excluded.value`,
