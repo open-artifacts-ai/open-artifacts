@@ -288,14 +288,6 @@ export function TitleBar({
             {narrow ? "" : " for you"}
           </ShButton>
         )}
-        {comments && asks?.count === 0 && (
-          <span
-            data-asks-none
-            className={`${TXT} whitespace-nowrap text-muted-foreground`}
-          >
-            No asks for you
-          </span>
-        )}
         {comments && (
           <ShButton
             variant="outline"
