@@ -54,7 +54,14 @@ import {
   MAX_ACTIVE_MACHINES,
 } from "../services/bus.js";
 import type { DeliveryOutcome } from "../services/bus-delivery.js";
-import { follow, following, unfollow } from "../services/follows.js";
+import {
+  follow,
+  following,
+  knownKey,
+  moveFollows,
+  pruneDeadFollows,
+  unfollow,
+} from "../services/follows.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
@@ -4352,6 +4359,14 @@ export class BusHub extends DurableObject<Env> {
         // ref takes over the old one's agent row (address, former names, mail).
         if (f.replaces !== undefined && mailboxGated(ws))
           takeOver(sql, machineId, f.replaces, f.agent_ref, this.#now());
+        // #1766: where this session's follows are now, before agentUp moves it.
+        const before = one<{ namespace: string; name: string }>(
+          sql,
+          "select namespace, name from agents where machine_id = ? and native_ref = ? and org_id = ?",
+          machineId,
+          f.agent_ref,
+          OWNER_ORG_ID,
+        );
         const { reply, change, arms, moved } = this.#withReachNotice(() =>
           agentUp(sql, machineId, f, this.#now()),
         );
@@ -4360,6 +4375,7 @@ export class BusHub extends DurableObject<Env> {
         sendFrame(ws, reply);
         notifyRoster(this.ctx, change, ws);
         const a = registeredAgent(sql, machineId, f.agent_ref);
+        const rekeyed = a ? this.#rekeyFollows(before, a) : undefined;
         if (a) {
           // Its queued mail, then what it missed as a sender.
           this.#flush(ws, a);
@@ -4369,7 +4385,7 @@ export class BusHub extends DurableObject<Env> {
             this.#arm(this.#now() + 1);
           }
         }
-        return;
+        return rekeyed;
       }
       case "agent_down": {
         const a = this.#withReachNotice(() =>
@@ -4436,10 +4452,74 @@ export class BusHub extends DurableObject<Env> {
           );
           return;
         }
-        this.#rename(ws, f, a);
-        return;
+        return this.#rename(ws, f, a);
       }
     }
+  }
+
+  /**
+   * #1766: follows are keyed by address, so a session whose address changed
+   * (a rename, or an agent_up that moved it) takes its rows along. The D1 work
+   * is returned for webSocketMessage to await after the arm commit, bounded by
+   * FOLLOW_TIMEOUT_MS and best effort: a failure logs and never fails the
+   * rename. A follow request waits for it (#rekeyed), so `following` right
+   * after `renamed` sees the moved rows. A reclaim keeps the address: no call.
+   */
+  #rekeyed: Promise<void> = Promise.resolve();
+  #rekeyFollows(
+    before: { namespace: string; name: string } | null,
+    after: { namespace: string; name: string },
+  ): Promise<void> | undefined {
+    if (
+      before === null ||
+      (before.namespace === after.namespace && before.name === after.name)
+    )
+      return undefined;
+    const userId = this.ctx.id.name?.startsWith("bus:")
+      ? this.ctx.id.name.slice(4)
+      : null;
+    if (userId === null) return undefined;
+    const from = { namespace: before.namespace, name: before.name };
+    const to = { namespace: after.namespace, name: after.name };
+    const run = async (): Promise<void> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("follow re-key timed out")),
+            FOLLOW_TIMEOUT_MS,
+          );
+        });
+        await Promise.race([moveFollows(this.env, userId, from, to), timeout]);
+      } catch (e) {
+        logError("bus_follow_rekey_failed", e);
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const p = this.#rekeyed.then(run);
+    this.#rekeyed = p;
+    return p;
+  }
+
+  /**
+   * #1766: every address this hub still holds for its member: a live agent, or
+   * a name under an unexpired reservation (away, held, chosen), as knownKey.
+   * A follow row at any other address can never be reached again.
+   */
+  #knownAddresses(): Set<string> {
+    const sql = this.ctx.storage.sql;
+    const known = new Set<string>();
+    for (const r of sql.exec<{ namespace: string; name: string }>(
+      "select namespace, name from agents where live = 1",
+    ))
+      known.add(knownKey(r));
+    for (const r of sql.exec<{ namespace: string; name: string }>(
+      "select namespace, name from former_names where expires_at > ?",
+      this.#now(),
+    ))
+      known.add(knownKey(r));
+    return known;
   }
 
   #followsInFlight = 0;
@@ -4462,6 +4542,7 @@ export class BusHub extends DurableObject<Env> {
       ? this.ctx.id.name.slice(4)
       : null;
     if (userId === null) {
+      logEvent("follow_no_member", { machineId: agent.machineId });
       sendError(ws, f.id, "internal", "Could not follow right now");
       return;
     }
@@ -4480,12 +4561,14 @@ export class BusHub extends DurableObject<Env> {
       url: e.url,
       followed_at: e.followedAt,
     });
+    // A rename's re-key lands first (bounded itself), so this sees the moved rows.
+    await this.#rekeyed;
     this.#followsInFlight++;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const work =
         f.type === "follow"
-          ? follow(this.env, userId, to, f.artifact).then(
+          ? this.#followOrPrune(userId, to, f.artifact).then(
               (e) =>
                 ({ v: 1, id: f.id, type: "followed", ...wire(e) }) as const,
             )
@@ -4530,6 +4613,31 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
+   * follow, and at follow_limit (#1766) delete the member's follows at
+   * addresses no live, away or reserved agent holds, then try once more. A
+   * live or away agent's rows are never touched; still full: follow_limit.
+   */
+  async #followOrPrune(
+    userId: string,
+    to: { namespace: string; name: string },
+    ref: string,
+  ) {
+    try {
+      return await follow(this.env, userId, to, ref);
+    } catch (e) {
+      if (!(e instanceof ApiError && e.code === "follow_limit")) throw e;
+      const n = await pruneDeadFollows(
+        this.env,
+        userId,
+        this.#knownAddresses(),
+      );
+      if (n === 0) throw e;
+      logEvent("follows_pruned", { n });
+      return follow(this.env, userId, to, ref);
+    }
+  }
+
+  /**
    * `rename` (R393b, #1325) for a live agent: `renamed`, or `error
    * rate_limited` past LIMITS.renamesPerHour name changes in a rolling hour
    * or with no room for one more chosen former name (formerRoom).
@@ -4544,7 +4652,7 @@ export class BusHub extends DurableObject<Env> {
     ws: WebSocket,
     f: Extract<ClientFrame, { type: "rename" }>,
     agent: AgentRow,
-  ): void {
+  ): Promise<void> | undefined {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
     const global = agent.global === 1;
@@ -4570,13 +4678,13 @@ export class BusHub extends DurableObject<Env> {
     // limit, then the commit: a no-op never counts, a refusal changes nothing.
     if (name === agent.name) {
       sendFrame(ws, reply);
-      return;
+      return undefined;
     }
     const at: Scope = { namespace: agent.namespace, global };
     if (!renameAllowed(sql, agent.id, now)) {
       logEvent("rate_limited", { kind: "rename", machineId: agent.machineId });
       sendError(ws, f.id, "rate_limited", RENAME_MESSAGES.rate);
-      return;
+      return undefined;
     }
     if (!formerRoom(sql, agent.id, agent.name, at, name, at, now)) {
       logEvent("rate_limited", {
@@ -4584,7 +4692,7 @@ export class BusHub extends DurableObject<Env> {
         machineId: agent.machineId,
       });
       sendError(ws, f.id, "rate_limited", RENAME_MESSAGES.room);
-      return;
+      return undefined;
     }
     const former = agent.name;
     for (const t of recordRename(sql, agent.id, former, at, name, at, now))
@@ -4615,6 +4723,7 @@ export class BusHub extends DurableObject<Env> {
       this.#adoptHeld(moved, agent);
       this.#flush(ws, agent);
     }
+    return this.#rekeyFollows(agent, { namespace: agent.namespace, name });
   }
 
   /** #1742: a held (pushed, unacked) body of a moved receipt now belongs to its new recipient. */

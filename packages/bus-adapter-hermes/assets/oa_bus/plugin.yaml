@@ -8,6 +8,9 @@ provides_tools:
   - oabus_fetch
   - oabus_self
   - oabus_set_status
+  - oabus_follow
+  - oabus_unfollow
+  - oabus_following
 provides_hooks:
   - pre_llm_call
   - on_session_end
