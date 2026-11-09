@@ -19,6 +19,7 @@ import {
   isFallbackName,
   isId,
   LIMITS,
+  LinkProofHashSchema,
   MAILBOX_BYTES_CAP,
   MAILBOX_PENDING_CAP,
   MAILBOX_RETAIN_MS,
@@ -50,6 +51,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError, logInfo } from "../log.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
+import type { AgentIdentity } from "../services/agent-usage.js";
 import {
   type BusCloseKind,
   busCloseKind,
@@ -193,6 +195,9 @@ function logEvent(
 }
 
 const HOUR_MS = 3_600_000;
+
+/** SET clause of every close: the status goes, and so does the session's link proof (#1822). */
+const CLOSE_CLEAR = `${STATUS_CLEAR}, proof_hash = null`;
 /** meta key: when the last closeAll started (ms). */
 const REVOKED_AT_KEY = "revoked_at";
 /**
@@ -331,6 +336,7 @@ const HUB_CAPS = [
   BUS_CAPS.links,
   BUS_CAPS.reach,
   BUS_CAPS.follow,
+  BUS_CAPS.link,
 ];
 
 /**
@@ -341,6 +347,12 @@ const HUB_CAPS = [
 const followGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.follow);
+};
+
+/** #1822: link_bind goes only to a socket whose hello listed BUS_CAPS.link. */
+const linkGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.link);
 };
 
 /**
@@ -809,6 +821,25 @@ function machineChange(sql: SqlStorage, machineId: string): RosterChange {
     namespaces: rows.map((r) => r.namespace),
     global: rows.some((r) => r.g === 1),
   };
+}
+
+/**
+ * #1822: stores the hash of `agentId`'s proof, replacing any earlier one, and
+ * mints the agent's identity_id at its first bind. Another row holding the
+ * same hash loses it, so a hash names one session.
+ */
+function bindProof(sql: SqlStorage, agentId: string, hash: string): void {
+  sql.exec(
+    "update agents set proof_hash = null where proof_hash = ? and id != ?",
+    hash,
+    agentId,
+  );
+  sql.exec(
+    "update agents set proof_hash = ?, identity_id = coalesce(identity_id, ?) where id = ?",
+    hash,
+    randomHex(32),
+    agentId,
+  );
 }
 
 /** The open agent `ref` on this machine, or null: the from_ref identity check. */
@@ -1293,6 +1324,26 @@ function takeAwayName(
   );
   while (deleteDeliveredBodies(sql, fromId, 500) >= 500) {
     // Next page.
+  }
+  // #1822: the session link follows the name, but only between two sessions
+  // of one machine.
+  const idFrom = one<{ identityId: string | null }>(
+    sql,
+    `select f.identity_id as identityId from agents f join agents t on t.machine_id = f.machine_id
+      where f.id = ? and t.id = ?`,
+    fromId,
+    toId,
+  );
+  if (idFrom?.identityId) {
+    sql.exec(
+      "update agents set identity_id = ? where id = ?",
+      idFrom.identityId,
+      toId,
+    );
+    sql.exec(
+      "update agents set identity_id = null, proof_hash = null where id = ?",
+      fromId,
+    );
   }
   const have = one<{ n: number; b: number }>(
     sql,
@@ -1875,7 +1926,7 @@ function takeOver(
   );
   if (taken?.live !== 1) return;
   sql.exec(
-    `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR} where id = ?`,
+    `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${CLOSE_CLEAR} where id = ?`,
     now,
     now,
     taken.id,
@@ -1893,7 +1944,7 @@ function agentDown(
   // One statement (B11): the close is the hot path of sessions{closed}.
   return one<{ id: string; namespace: string; global: number }>(
     sql,
-    `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR} where machine_id = ? and native_ref = ? and live = 1 and org_id = ? returning id, namespace, global`,
+    `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${CLOSE_CLEAR} where machine_id = ? and native_ref = ? and live = 1 and org_id = ? returning id, namespace, global`,
     now,
     now,
     machineId,
@@ -3234,7 +3285,9 @@ function senderRef(f: ClientFrame): string | null {
     f.type === "unfollow" ||
     f.type === "following"
     ? f.from_ref
-    : null;
+    : f.type === "link_bind"
+      ? f.agent_ref
+      : null;
 }
 
 /** #1317: waiting server notices a hub keeps; a notice over it is dropped (a replace of a waiting one is not). */
@@ -3644,6 +3697,21 @@ export class BusHub extends DurableObject<Env> {
     }
     await this.#commitArm();
     return outcome;
+  }
+
+  /**
+   * #1822: the live session whose proof hashes to `hash`, or null. Reads this
+   * member's own agents only (one hub per member), so a proof of another
+   * member never resolves here. Worker only.
+   */
+  async agentByProof(hash: string): Promise<AgentIdentity | null> {
+    if (!LinkProofHashSchema.safeParse(hash).success) return null;
+    return one<AgentIdentity>(
+      this.ctx.storage.sql,
+      "select identity_id as identityId, namespace, name, kind from agents where proof_hash = ? and live = 1 and identity_id is not null and org_id = ?",
+      hash,
+      OWNER_ORG_ID,
+    );
   }
 
   /** #1299: answers true. Reads no member data and arms no alarm (the constructor still creates the schema); the hosted canary's liveness probe. */
@@ -4103,7 +4171,7 @@ export class BusHub extends DurableObject<Env> {
     // CLOSED_AGENTS_PER_MACHINE), never the rest of its closed history.
     const ids = sql
       .exec(
-        `update agents set live = 0, last_name = name, updated_at = ?, ${STATUS_CLEAR} where machine_id = ? and live = 1 returning id`,
+        `update agents set live = 0, last_name = name, updated_at = ?, ${CLOSE_CLEAR} where machine_id = ? and live = 1 returning id`,
         now,
         id,
       )
@@ -4450,6 +4518,12 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
 
+    // #1822: without the cap the frame is as unknown as it is to an older hub.
+    if (f.type === "link_bind" && !linkGated(ws)) {
+      reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
+      return;
+    }
+
     // Review Focus 1: a socket acts only for agents it registered itself.
     const ref = senderRef(f);
     const sender = ref === null ? null : registeredAgent(sql, machineId, ref);
@@ -4489,7 +4563,8 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.mailbox) ||
           hasCap(f, BUS_CAPS.links) ||
           hasCap(f, BUS_CAPS.reach) ||
-          hasCap(f, BUS_CAPS.follow)
+          hasCap(f, BUS_CAPS.follow) ||
+          hasCap(f, BUS_CAPS.link)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -4502,7 +4577,7 @@ export class BusHub extends DurableObject<Env> {
         // inline batch and one queue row (B11).
         const downed = all<{ id: string; namespace: string; global: number }>(
           sql,
-          `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR}
+          `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${CLOSE_CLEAR}
             where machine_id = ? and live = 1 and org_id = ?
               and native_ref in (select value from json_each(?))
            returning id, namespace, global`,
@@ -4625,6 +4700,14 @@ export class BusHub extends DurableObject<Env> {
       case "unfollow":
       case "following":
         return sender ? this.#follows(ws, f, sender) : undefined;
+      case "link_bind":
+        // Only an agent this socket registered (the check above): a machine
+        // can bind a proof only for a session it hosts.
+        if (sender) {
+          bindProof(sql, sender.id, f.hash);
+          sendFrame(ws, { v: 1, id: f.id, type: "link_bound" });
+        }
+        return;
       case "rename": {
         // R393b: only a live agent this socket registered may be renamed.
         const a = registeredAgent(sql, machineId, f.agent_ref);
@@ -5101,7 +5184,7 @@ export class BusHub extends DurableObject<Env> {
       }
       const rows = all<{ id: string; namespace: string; global: number }>(
         sql,
-        `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR}
+        `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${CLOSE_CLEAR}
           where rowid in (select rowid from agents where machine_id = ? and live = 1 and org_id = ? limit ?)
          returning id, namespace, global`,
         now,

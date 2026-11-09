@@ -13,7 +13,7 @@ renames and role addresses; `role_vacant` came back with role addresses, see
 Role addresses); version gates (`AGENT_CARD_MIN_CLIENT`,
 `KIND_TOKEN_MIN_CLIENT`) are gone because no old client exists; the machine
 token is `oa_machine_`; the routes live under `/bus/` on the instance origin.
-`follow`, `unfollow` and `following` came with #1317 (see Follows). Renames (OpenBus R393a, #1325) are gated on a `hello` capability,
+`link_bind` came with #1822 (see Session links). `follow`, `unfollow` and `following` came with #1317 (see Follows). Renames (OpenBus R393a, #1325) are gated on a `hello` capability,
 not a version (see Renames).
 
 Anything both the instance (`apps/server/src/bus/`) and the local client
@@ -90,6 +90,7 @@ Client to hub (`CLIENT_FRAMES`):
 - `status {from_ref, state, label?}`: fire and forget.
 - `rename {agent_ref, proposed_name, name_kind?}`: rename a live agent; `proposed_name` 1..256 chars. Answered by `renamed` or `error`.
 - `follow {from_ref, artifact}`, `unfollow {from_ref, artifact}`, `following {from_ref}` (`BUS_CAPS.follow`, see Follows): `artifact` is an id or the page URL, 1..2048 chars.
+- `link_bind {agent_ref, hash}` (`BUS_CAPS.link`, see Session links).
 
 Hub to client (`SERVER_FRAMES`):
 
@@ -104,6 +105,7 @@ Hub to client (`SERVER_FRAMES`):
 - `roster_changed {namespace}`
 - `renamed {agent_ref, bus_name, former?}`: reply to `rename`. `former` is the name left, absent on a no-op. Names compare case-insensitively.
 - `followed {artifact_id, url, followed_at}`, `unfollowed {removed}`, `follows {follows: [{artifact_id, url, followed_at}]}` (at most `MAX_FOLLOWS`, 200): replies to `follow`, `unfollow`, `following`.
+- `link_bound {}`: reply to `link_bind`.
 
 Targeting, idempotency (a send's `id` is unique per sender for at least 1 h;
 a resend reuses it) and the decoder bounds are unchanged from OpenBus:
@@ -134,6 +136,24 @@ so an agent can only follow, unfollow and list as itself.
   this socket), `rate_limited` (too many follows in flight), `internal`.
 - `unfollow` answers `unfollowed {removed}`; no read access is needed.
 - `following` answers `follows`, newest first: ids and links only.
+
+## Session links (`BUS_CAPS.link`, #1822)
+
+A session proves which bus agent it is on `/mcp` with a random proof in the
+`X-OA-Agent-Proof-Token` header (43 base64url characters). The client sends
+the proof's hash, never the proof, over the machine's socket.
+
+- `hello.caps` listing `link`: the hub then answers `link_bind` and lists
+  `link` in `hello_ok.caps`. Any other socket gets `bad_frame`, as an older
+  hub does. A client sends it only when `hello_ok.caps` listed `link`.
+- `link_bind {agent_ref, hash}`: `hash` is the sha256 hex (64 lowercase hex
+  characters) of the proof. Answers `link_bound`, or `error` `not_registered`
+  when `agent_ref` is not an open agent this socket registered. A new bind
+  replaces the old hash; closing the session clears it. The first accepted
+  bind gives the agent an opaque `identity_id`, kept through renames and moved
+  with a name the hub hands over to a restarted session on the same machine.
+- The hub answers a lookup by hash only for the member who owns it; the
+  Worker asks only the hub of the credential's own member.
 
 ## Reply ids (`BUS_CAPS.ids`)
 
