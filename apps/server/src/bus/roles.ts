@@ -281,8 +281,8 @@ export function deleteRole(
  * Role `lname` in `ns` resolved: its live holder, or role_vacant. With
  * `awayAt` (#1349, a mailbox-capable sender; the time) a holder that is away
  * resolves too, so the send queues in its mailbox: closed (not live), its
- * `away` reservation unexpired (a newcomer's reclaim, #1742, releases it, and
- * the role is then vacant), its machine not revoked, and still in the role's
+ * `away` reservation unexpired (a newcomer's reclaim, #1742, releases it: a
+ * plain role moves to the newcomer, a role with reach is then vacant), its machine not revoked, and still in the role's
  * namespace or global. A vacated role, or a holder that moved, stays vacant.
  */
 function holderOf(
