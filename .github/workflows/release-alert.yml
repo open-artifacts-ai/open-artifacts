@@ -14,7 +14,8 @@
 #   * only the `release-please` job failed: the issue "release-please failed",
 #     closed by any later green push run. Safe, because `kind` fails every later
 #     run while a release is missing.
-#   * any other job failed (deploy-prod, publish-npm, verify-release): the
+#   * any other job failed, timed out or was cancelled (deploy-prod,
+#     publish-npm, verify-release; one is cancelled here only after a failure): the
 #     release exists but a downstream step is red. A later green push run on a
 #     newer commit says nothing about it, so it gets its own issue
 #     "release-please failed at <full sha>", closed only by a green run of that
@@ -88,7 +89,7 @@ jobs:
             kind="the release-please job"
             body_extra=""
             jobs=$(gh api "${JOBS_URL#https://api.github.com/}?per_page=100") || { echo "::error::could not read the jobs of $RUN"; exit 1; }
-            other=$(jq -r '[.jobs[] | select(.name != "release-please" and (.conclusion == "failure" or .conclusion == "timed_out")) | .name] | join(", ")' <<< "$jobs") || { echo "::error::could not read the jobs of $RUN"; exit 1; }
+            other=$(jq -r '[.jobs[] | select(.name != "release-please" and (.conclusion == "failure" or .conclusion == "timed_out" or .conclusion == "cancelled")) | .name] | join(", ")' <<< "$jobs") || { echo "::error::could not read the jobs of $RUN"; exit 1; }
             if [ -n "$other" ]; then
               title="$TITLE at $SHA"
               kind="a downstream job ($other)"

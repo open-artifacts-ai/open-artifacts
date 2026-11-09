@@ -2083,11 +2083,21 @@ esac
   const SHA = "a".repeat(40);
   const OTHER = "b".repeat(40);
   const issue = (number: number, title = TITLE) => ({ number, title });
-  const jobs = (...failed: string[]) => ({
+  // The real shape of a run where only release-please failed (run
+  // 42557712423): it is red and every job after it is skipped. With a
+  // downstream list, release-please passed and those jobs ended as given.
+  const DOWNSTREAM = ["deploy-landing", "deploy-prod", "publish-npm"];
+  const jobs = (...down: [string, string][]) => ({
     jobs: [
-      { name: "release-please", conclusion: "success" },
-      { name: "deploy-landing", conclusion: "skipped" },
-      ...failed.map((name) => ({ name, conclusion: "failure" })),
+      {
+        name: "release-please",
+        conclusion: down.length ? "success" : "failure",
+      },
+      ...DOWNSTREAM.filter((n) => !down.some(([d]) => d === n)).map((name) => ({
+        name,
+        conclusion: "skipped",
+      })),
+      ...down.map(([name, conclusion]) => ({ name, conclusion })),
     ],
   });
   const alert = (
@@ -2174,7 +2184,7 @@ esac
   });
   it("a failed downstream job gets its own issue titled with the full sha", () => {
     const r = alert("failure", {
-      jobs: jobs("deploy-prod"),
+      jobs: jobs(["deploy-prod", "failure"]),
       issues: [issue(7)],
     });
     expect(r.writes).toHaveLength(1);
@@ -2184,10 +2194,24 @@ esac
       ),
     );
   });
+  it.each(["timed_out", "cancelled"])(
+    "a downstream job that ended %s also gets the issue for the sha",
+    (conclusion) => {
+      const r = alert("failure", { jobs: jobs(["deploy-prod", conclusion]) });
+      expect(r.writes).toHaveLength(1);
+      expect(r.writes[0]).toContain(`--title release-please failed at ${SHA} `);
+      expect(r.writes[0]).toContain("deploy-prod");
+    },
+  );
+  it("skipped downstream jobs do not count: release-please alone is the plain issue", () => {
+    const r = alert("failure", { jobs: jobs() });
+    expect(r.writes[0]).toContain("--title release-please failed --label");
+    expect(r.writes[0]).not.toContain(" at ");
+  });
   it("a downstream failure again comments on that sha's issue", () => {
     const t = `${TITLE} at ${SHA}`;
     const r = alert("failure", {
-      jobs: jobs("publish-npm"),
+      jobs: jobs(["publish-npm", "failure"]),
       issues: [issue(7), issue(12, t)],
     });
     expect(r.writes).toHaveLength(1);
