@@ -439,7 +439,7 @@ export type CommentExtras = {
   mentions?: KeyRef[];
   assign?: KeyRef;
   ask?: AskInput;
-  /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions, assign or ask. */
+  /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions or ask. */
   toAsker?: boolean;
 };
 
@@ -783,14 +783,10 @@ export async function addReply(
   const text = checkBody(body);
   let r: Resolved;
   if (extras.toAsker) {
-    if (
-      (extras.mentions?.length ?? 0) > 0 ||
-      extras.assign !== undefined ||
-      extras.ask !== undefined
-    )
+    if ((extras.mentions?.length ?? 0) > 0 || extras.ask !== undefined)
       throw new ApiError(
         "bad_request",
-        "toAsker cannot be combined with mentions, assign or ask",
+        "toAsker cannot be combined with mentions or ask",
       );
     r = await resolveToAsker(env, artifactId, threadId);
   } else r = await resolveExtras(env, artifactId, who, extras, opts);
