@@ -38,6 +38,8 @@ export const IDLE_MS = 30 * 60_000;
 export const PROVEN_MAX = 2000;
 /** The daemon gets this long to take a link_proof; an answer after it leaves the root unlinked. */
 export const PROOF_MS = 2000;
+/** A link whose proof was not taken tries again on a later turn, at most this often. */
+export const PROOF_RETRY_MS = 60_000;
 /** Runs whose root the prompt hook has told us, so a tool hook can find its root. The oldest is dropped. */
 export const RUN_ROOTS_MAX = 500;
 /**
@@ -106,6 +108,13 @@ class Mailbox {
   client?: DaemonClient;
   /** This link's proof (#1822), kept in memory only; set once the daemon took its hash. */
   proof?: { client: DaemonClient; value: string };
+  /** The proof this link offered the daemon, and when it last did; a retry offers the same one. */
+  offer?: {
+    client: DaemonClient;
+    value: string;
+    at: number;
+    busy?: boolean;
+  };
   connecting?: Promise<DaemonClient>;
   retryAt = 0;
   refusals = 0;
@@ -314,16 +323,29 @@ export class Bus {
    */
   private async proveLink(b: Mailbox, client: DaemonClient): Promise<void> {
     b.proof = undefined;
+    b.offer = undefined;
+    const caps = client.welcome.caps;
+    if (!Array.isArray(caps) || !caps.includes(ADAPTER_CAPS.link)) return;
+    const value = (this.deps.random?.() ?? randomBytes(32)).toString(
+      "base64url",
+    );
+    b.offer = { client, value, at: this.now() };
+    await this.offerProof(b, b.offer);
+  }
+
+  /** One link_proof for `offer`; sets the proof only when the daemon says it took it. Never throws. */
+  private async offerProof(
+    b: Mailbox,
+    offer: NonNullable<Mailbox["offer"]>,
+  ): Promise<void> {
+    if (offer.busy) return;
+    offer.busy = true;
+    offer.at = this.now();
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const caps = client.welcome.caps;
-      if (!Array.isArray(caps) || !caps.includes(ADAPTER_CAPS.link)) return;
-      const value = (this.deps.random?.() ?? randomBytes(32)).toString(
-        "base64url",
-      );
-      const hash = createHash("sha256").update(value).digest("hex");
+      const hash = createHash("sha256").update(offer.value).digest("hex");
       const r = await Promise.race([
-        client.request({ type: "link_proof", hash }),
+        offer.client.request({ type: "link_proof", hash }),
         new Promise<never>((_, rej) => {
           timer = setTimeout(
             () => rej(new Error("slow")),
@@ -332,12 +354,36 @@ export class Bus {
           timer.unref?.();
         }),
       ]);
-      if (r.type === "link_proofed" && r.bound && client.state === "open")
-        b.proof = { client, value };
+      if (
+        r.type === "link_proofed" &&
+        r.bound &&
+        offer.client.state === "open" &&
+        b.offer === offer
+      )
+        b.proof = { client: offer.client, value: offer.value };
     } catch {
     } finally {
       clearTimeout(timer);
+      offer.busy = false;
     }
+  }
+
+  /**
+   * A later turn on a link the daemon did not take a proof for (its hub link
+   * was down): offers the same proof again, at most once a minute per link.
+   * Never waits; does nothing once taken or for a daemon without `link`.
+   */
+  private retryProof(b: Mailbox): void {
+    const offer = b.offer;
+    if (
+      !offer ||
+      b.proof ||
+      b.client !== offer.client ||
+      offer.client.state !== "open" ||
+      this.now() - offer.at < PROOF_RETRY_MS
+    )
+      return;
+    void this.offerProof(b, offer);
   }
 
   /**
@@ -593,6 +639,7 @@ export class Bus {
     b.lastActive = this.now();
     this.touch(r.root);
     if (c.runId) this.noteRun(c.runId, r.root.ref);
+    this.retryProof(b);
     if (c.runId && b.currentRunId !== c.runId) {
       b.currentRunId = c.runId;
       // A run that failed (a failed answer, or a call that ended in an error) and

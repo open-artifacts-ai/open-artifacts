@@ -136,4 +136,26 @@ describe("helloed link_proof (#1856)", () => {
     const r = await a.request({ type: "link_proof", hash: HASH } as never);
     expect(r).toMatchObject({ type: "link_proofed", bound: false });
   });
+
+  it("takes the same hash on a later try once the hub is up (an adapter retries on a later turn)", async () => {
+    const h = await daemonHarness();
+    const a = await h.adapter("A", listed);
+    expect(
+      await a.request({ type: "link_proof", hash: HASH } as never),
+    ).toMatchObject({ bound: false });
+    h.toDaemon({
+      id: "w",
+      type: "hello_ok",
+      machine_id: "1".repeat(16),
+      machine_label: "laptop",
+      server_version: "1",
+      caps: [BUS_CAPS.ids, BUS_CAPS.link, BUS_CAPS.linkArg],
+    });
+    await vi.waitFor(async () =>
+      expect(
+        await a.request({ type: "link_proof", hash: HASH } as never),
+      ).toMatchObject({ bound: true }),
+    );
+    expect((await h.next("link_bind")).hash).toBe(HASH);
+  });
 });

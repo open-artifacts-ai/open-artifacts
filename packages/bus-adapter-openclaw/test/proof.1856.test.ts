@@ -405,3 +405,92 @@ describe("how the hook runs", () => {
     expect(attempts).toBe(before + 1);
   });
 });
+
+describe("a hub that was down when the link opened", () => {
+  const open = "open-artifacts__get_artifact";
+
+  it("retries on a later turn with the same proof, at most once a minute, until it is taken", async () => {
+    let t = 1_000_000;
+    const hub = new Hub();
+    hub.proofAnswer = "unbound";
+    const s = setup({ now: () => t }, hub);
+    const run = await userRun(s);
+    expect(hub.proofs).toHaveLength(1);
+    expect((await s.call(open, run)).out).toBeUndefined();
+    const first = hub.proofs[0]?.hash;
+    // Turns inside the minute do not retry.
+    t += 59_000;
+    s.bus.buildPrompt(caller({ runId: "run-2" }));
+    await flush();
+    expect(hub.proofs).toHaveLength(1);
+    // The hub is back: the next turn after the minute offers the same proof again.
+    hub.proofAnswer = "bound";
+    t += 2_000;
+    s.bus.buildPrompt(caller({ runId: "run-3" }));
+    await flush();
+    expect(hub.proofs).toHaveLength(2);
+    expect(hub.proofs[1]?.hash).toBe(first);
+    const got = (await s.call(open, "run-3")).out?.params?.[ARG] as string;
+    expect(sha(got)).toBe(first);
+    // Taken: no more frames, however many turns.
+    t += 600_000;
+    s.bus.buildPrompt(caller({ runId: "run-4" }));
+    await flush();
+    expect(hub.proofs).toHaveLength(2);
+  });
+
+  it("keeps trying once a minute while the daemon keeps saying no", async () => {
+    let t = 1_000_000;
+    const hub = new Hub();
+    hub.proofAnswer = "unbound";
+    const s = setup({ now: () => t }, hub);
+    await userRun(s);
+    for (let i = 2; i <= 4; i++) {
+      t += 61_000;
+      s.bus.buildPrompt(caller({ runId: `run-${i}` }));
+      await flush();
+      expect(hub.proofs).toHaveLength(i);
+    }
+    expect(new Set(hub.proofs.map((p) => p.hash)).size).toBe(1);
+  });
+
+  it("never retries for a daemon that did not list link", async () => {
+    let t = 1_000_000;
+    const hub = new Hub();
+    hub.welcomeCaps = undefined;
+    const s = setup({ now: () => t }, hub);
+    await userRun(s);
+    t += 600_000;
+    s.bus.buildPrompt(caller({ runId: "run-2" }));
+    await flush();
+    expect(hub.proofs).toHaveLength(0);
+  });
+
+  it("a new link makes a new proof, not the old one's", async () => {
+    let t = 1_000_000;
+    const hub = new Hub();
+    hub.proofAnswer = "unbound";
+    const s = setup({ now: () => t }, hub);
+    await userRun(s);
+    hub.clients[0]?.close();
+    t += 61_000;
+    s.bus.buildPrompt(caller({ runId: "run-2" }));
+    await flush();
+    const hashes = hub.proofs.map((p) => p.hash);
+    expect(hashes.length).toBeGreaterThanOrEqual(2);
+    expect(hashes[hashes.length - 1]).not.toBe(hashes[0]);
+  });
+
+  it("a retry never holds the prompt: the turn does not wait for the daemon", async () => {
+    let t = 1_000_000;
+    const hub = new Hub();
+    hub.proofAnswer = "unbound";
+    const s = setup({ now: () => t, proofMs: 60_000 }, hub);
+    await userRun(s);
+    hub.proofAnswer = "hang";
+    t += 61_000;
+    const out = s.bus.buildPrompt(caller({ runId: "run-2" }));
+    expect(out === undefined || typeof out === "object").toBe(true);
+    expect(hub.proofs).toHaveLength(2);
+  });
+});
