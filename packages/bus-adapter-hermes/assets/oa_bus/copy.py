@@ -142,7 +142,7 @@ def receipt_text(r, sent_to, namespaces=None, excerpt=None, moved_to=None, linke
         def tail(v):
             if reason == "recipient_closed":
                 return f"was not delivered because {v} closed first."
-            return f"was not taken within {RETAIN}."
+            return f"was not confirmed as delivered. Mail waits at most {RETAIN}."
 
         def head(v):
             return f"×  Expired: your message to {v}"
