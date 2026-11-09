@@ -454,10 +454,36 @@ describe("comments (#682)", () => {
       }),
       "*",
     );
-    // The frame loads again: the new runtime has said nothing yet, so the
-    // marker is held back until it does (#1698 review).
+    // A `load` event is not a new runtime: it waits for subresources, so the
+    // runtime's hello can arrive first. The marker must survive it (#1698).
     frame.loaded();
     b.setComments(pins);
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threads: [expect.objectContaining({ changed: true })],
+      }),
+      "*",
+    );
+  });
+
+  it("holds `changed` back until the frame's own runtime says hello (#1698)", () => {
+    // A frame loaded from here says nothing until its runtime is up: until
+    // then the shell cannot know its protocol, so it sends core fields only.
+    const b = mk();
+    b.setComments([
+      {
+        id: "t1",
+        n: 1,
+        changed: true,
+        anchor: {
+          kind: "pin" as const,
+          version: 1,
+          x: 0,
+          y: 0,
+          contentHash: "h",
+        },
+      },
+    ]);
     expect(post).toHaveBeenLastCalledWith(
       expect.objectContaining({
         threads: [expect.not.objectContaining({ changed: true })],
@@ -465,7 +491,20 @@ describe("comments (#682)", () => {
       "*",
     );
     send({ oa: 1, type: "hello", protocol: 2, kind: "html" });
-    b.setComments(pins);
+    b.setComments([
+      {
+        id: "t1",
+        n: 1,
+        changed: true,
+        anchor: {
+          kind: "pin" as const,
+          version: 1,
+          x: 0,
+          y: 0,
+          contentHash: "h",
+        },
+      },
+    ]);
     expect(post).toHaveBeenLastCalledWith(
       expect.objectContaining({
         threads: [expect.objectContaining({ changed: true })],

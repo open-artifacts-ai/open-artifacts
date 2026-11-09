@@ -92,6 +92,16 @@ export type CommentsApi = {
   resync: () => void;
 };
 
+/**
+ * Where Esc belongs to someone else: a text field, or a modal above the viewer.
+ * Our own phone sheet is `role="dialog"` without `aria-modal` (and the wide
+ * overlay is not modal), so a reader's Esc still leaves pin mode there. Radix
+ * dialogs set `aria-modal="true"` and `data-state="open"`; the alert dialog is
+ * matched by role for anything else.
+ */
+const MODAL_OR_FIELD =
+  "input, textarea, select, [aria-modal='true'], [data-state='open'][role='dialog'], [role='alertdialog']";
+
 const Ctx = createContext<CommentsApi | null>(null);
 export const CommentsProvider = Ctx.Provider;
 export function useCommentsApi(): CommentsApi {
@@ -196,8 +206,7 @@ export function useCommentsController({
       const t = e.target;
       if (
         t instanceof HTMLElement &&
-        (t.isContentEditable ||
-          t.closest("input, textarea, select, [aria-modal='true']") !== null)
+        (t.isContentEditable || t.closest(MODAL_OR_FIELD) !== null)
       )
         return;
       e.preventDefault();

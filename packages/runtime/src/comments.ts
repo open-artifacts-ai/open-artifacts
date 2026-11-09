@@ -479,10 +479,21 @@ export function createComments(
     if (best) open(best.id);
   }
 
+  /** Where Esc belongs to the page or to a dialog above the frame (#1698). */
+  const ESC_NOT_OURS =
+    "input, textarea, select, [aria-modal='true'], [data-state='open'][role='dialog'], [role='alertdialog']";
   // Esc in pin mode: the frame holds focus after a click, so tell the shell.
+  // Not while an IME, a field or a modal owns the key, matching the shell's guard.
   function onKey(e: KeyboardEvent) {
-    if (e.key === "Escape" && mode === "pin")
-      bridge.send({ oa: 1, type: "comment.escape" });
+    if (e.key !== "Escape" || mode !== "pin") return;
+    if (e.isComposing) return;
+    const t = e.target;
+    if (
+      t instanceof HTMLElement &&
+      (t.isContentEditable || t.closest(ESC_NOT_OURS) !== null)
+    )
+      return;
+    bridge.send({ oa: 1, type: "comment.escape" });
   }
 
   // ---- shell messages ----

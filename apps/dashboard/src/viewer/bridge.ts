@@ -571,9 +571,6 @@ export function createBridge(opts: BridgeOptions) {
   };
   const onLoad = () => {
     if (disposed) return;
-    // A (re)loaded frame has said nothing yet: its runtime may be older than the
-    // one whose hello we last read, so hold back fields it may not know (#1698).
-    frameProtocol = 0;
     if (frameLoad(iframe) === current && current.expected) {
       current.expected = false;
       return;
@@ -586,6 +583,11 @@ export function createBridge(opts: BridgeOptions) {
   window.addEventListener("message", onMessage);
   iframe.addEventListener("load", onLoad);
   const current = loadArtifactFrame(iframe, opts.url);
+  // A frame loaded from here has said nothing yet: its runtime may be older
+  // than one we read before, so hold back fields it may not know (#1698). A
+  // `load` event is the wrong hook: it waits for subresources, so the runtime's
+  // hello can arrive first.
+  frameProtocol = 0;
 
   return {
     dispose,

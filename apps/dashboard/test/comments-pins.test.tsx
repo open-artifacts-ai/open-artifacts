@@ -339,7 +339,8 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     fireEvent.keyDown(box, { key: "Escape" });
     // An IME composition owns it too.
     fireEvent.keyDown(document.body, { key: "Escape", isComposing: true });
-    // So does a modal above the viewer.
+    // So does a modal above the viewer, whether it says aria-modal or is a
+    // Radix dialog in its open state.
     const modal = document.createElement("div");
     modal.setAttribute("aria-modal", "true");
     const inside = document.createElement("button");
@@ -347,7 +348,17 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     document.body.append(modal);
     inside.focus();
     fireEvent.keyDown(inside, { key: "Escape" });
+    const radix = document.createElement("div");
+    radix.setAttribute("role", "dialog");
+    radix.setAttribute("data-state", "open");
+    const inRadix = document.createElement("button");
+    radix.append(inRadix);
+    document.body.append(radix);
+    fireEvent.keyDown(inRadix, { key: "Escape" });
+    // ...but not the comments sheet, which is a plain role=dialog: its Esc
+    // still leaves the pin mode the reader chose.
     expect(setMode).not.toHaveBeenCalledWith("select");
+    radix.remove();
     expect(await tool("Pin")).toHaveAttribute("aria-pressed", "true");
     modal.remove();
     // Outside all three, Esc still leaves the mode the reader chose.
