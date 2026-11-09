@@ -1310,7 +1310,12 @@ export async function decideBusReachProposal(
     await auditReachExpired(env, userId, r.expired);
     await auditReachDecision(env, userId, r, actor);
   } catch (e) {
-    logError("bus_reach_audit_failed", e);
+    const a = r.audit ?? r.proposal;
+    logError("bus_reach_audit_failed", e, {
+      proposalId: a ? ("proposalId" in a ? a.proposalId : a.id) : null,
+      roleId: a?.roleId,
+      machineId: a?.machineId,
+    });
     throw e;
   }
   return r;

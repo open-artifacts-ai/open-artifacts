@@ -443,8 +443,12 @@ export function decideReachProposal(
   decision: "confirm" | "reject",
   now: number,
   newId: () => string,
-  /** The storage's transactionSync: the grants and the status apply together or not at all. */
-  tx: <T>(fn: () => T) => T = (fn) => fn(),
+  /**
+   * The storage's transactionSync. Required, so a caller can't lose it: the
+   * proposal's grants apply together or not at all. The status update that
+   * follows runs outside it, in the same synchronous hub run.
+   */
+  tx: <T>(fn: () => T) => T,
 ): ReachDecideResult {
   const expired = expireReachProposals(sql, orgId, now);
   const p = byHash(sql, orgId, tokenHash);

@@ -867,6 +867,38 @@ describe("reach proposals (#1346)", () => {
     b.d.close();
   });
 
+  it("a proposal whose grants fail partway applies none of them: refused as changed", async () => {
+    const b = await withBus();
+    const { agent } = await holder(b);
+    const good = ns("good");
+    const p = await proposed(
+      await propose(b.machineToken, {
+        nativeRef: agent.ref,
+        namespaces: [good, ns("other")],
+      }),
+    );
+    // addReach passes for the first namespace, then fails on the second.
+    await runInHub(b.userId, (s) => {
+      s.storage.sql.exec(
+        "update reach_proposals set namespaces = ?",
+        JSON.stringify([good, "BAD NS"]),
+      );
+    });
+    const r = await decideDirect(b, p.secret);
+    expect(r.status).toBe(409);
+    expect(await r.text()).toContain("The role changed");
+    expect(await grants(b.userId)).toEqual([]);
+    const row = await runInHub(b.userId, (s) =>
+      s.storage.sql
+        .exec<{ status: string; reason: string }>(
+          "select status, reason from reach_proposals",
+        )
+        .toArray(),
+    );
+    expect(row).toEqual([{ status: "refused", reason: "changed" }]);
+    b.d.close();
+  });
+
   it("a proposal that expired is refused by the decide step too, audited as expired then refused", async () => {
     const b = await withBus();
     const { agent } = await holder(b);
