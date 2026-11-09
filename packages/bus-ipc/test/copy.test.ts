@@ -95,9 +95,9 @@ describe("receipt copy", () => {
   it("an expired notice moves the quote down when line 1 would pass 80 columns", () => {
     const long = excerptOf("x".repeat(60)) as string;
     const s = receiptText({ state: "expired" }, "oa-team-e0", undefined, long);
-    // The quote and its tail fit on their own line.
+    // The quote fits on its own line; the longer tail moves below it.
     expect(s).toBe(
-      `×  Expired: your message to oa-team-e0,\n   "${long}", was not taken within 7 days.`,
+      `×  Expired: your message to oa-team-e0,\n   "${long}",\n   was not confirmed as delivered. Mail waits at most 7 days.`,
     );
     // Every line after the first is indented three spaces, the quote included.
     expect(
@@ -124,7 +124,7 @@ describe("receipt copy", () => {
 
   it("keeps the quote on line 1 when it fits, the tail below", () => {
     expect(receiptText({ state: "expired" }, "e0", undefined, "hi")).toBe(
-      `×  Expired: your message to e0, "hi",\n   was not taken within 7 days.`,
+      `×  Expired: your message to e0, "hi",\n   was not confirmed as delivered. Mail waits at most 7 days.`,
     );
     expect(
       receiptText(
@@ -140,7 +140,7 @@ describe("receipt copy", () => {
 
   it("without an excerpt (a legacy entry) the quote is omitted", () => {
     expect(receiptText({ state: "expired" }, "peer")).toBe(
-      "×  Expired: your message to peer was not taken within 7 days.",
+      "×  Expired: your message to peer was not confirmed as delivered. Mail waits at most 7 days.",
     );
     expect(
       receiptText({ state: "expired", reason: "recipient_closed" }, "peer"),

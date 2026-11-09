@@ -286,6 +286,26 @@ create table if not exists link_proposals (
 );
 create index if not exists link_proposals_machine on link_proposals(org_id, machine_id, created_at);
 
+-- #1346 reach grants: what the member allowed a role to reach. One row per
+-- role (role_ns, lname) and target namespace; the holder is read from roles,
+-- so a vacant role gives no reach and a new holder inherits it. mode is
+-- 'reach' only for now (a later 'listed' needs no alter table). Deleted with
+-- its role (bus/roles.ts). A new table: create-if-not-exists adds it; wipe()
+-- deletes it.
+create table if not exists reach_grants (
+  id text primary key,
+  org_id text not null,
+  role_ns text not null,
+  role_name text not null,
+  lname text not null,
+  mode text not null default 'reach' check (mode = 'reach'),
+  target_ns text not null,
+  created_at integer not null,
+  unique (org_id, role_ns, lname, mode, target_ns)
+);
+create index if not exists reach_grants_target on reach_grants(org_id, mode, target_ns);
+create index if not exists reach_grants_role on reach_grants(org_id, role_ns, lname);
+
 create table if not exists meta (
   org_id text not null,
   key text not null,

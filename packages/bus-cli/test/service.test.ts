@@ -251,7 +251,7 @@ describe("systemService: launchd", () => {
     await s.ensure();
     const plist = readFileSync(plistOf(userHome), "utf8");
     expect(plist).toContain(
-      `<string>/opt/node/bin/node</string><string>${home}/bin/dist/index.js</string><string>daemon</string>`,
+      `<string>${home}/bin/node</string><string>${home}/bin/dist/index.js</string><string>daemon</string>`,
     );
     expect(plist).toContain(
       "<key>PATH</key><string>/opt/x/bin:/usr/bin</string>",
@@ -287,17 +287,19 @@ describe("systemService: launchd", () => {
     const s = systemService(d);
     const entry = join(userHome, ".oa-bus/bin/dist/index.js");
     // Before any install: what install would write now.
-    expect(s.argv?.()).toEqual(["/opt/node/bin/node", entry]);
+    const launcher = join(userHome, ".oa-bus/bin/node");
+    expect(s.argv?.()).toEqual([launcher, entry]);
     await s.ensure();
     s.cli();
-    // A later install --no-service under another node: no ensure, so the
-    // service record keeps the old node, but the entries get the new one.
+    // A later install --no-service under another node: the entries still run
+    // the launcher, which now remembers the new node.
     const now = systemService({ ...d, execPath: "/new/node" });
     now.cli();
-    expect(now.argv?.()).toEqual(["/new/node", entry]);
+    expect(now.argv?.()).toEqual([launcher, entry]);
+    expect(readFileSync(launcher, "utf8")).toContain("recorded='/new/node'");
     // doctor under yet another node still names what the entries run.
     expect(systemService({ ...d, execPath: "/other/node" }).argv?.()).toEqual([
-      "/new/node",
+      launcher,
       entry,
     ]);
   });
@@ -394,7 +396,7 @@ describe("systemService: systemd", () => {
     await s.ensure();
     const u = readFileSync(unitOf(userHome), "utf8");
     expect(u).toContain(
-      `ExecStart="/opt/node/bin/node" "${home}/bin/dist/index.js" daemon`,
+      `ExecStart="${home}/bin/node" "${home}/bin/dist/index.js" daemon`,
     );
     expect(u).toContain('Environment="PATH=/opt/x/bin:/usr/bin"');
     expect(calls).toEqual([
@@ -422,7 +424,7 @@ describe("systemService: systemd", () => {
     expect(existsSync(unitOf(userHome))).toBe(false);
     expect(s.kind).toBeUndefined();
     expect(d.spawnDaemon).toHaveBeenCalledWith(
-      "/opt/node/bin/node",
+      join(home, "bin/node"),
       [join(home, "bin/dist/index.js"), "daemon"],
       {
         env: { PATH: "/opt/x/bin:/usr/bin" },
@@ -480,10 +482,13 @@ describe("systemService: systemd", () => {
     mkdirSync(join(userHome, "linger"));
     writeFileSync(join(userHome, "linger/leo"), "");
     expect(s.problems?.()).toEqual([]);
+    // A recorded node that is gone is no problem: the launcher finds another.
     await systemService({ ...d, execPath: "/gone/node" }).ensure();
-    expect(s.problems?.()).toEqual([
-      { kind: "node-missing", node: "/gone/node" },
-    ]);
+    expect(s.problems?.()).toEqual([]);
+    // The launcher itself gone is.
+    const launcher = join(userHome, ".oa-bus/bin/node");
+    rmSync(launcher);
+    expect(s.problems?.()).toEqual([{ kind: "node-missing", node: launcher }]);
   });
 });
 
