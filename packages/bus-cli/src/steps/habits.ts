@@ -34,6 +34,7 @@ import {
 } from "./hermes.ts";
 import {
   OPENCLAW_HABITS_MARKER,
+  openclawManifestIsOurs,
   openclawPluginDir,
   openclawPluginDirs,
   openclawPluginState,
@@ -217,6 +218,8 @@ export type HabitsResult = {
   /** removeHabits: the plugin harnesses whose marker was removed, and each marker path (also in `files`). */
   plugins?: PluginHarness[];
   pluginFiles?: string[];
+  /** removeHabits: a plugin marker may still be on (unreachable, unremovable, behind a symlink). */
+  incomplete?: boolean;
 };
 
 const isLink = (path: string): boolean => {
@@ -404,7 +407,13 @@ export function removeHabits(
   // a foreign OA_BUS_HOME look like ours to --purge).
   if (deps.busHome && existsSync(join(deps.busHome, "install.json")))
     saveRecord(deps.busHome, { files: kept });
-  return { files, notes, plugins: p.changed, pluginFiles: p.markers };
+  return {
+    files,
+    notes,
+    plugins: p.changed,
+    pluginFiles: p.markers,
+    incomplete: p.incomplete,
+  };
 }
 
 /** Files that hold the current or an older block, across every harness. */
@@ -440,6 +449,8 @@ export type PluginHarness = {
   marker: string;
   /** Whether `dir` is our plugin folder (it carries our ownership marker). */
   ours: (dir: string) => boolean;
+  /** Turning off only: a looser test, since deleting the one marker file there is harmless. */
+  offOurs?: (dir: string) => boolean;
 };
 export const PLUGIN_HARNESSES: PluginHarness[] = [
   {
@@ -458,6 +469,11 @@ export const PLUGIN_HARNESSES: PluginHarness[] = [
     marker: OPENCLAW_HABITS_MARKER,
     ours: (dir) =>
       openclawPluginState(dir, undefined) !== "foreign" && !isLink(dir),
+    // An install cut short can leave our manifest and no ownership marker.
+    offOurs: (dir) =>
+      (openclawPluginState(dir, undefined) !== "foreign" ||
+        openclawManifestIsOurs(dir)) &&
+      !isLink(dir),
   },
 ];
 
@@ -514,66 +530,149 @@ export function setPluginHabits(
   deps: { home: string; env?: Env; busHome?: string },
   plugins: PluginHarness[],
   on: boolean,
-): { changed: PluginHarness[]; notes: string[]; markers: string[] } {
+): {
+  changed: PluginHarness[];
+  notes: string[];
+  markers: string[];
+  /** Off only: a marker may still be there (unreachable, unremovable or behind a symlink). */
+  incomplete: boolean;
+} {
   const changed: PluginHarness[] = [];
   const notes: string[] = [];
   const markers: string[] = [];
+  let incomplete = false;
   for (const p of plugins) {
-    // On: the active profile's folder. Off: every profile's, and every folder a
-    // marker was recorded in (the env that chose it may be gone), so none is left behind.
-    const dirs = on
-      ? [pluginPaths(deps, p).dir]
-      : [
-          ...new Set([
-            ...p.dirs(deps.home, deps.env ?? {}),
-            ...(record(deps.busHome).pluginDirs[p.name] ?? []),
-          ]),
-        ];
-    for (const dir of dirs) {
+    if (on) {
+      const dir = pluginPaths(deps, p).dir;
       const marker = join(dir, p.marker);
       try {
         if (isLink(dir) || !pluginOurs(dir, p)) {
-          if (on)
-            notes.push(
-              `Left the ${p.label} plugin alone: ${isLink(dir) ? `${dir} is a symlink.` : existsSync(dir) ? `${dir} wasn't installed by ${BUS_CMD}` : `nothing installed at ${dir}.`}`,
-            );
-          else if (isLink(dir))
-            notes.push(
-              `Left the ${p.label} plugin alone: ${dir} is a symlink, so its habits may still be on. To turn them off, delete ${dir}/${p.marker}.`,
-            );
+          notes.push(
+            `Left the ${p.label} plugin alone: ${isLink(dir) ? `${dir} is a symlink.` : existsSync(dir) ? `${dir} wasn't installed by ${BUS_CMD}` : `nothing installed at ${dir}.`}`,
+          );
           continue;
         }
-        if (on) {
-          if (isLink(marker)) {
-            notes.push(
-              `Left the ${p.label} plugin alone: ${marker} is a symlink. Remove it, then rerun.`,
-            );
-            continue;
-          }
-          writeAtomic(marker, HABITS_MARKER_TEXT);
-          markers.push(marker);
-          rememberDir(deps.busHome, p, dir);
-          if (!changed.includes(p)) changed.push(p);
-        } else if (existsSync(marker) || isLink(marker)) {
-          rmSync(marker, { force: true });
-          markers.push(marker);
-          if (!changed.includes(p)) changed.push(p);
+        if (isLink(marker)) {
+          notes.push(
+            `Left the ${p.label} plugin alone: ${marker} is a symlink. Remove it, then rerun.`,
+          );
+          continue;
         }
+        // Recorded first: a marker is never written where off could not find it.
+        try {
+          rememberDir(deps.busHome, p, dir);
+        } catch (e) {
+          notes.push(
+            `Left the ${p.label} plugin alone: could not record ${dir} in ${deps.busHome}/install.json (${reason(e)}), so no habits marker was written.`,
+          );
+          continue;
+        }
+        writeAtomic(marker, HABITS_MARKER_TEXT);
+        markers.push(marker);
+        if (!changed.includes(p)) changed.push(p);
       } catch (e) {
         notes.push(`Could not update the ${p.label} plugin: ${reason(e)}`);
       }
+      continue;
     }
-    // Swept: nothing is left to remember. Never creates a record that is not there.
-    if (!on && deps.busHome && existsSync(join(deps.busHome, "install.json"))) {
+    // Off: every profile's folder, and every folder a marker was recorded in
+    // (the env that chose it may be gone), so none is left behind.
+    const recorded = record(deps.busHome).pluginDirs[p.name] ?? [];
+    const dirs = [
+      ...new Set([...p.dirs(deps.home, deps.env ?? {}), ...recorded]),
+    ];
+    // Recorded folders whose marker is now verified gone: the only ones forgotten.
+    const done = new Set<string>();
+    const left = (msg: string) => {
+      notes.push(msg);
+      incomplete = true;
+    };
+    for (const dir of dirs) {
+      const marker = join(dir, p.marker);
+      const d = probe(dir);
+      // Absent stays listed: an unmounted volume reads as absent too.
+      if (d.k === "absent") continue;
+      if (d.k === "error") {
+        left(
+          `Could not reach the ${p.label} plugin folder ${dir} (${d.code}): its habits may still be on.`,
+        );
+        continue;
+      }
+      if (d.k === "link") {
+        left(
+          `Left the ${p.label} plugin alone: ${dir} is a symlink, so its habits may still be on. To turn them off, delete ${dir}/${p.marker}.`,
+        );
+        continue;
+      }
+      // Not a folder of ours: nothing of ours is there to remove.
+      if (d.k === "file" || !(p.offOurs ?? p.ours)(dir)) {
+        done.add(dir);
+        continue;
+      }
+      const m = probe(marker);
+      if (m.k === "absent") {
+        done.add(dir);
+        continue;
+      }
+      if (m.k === "error") {
+        left(
+          `Could not reach ${marker} (${m.code}): ${p.label} habits may still be on there.`,
+        );
+        continue;
+      }
+      try {
+        rmSync(marker, { force: true });
+      } catch (e) {
+        left(
+          `Could not remove ${marker} (${reason(e)}): ${p.label} habits are still on there. Delete it, then rerun.`,
+        );
+        continue;
+      }
+      if (probe(marker).k !== "absent") {
+        left(
+          `Could not remove ${marker}: ${p.label} habits are still on there. Delete it, then rerun.`,
+        );
+        continue;
+      }
+      markers.push(marker);
+      done.add(dir);
+      if (!changed.includes(p)) changed.push(p);
+    }
+    // Forget only what is verified gone. Never creates a record that is not there.
+    if (deps.busHome && existsSync(join(deps.busHome, "install.json"))) {
       const { pluginDirs } = record(deps.busHome);
-      if (pluginDirs[p.name] !== undefined) {
-        const { [p.name]: _gone, ...rest } = pluginDirs;
-        saveRecord(deps.busHome, { pluginDirs: rest });
+      const had = pluginDirs[p.name];
+      if (had !== undefined) {
+        const kept = had.filter((d) => !done.has(d));
+        const { [p.name]: _old, ...rest } = pluginDirs;
+        if (kept.length !== had.length)
+          saveRecord(deps.busHome, {
+            pluginDirs: kept.length > 0 ? { ...rest, [p.name]: kept } : rest,
+          });
       }
     }
   }
-  return { changed, notes, markers };
+  return { changed, notes, markers, incomplete };
 }
+
+type Probe =
+  | { k: "absent" | "link" | "dir" | "file" }
+  | { k: "error"; code: string };
+
+/** What is at `path`, telling "not there" apart from "cannot look" (EACCES, EIO). */
+const probe = (path: string): Probe => {
+  try {
+    const st = lstatSync(path);
+    return {
+      k: st.isSymbolicLink() ? "link" : st.isDirectory() ? "dir" : "file",
+    };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "error";
+    return code === "ENOENT" || code === "ENOTDIR"
+      ? { k: "absent" }
+      : { k: "error", code };
+  }
+};
 
 /** The opt-out lives in the install record, so a reinstall keeps it. */
 export const habitsOptedOut = (busHome: string): boolean =>

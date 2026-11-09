@@ -117,6 +117,18 @@ const kind = (path: string): "dir" | "file" | "link" | undefined => {
   }
 };
 
+/** Whether the folder's manifest names our plugin: enough to delete habits.on there, never to replace it. */
+export const openclawManifestIsOurs = (dir: string): boolean => {
+  try {
+    const m: unknown = JSON.parse(
+      readFileSync(join(dir, "openclaw.plugin.json"), "utf8"),
+    );
+    return (m as { id?: unknown } | null)?.id === OPENCLAW_PLUGIN_ID;
+  } catch {
+    return false;
+  }
+};
+
 /** Whether `dir` holds exactly the shipped package files (a manifest id alone proves nothing). */
 const sameAsShipped = (dir: string, shipped: string | undefined): boolean => {
   if (shipped === undefined) return false;
@@ -292,8 +304,15 @@ export async function installOpenclaw(
       ],
       INSTALL_TIMEOUT_MS,
     );
+    // Only into a folder that carries our marker: an install cut short after the
+    // swap leaves a bare one, and the yes is lost rather than put where off could
+    // not vouch for it.
     const restore = () => {
-      if (keepHabits && kind(dest) === "dir")
+      if (
+        keepHabits &&
+        kind(dest) === "dir" &&
+        kind(join(dest, OPENCLAW_MARKER)) === "file"
+      )
         writeAtomic(habitsFile, HABITS_MARKER_TEXT);
     };
     if (r.code !== 0) {

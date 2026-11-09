@@ -122,6 +122,17 @@ function turnOff(ctx: Ctx): number {
   const pluginFiles = r.pluginFiles ?? [];
   const blocks = r.files.filter((f) => !pluginFiles.includes(f));
   const offIn = r.plugins ?? [];
+  if (r.incomplete) {
+    // Never "Habits off" while a marker may still be on.
+    say(
+      ctx,
+      ...(blocks.length > 0 ? [`Removed from ${shown(ctx, blocks)}`] : []),
+      "Habits are not off everywhere. A reinstall will not add them back.",
+    );
+    for (const p of offIn) say(ctx, pluginOff(p));
+    for (const n of r.notes) say(ctx, n);
+    return 1;
+  }
   say(
     ctx,
     blocks.length > 0
@@ -256,7 +267,15 @@ export async function habitsAfterInstall(
       // A first "no" is the user's choice; declining a changed block keeps the old one.
       if (!changed) {
         setHabitsOptOut(ctx.home, true, stamp(ctx));
-        setPluginHabits(deps(ctx), plugins, false);
+        const off = setPluginHabits(deps(ctx), plugins, false);
+        if (off.incomplete) {
+          say(
+            ctx,
+            "Habits are not off everywhere. A reinstall will not add them back.",
+          );
+          for (const n of off.notes) say(ctx, n);
+          return { ...none, state: "on", plugins: pluginStates(ctx) };
+        }
         say(ctx, "Habits off. A reinstall will not add them back.");
         return { ...none, state: "off", plugins: pluginStates(ctx) };
       }
