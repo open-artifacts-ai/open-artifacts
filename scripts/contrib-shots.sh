@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
-# UI screenshots for a contributor PR, on the dashboard's mock API (MSW, no
-# server, no secrets) at a fixed port. One exact command, so the leads'
-# permission rule can name this script instead of a wide playwright pattern
-# (follow-up to #1814).
+# UI screenshots for a contributor PR, on the dashboard's mock API at a fixed
+# port. One exact command, so the leads' permission rule can name this script
+# instead of a wide playwright pattern (follow-up to #1814).
+#
+# Threat model: this narrows the command line, not the code. The spec, the
+# playwright and vite configs and node_modules all run as Node with your
+# privileges and network, exactly as `pnpm exec playwright test` would. Only run
+# specs and diffs you have read; fork code is ported into our own branch first,
+# never checked out and run as is. The browser's API calls go to MSW
+# (VITE_MOCK=1; an unmocked call falls through to a local wrangler dev on
+# :8787 if one is running, so stop it first); the Node side starts with a scrubbed environment (HOME, PATH,
+# TERM, LANG only), so session tokens in env vars do not reach it.
 #
 # Usage: scripts/contrib-shots.sh <name>
-#   Runs apps/dashboard/e2e/<name>-shots.spec.ts and prints the PNGs it wrote.
+#   Runs apps/dashboard/e2e/<name>-shots.spec.ts and prints the PNGs it wrote
+#   (also after a failing run, then exits with the run's status).
 #   <name> is lowercase letters, digits and single dashes (e.g. pr-1660).
 #   Needs `pnpm install --frozen-lockfile` in this checkout first.
 #   OA_SHOTS_DRY_RUN=1 prints the command instead of running it.
@@ -25,17 +34,23 @@ name="$1"
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 dash="$root/apps/dashboard"
 spec="e2e/$name-shots.spec.ts"
-out="$dash/test-results/contrib-shots/$name"
+base="$dash/test-results/contrib-shots"
+out="$base/$name"
 
 if [[ ! -f "$dash/$spec" ]]; then
   echo "no such spec: apps/dashboard/$spec" >&2
   exit 66
 fi
 
-cmd=(pnpm --dir "$dash" exec playwright test "$spec" --output "$out" --reporter line)
+# Playwright reads the file argument as a regex over the absolute path.
+filter="e2e/$name-shots\\.spec\\.ts\$"
+cmd=(pnpm --dir "$dash" exec playwright test "$filter" --output "$out" --reporter line)
+clean_env=(env -i "HOME=$HOME" "PATH=$PATH" "TERM=${TERM:-dumb}" "LANG=${LANG:-C}"
+  VITE_MOCK=1 "OA_E2E_PORT=$PORT")
 
 if [[ "${OA_SHOTS_DRY_RUN:-}" == "1" ]]; then
-  echo "VITE_MOCK=1 OA_E2E_PORT=$PORT ${cmd[*]}"
+  printf '%q ' VITE_MOCK=1 "OA_E2E_PORT=$PORT" "${cmd[@]}"
+  echo
   exit 0
 fi
 
@@ -44,6 +59,21 @@ if [[ ! -d "$root/node_modules" ]]; then
   exit 69
 fi
 
+# Clear only our own output dir: refuse if any part of it resolves elsewhere.
+mkdir -p "$base"
+if [[ "$(cd "$base" && pwd -P)" != "$base" ]]; then
+  echo "refusing: $base resolves outside the checkout (symlink?)" >&2
+  exit 73
+fi
+if [[ -L "$out" ]]; then
+  echo "refusing: $out is a symlink" >&2
+  exit 73
+fi
 rm -rf "$out"
-VITE_MOCK=1 OA_E2E_PORT=$PORT "${cmd[@]}"
-find "$out" -name '*.png' | sort
+
+status=0
+"${clean_env[@]}" "${cmd[@]}" || status=$?
+if [[ -d "$out" ]]; then
+  find "$out" -name '*.png' | sort
+fi
+exit "$status"
