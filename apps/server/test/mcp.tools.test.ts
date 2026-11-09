@@ -54,6 +54,9 @@ const TOOLS = [
   "artifact_data_set",
   "artifact_data_update",
   "artifact_data_delete",
+  "list_comments",
+  "add_comment",
+  "resolve_comment",
 ];
 /** With the spaces feature on, list_spaces is offered too (parity 1, B12). */
 const SPACES_TOOLS = [...TOOLS, "list_spaces"];
@@ -103,7 +106,7 @@ afterAll(async () => {
 });
 
 describe("MCP tools over PAT", () => {
-  it("tools/list has the 18 tools and the bus's (spaces off: no list_spaces)", async () => {
+  it("tools/list has the 21 tools and the bus's (spaces off: no list_spaces)", async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
       [...TOOLS, ...BUS_TOOLS].sort(),
@@ -588,11 +591,36 @@ describe("MCP tools over PAT", () => {
       expect(u).toMatch(/^http:\/\/content\.localhost\/c\/[^/]+\/.+\?dl=1$/);
   });
 
-  it("create_upload returns a signed upload URL", async () => {
+  it("create_upload returns a signed upload URL without sha256", async () => {
     const up = sc<{ uploadId: string; artifactId: string; url: string }>(
       await tool(client, "create_upload", { path: "big.bin", size: 3_000_000 }),
     );
     expect(up.url).toContain(up.uploadId);
+    expect(
+      await env.DB.prepare("select expected_sha256 from uploads where id = ?")
+        .bind(up.uploadId)
+        .first(),
+    ).toEqual({ expected_sha256: null });
+  });
+
+  it("create_upload accepts and normalizes an optional sha256", async () => {
+    const up = sc<{ uploadId: string; artifactId: string; url: string }>(
+      await tool(client, "create_upload", {
+        path: "big.bin",
+        size: 3_000_000,
+        sha256: "AB".repeat(32),
+      }),
+    );
+    expect(up.url).toContain(up.uploadId);
+    expect(
+      await env.DB.prepare("select expected_sha256 from uploads where id = ?")
+        .bind(up.uploadId)
+        .first(),
+    ).toEqual({ expected_sha256: "ab".repeat(32) });
+    const { tools } = await client.listTools();
+    expect(
+      tools.find((t) => t.name === "create_upload")?.inputSchema.properties,
+    ).toHaveProperty("sha256");
   });
 
   it("runtime docs resource is readable", async () => {
@@ -779,7 +807,7 @@ describe("MCP artifact data tools", () => {
 describe("MCP 2026-07-28 era (per-request envelope)", () => {
   it("lists tools and publishes", async () => {
     const c = await connect(ownerPat, { modern: true });
-    expect((await c.listTools()).tools).toHaveLength(19);
+    expect((await c.listTools()).tools).toHaveLength(22);
     const pub = await publishMd(c, "# modern");
     const got = sc<{ content: string; version: { agent: unknown } }>(
       await tool(c, "get_artifact", { id: pub.id }),

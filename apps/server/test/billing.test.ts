@@ -82,6 +82,7 @@ type Row = {
   tier: BillingTier;
   status: BillingStatus;
   trialEndsAt: number | null;
+  soloTrialEndsAt?: number | null;
   graceUntil: number | null;
   version: number;
 };
@@ -893,6 +894,38 @@ describe("plan enforcement", () => {
     expect(calls.some((c) => c.path === "/trial/start")).toBe(false);
   });
 
+  it("free: a capped member reads comments over MCP but cannot add or resolve one (#682)", async () => {
+    await cache({ tier: "free", trialEndsAt: mid - DAY, version: 2 });
+    const id = await idOf(await publish(owner.cookie, { visibility: "team" }));
+    const { token } = await createPat(env, member.userId, "capped comments");
+    const client = await connect(token, { env: H, props: PROPS });
+    const listed = await tool(client, "list_comments", { id });
+    expect(listed.isError, textOf(listed)).toBeFalsy();
+    for (const [name, args] of [
+      ["add_comment", { body: "hi" }],
+      [
+        "add_comment",
+        {
+          body: "hi",
+          ask: {
+            question: "Which?",
+            options: [
+              { id: "a", label: "A" },
+              { id: "b", label: "B" },
+            ],
+            to: [{ key: "AAAAAAAAAAAAAAAA" }],
+          },
+        },
+      ],
+      ["resolve_comment", { threadId: "AAAAAAAAAAAAAAAA" }],
+    ] as const) {
+      const r = await tool(client, name, { id, ...args });
+      expect(r.isError, name).toBe(true);
+      expect(textOf(r), name).toMatch(/^plan_required\b/);
+    }
+    await client.close();
+  });
+
   it("free: everyone but the owner is read-only (cap plan); the owner's own artifacts stay writable", async () => {
     await cache({ tier: "solo", trialEndsAt: mid - DAY, version: 2 });
     const me = await getMe(member.cookie);
@@ -1403,6 +1436,28 @@ describe("Me.instance.billing and the billing routes", () => {
     // Self-hosted: absent.
     const self = await send(R.me, owner.cookie, { e: SELF });
     expect(MeSchema.parse(await self.json()).instance.billing).toBeUndefined();
+  });
+
+  it("soloTrialEndsAt: owner sees the Solo trial end, members null, trialEndsAt untouched", async () => {
+    const end = mid + 20 * DAY;
+    await cache({
+      tier: "solo",
+      trialEndsAt: null,
+      soloTrialEndsAt: end,
+      version: 6,
+    });
+    const o = (await getMe(owner.cookie)).instance.billing;
+    expect(o).toMatchObject({
+      tier: "solo",
+      trialEndsAt: null,
+      soloTrialEndsAt: new Date(end).toISOString(),
+    });
+    const m = (await getMe(member.cookie)).instance.billing;
+    expect(m).toMatchObject({ trialEndsAt: null, soloTrialEndsAt: null });
+    // The Business trial is still never used: the first invite may start it.
+    await cache({ tier: "solo", trialEndsAt: null, version: 7 });
+    const old = (await getMe(owner.cookie)).instance.billing;
+    expect(old).not.toHaveProperty("soloTrialEndsAt");
   });
 
   it("the billing routes need an interactive cookie session: a PAT, an OAuth grant and an MCP agent are refused, even the owner's", async () => {

@@ -68,6 +68,7 @@ import {
   cachedProcStart,
   claudeTarget,
   isRunning,
+  liveClaudeFiles,
   liveClaudeSessions,
 } from "./liveness/claude.ts";
 import { type Namespace, resolveNamespace } from "./namespace.ts";
@@ -130,16 +131,21 @@ export * from "./transports/opencode.ts";
 export * from "./transports/pi.ts";
 
 const NOTICE_RETRY_MS = 30_000;
+/** The hub caps renames per hour; a refused one holds that agent's renames this long. */
+const RENAME_HOLD_MS = 60 * 60_000;
+/** At most this many rename frames per ref in this window. */
+const RENAME_WINDOW_MS = 60_000;
+const RENAME_WINDOW_MAX = 3;
 /** A registration the hub rate-limited is retried this late, or on the next reconnect. */
 const LIMITED_RETRY_MS = 5 * 60_000;
 /** How far back `oa-bus status` lists late deliveries. */
 const LATE_WINDOW_MS = 60 * 60_000;
 /**
  * Pi and omp (a Pi fork) run the same extension; Hermes runs a plugin that
- * speaks the same protocol. Each lives as long as its connection and receives on it.
+ * speaks the same protocol, and so does OpenClaw's. Each lives as long as its connection and receives on it.
  */
 const piLike = (kind: string) =>
-  kind === "pi" || kind === "omp" || kind === "hermes";
+  kind === "pi" || kind === "omp" || kind === "hermes" || kind === "openclaw";
 
 export type DaemonDeps = {
   transports?: Partial<Record<AgentRecord["kind"], DeliverFn>>;
@@ -287,6 +293,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // Every close goes through here: a closed agent's rate limit mark goes with it.
     for (const ref of limited.keys())
       if (!agents.byRef(ref)?.live) clearLimited(ref);
+    for (const m of [renameFrames, renameHeldUntil])
+      for (const ref of m.keys()) if (!agents.byRef(ref)?.live) m.delete(ref);
     return hub.send({ v: 1, id: frameId(), type: "sessions", ...sessions() });
   };
   /** agent_up ids awaiting the hub's answer, to their agent_ref and the kind sent; cleared with the link. */
@@ -519,6 +527,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     pi: (agent, text, msgId) => pi.notify(agent, text, msgId),
     omp: (agent, text, msgId) => pi.notify(agent, text, msgId),
     hermes: (agent, text, msgId) => pi.notify(agent, text, msgId),
+    openclaw: (agent, text, msgId) => pi.notify(agent, text, msgId),
     codex: (agent, text, msgId) => codex.notify(agent, text, msgId),
     ...deps.notifiers,
   };
@@ -659,7 +668,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let seenSeq = 0;
 
   /** rename ids awaiting the hub's answer, to their agent_ref; cleared with the link. */
-  const renameIds = new Map<string, string>();
+  const renameIds = new Map<string, { ref: string; prevSent?: string }>();
+  /** When each ref's recent `rename` frames went (a sliding window). */
+  const renameFrames = new Map<string, number[]>();
+  /** After the hub's rate_limited on a rename: no rename for that ref until this time. */
+  const renameHeldUntil = new Map<string, number>();
   /**
    * A Claude `/rename` after connect (#1635): the session file's name changed
    * since the last tick. One `rename` per change; the hub's answer (a `-2`,
@@ -667,11 +680,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * while the link or the agent's registration is not ready rides the next
    * agent_up (it carries proposedName).
    */
-  const renameIfChanged = (rec: AgentRecord, name: string) => {
+  const renameIfChanged = (rec: AgentRecord, name: string, filePid: number) => {
     const was = rec.sessionName ?? rec.proposedName;
+    // Never a name nobody chose: empty, or the file's own `claude-<pid>`
+    // fallback (a file with no name, whichever process wrote it).
+    if (name === "" || name === `claude-${filePid}`) return;
     rec.sessionName = name;
-    // Never a name nobody chose: empty, or the `claude-<pid>` fallback.
-    if (name === was || name === "" || name === `claude-${rec.pid}`) return;
+    if (name === was) {
+      // A change held back (the hub's hour, a failed send) goes when it can.
+      if (rec.sentName !== rec.proposedName) flushRename(rec);
+      return;
+    }
     rec.proposedName = name;
     flushRename(rec);
   };
@@ -708,8 +727,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       limited.has(rec.ref)
     )
       return;
+    // The hub's hourly cap answered: nothing more for this ref until the hour is out.
+    if (Date.now() < (renameHeldUntil.get(rec.ref) ?? 0)) return;
+    // At most 3 frames per ref per minute: past that the latest name waits
+    // for the window to end (the next tick retries), so a flip cannot loop.
+    const now = Date.now();
+    const recent = (renameFrames.get(rec.ref) ?? []).filter(
+      (t) => now - t < RENAME_WINDOW_MS,
+    );
+    renameFrames.set(rec.ref, recent);
+    if (recent.length >= RENAME_WINDOW_MAX) return;
     const id = frameId();
-    renameIds.set(id, rec.ref);
+    renameIds.set(id, { ref: rec.ref, prevSent: rec.sentName });
     if (
       hub.send({
         v: 1,
@@ -719,13 +748,17 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         proposed_name: fitName(rec.proposedName, 64),
         name_kind: "chosen",
       })
-    )
+    ) {
       rec.sentName = rec.proposedName;
-    else renameIds.delete(id);
+      recent.push(now);
+    } else renameIds.delete(id);
   };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
-    const live = liveClaudeSessions(claudeSessions);
+    const live = liveClaudeSessions(
+      claudeSessions,
+      (ref) => agents.byRef(ref)?.pid,
+    );
     const liveRefs = new Set(live.map((s) => s.ref));
     const livePid = (ref: string, pid: number) =>
       live.some((s) => s.ref === ref && s.pid === pid);
@@ -744,7 +777,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           prev.pid = s.pid;
           prev.procStart = s.procStart;
         }
-        renameIfChanged(prev, s.name);
+        renameIfChanged(prev, s.name, s.pid);
         continue;
       }
       // Closed by a failed delivery and still the same process.
@@ -829,6 +862,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       pi: (agent, mail) => pi.deliver(agent, mail),
       omp: (agent, mail) => pi.deliver(agent, mail),
       hermes: (agent, mail) => pi.deliver(agent, mail),
+      openclaw: (agent, mail) => pi.deliver(agent, mail),
       codex: (agent, mail) => codex.deliver(agent, mail),
       ...deps.transports,
     },
@@ -842,6 +876,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubIds = false;
   /** The hub's last hello_ok listed BUS_CAPS.mailbox: agent_up may carry `replaces`. */
   let hubMailbox = false;
+  /** The hub's last hello_ok listed BUS_CAPS.follow: follow frames may go (#1317). */
+  let hubFollow = false;
   /** This link has had its hello_ok (reset when the link drops). */
   let hubHelloed = false;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
@@ -918,9 +954,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "error": {
           if (statusRelay.answer(frame)) return;
-          const renamedRef = renameIds.get(frame.id);
-          if (renamedRef !== undefined) {
+          const renamed = renameIds.get(frame.id);
+          if (renamed !== undefined) {
+            const renamedRef = renamed.ref;
             renameIds.delete(frame.id);
+            if (frame.code === "rate_limited") {
+              renameHeldUntil.set(renamedRef, Date.now() + RENAME_HOLD_MS);
+              // Refused, not told: the same name goes once the hold is out.
+              const a = agents.byRef(renamedRef);
+              if (a) a.sentName = renamed.prevSent;
+            }
             log(
               `the hub did not rename ${renamedRef} to its session name: ${frame.code} ${frame.message}`,
             );
@@ -953,6 +996,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         }
         case "roster":
+        case "followed":
+        case "unfollowed":
+        case "follows":
           pending.settle(frame);
           return;
         case "body":
@@ -965,6 +1011,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // A reply names its agent (to_id) only to a hub that said it can.
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
+          hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
           hubHelloed = true;
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
@@ -1024,6 +1071,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubIds = false;
       // A replay before the next hello_ok must not carry `replaces`.
       hubMailbox = false;
+      hubFollow = false;
       hubHelloed = false;
       statusRelay.dropped();
       receipts.release();
@@ -1187,11 +1235,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     },
     onHello: (hello, closed) => {
       /** welcome.caps (#1635): only to an adapter that listed `rename`. */
-      const capsFor = (h: typeof hello) =>
-        (h.kind === "pi" || h.kind === "omp") &&
-        h.caps?.includes(ADAPTER_CAPS.rename)
-          ? { caps: [ADAPTER_CAPS.rename] }
-          : {};
+      const capsFor = (h: typeof hello) => {
+        const listed = [
+          ...((h.kind === "pi" || h.kind === "omp") &&
+          h.caps?.includes(ADAPTER_CAPS.rename)
+            ? [ADAPTER_CAPS.rename]
+            : []),
+          // #1317: whether the hub takes follows is answered per request.
+          ...(h.caps?.includes(ADAPTER_CAPS.follow)
+            ? [ADAPTER_CAPS.follow]
+            : []),
+        ];
+        return listed.length > 0 ? { caps: listed } : {};
+      };
       // Only codex may leave it out: its cwd comes from the rollout (C26j).
       if (hello.cwd === undefined && hello.kind !== "codex")
         return { error: "cwd is required" };
@@ -1225,7 +1281,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         const prev = agents.byRef(hello.agent_ref);
         // A resumed session may beat the next sync tick: the files decide whose it is.
         if (prev?.live && prev.kind === "claude-code" && prev.pid !== pid) {
-          const live = liveClaudeSessions(claudeSessions).filter(
+          const live = liveClaudeFiles(claudeSessions).filter(
             (s) => s.ref === prev.ref,
           );
           if (
@@ -1294,7 +1350,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         // one whose session file is gone; it takes over that address.
         const files =
           hello.kind === "claude-code"
-            ? liveClaudeSessions(claudeSessions)
+            ? liveClaudeSessions(claudeSessions, (r) =>
+                r === hello.agent_ref ? pid : agents.byRef(r)?.pid,
+              )
             : [];
         const mine = files.find(
           (x) => x.ref === hello.agent_ref && x.pid === pid,
@@ -1369,6 +1427,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           limited.has(ref) ? (caps.get(ref) ?? "machine") : undefined,
         version,
         configFiles,
+        followSupport: () =>
+          !hub.open || !hubHelloed ? "down" : hubFollow ? "ok" : "old_hub",
         renamed: (ref, name) => {
           const rec = agents.byRef(ref);
           if (rec) renameFromAdapter(rec, name);
@@ -1479,6 +1539,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
 
   const sync = () => {
+    // A rename held back (the hub's hour, the 3-a-minute window) goes when it
+    // can; Pi and omp have no session file to prompt it.
+    for (const rec of agents.all()) if (rec.live) flushRename(rec);
     for (const [what, fn] of [
       ["claude", syncClaude],
       ["opencode", syncOpenCode],

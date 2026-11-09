@@ -11,10 +11,10 @@ type Snippet = {
 };
 
 /**
- * What setup prints. Claude Code, OpenCode and Cursor default to OAuth: the
+ * What setup prints. Claude Code, Codex, OpenCode and Cursor default to OAuth: the
  * snippet is only the MCP URL and the user signs in, so no token is ever in a
- * command line or config. A token is only for clients without OAuth: Codex
- * (`bearer_token_env_var`, env only), OpenCode's `{file:}` fallback and the
+ * command line or config. Token fallbacks use Codex's
+ * `bearer_token_env_var` (env only), OpenCode's `{file:}` and the
  * generic JSON. `tokenFile` is the absolute PAT file; undefined under --ci,
  * where no file exists.
  */
@@ -49,13 +49,17 @@ export function fileSnippets(
     codex: {
       title: "Codex CLI",
       path: "~/.codex/config.toml",
-      note: tokenFile
-        ? `Codex only reads the environment; launch it as: OA_TOKEN="$(cat ${tokenFile})" codex . Don't edit shell profiles.`
-        : "Codex only reads the environment: launch it with OA_TOKEN set to a token from Settings → Connections. Don't edit shell profiles.",
-      text: `[mcp_servers.${name}]\nurl = "${url}"\nbearer_token_env_var = "OA_TOKEN"`,
+      note: `then run: codex mcp login ${name}; sign in with your browser, no token goes in the file`,
+      text: `[mcp_servers.${name}]\nurl = "${url}"`,
     },
   };
-  if (tokenFile)
+  if (tokenFile) {
+    out.codexToken = {
+      title: "Codex CLI (token file, for no OAuth)",
+      path: "~/.codex/config.toml",
+      note: `only if OAuth is unavailable; launch it as: OA_TOKEN="$(cat ${tokenFile})" codex . Don't edit shell profiles.`,
+      text: `[mcp_servers.${name}]\nurl = "${url}"\nbearer_token_env_var = "OA_TOKEN"`,
+    };
     out.opencodeToken = {
       title: "OpenCode (token file, for no OAuth)",
       path: "opencode.json",
@@ -73,6 +77,7 @@ export function fileSnippets(
         },
       }),
     };
+  }
   out.json = {
     title: "Generic JSON (no OAuth)",
     path: null,

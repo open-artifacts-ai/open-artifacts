@@ -46,6 +46,29 @@ const frames = () => {
 const button = () =>
   roots.at(-1)?.querySelector<HTMLButtonElement>(".btn") ?? null;
 
+/**
+ * jsdom has no FontFaceSet: a double that records `loadingdone` listeners, so a
+ * test can finish a font batch the way the browser does (#1648).
+ */
+function fonts() {
+  const listeners = new Set<() => void>();
+  Object.defineProperty(document, "fonts", {
+    value: {
+      status: "loading",
+      addEventListener: (_t: string, h: () => void) => listeners.add(h),
+      removeEventListener: (_t: string, h: () => void) => listeners.delete(h),
+    },
+    configurable: true,
+  });
+  return {
+    /** A finished batch: the browser fires `loadingdone` on the font set. */
+    done() {
+      for (const h of [...listeners]) h();
+    },
+    listening: () => listeners.size,
+  };
+}
+
 function select(node: Node, a: number, node2: Node = node, b: number = a) {
   const r = document.createRange();
   r.setStart(node, a);
@@ -101,6 +124,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   ctl.abort();
+  Reflect.deleteProperty(document, "fonts");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   roots.length = 0;
@@ -163,6 +187,121 @@ describe("shell messages are validated", () => {
   });
 });
 
+/** Pointer type for the frame: matchMedia answers only (pointer: coarse). */
+const pointer = (coarse: boolean) =>
+  vi.stubGlobal("matchMedia", (q: string) => ({
+    matches: coarse && q === "(pointer: coarse)",
+    media: q,
+  }));
+const wait100 = () => new Promise((r) => setTimeout(r, 130));
+const sels = () => msgs().filter((m) => m.type === "comment.selection");
+
+describe("selection state for the shell (#1732)", () => {
+  it("posts has and the last rect bottom, debounced, once per change", async () => {
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    select(textOf("a"), 4, textOf("a"), 10);
+    expect(sels()).toHaveLength(0);
+    await wait100();
+    expect(sels()).toHaveLength(1);
+    expect(last("comment.selection")).toMatchObject({ has: true, bottom: 120 });
+    getSelection()?.removeAllRanges();
+    document.dispatchEvent(new Event("selectionchange"));
+    await wait100();
+    expect(last("comment.selection")).toMatchObject({ has: false });
+    expect(sels()).toHaveLength(2);
+  });
+
+  it("posts nothing in view or pin mode", async () => {
+    await start("view");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    expect(sels()).toHaveLength(0);
+  });
+
+  it("touch: no floating button; fine pointer keeps it", async () => {
+    pointer(true);
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()).toBeNull();
+    await wait100();
+    expect(last("comment.selection")).toMatchObject({ has: true });
+  });
+
+  it("the shell command runs the Comment path, even after the selection collapsed", async () => {
+    pointer(true);
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    getSelection()?.removeAllRanges(); // iOS: a tap outside the frame
+    await send({ type: "comments.comment" });
+    expect(last("comment.select")).toMatchObject({
+      anchor: { kind: "text", exact: "quick" },
+    });
+    await wait100();
+    expect(last("comment.selection")).toMatchObject({ has: false });
+  });
+
+  it("the command with nothing ever selected sends nothing", async () => {
+    await start("select");
+    await send({ type: "comments.comment" });
+    expect(last("comment.select")).toBeUndefined();
+  });
+
+  it("touch: scrolls by the overlap when the selection ends within bar + 12px of the bottom", async () => {
+    pointer(true);
+    vi.stubGlobal("innerHeight", 600);
+    const by = vi.fn();
+    vi.stubGlobal("scrollBy", by);
+    Object.assign(rect, { bottom: 570 });
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    // bar 48 + 12 gap: the line must end by 540; it ends at 570.
+    expect(by).toHaveBeenCalledWith(0, 30);
+  });
+
+  it("touch: scrolls once when the bar appears, not while a handle is dragged (review of #1757)", async () => {
+    pointer(true);
+    vi.stubGlobal("innerHeight", 600);
+    const by = vi.fn();
+    vi.stubGlobal("scrollBy", by);
+    Object.assign(rect, { bottom: 570 });
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    expect(by).toHaveBeenCalledTimes(1);
+    Object.assign(rect, { bottom: 580 });
+    select(textOf("a"), 4, textOf("a"), 10);
+    await wait100();
+    expect(by).toHaveBeenCalledTimes(1);
+  });
+
+  it("a collapsed selection is forgotten after the tap window (review of #1757)", async () => {
+    pointer(true);
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    getSelection()?.removeAllRanges();
+    document.dispatchEvent(new Event("selectionchange"));
+    await wait100();
+    await new Promise((r) => setTimeout(r, 1600));
+    await send({ type: "comments.comment" });
+    expect(last("comment.select")).toBeUndefined();
+  });
+
+  it("touch: does not scroll when clear of the bar", async () => {
+    pointer(true);
+    vi.stubGlobal("innerHeight", 600);
+    const by = vi.fn();
+    vi.stubGlobal("scrollBy", by);
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    expect(by).not.toHaveBeenCalled();
+  });
+});
+
 describe("selection button", () => {
   it("shows for a selection in one block and sends an anchor without a version", async () => {
     await start("select");
@@ -187,6 +326,46 @@ describe("selection button", () => {
       "suffix",
     ]);
     expect(button()).toBeNull();
+  });
+
+  it("places the button again when a webfont reflows the page (#1648)", async () => {
+    // The button's own width is fixed (closed shadow root, system-ui), so the
+    // swap cannot change it; what moves is the selection's rect, as the page
+    // reflows. The first rect puts the button at 30px, the second at 90px.
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+    const f = fonts();
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()?.style.left).toBe("30px");
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, right: 140, bottom: 200 },
+    ] as unknown as DOMRectList);
+    f.done();
+    expect(button()?.style.left).toBe("90px");
+    expect(button()?.style.top).toBe("206px");
+  });
+
+  it("leaves the button alone when it is gone by the time the fonts finish (#1648)", async () => {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+    const f = fonts();
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await send({ type: "comments.mode", mode: "off" });
+    expect(button()).toBeNull();
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, right: 140, bottom: 200 },
+    ] as unknown as DOMRectList);
+    f.done();
+    expect(button()).toBeNull();
+  });
+
+  it("listens for font batches once and stops on dispose (#1648)", async () => {
+    const f = fonts();
+    createRuntime({ loadSchemas: async () => schemas, signal: ctl.signal });
+    await flush();
+    expect(f.listening()).toBe(1);
+    ctl.abort();
+    expect(f.listening()).toBe(0);
   });
 
   it("has a bubble icon, is centered under the selection end, and clamps to the viewport", async () => {
@@ -214,10 +393,8 @@ describe("selection button", () => {
     expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
   });
 
-  it("does not show for a selection across blocks, an empty one, or when off", async () => {
+  it("does not show for an empty selection or when off", async () => {
     await start("select");
-    select(textOf("a"), 4, textOf("b"), 6);
-    expect(button()).toBeNull();
     select(textOf("a"), 3, textOf("a"), 4); // one space
     expect(button()).toBeNull();
     await send({ type: "comments.mode", mode: "off" });
@@ -225,10 +402,14 @@ describe("selection button", () => {
     expect(button()).toBeNull();
   });
 
-  it("treats a triple-click (end at the start of the next block) as one block", async () => {
+  it("a triple-click (end at the start of the next block) quotes only the first block", async () => {
     await start("select");
     select(textOf("a"), 0, textOf("b"), 0);
-    expect(button()).not.toBeNull();
+    button()?.click();
+    await flush();
+    expect(last("comment.select")).toMatchObject({
+      anchor: { exact: "The quick brown fox jumps over the lazy dog." },
+    });
   });
 
   it("stays hidden until the shell sends a mode", async () => {
@@ -569,6 +750,47 @@ describe("pins", () => {
     );
   });
 
+  it("leaves Esc to the page when an IME, a field or a modal owns it (#1698)", async () => {
+    await start("pin");
+    const count = () =>
+      msgs().filter((m) => m.type === "comment.escape").length;
+    const before = count();
+    // A composing key.
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        isComposing: true,
+      }),
+    );
+    // A text field.
+    const field = document.createElement("textarea");
+    document.body.append(field);
+    field.focus();
+    field.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    // A plain element inside an open modal dialog.
+    const modal = document.createElement("div");
+    modal.setAttribute("aria-modal", "true");
+    const inside = document.createElement("button");
+    modal.append(inside);
+    document.body.append(modal);
+    inside.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await flush();
+    expect(count()).toBe(before);
+    // Outside all three, pin mode's Esc still reaches the shell.
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await flush();
+    expect(count()).toBe(before + 1);
+    field.remove();
+    modal.remove();
+  });
+
   it("does nothing in select mode, and pins are drawn in the overlay with their number", async () => {
     await start("select");
     document
@@ -599,6 +821,35 @@ describe("pins", () => {
     });
     expect(roots.at(-1)?.querySelector(".pin")?.textContent).toBe("3");
     roots.at(-1)?.querySelector<HTMLElement>(".pin")?.click();
+    await flush();
+    expect(last("comment.open")).toMatchObject({ id: "p1" });
+  });
+
+  it("marks a pin whose page changed, so the marker itself says what the card says (#1657)", async () => {
+    await start("select");
+    const pin = (changed: boolean) => ({
+      id: "p1",
+      n: 1,
+      ...(changed ? { changed: true } : {}),
+      anchor: {
+        kind: "pin" as const,
+        version: 1,
+        x: 0.5,
+        y: 0.25,
+        contentHash: "h",
+      },
+    });
+    await send({ type: "comments.set", threads: [pin(false)] });
+    const plain = roots.at(-1)?.querySelector<HTMLElement>(".pin");
+    expect(plain?.className).toBe("pin");
+    expect(plain?.title).toBe("");
+    await send({ type: "comments.set", threads: [pin(true)] });
+    const marked = roots.at(-1)?.querySelector<HTMLElement>(".pin.changed");
+    expect(marked).not.toBeNull();
+    expect(marked?.title).toBe("Changed since this was placed.");
+    // It is still the same pin: numbered, and a click still opens it.
+    expect(marked?.textContent).toBe("1");
+    marked?.click();
     await flush();
     expect(last("comment.open")).toMatchObject({ id: "p1" });
   });
@@ -700,4 +951,90 @@ describe("what the frame sends", () => {
     for (const p of pos.positions)
       expect(Object.keys(p).sort()).toEqual(["id", "state", "top"]);
   });
+});
+
+describe("a selection spanning several elements (#1708)", () => {
+  const cases: {
+    name: string;
+    html: string;
+    from: [string, number];
+    to: [string, number];
+    exact: string;
+    first: string;
+    last: string;
+  }[] = [
+    {
+      name: "two list items",
+      html: "<ul><li id=x>First item</li><li id=y>Second item</li></ul>",
+      from: ["x", 6],
+      to: ["y", 6],
+      exact: "item Second",
+      first: "item",
+      last: "Second",
+    },
+    {
+      name: "two paragraphs",
+      html: "<p id=x>Alpha beta</p><p id=y>Gamma delta</p>",
+      from: ["x", 6],
+      to: ["y", 5],
+      exact: "beta Gamma",
+      first: "beta",
+      last: "Gamma",
+    },
+    {
+      name: "two table cells",
+      html: "<table><tr><td id=x>Left cell</td><td id=y>Right cell</td></tr></table>",
+      from: ["x", 5],
+      to: ["y", 5],
+      exact: "cell Right",
+      first: "cell",
+      last: "Right",
+    },
+    {
+      name: "a span inside one item that ends in the next item",
+      html: "<ul><li><span id=x>First <b>item</b></span></li><li id=y>Second item</li></ul>",
+      from: ["x", 3],
+      to: ["y", 6],
+      exact: "st item Second",
+      first: "st ",
+      last: "Second",
+    },
+  ];
+  for (const c of cases) {
+    it(`shows the button, saves one anchor and re-highlights both sides: ${c.name}`, async () => {
+      document.body.innerHTML = c.html;
+      const text = (id: string) => {
+        const el = document.getElementById(id) as Element;
+        const w = document.createTreeWalker(el, 4);
+        return w.nextNode() as Text;
+      };
+      await start("select");
+      select(text(c.from[0]), c.from[1], text(c.to[0]), c.to[1]);
+      expect(button()).not.toBeNull();
+      button()?.click();
+      await flush();
+      const m = last("comment.select") as unknown as {
+        anchor: { exact: string; prefix: string; suffix: string };
+      };
+      expect(m.anchor.exact).toBe(c.exact);
+
+      // A fresh frame state: the anchor resolves exactly and paints the whole range.
+      await send({
+        type: "comments.set",
+        threads: [
+          { id: "t1", anchor: { ...m.anchor, kind: "text", version: 1 } },
+        ],
+      });
+      expect(last("comment.positions")).toMatchObject({
+        positions: [{ id: "t1", state: "exact" }],
+      });
+      const ranges = highlights.get("oa-comment")?.ranges ?? [];
+      expect(ranges).toHaveLength(1);
+      const r = ranges[0];
+      expect(r.startContainer).toBe(text(c.from[0]));
+      expect(r.endContainer).toBe(text(c.to[0]));
+      expect(r.toString().startsWith(c.first)).toBe(true);
+      expect(r.toString().endsWith(c.last)).toBe(true);
+    });
+  }
 });

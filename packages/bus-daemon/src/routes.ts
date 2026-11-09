@@ -4,6 +4,7 @@ import {
   type AgentInfo,
   type ConfigFile,
   type DaemonFrame,
+  FOLLOW_DAEMON_BAD_FRAME,
   type Hello,
   type Unframed,
 } from "@oa/bus-ipc";
@@ -22,7 +23,16 @@ import { STATUS_COPY } from "./status.ts";
 
 export type HubReply = Extract<
   ServerFrame,
-  { type: "receipt" | "roster" | "body" | "error" }
+  {
+    type:
+      | "receipt"
+      | "roster"
+      | "body"
+      | "error"
+      | "followed"
+      | "unfollowed"
+      | "follows";
+  }
 >;
 
 type Waiter = {
@@ -160,6 +170,13 @@ export const MACHINE_CAP_COPY =
 export const MEMBER_CAP_COPY =
   "Your bus has too many agents right now. Close a session you no longer need; this one retries in a few minutes.";
 
+/** What an agent sees when a follow cannot reach a hub that supports it. */
+export const FOLLOW_COPY = {
+  down: "The hub is not connected right now. Try again in a moment.",
+  old_hub:
+    "This Open Artifacts hub is too old to follow artifacts. Ask the user to update it.",
+} as const;
+
 export type AgentCap = "machine" | "member";
 export const CAP_COPY: Record<AgentCap, string> = {
   machine: MACHINE_CAP_COPY,
@@ -185,6 +202,12 @@ export type RouteCtx = {
     ref: string,
     reply: (f: Unframed) => unknown,
   ) => Unframed | undefined;
+  /**
+   * Whether the hub link can take follow frames (#1317): `ok`, `old_hub` (its
+   * hello_ok did not list `follow`) or `down` (no link, or no hello_ok yet).
+   * Without it, refused as `down`.
+   */
+  followSupport?: () => "ok" | "old_hub" | "down";
   /** rename (#1635): the session's new name, from an adapter that listed the cap. */
   renamed?: (ref: string, name: string) => void;
   /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
@@ -329,6 +352,51 @@ export function routeLocal(
       return ctx.setStatus(frame, ref, (f) =>
         reply({ ...f, v: 1, id: frame.id } as DaemonFrame),
       );
+    }
+    case "follow":
+    case "unfollow":
+    case "following": {
+      // An adapter that did not list the cap was never told it could.
+      if (!hello.caps?.includes(ADAPTER_CAPS.follow))
+        return {
+          type: "error",
+          code: "bad_frame",
+          message: FOLLOW_DAEMON_BAD_FRAME.noCap,
+        };
+      const cap = ctx.limited?.(ref);
+      if (cap)
+        return { type: "error", code: "rate_limited", message: CAP_COPY[cap] };
+      const support = ctx.followSupport?.() ?? "down";
+      if (support !== "ok")
+        return {
+          type: "error",
+          code: support === "old_hub" ? "unsupported" : "hub_unavailable",
+          message: FOLLOW_COPY[support],
+        };
+      const build = (id: string): ClientFrame =>
+        frame.type === "following"
+          ? { v: 1, id, type: "following", from_ref: ref }
+          : {
+              v: 1,
+              id,
+              type: frame.type,
+              from_ref: ref,
+              artifact: frame.artifact,
+            };
+      if (!ClientFrameSchema.safeParse(build("probe")).success)
+        return {
+          type: "error",
+          code: "bad_frame",
+          message: FOLLOW_DAEMON_BAD_FRAME.wire,
+        };
+      const id = ctx.pending.open(frame.id, reply);
+      if (ctx.hub.send(build(id))) return undefined;
+      ctx.pending.cancel(id);
+      return {
+        type: "error",
+        code: "hub_unavailable",
+        message: FOLLOW_COPY.down,
+      };
     }
     case "list":
     case "send":

@@ -35,7 +35,12 @@ let memberSeq = 0;
 export async function member(
   role: "member" | "admin" | "owner" | "guest" = "member",
 ): Promise<Member> {
-  return login(`bus-${++memberSeq}-${newId().slice(0, 8)}@x.com`, role);
+  const m = await login(
+    `bus-${++memberSeq}-${newId().slice(0, 8)}@x.com`,
+    role,
+  );
+  touchedUsers.add(m.userId);
+  return m;
 }
 
 let owner: Promise<Member> | null = null;
@@ -51,6 +56,7 @@ export async function machine(
   userId?: string,
 ): Promise<{ id: string; token: string; userId: string }> {
   const uid = userId ?? (await theOwner()).userId;
+  touchedUsers.add(uid);
   const id = newId();
   const token = newMachineToken();
   await e.DB.prepare(
@@ -121,7 +127,14 @@ export function upgrade(
   );
 }
 
+/** Room for the index to settle when the whole suite loads the worker pool. */
+const INDEX_SETTLE_MS = 20_000;
+const CLOSE_WAIT_MS = 10_000;
+const HOOK_MS = CLOSE_WAIT_MS + 2 * INDEX_SETTLE_MS + 5_000;
+
 const opened = new Set<Daemon>();
+/** Users whose hub this file may have opened a socket on. */
+const touchedUsers = new Set<string>();
 const rawSockets = new Map<WebSocket, Promise<unknown>>();
 
 /**
@@ -158,11 +171,25 @@ afterAll(async () => {
       // Already closed or never accepted.
     }
   }
-  // Bounded: a socket the hub already tore down reported its close earlier.
+  // A socket the hub already tore down reported its close earlier. A close
+  // that never arrives fails the file with a clear message, inside the hook's
+  // own timeout; giving up silently is what let the worker tear down with the
+  // hub's `gone` RPC still in flight.
+  let giveUp: ReturnType<typeof setTimeout> | undefined;
   await Promise.race([
     Promise.all(closes),
-    new Promise((r) => setTimeout(r, 3000)),
-  ]);
+    new Promise<never>((_, reject) => {
+      giveUp = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `bus sockets still open ${CLOSE_WAIT_MS} ms after the file's afterAll closed them`,
+            ),
+          ),
+        CLOSE_WAIT_MS,
+      );
+    }),
+  ]).finally(() => clearTimeout(giveUp));
   opened.clear();
   rawSockets.clear();
   const ns = e.USER_PRESENCE;
@@ -184,10 +211,45 @@ afterAll(async () => {
         )
         .one().n;
     });
-  await vi
-    .waitFor(async () => expect(await rows()).toBe(0), { timeout: 3000 })
-    .catch((err) => console.warn("bus index rows left at file end", err));
-});
+  // A client close is only the echo of the hub's: the hub's work after it
+  // (the `gone` it sends) runs later. Wait until every hub this file touched
+  // holds no OPEN daemon socket, then until its close/error handlers and index
+  // calls are done (indexInFlight 0), so the worker is not torn down with one
+  // pending. A CLOSING socket whose peer never echoes never fires
+  // webSocketClose, so it cannot be waited on; the window left is an echo
+  // still in flight, which this does not gate.
+  for (const uid of touchedUsers) {
+    const ns = e.BUS_HUB;
+    if (!ns) break;
+    const hub = ns.get(ns.idFromName(busHubName(uid)));
+    await vi.waitFor(
+      async () =>
+        expect(
+          await runInDurableObject(
+            hub,
+            (_i, s: DurableObjectState) =>
+              s.getWebSockets("daemon").filter((w) => w.readyState === 1)
+                .length,
+          ),
+        ).toBe(0),
+      { timeout: INDEX_SETTLE_MS },
+    );
+    await vi.waitFor(
+      async () =>
+        expect(
+          await runInDurableObject(hub, (i: BusHub) => i.indexInFlight),
+        ).toBe(0),
+      { timeout: INDEX_SETTLE_MS },
+    );
+  }
+  touchedUsers.clear();
+  // The close events above are the client's; the hub's `gone` report lands
+  // after them. Wait for the index to show it, and fail the file (not warn) if
+  // a row stays: that is a hub that never reported its last socket gone.
+  await vi.waitFor(async () => expect(await rows()).toBe(0), {
+    timeout: INDEX_SETTLE_MS,
+  });
+}, HOOK_MS);
 
 /** A daemon socket. Every frame it receives must parse with decodeServerFrame. */
 export async function daemon(

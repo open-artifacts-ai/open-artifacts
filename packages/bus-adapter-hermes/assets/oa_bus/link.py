@@ -44,7 +44,7 @@ class Link:
             "pid": pid,
             "cwd": cwd,
             "proposed_name": name,
-            "caps": ["mailbox", "pending"],
+            "caps": ["mailbox", "pending", "follow"],
             "attest": {"proc_start": proc_start} if proc_start else {},
         }
         self._home = home if home is not None else bus_home()

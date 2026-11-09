@@ -201,7 +201,7 @@ it.each([
   ["data_daily_writes", "live-data writes per day"],
   ["something_new", "something_new"],
 ])("plan_limit names %s", (limit, noun) => {
-  const e = planErr("plan_limit", { tier: "free", limit, max: 50 });
+  const e = planErr("plan_limit", { tier: "solo", limit, max: 50 });
   expect(errorCopy(e, "x")).toBe(
     `The Solo plan allows up to 50 ${noun}. Ask your instance owner about a paid plan.`,
   );

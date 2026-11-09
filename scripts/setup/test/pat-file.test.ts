@@ -103,7 +103,7 @@ describe("#2: the minted PAT goes to a file, not stdout", () => {
     expect(JSON.parse(sn.opencode).mcp["open-artifacts"]).not.toHaveProperty(
       "headers",
     );
-    for (const k of ["claudeCode", "cursor", "opencode"])
+    for (const k of ["claudeCode", "cursor", "opencode", "codex"])
       expect(sn[k], k).not.toMatch(/\$\(cat|--header|OA_TOKEN|oa_pat_/);
     expect(JSON.stringify(cfg)).not.toContain(pat);
     expect(JSON.stringify(cfg)).not.toContain("~/.open-artifacts");
@@ -112,11 +112,11 @@ describe("#2: the minted PAT goes to a file, not stdout", () => {
     expect(sn.opencodeToken).not.toContain("{env:OA_TOKEN}");
   });
 
-  it("#2: Codex is launched with OA_TOKEN from the absolute file; no shell-profile edits", async () => {
+  it("#2: Codex token fallback is launched with OA_TOKEN from the absolute file; no shell-profile edits", async () => {
     const w = await go();
     const codex = (
       line(w, "agent-config").data.configs as { client: string; note: string }[]
-    ).find((c) => c.client === "Codex CLI");
+    ).find((c) => c.client === "Codex CLI (token file, for no OAuth)");
     expect(codex?.note).toContain(`OA_TOKEN="$(cat ${FILE})" codex`);
     expect(codex?.note).toContain("Don't edit shell profiles");
     expect(codex?.note).not.toMatch(/export OA_TOKEN|exported/);

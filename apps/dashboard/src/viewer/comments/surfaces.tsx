@@ -1,8 +1,9 @@
 import { Button } from "@oa/ui/shadcn";
-import { X } from "lucide-react";
+import { MessageSquare, X } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { TXT } from "../ui";
 import { CommentsBody } from "./CommentsBody";
+import { useCommentsApi } from "./useComments";
 
 /** Where the comments list lives (Design's 1C + 3D). */
 export type Surface = "column" | "panel" | "dialog";
@@ -20,6 +21,15 @@ const media = (q: string) => ({
 });
 const wide = media(WIDE_QUERY);
 const phone = media(PHONE_QUERY);
+const coarse = media("(pointer: coarse)");
+const narrow = media("(max-width: 599.98px)");
+
+/** Touch input (#1732). */
+export const useCoarsePointer = () =>
+  useSyncExternalStore(coarse.subscribe, coarse.get, () => false);
+/** Below 600px: the header button's short label. */
+export const useNarrow = () =>
+  useSyncExternalStore(narrow.subscribe, narrow.get, () => false);
 
 /**
  * A margin column beside the page from 960px; below that, a tab of the side
@@ -30,6 +40,55 @@ export function useSurface(chromeless: boolean): Surface {
   const isPhone = useSyncExternalStore(phone.subscribe, phone.get, () => false);
   if (chromeless || isPhone) return "dialog";
   return isWide ? "column" : "panel";
+}
+
+/**
+ * #1732: on touch, a full-width bar at the bottom of the viewer while text is
+ * selected in the frame. Drawn by the shell (the frame's own button is off on
+ * touch). The polite region announces once, when the bar appears.
+ */
+const ANNOUNCE_MS = 10_000;
+
+export function SelectionBar() {
+  const api = useCommentsApi();
+  const touch = useCoarsePointer();
+  const show = touch && api.hasSelection;
+  // Announce when the bar appears, at most once per ANNOUNCE_MS: page code
+  // can flip the selection state as often as it likes.
+  const [say, setSay] = useState(false);
+  const lastSaid = useRef(0);
+  useEffect(() => {
+    if (!show) {
+      setSay(false);
+      return;
+    }
+    if (Date.now() - lastSaid.current < ANNOUNCE_MS) return;
+    lastSaid.current = Date.now();
+    setSay(true);
+  }, [show]);
+  return (
+    <>
+      <div role="status" className="sr-only">
+        {say ? "Comment on selection available" : ""}
+      </div>
+      {show && (
+        // The bar is the chrome surface; the 48px accent button sits above the
+        // home indicator (Design's final: plain bar, no quote line).
+        <div className="fixed inset-x-0 bottom-0 z-20 animate-in border-t border-t-border bg-card px-3 pt-2 pb-[calc(0.5rem_+_env(safe-area-inset-bottom))] duration-200 slide-in-from-bottom motion-reduce:animate-none!">
+          <button
+            type="button"
+            className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg border-0 bg-[var(--oa-accent)] font-semibold text-[var(--oa-accent-text)] text-[15px] hover:bg-[var(--oa-accent-fg)]"
+            // No preventDefault on press: WebKit then drops the tap's click.
+            // The frame keeps the last selection if this tap collapses it.
+            onClick={api.commentOnSelection}
+          >
+            <MessageSquare className="size-[18px]" aria-hidden="true" />
+            Comment on selection
+          </button>
+        </div>
+      )}
+    </>
+  );
 }
 
 /** The margin column: cards in document order beside the frame. */
@@ -48,12 +107,22 @@ export function CommentsColumn({ textFormat }: { textFormat: boolean }) {
 export function CommentsDialog({
   textFormat,
   onClose,
+  pinCard = null,
 }: {
   textFormat: boolean;
   onClose: () => void;
+  /** The pin whose card is being read: keep the sheet short so its pin stays in view (#1657). */
+  pinCard?: string | null;
 }) {
   const ref = useRef<HTMLElement>(null);
   const [full, setFull] = useState(false);
+  // #1657: reading a pin card shrinks the sheet, so the image and that pin
+  // stay visible; dragging it back up still works. Keyed on the pin, so
+  // moving from one pin's card to another's shrinks it again.
+  useEffect(() => {
+    if (pinCard) setFull(false);
+  }, [pinCard]);
+  const height = full ? "full" : pinCard ? "pin" : "half";
   const drag = useRef<number | null>(null);
   const dragged = useRef(false);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
@@ -74,8 +143,8 @@ export function CommentsDialog({
         tabIndex={-1}
         role="dialog"
         aria-label="Comments"
-        data-sheet-height={full ? "full" : "half"}
-        className={`fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
+        data-sheet-height={height}
+        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
         onFocusCapture={(e) => {
           // The phone keyboard would cover a half-height sheet.
           const t = e.target as HTMLElement;

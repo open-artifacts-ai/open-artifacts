@@ -128,7 +128,7 @@ export function receiptText(
       const tail = (v: string) =>
         r.reason === "recipient_closed"
           ? `was not delivered because ${v} closed first.`
-          : `was not taken within ${RETAIN}.`;
+          : `was not confirmed as delivered. Mail waits at most ${RETAIN}.`;
       const head = (v: string) => `×  Expired: your message to ${v}`;
       if (!quote) return fitLine((v) => `${head(v)} ${tail(v)}`, to);
       return fitLine((v) => quoted(head(v), quote, tail(v)), to);
@@ -418,6 +418,40 @@ export const statusSetText = (state: string, label?: string): string =>
 /** A status the hub refused earlier, shown with the next `set_status` result (AC5b; Design-approved). */
 export const earlierStatusText = (message: string): string =>
   `Your previous status did not reach the user. ${message}`;
+
+/** The `follow` result (#1317). */
+export const followText = (url: string): string =>
+  `Following ${url}. You get a notice here when it changes.`;
+
+/** The `unfollow` result. */
+export const unfollowText = (removed: boolean, artifact: string): string =>
+  removed
+    ? `Stopped following ${artifact}.`
+    : `You were not following ${artifact}.`;
+
+/** The `following` result: one line per artifact, newest first. */
+export const followingText = (
+  follows: readonly { url: string; followed_at: string }[],
+): string =>
+  follows.length
+    ? follows.map((f) => `${f.url} (since ${f.followed_at})`).join("\n")
+    : "You are not following any artifacts.";
+
+/** What an agent sees when its daemon is too old for the follow frames. */
+export const FOLLOW_OLD_DAEMON =
+  "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus.";
+
+/**
+ * The two bad_frame answers a current daemon gives a follow tool call itself
+ * (#1766): the adapter never listed the cap, or the frame would not pass the
+ * hub's wire (a too-long artifact). Any other bad_frame on a follow call is a
+ * daemon that does not know the frame: FOLLOW_OLD_DAEMON. The adapters mirror
+ * the strings (pi, Hermes), the daemon sends these.
+ */
+export const FOLLOW_DAEMON_BAD_FRAME = {
+  noCap: "follow is not supported on this connection",
+  wire: "the frame is not valid on the hub wire",
+} as const;
 
 /** A status at least this old says how old it is (AC5c; Design-approved). */
 export const STATUS_STALE_MS = 10 * 60_000;

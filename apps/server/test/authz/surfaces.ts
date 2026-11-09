@@ -1242,6 +1242,32 @@ export const SURFACES: readonly Surface[] = [
     })),
     "data",
   ),
+  // #682 comments over MCP. The write probes stop after the access rules at
+  // a request that fails (an empty body; a thread that does not exist), so
+  // nothing is written.
+  mcp(
+    "list_comments",
+    "comments.read",
+    tool("list_comments", (id) => ({ id })),
+  ),
+  mcp(
+    "add_comment",
+    "comments.write",
+    tool(
+      "add_comment",
+      (id) => ({ id, body: " " }),
+      (o) => o.isError && /^invalid_body\b/.test(o.text),
+    ),
+  ),
+  mcp(
+    "resolve_comment",
+    "comments.write",
+    tool(
+      "resolve_comment",
+      (id) => ({ id, threadId: SOME_ID }),
+      (o) => o.isError && /^not_found: No such thread/.test(o.text),
+    ),
+  ),
   // Not artifact-scoped (the caller's publishable spaces).
   mcp(
     "list_spaces",
@@ -1927,6 +1953,26 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
+  // #1346: role reach; the conflict while they have no bus (or no such role).
+  "PUT /api/v1/bus/reach": {
+    refuse: invalid(),
+    real: {
+      req: () => ({
+        path: "",
+        body: {
+          role: { namespace: "probe/a", name: "probe-role" },
+          namespace: "probe/b",
+        },
+      }),
+      allow: either(ok(200), code("conflict")),
+    },
+  },
+  "DELETE /api/v1/bus/reach/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/bus/reach/probe-reach" }),
+      allow: ok(204),
+    },
+  },
 };
 
 /** A short random tag (space names). */
@@ -2108,6 +2154,10 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/bus/links", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/links", org("mcp.connect")],
   ["DELETE /api/v1/bus/links/:id", org("mcp.connect")],
+  // #1346: role reach; writes also need a cookie session (the handler).
+  ["GET /api/v1/bus/reach", org("mcp.connect"), [200]],
+  ["PUT /api/v1/bus/reach", org("mcp.connect")],
+  ["DELETE /api/v1/bus/reach/:id", org("mcp.connect")],
 ];
 
 /** Every instance route (an org or user policy) not reached through an artifact. */

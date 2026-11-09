@@ -5,6 +5,7 @@ import {
   pinAnchorSchema,
   textAnchorSchema,
 } from "./anchor.js";
+import { IdSchema } from "./schemas.js";
 
 // Comments REST contract (#682): /api/v1/artifacts/:id/comments. The shell and
 // the MSW mocks build against these; the Backend implements the same shapes.
@@ -44,13 +45,19 @@ export const AskOptionSchema = z.object({
 });
 export type AskOption = z.infer<typeof AskOptionSchema>;
 
-const askOptions = z
-  .array(AskOptionSchema)
-  .min(ASK_OPTIONS_MIN)
-  .max(ASK_OPTIONS_MAX)
-  .refine((o) => new Set(o.map((x) => x.id)).size === o.length, {
-    message: "Option ids must be unique",
-  });
+const optionRules = <T extends z.ZodType<{ id: string }>>(item: T) =>
+  z
+    .array(item)
+    .min(ASK_OPTIONS_MIN)
+    .max(ASK_OPTIONS_MAX)
+    .refine((o) => new Set(o.map((x) => x.id)).size === o.length, {
+      message: "Option ids must be unique",
+    });
+const askOptions = optionRules(AskOptionSchema);
+/** An option as a client sends it: the label is trimmed and must not be blank. */
+const AskInputOptionSchema = AskOptionSchema.extend({
+  label: z.string().trim().min(1).max(ASK_LABEL_MAX),
+});
 const askRecommended = z
   .object({ optionId: key, why: z.string().max(ASK_WHY_MAX) })
   .optional();
@@ -162,8 +169,8 @@ const guestName = z.string().max(COMMENT_GUEST_NAME_MAX).optional();
  */
 export const AskInputSchema = z
   .object({
-    question: z.string().min(1).max(ASK_QUESTION_MAX),
-    options: askOptions,
+    question: z.string().trim().min(1).max(ASK_QUESTION_MAX),
+    options: optionRules(AskInputOptionSchema),
     recommended: askRecommended,
     to: z.array(KeyRefSchema).min(1).max(ASK_TO_MAX),
   })
@@ -204,3 +211,29 @@ export const ArtifactAgentSchema = z.object({
   online: z.boolean(),
 });
 export type ArtifactAgent = z.infer<typeof ArtifactAgentSchema>;
+
+/** MCP list_comments. Bounded like REST: at most 500 threads, 200 replies each (`truncated`). */
+export const ListCommentsInputSchema = z.strictObject({
+  id: IdSchema,
+  status: z.enum(["open", "resolved", "all"]).optional(),
+});
+export type ListCommentsInput = z.infer<typeof ListCommentsInputSchema>;
+
+/** MCP add_comment: a reply when `threadId` is given, else a new thread (anchor defaults to a note on the whole artifact). */
+export const AddCommentInputSchema = z.strictObject({
+  id: IdSchema,
+  body: z.string(),
+  threadId: IdSchema.optional(),
+  anchor: anchorInputSchema.optional(),
+  /** Turns the comment into an ask (#1535): owner and editors only. */
+  ask: AskInputSchema.optional(),
+});
+export type AddCommentInput = z.infer<typeof AddCommentInputSchema>;
+
+/** MCP resolve_comment: `resolved` false reopens the thread. */
+export const ResolveCommentInputSchema = z.strictObject({
+  id: IdSchema,
+  threadId: IdSchema,
+  resolved: z.boolean().optional(),
+});
+export type ResolveCommentInput = z.infer<typeof ResolveCommentInputSchema>;

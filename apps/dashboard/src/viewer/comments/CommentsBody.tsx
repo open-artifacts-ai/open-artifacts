@@ -36,6 +36,7 @@ import {
   matchAgents,
   mentionedKeys,
   mentionQuery,
+  nextAskFor,
 } from "./asks";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { type CommentsApi, useCommentsApi } from "./useComments";
@@ -49,8 +50,9 @@ export const pinHint = () =>
   touch() ? "Tap to place a pin" : "Click to place a pin";
 
 /** "Esc to cancel", on a device with a keyboard only: touch has the Select button. */
-function EscHint() {
-  return touch() ? null : <span> · Esc to cancel</span>;
+function EscHint({ esc }: { esc: boolean }) {
+  // #1698: only where Esc actually leaves pin mode (a mode the reader chose).
+  return esc && !touch() ? <span> · Esc to cancel</span> : null;
 }
 
 /** Select and Pin tools for images and pdf pages (#1490). */
@@ -79,7 +81,7 @@ function Tools({ api }: { api: CommentsApi }) {
       {api.mode === "pin" && (
         <p className={`${TXT} ${MUTED}`}>
           <span>{pinHint()}</span>
-          <EscHint />
+          <EscHint esc={api.pinChosen} />
         </p>
       )}
     </div>
@@ -97,7 +99,7 @@ export function PinBar() {
     >
       <span className={`${TXT} whitespace-nowrap`}>
         <span>{pinHint()}</span>
-        <EscHint />
+        <EscHint esc={api.pinChosen} />
       </span>
       <Button size="xs" variant="ghost" onClick={() => api.setMode("select")}>
         Select
@@ -107,6 +109,18 @@ export function PinBar() {
 }
 
 const MUTED = "text-muted-foreground";
+
+/**
+ * #1657: in the phone sheet's short height (a pin's card), the action row
+ * stays on screen instead of being cut at the bottom edge. The sheet carries
+ * the named group; elsewhere these variants do nothing. The row needs its own
+ * surface while it floats (content scrolls under it), and that surface is the
+ * one it sits on: a thread card's, or the sheet's in the note composer.
+ */
+const STICKY =
+  "group-data-[sheet-height=pin]/sheet:sticky group-data-[sheet-height=pin]/sheet:bottom-0 group-data-[sheet-height=pin]/sheet:z-10";
+export const ACTIONS = `${STICKY} group-data-[sheet-height=pin]/sheet:bg-background`;
+export const ACTIONS_PLAIN = `${STICKY} group-data-[sheet-height=pin]/sheet:bg-card`;
 
 /** Everything below renders comment text as React text: never HTML. */
 
@@ -154,11 +168,14 @@ function Composer({
   failure,
   onDirty,
   mentionable = false,
+  actions = ACTIONS,
   buttonsRight = false,
   lead,
 }: {
-  /** Offer @mentions and Assign: the agent list is fetched once an "@" is typed. */
+  /** Offer @mentions and Assign: the agent list is fetched on the composer's first focus. */
   mentionable?: boolean;
+  /** The action row's own surface while it floats in the short sheet (#1657). */
+  actions?: string;
   /** The new-comment layout: Assign on its own line, then Cancel and the
       accent submit at the right. */
   buttonsRight?: boolean;
@@ -382,7 +399,10 @@ function Composer({
           );
           if (buttonsRight)
             return (
-              <>
+              <div
+                data-oa-actions=""
+                className={`flex flex-col gap-2 ${actions}`}
+              >
                 {assignSel}
                 <div className="flex flex-wrap items-center gap-2">
                   {lead}
@@ -399,10 +419,13 @@ function Composer({
                     </Button>
                   </div>
                 </div>
-              </>
+              </div>
             );
           return (
-            <div className="flex flex-wrap items-center gap-2">
+            <div
+              data-oa-actions=""
+              className={`flex flex-wrap items-center gap-2 ${actions}`}
+            >
               <Button
                 size="xs"
                 disabled={!body || busy}
@@ -493,10 +516,7 @@ function CommentRow({
   c: CommentT;
   root: boolean;
 }) {
-  const pending = asksForMe([...api.ordered, ...api.orphans]).filter(
-    (id) => id !== thread.id,
-  );
-  const nextAsk = pending[0];
+  const nextAsk = nextAskFor(api, thread.id);
   const edit = useEditComment(api.artifactId, api.guest);
   const del = useDeleteComment(api.artifactId, api.guest);
   const [menu, setMenu] = useState(false);
@@ -565,7 +585,8 @@ function CommentRow({
           artifactId={api.artifactId}
           thread={thread}
           c={c}
-          next={nextAsk ? () => api.select(nextAsk, true) : undefined}
+          next={nextAsk ? () => api.reveal(nextAsk) : undefined}
+          reply={api.canComment ? () => api.select(thread.id, true) : undefined}
         />
       ) : (
         <p className={`whitespace-pre-wrap break-words ${TXT}`}>{c.body}</p>
@@ -614,6 +635,7 @@ function CommentRow({
 
 /** What the card says about where its quote went (from the frame's state). */
 function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
+  const isAsk = !!t.comments[0]?.ask;
   const a = t.anchor;
   const state = api.positions.get(t.id)?.state;
   if (a.kind === "note")
@@ -653,7 +675,9 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
     <div className="flex flex-col gap-1">
       {where && <p className={`${TXT} ${MUTED}`}>{where}</p>}
       {state === "partial" && (
-        <p className={`${TXT} ${MUTED}`}>Text changed since this comment</p>
+        <p className={`${TXT} ${MUTED}`}>
+          Text changed since this {isAsk ? "ask" : "comment"}
+        </p>
       )}
       <blockquote
         className={`flex items-start gap-1.5 border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED}`}
@@ -684,9 +708,18 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const expanded = isActive || rest.length === 0;
   const shown = expanded ? rest : [];
   const orphan = api.positions.get(t.id)?.state === "orphan";
+  const revealTick = api.revealed.tick;
+  const revealedHere = api.revealed.id === t.id;
+  // Runs on mount too, so a column that is just opening still scrolls and focuses.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card.
   useEffect(() => {
-    if (isActive) el.current?.scrollIntoView?.({ block: "nearest" });
-  }, [isActive]);
+    if (!isActive) return;
+    el.current?.scrollIntoView?.({ block: "nearest" });
+    if (revealedHere && revealTick > api.revealDone.current) {
+      api.revealDone.current = revealTick;
+      el.current?.focus({ preventScroll: true });
+    }
+  }, [isActive, revealTick]);
   if (!first) return null;
   const toggle = () => {
     setStatusErr(null);
@@ -700,7 +733,8 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       ref={el}
       data-thread={t.id}
       data-active={isActive ? "" : undefined}
-      className="rounded-lg border border-border bg-background p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
+      tabIndex={-1}
+      className="rounded-lg border focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] border-border bg-background p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
     >
       <div className="flex flex-col gap-2">
         <button
@@ -906,6 +940,7 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         submit="Comment"
         alwaysOpen={false}
         buttonsRight
+        actions={ACTIONS_PLAIN}
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
         onSubmit={(body, x) =>
@@ -918,6 +953,26 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         }
       />
     </div>
+  );
+}
+
+/** Amber "N asks for you" button: steps to the next unanswered ask. */
+function AsksForYou({
+  count,
+  onClick,
+}: {
+  count: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-asks-for-you
+      className="cursor-pointer rounded-sm border-0 bg-[var(--oa-warning-soft)] px-2 py-0.5 font-semibold text-[var(--oa-warning)] shadow-[inset_0_0_0_1px_var(--oa-warning)] focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)]"
+    >
+      {count} ask{count === 1 ? "" : "s"} for you
+    </button>
   );
 }
 
@@ -936,23 +991,30 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
       <div className={`flex items-center justify-between gap-2 ${TXT}`}>
-        <span>
-          {api.listedOpen} open
-          {forMe.length > 0 &&
-            ` · ${forMe.length} ask${forMe.length === 1 ? "" : "s"} for you`}
-        </span>
-        {resolvedCount > 0 && (
-          <Button
-            size="xs"
-            variant="ghost"
-            aria-pressed={api.showResolved}
-            onClick={() => api.setShowResolved(!api.showResolved)}
-          >
-            {api.showResolved
-              ? "Hide resolved"
-              : `Show resolved (${resolvedCount})`}
-          </Button>
-        )}
+        <span>{api.listedOpen} open</span>
+        <div className="flex items-center gap-2">
+          {forMe.length > 0 && (
+            <AsksForYou
+              count={forMe.length}
+              onClick={() => {
+                const id = nextAskFor(api, api.active, { includeSelf: true });
+                if (id) api.reveal(id);
+              }}
+            />
+          )}
+          {resolvedCount > 0 && (
+            <Button
+              size="xs"
+              variant="ghost"
+              aria-pressed={api.showResolved}
+              onClick={() => api.setShowResolved(!api.showResolved)}
+            >
+              {api.showResolved
+                ? "Hide resolved"
+                : `Show resolved (${resolvedCount})`}
+            </Button>
+          )}
+        </div>
       </div>
       <Tools api={api} />
       {api.draft && api.canComment && (

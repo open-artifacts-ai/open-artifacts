@@ -4,6 +4,10 @@ import {
   type DaemonClient,
   earlierStatusText,
   excerptOf,
+  FOLLOW_DAEMON_BAD_FRAME,
+  FOLLOW_OLD_DAEMON,
+  followingText,
+  followText,
   linkedLiveNamespace,
   movedName,
   receiptText,
@@ -13,6 +17,7 @@ import {
   selfText,
   statusLabelTooLong,
   statusSetText,
+  unfollowText,
 } from "@oa/bus-ipc";
 
 /** LIMITS.maxLabelChars: a status label's limit, in code points. */
@@ -85,6 +90,32 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "follow",
+    description:
+      "Follow an Open Artifacts artifact, by id or link, to get a notice when it changes.",
+    inputSchema: {
+      type: "object",
+      properties: { artifact: { type: "string" } },
+      required: ["artifact"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "unfollow",
+    description: "Stop following an artifact, by id or link.",
+    inputSchema: {
+      type: "object",
+      properties: { artifact: { type: "string" } },
+      required: ["artifact"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "following",
+    description: "List the artifacts you follow.",
+    inputSchema: none,
+  },
 ] as const;
 
 export type ToolResult = {
@@ -145,6 +176,8 @@ async function run(
 ): Promise<ToolResult> {
   try {
     if (name === "set_status") return await statusTool(args, request);
+    if (name === "follow" || name === "unfollow" || name === "following")
+      return await followTool(name, args, request);
     if (name === "list_agents") {
       const r = await request({ type: "list" });
       if (r.type !== "roster") return failed(r);
@@ -259,6 +292,34 @@ async function statusTool(
   if (r.code === "bad_frame" && r.message !== STATUS_COPY.bad_frame)
     return text(STATUS_COPY.bad_frame, true);
   return text(r.message, true);
+}
+
+/** follow, unfollow and following (#1317). Refusals are the hub's or daemon's copy, as-is. */
+async function followTool(
+  name: "follow" | "unfollow" | "following",
+  args: Record<string, unknown>,
+  request: Request,
+): Promise<ToolResult> {
+  const artifact =
+    typeof args.artifact === "string" ? args.artifact.trim() : "";
+  if (name !== "following" && !artifact)
+    return text("oa-bus: artifact is required (an id or a link)", true);
+  const r =
+    name === "following"
+      ? await request({ type: "following" })
+      : await request({ type: name, artifact });
+  if (r.type === "followed") return text(followText(r.url));
+  if (r.type === "unfollowed") return text(unfollowText(r.removed, artifact));
+  if (r.type === "follows") return text(followingText(r.follows));
+  // Only a daemon that does not know the frame; its own refusals say what they are.
+  if (
+    r.type === "error" &&
+    r.code === "bad_frame" &&
+    r.message !== FOLLOW_DAEMON_BAD_FRAME.noCap &&
+    r.message !== FOLLOW_DAEMON_BAD_FRAME.wire
+  )
+    return text(FOLLOW_OLD_DAEMON, true);
+  return failed(r);
 }
 
 /** How many namespaces hold `name`; undefined when the roster is unavailable. */

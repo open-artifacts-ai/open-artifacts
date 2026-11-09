@@ -10,7 +10,9 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
+  rmdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -31,10 +33,93 @@ export const HERMES_MARKER = ".oa-bus-managed";
 /** The note uninstall leaves when the folder went with no `hermes` to disable it. */
 export const HERMES_NO_CLI =
   "no hermes binary found; its config may still list oa-bus";
+/**
+ * Present in the plugin folder only when the user said yes to the always-on
+ * habits (#1602): the plugin adds them to a turn only while it exists. It is
+ * not a package file, so it never counts toward the hash, and a reinstall keeps it.
+ */
+export const HERMES_HABITS_MARKER = "habits.on";
 /** Where a copy is built before it moves into plugins/, in the Hermes home. */
 export const HERMES_STAGING = ".oa-bus-staging";
 
 type Env = Record<string, string | undefined>;
+
+/** What the marker holds; only its presence matters. */
+export const HABITS_MARKER_TEXT =
+  "The Open Artifacts bus habits are on for this plugin. Remove: oa-bus install --no-habits\n";
+
+/**
+ * Python's non-strict Path.resolve(): the deepest existing ancestor is
+ * realpath'd and the missing rest is appended, so a symlinked ~/.hermes still
+ * counts for a HERMES_HOME that is not there yet.
+ */
+const real = (p: string): string => {
+  const rest: string[] = [];
+  let cur = p;
+  for (;;) {
+    try {
+      return join(realpathSync(cur), ...rest.reverse());
+    } catch {
+      const up = dirname(cur);
+      if (up === cur) return p;
+      rest.push(basename(cur));
+      cur = up;
+    }
+  }
+};
+
+/** A staged copy older than this is abandoned, whatever its pid says (pid reuse, other hosts). */
+export const STAGING_STALE_MS = 10 * 60 * 1000;
+const STAGE_NAME = /^(\d+)-[0-9a-f]+$/;
+
+/** Whether a process exists: EPERM means it does, ESRCH that it does not. */
+export function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * Removes staged copies a killed install left, and only those: an entry is
+ * stale when its pid is dead or it is older than STAGING_STALE_MS; a name not
+ * ours is swept only when old. A live peer's fresh entry, and `own`, stay.
+ */
+export function sweepStaging(
+  staging: string,
+  own: string,
+  o: { now?: number; alive?: (pid: number) => boolean } = {},
+): void {
+  const now = o.now ?? Date.now();
+  const alive = o.alive ?? pidAlive;
+  let names: string[];
+  try {
+    names = readdirSync(staging);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === own) continue;
+    const path = join(staging, name);
+    let old: boolean;
+    try {
+      old = now - lstatSync(path).mtimeMs > STAGING_STALE_MS;
+    } catch {
+      continue;
+    }
+    const m = STAGE_NAME.exec(name);
+    // A pid from another container or pid namespace can read as dead or alive;
+    // the age rule covers the alive case.
+    if (m ? old || !alive(Number(m[1])) : old) {
+      try {
+        // Removes a symlink entry itself, never its target.
+        rmSync(path, { recursive: true, force: true });
+      } catch {} // a peer's entry we cannot remove must not abort the install
+    }
+  }
+}
 
 const tilded = (home: string, v: string) =>
   v === "~" ? home : resolve(v.startsWith("~/") ? join(home, v.slice(2)) : v);
@@ -54,14 +139,7 @@ export function hermesHome(home: string, env: Env): string {
   if (given !== undefined && basename(dirname(given)) === "profiles")
     return given;
   const base = given ?? native;
-  const root = (() => {
-    if (given === undefined) return native;
-    const rel = relative(native, given);
-    // Under ~/.hermes: that is the root, whatever the folder is called.
-    if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel)))
-      return native;
-    return given;
-  })();
+  const root = hermesRoot(home, env);
   if (env.HERMES_S6_SUPERVISED_CHILD) return base;
   try {
     const name = readFileSync(join(root, "active_profile"), "utf8")
@@ -73,6 +151,40 @@ export function hermesHome(home: string, env: Env): string {
     }
   } catch {}
   return base;
+}
+
+/**
+ * The root all profiles live under (`<root>/profiles/<name>`), by the same
+ * rules as hermesHome: a HERMES_HOME inside `profiles/` has its grandparent
+ * as root; one under ~/.hermes means ~/.hermes; any other is its own root.
+ */
+export function hermesRoot(home: string, env: Env): string {
+  const native = join(home, ".hermes");
+  const v = env.HERMES_HOME?.trim();
+  const given = v ? tilded(home, v) : undefined;
+  if (given === undefined) return native;
+  if (basename(dirname(given)) === "profiles") return dirname(dirname(given));
+  // Hermes resolves both sides (Path.resolve) for this check only.
+  const rel = relative(real(native), real(given));
+  // Under ~/.hermes: that is the root, whatever the folder is called.
+  if (rel === "" || (!rel.startsWith("..") && !isAbsolute(rel))) return native;
+  return given;
+}
+
+/**
+ * Every plugin folder of this Hermes: the root's own, each profile's, and the
+ * active one, which a HERMES_HOME under ~/.hermes keeps outside both.
+ */
+export function hermesPluginDirs(home: string, env: Env): string[] {
+  const root = hermesRoot(home, env);
+  const out = [join(root, "plugins", HERMES_PLUGIN_NAME)];
+  try {
+    for (const name of readdirSync(join(root, "profiles")).sort())
+      out.push(join(root, "profiles", name, "plugins", HERMES_PLUGIN_NAME));
+  } catch {}
+  const active = hermesPluginDir(home, env);
+  if (!out.includes(active)) out.push(active);
+  return out;
 }
 
 /** The env Hermes's CLI runs with, so it and our files agree on the home. */
@@ -92,11 +204,16 @@ const kind = (path: string): "dir" | "file" | "link" | undefined => {
   }
 };
 
-/** Package files only: no bytecode caches, no marker, no hidden files. */
+/** Package files only: no bytecode caches, no marker, no habits marker, no hidden files. */
 function files(dir: string, rel = ""): string[] {
   const out: string[] = [];
   for (const name of readdirSync(join(dir, rel)).sort()) {
-    if (name === "__pycache__" || name.startsWith(".") || name.endsWith(".pyc"))
+    if (
+      name === "__pycache__" ||
+      name.startsWith(".") ||
+      name.endsWith(".pyc") ||
+      (rel === "" && name === HERMES_HABITS_MARKER)
+    )
       continue;
     const r = rel ? `${rel}/${name}` : name;
     if (kind(join(dir, r)) === "dir") out.push(...files(dir, r));
@@ -179,17 +296,28 @@ export async function installHermes(
       `${dest} exists and is not Open Artifacts bus's; left it untouched`,
     );
   if (state !== "current") {
+    // The user's yes to the habits lives in the folder being replaced: carry it over.
+    const keepHabits =
+      state === "stale" && kind(join(dest, HERMES_HABITS_MARKER)) === "file";
     const plugins = join(dest, "..");
     mkdirSync(plugins, { recursive: true });
     // Staged outside plugins/ (Hermes loads any folder there with a plugin.yaml),
     // but in the same Hermes home, so the rename stays on one filesystem. A
     // killed install leaves its stage behind: the next install sweeps them.
     const staging = join(plugins, "..", HERMES_STAGING);
-    rmSync(staging, { recursive: true, force: true });
+    const own = `${process.pid}-${randomBytes(4).toString("hex")}`;
+    // A symlink or file here would make the sweep touch somewhere else.
+    const st = lstatSync(staging, { throwIfNoEntry: false });
+    if (st !== undefined && !st.isDirectory())
+      throw new Error(
+        `${staging} is not a plain folder; remove it and run the install again`,
+      );
     mkdirSync(staging, { recursive: true });
-    const tmp = join(staging, randomBytes(4).toString("hex"));
+    sweepStaging(staging, own, deps.staging);
+    const tmp = join(staging, own);
     try {
-      mkdirSync(tmp);
+      // recursive: a peer's rmdir may remove the empty staging folder after our mkdir above.
+      mkdirSync(tmp, { recursive: true });
       for (const f of files(shipped)) {
         mkdirSync(join(tmp, f, ".."), { recursive: true });
         cpSync(join(shipped, f), join(tmp, f));
@@ -198,13 +326,18 @@ export async function installHermes(
         join(tmp, HERMES_MARKER),
         `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
       );
+      if (keepHabits)
+        writeFileSync(join(tmp, HERMES_HABITS_MARKER), HABITS_MARKER_TEXT);
       if (state === "stale") rmSync(dest, { recursive: true, force: true });
       renameSync(tmp, dest);
     } catch (e) {
       rmSync(tmp, { recursive: true, force: true });
       throw e;
     } finally {
-      rmSync(staging, { recursive: true, force: true });
+      // Only the folder itself, and only when no peer is staging in it.
+      try {
+        rmdirSync(staging);
+      } catch {}
     }
   }
   // Enable only a plugin Hermes does not list as enabled, so a reinstall never

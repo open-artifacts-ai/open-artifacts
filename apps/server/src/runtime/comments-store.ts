@@ -544,6 +544,15 @@ export const threadExists = (sql: SqlStorage, id: string): boolean =>
   sql.exec("select 1 from comment_threads where id = ?", id).toArray().length >
   0;
 
+/** A thread's status, or null when it does not exist. */
+export const threadStatus = (sql: SqlStorage, id: string): string | null =>
+  sql
+    .exec<{ status: string }>(
+      "select status from comment_threads where id = ?",
+      id,
+    )
+    .toArray()[0]?.status ?? null;
+
 export const touchThread = (sql: SqlStorage, id: string, now: string): void => {
   sql.exec("update comment_threads set activity_at = ? where id = ?", now, id);
 };

@@ -142,7 +142,7 @@ def receipt_text(r, sent_to, namespaces=None, excerpt=None, moved_to=None, linke
         def tail(v):
             if reason == "recipient_closed":
                 return f"was not delivered because {v} closed first."
-            return f"was not taken within {RETAIN}."
+            return f"was not confirmed as delivered. Mail waits at most {RETAIN}."
 
         def head(v):
             return f"×  Expired: your message to {v}"
@@ -341,6 +341,29 @@ def status_set_text(state, label=None):
 
 def earlier_status_text(message):
     return f"Your previous status did not reach the user. {message}"
+
+
+def follow_text(url):
+    return f"Following {url}. You get a notice here when it changes."
+
+
+def unfollow_text(removed, artifact):
+    return f"Stopped following {artifact}." if removed else f"You were not following {artifact}."
+
+
+def following_text(follows):
+    if not follows:
+        return "You are not following any artifacts."
+    return "\n".join(f"{f['url']} (since {f['followed_at']})" for f in follows)
+
+
+# The bad_frame answers a current daemon gives a follow call itself (@oa/bus-ipc FOLLOW_DAEMON_BAD_FRAME).
+FOLLOW_DAEMON_BAD_FRAME = (
+    "follow is not supported on this connection",
+    "the frame is not valid on the hub wire",
+)
+
+FOLLOW_OLD_DAEMON = "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus."
 
 
 def status_label_too_long(n):

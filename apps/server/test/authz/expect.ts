@@ -351,6 +351,7 @@ export const CAPPED_WRITES: readonly string[] = [
   "DELETE /api/v1/tokens/:id",
   "DELETE /api/v1/oauth-clients/:grantId",
   "DELETE /api/v1/bus/machines/:id",
+  "DELETE /api/v1/bus/reach/:id",
   "POST /api/v1/notices/guest_shares/dismiss",
 ];
 

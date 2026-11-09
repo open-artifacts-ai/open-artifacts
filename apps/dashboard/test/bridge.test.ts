@@ -409,6 +409,110 @@ describe("comments (#682)", () => {
     expect(o.onCommentSelect).not.toHaveBeenCalled();
   });
 
+  it("leaves `changed` out for a runtime older than this shell (#1698)", () => {
+    const b = mk();
+    const pins = [
+      {
+        id: "t1",
+        n: 1,
+        changed: true,
+        anchor: {
+          kind: "pin" as const,
+          version: 1,
+          x: 0,
+          y: 0,
+          contentHash: "h",
+        },
+      },
+    ];
+    // No hello yet: the frame's protocol is unknown, so send only what every
+    // runtime reads. One unknown field would have the strict schemas drop the
+    // whole message and every pin with it.
+    b.setComments(pins);
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        type: "comments.set",
+        threads: [expect.not.objectContaining({ changed: true })],
+      }),
+      "*",
+    );
+    // A runtime that said hello with an older protocol: same.
+    send({ oa: 1, type: "hello", protocol: 1, kind: "html" });
+    b.setComments(pins);
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threads: [expect.not.objectContaining({ changed: true })],
+      }),
+      "*",
+    );
+    // This shell's protocol: the marker goes through.
+    send({ oa: 1, type: "hello", protocol: 2, kind: "html" });
+    b.setComments(pins);
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threads: [expect.objectContaining({ changed: true })],
+      }),
+      "*",
+    );
+    // A `load` event is not a new runtime: it waits for subresources, so the
+    // runtime's hello can arrive first. The marker must survive it (#1698).
+    frame.loaded();
+    b.setComments(pins);
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threads: [expect.objectContaining({ changed: true })],
+      }),
+      "*",
+    );
+  });
+
+  it("holds `changed` back until the frame's own runtime says hello (#1698)", () => {
+    // A frame loaded from here says nothing until its runtime is up: until
+    // then the shell cannot know its protocol, so it sends core fields only.
+    const b = mk();
+    b.setComments([
+      {
+        id: "t1",
+        n: 1,
+        changed: true,
+        anchor: {
+          kind: "pin" as const,
+          version: 1,
+          x: 0,
+          y: 0,
+          contentHash: "h",
+        },
+      },
+    ]);
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threads: [expect.not.objectContaining({ changed: true })],
+      }),
+      "*",
+    );
+    send({ oa: 1, type: "hello", protocol: 2, kind: "html" });
+    b.setComments([
+      {
+        id: "t1",
+        n: 1,
+        changed: true,
+        anchor: {
+          kind: "pin" as const,
+          version: 1,
+          x: 0,
+          y: 0,
+          contentHash: "h",
+        },
+      },
+    ]);
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threads: [expect.objectContaining({ changed: true })],
+      }),
+      "*",
+    );
+  });
+
   it("sends the mode, the threads and a focus to the frame", () => {
     const b = mk();
     b.setCommentsMode("select");
@@ -1169,6 +1273,7 @@ describe("the frame can't change the bridge's artifact", () => {
     expect(typeof b.setArtifact).toBe("function");
     expect(Object.keys(b).sort()).toEqual(
       [
+        "commentOnSelection",
         "dispose",
         "focusComment",
         "requestThumbnail",

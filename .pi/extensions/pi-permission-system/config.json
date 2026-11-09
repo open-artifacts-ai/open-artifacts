@@ -40,6 +40,7 @@
       "gh pr checkout*": "allow",
       "gh pr ready*": "allow",
       "gh pr reopen*": "allow",
+      "gh pr close*": "allow",
       "gh issue view*": "allow",
       "gh issue list*": "allow",
       "gh issue create*": "allow",
@@ -65,10 +66,34 @@
       "pnpm run gen": "allow",
       "pnpm -C apps/server run gen": "allow",
       "pnpm --filter @oa/shared build": "allow",
+      "pnpm --filter @oa/shared --filter @oa/auth-core --filter @oa/provisioning-contract --filter @oa/provision build": "allow",
+      "pnpm --filter @oa/auth-core build": "allow",
+      "pnpm --filter @oa/provisioning-contract build": "allow",
+      "pnpm --filter @oa/provision build": "allow",
+      "pnpm --filter @oa/bundle build": "allow",
+      "node --experimental-strip-types scripts/emit-tool-manifest.ts": "allow",
+      "node --experimental-strip-types scripts/emit-skill.ts": "allow",
+      "node --experimental-strip-types scripts/emit-upgrade.ts": "allow",
       "pnpm run test:prep": "allow",
       "pnpm test:prep": "allow",
       "pnpm lint": "allow",
       "pnpm -s lint": "allow",
+      "sleep 1": "allow",
+      "sleep 2": "allow",
+      "sleep 5": "allow",
+      "sleep 10": "allow",
+      "sleep 15": "allow",
+      "sleep 20": "allow",
+      "sleep 30": "allow",
+      "sleep 45": "allow",
+      "sleep 60": "allow",
+      "sleep 90": "allow",
+      "sleep 120": "allow",
+      "sleep 180": "allow",
+      "sleep 240": "allow",
+      "sleep 300": "allow",
+      "sleep 600": "allow",
+      "sleep 900": "allow",
       "gh run rerun*": "ask",
       "gh api *-f*": "ask",
       "gh api *-F*": "ask",
@@ -596,6 +621,46 @@
       "git worktree add* -q*": {
         "action": "deny",
         "reason": "Forcing or quoting in a worktree add needs your human: use a plain 'git worktree add <path> -b <branch> <base>'."
+      },
+      "gh pr close*github.com*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh pr close* -R*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh pr close*--repo*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh pr close*\"-R*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh pr close*'-R*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh issue close*github.com*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh issue close* -R*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh issue close*--repo*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh issue close*\"-R*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
+      },
+      "gh issue close*'-R*": {
+        "action": "deny",
+        "reason": "Other repositories are your human's: close only in this one, or ask them with the exact command."
       }
     },
     "mcp": {

@@ -37,8 +37,10 @@ import {
   type CommentNoticeKind,
   type DeliveryState,
   notifyAgent,
+  notifyAnswered,
   type RosterAgent,
   storedAgent,
+  viewerRosterAgents,
 } from "./comment-agents.js";
 import {
   verifyQuote,
@@ -46,6 +48,12 @@ import {
   versionFormat,
 } from "./comment-anchor.js";
 import { type CommentStatus, cleanGuestName } from "./comment-rules.js";
+import {
+  addressKey,
+  follow,
+  inBackground,
+  notifyCommented,
+} from "./follows.js";
 import { effectiveName, getUser } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -133,9 +141,13 @@ export type CheckedAnchor = { anchor: Anchor; version: number };
 /**
  * An anchor as posted, checked: its schema (400 invalid_anchor), the version
  * it names (missing means current; a version that does not exist is 422
- * anchor_not_in_version) and, for a text anchor on an html version, the quote
- * (422 anchor_not_in_version; the context is re-derived when only it is off).
- * Other formats get the schema check only.
+ * anchor_not_in_version) and, for a text anchor on an html version, the quote.
+ * A quote the stored html shows keeps its context (re-derived when only it is
+ * off). A quote it does not show (text the page's script renders, or an entry
+ * too big to parse) is accepted with the live page's prefix and suffix, cut
+ * to CONTEXT_CHARS each side, and no block hint: the context is as unchecked
+ * as the quote, and the client resolver needs it to place a short quote
+ * (#1735). Other formats get the schema check only.
  */
 export async function checkAnchor(
   env: Pick<Env, "DB" | "FILES" | "PLAN">,
@@ -391,6 +403,36 @@ export async function listComments(
 
 // ------------------------------------------------------------------- writes
 
+/** Where a new comment's `comment` notice goes: after the response when there is a ctx. */
+export type Announce = {
+  /** The artifact's current version, named in the notice. */
+  version: number;
+  ctx?: Pick<ExecutionContext, "waitUntil">;
+};
+
+/** Followers hear of a new comment (once, never the author's own agents); never throws. */
+const announce = (
+  env: Env,
+  artifactId: string,
+  who: CommentWho,
+  after: Announce | undefined,
+  /** The comment's mentions, ask and assignment: those agents already heard of it. */
+  r?: Resolved,
+) =>
+  after
+    ? inBackground(
+        after.ctx,
+        notifyCommented(
+          env,
+          artifactId,
+          after.version,
+          who.kind === "user" ? who.id : null,
+          Date.now(),
+          new Set((r?.agents ?? []).map((x) => addressKey(x.agent.address))),
+        ),
+      )
+    : undefined;
+
 /** What a comment may carry besides its body (#1535). `ask` is for the MCP tool: no REST body takes it. */
 export type CommentExtras = {
   mentions?: KeyRef[];
@@ -399,15 +441,24 @@ export type CommentExtras = {
 };
 
 /** Who may mention, assign and ask. `moderator`: the owner or an editor. */
-export type ExtrasOpts = { moderator?: boolean };
+export type ExtrasOpts = {
+  moderator?: boolean;
+  /** Followers hear of the new comment (#682); absent: nobody is told. */
+  after?: Announce;
+};
 
 type Resolved = {
   extras: NewExtras | undefined;
   /** Every agent the comment reaches, once, with why (assign beats ask beats mention). */
   agents: { agent: RosterAgent; kind: CommentNoticeKind }[];
+  /** The agents to make follow: mentioned, resolved from the viewer's own running agents. */
+  follow: RosterAgent[];
   mentions: string[];
   assign: string | null;
 };
+
+/** The key of a roster agent (comment-agents.ts agentKey). */
+const AGENT_KEY = /^agent:[0-9a-f]{32}$/;
 
 const unknownKey = (key: string) =>
   new ApiError("bad_request", `Unknown agent or person: ${key}`);
@@ -425,14 +476,20 @@ async function resolveExtras(
   x: CommentExtras,
   opts: ExtrasOpts,
 ): Promise<Resolved> {
-  const none = { extras: undefined, agents: [], mentions: [], assign: null };
+  const none: Resolved = {
+    extras: undefined,
+    agents: [],
+    follow: [],
+    mentions: [],
+    assign: null,
+  };
   const wantsTargets = (x.mentions?.length ?? 0) > 0 || x.assign !== undefined;
   if (!wantsTargets && !x.ask) return none;
   // An ask notifies agents too: the same rule as mentions and assignments.
   if ((wantsTargets || x.ask) && !opts.moderator)
     throw new ApiError(
       "forbidden",
-      "Only the owner and editors can mention, assign or ask",
+      "Only the owner and editors can mention, assign or ask. Drop it, or post a plain comment.",
     );
   if (x.ask && who.kind !== "user")
     throw new ApiError("forbidden", "Sign in to ask a question");
@@ -440,28 +497,46 @@ async function resolveExtras(
   if (parsed && !parsed.success)
     throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);
   const askIn = parsed?.success ? parsed.data : undefined;
-  const roster = await agentRoster(
-    env,
-    artifactId,
-    who.kind === "user" ? who.id : null,
-    false,
-  );
-  const agentOf = (key: string): RosterAgent => {
+  const viewerId = who.kind === "user" ? who.id : null;
+  const roster = await agentRoster(env, artifactId, viewerId, false);
+  // The viewer's own running agents (#1535) are keyed by a hash of their
+  // address, so a key the follows do not hold can only be resolved by reading
+  // the viewer's hub. That read happens once per POST (memoised), only for a
+  // key shaped like an agent key that the follows do not hold: a mention of a
+  // follower, an ask to a person or a junk key costs D1 alone. busView bounds
+  // the read at BUS_HUB_TIMEOUT_MS (a stalled hub then reads as an unknown
+  // key). It sits OUTSIDE the POST's NOTICE_BUDGET_MS, so the worst case is
+  // about that bound plus the budget (about 4.5 s), and it runs before the
+  // rate-limit take: a thread's take is tied to the anchor check and a reply's
+  // sits in the DO write, so moving it ahead of this read is not a small change.
+  // Only the viewer's own agents, never another member's.
+  let own: Promise<RosterAgent[]> | undefined;
+  /** Keys resolved from the viewer's own running agents: not in the follows. */
+  const viaOwn = new Set<string>();
+  const find = async (key: string): Promise<RosterAgent | undefined> => {
     const a = roster.find((r) => r.key === key);
+    if (a || !viewerId || !AGENT_KEY.test(key)) return a;
+    own ??= viewerRosterAgents(env, artifactId, viewerId);
+    const found = (await own).find((r) => r.key === key);
+    if (found) viaOwn.add(key);
+    return found;
+  };
+  const agentOf = async (key: string): Promise<RosterAgent> => {
+    const a = await find(key);
     if (!a) throw unknownKey(key);
     return a;
   };
-  const mentioned = [...new Set((x.mentions ?? []).map((m) => m.key))].map(
-    agentOf,
-  );
-  const assigned = x.assign ? agentOf(x.assign.key) : null;
+  const mentioned: RosterAgent[] = [];
+  for (const key of new Set((x.mentions ?? []).map((m) => m.key)))
+    mentioned.push(await agentOf(key));
+  const assigned = x.assign ? await agentOf(x.assign.key) : null;
   let ask: NewExtras["ask"];
   const asked: RosterAgent[] = [];
   if (askIn) {
     const to: StoredParty[] = [];
     for (const { key } of askIn.to) {
       if (to.some((p) => p.key === key)) continue;
-      const a = roster.find((r) => r.key === key);
+      const a = await find(key);
       if (a) {
         to.push(storedAgent(a));
         asked.push(a);
@@ -484,7 +559,11 @@ async function resolveExtras(
   for (const a of mentioned) agents.set(a.key, { agent: a, kind: "mention" });
   for (const a of asked) agents.set(a.key, { agent: a, kind: "ask" });
   if (assigned) agents.set(assigned.key, { agent: assigned, kind: "assign" });
+  // A mention makes an agent follow (#1535); an assignment or ask alone does
+  // not. Only one the follows did not hold: another member's unfollow is never undone.
+  const toFollow = mentioned.filter((x) => viaOwn.has(x.key));
   return {
+    follow: [...new Map(toFollow.map((x) => [x.key, x])).values()],
     extras: {
       ...(ask ? { ask } : {}),
       ...(mentioned.length ? { mentions: mentioned.map(storedAgent) } : {}),
@@ -511,6 +590,25 @@ const stateOf = (
       ? "queued"
       : "gone";
 
+/** The most a comment POST waits, in total, for its notices to reach their hubs. */
+export const NOTICE_BUDGET_MS = 2500;
+
+/** The mentioned agent follows the artifact; never throws (a follow_limit or a lapsed member is logged). */
+async function followMentioned(
+  env: Env,
+  artifactId: string,
+  agent: RosterAgent,
+): Promise<void> {
+  try {
+    await follow(env, agent.userId, agent.address, artifactId);
+  } catch (e) {
+    logInfo("comment_mention_follow_failed", {
+      artifactId,
+      code: e instanceof ApiError ? e.code : "error",
+    });
+  }
+}
+
 /**
  * Sends the notices of a written comment and records how each mention and the
  * assignment went. Returns the comment as then stored.
@@ -525,11 +623,37 @@ async function deliver(
   if (r.agents.length === 0) return c;
   const version = Math.max(1, a.currentVersion);
   const outcome = new Map<string, DeliveryState>();
-  for (const { agent, kind } of r.agents)
-    outcome.set(
-      agent.key,
-      await notifyAgent(env, a.id, version, c.id, kind, agent),
+  // Concurrent, and the POST waits NOTICE_BUDGET_MS at most in total: a
+  // stalled hub reads "dropped" (its notice may still arrive; "gone" for a
+  // mention, "queued" for an assignment).
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<DeliveryState>((res) => {
+    timer = setTimeout(() => res("dropped"), NOTICE_BUDGET_MS);
+  });
+  try {
+    // A mentioned agent of the viewer's that did not follow now
+    // follows (#1535), beside the notice and under the same budget. Best
+    // effort: a failure is logged and changes neither the notice nor the comment.
+    const follows = r.follow.map((agent) =>
+      Promise.race([followMentioned(env, a.id, agent), late]),
     );
+    const [outs] = await Promise.all([
+      Promise.all(
+        r.agents.map(({ agent, kind }) =>
+          Promise.race([
+            notifyAgent(env, a.id, version, threadId, c.id, kind, agent),
+            late,
+          ]),
+        ),
+      ),
+      Promise.all(follows),
+    ]);
+    r.agents.forEach(({ agent }, i) => {
+      outcome.set(agent.key, outs[i] ?? "dropped");
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   const states: { kind: "mention" | "assign"; key: string; state: string }[] =
     [];
   for (const key of r.mentions)
@@ -599,6 +723,7 @@ export async function addThread(
     const sent = await deliver(env, a, t.id, root, r);
     t.comments[0] = sent;
   }
+  await announce(env, a.id, who, opts.after, r);
   return (await threadViews(env, [t], viewer))[0] as Thread;
 }
 
@@ -624,7 +749,10 @@ export async function addReply(
       ...(r.extras ? { extras: r.extras } : {}),
     }),
   );
-  if (r.agents.length === 0) return commentView(env, c, viewer);
+  if (r.agents.length === 0) {
+    await announce(env, artifactId, who, opts.after, r);
+    return commentView(env, c, viewer);
+  }
   const row = await stmt(
     env.DB,
     "select current_version as v from artifacts where id = ?",
@@ -632,7 +760,9 @@ export async function addReply(
     .bind(artifactId)
     .first<{ v: number }>();
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
-  return commentView(env, await deliver(env, a, threadId, c, r), viewer);
+  const sent = await deliver(env, a, threadId, c, r);
+  await announce(env, artifactId, who, opts.after, r);
+  return commentView(env, sent, viewer);
 }
 
 /**
@@ -649,8 +779,10 @@ export async function answerAsk(
   who: CommentWho,
   viewer: CommentViewer,
   optionId: string,
+  /** The artifact's current version and the request's ctx: the asker's agents hear of the answer (#1535), after the response. */
+  after?: Announce,
 ): Promise<Comment> {
-  const c = await call(() =>
+  const { comment: c, unchanged } = await call(() =>
     stub(env, artifactId).commentsAnswer({
       threadId,
       commentId,
@@ -659,6 +791,20 @@ export async function answerAsk(
       rate: rateKeyOf(who),
     }),
   );
+  // The answer is stored: the asker's following agents hear of it, in the
+  // background, and a failure never fails the answer (inBackground catches).
+  if (after && !unchanged && c.author.kind === "user")
+    await inBackground(
+      after.ctx,
+      notifyAnswered(
+        env,
+        artifactId,
+        Math.max(1, after.version),
+        threadId,
+        commentId,
+        c.author.ref,
+      ),
+    );
   return commentView(env, c, viewer);
 }
 
@@ -668,7 +814,7 @@ export async function artifactAgents(
   artifactId: string,
   viewerId: string | null,
 ): Promise<{ key: string; name: string; online: boolean }[]> {
-  return (await agentRoster(env, artifactId, viewerId, true)).map(
+  return (await agentRoster(env, artifactId, viewerId, true, true)).map(
     ({ key, name, online }) => ({ key, name, online }),
   );
 }

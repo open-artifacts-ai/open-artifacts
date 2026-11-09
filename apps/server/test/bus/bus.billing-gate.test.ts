@@ -45,7 +45,15 @@ import {
 import { fetchAndWait, login } from "../helpers.js";
 import { connect, textOf, tool } from "../mcp-helpers.js";
 import { pinMiddayUtc } from "../midday.js";
-import { daemon, hello, ns, trackSocket, up, waitFor } from "./helpers.js";
+import {
+  daemon,
+  hello,
+  hubOf,
+  ns,
+  trackSocket,
+  up,
+  waitFor,
+} from "./helpers.js";
 
 /** A hosted install with the bus feature on (FEATURES "bus"). */
 const H = {
@@ -439,6 +447,65 @@ describe.each(Object.entries(LOCKS))(
       } finally {
         installDelivery(prev);
       }
+    });
+  },
+);
+
+// ---- #1346 role reach: a new grant is new configuration; removing one is not
+
+describe.each(Object.entries(LOCKS))(
+  "role reach for a plan-capped member under %s",
+  (_n, row) => {
+    it("cannot grant reach, but can still read and remove an existing grant", async () => {
+      const who = await login(`br-${newId().slice(0, 8)}@a.com`, "member");
+      await env.DB.prepare(
+        "insert into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, ?, ?, ?, ?)",
+      )
+        .bind(
+          newId(),
+          who.userId,
+          "reach-box",
+          await sha256Hex(newMachineToken()),
+          Date.now(),
+          Date.now(),
+        )
+        .run();
+      const home = ns("gh");
+      // Set up while on a paid plan: a role and one grant.
+      await lockTo(PAID);
+      const w = (path: string, method: string, body?: unknown) =>
+        send(props, path, who.cookie, { method, body, e: H });
+      expect(
+        (
+          await w(R.busRoles, "PUT", {
+            namespace: home,
+            name: "lead",
+            agentId: null,
+          })
+        ).status,
+      ).toBe(200);
+      const made = await w(R.busReach, "PUT", {
+        role: { namespace: home, name: "lead" },
+        namespace: ns("gb"),
+      });
+      expect(made.status, await made.clone().text()).toBe(200);
+      const { reach } = (await made.json()) as { reach: { id: string } };
+      await lockTo(row);
+      // A new grant: refused with the plan's own error; nothing is stored.
+      const refused = await w(R.busReach, "PUT", {
+        role: { namespace: home, name: "lead" },
+        namespace: ns("gc"),
+      });
+      expect(refused.status).toBe(403);
+      expect(
+        ((await refused.json()) as { error: { code: string } }).error.code,
+      ).toMatch(/^plan_(required|read_only)$/);
+      const hub = await hubOf(who.userId);
+      expect(await hub.listReach()).toHaveLength(1);
+      // Reads and removal stay open.
+      expect((await w(R.busReach, "GET")).status).toBe(200);
+      expect((await w(R.busReachGrant(reach.id), "DELETE")).status).toBe(204);
+      expect(await hub.listReach()).toEqual([]);
     });
   },
 );

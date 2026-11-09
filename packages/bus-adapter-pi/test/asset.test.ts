@@ -9,6 +9,10 @@ import {
   displayKind,
   earlierStatusText,
   excerptOf,
+  FOLLOW_DAEMON_BAD_FRAME,
+  FOLLOW_OLD_DAEMON,
+  followingText,
+  followText,
   linkedLiveNamespace,
   messageHeader,
   movedName,
@@ -24,6 +28,7 @@ import {
   statusSetText,
   stripTerminalControls,
   unconfirmedText,
+  unfollowText,
 } from "@oa/bus-ipc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import oa_bus, { copy } from "../assets/oa-bus.ts";
@@ -201,17 +206,20 @@ describe("pi extension asset", () => {
     expect(src.split("\n")[0]).toMatch(/managed file/i);
   });
 
-  it("registers the five tools with the same JSON-Schema parameters as the MCP tools", () => {
+  it("registers the eight tools with the same JSON-Schema parameters as the MCP tools", () => {
     const p = fakePi();
     oa_bus(p.pi as never);
     expect([...p.tools.keys()]).toEqual(TOOLS.map((t) => piName(t.name)));
     expect([...p.tools.keys()].sort()).toEqual(
       [
         "oabus_fetch",
+        "oabus_follow",
+        "oabus_following",
         "oabus_list_agents",
         "oabus_self",
         "oabus_send_message",
         "oabus_set_status",
+        "oabus_unfollow",
       ].sort(),
     );
     for (const t of TOOLS) {
@@ -225,7 +233,7 @@ describe("pi extension asset", () => {
   it("registers no name the OpenBus extension registers, so Pi starts with both (#1448)", () => {
     const p = fakePi();
     oa_bus(p.pi as never);
-    expect(p.tools.size).toBe(5);
+    expect(p.tools.size).toBe(8);
     for (const name of p.tools.keys())
       expect(OPENBUS_TOOLS).not.toContain(name);
   });
@@ -251,8 +259,8 @@ describe("pi extension asset", () => {
       agent_ref: "pi-sess-1",
       pid: process.pid,
       cwd: "/work/repo",
-      proposed_name: "my-pi",
-      caps: ["mailbox", "pending", "rename"],
+      proposed_name: "My Pi",
+      caps: ["mailbox", "pending", "rename", "follow"],
       attest: { proc_start: procStartOf(process.pid) },
     });
     // `TZ=UTC LC_ALL=C ps -o lstart=`: "Fri Oct 23 08:13:26 2026".
@@ -652,7 +660,7 @@ describe("pi extension asset", () => {
     const d = await fakeDaemon(home);
     const p = fakePi();
     oa_bus(p.pi as never);
-    await p.emit("session_start", ctx("pi-sess-4", "!!!"));
+    await p.emit("session_start", ctx("pi-sess-4", " \u0001 "));
     await vi.waitFor(() =>
       expect(d.conns[0]?.frames[0]).toMatchObject({ proposed_name: "pi" }),
     );
@@ -836,7 +844,7 @@ describe("one file for Pi and oh-my-pi (C23b)", () => {
     oa_bus(p.pi as never);
     for (const t of p.tools.values()) expect(t).not.toHaveProperty("loadMode");
     const o = ompHost();
-    expect(o.tools.size).toBe(5);
+    expect(o.tools.size).toBe(8);
     expect(o.tools.get("oabus_send_message")).toMatchObject({
       loadMode: "essential",
     });
@@ -1005,6 +1013,104 @@ describe("set_status", () => {
       statusSetText("idle"),
     );
     expect(d.conns[0].frames[0]).toMatchObject({ kind: "omp" });
+  });
+});
+
+describe("follow tools (#1317)", () => {
+  const entry = {
+    artifact_id: "abc",
+    url: "https://x.test/a/abc",
+    followed_at: "2026-11-09T10:00:00.000Z",
+  };
+  const at = (answer: (f: Frame) => Record<string, unknown>) =>
+    started((f) =>
+      ["follow", "unfollow", "following"].includes(f.type)
+        ? answer(f)
+        : undefined,
+    );
+  const sent = (d: Awaited<ReturnType<typeof started>>["d"]) =>
+    d.conns[0].frames.filter((f) => f.type !== "hello");
+
+  it("registers the three tools with the shared descriptions", () => {
+    const p = fakePi();
+    oa_bus(p.pi as never);
+    for (const n of ["follow", "unfollow", "following"])
+      expect(p.tools.get(`oabus_${n}`)?.description).toBe(
+        TOOLS.find((t) => t.name === n)?.description,
+      );
+  });
+
+  it("follow sends the artifact only; the result says what the agent gets", async () => {
+    const { d, p } = await at(() => ({ type: "followed", ...entry }));
+    expect(
+      await p.call("follow", { artifact: ` ${entry.url} `, name: "other" }),
+    ).toBe(followText(entry.url));
+    expect(sent(d)).toMatchObject([{ type: "follow", artifact: entry.url }]);
+    expect(sent(d)[0]).not.toHaveProperty("name");
+  });
+
+  it("unfollow says whether it was followed", async () => {
+    const { p } = await at(() => ({ type: "unfollowed", removed: false }));
+    expect(await p.call("unfollow", { artifact: "abc" })).toBe(
+      unfollowText(false, "abc"),
+    );
+  });
+
+  it("following lists the links", async () => {
+    const { p } = await at(() => ({ type: "follows", follows: [entry] }));
+    expect(await p.call("following", {})).toBe(followingText([entry]));
+  });
+
+  it("an empty artifact is refused before the daemon", async () => {
+    const { d, p } = await at(() => ({ type: "followed", ...entry }));
+    await expect(p.call("follow", { artifact: " " })).rejects.toThrow(
+      /^oa-bus: artifact is required/,
+    );
+    expect(sent(d)).toEqual([]);
+  });
+
+  it("the hub's copy as-is", async () => {
+    const { p } = await at(() => ({
+      type: "error",
+      code: "not_found",
+      message: "Not found",
+    }));
+    await expect(p.call("follow", { artifact: "abc" })).rejects.toThrow(
+      new Error("oa-bus: Not found"),
+    );
+  });
+
+  it("a daemon without the frames (bad_frame) says to update", async () => {
+    const { p } = await at(() => ({
+      type: "error",
+      code: "bad_frame",
+      message: "Invalid input",
+    }));
+    await expect(p.call("following", {})).rejects.toThrow(
+      new Error(FOLLOW_OLD_DAEMON),
+    );
+  });
+
+  for (const message of Object.values(FOLLOW_DAEMON_BAD_FRAME))
+    it(`the daemon's own bad_frame refusal "${message}" is shown as it is, not as an old daemon (#1766)`, async () => {
+      const { p } = await at(() => ({
+        type: "error",
+        code: "bad_frame",
+        message,
+      }));
+      await expect(p.call("follow", { artifact: "abc" })).rejects.toThrow(
+        new Error(`oa-bus: ${message}`),
+      );
+    });
+
+  it("the asset's copy matches the shared copy", () => {
+    expect(copy.followText(entry.url)).toBe(followText(entry.url));
+    expect(copy.unfollowText(true, "abc")).toBe(unfollowText(true, "abc"));
+    expect(copy.followingText([])).toBe(followingText([]));
+    expect(copy.followingText([entry, entry])).toBe(
+      followingText([entry, entry]),
+    );
+    expect(copy.FOLLOW_OLD_DAEMON).toBe(FOLLOW_OLD_DAEMON);
   });
 });
 

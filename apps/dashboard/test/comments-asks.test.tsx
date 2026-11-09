@@ -1,4 +1,4 @@
-import { R, viewerPath } from "@oa/shared";
+import { type ArtifactAgent, R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import {
   act,
@@ -20,6 +20,11 @@ import {
   it,
   vi,
 } from "vitest";
+import {
+  mentionedKeys,
+  mentionQuery,
+  nextAskFor,
+} from "../src/viewer/comments/asks";
 import {
   calls,
   events,
@@ -102,7 +107,13 @@ const hello = () =>
     await waitFor(() => expect(opts.length).toBeGreaterThan(0));
     opts.at(-1)?.onHello();
   });
-const col = () => screen.findByRole("complementary", { name: "Comments" });
+/** The column starts closed (#1731): open it with the Comments button. */
+const col = async () => {
+  const b = await screen.findByRole("button", { name: /^Comments/ });
+  if (!screen.queryByRole("complementary", { name: "Comments" }))
+    fireEvent.click(b);
+  return screen.findByRole("complementary", { name: "Comments" });
+};
 const OWNED = (
   fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
 ).id;
@@ -197,9 +208,154 @@ describe("asks on the comments column", () => {
     expect(within(c).getByText(/1 ask for you/)).toBeInTheDocument();
     fireEvent.click(within(c).getByRole("button", { name: /List only/ }));
     await waitFor(() => expect(answered).toEqual({ optionId: "a" }));
+    expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
+  });
+
+  it("heads the ask 'Ask', amber while it needs you, with a key badge per option and a Recommended tag", async () => {
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(within(c).getByText("Ask", { selector: "p" })).toBeInTheDocument();
+    expect(c.querySelector("[data-ask]")).toHaveAttribute("data-needs-you");
+    const keys = [...c.querySelectorAll("[data-option-key]")].map(
+      (k) => k.textContent,
+    );
+    expect(keys).toEqual(["A", "B"]);
     expect(
-      await within(c).findByText(/You picked List only/),
+      within(c).getByRole("button", { name: /Side by side/ }),
+    ).toHaveTextContent("Recommended");
+    expect(
+      within(c).getByRole("button", { name: /Side by side/ }),
+    ).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("drops the amber once you have picked", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          answer: {
+            optionId: "b",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText(/You picked B/);
+    expect(c.querySelector("[data-ask]")).not.toHaveAttribute("data-needs-you");
+  });
+
+  it("shows 'You picked B · time · Change' and Change reopens the options", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          answer: {
+            optionId: "b",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const side = await within(c).findByRole("button", { name: /Side by side/ });
+    expect(side).toHaveAttribute("aria-pressed", "true");
+    expect(within(c).getByText(/You picked B/)).toBeInTheDocument();
+    expect(within(c).getByRole("button", { name: /List only/ })).toBeDisabled();
+    fireEvent.click(within(c).getByRole("button", { name: "Change" }));
+    expect(within(c).getByRole("button", { name: /List only/ })).toBeEnabled();
+  });
+
+  it("Change, then another option, sends the new answer and locks again once it lands", async () => {
+    let picked = "b";
+    let sent: unknown;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          answer: {
+            optionId: picked,
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+          },
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          sent = await request.json();
+          picked = "a";
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText(/You picked B/);
+    fireEvent.click(within(c).getByRole("button", { name: "Change" }));
+    fireEvent.click(within(c).getByRole("button", { name: /List only/ }));
+    await waitFor(() => expect(sent).toEqual({ optionId: "a" }));
+    expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
+    // The new answer ends Change mode: the others lock again.
+    expect(
+      within(c).getByRole("button", { name: /Side by side/ }),
+    ).toBeDisabled();
+    expect(
+      within(c).getByRole("button", { name: "Change" }),
     ).toBeInTheDocument();
+  });
+
+  it("clears an answer error once the ask shows as answered from elsewhere", async () => {
+    let answered = false;
+    serveThreads(() => [
+      askThread(
+        {},
+        answered
+          ? {
+              answer: {
+                optionId: "a",
+                by: { kind: "user", id: "me", name: "Me", me: true },
+                at: "2026-11-05T11:00:00Z",
+              },
+            }
+          : {},
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Side by side/ }),
+    );
+    expect(await within(c).findByRole("alert")).toBeInTheDocument();
+    answered = true;
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    );
+    // A refetch (here: a second failed tap's settle) now shows the ask answered.
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Side by side/ }),
+    );
+    await waitFor(() =>
+      expect(within(c).getByText(/You picked A/)).toBeInTheDocument(),
+    );
+    await waitFor(() => expect(within(c).queryByRole("alert")).toBeNull());
   });
 
   it("gives someone it isn't addressed to no answer buttons", async () => {
@@ -241,7 +397,7 @@ describe("asks on the comments column", () => {
     expect(await within(c).findByRole("alert")).toHaveTextContent(copy);
   });
 
-  it("collapses a decided, closed ask to one line that can be opened again", async () => {
+  it("collapses a decided, closed ask to one line that toggles, with a reply link", async () => {
     serveThreads(() => [
       askThread(
         { status: "resolved" },
@@ -260,14 +416,85 @@ describe("asks on the comments column", () => {
     fireEvent.click(
       await within(c).findByRole("button", { name: /Show resolved/ }),
     );
-    expect(
-      await within(c).findByText(
-        /Which layout\? Side by side · you, \d\d:\d\d/,
-      ),
-    ).toBeInTheDocument();
+    const line = await within(c).findByRole("button", { name: /Show$/ });
+    // The triangle is decoration: the name ends in "Show", not the glyph.
+    expect(line).toHaveTextContent(/Which layout\? Side by side · you, .+/);
+    // versionDate, not a 24-hour HH:MM.
+    expect(line.textContent).not.toMatch(/\d\d:\d\d/);
+    expect(line).toHaveAttribute("aria-expanded", "false");
     expect(within(c).queryByRole("button", { name: /List only/ })).toBeNull();
-    fireEvent.click(within(c).getByRole("button", { name: "Show" }));
+    fireEvent.click(line);
     expect(within(c).getByRole("button", { name: /List only/ })).toBeDisabled();
+    expect(line).toHaveTextContent("Hide ▴");
+    fireEvent.click(line);
+    expect(within(c).queryByRole("button", { name: /List only/ })).toBeNull();
+    fireEvent.click(
+      within(c).getByRole("button", { name: "Reply to ask for a change" }),
+    );
+    expect(
+      await within(c).findByRole("textbox", { name: "Reply" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Next ask goes to the following ask in page order, wrapping around", async () => {
+    const mk = (id: string, anchor: object) => {
+      const t = askThread({ id, anchor });
+      (t.comments[0] as { id: string }).id = `c-${id}`;
+      return t;
+    };
+    const text = (exact: string) => ({
+      kind: "text",
+      version: 1,
+      exact,
+      prefix: "",
+      suffix: "",
+    });
+    // Created in the reverse of page order.
+    const tText2 = mk("t2", text("two"));
+    const tText1 = mk("t1", text("one"));
+    const tNote = mk("n", { kind: "note" });
+    serveThreads(() => [tText2, tText1, tNote]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText("Which layout?");
+    await hello();
+    await act(async () =>
+      opts.at(-1)?.onCommentPositions([
+        { id: "t1", state: "ok", top: 10 },
+        { id: "t2", state: "ok", top: 50 },
+      ]),
+    );
+    const next = async (id: string, to: string) => {
+      const card = c.querySelector(`[data-thread="${id}"]`) as HTMLElement;
+      fireEvent.click(within(card).getByRole("button", { name: /Next ask/ }));
+      await waitFor(() =>
+        expect(c.querySelector(`[data-thread="${to}"]`)).toHaveAttribute(
+          "data-active",
+        ),
+      );
+    };
+    await next("n", "t1");
+    await next("t1", "t2");
+    await next("t2", "n");
+  });
+
+  it("says 'Text changed since this ask' on a partial ask anchor", async () => {
+    const t = askThread({
+      anchor: { kind: "text", version: 1, exact: "x", prefix: "", suffix: "" },
+    });
+    serveThreads(() => [t]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText("Which layout?");
+    await hello();
+    await act(async () =>
+      opts
+        .at(-1)
+        ?.onCommentPositions([{ id: "t-ask", state: "partial", top: 5 }]),
+    );
+    expect(
+      await within(c).findByText("Text changed since this ask"),
+    ).toBeInTheDocument();
   });
 });
 
@@ -419,6 +646,24 @@ describe("@ picker details", () => {
     expect(keys).toEqual(["agent:bob", "agent:product"]);
   });
 
+  it("matches @Bob's and @Bob- as Bob, and the picker does not swallow them", async () => {
+    const bob = {
+      key: "agent:bob",
+      name: "Bob",
+      online: true,
+    } as ArtifactAgent;
+    expect(mentionedKeys("hi @Bob's idea", [bob])).toEqual(["agent:bob"]);
+    expect(mentionedKeys("hi @Bob- ok", [bob])).toEqual(["agent:bob"]);
+    expect(mentionedKeys("hi @Bobby", [bob])).toEqual([]);
+    // A hyphen joined to more name is not Bob (review of #1763).
+    expect(mentionedKeys("hi @Bob-Smith here", [bob])).toEqual([]);
+    expect(mentionedKeys("hi @Bob.", [bob])).toEqual(["agent:bob"]);
+    expect(mentionedKeys("mail me@Bob today", [bob])).toEqual([]);
+    expect(mentionQuery("hi @Bob-")).toBe("Bob");
+    expect(mentionQuery("hi @Bob's")).toBeNull();
+    expect(mentionQuery("hi @OA Pro")).toBe("OA Pro");
+  });
+
   it("refuses more mentions than a comment may carry, in plain words", async () => {
     const many = Array.from({ length: 11 }, (_, i) => ({
       key: `agent:n${i}`,
@@ -496,7 +741,12 @@ describe("@ picker details", () => {
     ).toBeDisabled();
     expect(
       within(c).getByRole("button", { name: /Side by side/ }),
+    ).toBeDisabled();
+    fireEvent.click(within(c).getByRole("button", { name: "Change" }));
+    expect(
+      within(c).getByRole("button", { name: /Side by side/ }),
     ).toBeEnabled();
+    expect(within(c).getByRole("button", { name: /List only/ })).toBeDisabled();
   });
 });
 
@@ -557,7 +807,7 @@ describe("round 2", () => {
     );
     await within(c).findByText("On earlier text");
     const first = c.querySelector('[data-thread="t1"]') as HTMLElement;
-    fireEvent.click(within(first).getByRole("button", { name: "Next ask" }));
+    fireEvent.click(within(first).getByRole("button", { name: /Next ask/ }));
     await waitFor(() =>
       expect(c.querySelector('[data-thread="t2"]')).toHaveAttribute(
         "data-active",
@@ -738,5 +988,222 @@ describe("round 3 copy", () => {
     expect(
       within(c).getByText("Only the owner and editors can wake agents."),
     ).toBeInTheDocument();
+  });
+});
+
+describe("asks for you in the toolbar and header (#1614)", () => {
+  const mk = (id: string, answered = false) => {
+    const t = askThread(
+      { id },
+      answered
+        ? {
+            answer: {
+              optionId: "a",
+              by: { kind: "user", id: "me", name: "Me", me: true },
+              at: "2026-11-05T11:00:00Z",
+            },
+          }
+        : {},
+    );
+    (t.comments[0] as { id: string }).id = `c-${id}`;
+    return t;
+  };
+  const toolbar = () => screen.findByRole("button", { name: /asks? for you$/ });
+  const active = () =>
+    document
+      .querySelector("[data-thread][data-active]")
+      ?.getAttribute("data-thread");
+
+  it("counts and pluralises", async () => {
+    serveThreads(() => [mk("a")]);
+    mount(viewerPath(OWNED));
+    expect(await toolbar()).toHaveTextContent("1 ask for you");
+  });
+
+  it("is hidden when the page has no asks", async () => {
+    serveThreads(() => [
+      { ...mk("a"), comments: [{ ...mk("a").comments[0], ask: undefined }] },
+    ]);
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: /^Comments/ });
+    await wait(50);
+    expect(screen.queryByText(/for you/)).not.toBeInTheDocument();
+  });
+
+  it("says 'No asks for you' once all are answered", async () => {
+    serveThreads(() => [mk("a", true), mk("b", true)]);
+    mount(viewerPath(OWNED));
+    expect(await screen.findByText("No asks for you")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /asks? for you$/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("steps through two asks and wraps, opening the closed column", async () => {
+    serveThreads(() => [mk("a"), mk("b")]);
+    mount(viewerPath(OWNED));
+    const b = await toolbar();
+    expect(b).toHaveTextContent("2 asks for you");
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(b);
+    await screen.findByRole("complementary", { name: "Comments" });
+    const first = await waitFor(() => {
+      const id = active();
+      expect(id).toBeTruthy();
+      return id;
+    });
+    fireEvent.click(b);
+    await waitFor(() => expect(active()).not.toBe(first));
+    fireEvent.click(b);
+    await waitFor(() => expect(active()).toBe(first));
+  });
+
+  it("the header count does the same", async () => {
+    serveThreads(() => [mk("a"), mk("b")]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const h = await within(c).findByRole("button", { name: "2 asks for you" });
+    fireEvent.click(h);
+    await waitFor(() => expect(active()).toBeTruthy());
+    const first = active();
+    fireEvent.click(h);
+    await waitFor(() => expect(active()).not.toBe(first));
+  });
+});
+
+describe("asks for you with a single ask (#1614)", () => {
+  it("clicking again still selects the ask when it is already active", async () => {
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const b = await screen.findByRole("button", { name: /1 ask for you$/ });
+    fireEvent.click(b);
+    await waitFor(() =>
+      expect(document.querySelector("[data-thread][data-active]")).toBeTruthy(),
+    );
+    focus.mockClear();
+    fireEvent.click(b);
+    await waitFor(() => expect(focus).toHaveBeenCalledWith("t-ask"));
+  });
+});
+
+describe("asks for you: reveal, surfaces, gone (#1614)", () => {
+  const btn = () => screen.findByRole("button", { name: /1 ask for you$/ });
+
+  it("an already-active ask in an open column scrolls and takes focus on click", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const b = (
+      await screen.findAllByRole("button", { name: /1 ask for you$/ })
+    )[0] as HTMLElement;
+    fireEvent.click(b);
+    const row = c.querySelector('[data-thread="t-ask"]') as HTMLElement;
+    await waitFor(() => expect(row).toHaveAttribute("data-active"));
+    await waitFor(() => expect(document.activeElement).toBe(row));
+    (document.activeElement as HTMLElement).blur();
+    scroll.mockClear();
+    fireEvent.click(b);
+    await waitFor(() => expect(scroll).toHaveBeenCalled());
+    await waitFor(() => expect(document.activeElement).toBe(row));
+  });
+
+  it("focus is one-shot: reopening the column does not focus the row again", async () => {
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      (
+        await screen.findAllByRole("button", { name: /1 ask for you$/ })
+      )[0] as HTMLElement,
+    );
+    const row = c.querySelector('[data-thread="t-ask"]') as HTMLElement;
+    await waitFor(() => expect(document.activeElement).toBe(row));
+    const toggle = screen.getByRole("button", { name: /^Comments/ });
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    fireEvent.click(toggle);
+    const c2 = await screen.findByRole("complementary", { name: "Comments" });
+    const row2 = (await waitFor(() => {
+      const r = c2.querySelector('[data-thread="t-ask"]');
+      expect(r).toBeTruthy();
+      return r;
+    })) as HTMLElement;
+    await wait(50);
+    expect(document.activeElement).not.toBe(row2);
+  });
+
+  it("opens the side panel on a mid-width screen", async () => {
+    viewport(800);
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    fireEvent.click(await btn());
+    const tab = await screen.findByRole("tab", { name: /Comments/ });
+    expect(tab).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByText("Which layout?")).toBeInTheDocument();
+  });
+
+  it("opens the sheet on a phone, named for the ask count", async () => {
+    viewport(400);
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    fireEvent.click(await btn());
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(await within(sheet).findByText("Which layout?")).toBeInTheDocument();
+  });
+
+  it("is disabled once the artifact is gone", async () => {
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const b = await btn();
+    expect(b).toBeEnabled();
+    await act(() =>
+      fetch(R.artifact(OWNED), {
+        method: "DELETE",
+        headers: { "X-OA-Request": "1" },
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /1 ask for you$/ }),
+      ).toBeDisabled(),
+    );
+  });
+});
+
+describe("nextAskFor", () => {
+  const th = (id: string, mine = true) =>
+    askThread(
+      { id },
+      mine ? {} : { to: [{ kind: "user", id: "x", name: "X", me: false }] },
+    ) as never;
+  const mkApi = (ordered: unknown[], orphans: unknown[] = []) =>
+    ({ ordered, orphans }) as never;
+
+  it("includeSelf with a null fromId returns the first pending ask", () => {
+    expect(
+      nextAskFor(mkApi([th("a"), th("b")]), null, { includeSelf: true }),
+    ).toBe("a");
+  });
+  it("a fromId not in the list starts from the top", () => {
+    expect(nextAskFor(mkApi([th("a"), th("b")]), "zzz")).toBe("a");
+  });
+  it("includeSelf returns fromId only when it is the sole pending ask", () => {
+    const api = mkApi([th("a"), th("b", false)]);
+    expect(nextAskFor(api, "a")).toBeUndefined();
+    expect(nextAskFor(api, "a", { includeSelf: true })).toBe("a");
+    expect(nextAskFor(api, "b", { includeSelf: true })).toBe("a");
+  });
+  it("finds asks in orphans, after the ordered ones", () => {
+    const api = mkApi([th("a", false)], [th("o")]);
+    expect(nextAskFor(api, "a")).toBe("o");
+    expect(nextAskFor(api, null)).toBe("o");
   });
 });

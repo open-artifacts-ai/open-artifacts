@@ -20,6 +20,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { ACTIONS, ACTIONS_PLAIN } from "../src/viewer/comments/CommentsBody";
 import {
   calls,
   events,
@@ -39,11 +40,13 @@ type Opts = {
   onCommentSelect: (a: unknown) => void;
   onCommentPositions: (p: unknown[]) => void;
   onCommentOpen: (id: string) => void;
+  onCommentSelection: (has: boolean, bottom: number) => void;
 };
 const opts: Opts[] = [];
 const setMode = vi.fn();
 const setComments = vi.fn();
 const focus = vi.fn();
+const commentOnSelection = vi.fn();
 // Like the real bridge, the mock loads the frame (Shell ignores earlier loads).
 vi.mock("../src/viewer/bridge", async () => {
   const { loadArtifactFrame } = await import("../src/viewer/frame");
@@ -60,6 +63,7 @@ vi.mock("../src/viewer/bridge", async () => {
         setCommentsMode: setMode,
         setComments,
         focusComment: focus,
+        commentOnSelection,
       };
     },
   };
@@ -104,13 +108,17 @@ const oneThread = {
 };
 
 /** A viewport: matchMedia answers the two breakpoints the comments layout uses. */
-const viewport = (width: number) => {
+const viewport = (width: number, coarse = false) => {
   const eval_ = (q: string) =>
     q === "(min-width: 960px)"
       ? width >= 960
       : q === "(max-width: 600px)"
         ? width <= 600
-        : false;
+        : q === "(max-width: 599.98px)"
+          ? width < 600
+          : q === "(pointer: coarse)"
+            ? coarse
+            : false;
   vi.spyOn(window, "matchMedia").mockImplementation(
     (q: string) =>
       ({
@@ -127,7 +135,13 @@ const hello = () =>
     await waitFor(() => expect(opts.length).toBeGreaterThan(0));
     opts.at(-1)?.onHello();
   });
-const col = () => screen.findByRole("complementary", { name: "Comments" });
+/** The column starts closed (#1731): open it with the Comments button. */
+const col = async () => {
+  const b = await screen.findByRole("button", { name: /^Comments/ });
+  if (!screen.queryByRole("complementary", { name: "Comments" }))
+    fireEvent.click(b);
+  return screen.findByRole("complementary", { name: "Comments" });
+};
 const threadIds = () =>
   [...document.querySelectorAll("[data-thread]")].map((e) =>
     e.getAttribute("data-thread"),
@@ -138,6 +152,7 @@ beforeEach(() => {
   setMode.mockClear();
   setComments.mockClear();
   focus.mockClear();
+  commentOnSelection.mockClear();
   viewport(1280);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -203,6 +218,44 @@ describe("comments: layouts", () => {
     const box = await within(sheet).findAllByRole("textbox");
     fireEvent.focus(box[0] as HTMLElement);
     expect(sheet).toHaveAttribute("data-sheet-height", "full");
+  });
+
+  it("a phone sheet shrinks further while a pin card is open, so its pin stays in view (#1657)", async () => {
+    viewport(400);
+    const pin = (id: string, y: number) => ({
+      ...oneThread,
+      id,
+      anchor: { kind: "pin", version: 1, x: 0.5, y, contentHash: null },
+    });
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({
+          threads: [pin("p1", 0.4), pin("p2", 0.7)],
+          open: 2,
+          truncated: false,
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 2 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    // The frame opens the pin's card: the sheet gives the image back.
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    // The handle still wins: a reader who wants the list gets the full sheet.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    // Opening a card from full shrinks it again, and moving pin to pin too
+    // (the effect keys on the pin, not on "a pin is open").
+    await act(async () => opts.at(-1)?.onCommentOpen("p2"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
   });
 
   it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {
@@ -406,6 +459,23 @@ describe("comments: actions", () => {
     const c = await col();
     // Two comments: collapsed to a count until the card is selected.
     fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    // #1657: in the phone sheet's short height the action row stays on screen.
+    const actions = within(c)
+      .getByRole("button", { name: "Reply" })
+      .closest("[data-oa-actions]") as HTMLElement;
+    expect(actions).not.toBeNull();
+    expect(actions.className).toContain(
+      "group-data-[sheet-height=pin]/sheet:sticky",
+    );
+    // Floating over scrolling text needs an opaque surface, never an inherited
+    // one: a card's own, and the sheet's in the note composer (#1696).
+    expect(actions.className).toContain(
+      "group-data-[sheet-height=pin]/sheet:bg-background",
+    );
+    expect(ACTIONS).not.toContain("bg-inherit");
+    expect(ACTIONS_PLAIN).toContain(
+      "group-data-[sheet-height=pin]/sheet:bg-card",
+    );
     expect(
       await within(c).findByText("Agreed, shorter is better."),
     ).toBeInTheDocument();
@@ -697,6 +767,58 @@ describe("comments: errors", () => {
     );
   });
 
+  it("starts closed on a wide screen even with open threads (#1731)", async () => {
+    mount(viewerPath(OWNED));
+    const btn = await screen.findByRole("button", { name: "Comments, 1 open" });
+    await hello();
+    await wait(100);
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).toBeNull();
+    expect(btn).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(btn);
+    expect(
+      await screen.findByRole("complementary", { name: "Comments" }),
+    ).toBeInTheDocument();
+  });
+
+  it("a selection in the page opens the closed column on a draft (#1731)", async () => {
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: "Comments, 1 open" });
+    await hello();
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).toBeNull();
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "headline",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    const c = await screen.findByRole("complementary", { name: "Comments" });
+    expect(
+      within(c).getByRole("textbox", { name: "Add a comment" }),
+    ).toBeInTheDocument();
+  });
+
+  it("a list that fails to load opens the column on its own (#1731)", async () => {
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json(
+          { error: { code: "internal", message: "x" } },
+          { status: 500 },
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await screen.findByRole("complementary", { name: "Comments" });
+    expect(
+      await within(c).findByText("Couldn't load comments."),
+    ).toBeInTheDocument();
+  });
+
   it("a list that fails to load offers Retry", async () => {
     server.use(
       http.get("*/api/v1/artifacts/:id/comments", () =>
@@ -801,7 +923,6 @@ describe("comments: live and signed out", () => {
       ),
     );
     mount(viewerPath(PUBLIC));
-    // The column is open by default where it has room.
     const c = await col();
     // The whole-page box: Sign in at the left of the row, back to this page.
     fireEvent.focus(
@@ -975,7 +1096,6 @@ describe("comments: guests and Retry-After", () => {
       }),
     );
     mount(viewerPath(PUBLIC));
-    // The column is open by default where it has room.
     const c = await col();
     await waitFor(() => expect(seenTokens.length).toBeGreaterThan(0));
     // The read sent no token and minted none.
@@ -1485,7 +1605,6 @@ describe("comments: review round 1", () => {
     await hello();
     await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("view"));
     expect(setMode).not.toHaveBeenCalledWith("select");
-    // The column is open by default where it has room.
     const c = await col();
     expect(await within(c).findByText("No comments yet.")).toBeInTheDocument();
     expect(within(c).queryByText(/Select text to add one/)).toBeNull();
@@ -1745,5 +1864,174 @@ describe("initials", () => {
     expect(initials("山田 太郎")).toBe("山太");
     expect(initials("Sam Rivera")).toBe("SR");
     expect(initials("cursor")).toBe("CU");
+  });
+});
+
+describe("comment on selection (#1732)", () => {
+  const select = (has: boolean) =>
+    act(async () => opts.at(-1)?.onCommentSelection(has, 100));
+  // The shell's bar is the fixed one; at 600px and up the header button has the same name.
+  const bar = () =>
+    screen
+      .queryAllByRole("button", { name: "Comment on selection" })
+      .find((b) => b.parentElement?.className.includes("fixed")) ?? null;
+
+  it("touch: a full-width bar appears with the selection, announces once, and hides when it clears", async () => {
+    viewport(400, true);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: /^Comments/ });
+    expect(bar()).toBeNull();
+    await select(true);
+    expect(bar()).toBeInTheDocument();
+    expect(bar()?.parentElement?.className).toContain("fixed");
+    expect(bar()?.parentElement?.className).toContain("safe-area-inset-bottom");
+    expect(
+      screen.getByText("Comment on selection available"),
+    ).toBeInTheDocument();
+    await select(false);
+    expect(bar()).toBeNull();
+    expect(screen.queryByText("Comment on selection available")).toBeNull();
+  });
+
+  it("touch: one tap sends the command, hides the bar, and the quote opens the composer", async () => {
+    viewport(400, true);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: /^Comments/ });
+    await select(true);
+    fireEvent.click(bar() as HTMLElement);
+    expect(commentOnSelection).toHaveBeenCalledTimes(1);
+    expect(bar()).toBeNull();
+    // The frame answers with its usual comment.select.
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "the quote",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(within(sheet).getByText("the quote")).toBeInTheDocument();
+    expect(
+      within(sheet).getByRole("textbox", { name: "Add a comment" }),
+    ).toBeInTheDocument();
+  });
+
+  it("fine pointer: no bar", async () => {
+    viewport(1280, false);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: /^Comments/ });
+    await select(true);
+    expect(bar()).toBeNull();
+  });
+
+  it("header button: accent, 'Comment' below 600px, 'Comment on selection' from 600px, no badge, reverts", async () => {
+    viewport(400, true);
+    mount(viewerPath(OWNED));
+    await hello();
+    const btn = await screen.findByRole("button", { name: "Comments, 1 open" });
+    await select(true);
+    const phone = screen.getByRole("button", { name: "Comment" });
+    expect(phone).toHaveTextContent(/^Comment\s*$/);
+    fireEvent.click(phone);
+    expect(commentOnSelection).toHaveBeenCalledTimes(1);
+    await select(true);
+    await select(false);
+    expect(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    ).toBe(btn);
+  });
+
+  it("header button at 800px reads 'Comment on selection', also with a fine pointer", async () => {
+    viewport(800, false);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: "Comments, 1 open" });
+    await select(true);
+    const b = screen.getByRole("button", { name: "Comment on selection" });
+    expect(b).toHaveTextContent("Comment on selection");
+    expect(b).not.toHaveTextContent("1");
+  });
+
+  it("no bar over the open side panel (review of #1757)", async () => {
+    viewport(800, true);
+    mount(`${viewerPath(OWNED)}?panel=open&tab=versions`);
+    await hello();
+    await screen.findByRole("button", { name: /^Comment/ });
+    await select(true);
+    expect(bar()).toBeNull();
+  });
+
+  it("the header still opens the list when the frame has nothing to quote (review of #1757)", async () => {
+    viewport(1280, false);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: "Comments, 1 open" });
+    // Page code claims a selection; the frame then has nothing to send.
+    await select(true);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Comment on selection" }),
+    );
+    expect(commentOnSelection).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByRole("complementary", { name: "Comments" }),
+    ).toBeInTheDocument();
+  });
+
+  it("announces the bar at most once in a while, however often the page flips it (review of #1757)", async () => {
+    viewport(400, true);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: /^Comments/ });
+    await select(true);
+    expect(
+      screen.getByText("Comment on selection available"),
+    ).toBeInTheDocument();
+    await select(false);
+    await select(true);
+    expect(bar()).toBeInTheDocument();
+    expect(screen.queryByText("Comment on selection available")).toBeNull();
+  });
+
+  it("view-only readers get no bar and no button change", async () => {
+    viewport(400, true);
+    server.use(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json(
+          { error: { code: "unauthorized", message: "no" } },
+          { status: 401 },
+        ),
+      ),
+      http.get(`*${R.artifact(PUBLIC)}`, () =>
+        HttpResponse.json({
+          ...fixtures.artifacts.find((a) => a.id === PUBLIC),
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: false,
+            comment: false,
+          },
+          visibility: "public",
+        }),
+      ),
+      http.get(`*${R.comments(PUBLIC)}`, () =>
+        HttpResponse.json({ threads: [oneThread], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(PUBLIC));
+    await screen.findByRole("button", { name: /^Comments/ });
+    await hello();
+    await select(true);
+    expect(bar()).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Comment on selection" }),
+    ).toBeNull();
   });
 });

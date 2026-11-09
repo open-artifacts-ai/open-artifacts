@@ -7,6 +7,7 @@ import {
   type SyntheticEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -22,10 +23,12 @@ import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
+import { asksForMe, nextAskFor } from "./comments/asks";
 import { CommentsBody, PinBar } from "./comments/CommentsBody";
 import {
   CommentsColumn,
   CommentsDialog,
+  SelectionBar,
   useSurface,
 } from "./comments/surfaces";
 import {
@@ -244,6 +247,11 @@ function Viewer({
     getBridge,
     openSurface: () => openSurface.current(),
   });
+  // The card being read is a pin's: the phone sheet shortens so its pin stays
+  // in view (#1657).
+  const pinCard =
+    cmt.threads.find((t) => t.id === cmt.active && t.anchor.kind === "pin")
+      ?.id ?? null;
   // A sheet or overlay would cover the page: leave it while placing a pin.
   useEffect(() => {
     if (cmt.mode === "pin") setDialogOpen(false);
@@ -260,14 +268,10 @@ function Viewer({
     : requestedTab === "comments" && !commentsTab
       ? "versions"
       : requestedTab;
-  // Open by default wherever the column has room (so the empty state and the
-  // whole-page box show first); narrower, only when there is something to show.
-  const columnShown =
-    colOpen ??
-    (surface === "column" ||
-      cmt.threads.length > 0 ||
-      cmt.draft !== null ||
-      cmt.error != null);
+  // Closed until asked for (#1731): the Comments button, a selection, a pin or
+  // a thread's highlight opens it (each calls openSurface). A list that fails
+  // to load opens it too, so the failure and its Retry are seen.
+  const columnShown = colOpen ?? cmt.error != null;
   // Where the list is on screen its Pin button is the cue; otherwise (a closed
   // column, another panel tab, a phone with no sheet) the bar is, so pin mode
   // never runs unannounced. Hidden under the sheet too: it would overlap it.
@@ -456,6 +460,7 @@ function Viewer({
       onCommentOpen: (id) => cmtRef.current.onOpen(id),
       onCommentPin: (p) => cmtRef.current.onPin(p),
       onCommentEscape: () => cmtRef.current.onEscape(),
+      onCommentSelection: (has) => cmtRef.current.onSelection(has),
       onPdfText: (t) => fxRef.current.onPdfText(t),
       onThumb: (b) => fxRef.current.onThumb(b),
       // The shell re-checks access: still readable, or the gone state.
@@ -496,6 +501,12 @@ function Viewer({
     bridge.current?.setArtifact(artifact);
   }, [artifact.capabilities, artifact.dataWriters, artifact.visibility]);
 
+  const asks = useMemo(() => {
+    const all = [...cmt.ordered, ...cmt.orphans];
+    return all.some((t) => t.comments.some((c) => c.ask))
+      ? { count: asksForMe(all).length }
+      : undefined;
+  }, [cmt.ordered, cmt.orphans]);
   if ((content.notFound || signedOut) && isEmbed())
     return <NotPublic id={artifact.id} />;
   if (content.notFound) return <NotFound />;
@@ -516,7 +527,7 @@ function Viewer({
     vformat ??
     (version === artifact.currentVersion ? artifact.format : undefined);
   const textFormat = fmt !== "pdf" && fmt !== "image";
-  const commentsButton = commentsOn
+  const listButton = commentsOn
     ? surface === "column"
       ? {
           open: cmt.listedOpen,
@@ -537,6 +548,25 @@ function Viewer({
             onClick: () => setDialogOpen((o) => !o),
           }
     : undefined;
+  // #1732: while text is selected the button is the same action as the bar.
+  const commentsButton = listButton && {
+    ...listButton,
+    selecting: cmt.hasSelection,
+    onClick: cmt.hasSelection ? cmt.commentOnSelection : listButton.onClick,
+  };
+  // #1614: "N asks for you" opens the comments surface (never toggles it shut) and steps to the next ask.
+  const asksButton =
+    commentsOn && asks
+      ? {
+          count: asks.count,
+          onClick: () => {
+            const id = nextAskFor(cmt, cmt.active, { includeSelf: true });
+            if (!id) return;
+            openSurface.current();
+            cmt.reveal(id);
+          },
+        }
+      : undefined;
   return (
     <CommentsProvider value={cmt}>
       <div className="oa-viewer">
@@ -557,6 +587,7 @@ function Viewer({
               newer={newer}
               gone={gone !== null}
               comments={commentsButton}
+              asks={asksButton}
             />
             <SignupNudge
               authed={authed}
@@ -641,9 +672,14 @@ function Viewer({
           )}
         </div>
         {commentsOn && !listShown && <PinBar />}
+        {commentsOn &&
+          !chromeless &&
+          !panelOpen &&
+          !(surface === "dialog" && dialogOpen) && <SelectionBar />}
         {commentsOn && surface === "dialog" && dialogOpen && (
           <CommentsDialog
             textFormat={textFormat}
+            pinCard={pinCard}
             onClose={() => setDialogOpen(false)}
           />
         )}
