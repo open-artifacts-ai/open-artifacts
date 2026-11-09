@@ -2027,7 +2027,7 @@ describe("W9b: public workflows keep the retired hosted writes retired", () => {
   });
 });
 
-// #1782: a failed release run keeps one open `blocker` issue.
+// #1782: a failed release run keeps a `blocker` issue open.
 describe("release-alert.yml", () => {
   const w = wf("release-alert.yml");
   const raw = read(".github/workflows/release-alert.yml");
@@ -2041,10 +2041,13 @@ describe("release-alert.yml", () => {
     expect(w.on.workflow_run.types).toEqual(["completed"]);
     expect(w.on.workflow_run.branches).toEqual(["main"]);
   });
-  it("grants nothing at the top and only issues: write to its one job", () => {
+  it("grants nothing at the top, only actions: read and issues: write to its one job", () => {
     expect(w.permissions).toEqual({});
     expect(Object.keys(w.jobs)).toEqual(["report"]);
-    expect(w.jobs.report.permissions).toEqual({ issues: "write" });
+    expect(w.jobs.report.permissions).toEqual({
+      actions: "read",
+      issues: "write",
+    });
   });
   it("has no checkout, install or secret but the default token", () => {
     expect(steps).toHaveLength(1);
@@ -2055,7 +2058,7 @@ describe("release-alert.yml", () => {
   });
   it("never interpolates an expression into the script", () => {
     expect(step.run).not.toContain("${{");
-    for (const k of ["CONCLUSION", "RUN", "SHA"])
+    for (const k of ["EVENT", "CONCLUSION", "RUN", "SHA", "JOBS_URL"])
       expect(step.env[k]).toMatch(/^\$\{\{ github\.event\.workflow_run\./);
   });
   it("serializes completions without cancelling a running one", () => {
@@ -2064,14 +2067,39 @@ describe("release-alert.yml", () => {
       "cancel-in-progress": false,
     });
   });
+  it("fails on any error", () => {
+    expect(step.run).toMatch(/^set -euo pipefail$/m);
+  });
 
+  // `gh issue list` prints the open issues; `gh api` prints the run's jobs.
   const GH = `#!/usr/bin/env bash
 echo "$*" >> "$STUB_LOG"
-if [ "$1 $2" = "issue list" ]; then printf '%s' "$STUB_ISSUES"; fi
+case "$1 $2" in
+  "issue list") [ "$STUB_FAIL" != list ] || exit 1; printf '%s' "$STUB_ISSUES" ;;
+  "api "*) [ "$STUB_FAIL" != jobs ] || exit 1; printf '%s' "$STUB_JOBS"; echo "$2" > "$STUB_LOG.api" ;;
+esac
 `;
   const TITLE = "release-please failed";
+  const SHA = "a".repeat(40);
+  const OTHER = "b".repeat(40);
   const issue = (number: number, title = TITLE) => ({ number, title });
-  const alert = (conclusion: string, issues: unknown[] = []) => {
+  const jobs = (...failed: string[]) => ({
+    jobs: [
+      { name: "release-please", conclusion: "success" },
+      { name: "deploy-landing", conclusion: "skipped" },
+      ...failed.map((name) => ({ name, conclusion: "failure" })),
+    ],
+  });
+  const alert = (
+    conclusion: string,
+    opts: {
+      issues?: unknown[];
+      jobs?: unknown;
+      event?: string;
+      sha?: string;
+      fail?: "list" | "jobs";
+    } = {},
+  ) => {
     const dir = mkdtempSync(join(tmpdir(), "ra-"));
     writeFileSync(join(dir, "gh"), GH, { mode: 0o755 });
     const r = spawnSync("bash", ["-c", step.run], {
@@ -2079,51 +2107,114 @@ if [ "$1 $2" = "issue list" ]; then printf '%s' "$STUB_ISSUES"; fi
       env: {
         PATH: `${dir}:${process.env.PATH}`,
         STUB_LOG: join(dir, "log"),
-        STUB_ISSUES: JSON.stringify(issues),
+        STUB_ISSUES: JSON.stringify(opts.issues ?? []),
+        STUB_JOBS: JSON.stringify(opts.jobs ?? jobs()),
+        STUB_FAIL: opts.fail ?? "",
         GH_TOKEN: "t",
         REPO: "o/r",
         TITLE: step.env.TITLE,
+        EVENT: opts.event ?? "push",
         CONCLUSION: conclusion,
         RUN: "https://github.com/o/r/actions/runs/1",
-        SHA: "a".repeat(40),
+        SHA: opts.sha ?? SHA,
+        JOBS_URL: "https://api.github.com/repos/o/r/actions/runs/1/jobs",
       },
     });
     let calls: string[] = [];
     try {
       calls = readFileSync(join(dir, "log"), "utf8").trim().split("\n");
     } catch {}
-    const writes = calls.filter((c) => !c.startsWith("issue list"));
-    return { code: r.status, writes, out: r.stdout + r.stderr };
+    const writes = calls.filter(
+      (c) => !c.startsWith("issue list") && !c.startsWith("api "),
+    );
+    return {
+      code: r.status,
+      calls,
+      writes,
+      out: r.stdout + r.stderr,
+    };
   };
 
   it("uses the fixed title", () => {
     expect(step.env.TITLE).toBe(TITLE);
   });
-  it.each(["failure", "timed_out"])("%s with no open issue opens one", (c) => {
-    const r = alert(c);
-    expect(r.code).toBe(0);
-    expect(r.writes).toHaveLength(1);
-    expect(r.writes[0]).toMatch(
-      /^issue create --repo o\/r --title release-please failed --label blocker --body .*actions\/runs\/1 .*a{40}.* /,
-    );
-    expect(r.writes[0]).toContain(c);
+  it("lists open blocker issues with the exact arguments, once", () => {
+    const r = alert("success");
+    expect(r.calls.filter((c) => c.startsWith("issue list"))).toEqual([
+      "issue list --repo o/r --state open --label blocker --limit 100 --json number,title",
+    ]);
   });
-  it("failure with an open issue comments on it, opens no second", () => {
-    const r = alert("failure", [issue(7), issue(8, "something else")]);
+  it("reads the failed run's jobs from the event's jobs URL", () => {
+    const r = alert("failure");
+    expect(r.calls).toContain("api repos/o/r/actions/runs/1/jobs?per_page=100");
+  });
+  it.each(["failure", "timed_out", "startup_failure"])(
+    "%s with only release-please red and no open issue opens the plain one",
+    (c) => {
+      const r = alert(c, { jobs: jobs() });
+      expect(r.code).toBe(0);
+      expect(r.writes).toHaveLength(1);
+      expect(r.writes[0]).toMatch(
+        /^issue create --repo o\/r --title release-please failed --label blocker --body .*actions\/runs\/1 .*a{40}.* /,
+      );
+      expect(r.writes[0]).toContain(c);
+    },
+  );
+  it("failure with an open issue comments on the first match, opens no second", () => {
+    const r = alert("failure", {
+      issues: [issue(8, "something else"), issue(7), issue(9)],
+    });
     expect(r.writes).toHaveLength(1);
     expect(r.writes[0]).toMatch(/^issue comment 7 --repo o\/r --body /);
     expect(r.writes[0]).toContain("actions/runs/1");
   });
   it("another issue's title does not count as the open one", () => {
-    const r = alert("failure", [issue(8, "something else")]);
+    const r = alert("failure", { issues: [issue(8, "something else")] });
     expect(r.writes[0]).toMatch(/^issue create /);
   });
-  it("success closes the open issue, naming the run", () => {
-    const r = alert("success", [issue(7)]);
+  it("a failed downstream job gets its own issue titled with the full sha", () => {
+    const r = alert("failure", {
+      jobs: jobs("deploy-prod"),
+      issues: [issue(7)],
+    });
+    expect(r.writes).toHaveLength(1);
+    expect(r.writes[0]).toMatch(
+      new RegExp(
+        `^issue create --repo o/r --title release-please failed at ${SHA} --label blocker --body .*deploy-prod.*close it if a newer release replaced it`,
+      ),
+    );
+  });
+  it("a downstream failure again comments on that sha's issue", () => {
+    const t = `${TITLE} at ${SHA}`;
+    const r = alert("failure", {
+      jobs: jobs("publish-npm"),
+      issues: [issue(7), issue(12, t)],
+    });
+    expect(r.writes).toHaveLength(1);
+    expect(r.writes[0]).toMatch(/^issue comment 12 /);
+  });
+  it("success closes the plain issue, naming the run", () => {
+    const r = alert("success", { issues: [issue(7)] });
     expect(r.writes).toHaveLength(1);
     expect(r.writes[0]).toMatch(
       /^issue close 7 --repo o\/r --comment Green again: .*actions\/runs\/1/,
     );
+  });
+  it("success closes the plain issue and the issue for its own sha", () => {
+    const r = alert("success", {
+      issues: [issue(7), issue(12, `${TITLE} at ${SHA}`)],
+    });
+    expect(r.writes.map((c) => c.split(" ").slice(0, 3).join(" "))).toEqual([
+      "issue close 7",
+      "issue close 12",
+    ]);
+  });
+  it("a green run of another sha does not close a downstream failure's issue", () => {
+    const r = alert("success", {
+      sha: OTHER,
+      issues: [issue(12, `${TITLE} at ${SHA}`)],
+    });
+    expect(r.writes).toEqual([]);
   });
   it("success with no open issue does nothing", () => {
     const r = alert("success");
@@ -2133,10 +2224,35 @@ if [ "$1 $2" = "issue list" ]; then printf '%s' "$STUB_ISSUES"; fi
   it.each(["cancelled", "skipped", "neutral", ""])(
     "%j is neither red nor green: nothing changes, and it says so",
     (c) => {
-      const r = alert(c, [issue(7)]);
+      const r = alert(c, { issues: [issue(7)] });
       expect(r.code).toBe(0);
       expect(r.writes).toEqual([]);
       expect(r.out).toContain("nothing changed");
     },
   );
+  it.each(["workflow_dispatch", "schedule", ""])(
+    "a %j run counts as nothing, red or green",
+    (event) => {
+      for (const c of ["failure", "success"]) {
+        const r = alert(c, { event, issues: [issue(7)] });
+        expect(r.code).toBe(0);
+        expect(r.calls).toEqual([]);
+        expect(r.out).toContain("not counted");
+      }
+    },
+  );
+  it("a failed issue list fails the job and creates nothing", () => {
+    for (const c of ["failure", "success"]) {
+      const r = alert(c, { fail: "list", issues: [issue(7)] });
+      expect(r.code).not.toBe(0);
+      expect(r.writes).toEqual([]);
+      expect(r.out).toContain("could not list");
+    }
+  });
+  it("a failed jobs read fails the job and creates nothing, never guessing", () => {
+    const r = alert("failure", { fail: "jobs" });
+    expect(r.code).not.toBe(0);
+    expect(r.writes).toEqual([]);
+    expect(r.out).toContain("could not read the jobs");
+  });
 });

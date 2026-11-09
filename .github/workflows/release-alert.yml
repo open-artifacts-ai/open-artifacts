@@ -1,20 +1,37 @@
-# Keeps one open `blocker` issue "release-please failed" while the last release
-# run on main is red (#1782). A failed release run reaches nobody otherwise: the
-# 4 hours v0.139.0 sat untagged went unnoticed. A green run closes the issue.
+# Keeps a `blocker` issue open while a release run on main is red (#1782). A
+# failed release run reaches nobody otherwise: the 4 hours v0.139.0 sat untagged
+# went unnoticed.
 #
-# - Red is `failure` or `timed_out`. `success` is green. `cancelled` is neither:
-#   a queued release-please run is cancelled as a matter of course when a newer
-#   one queues, and a missed release then fails the next run loudly, which this
-#   alert catches. `skipped` and anything else count as nothing. Each is logged.
+# - Only `push` runs count. A dispatch (a landing redeploy) says nothing about
+#   whether the last release commit was released.
+# - Red is `failure`, `timed_out` or `startup_failure`. `success` is green.
+#   `cancelled` is neither: a queued release-please run is cancelled as a matter
+#   of course when a newer one queues, and a missed release then fails the next
+#   run loudly (the `kind` step), which this alert catches. Counting it red
+#   would open an issue on every superseded run. `skipped` and anything else
+#   count as nothing. Each is logged.
+# - Two kinds of red, told apart by reading the run's jobs (actions: read):
+#   * only the `release-please` job failed: the issue "release-please failed",
+#     closed by any later green push run. Safe, because `kind` fails every later
+#     run while a release is missing.
+#   * any other job failed (deploy-prod, publish-npm, verify-release): the
+#     release exists but a downstream step is red. A later green push run on a
+#     newer commit says nothing about it, so it gets its own issue
+#     "release-please failed at <full sha>", closed only by a green run of that
+#     same sha (a rerun). A person may close it if a newer release replaced it.
+#   If the jobs cannot be read the alert job fails loudly; it never guesses.
+# - A green run closes the plain issue and any issue for its own sha.
 # - Reads only the workflow_run event's own fields, passed through env: and
 #   never interpolated into a script. No checkout, no install, no secret: the
-#   default token with issues: write only. Public text: the repo, the run URL,
-#   the sha and the conclusion, no log excerpts.
+#   default token with issues: write and actions: read only. Public text: the
+#   repo, the run URL, the sha and the conclusion, no log excerpts.
 # - The concurrency group keeps two completions from opening two issues. GitHub
 #   keeps one running and one pending run per group, so a third completion
 #   replaces the pending one (cancel-in-progress: false only protects the
-#   running one). A dropped completion can lose one "failed again" comment, not
-#   the issue: the next red or green completion sets the state.
+#   running one). In rare cases that drops a red run: a red completion waiting
+#   as the pending one is replaced and never seen. The next red or green
+#   completion sets the state, so a dropped red is lost only if nothing red
+#   follows it.
 # - workflow_run runs only from the default branch's copy of this file.
 name: release-alert
 
@@ -35,6 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
+      actions: read
       issues: write
     steps:
       - name: Keep the blocker issue in step
@@ -42,13 +60,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           TITLE: release-please failed
+          EVENT: ${{ github.event.workflow_run.event }}
           CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           RUN: ${{ github.event.workflow_run.html_url }}
           SHA: ${{ github.event.workflow_run.head_sha }}
+          JOBS_URL: ${{ github.event.workflow_run.jobs_url }}
         run: |
           set -euo pipefail
+          if [ "$EVENT" != push ]; then
+            echo "Run $RUN is a '$EVENT' run: not counted, nothing changed."
+            exit 0
+          fi
           case "$CONCLUSION" in
-            failure | timed_out) result=red ;;
+            failure | timed_out | startup_failure) result=red ;;
             success) result=green ;;
             cancelled)
               echo "Run $RUN was cancelled: neither red nor green, nothing changed (a missed release fails the next run, which this alert catches)."
@@ -57,18 +81,36 @@ jobs:
               echo "Run $RUN ended '$CONCLUSION': not counted, nothing changed."
               exit 0 ;;
           esac
-          open=$(gh issue list --repo "$REPO" --state open --label blocker --limit 100 --json number,title | jq -r --arg t "$TITLE" '[.[] | select(.title == $t) | .number][0] // empty')
+          issues=$(gh issue list --repo "$REPO" --state open --label blocker --limit 100 --json number,title) || { echo "::error::could not list the open blocker issues"; exit 1; }
+          find() { jq -r --arg t "$1" '[.[] | select(.title == $t) | .number][0] // empty' <<< "$issues"; }
           if [ "$result" = red ]; then
-            if [ -n "$open" ]; then
-              gh issue comment "$open" --repo "$REPO" --body "Failed again ($CONCLUSION): $RUN at $SHA"
-              echo "Red ($CONCLUSION): commented on #$open."
-            else
-              gh issue create --repo "$REPO" --title "$TITLE" --label blocker --body "The release-please workflow ended $CONCLUSION on main in $REPO. Run: $RUN Commit: $SHA Conclusion: $CONCLUSION"
-              echo "Red ($CONCLUSION): opened the blocker issue."
+            title=$TITLE
+            kind="the release-please job"
+            body_extra=""
+            jobs=$(gh api "${JOBS_URL#https://api.github.com/}?per_page=100") || { echo "::error::could not read the jobs of $RUN"; exit 1; }
+            other=$(jq -r '[.jobs[] | select(.name != "release-please" and (.conclusion == "failure" or .conclusion == "timed_out")) | .name] | join(", ")' <<< "$jobs") || { echo "::error::could not read the jobs of $RUN"; exit 1; }
+            if [ -n "$other" ]; then
+              title="$TITLE at $SHA"
+              kind="a downstream job ($other)"
+              body_extra=" The release step ran; a later job failed. A green run of this same commit (a rerun) closes this issue. A person may close it if a newer release replaced it."
             fi
-          elif [ -n "$open" ]; then
-            gh issue close "$open" --repo "$REPO" --comment "Green again: $RUN at $SHA"
-            echo "Green: closed #$open."
+            open=$(find "$title")
+            if [ -n "$open" ]; then
+              gh issue comment "$open" --repo "$REPO" --body "Failed again ($CONCLUSION, $kind): $RUN at $SHA"
+              echo "Red ($CONCLUSION, $kind): commented on #$open."
+            else
+              gh issue create --repo "$REPO" --title "$title" --label blocker --body "The release-please workflow ended $CONCLUSION on main in $REPO ($kind failed). Run: $RUN Commit: $SHA Conclusion: $CONCLUSION.$body_extra"
+              echo "Red ($CONCLUSION, $kind): opened the blocker issue '$title'."
+            fi
           else
-            echo "Green: no open blocker issue, nothing to do."
+            closed=0
+            for t in "$TITLE" "$TITLE at $SHA"; do
+              n=$(find "$t")
+              if [ -n "$n" ]; then
+                gh issue close "$n" --repo "$REPO" --comment "Green again: $RUN at $SHA"
+                echo "Green: closed #$n ('$t')."
+                closed=1
+              fi
+            done
+            [ "$closed" = 1 ] || echo "Green: no open blocker issue for this run, nothing to do."
           fi
