@@ -2478,8 +2478,11 @@ function resolveTarget(
   now: number,
   withLinks = false,
   withReach = false,
+  withMailbox = false,
 ): Resolution {
   const lname = toName.toLowerCase();
+  // #1349: an away role holder takes mail only for a mailbox-capable sender.
+  const awayAt = withMailbox ? now : undefined;
   // A former name is never held by two agents in one scope (nameTaken);
   // if it ever were, the send is ambiguous rather than delivered to either.
   const formerIn = (
@@ -2491,7 +2494,7 @@ function resolveTarget(
     return rows.length > 1 ? refused("ambiguous") : { ok: true, agent: hit };
   };
   const visibleIn = (ns: string): Resolution | null => {
-    const role = resolveRoleIn(sql, OWNER_ORG_ID, ns, lname);
+    const role = resolveRoleIn(sql, OWNER_ORG_ID, ns, lname, awayAt);
     if (role) return role;
     const hit = liveVisibleIn(sql, ns, lname);
     return hit ? { ok: true, agent: hit } : formerIn({ ns });
@@ -2531,7 +2534,7 @@ function resolveTarget(
             ? r
             : null;
         const reply =
-          back(resolveRoleIn(sql, OWNER_ORG_ID, toNamespace, lname)) ??
+          back(resolveRoleIn(sql, OWNER_ORG_ID, toNamespace, lname, awayAt)) ??
           back(
             (() => {
               const h = liveVisibleIn(sql, toNamespace, lname);
@@ -2592,8 +2595,12 @@ function resolveTarget(
   if (own) return own;
   // #1296: a role in exactly one other namespace, unless a live agent (or a
   // live former name) outside that namespace's scope shares the name.
-  const role = resolveRoleAnywhere(sql, OWNER_ORG_ID, lname, (ns) =>
-    nameOutside(sql, lname, ns, now, sender.id),
+  const role = resolveRoleAnywhere(
+    sql,
+    OWNER_ORG_ID,
+    lname,
+    (ns) => nameOutside(sql, lname, ns, now, sender.id),
+    awayAt,
   );
   if (role) return role;
   // A live global sorts first and is the only live agent with its name (and
@@ -4981,6 +4988,7 @@ export class BusHub extends DurableObject<Env> {
       now,
       linksGated(ws),
       reachGated(ws),
+      mailboxGated(ws),
     );
     // A reply (`to_id`) goes only to the agent it answers: never to whoever
     // holds the name now (wireReason shows agent_gone only to an ids socket).
