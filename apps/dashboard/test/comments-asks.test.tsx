@@ -1027,6 +1027,9 @@ describe("round 3 copy", () => {
 });
 
 describe("removeMention", () => {
+  it("keeps the line break before a removed mention", () => {
+    expect(removeMention("hi\n@Bob there", "Bob")).toBe("hi\n there");
+  });
   it("removes every mention of the name", () => {
     expect(removeMention("@Bob hi @bob, ok", "Bob")).toBe("hi, ok");
   });

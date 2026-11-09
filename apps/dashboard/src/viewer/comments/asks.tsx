@@ -333,8 +333,9 @@ export function removeMention(
     if (longer.some((l) => l.test(text.slice(at + lead.length)))) return m;
     if (at === 0) atStart = true;
     // The space before it goes too, so "hi @Bob." leaves "hi." and
-    // "a @Bob b" leaves "a b"; the space after stays for the next match.
-    return "";
+    // "a @Bob b" leaves "a b"; the space after stays for the next match. A
+    // line break before it stays, so lines are not joined.
+    return /[\r\n]/.test(lead) ? lead : "";
   });
   return atStart ? out.trimStart() : out;
 }
