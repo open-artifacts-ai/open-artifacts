@@ -46,23 +46,26 @@ const frames = () => {
 const button = () =>
   roots.at(-1)?.querySelector<HTMLButtonElement>(".btn") ?? null;
 
-/** jsdom has no FontFaceSet: a stub whose `ready` the test settles (#1648). */
+/**
+ * jsdom has no FontFaceSet: a double that records `loadingdone` listeners, so a
+ * test can finish a font batch the way the browser does (#1648).
+ */
 function fonts() {
-  let settle: () => void = () => {};
-  const ready = new Promise<void>((r) => {
-    settle = r;
-  });
-  const set = (status: "loading" | "loaded") =>
-    Object.defineProperty(document, "fonts", {
-      value: { status, ready },
-      configurable: true,
-    });
-  set("loading");
-  return {
-    load() {
-      set("loaded");
-      settle();
+  const listeners = new Set<() => void>();
+  Object.defineProperty(document, "fonts", {
+    value: {
+      status: "loading",
+      addEventListener: (_t: string, h: () => void) => listeners.add(h),
+      removeEventListener: (_t: string, h: () => void) => listeners.delete(h),
     },
+    configurable: true,
+  });
+  return {
+    /** A finished batch: the browser fires `loadingdone` on the font set. */
+    done() {
+      for (const h of [...listeners]) h();
+    },
+    listening: () => listeners.size,
   };
 }
 
@@ -210,38 +213,44 @@ describe("selection button", () => {
     expect(button()).toBeNull();
   });
 
-  it("places the button again when a webfont swaps in (#1648)", async () => {
-    // A wide first measurement: centered would be 80 - 150, so it clamps to
-    // the margin. The font then loads and the label narrows to 100.
-    let w = 300;
-    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
-      () => w,
-    );
+  it("places the button again when a webfont reflows the page (#1648)", async () => {
+    // The button's own width is fixed (closed shadow root, system-ui), so the
+    // swap cannot change it; what moves is the selection's rect, as the page
+    // reflows. The first rect puts the button at 30px, the second at 90px.
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
     const f = fonts();
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
-    expect(button()?.style.left).toBe("4px");
-    w = 100;
-    f.load();
-    await flush();
     expect(button()?.style.left).toBe("30px");
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, right: 140, bottom: 200 },
+    ] as unknown as DOMRectList);
+    f.done();
+    expect(button()?.style.left).toBe("90px");
+    expect(button()?.style.top).toBe("206px");
   });
 
-  it("leaves the button alone when it is gone by the time the fonts settle (#1648)", async () => {
-    let w = 300;
-    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(
-      () => w,
-    );
+  it("leaves the button alone when it is gone by the time the fonts finish (#1648)", async () => {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
     const f = fonts();
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
-    expect(button()).not.toBeNull();
     await send({ type: "comments.mode", mode: "off" });
     expect(button()).toBeNull();
-    w = 100;
-    f.load();
-    await flush();
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, right: 140, bottom: 200 },
+    ] as unknown as DOMRectList);
+    f.done();
     expect(button()).toBeNull();
+  });
+
+  it("listens for font batches once and stops on dispose (#1648)", async () => {
+    const f = fonts();
+    createRuntime({ loadSchemas: async () => schemas, signal: ctl.signal });
+    await flush();
+    expect(f.listening()).toBe(1);
+    ctl.abort();
+    expect(f.listening()).toBe(0);
   });
 
   it("has a bubble icon, is centered under the selection end, and clamps to the viewport", async () => {
