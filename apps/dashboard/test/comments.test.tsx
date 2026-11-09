@@ -418,6 +418,73 @@ describe("comments: layouts", () => {
     expect(row.closest("[data-oa-actions]")).not.toBeNull();
   });
 
+  it("the short pin sheet drops the whole-page box, so the pinned card is the only thing there (#1783)", async () => {
+    // The short height exists to read one pinned card (#1657). The whole-page
+    // box above the list filled it and left the open card below the fold: the
+    // reader saw an action row with no card above it.
+    viewport(390);
+    const [c1] = oneThread.comments;
+    const pin = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+      comments: [
+        { ...c1, id: "c1", body: "Which pin is this?" },
+        { ...c1, id: "c2", body: "The one on the button." },
+      ],
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [pin], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    const wholePage = () =>
+      within(sheet).queryByRole("textbox", {
+        name: "Comment on the whole page",
+      });
+    // jsdom loads no CSS, so `hidden` is a class here, not a display: none.
+    const wrapper = () =>
+      wholePage()?.closest("div.hidden, div.contents") as HTMLElement | null;
+    // Half height: the box is part of the list. A draft is typed into it.
+    const box = wholePage();
+    expect(box).not.toBeNull();
+    expect(wrapper()?.className).toContain("contents");
+    fireEvent.change(box as HTMLElement, {
+      target: { value: "Whole page: the hero is too loud" },
+    });
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    // Short: the box is hidden (not unmounted: the draft has to survive a pin
+    // tap), and the pinned card with its reply is there, so the reader is not
+    // left with only an action row.
+    expect(wrapper()?.className).toContain("hidden");
+    expect(within(sheet).getByText("Which pin is this?")).toBeInTheDocument();
+    expect(
+      within(sheet).getByText("The one on the button."),
+    ).toBeInTheDocument();
+    expect(
+      within(sheet).getByRole("button", { name: "Reply" }),
+    ).toBeInTheDocument();
+    // A taller sheet brings the box back with the draft still in it.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(wholePage()).toHaveValue("Whole page: the hero is too loud");
+    expect(wrapper()?.className).toContain("contents");
+    // The other way a sheet grows: typing a reply (#1657). Same result, and the
+    // whole-page draft is still there.
+    fireEvent.click(screen.getByRole("button", { name: "Shrink comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    fireEvent.focus(within(sheet).getByRole("textbox", { name: "Reply" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(wrapper()?.className).toContain("contents");
+    expect(wholePage()).toHaveValue("Whole page: the hero is too loud");
+  });
+
   it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {
     viewport(400);
     mount(viewerPath(OWNED));

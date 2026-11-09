@@ -205,7 +205,11 @@ export function CommentsDialog({
         </div>
         <ActionRowProvider>
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-            <CommentsBody textFormat={textFormat} grow={!floating} />
+            <CommentsBody
+              textFormat={textFormat}
+              grow={!floating}
+              short={floating}
+            />
             {/* #1711: in the short pin sheet the active card's action row
                 floats here, at the bottom of the sheet, for a long thread
                 too, and clear of a phone's home indicator. */}

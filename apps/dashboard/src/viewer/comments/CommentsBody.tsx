@@ -968,9 +968,12 @@ export function CommentsBody({
   /** Grow to fill the surface. Off in the phone sheet's short height, where the
       action row's outlet follows the list as a sibling (#1711). */
   grow = true,
+  /** The phone sheet's short height, kept for reading one pinned card (#1783). */
+  short = false,
 }: {
   textFormat?: boolean;
   grow?: boolean;
+  short?: boolean;
 }) {
   const api = useCommentsApi();
   const resolvedCount = api.threads.filter(
@@ -1018,11 +1021,16 @@ export function CommentsBody({
           api={api}
         />
       )}
-      {api.canComment ? (
-        <NoteComposer api={api} />
-      ) : (
-        api.guest && <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
-      )}
+      {/* #1783: the short sheet is for the pinned card, so the whole-page box
+          is not shown there. Hidden with CSS, never unmounted: a typed draft has
+          to survive a pin tap, and dragging the sheet up brings the box back. */}
+      <div className={short ? "hidden" : "contents"}>
+        {api.canComment ? (
+          <NoteComposer api={api} />
+        ) : (
+          api.guest && <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
+        )}
+      </div>
       {api.error != null && !api.threads.length ? (
         <div role="alert" className={`flex flex-col gap-2 ${TXT}`}>
           <p>Couldn't load comments.</p>
