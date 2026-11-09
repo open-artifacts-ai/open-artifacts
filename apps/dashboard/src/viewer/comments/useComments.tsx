@@ -73,6 +73,8 @@ export type CommentsApi = {
   reveal: (id: string) => void;
   /** The last reveal: its card scrolls and takes focus when `tick` changes. */
   revealed: { id: string | null; tick: number };
+  /** The last `revealed.tick` a card focused for: a remounted card must not focus again. */
+  revealDone: { current: number };
   draft: Draft;
   cancelDraft: () => void;
   /** The draft's composer has (or no longer has) text the reader typed. */
@@ -248,6 +250,7 @@ export function useCommentsController({
   const [revealed, setRevealed] = useState<{ id: string | null; tick: number }>(
     { id: null, tick: 0 },
   );
+  const revealDone = useRef(0);
   const reveal = useCallback(
     (tid: string) => {
       select(tid, true);
@@ -352,6 +355,7 @@ export function useCommentsController({
       select,
       reveal,
       revealed,
+      revealDone,
       draft,
       cancelDraft: () => {
         dirty.current = false;

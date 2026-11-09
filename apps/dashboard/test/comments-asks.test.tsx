@@ -1111,6 +1111,35 @@ describe("asks for you: reveal, surfaces, gone (#1614)", () => {
     await waitFor(() => expect(document.activeElement).toBe(row));
   });
 
+  it("focus is one-shot: reopening the column does not focus the row again", async () => {
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      (
+        await screen.findAllByRole("button", { name: /1 ask for you$/ })
+      )[0] as HTMLElement,
+    );
+    const row = c.querySelector('[data-thread="t-ask"]') as HTMLElement;
+    await waitFor(() => expect(document.activeElement).toBe(row));
+    const toggle = screen.getByRole("button", { name: /^Comments/ });
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    fireEvent.click(toggle);
+    const c2 = await screen.findByRole("complementary", { name: "Comments" });
+    const row2 = (await waitFor(() => {
+      const r = c2.querySelector('[data-thread="t-ask"]');
+      expect(r).toBeTruthy();
+      return r;
+    })) as HTMLElement;
+    await wait(50);
+    expect(document.activeElement).not.toBe(row2);
+  });
+
   it("opens the side panel on a mid-width screen", async () => {
     viewport(800);
     serveThreads(() => [askThread()]);

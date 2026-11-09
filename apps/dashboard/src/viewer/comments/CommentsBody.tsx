@@ -714,8 +714,10 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   useEffect(() => {
     if (!isActive) return;
     el.current?.scrollIntoView?.({ block: "nearest" });
-    if (revealedHere && revealTick > 0)
+    if (revealedHere && revealTick > api.revealDone.current) {
+      api.revealDone.current = revealTick;
       el.current?.focus({ preventScroll: true });
+    }
   }, [isActive, revealTick]);
   if (!first) return null;
   const toggle = () => {
