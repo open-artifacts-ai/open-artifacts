@@ -32,10 +32,12 @@ import {
   Delivery,
   type Extras,
   extrasBody,
+  MentionChips,
   MentionMenu,
   matchAgents,
   mentionedKeys,
   mentionQuery,
+  removeMention,
 } from "./asks";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { type CommentsApi, useCommentsApi } from "./useComments";
@@ -363,6 +365,14 @@ function Composer({
           onPick={pick}
         />
       )}
+      {agents && agents.length > 0 && (
+        <MentionChips
+          text={text}
+          agents={agents}
+          assign={assign}
+          onRemove={(a) => setText((t) => removeMention(t, a.name))}
+        />
+      )}
       {error != null && (
         <p role="alert" className={`${TXT} text-destructive`}>
           {commentError(error, capped)}
@@ -372,23 +382,20 @@ function Composer({
       {open &&
         (() => {
           const assignSel = agents && agents.length > 0 && (
-            <label
-              className={`flex items-center gap-1 ${TXT} ${buttonsRight ? "w-full" : ""}`}
+            <div
+              className={`flex flex-wrap items-center gap-x-3 gap-y-1 ${TXT} ${buttonsRight ? "w-full" : ""}`}
             >
-              Assign to
-              <select
-                className={`min-w-0 rounded-md border border-input bg-background px-1 py-0.5 ${TXT}`}
-                value={assign}
-                onChange={(e) => setAssign(e.target.value)}
-              >
-                <option value="">No one</option>
-                {agents.map((a) => (
-                  <option key={a.key} value={a.key}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+              {agents.map((a) => (
+                <label key={a.key} className="flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={assign === a.key}
+                    onChange={(e) => setAssign(e.target.checked ? a.key : "")}
+                  />
+                  Assign to {a.name}
+                </label>
+              ))}
+            </div>
           );
           const cancelBtn = (onCancel || !alwaysOpen) && (
             <Button size="xs" variant="ghost" onClick={cancel}>

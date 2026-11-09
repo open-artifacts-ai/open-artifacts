@@ -46,7 +46,13 @@ const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
 const assignedLine = (name: string, st: CommentAssigned["state"]) =>
   st === "queued"
     ? `Assigned to ${name}, who is ${OFFLINE}`
-    : `Assigned to ${name}: ${st === "done" ? "Done" : st === "seen" ? "Seen" : "Delivered"}`;
+    : `Assigned to ${name}: ${
+        st === "done"
+          ? "Delivered → Seen → Done"
+          : st === "seen"
+            ? "Delivered → Seen"
+            : "Delivered"
+      }`;
 
 /** Delivery of each mention and the assignment, in plain words. Names are text, never HTML. */
 export function Delivery({ c }: { c: CommentT }) {
@@ -319,6 +325,70 @@ export function mentionedKeys(
   return keys;
 }
 
+/** Drops the first whole `@name` (and one following space) from the text. */
+export function removeMention(text: string, name: string): string {
+  const re = new RegExp(
+    `(^|\\s)@${esc(name)}(?=$|[\\s.,;:!?)\\]'\u2019-])\\s?`,
+    "i",
+  );
+  return text.replace(re, (_m, lead: string) => lead);
+}
+
+/** Who gets notified: the mentioned agents plus the assignee, once each. */
+export function notifyNames(
+  text: string,
+  agents: readonly ArtifactAgent[],
+  assign: string,
+): string[] {
+  const keys = new Set(mentionedKeys(text, agents));
+  if (assign) keys.add(assign);
+  return agents.filter((a) => keys.has(a.key)).map((a) => a.name);
+}
+
+/** The picked mentions as removable chips, and the "Will notify" line. */
+export function MentionChips({
+  text,
+  agents,
+  assign,
+  onRemove,
+}: {
+  text: string;
+  agents: readonly ArtifactAgent[];
+  assign: string;
+  onRemove: (a: ArtifactAgent) => void;
+}) {
+  const keys = mentionedKeys(text, agents);
+  const chips = agents.filter((a) => keys.includes(a.key));
+  const names = notifyNames(text, agents, assign);
+  if (names.length === 0) return null;
+  return (
+    <div className={`flex flex-col gap-1 ${TXT}`}>
+      {chips.length > 0 && (
+        <ul className="m-0 flex list-none flex-wrap gap-1 p-0">
+          {chips.map((a) => (
+            <li
+              key={a.key}
+              data-chip={a.key}
+              className="inline-flex items-center gap-1 rounded-full bg-[var(--oa-accent-soft)] py-0.5 pr-1 pl-2 text-[var(--oa-accent-fg)]"
+            >
+              @{a.name}
+              <button
+                type="button"
+                aria-label={`Remove mention of ${a.name}`}
+                className="rounded-full px-1 leading-none hover:bg-background/60"
+                onClick={() => onRemove(a)}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className={`m-0 ${MUTED}`}>Will notify {names.join(", ")}</p>
+    </div>
+  );
+}
+
 export function MentionMenu({
   id,
   matches,
@@ -356,6 +426,10 @@ export function MentionMenu({
               onPick(a);
             }}
           >
+            <span
+              aria-hidden="true"
+              className={`size-2 shrink-0 rounded-full ${a.online ? "bg-[var(--oa-success-fg,#157a3a)]" : "bg-muted-foreground/50"}`}
+            />
             <b className="min-w-0 flex-1 truncate">{a.name}</b>
             <span className={MUTED}>{a.online ? "online" : "offline"}</span>
           </div>

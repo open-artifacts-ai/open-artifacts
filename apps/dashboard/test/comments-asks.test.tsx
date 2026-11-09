@@ -556,7 +556,7 @@ describe("@mentions in the composer", () => {
     ).toBeInTheDocument();
     expect(within(c).getByText("OA Design: Seen")).toBeInTheDocument();
     expect(
-      within(c).getByText("Assigned to OA Product: Done"),
+      within(c).getByText("Assigned to OA Product: Delivered → Seen → Done"),
     ).toBeInTheDocument();
   });
 });
@@ -700,12 +700,7 @@ describe("@ picker details", () => {
     const box = await within(c).findByRole("textbox", { name: "Reply" });
     // The agent list loads on focus; Assign to comes with it, no "@" needed.
     fireEvent.focus(box);
-    const select = await waitFor(() => {
-      const s = within(c).getByLabelText("Assign to") as HTMLSelectElement;
-      expect(s.options.length).toBeGreaterThan(1);
-      return s;
-    });
-    fireEvent.change(select, { target: { value: "agent:design" } });
+    fireEvent.click(await within(c).findByLabelText("Assign to OA Design"));
     fireEvent.change(box, { target: { value: "please do it" } });
     fireEvent.click(
       within(c).getByRole("button", { name: "Reply", hidden: false }),
@@ -715,6 +710,70 @@ describe("@ picker details", () => {
       body: "please do it",
       assign: { key: "agent:design" },
     });
+  });
+
+  it("assigns exclusively, lists who will be notified, and removes chips", async () => {
+    withAgents();
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.focus(box);
+    const design = (await within(c).findByLabelText(
+      "Assign to OA Design",
+    )) as HTMLInputElement;
+    const product = within(c).getByLabelText(
+      "Assign to OA Product",
+    ) as HTMLInputElement;
+    fireEvent.click(design);
+    fireEvent.click(product);
+    expect(design.checked).toBe(false);
+    expect(product.checked).toBe(true);
+    fireEvent.click(product);
+    expect(product.checked).toBe(false);
+    expect(within(c).queryByText(/Will notify/)).toBeNull();
+    fireEvent.click(design);
+    fireEvent.change(box, {
+      target: { value: "@OA Design and @OA Product go", selectionStart: 29 },
+    });
+    // Mentions and the assignee, once each.
+    expect(
+      within(c).getByText("Will notify OA Product, OA Design"),
+    ).toBeTruthy();
+    fireEvent.click(
+      within(c).getByRole("button", { name: "Remove mention of OA Product" }),
+    );
+    expect(box).toHaveValue("@OA Design and go");
+    expect(within(c).getByText("Will notify OA Design")).toBeTruthy();
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts.length).toBeGreaterThan(0));
+    expect(posts[0]?.body).toMatchObject({
+      mentions: [{ key: "agent:design" }],
+      assign: { key: "agent:design" },
+    });
+  });
+
+  it("marks agents online or offline in text, not colour alone", async () => {
+    withAgents();
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.focus(box);
+    await within(c).findByLabelText("Assign to OA Design");
+    fireEvent.change(box, { target: { value: "@OA", selectionStart: 3 } });
+    const menu = await within(c).findByRole("listbox", {
+      name: "Agents on this page",
+    });
+    expect(
+      within(menu).getByRole("option", { name: /OA Product.*online/ }),
+    ).toBeTruthy();
+    expect(
+      within(menu).getByRole("option", { name: /OA Design.*offline/ }),
+    ).toBeTruthy();
   });
 
   it("does not resend the answer already picked", async () => {
@@ -841,10 +900,7 @@ describe("agent list loads on composer focus", () => {
     const c = await col();
     const box = await wholePage(c);
     fireEvent.focus(box);
-    await waitFor(() => {
-      const s = within(c).getByLabelText("Assign to") as HTMLSelectElement;
-      expect(s.options.length).toBeGreaterThan(1);
-    });
+    await within(c).findByLabelText("Assign to OA Design");
     fireEvent.blur(box);
     fireEvent.focus(box);
     expect(n.count).toBe(1);
@@ -876,7 +932,7 @@ describe("agent list loads on composer focus", () => {
     fireEvent.focus(box);
     await new Promise((r) => setTimeout(r, 50));
     expect(n.count).toBe(0);
-    expect(within(c).queryByLabelText("Assign to")).toBeNull();
+    expect(within(c).queryByLabelText(/^Assign to/)).toBeNull();
   });
 
   it("retries a 5xx on the next focus but never a 404", async () => {
@@ -898,11 +954,11 @@ describe("agent list loads on composer focus", () => {
     const box = await wholePage(c);
     fireEvent.focus(box);
     await waitFor(() => expect(hits).toBe(1));
-    expect(within(c).queryByLabelText("Assign to")).toBeNull();
+    expect(within(c).queryByLabelText(/^Assign to/)).toBeNull();
     status = 200;
     fireEvent.blur(box);
     fireEvent.focus(box);
-    await within(c).findByLabelText("Assign to");
+    await within(c).findAllByLabelText(/^Assign to/);
     expect(hits).toBe(2);
   });
 
@@ -949,7 +1005,7 @@ describe("agent list loads on composer focus", () => {
     fireEvent.focus(box);
     await new Promise((r) => setTimeout(r, 50));
     expect(hits).toBe(1);
-    expect(within(c).queryByLabelText("Assign to")).toBeNull();
+    expect(within(c).queryByLabelText(/^Assign to/)).toBeNull();
   });
 });
 
