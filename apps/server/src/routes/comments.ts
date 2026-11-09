@@ -218,6 +218,15 @@ export function mountComments(app: AppType): void {
     const raw = ReplyBodySchema.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
     const moderator = modOf(cw, level, artifact);
+    // toAsker stands alone (400), before the owner-and-editor check on mentions.
+    if (
+      raw.data.toAsker &&
+      ((raw.data.mentions?.length ?? 0) > 0 || raw.data.assign !== undefined)
+    )
+      throw new ApiError(
+        "bad_request",
+        "toAsker cannot be combined with mentions or assign",
+      );
     mayTarget(raw.data, moderator);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
     if (!who) throw new ApiError("unauthorized", "Sign in to comment");
@@ -225,7 +234,7 @@ export function mountComments(app: AppType): void {
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }
         : who;
-    const { mentions, assign } = raw.data;
+    const { mentions, assign, toAsker } = raw.data;
     const out = await addReply(
       c.env,
       id,
@@ -233,7 +242,7 @@ export function mountComments(app: AppType): void {
       w,
       viewer,
       raw.data.body,
-      { mentions, assign },
+      { mentions, assign, toAsker },
       {
         moderator,
         after: { version: artifact.currentVersion, ctx: execCtx(c) },

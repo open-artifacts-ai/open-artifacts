@@ -80,6 +80,13 @@ export function Delivery({ c }: { c: CommentT }) {
   );
 }
 
+/** Who did it, in words: "you" for the viewer's own act, never for their agent
+    (#1789: an owner's token answers with \`me\` set), and "<name> (agent)" for an agent. */
+export const actor = (
+  a: { kind: string; name: string; me: boolean },
+  you: string,
+) => (a.kind === "agent" ? `${a.name} (agent)` : a.me ? you : a.name);
+
 const letter = (i: number) => String.fromCharCode(65 + i);
 /** Letters are shown unless every option's id already equals its label ("yes"/"Yes"). */
 const showLetters = (opts: { id: string; label: string }[]) =>
@@ -94,6 +101,7 @@ export function AskBlock({
   c,
   next,
   reply,
+  askQuestion,
 }: {
   artifactId: string;
   thread: CommentThread;
@@ -102,6 +110,8 @@ export function AskBlock({
   next?: () => void;
   /** Open this thread's reply composer, when the viewer may comment. */
   reply?: () => void;
+  /** Open a question to the agent that asked (#1794), when the viewer may reply. */
+  askQuestion?: () => void;
 }) {
   const ask = c.ask;
   const answer = useAnswerAsk(artifactId);
@@ -138,7 +148,7 @@ export function AskBlock({
             ? `${ask.question} `
             : `${ask.question}: `}
           {letters ? `${letter(pickedIdx)}, ` : ""}
-          {pickedOpt.label} · {ask.answer?.by.me ? "you" : ask.answer?.by.name},{" "}
+          {pickedOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
         <span className="shrink-0 font-semibold">
@@ -240,7 +250,7 @@ export function AskBlock({
           )}
           {ask.answer && pickedOpt && (
             <p className={`${TXT} font-medium`} data-ask-answer="">
-              {ask.answer.by.me ? "You" : ask.answer.by.name} picked{" "}
+              {actor(ask.answer.by, "You")} picked{" "}
               {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
               {versionDate(ask.answer.at)}
               {ask.closed ? " · closed" : ""}
@@ -270,6 +280,11 @@ export function AskBlock({
             </p>
           )}
           <div className="flex gap-2">
+            {askQuestion && !pickedOpt && !ask.closed && (
+              <Button size="xs" variant="outline" onClick={askQuestion}>
+                Ask a question
+              </Button>
+            )}
             {next && canAnswer && (
               <Button size="xs" variant="outline" onClick={next}>
                 Next ask ↓

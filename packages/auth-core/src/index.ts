@@ -46,6 +46,7 @@ export {
   GoogleTokenError,
   type GoogleTokenStage,
   hasDirectoryScopes,
+  noDomainIdentityOk,
   verifyGoogleIdToken,
   verifyGoogleIdTokenAnyDomain,
 } from "./google.js";

@@ -181,6 +181,7 @@ export function effectivePlan(
     lock: reason && mode ? { mode, tier: base.tier, reason } : null,
     trialEligible:
       mode === "solo" &&
+      base.status === "active" &&
       (base.tier === "solo" || base.tier === "free") &&
       base.trialEndsAt === null,
   });

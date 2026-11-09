@@ -57,6 +57,7 @@ export const ERROR_CODES = [
   // Comments (#682).
   "invalid_anchor",
   "invalid_body",
+  "not_an_ask",
   "anchor_not_in_version",
   "comments_off",
   "forbidden",
@@ -162,6 +163,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   /** Comments (#682). */
   invalid_anchor: 400,
   invalid_body: 400,
+  /** POST R.commentReplies with toAsker where the thread's root has no ask, or its author is not an agent (#1614). */
+  not_an_ask: 400,
   anchor_not_in_version: 422,
   comments_off: 403,
   forbidden: 403,

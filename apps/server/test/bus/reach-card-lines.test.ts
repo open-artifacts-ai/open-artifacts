@@ -67,4 +67,24 @@ describe("reach and role cards list namespaces one per line, escaped", () => {
     expect(h.match(/class="slot card"/g)).toHaveLength(1);
     expect(h).toContain('c.className="slot";c.innerHTML=j.html');
   });
+  it("the script says the outcome is unknown for a decide POST, and nothing changed only for the view", () => {
+    const h = renderConfirmPage({
+      instanceHost: "h",
+      title: "t",
+      base: "/b",
+      csrf: "c",
+      nonce: "n",
+    });
+    expect(h).toContain(
+      'UNKNOWN="We could not confirm this finished. Check before trying again, then reload the page."',
+    );
+    // Both a non-JSON reply and a lost response pick the text by `decide`.
+    expect(h).toContain(
+      "show(decide?UNKNOWN:NONE)})}).catch(function(){show(decide?UNKNOWN:NONE)})",
+    );
+    // The decide POST passes true; the view does not.
+    expect(h).toContain("decision:d},true)");
+    expect(h).toContain('send(base+"/view",{secret:s,csrf:vcsrf});');
+    expect(h).not.toContain(".catch(fail)");
+  });
 });

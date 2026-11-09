@@ -36,7 +36,7 @@ export type RosterAgent = ArtifactAgent & {
   address: BusAddress;
 };
 
-async function agentKey(
+export async function agentKey(
   artifactId: string,
   userId: string,
   a: BusAddress,
@@ -197,12 +197,13 @@ export const storedAgent = (a: RosterAgent): StoredAgent => ({
   owner: a.userId,
 });
 
-export type CommentNoticeKind = "ask" | "mention" | "assign";
+export type CommentNoticeKind = "ask" | "mention" | "assign" | "asker";
 
 const WHAT: Record<CommentNoticeKind, string> = {
   ask: "there is a question for you on an artifact",
   mention: "you were mentioned in a comment on an artifact",
   assign: "work was assigned to you in a comment on an artifact",
+  asker: "someone replied to a question you asked on an artifact",
 };
 
 /** What a notice text can be about: a comment notice kind, or `answered` (an ask got its answer). */
@@ -219,6 +220,7 @@ const WHAT_YOURS: Record<CommentTextKind, string> = {
   mention: "mentioned you in a comment on an artifact",
   assign: "assigned you work in a comment on an artifact",
   answered: "answered your question",
+  asker: "replied to a question you asked on an artifact",
 };
 
 const YOUR_USER_TAIL =
@@ -285,7 +287,12 @@ export async function notifyAgent(
       { threadId, commentId },
       fromYourUser,
     ),
-    coalesceKey: `${artifactId}:${commentId}:${kind}`,
+    // A reply to an ask's author coalesces per thread (#1614): replies sent
+    // while its agent is away leave one waiting notice, never a pile.
+    coalesceKey:
+      kind === "asker"
+        ? `${artifactId}:${threadId}:asker`
+        : `${artifactId}:${commentId}:${kind}`,
     threadId,
     commentId,
   };
@@ -321,29 +328,11 @@ export async function notifyAnswered(
   /** The answer was picked in the web app by `askerId` themselves (#1797). */
   fromYourUser = false,
 ): Promise<void> {
-  const { results } = await stmt(
-    env.DB,
-    `select namespace, agent_name as name from follows
-     where artifact_id = ? and user_id = ?
-     order by created_at, namespace, agent_name limit ?`,
-  )
-    .bind(artifactId, askerId, FANOUT_MAX)
-    .all<{ namespace: string; name: string }>();
-  if (results.length === 0) return;
-  const user = await getUser(env, askerId);
-  if (!user || !(await accessLevel(env, callerOf(user), artifactId))) {
-    await stmt(env.DB, DROP_MEMBER_FOLLOWS).bind(askerId, artifactId).run();
-    logInfo("follow_dropped", {
-      artifactId,
-      userId: askerId,
-      reason: "no_access",
-    });
-    return;
-  }
-  if (!canConnect(user)) return;
+  const targets = await askerAgents(env, artifactId, askerId);
+  if (targets.length === 0) return;
   const url = appOrigin(env) + viewerPath(artifactId);
   const scope = newDeliveryScope();
-  for (const to of results) {
+  for (const to of targets) {
     const n: BusNotice = {
       id: newId(),
       kind: "ask_answered",
@@ -366,4 +355,60 @@ export async function notifyAnswered(
     const out = await deliverNotice(env, askerId, n, scope);
     logInfo("comment_notice", { artifactId, kind: "answered", outcome: out });
   }
+}
+
+/**
+ * The agents of an ask's author that can be told of something on the ask (#1535,
+ * #1614): the agents that follow the artifact and belong to `askerId`. That is
+ * the honest target for now: an MCP caller has no bus address, so until a
+ * publisher/asker link exists (an open user decision) the asker's member is
+ * the only link to an agent. A person-authored ask with no following agent
+ * gets nothing. The member is re-checked at send time as the follows fan-out
+ * does (a lapsed one loses their follows on the artifact and hears nothing).
+ * Reads at most FANOUT_MAX follow rows of one member. Never another member's.
+ */
+export async function askerAgents(
+  env: Env,
+  artifactId: string,
+  askerId: string,
+): Promise<BusAddress[]> {
+  const { results } = await stmt(
+    env.DB,
+    `select namespace, agent_name as name from follows
+     where artifact_id = ? and user_id = ?
+     order by created_at, namespace, agent_name limit ?`,
+  )
+    .bind(artifactId, askerId, FANOUT_MAX)
+    .all<{ namespace: string; name: string }>();
+  if (results.length === 0) return [];
+  const user = await getUser(env, askerId);
+  if (!user || !(await accessLevel(env, callerOf(user), artifactId))) {
+    await stmt(env.DB, DROP_MEMBER_FOLLOWS).bind(askerId, artifactId).run();
+    logInfo("follow_dropped", {
+      artifactId,
+      userId: askerId,
+      reason: "no_access",
+    });
+    return [];
+  }
+  if (!canConnect(user)) return [];
+  return results;
+}
+
+/** `askerAgents` as roster entries, for the card's delivery marks (#1614). */
+export async function askerRoster(
+  env: Env,
+  artifactId: string,
+  askerId: string,
+): Promise<RosterAgent[]> {
+  const out: RosterAgent[] = [];
+  for (const address of await askerAgents(env, artifactId, askerId))
+    out.push({
+      key: await agentKey(artifactId, askerId, address),
+      name: address.name,
+      online: false,
+      userId: askerId,
+      address,
+    });
+  return out;
 }

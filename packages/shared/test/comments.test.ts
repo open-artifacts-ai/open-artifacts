@@ -109,6 +109,7 @@ describe("comment schemas", () => {
       "invalid_anchor",
       "invalid_body",
       "anchor_not_in_version",
+      "not_an_ask",
       "comments_off",
       "forbidden",
     ])
