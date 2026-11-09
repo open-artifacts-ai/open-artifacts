@@ -33,6 +33,7 @@ import {
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import {
+  askRows,
   indexAnswered,
   indexAsk,
   indexDeleted,
@@ -400,10 +401,12 @@ export async function listComments(
   status: CommentStatus | "all",
   viewer: CommentViewer,
 ): Promise<CommentList> {
+  // A full read repairs the asks index (#1623); never fails the read. The rows
+  // are read first, so the threads are never older than the rows they are
+  // compared with.
+  const rows = status === "all" ? await askRows(env, artifactId) : null;
   const r = await call(() => stub(env, artifactId).commentsList(status));
-  // A full read repairs the asks index (#1623); never fails the read.
-  if (status === "all")
-    await reconcileAsks(env, artifactId, r.threads, r.truncated);
+  if (rows) await reconcileAsks(env, artifactId, r.threads, r.truncated, rows);
   return {
     threads: await threadViews(env, r.threads, viewer),
     open: r.open,
@@ -891,7 +894,8 @@ export async function deleteComment(
   moderator: boolean,
 ): Promise<void> {
   const a = who ? actorOf(who) : null;
-  const { root } = await call(() =>
+  // `r` is undefined from an older DO mid-deploy: the delete stands, the index heals on read.
+  const r = await call(() =>
     stub(env, artifactId).commentsDelete({
       threadId,
       commentId,
@@ -900,5 +904,5 @@ export async function deleteComment(
       ...(who ? { rate: rateKeyOf(who) } : {}),
     }),
   );
-  await indexDeleted(env, artifactId, threadId, commentId, root);
+  await indexDeleted(env, artifactId, threadId, commentId, r?.root === true);
 }

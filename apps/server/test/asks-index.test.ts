@@ -14,6 +14,7 @@ import { createApp } from "../src/app.js";
 import { callerOf } from "../src/auth/authz.js";
 import type { Env } from "../src/env.js";
 import { listQuery, publish } from "../src/services/artifacts.js";
+import { askRows, reconcileAsks } from "../src/services/asks.js";
 import {
   addReply,
   addThread,
@@ -430,5 +431,105 @@ describe("a failing index write", () => {
     ).json()) as CommentList;
     expect(l.threads).toHaveLength(1);
     expect(await countFor(reader, id)).toBe(1);
+  });
+});
+
+describe("review fixes", () => {
+  it("comments off hides the badge and the match; on brings them back", async () => {
+    const id = await mkArtifact();
+    await ask(id, [reader]);
+    const set = (comments: boolean) =>
+      api(app, R.artifact(id), owner.cookie, {
+        method: "PATCH",
+        body: { comments },
+      });
+    expect((await set(false)).status).toBe(200);
+    expect(await countFor(reader, id)).toBeUndefined();
+    expect(
+      (await listFor(reader, "filter=needs_answer&limit=100")).items.map(
+        (a) => a.id,
+      ),
+    ).not.toContain(id);
+    expect((await set(true)).status).toBe(200);
+    expect(await countFor(reader, id)).toBe(1);
+  });
+
+  it("an owner who is the addressee sees nothing for a trashed artifact, badge or filter", async () => {
+    const id = await mkArtifact();
+    await ask(id, [owner]);
+    expect(await countFor(owner, id)).toBe(1);
+    await api(app, R.artifact(id), owner.cookie, { method: "DELETE" });
+    const r = await api(
+      app,
+      `${R.artifacts}?includeDeleted=true&limit=100`,
+      owner.cookie,
+    );
+    const inTrash = ((await r.json()) as Page<ArtifactSummary>).items.find(
+      (a) => a.id === id,
+    );
+    expect(inTrash).toBeTruthy();
+    expect(inTrash?.asksForYou).toBeUndefined();
+    const f = await api(
+      app,
+      `${R.artifacts}?includeDeleted=true&filter=needs_answer&limit=100`,
+      owner.cookie,
+    );
+    expect(
+      ((await f.json()) as Page<ArtifactSummary>).items.map((a) => a.id),
+    ).not.toContain(id);
+  });
+
+  /** An env whose D1 counts batch calls (the reconcile's only write). */
+  const counting = () => {
+    const n = { batches: 0 };
+    const db = new Proxy(E.DB, {
+      get(t, k) {
+        const v = Reflect.get(t, k) as unknown;
+        if (k === "batch")
+          return (x: D1PreparedStatement[]) => {
+            n.batches++;
+            return t.batch(x);
+          };
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    return { n, env: { ...E, DB: db } as Env };
+  };
+
+  it("a reconcile that matches writes nothing; one that differs writes once", async () => {
+    const id = await mkArtifact();
+    await ask(id, [reader]);
+    const c = counting();
+    await listComments(c.env, id, "all", view(owner));
+    expect(c.n.batches).toBe(0);
+    await E.DB.prepare("delete from artifact_asks where artifact_id = ?")
+      .bind(id)
+      .run();
+    await listComments(c.env, id, "all", view(owner));
+    expect(c.n.batches).toBe(1);
+  });
+
+  it("only a full read (status=all) reconciles", async () => {
+    const id = await mkArtifact();
+    await ask(id, [reader]);
+    await E.DB.prepare("delete from artifact_asks where artifact_id = ?")
+      .bind(id)
+      .run();
+    for (const status of ["open", "resolved"])
+      await api(app, `${R.comments(id)}?status=${status}`, owner.cookie);
+    expect(await rows(id)).toEqual([]);
+    await api(app, `${R.comments(id)}?status=all`, owner.cookie);
+    expect(await rows(id)).toHaveLength(1);
+  });
+
+  it("a truncated read never deletes rows it may lack; a complete one does", async () => {
+    const id = await mkArtifact();
+    await ask(id, [reader]);
+    const have = (await askRows(E, id)) ?? [];
+    expect(have).toHaveLength(1);
+    await reconcileAsks(E, id, [], true, have);
+    expect(await rows(id)).toHaveLength(1);
+    await reconcileAsks(E, id, [], false, have);
+    expect(await rows(id)).toEqual([]);
   });
 });

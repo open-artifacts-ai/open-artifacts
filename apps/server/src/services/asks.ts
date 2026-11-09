@@ -115,18 +115,39 @@ type Row = {
   answered: number;
 };
 
+/** The artifact's index rows, or null when D1 fails (then nothing is reconciled). */
+export async function askRows(
+  env: Env,
+  artifactId: string,
+): Promise<Row[] | null> {
+  try {
+    const { results } = await stmt(
+      env.DB,
+      "select thread_id, comment_id, addressee, open, answered from artifact_asks where artifact_id = ?",
+    )
+      .bind(artifactId)
+      .all<Row>();
+    return results;
+  } catch (e) {
+    logWarn("asks_index_failed", e, { op: "read", artifactId });
+    return null;
+  }
+}
+
 /**
- * Makes the artifact's rows match its threads (all of them: a partial read
- * must not be passed). One select; writes only the differences. It is also the
- * backfill: an ask that predates the table, or whose write failed, appears the
- * first time someone lists the artifact's comments. Rows for asks the DO no
- * longer has are removed, unless the read was truncated (it may lack them).
+ * Makes the artifact's rows (`results`, read before the threads) match its
+ * threads (all of them: a partial read must not be passed). Writes only the
+ * differences. It is also the backfill: an ask that predates the table, or
+ * whose write failed, appears the first time someone lists the artifact's
+ * comments. Rows for asks the DO no longer has are removed, unless the read
+ * was truncated (it may lack them).
  */
 export const reconcileAsks = (
   env: Env,
   artifactId: string,
   threads: StoredThread[],
   truncated: boolean,
+  results: Row[],
 ) =>
   guarded("reconcile", artifactId, async () => {
     const want = new Map<string, Row>();
@@ -144,12 +165,6 @@ export const reconcileAsks = (
             answered,
           });
       }
-    const { results } = await stmt(
-      env.DB,
-      "select thread_id, comment_id, addressee, open, answered from artifact_asks where artifact_id = ?",
-    )
-      .bind(artifactId)
-      .all<Row>();
     const have = new Map(
       results.map((r) => [`${r.comment_id}|${r.addressee}`, r]),
     );

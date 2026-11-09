@@ -1197,8 +1197,8 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
   // artifact is already in the access filter above, so an ask on one the
   // caller can't list is never counted or matched.
   const me = caller.kind === "user" ? caller.user.id : "";
-  // A deleted artifact (includeDeleted) has no asks for anyone to answer.
-  const asksOf = sql`select 1 from artifact_asks k where k.artifact_id = ${artifacts.id} and k.addressee = ${me} and k.open = 1 and ${artifacts.deletedAt} is null`;
+  // A deleted artifact (includeDeleted) has no asks for anyone to answer, and one with comments off hides them.
+  const asksOf = sql`select 1 from artifact_asks k where k.artifact_id = ${artifacts.id} and k.addressee = ${me} and k.open = 1 and ${artifacts.deletedAt} is null and ${artifacts.comments} = 1`;
   if (q.filter === "needs_answer") conds.push(sql`exists (${asksOf})`);
   if (q.updatedSince !== undefined) {
     const t = ISO_DATE.test(q.updatedSince) ? Date.parse(q.updatedSince) : NaN;
@@ -1221,7 +1221,7 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
       ownerDisplayName: users.displayName,
       level: levelSql(caller, { allowDeleted: q.includeDeleted }),
       lastPub: lastPublisherSql,
-      asksForYou: sql<number>`(select count(*) from artifact_asks k where k.artifact_id = ${artifacts.id} and k.addressee = ${me} and k.open = 1 and ${artifacts.deletedAt} is null)`,
+      asksForYou: sql<number>`(select count(*) from artifact_asks k where k.artifact_id = ${artifacts.id} and k.addressee = ${me} and k.open = 1 and ${artifacts.deletedAt} is null and ${artifacts.comments} = 1)`,
       // The joined space, for `space` and `can` (withSpace).
       space: spaceCols(caller, decorates(env, caller)),
     })
