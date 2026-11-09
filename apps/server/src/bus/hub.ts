@@ -4167,18 +4167,30 @@ export class BusHub extends DurableObject<Env> {
     if (!idx || !name) return;
     this.#indexedAt = Number.NEGATIVE_INFINITY;
     // #1749: bounded, so a hung index stalls no close, erase or revoke. The
-    // call counts in indexInFlight until it really settles, not until the
-    // timeout, so a test teardown still waits for it.
+    // call, and the repair after it, count in indexInFlight until they
+    // really settle, not until the timeout, so a test teardown still waits.
     this.indexInFlight++;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const call = Promise.resolve().then(() => idx.gone(name));
+    // The repair runs when `gone` really lands, even after the bound gave up
+    // on it: always reset, because a `seen` that returned while `gone` was in
+    // flight set the throttle after the row was deleted, and an accept
+    // within INDEX_REPORT_MS would skip its report and leave a live socket
+    // with no row. A socket accepted while `gone` was in flight reported
+    // before it landed, so its report may have been deleted: report again.
+    const settled = call
+      .then(
+        async () => {
+          this.#indexedAt = Number.NEGATIVE_INFINITY;
+          if (open()) await this.#reportToIndex();
+        },
+        () => {}, // logged by the race below, or after the bound: ignored
+      )
+      .finally(() => {
+        this.indexInFlight--;
+      });
+    this.ctx.waitUntil(settled);
     try {
-      const call = Promise.resolve()
-        .then(() => idx.gone(name))
-        .finally(() => {
-          this.indexInFlight--;
-        });
-      // A rejection after the timeout won is already logged as the timeout.
-      call.catch(() => {});
       const timedOut = new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => reject(new Error("socket index gone timed out")),
@@ -4192,15 +4204,7 @@ export class BusHub extends DurableObject<Env> {
     } finally {
       clearTimeout(timer);
     }
-    // Always reset: a `seen` that returned while `gone` was in flight set the
-    // throttle after the row was deleted, and an accept within INDEX_REPORT_MS
-    // would then skip its report and leave a live socket with no row.
-    this.#indexedAt = Number.NEGATIVE_INFINITY;
-    // A socket accepted while `gone` was in flight reported before it landed,
-    // so its report may have been deleted: report again.
-    if (open()) {
-      await this.#reportToIndex();
-    }
+    await settled;
   }
 
   override async webSocketMessage(

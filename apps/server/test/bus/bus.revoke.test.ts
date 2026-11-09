@@ -606,6 +606,37 @@ describe("bus rows outlive the index window (#1299)", () => {
     await vi.waitFor(async () => expect(await x.inFlight()).toBe(0));
   });
 
+  it("a gone that lands after the bound does not leave a live socket without its row", async () => {
+    const u = await member();
+    const name = `bus:${u.userId}`;
+    const a = await connected(u, "one");
+    const x = await hungIndex(u.userId);
+    try {
+      const err = vi.spyOn(console, "error");
+      // The client's close reaches the hub, whose last socket is gone: its
+      // `gone` hangs until the bound logs the timeout.
+      a.d.close();
+      await vi.waitFor(() =>
+        expect(
+          err.mock.calls.some((c) =>
+            String(c[0]).includes("socket_index_failed"),
+          ),
+        ).toBe(true),
+      );
+      // The bound has fired and `gone` is still gated.
+      expect(await x.inFlight()).toBeGreaterThan(0);
+      // A socket accepted now reports its row, which the late gone deletes.
+      const b = await connected(u, "two");
+      expect(await rowOf(name)).not.toBeNull();
+      x.release();
+      await vi.waitFor(async () => expect(await x.inFlight()).toBe(0));
+      expect(await rowOf(name)).not.toBeNull();
+      b.d.close();
+    } finally {
+      x.release();
+    }
+  });
+
   it("a missing gone (the hub crashed) is harmless: closeInstall reaches the row, the cap prunes it", async () => {
     const u = await member();
     const name = `bus:${u.userId}`;
