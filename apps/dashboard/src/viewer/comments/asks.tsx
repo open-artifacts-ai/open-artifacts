@@ -364,7 +364,7 @@ export function MentionedText({
       <span
         key={at}
         data-mention-chip=""
-        className="rounded-full bg-[var(--oa-accent-soft)] px-2 py-0.5 text-[var(--oa-accent-fg)]"
+        className="rounded-full bg-[var(--oa-accent-soft)] px-1 py-0.5 text-[var(--oa-accent-fg)]"
       >
         {body.slice(at, end)}
       </span>,
