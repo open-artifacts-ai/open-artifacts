@@ -25,6 +25,7 @@ import {
   readAssets,
 } from "../steps/adapters.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
+import { openclawVerify } from "../steps/openclaw.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
 import {
@@ -191,6 +192,8 @@ async function harnessesStep(
   if (out.sharedPiFile) say(ctx, c.sharedPiFile());
   if (out.codexNoWake) say(ctx, c.codexNoWake());
   if (out.hermesRestart) say(ctx, c.hermesRestart());
+  if (out.openclawRestart) say(ctx, c.openclawRestart());
+  if (out.openclawNix) say(ctx, c.openclawNix());
   for (const s of out.skipped)
     say(ctx, await skippedLines(ctx, s.harness, s.reason));
   if (out.installed.includes("opencode"))
@@ -390,6 +393,16 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
           env: ctx.env,
           exec: ctx.exec,
         }))
+      )
+        return "todo";
+      // Likewise OpenClaw: installed and enabled, and its runtime shows the plugin loaded.
+      if (
+        wiring.openclaw === "configured" &&
+        (await openclawVerify({
+          home: ctx.userHome,
+          env: ctx.env,
+          exec: ctx.exec,
+        })) !== undefined
       )
         return "todo";
       return "done";
