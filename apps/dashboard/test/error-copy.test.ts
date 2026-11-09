@@ -196,7 +196,7 @@ it("errorContext gives admins the owner wording and the trial state", () => {
     ({
       user: { role },
       auth: null,
-      instance: { billing: { tier: "solo", trialEndsAt } },
+      instance: { billing: { tier: "solo", status: "active", trialEndsAt } },
     }) as never;
   expect(billingContext(me("admin", null))).toEqual({
     owner: true,
@@ -214,7 +214,9 @@ it("billingContext follows the banner: an admin with the plan cap is an owner (L
     ({
       user: { role },
       auth: { method: "google", readOnly: !!cap, cap, expiresAt: null },
-      instance: { billing: { tier: "solo", trialEndsAt: null } },
+      instance: {
+        billing: { tier: "solo", status: "active", trialEndsAt: null },
+      },
     }) as never;
   expect(billingContext(me("admin", "plan")).owner).toBe(true);
   expect(billingContext(me("owner", null)).owner).toBe(true);
@@ -234,7 +236,9 @@ it("a capped admin is an owner but is never offered the trial (cap rule)", () =>
     ({
       user: { role },
       auth: { method: "google", readOnly: !!cap, cap, expiresAt: null },
-      instance: { billing: { tier: "solo", trialEndsAt: null } },
+      instance: {
+        billing: { tier: "solo", status: "active", trialEndsAt: null },
+      },
     }) as never;
   expect(billingContext(me("admin", "plan"))).toEqual({ owner: true });
   expect(billingContext(me("admin", null))).toEqual({
@@ -248,6 +252,18 @@ it("a capped admin is an owner but is never offered the trial (cap rule)", () =>
       ...billingContext(me("admin", "plan")),
     }),
   ).toBe("Spaces are a team feature. Choose a plan to continue.");
+});
+
+it("trialNeverRan needs an active plan: past_due, lapsed and suspended Solos aren't offered the trial", () => {
+  const me = (status: string) =>
+    ({
+      user: { role: "owner" },
+      auth: null,
+      instance: { billing: { tier: "solo", status, trialEndsAt: null } },
+    }) as never;
+  expect(billingContext(me("active")).trialNeverRan).toBe(true);
+  for (const status of ["past_due", "lapsed", "suspended"])
+    expect(billingContext(me(status)).trialNeverRan).toBe(false);
 });
 
 it("plan_required", () => {

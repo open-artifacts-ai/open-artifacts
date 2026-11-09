@@ -167,8 +167,12 @@ export const billingContext = (
     // A capped admin can't invite, so the copy never offers them the trial.
     ...(owner && billing && (me?.auth?.cap ?? null) === null
       ? {
+          // Active only: a past_due Solo in grace is refused, so it isn't
+          // offered the trial.
           trialNeverRan:
-            billing.tier === "solo" && billing.trialEndsAt === null,
+            billing.tier === "solo" &&
+            billing.status === "active" &&
+            billing.trialEndsAt === null,
         }
       : {}),
   };
