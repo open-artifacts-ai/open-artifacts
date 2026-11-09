@@ -5,6 +5,7 @@
 import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { daemonLinkProof } from "@oa/bus-ipc";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { daemonHarness, stopAll } from "./helpers.ts";
@@ -440,5 +441,42 @@ describe("/clear handover in the daemon", () => {
     // Then a /clear in that process hands s-x's address on, not s-old's.
     write(d, 4242, "s-y", "y");
     expect(await upFor(h, "s-y")).toMatchObject({ replaces: "s-x" });
+  });
+
+  it("a /clear in the same process keeps the proof: link_bind on the new ref", async () => {
+    const { h, d } = await start([
+      BUS_CAPS.ids,
+      BUS_CAPS.mailbox,
+      BUS_CAPS.link,
+    ]);
+    const old = await upFor(h, "s-old");
+    h.toDaemon({
+      id: old.id,
+      type: "agent_ok",
+      agent_ref: "s-old",
+      bus_name: "npm-test",
+    });
+    expect(
+      await daemonLinkProof({
+        path: h.socketPath,
+        pid: 4242,
+        hash: "c".repeat(64),
+      }),
+    ).toBe(true);
+    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(1));
+    write(d, 4242, "s-new", "fresh-name");
+    const up = await upFor(h, "s-new");
+    h.toDaemon({
+      id: up.id,
+      type: "agent_ok",
+      agent_ref: "s-new",
+      bus_name: "npm-test",
+    });
+    await vi.waitFor(() =>
+      expect(h.of("link_bind").at(-1)).toMatchObject({
+        agent_ref: "s-new",
+        hash: "c".repeat(64),
+      }),
+    );
   });
 });

@@ -36,12 +36,17 @@ export function proofHelper(
   // `tokenFile` is shell text taken from the old helper, so it stays as it was.
   opts: { tokenFile?: string; busHome?: string },
 ): string {
-  return [
+  const run = [
     ...(opts.busHome ? [`OA_BUS_HOME=${quote(opts.busHome)}`] : []),
     ...busBin.map(quote),
     PROOF_COMMAND,
     ...(opts.tokenFile ? ["--token-file", opts.tokenFile] : []),
   ].join(" ");
+  // A token entry must keep its Authorization when oa-bus cannot run (its
+  // install deleted): fall back to the plain header the old helper printed.
+  return opts.tokenFile
+    ? `T=$(cat ${opts.tokenFile}) && { ${run} 2>/dev/null || printf '{"Authorization":"Bearer %s"}' "$T"; }`
+    : run;
 }
 
 /** Whether `helper` is one of ours. */

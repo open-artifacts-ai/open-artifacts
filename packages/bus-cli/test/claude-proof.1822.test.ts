@@ -1,6 +1,7 @@
 // #1822: the Claude Code half of session links. The helper prints the proof
 // header (and the old token Authorization line, never one for OAuth); install
 // adds it to the user-scope entry and uninstall puts the bytes back.
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -15,6 +16,7 @@ import {
   installAdapters,
   uninstallAdapters,
 } from "../src/steps/adapters.ts";
+import { isProofHelper, proofHelper } from "../src/steps/claude-proof.ts";
 import { HUB as FAKE_HUB, fakeCtx, status, TOKEN as TOKEN_ } from "./fake.ts";
 
 const HUB = "https://oa.example.com";
@@ -146,10 +148,26 @@ const TOKEN = { type: "http", url: `${HUB}/mcp`, headersHelper: TOKEN_HELPER };
 const helperOf = (text: string) =>
   JSON.parse(text).mcpServers["open-artifacts"].headersHelper as string;
 
+describe("token helper without oa-bus", () => {
+  it("still prints the Authorization header when oa-bus cannot run", () => {
+    const f = tokenFile();
+    const helper = proofHelper(["/nonexistent/oa-bus-gone"], { tokenFile: f });
+    expect(isProofHelper(helper)).toBe(true);
+    const out = execFileSync("sh", ["-c", helper], { encoding: "utf8" });
+    expect(JSON.parse(out)).toEqual({
+      Authorization: `Bearer ${readFileSync(f, "utf8").trim()}`,
+    });
+  });
+});
+
 describe("oa-bus install and uninstall, Claude entry", () => {
   for (const [name, e, want] of [
     ["OAuth", OAUTH, `${BIN} mcp-proof`],
-    ["token", TOKEN, `${BIN} mcp-proof --token-file ${TOKEN_FILE}`],
+    [
+      "token",
+      TOKEN,
+      `T=$(cat ${TOKEN_FILE}) && { ${BIN} mcp-proof --token-file ${TOKEN_FILE} 2>/dev/null || printf '{"Authorization":"Bearer %s"}' "$T"; }`,
+    ],
   ] as const)
     it(`${name}: install adds the helper, uninstall restores the bytes`, async () => {
       const s = setup(entry(e));

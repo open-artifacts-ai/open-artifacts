@@ -138,6 +138,9 @@ const RENAME_WINDOW_MS = 60_000;
 const RENAME_WINDOW_MAX = 3;
 /** A registration the hub rate-limited is retried this late, or on the next reconnect. */
 const LIMITED_RETRY_MS = 5 * 60_000;
+/** #1822: how long and how many proofs wait for a record that does not exist yet. */
+const PENDING_PROOF_MS = 60_000;
+const PENDING_PROOF_MAX = 64;
 /** How far back `oa-bus status` lists late deliveries. */
 const LATE_WINDOW_MS = 60 * 60_000;
 /**
@@ -768,6 +771,31 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       recent.push(now);
     } else renameIds.delete(id);
   };
+  /**
+   * #1822: a proof can arrive before the daemon has a record for its pid (the
+   * helper runs once, at /mcp connect, while the session file may still be
+   * unwritten). The latest hash per pid and start time waits here, briefly and
+   * bounded; a live record with that pid and start time takes it.
+   */
+  const pendingProofs = new Map<
+    number,
+    { procStart: string; hash: string; at: number }
+  >();
+  const claimProofs = () => {
+    if (pendingProofs.size === 0) return;
+    const now = Date.now();
+    for (const [pid, p] of pendingProofs)
+      if (now - p.at > PENDING_PROOF_MS) pendingProofs.delete(pid);
+    for (const rec of agents.all()) {
+      if (rec.kind !== "claude-code" || !rec.live || rec.pid === undefined)
+        continue;
+      const p = pendingProofs.get(rec.pid);
+      if (!p || p.procStart !== rec.procStart) continue;
+      pendingProofs.delete(rec.pid);
+      rec.linkHash = p.hash;
+      sendLink(rec);
+    }
+  };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
     const live = liveClaudeSessions(
@@ -824,6 +852,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           global: ns.global,
           pid: s.pid,
           procStart: s.procStart,
+          // The same process keeps its proof across /clear; agent_ok rebinds it.
+          ...(old?.linkHash !== undefined ? { linkHash: old.linkHash } : {}),
           sessionName: s.name,
           cwd: s.cwd,
           live: true,
@@ -833,6 +863,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       void claude.revive(s.ref);
       tellOwed(s.ref);
     }
+    claimProofs();
     let closed = false;
     for (const a of agents.all()) {
       if (a.kind !== "claude-code" || !a.live || liveRefs.has(a.ref)) continue;
@@ -1166,14 +1197,37 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // live Claude record this daemon attested for that very pid takes the hash;
     // an unknown pid binds nothing.
     onLinkProof: (req) => {
-      const rec = agents
-        .all()
-        .find((a) => a.kind === "claude-code" && a.live && a.pid === req.pid);
-      if (!rec || rec.procStart === undefined) return { bound: false };
-      if ((cl.procStart ?? claudeProcStartOf)(req.pid) !== rec.procStart)
-        return { bound: false };
-      rec.linkHash = req.hash;
-      sendLink(rec);
+      const start = (cl.procStart ?? claudeProcStartOf)(req.pid);
+      if (start === undefined) return { bound: false };
+      const find = () =>
+        agents
+          .all()
+          .find((a) => a.kind === "claude-code" && a.live && a.pid === req.pid);
+      let rec = find();
+      // The helper can beat the session file: look now, not at the next tick.
+      if (!rec || rec.procStart === undefined) {
+        syncClaude();
+        rec = find();
+      }
+      if (rec && rec.procStart !== undefined) {
+        if (rec.procStart !== start) return { bound: false };
+        rec.linkHash = req.hash;
+        sendLink(rec);
+        return { bound: true };
+      }
+      // Still no record: hold it for the one that may appear (same pid and
+      // start time only). Bounded, and a proof nobody claims expires.
+      pendingProofs.delete(req.pid);
+      pendingProofs.set(req.pid, {
+        procStart: start,
+        hash: req.hash,
+        at: Date.now(),
+      });
+      while (pendingProofs.size > PENDING_PROOF_MAX) {
+        const oldest = pendingProofs.keys().next().value;
+        if (oldest === undefined) break;
+        pendingProofs.delete(oldest);
+      }
       return { bound: true };
     },
     // `oa-bus status` and install's "Daemon running": one roster per namespace
@@ -1418,13 +1472,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ...(mine ? { procStart: mine.procStart } : {}),
           ...(mine ? { sessionName: mine.name } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.
-          ...(prev?.linkHash !== undefined ? { linkHash: prev.linkHash } : {}),
+          ...((prev?.linkHash ?? old?.linkHash) !== undefined
+            ? { linkHash: (prev?.linkHash ?? old?.linkHash) as string }
+            : {}),
           cwd,
           live: true,
         });
         if (rec.kind === "opencode") ocServiceStart.set(rec.ref, ocStart(pid));
         if (rec.kind === "claude-code") void claude.revive(rec.ref);
         conns.set(rec.ref, (conns.get(rec.ref) ?? 0) + 1);
+        claimProofs();
         announceUp(rec);
         if (!piLike(hello.kind)) tellOwed(rec.ref);
         return {

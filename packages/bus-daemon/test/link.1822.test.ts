@@ -71,10 +71,10 @@ describe("link_proof to link_bind (#1822)", () => {
     expect(bind).toMatchObject({ agent_ref: "s-a", hash: HASH });
   });
 
-  it("a pid with no live record binds nothing", async () => {
+  it("a pid that never gets a record binds nothing", async () => {
     const { h } = await start([BUS_CAPS.ids, BUS_CAPS.link]);
-    expect(await proof(h, 9999)).toBe(false);
-    // The same call for the real pid is answered after: nothing came before it.
+    expect(await proof(h, 9999)).toBe(true);
+    // An unknown pid is held, not bound; the real pid binds alone.
     expect(await proof(h, 4242, HASH2)).toBe(true);
     await h.next("link_bind");
     expect(h.of("link_bind").map((f) => f.hash)).toEqual([HASH2]);
@@ -91,7 +91,7 @@ describe("link_proof to link_bind (#1822)", () => {
   it("sends nothing to a hub that did not list link", async () => {
     const { h } = await start([BUS_CAPS.ids]);
     expect(await proof(h, 4242)).toBe(true);
-    expect(await proof(h, 9999)).toBe(false);
+    expect(await proof(h, 9999)).toBe(true);
     expect(h.of("link_bind")).toHaveLength(0);
   });
 
@@ -108,6 +108,86 @@ describe("link_proof to link_bind (#1822)", () => {
     expect(h.of("link_bind")[2]).toMatchObject({
       agent_ref: "s-a",
       hash: HASH2,
+    });
+  });
+
+  describe("a proof before the record", () => {
+    // No session file yet: the helper beat Claude's own file write.
+    async function early(osStart: { v: string }) {
+      const d = mkdtempSync(join(tmpdir(), "ob-link-"));
+      const h = await daemonHarness({
+        claude: {
+          sessionsDir: d,
+          socketsDir: join(d, "r"),
+          syncMs: 20,
+          procStart: () => osStart.v,
+          isRunning: () => true,
+        },
+      });
+      h.toDaemon({
+        id: "w",
+        type: "hello_ok",
+        machine_id: "1".repeat(16),
+        machine_label: "laptop",
+        server_version: "1",
+        caps: [BUS_CAPS.ids, BUS_CAPS.link],
+      });
+      const file = (procStart: string) =>
+        writeFileSync(
+          join(d, "4242.json"),
+          JSON.stringify({
+            pid: 4242,
+            sessionId: "s-a",
+            procStart,
+            name: "open-artifacts-9e",
+            messagingSocketPath: "",
+            cwd: "/repo",
+          }),
+        );
+      return { h, file };
+    }
+
+    it("is accepted, then binds when the session record appears", async () => {
+      const os = { v: "t0" };
+      const { h, file } = await early(os);
+      expect(await proof(h, 4242, HASH)).toBe(true);
+      expect(await proof(h, 4242, HASH2)).toBe(true);
+      expect(h.of("link_bind")).toHaveLength(0);
+      file("t0");
+      const up = await h.next("agent_up");
+      h.toDaemon({
+        id: up.id,
+        type: "agent_ok",
+        agent_ref: "s-a",
+        bus_name: "open-artifacts-9e",
+      });
+      await vi.waitFor(() =>
+        expect(h.of("link_bind").length).toBeGreaterThan(0),
+      );
+      expect(h.of("link_bind").at(-1)).toMatchObject({
+        agent_ref: "s-a",
+        hash: HASH2,
+      });
+    });
+
+    it("never binds to a process with another start time", async () => {
+      const os = { v: "t0" };
+      const { h, file } = await early(os);
+      expect(await proof(h, 4242)).toBe(true);
+      // The pid was reused: the record that appears is a different process.
+      os.v = "t1";
+      file("t1");
+      const up = await h.next("agent_up");
+      h.toDaemon({
+        id: up.id,
+        type: "agent_ok",
+        agent_ref: "s-a",
+        bus_name: "open-artifacts-9e",
+      });
+      // A later proof from the real process proves the daemon kept looking.
+      expect(await proof(h, 4242, HASH2)).toBe(true);
+      await h.next("link_bind");
+      expect(h.of("link_bind").map((f) => f.hash)).toEqual([HASH2]);
     });
   });
 });
