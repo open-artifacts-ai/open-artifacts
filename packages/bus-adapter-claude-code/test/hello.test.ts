@@ -23,6 +23,7 @@ describe("the Claude session's hello", () => {
     expect(sessionHello(session("n"), 1, "/w").caps).toEqual([
       "mailbox",
       "pending",
+      "follow",
     ]);
   });
 

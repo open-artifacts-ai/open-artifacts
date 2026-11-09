@@ -4,7 +4,7 @@ import type { Bus } from "./bus.ts";
 import { LinkError } from "./link.ts";
 import { refusal } from "./roots.ts";
 
-/** The five bus tools, named as Pi and Hermes name them (#1448): the MCP tools behind an `oabus_` prefix. */
+/** The bus tools, named as Pi and Hermes name them (#1448): the MCP tools behind an `oabus_` prefix. */
 export const TOOL_NAMES = TOOLS.map((t) => `oabus_${t.name}`);
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });

@@ -58,7 +58,7 @@ export type PlanReason = z.infer<typeof PlanReasonSchema>;
 /**
  * Me.instance.billing (hosted only; absent self-hosted and on older servers).
  * Everyone sees tier, readOnly and reason (the banner). status, trialEndsAt,
- * graceUntil and creatorsThisMonth are billing details: the org owner and
+ * soloTrialEndsAt, graceUntil and creatorsThisMonth are billing details: the org owner and
  * admins only; null (creatorsThisMonth absent) for everyone else.
  */
 export const PlanViewSchema = z.object({
@@ -67,6 +67,12 @@ export const PlanViewSchema = z.object({
   status: BillingStatusSchema.nullable(),
   /** ISO; the trial's end (set once a trial started). Owner and admins; null for others. */
   trialEndsAt: z.string().nullable(),
+  /**
+   * ISO; the Solo trial's end. Separate from trialEndsAt, which is the
+   * Business trial's only. Owner and admins; null for others; absent when
+   * billing's answer predates it.
+   */
+  soloTrialEndsAt: z.string().nullable().optional(),
   /** ISO; while past_due, the grace period's end. Owner and admins; null for others. */
   graceUntil: z.string().nullable(),
   /** Distinct creators this UTC calendar month so far (CREATOR definition). Owner and admins only. */
@@ -106,9 +112,13 @@ export const PlanLimitSchema = z.enum([
 ]);
 export type PlanLimit = z.infer<typeof PlanLimitSchema>;
 
-/** details of 403 plan_limit: which cap, and its value. The paywall names it. */
+/**
+ * details of 403 plan_limit: which cap, and its value. The paywall names it.
+ * The server emits solo; free is still accepted because a server from before
+ * Solo sent it.
+ */
 export const PlanLimitDetailsSchema = z.object({
-  tier: z.literal("free"),
+  tier: z.enum(["solo", "free"]),
   limit: PlanLimitSchema,
   max: z.number().int().positive(),
 });

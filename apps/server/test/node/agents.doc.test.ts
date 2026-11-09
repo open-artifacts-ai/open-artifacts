@@ -18,6 +18,9 @@ const BUS_TOOLS = [
   "fetch",
   "self",
   "set_status",
+  "follow",
+  "unfollow",
+  "following",
 ];
 
 describe("AGENTS.md", () => {

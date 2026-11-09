@@ -399,7 +399,7 @@ it("on free, a promotion refused with plan_limit shows by the member row, not as
           error: {
             code: "plan_limit",
             message: "server text",
-            details: { tier: "free", limit: "storage_bytes", max: 3 },
+            details: { tier: "solo", limit: "storage_bytes", max: 3 },
           },
         },
         { status: 403 },

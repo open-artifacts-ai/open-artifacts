@@ -13,8 +13,7 @@ renames and role addresses; `role_vacant` came back with role addresses, see
 Role addresses); version gates (`AGENT_CARD_MIN_CLIENT`,
 `KIND_TOKEN_MIN_CLIENT`) are gone because no old client exists; the machine
 token is `oa_machine_`; the routes live under `/bus/` on the instance origin.
-`follow`, `unfollow`, `following` and the `notice` frame come with step 2 of
-the design. Renames (OpenBus R393a, #1325) are gated on a `hello` capability,
+`follow`, `unfollow` and `following` came with #1317 (see Follows). Renames (OpenBus R393a, #1325) are gated on a `hello` capability,
 not a version (see Renames).
 
 Anything both the instance (`apps/server/src/bus/`) and the local client
@@ -90,6 +89,7 @@ Client to hub (`CLIENT_FRAMES`):
 - `fetch {from_ref, msg_id}`
 - `status {from_ref, state, label?}`: fire and forget.
 - `rename {agent_ref, proposed_name, name_kind?}`: rename a live agent; `proposed_name` 1..256 chars. Answered by `renamed` or `error`.
+- `follow {from_ref, artifact}`, `unfollow {from_ref, artifact}`, `following {from_ref}` (`BUS_CAPS.follow`, see Follows): `artifact` is an id or the page URL, 1..2048 chars.
 
 Hub to client (`SERVER_FRAMES`):
 
@@ -98,11 +98,12 @@ Hub to client (`SERVER_FRAMES`):
 - `receipt {msg_id, state, reason?, to_name?}`; `to_name` is the recipient's current name, only on a former-name hit to a `rename`-cap socket, or on a role hit to a `roles`-cap socket
 - `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?, former_names?}]}`; `kind` is any kind token.
 - `body {msg_id, body}`
-- `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
+- `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`, and `follow_limit` to a socket whose hello listed `follow`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
 - `deliver {msg_id, to_ref, from_name, from_id?, namespace, body | notice}`; `from_id` is the sender's agent id.
 - `receipt_update {msg_id, state, reason?}`: the schema shares `to_name?` with `receipt`, but the hub sets it only on `receipt`.
 - `roster_changed {namespace}`
 - `renamed {agent_ref, bus_name, former?}`: reply to `rename`. `former` is the name left, absent on a no-op. Names compare case-insensitively.
+- `followed {artifact_id, url, followed_at}`, `unfollowed {removed}`, `follows {follows: [{artifact_id, url, followed_at}]}` (at most `MAX_FOLLOWS`, 200): replies to `follow`, `unfollow`, `following`.
 
 Targeting, idempotency (a send's `id` is unique per sender for at least 1 h;
 a resend reuses it) and the decoder bounds are unchanged from OpenBus:
@@ -113,6 +114,26 @@ depth <= 4, `:` plus `,` <= 16384, structural characters <= 65536; server
 frames depth <= 5, 65536 and 131072, so a full roster of rows with status
 fields and 5 `former_names` fits. Either way at most 64 `:` plus `,` directly
 in one object.
+
+## Follows (`BUS_CAPS.follow`, #1317)
+
+An agent follows an artifact so the instance can tell it when it changes
+(notices, #1292). The frames are the agent's own: the hub takes the member
+from the machine's token and the address (namespace, name) from the agent
+`from_ref` registered on that socket. The frames carry no member or address,
+so an agent can only follow, unfollow and list as itself.
+
+- `hello.caps` listing `follow`: the hub then answers the three frames and
+  lists `follow` in `hello_ok.caps`. Any other socket gets `bad_frame` for
+  them, as a hub before this change does. A client sends them only when
+  `hello_ok.caps` listed `follow`; no protocol version change.
+- `follow` answers `followed` (a repeat is a no-op that keeps the first
+  `followed_at`), or `error`: `not_found` (no such artifact, or the member
+  cannot read it: one answer for both), `follow_limit` (200 follows per member,
+  across all their agents), `not_registered` (`from_ref` is not an agent of
+  this socket), `rate_limited` (too many follows in flight), `internal`.
+- `unfollow` answers `unfollowed {removed}`; no read access is needed.
+- `following` answers `follows`, newest first: ids and links only.
 
 ## Reply ids (`BUS_CAPS.ids`)
 

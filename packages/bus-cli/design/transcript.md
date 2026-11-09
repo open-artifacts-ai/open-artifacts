@@ -340,7 +340,8 @@ Two honesty rules from the spec bind them:
 [[warning]]○[[/warning]]  Queued for oa-team-e0. Not delivered yet; expires within 7 days.
 [[success]]✓[[/success]]  Delivered to oa-team-e0.
 [[danger]]×[[/danger]]  Expired: your message to oa-team-e0,
-   "Can you regenerate the API reference pag…", was not taken within 7 days.
+   "Can you regenerate the API reference pag…",
+   was not confirmed as delivered. Mail waits at most 7 days.
 [[danger]]×[[/danger]]  Expired: your message to oa-team-e0,
    "Can you regenerate the API reference pag…",
    was not delivered because oa-team-e0 closed first.
