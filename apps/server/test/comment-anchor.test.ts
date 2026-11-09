@@ -54,6 +54,25 @@ describe("visible text", () => {
       "&nosuch; \uFFFD \uFFFD \uFFFD",
     );
   });
+  it("agrees with the browser on the edge cases (#1735)", () => {
+    // Once only: &amp;lt; is the text "&lt;", never "<".
+    expect(decodeEntities("&amp;lt; &amp;amp;")).toBe("&lt; &amp;");
+    expect(decodeEntities("&#x2264; &#8804; &#X2264;")).toBe(
+      "\u2264 \u2264 \u2264",
+    );
+    // A legacy name without a semicolon decodes where the HTML spec says so;
+    // the rest of the word stays.
+    expect(decodeEntities("&ampx &notit; &lt")).toBe("&x \u00acit; <");
+    // Unknown names and a bare ampersand stay; an invalid number is U+FFFD.
+    expect(decodeEntities("AT&T &unknown; & &#; &#xZ; &#x;")).toBe(
+      "AT&T &unknown; & &#; &#xZ; &#x;",
+    );
+    expect(decodeEntities("&#1114112; &#xFFFFFFFFF;")).toBe("\uFFFD \uFFFD");
+  });
+  it("a selection with &le; matches its quote through visibleText", async () => {
+    const t = await text("<p>if <code>a[j]</code> &le; <code>a[i]</code></p>");
+    expect(t).toBe("if a[j] \u2264 a[i]");
+  });
   it("decodes the full named set, legacy forms and windows-1252 numbers", () => {
     expect(
       decodeEntities(
