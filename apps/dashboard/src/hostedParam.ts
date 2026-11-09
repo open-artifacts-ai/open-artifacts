@@ -61,6 +61,40 @@ const TOKENS: Record<string, HostedMockOptions> = {
       reason: "lapsed",
     },
   },
+  // Team read-only for each reason the banner words (Self-serve screens v6, 3).
+  "plan-team-payment-failed": {
+    billing: {
+      tier: "team",
+      status: "past_due",
+      trialEndsAt: null,
+      graceUntil: "2026-11-01T00:00:00.000Z",
+      creatorsThisMonth: 4,
+      readOnly: true,
+      reason: "payment_failed",
+    },
+  },
+  "plan-team-suspended": {
+    billing: {
+      tier: "team",
+      status: "suspended",
+      trialEndsAt: null,
+      graceUntil: null,
+      creatorsThisMonth: 4,
+      readOnly: true,
+      reason: "suspended",
+    },
+  },
+  "plan-team-unreachable": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      creatorsThisMonth: 4,
+      readOnly: true,
+      reason: "billing_unreachable",
+    },
+  },
   "solo-paused": {
     billing: {
       tier: "solo",
@@ -112,7 +146,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
 /**
  * Mock-only: `?hosted=` turns on the hosted mocks. Comma tokens: 1 (defaults),
  * access, email-only, turnstile, unhealthy (backoff), auth-failed,
- * scope-missing, customer-mismatch, trial, solo, solo-paused, team, business, frozen, sync-off,
+ * scope-missing, customer-mismatch, trial, solo, solo-paused,
+ * plan-team-lapsed, plan-team-payment-failed, plan-team-suspended, plan-team-unreachable, team, business, frozen, sync-off,
  * admin (you are an admin, not the owner), guest-notices (an Access-only
  * install with parity 2's notices, spaces off), guest-departed (the same, one
  * guest owner has left), spaces-on, workspace-change (the confirm

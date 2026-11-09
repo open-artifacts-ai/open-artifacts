@@ -123,25 +123,27 @@ it.each([
     "Publishing is paused until this instance's Solo plan is paid. Ask your instance owner.",
     "Your Solo plan is paused. Keep publishing for $1/month or $12/year.",
   ],
+  // Design, Self-serve screens v6, decision 3: one line per reason. The member
+  // lines for lapsed and payment_failed end with what still works (#1844).
   [
     "lapsed",
-    "This instance is read-only until billing is sorted out. Ask your instance owner.",
-    "This instance is read-only until billing is sorted out. Update billing to fix it. Reading and sharing still work. Nothing has been deleted.",
+    "The plan has lapsed, so this instance is read-only. Ask an owner to fix billing. Reading and sharing still work. Nothing has been deleted.",
+    "Your plan has lapsed. This instance is read-only. Manage billing to restart it.",
   ],
   [
     "payment_failed",
-    "This instance is read-only until billing is sorted out. Ask your instance owner.",
-    "This instance is read-only until billing is sorted out. Update billing to fix it. Reading and sharing still work. Nothing has been deleted.",
+    "A payment failed, so this instance is read-only. Ask an owner to update the card. Reading and sharing still work. Nothing has been deleted.",
+    "Payment failed and the grace period has ended. This instance is read-only. Manage billing to update your card.",
   ],
   [
     "suspended",
-    "This instance is suspended. Ask your instance owner.",
-    "This instance is suspended. Email support. Reading still works. Nothing has been deleted.",
+    "This instance is suspended. Reading and sharing still work. Nothing has been deleted. Ask an owner to contact support.",
+    "This instance is suspended. Reading and sharing still work. Nothing has been deleted. Contact support to restore it.",
   ],
   [
     "billing_unreachable",
-    "Team features are read-only while we restore billing. Reading and sharing still work. Nothing has been deleted.",
-    "Team features are read-only while we restore billing. Reading and sharing still work. Nothing has been deleted.",
+    "Editing is paused while we fix a problem on our side. Nothing is wrong with your account. Reading and sharing still work. Nothing has been deleted.",
+    "We can't reach our billing system, so editing is paused. This is on our side and nothing is wrong with your account. We're working on it.",
   ],
   [
     undefined,
@@ -164,6 +166,28 @@ it("plan_required before a trial ever ran offers the trial", () => {
   );
   expect(errorCopy(e, "x", { trialNeverRan: true })).toBe(
     "Spaces are a team feature. This instance is on Solo. Ask an owner to invite someone or choose a plan.",
+  );
+});
+
+it("plan_required names what was refused, not always Spaces (#1838)", () => {
+  const e = planErr("plan_required", reason("solo"));
+  // An invite: the caller says so (the refusal itself carries no feature).
+  expect(errorCopy(e, "x", { owner: true, refused: "invite" })).toBe(
+    "Inviting people is a team feature. Choose a plan to continue.",
+  );
+  expect(errorCopy(e, "x", { refused: "invite" })).toBe(
+    "Inviting people is a team feature. This instance is on Solo. Ask an owner to choose a plan.",
+  );
+  // Never the trial offer on an invite: the first invite is what starts it.
+  expect(
+    errorCopy(e, "x", { owner: true, trialNeverRan: true, refused: "invite" }),
+  ).not.toMatch(/Spaces|Invite someone/);
+  // Spaces, and a caller that doesn't say, keep the Spaces copy.
+  expect(errorCopy(e, "x", { owner: true, refused: "spaces" })).toBe(
+    "Spaces are a team feature. Choose a plan to continue.",
+  );
+  expect(errorCopy(e, "x", { owner: true })).toBe(
+    "Spaces are a team feature. Choose a plan to continue.",
   );
 });
 

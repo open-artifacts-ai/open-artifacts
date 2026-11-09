@@ -33,6 +33,9 @@ const COPY: Partial<Record<ErrorCode, string>> = {
 /** Billing's wording; `owner` swaps "ask your instance owner" for the action. */
 const ASK = "Ask your instance owner";
 const TEAM_FEATURE = "Spaces are a team feature";
+/** What a refused invite is called (#1838); the refusal itself names no feature. */
+const INVITE_FEATURE = "Inviting people is a team feature";
+const STILL_WORKS = "Reading and sharing still work. Nothing has been deleted.";
 const PLAN_LIMIT_NOUN: Record<string, string> = {
   storage_bytes: "storage",
   data_docs: "live-data documents per artifact",
@@ -54,17 +57,26 @@ export const readOnlyCopy = (reason: unknown, owner: boolean): string => {
       return owner
         ? "Your Solo plan is paused. Keep publishing for $1/month or $12/year."
         : `Publishing is paused until this instance's Solo plan is paid. ${ASK}.`;
+    // Design, Self-serve screens v6, decision 3: one line per reason. The
+    // owner's line names the action (the banner's button); a member's says
+    // whom to ask and what still works.
     case "lapsed":
+      return owner
+        ? "Your plan has lapsed. This instance is read-only. Manage billing to restart it."
+        : `The plan has lapsed, so this instance is read-only. Ask an owner to fix billing. ${STILL_WORKS}`;
     case "payment_failed":
       return owner
-        ? "This instance is read-only until billing is sorted out. Update billing to fix it. Reading and sharing still work. Nothing has been deleted."
-        : `This instance is read-only until billing is sorted out. ${ASK}.`;
+        ? "Payment failed and the grace period has ended. This instance is read-only. Manage billing to update your card."
+        : `A payment failed, so this instance is read-only. Ask an owner to update the card. ${STILL_WORKS}`;
     case "billing_unreachable":
-      return "Team features are read-only while we restore billing. Reading and sharing still work. Nothing has been deleted.";
+      // Our outage: never blame the customer, and no action for the owner.
+      return owner
+        ? "We can't reach our billing system, so editing is paused. This is on our side and nothing is wrong with your account. We're working on it."
+        : `Editing is paused while we fix a problem on our side. Nothing is wrong with your account. ${STILL_WORKS}`;
     case "suspended":
       return owner
-        ? "This instance is suspended. Email support. Reading still works. Nothing has been deleted."
-        : `This instance is suspended. ${ASK}.`;
+        ? `This instance is suspended. ${STILL_WORKS} Contact support to restore it.`
+        : `This instance is suspended. ${STILL_WORKS} Ask an owner to contact support.`;
     default:
       return owner
         ? "This instance is read-only right now."
@@ -76,11 +88,17 @@ const planCopy = (
   e: ApiClientError,
   owner: boolean,
   trialNeverRan: boolean,
+  refused: ErrorContext["refused"],
 ): string | undefined => {
   const d = e.details as { reason?: unknown; limit?: unknown; max?: unknown };
   switch (e.code) {
     case "plan_required":
-      // Sharing is free on every plan: plan_required is spaces and invites.
+      // Sharing is free on every plan: plan_required is a team feature. The
+      // refusal's details are only {tier, reason}, so the caller says which.
+      if (refused === "invite")
+        return owner
+          ? `${INVITE_FEATURE}. Choose a plan to continue.`
+          : `${INVITE_FEATURE}. This instance is on Solo. Ask an owner to choose a plan.`;
       if (owner && trialNeverRan)
         return `${TEAM_FEATURE}. Invite someone to start your free 14-day trial, or choose a plan.`;
       return owner
@@ -123,6 +141,11 @@ export type ErrorContext = {
   owner?: boolean;
   /** A Solo instance whose trial never ran (trialEndsAt null): plan_required offers the trial. */
   trialNeverRan?: boolean;
+  /**
+   * What the caller attempted, for plan_required: its details carry no
+   * feature. Absent reads as spaces (the original wording).
+   */
+  refused?: "invite" | "spaces";
   /** The error shows on the Directory page itself. */
   onDirectoryPage?: boolean;
 };
@@ -163,7 +186,12 @@ export const errorCopy = (
   if (!(e instanceof ApiClientError)) return fallback;
   if (e.code === "space_forbidden" && ctx?.capped)
     return ctx.cap === "plan" ? PLAN_FORBIDDEN : CAPPED_FORBIDDEN;
-  const plan = planCopy(e, ctx?.owner === true, ctx?.trialNeverRan === true);
+  const plan = planCopy(
+    e,
+    ctx?.owner === true,
+    ctx?.trialNeverRan === true,
+    ctx?.refused,
+  );
   if (plan) return plan;
   const d = e.details as { reason?: unknown; path?: unknown } | undefined;
   if (e.code === "unsupported_format" && d?.reason === "heic")

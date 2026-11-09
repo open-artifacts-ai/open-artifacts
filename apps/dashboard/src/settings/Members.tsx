@@ -206,7 +206,10 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
               ? inviteRefusedCopy(refused.data.reason, parsed, domains)
               : e instanceof ApiClientError
                 ? e.code.startsWith("plan_") || e.code === "billing_unavailable"
-                  ? errorCopy(e, e.message, billingContext(me))
+                  ? errorCopy(e, e.message, {
+                      ...billingContext(me),
+                      refused: "invite",
+                    })
                   : e.message
                 : "Couldn't add.",
           );
