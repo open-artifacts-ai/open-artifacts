@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.142.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.141.0...v0.142.0) (2026-11-09)
+
+
+### Features
+
+* **auth:** Google sign-in with empty AUTH_DOMAINS (owner + invites) ([#1825](https://github.com/open-artifacts-ai/open-artifacts/issues/1825)) ([08c2537](https://github.com/open-artifacts-ai/open-artifacts/commit/08c2537cfe83dc20f521d2d5d9a1e411da6bc457))
+* **bus:** session link bind and /mcp proof lookup, server half ([#1822](https://github.com/open-artifacts-ai/open-artifacts/issues/1822)) ([#1857](https://github.com/open-artifacts-ai/open-artifacts/issues/1857)) ([8ac2866](https://github.com/open-artifacts-ai/open-artifacts/commit/8ac286601b7d0eb248eeb919129d1c80f604c74b))
+* **comments:** a reply can reach the agent that asked ([#1614](https://github.com/open-artifacts-ai/open-artifacts/issues/1614)) ([#1798](https://github.com/open-artifacts-ai/open-artifacts/issues/1798)) ([c898e2f](https://github.com/open-artifacts-ai/open-artifacts/commit/c898e2f21314aa722b8d2708a04e6c4ed05842aa))
+* **comments:** Ask a question to the agent that asked ([#1794](https://github.com/open-artifacts-ai/open-artifacts/issues/1794)) ([#1868](https://github.com/open-artifacts-ai/open-artifacts/issues/1868)) ([4be5972](https://github.com/open-artifacts-ai/open-artifacts/commit/4be5972b29036814d2ebc22a2ea005b5cb851849))
+* **dashboard:** first-run Get started checklist ([#1769](https://github.com/open-artifacts-ai/open-artifacts/issues/1769)) ([46a3220](https://github.com/open-artifacts-ai/open-artifacts/commit/46a322030771dbbce5fcba99c2665124640fb0e4))
+* **viewer:** an agent's comment shows as the agent ([#1789](https://github.com/open-artifacts-ai/open-artifacts/issues/1789)) ([#1807](https://github.com/open-artifacts-ai/open-artifacts/issues/1807)) ([767b041](https://github.com/open-artifacts-ai/open-artifacts/commit/767b041adab110554b1849ab6c4c3215c0910ce8))
+
+
+### Bug Fixes
+
+* **billing:** the Business trial starts only on an announced invite or restore ([#1851](https://github.com/open-artifacts-ai/open-artifacts/issues/1851)) ([#1855](https://github.com/open-artifacts-ai/open-artifacts/issues/1855)) ([dc64e53](https://github.com/open-artifacts-ai/open-artifacts/commit/dc64e532b604dafa2286e5c3bdd5cfa22f1144f9))
+* **bus:** a confirm whose outcome is unknown no longer says nothing changed ([#1861](https://github.com/open-artifacts-ai/open-artifacts/issues/1861)) ([#1869](https://github.com/open-artifacts-ai/open-artifacts/issues/1869)) ([9da1651](https://github.com/open-artifacts-ai/open-artifacts/commit/9da165134bea0dbfae510685db95b8dd57f0b25f))
+
 ## [0.141.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.140.0...v0.141.0) (2026-11-09)
 
 
