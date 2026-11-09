@@ -418,6 +418,39 @@ const followingText = (
 const FOLLOW_OLD_DAEMON =
   "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus.";
 
+/** The `propose_reach` result (#1346). */
+const reachProposedText = (
+  namespaces: readonly string[],
+  url: string,
+  expiresAt: string,
+): string =>
+  `Proposed: let your role reach ${namespaces.join(", ")}. Nothing has changed. Give the person this link to confirm it in their browser, signed in (it works once and expires at ${expiresAt}): ${url}`;
+
+/** What an agent sees when its daemon is too old for the reach frames. */
+const REACH_OLD_DAEMON =
+  "This oa-bus daemon is too old to ask for reach. Ask the user to update oa-bus.";
+
+/** The `propose_reach` namespaces: 1 to 10, each as list_agents shows it. @oa/bus-ipc reachNamespacesOf. */
+const reachNamespacesOf = (
+  value: unknown,
+): { namespaces: string[] } | { error: string } => {
+  const list = Array.isArray(value)
+    ? value.map((v) => (typeof v === "string" ? v.trim() : ""))
+    : [];
+  if (list.length < 1 || list.length > 10)
+    return {
+      error: "oa-bus: namespaces: give 1 to 10 namespaces. Nothing was asked.",
+    };
+  const bad = list.find(
+    (n) => n.length < 1 || n.length > 128 || !/^[a-z0-9._~/-]+$/.test(n),
+  );
+  if (bad !== undefined)
+    return {
+      error: `oa-bus: namespaces: "${bad.slice(0, 40)}" is not a namespace. Use one as list_agents shows it. Nothing was asked.`,
+    };
+  return { namespaces: [...new Set(list)] };
+};
+
 /** @oa/bus-protocol BAD_NS_CHARS: control, bidi and zero-width characters. */
 const BAD_LABEL_CHARS =
   // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting them is the point
@@ -539,6 +572,9 @@ export const copy = {
   unfollowText,
   followingText,
   FOLLOW_OLD_DAEMON,
+  reachProposedText,
+  REACH_OLD_DAEMON,
+  reachNamespacesOf,
   displayKind,
   statusSaysText,
   rosterLine,
@@ -656,6 +692,25 @@ const TOOLS = [
     label: "Open Artifacts bus: list follows",
     description: "List the artifacts you follow.",
     parameters: none,
+  },
+  {
+    name: "oabus_propose_reach",
+    label: "Open Artifacts bus: ask for reach",
+    description:
+      "Ask that the role you hold be able to message agents in more namespaces. This only asks: nothing changes until the person confirms on the link you get back.",
+    parameters: {
+      type: "object",
+      properties: {
+        namespaces: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 10,
+        },
+      },
+      required: ["namespaces"],
+      additionalProperties: false,
+    },
   },
 ] as const;
 
@@ -970,7 +1025,7 @@ function open(
         // #1295: this asset decodes away rows and the new refusals.
         // #1525: and a config file that is pending approval.
         // #1635: and may send a rename.
-        caps: ["mailbox", "pending", "rename", "follow"],
+        caps: ["mailbox", "pending", "rename", "follow", "reach"],
         attest: start ? { proc_start: start } : {},
       }),
     );
@@ -1257,6 +1312,7 @@ export default function oaBus(pi: Pi): void {
       return stripTerminalControls(String(r.body));
     }
     if (name === "oabus_set_status") return statusTool(args, link);
+    if (name === "oabus_propose_reach") return reachTool(args, link);
     if (
       name === "oabus_follow" ||
       name === "oabus_unfollow" ||
@@ -1266,6 +1322,25 @@ export default function oaBus(pi: Pi): void {
     const r = await link.request({ type: "self", row: true });
     if (r.type !== "agent") failed(r);
     return selfText((r.agent ?? null) as Json | null);
+  };
+
+  /** propose_reach (#1346): the frame carries the namespaces only; the daemon knows the session. */
+  const reachTool = async (args: Json, link: Link): Promise<string> => {
+    const given = reachNamespacesOf(args.namespaces);
+    if ("error" in given) throw new Error(given.error);
+    const r = await link.request({
+      type: "propose_reach",
+      namespaces: given.namespaces,
+    });
+    if (r.type === "reach_proposed")
+      return reachProposedText(
+        given.namespaces,
+        String(r.confirm_url),
+        String(r.expires_at),
+      );
+    if (r.type === "error" && r.code === "bad_frame")
+      throw new Error(REACH_OLD_DAEMON);
+    return failed(r);
   };
 
   /** follow, unfollow and following (#1317). Refusals are the hub's or daemon's copy, as-is. */
