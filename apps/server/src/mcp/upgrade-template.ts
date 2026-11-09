@@ -150,18 +150,22 @@ git fetch --depth 1 origin tag v<latest>
 git checkout v<latest>
 \`\`\`
 
-Otherwise, in a new directory:
+The install directory is the one holding \`.openartifacts/state.json\` (the hostnames, owner email, deploy hash and previous version setup saved). Every step below runs from it, and a rollback from anywhere else exits 2. If you cannot tell which directory it is, look for \`.openartifacts/state.json\`, and if that does not find it, ask the user which directory they cloned into. Do not guess, and do not make a second copy while the first still exists: without the state, setup asks for every value again and the rollback cannot run.
+
+Only when no install directory exists (a new machine, or CI), clone into an absolute path, the same default setup uses:
 
 \`\`\`sh
-git clone --depth 1 --branch v<latest> https://github.com/${REPO}
-cd open-artifacts
+git clone --depth 1 --branch v<latest> https://github.com/${REPO} ~/open-artifacts
+cd ~/open-artifacts
 \`\`\`
 
 Then install the dependencies:
 
 \`\`\`sh
-pnpm install --frozen-lockfile
+pnpm install --frozen-lockfile --config.confirmModulesPurge=false
 \`\`\`
+
+An install made by an older release has a \`node_modules\` directory from an older pnpm, or from another package manager, so pnpm first wants to purge it and reinstall it from the lockfile. With no terminal to answer its question it stops at \`ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY\`; \`--config.confirmModulesPurge=false\` answers it. The purge is expected and loses nothing: it discards installed packages only, and the lockfile restores them.
 
 ## 6. Preview
 
@@ -240,5 +244,21 @@ Then tell the user the upgrade was rolled back, with the \`message\` of the fail
 ## 9. Report
 
 \`GET ${T("origin")}/healthz\` again and tell the user the version that is now running. If it is not the version you upgraded to, say so.
+
+## 10. The bus client, offered and not assumed
+
+The upgraded instance can carry bus traffic: its \`BUS_HUB\` binding is part of the config step 7 deployed. That is the server side only. No agent is connected until a client runs on each machine that has an agent, so do not report the upgrade as complete work here without saying which of the two the user now has.
+
+Ask the user before installing, because it writes into their agent configs and needs their approval in a browser:
+
+\`\`\`sh
+npx @open-artifacts/bus install --instance ${T("origin")}
+\`\`\`
+
+It opens their browser to approve the machine, saves a machine token to \`~/.oa-bus/machine.json\`, configures the agents it finds on the machine, and starts the daemon. Its last question, whether to add its always-on habit lines to their agent instructions, is theirs: show them the two lines it prints and run \`npx @open-artifacts/bus install --habits\` on their yes or \`--no-habits\` on their no, and neither until they answer.
+
+Then check it with \`npx @open-artifacts/bus status\` and point the user at ${T("origin")}/bus for the machines and agents. On a machine used across several repositories, \`npx @open-artifacts/bus global add <dir>\` makes one agent findable from all of them.
+
+If the user declines, say what they have (the server, with the bus on, and no client) and stop. Never install it unasked, and never run it with a token in the command.
 `;
 }
