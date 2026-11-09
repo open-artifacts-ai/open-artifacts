@@ -117,6 +117,7 @@ export * from "./dedupe.ts";
 export * from "./deliver.ts";
 export * from "./global.ts";
 export * from "./hub.ts";
+export * from "./leads/templates.ts";
 export * from "./liveness/claude.ts";
 export * from "./namespace.ts";
 export * from "./namespaces.ts";

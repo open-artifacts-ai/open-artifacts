@@ -745,6 +745,37 @@ export function copy(style: Style) {
       ...dirs.map((d) => `  ${clip(d, 2)}`),
     ],
 
+    // 13. lead templates (#1328). DRAFT: not in the transcript yet.
+    leadsNoHub: () => [
+      fail("This machine has no instance to check briefs against."),
+      next(`Run ${BUS_CMD} install first.`),
+    ],
+    leadsFolderUnusable: (dir: string, why: string) => [
+      fail(`${clip(dir, 40)} can't be used: ${why}.`),
+    ],
+    leadsNone: (dir: string) => [
+      "No lead templates.",
+      p("muted", clip(`Put <name>.json files in ${dir}.`, 3)),
+    ],
+    leadsNoSuch: (name: string, dir: string) => [
+      fail(`No template named ${clip(name, 30)} in ${clip(dir, 40)}.`),
+    ],
+    leadsOk: (t: {
+      name: string;
+      harness: string;
+      role: string;
+      cap: string;
+      hash: string;
+    }) =>
+      done(
+        `${clip(t.name, 40)}  ${t.harness}, role ${clip(t.role, 30)}, cap ${t.cap}`,
+        t.hash.slice(0, 12),
+      ),
+    leadsRefused: (name: string, why: string) =>
+      fail(`${clip(name, 24)}: ${clip(why, 30)}`),
+    leadsSummary: (ok: number, refused: number) =>
+      `${ok} usable, ${refused} refused. Nothing was started or changed.`,
+
     // 12. namespace approvals (#1525)
     nsUnusable: (path: string, why: string) => [
       warn(`${clip(path, 45)} can't be used, so no namespace is approved.`),
