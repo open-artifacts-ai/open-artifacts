@@ -16,6 +16,27 @@ const noTokens = () => [
   ),
 ];
 const owner = (m: Me): Me => ({ ...m, user: { ...m.user, role: "owner" } });
+const seedFirst = (v: "1" | "0" = "1") =>
+  localStorage.setItem(`oa.getStarted.first.${fixtures.me.user.id}`, v);
+const billing = (over: Record<string, unknown>) => (m: Me) => {
+  const o = owner(m);
+  return {
+    ...o,
+    instance: {
+      ...o.instance,
+      billing: {
+        tier: "solo",
+        status: "active",
+        trialEndsAt: null,
+        graceUntil: null,
+        readOnly: false,
+        reason: "solo",
+        ...over,
+      },
+    } as Me["instance"],
+  };
+};
+const trialLine = /14-day trial of Business/;
 const heading = () => screen.findByRole("heading", { name: "Get started" });
 
 describe("Get started checklist", () => {
@@ -33,6 +54,7 @@ describe("Get started checklist", () => {
   });
 
   it("ticks the connection from a token, then the artifact", async () => {
+    seedFirst();
     server.use(
       none(),
       http.get("*/api/v1/members", () =>
@@ -95,37 +117,90 @@ describe("Get started checklist", () => {
     server.use(none(), ...noTokens());
     mount("/");
     await heading();
-    expect(screen.queryByText(/14-day trial of Business/)).toBeNull();
+    expect(screen.queryByText(trialLine)).toBeNull();
   });
 
-  it("says the trial line on Solo, hosted", async () => {
-    mountHosted(
-      "/",
-      true,
-      (m) => {
-        const o = owner(m);
-        return {
-          ...o,
-          instance: {
-            ...o.instance,
-            billing: {
-              tier: "solo",
-              status: "active",
-              trialEndsAt: null,
-              graceUntil: null,
-              readOnly: false,
-              reason: "solo",
-            },
-          } as Me["instance"],
-        };
-      },
-      [none(), ...noTokens()],
-    );
+  const hosted = (over: Record<string, unknown>) =>
+    mountHosted("/", true, billing(over), [none(), ...noTokens()]);
+
+  it("says the trial line on Solo and free when a trial can start", async () => {
+    hosted({});
     await heading();
     expect(
       screen.getByText(
         "Inviting someone starts a 14-day trial of Business. Your Solo plan stays as it is.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("says the trial line on the free tier", async () => {
+    hosted({ tier: "free" });
+    await heading();
+    expect(screen.getByText(trialLine)).toBeInTheDocument();
+  });
+
+  it("omits the trial line once a trial was used", async () => {
+    hosted({ trialEndsAt: "2026-01-01T00:00:00.000Z" });
+    await heading();
+    expect(screen.queryByText(trialLine)).toBeNull();
+  });
+
+  it("omits the trial line when paused or read-only", async () => {
+    hosted({ readOnly: true, status: "lapsed", reason: "solo_unpaid" });
+    await heading();
+    expect(screen.queryByText(trialLine)).toBeNull();
+  });
+
+  it("offers Invite people and Not now only at step 3", async () => {
+    server.use(none(), ...noTokens());
+    mount("/");
+    await heading();
+    expect(screen.queryByRole("link", { name: "Invite people" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Not now" })).toBeNull();
+  });
+
+  it("Not now hides the checklist once the first artifact exists", async () => {
+    seedFirst();
+    mount("/");
+    // Default fixtures: a token and artifacts, but only the owner as member.
+    server.use(
+      http.get("*/api/v1/members", () =>
+        HttpResponse.json(fixtures.members.filter((m) => m.role === "owner")),
+      ),
+    );
+    await heading();
+    expect(screen.getByRole("link", { name: "Invite people" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull(),
+    );
+  });
+
+  it("is first-run only: an owner who already has a connection never sees it", async () => {
+    mount("/");
+    await screen.findByRole("link", { name: fixtures.artifacts[0]?.title });
+    await waitFor(() =>
+      expect(
+        localStorage.getItem(`oa.getStarted.first.${fixtures.me.user.id}`),
+      ).toBe("0"),
+    );
+    expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull();
+  });
+
+  it("records the first run when shown, and keeps showing after connecting", async () => {
+    server.use(none(), ...noTokens());
+    mount("/");
+    await heading();
+    expect(
+      localStorage.getItem(`oa.getStarted.first.${fixtures.me.user.id}`),
+    ).toBe("1");
+  });
+
+  it("stays away when decided not first-run, even with an empty Library", async () => {
+    seedFirst("0");
+    server.use(none(), ...noTokens());
+    mount("/");
+    await screen.findByText("No artifacts yet");
+    expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull();
   });
 });

@@ -21,6 +21,18 @@ const readHidden = (userId: string) => {
   }
 };
 
+// Decided once, the first time the checklist could show: a new instance has
+// no connection and no artifact yet; an existing one never gets the box.
+const firstKey = (userId: string) => `oa.getStarted.first.${userId}`;
+const readFirst = (userId: string): boolean | null => {
+  try {
+    const v = localStorage.getItem(firstKey(userId));
+    return v === "1" ? true : v === "0" ? false : null;
+  } catch {
+    return null;
+  }
+};
+
 const dot =
   "grid size-5 flex-none place-items-center rounded-full border-[1.5px] text-[length:var(--oa-text-xs)] font-semibold";
 
@@ -94,7 +106,9 @@ export function GetStarted({
   const userId = me?.user.id ?? "";
   const [hidden, setHidden] = useState(() => readHidden(userId));
   useEffect(() => setHidden(readHidden(userId)), [userId]);
-  const live = owner && !hidden;
+  const [first, setFirst] = useState(() => readFirst(userId));
+  useEffect(() => setFirst(readFirst(userId)), [userId]);
+  const live = owner && !hidden && first !== false;
   const tokens = useTokens(live);
   const clients = useOAuthClients(live);
   const members = useMembers(undefined, live);
@@ -108,6 +122,16 @@ export function GetStarted({
   const done = [connected, hasArtifacts, invited];
   const all = ready && done.every(Boolean);
 
+  // First run only: decide once, from the first complete read.
+  useEffect(() => {
+    if (!live || !ready || first !== null) return;
+    const v = !connected && !hasArtifacts;
+    try {
+      localStorage.setItem(firstKey(userId), v ? "1" : "0");
+    } catch {}
+    setFirst(v);
+  }, [live, ready, first, connected, hasArtifacts, userId]);
+
   // Events happen elsewhere (an agent, another tab): re-read what is still
   // open, quietly, until it is done. Focus refetch covers returning to the tab.
   const qc = useQueryClient();
@@ -115,15 +139,20 @@ export function GetStarted({
     if (!live || all) return;
     const t = setInterval(() => {
       if (document.visibilityState === "hidden") return;
-      void qc.invalidateQueries({ queryKey: qk.tokens });
-      void qc.invalidateQueries({ queryKey: qk.oauthClients });
-      void qc.invalidateQueries({ queryKey: qk.members });
-      void qc.invalidateQueries({ queryKey: ["artifacts"] });
+      // Only what is still open; the Library's pages refetch only while no
+      // artifact exists yet.
+      if (!connected) {
+        void qc.invalidateQueries({ queryKey: qk.tokens });
+        void qc.invalidateQueries({ queryKey: qk.oauthClients });
+      }
+      if (!invited) void qc.invalidateQueries({ queryKey: qk.members });
+      if (!hasArtifacts) void qc.invalidateQueries({ queryKey: ["artifacts"] });
     }, BUS_POLL_MS);
     return () => clearInterval(t);
-  }, [live, all, qc]);
+  }, [live, all, qc, connected, invited, hasArtifacts]);
 
-  if (!live || !ready || all || !me?.instance.mcpUrl) return null;
+  if (!live || !ready || first !== true || all || !me?.instance.mcpUrl)
+    return null;
 
   const hide = () => {
     try {
@@ -134,9 +163,15 @@ export function GetStarted({
   const count = done.filter(Boolean).length;
   const cur = done.indexOf(false);
   const st = (i: number) => (done[i] ? "done" : cur === i ? "cur" : "todo");
-  // The trial line is about the Solo plan; self-hosted installs and other
-  // plans have no such trial.
-  const soloTrial = me.instance.billing?.tier === "solo";
+  // The trial line is true only when the server would start the Business
+  // trial on an invite (plan.trialEligible): Solo or free, no trial used yet,
+  // not read-only. Self-hosted installs have no billing.
+  const b = me.instance.billing;
+  const soloTrial =
+    !!b &&
+    (b.tier === "solo" || b.tier === "free") &&
+    b.trialEndsAt === null &&
+    !b.readOnly;
 
   return (
     <section
@@ -204,7 +239,7 @@ export function GetStarted({
               stays as it is.
             </p>
           )}
-          {!invited && (
+          {!invited && cur === 2 && (
             <div className="flex gap-[var(--oa-space-2)]">
               <Button asChild size="sm" className="h-[30px]">
                 <AppLink href="/settings/members">Invite people</AppLink>
