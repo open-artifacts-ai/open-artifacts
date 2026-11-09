@@ -115,6 +115,7 @@ export function CommentsDialog({
   pinCard?: string | null;
 }) {
   const ref = useRef<HTMLElement>(null);
+  const api = useCommentsApi();
   const [full, setFull] = useState(false);
   // #1657: reading a pin card shrinks the sheet, so the image and that pin
   // stay visible; dragging it back up still works. Keyed on the pin, so
@@ -122,7 +123,24 @@ export function CommentsDialog({
   useEffect(() => {
     if (pinCard) setFull(false);
   }, [pinCard]);
-  const height = full ? "full" : pinCard ? "pin" : "half";
+  // #1865: writing a comment on a selection keeps the sheet short, with only
+  // its composer, so the highlighted quote stays in sight above it. Dragging
+  // up still works, and closing the draft returns the sheet to the height it
+  // had before.
+  const drafting = api.draft !== null && "anchor" in api.draft;
+  const wasDrafting = useRef(false);
+  const fullBefore = useRef(false);
+  useEffect(() => {
+    if (drafting && !wasDrafting.current) {
+      wasDrafting.current = true;
+      fullBefore.current = full;
+      setFull(false);
+    } else if (!drafting && wasDrafting.current) {
+      wasDrafting.current = false;
+      setFull(fullBefore.current);
+    }
+  }, [drafting, full]);
+  const height = full ? "full" : pinCard || drafting ? "pin" : "half";
   const drag = useRef<number | null>(null);
   const dragged = useRef(false);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
@@ -146,6 +164,10 @@ export function CommentsDialog({
         data-sheet-height={height}
         className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
         onFocusCapture={(e) => {
+          // #1865: a selection draft rests short on purpose, so the quote above
+          // it stays visible while the keyboard is up; the frame scrolls the
+          // quote clear of the sheet instead of growing the sheet.
+          if (drafting) return;
           // The phone keyboard would cover a half-height sheet.
           const t = e.target as HTMLElement;
           if (t.tagName === "TEXTAREA" || t.tagName === "INPUT") setFull(true);
@@ -187,7 +209,10 @@ export function CommentsDialog({
         >
           <span className="h-1 w-10 rounded-full bg-border" />
         </button>
-        <div className={`flex items-center justify-between px-4 pt-3 ${TXT}`}>
+        {/* #1865: the short draft sheet is the composer alone. */}
+        <div
+          className={`flex items-center justify-between px-4 pt-3 ${TXT} ${drafting ? "hidden" : ""}`}
+        >
           <h2 className="m-0 font-medium">Comments</h2>
           <Button
             variant="ghost"
@@ -199,7 +224,7 @@ export function CommentsDialog({
           </Button>
         </div>
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-          <CommentsBody textFormat={textFormat} />
+          <CommentsBody textFormat={textFormat} composerOnly={drafting} />
         </div>
       </section>
     </>

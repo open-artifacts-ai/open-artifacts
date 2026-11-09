@@ -258,6 +258,50 @@ describe("comments: layouts", () => {
     expect(sheet).toHaveAttribute("data-sheet-height", "pin");
   });
 
+  it("a selection draft rests the phone sheet short, composer only (#1865)", async () => {
+    // The quote is above the sheet; at half height the sheet would cover it.
+    viewport(390);
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "Landing",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    // Short, and the composer is the only thing in it.
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    expect(
+      within(sheet).getByRole("textbox", { name: "Add a comment" }),
+    ).toBeInTheDocument();
+    // jsdom loads no CSS, so the hidden header is a class, not a computed style.
+    const header = within(sheet).getByText("Comments", { selector: "h2" })
+      .parentElement as HTMLElement;
+    expect(header.className).toContain("hidden");
+    expect(
+      within(sheet).queryByRole("textbox", {
+        name: "Comment on the whole page",
+      }),
+    ).toBeNull();
+    // Focusing the composer does not grow it: the quote must stay in sight.
+    fireEvent.focus(
+      within(sheet).getByRole("textbox", { name: "Add a comment" }),
+    );
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    // The reader can still drag it up, and Cancel returns it to half.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    fireEvent.click(within(sheet).getByRole("button", { name: "Cancel" }));
+    await wait(30);
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+  });
+
   it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {
     viewport(400);
     mount(viewerPath(OWNED));

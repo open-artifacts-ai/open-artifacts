@@ -961,7 +961,14 @@ function AsksForYou({
 }
 
 /** The list, header and composers: one body for the column, panel tab and sheet. */
-export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
+export function CommentsBody({
+  textFormat = true,
+  /** The phone sheet's short draft height: the composer being written, alone (#1865). */
+  composerOnly = false,
+}: {
+  textFormat?: boolean;
+  composerOnly?: boolean;
+}) {
   const api = useCommentsApi();
   const resolvedCount = api.threads.filter(
     (t) => t.status === "resolved",
@@ -972,6 +979,19 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
   const orphans = visible(api.orphans);
   const none = api.threads.length === 0;
   const forMe = asksForMe([...api.ordered, ...api.orphans]);
+  // #1865: while a selection comment is written, the short sheet holds that
+  // composer and nothing else, so the quote above it stays in sight.
+  if (composerOnly && api.draft && api.canComment)
+    return (
+      <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+        <NewThread
+          key={JSON.stringify(
+            "pin" in api.draft ? api.draft.pin : api.draft.anchor,
+          )}
+          api={api}
+        />
+      </div>
+    );
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
       <div className={`flex items-center justify-between gap-2 ${TXT}`}>
