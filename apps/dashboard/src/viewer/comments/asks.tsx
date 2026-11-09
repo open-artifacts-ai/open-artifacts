@@ -67,6 +67,13 @@ export function Delivery({ c }: { c: CommentT }) {
   );
 }
 
+/** Who did it, in words: "you" for the viewer's own act, never for their agent
+    (#1789: an owner's token answers with \`me\` set), and "<name> (agent)" for an agent. */
+export const actor = (
+  a: { kind: string; name: string; me: boolean },
+  you: string,
+) => (a.kind === "agent" ? `${a.name} (agent)` : a.me ? you : a.name);
+
 const letter = (i: number) => String.fromCharCode(65 + i);
 
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
@@ -118,7 +125,7 @@ export function AskBlock({
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
-          {pickedOpt.label} · {ask.answer?.by.me ? "you" : ask.answer?.by.name},{" "}
+          {pickedOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
         <span className="shrink-0 font-semibold">
@@ -218,8 +225,8 @@ export function AskBlock({
           )}
           {ask.answer && pickedOpt && (
             <p className={`${TXT} font-medium`} data-ask-answer="">
-              {ask.answer.by.me ? "You" : ask.answer.by.name} picked{" "}
-              {letter(pickedIdx)} · {versionDate(ask.answer.at)}
+              {actor(ask.answer.by, "You")} picked {letter(pickedIdx)} ·{" "}
+              {versionDate(ask.answer.at)}
               {ask.closed ? " · closed" : ""}
               {canAnswer && locked && (
                 <>

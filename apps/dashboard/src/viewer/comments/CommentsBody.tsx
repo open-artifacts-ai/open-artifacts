@@ -28,6 +28,7 @@ import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
 import {
   AskBlock,
+  actor,
   asksForMe,
   Delivery,
   type Extras,
@@ -781,7 +782,8 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             className={`flex items-center gap-1 ${TXT} text-green-700 dark:text-green-400`}
           >
             <Check aria-hidden="true" className="size-3.5 shrink-0" />
-            Resolved by {t.resolvedBy?.name ?? "someone"}
+            Resolved by{" "}
+            {t.resolvedBy ? actor(t.resolvedBy, t.resolvedBy.name) : "someone"}
             {t.resolvedAt ? ` · ${versionDate(t.resolvedAt)}` : ""}
           </p>
         )}
