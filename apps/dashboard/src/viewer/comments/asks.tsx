@@ -325,11 +325,11 @@ export function mentionedKeys(
   return keys;
 }
 
-/** Drops the first whole `@name` (and one following space) from the text. */
+/** Drops every whole `@name` (and one following space each) from the text. */
 export function removeMention(text: string, name: string): string {
   const re = new RegExp(
     `(^|\\s)@${esc(name)}(?=$|[\\s.,;:!?)\\]'\u2019-])\\s?`,
-    "i",
+    "gi",
   );
   return text.replace(re, (_m, lead: string) => lead);
 }

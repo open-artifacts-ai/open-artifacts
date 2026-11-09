@@ -20,7 +20,11 @@ import {
   it,
   vi,
 } from "vitest";
-import { mentionedKeys, mentionQuery } from "../src/viewer/comments/asks";
+import {
+  mentionedKeys,
+  mentionQuery,
+  removeMention,
+} from "../src/viewer/comments/asks";
 import {
   calls,
   events,
@@ -1040,5 +1044,11 @@ describe("round 3 copy", () => {
     expect(
       within(c).getByText("Only the owner and editors can wake agents."),
     ).toBeInTheDocument();
+  });
+});
+
+describe("removeMention", () => {
+  it("removes every mention of the name", () => {
+    expect(removeMention("@Bob hi @bob, ok", "Bob")).toBe("hi , ok");
   });
 });
