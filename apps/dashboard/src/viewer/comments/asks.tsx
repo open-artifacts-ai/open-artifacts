@@ -67,7 +67,12 @@ export function Delivery({ c }: { c: CommentT }) {
   );
 }
 
-const letter = (i: number) => String.fromCharCode(65 + i);
+/** An option's key: its id, upper-cased when a single letter ("a" shows as "A"). */
+const keyOf = (o: { id: string }) =>
+  o.id.length === 1 ? o.id.toUpperCase() : o.id;
+/** The key is worth showing only when it says something the label does not. */
+const hasKey = (o: { id: string; label: string }) =>
+  keyOf(o).trim().toLowerCase() !== o.label.trim().toLowerCase();
 
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
@@ -118,6 +123,7 @@ export function AskBlock({
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
+          {hasKey(pickedOpt) ? `${keyOf(pickedOpt)}, ` : ""}
           {pickedOpt.label} · {ask.answer?.by.me ? "you" : ask.answer?.by.name},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
@@ -185,12 +191,14 @@ export function AskBlock({
                       );
                     }}
                   >
-                    <span
-                      data-option-key=""
-                      className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
-                    >
-                      {letter(i)}
-                    </span>
+                    {hasKey(o) && (
+                      <span
+                        data-option-key=""
+                        className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
+                      >
+                        {keyOf(o)}
+                      </span>
+                    )}
                     <span className="min-w-0 flex-1 break-words">
                       <b>{o.label}</b>
                       {rec && (
@@ -219,7 +227,7 @@ export function AskBlock({
           {ask.answer && pickedOpt && (
             <p className={`${TXT} font-medium`} data-ask-answer="">
               {ask.answer.by.me ? "You" : ask.answer.by.name} picked{" "}
-              {letter(pickedIdx)} · {versionDate(ask.answer.at)}
+              {keyOf(pickedOpt)} · {versionDate(ask.answer.at)}
               {ask.closed ? " · closed" : ""}
               {canAnswer && locked && (
                 <>

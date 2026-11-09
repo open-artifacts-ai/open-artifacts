@@ -226,6 +226,56 @@ describe("asks on the comments column", () => {
     ).toHaveAttribute("aria-pressed", "false");
   });
 
+  it("shows a key badge only on options whose key differs from the label", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          options: [
+            { id: "yes", label: " Yes " },
+            { id: "b", label: "Other plan" },
+          ],
+          recommended: undefined,
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    const keys = [...c.querySelectorAll("[data-option-key]")].map(
+      (k) => k.textContent,
+    );
+    expect(keys).toEqual(["B"]);
+  });
+
+  it("omits the key from the decided line when it equals the label", async () => {
+    serveThreads(() => [
+      askThread(
+        { status: "resolved" },
+        {
+          options: [
+            { id: "yes", label: "Yes" },
+            { id: "no", label: "No" },
+          ],
+          recommended: undefined,
+          closed: true,
+          answer: {
+            optionId: "yes",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Show resolved/ }),
+    );
+    const line = await within(c).findByRole("button", { name: /Show$/ });
+    expect(line.textContent).toMatch(/^Which layout\? Yes · you, /);
+  });
+
   it("drops the amber once you have picked", async () => {
     serveThreads(() => [
       askThread(
@@ -414,7 +464,7 @@ describe("asks on the comments column", () => {
     );
     const line = await within(c).findByRole("button", { name: /Show$/ });
     // The triangle is decoration: the name ends in "Show", not the glyph.
-    expect(line).toHaveTextContent(/Which layout\? Side by side · you, .+/);
+    expect(line).toHaveTextContent(/Which layout\? B, Side by side · you, .+/);
     // versionDate, not a 24-hour HH:MM.
     expect(line.textContent).not.toMatch(/\d\d:\d\d/);
     expect(line).toHaveAttribute("aria-expanded", "false");
