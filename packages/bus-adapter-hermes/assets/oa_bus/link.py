@@ -5,6 +5,7 @@ import hashlib
 import os
 import socket
 import threading
+import time
 
 from . import frames
 from .sockpath import bus_home, daemon_socket_path, socket_dir_problem
@@ -17,6 +18,9 @@ REQUEST_TIMEOUT_S = 20.0
 HELLO_TIMEOUT_S = 5.0
 # The daemon is local and answers link_proof at once; past this the root stays unlinked.
 PROOF_TIMEOUT_S = 2.0
+# A link whose proof was not taken (the hub was down) tries again on a later turn, at most this often.
+PROOF_RETRY_S = 60.0
+_monotonic = time.monotonic
 RECONNECT_S = 3.0
 MAX_REFUSED_BACKOFF_S = 60.0
 
@@ -43,6 +47,9 @@ class Link:
         # #1822: this link's proof, in memory only (never written or logged); set once the
         # daemon took its hash. A reconnect is a new Link, so a new proof.
         self.proof = None
+        self._candidate = None  # the proof this link offered; a retry offers the same one
+        self._tried_at = None
+        self._proving = False
         self._hello = {
             "id": "hello",
             "type": "hello",
@@ -97,19 +104,44 @@ class Link:
         return self
 
     def _prove(self):
-        """Makes a proof and tells the daemon its hash, for a daemon whose welcome listed `link`.
-        Any failure leaves this root unlinked; the link and every tool keep working."""
+        """Makes this link's proof and tells the daemon its hash, for a daemon whose welcome listed
+        `link`. Any failure leaves this root unlinked; the link and every tool keep working."""
         try:
             caps = self.welcome.get("caps")
             if not isinstance(caps, list) or "link" not in caps:
                 return
-            proof = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode("ascii")
-            hash_ = hashlib.sha256(proof.encode("ascii")).hexdigest()
-            r = self.request({"type": "link_proof", "hash": hash_}, PROOF_TIMEOUT_S)
-            if r.get("type") == "link_proofed" and r.get("bound") is True and not self._ended:
-                self.proof = proof
+            self._candidate = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode("ascii")
+            self._attempt()
         except Exception:
             pass
+
+    def retry_proof(self):
+        """A later turn: offers the same proof again when the daemon did not take it (its hub link
+        was down), at most once per PROOF_RETRY_S. Does nothing once taken, or without the cap."""
+        try:
+            if self.proof is not None or self._candidate is None or self._ended:
+                return
+            if _monotonic() - self._tried_at < PROOF_RETRY_S:
+                return
+            self._attempt()
+        except Exception:
+            pass
+
+    def _attempt(self):
+        with self._lock:
+            if self._proving or self.proof is not None or self._ended:
+                return
+            self._proving = True
+        try:
+            self._tried_at = _monotonic()
+            hash_ = hashlib.sha256(self._candidate.encode("ascii")).hexdigest()
+            r = self.request({"type": "link_proof", "hash": hash_}, PROOF_TIMEOUT_S)
+            if r.get("type") == "link_proofed" and r.get("bound") is True and not self._ended:
+                self.proof = self._candidate
+        except Exception:
+            pass
+        finally:
+            self._proving = False
 
     def _send(self, partial):
         data = frames.encode(partial)

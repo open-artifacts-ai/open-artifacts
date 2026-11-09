@@ -48,6 +48,7 @@ class FakeLink:
         self.welcome = {"type": "welcome", "bus_name": bus_name, "namespace": "ns", "global": False}
         self.closed = False
         self.proof = None
+        self.retries = 0
         self.acks = []
         self.requests = []
         self.replies = replies or {}
@@ -62,6 +63,9 @@ class FakeLink:
 
             raise LinkError("no reply")
         return {"v": 1, "id": "1", **r}
+
+    def retry_proof(self):
+        self.retries += 1
 
     def ack(self, msg_id):
         self.acks.append(msg_id)

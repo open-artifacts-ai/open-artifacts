@@ -170,6 +170,72 @@ class OverASocket(unittest.TestCase):
         self.assertFalse(l.closed)
 
 
+class RetryOnLaterTurns(OverASocket):
+    """A hub that was down when the link opened: the daemon said not bound. A later turn tries
+    again with the same proof, at most once a minute per link."""
+
+    def clock(self):
+        t = [1000.0]
+        old = link_mod._monotonic
+        link_mod._monotonic = lambda: t[0]
+        self.addCleanup(setattr, link_mod, "_monotonic", old)
+        return t
+
+    def test_retries_with_the_same_proof_once_a_minute_until_it_is_taken(self):
+        t = self.clock()
+        d = self.daemon(answer="unbound")
+        l = self.link()
+        self.assertIsNone(l.proof)
+        first = d.proofs[0][1]["hash"]
+        l.retry_proof()
+        t[0] += 59
+        l.retry_proof()
+        self.assertEqual(len(d.proofs), 1)  # rate limited
+        t[0] += 2
+        d.answer = "unbound"
+        l.retry_proof()
+        self.assertEqual(len(d.proofs), 2)
+        self.assertEqual(d.proofs[1][1]["hash"], first)
+        self.assertIsNone(l.proof)
+        t[0] += 61
+        d.answer = "bound"
+        l.retry_proof()
+        self.assertEqual(len(d.proofs), 3)
+        self.assertEqual(d.proofs[2][1]["hash"], first)
+        self.assertEqual(sha(l.proof), first)
+        # Taken: no more frames.
+        t[0] += 1000
+        l.retry_proof()
+        self.assertEqual(len(d.proofs), 3)
+
+    def test_no_retry_for_a_daemon_that_did_not_list_link(self):
+        t = self.clock()
+        d = self.daemon(caps=())
+        l = self.link()
+        t[0] += 1000
+        l.retry_proof()
+        self.assertEqual(d.proofs, [])
+        self.assertIsNone(l.proof)
+
+    def test_a_new_link_makes_a_new_proof_not_the_old_ones(self):
+        self.clock()
+        d = self.daemon(answer="unbound")
+        a = self.link()
+        a.close()
+        b = self.link()
+        self.assertNotEqual(d.proofs[0][1]["hash"], d.proofs[1][1]["hash"])
+
+    def test_a_turn_asks_the_link_to_retry(self):
+        roots = Roots(lambda s: s)
+        bus = Bus(roots, spawn=support.inline_spawn, start="t", habits_marker=support.habits_marker(),
+                  codex_runtime=lambda: False)
+        link = support.FakeLink(ref="root-1")
+        bus.state("root-1").link = link
+        bus.turn_start("root-1", "cli")
+        bus.turn_start("root-1", "cli")
+        self.assertEqual(link.retries, 2)  # the link rate limits; the bus asks every turn
+
+
 class FakeProofBus:
     """What the middleware asks of the Bus: the root's proof, or none."""
 
@@ -338,13 +404,24 @@ class WireInjection(unittest.TestCase):
         [t.join(10) for t in ts]
         self.assertEqual(sorted(w[2][ARG] for w in handlers.wire), ["a" * 43, "b" * 43])
 
-    def test_installing_again_does_not_stack_and_uses_the_new_bus(self):
-        ok, registry, handlers, _, _ = installed()
-        newbus = FakeProofBus(proof="n" * 43)
-        self.assertTrue(proof_mod.install(newbus, ("open-artifacts",), registry=registry, handlers=handlers))
+    def test_installing_again_for_the_same_bus_does_not_stack(self):
+        ok, registry, handlers, bus, _ = installed()
+        self.assertTrue(proof_mod.install(bus, ("open-artifacts",), registry=registry, handlers=handlers))
         registry.dispatch("mcp__open_artifacts__get_artifact", {}, session_id="root-1")
-        self.assertEqual(handlers.wire[0][2], {ARG: "n" * 43})
+        self.assertEqual(handlers.wire[0][2], {ARG: "p" * 43})
         self.assertEqual(len(registry.above), 1)
+        self.assertEqual(bus.asked, ["root-1"])
+
+    def test_a_second_bus_in_one_process_leaves_the_first_in_charge(self):
+        # Another Hermes profile loaded in the same process: its install is a no-op against
+        # the first's wrappers. The first keeps its proofs; the second stays unlinked.
+        ok, registry, handlers, first, _ = installed()
+        second = FakeProofBus(proof="n" * 43)
+        self.assertFalse(proof_mod.install(second, ("open-artifacts",), registry=registry, handlers=handlers))
+        registry.dispatch("mcp__open_artifacts__get_artifact", {}, session_id="root-1")
+        self.assertEqual(handlers.wire[0][2], {ARG: "p" * 43})
+        self.assertEqual(first.asked, ["root-1"])
+        self.assertEqual(second.asked, [])
 
     def test_a_hermes_without_the_functions_stays_unlinked_and_untouched(self):
         registry = FakeRegistry(FakeHandlers(), SERVED)
@@ -409,12 +486,22 @@ class ProofForABus(unittest.TestCase):
             with self.subTest(sid):
                 self.assertIsNone(self.bus.proof_for(sid))
 
-    def test_none_when_the_link_is_closed_and_it_is_reopened_in_the_background(self):
+    def test_none_when_the_link_is_closed_and_nothing_is_opened(self):
+        # The dispatch path is a read: it never opens a link, so a session whose root has no
+        # open link (another profile's, a finalized one, a closed one) gets no proof.
         self.link.closed = True
         opened = []
         self.bus.ensure = lambda ref: opened.append(ref) or self.link
+        self.bus.touch = lambda ref: opened.append(ref)
         self.assertIsNone(self.bus.proof_for("root-1"))
-        self.assertEqual(opened, ["root-1"])
+        self.assertEqual(opened, [])
+
+    def test_a_root_this_bus_never_held_gets_no_proof_and_no_state(self):
+        roots = Roots({"other": "other-root"}.get)
+        bus = Bus(roots, spawn=support.inline_spawn, start="t", habits_marker=support.habits_marker(),
+                  codex_runtime=lambda: False)
+        self.assertIsNone(bus.proof_for("other"))
+        self.assertEqual(bus._by_root, {})
 
     def test_none_under_the_codex_runtime_or_when_that_cannot_be_told(self):
         for state in (True, None):
