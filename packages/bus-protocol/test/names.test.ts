@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BusNameSchema,
   candidateName,
+  droppedRefusedChars,
   isReservedBusName,
   suffixName,
 } from "../src/names.ts";
@@ -39,7 +40,7 @@ describe("bus names", () => {
   });
   it("turns any proposal into a usable candidate", () => {
     expect(candidateName("  My  Agent ")).toBe("My Agent");
-    expect(candidateName("a@b.com")).toBe("agent");
+    expect(candidateName("a@b.com")).toBe("ab.com"); // #1480: refused chars are dropped
     expect(candidateName("")).toBe("agent");
     expect(candidateName("x".repeat(80)).length).toBe(64);
   });
@@ -167,5 +168,73 @@ describe("reserved bus names", () => {
       expect(BusNameSchema.safeParse(out).success, x).toBe(true);
       expect(isReservedBusName(out), x).toBe(false);
     }
+  });
+
+  it("keeps what it can of a name with refused characters (#1480)", () => {
+    const table: Array<[string, string]> = [
+      ["OA Owner (2)", "OA Owner 2"],
+      ["(lead)", "lead"],
+      ["a/b\\c:d", "abcd"],
+      ["Owner  (  2 )", "Owner 2"],
+      ["  --Lead--  ", "Lead--"],
+      ["_x", "x"],
+      ["R&D team", "RD team"],
+      ["Owner \u{1F680}", "Owner"],
+      ["Own\u0007er (2)", "Owner 2"],
+      ["a.b (c)", "a.b c"],
+      ["Lead (", "Lead"],
+      // nothing usable left
+      ["()", "agent"],
+      ["@@@", "agent"],
+      ["...", "agent"],
+      // letters or digits outside ASCII: no half-names
+      ["\u65e5\u672c\u8a9e", "agent"],
+      ["caf\u00e9 (2)", "agent"],
+      ["\u65e5\u672c Owner", "agent"],
+      // still refused after cleaning
+      ["(1.2.3.4)", "agent"],
+      ["Open(Bus)", "agent"],
+      ["(openbus)", "agent"],
+      ["open (bus) 2", "agent"],
+    ];
+    for (const [raw, want] of table) expect(candidateName(raw), raw).toBe(want);
+    // the length cap applies after cleaning
+    const long = candidateName(`${"x".repeat(63)} (y) z`);
+    expect(long.length).toBeLessThanOrEqual(64);
+    expect(BusNameSchema.safeParse(long).success).toBe(true);
+    expect(candidateName(`(${"x".repeat(70)})`)).toBe("x".repeat(64));
+  });
+  it("candidateName is idempotent and never reaches a reserved name", () => {
+    for (const x of [
+      "OA Owner (2)",
+      "Open(Bus)",
+      "a (b) c",
+      "(1.2.3.4)",
+      "-- x --",
+    ]) {
+      const once = candidateName(x);
+      expect(candidateName(once), x).toBe(once);
+      expect(isReservedBusName(once), x).toBe(false);
+    }
+  });
+  it("droppedRefusedChars: only a name kept by dropping refused characters (#1480)", () => {
+    for (const x of [
+      "OA Manager!",
+      "OA Owner (2)",
+      "a@b.com",
+      "Owner \u{1F680}",
+    ])
+      expect(droppedRefusedChars(x), x).toBe(true);
+    for (const x of [
+      "Lead ",
+      "Two  Words",
+      "lead.",
+      "Own\u0007er",
+      "x".repeat(80),
+      "OA Owner",
+      "()",
+      "caf\u00e9",
+    ])
+      expect(droppedRefusedChars(x), x).toBe(false);
   });
 });
