@@ -2,7 +2,9 @@
 // that points at one agent by its stable id, so it follows a rename. The only
 // rerouting on the bus (design Decision 3): a send to a role resolves at send
 // time to its holder; the system never guesses one. Only the member sets a
-// role (BusHub.putRole, from the dashboard's REST); no frame does.
+// role (BusHub.putRole, from the dashboard's REST); no frame does. One
+// exception, by the user's decision (#1816): a session that reclaims an away
+// holder's name (#1742) takes that holder's roles, except a role with reach.
 //
 // Adapted from OpenBus v0.63.0 apps/server/src/hub/roles.ts, without the
 // agent card's `role` claim or the one-role-per-agent rule. A close does not
@@ -279,8 +281,8 @@ export function deleteRole(
  * Role `lname` in `ns` resolved: its live holder, or role_vacant. With
  * `awayAt` (#1349, a mailbox-capable sender; the time) a holder that is away
  * resolves too, so the send queues in its mailbox: closed (not live), its
- * `away` reservation unexpired (a newcomer's reclaim, #1742, releases it, and
- * the role is then vacant), its machine not revoked, and still in the role's
+ * `away` reservation unexpired (a newcomer's reclaim, #1742, releases it: a
+ * plain role moves to the newcomer, a role with reach is then vacant), its machine not revoked, and still in the role's
  * namespace or global. A vacated role, or a holder that moved, stays vacant.
  */
 function holderOf(
