@@ -375,6 +375,42 @@ export function removeMention(
   return atStart ? out.trimStart() : out;
 }
 
+/** A posted body with each `@name` from its mentions as a chip. Text spans only,
+    never HTML; a body with no mentions is the plain string. */
+export function MentionedText({
+  body,
+  mentions,
+}: {
+  body: string;
+  mentions?: readonly { key: string; name: string }[];
+}) {
+  if (!mentions?.length) return <>{body}</>;
+  const names = [...new Set(mentions.map((m) => m.name))]
+    .sort((x, y) => y.length - x.length)
+    .map(esc);
+  const re = new RegExp(`(^|\\s)@(${names.join("|")})${MENTION_END}`, "gi");
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of body.matchAll(re)) {
+    const at = m.index + (m[1]?.length ?? 0);
+    const end = at + 1 + (m[2]?.length ?? 0);
+    if (at > last) out.push(body.slice(last, at));
+    out.push(
+      <span
+        key={at}
+        data-mention-chip=""
+        className="rounded-full bg-[var(--oa-accent-soft)] px-1 py-0.5 text-[var(--oa-accent-fg)]"
+      >
+        {body.slice(at, end)}
+      </span>,
+    );
+    last = end;
+  }
+  if (last === 0) return <>{body}</>;
+  if (last < body.length) out.push(body.slice(last));
+  return <>{out}</>;
+}
+
 /** Who gets notified: the mentioned agents. */
 export function notifyNames(
   text: string,
