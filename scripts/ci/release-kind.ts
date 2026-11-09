@@ -8,12 +8,17 @@
 // main's head, not this run's sha, so any other run creating one could tag a
 // commit that is not its own head_sha.
 //
-// Positive case, from data that cannot lag behind the push: the release
+// Positive case, read directly from the PR, not from a list: the release
 // commit's subject is `chore(main): release X (#N)`. Read pulls/N directly and
 // require merged, merge_commit_sha == this sha and the `autorelease: pending`
 // label. A list or search endpoint (the closed-issues list) can trail a
 // just-merged PR by seconds; run 42556718364 skipped v0.139.0 that way. A
 // look-alike (a subject naming some other PR) fails the merge_commit_sha test.
+// A direct read can lag too: a subject naming a PR labelled pending that does
+// not yet show as merged as this sha is re-read with a backoff (BACKOFF_MS),
+// then fails loudly. It never falls through to "not a release", so the lag
+// that caused #1782 cannot skip a release silently. A named PR without the
+// label (tagged already, or a look-alike) goes to the list below.
 //
 // Everything else uses the pending list, which may lag but only in a safe
 // direction here: this run's own commit is not a release, so a missing entry
@@ -38,6 +43,11 @@ export type Say = (line: string) => void;
 const SUBJECT = /^chore\(main\): release \S+ \(#(\d+)\)$/;
 const LABEL = "autorelease: pending";
 
+/** Waits between re-reads of an unconfirmed pending PR: 25 s in all. */
+export const BACKOFF_MS = [1000, 2000, 4000, 8000, 10000];
+const sleep = (ms: number) =>
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
 export class Undecided extends Error {}
 
 function api(exec: Exec, path: string, jq?: string): string {
@@ -54,6 +64,7 @@ export function decide(
   repo: string,
   sha: string,
   out?: Say,
+  wait: (ms: number) => void = sleep,
 ): Decision {
   const log: string[] = [];
   const say = (s: string) => {
@@ -67,22 +78,36 @@ export function decide(
   say(`commit ${sha} subject: ${subject}`);
   if (named) {
     const n = named[1];
-    const pr = JSON.parse(api(exec, `repos/${repo}/pulls/${n}`));
-    const merged = pr.merged === true || Boolean(pr.merged_at);
-    const labels: string[] = (pr.labels ?? []).map(
-      (l: { name?: string }) => l.name ?? "",
-    );
-    const own = pr.merge_commit_sha === sha;
-    say(
-      `pulls/${n}: merged=${merged} merge_commit_sha=${pr.merge_commit_sha} labels=[${labels.join(", ")}]`,
-    );
-    if (merged && own && labels.includes(LABEL)) {
-      say(`decision: release commit (#${n}); this run creates the release`);
-      return { isRelease: true, log };
+    let tries = 0;
+    for (;;) {
+      const pr = JSON.parse(api(exec, `repos/${repo}/pulls/${n}`));
+      const merged = pr.merged === true || Boolean(pr.merged_at);
+      const labels: string[] = (pr.labels ?? []).map(
+        (l: { name?: string }) => l.name ?? "",
+      );
+      const pending = labels.includes(LABEL);
+      say(
+        `pulls/${n}: merged=${merged} merge_commit_sha=${pr.merge_commit_sha} labels=[${labels.join(", ")}] (read ${tries + 1})`,
+      );
+      if (!pending) {
+        say(
+          `#${n} is not labelled "${LABEL}" (tagged already, or a look-alike); checking the pending list`,
+        );
+        break;
+      }
+      if (merged && pr.merge_commit_sha === sha) {
+        say(`decision: release commit (#${n}); this run creates the release`);
+        return { isRelease: true, log };
+      }
+      // Pending but unconfirmed: a read that lags the merge shows merged=false
+      // and the test-merge sha. Never skip on that; read again, then fail.
+      if (tries >= BACKOFF_MS.length)
+        throw new Undecided(
+          `this commit's subject names release PR #${n}, labelled "${LABEL}", but after ${tries + 1} reads it is merged=${merged} with merge_commit_sha=${pr.merge_commit_sha}, not ${sha}. Not skipping the release on that: re-run this run once GitHub shows #${n} merged as ${sha}.`,
+        );
+      say(`#${n} is pending but not confirmed as ${sha}; reading again`);
+      wait(BACKOFF_MS[tries++]);
     }
-    say(
-      `#${n} is not this commit's pending release PR; checking the pending list`,
-    );
   } else {
     say("subject is not a release commit's; checking the pending list");
   }
