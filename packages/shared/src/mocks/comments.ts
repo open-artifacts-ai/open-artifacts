@@ -277,7 +277,12 @@ export function createCommentMock({
       );
       if (!j.success || !c.ask.options.some((o) => o.id === j.data.optionId))
         return err("bad_request", "Unknown option");
-      c.ask.answer = { optionId: j.data.optionId, by: mine(), at: iso(), typed: true };
+      c.ask.answer = {
+        optionId: j.data.optionId,
+        by: mine(),
+        at: iso(),
+        typed: true,
+      };
       emit(String(params.id), open(String(params.id)));
       return HttpResponse.json(c);
     }),

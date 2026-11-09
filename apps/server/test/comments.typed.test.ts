@@ -172,9 +172,9 @@ describe("typed comes from the credential kind", () => {
     const s = await setup();
     const t = (await (await post(s.id, owner.cookie, {})).json()) as Thread;
     expect(t.comments[0]?.typed).toBe(true);
-    expect((await list(s.id, owner.cookie)).threads[0]?.comments[0]?.typed).toBe(
-      true,
-    );
+    expect(
+      (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.typed,
+    ).toBe(true);
   });
 
   it("a PAT comment is not typed, and a body typed:true changes nothing", async () => {
@@ -216,9 +216,9 @@ describe("typed comes from the credential kind", () => {
         });
       },
     );
-    expect((await list(s.id, owner.cookie)).threads[0]?.comments[0]?.typed).toBe(
-      false,
-    );
+    expect(
+      (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.typed,
+    ).toBe(false);
   });
 
   it("a token edit of a typed comment makes it not typed", async () => {
