@@ -461,4 +461,19 @@ describe("notice tier", () => {
         ?.yes,
     ).toBe(false);
   });
+
+  it("answer.yes is false for the owner when an editor picks in the browser on the owner's agent's ask", async () => {
+    const s = await setup();
+    const t = await askFrom(s.id, mcpWho(owner), s.codex);
+    const r = await answer(
+      s.id,
+      t.id,
+      (t.comments[0] as Comment).id,
+      editor.cookie,
+    );
+    expect(r.status).toBe(200);
+    expect(
+      (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask?.answer,
+    ).toMatchObject({ typed: true, yes: false });
+  });
 });
