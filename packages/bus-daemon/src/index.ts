@@ -44,6 +44,7 @@ import {
   codexAttestor,
   codexHome,
 } from "./codex-attest.ts";
+import { codexThreadNames } from "./codex-names.ts";
 import {
   type Config,
   claudeReturnDir,
@@ -109,6 +110,7 @@ import { PiTransport } from "./transports/pi.ts";
 export * from "./agents.ts";
 export * from "./attest.ts";
 export * from "./codex-attest.ts";
+export * from "./codex-names.ts";
 export * from "./config.ts";
 export * from "./config-issues.ts";
 export * from "./dedupe.ts";
@@ -429,6 +431,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       oc.uncertainFile ?? join(home(), "opencode-uncertain.json"),
     ),
   });
+  /** Where Codex keeps its thread names (#1748). */
+  const codexIndexHome = cx.home ?? codexHome();
   const codex = new CodexTransport({
     resolve:
       cx.resolveBin ??
@@ -438,7 +442,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           path: process.env.PATH,
         })),
     run: cx.run ?? execCodex(),
-    home: cx.home ?? codexHome(),
+    home: codexIndexHome,
     wakes: cx.wakes ?? codexHostWakes,
     queued: new HeldStore(cx.queuedFile ?? join(home(), "codex-queued.json")),
     log,
@@ -716,7 +720,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       !(
         rec.kind === "claude-code" ||
         rec.kind === "pi" ||
-        rec.kind === "omp"
+        rec.kind === "omp" ||
+        rec.kind === "codex"
       ) ||
       !rec.live ||
       rec.sentName === undefined ||
@@ -752,6 +757,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       rec.sentName = rec.proposedName;
       recent.push(now);
     } else renameIds.delete(id);
+  };
+  /**
+   * A Codex `/rename` (#1748): the thread's name in Codex's session index
+   * changed. The same rules as Pi: one frame per change, a thread with no name
+   * stays as it was. Reads the index only while a Codex thread is live.
+   */
+  const renameCodexThreads = () => {
+    const live = agents.all().filter((a) => a.kind === "codex" && a.live);
+    if (!live.length) return;
+    const names = codexThreadNames(codexIndexHome);
+    for (const rec of live) {
+      const name = names.get(rec.ref);
+      if (name !== undefined) renameFromAdapter(rec, name);
+    }
   };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
@@ -1323,6 +1342,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // A rename made while the link was down (#1635).
           if (hello.proposed_name !== undefined && prev.kind === "pi")
             renameFromAdapter(prev, hello.proposed_name);
+          // A Codex rename made while the link was down (#1748).
+          if (prev.kind === "codex") renameCodexThreads();
           return {
             bus_name: prev.busName,
             namespace: prev.namespace,
@@ -1345,7 +1366,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             error: `namespace is not valid on the wire: ${ns.namespace}`,
           };
         attested(pid);
-        const proposedName = hello.proposed_name ?? hello.agent_ref;
+        // A Codex thread the user named registers under that name (#1748).
+        const codexName =
+          hello.kind === "codex"
+            ? codexThreadNames(codexIndexHome).get(hello.agent_ref)
+            : undefined;
+        const proposedName =
+          codexName ?? hello.proposed_name ?? hello.agent_ref;
         // /clear (#1295): this new session runs in the process of a live
         // one whose session file is gone; it takes over that address.
         const files =
@@ -1379,6 +1406,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
           ...(mine ? { sessionName: mine.name } : {}),
+          ...(codexName !== undefined ? { sessionName: codexName } : {}),
           cwd,
           live: true,
         });
@@ -1520,6 +1548,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * thread loaded, not that a user is watching (the shared daemon keeps threads).
    */
   const syncCodex = () => {
+    renameCodexThreads();
     const live = agents
       .all()
       .filter((a) => a.kind === "codex" && a.live)
