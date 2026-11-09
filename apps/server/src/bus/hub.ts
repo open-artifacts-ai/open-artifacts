@@ -38,8 +38,10 @@ import {
   BUS_ROLE_MAX,
   type BusAgent,
   type BusLink,
+  type BusNotice,
   type BusRole,
   type BusRoleProposal,
+  NOTICE_SENDER,
 } from "@oa/shared";
 import type { Env } from "../env.js";
 import { logError, logInfo } from "../log.js";
@@ -49,6 +51,7 @@ import {
   busCloseKind,
   MAX_ACTIVE_MACHINES,
 } from "../services/bus.js";
+import type { DeliveryOutcome } from "../services/bus-delivery.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
@@ -3010,6 +3013,58 @@ function senderRef(f: ClientFrame): string | null {
     : null;
 }
 
+/** #1317: waiting server notices a hub keeps; a notice over it is dropped (a replace of a waiting one is not). */
+export const NOTICES_MAX = 500;
+/** #1317: how long an offline machine's notice waits (the v1 rule). */
+export const NOTICE_HOLD_MS = HOUR_MS;
+/** #1317: notices one agent_up sends, so a reconnect stays one bounded step. */
+const NOTICE_FLUSH_BATCH = 100;
+
+type NoticeRow = {
+  toNs: string;
+  toLname: string;
+  ckey: string;
+  text: string;
+};
+const NOTICE_COLS = "to_ns as toNs, to_lname as toLname, ckey, text";
+
+/** #1317: the shape deliverNotice trusts: the Worker is the only caller, but the hub still checks. */
+function wellFormedNotice(n: BusNotice): boolean {
+  return (
+    typeof n === "object" &&
+    n !== null &&
+    n.from === NOTICE_SENDER &&
+    typeof n.id === "string" &&
+    typeof n.text === "string" &&
+    n.text.length > 0 &&
+    utf8Bytes(n.text) <= LIMITS.inlineBodyBytes &&
+    typeof n.coalesceKey === "string" &&
+    n.coalesceKey.length > 0 &&
+    n.coalesceKey.length <= 128 &&
+    typeof n.to === "object" &&
+    n.to !== null &&
+    typeof n.to.namespace === "string" &&
+    n.to.namespace.length > 0 &&
+    typeof n.to.name === "string" &&
+    n.to.name.length > 0 &&
+    (n.notBefore === undefined || Number.isFinite(n.notBefore))
+  );
+}
+
+/** #1317: one notice as a deliver frame from the reserved sender; no receipt, no mail row, no from_id. */
+function noticeFrame(agent: AgentRow, text: string): ServerFrame {
+  return {
+    v: 1,
+    id: frameId(),
+    type: "deliver",
+    msg_id: newId(),
+    to_ref: agent.nativeRef,
+    from_name: NOTICE_SENDER,
+    namespace: agent.namespace,
+    body: text,
+  };
+}
+
 /**
  * The bus hub: one SQLite Durable Object per member (#1291). Reached only
  * through the Worker: GET /bus/connect forwards a verified daemon upgrade,
@@ -3062,6 +3117,7 @@ export class BusHub extends DurableObject<Env> {
             or exists (select 1 from agents indexed by agents_closed where live = 0)
             or exists (select 1 from agents indexed by agents_status_due where status_due is not null)
             or exists (select 1 from former_names)
+            or exists (select 1 from notices)
             or exists (select 1 from rename_rl)
             or exists (select 1 from machines where ${OFFLINE_LIVE_WHERE})
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)
@@ -3242,6 +3298,22 @@ export class BusHub extends DurableObject<Env> {
   /** Tests only (static, not RPC): the link cap (null: BUS_LINK_MAX). */
   static setMaxLinksForTests(hub: BusHub, max: number | null): void {
     hub.#maxLinks = max ?? BUS_LINK_MAX;
+  }
+
+  /**
+   * #1317: one server notice for one address in this member's bus, sent as
+   * the reserved sender through a `deliver` frame (no receipt, no mail row).
+   * Contract: services/bus-delivery.ts. Never throws for an outcome.
+   */
+  async deliverNotice(n: BusNotice): Promise<DeliveryOutcome> {
+    let outcome: DeliveryOutcome = "dropped";
+    try {
+      if (wellFormedNotice(n)) outcome = this.#acceptNotice(n);
+    } catch (e) {
+      logError("bus_notice_failed", e);
+    }
+    await this.#commitArm();
+    return outcome;
   }
 
   /** #1299: answers true. Reads no member data and arms no alarm (the constructor still creates the schema); the hosted canary's liveness probe. */
@@ -4015,6 +4087,7 @@ export class BusHub extends DurableObject<Env> {
         if (a) {
           // Its queued mail, then what it missed as a sender.
           this.#flush(ws, a);
+          this.#flushNoticesFor(ws, a);
           if (this.#replay(a.id)) {
             this.#replayQueue.add(a.id);
             this.#arm(this.#now() + 1);
@@ -5295,6 +5368,157 @@ export class BusHub extends DurableObject<Env> {
     this.#heldBytes -= h.cost;
   }
 
+  // ----------------------------------------------------------------- notices
+
+  #acceptNotice(n: BusNotice): DeliveryOutcome {
+    const sql = this.ctx.storage.sql;
+    const now = this.#now();
+    const lname = n.to.name.toLowerCase();
+    const agent = liveVisibleIn(sql, n.to.namespace, lname);
+    const key = [n.to.namespace, lname, n.coalesceKey] as const;
+    // No live session at the address: nothing is kept (and a waiting notice
+    // for it is stale, so it goes too).
+    if (!agent) {
+      sql.exec(
+        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+        ...key,
+      );
+      return "dropped";
+    }
+    const socket = liveSocket(this.ctx, agent.machineId);
+    const notBefore = n.notBefore ?? now;
+    if (socket && notBefore <= now) {
+      sql.exec(
+        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+        ...key,
+      );
+      sendFrame(socket, noticeFrame(agent, n.text));
+      return "delivered";
+    }
+    const exists =
+      one<{ x: number }>(
+        sql,
+        "select 1 as x from notices where to_ns = ? and to_lname = ? and ckey = ?",
+        ...key,
+      ) !== null;
+    if (!exists) {
+      const held =
+        one<{ n: number }>(sql, "select count(*) as n from notices")?.n ?? 0;
+      if (held >= NOTICES_MAX) {
+        logEvent("notice_dropped", { reason: "cap" });
+        return "dropped";
+      }
+    }
+    const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
+    // Due with no live socket: parked until the machine's agent_up.
+    const parked = notBefore <= now ? 1 : 0;
+    sql.exec(
+      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked)
+       values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ...key,
+      n.id,
+      n.text,
+      notBefore,
+      expiresAt,
+      parked,
+    );
+    this.#arm(parked === 1 ? expiresAt : notBefore);
+    this.#arm(expiresAt);
+    return "held";
+  }
+
+  /**
+   * Sends the waiting notices addressed to `agent` that are due, when it
+   * has a live socket: the reconnect (agent_up) path, which also reaches
+   * parked ones. Bounded by NOTICE_FLUSH_BATCH.
+   */
+  #flushNoticesFor(ws: WebSocket, agent: AgentRow): void {
+    const sql = this.ctx.storage.sql;
+    const now = this.#now();
+    const rows = all<NoticeRow>(
+      sql,
+      `select ${NOTICE_COLS} from notices where to_lname = ? and not_before <= ? and expires_at > ?
+         and (to_ns = ? or ?) order by not_before limit ?`,
+      agent.name.toLowerCase(),
+      now,
+      now,
+      agent.namespace,
+      agent.global === 1 ? 1 : 0,
+      NOTICE_FLUSH_BATCH,
+    );
+    for (const r of rows) {
+      // The address resolves to this agent now, or the notice is not its.
+      if (liveVisibleIn(sql, r.toNs, r.toLname)?.id !== agent.id) continue;
+      sql.exec(
+        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+        r.toNs,
+        r.toLname,
+        r.ckey,
+      );
+      sendFrame(ws, noticeFrame(agent, r.text));
+    }
+    // A full batch: more may wait. Hand the rest to the alarm (it sends in
+    // bounded steps to this live socket) instead of leaving them parked.
+    if (rows.length >= NOTICE_FLUSH_BATCH) {
+      sql.exec(
+        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked = 1",
+        agent.name.toLowerCase(),
+        agent.namespace,
+        agent.global === 1 ? 1 : 0,
+      );
+      this.#arm(now + 1);
+    }
+  }
+
+  /**
+   * The alarm's step for notices: expired ones go; due ones are sent to a
+   * live socket, dropped when the address has no live agent, and parked when
+   * the machine is offline (its agent_up sends them). True when the batch
+   * was full.
+   */
+  #sweepNotices(now: number): boolean {
+    const sql = this.ctx.storage.sql;
+    const gone = purge(
+      sql,
+      "delete from notices where rowid in (select rowid from notices where expires_at <= ? limit ?) returning rowid",
+      now,
+    );
+    const due = all<NoticeRow>(
+      sql,
+      `select ${NOTICE_COLS} from notices where parked = 0 and not_before <= ? order by not_before limit ?`,
+      now,
+      BATCH,
+    );
+    for (const r of due) {
+      const agent = liveVisibleIn(sql, r.toNs, r.toLname);
+      const socket = agent && liveSocket(this.ctx, agent.machineId);
+      if (agent && socket) {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          r.toNs,
+          r.toLname,
+          r.ckey,
+        );
+        sendFrame(socket, noticeFrame(agent, r.text));
+      } else if (agent) {
+        sql.exec(
+          "update notices set parked = 1 where to_ns = ? and to_lname = ? and ckey = ?",
+          r.toNs,
+          r.toLname,
+          r.ckey,
+        );
+      } else {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          r.toNs,
+          r.toLname,
+          r.ckey,
+        );
+      }
+    }
+    return gone || due.length >= BATCH;
+  }
+
   // ------------------------------------------------------------------- alarm
 
   /** Asks for the alarm at `t` (the earliest ask wins); committed after the event. */
@@ -5397,6 +5621,9 @@ export class BusHub extends DurableObject<Env> {
     if (statuses.length >= BATCH) more = true;
     this.#statusChanged(statuses);
 
+    // 5c. #1317: server notices due or expired.
+    if (this.#sweepNotices(now)) more = true;
+
     // 6. Housekeeping: B14 send keys
     // past SEND_KEY_RETAIN_MS, and final receipts told over 24 h ago (or never told, final over 24 h ago: keyed
     // on final_at, so a receipt finalized in this run is never deleted in it).
@@ -5472,6 +5699,8 @@ export class BusHub extends DurableObject<Env> {
       this.#purgeDeadline(),
       nextStatusDue(sql),
       min("select min(expires_at) as t from former_names"),
+      min("select min(not_before) as t from notices where parked = 0"),
+      min("select min(expires_at) as t from notices"),
       min("select min(at) as t from rename_rl", HOUR_MS),
       this.#offlineReapDeadline(),
     ].filter((t): t is number => t !== null);
