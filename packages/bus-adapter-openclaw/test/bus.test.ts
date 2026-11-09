@@ -369,6 +369,7 @@ describe("the first prompt of a root", () => {
     hub.unacked.set("m1", { id: "m1", body: "held while down" });
     const bus = newBus(hub);
     // The root has already reported a model call (a restarted link, not a new root).
+    bus.buildPrompt(caller({ runId: "earlier" }));
     bus.modelCallStarted(
       { agentId: "main", sessionKey: "agent:main:main" },
       { runId: "earlier" },
@@ -466,6 +467,81 @@ describe("a root is handed mail only after its runtime has reported a model call
     ).toBeUndefined();
     bus.modelCallEnded(key, { runId: "r2", outcome: "error" });
     expect(bus.buildPrompt(caller({ runId: "r3" }))?.prependContext).toContain(
+      "m1",
+    );
+  });
+
+  it("a user run with no mail proves the root, and the next run delivers (#1724)", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus, caller({ runId: "warm" }), false);
+    bus.buildPrompt(caller({ runId: "r1" })); // a user run, nothing queued
+    bus.modelCallStarted(key, { runId: "r1" });
+    hub.push({ id: "m1" });
+    await flush();
+    expect(bus.buildPrompt(caller({ runId: "r2" }))?.prependContext).toContain(
+      "m1",
+    );
+  });
+
+  it("a model call from a cron, heartbeat or hook run does not prove the root (#1724)", async () => {
+    for (const trigger of ["cron", "heartbeat", "hook", "memory"]) {
+      const hub = new Hub();
+      const bus = newBus(hub);
+      await online(bus, caller({ runId: "warm" }), false);
+      hub.push({ id: "m1" });
+      await flush();
+      bus.buildPrompt(caller({ trigger, runId: "x1" }));
+      bus.modelCallStarted(key, { runId: "x1" });
+      bus.modelCallEnded(key, { runId: "x1", outcome: "completed" });
+      expect(
+        bus.buildPrompt(caller({ runId: "r1" }))?.prependContext,
+      ).toBeUndefined();
+      expect(hub.acks).toEqual([]);
+    }
+  });
+
+  it("a model call with no runId, or another run's id, does not prove the root (#1724)", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus, caller({ runId: "warm" }), false);
+    hub.push({ id: "m1" });
+    await flush();
+    bus.buildPrompt(caller({ runId: "r1" }));
+    bus.modelCallStarted(key, {});
+    bus.modelCallEnded(key, { outcome: "completed" });
+    bus.modelCallStarted(key, { runId: "other" });
+    bus.modelCallEnded(key, { runId: "other", outcome: "completed" });
+    expect(
+      bus.buildPrompt(caller({ runId: "r2" }))?.prependContext,
+    ).toBeUndefined();
+  });
+
+  it("after an unprove, a late event from the old run neither proves nor acks; the new run's call proves (#1724)", async () => {
+    const hub = new Hub();
+    const bus = newBus(hub);
+    await online(bus);
+    hub.push({ id: "m1" });
+    await flush();
+    expect(bus.buildPrompt(caller({ runId: "r1" }))?.prependContext).toContain(
+      "m1",
+    );
+    // r1 reported nothing: r2's prompt unproves the root and clears the runs.
+    expect(
+      bus.buildPrompt(caller({ runId: "r2" }))?.prependContext,
+    ).toBeUndefined();
+    const r = bus.resolve(caller(), "prompt");
+    expect(r.ok && bus.box(r.root.ref)?.runs.size).toBe(0);
+    // A late event from r1 arrives.
+    bus.modelCallStarted(key, { runId: "r1" });
+    bus.modelCallEnded(key, { runId: "r1", outcome: "completed" });
+    expect(hub.acks).toEqual([]);
+    expect(
+      bus.buildPrompt(caller({ runId: "r3" }))?.prependContext,
+    ).toBeUndefined();
+    // The new run reports a model call: proven again.
+    bus.modelCallStarted(key, { runId: "r3" });
+    expect(bus.buildPrompt(caller({ runId: "r4" }))?.prependContext).toContain(
       "m1",
     );
   });

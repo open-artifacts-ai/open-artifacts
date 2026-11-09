@@ -66,13 +66,56 @@ def context_reaches_model(user_message, history):
     return _is_gateway_wrapped(last["content"], user_message)
 
 
+# gateway/run_turn_runner.py _prepare_turn_message prepends this, as an inline literal (Hermes
+# has no constant for it), to the current message after an interrupted tool call.
+_TOOL_TAIL_NOTE = (
+    "[System note: A new message has arrived. The conversation "
+    "history contains pending tool outputs from an interrupted turn. "
+    "IGNORE those pending results. Address the user's NEW message "
+    "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
+)
+_NOTE_PROBE = "\0"
+
+
+def _resume_note_prefixes():
+    """Every exact prefix Hermes's own build_resume_recovery_note puts before a user message.
+
+    The note names the reason, so it is built for each phrase it has (restart, shutdown, and
+    the generic one) with a probe message and cut off at the probe. Empty when Hermes's
+    builder is missing or does not behave as expected, so nothing is recognised then.
+    """
+    build = getattr(sys.modules.get("gateway.run"), "build_resume_recovery_note", None)
+    if not callable(build):
+        return []
+    prefixes = []
+    for reason in ("restart_timeout", "shutdown_timeout", None):
+        try:
+            full = build(reason, _NOTE_PROBE)
+        except Exception:
+            return []
+        tail = "\n\n" + _NOTE_PROBE
+        if not isinstance(full, str) or not full.startswith("[System note:") or not full.endswith(tail):
+            return []
+        prefixes.append(full[: -len(_NOTE_PROBE)])
+    return prefixes
+
+
+def _strip_recovery_note(rest):
+    """`rest` without one leading Hermes recovery note (resume or interrupted tool call), if it has one."""
+    for prefix in (*_resume_note_prefixes(), _TOOL_TAIL_NOTE):
+        if rest.startswith(prefix):
+            return rest[len(prefix) :]
+    return rest
+
+
 def _is_gateway_wrapped(content, user_message):
     """Whether `content` is `user_message` as the Hermes gateway composes it.
 
     The gateway may prepend a timestamp (gateway/message_timestamps.py, when
     gateway.message_timestamps is on) and then, outside it, the Telegram observed group
-    context (gateway/run.py _wrap_current_message_with_observed_context). Only those two
-    exact shapes count; any other prefix means the text is not the current turn's.
+    context (gateway/run.py _wrap_current_message_with_observed_context), and between them
+    a recovery note after an interrupted turn (gateway/run_turn_runner.py). Only those exact
+    shapes count; any other prefix means the text is not the current turn's.
     """
     if content == user_message:
         return True
@@ -88,6 +131,9 @@ def _is_gateway_wrapped(content, user_message):
         rest = rest[at + len(marker) :]
         if rest == user_message:
             return True
+    rest = _strip_recovery_note(rest)
+    if rest == user_message:
+        return True
     if not user_message or not rest.endswith(user_message):
         return False
     prefix = rest[: -len(user_message)]
