@@ -943,19 +943,29 @@ describe("reach proposals (#1346)", () => {
     ).run();
     let r: Response;
     try {
-      r = await post(p.secret, { cookie: b.cookie }, [
-        ["csrf", csrf],
-        ["decision", "confirm"],
-      ]);
+      // Raw, as the page's script gets it: the harness's `post` unwraps JSON.
+      r = await browser.postJson(
+        env,
+        "/bus/reach/confirm",
+        { cookie: b.cookie },
+        {
+          secret: p.secret,
+          csrf,
+          decision: "confirm",
+        },
+      );
     } finally {
       await env.DB.prepare(
         "alter table audit_events_x rename to audit_events",
       ).run();
     }
     expect(r.status).toBe(500);
-    const text = await r.text();
-    expect(text).toContain("We could not confirm this finished");
-    expect(text).not.toContain("Nothing changed");
+    // The page's script renders only JSON ({ html }): raw HTML would show
+    // "Nothing changed" in a browser, which is false here.
+    expect(r.headers.get("content-type")).toContain("application/json");
+    const { html: card } = (await r.json()) as { html: string };
+    expect(card).toContain("We could not confirm this finished");
+    expect(card).not.toContain("Nothing changed");
     expect(await grants(b.userId)).toHaveLength(1);
     b.d.close();
   });
