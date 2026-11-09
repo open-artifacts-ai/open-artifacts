@@ -28,6 +28,7 @@ export const RESERVED_SLUGS: readonly string[] = [
   "provisioner",
   // Look-alike and role names (issue #1011): no phishing hosts such as
   // support.<app-domain>. Existing installs (leo, rl-a, rl-b) are not here.
+  // "demo" is deliberately left out: it may already be a prod install (#1011).
   "admins",
   "administrator",
   "root",
@@ -80,7 +81,6 @@ export const RESERVED_SLUGS: readonly string[] = [
   "health",
   "test",
   "dev",
-  "demo",
   "internal",
   "ns1",
   "ns2",

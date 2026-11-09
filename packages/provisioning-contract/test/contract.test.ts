@@ -183,7 +183,6 @@ describe("slugs", () => {
       "health",
       "test",
       "dev",
-      "demo",
       "internal",
       "ns1",
       "ns2",
@@ -193,7 +192,7 @@ describe("slugs", () => {
     ])("%s is reserved", (name) => {
       expect(slugError(name)).toBe("slug_reserved");
     });
-    it.each(["leo", "rl-a", "rl-b"])("%s stays valid", (name) => {
+    it.each(["leo", "rl-a", "rl-b", "demo"])("%s stays valid", (name) => {
       expect(slugError(name)).toBeNull();
     });
   });
