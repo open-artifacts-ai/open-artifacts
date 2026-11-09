@@ -131,3 +131,19 @@ describe("AnimalIcon", () => {
     }
   });
 });
+
+describe("AnimalIcon sizes and fallback", () => {
+  it("draws a drawn animal at lucide's default 24px", () => {
+    const drawnId = Object.keys(DRAWN)[0] as AnimalId;
+    const { container } = render(<AnimalIcon id={drawnId} />);
+    const svg = container.querySelector("svg");
+    expect(svg?.getAttribute("width")).toBe("24");
+    expect(svg?.getAttribute("height")).toBe("24");
+  });
+  it("falls back to a paw for an id this build doesn't know", () => {
+    const { container } = render(
+      <AnimalIcon id={"unicorn" as unknown as AnimalId} />,
+    );
+    expect(container.querySelector("svg.lucide-paw-print")).not.toBeNull();
+  });
+});

@@ -7,6 +7,7 @@ import {
   Fish,
   type LucideIcon,
   Panda,
+  PawPrint,
   Rabbit,
   Rat,
   Shrimp,
@@ -439,10 +440,16 @@ export function AnimalIcon({
   if (Lucide) {
     return <Lucide aria-hidden="true" className={className} />;
   }
+  const drawn = (DRAWN as Partial<Record<AnimalId, ReactNode>>)[id];
+  // An id this build doesn't know (a newer server) still gets an icon.
+  if (!drawn) return <PawPrint aria-hidden="true" className={className} />;
   return (
     <svg
       aria-hidden="true"
       className={className}
+      // The same default size as a lucide icon, so both kinds match.
+      width={24}
+      height={24}
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
@@ -450,7 +457,7 @@ export function AnimalIcon({
       strokeLinecap="round"
       strokeLinejoin="round"
     >
-      {(DRAWN as Partial<Record<AnimalId, ReactNode>>)[id]}
+      {drawn}
     </svg>
   );
 }
