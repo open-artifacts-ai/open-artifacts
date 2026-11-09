@@ -166,7 +166,7 @@ export function AskBlock({
                     size="sm"
                     className={`h-auto w-full items-start justify-start gap-2 py-1 text-left whitespace-normal ${
                       sel
-                        ? "bg-[var(--oa-accent-soft)] ring-2 ring-primary disabled:opacity-100"
+                        ? "bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] disabled:opacity-100"
                         : ""
                     }`}
                     disabled={
