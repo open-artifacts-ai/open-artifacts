@@ -184,6 +184,29 @@ describe("ci.yml", () => {
     expect(step.run).toContain("command -v shellcheck");
     expect(step.run).toContain(".github/workflows/*.yml");
   });
+  it("the actionlint download retries transient and connection errors", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const step = w.jobs.lint.steps.find((s: any) =>
+      (s.run ?? "").includes("actionlint"),
+    );
+    const curl = /curl [^\n]*\\\n[^\n]*/.exec(step.run)?.[0] ?? "";
+    expect(curl).toMatch(/--retry 5 /);
+    expect(curl).toContain("--retry-all-errors");
+    // -f stays: an HTTP error that outlasts the retries still fails the step.
+    expect(curl).toMatch(/ -[a-zA-Z]*f/);
+  });
+  it("public-only runs on the merge queue, not on pull requests, and needs nothing from it", () => {
+    const job = w.jobs["public-only"];
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(job.if).toBe("${{ github.event_name != 'pull_request' }}");
+    // Nothing waits on it: a skipped job must not hold an aggregate.
+    for (const [name, j] of Object.entries<{ needs?: string | string[] }>(
+      w.jobs,
+    ))
+      expect([j.needs ?? []].flat(), `${name} needs`).not.toContain(
+        "public-only",
+      );
+  });
   it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
     const job = w.jobs["e2e-shard"];
     // Pull requests run two shards (free plan, 20 concurrent jobs; #965);
