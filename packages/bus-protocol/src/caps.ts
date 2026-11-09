@@ -47,6 +47,15 @@ export const BUS_CAPS = {
    */
   links: "links",
   /**
+   * Scoped role reach (#1346): a role the member gave reach to other
+   * namespaces lets its holder see and message the agents there (each row
+   * carries its own `namespace`; a name in two namespaces is `ambiguous`
+   * until the send names `to_namespace`), and those agents reply to it. The
+   * hub widens a socket's roster and routing only when its hello listed it,
+   * and lists it in `hello_ok.caps`; any other socket sees today's behaviour.
+   */
+  reach: "reach",
+  /**
    * Follows (#1317): the client may send `follow`, `unfollow` and `following`
    * and decodes `followed`, `unfollowed`, `follows` and the `follow_limit`
    * error. The hub answers those frames only on a socket whose hello listed

@@ -35,6 +35,7 @@ import {
 } from "@oa/bus-protocol";
 import {
   BUS_LINK_MAX,
+  BUS_REACH_MAX,
   BUS_ROLE_MAX,
   type BusAgent,
   type BusLink,
@@ -74,6 +75,16 @@ import {
   type PutLinkResult,
   removeLink,
 } from "./links.js";
+import {
+  addReach,
+  holderReaches,
+  holdersReaching,
+  listReach,
+  type PutReachResult,
+  type ReachGrant,
+  reachNamespaces,
+  removeReach,
+} from "./reach.js";
 import {
   type DecideResult,
   decideProposal,
@@ -288,6 +299,7 @@ const HUB_CAPS = [
   BUS_CAPS.ids,
   BUS_CAPS.mailbox,
   BUS_CAPS.links,
+  BUS_CAPS.reach,
   BUS_CAPS.follow,
 ];
 
@@ -325,6 +337,17 @@ const mailboxGated = (ws: WebSocket | null): boolean => {
 const linksGated = (ws: WebSocket | null): boolean => {
   const caps = ws ? attachmentOf(ws)?.caps : undefined;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.links);
+};
+
+/**
+ * Scoped role reach (#1346, BUS_CAPS.reach): a role holder's roster and sends
+ * reach the namespaces its role was given, and the agents there reply to it,
+ * only when the socket's hello listed it. Fails closed, like linksGated: any
+ * other socket sees today's behaviour.
+ */
+const reachGated = (ws: WebSocket | null): boolean => {
+  const caps = ws ? attachmentOf(ws)?.caps : undefined;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.reach);
 };
 
 /**
@@ -529,6 +552,7 @@ function rosterAudience(
   changed: string[],
   machines: string[],
   linkMachines: ReadonlySet<string>,
+  reachMachines: ReadonlySet<string>,
 ): Map<string, string[]> {
   const out = directAudience(sql, changed, machines);
   // #1567: a namespace linked to a changed one sees its agents too, so the
@@ -554,6 +578,28 @@ function rosterAudience(
         if (!cur.includes(r)) cur.push(r);
       } else out.set(row.machineId, [r]);
     }
+  // #1346: the machine hosting a live holder of a role that reaches a changed
+  // namespace hears `roster_changed{holder's namespace}`: its roster shows the
+  // changed namespace's agents. Only a reach-capable machine can use it.
+  if (reachMachines.size > 0)
+    for (const x of changed)
+      for (const id of holdersReaching(sql, OWNER_ORG_ID, x))
+        for (const row of all<{ machineId: string; namespace: string }>(
+          sql,
+          "select machine_id as machineId, namespace from agents where id = ? and org_id = ? and live = 1",
+          id,
+          OWNER_ORG_ID,
+        )) {
+          if (!reachMachines.has(row.machineId) || wanted.has(row.namespace))
+            continue;
+          const cur = out.get(row.machineId);
+          // `changed` itself is shared by every global machine: copy, never push.
+          if (cur === changed)
+            out.set(row.machineId, [...changed, row.namespace]);
+          else if (cur) {
+            if (!cur.includes(row.namespace)) cur.push(row.namespace);
+          } else out.set(row.machineId, [row.namespace]);
+        }
   return out;
 }
 
@@ -610,6 +656,8 @@ type RosterChange = {
   global: boolean;
   /** #1567: a link change; only links-capable sockets hear it. */
   linksOnly?: boolean;
+  /** #1346: a reach change; only reach-capable sockets hear it. */
+  reachOnly?: boolean;
 };
 
 /**
@@ -653,7 +701,8 @@ function notifyRoster(
         w !== except &&
         w.readyState === OPEN &&
         !isReplaced(w) &&
-        (change.linksOnly !== true || linksGated(w)),
+        (change.linksOnly !== true || linksGated(w)) &&
+        (change.reachOnly !== true || reachGated(w)),
     );
   if (sockets.length === 0) return;
   const linkMachines = new Set(
@@ -662,12 +711,24 @@ function notifyRoster(
       .map(machineOf)
       .filter((m): m is string => m !== null),
   );
+  const reachMachines = new Set(
+    sockets
+      .filter((w) => reachGated(w))
+      .map(machineOf)
+      .filter((m): m is string => m !== null),
+  );
   const machines = [
     ...new Set(sockets.map(machineOf).filter((m): m is string => m !== null)),
   ];
   const audience = change.global
     ? everyDaemonAudience(ctx.storage.sql)
-    : rosterAudience(ctx.storage.sql, changed, machines, linkMachines);
+    : rosterAudience(
+        ctx.storage.sql,
+        changed,
+        machines,
+        linkMachines,
+        reachMachines,
+      );
   const encoded = new Map<string, string>();
   const frameFor = (namespace: string) => {
     let f = encoded.get(namespace);
@@ -1113,6 +1174,32 @@ function awayHolder(
   // Nothing else holds it: no live agent, no role, and no minted name (the
   // old agent's own included, which nameTaken skips for it).
   if (nameTaken(sql, namespace, name, global, r.agentId, now)) return null;
+  // #1346: mail that crossed a namespace boundary (admitted by a reach grant,
+  // which may be gone by now) waits for its holder: the newcomer may hold no
+  // such grant. Pending in-session mail from another namespace blocks the
+  // takeover unless its sender is global or its namespace is linked to the
+  // holder's. A sender row that no longer exists counts as not global.
+  const holder = one<{ ns: string; global: number; start: number }>(
+    sql,
+    "select namespace as ns, global, session_start_rowid as start from agents where id = ?",
+    r.agentId,
+  );
+  if (holder === null) return null;
+  if (holder.global !== 1) {
+    const foreign = all<{ ns: string }>(
+      sql,
+      `select distinct rc.namespace as ns
+         from receipts rc indexed by receipts_to
+         left join agents s on s.id = rc.from_agent
+        where rc.to_agent = ? and rc.state = 'pending' and rc.rowid > ?
+          and rc.namespace <> ? and coalesce(s.global, 0) <> 1`,
+      r.agentId,
+      holder.start,
+      holder.ns,
+    );
+    for (const f of foreign)
+      if (!isLinked(sql, OWNER_ORG_ID, holder.ns, f.ns)) return null;
+  }
   const minted = one(
     sql,
     "select 1 as x from minted_names where org_id = ? and lname = ?",
@@ -1763,6 +1850,29 @@ function agentDown(
 }
 
 /**
+ * The namespaces besides its own that a non-global agent sees and reaches:
+ * those linked to its own (#1567, `withLinks`) and those its roles reach
+ * (#1346, `withReach`), sorted, never its own. Empty for a global agent or a
+ * socket without either cap, so every path using it is today's.
+ */
+function scopeNamespaces(
+  sql: SqlStorage,
+  agent: AgentRow,
+  withLinks: boolean,
+  withReach: boolean,
+): string[] {
+  if (agent.global === 1) return [];
+  const out = new Set<string>();
+  if (withLinks)
+    for (const n of linkedNamespaces(sql, OWNER_ORG_ID, agent.namespace))
+      out.add(n);
+  if (withReach)
+    for (const n of reachNamespaces(sql, OWNER_ORG_ID, agent.id)) out.add(n);
+  out.delete(agent.namespace);
+  return [...out].sort();
+}
+
+/**
  * A non-global agent sees its namespace plus every global agent; a global
  * agent sees every open agent. `state` is always sent: live while the
  * agent's machine holds an open, current socket (machineOnline, as the
@@ -1778,15 +1888,14 @@ function roster(
   now: number,
   withAway = false,
   withLinks = false,
+  withReach = false,
 ): ServerFrame {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
   // #1567: a links-capable non-global socket also sees the namespaces linked
   // to its own (direct links only). Own namespace first, then linked ones.
-  const linked =
-    withLinks && agent.global !== 1
-      ? linkedNamespaces(sql, OWNER_ORG_ID, agent.namespace)
-      : [];
+  // #1346: a reach-capable one also sees what its roles reach.
+  const linked = scopeNamespaces(sql, agent, withLinks, withReach);
   const nsRank = (ns: string) =>
     linked.length === 0
       ? 0
@@ -2361,6 +2470,7 @@ function resolveTarget(
   toNamespace: string | undefined,
   now: number,
   withLinks = false,
+  withReach = false,
 ): Resolution {
   const lname = toName.toLowerCase();
   // A former name is never held by two agents in one scope (nameTaken);
@@ -2382,10 +2492,8 @@ function resolveTarget(
   // #1567: the namespaces directly linked to the sender's (never transitive),
   // for a links-capable non-global sender only. Any other sender has none, so
   // every path below is today's.
-  const linked =
-    withLinks && sender.global !== 1
-      ? linkedNamespaces(sql, OWNER_ORG_ID, sender.namespace)
-      : [];
+  // #1346: the namespaces its roles reach join them, for a reach-capable one.
+  const linked = scopeNamespaces(sql, sender, withLinks, withReach);
   if (sender.global !== 1) {
     if (toNamespace !== undefined && linked.includes(toNamespace)) {
       // A linked namespace is reached as a global sender reaches any.
@@ -2404,6 +2512,29 @@ function resolveTarget(
       // same refusal, so it cannot probe what exists in another namespace.
       const hit = liveGlobalHomedIn(sql, toNamespace, lname);
       if (hit) return { ok: true, agent: hit };
+      // #1346: the reply path. The agent in X whose role reaches the sender's
+      // namespace may be answered, by that one agent only, however it is
+      // named: its live or away name, a former name, or the role's own name
+      // (a reach-capable sender; the holder is not in the sender's roster).
+      if (withReach) {
+        const back = (r: Resolution | null): Resolution | null =>
+          r?.ok &&
+          r.agent.global !== 1 &&
+          holderReaches(sql, OWNER_ORG_ID, r.agent.id, sender.namespace)
+            ? r
+            : null;
+        const reply =
+          back(resolveRoleIn(sql, OWNER_ORG_ID, toNamespace, lname)) ??
+          back(
+            (() => {
+              const h = liveVisibleIn(sql, toNamespace, lname);
+              return h ? { ok: true as const, agent: h } : null;
+            })(),
+          ) ??
+          back(awayAgent(sql, toNamespace, lname, now)) ??
+          back(formerIn({ ns: toNamespace }));
+        if (reply) return reply;
+      }
       return formerIn({ homedIn: toNamespace }) ?? refused("other_namespace");
     }
     const hit = visibleIn(sender.namespace);
@@ -3293,23 +3424,80 @@ export class BusHub extends DurableObject<Env> {
     name: string,
     agentId: string | null,
   ): Promise<PutRoleResult> {
-    const r = putRole(
-      this.ctx.storage.sql,
-      OWNER_ORG_ID,
-      namespace,
-      name,
-      agentId,
-      this.#now(),
-      newId,
-      this.#maxRoles,
+    const r = this.#withReachNotice(() =>
+      putRole(
+        this.ctx.storage.sql,
+        OWNER_ORG_ID,
+        namespace,
+        name,
+        agentId,
+        this.#now(),
+        newId,
+        this.#maxRoles,
+      ),
     );
     logEvent("role_set", r.ok ? { ok: 1 } : { reason: r.reason });
     return r;
   }
 
+  /**
+   * #1346: runs `fn` (a role change) and tells the reach-capable machines of
+   * every namespace where a granted role's holder or grants changed (a role
+   * moved, vacated or removed), so a roster follows at once. Nothing is sent
+   * when no granted role was touched.
+   */
+  #withReachNotice<R>(fn: () => R): R {
+    const sql = this.ctx.storage.sql;
+    // Each granted role with its effective holder (live, non-global, in the
+    // role's namespace; '' when vacant): what reach is read from.
+    const snap = () =>
+      new Set(
+        all<{ k: string }>(
+          sql,
+          `select g.role_ns || char(0) || g.lname || char(0) || coalesce(a.id, '') as k
+             from (select distinct role_ns, lname from reach_grants where org_id = ?) g
+             left join roles r on r.org_id = ? and r.namespace = g.role_ns and r.lname = g.lname
+             left join agents a on a.id = r.agent_id and a.live = 1 and a.global = 0 and a.namespace = r.namespace`,
+          OWNER_ORG_ID,
+          OWNER_ORG_ID,
+        ).map((r) => r.k),
+      );
+    const before = snap();
+    const out = fn();
+    const after = snap();
+    const changed = new Set<string>();
+    const holders = new Set<string>();
+    for (const k of [
+      ...[...before].filter((k) => !after.has(k)),
+      ...[...after].filter((k) => !before.has(k)),
+    ]) {
+      const [ns, , id] = k.split("\0");
+      if (ns) changed.add(ns);
+      if (id) holders.add(id);
+    }
+    // The holder's own machine hears it where the holder is now, which may
+    // not be the role's namespace (it moved).
+    if (holders.size > 0)
+      for (const r of all<{ namespace: string }>(
+        sql,
+        "select distinct namespace from agents where id in (select value from json_each(?)) and live = 1",
+        JSON.stringify([...holders]),
+      ))
+        changed.add(r.namespace);
+    if (changed.size > 0)
+      notifyRoster(this.ctx, {
+        namespaces: [...changed],
+        global: false,
+        reachOnly: true,
+      });
+    return out;
+  }
+
   /** #1296: removes role `id` (its name is free at once); false when unknown. Worker only. */
   async deleteRole(id: string): Promise<boolean> {
-    return deleteRole(this.ctx.storage.sql, OWNER_ORG_ID, id);
+    return this.#withReachNotice(() =>
+      deleteRole(this.ctx.storage.sql, OWNER_ORG_ID, id),
+    );
   }
 
   // ------------------------------------------------------------------ links
@@ -3319,6 +3507,55 @@ export class BusHub extends DurableObject<Env> {
   /** Tests only (static, not RPC): the link cap (null: BUS_LINK_MAX). */
   static setMaxLinksForTests(hub: BusHub, max: number | null): void {
     hub.#maxLinks = max ?? BUS_LINK_MAX;
+  }
+
+  // ------------------------------------------------------------------ reach
+
+  /** #1346: the member's reach grants. Worker only. */
+  async listReach(): Promise<ReachGrant[]> {
+    return listReach(this.ctx.storage.sql, OWNER_ORG_ID, BUS_REACH_MAX);
+  }
+
+  /**
+   * #1346: lets role (`roleNamespace`, `roleName`) reach `target` (idempotent).
+   * Reach-capable sockets hear `roster_changed` and see it live. Worker only
+   * (a later PR's REST and confirm page); no frame grants reach.
+   */
+  async putReach(
+    roleNamespace: string,
+    roleName: string,
+    target: string,
+  ): Promise<PutReachResult> {
+    const r = addReach(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      roleNamespace,
+      roleName,
+      target,
+      this.#now(),
+      newId,
+      BUS_REACH_MAX,
+    );
+    if (r.ok && r.created)
+      notifyRoster(this.ctx, {
+        namespaces: [roleNamespace],
+        global: false,
+        reachOnly: true,
+      });
+    logEvent("reach_set", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /** #1346: removes grant `id`; false when unknown. Live at once. Worker only. */
+  async deleteReach(id: string): Promise<boolean> {
+    const gone = removeReach(this.ctx.storage.sql, OWNER_ORG_ID, id);
+    if (gone)
+      notifyRoster(this.ctx, {
+        namespaces: [gone.roleNamespace],
+        global: false,
+        reachOnly: true,
+      });
+    return gone !== null;
   }
 
   /**
@@ -3490,14 +3727,16 @@ export class BusHub extends DurableObject<Env> {
     tokenHash: string,
     decision: "confirm" | "reject",
   ): Promise<DecideResult> {
-    const r = decideProposal(
-      this.ctx.storage.sql,
-      OWNER_ORG_ID,
-      tokenHash,
-      decision,
-      this.#now(),
-      newId,
-      this.#maxRoles,
+    const r = this.#withReachNotice(() =>
+      decideProposal(
+        this.ctx.storage.sql,
+        OWNER_ORG_ID,
+        tokenHash,
+        decision,
+        this.#now(),
+        newId,
+        this.#maxRoles,
+      ),
     );
     logEvent("role_decided", r.ok ? { ok: 1 } : { reason: r.reason });
     return r;
@@ -4065,6 +4304,7 @@ export class BusHub extends DurableObject<Env> {
           ...(hasCap(f, BUS_CAPS.ids) ||
           hasCap(f, BUS_CAPS.mailbox) ||
           hasCap(f, BUS_CAPS.links) ||
+          hasCap(f, BUS_CAPS.reach) ||
           hasCap(f, BUS_CAPS.follow)
             ? { caps: [...HUB_CAPS] }
             : {}),
@@ -4112,11 +4352,8 @@ export class BusHub extends DurableObject<Env> {
         // ref takes over the old one's agent row (address, former names, mail).
         if (f.replaces !== undefined && mailboxGated(ws))
           takeOver(sql, machineId, f.replaces, f.agent_ref, this.#now());
-        const { reply, change, arms, moved } = agentUp(
-          sql,
-          machineId,
-          f,
-          this.#now(),
+        const { reply, change, arms, moved } = this.#withReachNotice(() =>
+          agentUp(sql, machineId, f, this.#now()),
         );
         for (const t of arms) this.#arm(t);
         this.#adoptHeld(moved, registeredAgent(sql, machineId, f.agent_ref));
@@ -4135,7 +4372,9 @@ export class BusHub extends DurableObject<Env> {
         return;
       }
       case "agent_down": {
-        const a = agentDown(sql, machineId, f.agent_ref, this.#now());
+        const a = this.#withReachNotice(() =>
+          agentDown(sql, machineId, f.agent_ref, this.#now()),
+        );
         if (a === null) return;
         this.#closeSessions([a.id]);
         notifyRoster(
@@ -4157,6 +4396,7 @@ export class BusHub extends DurableObject<Env> {
               this.#now(),
               mailboxGated(ws),
               linksGated(ws),
+              reachGated(ws),
             ),
           );
         return;
@@ -4616,6 +4856,7 @@ export class BusHub extends DurableObject<Env> {
       f.to_namespace,
       now,
       linksGated(ws),
+      reachGated(ws),
     );
     // A reply (`to_id`) goes only to the agent it answers: never to whoever
     // holds the name now (wireReason shows agent_gone only to an ids socket).
