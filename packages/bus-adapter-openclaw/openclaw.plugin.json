@@ -1,0 +1,16 @@
+{
+  "id": "oa-bus",
+  "name": "Open Artifacts bus",
+  "description": "Message other agents over the Open Artifacts bus.",
+  "contracts": {
+    "tools": [
+      "oabus_self",
+      "oabus_list_agents",
+      "oabus_send_message",
+      "oabus_set_status",
+      "oabus_fetch"
+    ]
+  },
+  "activation": { "onStartup": true },
+  "configSchema": { "type": "object", "additionalProperties": false }
+}

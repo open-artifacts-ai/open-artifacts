@@ -63,10 +63,10 @@ const pub = async (bytes: Uint8Array, id?: string) =>
   );
 
 type Up = { uploadId: string; artifactId: string; url: string };
-const reserve = async (bytes: Uint8Array): Promise<Up> => {
+const reserve = async (bytes: Uint8Array, sha256?: string): Promise<Up> => {
   const r = await api(app, R.uploads, cookie, {
     method: "POST",
-    body: { path: "u.pdf", size: bytes.length },
+    body: { path: "u.pdf", size: bytes.length, ...(sha256 ? { sha256 } : {}) },
   });
   expect(r.status).toBe(201);
   return (await r.json()) as Up;
@@ -129,6 +129,37 @@ describe("contentHash on versions", () => {
     const a = await checkAnchor(paid, art(up.artifactId), pin({ version: 1 }));
     expect(a.anchor).toMatchObject({ contentHash: await hex(bytes) });
   });
+
+  it.each(["free", "paid"])(
+    "R2-verified client checksum gives %s uploads a version and pin hash without a reread",
+    async (plan) => {
+      const bytes = new TextEncoder().encode(`%PDF-1.4\n% client ${newId()}\n`);
+      const sha256 = await hex(bytes);
+      const up = await reserve(bytes, sha256.toUpperCase());
+      const get = vi.fn(() => {
+        throw new Error("must not reread uploaded bytes");
+      });
+      const e = withEnv({
+        PLAN: plan,
+        FILES: {
+          put: (...a: Parameters<R2Bucket["put"]>) => env.FILES.put(...a),
+          delete: (k: string) => env.FILES.delete(k),
+          get,
+        },
+      });
+      expect((await put(up, bytes, e)).status).toBe(204);
+      expect(get).not.toHaveBeenCalled();
+      expect(await publishUpload(up)).toBe(201);
+      expect((await versions(up.artifactId))[0]?.contentHash).toBe(sha256);
+      const anchor = await checkAnchor(
+        { DB: env.DB, FILES: { get }, PLAN: plan } as never,
+        art(up.artifactId),
+        pin({ version: 1 }),
+      );
+      expect(anchor.anchor).toMatchObject({ contentHash: sha256 });
+      expect(get).not.toHaveBeenCalled();
+    },
+  );
 
   it("on a free instance an upload has no digest: null, and a pin stamps null with no R2 read", async () => {
     const up = await uploaded(

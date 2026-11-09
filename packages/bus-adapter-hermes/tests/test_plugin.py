@@ -20,7 +20,8 @@ def plugin(replies=None, known=None):
     known = known or {"root-1": "root-1", "rot": "root-1"}
     ctx = support.FakeCtx()
     roots = Roots(known.get)
-    bus = Bus(roots, inject=ctx.inject_message, spawn=support.inline_spawn, start="t")
+    bus = Bus(roots, inject=ctx.inject_message, spawn=support.inline_spawn, start="t",
+               habits_marker=support.habits_marker())
     link = support.FakeLink(ref="root-1", replies=replies or {})
     bus.ensure = lambda ref: link
     register(ctx, roots=roots, bus=bus)
