@@ -458,7 +458,7 @@ describe("free-tier caps: config, off until set", () => {
     expect(third.status).toBe(403);
     expect(await errOf(third)).toMatchObject({
       code: "plan_limit",
-      details: { tier: "free", limit: "data_docs", max: 2 },
+      details: { tier: "solo", limit: "data_docs", max: 2 },
     });
     // An update of a doc that exists: passes (3 writes, then 4).
     expect((await put(e, id, "a")).status).toBe(200);

@@ -7,10 +7,10 @@ import type {
   KeyRef,
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { answerError, useAnswerAsk } from "../../api/comments";
 import { TXT } from "../ui";
-import { clockTime, versionDate } from "../versionDate";
+import { versionDate } from "../versionDate";
 
 const MUTED = "text-muted-foreground";
 
@@ -67,139 +67,202 @@ export function Delivery({ c }: { c: CommentT }) {
   );
 }
 
+const letter = (i: number) => String.fromCharCode(65 + i);
+
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
   artifactId,
   thread,
   c,
   next,
+  reply,
 }: {
   artifactId: string;
   thread: CommentThread;
   c: CommentT;
   /** Jump to the next unanswered ask, when there is one. */
   next?: () => void;
+  /** Open this thread's reply composer, when the viewer may comment. */
+  reply?: () => void;
 }) {
   const ask = c.ask;
   const answer = useAnswerAsk(artifactId);
   const [err, setErr] = useState<unknown>(null);
   const [open, setOpen] = useState(false);
+  const [changing, setChanging] = useState(false);
   const qid = useId();
+  const picked = ask?.answer?.optionId;
+  // A later answer, even one made elsewhere, ends the old failure and the Change mode.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` is the trigger.
+  useEffect(() => {
+    setErr(null);
+    setChanging(false);
+  }, [picked]);
   if (!ask) return null;
   const mine = ask.to.some((a) => a.me);
   const canAnswer = mine && !ask.closed;
-  const picked = ask.answer?.optionId;
-  const pickedOpt = ask.options.find((o) => o.id === picked);
-  // Decided and closed: one line, with a way to open it again.
-  if (ask.closed && pickedOpt && !open)
-    return (
-      <div
+  const pickedIdx = ask.options.findIndex((o) => o.id === picked);
+  const pickedOpt = ask.options[pickedIdx];
+  const locked = !!pickedOpt && !changing;
+  const decided = ask.closed && pickedOpt;
+  const line = decided && (
+    <>
+      <button
+        type="button"
         data-ask-decided=""
-        className={`flex items-center gap-2 rounded-md bg-muted px-2 py-1 ${TXT}`}
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={`flex w-full cursor-pointer items-center gap-2 rounded-md border-0 bg-[var(--oa-success-soft)] px-2 py-1 text-left font-medium text-[var(--oa-success-fg)] ${TXT}`}
       >
         <span className="min-w-0 flex-1 break-words">
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
           {pickedOpt.label} · {ask.answer?.by.me ? "you" : ask.answer?.by.name},{" "}
-          {clockTime(ask.answer?.at ?? "")}
+          {versionDate(ask.answer?.at ?? "")}
         </span>
-        <Button size="xs" variant="ghost" onClick={() => setOpen(true)}>
-          Show
+        <span className="shrink-0 font-semibold">
+          {open ? "Hide" : "Show"}{" "}
+          <span aria-hidden="true">{open ? "▴" : "▾"}</span>
+        </span>
+      </button>
+      {reply && (
+        <Button
+          size="xs"
+          variant="link"
+          className="h-auto self-start p-0"
+          onClick={reply}
+        >
+          Reply to ask for a change
         </Button>
-      </div>
-    );
+      )}
+    </>
+  );
   return (
-    <div
-      className="flex flex-col gap-2 rounded-md border border-border p-2"
-      data-ask=""
-    >
-      <p className={`${TXT} ${MUTED}`}>
-        Ask for {ask.to.map((a) => (a.me ? "you" : a.name)).join(", ")}
-      </p>
-      <p id={qid} className={`${TXT} font-semibold break-words`}>
-        {ask.question}
-      </p>
-      <ul
-        aria-labelledby={qid}
-        className="m-0 flex list-none flex-col gap-1 p-0"
-      >
-        {ask.options.map((o) => {
-          const rec = ask.recommended?.optionId === o.id;
-          return (
-            <li key={o.id}>
-              <Button
-                variant="outline"
-                size="sm"
-                className="h-auto w-full justify-start gap-2 py-1 text-left whitespace-normal"
-                disabled={!canAnswer || answer.isPending || picked === o.id}
-                aria-pressed={picked === o.id}
-                data-option={o.id}
-                onClick={() => {
-                  setErr(null);
-                  answer.mutate(
-                    { thread: thread.id, comment: c.id, optionId: o.id },
-                    { onError: setErr },
-                  );
-                }}
-              >
-                <span className="min-w-0 flex-1 break-words">
-                  <b>{o.label}</b>
-                  {rec && (
-                    <span className={`ml-2 ${TXT} font-medium`}>
-                      Recommended
+    <div className="flex flex-col gap-1">
+      {line}
+      {(!decided || open) && (
+        <div
+          // Amber only while it needs this reader: an ask for you with no pick yet.
+          className={`flex flex-col gap-2 rounded-md p-2 ring-1 ${
+            canAnswer && !pickedOpt ? "ring-[var(--oa-warning)]" : "ring-border"
+          }`}
+          data-ask=""
+          data-needs-you={canAnswer && !pickedOpt ? "" : undefined}
+        >
+          {/* The card's own header already names the asker and the time. */}
+          <p className={`${TXT} ${MUTED}`}>Ask</p>
+          <p id={qid} className={`${TXT} font-semibold break-words`}>
+            {ask.question}
+          </p>
+          <ul
+            aria-labelledby={qid}
+            className="m-0 flex list-none flex-col gap-1 p-0"
+          >
+            {ask.options.map((o, i) => {
+              const rec = ask.recommended?.optionId === o.id;
+              const sel = picked === o.id;
+              return (
+                <li key={o.id}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className={`h-auto w-full items-start justify-start gap-2 py-1 text-left whitespace-normal ${
+                      sel
+                        ? "bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] disabled:opacity-100"
+                        : ""
+                    }`}
+                    disabled={
+                      !canAnswer || answer.isPending || sel || (locked && !sel)
+                    }
+                    aria-pressed={sel}
+                    data-option={o.id}
+                    onClick={() => {
+                      setErr(null);
+                      answer.mutate(
+                        { thread: thread.id, comment: c.id, optionId: o.id },
+                        { onError: setErr },
+                      );
+                    }}
+                  >
+                    <span
+                      data-option-key=""
+                      className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
+                    >
+                      {letter(i)}
                     </span>
-                  )}
-                  {o.detail && (
-                    <span className={`block font-normal ${MUTED}`}>
-                      {o.detail}
+                    <span className="min-w-0 flex-1 break-words">
+                      <b>{o.label}</b>
+                      {rec && (
+                        <span
+                          className={`ml-2 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                        >
+                          Recommended
+                        </span>
+                      )}
+                      {o.detail && (
+                        <span className={`block font-normal ${MUTED}`}>
+                          {o.detail}
+                        </span>
+                      )}
                     </span>
-                  )}
-                </span>
+                  </Button>
+                </li>
+              );
+            })}
+          </ul>
+          {ask.recommended?.why && (
+            <p className={`${TXT} ${MUTED} break-words`}>
+              Why: {ask.recommended.why}
+            </p>
+          )}
+          {ask.answer && pickedOpt && (
+            <p className={`${TXT} font-medium`} data-ask-answer="">
+              {ask.answer.by.me ? "You" : ask.answer.by.name} picked{" "}
+              {letter(pickedIdx)} · {versionDate(ask.answer.at)}
+              {ask.closed ? " · closed" : ""}
+              {canAnswer && locked && (
+                <>
+                  {" · "}
+                  <Button
+                    size="xs"
+                    variant="link"
+                    className="h-auto p-0"
+                    onClick={() => setChanging(true)}
+                  >
+                    Change
+                  </Button>
+                </>
+              )}
+            </p>
+          )}
+          {!mine && !ask.closed && (
+            <p className={`${TXT} ${MUTED}`}>
+              Only the people asked can answer.
+            </p>
+          )}
+          {err != null && (
+            <p role="alert" className={`${TXT} text-destructive`}>
+              {answerError(err)}
+            </p>
+          )}
+          <div className="flex gap-2">
+            {next && canAnswer && (
+              <Button size="xs" variant="outline" onClick={next}>
+                Next ask ↓
               </Button>
-            </li>
-          );
-        })}
-      </ul>
-      {ask.recommended?.why && (
-        <p className={`${TXT} ${MUTED} break-words`}>
-          Why: {ask.recommended.why}
-        </p>
+            )}
+          </div>
+        </div>
       )}
-      {ask.answer && pickedOpt && (
-        <p className={`${TXT} font-medium`} data-ask-answer="">
-          {ask.answer.by.me ? "You" : ask.answer.by.name} picked{" "}
-          {pickedOpt.label} · {versionDate(ask.answer.at)}
-          {ask.closed ? " · closed" : ""}
-        </p>
-      )}
-      {!mine && !ask.closed && (
-        <p className={`${TXT} ${MUTED}`}>Only the people asked can answer.</p>
-      )}
-      {err != null && (
-        <p role="alert" className={`${TXT} text-destructive`}>
-          {answerError(err)}
-        </p>
-      )}
-      <div className="flex gap-2">
-        {next && canAnswer && (
-          <Button size="xs" variant="outline" onClick={next}>
-            Next ask
-          </Button>
-        )}
-        {open && (
-          <Button size="xs" variant="ghost" onClick={() => setOpen(false)}>
-            Hide
-          </Button>
-        )}
-      </div>
     </div>
   );
 }
 
 /** The @ picker's matches for the text before the caret, or null when no mention is being typed. */
 export function mentionQuery(before: string): string | null {
-  const m = /(?:^|\s)@([\w .-]{0,40})$/.exec(before);
+  // A trailing "-" or "." is punctuation after the name ("@Bob-"), not part of it.
+  const m = /(?:^|\s)@([\w .-]{0,40}?)[.-]*$/.exec(before);
   return m ? (m[1] ?? "") : null;
 }
 
@@ -240,7 +303,10 @@ export function mentionedKeys(
   let rest = text;
   const keys: string[] = [];
   for (const a of [...agents].sort((x, y) => y.name.length - x.name.length)) {
-    const re = new RegExp(`(^|\\s)@${esc(a.name)}(?=$|[\\s.,;:!?)\\]])`, "i");
+    const re = new RegExp(
+      `(^|\\s)@${esc(a.name)}(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))`,
+      "i",
+    );
     const m = re.exec(rest);
     if (!m) continue;
     keys.push(a.key);

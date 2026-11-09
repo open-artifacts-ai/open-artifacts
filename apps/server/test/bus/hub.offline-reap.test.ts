@@ -311,10 +311,10 @@ describe("offline reap (open-bus #422)", () => {
     const w = await machine("Watcher");
     const v = await connect(w.token, true);
     await reg(v, "s", uniq("Sender"), n);
-    expect(await reg(v, "x", now, n)).toBe(`${now}-2`);
+    // The chosen former name stays reserved; the current one, away, goes to a
+    // restarted session (#1742).
     expect(await reg(v, "y", old, n)).toBe(`${old}-2`);
-    // #1295: the away agent's mailbox takes mail.
-    expect((await send(v, "s", now)).state).toBe("pending");
+    expect(await reg(v, "x", now, n)).toBe(now);
     v.close();
     // A close keeps the rename log (OpenBus #446): the rolling hour purges it.
     expect(await count("rename_rl")).toBeGreaterThan(0);

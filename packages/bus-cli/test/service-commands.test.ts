@@ -2,7 +2,9 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -136,14 +138,14 @@ describe("install through the service", () => {
       ),
     );
     expect(oc.mcp.servers.oa_bus.command).toEqual([
-      process.execPath,
+      join(ctx.home, "bin/node"),
       entry,
       "mcp",
       "opencode",
     ]);
     expect(existsSync(entry)).toBe(true);
     expect(calls).toContain(
-      `claude mcp add --scope user oa_bus -- ${process.execPath} ${entry} mcp claude`,
+      `claude mcp add --scope user oa_bus -- ${join(ctx.home, "bin/node")} ${entry} mcp claude`,
     );
   });
 
@@ -207,18 +209,18 @@ describe("status and doctor report the service", () => {
     expect(b.ctx.out()).not.toContain(NO_SERVICE[0]);
   });
 
-  it("doctor: the service passes; a gone node fails, lingering off warns", async () => {
-    const { ctx } = withService("linux", () => false, {
-      execPath: "/gone/node",
-    });
+  it("doctor: the service passes; a gone launcher fails, lingering off warns", async () => {
+    const { ctx } = withService("linux", () => false);
     ctx.fetch = vi.fn(async () => new Response("ok")) as never;
     await ctx.service.ensure();
-    // A gone Node fails: after a reboot the service cannot start.
+    const launcher = join(ctx.home, "bin/node");
+    rmSync(launcher);
+    // A gone launcher fails: after a reboot the service cannot start.
     expect(await doctor(ctx)).toBe(1);
     expect(ctx.all()).toEqual(
       expect.arrayContaining([
         "[[success]]✓[[/success]]  Daemon running as a systemd user service  [[muted]]pid 48213[[/muted]]",
-        "[[danger]]×[[/danger]]  The service runs a Node that is gone: /gone/node.",
+        expect.stringContaining("The service runs a Node that is gone:"),
         "   Run npx @open-artifacts/bus install to point it at your current Node.",
         "[[warning]]![[/warning]]  The daemon stops when you log out (systemd lingering is off).",
         "   Run loginctl enable-linger $USER to keep it running.",
@@ -226,6 +228,51 @@ describe("status and doctor report the service", () => {
       ]),
     );
     expect(ctx.out()).not.toContain(NO_SERVICE[0]);
+  });
+});
+
+describe("a Node upgrade or move does not break the bus (#1729)", () => {
+  const GONE = "/gone/old-node";
+  const files = (d: string): string[] =>
+    readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+      e.isDirectory()
+        ? files(join(d, e.name))
+        : e.isFile()
+          ? [join(d, e.name)]
+          : [],
+    );
+
+  it("the unit and every harness entry run the launcher; none holds the recorded node", async () => {
+    const { ctx, calls } = withService("linux", () => false, {
+      execPath: GONE,
+    });
+    ctx.env = { OA_BUS_BIN: "/tmp/_npx/oa-bus" };
+    // Every harness is present: claude, opencode, codex, pi, omp, hermes.
+    ctx.which = () => true;
+    const exec = ctx.exec;
+    ctx.exec = vi.fn(async (cmd: string, args: string[]) =>
+      cmd === "opencode" && args[0] === "--version"
+        ? { code: 0, stdout: "opencode v2.0.32\n", stderr: "" }
+        : exec(cmd, args),
+    );
+    expect(await install({ hub: HUB }, ctx)).toBe(0);
+    const launcher = join(ctx.home, "bin/node");
+    expect(existsSync(launcher)).toBe(true);
+    const holders = [ctx.userHome, ctx.home]
+      .flatMap(files)
+      .filter((f) => f !== launcher && readFileSync(f).includes(GONE));
+    expect(holders).toEqual([]);
+    expect(calls.filter((c) => c.includes(GONE))).toEqual([]);
+    expect(
+      calls.some((c) => c.startsWith("claude mcp add") && c.includes(launcher)),
+    ).toBe(true);
+    const naming = (name: string) =>
+      files(ctx.userHome).filter(
+        (f) => f.endsWith(name) && readFileSync(f, "utf8").includes(launcher),
+      );
+    expect(naming("oa-bus.service")).toHaveLength(1);
+    expect(naming("opencode.json")).toHaveLength(1);
+    expect(naming("config.toml")).toHaveLength(1);
   });
 });
 
