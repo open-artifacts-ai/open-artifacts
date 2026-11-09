@@ -3,6 +3,7 @@
 // homes and a fake exec that behaves like the real CLI (checked against
 // OpenClaw 2026.6.5 in a throwaway state dir); nothing real runs.
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -72,6 +73,8 @@ function setup(
     env?: Record<string, string>;
     /** The install command wipes the folder, then fails. */
     wipeThenFail?: boolean;
+    /** The install command swaps in a fresh copy (no marker), then fails. */
+    swapThenFail?: boolean;
     /** What inspect reports; the default is a loaded plugin. */
     inspect?: (enabled: boolean) => unknown;
   } = {},
@@ -117,6 +120,11 @@ function setup(
       if (key.startsWith("openclaw plugins install")) {
         if (args.includes("--force"))
           rmSync(dest, { recursive: true, force: true });
+        if (opts.swapThenFail) {
+          rmSync(dest, { recursive: true, force: true });
+          cpSync(src, dest, { recursive: true });
+          return { code: 1, stdout: "", stderr: "swapped" };
+        }
         if (opts.wipeThenFail) {
           rmSync(dest, { recursive: true, force: true });
           return { code: 1, stdout: "", stderr: "boom\nmore" };
@@ -440,6 +448,22 @@ describe("installAdapters: openclaw", () => {
     const out = await installAdapters(deps);
     expect(out.skipped[0]?.reason).toContain("boom");
     expect(existsSync(dest)).toBe(false);
+  });
+
+  it("does not put habits.on into a swapped-in folder that has no marker", async () => {
+    const { deps, dest } = setup({ swapThenFail: true });
+    put(join(dest, "openclaw.plugin.json"), '{"id":"oa-bus"}');
+    put(
+      join(dest, OPENCLAW_MARKER),
+      "managed by the Open Artifacts bus installer: old\n",
+    );
+    put(join(dest, OPENCLAW_HABITS_MARKER), "on\n");
+    const out = await installAdapters(deps);
+    expect(out.skipped[0]?.reason).toContain("swapped");
+    expect(existsSync(join(dest, "index.js"))).toBe(true);
+    expect(existsSync(join(dest, OPENCLAW_MARKER))).toBe(false);
+    // An interrupted upgrade loses the yes: the safe direction.
+    expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(false);
   });
 
   it("never replaces a folder that is not ours", async () => {
@@ -807,6 +831,117 @@ describe("openclaw habits: on, then off", () => {
     expect(existsSync(marker(foreign))).toBe(true);
     expect(existsSync(marker(target))).toBe(true);
     expect(r.notes.join("\n")).toContain("is a symlink");
+  });
+
+  it("off removes habits.on from a marker-less folder with our manifest id, and only that file", () => {
+    const home = tmp("oa-oc-habits-");
+    const dir = openclawPluginDir(home, {});
+    put(join(dir, "openclaw.plugin.json"), '{"id":"oa-bus"}');
+    put(join(dir, "index.js"), "my fork\n");
+    put(marker(dir), "on\n");
+    const r = setPluginHabits({ home, env: {} }, [openclaw], false);
+    expect(r.changed).toEqual([openclaw]);
+    expect(existsSync(marker(dir))).toBe(false);
+    expect(readFileSync(join(dir, "index.js"), "utf8")).toBe("my fork\n");
+    // Another plugin's folder is left alone.
+    const other = tmp("oa-oc-habits-");
+    const od = openclawPluginDir(other, {});
+    put(join(od, "openclaw.plugin.json"), '{"id":"other"}');
+    put(marker(od), "theirs\n");
+    expect(setPluginHabits({ home: other, env: {} }, [openclaw], false).changed).toEqual([]);
+    expect(existsSync(marker(od))).toBe(true);
+    // And a yes still needs our marker.
+    expect(setPluginHabits({ home, env: {} }, [openclaw], true).changed).toEqual([]);
+  });
+
+  describe("an off that cannot finish", () => {
+    const listed = (busHome: string) =>
+      (
+        JSON.parse(readFileSync(join(busHome, "install.json"), "utf8")).habits
+          ?.pluginDirs?.openclaw ?? []
+      ) as string[];
+    const seed = (busHome: string, dirs: string[]) =>
+      put(
+        join(busHome, "install.json"),
+        JSON.stringify({ habits: { pluginDirs: { openclaw: dirs } } }),
+      );
+    const unlessRoot = process.getuid?.() === 0 ? it.skip : it;
+
+    it("keeps an absent recorded folder, and drops one whose marker is verified gone", () => {
+      const home = tmp("oa-oc-habits-");
+      const busHome = join(home, ".oa-bus");
+      const swept = ours(join(tmp("oa-oc-a-"), "extensions", "oa-bus"));
+      writeFileSync(marker(swept), "on\n");
+      const ghost = join(tmp("oa-oc-g-"), "gone", "extensions", "oa-bus");
+      seed(busHome, [swept, ghost]);
+      const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
+      expect(r.incomplete).toBe(false);
+      expect(existsSync(marker(swept))).toBe(false);
+      expect(listed(busHome)).toEqual([ghost]);
+    });
+
+    unlessRoot("counts a folder it cannot reach as a failure, with a note, and keeps it", () => {
+      const home = tmp("oa-oc-habits-");
+      const busHome = join(home, ".oa-bus");
+      const root = tmp("oa-oc-locked-");
+      const dir = ours(join(root, "state", "extensions", "oa-bus"));
+      writeFileSync(marker(dir), "on\n");
+      seed(busHome, [dir]);
+      chmodSync(join(root, "state"), 0o000);
+      try {
+        const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
+        expect(r.incomplete).toBe(true);
+        expect(r.notes.join("\n")).toMatch(/Could not reach .*EACCES/);
+        expect(listed(busHome)).toEqual([dir]);
+      } finally {
+        chmodSync(join(root, "state"), 0o755);
+      }
+      expect(existsSync(marker(dir))).toBe(true);
+    });
+
+    unlessRoot("counts a marker it cannot remove as a failure and keeps the folder listed", () => {
+      const home = tmp("oa-oc-habits-");
+      const busHome = join(home, ".oa-bus");
+      const dir = ours(join(tmp("oa-oc-ro-"), "extensions", "oa-bus"));
+      writeFileSync(marker(dir), "on\n");
+      seed(busHome, [dir]);
+      chmodSync(dir, 0o500);
+      try {
+        const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
+        expect(r.incomplete).toBe(true);
+        expect(r.notes.join("\n")).toContain("habits are still on");
+        expect(listed(busHome)).toEqual([dir]);
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+      expect(existsSync(marker(dir))).toBe(true);
+    });
+
+    it("counts a symlinked folder as a failure and keeps it listed", () => {
+      const home = tmp("oa-oc-habits-");
+      const busHome = join(home, ".oa-bus");
+      const target = ours(tmp("oa-oc-lt-"));
+      writeFileSync(marker(target), "on\n");
+      const link = join(tmp("oa-oc-l-"), "extensions", "oa-bus");
+      mkdirSync(join(link, ".."), { recursive: true });
+      symlinkSync(target, link);
+      seed(busHome, [link]);
+      const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
+      expect(r.incomplete).toBe(true);
+      expect(listed(busHome)).toEqual([link]);
+      expect(existsSync(marker(target))).toBe(true);
+    });
+
+    it("writes no marker when the record cannot be written, and says so", () => {
+      const home = tmp("oa-oc-habits-");
+      const busHome = join(home, "not-a-folder");
+      writeFileSync(busHome, "a file where the bus home should be\n");
+      const dir = ours(openclawPluginDir(home, {}));
+      const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], true);
+      expect(r.changed).toEqual([]);
+      expect(r.notes.join("\n")).toContain("could not record");
+      expect(existsSync(marker(dir))).toBe(false);
+    });
   });
 
   it("refuses a folder that is not ours, and says so", () => {

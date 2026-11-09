@@ -1,6 +1,7 @@
 // The Hermes plugin's habits (#1602): the plugin adds the lines only while
 // <plugin dir>/habits.on exists, and the installer writes it only on a yes.
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -290,6 +291,28 @@ describe("install and uninstall with Hermes", () => {
     await uninstall({ purge: false }, ctx);
     expect(existsSync(hermesPluginDir(ctx.userHome, ctx.env))).toBe(false);
   });
+  (process.getuid?.() === 0 ? it.skip : it)(
+    "--no-habits that cannot remove the marker says so, exits 1 and never prints Habits off",
+    async () => {
+      const ctx = setup();
+      await install({ hub: HUB }, ctx);
+      await install({ habits: "yes" }, ctx);
+      const dir = hermesPluginDir(ctx.userHome, ctx.env);
+      chmodSync(dir, 0o500);
+      try {
+        const before = ctx.out().length;
+        const code = await install({ habits: "no" }, ctx);
+        const text = ctx.out().slice(before).join("\n");
+        expect(code).toBe(1);
+        expect(text).not.toContain("Habits off");
+        expect(text).toContain("not off everywhere");
+        expect(text).toContain("habits are still on");
+        expect(existsSync(marker(ctx))).toBe(true);
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+    },
+  );
   it("TTY yes in the flow writes it; no leaves it off and opts out", async () => {
     const yes = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "y") });
     await install({ hub: HUB }, yes);
