@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.143.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.142.0...v0.143.0) (2026-11-09)
+
+
+### Features
+
+* **dashboard:** the first invite says it starts the trial; Plan comparison stacks on phones ([#1836](https://github.com/open-artifacts-ai/open-artifacts/issues/1836), [#1837](https://github.com/open-artifacts-ai/open-artifacts/issues/1837)) ([#1853](https://github.com/open-artifacts-ai/open-artifacts/issues/1853)) ([7631494](https://github.com/open-artifacts-ai/open-artifacts/commit/76314947f228346fd7e6492882606142fca781e8))
+
+
+### Bug Fixes
+
+* **bus-daemon:** a running Codex session survives a daemon restart ([#1748](https://github.com/open-artifacts-ai/open-artifacts/issues/1748)) ([#1848](https://github.com/open-artifacts-ai/open-artifacts/issues/1848)) ([0ceb231](https://github.com/open-artifacts-ai/open-artifacts/commit/0ceb231d42860309b5b370a5dfa183c843144d92))
+* **runtime:** report a selection made before the comments mode arrives ([#1877](https://github.com/open-artifacts-ai/open-artifacts/issues/1877)) ([#1878](https://github.com/open-artifacts-ai/open-artifacts/issues/1878)) ([8495707](https://github.com/open-artifacts-ai/open-artifacts/commit/8495707f4b6943c2580131aca1c59e84b10aaf4a))
+* **ui:** show pointer cursors on enabled action controls ([#1666](https://github.com/open-artifacts-ai/open-artifacts/issues/1666)) ([216772b](https://github.com/open-artifacts-ai/open-artifacts/commit/216772b8e33e78d179207adbcea2a9e9a49f094e))
+
 ## [0.142.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.141.0...v0.142.0) (2026-11-09)
 
 
