@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.138.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.137.0...v0.138.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** deliver server notices through the BusHub ([#1317](https://github.com/open-artifacts-ai/open-artifacts/issues/1317), step 1) ([#1746](https://github.com/open-artifacts-ai/open-artifacts/issues/1746)) ([f6a7e56](https://github.com/open-artifacts-ai/open-artifacts/commit/f6a7e561bc1cea1755bef02eeaeb35ebe0512f86))
+* **library:** asks filters as chips ([#1614](https://github.com/open-artifacts-ai/open-artifacts/issues/1614)) ([#1761](https://github.com/open-artifacts-ai/open-artifacts/issues/1761)) ([52a4e04](https://github.com/open-artifacts-ai/open-artifacts/commit/52a4e04d5c89d3148f288f337ce7b01b7e318782))
+* **provisioning-contract:** reserve look-alike and role slugs ([#1011](https://github.com/open-artifacts-ai/open-artifacts/issues/1011)) ([#1765](https://github.com/open-artifacts-ai/open-artifacts/issues/1765)) ([f20551d](https://github.com/open-artifacts-ai/open-artifacts/commit/f20551d49dec66e06d02dcf7702f81cc5b2dbf55))
+* **viewer:** ask card follow-ups ([#1614](https://github.com/open-artifacts-ai/open-artifacts/issues/1614)) ([#1763](https://github.com/open-artifacts-ai/open-artifacts/issues/1763)) ([175744e](https://github.com/open-artifacts-ai/open-artifacts/commit/175744e3a9477842ddd9781e86c513c0abad3312))
+
+
+### Bug Fixes
+
+* **bus:** a restarted or moved session takes back its own name ([#1742](https://github.com/open-artifacts-ai/open-artifacts/issues/1742)) ([#1770](https://github.com/open-artifacts-ai/open-artifacts/issues/1770)) ([7c93390](https://github.com/open-artifacts-ai/open-artifacts/commit/7c93390c7c0285f7f90895f18bfd83ab065d48eb))
+* **bus:** an expiry notice no longer claims 7 days passed ([#1760](https://github.com/open-artifacts-ai/open-artifacts/issues/1760)) ([#1773](https://github.com/open-artifacts-ai/open-artifacts/issues/1773)) ([60d5a15](https://github.com/open-artifacts-ai/open-artifacts/commit/60d5a1529a8e16866c68fc44c3a981706b91d53b))
+
 ## [0.137.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.136.1...v0.137.0) (2026-11-09)
 
 
