@@ -69,8 +69,9 @@ const ts: Record<string, (...a: any[]) => unknown> = {
       }).message as { content: string }
     ).content,
   daemonSocketPath,
+  // propose_reach (#1346) is not offered on Hermes yet: it lists no `reach` cap.
   tools: () =>
-    TOOLS.map((t) => ({
+    TOOLS.filter((t) => t.name !== "propose_reach").map((t) => ({
       name: `oabus_${t.name}`,
       description: t.description,
       parameters: t.inputSchema,
