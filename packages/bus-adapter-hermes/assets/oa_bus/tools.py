@@ -70,6 +70,31 @@ TOOLS = [
             "additionalProperties": False,
         },
     },
+    {
+        "name": "oabus_follow",
+        "description": "Follow an Open Artifacts artifact, by id or link, to get a notice when it changes.",
+        "parameters": {
+            "type": "object",
+            "properties": {"artifact": {"type": "string"}},
+            "required": ["artifact"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "oabus_unfollow",
+        "description": "Stop following an artifact, by id or link.",
+        "parameters": {
+            "type": "object",
+            "properties": {"artifact": {"type": "string"}},
+            "required": ["artifact"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "oabus_following",
+        "description": "List the artifacts you follow.",
+        "parameters": _NONE,
+    },
 ]
 
 
@@ -155,10 +180,29 @@ def run(name, args, link):
         return copy.strip_terminal_controls(str(r["body"]))
     if name == "oabus_set_status":
         return _status(args, link)
+    if name in ("oabus_follow", "oabus_unfollow", "oabus_following"):
+        return _follow(name[len("oabus_") :], args, link)
     r = link.request({"type": "self", "row": True})
     if r["type"] != "agent":
         _failed(r)
     return copy.self_text(r.get("agent"))
+
+
+def _follow(name, args, link):
+    """follow, unfollow and following (#1317). Refusals are the hub's or daemon's copy, as-is."""
+    artifact = args.get("artifact").strip() if isinstance(args.get("artifact"), str) else ""
+    if name != "following" and not artifact:
+        raise ToolError("oa-bus: artifact is required (an id or a link)")
+    r = link.request({"type": name} if name == "following" else {"type": name, "artifact": artifact})
+    if r["type"] == "followed":
+        return copy.follow_text(str(r["url"]))
+    if r["type"] == "unfollowed":
+        return copy.unfollow_text(r["removed"] is True, artifact)
+    if r["type"] == "follows":
+        return copy.following_text(r["follows"])
+    if r["type"] == "error" and r.get("code") == "bad_frame":
+        raise ToolError(copy.FOLLOW_OLD_DAEMON)
+    _failed(r)
 
 
 def _status(args, link):

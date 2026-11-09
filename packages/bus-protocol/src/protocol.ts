@@ -207,6 +207,67 @@ const Rename = z.strictObject({
   name_kind: NameKindSchema.optional(),
 });
 
+/**
+ * What a follow names: an artifact id or its page URL on the instance. The
+ * hub passes it to the follows service, which parses it; it never carries an
+ * address (the hub takes that from the registered agent, #1317).
+ */
+const FollowRefSchema = WellFormedText.pipe(z.string().min(1).max(2048));
+
+/**
+ * Follow an artifact as the agent `from_ref` (#1317, `BUS_CAPS.follow`).
+ * Answered by `followed`, or `error` (`not_found`, `follow_limit`,
+ * `not_registered`, `bad_frame`, `internal`). Following again is a no-op.
+ */
+const Follow = z.strictObject({
+  ...base,
+  type: z.literal("follow"),
+  from_ref: AgentRefSchema,
+  artifact: FollowRefSchema,
+});
+
+/** Stop following. Answered by `unfollowed`, or `error`. */
+const Unfollow = z.strictObject({
+  ...base,
+  type: z.literal("unfollow"),
+  from_ref: AgentRefSchema,
+  artifact: FollowRefSchema,
+});
+
+/** The agent's own follows. Answered by `follows`, or `error`. */
+const Following = z.strictObject({
+  ...base,
+  type: z.literal("following"),
+  from_ref: AgentRefSchema,
+});
+
+/**
+ * Most follows one member holds, so the most `follows` lists. Equals
+ * FOLLOW_LIMIT in @oa/shared (a server test pins the two).
+ */
+export const MAX_FOLLOWS = 200;
+
+const FollowEntry = z.strictObject({
+  artifact_id: z.string().min(1).max(64),
+  url: z.string().min(1).max(2048),
+  followed_at: IsoTimeSchema,
+});
+const Followed = z.strictObject({
+  ...base,
+  type: z.literal("followed"),
+  ...FollowEntry.shape,
+});
+const Unfollowed = z.strictObject({
+  ...base,
+  type: z.literal("unfollowed"),
+  removed: z.boolean(),
+});
+const Follows = z.strictObject({
+  ...base,
+  type: z.literal("follows"),
+  follows: z.array(FollowEntry).max(MAX_FOLLOWS),
+});
+
 const HelloOk = z.strictObject({
   ...base,
   type: z.literal("hello_ok"),
@@ -314,6 +375,8 @@ const ErrorFrame = z.strictObject({
     "too_large",
     "rate_limited",
     "internal",
+    /** Only to a socket whose hello listed `BUS_CAPS.follow` (#1317). */
+    "follow_limit",
   ]),
   message: WellFormedText.pipe(z.string().max(1024)),
 });
@@ -373,6 +436,9 @@ export const CLIENT_FRAMES = [
   "fetch",
   "status",
   "rename",
+  "follow",
+  "unfollow",
+  "following",
 ] as const;
 export const SERVER_FRAMES = [
   "hello_ok",
@@ -385,6 +451,9 @@ export const SERVER_FRAMES = [
   "receipt_update",
   "roster_changed",
   "renamed",
+  "followed",
+  "unfollowed",
+  "follows",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -399,6 +468,9 @@ export const ClientFrameSchema = z.discriminatedUnion("type", [
   Fetch,
   Status,
   Rename,
+  Follow,
+  Unfollow,
+  Following,
 ]);
 export const ServerFrameSchema = z.discriminatedUnion("type", [
   HelloOk,
@@ -411,6 +483,9 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   ReceiptUpdate,
   RosterChanged,
   Renamed,
+  Followed,
+  Unfollowed,
+  Follows,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -424,6 +499,9 @@ export const FrameSchema = z.discriminatedUnion("type", [
   Fetch,
   Status,
   Rename,
+  Follow,
+  Unfollow,
+  Following,
   HelloOk,
   AgentOk,
   ReceiptFrame,
@@ -434,6 +512,9 @@ export const FrameSchema = z.discriminatedUnion("type", [
   ReceiptUpdate,
   RosterChanged,
   Renamed,
+  Followed,
+  Unfollowed,
+  Follows,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;
@@ -446,6 +527,7 @@ export type RefuseFrame = z.infer<typeof Refuse>;
 export type HelloFrame = z.infer<typeof Hello>;
 export type RenameFrame = z.infer<typeof Rename>;
 export type RenamedFrame = z.infer<typeof Renamed>;
+export type FollowEntryWire = z.infer<typeof FollowEntry>;
 
 /**
  * Serializes a frame with `v` then `id` first, so an oversize id is recoverable.

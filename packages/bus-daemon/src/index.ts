@@ -874,6 +874,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubIds = false;
   /** The hub's last hello_ok listed BUS_CAPS.mailbox: agent_up may carry `replaces`. */
   let hubMailbox = false;
+  /** The hub's last hello_ok listed BUS_CAPS.follow: follow frames may go (#1317). */
+  let hubFollow = false;
   /** This link has had its hello_ok (reset when the link drops). */
   let hubHelloed = false;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
@@ -992,6 +994,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         }
         case "roster":
+        case "followed":
+        case "unfollowed":
+        case "follows":
           pending.settle(frame);
           return;
         case "body":
@@ -1004,6 +1009,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // A reply names its agent (to_id) only to a hub that said it can.
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
+          hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
           hubHelloed = true;
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
@@ -1063,6 +1069,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubIds = false;
       // A replay before the next hello_ok must not carry `replaces`.
       hubMailbox = false;
+      hubFollow = false;
       hubHelloed = false;
       statusRelay.dropped();
       receipts.release();
@@ -1226,11 +1233,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     },
     onHello: (hello, closed) => {
       /** welcome.caps (#1635): only to an adapter that listed `rename`. */
-      const capsFor = (h: typeof hello) =>
-        (h.kind === "pi" || h.kind === "omp") &&
-        h.caps?.includes(ADAPTER_CAPS.rename)
-          ? { caps: [ADAPTER_CAPS.rename] }
-          : {};
+      const capsFor = (h: typeof hello) => {
+        const listed = [
+          ...((h.kind === "pi" || h.kind === "omp") &&
+          h.caps?.includes(ADAPTER_CAPS.rename)
+            ? [ADAPTER_CAPS.rename]
+            : []),
+          // #1317: whether the hub takes follows is answered per request.
+          ...(h.caps?.includes(ADAPTER_CAPS.follow)
+            ? [ADAPTER_CAPS.follow]
+            : []),
+        ];
+        return listed.length > 0 ? { caps: listed } : {};
+      };
       // Only codex may leave it out: its cwd comes from the rollout (C26j).
       if (hello.cwd === undefined && hello.kind !== "codex")
         return { error: "cwd is required" };
@@ -1410,6 +1425,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           limited.has(ref) ? (caps.get(ref) ?? "machine") : undefined,
         version,
         configFiles,
+        followSupport: () =>
+          !hub.open || !hubHelloed ? "down" : hubFollow ? "ok" : "old_hub",
         renamed: (ref, name) => {
           const rec = agents.byRef(ref);
           if (rec) renameFromAdapter(rec, name);

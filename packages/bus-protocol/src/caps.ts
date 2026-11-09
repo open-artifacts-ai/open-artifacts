@@ -46,6 +46,14 @@ export const BUS_CAPS = {
    * socket sees today's isolation.
    */
   links: "links",
+  /**
+   * Follows (#1317): the client may send `follow`, `unfollow` and `following`
+   * and decodes `followed`, `unfollowed`, `follows` and the `follow_limit`
+   * error. The hub answers those frames only on a socket whose hello listed
+   * it (any other gets `bad_frame`, as an old hub would) and lists it in
+   * `hello_ok.caps`; a client sends them only when it did.
+   */
+  follow: "follow",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 
