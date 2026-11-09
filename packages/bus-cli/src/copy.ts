@@ -265,28 +265,28 @@ export function copy(style: Style) {
     ],
     // After the configured line, when the OpenClaw plugin was installed and enabled.
     openclawRestart: () => [
-      next("Restart the OpenClaw gateway to load the plugin."),
-      next(
-        "A managed gateway restarts itself; if yours is not managed, run openclaw gateway restart.",
-      ),
+      next("Run openclaw gateway restart to load the plugin."),
     ],
     // After the configured line, when OpenClaw is in Nix mode: plugin commands are off there.
     openclawNix: () => [
-      warn("OpenClaw is in Nix mode, so the bus left it alone."),
+      warn("OpenClaw is in Nix mode, so oa-bus didn't change it."),
       next("Add the oa-bus plugin through your Nix setup instead."),
     ],
     // After uninstall removed the OpenClaw plugin folder with no openclaw binary to uninstall it.
     openclawNoCli: () => [
       warn(
-        "OpenClaw isn't on PATH, so oa-bus may still be enabled in OpenClaw.",
+        "Removed the oa-bus plugin files, but OpenClaw isn't on PATH, so its config may still enable oa-bus.",
       ),
-      next("Run openclaw plugins uninstall oa-bus once it is back."),
+      next(
+        "Once openclaw is on PATH again, run openclaw plugins uninstall oa-bus.",
+      ),
     ],
     // Doctor, and status when the plugin is installed. Static: nothing in OpenClaw's config is read.
     openclawDmNote: () => [
-      "OpenClaw: with the default dmScope, every direct message sender shares",
-      "one session, and that session is one bus address. If others can message",
-      "it, set a per-peer dmScope and keep dmPolicy on pairing or an allowlist.",
+      "OpenClaw: by default (dmScope), everyone who sends it a direct message",
+      "shares one session, and that session is one bus address. If people other",
+      "than you can message it, set a per-peer dmScope and keep dmPolicy on",
+      "pairing or an allowlist.",
     ],
     opencodeNotRunning: () =>
       done("OpenCode service not running; it loads the plugin when it starts"),
