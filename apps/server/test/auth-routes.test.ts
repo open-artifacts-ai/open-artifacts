@@ -227,7 +227,7 @@ describe("direct-mode sign-in routes", () => {
 
   it("Google is 404 when it isn't configured", async () => {
     expect(
-      (await get(AUTH.loginGoogle, direct({ AUTH_DOMAINS: "" }))).status,
+      (await get(AUTH.loginGoogle, direct({ GOOGLE_CLIENT_ID: "" }))).status,
     ).toBe(404);
     expect((await get(AUTH.loginGoogle, env)).status).toBe(404);
   });

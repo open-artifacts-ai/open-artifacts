@@ -5,6 +5,7 @@ import {
   GoogleTokenError,
   brokerRedeemRequest as signedRedeemRequest,
   verifyGoogleIdToken,
+  verifyGoogleIdTokenAnyDomain,
 } from "@oa/auth-core";
 import { AUTH } from "@oa/shared";
 import type { Env } from "../../env.js";
@@ -141,7 +142,9 @@ export const googleProvider: OidcProvider = {
       code_challenge_method: "S256",
       prompt: "select_account",
       // A hint for the account chooser only; the hd claim is what's checked.
-      hd: g.domains[0] as string,
+      // No domains (owner and invites only): no hint, any Google account may
+      // try and admission decides.
+      ...(g.domains[0] ? { hd: g.domains[0] } : {}),
       // Break-glass (T18): Google must re-authenticate; the callback checks
       // auth_time, so a silent SSO can't stand in for it.
       ...(a.reauth ? { max_age: "0" } : {}),
@@ -167,17 +170,26 @@ export const googleProvider: OidcProvider = {
         g.transport.kind === "broker"
           ? await brokerNonce(g.transport.installId, a.nonce)
           : a.nonce;
-      const id = await verifyGoogleIdToken(
-        { clientId: g.clientId, domains: g.domains },
-        idToken,
-        expectNonce,
-      );
+      // No domains: no hd check (a Gmail account has none) and no tenant;
+      // email_verified is still required and admission is by owner/invite.
+      const id =
+        g.domains.length === 0
+          ? await verifyGoogleIdTokenAnyDomain(
+              { clientId: g.clientId },
+              idToken,
+              expectNonce,
+            )
+          : await verifyGoogleIdToken(
+              { clientId: g.clientId, domains: g.domains },
+              idToken,
+              expectNonce,
+            );
       return {
         provider: "google",
         subject: id.sub,
         email: id.email,
         name: id.name,
-        tenant: id.hd,
+        tenant: g.domains.length === 0 ? null : id.hd,
         authTime: id.authTime,
       };
     } catch (e) {

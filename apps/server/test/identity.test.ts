@@ -658,3 +658,61 @@ describe("user inserts", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+// Google with no AUTH_DOMAINS (self-serve Gmail): admission is by OWNER_EMAIL
+// and invites only. An empty list must never mean "any Google account".
+describe("admit (Google, no domains)", () => {
+  const e = (over: Partial<Env> = {}) =>
+    direct({ AUTH_DOMAINS: "", AUTH_DOMAIN_JOIN: "invite", ...over });
+  const gm = (o: Partial<VerifiedIdentity> = {}) =>
+    g({ tenant: null, email: uniq("p", "gmail.com"), ...o });
+
+  it("a random Gmail account that is not invited is refused", async () => {
+    const id = gm();
+    expect(await admit(env, authConfig(e()), id)).toEqual({
+      ok: false,
+      reason: "no_access",
+    });
+    expect(await count("users where email = ?", id.email)).toBe(0);
+  });
+
+  it("AUTH_DOMAIN_JOIN=member with no domains still refuses (no domain join)", async () => {
+    const id = gm();
+    const c = authConfig(e({ AUTH_DOMAIN_JOIN: "member" }));
+    expect(await admit(env, c, id)).toEqual({
+      ok: false,
+      reason: "no_access",
+    });
+  });
+
+  it("a hd claim does not admit when there are no domains", async () => {
+    const id = gm({ tenant: "evil.com" });
+    expect(await admit(env, authConfig(e()), id)).toEqual({
+      ok: false,
+      reason: "no_access",
+    });
+  });
+
+  it("the owner email is admitted as owner", async () => {
+    const owner = uniq("me", "gmail.com");
+    const x = e({ OWNER_EMAIL: owner });
+    // Other tests in this file seed owners into the shared D1.
+    await env.DB.exec("update users set role = 'admin' where role = 'owner'");
+    const r = await admit(x, authConfig(x), gm({ email: owner }));
+    expect(r).toMatchObject({ ok: true, user: { role: "owner" } });
+  });
+
+  it("an invited member is admitted and linked", async () => {
+    const id = gm();
+    await seedUser(id.email, "member");
+    const r = await admit(env, authConfig(e()), id);
+    expect(r).toMatchObject({ ok: true, user: { email: id.email } });
+  });
+
+  it("an invited guest stays a guest (not promoted without a tenant)", async () => {
+    const id = gm();
+    await seedUser(id.email, "guest");
+    const r = await admit(env, authConfig(e()), id);
+    expect(r).toMatchObject({ ok: true, user: { role: "guest" } });
+  });
+});

@@ -101,6 +101,27 @@ describe("google provider (direct)", () => {
     expect(lines).toEqual([{ evt: "oidc_fail", stage }]);
   });
 
+  it("no domains: no hd hint, no hd check, tenant null, verified email required", async () => {
+    const e = direct({ AUTH_DOMAINS: "" });
+    const b = await begin(e);
+    expect(b.loc.searchParams.has("hd")).toBe(false);
+    const code = g.issueCode(
+      { nonce: b.nonce, hd: undefined, email: "me@gmail.com" },
+      b.challenge,
+    );
+    expect(
+      await handleCallback(e, googleProvider, callback(b, code)),
+    ).toMatchObject({ email: "me@gmail.com", tenant: null });
+    const b2 = await begin(e);
+    const bad = g.issueCode(
+      { nonce: b2.nonce, hd: undefined, email_verified: false },
+      b2.challenge,
+    );
+    await expect(
+      handleCallback(e, googleProvider, callback(b2, bad)),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+  });
+
   it("tenant B's token at install A is refused", async () => {
     const e = direct({ AUTH_DOMAINS: "a.com" });
     const b = await begin(e);
@@ -163,7 +184,7 @@ describe("google provider (direct)", () => {
   });
 
   it("Google not configured: no authorize URL and no token call", async () => {
-    const e = direct({ AUTH_DOMAINS: "" });
+    const e = direct({ GOOGLE_CLIENT_ID: "" });
     await expect(
       buildAuthorizeRedirect(e, googleProvider, "/"),
     ).rejects.toMatchObject({ code: "not_found" });

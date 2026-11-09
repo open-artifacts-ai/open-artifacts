@@ -62,12 +62,12 @@ describe("authConfig", () => {
     ).toEqual(["spaces"]);
   });
 
-  test("google without domains is disabled, fail closed", () => {
+  test("google without domains is on, invite only (never domain join)", () => {
     const c = authConfig(direct({ AUTH_DOMAINS: "" }));
-    expect(c.google).toBeNull();
-    expect(c.problems).toContain(
-      "Google sign-in is on, but AUTH_DOMAINS is empty, so Google isn't offered. Set the Google Workspace domains that may sign in.",
-    );
+    expect(c.google).not.toBeNull();
+    expect(c.domains).toEqual([]);
+    expect(c.domainJoin).toBe("invite");
+    expect(c.problems.join()).toContain("no domain to join");
   });
 
   test("google without a client id or secret is disabled", () => {
