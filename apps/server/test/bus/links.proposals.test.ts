@@ -194,7 +194,7 @@ describe("link proposals (#1567)", () => {
     );
     const csrf = csrfOf(await (await get(p.secret, { cookie })).text());
     // A hub that applies the decision and then times out on the caller.
-    const real = env.BUS_HUB;
+    const real = env.BUS_HUB as NonNullable<typeof env.BUS_HUB>;
     const flaky = {
       idFromName: (n: string) => real.idFromName(n),
       get: (id: DurableObjectId) => {
