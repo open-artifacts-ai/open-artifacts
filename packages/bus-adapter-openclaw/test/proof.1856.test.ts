@@ -18,14 +18,25 @@ type Handler = (
 const ARG = "_oa_agent_proof";
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
-function setup(over: Parameters<typeof newBus>[1] = {}, hub: Hub = new Hub()) {
+/** An OpenClaw config naming these MCP servers (raw keys), as `mcp.servers` does. */
+const cfg = (servers: Record<string, unknown>) => ({ mcp: { servers } });
+const OA = cfg({ "open-artifacts": { url: "https://oa.example/mcp" } });
+
+function setup(
+  over: Parameters<typeof newBus>[1] = {},
+  hub: Hub = new Hub(),
+  config: unknown = OA,
+) {
   const bus = newBus(hub, over);
   const hooks: Record<string, Handler[]> = {};
+  const opts: Record<string, unknown> = {};
   registerBus(
     {
+      config,
       registerTool: () => {},
-      on: (h: string, fn: Handler) => {
+      on: (h: string, fn: Handler, o?: unknown) => {
         hooks[h] = [...(hooks[h] ?? []), fn];
+        opts[h] = o;
       },
     } as unknown as PluginApi,
     bus,
@@ -47,7 +58,7 @@ function setup(over: Parameters<typeof newBus>[1] = {}, hub: Hub = new Hub()) {
     })) as { params?: Record<string, unknown> } | undefined;
     return { out, ev };
   };
-  return { bus, hub, hooks, call };
+  return { bus, hub, hooks, call, opts };
 }
 
 /** A user run on the main session: its prompt is built (the root is mapped), then its link is open. */
@@ -110,6 +121,7 @@ describe("which tools get it", () => {
     for (const name of [
       "open-artifacts__publish_artifact",
       "open-artifacts__get_artifact",
+      "open-artifacts__artifact_data_get",
     ])
       expect((await s.call(name, run)).out?.params).toHaveProperty(ARG);
     for (const name of [
@@ -121,16 +133,94 @@ describe("which tools get it", () => {
       "xopen-artifacts__get_artifact",
       "other__open-artifacts__x",
       "open-artifacts",
-      "open-artifacts__resources_list",
-      "open-artifacts__prompts_get",
+      "open-artifacts__",
       "oabus_send_message",
       "exec",
+      // a server named "open-artifacts__evil", or one ending in underscores
+      "open-artifacts__evil__steal",
+      "open-artifacts___x",
+      "open-artifacts__x__",
+      "open-artifacts___",
+      // OpenClaw's own utility tools, with and without its collision suffix
+      "open-artifacts__resources_list",
+      "open-artifacts__resources_read",
+      "open-artifacts__prompts_list",
+      "open-artifacts__prompts_get",
+      "open-artifacts__resources_list-2",
+      "open-artifacts__prompts_get-3",
+      // a tool name the instance does not have the shape of
+      "open-artifacts__Get_Artifact",
+      "open-artifacts__get-artifact",
+      "open-artifacts__get artifact",
     ])
       expect((await s.call(name, run)).out, name).toBeUndefined();
   });
 
+  it("goes unlinked when more than one configured server has the base name, in any case or spelling", async () => {
+    for (const other of [
+      "open artifacts",
+      "open.artifacts",
+      "open/artifacts",
+      "Open-Artifacts",
+      "OPEN-ARTIFACTS",
+    ]) {
+      const s = setup(
+        {},
+        new Hub(),
+        cfg({ "open-artifacts": {}, [other]: { url: "https://evil.example" } }),
+      );
+      const run = await userRun(s);
+      for (const name of [
+        "open-artifacts__get_artifact",
+        "open-artifacts-2__get_artifact",
+      ])
+        expect(
+          (await s.call(name, run)).out,
+          `${other} ${name}`,
+        ).toBeUndefined();
+    }
+  });
+
+  it("a disabled look-alike or an unrelated server does not count", async () => {
+    const s = setup(
+      {},
+      new Hub(),
+      cfg({
+        "open-artifacts": {},
+        "open artifacts": { enabled: false },
+        other: {},
+      }),
+    );
+    const run = await userRun(s);
+    expect(
+      (await s.call("open-artifacts__get_artifact", run)).out?.params,
+    ).toHaveProperty(ARG);
+  });
+
+  it("without a config that names open-artifacts exactly, nothing is trusted", async () => {
+    for (const config of [
+      null,
+      {},
+      cfg({}),
+      cfg({ "Open-Artifacts": {} }),
+      cfg({ "open artifacts": {} }),
+      { mcp: { servers: "nope" } },
+    ]) {
+      const s = setup({}, new Hub(), config);
+      const run = await userRun(s);
+      expect(
+        (await s.call("open-artifacts__get_artifact", run)).out,
+        JSON.stringify(config),
+      ).toBeUndefined();
+    }
+  });
+
   it("also the instance's own server name when it is set", async () => {
-    const s = setup({ mcpServers: () => ["open-artifacts", "oa-staging"] });
+    const s = setup(
+      { mcpServers: () => ["open-artifacts", "oa-staging"] },
+      new Hub(),
+      cfg({ "open-artifacts": {}, "oa-staging": {} }),
+    );
     const run = await userRun(s);
     expect(
       (await s.call("oa-staging__get_artifact", run)).out?.params,
@@ -263,5 +353,55 @@ describe("stays unlinked, every tool working", () => {
         s.hooks.before_tool_call?.[0]?.(null as never, null as never),
       ),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("how the hook runs", () => {
+  it("runs before every other plugin's hook, so a later params rewrite replaces ours and the root goes unlinked", async () => {
+    const s = setup();
+    expect(s.opts.before_tool_call).toMatchObject({
+      priority: expect.any(Number),
+    });
+    // OpenClaw runs higher priorities first and keeps the last defined `params`.
+    expect(
+      (s.opts.before_tool_call as { priority: number }).priority,
+    ).toBeGreaterThanOrEqual(1e6);
+  });
+
+  it("keeps a long run's root alive: tool calls count as use (no idle eviction after 30 minutes)", async () => {
+    let t = 1_000_000;
+    const s = setup({ now: () => t });
+    const run = await userRun(s);
+    for (let i = 0; i < 31; i++) {
+      t += 60_000;
+      expect(
+        (await s.call("open-artifacts__get_artifact", run)).out,
+        `minute ${i}`,
+      ).toBeDefined();
+      s.bus.evictIdle();
+    }
+    expect(s.hub.clients[0]?.state).toBe("open");
+    expect(s.hub.proofs).toHaveLength(1);
+  });
+
+  it("never waits for a link: a closed one is reopened in the background and this call goes unlinked", async () => {
+    const hub = new Hub();
+    let hang = false;
+    let attempts = 0;
+    const connect = (root: Parameters<Hub["connect"]>[0]) => {
+      attempts++;
+      return hang ? new Promise<never>(() => {}) : hub.connect(root);
+    };
+    const s = setup({ connect }, hub);
+    const run = await userRun(s);
+    hub.clients[0]?.close();
+    hang = true;
+    const before = attempts;
+    const t0 = Date.now();
+    const { out } = await s.call("open-artifacts__get_artifact", run);
+    // A wait for the link would last WARM_MS (1500 ms) or more.
+    expect(Date.now() - t0).toBeLessThan(500);
+    expect(out).toBeUndefined();
+    expect(attempts).toBe(before + 1);
   });
 });

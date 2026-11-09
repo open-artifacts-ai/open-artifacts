@@ -51,6 +51,7 @@ export type PluginApi = {
       },
       ctx: HookContext,
     ) => unknown,
+    opts?: { priority?: number; timeoutMs?: number },
   ): void;
   on(
     hook: "before_message_write",

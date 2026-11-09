@@ -1,18 +1,27 @@
 """The per-session proof argument (#1822, #1856).
 
-Hermes calls a tool through `tool_execution` middleware, which may hand the
-tool different arguments than the model wrote, only for that one call: hooks,
-guardrails and the transcript see the model's own. Our middleware adds one
-reserved argument to calls to this instance's open-artifacts MCP tools, and to
-no other server's, so the instance's /mcp can tell which bus agent is calling.
-It is in no schema the model sees.
+The instance's /mcp reads a reserved argument on a `tools/call` to tell which
+bus agent is calling. It must reach the wire and nothing else: Hermes shows a
+call's arguments to hooks, callbacks, approval prompts, its tool guardrails (a
+repeated call's stub result prints them to the model) and the CLI progress line.
+So it is added at the last layer, in Hermes's one function that hands arguments
+to the MCP SDK (tools/mcp_tool_handlers.py `_call_tool_racing_stdio_death`,
+Hermes v0.23.0), and not by middleware, whose output every layer above sees.
 
-Which server a tool belongs to comes from Hermes's own record of the raw server
-name that registered it (tools/mcp_tool.py `_mcp_tool_server_names`, Hermes
-v0.23.0). The tool's name cannot say: `mcp__<server>__<tool>` replaces every
-character outside [A-Za-z0-9_] with `_`, so `open-artifacts` and `open_artifacts`
-make the same prefix. No record means no argument.
+How the proof gets from the agent thread to that function, which runs on the MCP
+loop thread and has no session: `registry.dispatch` (tools/registry.py, the
+last call before the handler, which receives the same `args` object) hands the
+handler a copy of the arguments and notes the session's proof under that copy's
+identity; the wire function looks the identity up. Its `server_name` is the raw
+server name Hermes was configured with, so the match is exact: `open-artifacts`
+and `open_artifacts` make the same registry prefix but are different names here.
+
+Every piece fails to unlinked: a missing function leaves both untouched, an error
+finding the proof sends the call as it was, a call that did not come through
+`dispatch` finds no note.
 """
+
+import functools
 
 # The reserved argument the instance's /mcp reads and removes.
 ARG = "_oa_agent_proof"
@@ -20,17 +29,10 @@ ARG = "_oa_agent_proof"
 # The raw MCP server key of an instance's entry: exactly this, nothing else is trusted.
 DEFAULT_SERVERS = ("open-artifacts",)
 
-# Hermes's own utility tools for an MCP server (tools/mcp_tool_schema.py _UTILITY_TOOL_SPECS):
-# not the instance's tools.
-_UTILITY = (
-    "list_resources",
-    "read_resource",
-    "list_prompts",
-    "get_prompt",
-    "list_event_types",
-    "subscribe_event",
-    "unsubscribe_event",
-)
+# id(args copy handed to the handler) -> the proof for that call, only while it is in flight.
+_CALLS = {}
+_STATE = {"bus": None, "names": DEFAULT_SERVERS}
+_MARK = "_oa_proof_wrapper"
 
 
 def proof_servers():
@@ -38,21 +40,73 @@ def proof_servers():
     return DEFAULT_SERVERS
 
 
-def hermes_server_of(tool_name):
-    """The raw name of the MCP server that registered `tool_name`, or None."""
-    from tools.mcp_tool import _mcp_tool_server_names  # only importable inside Hermes
+def _wire_wrapper(original):
+    async def wrapped(*a, **kw):
+        a2, kw2 = a, kw
+        try:
+            # (server, server_name, tool_name, args, progress_callback=None)
+            if "args" in kw:
+                args, server_name = kw["args"], kw.get("server_name", a[1] if len(a) > 1 else None)
+            else:
+                args, server_name = (a[3], a[1]) if len(a) > 3 else (None, None)
+            proof = _CALLS.get(id(args)) if isinstance(args, dict) else None
+            if proof and isinstance(server_name, str) and server_name in _STATE["names"]:
+                send = {**args, ARG: proof}
+                if "args" in kw:
+                    kw2 = {**kw, "args": send}
+                else:
+                    a2 = a[:3] + (send,) + a[4:]
+        except Exception:
+            a2, kw2 = a, kw
+        return await original(*a2, **kw2)
 
-    return _mcp_tool_server_names.get(tool_name)
+    setattr(wrapped, _MARK, original)
+    functools.update_wrapper(wrapped, original, assigned=("__name__", "__qualname__", "__doc__"), updated=())
+    setattr(wrapped, _MARK, original)
+    return wrapped
 
 
-def instance_tool(tool_name, server_of, names):
-    """Whether `tool_name` is a tool of an MCP server named exactly one of `names`."""
+def _dispatch_wrapper(original):
+    def wrapped(name, args, **kwargs):
+        sent = args
+        key = None
+        try:
+            bus = _STATE["bus"]
+            if bus is not None and isinstance(name, str) and name.startswith("mcp__") and isinstance(args, dict):
+                proof = bus.proof_for(kwargs.get("session_id"))
+                if proof:
+                    sent = dict(args)  # a copy with a identity of its own, and the same content
+                    key = id(sent)
+                    _CALLS[key] = proof
+        except Exception:
+            sent, key = args, None
+        try:
+            return original(name, sent, **kwargs)
+        finally:
+            if key is not None:
+                _CALLS.pop(key, None)
+
+    setattr(wrapped, _MARK, original)
+    return wrapped
+
+
+def install(bus, names, registry=None, handlers=None):
+    """Wraps the two Hermes functions, once; a later call only swaps in the new `bus` and `names`.
+    False (nothing touched) when Hermes does not have both."""
     try:
-        if not isinstance(tool_name, str) or not tool_name.startswith("mcp__"):
+        if registry is None:
+            from tools.registry import registry  # only importable inside Hermes
+        if handlers is None:
+            import tools.mcp_tool_handlers as handlers
+        dispatch = getattr(registry, "dispatch", None)
+        wire = getattr(handlers, "_call_tool_racing_stdio_death", None)
+        if not callable(dispatch) or not callable(wire):
             return False
-        if any(tool_name.endswith("__" + op) for op in _UTILITY):
-            return False
-        raw = server_of(tool_name)
-        return isinstance(raw, str) and raw in names
+        _STATE["bus"], _STATE["names"] = bus, tuple(names)
+        if not hasattr(dispatch, _MARK):
+            registry.dispatch = _dispatch_wrapper(dispatch)
+        if not hasattr(wire, _MARK):
+            handlers._call_tool_racing_stdio_death = _wire_wrapper(wire)
+        return True
     except Exception:
         return False

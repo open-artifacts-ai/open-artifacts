@@ -64,6 +64,11 @@ export function safeServerName(raw: string): string {
   const safe = /^[A-Za-z]/.test(n) ? n : `mcp-${n}`;
   return safe.slice(0, 30);
 }
+/** A tool name of the instance's own tools: snake_case words, as every Open Artifacts tool is named. */
+const INSTANCE_TOOL_SHAPE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+
+/** Higher runs first in OpenClaw; ours is first, so any other plugin's params rewrite replaces ours. */
+export const BEFORE_TOOL_CALL_PRIORITY = 1_000_000_000;
 const RECONNECT_MS = 3000;
 const MAX_REFUSED_BACKOFF_MS = 60_000;
 
@@ -335,14 +340,39 @@ export class Bus {
     }
   }
 
-  /** Whether `toolName` is a tool of this instance's MCP server (and no look-alike's). */
+  /**
+   * Whether `toolName` is a tool of this instance's MCP server, and no
+   * look-alike's. The hook sees only the tool name, which OpenClaw builds as
+   * `<safeServer>__<tool>` with lossy sanitizing, so the check is exact:
+   * - the instance's raw server key is in `config.mcp.servers`, enabled;
+   * - exactly one enabled configured server has that base name once
+   *   sanitized and lowercased (OpenClaw lowercases when it resolves
+   *   collisions and tool names), so no configured look-alike can share it;
+   * - the rest of the name is one plain snake_case tool name: no `__` (a
+   *   server named `open-artifacts__x`, or ending in `_`), no suffix (OpenClaw
+   *   adds `-2` to a collision) and not OpenClaw's own utility tools.
+   * Not detectable here: a look-alike bundle (plugin) MCP server, which is not
+   * in the config; the hook has no server identity.
+   */
   private isInstanceTool(toolName: string): boolean {
-    const servers = this.deps.mcpServers?.() ?? DEFAULT_MCP_SERVERS;
-    return servers.some((raw) => {
-      const prefix = `${safeServerName(raw)}__`;
+    const servers = (this.config as { mcp?: { servers?: unknown } } | undefined)
+      ?.mcp?.servers;
+    if (typeof servers !== "object" || servers === null) return false;
+    const enabled = Object.entries(servers).filter(
+      ([, v]) => (v as { enabled?: unknown } | null)?.enabled !== false,
+    );
+    const names = this.deps.mcpServers?.() ?? DEFAULT_MCP_SERVERS;
+    return names.some((raw) => {
+      if (!enabled.some(([k]) => k === raw)) return false;
+      const base = safeServerName(raw);
+      const same = enabled.filter(
+        ([k]) => safeServerName(k).toLowerCase() === base.toLowerCase(),
+      );
+      if (same.length !== 1) return false;
+      const prefix = `${base}__`;
       if (!toolName.startsWith(prefix)) return false;
       const rest = toolName.slice(prefix.length);
-      return rest !== "" && !MCP_UTILITY_OPS.has(rest);
+      return INSTANCE_TOOL_SHAPE.test(rest) && !MCP_UTILITY_OPS.has(rest);
     });
   }
 
@@ -366,7 +396,13 @@ export class Bus {
       const ref = this.runRoots.get(runId);
       const b = ref === undefined ? undefined : this.boxes.get(ref);
       if (!b || !this.userRun(b.root)) return undefined;
-      if (!this.open(b)) await this.warm(b.root);
+      // A long run must keep its proof: tool calls count as use.
+      b.lastActive = this.now();
+      // Never wait for a link: a closed one reopens in the background, and this call goes unlinked.
+      if (!this.open(b)) {
+        this.touch(b.root);
+        return undefined;
+      }
       const p = b.proof;
       if (!p || p.client !== b.client || p.client.state !== "open")
         return undefined;
