@@ -21,7 +21,9 @@ const same = {
 };
 const listed = { ...same, caps: [ADAPTER_CAPS.link] };
 
-async function start(hubCaps = [BUS_CAPS.ids, BUS_CAPS.link]) {
+async function start(
+  hubCaps: string[] = [BUS_CAPS.ids, BUS_CAPS.link, BUS_CAPS.linkArg],
+) {
   const h = await daemonHarness();
   h.toDaemon({
     id: "w",
@@ -110,12 +112,28 @@ describe("helloed link_proof (#1856)", () => {
     expect(h.of("link_bind")).toHaveLength(0);
   });
 
-  it("sends nothing to a hub that did not list link, and still answers", async () => {
-    const h = await start([BUS_CAPS.ids]);
+  it("says not bound, and sends nothing, to a hub that did not list link", async () => {
+    const h = await start([BUS_CAPS.ids, BUS_CAPS.linkArg]);
     const a = await h.adapter("A", listed);
     const r = await a.request({ type: "link_proof", hash: HASH } as never);
-    expect(r).toMatchObject({ type: "link_proofed" });
+    expect(r).toMatchObject({ type: "link_proofed", bound: false });
     await vi.waitFor(() => expect(h.of("agent_up").length).toBe(1));
     expect(h.of("link_bind")).toHaveLength(0);
+  });
+
+  it("says not bound, and sends nothing, to a hub that lists link but not link_arg (its /mcp would refuse the argument)", async () => {
+    const h = await start([BUS_CAPS.ids, BUS_CAPS.link]);
+    const a = await h.adapter("A", listed);
+    const r = await a.request({ type: "link_proof", hash: HASH } as never);
+    expect(r).toMatchObject({ type: "link_proofed", bound: false });
+    await vi.waitFor(() => expect(h.of("agent_up").length).toBe(1));
+    expect(h.of("link_bind")).toHaveLength(0);
+  });
+
+  it("says not bound while the hub link is down", async () => {
+    const h = await daemonHarness();
+    const a = await h.adapter("A", listed);
+    const r = await a.request({ type: "link_proof", hash: HASH } as never);
+    expect(r).toMatchObject({ type: "link_proofed", bound: false });
   });
 });
