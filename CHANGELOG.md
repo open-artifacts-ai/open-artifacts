@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.140.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.139.0...v0.140.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** role reach REST routes and billing gate ([#1346](https://github.com/open-artifacts-ai/open-artifacts/issues/1346)) ([#1780](https://github.com/open-artifacts-ai/open-artifacts/issues/1780)) ([ab39a2b](https://github.com/open-artifacts-ai/open-artifacts/commit/ab39a2bd06cfa94fa23df167c9ee77cb90b0767f))
+* **bus:** scoped role reach, hub core ([#1346](https://github.com/open-artifacts-ai/open-artifacts/issues/1346), PR 1) ([#1700](https://github.com/open-artifacts-ai/open-artifacts/issues/1700)) ([61d4db0](https://github.com/open-artifacts-ai/open-artifacts/commit/61d4db07805204adf76e670715794ba2531471b6))
+* **comments:** @ menu lists the viewer's running agents; a mention follows ([#1535](https://github.com/open-artifacts-ai/open-artifacts/issues/1535)) ([#1768](https://github.com/open-artifacts-ai/open-artifacts/issues/1768)) ([b7139c7](https://github.com/open-artifacts-ai/open-artifacts/commit/b7139c73f70c4c46492593dc4968569ef77968cd))
+* **comments:** tell the asker's agents when an ask is answered ([#1535](https://github.com/open-artifacts-ai/open-artifacts/issues/1535)) ([#1778](https://github.com/open-artifacts-ai/open-artifacts/issues/1778)) ([fc62dfa](https://github.com/open-artifacts-ai/open-artifacts/commit/fc62dfa972af13e011e27e9aaf1758b110562154))
+* **mcp:** add_comment takes an ask ([#1535](https://github.com/open-artifacts-ai/open-artifacts/issues/1535)) ([#1772](https://github.com/open-artifacts-ai/open-artifacts/issues/1772)) ([a5a4aaf](https://github.com/open-artifacts-ai/open-artifacts/commit/a5a4aafd8fb6039158df15c925c4197d5ddbed6c))
+
 ## [0.139.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.138.0...v0.139.0) (2026-11-09)
 
 
