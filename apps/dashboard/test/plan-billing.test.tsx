@@ -180,6 +180,8 @@ it("Plan and billing: a Solo trial shows its end and the two upgrades", async ()
     await screen.findByRole("heading", { name: "Plan and billing" }),
   ).toBeVisible();
   expect(screen.getAllByText("Solo").length).toBeGreaterThan(0);
+  expect(screen.getByText("Free month")).toBeVisible();
+  expect(screen.queryByText("Trial")).toBeNull();
   expect(
     screen.getByText(
       "Your free month ends Dec 1, 2026. Then $1/month or $12/year.",
@@ -543,7 +545,8 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
 
   it("a Solo trial reads soloTrialEndsAt", () => {
     const r = planStatus(TRIAL);
-    expect(r.pill.label).toBe("Trial");
+    // #1843: not "Trial", the Business trial's word.
+    expect(r.pill.label).toBe("Free month");
     expect(r.note?.text).toBe(
       "Your free month ends Dec 1, 2026. Then $1/month or $12/year.",
     );
@@ -573,13 +576,14 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
     ).toEqual({ pill: { label: "Active", tone: "ok" } });
   });
 
-  it("the Business trial keeps trialEndsAt", () => {
+  it("the Business trial keeps trialEndsAt and its Trial pill", () => {
     const r = planStatus({
       ...TRIAL,
       tier: "trial",
       trialEndsAt: "2026-11-20T00:00:00.000Z",
       soloTrialEndsAt: null,
     });
+    expect(r.pill.label).toBe("Trial");
     expect(r.note?.text).toBe(
       "Trial ends Nov 20, 2026. Everything in Business is on.",
     );
