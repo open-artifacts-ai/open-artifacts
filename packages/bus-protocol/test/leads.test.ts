@@ -64,6 +64,15 @@ describe("lead template schema", () => {
     expect(ok(withKey("permission_cap", cap))).toBe(false);
   });
 
+  it("permissionWithin fails closed on an unknown value", () => {
+    const within = permissionWithin as (a: string, b: string) => boolean;
+    expect(within("bypass", "edits")).toBe(false);
+    expect(within("ask", "bypass")).toBe(false);
+    expect(within("bypass", "bypass")).toBe(false);
+    expect(within("", "")).toBe(false);
+    expect(within("read_only", "edits")).toBe(true);
+  });
+
   it("has only read_only, ask and edits, lowest first", () => {
     expect([...LEAD_PERMISSION_CAPS]).toEqual(["read_only", "ask", "edits"]);
     expect(permissionWithin("read_only", "ask")).toBe(true);
@@ -87,6 +96,70 @@ describe("lead template schema", () => {
     `/${"a".repeat(5000)}`,
   ])("refuses the repo path %j", (repo) => {
     expect(ok(withKey("repo", repo))).toBe(false);
+  });
+
+  it.each([
+    "/home/x/#(touch x)",
+    "/home/x/#{pane_id}",
+    "/home/x/a#(touch /tmp/x)b/repo",
+    "/home/x/$(id)",
+    "/home/x/$HOME",
+    "/home/x/`id`",
+    "/home/x/a|b",
+    "/home/x/a;b",
+    "/home/x/a&b",
+    "/home/x/a(b)",
+    "/home/x/a'b",
+    '/home/x/a"b',
+    "/home/x/a*b",
+    "/home/x/a?b",
+    "/home/x/~",
+    "/home/x/a%b",
+    "/home/x/a{b}",
+    "/home/x/a<b",
+    "/home/x/a!b",
+    "/home/x/-rf",
+    "/home/x/ lead",
+    "/home/x/caf\u00e9",
+    "/home/x/cafe\u0301",
+    "/home/x/a\u200bb",
+    "/home/x/a\u202eb",
+    "/home/x/\u0430pple",
+    "/home/x/a\tb",
+  ])(
+    "refuses the folder %j: no character tmux or a shell would expand",
+    (repo) => {
+      expect(ok(withKey("repo", repo))).toBe(false);
+      expect(ok(withKey("worktree_root", repo))).toBe(false);
+    },
+  );
+
+  it("allows letters, digits, dot, underscore, hyphen and inner spaces in a segment", () => {
+    expect(
+      ok(withKey("repo", "/home/x/My Code/open-artifacts_2.v1/.hidden")),
+    ).toBe(true);
+  });
+
+  it("refuses the root as a folder", () => {
+    expect(ok(withKey("repo", "/"))).toBe(false);
+    expect(ok(withKey("worktree_root", "/"))).toBe(false);
+  });
+
+  it.each([
+    ["claude-code", "/usr/bin/claude", true],
+    ["codex", "/usr/local/bin/codex", true],
+    ["pi", "/home/x/.local/bin/pi", true],
+    ["opencode", "/opt/opencode", true],
+    ["claude-code", "/bin/sh", false],
+    ["claude-code", "/bin/bash", false],
+    ["claude-code", "/usr/bin/env", false],
+    ["claude-code", "/usr/bin/codex", false],
+    ["codex", "/usr/bin/claude", false],
+    ["claude-code", "/home/x/claude/run", false],
+    ["claude-code", "/home/x/claude.sh", false],
+    ["claude-code", "/", false],
+  ])("binary for %s at %s is allowed: %s", (harness, binary, allowed) => {
+    expect(ok({ ...base, harness, binary })).toBe(allowed);
   });
 
   it.each(["binary", "worktree_root"])("applies the same to %s", (k) => {
@@ -204,8 +277,8 @@ describe("lead template hash", () => {
   it("changes with any value, and with an optional key's presence", async () => {
     const h0 = await leadTemplateHash(parse(base));
     const variants: Record<string, unknown>[] = [
-      { harness: "codex" },
-      { binary: "/home/x/.local/bin/claude2" },
+      { harness: "codex", binary: "/home/x/codex" },
+      { binary: "/home/y/claude" },
       { repo: "/home/x/code/other" },
       { worktree_root: "/home/x/other" },
       { role_name: "OA Docs 2" },

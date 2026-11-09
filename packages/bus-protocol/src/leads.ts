@@ -6,9 +6,12 @@ import { BusNameSchema } from "./names.ts";
  * from the bus. It lives in `<OA_BUS_HOME>/leads/<name>.json`, never in a repo.
  *
  * A template cannot express a command. The schema is strict, so `command`,
- * `args`, `env`, `shell` or any other key is refused, and every value is a
- * closed enum, a validated path, a bus name or a fixed-shape URL. The daemon
- * (not this package) builds the argv from the harness and the permission cap.
+ * `args`, `env`, `shell` or any other key is refused. Every value is a closed
+ * enum, a bus name, a fixed-shape URL, or a path whose segments use only
+ * ASCII letters, digits, `.`, `_`, `-` and space (never `#`, `$`, `(`, quotes
+ * or backticks, which tmux or a shell would expand), and `binary` must be the
+ * harness's own program name. The daemon (not this package) builds the argv
+ * from the harness and the permission cap. Disk checks live in the daemon.
  */
 
 /** The file name is the template name: `<name>.json`. */
@@ -47,37 +50,60 @@ export type LeadPermissionCap = (typeof LEAD_PERMISSION_CAPS)[number];
 export const permissionWithin = (
   a: LeadPermissionCap,
   b: LeadPermissionCap,
-): boolean =>
-  LEAD_PERMISSION_CAPS.indexOf(a) <= LEAD_PERMISSION_CAPS.indexOf(b);
+): boolean => {
+  const i = LEAD_PERMISSION_CAPS.indexOf(a);
+  const j = LEAD_PERMISSION_CAPS.indexOf(b);
+  // An unknown value is within nothing: it fails closed.
+  return i !== -1 && j !== -1 && i <= j;
+};
 
 export const LEAD_WORKTREE_MODES = ["new", "none"] as const;
 
 const MAX_PATH_CHARS = 4096;
-// biome-ignore lint/suspicious/noControlCharactersInRegex: refusing them is the point
-const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
 
 /**
- * An absolute POSIX path in its own normal form: starts with `/`, no empty,
- * `.` or `..` segments, no trailing slash (except `/`), no control characters.
- * What the daemon opens is then exactly what the person read.
+ * One path segment: ASCII letters, digits, `.`, `_`, `-` and space, nothing
+ * else, and not starting with `-` or a space (so it is never read as a flag)
+ * and never `.` or `..`. The allowlist is the point: tmux expands `#(...)`
+ * in a start directory and shells expand `$`, backticks and quotes, so no
+ * such character may appear. ASCII only, so there are no invisible or
+ * look-alike characters and no normalization question.
+ */
+const SEGMENT_RE = /^[A-Za-z0-9._][A-Za-z0-9._ -]*$/;
+
+/**
+ * An absolute POSIX path in its own normal form: starts with `/`, every
+ * segment passes SEGMENT_RE (so no empty, `.` or `..` part), no trailing
+ * slash. `/` alone is a valid path here; the folders below refuse it.
  */
 export function isNormalAbsolutePath(s: string): boolean {
   if (s.length === 0 || s.length > MAX_PATH_CHARS) return false;
-  if (!s.startsWith("/") || CONTROL_RE.test(s) || s.includes("\\"))
-    return false;
+  if (!s.startsWith("/")) return false;
   if (s === "/") return true;
   return s
     .slice(1)
     .split("/")
-    .every((seg) => seg !== "" && seg !== "." && seg !== "..");
+    .every((seg) => seg !== "." && seg !== ".." && SEGMENT_RE.test(seg));
 }
 
+const PATH_MESSAGE =
+  "must be an absolute path of letters, digits, '.', '_', '-' and spaces only";
 const AbsolutePathSchema = z
   .string()
-  .refine(
-    isNormalAbsolutePath,
-    "must be an absolute path with no '..', '.' or empty parts",
-  );
+  .refine(isNormalAbsolutePath, PATH_MESSAGE);
+/** A folder: any such path but the root. */
+const FolderPathSchema = AbsolutePathSchema.refine(
+  (s) => s !== "/",
+  "must not be the root folder",
+);
+
+/** The program a harness's binary must be called. */
+export const LEAD_HARNESS_BINARY: Record<LeadHarness, string> = {
+  "claude-code": "claude",
+  codex: "codex",
+  pi: "pi",
+  opencode: "opencode",
+};
 
 /** `<origin>/a/<artifact id>`: the brief a started lead is told to read. */
 const BRIEF_PATH_RE = /^\/a\/[A-Za-z0-9]{8,64}$/;
@@ -118,9 +144,9 @@ const LeadTemplateObject = z.strictObject({
   harness: z.enum(LEAD_HARNESSES),
   /** Absolute path of the harness binary, recorded so a PATH change cannot swap it. */
   binary: AbsolutePathSchema,
-  repo: AbsolutePathSchema,
+  repo: FolderPathSchema,
   worktree: z.enum(LEAD_WORKTREE_MODES),
-  worktree_root: AbsolutePathSchema.optional(),
+  worktree_root: FolderPathSchema.optional(),
   /** The bus name the lead takes. BusNameSchema refuses system-notice names. */
   role_name: BusNameSchema,
   brief: BriefSchema,
@@ -136,7 +162,11 @@ export const LeadTemplateSchema = LeadTemplateObject.refine(
       "worktree_root is required with worktree 'new' and not allowed otherwise",
     path: ["worktree_root"],
   },
-);
+).refine((t) => t.binary.split("/").pop() === LEAD_HARNESS_BINARY[t.harness], {
+  message:
+    "binary must be named for its harness (claude, codex, pi or opencode)",
+  path: ["binary"],
+});
 export type LeadTemplate = z.infer<typeof LeadTemplateSchema>;
 
 /**

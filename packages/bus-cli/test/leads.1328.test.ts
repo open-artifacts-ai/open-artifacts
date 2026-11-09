@@ -29,8 +29,10 @@ function setup(opts: { machine?: boolean } = {}) {
     );
   const repo = join(ctx.userHome, "repo");
   const wt = join(ctx.userHome, "wt");
-  mkdirSync(repo);
-  mkdirSync(wt);
+  mkdirSync(repo, { mode: 0o755 });
+  mkdirSync(wt, { mode: 0o755 });
+  chmodSync(repo, 0o755);
+  chmodSync(wt, 0o755);
   const bin = join(ctx.userHome, "claude");
   writeFileSync(bin, "#!/bin/sh\n", { mode: 0o755 });
   chmodSync(bin, 0o755);

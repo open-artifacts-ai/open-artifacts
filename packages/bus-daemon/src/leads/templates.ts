@@ -76,8 +76,18 @@ export function checkLeadsDir(
   return undefined;
 }
 
-/** A folder named by absolute path that is already its own real path. */
-function checkRealDir(path: string, label: string): string | undefined {
+/**
+ * A folder named by absolute path: its own real path (no symlink or alias),
+ * not the root, a folder, ours, and not writable by group or others. The same
+ * rules as the leads folder, so a template cannot point a lead at a folder
+ * someone else can reshape.
+ */
+function checkRealDir(
+  path: string,
+  label: string,
+  uid: number | undefined,
+): string | undefined {
+  if (path === "/") return `${label} is the root folder`;
   let real: string;
   try {
     real = realpathSync.native(path);
@@ -87,17 +97,31 @@ function checkRealDir(path: string, label: string): string | undefined {
   if (real !== path)
     return `${label} is not its own real path (a symlink or alias)`;
   try {
-    if (!statSync(real).isDirectory()) return `${label} is not a folder`;
+    const st = statSync(real);
+    if (!st.isDirectory()) return `${label} is not a folder`;
+    if (uid !== undefined && st.uid !== uid)
+      return `${label} belongs to another user`;
+    if (st.mode & 0o022) return `${label} is writable by others`;
   } catch {
     return `${label} cannot be read`;
   }
   return undefined;
 }
 
-function checkBinary(path: string): string | undefined {
+/**
+ * The harness binary: a regular, executable file, owned by this user or root,
+ * not writable by group or others. The name is fixed by the schema. A
+ * same-user replacement of the file (or of a symlink's target) is not stopped.
+ */
+function checkBinary(
+  path: string,
+  uid: number | undefined,
+): string | undefined {
   try {
     const st = statSync(path);
     if (!st.isFile()) return "binary is not a regular file";
+    if (uid !== undefined && st.uid !== uid && st.uid !== 0)
+      return "binary belongs to another user";
     if (st.mode & 0o022) return "binary is writable by others";
     if (!(st.mode & 0o111)) return "binary is not executable";
   } catch {
@@ -156,11 +180,11 @@ export async function loadLeadTemplate(
     return refused(name, "brief is not on this machine's hub");
 
   const bad =
-    checkRealDir(t.repo, "repo") ??
+    checkRealDir(t.repo, "repo", uid) ??
     (t.worktree_root
-      ? checkRealDir(t.worktree_root, "worktree_root")
+      ? checkRealDir(t.worktree_root, "worktree_root", uid)
       : undefined) ??
-    checkBinary(t.binary);
+    checkBinary(t.binary, uid);
   if (bad) return refused(name, bad);
 
   return {

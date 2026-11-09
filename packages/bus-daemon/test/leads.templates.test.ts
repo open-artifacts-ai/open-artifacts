@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -27,7 +28,10 @@ function setup() {
   const repo = join(root, "repo");
   const wt = join(root, "wt");
   const bin = join(root, "claude");
-  for (const d of [home, repo, wt]) mkdirSync(d);
+  for (const d of [home, repo, wt]) {
+    mkdirSync(d);
+    chmodSync(d, 0o755);
+  }
   writeFileSync(bin, "#!/bin/sh\n");
   chmodSync(bin, 0o755);
   chmodSync(home, 0o700);
@@ -227,6 +231,51 @@ describe("loading a lead template", () => {
     expect(why(await s.load("docs"))).toMatch(/worktree_root is not its own/);
   });
 
+  it("refuses a folder named to run a command in tmux, and never runs it", async () => {
+    const s = setup();
+    const evil = join(s.root, "#(touch pwned)");
+    mkdirSync(evil);
+    s.write("docs", { ...s.tpl, repo: evil });
+    expect((await s.load("docs")).state).toBe("refused");
+    expect(existsSync(join(s.root, "pwned"))).toBe(false);
+    expect(existsSync("pwned")).toBe(false);
+  });
+
+  it("refuses a repo or worktree_root that is the root, group-writable or another user's", async () => {
+    const s = setup();
+    s.write("docs", { ...s.tpl, repo: "/" });
+    expect(why(await s.load("docs"))).toMatch(/repo is not a valid|repo|root/);
+    expect((await s.load("docs")).state).toBe("refused");
+    s.write("docs", s.tpl);
+    chmodSync(s.repo, 0o775);
+    expect(why(await s.load("docs"))).toMatch(/repo is writable by others/);
+    chmodSync(s.repo, 0o755);
+    chmodSync(s.wt, 0o777);
+    expect(why(await s.load("docs"))).toMatch(
+      /worktree_root is writable by others/,
+    );
+    chmodSync(s.wt, 0o755);
+    expect((await s.load("docs")).state).toBe("ok");
+    const uid = process.getuid?.() ?? 0;
+    expect(why(await s.load("docs", { uid: uid + 1 }))).toMatch(/another user/);
+  });
+
+  it("refuses a binary that is not named for its harness, such as /bin/sh", async () => {
+    const s = setup();
+    s.write("docs", { ...s.tpl, binary: "/bin/sh" });
+    expect((await s.load("docs")).state).toBe("refused");
+    s.write("docs", { ...s.tpl, harness: "codex" });
+    expect((await s.load("docs")).state).toBe("refused");
+  });
+
+  it("refuses a binary owned by another user other than root", async () => {
+    const s = setup();
+    s.write("docs", s.tpl);
+    const uid = process.getuid?.() ?? 0;
+    // The file is ours (uid), so claiming to be uid+1 makes it foreign; root-owned would pass.
+    expect(why(await s.load("docs", { uid: uid + 1 }))).toMatch(/another user/);
+  });
+
   it("refuses a binary that is group-writable, missing or not executable", async () => {
     const s = setup();
     chmodSync(s.bin, 0o775);
@@ -234,7 +283,7 @@ describe("loading a lead template", () => {
     expect(why(await s.load("docs"))).toMatch(/binary is writable by others/);
     chmodSync(s.bin, 0o644);
     expect(why(await s.load("docs"))).toMatch(/not executable/);
-    s.write("docs", { ...s.tpl, binary: join(s.root, "none") });
+    s.write("docs", { ...s.tpl, binary: join(s.root, "gone", "claude") });
     expect(why(await s.load("docs"))).toMatch(/binary does not exist/);
   });
 
