@@ -290,3 +290,33 @@ export const BusRoleProposeInputSchema = z.strictObject({
   agent: BusAddressSchema.shape.name.optional(),
 });
 export type BusRoleProposeInput = z.infer<typeof BusRoleProposeInputSchema>;
+
+/** How long a reach proposal's confirm link works (#1346): one hour. */
+export const BUS_REACH_PROPOSAL_TTL_MS = 60 * 60_000;
+/** Reach proposals waiting for the member at once (#1346). */
+export const BUS_REACH_PROPOSALS_PENDING_MAX = 10;
+/** Reach proposals one machine may make in an hour (#1346), then `rate_limited`. */
+export const BUS_REACH_PROPOSALS_PER_MACHINE_HOUR = 10;
+
+/**
+ * POST R.busReachProposals (a machine token): the agent whose session is
+ * `nativeRef` on that machine asks that the role it holds reach `namespaces`.
+ * The role is never named here: the hub finds it from the agent, so a peer
+ * can't ask for another agent's role. Nothing changes until the member
+ * confirms the returned link in a browser.
+ */
+export const BusReachProposeSchema = z.strictObject({
+  nativeRef: z.string().min(1).max(512),
+  namespaces: z
+    .array(BusAddressSchema.shape.namespace)
+    .min(1)
+    .max(BUS_REACH_PER_ROLE),
+});
+export type BusReachPropose = z.infer<typeof BusReachProposeSchema>;
+
+/** The reach proposal route's answer: the one-time confirm URL and when it expires. */
+export const BusReachProposedSchema = z.strictObject({
+  confirmUrl: z.string(),
+  expiresAt: z.string(),
+});
+export type BusReachProposed = z.infer<typeof BusReachProposedSchema>;

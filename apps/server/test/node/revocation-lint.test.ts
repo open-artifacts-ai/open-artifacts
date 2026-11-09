@@ -162,6 +162,14 @@ const WIDENS: Readonly<Record<string, string>> = {
     "a link proposal's status, not access",
   "bus/role-proposals.ts:expireByCredential":
     "a role proposal's status, not access",
+  // #1346: a reach proposal's own status column in the BusHub, likewise; a
+  // revoked machine's pending ones expire (it holds no socket, as above).
+  "bus/reach-proposals.ts:expireReachProposals":
+    "a reach proposal's status, not access",
+  "bus/reach-proposals.ts:decideReachProposal":
+    "a reach proposal's status, not access",
+  "bus/reach-proposals.ts:expireReachProposalsOfMachine":
+    "a reach proposal's status, not access",
 };
 
 /** Exempt from the scan: the primitives themselves. */

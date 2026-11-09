@@ -246,6 +246,8 @@ export type RoleConfirmView = {
   priorHolderGone: boolean;
   /** The new holder's current name (set, repoint). */
   agentName: string | null;
+  /** #1346: the namespaces the role reaches now (sorted; [] for none or a new role). */
+  reach: string[];
   /** Minutes until the link expires (at least 1). */
   minutesLeft: number;
   userEmail: string;
@@ -258,6 +260,15 @@ const ROLE_HEADINGS = {
   repoint: "Re-point this role?",
   clear: "Remove this role?",
 } as const;
+
+/** Namespaces as monospace names: "a", "a and b", "a, b and c". */
+const names = (ns: string[]): SafeHtml => {
+  const n = (x: string) => html`<span class="mono wrap">${x}</span>`;
+  return html`${ns.flatMap((x, i) => [
+    i === 0 ? "" : i === ns.length - 1 ? " and " : ", ",
+    n(x),
+  ])}`;
+};
 
 /** The confirm form: what changes, from whom to whom, as whom; Reject or Confirm. */
 export function renderRoleConfirm(v: RoleConfirmView): string {
@@ -286,6 +297,11 @@ export function renderRoleConfirm(v: RoleConfirmView): string {
       <li>${CHECK}<div><b>Role</b><small><span class="wrap">${v.name}</span> in <span class="mono wrap">${v.namespace}</span></small></div></li>
       <li class="no">${CROSS}<div><b>Now</b><small class="wrap">${now}</small></div></li>
       <li>${CHECK}<div><b>After</b><small class="wrap">${after}</small></div></li>
+      ${
+        v.reach.length === 0
+          ? ""
+          : html`<li>${CHECK}<div><b>${v.action === "clear" ? "Its reach is removed" : "Its reach goes with the role"}</b><small>${v.action === "clear" ? "This role can message agents in" : "The new holder can message agents in"} ${names(v.reach)}.</small></div></li>`
+      }
     </ul>
     <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
     <div class="note" role="note">${WARN}<span>Messages sent to this role go to its holder at send time. Only confirm a change you asked for. ${left}</span></div>
@@ -477,6 +493,57 @@ export function renderLinkConfirm(v: LinkConfirmView): string {
       <li>${CHECK}<div><b>Project</b><small class="wrap mono">${v.b}</small></div></li>
     </ul>
     ${noopNote === null ? "" : html`<div class="note" role="note">${WARN}<span>${noopNote}</span></div>`}
+    <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
+    <div class="note" role="note">${WARN}<span>Only confirm a change you asked for. ${left}</span></div>
+    <div class="actions">
+      <button type="submit" name="decision" value="reject">Reject</button>
+      <button type="submit" name="decision" value="confirm" class="primary">Confirm</button>
+    </div>
+  </form>`,
+  );
+}
+
+export type ReachConfirmView = {
+  instanceHost: string;
+  roleName: string;
+  roleNamespace: string;
+  /** The role's holder when it was proposed. */
+  holderName: string;
+  /** The namespaces asked for, sorted. */
+  namespaces: string[];
+  /** Of those, the ones no agent on the member's machines ever used. */
+  unknown: string[];
+  /** True when the role already reaches all of them: confirming changes nothing. */
+  noop: boolean;
+  /** The proposing machine's label (null: gone) and when, in ms. */
+  machineLabel: string | null;
+  proposedAt: number;
+  minutesLeft: number;
+  userEmail: string;
+  csrf: string;
+  switchUrl: string;
+};
+
+/** The reach confirm form (#1346): which role, which namespaces, as whom; Reject or Confirm. */
+export function renderReachConfirm(v: ReachConfirmView): string {
+  const left =
+    v.minutesLeft <= 1
+      ? "This link expires in about a minute."
+      : `This link expires in ${v.minutesLeft} minutes.`;
+  return String(
+    html`<form class="card">
+    <input type="hidden" name="csrf" value="${v.csrf}">
+    <h1>Let <span class="wrap">${v.roleName}</span> reach other projects?</h1>
+    <p>An AI agent in one of your coding sessions asked for this. Nothing changes unless you confirm it.</p>
+    <p class="muted">Proposed from <b class="wrap">${v.machineLabel ?? "a machine that is gone"}</b> at ${new Date(v.proposedAt).toISOString().slice(0, 16).replace("T", " ")} UTC. If an agent asked you to confirm this, check that it is the machine you expect.</p>
+    <ul>
+      <li>${CHECK}<div><b>What it allows</b><small><span class="wrap">${v.roleName}</span> can message agents in ${names(v.namespaces)}. They can reply.</small></div></li>
+      <li>${CHECK}<div><b>Role</b><small><span class="wrap">${v.roleName}</span> in <span class="mono wrap">${v.roleNamespace}</span></small></div></li>
+      <li>${CHECK}<div><b>Held by</b><small class="wrap">${v.holderName}</small></div></li>
+      <li class="no">${CROSS}<div><b>Only the holder</b><small>Only the agent that holds this role reaches them. The rest of its project stays closed to them.</small></div></li>
+    </ul>
+    ${v.unknown.length === 0 ? "" : html`<div class="note" role="note">${WARN}<span>Never seen on your machines: ${names(v.unknown)}.</span></div>`}
+    ${v.noop ? html`<div class="note" role="note">${WARN}<span>This role already reaches all of these, so confirming changes nothing.</span></div>` : ""}
     <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
     <div class="note" role="note">${WARN}<span>Only confirm a change you asked for. ${left}</span></div>
     <div class="actions">

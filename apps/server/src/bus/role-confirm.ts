@@ -415,6 +415,7 @@ export function mountRoleConfirm(app: AppType): void {
           priorHolderGone:
             p.priorAgentId !== null && p.priorHolderName === null,
           agentName: p.agentName,
+          reach: v.reach,
           minutesLeft: Math.max(
             1,
             Math.ceil((Date.parse(p.expiresAt) - Date.now()) / 60_000),

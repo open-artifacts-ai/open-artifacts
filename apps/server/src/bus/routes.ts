@@ -19,6 +19,7 @@ import {
   AUTH,
   BusLinkProposeSchema,
   BusLinkPutSchema,
+  BusReachProposeSchema,
   BusReachPutSchema,
   BusRolePutSchema,
   type Member,
@@ -55,6 +56,7 @@ import {
   listBusRoles,
   MAX_ACTIVE_MACHINES,
   proposeBusLink,
+  proposeBusReach,
   putBusLink,
   putBusReach,
   putBusRole,
@@ -802,6 +804,26 @@ export function mountBus(app: AppType): void {
     const user = requireUser(c);
     if (!canConnect(user)) throw notFound();
     return c.json(await listBusReach(c.env, user.id));
+  });
+  // #1346: the agent holding a role asks, with its machine's token (never a
+  // session, a PAT or an OAuth grant), that the role reach namespaces. It
+  // only records a proposal; the member confirms its one-time URL in a
+  // browser (bus/reach-confirm.ts). The role is the one the hub finds the
+  // agent holding, never one the caller names.
+  app.post(R.busReachProposals, async (c) => {
+    if (!busOn(c.env)) throw notFound();
+    const token = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
+    if (!isMachineToken(token)) return unauthorized();
+    const m = await stmt(c.env.DB, MACHINE_BY_HASH)
+      .bind(await sha256Hex(token))
+      .first<{ id: string; userId: string; revokedAt: number | null }>();
+    if (!m || m.revokedAt !== null) return unauthorized();
+    const user = await getUser(c.env, m.userId);
+    if (!user || !canConnect(user)) return unauthorized();
+    // #1299: a plan-capped member's machine may not propose new reach.
+    busConfigCap(user);
+    const body = await jsonBody(c, BusReachProposeSchema);
+    return c.json(await proposeBusReach(c.env, user.id, m.id, body));
   });
   app.put(R.busReach, async (c) => {
     const user = roleWriter(c);

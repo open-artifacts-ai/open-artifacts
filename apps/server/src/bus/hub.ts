@@ -86,6 +86,16 @@ import {
   removeReach,
 } from "./reach.js";
 import {
+  decideReachProposal,
+  expireReachProposalsOfMachine,
+  proposeReach,
+  type ReachAudit,
+  type ReachDecideResult,
+  type ReachProposeResult,
+  type ReachViewResult,
+  viewReachProposal,
+} from "./reach-proposals.js";
+import {
   type DecideResult,
   decideProposal,
   expireByCredential,
@@ -3685,6 +3695,69 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
+   * #1346: records a reach proposal from agent `nativeRef` of `machineId`
+   * under `tokenHash` (the sha256 of its confirm link's secret). Grants
+   * nothing; the role is the one the agent holds, found here. Worker only
+   * (services/bus.ts proposeBusReach, from the machine-token route).
+   */
+  async proposeReach(
+    input: { nativeRef: string; namespaces: string[] },
+    machineId: string,
+    tokenHash: string,
+  ): Promise<ReachProposeResult> {
+    const r = proposeReach(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      input,
+      machineId,
+      tokenHash,
+      this.#now(),
+      newId,
+    );
+    logEvent("reach_proposed", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /** #1346: the reach proposal behind `tokenHash`, for the confirm page. Worker only. */
+  async viewReachProposal(tokenHash: string): Promise<ReachViewResult> {
+    return viewReachProposal(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      tokenHash,
+      this.#now(),
+    );
+  }
+
+  /**
+   * #1346: confirms (applies, through addReach) or rejects the reach
+   * proposal behind `tokenHash`, once. Worker only, and only from the
+   * confirm page's POST (bus/reach-confirm.ts: a browser session and its
+   * form token). Reach-capable sockets hear `roster_changed` when grants
+   * were added.
+   */
+  async decideReachProposal(
+    tokenHash: string,
+    decision: "confirm" | "reject",
+  ): Promise<ReachDecideResult> {
+    const r = decideReachProposal(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      tokenHash,
+      decision,
+      this.#now(),
+      newId,
+    );
+    if (r.ok && r.changed !== null)
+      notifyRoster(this.ctx, {
+        namespaces: [r.changed],
+        global: false,
+        reachOnly: true,
+      });
+    logEvent("reach_decided", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /**
    * #1372: records an AI agent's role proposal under `tokenHash` (the
    * sha256 of its confirm link's secret, minted by the Worker). Changes no
    * role. Worker only (services/bus.ts proposeBusRole, from MCP).
@@ -3766,9 +3839,9 @@ export class BusHub extends DurableObject<Env> {
     machines: string[];
   }> {
     const sql = this.ctx.storage.sql;
-    const col = (q: string) =>
+    const col = (q: string, ...org: string[]) =>
       sql
-        .exec(q, OWNER_ORG_ID)
+        .exec(q, ...(org.length > 0 ? org : [OWNER_ORG_ID]))
         .toArray()
         .map((r) => String(Object.values(r)[0]));
     return {
@@ -3776,18 +3849,30 @@ export class BusHub extends DurableObject<Env> {
         "select distinct credential from role_proposals where org_id = ? and status = 'pending' and credential is not null",
       ),
       machines: col(
-        "select distinct machine_id from link_proposals where org_id = ? and status = 'pending'",
+        "select machine_id from link_proposals where org_id = ? and status = 'pending' union select machine_id from reach_proposals where org_id = ? and status = 'pending'",
+        OWNER_ORG_ID,
+        OWNER_ORG_ID,
       ),
     };
   }
 
-  /** #1403: expires the machine's pending link proposals (a machine revoked in bulk). Worker only. */
-  async expireLinkProposalsOf(machineId: string): Promise<void> {
+  /**
+   * #1403: expires the machine's pending link and reach proposals (a machine
+   * revoked in bulk). Returns the reach ones, for their audit rows. Worker only.
+   */
+  async expireLinkProposalsOf(machineId: string): Promise<ReachAudit[]> {
+    const now = this.#now();
     expireLinkProposalsOfMachine(
       this.ctx.storage.sql,
       OWNER_ORG_ID,
       machineId,
-      this.#now(),
+      now,
+    );
+    return expireReachProposalsOfMachine(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      machineId,
+      now,
     );
   }
 

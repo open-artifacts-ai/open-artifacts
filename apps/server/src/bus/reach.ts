@@ -3,9 +3,9 @@
 // it. A grant is one `reach_grants` row per (role, target namespace). The
 // holder is read from `roles` (follows a re-point, vacant gives none), and
 // reach is never transitive: it opens the holder's own view only, never the
-// target's view of the holder's other agents. Only the member writes one
-// (BusHub.putReach); no frame and no MCP tool does. Hub core only in this PR:
-// nothing but tests writes rows yet.
+// target's view of the holder's other agents. Only the member writes one:
+// directly (BusHub.putReach) or by confirming an agent's proposal on its
+// one-time link (bus/reach-proposals.ts); no frame and no MCP tool does.
 import { WireNamespaceSchema } from "@oa/bus-protocol";
 import { BUS_REACH_MAX, BUS_REACH_PER_ROLE } from "@oa/shared";
 
@@ -165,6 +165,8 @@ export function addReach(
   newId: () => string,
   max = BUS_REACH_MAX,
   perRole = BUS_REACH_PER_ROLE,
+  /** Set when a confirmed agent proposal (not the member's own add) grants it: the proposing machine. */
+  viaMachine: string | null = null,
 ): PutReachResult {
   if (!WireNamespaceSchema.safeParse(roleNs).success)
     return { ok: false, reason: "invalid", field: "namespace" };
@@ -200,8 +202,8 @@ export function addReach(
   if (reachOfRole(sql, orgId, roleNs, lname, perRole).length >= perRole)
     return { ok: false, reason: "reach_limit" };
   sql.exec(
-    `insert into reach_grants (id, org_id, role_ns, role_name, lname, mode, target_ns, created_at)
-     values (?, ?, ?, ?, ?, 'reach', ?, ?)`,
+    `insert into reach_grants (id, org_id, role_ns, role_name, lname, mode, target_ns, created_at, granted_by, machine_id)
+     values (?, ?, ?, ?, ?, 'reach', ?, ?, ?, ?)`,
     newId(),
     orgId,
     roleNs,
@@ -209,6 +211,8 @@ export function addReach(
     lname,
     target,
     now,
+    viaMachine === null ? "member" : "request",
+    viaMachine,
   );
   const grant = read();
   if (!grant) throw new Error("reach grant not stored");
