@@ -1252,3 +1252,105 @@ describe("nextAskFor", () => {
     expect(nextAskFor(api, null)).toBe("o");
   });
 });
+
+describe("Ask a question (#1794)", () => {
+  const agentAsk = (askOver: object = {}) => {
+    const t = askThread({}, askOver);
+    (t.comments[0] as { author: unknown }).author = {
+      kind: "agent",
+      id: "agent:p",
+      name: "OA Product",
+      for: "Leo",
+      me: false,
+    };
+    return t;
+  };
+
+  it("sends a reply to the agent that asked, with toAsker", async () => {
+    const t = agentAsk();
+    serveThreads(() => [t]);
+    let sent: unknown = null;
+    server.use(
+      http.post(
+        "*/api/v1/artifacts/:id/comments/:tid/replies",
+        async ({ request }) => {
+          sent = await request.json();
+          return HttpResponse.json({
+            id: "c-q",
+            body: "What breaks with A?",
+            author: { kind: "user", id: "me", name: "Me", me: true },
+            createdAt: "2026-11-05T11:00:00Z",
+            editedAt: null,
+            can: { edit: true, delete: true },
+            mentions: [
+              { key: "agent:p", name: "OA Product", delivery: "delivered" },
+            ],
+          });
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Ask a question" }),
+    );
+    expect(
+      await within(c).findByText("To OA Product, the agent that asked"),
+    ).toBeInTheDocument();
+    const box = within(c).getByRole("textbox", { name: "Question" });
+    await waitFor(() => expect(box).toHaveFocus());
+    fireEvent.change(box, { target: { value: "What breaks with A?" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(sent).toEqual({ body: "What breaks with A?", toAsker: true }),
+    );
+    await waitFor(() =>
+      expect(
+        within(c).queryByRole("textbox", { name: "Question" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      within(c).getByRole("textbox", { name: "Reply" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Cancel goes back to the plain reply box", async () => {
+    serveThreads(() => [agentAsk()]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Ask a question" }),
+    );
+    fireEvent.click(await within(c).findByRole("button", { name: "Cancel" }));
+    expect(
+      await within(c).findByRole("textbox", { name: "Reply" }),
+    ).toBeInTheDocument();
+    expect(
+      within(c).queryByText("To OA Product, the agent that asked"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("is not offered once picked, when closed, or when a person asked", async () => {
+    const picked = agentAsk({
+      answer: {
+        optionId: "a",
+        by: { kind: "user", id: "me", name: "Me", me: true },
+        at: "2026-11-05T11:00:00Z",
+      },
+    });
+    picked.id = "t-1";
+    const closed = agentAsk({ closed: true });
+    closed.id = "t-2";
+    (closed.comments[0] as { id: string }).id = "c-2";
+    const person = askThread({ id: "t-3" });
+    (person.comments[0] as { id: string }).id = "c-3";
+    serveThreads(() => [picked, closed, person]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText("Which layout?");
+    await wait(50);
+    expect(
+      within(c).queryByRole("button", { name: "Ask a question" }),
+    ).not.toBeInTheDocument();
+  });
+});

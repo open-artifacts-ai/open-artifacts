@@ -93,6 +93,7 @@ export const useReply = (id: string, guest = false) =>
         body: v.body,
         ...(v.guestName ? { guestName: v.guestName } : {}),
         ...(v.mentions?.length ? { mentions: v.mentions } : {}),
+        ...(v.toAsker ? { toAsker: true } : {}),
       },
       CommentSchema,
       undefined,
