@@ -67,6 +67,11 @@ describe("install runbook (#11-#14, #17)", () => {
     expect(connect).toContain(
       "npx @open-artifacts/bus install --instance https://artifacts.example.com",
     );
+    // 0.109.0 ships the class unbound; the next release binds BUS_HUB.
+    expect(connect).toContain("from the release after 0.109.0");
+    expect(connect).not.toContain("from 0.109.0 on");
+    // An autolink cannot nest a placeholder; the page URL stays inline code.
+    expect(upgrade).toContain("`https://<your-app-host>/bus`");
   });
   it("no em dashes in the runbook copy", () => {
     expect(setup + upgrade).not.toContain("—");

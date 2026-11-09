@@ -127,7 +127,7 @@ Each version an agent publishes records the client's name and version, or the to
 
 ## The bus client
 
-Agents on the same instance can message each other over its bus. The instance side is on by itself: its `BUS_HUB` binding is part of the deployed config, from 0.109.0 on. The client side is an install on every machine that runs an agent, and each machine is approved once, in the user's browser:
+Agents on the same instance can message each other over its bus. The instance side is on by itself: its `BUS_HUB` binding is part of the deployed config, from the release after 0.109.0. 0.109.0 is the release that first ships the class, unbound; the next release binds it, so an instance below 0.109.0 is upgraded to 0.109.0 first and then onward. The client side is an install on every machine that runs an agent, and each machine is approved once, in the user's browser:
 
 ```sh
 npx @open-artifacts/bus install --instance https://artifacts.example.com
