@@ -69,10 +69,16 @@ async function touch(
       env.DB,
       `update users set last_seen_at = ?1, name = coalesce(?2, name),
          role = case when ?4 = 1 and not exists (select 1 from users where role = 'owner') then 'owner'
-                     when role = 'guest' then 'member' else role end
+                     when role = 'guest' and ?5 = 1 then 'member' else role end
        where id = ?3 and status = 'active'
        returning id, email, name, display_name as displayName, role, last_seen_at as lastSeenAt, status`,
-    ).bind(now, id.name, row.id, owner && row.email === owner ? 1 : 0),
+    ).bind(
+      now,
+      id.name,
+      row.id,
+      owner && row.email === owner ? 1 : 0,
+      id.tenant ? 1 : 0,
+    ),
     signInAudit(env, row.id, id.provider, id.tenant, {
       sql: "changes() > 0",
       args: [],
@@ -106,21 +112,25 @@ async function followDrift(
 
 /**
  * Admits a verified Google identity:
- * 1. The tenant (hd) must still be a verified domain.
+ * 1. The tenant (hd) must still be a verified domain (no domains: no check).
  * 2. Linked (provider, subject): that user, unless not active (removed);
  *    follow email drift when the new address is free.
  * 3. Unlinked: an existing row with the email must be active (else removed)
  *    and have no other Google link (else identity_conflict); a new row needs
  *    join = member or OWNER_EMAIL (else no_access). Created and linked in one
  *    race-safe batch (googleLinkStmts).
- * A guest promoted to member here is safe: hd proves domain membership.
+ * A guest promoted to member here is safe: hd proves domain membership. With
+ * no domains (no tenant) a guest stays a guest: nothing proves membership.
  */
 export async function admit(
   env: Env,
   cfg: AuthConfig,
-  id: VerifiedIdentity,
+  raw: VerifiedIdentity,
   now = Date.now(),
 ): Promise<AdmitResult> {
+  // No domains: there is no tenant, whatever the token said.
+  const id: VerifiedIdentity =
+    cfg.domains.length === 0 ? { ...raw, tenant: null } : raw;
   if (!googleTenantOk(cfg, id.tenant)) return { ok: false, reason: "tenant" };
   const email = normalizeEmail(id.email);
   if (!email) return { ok: false, reason: "no_access" };
@@ -154,7 +164,7 @@ export async function admit(
       name: id.name,
       role: isOwner ? "owner" : "member",
       subject: id.subject,
-      tenant: id.tenant as string,
+      tenant: id.tenant ?? "",
       now,
     }),
   );
@@ -170,11 +180,11 @@ export async function admit(
 export const googleTenantOk = (
   cfg: AuthConfig,
   tenant: string | null | undefined,
-): boolean => inDomains(cfg.domains, tenant);
+): boolean => cfg.domains.length === 0 || inDomains(cfg.domains, tenant);
 
 /** Google admission rule 3: a verified identity with no user row gets one (join = member, or OWNER_EMAIL). */
 export const googleNewRowOk = (cfg: AuthConfig, isOwner: boolean): boolean =>
-  isOwner || cfg.domainJoin === "member";
+  isOwner || (cfg.domains.length > 0 && cfg.domainJoin === "member");
 
 /** touch's result: null (no longer active mid-sign-in) is refused, fail closed. */
 const admitted = (user: Member | null): AdmitResult =>
