@@ -5,7 +5,7 @@ import { Hub, newBus } from "./support.ts";
 const ctx = { agentId: "main", sessionKey: "agent:main:main" };
 
 describe("tools", () => {
-  it("offers the five oabus_ tools with the MCP tools' descriptions and schemas", () => {
+  it("offers the oabus_ tools with the MCP tools' descriptions and schemas", () => {
     const tools = toolsFor(newBus(new Hub()), ctx);
     expect(tools.map((t) => t.name)).toEqual([
       "oabus_list_agents",
@@ -13,6 +13,9 @@ describe("tools", () => {
       "oabus_fetch",
       "oabus_self",
       "oabus_set_status",
+      "oabus_follow",
+      "oabus_unfollow",
+      "oabus_following",
     ]);
     const send = tools.find((t) => t.name === "oabus_send_message");
     expect(send?.description).toBe("Send a message to another agent by name.");

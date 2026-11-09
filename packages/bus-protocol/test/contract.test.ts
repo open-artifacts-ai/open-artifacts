@@ -49,6 +49,9 @@ describe("contract is pinned", () => {
       "fetch",
       "status",
       "rename",
+      "follow",
+      "unfollow",
+      "following",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -61,6 +64,9 @@ describe("contract is pinned", () => {
       "receipt_update",
       "roster_changed",
       "renamed",
+      "followed",
+      "unfollowed",
+      "follows",
     ]);
   });
 

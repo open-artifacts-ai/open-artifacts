@@ -8,7 +8,10 @@
       "oabus_list_agents",
       "oabus_send_message",
       "oabus_set_status",
-      "oabus_fetch"
+      "oabus_fetch",
+      "oabus_follow",
+      "oabus_unfollow",
+      "oabus_following"
     ]
   },
   "activation": { "onStartup": true },

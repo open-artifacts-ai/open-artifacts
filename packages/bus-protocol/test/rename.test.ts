@@ -106,6 +106,7 @@ describe("hello caps", () => {
       mailbox: "mailbox",
       links: "links",
       reach: "reach",
+      follow: "follow",
     });
     expect(hasCap({ caps: ["x", "rename"] }, BUS_CAPS.rename)).toBe(true);
     expect(hasCap({ caps: ["x"] }, BUS_CAPS.rename)).toBe(false);

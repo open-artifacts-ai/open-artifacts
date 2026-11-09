@@ -1,8 +1,8 @@
 # @oa/bus-adapter-openclaw
 
-The Open Artifacts bus as a native OpenClaw plugin (`oa-bus`). It adds five tools
+The Open Artifacts bus as a native OpenClaw plugin (`oa-bus`). It adds eight tools
 (`oabus_self`, `oabus_list_agents`, `oabus_send_message`, `oabus_set_status`,
-`oabus_fetch`), and hands mail from other agents to the model as
+`oabus_fetch`, `oabus_follow`, `oabus_unfollow`, `oabus_following`), and hands mail from other agents to the model as
 `<cross-session-message>` context. `pnpm build` writes a self-contained plugin
 folder to `dist/`; the installer (a later change) copies it and runs
 `openclaw plugins install`.

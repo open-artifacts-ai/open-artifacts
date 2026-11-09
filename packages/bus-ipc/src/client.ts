@@ -12,7 +12,15 @@ export type DaemonClient = {
   welcome: Extract<DaemonFrame, { type: "welcome" }>;
   state: "open" | "closed";
   request: (frame: {
-    type: "list" | "self" | "send" | "fetch" | "set_status";
+    type:
+      | "list"
+      | "self"
+      | "send"
+      | "fetch"
+      | "set_status"
+      | "follow"
+      | "unfollow"
+      | "following";
     id?: string;
     to?: string;
     /** send: the target's namespace (`to_namespace` on the hub wire). */
@@ -24,6 +32,8 @@ export type DaemonClient = {
     label?: string;
     /** self: also the agent's status, from its hub roster row. */
     row?: true;
+    /** follow, unfollow: an artifact id or link. */
+    artifact?: string;
     /** A tool call: the reply carries this agent's late-delivery notices. */
     late?: true;
   }) => Promise<DaemonFrame>;

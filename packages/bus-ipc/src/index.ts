@@ -12,7 +12,10 @@ export {
   displayKind,
   earlierStatusText,
   excerptOf,
+  FOLLOW_OLD_DAEMON,
   fitName,
+  followingText,
+  followText,
   lateDeliveredText,
   linkedLiveNamespace,
   messageHeader,
@@ -31,6 +34,7 @@ export {
   statusSetText,
   stripTerminalControls,
   unconfirmedText,
+  unfollowText,
 } from "./copy.ts";
 export * from "./frames.ts";
 export { FrameTooLarge, LineDecoder } from "./lines.ts";
