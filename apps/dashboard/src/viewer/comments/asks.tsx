@@ -310,7 +310,7 @@ export function mentionedKeys(
 const MENTION_END = "(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))";
 
 /** Drops every `@name` that `mentionedKeys` would count (same boundary), with a
-    trailing `'s` and one space. An `@name` that is the start of a longer agent's
+    trailing `'s` and the space before it. An `@name` that is the start of a longer agent's
     name is left alone. */
 export function removeMention(
   text: string,
@@ -325,13 +325,18 @@ export function removeMention(
     )
     .map((a) => new RegExp(`^@${esc(a.name)}${MENTION_END}`, "i"));
   const re = new RegExp(
-    `(^|\\s)@${esc(name)}${MENTION_END}(?:['\u2019]s)?\\s?`,
+    `(^|\\s)@${esc(name)}${MENTION_END}(?:['\u2019]s)?`,
     "gi",
   );
-  return text.replace(re, (m, lead: string, at: number) => {
-    const rest = text.slice(at + lead.length);
-    return longer.some((l) => l.test(rest)) ? m : lead;
+  let atStart = false;
+  const out = text.replace(re, (m, lead: string, at: number) => {
+    if (longer.some((l) => l.test(text.slice(at + lead.length)))) return m;
+    if (at === 0) atStart = true;
+    // The space before it goes too, so "hi @Bob." leaves "hi." and
+    // "a @Bob b" leaves "a b"; the space after stays for the next match.
+    return "";
   });
+  return atStart ? out.trimStart() : out;
 }
 
 /** Who gets notified: the mentioned agents. */
@@ -356,10 +361,9 @@ export function MentionChips({
   const keys = mentionedKeys(text, agents);
   const chips = agents.filter((a) => keys.includes(a.key));
   const names = notifyNames(text, agents);
-  if (names.length === 0) return null;
   return (
-    <div className={`flex flex-col gap-1 ${TXT}`}>
-      {chips.length > 0 && (
+    <div aria-live="polite" className={`flex flex-col gap-1 ${TXT}`}>
+      {names.length > 0 && chips.length > 0 && (
         <ul className="m-0 flex list-none flex-wrap gap-1 p-0">
           {chips.map((a) => (
             <li
@@ -380,7 +384,9 @@ export function MentionChips({
           ))}
         </ul>
       )}
-      <p className={`m-0 ${MUTED}`}>Will notify {names.join(", ")}</p>
+      {names.length > 0 && (
+        <p className={`m-0 ${MUTED}`}>Will notify {names.join(", ")}</p>
+      )}
     </div>
   );
 }

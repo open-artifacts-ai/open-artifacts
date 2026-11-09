@@ -176,8 +176,7 @@ function Composer({
   mentionable?: boolean;
   /** The action row's own surface while it floats in the short sheet (#1657). */
   actions?: string;
-  /** The new-comment layout: Assign on its own line, then Cancel and the
-      accent submit at the right. */
+  /** The new-comment layout: Cancel and the accent submit at the right. */
   buttonsRight?: boolean;
   /** Shown at the left of the button row (a guest's Sign in link). */
   lead?: React.ReactNode;

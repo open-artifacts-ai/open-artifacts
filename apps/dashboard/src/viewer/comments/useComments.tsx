@@ -36,7 +36,7 @@ export type CommentsApi = {
   /** Comments are on for this artifact and this viewer isn't an embed. */
   enabled: boolean;
   canComment: boolean;
-  /** Owner or editor, signed in: may @mention and assign agents (the server refuses anyone else). */
+  /** Owner or editor, signed in: may @mention agents (the server refuses anyone else). */
   canMention: boolean;
   /** A guest or restricted member: the server refuses their writes as read-only. */
   capped: boolean;

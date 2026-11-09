@@ -727,7 +727,13 @@ describe("@ picker details", () => {
     const bob = { key: "agent:bob", name: "Bob", online: true };
     const smith = { key: "agent:bs", name: "Bob Smith", online: true };
     const both = [bob, smith];
-    expect(removeMention("hi @Bob and @Bob.", "Bob", both)).toBe("hi and .");
+    expect(removeMention("hi @Bob and @Bob.", "Bob", both)).toBe("hi and.");
+    expect(removeMention("hi @Bob.", "Bob", both)).toBe("hi.");
+    expect(removeMention("@Bob @Bob x", "Bob", both)).toBe("x");
+    expect(removeMention("a @Bob @Bob b", "Bob", both)).toBe("a b");
+    const cpp = { key: "agent:cpp", name: "C++ Bot", online: true };
+    expect(removeMention("go @C++ Bot now", "C++ Bot", [cpp])).toBe("go now");
+    expect(removeMention("go @C++ Bot's way", "C++ Bot", [cpp])).toBe("go way");
     expect(removeMention("hi @Bob-x ok", "Bob", both)).toBe("hi @Bob-x ok");
     expect(removeMention("hi @Bob-Smith", "Bob", both)).toBe("hi @Bob-Smith");
     expect(removeMention("hi @Bob's idea", "Bob", both)).toBe("hi idea");
@@ -1022,6 +1028,6 @@ describe("round 3 copy", () => {
 
 describe("removeMention", () => {
   it("removes every mention of the name", () => {
-    expect(removeMention("@Bob hi @bob, ok", "Bob")).toBe("hi , ok");
+    expect(removeMention("@Bob hi @bob, ok", "Bob")).toBe("hi, ok");
   });
 });
