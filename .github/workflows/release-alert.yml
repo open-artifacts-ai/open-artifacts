@@ -1,0 +1,74 @@
+# Keeps one open `blocker` issue "release-please failed" while the last release
+# run on main is red (#1782). A failed release run reaches nobody otherwise: the
+# 4 hours v0.139.0 sat untagged went unnoticed. A green run closes the issue.
+#
+# - Red is `failure` or `timed_out`. `success` is green. `cancelled` is neither:
+#   a queued release-please run is cancelled as a matter of course when a newer
+#   one queues, and a missed release then fails the next run loudly, which this
+#   alert catches. `skipped` and anything else count as nothing. Each is logged.
+# - Reads only the workflow_run event's own fields, passed through env: and
+#   never interpolated into a script. No checkout, no install, no secret: the
+#   default token with issues: write only. Public text: the repo, the run URL,
+#   the sha and the conclusion, no log excerpts.
+# - The concurrency group keeps two completions from opening two issues. GitHub
+#   keeps one running and one pending run per group, so a third completion
+#   replaces the pending one (cancel-in-progress: false only protects the
+#   running one). A dropped completion can lose one "failed again" comment, not
+#   the issue: the next red or green completion sets the state.
+# - workflow_run runs only from the default branch's copy of this file.
+name: release-alert
+
+on:
+  workflow_run:
+    workflows: [release-please]
+    types: [completed]
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: release-alert
+  cancel-in-progress: false
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Keep the blocker issue in step
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TITLE: release-please failed
+          CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN: ${{ github.event.workflow_run.html_url }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          case "$CONCLUSION" in
+            failure | timed_out) result=red ;;
+            success) result=green ;;
+            cancelled)
+              echo "Run $RUN was cancelled: neither red nor green, nothing changed (a missed release fails the next run, which this alert catches)."
+              exit 0 ;;
+            *)
+              echo "Run $RUN ended '$CONCLUSION': not counted, nothing changed."
+              exit 0 ;;
+          esac
+          open=$(gh issue list --repo "$REPO" --state open --label blocker --limit 100 --json number,title | jq -r --arg t "$TITLE" '[.[] | select(.title == $t) | .number][0] // empty')
+          if [ "$result" = red ]; then
+            if [ -n "$open" ]; then
+              gh issue comment "$open" --repo "$REPO" --body "Failed again ($CONCLUSION): $RUN at $SHA"
+              echo "Red ($CONCLUSION): commented on #$open."
+            else
+              gh issue create --repo "$REPO" --title "$TITLE" --label blocker --body "The release-please workflow ended $CONCLUSION on main in $REPO. Run: $RUN Commit: $SHA Conclusion: $CONCLUSION"
+              echo "Red ($CONCLUSION): opened the blocker issue."
+            fi
+          elif [ -n "$open" ]; then
+            gh issue close "$open" --repo "$REPO" --comment "Green again: $RUN at $SHA"
+            echo "Green: closed #$open."
+          else
+            echo "Green: no open blocker issue, nothing to do."
+          fi
