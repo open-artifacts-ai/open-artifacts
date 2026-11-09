@@ -977,7 +977,7 @@ describe("agents", () => {
       Object.fromEntries(
         (await list(id, who)).threads.map((t) => [
           t.comments[0]?.body,
-          t.comments[0]?.author.agent,
+          t.comments[0]?.author.name,
         ]),
       );
     expect(await agents(viewer)).toEqual({

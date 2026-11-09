@@ -79,6 +79,7 @@ const RPC_ALLOWLIST = [
   "agentByProof",
   "closeAll",
   "decideLinkProposal",
+  "decideReachProposal",
   "decideRoleProposal",
   "deleteLink",
   "deleteReach",
@@ -93,6 +94,7 @@ const RPC_ALLOWLIST = [
   "pendingProposalSources",
   "ping",
   "proposeLink",
+  "proposeReach",
   "proposeRole",
   "putLink",
   "putReach",
@@ -100,6 +102,7 @@ const RPC_ALLOWLIST = [
   "revokeMachine",
   "snapshot",
   "viewLinkProposal",
+  "viewReachProposal",
   "viewRoleProposal",
   "wipe",
 ];

@@ -95,6 +95,16 @@ import {
   removeReach,
 } from "./reach.js";
 import {
+  decideReachProposal,
+  expireReachProposalsOfMachine,
+  proposeReach,
+  type ReachAudit,
+  type ReachDecideResult,
+  type ReachProposeResult,
+  type ReachViewResult,
+  viewReachProposal,
+} from "./reach-proposals.js";
+import {
   type DecideResult,
   decideProposal,
   expireByCredential,
@@ -167,6 +177,12 @@ export const AUTHZ_AT_HEADER = "x-oa-bus-authz-at";
  * (429, Retry-After), so a connect racing closeAll never survives it.
  */
 export const SKEW_MS = 2000;
+/**
+ * #1749: how long a close this hub started waits for the install index's
+ * `gone`. Well under revokeBusMachine's 10 s `within`, so a slow index never
+ * turns a finished revoke into a 503.
+ */
+const INDEX_GONE_TIMEOUT_MS = 3000;
 
 /** Structured hub events: ids, codes, kinds and counts only (log.ts). */
 function logEvent(
@@ -272,6 +288,11 @@ type Attachment = {
   replaced?: true;
   revoked?: true;
   /**
+   * The socket tripped its frame budget and was closed (#1749). Kept here so
+   * a wake (which clears #rateClosed) still processes none of its frames.
+   */
+  rateLimited?: true;
+  /**
    * The capability tokens of the socket's latest `hello` (#1325), kept in
    * the attachment so they survive hibernation. Absent: no hello with caps.
    */
@@ -331,6 +352,16 @@ const linkGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.link);
 };
+
+/**
+ * Notices (#1746): the `notice` frame arrived with daemon v0.138.0, but only
+ * v0.139.0 began listing a cap (BUS_CAPS.follow), so that cap is the gate. A
+ * daemon without it has a strict decoder that refuses the frame (`bad_frame`)
+ * while the hub would report `delivered`. Such a socket is treated as an
+ * offline machine: the notice parks and goes out on an agent_up from a
+ * socket with the cap. 0.138.x daemons count as old, which is acceptable.
+ */
+const noticeGated = (ws: WebSocket): boolean => followGated(ws);
 
 /** #1317: follow requests one hub runs at once (each is a D1 round trip); past it, `rate_limited`. */
 const FOLLOWS_IN_FLIGHT_MAX = 8;
@@ -2529,8 +2560,11 @@ function resolveTarget(
   now: number,
   withLinks = false,
   withReach = false,
+  withMailbox = false,
 ): Resolution {
   const lname = toName.toLowerCase();
+  // #1349: an away role holder takes mail only for a mailbox-capable sender.
+  const awayAt = withMailbox ? now : undefined;
   // A former name is never held by two agents in one scope (nameTaken);
   // if it ever were, the send is ambiguous rather than delivered to either.
   const formerIn = (
@@ -2542,7 +2576,7 @@ function resolveTarget(
     return rows.length > 1 ? refused("ambiguous") : { ok: true, agent: hit };
   };
   const visibleIn = (ns: string): Resolution | null => {
-    const role = resolveRoleIn(sql, OWNER_ORG_ID, ns, lname);
+    const role = resolveRoleIn(sql, OWNER_ORG_ID, ns, lname, awayAt);
     if (role) return role;
     const hit = liveVisibleIn(sql, ns, lname);
     return hit ? { ok: true, agent: hit } : formerIn({ ns });
@@ -2582,7 +2616,7 @@ function resolveTarget(
             ? r
             : null;
         const reply =
-          back(resolveRoleIn(sql, OWNER_ORG_ID, toNamespace, lname)) ??
+          back(resolveRoleIn(sql, OWNER_ORG_ID, toNamespace, lname, awayAt)) ??
           back(
             (() => {
               const h = liveVisibleIn(sql, toNamespace, lname);
@@ -2643,8 +2677,12 @@ function resolveTarget(
   if (own) return own;
   // #1296: a role in exactly one other namespace, unless a live agent (or a
   // live former name) outside that namespace's scope shares the name.
-  const role = resolveRoleAnywhere(sql, OWNER_ORG_ID, lname, (ns) =>
-    nameOutside(sql, lname, ns, now, sender.id),
+  const role = resolveRoleAnywhere(
+    sql,
+    OWNER_ORG_ID,
+    lname,
+    (ns) => nameOutside(sql, lname, ns, now, sender.id),
+    awayAt,
   );
   if (role) return role;
   // A live global sorts first and is the only live agent with its name (and
@@ -3760,6 +3798,70 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
+   * #1346: records a reach proposal from agent `nativeRef` of `machineId`
+   * under `tokenHash` (the sha256 of its confirm link's secret). Grants
+   * nothing; the role is the one the agent holds, found here. Worker only
+   * (services/bus.ts proposeBusReach, from the machine-token route).
+   */
+  async proposeReach(
+    input: { nativeRef: string; namespaces: string[] },
+    machineId: string,
+    tokenHash: string,
+  ): Promise<ReachProposeResult> {
+    const r = proposeReach(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      input,
+      machineId,
+      tokenHash,
+      this.#now(),
+      newId,
+    );
+    logEvent("reach_proposed", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /** #1346: the reach proposal behind `tokenHash`, for the confirm page. Worker only. */
+  async viewReachProposal(tokenHash: string): Promise<ReachViewResult> {
+    return viewReachProposal(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      tokenHash,
+      this.#now(),
+    );
+  }
+
+  /**
+   * #1346: confirms (applies, through addReach) or rejects the reach
+   * proposal behind `tokenHash`, once. Worker only, and only from the
+   * confirm page's POST (bus/reach-confirm.ts: a browser session and its
+   * form token). Reach-capable sockets hear `roster_changed` when grants
+   * were added.
+   */
+  async decideReachProposal(
+    tokenHash: string,
+    decision: "confirm" | "reject",
+  ): Promise<ReachDecideResult> {
+    const r = decideReachProposal(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      tokenHash,
+      decision,
+      this.#now(),
+      newId,
+      (fn) => this.ctx.storage.transactionSync(fn),
+    );
+    if (r.ok && r.changed !== null)
+      notifyRoster(this.ctx, {
+        namespaces: [r.changed],
+        global: false,
+        reachOnly: true,
+      });
+    logEvent("reach_decided", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /**
    * #1372: records an AI agent's role proposal under `tokenHash` (the
    * sha256 of its confirm link's secret, minted by the Worker). Changes no
    * role. Worker only (services/bus.ts proposeBusRole, from MCP).
@@ -3841,9 +3943,9 @@ export class BusHub extends DurableObject<Env> {
     machines: string[];
   }> {
     const sql = this.ctx.storage.sql;
-    const col = (q: string) =>
+    const col = (q: string, ...org: string[]) =>
       sql
-        .exec(q, OWNER_ORG_ID)
+        .exec(q, ...(org.length > 0 ? org : [OWNER_ORG_ID]))
         .toArray()
         .map((r) => String(Object.values(r)[0]));
     return {
@@ -3851,18 +3953,30 @@ export class BusHub extends DurableObject<Env> {
         "select distinct credential from role_proposals where org_id = ? and status = 'pending' and credential is not null",
       ),
       machines: col(
-        "select distinct machine_id from link_proposals where org_id = ? and status = 'pending'",
+        "select machine_id from link_proposals where org_id = ? and status = 'pending' union select machine_id from reach_proposals where org_id = ? and status = 'pending'",
+        OWNER_ORG_ID,
+        OWNER_ORG_ID,
       ),
     };
   }
 
-  /** #1403: expires the machine's pending link proposals (a machine revoked in bulk). Worker only. */
-  async expireLinkProposalsOf(machineId: string): Promise<void> {
+  /**
+   * #1403: expires the machine's pending link and reach proposals (a machine
+   * revoked in bulk). Returns the reach ones, for their audit rows. Worker only.
+   */
+  async expireLinkProposalsOf(machineId: string): Promise<ReachAudit[]> {
+    const now = this.#now();
     expireLinkProposalsOfMachine(
       this.ctx.storage.sql,
       OWNER_ORG_ID,
       machineId,
-      this.#now(),
+      now,
+    );
+    return expireReachProposalsOfMachine(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      machineId,
+      now,
     );
   }
 
@@ -4193,6 +4307,13 @@ export class BusHub extends DurableObject<Env> {
    */
   indexInFlight = 0;
 
+  #indexGoneTimeoutMs = INDEX_GONE_TIMEOUT_MS;
+
+  /** Tests only (static, not RPC): the bound on a `gone` call (null: INDEX_GONE_TIMEOUT_MS). */
+  static setIndexGoneTimeoutForTests(hub: BusHub, ms: number | null): void {
+    hub.#indexGoneTimeoutMs = ms ?? INDEX_GONE_TIMEOUT_MS;
+  }
+
   /**
    * #1299: when `closing` was the hub's last open daemon socket, removes the
    * hub's row from the install index (it outlives the index window while
@@ -4216,24 +4337,45 @@ export class BusHub extends DurableObject<Env> {
     const idx = socketIndexStub(this.env);
     if (!idx || !name) return;
     this.#indexedAt = Number.NEGATIVE_INFINITY;
+    // #1749: bounded, so a hung index stalls no close, erase or revoke. The
+    // call, and the repair after it, count in indexInFlight until they
+    // really settle, not until the timeout, so a test teardown still waits.
     this.indexInFlight++;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const call = Promise.resolve().then(() => idx.gone(name));
+    // The repair runs when `gone` really lands, even after the bound gave up
+    // on it: always reset, because a `seen` that returned while `gone` was in
+    // flight set the throttle after the row was deleted, and an accept
+    // within INDEX_REPORT_MS would skip its report and leave a live socket
+    // with no row. A socket accepted while `gone` was in flight reported
+    // before it landed, so its report may have been deleted: report again.
+    const settled = call
+      .then(
+        async () => {
+          this.#indexedAt = Number.NEGATIVE_INFINITY;
+          if (open()) await this.#reportToIndex();
+        },
+        () => {}, // logged by the race below, or after the bound: ignored
+      )
+      .finally(() => {
+        this.indexInFlight--;
+      });
+    this.ctx.waitUntil(settled);
     try {
-      await idx.gone(name);
+      const timedOut = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("socket index gone timed out")),
+          this.#indexGoneTimeoutMs,
+        );
+      });
+      await Promise.race([call, timedOut]);
     } catch (e) {
       logError("socket_index_failed", e);
       return;
     } finally {
-      this.indexInFlight--;
+      clearTimeout(timer);
     }
-    // Always reset: a `seen` that returned while `gone` was in flight set the
-    // throttle after the row was deleted, and an accept within INDEX_REPORT_MS
-    // would then skip its report and leave a live socket with no row.
-    this.#indexedAt = Number.NEGATIVE_INFINITY;
-    // A socket accepted while `gone` was in flight reported before it landed,
-    // so its report may have been deleted: report again.
-    if (open()) {
-      await this.#reportToIndex();
-    }
+    await settled;
   }
 
   override async webSocketMessage(
@@ -4267,12 +4409,20 @@ export class BusHub extends DurableObject<Env> {
     const machineId = machineOf(ws);
     if (machineId === null) return false;
     const b = this.#machineBudget(machineId, now);
-    const ok = !this.#rateClosed.has(ws) && takeToken(b, now, FRAME_BUDGET);
+    const tripped =
+      this.#rateClosed.has(ws) || attachmentOf(ws)?.rateLimited === true;
+    const ok = !tripped && takeToken(b, now, FRAME_BUDGET);
     if (ok) return false;
     // The cooldown starts when this socket trips, not on its late frames.
-    if (!this.#rateClosed.has(ws)) {
+    if (!tripped) {
       b.cooldownUntil = now + LIMITS.rateLimitCooldownMs;
       this.#rateClosed.add(ws);
+      try {
+        const a = attachmentOf(ws);
+        if (a) ws.serializeAttachment({ ...a, rateLimited: true });
+      } catch {
+        // Already closed.
+      }
       logEvent("rate_limited", { kind: "frames", machineId });
     }
     closeSocket(ws, LIMITS.rateLimitCloseCode, "rate limited");
@@ -5064,6 +5214,7 @@ export class BusHub extends DurableObject<Env> {
       now,
       linksGated(ws),
       reachGated(ws),
+      mailboxGated(ws),
     );
     // A reply (`to_id`) goes only to the agent it answers: never to whoever
     // holds the name now (wireReason shows agent_gone only to an ids socket).
@@ -5963,7 +6114,9 @@ export class BusHub extends DurableObject<Env> {
       );
       return "dropped";
     }
-    const socket = liveSocket(this.ctx, agent.machineId);
+    const live = liveSocket(this.ctx, agent.machineId);
+    // A socket that cannot decode a notice counts as offline (noticeGated).
+    const socket = live && noticeGated(live) ? live : null;
     const notBefore = n.notBefore ?? now;
     if (socket && notBefore <= now) {
       sql.exec(
@@ -6011,6 +6164,8 @@ export class BusHub extends DurableObject<Env> {
    * parked ones. Bounded by NOTICE_FLUSH_BATCH.
    */
   #flushNoticesFor(ws: WebSocket, agent: AgentRow): void {
+    // A socket without the cap cannot decode a notice: leave them parked.
+    if (!noticeGated(ws)) return;
     const sql = this.ctx.storage.sql;
     const now = this.#now();
     const rows = all<NoticeRow>(
@@ -6069,7 +6224,8 @@ export class BusHub extends DurableObject<Env> {
     );
     for (const r of due) {
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
-      const socket = agent && liveSocket(this.ctx, agent.machineId);
+      const live = agent && liveSocket(this.ctx, agent.machineId);
+      const socket = live && noticeGated(live) ? live : null;
       if (agent && socket) {
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",

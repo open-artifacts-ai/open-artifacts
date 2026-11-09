@@ -635,6 +635,7 @@ describe("RPC surface", () => {
       "agentByProof",
       "closeAll",
       "decideLinkProposal",
+      "decideReachProposal",
       "decideRoleProposal",
       "deleteLink",
       "deleteReach",
@@ -649,6 +650,7 @@ describe("RPC surface", () => {
       "pendingProposalSources",
       "ping",
       "proposeLink",
+      "proposeReach",
       "proposeRole",
       "putLink",
       "putReach",
@@ -656,6 +658,7 @@ describe("RPC surface", () => {
       "revokeMachine",
       "snapshot",
       "viewLinkProposal",
+      "viewReachProposal",
       "viewRoleProposal",
       "wipe",
     ]);
