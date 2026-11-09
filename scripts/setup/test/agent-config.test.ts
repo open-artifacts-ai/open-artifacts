@@ -24,7 +24,7 @@ describe("agent-config snippets", () => {
       url: URL,
       enabled: true,
     });
-    for (const k of ["claudeCode", "cursor", "opencode"])
+    for (const k of ["claudeCode", "cursor", "opencode", "codex"])
       expect(s[k], k).not.toMatch(/OA_TOKEN|\$\(cat|--header|oa_pat_|Bearer/);
   });
   it("the token fallbacks read the absolute file; none embeds a token", () => {
@@ -34,8 +34,8 @@ describe("agent-config snippets", () => {
       oauth: false,
       headers: { Authorization: `Bearer {file:${FILE}}` },
     });
-    expect(s.codex).toContain('bearer_token_env_var = "OA_TOKEN"');
-    expect(s.codex).toContain("[mcp_servers.open-artifacts]");
+    expect(s.codexToken).toContain('bearer_token_env_var = "OA_TOKEN"');
+    expect(s.codexToken).toContain("[mcp_servers.open-artifacts]");
     expect(
       JSON.parse(s.json as string).mcpServers["open-artifacts"].headers,
     ).toEqual({
@@ -43,14 +43,22 @@ describe("agent-config snippets", () => {
     });
     for (const v of Object.values(s)) expect(v).not.toMatch(/oa_pat_/);
   });
-  it("Codex's note launches it with the file and says not to edit profiles", () => {
-    const note = fileSnippets("open-artifacts", URL, FILE).codex?.note;
+  it("Codex defaults to URL-only config and browser OAuth", () => {
+    const c = fileSnippets("open-artifacts", URL, FILE).codex;
+    expect(c?.text).toBe(`[mcp_servers.open-artifacts]\nurl = "${URL}"`);
+    expect(c?.note).toContain("codex mcp login open-artifacts");
+    expect(c?.note).not.toContain(FILE);
+  });
+  it("Codex's token fallback launches it with the file and says not to edit profiles", () => {
+    const note = fileSnippets("open-artifacts", URL, FILE).codexToken?.note;
     expect(note).toContain(`OA_TOKEN="$(cat ${FILE})" codex`);
     expect(note).toContain("Don't edit shell profiles");
   });
   it("without a token file there are no file-based fallbacks", () => {
     const n = fileSnippets("open-artifacts", URL);
     expect(n.opencodeToken).toBeUndefined();
+    expect(n.codexToken).toBeUndefined();
+    expect(n.codex?.note).toContain("codex mcp login open-artifacts");
     expect(JSON.stringify(n)).not.toContain("pat-token");
   });
 });
