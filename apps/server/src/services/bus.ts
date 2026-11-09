@@ -458,11 +458,14 @@ export async function linkRequest(
   try {
     if (!busOn(env) || !LinkProofSchema.safeParse(proof).success)
       return { req: clean };
-    if (!(await hasConnectedMachine(env, userId))) return { req: clean };
-    const hub = busHub(env, userId);
-    if (!hub) return { req: clean };
+    // One bound for the whole lookup, the machine read included, so a slow
+    // D1 read cannot slow /mcp either; a timeout is unlinked, like a miss.
     const identity = await within(
-      hub.agentByProof(await sha256Hex(proof)),
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        return hub ? await hub.agentByProof(await sha256Hex(proof)) : null;
+      })(),
       LINK_LOOKUP_MS,
     );
     return identity ? { req: clean, identity } : { req: clean };

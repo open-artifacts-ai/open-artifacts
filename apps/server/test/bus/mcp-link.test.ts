@@ -146,6 +146,24 @@ describe("linkRequest (#1822)", () => {
     expect(Date.now() - t0).toBeLessThan(LINK_LOOKUP_MS + 1500);
   });
 
+  it("a slow machine read (D1) is bound by the same limit and leaves the request unlinked", async () => {
+    const proof = proofOf();
+    const a = await bound(proof);
+    const { asked, ev } = spyHubs();
+    const hang = new Promise(() => {});
+    const DB = { prepare: () => ({ bind: () => ({ first: () => hang }) }) };
+    const t0 = Date.now();
+    const r = await linkRequest(
+      { ...(ev as object), DB } as never,
+      a.userId,
+      mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
+    );
+    expect(Object.keys(r)).toEqual(["req"]);
+    expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
+    expect(Date.now() - t0).toBeLessThan(LINK_LOOKUP_MS + 1500);
+    expect(asked).toEqual([]);
+  });
+
   it("with the bus off the header is stripped and no hub is asked", async () => {
     const proof = proofOf();
     const a = await bound(proof);
