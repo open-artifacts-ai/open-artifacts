@@ -10,7 +10,6 @@ import { BusHub } from "../../src/bus/hub.js";
 import {
   type Daemon,
   daemon,
-  framesSeen,
   hubOf,
   machine,
   ns,
