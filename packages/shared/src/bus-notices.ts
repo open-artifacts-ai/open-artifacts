@@ -301,8 +301,10 @@ export const BUS_REACH_PROPOSALS_PER_MACHINE_HOUR = 10;
 /**
  * POST R.busReachProposals (a machine token): the agent whose session is
  * `nativeRef` on that machine asks that the role it holds reach `namespaces`.
- * The role is never named here: the hub finds it from the agent, so a peer
- * can't ask for another agent's role. Nothing changes until the member
+ * The role is never named here: the hub finds it from the agent, so one
+ * machine can't ask for another machine's agent's role. The daemon must
+ * derive `nativeRef` from the calling session (the token is the machine's).
+ * Nothing changes until the member
  * confirms the returned link in a browser.
  */
 export const BusReachProposeSchema = z.strictObject({

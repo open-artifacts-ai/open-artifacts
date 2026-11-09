@@ -3746,6 +3746,7 @@ export class BusHub extends DurableObject<Env> {
       decision,
       this.#now(),
       newId,
+      (fn) => this.ctx.storage.transactionSync(fn),
     );
     if (r.ok && r.changed !== null)
       notifyRoster(this.ctx, {

@@ -8,8 +8,11 @@
 //
 // The role is never named by the caller: it is the role the hub finds the
 // agent holding (the live, non-global agent in the role's namespace, as
-// reachNamespaces reads a holder), so a peer can't ask for another agent's
-// role. A proposal is bound to what the member sees: the role, its holder
+// reachNamespaces reads a holder), so a machine can't ask for another
+// machine's agent's role. Within one machine the token is the machine's, not
+// the agent's: the daemon must derive nativeRef from the calling session, or
+// one local agent could ask for another's role (the member still sees the
+// holder and the machine on the card). A proposal is bound to what the member sees: the role, its holder
 // and the namespaces. It applies only while the role is still the same role
 // with the same holder under the same name, through addReach (the member's
 // own REST write, same limits), all of its namespaces or none. It is
@@ -35,6 +38,9 @@ const one = <T extends Row>(
   q: string,
   ...b: SqlStorageValue[]
 ): T | null => all<T>(sql, q, ...b)[0] ?? null;
+
+/** Thrown inside the grant transaction to undo it (no grant of the proposal stays). */
+class Rollback extends Error {}
 
 const RETAIN_MS = 24 * 3_600_000;
 const HOUR_MS = 3_600_000;
@@ -437,6 +443,8 @@ export function decideReachProposal(
   decision: "confirm" | "reject",
   now: number,
   newId: () => string,
+  /** The storage's transactionSync: the grants and the status apply together or not at all. */
+  tx: <T>(fn: () => T) => T = (fn) => fn(),
 ): ReachDecideResult {
   const expired = expireReachProposals(sql, orgId, now);
   const p = byHash(sql, orgId, tokenHash);
@@ -477,20 +485,27 @@ export function decideReachProposal(
   if (decision === "reject") return refuse("rejected");
   const b = blocker(sql, orgId, p);
   if (b.why !== null) return refuse(b.why);
-  for (const ns of b.fresh) {
-    const r = addReach(
-      sql,
-      orgId,
-      p.roleNamespace,
-      p.roleName,
-      ns,
-      now,
-      newId,
-      BUS_REACH_MAX,
-      BUS_REACH_PER_ROLE,
-      p.machineId,
-    );
-    if (!r.ok) return refuse("changed");
+  try {
+    tx(() => {
+      for (const ns of b.fresh) {
+        const r = addReach(
+          sql,
+          orgId,
+          p.roleNamespace,
+          p.roleName,
+          ns,
+          now,
+          newId,
+          BUS_REACH_MAX,
+          BUS_REACH_PER_ROLE,
+          p.machineId,
+        );
+        if (!r.ok) throw new Rollback();
+      }
+    });
+  } catch (e) {
+    if (e instanceof Rollback) return refuse("changed");
+    throw e;
   }
   const noop = b.fresh.length === 0;
   return {

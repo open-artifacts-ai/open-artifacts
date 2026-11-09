@@ -1219,6 +1219,9 @@ export async function proposeBusReach(
   if (!(await hasConnectedMachine(env, userId))) throw refuse("no_bus");
   const hub = busHub(env, userId);
   if (!hub) throw refuse("no_bus");
+  // A revoked machine's pending proposals expire (audited) before they
+  // count toward the pending limit.
+  await sweepRevokedProposers(env, userId, hub);
   const secret = b64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
   const r = await reachProposalCall(
     hub.proposeReach(input, machineId, await sha256Hex(secret)),
@@ -1300,8 +1303,26 @@ export async function decideBusReachProposal(
   const r = await reachProposalCall(
     hub.decideReachProposal(await sha256Hex(secret), decision),
   );
-  await auditReachExpired(env, userId, r.expired);
   const actor = userActor(userId);
+  // The decision is made: an audit write that fails is logged and rethrown
+  // so the page says it could not confirm, never "nothing changed".
+  try {
+    await auditReachExpired(env, userId, r.expired);
+    await auditReachDecision(env, userId, r, actor);
+  } catch (e) {
+    logError("bus_reach_audit_failed", e);
+    throw e;
+  }
+  return r;
+}
+
+/** The audit row of a decided (or already-spent) reach proposal. */
+async function auditReachDecision(
+  env: Env,
+  userId: string,
+  r: ReachDecideResult,
+  actor: AuditActor,
+): Promise<void> {
   if (r.ok)
     await audit(env, "bus.reach.confirmed", auditTarget(userId), actor, {
       detail: reachDetailOf(r.audit),
@@ -1323,5 +1344,4 @@ export async function decideBusReachProposal(
         r.reason,
       ),
     }).run();
-  return r;
 }

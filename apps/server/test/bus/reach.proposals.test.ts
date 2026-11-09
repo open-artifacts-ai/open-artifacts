@@ -9,6 +9,7 @@
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
+  BUS_REACH_MAX,
   BUS_REACH_PER_ROLE,
   BUS_REACH_PROPOSAL_TTL_MS,
   BUS_REACH_PROPOSALS_PENDING_MAX,
@@ -21,10 +22,12 @@ import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
 import { sessionCookieName, signSession } from "../../src/auth/session.js";
 import type { BusHub } from "../../src/bus/hub.js";
+import { OWNER_ORG_ID } from "../../src/bus/hub.js";
 import { REACH_CONFIRM_SCOPE } from "../../src/bus/reach-confirm.js";
 import { ROLE_CONFIRM_SCOPE } from "../../src/bus/role-confirm.js";
 import { migrateHub } from "../../src/bus/schema.js";
 import { formCsrf } from "../../src/http/pages.js";
+import { revokeBusMachine } from "../../src/services/bus.js";
 import { sha256Hex } from "../../src/util/crypto.js";
 import { errOf, fetchAndWait } from "../helpers.js";
 import { confirmBrowser } from "./confirm-browser.js";
@@ -760,9 +763,8 @@ describe("reach proposals (#1346)", () => {
         namespaces: [ns("w")],
       }),
     );
-    await env.DB.prepare("update bus_machines set revoked_at = ? where id = ?")
-      .bind(Date.now(), b.machineId)
-      .run();
+    // The real revoke (D1 and the hub), not a direct write.
+    expect(await revokeBusMachine(env, b.userId, b.machineId)).toBe(true);
     expect((await get(mine.secret, { cookie: b.cookie })).status).toBe(410);
     expect((await confirmInBrowser(b.cookie, theirs.secret)).status).toBe(200);
     expect(await grants(b.userId)).toHaveLength(1);
@@ -776,6 +778,154 @@ describe("reach proposals (#1346)", () => {
     expect(expired[0]?.actor_kind).toBe("system");
     b.d.close();
     od.close();
+  });
+
+  it("revoking a machine frees its pending proposals from the limit at the next proposal, audited machine_revoked, with no page view", async () => {
+    const b = await withBus();
+    const { agent } = await holder(b);
+    const other = await machine("Other", b.userId);
+    const od = await hello(other.token, "Other");
+    const home2 = ns("home2");
+    const agent2 = await open(b.userId, od, home2);
+    expect(
+      (await (await hubOf(b.userId)).putRole(home2, "lead", agent2.id)).ok,
+    ).toBe(true);
+    const one = (token: string, ref: string) =>
+      propose(token, { nativeRef: ref, namespaces: [ns("q")] });
+    for (let i = 0; i < BUS_REACH_PROPOSALS_PENDING_MAX; i++)
+      expect((await one(b.machineToken, agent.ref)).status).toBe(200);
+    expect((await one(other.token, agent2.ref)).status).toBe(409);
+    expect(await revokeBusMachine(env, b.userId, b.machineId)).toBe(true);
+    expect((await one(other.token, agent2.ref)).status).toBe(200);
+    const expired = (await auditRows(b.userId)).filter(
+      (r) => r.action === "bus.reach.expired",
+    );
+    expect(expired).toHaveLength(BUS_REACH_PROPOSALS_PENDING_MAX);
+    for (const r of expired)
+      expect(JSON.parse(r.detail)).toMatchObject({
+        why: "machine_revoked",
+        machineId: b.machineId,
+      });
+    b.d.close();
+    od.close();
+  });
+
+  it("the hub-wide limit holds at view and confirm: nothing is applied past BUS_REACH_MAX", async () => {
+    const b = await withBus();
+    const { agent } = await holder(b);
+    await runInHub(b.userId, (s) => {
+      for (let i = 0; i < BUS_REACH_MAX; i++)
+        s.storage.sql.exec(
+          `insert into reach_grants (id, org_id, role_ns, role_name, lname, mode, target_ns, created_at)
+           values (?, ?, ?, 'r', ?, 'reach', 't', 1)`,
+          `fill${i}`,
+          OWNER_ORG_ID,
+          `fill.local/${Math.floor(i / 10)}`,
+          `r${i % 10}`,
+        );
+    });
+    const p = await proposed(
+      await propose(b.machineToken, {
+        nativeRef: agent.ref,
+        namespaces: [ns("over")],
+      }),
+    );
+    expect((await get(p.secret, { cookie: b.cookie })).status).toBe(409);
+    expect((await decideDirect(b, p.secret)).status).toBe(409);
+    expect(await grantRows(b.userId)).toHaveLength(BUS_REACH_MAX);
+    b.d.close();
+  });
+
+  it("the holder going away, moving namespace or flipping global between propose and confirm refuses it, applying nothing", async () => {
+    const b = await withBus();
+    const cases: [string, string][] = [
+      ["away", "update agents set live = 0 where id = ?"],
+      [
+        "moved",
+        "update agents set namespace = 'moved.local/elsewhere' where id = ?",
+      ],
+      ["global", "update agents set global = 1 where id = ?"],
+    ];
+    for (const [, q] of cases) {
+      const h = await holder(b);
+      const p = await proposed(
+        await propose(b.machineToken, {
+          nativeRef: h.agent.ref,
+          namespaces: [ns("g")],
+        }),
+      );
+      await runInHub(b.userId, (s) => {
+        s.storage.sql.exec(q, h.agent.id);
+      });
+      expect((await decideDirect(b, p.secret)).status).toBe(409);
+    }
+    expect(await grants(b.userId)).toEqual([]);
+    const why = (await auditRows(b.userId))
+      .filter((r) => r.action === "bus.reach.refused")
+      .map((r) => JSON.parse(r.detail).why);
+    expect(why).toEqual(["changed", "changed", "changed"]);
+    b.d.close();
+  });
+
+  it("a proposal that expired is refused by the decide step too, audited as expired then refused", async () => {
+    const b = await withBus();
+    const { agent } = await holder(b);
+    const p = await proposed(
+      await propose(b.machineToken, {
+        nativeRef: agent.ref,
+        namespaces: [ns("x")],
+      }),
+    );
+    await runInHub(b.userId, (s) => {
+      s.storage.sql.exec("update reach_proposals set expires_at = 1");
+    });
+    expect((await decideDirect(b, p.secret)).status).toBe(410);
+    expect(await grants(b.userId)).toEqual([]);
+    const rows = await auditRows(b.userId);
+    expect(rows.map((r) => r.action).sort()).toEqual([
+      "bus.reach.expired",
+      "bus.reach.proposed",
+      "bus.reach.refused",
+    ]);
+    expect(
+      JSON.parse(
+        rows.find((r) => r.action === "bus.reach.refused")?.detail ?? "{}",
+      ).why,
+    ).toBe("expired");
+    b.d.close();
+  });
+
+  it("if the grant lands but the audit write fails, the page never says nothing changed", async () => {
+    const b = await withBus();
+    const { agent } = await holder(b);
+    const p = await proposed(
+      await propose(b.machineToken, {
+        nativeRef: agent.ref,
+        namespaces: [ns("au")],
+      }),
+    );
+    const page = await get(p.secret, { cookie: b.cookie });
+    const csrf = csrfOf(await page.text());
+    await env.DB.prepare(
+      "alter table audit_events rename to audit_events_x",
+    ).run();
+    let r: Response;
+    try {
+      r = await post(p.secret, { cookie: b.cookie }, [
+        ["csrf", csrf],
+        ["decision", "confirm"],
+      ]);
+    } finally {
+      await env.DB.prepare(
+        "alter table audit_events_x rename to audit_events",
+      ).run();
+    }
+    expect(r.status).toBe(500);
+    const text = await r.text();
+    expect(text).toContain("We could not confirm this finished");
+    expect(text).not.toContain("Nothing changed");
+    expect(await grants(b.userId)).toHaveLength(1);
+    b.d.close();
   });
 
   it("a hub from before PR 2 (reach_grants without provenance) gains the columns, keeping its rows as the member's", async () => {
