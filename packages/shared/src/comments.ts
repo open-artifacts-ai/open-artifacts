@@ -104,6 +104,11 @@ export const CommentAssignedSchema = z.object({
   key,
   name: z.string(),
   state: z.enum(["delivered", "queued", "seen", "done"]),
+  /**
+   * The version the agent published when the work was marked done; null when
+   * done without publishing. Absent until the server records it (#1614).
+   */
+  doneVersion: z.number().int().min(1).nullable().optional(),
 });
 export type CommentAssigned = z.infer<typeof CommentAssignedSchema>;
 
@@ -197,6 +202,13 @@ export const ReplyBodySchema = z.object({
   body: commentBody,
   guestName,
   ...extras,
+  /**
+   * Address the reply to the thread root's ask author (#1614): anyone who may
+   * reply, viewers included. 400 not_an_ask when the root has no ask or its
+   * author is not an agent; 400 with mentions or assign. Its agents get a
+   * fixed notice; `mentions` on the returned comment says who and how it went.
+   */
+  toAsker: z.boolean().optional(),
 });
 export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 

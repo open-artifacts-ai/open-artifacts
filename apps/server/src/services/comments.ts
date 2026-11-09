@@ -34,6 +34,7 @@ import {
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import {
   agentRoster,
+  askerRoster,
   type CommentNoticeKind,
   type DeliveryState,
   notifyAgent,
@@ -438,6 +439,8 @@ export type CommentExtras = {
   mentions?: KeyRef[];
   assign?: KeyRef;
   ask?: AskInput;
+  /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions, assign or ask. */
+  toAsker?: boolean;
 };
 
 /** Who may mention, assign and ask. `moderator`: the owner or an editor. */
@@ -454,6 +457,8 @@ type Resolved = {
   /** The agents to make follow: mentioned, resolved from the viewer's own running agents. */
   follow: RosterAgent[];
   mentions: string[];
+  /** What the stored mention rows are: plain mentions, or the agents a reply to the asker reached (#1614). */
+  mentionKind: "mention" | "asker";
   assign: string | null;
 };
 
@@ -481,6 +486,7 @@ async function resolveExtras(
     agents: [],
     follow: [],
     mentions: [],
+    mentionKind: "mention",
     assign: null,
   };
   const wantsTargets = (x.mentions?.length ?? 0) > 0 || x.assign !== undefined;
@@ -571,6 +577,7 @@ async function resolveExtras(
     },
     agents: [...agents.values()],
     mentions: mentioned.map((m) => m.key),
+    mentionKind: "mention",
     assign: assigned?.key ?? null,
   };
 }
@@ -654,11 +661,14 @@ async function deliver(
   } finally {
     clearTimeout(timer);
   }
-  const states: { kind: "mention" | "assign"; key: string; state: string }[] =
-    [];
+  const states: {
+    kind: "mention" | "assign" | "asker";
+    key: string;
+    state: string;
+  }[] = [];
   for (const key of r.mentions)
     states.push({
-      kind: "mention",
+      kind: r.mentionKind,
       key,
       state: stateOf(outcome.get(key) ?? "dropped", false),
     });
@@ -727,6 +737,38 @@ export async function addThread(
   return (await threadViews(env, [t], viewer))[0] as Thread;
 }
 
+/**
+ * A reply to the thread root's ask author (#1614). 400 not_an_ask unless the
+ * root carries an ask and its author is an agent (a person's ask has no agent
+ * to tell). The only addressee is that author's agents: the same target as
+ * ask_answered (askerRoster: the agents that follow the artifact and belong to
+ * the author's member; an MCP asker has no bus address until the open
+ * publisher/asker user decision is made, so the member is the only link).
+ * It can reach no other agent. The notice is fixed text with the ids.
+ */
+async function resolveToAsker(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+): Promise<Resolved> {
+  const t = await call(() => stub(env, artifactId).commentsGet(threadId));
+  const root = t.comments[0];
+  if (!root?.ask || root.author.kind !== "user" || !root.author.agent)
+    throw new ApiError(
+      "not_an_ask",
+      "This thread has no question from an agent to reply to",
+    );
+  const to = await askerRoster(env, artifactId, root.author.ref);
+  return {
+    extras: to.length ? { asker: to.map(storedAgent) } : undefined,
+    agents: to.map((agent) => ({ agent, kind: "asker" as const })),
+    follow: [],
+    mentions: to.map((a) => a.key),
+    mentionKind: "asker",
+    assign: null,
+  };
+}
+
 /** A reply. It does not reopen the thread. */
 export async function addReply(
   env: Env,
@@ -739,7 +781,19 @@ export async function addReply(
   opts: ExtrasOpts = {},
 ): Promise<Comment> {
   const text = checkBody(body);
-  const r = await resolveExtras(env, artifactId, who, extras, opts);
+  let r: Resolved;
+  if (extras.toAsker) {
+    if (
+      (extras.mentions?.length ?? 0) > 0 ||
+      extras.assign !== undefined ||
+      extras.ask !== undefined
+    )
+      throw new ApiError(
+        "bad_request",
+        "toAsker cannot be combined with mentions, assign or ask",
+      );
+    r = await resolveToAsker(env, artifactId, threadId);
+  } else r = await resolveExtras(env, artifactId, who, extras, opts);
   const c = await call(() =>
     stub(env, artifactId).commentsReply({
       threadId,
@@ -749,6 +803,11 @@ export async function addReply(
       ...(r.extras ? { extras: r.extras } : {}),
     }),
   );
+  // The thread's bound (one notice per window, a cap in all) left the reply
+  // without its mention rows: nobody is told, and the usual follower notice
+  // (its own limits) is the only one.
+  if (extras.toAsker && !c.mentions?.length)
+    r = { ...r, agents: [], mentions: [] };
   if (r.agents.length === 0) {
     await announce(env, artifactId, who, opts.after, r);
     return commentView(env, c, viewer);

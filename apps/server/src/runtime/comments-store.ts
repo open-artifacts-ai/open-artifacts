@@ -102,6 +102,8 @@ export type NewExtras = {
   ask?: Omit<StoredAsk, "answer" | "closed">;
   mentions?: StoredAgent[];
   assign?: StoredAgent;
+  /** A reply addressed to the ask's author (#1614): stored as a mention of its agents, under its own kind so the notice can be bounded. */
+  asker?: StoredAgent[];
 };
 
 export type StoredThread = {
@@ -358,7 +360,7 @@ export function insertExtras(
       x.ask.recommended ? JSON.stringify(x.ask.recommended) : null,
       JSON.stringify(x.ask.to),
     );
-  const put = (kind: "mention" | "assign", p: StoredAgent) =>
+  const put = (kind: "mention" | "assign" | "asker", p: StoredAgent) =>
     sql.exec(
       `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state)
        values (?, ?, ?, ?, ?, 'queued')`,
@@ -370,13 +372,38 @@ export function insertExtras(
     );
   for (const m of x.mentions ?? []) put("mention", m);
   if (x.assign) put("assign", x.assign);
+  for (const m of x.asker ?? []) put("asker", m);
+}
+
+/**
+ * Whether a reply to the ask's author may notify its agents now (#1614): none
+ * yet within `sinceIso` on this thread, and fewer than `max` in all. One
+ * notice per thread per window is the bound; a thread's total is capped too.
+ */
+export function askerNoticeDue(
+  sql: SqlStorage,
+  threadId: string,
+  sinceIso: string,
+  max: number,
+): boolean {
+  const r = sql
+    .exec<{ total: number; recent: number }>(
+      `select count(distinct g.comment_id) as total,
+         count(distinct case when c.created_at >= ? then g.comment_id end) as recent
+       from comment_targets g join comments c on c.id = g.comment_id
+       where g.thread_id = ? and g.kind = 'asker'`,
+      sinceIso,
+      threadId,
+    )
+    .one();
+  return r.recent === 0 && r.total < max;
 }
 
 /** Sets one mention's or the assignment's state. */
 export function setTargetState(
   sql: SqlStorage,
   commentId: string,
-  kind: "mention" | "assign",
+  kind: "mention" | "assign" | "asker",
   key: string,
   state: string,
 ): void {

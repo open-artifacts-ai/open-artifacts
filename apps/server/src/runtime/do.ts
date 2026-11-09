@@ -34,6 +34,8 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError } from "../log.js";
 import {
+  ASKER_NOTICE_WINDOW_MS,
+  ASKER_NOTICES_MAX,
   COMMENTS_MAX_REPLIES,
   type CommentStatus,
 } from "../services/comment-rules.js";
@@ -45,6 +47,7 @@ import {
   type ThumbResult,
 } from "../services/thumbs.js";
 import {
+  askerNoticeDue,
   askRow,
   bodyOk,
   COMMENTS_SCHEMA,
@@ -2061,8 +2064,22 @@ export class ArtifactRuntime extends DurableObject<Env> {
         );
       this.countComment(a.rate);
       const now = this.iso();
+      let extras = a.extras;
+      // #1614: a reply to the ask's author is stored, but its agents are only
+      // told when the thread's bound allows it (otherwise no mention is kept
+      // and the service sends nothing).
+      if (
+        extras?.asker &&
+        !askerNoticeDue(
+          this.sql,
+          a.threadId,
+          new Date(this.now() - ASKER_NOTICE_WINDOW_MS).toISOString(),
+          ASKER_NOTICES_MAX,
+        )
+      )
+        extras = { ...extras, asker: undefined };
       const c = insertComment(this.sql, now, a.threadId, a.actor, a.body);
-      if (a.extras) insertExtras(this.sql, a.threadId, c.id, a.extras);
+      if (extras) insertExtras(this.sql, a.threadId, c.id, extras);
       touchThread(this.sql, a.threadId, now);
       return getComment(this.sql, a.threadId, c.id) as StoredComment;
     });
@@ -2119,7 +2136,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
   commentsTargetStates(a: {
     threadId: string;
     commentId: string;
-    states: { kind: "mention" | "assign"; key: string; state: string }[];
+    states: {
+      kind: "mention" | "assign" | "asker";
+      key: string;
+      state: string;
+    }[];
   }): StoredComment {
     this.ensureSchema();
     return this.ctx.storage.transactionSync(() => {

@@ -108,6 +108,7 @@ describe("comment schemas", () => {
       "invalid_anchor",
       "invalid_body",
       "anchor_not_in_version",
+      "not_an_ask",
       "comments_off",
       "forbidden",
     ])
@@ -304,6 +305,7 @@ describe("comments mock", () => {
       expect(ApiErrorSchema.parse(await r.json()).error.code).toBe(
         "invalid_body",
       );
+      "not_an_ask",
     }
   });
 
