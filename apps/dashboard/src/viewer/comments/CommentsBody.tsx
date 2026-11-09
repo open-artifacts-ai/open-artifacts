@@ -33,6 +33,7 @@ import {
   type Extras,
   extrasBody,
   MentionChips,
+  MentionedText,
   MentionMenu,
   matchAgents,
   mentionedKeys,
@@ -157,6 +158,7 @@ function SignInLink() {
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
 function Composer({
   placeholder,
+  mentionPlaceholder,
   label,
   submit,
   extra,
@@ -183,6 +185,8 @@ function Composer({
   /** Called when the box gains or loses text the reader typed. */
   onDirty?: (dirty: boolean) => void;
   placeholder: string;
+  /** The placeholder for someone who can mention agents here. */
+  mentionPlaceholder?: string;
   label: string;
   submit: string;
   extra?: React.ReactNode;
@@ -287,7 +291,11 @@ function Composer({
       <Textarea
         ref={ref}
         aria-label={label}
-        placeholder={placeholder}
+        placeholder={
+          mentionable && canMention && api.canComment && mentionPlaceholder
+            ? mentionPlaceholder
+            : placeholder
+        }
         value={text}
         maxLength={COMMENT_BODY_MAX}
         rows={open ? 3 : 1}
@@ -577,7 +585,9 @@ function CommentRow({
           reply={api.canComment ? () => api.select(thread.id, true) : undefined}
         />
       ) : (
-        <p className={`whitespace-pre-wrap break-words ${TXT}`}>{c.body}</p>
+        <p className={`whitespace-pre-wrap break-words ${TXT}`}>
+          <MentionedText body={c.body} mentions={c.mentions} />
+        </p>
       )}
       <Delivery c={c} />
       {mode === "delete" && (
@@ -781,6 +791,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             <Composer
               label="Reply"
               placeholder="Reply"
+              mentionPlaceholder="Reply. Type @ to mention an agent."
               submit="Reply"
               mentionable
               onSubmit={(body, x) =>
@@ -860,6 +871,7 @@ function NewThread({ api }: { api: CommentsApi }) {
       <Composer
         label="Add a comment"
         placeholder="Add a comment"
+        mentionPlaceholder="Add a comment. Type @ to mention an agent."
         submit="Comment"
         autoFocus
         buttonsRight
@@ -915,6 +927,7 @@ function NoteComposer({ api }: { api: CommentsApi }) {
       <Composer
         label="Comment on the whole page"
         placeholder="Comment on the whole page"
+        mentionPlaceholder="Add a comment. Type @ to mention an agent."
         submit="Comment"
         alwaysOpen={false}
         buttonsRight

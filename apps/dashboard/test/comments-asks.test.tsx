@@ -536,6 +536,42 @@ describe("@mentions in the composer", () => {
     });
   });
 
+  it("renders posted @names as chips, as text only", async () => {
+    const t = askThread();
+    const root = t.comments[0] as Record<string, unknown>;
+    delete root.ask;
+    root.body = "hi @C++ Bot and @OA Design. @OA Designer <b>x</b> @Bobby";
+    root.mentions = [
+      { key: "agent:c", name: "C++ Bot", delivery: "seen" },
+      { key: "agent:b", name: "OA Design", delivery: "seen" },
+    ];
+    serveThreads(() => [t]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText(/hi/);
+    const chips = [...c.querySelectorAll("[data-mention-chip]")].map(
+      (e) => e.textContent,
+    );
+    expect(chips).toEqual(["@C++ Bot", "@OA Design"]);
+    const p = c.querySelector("[data-mention-chip]")?.parentElement;
+    expect(p?.textContent).toBe(
+      "hi @C++ Bot and @OA Design. @OA Designer <b>x</b> @Bobby",
+    );
+    expect(p?.querySelector("b")).toBeNull();
+  });
+
+  it("renders a body without mentions as plain text", async () => {
+    const t = askThread();
+    const root = t.comments[0] as Record<string, unknown>;
+    delete root.ask;
+    root.body = "no @OA Design chip here";
+    serveThreads(() => [t]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("no @OA Design chip here");
+    expect(c.querySelector("[data-mention-chip]")).toBeNull();
+  });
+
   it("renders each mention's delivery", async () => {
     const t = askThread();
     const root = t.comments[0] as Record<string, unknown>;
@@ -891,6 +927,47 @@ describe("agent list loads on composer focus", () => {
     fireEvent.blur(box);
     fireEvent.focus(box);
     expect(n.count).toBe(1);
+  });
+
+  it("hints at @ in the placeholder for those who can mention", async () => {
+    serveThreads(() => [askThread({}, {})]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await wholePage(c)).toHaveAttribute(
+      "placeholder",
+      "Add a comment. Type @ to mention an agent.",
+    );
+    fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
+    expect(
+      await within(c).findByRole("textbox", { name: "Reply" }),
+    ).toHaveAttribute("placeholder", "Reply. Type @ to mention an agent.");
+  });
+
+  it("keeps the plain placeholder for a viewer", async () => {
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({
+          ...fixtures.artifacts.find((a) => a.id === OWNED),
+          access: "viewer",
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: true,
+            comment: true,
+          },
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await wholePage(c)).toHaveAttribute(
+      "placeholder",
+      "Comment on the whole page",
+    );
   });
 
   it("makes no call for a viewer who can't mention", async () => {
