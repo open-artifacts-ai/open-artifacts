@@ -482,6 +482,18 @@ export const reachNamespacesOf = (
 export const REACH_OLD_DAEMON =
   "This oa-bus daemon is too old to ask for reach. Ask the user to update oa-bus.";
 
+/**
+ * The two bad_frame answers a current daemon gives a follow tool call itself
+ * (#1766): the adapter never listed the cap, or the frame would not pass the
+ * hub's wire (a too-long artifact). Any other bad_frame on a follow call is a
+ * daemon that does not know the frame: FOLLOW_OLD_DAEMON. The adapters mirror
+ * the strings (pi, Hermes), the daemon sends these.
+ */
+export const FOLLOW_DAEMON_BAD_FRAME = {
+  noCap: "follow is not supported on this connection",
+  wire: "the frame is not valid on the hub wire",
+} as const;
+
 /** A status at least this old says how old it is (AC5c; Design-approved). */
 export const STATUS_STALE_MS = 10 * 60_000;
 

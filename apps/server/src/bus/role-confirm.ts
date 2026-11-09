@@ -194,6 +194,15 @@ const refused = (c: Context<AppEnv>, why: keyof typeof REFUSED) => {
   return page(c, r.title, r.message, r.status);
 };
 
+/** The decision may have applied before the audit write failed: a card the script renders, never "nothing changed". */
+const unsure = (c: Context<AppEnv>) =>
+  page(
+    c,
+    "Something went wrong",
+    "We could not confirm this finished. Check the role before trying again.",
+    500,
+  );
+
 const failed = () =>
   messagePage(
     "Something went wrong",
@@ -487,7 +496,7 @@ export function mountRoleConfirm(app: AppType): void {
       return page(c, "Role updated", message, 200);
     } catch (e) {
       logError("bus_role_confirm_failed", e);
-      return failed();
+      return unsure(c);
     }
   });
 }

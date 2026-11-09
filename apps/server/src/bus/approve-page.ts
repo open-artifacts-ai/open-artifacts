@@ -53,6 +53,9 @@ a.primary{display:inline-flex;align-items:center;height:36px;padding:0 16px;bord
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .foot{margin:16px 0 0;font-size:12px;color:var(--muted);text-align:center}
 .muted{color:var(--muted);font-size:12px;margin:0}
+p.muted+ul{margin-top:12px}
+.ns{display:block;padding-left:1em;text-indent:-1em}
+.slot{width:100%;max-width:440px}
 .nw{white-space:nowrap}
 .wrap{overflow-wrap:anywhere}
 .field{display:block;font-weight:500;font-size:13px;margin:0 0 6px}
@@ -261,14 +264,9 @@ const ROLE_HEADINGS = {
   clear: "Remove this role?",
 } as const;
 
-/** Namespaces as monospace names: "a", "a and b", "a, b and c". */
-const names = (ns: string[]): SafeHtml => {
-  const n = (x: string) => html`<span class="mono wrap">${x}</span>`;
-  return html`${ns.flatMap((x, i) => [
-    i === 0 ? "" : i === ns.length - 1 ? " and " : ", ",
-    n(x),
-  ])}`;
-};
+/** Namespaces one per line in monospace, like the link page's Project rows. Each is escaped. */
+const names = (ns: string[]): SafeHtml =>
+  html`${ns.map((x) => html`<span class="ns mono wrap">${x}</span>`)}`;
 
 /** The confirm form: what changes, from whom to whom, as whom; Reject or Confirm. */
 export function renderRoleConfirm(v: RoleConfirmView): string {
@@ -300,7 +298,7 @@ export function renderRoleConfirm(v: RoleConfirmView): string {
       ${
         v.reach.length === 0
           ? ""
-          : html`<li>${CHECK}<div><b>${v.action === "clear" ? "Its reach is removed" : "Its reach goes with the role"}</b><small>${v.action === "clear" ? "This role can message agents in" : "The new holder can message agents in"} ${names(v.reach)}.</small></div></li>`
+          : html`<li>${CHECK}<div><b>${v.action === "clear" ? "Its reach is removed" : "Its reach goes with the role"}</b><small>${v.action === "clear" ? "This role can message agents in:" : "The new holder can message agents in:"}${names(v.reach)}</small></div></li>`
       }
     </ul>
     <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
@@ -374,11 +372,11 @@ function clear(){try{sessionStorage.removeItem(K)}catch(e){}}
 function send(url,body){return fetch(url,{method:"POST",credentials:"same-origin",cache:"no-store",
 headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.text().then(function(t){
 var j=null;try{j=JSON.parse(t)}catch(e){}
-if(j&&typeof j.html==="string"){c.innerHTML=j.html;if(!j.keep)clear();return}
-c.textContent="Something went wrong. Nothing changed. Reload the page to try again."})})}
-function fail(){c.textContent="Something went wrong. Nothing changed. Reload the page to try again."}
+if(j&&typeof j.html==="string"){c.className="slot";c.innerHTML=j.html;if(!j.keep)clear();return}
+c.className="slot card";c.textContent="Something went wrong. Nothing changed. Reload the page to try again."})})}
+function fail(){c.className="slot card";c.textContent="Something went wrong. Nothing changed. Reload the page to try again."}
 var s=secret();
-if(!s){c.textContent="This page needs the whole link. Open the link the command or the agent gave you, not just this page's address."}
+if(!s){c.className="slot card";c.textContent="This page needs the whole link. Open the link the command or the agent gave you, not just this page's address."}
 else send(base+"/view",{secret:s,csrf:vcsrf}).catch(fail);
 c.addEventListener("submit",function(e){e.preventDefault();
 var f=e.target,d=e.submitter&&e.submitter.value,s2=secret();
@@ -407,7 +405,7 @@ export function renderConfirmPage(v: {
   return shell(
     v.title,
     v.instanceHost,
-    html`<div class="card" id="c" data-base="${v.base}" data-csrf="${v.csrf}" aria-live="polite">Loading the change you were sent here to confirm…</div>
+    html`<div class="slot card" id="c" data-base="${v.base}" data-csrf="${v.csrf}" aria-live="polite">Loading the change you were sent here to confirm…</div>
 ${withScript(CONFIRM_SCRIPT, v.nonce)}`,
   );
 }
@@ -537,12 +535,12 @@ export function renderReachConfirm(v: ReachConfirmView): string {
     <p>An AI agent in one of your coding sessions asked for this. Nothing changes unless you confirm it.</p>
     <p class="muted">Proposed from <b class="wrap">${v.machineLabel ?? "a machine that is gone"}</b> at ${new Date(v.proposedAt).toISOString().slice(0, 16).replace("T", " ")} UTC. If an agent asked you to confirm this, check that it is the machine you expect.</p>
     <ul>
-      <li>${CHECK}<div><b>What it allows</b><small><span class="wrap">${v.roleName}</span> can message agents in ${names(v.namespaces)}. They can reply.</small></div></li>
+      <li>${CHECK}<div><b>What it allows</b><small><span class="wrap">${v.roleName}</span> can message agents in:${names(v.namespaces)}They can reply.</small></div></li>
       <li>${CHECK}<div><b>Role</b><small><span class="wrap">${v.roleName}</span> in <span class="mono wrap">${v.roleNamespace}</span></small></div></li>
       <li>${CHECK}<div><b>Held by</b><small class="wrap">${v.holderName}</small></div></li>
       <li class="no">${CROSS}<div><b>Only the holder</b><small>Only the agent that holds this role reaches them. The rest of its project stays closed to them.</small></div></li>
     </ul>
-    ${v.unknown.length === 0 ? "" : html`<div class="note" role="note">${WARN}<span>Never seen on your machines: ${names(v.unknown)}.</span></div>`}
+    ${v.unknown.length === 0 ? "" : html`<div class="note" role="note">${WARN}<span>Never seen on your machines:${names(v.unknown)}</span></div>`}
     ${v.noop ? html`<div class="note" role="note">${WARN}<span>This role already reaches all of these, so confirming changes nothing.</span></div>` : ""}
     <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
     <div class="note" role="note">${WARN}<span>Only confirm a change you asked for. ${left}</span></div>

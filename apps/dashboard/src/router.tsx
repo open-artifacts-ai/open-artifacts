@@ -77,10 +77,7 @@ const library = (path: string, scope: Scope) =>
         ...(str(s.agent) && { agent: str(s.agent) }),
         ...(via.success && { agentVia: via.data }),
         ...(str(s.space) && { space: str(s.space) }),
-        ...((s.filter === "needs_answer" ||
-          s.filter === "waiting_on_agents") && {
-          filter: s.filter,
-        }),
+        ...(s.filter === "needs_answer" && { filter: s.filter }),
         ...(view && { view }),
       };
     },

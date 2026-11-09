@@ -414,6 +414,12 @@ const followingText = (
     ? follows.map((f) => `${f.url} (since ${f.followed_at})`).join("\n")
     : "You are not following any artifacts.";
 
+/** The bad_frame answers a current daemon gives a follow call itself (@oa/bus-ipc FOLLOW_DAEMON_BAD_FRAME). */
+const FOLLOW_DAEMON_BAD_FRAME = [
+  "follow is not supported on this connection",
+  "the frame is not valid on the hub wire",
+];
+
 /** What an agent sees when its daemon is too old for the follow frames. */
 const FOLLOW_OLD_DAEMON =
   "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus.";
@@ -1363,7 +1369,11 @@ export default function oaBus(pi: Pi): void {
       return followingText(
         (r.follows ?? []) as { url: string; followed_at: string }[],
       );
-    if (r.type === "error" && r.code === "bad_frame")
+    if (
+      r.type === "error" &&
+      r.code === "bad_frame" &&
+      !FOLLOW_DAEMON_BAD_FRAME.includes(String(r.message))
+    )
       throw new Error(FOLLOW_OLD_DAEMON);
     return failed(r);
   };

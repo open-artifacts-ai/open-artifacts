@@ -116,8 +116,10 @@ const joined = (ns: string[]) =>
     ? (ns[0] ?? "")
     : `${ns.slice(0, -1).join(", ")} and ${ns[ns.length - 1]}`;
 
-const unsure = () =>
-  messagePage(
+/** A card (JSON, which the page's script renders), not a bare page: the grant may have applied. */
+const unsure = (c: Context<AppEnv>) =>
+  page(
+    c,
     "Something went wrong",
     "We could not confirm this finished. Check the role's reach before trying again.",
     500,
@@ -271,7 +273,7 @@ export function mountReachConfirm(app: AppType): void {
       logError("bus_reach_confirm_failed", e);
       // The grant may have landed before the failure (the hub answered late,
       // or only the audit write failed): never say nothing changed.
-      return unsure();
+      return unsure(c);
     }
   });
 }
