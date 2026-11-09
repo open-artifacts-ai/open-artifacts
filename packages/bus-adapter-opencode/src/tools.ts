@@ -68,7 +68,7 @@ export async function handleToolCall(input: {
       pid: process.pid,
       cwd: session.directory,
       proposed_name: nameOf(session.title),
-      caps: [ADAPTER_CAPS.mailbox, ADAPTER_CAPS.pending],
+      caps: [ADAPTER_CAPS.mailbox, ADAPTER_CAPS.pending, ADAPTER_CAPS.follow],
       attest: { session_id: sessionId },
     });
     let client: DaemonClient;

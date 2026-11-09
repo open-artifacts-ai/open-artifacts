@@ -343,6 +343,23 @@ def earlier_status_text(message):
     return f"Your previous status did not reach the user. {message}"
 
 
+def follow_text(url):
+    return f"Following {url}. You get a notice here when it changes."
+
+
+def unfollow_text(removed, artifact):
+    return f"Stopped following {artifact}." if removed else f"You were not following {artifact}."
+
+
+def following_text(follows):
+    if not follows:
+        return "You are not following any artifacts."
+    return "\n".join(f"{f['url']} (since {f['followed_at']})" for f in follows)
+
+
+FOLLOW_OLD_DAEMON = "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus."
+
+
 def status_label_too_long(n):
     return (
         f"oa-bus: that label is {n} characters, and the limit is 64. "

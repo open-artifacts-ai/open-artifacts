@@ -44,6 +44,7 @@ import {
   NOTICE_SENDER,
 } from "@oa/shared";
 import type { Env } from "../env.js";
+import { ApiError } from "../http/errors.js";
 import { logError, logInfo } from "../log.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
 import {
@@ -52,6 +53,7 @@ import {
   MAX_ACTIVE_MACHINES,
 } from "../services/bus.js";
 import type { DeliveryOutcome } from "../services/bus-delivery.js";
+import { follow, following, unfollow } from "../services/follows.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
@@ -286,7 +288,23 @@ const HUB_CAPS = [
   BUS_CAPS.ids,
   BUS_CAPS.mailbox,
   BUS_CAPS.links,
+  BUS_CAPS.follow,
 ];
+
+/**
+ * Follows (#1317, BUS_CAPS.follow): the follow, unfollow and following frames
+ * and the `follow_limit` error go only to a socket whose hello listed it.
+ * Fails closed, like renameGated.
+ */
+const followGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.follow);
+};
+
+/** #1317: follow requests one hub runs at once (each is a D1 round trip); past it, `rate_limited`. */
+const FOLLOWS_IN_FLIGHT_MAX = 8;
+/** #1317: how long a follow request waits on D1 before the agent is told `internal`. */
+const FOLLOW_TIMEOUT_MS = 5_000;
 
 /**
  * Lasting mailboxes (#1295, BUS_CAPS.mailbox): a receipt's `queued`/`since`,
@@ -3008,7 +3026,10 @@ function senderRef(f: ClientFrame): string | null {
   return f.type === "send" ||
     f.type === "list" ||
     f.type === "fetch" ||
-    f.type === "status"
+    f.type === "status" ||
+    f.type === "follow" ||
+    f.type === "unfollow" ||
+    f.type === "following"
     ? f.from_ref
     : null;
 }
@@ -3914,9 +3935,12 @@ export class BusHub extends DurableObject<Env> {
       if (wasOpen && ws.readyState !== OPEN) await this.#goneFromIndex();
       return;
     }
-    this.#onMessage(ws, message);
+    const pending = this.#onMessage(ws, message);
     await this.#commitArm();
     if (wasOpen && ws.readyState !== OPEN) await this.#goneFromIndex();
+    // #1317: a follow frame's D1 work. Awaited after the arm commit, so
+    // nothing else waits on it; other sockets' messages run meanwhile.
+    await pending;
   }
 
   /**
@@ -3950,7 +3974,10 @@ export class BusHub extends DurableObject<Env> {
     return b;
   }
 
-  #onMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+  #onMessage(
+    ws: WebSocket,
+    message: string | ArrayBuffer,
+  ): Promise<void> | undefined {
     // A replaced socket is dead: nothing it sends is processed.
     if (isRevokedSocket(ws)) {
       closeSocket(ws, LIMITS.revokeCloseCode, "machine revoked");
@@ -3989,6 +4016,17 @@ export class BusHub extends DurableObject<Env> {
     const f = res.frame;
     const sql = this.ctx.storage.sql;
 
+    // #1317: without the cap the frame is as unknown as it is to an older hub.
+    if (
+      (f.type === "follow" ||
+        f.type === "unfollow" ||
+        f.type === "following") &&
+      !followGated(ws)
+    ) {
+      reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
+      return;
+    }
+
     // Review Focus 1: a socket acts only for agents it registered itself.
     const ref = senderRef(f);
     const sender = ref === null ? null : registeredAgent(sql, machineId, ref);
@@ -4026,7 +4064,8 @@ export class BusHub extends DurableObject<Env> {
           // strictly, a rename-only one included.
           ...(hasCap(f, BUS_CAPS.ids) ||
           hasCap(f, BUS_CAPS.mailbox) ||
-          hasCap(f, BUS_CAPS.links)
+          hasCap(f, BUS_CAPS.links) ||
+          hasCap(f, BUS_CAPS.follow)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -4140,6 +4179,10 @@ export class BusHub extends DurableObject<Env> {
       case "status":
         if (sender) this.#status(ws, f, sender);
         return;
+      case "follow":
+      case "unfollow":
+      case "following":
+        return sender ? this.#follows(ws, f, sender) : undefined;
       case "rename": {
         // R393b: only a live agent this socket registered may be renamed.
         const a = registeredAgent(sql, machineId, f.agent_ref);
@@ -4156,6 +4199,93 @@ export class BusHub extends DurableObject<Env> {
         this.#rename(ws, f, a);
         return;
       }
+    }
+  }
+
+  #followsInFlight = 0;
+
+  /**
+   * `follow`, `unfollow` and `following` (#1317) for the agent `from_ref`
+   * names, which this socket registered. The member is this hub's (its DO name
+   * is `bus:<userId>`) and the address is the agent's own row: nothing in the
+   * frame names either. The D1 work is the follows service's, so it runs
+   * after the synchronous part: bounded by FOLLOWS_IN_FLIGHT_MAX requests in
+   * flight and FOLLOW_TIMEOUT_MS each. Errors answer in the frame's own id
+   * with the service's stable codes; anything else is `internal`.
+   */
+  async #follows(
+    ws: WebSocket,
+    f: Extract<ClientFrame, { type: "follow" | "unfollow" | "following" }>,
+    agent: AgentRow,
+  ): Promise<void> {
+    const userId = this.ctx.id.name?.startsWith("bus:")
+      ? this.ctx.id.name.slice(4)
+      : null;
+    if (userId === null) {
+      sendError(ws, f.id, "internal", "Could not follow right now");
+      return;
+    }
+    if (this.#followsInFlight >= FOLLOWS_IN_FLIGHT_MAX) {
+      logEvent("rate_limited", { kind: "follows", machineId: agent.machineId });
+      sendError(ws, f.id, "rate_limited", "Too many follow requests at once");
+      return;
+    }
+    const to = { namespace: agent.namespace, name: agent.name };
+    const wire = (e: {
+      artifactId: string;
+      url: string;
+      followedAt: string;
+    }) => ({
+      artifact_id: e.artifactId,
+      url: e.url,
+      followed_at: e.followedAt,
+    });
+    this.#followsInFlight++;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const work =
+        f.type === "follow"
+          ? follow(this.env, userId, to, f.artifact).then(
+              (e) =>
+                ({ v: 1, id: f.id, type: "followed", ...wire(e) }) as const,
+            )
+          : f.type === "unfollow"
+            ? unfollow(this.env, userId, to, f.artifact).then(
+                (r) =>
+                  ({
+                    v: 1,
+                    id: f.id,
+                    type: "unfollowed",
+                    removed: r.removed,
+                  }) as const,
+              )
+            : following(this.env, userId, to).then(
+                (l) =>
+                  ({
+                    v: 1,
+                    id: f.id,
+                    type: "follows",
+                    follows: l.map(wire),
+                  }) as const,
+              );
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("follow timed out")),
+          FOLLOW_TIMEOUT_MS,
+        );
+      });
+      sendFrame(ws, await Promise.race([work, timeout]));
+    } catch (e) {
+      const code = e instanceof ApiError ? e.code : null;
+      if (code === "not_found" || code === "follow_limit")
+        sendError(ws, f.id, code, e instanceof Error ? e.message : code);
+      else {
+        logError("bus_follow_failed", e);
+        sendError(ws, f.id, "internal", "Could not follow right now");
+      }
+    } finally {
+      clearTimeout(timer);
+      this.#followsInFlight--;
     }
   }
 

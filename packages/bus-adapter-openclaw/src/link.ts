@@ -65,7 +65,7 @@ export function realConnect(
       pid: process.pid,
       cwd: root.cwd,
       proposed_name: root.proposedName,
-      caps: ["mailbox", "pending"],
+      caps: ["mailbox", "pending", "follow"],
       attest: start ? { proc_start: start } : {},
     };
     try {

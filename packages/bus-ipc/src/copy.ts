@@ -419,6 +419,28 @@ export const statusSetText = (state: string, label?: string): string =>
 export const earlierStatusText = (message: string): string =>
   `Your previous status did not reach the user. ${message}`;
 
+/** The `follow` result (#1317). */
+export const followText = (url: string): string =>
+  `Following ${url}. You get a notice here when it changes.`;
+
+/** The `unfollow` result. */
+export const unfollowText = (removed: boolean, artifact: string): string =>
+  removed
+    ? `Stopped following ${artifact}.`
+    : `You were not following ${artifact}.`;
+
+/** The `following` result: one line per artifact, newest first. */
+export const followingText = (
+  follows: readonly { url: string; followed_at: string }[],
+): string =>
+  follows.length
+    ? follows.map((f) => `${f.url} (since ${f.followed_at})`).join("\n")
+    : "You are not following any artifacts.";
+
+/** What an agent sees when its daemon is too old for the follow frames. */
+export const FOLLOW_OLD_DAEMON =
+  "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus.";
+
 /** A status at least this old says how old it is (AC5c; Design-approved). */
 export const STATUS_STALE_MS = 10 * 60_000;
 

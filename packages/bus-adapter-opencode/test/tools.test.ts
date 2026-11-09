@@ -51,13 +51,16 @@ const call = (
   });
 
 describe("opencode mcp tools", () => {
-  it("exposes the five vendor-neutral tools, and no card", () => {
+  it("exposes the eight vendor-neutral tools, and no card", () => {
     expect(TOOLS.map((t) => t.name)).toEqual([
       "list_agents",
       "send_message",
       "fetch",
       "self",
       "set_status",
+      "follow",
+      "unfollow",
+      "following",
     ]);
   });
 
@@ -75,6 +78,20 @@ describe("opencode mcp tools", () => {
     expect(svc.requests.map((r) => r.ref)).toEqual(["ses_a", "ses_b"]);
     // Each call's connection is its own, and is closed after it.
     expect(svc.closed).toEqual(["ses_a", "ses_b"]);
+  });
+
+  it("lists the follow cap, and a follow is the session's own request (#1317)", async () => {
+    const svc = service({
+      ses_a: { root: "ses_a", directory: "/work/a", title: null },
+    });
+    await call(svc, "ses_a", "follow", { artifact: "abc", name: "other" });
+    expect(svc.hellos[0]?.caps).toContain("follow");
+    expect(svc.requests).toEqual([
+      {
+        ref: "ses_a",
+        frame: { type: "follow", artifact: "abc", late: true },
+      },
+    ]);
   });
 
   it("says hello with the IPC marker (C23c)", async () => {
