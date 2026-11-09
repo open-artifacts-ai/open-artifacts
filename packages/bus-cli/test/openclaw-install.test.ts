@@ -4,6 +4,7 @@
 // OpenClaw 2026.6.5 in a throwaway state dir); nothing real runs.
 import {
   chmodSync,
+  lstatSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -899,7 +900,7 @@ describe("openclaw habits: on, then off", () => {
             false,
           );
           expect(r.incomplete).toBe(true);
-          expect(r.notes.join("\n")).toMatch(/Could not reach .*EACCES/);
+          expect(r.notes.join("\n")).toMatch(/Couldn't reach .*EACCES/);
           expect(listed(busHome)).toEqual([dir]);
         } finally {
           chmodSync(join(root, "state"), 0o755);
@@ -932,6 +933,57 @@ describe("openclaw habits: on, then off", () => {
         expect(existsSync(marker(dir))).toBe(true);
       },
     );
+
+    unlessRoot("counts an unreadable plugin folder as a failure and keeps it listed", () => {
+      const home = tmp("oa-oc-habits-");
+      const busHome = join(home, ".oa-bus");
+      const dir = ours(join(tmp("oa-oc-z-"), "extensions", "oa-bus"));
+      writeFileSync(marker(dir), "on\n");
+      seed(busHome, [dir]);
+      chmodSync(dir, 0o000);
+      try {
+        const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
+        expect(r.incomplete).toBe(true);
+        expect(r.notes.join("\n")).toContain(`Couldn't reach ${marker(dir)}`);
+        expect(listed(busHome)).toEqual([dir]);
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+      expect(existsSync(marker(dir))).toBe(true);
+    });
+
+    it("lets a symlink with nothing behind it go: no habits.on, or a dangling link", () => {
+      const home = tmp("oa-oc-habits-");
+      const busHome = join(home, ".oa-bus");
+      const clean = ours(tmp("oa-oc-clean-"));
+      const a = join(tmp("oa-oc-l1-"), "extensions", "oa-bus");
+      const b = join(tmp("oa-oc-l2-"), "extensions", "oa-bus");
+      for (const [l, t] of [
+        [a, clean],
+        [b, join(tmp("oa-oc-nowhere-"), "missing")],
+      ] as const) {
+        mkdirSync(join(l, ".."), { recursive: true });
+        symlinkSync(t, l);
+      }
+      seed(busHome, [a, b]);
+      const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
+      expect(r.incomplete).toBe(false);
+      expect(r.notes).toEqual([]);
+      expect(listed(busHome)).toEqual([]);
+    });
+
+    it("treats a directory named habits.on as off, leaves it, and does not fail", () => {
+      const home = tmp("oa-oc-habits-");
+      const busHome = join(home, ".oa-bus");
+      const dir = ours(join(tmp("oa-oc-d-"), "extensions", "oa-bus"));
+      mkdirSync(marker(dir));
+      seed(busHome, [dir]);
+      const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
+      expect(r.incomplete).toBe(false);
+      expect(r.changed).toEqual([]);
+      expect(lstatSync(marker(dir)).isDirectory()).toBe(true);
+      expect(listed(busHome)).toEqual([]);
+    });
 
     it("counts a symlinked folder as a failure and keeps it listed", () => {
       const home = tmp("oa-oc-habits-");

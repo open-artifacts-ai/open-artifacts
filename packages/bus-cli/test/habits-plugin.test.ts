@@ -305,7 +305,7 @@ describe("install and uninstall with Hermes", () => {
         const text = ctx.out().slice(before).join("\n");
         expect(code).toBe(1);
         expect(text).not.toContain("Habits off");
-        expect(text).toContain("not off everywhere");
+        expect(text).toContain("Habits are still on in some places (see below)");
         expect(text).toContain("habits are still on");
         expect(existsSync(marker(ctx))).toBe(true);
       } finally {
@@ -313,6 +313,18 @@ describe("install and uninstall with Hermes", () => {
       }
     },
   );
+  it("--no-habits is not failed by a harmless symlink at the Hermes plugin path", async () => {
+    const ctx = setup();
+    await install({ hub: HUB }, ctx);
+    const dir = hermesPluginDir(ctx.userHome, ctx.env);
+    rmSync(dir, { recursive: true, force: true });
+    const empty = join(ctx.userHome, "empty-plugin");
+    mkdirSync(empty);
+    symlinkSync(empty, dir);
+    const code = await install({ habits: "no" }, ctx);
+    expect(code).toBe(0);
+    expect(ctx.out().join("\n")).toContain("Habits off");
+  });
   it("TTY yes in the flow writes it; no leaves it off and opts out", async () => {
     const yes = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "y") });
     await install({ hub: HUB }, yes);
