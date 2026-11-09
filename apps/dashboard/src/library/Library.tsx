@@ -284,6 +284,7 @@ export function Library({ scope }: { scope: Scope }) {
         // Your own artifacts only: ones shared with you aren't your first.
         <GetStarted
           hasArtifacts={items.some((a) => a.owner.id === meId)}
+          anyArtifacts={items.length > 0}
           loaded={q.isSuccess}
         />
       )}

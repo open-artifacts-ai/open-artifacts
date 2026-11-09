@@ -82,6 +82,7 @@ describe("Get started checklist", () => {
   });
 
   it("ticks the invite once someone else is a member", async () => {
+    seedFirst();
     server.use(none(), ...noTokens());
     server.use(
       http.get("*/api/v1/members", () => HttpResponse.json(fixtures.members)),
@@ -137,6 +138,33 @@ describe("Get started checklist", () => {
     hosted({ tier: "free" });
     await heading();
     expect(screen.getByText(trialLine)).toBeInTheDocument();
+    expect(screen.queryByText(/Solo plan/)).toBeNull();
+  });
+
+  it("marks the current step", async () => {
+    server.use(none(), ...noTokens());
+    mount("/");
+    await heading();
+    const cur = document.querySelector('[aria-current="step"]');
+    expect(cur).toHaveTextContent("Connect your agent");
+    expect(cur).toHaveTextContent("(current step)");
+  });
+
+  it("is not first run when another member already exists", async () => {
+    server.use(
+      none(),
+      http.get("*/api/v1/tokens", () => HttpResponse.json([])),
+      http.get("*/api/v1/oauth-clients", () => HttpResponse.json([])),
+      http.get("*/api/v1/members", () => HttpResponse.json(fixtures.members)),
+    );
+    mount("/");
+    await screen.findByText("No artifacts yet");
+    await waitFor(() =>
+      expect(
+        localStorage.getItem(`oa.getStarted.first.${fixtures.me.user.id}`),
+      ).toBe("0"),
+    );
+    expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull();
   });
 
   it("omits the trial line once a trial was used", async () => {
@@ -169,7 +197,9 @@ describe("Get started checklist", () => {
       ),
     );
     await heading();
-    expect(screen.getByRole("link", { name: "Invite people" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Invite people" }),
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Not now" }));
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull(),

@@ -22,7 +22,8 @@ const readHidden = (userId: string) => {
 };
 
 // Decided once, the first time the checklist could show: a new instance has
-// no connection and no artifact yet; an existing one never gets the box.
+// connection, no artifact by anyone and no other member; an existing
+// instance never gets the box, whatever the owner's own page shows.
 const firstKey = (userId: string) => `oa.getStarted.first.${userId}`;
 const readFirst = (userId: string): boolean | null => {
   try {
@@ -50,12 +51,13 @@ function Step({
   return (
     <li
       data-state={state}
+      aria-current={state === "cur" ? "step" : undefined}
       className="grid grid-cols-[20px_1fr] gap-x-[var(--oa-space-3)] gap-y-[var(--oa-space-1)] border-t border-border py-[var(--oa-space-3)]"
     >
       <span
         className={`${dot} ${
           state === "done"
-            ? "border-[var(--oa-ok,#157a3a)] bg-[var(--oa-ok,#157a3a)] text-white"
+            ? "border-[var(--oa-success)] bg-[var(--oa-success)] text-[var(--oa-accent-text)]"
             : state === "cur"
               ? "border-primary text-primary"
               : "border-border text-muted-foreground"
@@ -69,6 +71,7 @@ function Step({
       >
         {title}
         {state === "done" && <span className="sr-only"> (done)</span>}
+        {state === "cur" && <span className="sr-only"> (current step)</span>}
       </div>
       <div className="col-start-2 grid gap-[var(--oa-space-2)] text-[length:var(--oa-text-sm)] text-[var(--oa-text-2)]">
         {children}
@@ -95,9 +98,12 @@ const Waiting = ({ children }: { children: string }) => (
  */
 export function GetStarted({
   hasArtifacts,
+  anyArtifacts,
   loaded,
 }: {
   hasArtifacts: boolean;
+  /** Any artifact on the instance, by anyone, in the loaded page. */
+  anyArtifacts: boolean;
   loaded: boolean;
 }) {
   const state = useMe();
@@ -114,6 +120,10 @@ export function GetStarted({
   const members = useMembers(undefined, live);
   const connected =
     (tokens.data?.length ?? 0) > 0 || (clients.data?.length ?? 0) > 0;
+  // Anyone else who is not a guest means the instance is already in use.
+  const others = (members.data ?? []).some(
+    (m) => m.id !== userId && m.role !== "guest",
+  );
   const invited = (members.data ?? []).some(
     (m) => m.id !== userId && m.role !== "guest" && m.role !== "owner",
   );
@@ -125,12 +135,12 @@ export function GetStarted({
   // First run only: decide once, from the first complete read.
   useEffect(() => {
     if (!live || !ready || first !== null) return;
-    const v = !connected && !hasArtifacts;
+    const v = !connected && !anyArtifacts && !others;
     try {
       localStorage.setItem(firstKey(userId), v ? "1" : "0");
     } catch {}
     setFirst(v);
-  }, [live, ready, first, connected, hasArtifacts, userId]);
+  }, [live, ready, first, connected, anyArtifacts, others, userId]);
 
   // Events happen elsewhere (an agent, another tab): re-read what is still
   // open, quietly, until it is done. Focus refetch covers returning to the tab.
@@ -172,6 +182,7 @@ export function GetStarted({
     (b.tier === "solo" || b.tier === "free") &&
     b.trialEndsAt === null &&
     !b.readOnly;
+  const keepsSolo = b?.tier === "solo";
 
   return (
     <section
@@ -235,8 +246,8 @@ export function GetStarted({
         >
           {soloTrial && (
             <p className="m-0">
-              Inviting someone starts a 14-day trial of Business. Your Solo plan
-              stays as it is.
+              Inviting someone starts a 14-day trial of Business.
+              {keepsSolo && " Your Solo plan stays as it is."}
             </p>
           )}
           {!invited && cur === 2 && (
