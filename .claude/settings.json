@@ -21,10 +21,10 @@
       "Bash(npx @open-artifacts/bus namespace approve:*)",
       "Bash(gh pr review *--repo*)",
       "Bash(gh pr review *-R*)",
-      "Bash(gh pr review *https://*)",
+      "Bash(gh pr review *://*)",
       "Bash(gh pr comment *--repo*)",
       "Bash(gh pr comment *-R*)",
-      "Bash(gh pr comment *https://*)"
+      "Bash(gh pr comment *://*)"
     ]
   }
 }
