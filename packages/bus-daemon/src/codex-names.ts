@@ -1,5 +1,6 @@
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
+import { type GroupCheck, ownGroup } from "./own-file.ts";
 
 /** Most of `session_index.jsonl` read per call: the latest entries are at the end. */
 export const CODEX_INDEX_MAX_BYTES = 1024 * 1024;
@@ -11,12 +12,26 @@ export const CODEX_INDEX_MAX_BYTES = 1024 * 1024;
  * that file is read, never a rollout or a session. The read is bounded (the
  * last 1 MB), a partial first line, a bad line or a nameless entry is skipped,
  * and a missing file (an older Codex) is no names, never an error.
+ *
+ * The file is opened as own-file.ts does: never through a symlink, never
+ * blocking (a FIFO cannot hang the daemon). It must be a regular file owned
+ * by us, not world-writable, and group-writable only in our private group
+ * (#1527). Any refusal is no names, never an error.
  */
-export const codexThreadNames = (home: string): Map<string, string> => {
+export const codexThreadNames = (
+  home: string,
+  opts: { uid?: number | undefined; group?: GroupCheck } = {},
+): Map<string, string> => {
+  const uid = "uid" in opts ? opts.uid : process.getuid?.();
   const names = new Map<string, string>();
   let fd: number;
   try {
-    fd = openSync(join(home, "session_index.jsonl"), "r");
+    fd = openSync(
+      join(home, "session_index.jsonl"),
+      constants.O_RDONLY |
+        (constants.O_NOFOLLOW ?? 0) |
+        (constants.O_NONBLOCK ?? 0),
+    );
   } catch {
     return names;
   }
@@ -24,6 +39,12 @@ export const codexThreadNames = (home: string): Map<string, string> => {
   try {
     const st = fstatSync(fd);
     if (!st.isFile()) return names;
+    if (uid !== undefined && st.uid !== uid) return names;
+    if (st.mode & 0o002) return names;
+    if (st.mode & 0o020) {
+      const g = opts.group ?? ownGroup();
+      if (st.gid !== g.gid || !g.isPrivate(st.gid)) return names;
+    }
     const len = Math.min(st.size, CODEX_INDEX_MAX_BYTES);
     const buf = Buffer.alloc(len);
     let got = 0;

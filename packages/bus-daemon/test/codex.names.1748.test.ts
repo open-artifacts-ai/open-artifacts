@@ -1,10 +1,13 @@
 // A renamed Codex session shows its name (#1748): the thread's name in
 // `session_index.jsonl` is the bus name; the file only, in a temp home.
+import { execFileSync } from "node:child_process";
 import {
   appendFileSync,
+  chmodSync,
   mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -73,6 +76,56 @@ describe("codexThreadNames", () => {
     const names = codexThreadNames(home);
     expect(names.get(THREAD)).toBe("new");
     expect(names.has(OTHER)).toBe(false);
+  });
+
+  it("a FIFO at the index does not block and gives no names", () => {
+    const home = homeDir();
+    execFileSync("mkfifo", [indexOf(home)]);
+    expect(codexThreadNames(home).size).toBe(0);
+  });
+
+  it("a symlinked index gives no names", () => {
+    const home = homeDir();
+    writeFileSync(join(home, "real"), entry(THREAD, "x"));
+    symlinkSync(join(home, "real"), indexOf(home));
+    expect(codexThreadNames(home).size).toBe(0);
+  });
+
+  it("a file of another owner gives no names", () => {
+    const home = homeDir();
+    writeFileSync(indexOf(home), entry(THREAD, "x"));
+    const me = process.getuid?.() ?? 0;
+    expect(codexThreadNames(home, { uid: me }).get(THREAD)).toBe("x");
+    expect(codexThreadNames(home, { uid: me + 1 }).size).toBe(0);
+  });
+
+  it("a world-writable file gives no names", () => {
+    const home = homeDir();
+    writeFileSync(indexOf(home), entry(THREAD, "x"));
+    chmodSync(indexOf(home), 0o666);
+    const group = { gid: process.getgid?.(), isPrivate: () => true };
+    expect(codexThreadNames(home, { group }).size).toBe(0);
+  });
+
+  it("a group-writable file is read only in our private group", () => {
+    const home = homeDir();
+    writeFileSync(indexOf(home), entry(THREAD, "x"));
+    chmodSync(indexOf(home), 0o664);
+    const gid = process.getgid?.();
+    expect(
+      codexThreadNames(home, { group: { gid, isPrivate: () => true } }).get(
+        THREAD,
+      ),
+    ).toBe("x");
+    // A group others share, or a group that is not ours: refused.
+    expect(
+      codexThreadNames(home, { group: { gid, isPrivate: () => false } }).size,
+    ).toBe(0);
+    expect(
+      codexThreadNames(home, {
+        group: { gid: (gid ?? 0) + 1, isPrivate: () => true },
+      }).size,
+    ).toBe(0);
   });
 
   it("a later entry with no name clears the name", () => {
