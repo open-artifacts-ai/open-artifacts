@@ -476,4 +476,86 @@ describe("notice tier", () => {
       (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask?.answer,
     ).toMatchObject({ typed: true, yes: false });
   });
+
+  describe("asker notice (toAsker, #1614)", () => {
+    const replyToAsker = (
+      id: string,
+      tid: string,
+      auth: string | null,
+      headers: Record<string, string> = {},
+    ) =>
+      api(app, R.commentReplies(id, tid), auth, {
+        method: "POST",
+        body: { body: "a reply", toAsker: true },
+        headers,
+      });
+    /** The root's own ids, with the reply's comment id in the notice. */
+    const noticeOf = () => {
+      const n = sentTo("Claude");
+      expect(n).toHaveLength(1);
+      return n[0] as BusNotice;
+    };
+    const lineOf = (id: string, n: BusNotice, mine: boolean) =>
+      [
+        `Open Artifacts: ${
+          mine ? "your user replied" : "someone replied"
+        } to a question you asked on an artifact (version 1).`,
+        url(id),
+        `Thread ${n.threadId}, comment ${n.commentId}.`,
+        mine ? YOURS : OTHERS,
+      ].join("\n");
+
+    it("the agent owner's own browser reply gets the your-user line", async () => {
+      const s = await setup();
+      const t = await askFrom(s.id, mcpWho(owner), s.claude);
+      bus.sent = [];
+      expect((await replyToAsker(s.id, t.id, owner.cookie)).status).toBe(201);
+      expect(noticeOf().text).toBe(lineOf(s.id, noticeOf(), true));
+    });
+
+    it("the owner's token reply gets the everyone-else line", async () => {
+      const s = await setup();
+      const t = await askFrom(s.id, mcpWho(owner), s.claude);
+      bus.sent = [];
+      expect((await replyToAsker(s.id, t.id, ownerPat)).status).toBe(201);
+      expect(noticeOf().text).toBe(lineOf(s.id, noticeOf(), false));
+    });
+
+    it("another member's browser reply gets the everyone-else line", async () => {
+      const s = await setup();
+      const t = await askFrom(s.id, mcpWho(owner), s.claude);
+      bus.sent = [];
+      expect((await replyToAsker(s.id, t.id, editor.cookie)).status).toBe(201);
+      expect(noticeOf().text).toBe(lineOf(s.id, noticeOf(), false));
+    });
+
+    it("a viewer's browser reply gets the everyone-else line", async () => {
+      const s = await setup();
+      const v = await mk("t-viewer");
+      await api(app, R.shares(s.id), owner.cookie, {
+        method: "PUT",
+        body: { email: v.email, role: "viewer" },
+      });
+      const t = await askFrom(s.id, mcpWho(owner), s.claude);
+      bus.sent = [];
+      const r = await replyToAsker(s.id, t.id, v.cookie);
+      expect(r.status).toBe(201);
+      expect(noticeOf().text).toBe(lineOf(s.id, noticeOf(), false));
+    });
+
+    it("a guest's reply gets the everyone-else line", async () => {
+      const s = await setup();
+      await api(app, `/api/v1/artifacts/${s.id}`, owner.cookie, {
+        method: "PATCH",
+        body: { visibility: "public" },
+      });
+      const t = await askFrom(s.id, mcpWho(owner), s.claude);
+      bus.sent = [];
+      const r = await replyToAsker(s.id, t.id, null, {
+        "cf-connecting-ip": "198.18.9.7",
+      });
+      expect(r.status).toBe(201);
+      expect(noticeOf().text).toBe(lineOf(s.id, noticeOf(), false));
+    });
+  });
 });
