@@ -137,6 +137,39 @@ export const BusLinkPutSchema = z.strictObject({
 });
 export type BusLinkPut = z.infer<typeof BusLinkPutSchema>;
 
+/**
+ * One reach grant (#1346): the role (`role`) may message agents in
+ * `namespace`, and they may reply to its holder. One per role and target
+ * namespace; the role is the key, never the agent. Never transitive.
+ */
+export const BusReachSchema = z.strictObject({
+  id: z.string(),
+  role: z.strictObject({
+    namespace: BusAddressSchema.shape.namespace,
+    name: BusAddressSchema.shape.name,
+  }),
+  namespace: BusAddressSchema.shape.namespace,
+  createdAt: z.string(),
+});
+export type BusReach = z.infer<typeof BusReachSchema>;
+
+/** GET R.busReach, by role then namespace. `live` false: the bus could not be asked (reach is then []). */
+export const BusReachListSchema = z.strictObject({
+  reach: z.array(BusReachSchema).max(BUS_REACH_MAX),
+  live: z.boolean(),
+});
+export type BusReachList = z.infer<typeof BusReachListSchema>;
+
+/** PUT R.busReach: let the role reach `namespace` (a canonical namespace other than the role's own). */
+export const BusReachPutSchema = z.strictObject({
+  role: z.strictObject({
+    namespace: BusAddressSchema.shape.namespace,
+    name: BusAddressSchema.shape.name,
+  }),
+  namespace: BusAddressSchema.shape.namespace,
+});
+export type BusReachPut = z.infer<typeof BusReachPutSchema>;
+
 /** How long a link proposal's confirm link works (#1567): one hour. */
 export const BUS_LINK_PROPOSAL_TTL_MS = 60 * 60_000;
 /** Link proposals waiting for the member at once (#1567). */
