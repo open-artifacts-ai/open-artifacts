@@ -68,13 +68,23 @@ export function suffixName(base: string, n: number): string {
   return `${stem}${suffix}`;
 }
 
-/** A harness proposal made safe: control chars stripped, trimmed, capped. */
+/**
+ * A harness proposal made safe (#1480): control chars and every character
+ * NAME_RE refuses are dropped and the rest kept (`OA Owner (2)` becomes
+ * `OA Owner 2`), spaces collapsed, edges trimmed so it starts with a letter or
+ * digit and ends with a letter, digit, `_` or `-`, then capped. A name with a
+ * letter or digit outside ASCII falls back whole (`caf\u00e9` must not become
+ * `caf`); symbols and emoji are dropped like punctuation. The cleaned name is
+ * checked as any name is, so reserved and IPv4-shaped results still fall back.
+ * NAME_RE itself is the wire contract and is not widened.
+ */
 export function candidateName(proposed: string): string {
+  if (/[\p{L}\p{N}]/u.test(proposed.replace(/[A-Za-z0-9]/g, "")))
+    return FALLBACK_BUS_NAME;
   const cleaned = proposed
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+    .replace(/[^A-Za-z0-9 ._-]/g, "")
     .replace(/ {2,}/g, " ")
-    .trim()
+    .replace(/^[^A-Za-z0-9]+/, "")
     .slice(0, LIMITS.maxBusNameChars)
     .replace(/[ .]+$/, "");
   return BusNameSchema.safeParse(cleaned).success ? cleaned : FALLBACK_BUS_NAME;

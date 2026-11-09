@@ -702,4 +702,35 @@ describe("a restarted session takes back its own name (#1742)", () => {
     }
     throw new Error("ack never settled");
   });
+
+  it("#1480: a name with parentheses is cleaned, and a restart reclaims it bare", async () => {
+    const s = await scene();
+    const raw = "OA Owner (2)";
+    const ref = uniq("paren");
+    // The scene's chosen name stays; this session proposes the raw name.
+    const cleaned = await reg(s.d, ref, raw, s.n);
+    expect(cleaned).toBe("OA Owner 2");
+    await close(s.d, ref);
+    expect(await awayRows("OA Owner 2")).toEqual([ref]);
+    // A restart proposes the raw name again: it takes back the cleaned one.
+    expect(await reg(s.d, uniq("new"), raw, s.n)).toBe("OA Owner 2");
+    expect(await awayRows("OA Owner 2")).toEqual([]);
+    shut(s);
+  });
+
+  it("#1480: rename to a name with refused characters: cleaned once, the same raw name again is a no-op", async () => {
+    const s = await scene();
+    const ref = uniq("paren");
+    await reg(s.d, ref, uniq("Plain"), s.n);
+    const raw = "Tidy (3)";
+    const first = await rename(s.d, ref, raw);
+    expect(first.bus_name).toBe("Tidy 3");
+    const again = await rename(s.d, ref, raw);
+    expect(again.bus_name).toBe("Tidy 3");
+    // the no-op wrote no former name for "Tidy 3" or "Tidy 3-2"
+    expect(
+      await sqlOf("select 1 from agents where lower(name) = 'tidy 3-2'"),
+    ).toEqual([]);
+    shut(s);
+  });
 });
