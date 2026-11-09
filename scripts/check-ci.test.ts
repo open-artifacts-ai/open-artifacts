@@ -819,9 +819,11 @@ describe("release-please", () => {
         SHA: "${{ github.sha }}",
       });
       expect(k.run).not.toContain("${{");
-      // Reads only: no method override, no fields.
-      expect(k.run).not.toMatch(
-        /gh api[^\n]*(\s-X|--method|\s-f|\s-F|--field|--input)/,
+      // Reads only: the script never passes gh a method override or fields.
+      const src = read("scripts/ci/release-kind.ts");
+      expect(src).toContain('"api"');
+      expect(src).not.toMatch(
+        /["'](-X|--method|-f|-F|--field|--input|--raw-field)["']/,
       );
     });
     it("the kind step runs the tested script on this run's own sha, after checking it out", () => {
@@ -845,6 +847,20 @@ describe("release-please", () => {
       // The behaviour (stale list, look-alike, newer, two pending) is tested in
       // scripts/ci/release-kind.test.ts; this only proves the step calls it.
       expect(existsSync(join(root, "scripts/ci/release-kind.ts"))).toBe(true);
+    });
+    it("a release commit that ends with no release fails the run instead of going green", () => {
+      const steps = rpSteps();
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const rp = steps.findIndex((s: any) => s.id === "rp");
+      const after = steps[rp + 1];
+      expect(after).toBeDefined();
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(after.if).toContain("steps.kind.outputs.is_release == 'true'");
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(after.if).toContain("steps.rp.outputs.release_created != 'true'");
+      expect(after.run).toContain("::error::");
+      expect(after.run).toContain("gh run rerun");
+      expect(after.run).toMatch(/exit 1/);
     });
   });
   it("has no dispatch workaround for the release PR", () => {

@@ -75,6 +75,14 @@ jobs:
           token: ${{ steps.app.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      # The action finds the release PR through its own closed-PR list, which
+      # can lag too. If `kind` found this commit to be the release commit and
+      # no release came out, fail instead of ending green with no tag.
+      - name: The release commit created its release
+        if: ${{ steps.kind.outputs.is_release == 'true' && steps.rp.outputs.release_created != 'true' }}
+        run: |
+          echo "::error::This commit is the release commit (kind: is_release=true) but release-please created no release, so no tag exists. Re-run this run (gh run rerun $GITHUB_RUN_ID): the action's own PR lookup can lag a just-merged PR."
+          exit 1
   deploy-landing:
     needs: [release-please]
     # always(): on workflow_dispatch the release-please job is skipped.

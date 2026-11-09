@@ -20,11 +20,17 @@
 // that caused #1782 cannot skip a release silently. A named PR without the
 // label (tagged already, or a look-alike) goes to the list below.
 //
+// On the positive path the list is read too: any other merged pending PR
+// fails loudly, because release-please would tag it at its own sha. Each gh
+// read is tried again with a short backoff (RETRY_MS); a run never waits more
+// than TOTAL_WAIT_CAP_MS in all.
+//
 // Everything else uses the pending list, which may lag but only in a safe
 // direction here: this run's own commit is not a release, so a missing entry
 // changes nothing.
 //   no merged pending release PR            not a release
 //   one, merged after this commit           not a release (its own run is queued)
+//   one, no longer labelled pending         not a release (tagged; the list lags)
 //   one, merged before this commit          fail: it missed its release (below)
 //   more than one                           fail loudly
 //
@@ -45,19 +51,51 @@ const LABEL = "autorelease: pending";
 
 /** Waits between re-reads of an unconfirmed pending PR: 25 s in all. */
 export const BACKOFF_MS = [1000, 2000, 4000, 8000, 10000];
+/** Waits between tries of one failed gh call: 7 s in all. */
+export const RETRY_MS = [1000, 2000, 4000];
+/** No run waits longer than this in all, across every call and re-read. */
+export const TOTAL_WAIT_CAP_MS = 30_000;
 const sleep = (ms: number) =>
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 export class Undecided extends Error {}
 
-function api(exec: Exec, path: string, jq?: string): string {
-  const r = exec("gh", ["api", path, ...(jq ? ["-q", jq] : [])]);
-  if (r.code !== 0)
-    throw new Undecided(
-      `could not read ${path}: ${r.stderr.trim() || `exit ${r.code}`}`,
-    );
-  return r.stdout.trim();
+type Ctx = {
+  exec: Exec;
+  wait: (ms: number) => void;
+  spent: number;
+};
+
+/** Waits ms if the run's total wait stays under the cap; false if it would not. */
+function pause(c: Ctx, ms: number): boolean {
+  if (c.spent + ms > TOTAL_WAIT_CAP_MS) return false;
+  c.spent += ms;
+  c.wait(ms);
+  return true;
 }
+
+/** One gh api read; a failure (a 502, a timeout) is tried again with a short backoff. */
+function api(c: Ctx, path: string, jq?: string): string {
+  for (let i = 0; ; i++) {
+    const r = c.exec("gh", ["api", path, ...(jq ? ["-q", jq] : [])]);
+    if (r.code === 0) return r.stdout.trim();
+    if (i >= RETRY_MS.length || !pause(c, RETRY_MS[i]))
+      throw new Undecided(
+        `could not read ${path} after ${i + 1} tries: ${r.stderr.trim() || `exit ${r.code}`}`,
+      );
+  }
+}
+
+function json(path: string, text: string) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Undecided(`could not parse the answer for ${path}`);
+  }
+}
+
+const labelsOf = (pr: { labels?: { name?: string }[] }): string[] =>
+  (pr.labels ?? []).map((l) => l.name ?? "");
 
 export function decide(
   exec: Exec,
@@ -66,58 +104,54 @@ export function decide(
   out?: Say,
   wait: (ms: number) => void = sleep,
 ): Decision {
+  const c: Ctx = { exec, wait, spent: 0 };
   const log: string[] = [];
   const say = (s: string) => {
     log.push(s);
     out?.(s);
   };
-  const subject = api(exec, `repos/${repo}/commits/${sha}`, ".commit.message")
+  const subject = api(c, `repos/${repo}/commits/${sha}`, ".commit.message")
     .split("\n")[0]
     .trim();
   const named = SUBJECT.exec(subject);
   say(`commit ${sha} subject: ${subject}`);
+  // The number of this commit's own release PR, once pulls/N confirms it.
+  let own: number | undefined;
   if (named) {
     const n = named[1];
     let tries = 0;
     for (;;) {
-      const pr = JSON.parse(api(exec, `repos/${repo}/pulls/${n}`));
+      const path = `repos/${repo}/pulls/${n}`;
+      const pr = json(path, api(c, path));
       const merged = pr.merged === true || Boolean(pr.merged_at);
-      const labels: string[] = (pr.labels ?? []).map(
-        (l: { name?: string }) => l.name ?? "",
-      );
-      const pending = labels.includes(LABEL);
+      const labels = labelsOf(pr);
       say(
         `pulls/${n}: merged=${merged} merge_commit_sha=${pr.merge_commit_sha} labels=[${labels.join(", ")}] (read ${tries + 1})`,
       );
-      if (!pending) {
+      if (!labels.includes(LABEL)) {
         say(
           `#${n} is not labelled "${LABEL}" (tagged already, or a look-alike); checking the pending list`,
         );
         break;
       }
       if (merged && pr.merge_commit_sha === sha) {
-        say(`decision: release commit (#${n}); this run creates the release`);
-        return { isRelease: true, log };
+        own = Number(n);
+        break;
       }
       // Pending but unconfirmed: a read that lags the merge shows merged=false
       // and the test-merge sha. Never skip on that; read again, then fail.
-      if (tries >= BACKOFF_MS.length)
+      if (tries >= BACKOFF_MS.length || !pause(c, BACKOFF_MS[tries++]))
         throw new Undecided(
-          `this commit's subject names release PR #${n}, labelled "${LABEL}", but after ${tries + 1} reads it is merged=${merged} with merge_commit_sha=${pr.merge_commit_sha}, not ${sha}. Not skipping the release on that: re-run this run once GitHub shows #${n} merged as ${sha}.`,
+          `this commit's subject names release PR #${n}, labelled "${LABEL}", but after ${tries} re-reads it is merged=${merged} with merge_commit_sha=${pr.merge_commit_sha}, not ${sha}. Not skipping the release on that: re-run this run once GitHub shows #${n} merged as ${sha}.`,
         );
-      say(`#${n} is pending but not confirmed as ${sha}; reading again`);
-      wait(BACKOFF_MS[tries++]);
+      say(`#${n} is pending but not confirmed as ${sha}; read again`);
     }
   } else {
     say("subject is not a release commit's; checking the pending list");
   }
-  const issues = JSON.parse(
-    api(
-      exec,
-      `repos/${repo}/issues?state=closed&labels=autorelease:%20pending&per_page=100`,
-    ),
-  );
-  // One page, no pagination: a full page could hide the pending PR.
+  const listPath = `repos/${repo}/issues?state=closed&labels=autorelease:%20pending&per_page=100`;
+  const issues = json(listPath, api(c, listPath));
+  // One page, no pagination: a full page could hide a pending PR.
   if (issues.length >= 100)
     throw new Undecided(
       "pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud",
@@ -128,6 +162,18 @@ export function decide(
     )
     .map((i: { number: number }) => i.number);
   say(`merged pending release PRs: [${pending.join(", ")}]`);
+  if (own !== undefined) {
+    // release-please tags every merged pending release PR at its own merge
+    // sha, so any other one would tag a commit that is not this run's. Lag can
+    // only hide entries here, which is the old behaviour.
+    const others = pending.filter((x) => x !== own);
+    if (others.length > 0)
+      throw new Undecided(
+        `more than one merged release PR is pending (${[...new Set([own, ...others])].join(" ")}): remove "${LABEL}" from the stranded ones: see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud`,
+      );
+    say(`decision: release commit (#${own}); this run creates the release`);
+    return { isRelease: true, log };
+  }
   if (pending.length === 0) {
     say("decision: not a release commit");
     return { isRelease: false, log };
@@ -137,7 +183,16 @@ export function decide(
       `more than one merged release PR is pending (${pending.join(" ")}): remove "${LABEL}" from the stranded ones: see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud`,
     );
   const n = pending[0];
-  const merge = api(exec, `repos/${repo}/pulls/${n}`, ".merge_commit_sha");
+  const prPath = `repos/${repo}/pulls/${n}`;
+  const pr = json(prPath, api(c, prPath));
+  if (!labelsOf(pr).includes(LABEL)) {
+    // The list still shows it after its own run tagged it and swapped the label.
+    say(
+      `decision: #${n} is in the list but no longer labelled "${LABEL}" (already tagged); not a release commit`,
+    );
+    return { isRelease: false, log };
+  }
+  const merge = String(pr.merge_commit_sha ?? "");
   if (!/^[0-9a-f]{40}$/.test(merge))
     throw new Undecided(`could not read #${n}'s merge commit`);
   if (merge === sha) {
@@ -147,11 +202,7 @@ export function decide(
     );
     return { isRelease: true, log };
   }
-  const status = api(
-    exec,
-    `repos/${repo}/compare/${sha}...${merge}`,
-    ".status",
-  );
+  const status = api(c, `repos/${repo}/compare/${sha}...${merge}`, ".status");
   if (status === "ahead") {
     say(
       `decision: release commit ${merge} (#${n}) is newer; its own run creates the release`,
@@ -185,8 +236,7 @@ function main(argv: string[]): number {
     console.log(`is_release=${d.isRelease}`);
     return 0;
   } catch (e) {
-    if (!(e instanceof Undecided)) throw e;
-    console.error(`::error::${e.message}`);
+    console.error(`::error::${(e as Error).message}`);
     return 1;
   }
 }
