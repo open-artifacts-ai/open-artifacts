@@ -624,13 +624,19 @@ export function createComments(
   // ---- shell messages ----
   const off = bridge.on((m) => {
     if (m.type === "comments.mode") {
+      const was = mode;
       mode = m.mode;
-      clearTimeout(selTimer);
-      if (mode !== "select") kept = null;
-      // Also on entering select: a selection made before the shell's mode
-      // arrived (a fast reader, or a test) is reported now, not on its next
-      // change.
-      reportSelection();
+      if (mode !== "select") {
+        kept = null;
+        clearTimeout(selTimer);
+        reportSelection();
+      } else if (was !== "select") {
+        // A selection made before the shell's mode arrived (a fast reader,
+        // or a test) is reported on entering select, not on its next change.
+        // A repeated select is a no-op, so a stale quote's timer isn't reset.
+        clearTimeout(selTimer);
+        reportSelection();
+      }
       if (mode === "off") {
         // No mode, no draft: a quote left behind would paint on the next set
         // (#1850 review).
