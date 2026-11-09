@@ -518,7 +518,7 @@ export const useInviteMember = () => {
     mutationFn: (input: MemberInvite) =>
       api.send("POST", R.members, input, MemberInviteResultSchema),
     // An invite can start the Business trial: Me carries the billing the
-    // checklist's trial line reads.
+    // checklist's trial line and the invite dialog's trial notice read.
     onSuccess: () =>
       Promise.all([
         qc.invalidateQueries({ queryKey: qk.members }),
@@ -1144,7 +1144,8 @@ export const useRestoreMember = () =>
   useInvalidating(
     (memberId: string) =>
       api.send("POST", R.memberRestore(memberId), undefined, MemberSchema),
-    () => [qk.members],
+    // A restore can start the trial too: Me's billing changes.
+    () => [qk.members, qk.me],
     "Couldn't restore them.",
     () => true,
   );

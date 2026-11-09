@@ -33,6 +33,7 @@ import {
   useRestoreMember,
   useSetRestricted,
 } from "../api/queries";
+import { trialEndsOn, trialWouldStart } from "../api/trial";
 import { emailEnabled } from "../auth/emailEnabled";
 import { useFrozen } from "../auth/permissions";
 import {
@@ -135,6 +136,15 @@ function RoleSelect({
   );
 }
 
+/** Design's notice where a person is added or restored and the trial starts (#1836). */
+function TrialNotice({ endsOn }: { endsOn: string }) {
+  return (
+    <Notice tone="info" title="This starts your 14-day trial of Business.">
+      Trial ends {endsOn}.
+    </Notice>
+  );
+}
+
 /**
  * "Choose a plan" in `text`, as a link to Plan and billing. Only the owner
  * wording of a plan refusal has those words (a member's says "choose a plan"
@@ -161,6 +171,11 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   const spaces = hasFeature(me, "spaces");
   const invite = useInviteMember();
   const domains = useSignInDomains();
+  // #1836: the first invite starts the Business trial; the dialog says so.
+  // Decided when the dialog opens, so the date doesn't move under the owner.
+  const [trial] = useState(() =>
+    trialWouldStart(me) ? { endsOn: trialEndsOn() } : null,
+  );
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Assignable>("member");
   const [error, setError] = useState<string | null>(null);
@@ -292,7 +307,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
             Cancel
           </Button>
           <Button disabled={invite.isPending} onClick={submit}>
-            Add member
+            {trial ? "Add member and start trial" : "Add member"}
           </Button>
         </>
       }
@@ -360,6 +375,14 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
           </p>
         )}
         <RoleSelect label="Role" value={role} onChange={setRole} />
+        {trial && (
+          <Notice
+            tone="info"
+            title="This starts your 14-day trial of Business."
+          >
+            Trial ends {trial.endsOn}.
+          </Notice>
+        )}
       </form>
     </Modal>
   );
@@ -1165,22 +1188,28 @@ function RestoreDialog({
   const spaces = state.status === "authed" && hasFeature(state.me, "spaces");
   const label = personName(m);
   const first = personFirst(m);
+  // Restoring adds a person, so on a Solo whose trial never ran it starts it.
+  const trial =
+    open && trialWouldStart(state.status === "authed" ? state.me : null);
   return (
     <ConfirmDialog
       open={open}
       onClose={onClose}
       title={`Restore ${label}?`}
       body={
-        <p>
-          {/* Manager's ruling: a guest stays a guest; anyone else comes back a member. */}
-          {first} comes back{" "}
-          {m.role === "guest" ? "as a guest" : "as a member (no admin role)"},
-          with any manual restriction kept, and gets back the{" "}
-          {spaces && "personal "}artifacts you haven't transferred. Their old
-          tokens and agent connections stay off, so they sign in again.
-        </p>
+        <>
+          <p>
+            {/* Manager's ruling: a guest stays a guest; anyone else comes back a member. */}
+            {first} comes back{" "}
+            {m.role === "guest" ? "as a guest" : "as a member (no admin role)"},
+            with any manual restriction kept, and gets back the{" "}
+            {spaces && "personal "}artifacts you haven't transferred. Their old
+            tokens and agent connections stay off, so they sign in again.
+          </p>
+          {trial && <TrialNotice endsOn={trialEndsOn()} />}
+        </>
       }
-      confirm="Restore"
+      confirm={trial ? "Restore and start trial" : "Restore"}
       onConfirm={() =>
         restore.mutate(m.id, {
           onSuccess: () =>

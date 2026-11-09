@@ -21,7 +21,7 @@ import {
   TableRow,
 } from "@oa/ui/shadcn";
 import { useMutation } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
 import { useRedirect } from "../auth/redirect";
@@ -29,6 +29,7 @@ import { useMe } from "../auth/useMe";
 import { Notice } from "../layout/Notice";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { formatDate } from "./date";
 import { INSET, muted, SettingsCard, STACK } from "./ui";
 
 type Buy = Pick<BillingCheckoutInput, "tier" | "interval">;
@@ -84,15 +85,7 @@ const CMP: { row: string; cells: Record<Column, string> }[] = [
   },
 ];
 
-const date = (iso: string | null) =>
-  iso
-    ? new Date(iso).toLocaleDateString("en", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-        timeZone: "UTC",
-      })
-    : null;
+const date = formatDate;
 
 type Status = {
   label: string;
@@ -202,6 +195,44 @@ function ScrollFade({ children }: { children: ReactNode }) {
           className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[var(--oa-bg)] to-transparent"
         />
       )}
+    </div>
+  );
+}
+
+const NAMES: Record<Column, string> = {
+  solo: "Solo",
+  team: "Team",
+  business: "Business",
+};
+
+/** The comparison on a phone: a block per plan, every row in full. */
+function Stacked({ column }: { column: Column }) {
+  return (
+    <div
+      data-testid="compare-stacked"
+      className="grid gap-[var(--oa-space-3)] sm:hidden"
+    >
+      {(["solo", "team", "business"] as const).map((c) => (
+        <section
+          key={c}
+          aria-current={c === column ? "true" : undefined}
+          className={`rounded-[var(--oa-radius-md)] border border-[var(--oa-border)] p-[var(--oa-space-3)] ${
+            c === column ? "bg-[var(--oa-accent-soft)]" : ""
+          }`}
+        >
+          <h3 className="m-0 text-[length:var(--oa-text-base)] font-semibold">
+            {NAMES[c]}
+          </h3>
+          <dl className="m-0 mt-[var(--oa-space-2)] grid grid-cols-[minmax(0,auto)_minmax(0,1fr)] gap-x-[var(--oa-space-3)] gap-y-[var(--oa-space-1)]">
+            {CMP.map((r) => (
+              <Fragment key={r.row}>
+                <dt className={muted}>{r.row}</dt>
+                <dd className="m-0">{r.cells[c]}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        </section>
+      ))}
     </div>
   );
 }
@@ -336,41 +367,50 @@ export function Plan() {
         aria-label="Compare plans"
         className={`relative min-w-0 ${INSET} px-0`}
       >
-        <ScrollFade>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead />
-                {(["solo", "team", "business"] as const).map((c) => (
-                  <TableHead
-                    key={c}
-                    aria-current={c === column ? "true" : undefined}
-                    className={c === column ? "bg-[var(--oa-accent-soft)]" : ""}
-                  >
-                    {c === "solo" ? "Solo" : c === "team" ? "Team" : "Business"}
-                  </TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {CMP.map((r) => (
-                <TableRow key={r.row}>
-                  <TableHead scope="row">{r.row}</TableHead>
+        <div data-testid="compare-table" className="hidden sm:block">
+          <ScrollFade>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead />
                   {(["solo", "team", "business"] as const).map((c) => (
-                    <TableCell
+                    <TableHead
                       key={c}
+                      aria-current={c === column ? "true" : undefined}
                       className={
                         c === column ? "bg-[var(--oa-accent-soft)]" : ""
                       }
                     >
-                      {r.cells[c]}
-                    </TableCell>
+                      {c === "solo"
+                        ? "Solo"
+                        : c === "team"
+                          ? "Team"
+                          : "Business"}
+                    </TableHead>
                   ))}
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </ScrollFade>
+              </TableHeader>
+              <TableBody>
+                {CMP.map((r) => (
+                  <TableRow key={r.row}>
+                    <TableHead scope="row">{r.row}</TableHead>
+                    {(["solo", "team", "business"] as const).map((c) => (
+                      <TableCell
+                        key={c}
+                        className={
+                          c === column ? "bg-[var(--oa-accent-soft)]" : ""
+                        }
+                      >
+                        {r.cells[c]}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </ScrollFade>
+        </div>
+        <Stacked column={column} />
         <p className={`mt-[var(--oa-space-2)] ${muted}`}>
           Team and Business bill per creator: people who publish or edit live
           data in a month. Viewers are free.

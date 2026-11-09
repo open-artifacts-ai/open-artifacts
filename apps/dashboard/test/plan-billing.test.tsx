@@ -329,7 +329,9 @@ it("Plan and billing: an ended trial is titled Trial ended, with no price row", 
   );
   expect(await screen.findByText("Trial ended")).toBeVisible();
   expect(screen.queryByText("Business trial")).toBeNull();
-  expect(screen.queryByText("Price", { selector: "dt" })).toBeNull();
+  // The plan card's price row. (The stacked comparison has its own Price rows.)
+  const card = document.getElementById("plan-card") as HTMLElement;
+  expect(within(card).queryByText("Price", { selector: "dt" })).toBeNull();
 });
 
 it("Plan and billing: Pay $1/month is the primary button, the rest are outline", async () => {
@@ -586,6 +588,47 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
     expect(r.pill.label).toBe("Trial");
     expect(r.note?.text).toBe(
       "Trial ends Nov 20, 2026. Everything in Business is on.",
+    );
+  });
+});
+
+// #1837: at 390px the comparison used to cut off Team and Business and the
+// Solo price. Below the sm breakpoint it stacks, one block per plan with every
+// row in full; from sm up it is the table. jsdom has no CSS, so these pin the
+// structure and the breakpoint classes; e2e/billing-ui.spec.ts measures it.
+describe("the comparison on a phone (#1837)", () => {
+  it("stacks every plan with every row, none cut off", async () => {
+    mountHosted("/settings/plan", { billing: TEAM });
+    const stack = await screen.findByTestId("compare-stacked");
+    expect(stack.className).toContain("sm:hidden");
+    for (const plan of ["Solo", "Team", "Business"])
+      expect(
+        within(stack).getByRole("heading", { name: plan }),
+      ).toBeInTheDocument();
+    // The Solo price in full, not "$1 a month or $12 a year, pe".
+    expect(
+      within(stack).getByText("$1 a month or $12 a year, per instance"),
+    ).toBeInTheDocument();
+    expect(within(stack).getByText("$10 per creator")).toBeInTheDocument();
+    expect(within(stack).getByText("$25 per creator")).toBeInTheDocument();
+    // 5 rows for each of the 3 plans.
+    expect(within(stack).getAllByRole("term")).toHaveLength(15);
+    expect(within(stack).getAllByRole("definition")).toHaveLength(15);
+  });
+
+  it("marks the current plan and no other", async () => {
+    mountHosted("/settings/plan", { billing: TEAM });
+    const stack = await screen.findByTestId("compare-stacked");
+    const current = stack.querySelectorAll('[aria-current="true"]');
+    expect(current).toHaveLength(1);
+    expect(current[0]).toHaveTextContent("Team");
+  });
+
+  it("the table shows only from sm up", async () => {
+    mountHosted("/settings/plan", { billing: TEAM });
+    const table = await screen.findByRole("table");
+    expect(table.closest('[data-testid="compare-table"]')?.className).toContain(
+      "hidden sm:block",
     );
   });
 });
