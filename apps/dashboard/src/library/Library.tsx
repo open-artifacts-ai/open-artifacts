@@ -337,7 +337,13 @@ export function Library({ scope }: { scope: Scope }) {
       {q.isSuccess && items.length === 0 && (
         <Empty
           icon={<LibraryIcon />}
-          title={filtered ? "No artifacts match these filters" : emptyTitle}
+          title={
+            s.filter
+              ? "Nothing here."
+              : filtered
+                ? "No artifacts match these filters"
+                : emptyTitle
+          }
           description={
             filtered ? (
               "Try removing a filter."
