@@ -1156,19 +1156,32 @@ function awayHolder(
   // Nothing else holds it: no live agent, no role, and no minted name (the
   // old agent's own included, which nameTaken skips for it).
   if (nameTaken(sql, namespace, name, global, r.agentId, now)) return null;
-  // #1346: a holder of a role with a reach grant keeps its name. Mail sent to
-  // it across namespaces (a reply, allowed because of the grant) must wait for
-  // the holder, never go to a newcomer that holds no grant.
-  const reaching = one(
+  // #1346: mail that crossed a namespace boundary (admitted by a reach grant,
+  // which may be gone by now) waits for its holder: the newcomer may hold no
+  // such grant. Pending in-session mail from another namespace blocks the
+  // takeover unless its sender is global or its namespace is linked to the
+  // holder's. A sender row that no longer exists counts as not global.
+  const holder = one<{ ns: string; global: number; start: number }>(
     sql,
-    `select 1 as x from roles r
-      where r.org_id = ? and r.agent_id = ?
-        and exists (select 1 from reach_grants g
-                     where g.org_id = r.org_id and g.role_ns = r.namespace and g.lname = r.lname)`,
-    OWNER_ORG_ID,
+    "select namespace as ns, global, session_start_rowid as start from agents where id = ?",
     r.agentId,
   );
-  if (reaching !== null) return null;
+  if (holder === null) return null;
+  if (holder.global !== 1) {
+    const foreign = all<{ ns: string }>(
+      sql,
+      `select distinct rc.namespace as ns
+         from receipts rc indexed by receipts_to
+         left join agents s on s.id = rc.from_agent
+        where rc.to_agent = ? and rc.state = 'pending' and rc.rowid > ?
+          and rc.namespace <> ? and coalesce(s.global, 0) <> 1`,
+      r.agentId,
+      holder.start,
+      holder.ns,
+    );
+    for (const f of foreign)
+      if (!isLinked(sql, OWNER_ORG_ID, holder.ns, f.ns)) return null;
+  }
   const minted = one(
     sql,
     "select 1 as x from minted_names where org_id = ? and lname = ?",

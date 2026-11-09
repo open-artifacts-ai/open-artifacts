@@ -428,52 +428,159 @@ async function renameTo(d: Daemon, ref: string, name: string) {
 const delivers = (d: Daemon) =>
   d.raw.filter((t) => t.includes('"type":"deliver"'));
 
-describe("name reclaim never hands reach mail to an agent with no grant (#1742)", () => {
-  it("agent_up: a newcomer asking for an away holder's name is suffixed and gets no mail", async () => {
+type World = Awaited<ReturnType<typeof world>>;
+
+async function holderAway(w: World) {
+  w.dh.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "h" });
+  await waitUntilAway(w);
+}
+
+/** Tries to take the away holder's name: by agent_up or by a live peer's rename. */
+async function takeName(w: World, how: "up" | "rename") {
+  if (how === "rename") {
+    const got = await renameTo(w.dp, "p", w.hn);
+    return { got, d: w.dp, extra: null as Daemon | null };
+  }
+  const dn = await connect(REACH);
+  dn.send(up(`u${++seq}`, "newcomer", w.hn, w.x));
+  return { got: (await waitFor(dn, "agent_ok")).bus_name, d: dn, extra: dn };
+}
+
+async function expectBlocked(w: World, how: "up" | "rename") {
+  const t = await takeName(w, how);
+  expect(t.got).not.toBe(w.hn);
+  expect(t.got.startsWith(w.hn)).toBe(true);
+  await new Promise((res) => setTimeout(res, 200));
+  expect(delivers(t.d)).toEqual([]);
+  t.extra?.close();
+}
+
+async function expectReclaimed(w: World, how: "up" | "rename") {
+  const t = await takeName(w, how);
+  expect(t.got).toBe(w.hn);
+  await waitFor(t.d, "deliver");
+  t.extra?.close();
+  return t;
+}
+
+describe("name reclaim never hands cross-namespace mail to a newcomer (#1742, #1346)", () => {
+  for (const how of ["up", "rename"] as const) {
+    it(`${how}: pending mail from another namespace blocks the takeover`, async () => {
+      const w = await world();
+      await holderAway(w);
+      expect((await send(w.db, "b", w.hn, w.x)).state).toBe("pending");
+      await expectBlocked(w, how);
+      w.close();
+    });
+
+    it(`${how}: still blocks after deleteReach`, async () => {
+      const w = await world();
+      await holderAway(w);
+      expect((await send(w.db, "b", w.hn, w.x)).state).toBe("pending");
+      const hub = await hubOf();
+      for (const g of await hub.listReach()) await hub.deleteReach(g.id);
+      await expectBlocked(w, how);
+      w.close();
+    });
+
+    it(`${how}: still blocks after the role is re-pointed`, async () => {
+      const w = await world();
+      await holderAway(w);
+      expect((await send(w.db, "b", w.hn, w.x)).state).toBe("pending");
+      await holds(w.x, "lead", w.pn);
+      await expectBlocked(w, how);
+      w.close();
+    });
+
+    it(`${how}: still blocks after the role is deleted`, async () => {
+      const w = await world();
+      await holderAway(w);
+      expect((await send(w.db, "b", w.hn, w.x)).state).toBe("pending");
+      const hub = await hubOf();
+      const role = (await hub.listRoles()).find(
+        (r) => r.namespace === w.x && r.name === "lead",
+      );
+      expect(await hub.deleteRole(role?.id ?? "")).toBe(true);
+      await expectBlocked(w, how);
+      w.close();
+    });
+  }
+
+  it("a purged sender blocks (no row counts as not global)", async () => {
     const w = await world();
-    w.dh.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "h" });
-    await waitUntilAway(w);
-    const r = await send(w.db, "b", w.hn, w.x);
-    expect(r.state).toBe("pending");
+    await holderAway(w);
+    expect((await send(w.db, "b", w.hn, w.x)).state).toBe("pending");
+    const bid = await idOf(w.bn);
+    w.db.close();
+    await inOwnerHub((s) => {
+      s.storage.sql.exec("delete from agents where id = ?", bid);
+    });
+    await expectBlocked(w, "up");
+    w.close();
+  });
+
+  it("a granted role with no cross-namespace mail is reclaimed from, and the newcomer gets no reach", async () => {
+    const w = await world();
+    await holderAway(w);
     const dn = await connect(REACH);
     dn.send(up(`u${++seq}`, "newcomer", w.hn, w.x));
-    const got = (await waitFor(dn, "agent_ok")).bus_name;
-    expect(got).not.toBe(w.hn);
-    expect(got.startsWith(w.hn)).toBe(true);
-    await new Promise((res) => setTimeout(res, 200));
-    expect(delivers(dn)).toEqual([]);
+    expect((await waitFor(dn, "agent_ok")).bus_name).toBe(w.hn);
+    expect(names(await list(dn, "newcomer"))).not.toContain(w.bn);
     dn.close();
     w.close();
   });
 
-  it("rename: a live peer renaming to an away holder's name is suffixed and gets no mail", async () => {
-    const w = await world();
-    w.dh.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "h" });
-    await waitUntilAway(w);
-    const r = await send(w.db, "b", w.hn, w.x);
-    expect(r.state).toBe("pending");
-    const got = await renameTo(w.dp, "p", w.hn);
-    expect(got).not.toBe(w.hn);
-    await new Promise((res) => setTimeout(res, 200));
-    expect(delivers(w.dp)).toEqual([]);
-    w.close();
-  });
-
-  it("a holder of a role with no grant is still reclaimed from, with its mail", async () => {
-    const w = await world();
-    await holds(w.x, "plain", w.pn);
-    w.dp.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "p" });
-    const hub = await hubOf();
-    for (let i = 0; i < 200; i++) {
-      if (!(await hub.snapshot()).agents.some((a) => a.name === w.pn)) break;
-      await new Promise((res) => setTimeout(res, 25));
+  it("same-namespace mail does not block, by agent_up or rename", async () => {
+    for (const how of ["up", "rename"] as const) {
+      const w = await world();
+      const dq = await connect(REACH);
+      await agent(dq, "q", uniq("mate"), w.x);
+      await holderAway(w);
+      expect((await send(dq, "q", w.hn)).state).toBe("pending");
+      await expectReclaimed(w, how);
+      dq.close();
+      w.close();
     }
-    const dn = await connect(REACH);
-    dn.send(up(`u${++seq}`, "newcomer", w.pn, w.x));
-    expect((await waitFor(dn, "agent_ok")).bus_name).toBe(w.pn);
-    w.close();
-    dn.close();
   });
+
+  for (const how of ["up", "rename"] as const) {
+    it(`${how}: mail from a linked namespace does not block`, async () => {
+      const w = await world();
+      const hub = await hubOf();
+      for (const g of await hub.listReach()) await hub.deleteReach(g.id);
+      expect((await hub.putLink(w.x, w.y)).ok).toBe(true);
+      const dl = await connect([...REACH, BUS_CAPS.links]);
+      await agent(dl, "l", uniq("linked"), w.y);
+      await holderAway(w);
+      expect((await send(dl, "l", w.hn, w.x)).state).toBe("pending");
+      await expectReclaimed(w, how);
+      dl.close();
+      w.close();
+    });
+
+    it(`${how}: mail from a global sender does not block`, async () => {
+      const w = await world();
+      const hub = await hubOf();
+      for (const g of await hub.listReach()) await hub.deleteReach(g.id);
+      const dg = await connect(REACH);
+      dg.send(up(`u${++seq}`, "g", uniq("glob"), ns("rg"), true));
+      await waitFor(dg, "agent_ok");
+      await holderAway(w);
+      const r = await send(dg, "g", w.hn, w.x);
+      expect(r.state).toBe("pending");
+      await expectReclaimed(w, how);
+      dg.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "g" });
+      for (let i = 0; i < 200; i++) {
+        const open = (await hub.snapshot()).agents.some((a) =>
+          a.name.startsWith("glob"),
+        );
+        if (!open) break;
+        await new Promise((res) => setTimeout(res, 25));
+      }
+      dg.close();
+      w.close();
+    });
+  }
 });
 
 describe("caps", () => {
