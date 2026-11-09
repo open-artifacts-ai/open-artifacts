@@ -425,11 +425,27 @@ describe("route and hub reads", () => {
     });
     expect(r.t?.comments[0]?.assigned?.state).toBe("delivered");
     expect(h.seen).toEqual([`bus:${s.owner.userId}`]);
-    // Both followed: the mention and the assignment.
-    expect((await followRows(s.id)).map((x) => x.n).sort()).toEqual([
-      "A1",
-      "A2",
-    ]);
+    // Only the mention follows; the assignment alone does not.
+    expect((await followRows(s.id)).map((x) => x.n)).toEqual(["A1"]);
+  });
+
+  it("an assignment alone makes no follow; mention plus assignment of one agent does", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    const h = hubs({
+      [s.owner.userId]: [agentRow("ns-o", "A1"), agentRow("ns-o", "A2")],
+    });
+    const k1 = await keyOf(s, h, "A1");
+    const k2 = await keyOf(s, h, "A2");
+    const a = await post(h, s, { assign: { key: k1 } });
+    expect(a.t?.comments[0]?.assigned?.state).toBe("delivered");
+    expect(await followRows(s.id)).toEqual([]);
+    const b = await post(h, s, {
+      mentions: [{ key: k2 }],
+      assign: { key: k2 },
+    });
+    expect(b.t?.comments[0]?.assigned?.state).toBe("delivered");
+    expect((await followRows(s.id)).map((x) => x.n)).toEqual(["A2"]);
   });
 
   it("an agent the follows already hold is not followed again", async () => {

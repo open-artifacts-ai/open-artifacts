@@ -558,11 +558,9 @@ async function resolveExtras(
   for (const a of mentioned) agents.set(a.key, { agent: a, kind: "mention" });
   for (const a of asked) agents.set(a.key, { agent: a, kind: "ask" });
   if (assigned) agents.set(assigned.key, { agent: assigned, kind: "assign" });
-  // A mention or assignment makes an agent follow (#1535), but only one the
-  // follows did not hold: another member's unfollow is never undone.
-  const toFollow = [...mentioned, ...(assigned ? [assigned] : [])].filter((x) =>
-    viaOwn.has(x.key),
-  );
+  // A mention makes an agent follow (#1535); an assignment or ask alone does
+  // not. Only one the follows did not hold: another member's unfollow is never undone.
+  const toFollow = mentioned.filter((x) => viaOwn.has(x.key));
   return {
     follow: [...new Map(toFollow.map((x) => [x.key, x])).values()],
     extras: {
