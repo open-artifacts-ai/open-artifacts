@@ -724,3 +724,30 @@ describe("L4: the revoke drain visits only agents with work", () => {
     ).toBe(3);
   });
 });
+
+describe("#1749: a rate-limited socket stays dead across hibernation", () => {
+  it("frames after a wake (a fresh instance on the same state and sockets) are not processed", async () => {
+    const h = freshHub();
+    const t0 = Date.now() + HOUR;
+    await clock(h, t0);
+    const m = await machineOn(h);
+    const d = await daemonOn(h, m.id);
+    await sync(d);
+    await emptyBucket(h, m.id, 0);
+    d.send(junkAck());
+    expect((await d.closed).code).toBe(LIMITS.rateLimitCloseCode);
+    // A wake: new instance, empty #rateClosed and budgets, same attachments.
+    const agentsAfter = await inHub(h, async (_, s) => {
+      const fresh = new BusHub(s, e);
+      for (const ws of s.getWebSockets("daemon"))
+        await fresh.webSocketMessage(
+          ws,
+          encodeFrame(up("late", "late-ref", "late", "ns1749")),
+        );
+      return s.storage.sql
+        .exec<{ n: number }>("select count(*) as n from agents")
+        .one().n;
+    });
+    expect(agentsAfter).toBe(0);
+  });
+});
