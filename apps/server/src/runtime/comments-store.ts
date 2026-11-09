@@ -58,6 +58,12 @@ export type StoredActor = {
   ref: string;
   name?: string;
   agent?: { name: string; via: string | null };
+  /**
+   * #1797: written from a browser session (a person typing in the web app),
+   * set by the route from the credential kind. Absent on older rows: not typed.
+   * Only a user can carry it.
+   */
+  typed?: true;
 };
 
 /**

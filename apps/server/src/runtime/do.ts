@@ -2174,6 +2174,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     commentId: string;
     by: { kind: "user" | "guest"; ref: string };
     body: string;
+    /**
+     * #1797: the edit came from a browser session. A comment stays typed only
+     * when its last editor was typed too: a token edit of a typed comment
+     * makes it not typed.
+     */
+    typed?: boolean;
     /** The caller's rate key ("u:{id}" or "ip:{key}"): counts against the minute limit only. */
     rate?: string;
   }): StoredComment {
@@ -2193,6 +2199,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (who.kind !== a.by.kind || who.ref !== a.by.ref)
         fail("forbidden", "Only the author can edit a comment");
       const now = this.iso();
+      if (who.typed && a.typed !== true) {
+        const { typed: _typed, ...rest } = who;
+        this.sql.exec(
+          "update comments set author = ? where id = ?",
+          JSON.stringify(rest),
+          a.commentId,
+        );
+      }
       this.sql.exec(
         "update comments set body = ?, edited_at = ? where id = ?",
         a.body.trim(),

@@ -64,7 +64,17 @@ import { effectiveName, getUser } from "./users.js";
 
 /** Who is acting: a signed-in person (maybe through an agent) or a signed-out guest. */
 export type CommentWho =
-  | { kind: "user"; id: string; agent?: AgentAttr | null }
+  | {
+      kind: "user";
+      id: string;
+      agent?: AgentAttr | null;
+      /**
+       * #1797: the request authenticated with a browser session (never a PAT,
+       * a grant or MCP). The route sets it from the credential kind, never
+       * from the body or from a missing agent.
+       */
+      typed?: boolean;
+    }
   | {
       kind: "guest";
       /** The per-artifact anonymous id (anon-id.ts short). */
@@ -90,6 +100,7 @@ const actorOf = (w: CommentWho): StoredActor =>
     ? {
         kind: "user",
         ref: w.id,
+        ...(w.typed === true && !w.agent ? { typed: true as const } : {}),
         ...(w.agent
           ? {
               agent: {
@@ -325,6 +336,10 @@ const partyView = (
         me: viewer.userId !== null && viewer.userId === p.owner,
       };
 
+/** A stored actor a person typed in the web app (#1797); an agent row or an old row is not. */
+const isTyped = (a: StoredActor): boolean =>
+  a.kind === "user" && a.typed === true && !a.agent;
+
 const commentOf = (
   c: StoredComment,
   viewer: CommentViewer,
@@ -337,6 +352,7 @@ const commentOf = (
     author,
     createdAt: c.createdAt,
     editedAt: c.editedAt,
+    typed: isTyped(c.author),
     can: { edit: author.me, delete: author.me || viewer.moderator === true },
     ...(c.ask
       ? {
@@ -351,6 +367,7 @@ const commentOf = (
                     optionId: c.ask.answer.optionId,
                     by: authorView(c.ask.answer.by, viewer, users),
                     at: c.ask.answer.at,
+                    typed: isTyped(c.ask.answer.by),
                   },
                 }
               : {}),
@@ -646,7 +663,20 @@ async function deliver(
       Promise.all(
         r.agents.map(({ agent, kind }) =>
           Promise.race([
-            notifyAgent(env, a.id, version, threadId, c.id, kind, agent),
+            notifyAgent(
+              env,
+              a.id,
+              version,
+              threadId,
+              c.id,
+              kind,
+              agent,
+              // Only a comment a person typed, to an agent of that same
+              // person. An assignment (going away, #1792) stays data.
+              kind !== "assign" &&
+                isTyped(c.author) &&
+                c.author.ref === agent.userId,
+            ),
             late,
           ]),
         ),
@@ -808,6 +838,10 @@ export async function answerAsk(
         threadId,
         commentId,
         c.author.ref,
+        // Only an answer the asker picked themselves in the web app.
+        c.ask?.answer !== undefined &&
+          isTyped(c.ask.answer.by) &&
+          c.ask.answer.by.ref === c.author.ref,
       ),
     );
   return commentView(env, c, viewer);
@@ -862,6 +896,7 @@ export async function editComment(
       commentId,
       by: { kind: a.kind, ref: a.ref },
       body: text,
+      typed: a.kind === "user" && a.typed === true,
       rate: rateKeyOf(who),
     }),
   );

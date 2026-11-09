@@ -27,6 +27,7 @@ const thread = (
       author,
       createdAt: "2026-11-05T10:00:00Z",
       editedAt: null,
+      typed: false,
       can: { edit: false, delete: false },
     },
   ],
