@@ -9,10 +9,11 @@ import os
 import re
 import sys
 import threading
+import unicodedata
 
 from . import copy
 from .link import Link, LinkError, retry_delay_s
-from .roots import NotOnBus
+from .roots import NotOnBus, hermes_session_title
 from .sockpath import proc_start
 from .wrap import wrap
 
@@ -22,12 +23,33 @@ SHOWN_MAX = 1000
 SELF_TIMEOUT_S = 2.0
 
 
-def name_of(title, kind="hermes"):
-    """A session name as a bus name: lowercase words joined by `-`; the kind when nothing is left."""
-    slug = re.sub(r"[^a-z0-9]+", "-", (title or "").lower())
+def slug_of(text, kind="hermes"):
+    """A derived name (the directory) as a bus name: lowercase words joined by `-`; the kind when nothing is left."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower())
     slug = re.sub(r"^-+", "", slug)[:64]
     slug = re.sub(r"-+$", "", slug)
     return slug or kind
+
+
+def name_of(title, kind="hermes"):
+    """A session title as a bus name (#1704), as typed.
+
+    The same rules the pi adapter follows (#1703). Accents fold away. Letters,
+    digits, single spaces, `.` `_` `-` keep their place and case. A run of any
+    other character (controls included) becomes `-` only between two kept
+    non-space characters, and is dropped elsewhere. Starts with a letter or
+    digit, ends with a letter, digit, `_` or `-`, at most 64 characters (the
+    hub counts characters, and every kept one is ASCII); the kind when nothing
+    is left.
+    """
+    t = unicodedata.normalize("NFKD", title or "")
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    t = re.sub(r"([A-Za-z0-9._-])[^A-Za-z0-9 ._-]+(?=[A-Za-z0-9._-])", r"\1-", t)
+    t = re.sub(r"[^A-Za-z0-9 ._-]+", "", t)
+    t = re.sub(r" {2,}", " ", t)
+    t = re.sub(r"^[ ._-]+", "", t)[:64]
+    t = re.sub(r"[ .]+$", "", t)
+    return t or kind
 
 
 def codex_app_server_active():
@@ -181,8 +203,10 @@ class Bus:
     """`inject` is ctx.inject_message; `connect` makes a Link (replaced in tests)."""
 
     def __init__(self, roots, inject=None, connect=None, start=None, cwd=None, spawn=None,
-                 current_session=None, codex_runtime=None, habits_marker=None):
+                 current_session=None, codex_runtime=None, habits_marker=None, title_of=None):
         self.roots = roots
+        # The user-set session title of a root, or None.
+        self._title_of = title_of or hermes_session_title
         self._habits_marker = habits_marker or HABITS_MARKER
         self._codex_runtime = codex_runtime or codex_app_server_active
         self._inject = inject
@@ -210,7 +234,8 @@ class Bus:
         return Link(
             root.ref,
             cwd,
-            name_of(f"hermes-{base}" if base else None),
+            # The user's own title as typed; else the directory, as before.
+            name_of(self._title_of(root.ref), slug_of(f"hermes-{base}" if base else None)),
             self._start,
             os.getpid(),
             on_deliver,
