@@ -4,9 +4,9 @@
 // OpenClaw 2026.6.5 in a throwaway state dir); nothing real runs.
 import {
   chmodSync,
-  lstatSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
@@ -934,23 +934,30 @@ describe("openclaw habits: on, then off", () => {
       },
     );
 
-    unlessRoot("counts an unreadable plugin folder as a failure and keeps it listed", () => {
-      const home = tmp("oa-oc-habits-");
-      const busHome = join(home, ".oa-bus");
-      const dir = ours(join(tmp("oa-oc-z-"), "extensions", "oa-bus"));
-      writeFileSync(marker(dir), "on\n");
-      seed(busHome, [dir]);
-      chmodSync(dir, 0o000);
-      try {
-        const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
-        expect(r.incomplete).toBe(true);
-        expect(r.notes.join("\n")).toContain(`Couldn't reach ${marker(dir)}`);
-        expect(listed(busHome)).toEqual([dir]);
-      } finally {
-        chmodSync(dir, 0o755);
-      }
-      expect(existsSync(marker(dir))).toBe(true);
-    });
+    unlessRoot(
+      "counts an unreadable plugin folder as a failure and keeps it listed",
+      () => {
+        const home = tmp("oa-oc-habits-");
+        const busHome = join(home, ".oa-bus");
+        const dir = ours(join(tmp("oa-oc-z-"), "extensions", "oa-bus"));
+        writeFileSync(marker(dir), "on\n");
+        seed(busHome, [dir]);
+        chmodSync(dir, 0o000);
+        try {
+          const r = setPluginHabits(
+            { home, env: {}, busHome },
+            [openclaw],
+            false,
+          );
+          expect(r.incomplete).toBe(true);
+          expect(r.notes.join("\n")).toContain(`Couldn't reach ${marker(dir)}`);
+          expect(listed(busHome)).toEqual([dir]);
+        } finally {
+          chmodSync(dir, 0o755);
+        }
+        expect(existsSync(marker(dir))).toBe(true);
+      },
+    );
 
     it("lets a symlink with nothing behind it go: no habits.on, or a dangling link", () => {
       const home = tmp("oa-oc-habits-");

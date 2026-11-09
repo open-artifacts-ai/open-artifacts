@@ -305,7 +305,9 @@ describe("install and uninstall with Hermes", () => {
         const text = ctx.out().slice(before).join("\n");
         expect(code).toBe(1);
         expect(text).not.toContain("Habits off");
-        expect(text).toContain("Habits are still on in some places (see below)");
+        expect(text).toContain(
+          "Habits are still on in some places (see below)",
+        );
         expect(text).toContain("habits are still on");
         expect(existsSync(marker(ctx))).toBe(true);
       } finally {
