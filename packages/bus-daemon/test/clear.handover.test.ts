@@ -117,6 +117,7 @@ describe("/clear handover in the daemon", () => {
       BUS_CAPS.mailbox,
       BUS_CAPS.links,
       BUS_CAPS.follow,
+      BUS_CAPS.link,
     ]);
   });
 

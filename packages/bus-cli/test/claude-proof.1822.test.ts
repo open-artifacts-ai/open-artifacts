@@ -92,7 +92,9 @@ describe("oa-bus mcp-proof output", () => {
     const f = tokenFile();
     const code = await mcpProof({ tokenFile: f }, ctx);
     expect(code).toBe(0);
-    expect(JSON.parse(ctx.raw())).toEqual({ Authorization: `Bearer ${SECRET}` });
+    expect(JSON.parse(ctx.raw())).toEqual({
+      Authorization: `Bearer ${SECRET}`,
+    });
   });
 
   it("prints no proof when no Claude process is above it, or the daemon did not bind", async () => {
@@ -191,7 +193,11 @@ describe("oa-bus install and uninstall, Claude entry", () => {
 });
 
 describe("oa-bus status, Claude entry", () => {
-  const line = async (e: object | undefined, link: boolean, install = false) => {
+  const line = async (
+    e: object | undefined,
+    link: boolean,
+    install = false,
+  ) => {
     const ctx = fakeCtx({
       status: vi.fn(async () => status(link ? { link: true } : {})),
     });

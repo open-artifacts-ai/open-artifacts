@@ -10,8 +10,8 @@ import {
 } from "../context.ts";
 import { ago, forHowLong, type HubLink } from "../copy.ts";
 import { readMachine } from "../machine.ts";
-import { habitsLine } from "./habits.ts";
 import { claudeConfigFile, proofState } from "../steps/claude-proof.ts";
+import { habitsLine } from "./habits.ts";
 import { rosters } from "./install.ts";
 
 export const hostOf = (hub: string) => {
