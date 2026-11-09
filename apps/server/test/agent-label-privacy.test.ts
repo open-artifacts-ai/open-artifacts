@@ -20,10 +20,10 @@ const app = createApp();
 const tag = newId().slice(0, 6).toLowerCase();
 const LABEL = `label-9q2x private ${tag}`;
 /**
- * What the label must never leak. It carries a space on purpose: ids are base62
- * (`[0-9A-Za-z]`), so a random id can never contain this marker, and a negative
- * check on it cannot flake. "9q2x" alone could: a random space id may start
- * with those four characters.
+ * What the label must never leak. It carries a space on purpose: ids are base58
+ * (`[1-9A-HJ-NP-Za-km-z]`, no 0, O, I or l), so a random id can never contain
+ * this marker and a negative check on it cannot flake. "9q2x" alone could: a
+ * random space id may start with those four characters.
  */
 const LEAK = "9q2x private";
 const WORD = `zebrafy${tag}`;
