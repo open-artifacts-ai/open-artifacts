@@ -697,7 +697,7 @@ const TOOLS = [
     name: "oabus_propose_reach",
     label: "Open Artifacts bus: ask for reach",
     description:
-      "Ask that the role you hold be able to message agents in more namespaces. This only asks: nothing changes until the person confirms on the link you get back.",
+      "Ask that the role you hold be able to message agents in more namespaces. Name only other namespaces: your role already reaches its own. This only asks: nothing changes until the person confirms on the link you get back.",
     parameters: {
       type: "object",
       properties: {

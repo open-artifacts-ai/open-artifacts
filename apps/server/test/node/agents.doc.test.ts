@@ -21,7 +21,6 @@ const BUS_TOOLS = [
   "follow",
   "unfollow",
   "following",
-  "propose_reach",
 ];
 
 describe("AGENTS.md", () => {

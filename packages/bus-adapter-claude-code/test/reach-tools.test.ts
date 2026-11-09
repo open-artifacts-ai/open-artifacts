@@ -37,6 +37,7 @@ describe("propose_reach tool", () => {
     expect(t?.inputSchema.required).toEqual(["namespaces"]);
     expect(t?.inputSchema.additionalProperties).toBe(false);
     expect(t?.description).not.toMatch(/claude|—/i);
+    expect(t?.description).toMatch(/only other namespaces/i);
     expect(t?.description).toMatch(
       /nothing changes until the person confirms/i,
     );

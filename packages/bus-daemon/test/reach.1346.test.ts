@@ -161,14 +161,41 @@ describe("proposeReach: responses", () => {
     expect((r as { message: string }).message).not.toBe(REACH_COPY.no_role);
   });
 
-  it("a 402 and a 5xx are refusals with the status, and a junk body is not trusted", async () => {
-    expect(await code(new Response("<html>", { status: 402 }))).toMatchObject({
+  it("a 400 for a namespace says to name only other namespaces", async () => {
+    const r = await code(
+      json(400, {
+        error: {
+          code: "bad_request",
+          message: "Invalid namespaces",
+          details: { field: "namespaces" },
+        },
+      }),
+    );
+    expect(r).toEqual({
       ok: false,
-      message: expect.stringContaining("HTTP 402"),
+      code: "bad_namespaces",
+      message: REACH_COPY.bad_namespaces,
     });
-    expect(await code(new Response("oops", { status: 502 }))).toMatchObject({
+    expect(REACH_COPY.bad_namespaces).toMatch(/own namespace/);
+  });
+
+  it("a 402 and a 5xx are refusals with the status, and a junk body is not trusted", async () => {
+    expect(await code(new Response("<html>", { status: 402 }))).toEqual({
       ok: false,
-      message: expect.stringContaining("HTTP 502"),
+      code: "refused",
+      message: "The hub refused the request. (HTTP 402) Nothing changed.",
+    });
+    expect(await code(new Response("oops", { status: 502 }))).toEqual({
+      ok: false,
+      code: "refused",
+      message: "The hub refused the request. (HTTP 502) Nothing changed.",
+    });
+    expect(
+      await code(
+        json(500, { error: { code: "internal", message: "Internal error" } }),
+      ),
+    ).toMatchObject({
+      message: "Internal error (HTTP 500) Nothing changed.",
     });
     expect(
       await code(new Response("x".repeat(20_000), { status: 200 })),

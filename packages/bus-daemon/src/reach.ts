@@ -37,6 +37,8 @@ export const REACH_COPY = {
   no_bus:
     "The hub has no connected machine for this person yet. Nothing changed.",
   refused: "The hub refused the request. Nothing changed.",
+  bad_namespaces:
+    "The hub did not accept those namespaces. Your role already reaches its own namespace, so name only other namespaces, as list_agents shows them. Nothing changed.",
 } as const;
 
 const fail = (
@@ -129,7 +131,10 @@ export async function proposeReach(o: {
     const body = (json ?? {}) as {
       confirmUrl?: unknown;
       expiresAt?: unknown;
-      error?: { message?: unknown; details?: { reason?: unknown } };
+      error?: {
+        message?: unknown;
+        details?: { reason?: unknown; field?: unknown };
+      };
     };
     if (res.status === 200) {
       const url = ownConfirmUrl(body.confirmUrl, o.hub);
@@ -156,6 +161,9 @@ export async function proposeReach(o: {
         return fail(why, REACH_COPY[why]);
       return fail("refused", REACH_COPY.refused);
     }
+    // The route's 400 for a namespace: not canonical, or the role's own (it cannot tell which).
+    if (res.status === 400 && body.error?.details?.field === "namespaces")
+      return fail("bad_namespaces", REACH_COPY.bad_namespaces);
     // 402/403 (a plan cap), 400, 429, 5xx: the hub's own words, when it has some.
     const msg =
       typeof body.error?.message === "string"
@@ -163,7 +171,7 @@ export async function proposeReach(o: {
         : "";
     return fail(
       res.status === 429 ? "rate_limited" : "refused",
-      `${msg || REACH_COPY.refused} (HTTP ${res.status}) Nothing changed.`,
+      `${msg || "The hub refused the request."} (HTTP ${res.status}) Nothing changed.`,
     );
   } finally {
     clearTimeout(timer);
