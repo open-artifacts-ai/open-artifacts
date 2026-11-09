@@ -124,6 +124,15 @@ it("refuses an output dir that resolves outside the checkout", () => {
   expect(existsSync(join(bin, "args"))).toBe(false);
 });
 
+it("creates nothing through a symlinked test-results", () => {
+  const outside = join(root, "outside");
+  mkdirSync(outside);
+  symlinkSync(outside, join(dash, "test-results"));
+  const r = run(["pr-1660"]);
+  expect(r.status).toBe(73);
+  expect(existsSync(join(outside, "contrib-shots"))).toBe(false);
+});
+
 it("refuses a symlinked output dir", () => {
   const outside = join(root, "outside");
   mkdirSync(outside);
