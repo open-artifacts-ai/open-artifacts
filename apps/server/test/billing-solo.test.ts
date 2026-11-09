@@ -39,14 +39,14 @@ const plan = (r: Partial<StoredPlan>) =>
   effectivePlan(at(r), null, undefined, mid);
 
 describe("effectivePlan: solo", () => {
-  it("active, and past_due within grace, are the solo lock (trial eligible)", () => {
+  it("active, and past_due within grace, are the solo lock (only active is trial eligible)", () => {
     for (const p of [
       plan({}),
       plan({ status: "past_due", graceUntil: mid + DAY }),
     ]) {
       expect(p.lock).toEqual({ mode: "solo", tier: "solo", reason: "solo" });
       expect(p.readOnly).toBe(false);
-      expect(p.trialEligible).toBe(true);
+      expect(p.trialEligible).toBe(p.status === "active");
     }
     expect(plan({ trialEndsAt: mid - DAY }).trialEligible).toBe(false);
   });

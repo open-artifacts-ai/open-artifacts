@@ -7,6 +7,7 @@ import {
   linkedLiveNamespace,
   movedName,
   receiptText,
+  rosterText,
   unconfirmedText,
 } from "../src/copy.ts";
 
@@ -334,5 +335,83 @@ describe("linked namespaces (#1567)", () => {
       linkedLiveNamespace("docs", [row("docs", "a/b"), row("docs", "c/d")]),
     ).toBeUndefined();
     expect(linkedLiveNamespace("docs", [])).toBeUndefined();
+  });
+});
+
+describe("rosterText (#1860)", () => {
+  const NOW = Date.parse("2026-11-09T12:00:00.000Z");
+  const SINCE = "2026-11-05T10:00:00.000Z";
+  const a = (r: Record<string, unknown>) => ({
+    name: "alpha",
+    kind: "pi",
+    namespace: "ns",
+    live: true,
+    state: "live",
+    ...r,
+  });
+  const away = (name: string, kind = "pi") =>
+    a({ name, kind, live: false, state: "away", since: SINCE });
+  const text = (rows: Record<string, unknown>[]) =>
+    rosterText(rows as unknown as Parameters<typeof rosterText>[0], NOW);
+
+  it("keeps live, queued and chosen-name away rows; no count line at zero", () => {
+    expect(
+      text([
+        a({}),
+        a({ name: "beta", live: false, state: "queued" }),
+        away("gamma"),
+      ]),
+    ).toBe(
+      "- alpha (pi, ns)\n- beta (pi, ns) (queued)\n- gamma (pi, ns) (away since 2026-11-05 10:00 UTC)",
+    );
+  });
+
+  it("one collapsed away row says session", () => {
+    expect(text([a({}), away("pi-6")])).toBe(
+      "- alpha (pi, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
+    );
+  });
+
+  it("many collapsed away rows say sessions, across kinds", () => {
+    expect(
+      text([
+        away("claude-1262814", "claude-code"),
+        a({}),
+        away("omp-3", "omp"),
+        away("pi-6"),
+        away("agent"),
+        away("agent-4", "pi"),
+      ]),
+    ).toBe(
+      "- alpha (pi, ns)\n- agent-4 (pi, ns) (away since 2026-11-05 10:00 UTC)\n4 more away sessions with no chosen name (not listed, still reachable by name)",
+    );
+  });
+
+  it("never collapses a live or queued agent with a fallback name", () => {
+    expect(
+      text([
+        a({ name: "claude-1262814", kind: "claude-code" }),
+        a({ name: "pi-6", live: false, state: "queued" }),
+        a({ name: "agent", state: undefined, live: true }),
+      ]),
+    ).toBe(
+      "- claude-1262814 (claude-code, ns)\n- pi-6 (pi, ns) (queued)\n- agent (pi, ns)",
+    );
+  });
+
+  it("folds uppercase fallback names; one folded row alone says session", () => {
+    expect(text([away("PI-6"), a({ name: "x" })])).toBe(
+      "- x (pi, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
+    );
+    expect(text([away("Claude-12", "claude-code")])).toBe(
+      "1 away session with no chosen name (not listed, still reachable by name)",
+    );
+  });
+
+  it("only collapsed rows: just the count line; empty: the old message", () => {
+    expect(text([away("pi-1"), away("pi-2")])).toBe(
+      "2 away sessions with no chosen name (not listed, still reachable by name)",
+    );
+    expect(text([])).toBe("No agents in your namespace and linked ones.");
   });
 });

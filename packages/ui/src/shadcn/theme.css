@@ -154,12 +154,23 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
-/* The only base rule, kept in both entries: shadcn's components rely on it
-   for their border and outline colors. It sets colors only (no width, style,
-   margin or font), and never restyles body or headings, so pages without
-   preflight keep their look. */
+/* Shared defaults, kept in both entries. No layout, typography or heading
+   reset, so pages without preflight keep their look. */
 @layer base {
   * {
     @apply border-border outline-ring/50;
+  }
+
+  /* Action affordances. Base-layer defaults let explicit text, drag, resize
+     and progress cursor utilities win; disabled controls keep their cursor. */
+  :where(
+    button,
+    [role="button"],
+    [role="menuitem"],
+    [role="menuitemcheckbox"],
+    [role="menuitemradio"],
+    [role="option"]
+  ):not(:disabled):not([aria-disabled="true"]):not([data-disabled]) {
+    cursor: pointer;
   }
 }

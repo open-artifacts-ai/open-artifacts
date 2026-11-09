@@ -28,6 +28,7 @@ export type Command = (
   | { cmd: "namespace"; sub: "list" }
   | { cmd: "link"; sub: "add" | "rm"; dirs: [string, string] }
   | { cmd: "link"; sub: "list" }
+  | { cmd: "leads"; sub: "check"; name?: string }
   | { cmd: "version" }
 ) & {
   noColor: boolean;
@@ -49,11 +50,13 @@ const COMMANDS = new Set([
   "namespace",
   "link",
   "unlink",
+  "leads",
   "version",
 ]);
 const HARNESSES = ["claude", "opencode", "codex", "pi"];
 const GLOBAL_USAGE = `usage: ${BUS_CMD} global <add|rm> <dir>, or global list`;
 const LINK_USAGE = `usage: ${BUS_CMD} link <dir> <dir>, ${BUS_CMD} unlink <dir> <dir>, or link list`;
+const LEADS_USAGE = `usage: ${BUS_CMD} leads check [name]`;
 const NAMESPACE_USAGE = `usage: ${BUS_CMD} namespace approve [dir], namespace revoke <dir>, or namespace list`;
 /** Flags every command takes. */
 const COMMON = new Set(["no-color", "version", "home"]);
@@ -120,6 +123,11 @@ export function parse(argv: string[]): Command {
     if (rest[max] !== undefined)
       throw new Error(`unexpected argument: ${rest[max]}`);
   }
+  if (cmd === "leads") {
+    if (rest[0] !== "check") throw new Error(LEADS_USAGE);
+    if (rest[2] !== undefined)
+      throw new Error(`unexpected argument: ${rest[2]}`);
+  }
   if (cmd === "link" || cmd === "unlink") {
     const n = cmd === "link" && rest[0] === "list" ? 1 : 2;
     if (rest.length < n) throw new Error(LINK_USAGE);
@@ -127,7 +135,7 @@ export function parse(argv: string[]): Command {
       throw new Error(`unexpected argument: ${rest[n]}`);
   }
   const extra =
-    cmd === "namespace" || cmd === "link" || cmd === "unlink"
+    cmd === "namespace" || cmd === "link" || cmd === "unlink" || cmd === "leads"
       ? undefined
       : rest[takes];
   if (extra !== undefined) throw new Error(`unexpected argument: ${extra}`);
@@ -193,6 +201,10 @@ function route(cmd: string, values: Values, positionals: string[]) {
       if (sub === "approve")
         return { cmd, sub, dir: dir ?? ".", yes: values.yes };
       throw new Error(NAMESPACE_USAGE);
+    }
+    case "leads": {
+      const name = positionals[1];
+      return { cmd, sub: "check" as const, ...(name ? { name } : {}) };
     }
     case "link":
     case "unlink": {

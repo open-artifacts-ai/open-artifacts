@@ -9,6 +9,7 @@ export {
 } from "./client.ts";
 export {
   cleanStatusLabel,
+  collapsedAwayLine,
   deliveredText,
   displayKind,
   earlierStatusText,
@@ -24,9 +25,13 @@ export {
   movedName,
   neutralizeBody,
   oversizedText,
+  REACH_OLD_DAEMON,
+  reachNamespacesOf,
+  reachProposedText,
   receiptText,
   replyGoneText,
   rosterLine,
+  rosterText,
   STATUS_COPY,
   STATUS_STALE_MS,
   type StatusFields,

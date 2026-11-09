@@ -9,12 +9,14 @@ import {
   type ClientFrame,
   candidateName,
   decodeClientFrame,
+  droppedRefusedChars,
   encodeFrame,
   FALLBACK_BUS_NAME,
   type FormerName,
   frameId,
   HUB_MAILBOX_BYTES_CAP,
   hasCap,
+  isFallbackName,
   isId,
   LIMITS,
   LinkProofHashSchema,
@@ -1144,7 +1146,9 @@ function assignName(
   for (const base of new Set([asked, FALLBACK_BUS_NAME])) {
     if (free(base)) return { name: base, mint: null };
     // #1742: only the exact chosen name is ever taken back, never a suffix.
-    if (reclaim && base === asked) {
+    // #1480: and never one reached by dropping refused characters: `OA Manager!`
+    // is not `OA Manager`.
+    if (reclaim && base === asked && !droppedRefusedChars(proposed)) {
       const from = awayHolder(
         sql,
         namespace,
@@ -1196,13 +1200,7 @@ function awayHolder(
   // (Hermes proposes `hermes-<cwd>`), the hub's `agent`, Claude's
   // `claude-<digits>`. An unrelated new thread of that kind must not take
   // over its mail.
-  if (
-    lname === kind ||
-    lname.startsWith(`${kind}-`) ||
-    lname === FALLBACK_BUS_NAME ||
-    /^claude-\d+$/.test(lname)
-  )
-    return null;
+  if (isFallbackName(name, kind)) return null;
   const rows = all<{
     agentId: string;
     kind: string;
@@ -1290,6 +1288,12 @@ function awayHolder(
  * be able to see anything the old session had acked. Acked bodies never
  * move: they are deleted, the old row keeps none. Returns the moved msg_ids.
  * Bounded by MAILBOX_PENDING_CAP.
+ *
+ * #1816: the roles the old row held move to the newcomer too, so a restarted
+ * lead keeps its role. A role with a reach_grants row stays with the old row
+ * (vacant): holding it grants cross-namespace reach, which needs the member's
+ * confirmation (#1346), so it is re-pointed, never passed silently. Only
+ * roles in the reclaim's scope move (a global's any, else `namespace`'s).
  */
 function takeAwayName(
   sql: SqlStorage,
@@ -1304,6 +1308,17 @@ function takeAwayName(
     "delete from former_names where agent_id = ? and kind = 'away' and lname = ? and global = ? and (global = 1 or namespace = ?)",
     fromId,
     name.toLowerCase(),
+    global ? 1 : 0,
+    namespace,
+  );
+  sql.exec(
+    `update roles set agent_id = ? where org_id = ? and agent_id = ?
+       and (? = 1 or roles.namespace = ?)
+       and not exists (select 1 from reach_grants g
+                        where g.org_id = roles.org_id and g.role_ns = roles.namespace and g.lname = roles.lname)`,
+    toId,
+    OWNER_ORG_ID,
+    fromId,
     global ? 1 : 0,
     namespace,
   );
@@ -2643,19 +2658,31 @@ function resolveTarget(
     // names no namespace. Live first, then away. One hit resolves; hits in
     // two of them are ambiguous (the sender names `to_namespace`).
     if (linked.length > 0 && toNamespace === undefined) {
-      for (const look of [
-        visibleIn,
-        (ns: string) => awayAgent(sql, ns, lname, now),
-      ]) {
-        const found = new Map<string, Resolution>();
-        for (const ns of linked) {
-          const h = look(ns);
-          if (h) found.set(h.ok ? h.agent.id : h.reason, h);
+      const keyOf = (h: Resolution) => (h.ok ? h.agent.id : h.reason);
+      const lives = new Map<string, Resolution>();
+      const liveNs = new Set<string>();
+      for (const ns of linked) {
+        const h = visibleIn(ns);
+        if (h) {
+          lives.set(keyOf(h), h);
+          liveNs.add(ns);
         }
-        const only = [...found.values()];
-        if (only.length > 1) return refused("ambiguous");
-        if (only[0]) return only[0];
       }
+      const first = [...lives.values()];
+      if (first.length > 1) return refused("ambiguous");
+      const one1 = first[0];
+      // A live agent resolves alone. A vacant or away role (#1816) is one
+      // candidate among the away agents of the other linked namespaces.
+      if (one1 && one1.ok && one1.agent.live === 1) return one1;
+      const found = new Map<string, Resolution>(lives);
+      for (const ns of linked) {
+        if (liveNs.has(ns)) continue;
+        const h = awayAgent(sql, ns, lname, now);
+        if (h) found.set(keyOf(h), h);
+      }
+      const only = [...found.values()];
+      if (only.length > 1) return refused("ambiguous");
+      if (only[0]) return only[0];
     }
     // Other namespaces are invisible and unreachable (spec goal 5, scenario
     // 6): a name live only elsewhere is unknown_agent, so no probe can tell

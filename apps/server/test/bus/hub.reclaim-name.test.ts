@@ -702,4 +702,79 @@ describe("a restarted session takes back its own name (#1742)", () => {
     }
     throw new Error("ack never settled");
   });
+
+  it("#1480: a name with parentheses is cleaned; a restart gets a suffix, never the old address", async () => {
+    const s = await scene();
+    const raw = "OA Owner (2)";
+    const ref = uniq("paren");
+    expect(await reg(s.d, ref, raw, s.n)).toBe("OA Owner 2");
+    await close(s.d, ref);
+    expect(await awayRows("OA Owner 2")).toEqual([ref]);
+    expect(await reg(s.d, uniq("new"), raw, s.n)).toBe("OA Owner 2-2");
+    expect(await awayRows("OA Owner 2")).toEqual([ref]);
+    shut(s);
+  });
+
+  it("#1480: OA Manager! never takes the away OA Manager or its mail, by agent_up", async () => {
+    const s = await scene();
+    const real = uniq("OA Manager");
+    const old = uniq("mgr");
+    await reg(s.d, old, real, s.n);
+    await close(s.d, old);
+    await send(s.snd, "snd", real, "for the manager");
+    const ref = uniq("bang");
+    expect(await reg(s.d, ref, `${real}!`, s.n)).toBe(`${real}-2`);
+    expect(await awayRows(real)).toEqual([old]);
+    expect(await pendingOf(ref)).toEqual([]);
+    expect((await pendingOf(old)).length).toBe(1);
+    shut(s);
+  });
+
+  it("#1480: OA Manager! never takes the away OA Manager or its mail, by rename", async () => {
+    const s = await scene();
+    const real = uniq("OA Manager");
+    const old = uniq("mgr");
+    await reg(s.d, old, real, s.n);
+    await close(s.d, old);
+    await send(s.snd, "snd", real, "for the manager");
+    const ref = uniq("bang");
+    await reg(s.d, ref, uniq("Other"), s.n);
+    expect((await rename(s.d, ref, `${real}!`)).bus_name).toBe(`${real}-2`);
+    expect(await awayRows(real)).toEqual([old]);
+    expect(await pendingOf(ref)).toEqual([]);
+    expect((await pendingOf(old)).length).toBe(1);
+    shut(s);
+  });
+
+  it("#1480: a trailing space or doubled spaces still reclaim (#1742 unchanged)", async () => {
+    const s = await scene();
+    const name = uniq("Two Words");
+    const old = uniq("old2");
+    await reg(s.d, old, name, s.n);
+    await close(s.d, old);
+    expect(await reg(s.d, uniq("sp"), `${name} `, s.n)).toBe(name);
+    const name2 = uniq("Two Words");
+    const old2 = uniq("old3");
+    await reg(s.d, old2, name2, s.n);
+    await close(s.d, old2);
+    const dbl = name2.replace(" ", "  ");
+    expect(await reg(s.d, uniq("dbl"), dbl, s.n)).toBe(name2);
+    shut(s);
+  });
+
+  it("#1480: rename to a name with refused characters: cleaned once, the same raw name again is a no-op", async () => {
+    const s = await scene();
+    const ref = uniq("paren");
+    await reg(s.d, ref, uniq("Plain"), s.n);
+    const raw = "Tidy (3)";
+    const first = await rename(s.d, ref, raw);
+    expect(first.bus_name).toBe("Tidy 3");
+    const again = await rename(s.d, ref, raw);
+    expect(again.bus_name).toBe("Tidy 3");
+    // the no-op wrote no former name for "Tidy 3" or "Tidy 3-2"
+    expect(
+      await sqlOf("select 1 from agents where lower(name) = 'tidy 3-2'"),
+    ).toEqual([]);
+    shut(s);
+  });
 });

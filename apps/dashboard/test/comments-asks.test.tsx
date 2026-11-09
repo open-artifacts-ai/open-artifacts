@@ -21,6 +21,7 @@ import {
   vi,
 } from "vitest";
 import {
+  actor,
   mentionedKeys,
   mentionQuery,
   nextAskFor,
@@ -231,6 +232,75 @@ describe("asks on the comments column", () => {
     ).toHaveAttribute("aria-pressed", "false");
   });
 
+  it("shows letters on all options unless every id equals its label", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          options: [
+            { id: "wide", label: "Wide layout" },
+            { id: "compact", label: "Compact list" },
+          ],
+          recommended: undefined,
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    const keys = [...c.querySelectorAll("[data-option-key]")].map(
+      (k) => k.textContent,
+    );
+    expect(keys).toEqual(["A", "B"]);
+  });
+
+  it("shows no letters when every id equals its label", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          options: [
+            { id: "yes", label: " Yes " },
+            { id: "no", label: "No" },
+          ],
+          recommended: undefined,
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(c.querySelectorAll("[data-option-key]")).toHaveLength(0);
+  });
+
+  it("omits the letter from the decided line when it equals the label", async () => {
+    serveThreads(() => [
+      askThread(
+        { status: "resolved" },
+        {
+          options: [
+            { id: "yes", label: "Yes" },
+            { id: "no", label: "No" },
+          ],
+          recommended: undefined,
+          closed: true,
+          answer: {
+            optionId: "yes",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Show resolved/ }),
+    );
+    const line = await within(c).findByRole("button", { name: /Show$/ });
+    expect(line.textContent).toMatch(/^Which layout\? Yes · you, /);
+  });
+
   it("drops the amber once you have picked", async () => {
     serveThreads(() => [
       askThread(
@@ -419,7 +489,7 @@ describe("asks on the comments column", () => {
     );
     const line = await within(c).findByRole("button", { name: /Show$/ });
     // The triangle is decoration: the name ends in "Show", not the glyph.
-    expect(line).toHaveTextContent(/Which layout\? Side by side · you, .+/);
+    expect(line).toHaveTextContent(/Which layout\? B, Side by side · you, .+/);
     // versionDate, not a 24-hour HH:MM.
     expect(line.textContent).not.toMatch(/\d\d:\d\d/);
     expect(line).toHaveAttribute("aria-expanded", "false");
@@ -500,6 +570,35 @@ describe("asks on the comments column", () => {
 });
 
 describe("@mentions in the composer", () => {
+  it("puts the caret right after a picked name at once (#1795)", async () => {
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, () =>
+        HttpResponse.json([
+          { key: "agent:design", name: "OA Design", online: true },
+        ]),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = (await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
+    })) as HTMLTextAreaElement;
+    fireEvent.focus(box);
+    // The reader typed "@OA D" in front of words already in the box.
+    fireEvent.change(box, {
+      target: { value: "@OA D tail", selectionStart: 5, selectionEnd: 5 },
+    });
+    const menu = await within(c).findByRole("listbox", {
+      name: "Agents on this page",
+    });
+    fireEvent.mouseDown(
+      within(menu).getByRole("option", { name: /OA Design/ }),
+    );
+    expect(box).toHaveValue("@OA Design  tail");
+    // Not a frame later: keys typed right after the pick must land here.
+    expect(box.selectionStart).toBe(11);
+  });
+
   it("opens a picker on @, sends the picked key, and shows delivery in plain words", async () => {
     server.use(
       http.get(`*${R.artifactAgents(OWNED)}`, () =>
@@ -535,6 +634,42 @@ describe("@mentions in the composer", () => {
       body: "@OA Design why B?",
       mentions: [{ key: "agent:design" }],
     });
+  });
+
+  it("renders posted @names as chips, as text only", async () => {
+    const t = askThread();
+    const root = t.comments[0] as Record<string, unknown>;
+    delete root.ask;
+    root.body = "hi @C++ Bot and @OA Design. @OA Designer <b>x</b> @Bobby";
+    root.mentions = [
+      { key: "agent:c", name: "C++ Bot", delivery: "seen" },
+      { key: "agent:b", name: "OA Design", delivery: "seen" },
+    ];
+    serveThreads(() => [t]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText(/hi/);
+    const chips = [...c.querySelectorAll("[data-mention-chip]")].map(
+      (e) => e.textContent,
+    );
+    expect(chips).toEqual(["@C++ Bot", "@OA Design"]);
+    const p = c.querySelector("[data-mention-chip]")?.parentElement;
+    expect(p?.textContent).toBe(
+      "hi @C++ Bot and @OA Design. @OA Designer <b>x</b> @Bobby",
+    );
+    expect(p?.querySelector("b")).toBeNull();
+  });
+
+  it("renders a body without mentions as plain text", async () => {
+    const t = askThread();
+    const root = t.comments[0] as Record<string, unknown>;
+    delete root.ask;
+    root.body = "no @OA Design chip here";
+    serveThreads(() => [t]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("no @OA Design chip here");
+    expect(c.querySelector("[data-mention-chip]")).toBeNull();
   });
 
   it("renders each mention's delivery", async () => {
@@ -894,6 +1029,47 @@ describe("agent list loads on composer focus", () => {
     expect(n.count).toBe(1);
   });
 
+  it("hints at @ in the placeholder for those who can mention", async () => {
+    serveThreads(() => [askThread({}, {})]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await wholePage(c)).toHaveAttribute(
+      "placeholder",
+      "Add a comment. Type @ to mention an agent.",
+    );
+    fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
+    expect(
+      await within(c).findByRole("textbox", { name: "Reply" }),
+    ).toHaveAttribute("placeholder", "Reply. Type @ to mention an agent.");
+  });
+
+  it("keeps the plain placeholder for a viewer", async () => {
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({
+          ...fixtures.artifacts.find((a) => a.id === OWNED),
+          access: "viewer",
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: true,
+            comment: true,
+          },
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await wholePage(c)).toHaveAttribute(
+      "placeholder",
+      "Comment on the whole page",
+    );
+  });
+
   it("makes no call for a viewer who can't mention", async () => {
     const n = agentCalls();
     server.use(
@@ -1024,6 +1200,16 @@ describe("round 3 copy", () => {
     expect(
       within(c).getByText("Only the owner and editors can wake agents."),
     ).toBeInTheDocument();
+  });
+});
+
+describe("actor (#1789)", () => {
+  it("never says you for the owner's agent, and tags agents", () => {
+    expect(actor({ kind: "agent", name: "Cursor", me: true }, "You")).toBe(
+      "Cursor (agent)",
+    );
+    expect(actor({ kind: "user", name: "Leo", me: true }, "You")).toBe("You");
+    expect(actor({ kind: "user", name: "Ada", me: false }, "You")).toBe("Ada");
   });
 });
 
@@ -1250,5 +1436,181 @@ describe("nextAskFor", () => {
     const api = mkApi([th("a", false)], [th("o")]);
     expect(nextAskFor(api, "a")).toBe("o");
     expect(nextAskFor(api, null)).toBe("o");
+  });
+});
+
+describe("Ask a question (#1794)", () => {
+  const agentAsk = (askOver: object = {}) => {
+    const t = askThread({}, askOver);
+    (t.comments[0] as { author: unknown }).author = {
+      kind: "agent",
+      id: "agent:p",
+      name: "OA Product",
+      for: "Leo",
+      me: false,
+    };
+    return t;
+  };
+
+  it("sends a reply to the agent that asked, with toAsker", async () => {
+    const t = agentAsk();
+    serveThreads(() => [t]);
+    let sent: unknown = null;
+    server.use(
+      http.post(
+        "*/api/v1/artifacts/:id/comments/:tid/replies",
+        async ({ request }) => {
+          sent = await request.json();
+          return HttpResponse.json({
+            id: "c-q",
+            body: "What breaks with A?",
+            author: { kind: "user", id: "me", name: "Me", me: true },
+            createdAt: "2026-11-05T11:00:00Z",
+            editedAt: null,
+            can: { edit: true, delete: true },
+            mentions: [
+              { key: "agent:p", name: "OA Product", delivery: "delivered" },
+            ],
+          });
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Ask a question" }),
+    );
+    expect(
+      await within(c).findByText("To OA Product, the agent that asked"),
+    ).toBeInTheDocument();
+    const box = within(c).getByRole("textbox", { name: "Question" });
+    await waitFor(() => expect(box).toHaveFocus());
+    fireEvent.change(box, { target: { value: "What breaks with A?" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(sent).toEqual({ body: "What breaks with A?", toAsker: true }),
+    );
+    await waitFor(() =>
+      expect(
+        within(c).queryByRole("textbox", { name: "Question" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      within(c).getByRole("textbox", { name: "Reply" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Cancel goes back to the plain reply box", async () => {
+    serveThreads(() => [agentAsk()]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Ask a question" }),
+    );
+    fireEvent.click(await within(c).findByRole("button", { name: "Cancel" }));
+    expect(
+      await within(c).findByRole("textbox", { name: "Reply" }),
+    ).toBeInTheDocument();
+    expect(
+      within(c).queryByText("To OA Product, the agent that asked"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the draft when the ask is answered meanwhile, and says why it can't send", async () => {
+    let t = agentAsk();
+    serveThreads(() => [t]);
+    server.use(
+      http.post("*/api/v1/artifacts/:id/comments/:tid/replies", () =>
+        HttpResponse.json(
+          { error: { code: "not_an_ask", message: "x" } },
+          { status: 400 },
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Ask a question" }),
+    );
+    const box = await within(c).findByRole("textbox", { name: "Question" });
+    fireEvent.change(box, { target: { value: "Why B?" } });
+    t = agentAsk({ closed: true });
+    await act(async () => {
+      events.emitComments(OWNED, 2);
+    });
+    await waitFor(() =>
+      expect(
+        within(c).queryByRole("button", { name: "Ask a question" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(within(c).getByRole("textbox", { name: "Question" })).toHaveValue(
+      "Why B?",
+    );
+    fireEvent.click(within(c).getByRole("button", { name: "Send" }));
+    expect(
+      await within(c).findByText(
+        "That ask is no longer open to questions. Reply instead.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("leaving the thread drops the question box", async () => {
+    const other = askThread({ id: "t-2" }, {});
+    (other.comments[0] as { id: string }).id = "c-2";
+    delete (other.comments[0] as { ask?: unknown }).ask;
+    (other.comments[0] as { body: string }).body = "Other thread";
+    serveThreads(() => [agentAsk(), other]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Ask a question" }),
+    );
+    await within(c).findByRole("textbox", { name: "Question" });
+    const second = document.querySelector("[data-thread='t-2']") as HTMLElement;
+    fireEvent.click(within(second).getAllByRole("button")[0]!);
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-thread='t-2'][data-active]"),
+      ).toBeTruthy(),
+    );
+    const first = document.querySelector(
+      "[data-thread='t-ask']",
+    ) as HTMLElement;
+    fireEvent.click(within(first).getAllByRole("button")[0]!);
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-thread='t-ask'][data-active]"),
+      ).toBeTruthy(),
+    );
+    expect(
+      within(c).queryByRole("textbox", { name: "Question" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(first).getByRole("textbox", { name: "Reply" }),
+    ).toBeInTheDocument();
+  });
+
+  it("is not offered once picked, when closed, or when a person asked", async () => {
+    const picked = agentAsk({
+      answer: {
+        optionId: "a",
+        by: { kind: "user", id: "me", name: "Me", me: true },
+        at: "2026-11-05T11:00:00Z",
+      },
+    });
+    picked.id = "t-1";
+    const closed = agentAsk({ closed: true });
+    closed.id = "t-2";
+    (closed.comments[0] as { id: string }).id = "c-2";
+    const person = askThread({ id: "t-3" });
+    (person.comments[0] as { id: string }).id = "c-3";
+    serveThreads(() => [picked, closed, person]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText("Which layout?");
+    await wait(50);
+    expect(
+      within(c).queryByRole("button", { name: "Ask a question" }),
+    ).not.toBeInTheDocument();
   });
 });

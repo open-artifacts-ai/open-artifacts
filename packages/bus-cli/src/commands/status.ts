@@ -11,6 +11,7 @@ import {
 import { ago, forHowLong, type HubLink } from "../copy.ts";
 import { readMachine } from "../machine.ts";
 import { claudeConfigFile, proofState } from "../steps/claude-proof.ts";
+import { openclawPluginDir, openclawPluginState } from "../steps/openclaw.ts";
 import { habitsLine } from "./habits.ts";
 import { rosters } from "./install.ts";
 
@@ -192,6 +193,13 @@ export async function status(ctx: Ctx): Promise<number> {
   if (habits) say(ctx, habits);
   const proof = proofLine(ctx, m.hub, st.link === true);
   if (proof) say(ctx, proof);
+  // Static text, only where the plugin is installed: nothing in OpenClaw's config is read.
+  const ocState = openclawPluginState(
+    openclawPluginDir(ctx.userHome, ctx.env),
+    undefined,
+  );
+  if (ocState === "stale" || ocState === "current")
+    say(ctx, c.openclawDmNote());
   // Before the hub check: a refused file explains a missing config either way.
   if (st.config_files?.length) say(ctx, configFileLines(ctx, st.config_files));
   if (st.hub !== "connected") {

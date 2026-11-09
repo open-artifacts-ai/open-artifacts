@@ -211,7 +211,7 @@ describe("hub socket: hello and agents", () => {
     const a = ns();
     d.send(up("u1", "ses_r", "openbus", a));
     expect((await waitFor(d, "agent_ok")).bus_name).toBe("agent");
-    d.send(up("u2", "ses_s", "a@b", a));
+    d.send(up("u2", "ses_s", "@@", a));
     expect((await waitFor(d, "agent_ok")).bus_name).toBe("agent-2");
     d.close();
   });

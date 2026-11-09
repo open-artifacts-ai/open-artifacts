@@ -339,3 +339,20 @@ only for a directory the user approved for exactly that namespace
 directory identity); otherwise the derived namespace is used and the file is
 listed as `pending`. `global` grants nothing; global comes only from the user's
 allowlist under the client's home folder.
+
+## Reach proposals (`ADAPTER_CAPS.reach`, #1346)
+
+Not a hub wire frame, so no `BUS_CAPS` entry and no version change. An adapter
+that listed the `reach` cap sends the daemon `propose_reach {namespaces}`
+(1..`REACH_PROPOSAL_MAX` canonical namespaces) and gets `reach_proposed
+{confirm_url, expires_at}` or `error`. The daemon posts
+`{nativeRef, namespaces}` to `BUS_ROUTES.reachProposals` on the hub's origin
+with the machine token (`redirect: "error"`, bounded in time), where
+`nativeRef` is the calling connection's own agent ref: the frame, the tool
+and the adapter name no session. It only records a proposal; the member
+confirms the link in a browser. Errors: `unauthorized` (401), `unsupported`
+(404, a hub without the route), the route's 409 `details.reason` (`no_role`,
+`ambiguous`, `rate_limited`, `proposal_limit`, `no_bus`), `hub_unavailable`
+(no answer in time), `bad_reply`, and `refused` (a plan cap or anything else,
+with the hub's words and the HTTP status). An older daemon answers the frame
+`bad_frame`.

@@ -9,6 +9,7 @@ import {
   LIMITS,
   METHOD_CAPABILITY,
   PageSchema,
+  PROTOCOL_COMMENT_DRAFT,
   PROTOCOL_PIN_CHANGED,
   parseArtifactMessage,
   R,
@@ -619,6 +620,8 @@ export function createBridge(opts: BridgeOptions) {
     setComments(
       threads: Extract<ShellToArtifact, { type: "comments.set" }>["threads"],
       ghost?: { x: number; y: number; page?: number },
+      /** The quote being written about, kept highlighted (#1834). */
+      draft?: Extract<ShellToArtifact, { type: "comments.set" }>["draft"],
     ) {
       reply({
         oa: 1,
@@ -631,6 +634,8 @@ export function createBridge(opts: BridgeOptions) {
             ? threads
             : threads.map(({ changed: _, ...t }) => t),
         ...(ghost ? { ghost } : {}),
+        // Same rule as `changed`: only for a runtime that knows the field.
+        ...(draft && frameProtocol >= PROTOCOL_COMMENT_DRAFT ? { draft } : {}),
       });
     },
     /** #1732: the reader tapped "Comment on selection"; the frame runs its own Comment path. */

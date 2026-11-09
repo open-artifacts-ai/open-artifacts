@@ -1451,18 +1451,13 @@ describe("comments: review round 1", () => {
     ).toBeInTheDocument();
   });
 
-  it("#1529: relative times carry the full date, the agent reads 'via', and the column count follows the version", async () => {
-    const t = (id: string, v: number, agent?: string) => ({
+  it("#1529/#1789: relative times carry the full date, an agent author reads as the agent, and the column count follows the version", async () => {
+    const t = (id: string, v: number, author: object) => ({
       ...threadAt(id, "text", v, `body ${id}`),
       comments: [
         {
           ...threadAt(id, "text", v, `body ${id}`).comments[0],
-          author: {
-            kind: "user",
-            name: "Sam",
-            me: false,
-            ...(agent ? { agent } : {}),
-          },
+          author,
         },
       ],
     });
@@ -1470,11 +1465,17 @@ describe("comments: review round 1", () => {
       http.get("*/api/v1/artifacts/:id/comments", () =>
         HttpResponse.json({
           threads: [
-            t("a", 1, "Claude Code"),
-            t("b", 1, "via Cursor"),
-            t("c", 2),
+            t("a", 1, {
+              kind: "agent",
+              name: "Claude Code",
+              for: "Sam",
+              me: false,
+            }),
+            t("b", 1, { kind: "agent", name: "Cursor", me: false }),
+            t("c", 1, { kind: "user", name: "Sam", me: false }),
+            t("d", 2, { kind: "user", name: "Sam", me: false }),
           ],
-          open: 3,
+          open: 4,
           truncated: false,
         }),
       ),
@@ -1482,33 +1483,42 @@ describe("comments: review round 1", () => {
     mount(viewerPath(OWNED, 1));
     const c = await col();
     await within(c).findByText("body a");
-    expect(within(c).getByText("via Claude Code")).toBeInTheDocument();
-    expect(within(c).getByText("via Cursor")).toBeInTheDocument();
-    expect(within(c).queryByText("via via Cursor")).toBeNull();
-    // Two threads were made on version 1; the artifact has three. The toolbar badge follows the column.
-    expect(within(c).getByText("2 open")).toBeInTheDocument();
+    const rowOf = (id: string) =>
+      within(c).getByText(`body ${id}`).closest("[data-thread]") as HTMLElement;
+    // Agent: bot icon (not initials), name, "agent" tag, muted "for <person>"; no "via".
+    const row = rowOf("a");
+    expect(row.querySelector('[data-avatar="agent"] svg')).not.toBeNull();
+    expect(row.querySelector("[data-avatar]")?.textContent).toBe("");
+    expect(within(row).getByText("Claude Code")).toBeInTheDocument();
+    expect(within(row).getByText("agent")).toBeInTheDocument();
+    const forEl = within(row).getByText("for Sam");
+    expect(forEl.className).toMatch(/text-muted-foreground/);
+    expect(within(c).queryByText(/^via /)).toBeNull();
+    // No "for" without a person.
+    expect(within(rowOf("b")).queryByText(/^for /)).toBeNull();
+    expect(within(rowOf("b")).getByText("agent")).toBeInTheDocument();
+    // A user is unchanged: initials avatar, no tag.
+    const user = rowOf("c");
+    expect(user.querySelector("[data-avatar]")?.textContent).toBe("SA");
+    expect(user.querySelector("[data-agent-tag]")).toBeNull();
+    // Three threads were made on version 1; the artifact has four. The toolbar badge follows the column.
+    expect(within(c).getByText("3 open")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Comments, 2 open/ }),
+      screen.getByRole("button", { name: /Comments, 3 open/ }),
     ).toBeInTheDocument();
-    const row = within(c)
-      .getByText("body a")
-      .closest("[data-thread]") as HTMLElement;
     const when = row.querySelector("span[title]") as HTMLElement;
     expect(when.getAttribute("title")).toMatch(/^November 5(, 2026)? at \d/);
     expect(when.textContent).not.toBe(when.getAttribute("title"));
-    // The author line never wraps: the name and "via" truncate, the time stays put (jsdom has no layout).
+    // The author line never wraps: the name truncates, the time stays put (jsdom has no layout).
     const line = when.parentElement as HTMLElement;
     expect(line.className).not.toMatch(/flex-wrap/);
     expect(when.className).toMatch(/whitespace-nowrap/);
     expect(when.className).toMatch(/shrink-0/);
     expect(line.querySelector("b")?.className).toMatch(/truncate/);
-    // "via <agent>" sits on the name's line, small and muted.
-    const via = within(c).getByText("via Claude Code");
-    expect(line.contains(via)).toBe(true);
-    expect(via.className).toMatch(/text-muted-foreground/);
-    expect(via.className).toMatch(/truncate/);
-    // An initials avatar leads the name.
-    expect(row.querySelector("[data-avatar]")).not.toBeNull();
+    expect(forEl.className).toMatch(/truncate/);
+    // #1789 (Design): "for <person>" is its own line under the name row.
+    expect(line.contains(forEl)).toBe(false);
+    expect(line.parentElement?.contains(forEl)).toBe(true);
   });
 
   const art = (over: object) =>
@@ -1697,6 +1707,78 @@ describe("comments: capped members", () => {
     expect(
       await within(c).findByText("That comment is gone."),
     ).toBeInTheDocument();
+  });
+});
+
+describe("comments: the quote stays highlighted while writing (#1834)", () => {
+  const quote = (exact: string) => ({
+    kind: "text" as const,
+    exact,
+    prefix: "",
+    suffix: "",
+  });
+  /** The third argument of the last comments.set: the draft quote. */
+  const sentQuote = () =>
+    setComments.mock.calls.at(-1)?.[2] as { exact: string } | undefined;
+
+  it("sends the quote while the composer is open, and drops it on cancel", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    await screen.findByRole("textbox", { name: "Add a comment" });
+    expect(sentQuote()).toMatchObject({ exact: "Landing" });
+    fireEvent.click(within(c).getByRole("button", { name: "Cancel" }));
+    await wait(30);
+    expect(sentQuote()).toBeUndefined();
+  });
+
+  it("keeps it until the posted thread arrives, then the thread paints itself", async () => {
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    fireEvent.change(box, { target: { value: "Tighten this" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // The draft is closed, but the quote is still sent: no frame without a
+    // highlight while the list refetches.
+    const afterPost = setComments.mock.calls
+      .slice(-3)
+      .map((call) => call[2] as { exact: string } | undefined)
+      .filter(Boolean);
+    expect(afterPost.length).toBeGreaterThan(0);
+    // Once the list carries the new thread, the held quote goes.
+    await waitFor(() => expect(sentQuote()).toBeUndefined());
+    const lastThreads = setComments.mock.calls.at(-1)?.[0] as {
+      id: string;
+    }[];
+    expect(lastThreads.some((t) => t.id)).toBe(true);
+  });
+  it("drops the held quote when the list never carries it (#1850)", async () => {
+    // A server that normalises the quote, or a refetch that misses the thread:
+    // the draft highlight must not stay on for good.
+    const posts = calls("POST");
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    fireEvent.change(box, { target: { value: "Tighten this" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // Held for a moment (the list is still empty)...
+    expect(sentQuote()).toMatchObject({ exact: "Landing" });
+    // ...and gone once the hold expires.
+    await wait(1700);
+    expect(sentQuote()).toBeUndefined();
   });
 });
 

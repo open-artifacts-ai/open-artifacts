@@ -460,6 +460,9 @@ importers:
       '@oa/bus-adapter-mcp-json':
         specifier: workspace:*
         version: link:../bus-adapter-mcp-json
+      '@oa/bus-adapter-openclaw':
+        specifier: workspace:*
+        version: link:../bus-adapter-openclaw
       '@oa/bus-adapter-opencode':
         specifier: workspace:*
         version: link:../bus-adapter-opencode

@@ -728,13 +728,28 @@ describe("a role whose holder is away (#1349)", () => {
     d.close();
   });
 
-  it("a newcomer that reclaims the away name takes the queued mail; the role is vacant after", async () => {
+  it("a newcomer that reclaims the away name takes the queued mail and the plain role (#1816)", async () => {
     const { d, n, alice } = await awayWorld();
     const r = await send(d, "s", "lead");
     expect(r.queued).toBe("away");
     expect(await reg(d, "x", alice, n)).toBe(alice);
     expect((await delivered(d, r.msg_id)).to_ref).toBe("x");
-    // The role still points at the old row, whose reservation is released.
+    // A plain role follows the name: the next message reaches the newcomer.
+    const r2 = await send(d, "s", "lead");
+    expect(r2).toMatchObject({ state: "pending", to_name: alice });
+    expect((await delivered(d, r2.msg_id)).to_ref).toBe("x");
+    d.close();
+  });
+
+  it("a role with reach is not taken over by the newcomer: role_vacant after (#1816)", async () => {
+    const { uid, d, n, alice } = await awayWorld();
+    expect((await (await hubOf(uid)).putReach(n, "lead", ns("rt"))).ok).toBe(
+      true,
+    );
+    const r = await send(d, "s", "lead");
+    expect(r.queued).toBe("away");
+    expect(await reg(d, "x", alice, n)).toBe(alice);
+    expect((await delivered(d, r.msg_id)).to_ref).toBe("x");
     expect(await send(d, "s", "lead")).toMatchObject({
       state: "refused",
       reason: "role_vacant",

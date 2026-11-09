@@ -56,6 +56,14 @@ describe("register", () => {
     ]);
   });
 
+  it("does not offer propose_reach (#1346): no reach cap here, and the manifest does not name it", () => {
+    expect(TOOL_NAMES).not.toContain("oabus_propose_reach");
+    const manifest = JSON.parse(
+      readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
+    );
+    expect(manifest.contracts.tools).not.toContain("oabus_propose_reach");
+  });
+
   it("declares every tool in the manifest: OpenClaw drops the whole registration otherwise", () => {
     const manifest = JSON.parse(
       readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),

@@ -8,6 +8,7 @@ import {
   LinkProofHashSchema,
   MachineLabelSchema,
   MsgIdSchema,
+  REACH_PROPOSAL_MAX,
   ReceiptReasonSchema,
   RefusalReasonSchema,
   StatusLabelSchema,
@@ -83,7 +84,17 @@ export const ADAPTER_CAPS = {
    * daemon without it answers them with a plain "update" error instead.
    */
   follow: "follow",
+  /**
+   * `reach` (#1346): the adapter may send `propose_reach`. The daemon lists
+   * `reach` in `welcome.caps` only for an adapter that listed it. The adapter
+   * tool is offered either way: a daemon without it answers with a plain
+   * "update" error. The request goes to the hub over HTTP, so there is no
+   * hub cap: a hub without the route answers 404.
+   */
+  reach: "reach",
 } as const;
+
+export { REACH_PROPOSAL_MAX };
 
 export const Hello = z.object({
   ...base,
@@ -239,6 +250,17 @@ export const Following = z.object({
   type: z.literal("following"),
 });
 /**
+ * Ask that the role this agent holds reach more namespaces (#1346). The agent
+ * is the connection's attested one: the frame names no session, role or
+ * address. Answered by `reach_proposed`, or `error`.
+ */
+export const ProposeReach = z.object({
+  ...base,
+  ...optIn,
+  type: z.literal("propose_reach"),
+  namespaces: z.array(WireNamespaceSchema).min(1).max(REACH_PROPOSAL_MAX),
+});
+/**
  * A local CLI asking the daemon how it is (`oa-bus status`, `install`). No
  * hello: the socket is the user's own (0600). `cwd` picks the namespace.
  */
@@ -278,6 +300,7 @@ export const AdapterFrame = z.discriminatedUnion("type", [
   Follow,
   Unfollow,
   Following,
+  ProposeReach,
 ]);
 export type AdapterFrame = z.infer<typeof AdapterFrame>;
 
@@ -388,6 +411,14 @@ export const Follows = z.object({
   ...base,
   type: z.literal("follows"),
   follows: z.array(FollowEntry),
+  ...late,
+});
+/** The reply to `propose_reach`: the one-time link for the member, and when it expires. */
+export const ReachProposed = z.object({
+  ...base,
+  type: z.literal("reach_proposed"),
+  confirm_url: z.string(),
+  expires_at: z.string(),
   ...late,
 });
 export const Body = z.object({
@@ -503,5 +534,6 @@ export const DaemonFrame = z.discriminatedUnion("type", [
   Followed,
   Unfollowed,
   Follows,
+  ReachProposed,
 ]);
 export type DaemonFrame = z.infer<typeof DaemonFrame>;

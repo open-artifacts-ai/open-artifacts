@@ -120,21 +120,7 @@ def run(name, args, link):
         r = link.request({"type": "list"})
         if r["type"] != "roster":
             _failed(r)
-        agents = r.get("agents", [])
-        if not agents:
-            return "No agents in your namespace and linked ones."
-        now = int(time.time() * 1000)
-        return "\n".join(
-            copy.roster_line(
-                {
-                    **a,
-                    "queued": (a.get("state") or ("live" if a.get("live") else "queued")) == "queued",
-                    "away": str(a.get("since", "")) if a.get("state") == "away" else None,
-                },
-                now,
-            )
-            for a in agents
-        )
+        return copy.roster_text(r.get("agents", []), int(time.time() * 1000))
     if name == "oabus_send_message":
         to = str(args.get("to") or "")
         body = str(args.get("text") or "")
