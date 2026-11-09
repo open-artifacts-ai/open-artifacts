@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   BusNameSchema,
   candidateName,
+  droppedRefusedChars,
   isReservedBusName,
   suffixName,
 } from "../src/names.ts";
@@ -215,5 +216,25 @@ describe("reserved bus names", () => {
       expect(candidateName(once), x).toBe(once);
       expect(isReservedBusName(once), x).toBe(false);
     }
+  });
+  it("droppedRefusedChars: only a name kept by dropping refused characters (#1480)", () => {
+    for (const x of [
+      "OA Manager!",
+      "OA Owner (2)",
+      "a@b.com",
+      "Owner \u{1F680}",
+    ])
+      expect(droppedRefusedChars(x), x).toBe(true);
+    for (const x of [
+      "Lead ",
+      "Two  Words",
+      "lead.",
+      "Own\u0007er",
+      "x".repeat(80),
+      "OA Owner",
+      "()",
+      "caf\u00e9",
+    ])
+      expect(droppedRefusedChars(x), x).toBe(false);
   });
 });

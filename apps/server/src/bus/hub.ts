@@ -9,6 +9,7 @@ import {
   type ClientFrame,
   candidateName,
   decodeClientFrame,
+  droppedRefusedChars,
   encodeFrame,
   FALLBACK_BUS_NAME,
   type FormerName,
@@ -1082,7 +1083,9 @@ function assignName(
   for (const base of new Set([asked, FALLBACK_BUS_NAME])) {
     if (free(base)) return { name: base, mint: null };
     // #1742: only the exact chosen name is ever taken back, never a suffix.
-    if (reclaim && base === asked) {
+    // #1480: and never one reached by dropping refused characters: `OA Manager!`
+    // is not `OA Manager`.
+    if (reclaim && base === asked && !droppedRefusedChars(proposed)) {
       const from = awayHolder(
         sql,
         namespace,

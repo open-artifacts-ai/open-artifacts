@@ -89,3 +89,23 @@ export function candidateName(proposed: string): string {
     .replace(/[ .]+$/, "");
   return BusNameSchema.safeParse(cleaned).success ? cleaned : FALLBACK_BUS_NAME;
 }
+
+/**
+ * True when `candidateName` kept a name only by dropping characters NAME_RE
+ * refuses (#1480): the old cleaning alone (control chars, spaces, trim, cap,
+ * trailing space or dot) would not give the same name. Two raw names that
+ * clean to one name this way are different names, so neither may take the
+ * other's away reservation or queued mail. A fallback is never "dropped".
+ */
+export function droppedRefusedChars(proposed: string): boolean {
+  const out = candidateName(proposed);
+  if (out === FALLBACK_BUS_NAME) return false;
+  const old = proposed
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
+    .replace(/ {2,}/g, " ")
+    .trim()
+    .slice(0, LIMITS.maxBusNameChars)
+    .replace(/[ .]+$/, "");
+  return old !== out;
+}
