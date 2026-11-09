@@ -46,6 +46,20 @@ const ours = (home: string, env: Record<string, string> = {}) => {
   return dir;
 };
 
+describe("setPluginHabits: a folder under an env that is gone (#1743)", () => {
+  it("off still reaches a Hermes marker written under another HERMES_HOME", () => {
+    const home = tmp();
+    const busHome = join(home, ".oa-bus");
+    const env = { HERMES_HOME: join(tmp(), "srv-hermes") };
+    const dir = ours(home, env);
+    setPluginHabits({ home, env, busHome }, [hermes], true);
+    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(true);
+    const r = removeHabits({ home, busHome });
+    expect(r.files).toContain(join(dir, HERMES_HABITS_MARKER));
+    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
+  });
+});
+
 describe("setPluginHabits", () => {
   it("yes writes the marker, no removes it", () => {
     const home = tmp();

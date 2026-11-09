@@ -167,7 +167,7 @@ describe("state dir", () => {
   it("is OPENCLAW_STATE_DIR first", () => {
     expect(
       resolveStateDir(
-        { OPENCLAW_STATE_DIR: "/x/state", OPENCLAW_PROFILE: "p" },
+        { OPENCLAW_STATE_DIR: "/x/state" },
         home,
         none,
       ),
@@ -182,11 +182,8 @@ describe("state dir", () => {
       ),
     ).toBe("/h2/s");
   });
-  it("is the profile's dir without a state dir", () => {
+  it("ignores OPENCLAW_PROFILE: only --profile, which sets the state dir, moves it", () => {
     expect(resolveStateDir({ OPENCLAW_PROFILE: "eileen" }, home, none)).toBe(
-      "/home/u/.openclaw-eileen",
-    );
-    expect(resolveStateDir({ OPENCLAW_PROFILE: "default" }, home, none)).toBe(
       "/home/u/.openclaw",
     );
   });

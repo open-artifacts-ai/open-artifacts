@@ -91,6 +91,7 @@ function setup(
     ((on: boolean) => ({
       plugin: {
         id: "oa-bus",
+        rootDir: dest,
         enabled: on,
         status: on ? "loaded" : "disabled",
         toolNames: ["oabus_self", "oabus_send_message", "oabus_fetch"],
@@ -166,21 +167,18 @@ describe("openclawStateDir", () => {
     ["a ~ state dir", { OPENCLAW_STATE_DIR: "~/state" }],
     ["OPENCLAW_HOME", { OPENCLAW_HOME: "/srv/oc" }],
     ["a ~ OPENCLAW_HOME", { OPENCLAW_HOME: "~/oc" }],
-    ["a profile", { OPENCLAW_PROFILE: "work" }],
-    ["the default profile", { OPENCLAW_PROFILE: "Default" }],
-    [
-      "a profile in OPENCLAW_HOME",
-      { OPENCLAW_PROFILE: "w", OPENCLAW_HOME: "/srv/oc" },
-    ],
-    [
-      "a state dir over a profile",
-      { OPENCLAW_PROFILE: "w", OPENCLAW_STATE_DIR: "/x" },
-    ],
+    ["OPENCLAW_PROFILE, which OpenClaw ignores", { OPENCLAW_PROFILE: "work" }],
   ])("matches the plugin's own resolution: %s", (_n, env) => {
     const home = tmp("oa-openclaw-parity-");
     // The adapter reads HOME; the CLI is handed the user's home explicitly.
     expect(openclawStateDir(home, env)).toBe(
       resolveStateDir({ ...env, HOME: home }, () => home),
+    );
+  });
+  it("ignores OPENCLAW_PROFILE: only the --profile flag moves the state dir", () => {
+    const home = tmp("oa-openclaw-noprofile-");
+    expect(openclawStateDir(home, { OPENCLAW_PROFILE: "work" })).toBe(
+      join(home, ".openclaw"),
     );
   });
   it("uses a legacy .clawdbot only when it alone exists", () => {
@@ -254,19 +252,124 @@ describe("installAdapters: openclaw", () => {
     expect(a.envs[0]).toEqual({ OPENCLAW_STATE_DIR: state });
 
     const oh = tmp("oa-openclaw-ohome-");
-    const b = setup({ env: { OPENCLAW_HOME: oh, OPENCLAW_PROFILE: "work" } });
+    const b = setup({ env: { OPENCLAW_HOME: oh } });
     await installAdapters(b.deps);
-    expect(b.dest).toBe(join(oh, ".openclaw-work", "extensions", "oa-bus"));
+    expect(b.dest).toBe(join(oh, ".openclaw", "extensions", "oa-bus"));
     expect(existsSync(join(b.dest, "index.js"))).toBe(true);
   });
 
-  it("runs only enable and verify on a current install", async () => {
+  it("only verifies a current install that already loads", async () => {
     const { deps, calls, src } = setup();
     await installAdapters(deps);
     calls.length = 0;
-    await installAdapters(deps);
-    expect(calls).toEqual([ENABLE, INSPECT]);
+    const out = await installAdapters(deps);
+    expect(out.installed).toContain("openclaw");
+    expect(calls).toEqual([INSPECT]);
     expect(calls.flat()).not.toContain(src);
+  });
+
+  it("enables a current install that does not verify, then verifies again", async () => {
+    const { deps, calls } = setup();
+    await installAdapters(deps);
+    // OpenClaw lost the enabled flag: the first inspect says disabled.
+    let n = 0;
+    const real = deps.exec;
+    deps.exec = (async (c, a, o) => {
+      if (a[1] === "inspect" && n++ === 0)
+        return {
+          code: 0,
+          stdout: JSON.stringify({ plugin: { enabled: false, status: "disabled" } }),
+          stderr: "",
+        };
+      return real(c, a, o);
+    }) as Exec;
+    calls.length = 0;
+    const out = await installAdapters(deps);
+    expect(out.installed).toContain("openclaw");
+    expect(calls).toEqual([INSPECT, ENABLE, INSPECT]);
+  });
+
+  it("gives inspect 30 s and install 180 s", async () => {
+    const { deps, calls, timeouts } = setup();
+    await installAdapters(deps);
+    const t = (verb: string) =>
+      timeouts[calls.findIndex((c) => c[2] === verb)];
+    expect(t("install")).toBe(180_000);
+    expect(t("enable")).toBeLessThanOrEqual(60_000);
+    expect(t("inspect")).toBe(30_000);
+  });
+
+  it("fails when a different copy of oa-bus is the one that loads", async () => {
+    const other = tmp("oa-openclaw-dev-");
+    const { deps } = setup({
+      inspect: (on) => ({
+        plugin: {
+          rootDir: other,
+          enabled: on,
+          status: "loaded",
+          toolNames: ["oabus_self", "oabus_send_message", "oabus_fetch"],
+        },
+        typedHooks: [{ name: "before_prompt_build" }],
+      }),
+    });
+    const out = await installAdapters(deps);
+    expect(out.installed).not.toContain("openclaw");
+    expect(out.skipped[0]?.reason).toContain(`a different copy loads from ${other}`);
+  });
+
+  it("accepts the same folder reached through a symlink", async () => {
+    const real = tmp("oa-openclaw-realstate-");
+    const link = join(tmp("oa-openclaw-linkdir-"), "state");
+    symlinkSync(real, link);
+    const { deps } = setup({
+      env: { OPENCLAW_STATE_DIR: link },
+      inspect: (on) => ({
+        plugin: {
+          rootDir: join(real, "extensions", "oa-bus"),
+          enabled: on,
+          status: "loaded",
+          toolNames: ["oabus_self", "oabus_send_message", "oabus_fetch"],
+        },
+        typedHooks: [{ name: "before_prompt_build" }],
+      }),
+    });
+    const out = await installAdapters(deps);
+    expect(out.installed).toContain("openclaw");
+  });
+
+  it("does not carry a habits.on in the shipped folder into the install", async () => {
+    const { deps, dest, src } = setup();
+    put(join(src, OPENCLAW_HABITS_MARKER), "on\n");
+    await installAdapters(deps);
+    expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(false);
+  });
+
+  it("deletes habits.on on every install once the user opted out, even a current one", async () => {
+    const { deps, dest, busHome } = setup();
+    await installAdapters(deps);
+    setPluginHabits({ home: deps.home, env: deps.env }, [openclaw], true);
+    setHabitsOptOut(busHome, true, "2026-11-09T00:00:00Z");
+    expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(true);
+    await installAdapters(deps);
+    expect(existsSync(join(dest, OPENCLAW_HABITS_MARKER))).toBe(false);
+  });
+
+  it("never wipes a fork that only shares the manifest id", async () => {
+    const { deps, dest, calls } = setup();
+    put(join(dest, "openclaw.plugin.json"), '{"id":"oa-bus"}');
+    put(join(dest, "index.js"), "my fork\n");
+    const out = await installAdapters(deps);
+    expect(out.skipped[0]?.harness).toBe("openclaw");
+    expect(calls).toEqual([]);
+    expect(readFileSync(join(dest, "index.js"), "utf8")).toBe("my fork\n");
+  });
+
+  it("takes over a marker-less folder that is byte-identical to the shipped plugin", async () => {
+    const { deps, dest, src, calls } = setup();
+    cpSync(src, dest, { recursive: true });
+    const out = await installAdapters(deps);
+    expect(out.installed).toContain("openclaw");
+    expect(calls[0]).toEqual(INSTALL(src, true));
   });
 
   it("reinstalls a stale folder with --force and keeps habits.on that was there", async () => {
@@ -481,6 +584,16 @@ describe("uninstallAdapters: openclaw", () => {
     expect(existsSync(dest)).toBe(true);
   });
 
+  it("never uninstalls a marker-less fork that shares the manifest id", async () => {
+    const { deps, dest, calls } = setup();
+    put(join(dest, "openclaw.plugin.json"), '{"id":"oa-bus"}');
+    put(join(dest, "index.js"), "my fork\n");
+    const out = await uninstallAdapters(deps);
+    expect(out.skipped[0]?.harness).toBe("openclaw");
+    expect(calls).toEqual([]);
+    expect(readFileSync(join(dest, "index.js"), "utf8")).toBe("my fork\n");
+  });
+
   it("never touches a folder that is not ours", async () => {
     const { deps, dest, calls } = setup();
     put(join(dest, "index.js"), "mine\n");
@@ -556,7 +669,7 @@ describe("openclaw habits: on, then off", () => {
     ["OPENCLAW_STATE_DIR inside ~/.openclaw", "inside"],
     ["OPENCLAW_STATE_DIR through a symlink", "linked"],
     ["a symlinked ~/.openclaw with the real path given", "linked-home"],
-    ["OPENCLAW_PROFILE", "profile"],
+    ["a --profile dir (OPENCLAW_STATE_DIR)", "profile"],
     ["OPENCLAW_HOME", "ohome"],
   ])("off reaches the active folder: %s", (_n, form) => {
     const home = tmp("oa-oc-habits-");
@@ -578,7 +691,8 @@ describe("openclaw habits: on, then off", () => {
       symlinkSync(real, join(home, ".openclaw"));
       env = { OPENCLAW_STATE_DIR: real };
     }
-    if (form === "profile") env = { OPENCLAW_PROFILE: "work" };
+    if (form === "profile")
+      env = { OPENCLAW_STATE_DIR: join(home, ".openclaw-work") };
     if (form === "ohome") env = { OPENCLAW_HOME: tmp("oa-oc-ohome-") };
     const dir = ours(openclawPluginDir(home, env));
     const deps = { home, env };
@@ -617,12 +731,77 @@ describe("openclaw habits: on, then off", () => {
 
   it("a yes writes only the active folder", () => {
     const home = tmp("oa-oc-habits-");
-    const env = { OPENCLAW_PROFILE: "work" };
+    const env = { OPENCLAW_STATE_DIR: join(home, ".openclaw-work") };
     const other = ours(join(home, ".openclaw", "extensions", "oa-bus"));
     const active = ours(openclawPluginDir(home, env));
     setPluginHabits({ home, env }, [openclaw], true);
     expect(existsSync(marker(active))).toBe(true);
     expect(existsSync(marker(other))).toBe(false);
+  });
+
+  it("off reaches a folder written under an env that is gone (#1743)", () => {
+    const home = tmp("oa-oc-habits-");
+    const busHome = join(home, ".oa-bus");
+    const env = { OPENCLAW_STATE_DIR: join(tmp("oa-oc-srv-"), "srv-oc") };
+    const dir = ours(openclawPluginDir(home, env));
+    expect(setPluginHabits({ home, env, busHome }, [openclaw], true).changed).toEqual([
+      openclaw,
+    ]);
+    expect(existsSync(marker(dir))).toBe(true);
+    // The next command runs without that env.
+    const r = removeHabits({ home, busHome });
+    expect(r.files).toContain(marker(dir));
+    expect(existsSync(marker(dir))).toBe(false);
+    // The list was cleared: a later run finds nothing to do.
+    writeFileSync(marker(dir), "on\n");
+    removeHabits({ home, busHome });
+    expect(existsSync(marker(dir))).toBe(true);
+  });
+
+  it("--no-habits and uninstall paths both sweep recorded folders", () => {
+    const home = tmp("oa-oc-habits-");
+    const busHome = join(home, ".oa-bus");
+    const env = { OPENCLAW_STATE_DIR: join(tmp("oa-oc-srv-"), "s") };
+    const dir = ours(openclawPluginDir(home, env));
+    setPluginHabits({ home, env, busHome }, [openclaw], true);
+    setPluginHabits({ home, busHome }, [openclaw], false);
+    expect(existsSync(marker(dir))).toBe(false);
+  });
+
+  it("tolerates an install record from before the list existed", () => {
+    const home = tmp("oa-oc-habits-");
+    const busHome = join(home, ".oa-bus");
+    put(
+      join(busHome, "install.json"),
+      JSON.stringify({ habits: { optedOut: false, files: {} } }),
+    );
+    const dir = ours(openclawPluginDir(home, {}));
+    writeFileSync(marker(dir), "on\n");
+    removeHabits({ home, busHome });
+    expect(existsSync(marker(dir))).toBe(false);
+  });
+
+  it("keeps the ownership and symlink checks for a recorded folder", () => {
+    const home = tmp("oa-oc-habits-");
+    const busHome = join(home, ".oa-bus");
+    const foreign = join(tmp("oa-oc-f-"), "extensions", "oa-bus");
+    put(join(foreign, "openclaw.plugin.json"), '{"id":"other"}');
+    put(join(foreign, OPENCLAW_HABITS_MARKER), "theirs\n");
+    const linked = join(tmp("oa-oc-l-"), "extensions", "oa-bus");
+    const target = ours(tmp("oa-oc-lt-"));
+    writeFileSync(marker(target), "on\n");
+    mkdirSync(join(linked, ".."), { recursive: true });
+    symlinkSync(target, linked);
+    put(
+      join(busHome, "install.json"),
+      JSON.stringify({
+        habits: { pluginDirs: { openclaw: [foreign, linked, 7, null] } },
+      }),
+    );
+    const r = removeHabits({ home, busHome });
+    expect(existsSync(marker(foreign))).toBe(true);
+    expect(existsSync(marker(target))).toBe(true);
+    expect(r.notes.join("\n")).toContain("is a symlink");
   });
 
   it("refuses a folder that is not ours, and says so", () => {
