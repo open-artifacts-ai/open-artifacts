@@ -625,11 +625,12 @@ export function createComments(
   const off = bridge.on((m) => {
     if (m.type === "comments.mode") {
       mode = m.mode;
-      if (mode !== "select") {
-        kept = null;
-        clearTimeout(selTimer);
-        reportSelection();
-      }
+      clearTimeout(selTimer);
+      if (mode !== "select") kept = null;
+      // Also on entering select: a selection made before the shell's mode
+      // arrived (a fast reader, or a test) is reported now, not on its next
+      // change.
+      reportSelection();
       if (mode === "off") {
         // No mode, no draft: a quote left behind would paint on the next set
         // (#1850 review).
