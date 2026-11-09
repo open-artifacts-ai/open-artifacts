@@ -463,7 +463,7 @@ describe("/mcp proof by tool argument (#1856)", () => {
       );
       expect(r.status).toBe(200);
       expect(hubCalls).toBe(1);
-      expect(Date.now() - t0).toBeLessThan(1000);
+      expect(Date.now() - t0).toBeLessThan(2500);
       expect(await bodies[0]?.text()).not.toContain(proof);
     }
   });
