@@ -340,6 +340,7 @@ describe("bus option (#1293)", () => {
     expect(await json(await call("GET", R.busAgents))).toEqual({
       agents: [],
       live: false,
+      droppedNotices: 0,
     });
   });
   it("bus: true turns on busOn and canConnect and serves the fixtures, active first", async () => {
@@ -359,6 +360,7 @@ describe("bus option (#1293)", () => {
       await json(await call("GET", R.busAgents)),
     );
     expect(as.live).toBe(true);
+    expect(as.droppedNotices).toBe(fixtures.busDroppedNotices);
     expect(as.agents).toHaveLength(fixtures.busAgents.length);
   });
   it("revoke: 204, idempotent, closes the machine's agents; unknown id 404", async () => {
