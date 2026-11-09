@@ -1198,7 +1198,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // an unknown pid binds nothing.
     onLinkProof: (req) => {
       const start = (cl.procStart ?? claudeProcStartOf)(req.pid);
-      if (start === undefined) return { bound: false };
+      if (start === null || start === undefined) return { bound: false };
       const find = () =>
         agents
           .all()
