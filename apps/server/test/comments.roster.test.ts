@@ -262,6 +262,30 @@ describe("mention: a viewer's running agent, and the follow it makes", () => {
         { moderator: true },
       ),
     ).rejects.toMatchObject({ code: "bad_request" });
+    // And the other way: the editor cannot mention the owner's running agent.
+    const ownerKey = (
+      await agentRoster(
+        hubs({ [s.owner.userId]: [agentRow("ns-o", "OwnerBot")] }).env,
+        s.id,
+        s.owner.userId,
+        true,
+        true,
+      )
+    )[0]?.key as string;
+    const h2 = hubs({
+      [s.owner.userId]: [agentRow("ns-o", "OwnerBot")],
+      [s.editor.userId]: [],
+    });
+    await expect(
+      addThread(
+        h2.env,
+        art(s.id),
+        who(s.editor),
+        view(s.editor),
+        { anchor: { kind: "note" }, body: "hi", mentions: [{ key: ownerKey }] },
+        { moderator: true },
+      ),
+    ).rejects.toMatchObject({ code: "bad_request" });
     expect(bus.sent).toEqual([]);
     expect(await followRows(s.id)).toEqual([]);
   });
