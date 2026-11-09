@@ -369,6 +369,33 @@ describe("status in OpenCode", () => {
     );
   });
 
+  it("#1860: away fallback-named rows collapse to a count", async () => {
+    const away = (name: string) =>
+      row({
+        name,
+        state: "away",
+        live: false,
+        since: "2026-11-05T10:00:00.000Z",
+      });
+    const { text } = await run("list_agents", {}, () => ({
+      type: "roster",
+      agents: [
+        row({ name: "live-one" }),
+        away("opencode-3"),
+        away("opencode"),
+        away("agent"),
+        away("kept"),
+      ],
+    }));
+    expect(text).toBe(
+      [
+        "- live-one (opencode, ns)",
+        "- kept (opencode, ns) (away since 2026-11-05 10:00 UTC)",
+        "3 more away sessions with no chosen name (not listed, still reachable by name)",
+      ].join("\n"),
+    );
+  });
+
   it("#1527: self shows the config files the daemon refused", async () => {
     const self = await run("self", {}, () => ({
       type: "agent",

@@ -11,7 +11,7 @@ import {
   linkedLiveNamespace,
   movedName,
   receiptText,
-  rosterLine,
+  rosterText,
   SetStatus,
   STATUS_COPY,
   selfText,
@@ -182,22 +182,7 @@ async function run(
       const r = await request({ type: "list" });
       if (r.type !== "roster") return failed(r);
       const now = Date.now();
-      return text(
-        r.agents.length
-          ? r.agents
-              .map((a) =>
-                rosterLine(
-                  {
-                    ...a,
-                    queued: queued(a),
-                    away: a.state === "away" ? (a.since ?? "") : undefined,
-                  },
-                  now,
-                ),
-              )
-              .join("\n")
-          : "No agents in your namespace and linked ones.",
-      );
+      return text(rosterText(r.agents, now));
     }
     if (name === "send_message") {
       const to = String(args.to ?? "");

@@ -1,6 +1,7 @@
 import {
   BAD_NS_CHARS,
   BUS_CMD,
+  isFallbackName,
   LIMITS,
   MAILBOX_PENDING_CAP,
   MAILBOX_RETAIN_MS,
@@ -525,6 +526,53 @@ export function rosterLine(
 ): string {
   const says = statusSaysText(a, now);
   return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+}
+
+/** The count line for away rows with a harness fallback name (#1860). */
+export function collapsedAwayLine(n: number, listed: boolean): string {
+  return `${n}${listed ? " more" : ""} away ${n === 1 ? "session" : "sessions"} with no chosen name (not listed, still reachable by name)`;
+}
+
+/**
+ * The `list_agents` text from the hub's roster rows. Live and queued agents,
+ * and away agents with a chosen name, get a line each. Away rows whose name is
+ * only a harness fallback (isFallbackName) become one count line, shown only
+ * when there are any. Display only: the hub still holds and delivers to them.
+ */
+export function rosterText(
+  agents: readonly (StatusFields & {
+    name: string;
+    kind: string;
+    namespace: string;
+    machine_label?: unknown;
+    state?: string | undefined;
+    live?: boolean | undefined;
+    since?: string | undefined;
+  })[],
+  now = Date.now(),
+): string {
+  if (!agents.length) return "No agents in your namespace and linked ones.";
+  const lines: string[] = [];
+  let collapsed = 0;
+  for (const a of agents) {
+    const away = a.state === "away";
+    if (away && isFallbackName(a.name, a.kind)) {
+      collapsed++;
+      continue;
+    }
+    lines.push(
+      rosterLine(
+        {
+          ...a,
+          queued: (a.state ?? (a.live ? "live" : "queued")) === "queued",
+          away: away ? (a.since ?? "") : undefined,
+        },
+        now,
+      ),
+    );
+  }
+  if (collapsed > 0) lines.push(collapsedAwayLine(collapsed, lines.length > 0));
+  return lines.join("\n");
 }
 
 /** The `self` result: the agent entry, its hub-supplied status cleaned as list_agents shows it. */

@@ -21,6 +21,7 @@ import {
   REFUSAL,
   receiptText,
   rosterLine,
+  rosterText,
   STATUS_COPY,
   selfText,
   statusLabelTooLong,
@@ -1233,5 +1234,42 @@ describe("status, as Pi shows it", () => {
     expect(copy.rosterLine(a, NOW)).toBe(rosterLine(a, NOW));
     expect(copy.statusSaysText(r, NOW)).toBe(statusSaysText(r, NOW));
     expect(copy.selfText(row(r))).toBe(selfText(row(r)));
+  });
+
+  it("#1860: rosterText matches @oa/bus-ipc", () => {
+    const since = "2026-11-05T10:00:00.000Z";
+    const mk = (name: string, kind: string, state: string) => ({
+      name,
+      kind,
+      namespace: "ns",
+      live: state === "live",
+      state,
+      ...(state === "away" ? { since } : {}),
+    });
+    const sets = [
+      [],
+      [mk("a", "pi", "live")],
+      [mk("pi-6", "pi", "away")],
+      [mk("PI-6", "pi", "away")],
+      [mk("Claude-12", "claude-code", "away"), mk("AGENT", "pi", "away")],
+      [mk("a", "pi", "live"), mk("OMP-3", "omp", "away")],
+      [mk("pi-6", "pi", "live"), mk("pi-7", "pi", "queued")],
+      [
+        mk("a", "pi", "live"),
+        mk("claude-12", "claude-code", "away"),
+        mk("omp-3", "omp", "away"),
+        mk("agent", "pi", "away"),
+        mk("kept", "pi", "away"),
+      ],
+    ];
+    for (const s of sets)
+      expect(copy.rosterText(s as never, NOW)).toBe(
+        rosterText(s as never, NOW),
+      );
+    expect(
+      copy.rosterText([mk("a", "pi", "live"), mk("pi-6", "pi", "away")], NOW),
+    ).toBe(
+      "- a (pi, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
+    );
   });
 });

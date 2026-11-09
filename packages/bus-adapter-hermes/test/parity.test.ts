@@ -21,6 +21,7 @@ import {
   oversizedText,
   receiptText,
   rosterLine,
+  rosterText,
   selfText,
   statusLabelTooLong,
   statusSaysText,
@@ -56,6 +57,7 @@ const ts: Record<string, (...a: any[]) => unknown> = {
   statusLabelTooLong,
   statusSaysText: (row, now) => statusSaysText(row, now) ?? null,
   rosterLine: (a, now) => rosterLine({ ...a, away: none(a.away) }, now),
+  rosterText: (agents, now) => rosterText(agents, now),
   selfText,
   wrap: (from, text, source) =>
     (
@@ -259,6 +261,35 @@ describe("the Hermes plugin's text is bus-ipc's text", () => {
       ],
     ]);
     same(cases);
+  });
+
+  it("#1860: rosterText collapses away fallback names like the TS", () => {
+    const since = "2026-11-05T10:00:00.000Z";
+    const mk = (name: string, kind: string, state: string) => ({
+      name,
+      kind,
+      namespace: "ns",
+      live: state === "live",
+      state,
+      ...(state === "away" ? { since } : {}),
+    });
+    const sets = [
+      [],
+      [mk("a", "hermes", "live")],
+      [mk("hermes-proj", "hermes", "away")],
+      [mk("PI-6", "pi", "away")],
+      [mk("Claude-12", "claude-code", "away"), mk("AGENT", "pi", "away")],
+      [mk("a", "pi", "live"), mk("OMP-3", "omp", "away")],
+      [mk("claude-9", "claude-code", "live"), mk("pi-7", "pi", "queued")],
+      [
+        mk("a", "hermes", "live"),
+        mk("claude-12", "claude-code", "away"),
+        mk("omp-3", "omp", "away"),
+        mk("agent", "pi", "away"),
+        mk("kept", "pi", "away"),
+      ],
+    ];
+    same(sets.map((s): Case => ["rosterText", [s, NOW]]));
   });
 
   it("moved names and linked namespaces", () => {

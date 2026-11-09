@@ -208,6 +208,39 @@ describe("claude mcp tools", () => {
     );
   });
 
+  it("#1860: collapses away fallback-named rows into one count", async () => {
+    const row = (name: string, state: string, kind = "claude-code") => ({
+      name,
+      kind,
+      namespace: "ns",
+      live: state === "live",
+      state,
+      ...(state === "away" ? { since: "2026-11-05T10:00:00.000Z" } : {}),
+      global: false,
+    });
+    const roster = (agents: unknown[]) =>
+      callTool(
+        "list_agents",
+        {},
+        client(async () => ({ type: "roster", agents }) as never),
+      );
+    const many = await roster([
+      row("claude-1262814", "live"),
+      row("claude-1", "away"),
+      row("omp-3", "away", "omp"),
+      row("gamma", "away"),
+    ]);
+    expect(many.content[0].text).toBe(
+      "- claude-1262814 (claude-code, ns)\n- gamma (claude-code, ns) (away since 2026-11-05 10:00 UTC)\n2 more away sessions with no chosen name (not listed, still reachable by name)",
+    );
+    const one = await roster([row("alpha", "live"), row("claude-1", "away")]);
+    expect(one.content[0].text).toBe(
+      "- alpha (claude-code, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
+    );
+    const none = await roster([row("alpha", "live")]);
+    expect(none.content[0].text).toBe("- alpha (claude-code, ns)");
+  });
+
   it("shows the machine when the roster names one", async () => {
     const r = await callTool(
       "list_agents",
