@@ -7,6 +7,7 @@ import {
   type SyntheticEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -500,6 +501,12 @@ function Viewer({
     bridge.current?.setArtifact(artifact);
   }, [artifact.capabilities, artifact.dataWriters, artifact.visibility]);
 
+  const asks = useMemo(() => {
+    const all = [...cmt.ordered, ...cmt.orphans];
+    return all.some((t) => t.comments.some((c) => c.ask))
+      ? { count: asksForMe(all).length }
+      : undefined;
+  }, [cmt.ordered, cmt.orphans]);
   if ((content.notFound || signedOut) && isEmbed())
     return <NotPublic id={artifact.id} />;
   if (content.notFound) return <NotFound />;
@@ -548,20 +555,15 @@ function Viewer({
     onClick: cmt.hasSelection ? cmt.commentOnSelection : listButton.onClick,
   };
   // #1614: "N asks for you" opens the comments surface (never toggles it shut) and steps to the next ask.
-  const allThreads = [...cmt.ordered, ...cmt.orphans];
   const asksButton =
-    commentsOn && allThreads.some((t) => t.comments.some((c) => c.ask))
+    commentsOn && asks
       ? {
-          count: asksForMe(allThreads).length,
+          count: asks.count,
           onClick: () => {
             const id = nextAskFor(cmt, cmt.active, { includeSelf: true });
             if (!id) return;
-            if (surface === "column") {
-              if (panelOpen) setPanel(true, "comments");
-              else setColOpen(true);
-            } else if (surface === "panel") setPanel(true, "comments");
-            else setDialogOpen(true);
-            cmt.select(id, true);
+            openSurface.current();
+            cmt.reveal(id);
           },
         }
       : undefined;

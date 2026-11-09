@@ -279,6 +279,7 @@ export function TitleBar({
             variant="outline"
             size="xs"
             data-asks-for-you
+            aria-label={`${asks.count} ask${asks.count === 1 ? "" : "s"} for you`}
             className={`${SM} border-0 bg-[var(--oa-warning-soft)] font-semibold text-[var(--oa-warning)] shadow-[inset_0_0_0_1px_var(--oa-warning)] hover:bg-[var(--oa-warning-soft)] hover:text-[var(--oa-warning)]`}
             disabled={gone}
             onClick={asks.onClick}

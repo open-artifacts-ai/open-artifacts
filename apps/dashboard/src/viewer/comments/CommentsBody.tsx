@@ -584,7 +584,7 @@ function CommentRow({
           artifactId={api.artifactId}
           thread={thread}
           c={c}
-          next={nextAsk ? () => api.select(nextAsk, true) : undefined}
+          next={nextAsk ? () => api.reveal(nextAsk) : undefined}
           reply={api.canComment ? () => api.select(thread.id, true) : undefined}
         />
       ) : (
@@ -707,9 +707,16 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const expanded = isActive || rest.length === 0;
   const shown = expanded ? rest : [];
   const orphan = api.positions.get(t.id)?.state === "orphan";
+  const revealTick = api.revealed.tick;
+  const revealedHere = api.revealed.id === t.id;
+  // Runs on mount too, so a column that is just opening still scrolls and focuses.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card.
   useEffect(() => {
-    if (isActive) el.current?.scrollIntoView?.({ block: "nearest" });
-  }, [isActive]);
+    if (!isActive) return;
+    el.current?.scrollIntoView?.({ block: "nearest" });
+    if (revealedHere && revealTick > 0)
+      el.current?.focus({ preventScroll: true });
+  }, [isActive, revealTick]);
   if (!first) return null;
   const toggle = () => {
     setStatusErr(null);
@@ -723,7 +730,8 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       ref={el}
       data-thread={t.id}
       data-active={isActive ? "" : undefined}
-      className="rounded-lg border border-border bg-background p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
+      tabIndex={-1}
+      className="rounded-lg border focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] border-border bg-background p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
     >
       <div className="flex flex-col gap-2">
         <button
@@ -987,7 +995,7 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
               count={forMe.length}
               onClick={() => {
                 const id = nextAskFor(api, api.active, { includeSelf: true });
-                if (id) api.select(id, true);
+                if (id) api.reveal(id);
               }}
             />
           )}

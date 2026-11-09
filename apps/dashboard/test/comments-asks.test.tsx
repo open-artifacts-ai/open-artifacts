@@ -20,7 +20,11 @@ import {
   it,
   vi,
 } from "vitest";
-import { mentionedKeys, mentionQuery } from "../src/viewer/comments/asks";
+import {
+  mentionedKeys,
+  mentionQuery,
+  nextAskFor,
+} from "../src/viewer/comments/asks";
 import {
   calls,
   events,
@@ -1081,5 +1085,96 @@ describe("asks for you with a single ask (#1614)", () => {
     focus.mockClear();
     fireEvent.click(b);
     await waitFor(() => expect(focus).toHaveBeenCalledWith("t-ask"));
+  });
+});
+
+describe("asks for you: reveal, surfaces, gone (#1614)", () => {
+  const btn = () => screen.findByRole("button", { name: /1 ask for you$/ });
+
+  it("an already-active ask in an open column scrolls and takes focus on click", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const b = (
+      await screen.findAllByRole("button", { name: /1 ask for you$/ })
+    )[0] as HTMLElement;
+    fireEvent.click(b);
+    const row = c.querySelector('[data-thread="t-ask"]') as HTMLElement;
+    await waitFor(() => expect(row).toHaveAttribute("data-active"));
+    await waitFor(() => expect(document.activeElement).toBe(row));
+    (document.activeElement as HTMLElement).blur();
+    scroll.mockClear();
+    fireEvent.click(b);
+    await waitFor(() => expect(scroll).toHaveBeenCalled());
+    await waitFor(() => expect(document.activeElement).toBe(row));
+  });
+
+  it("opens the side panel on a mid-width screen", async () => {
+    viewport(800);
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    fireEvent.click(await btn());
+    const tab = await screen.findByRole("tab", { name: /Comments/ });
+    expect(tab).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByText("Which layout?")).toBeInTheDocument();
+  });
+
+  it("opens the sheet on a phone, named for the ask count", async () => {
+    viewport(400);
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    fireEvent.click(await btn());
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(await within(sheet).findByText("Which layout?")).toBeInTheDocument();
+  });
+
+  it("is disabled once the artifact is gone", async () => {
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const b = await btn();
+    expect(b).toBeEnabled();
+    await act(() =>
+      fetch(R.artifact(OWNED), {
+        method: "DELETE",
+        headers: { "X-OA-Request": "1" },
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /1 ask for you$/ }),
+      ).toBeDisabled(),
+    );
+  });
+});
+
+describe("nextAskFor", () => {
+  const th = (id: string, mine = true) =>
+    askThread(
+      { id },
+      mine ? {} : { to: [{ kind: "user", id: "x", name: "X", me: false }] },
+    ) as never;
+  const mkApi = (ordered: unknown[], orphans: unknown[] = []) =>
+    ({ ordered, orphans }) as never;
+
+  it("includeSelf with a null fromId returns the first pending ask", () => {
+    expect(
+      nextAskFor(mkApi([th("a"), th("b")]), null, { includeSelf: true }),
+    ).toBe("a");
+  });
+  it("a fromId not in the list starts from the top", () => {
+    expect(nextAskFor(mkApi([th("a"), th("b")]), "zzz")).toBe("a");
+  });
+  it("includeSelf returns fromId only when it is the sole pending ask", () => {
+    const api = mkApi([th("a"), th("b", false)]);
+    expect(nextAskFor(api, "a")).toBeUndefined();
+    expect(nextAskFor(api, "a", { includeSelf: true })).toBe("a");
+    expect(nextAskFor(api, "b", { includeSelf: true })).toBe("a");
+  });
+  it("finds asks in orphans, after the ordered ones", () => {
+    const api = mkApi([th("a", false)], [th("o")]);
+    expect(nextAskFor(api, "a")).toBe("o");
+    expect(nextAskFor(api, null)).toBe("o");
   });
 });
