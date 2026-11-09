@@ -22,7 +22,16 @@ import {
 } from "./schemas.js";
 import { utf8Exceeds } from "./utf8.js";
 
-export const PROTOCOL_VERSION = 1;
+/**
+ * What the frame's `hello` announces. The shell's schemas are strict, so a
+ * runtime older than the shell drops a message carrying a field it does not
+ * know (all of them, not the field): bump this when a shell message gains one,
+ * and have the shell leave that field out for a runtime that said an earlier
+ * number. #1698: 2 adds `changed` on `comments.set` threads.
+ */
+export const PROTOCOL_VERSION = 2;
+/** The first protocol whose runtime knows `changed` on a pin (#1698). */
+export const PROTOCOL_PIN_CHANGED = 2;
 
 export const RUNTIME_METHODS = [
   "db.get",
