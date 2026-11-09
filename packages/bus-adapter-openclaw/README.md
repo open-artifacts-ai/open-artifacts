@@ -26,7 +26,7 @@ Paths below are under the OpenClaw install (`openclaw/` in its `node_modules`).
   OpenAI-compatible provider behind a custom `baseUrl` is allowed.
 - **Mail waits for the next turn.** An external plugin cannot wake an idle
   session, so mail is delivered with the next user message.
-- **Habits are opt-in.** The two habit lines are added to the system prompt only
+- **Habits are opt-in.** The three habit lines are added to the system prompt only
   while a `habits.on` file exists in the plugin folder (the installer's `--habits`
   writes it) and a link has been opened.
 

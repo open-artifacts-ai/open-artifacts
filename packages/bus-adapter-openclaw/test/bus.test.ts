@@ -260,6 +260,9 @@ describe("habits", () => {
     });
     expect(HABITS).toContain("never your user's yes");
     expect(HABITS).toContain("140 characters");
+    expect(HABITS).toContain(
+      "- After you publish an artifact or post an ask, follow it with the bus client's follow tool: that puts you in the @ menu and is how you hear the answers.",
+    );
   });
 
   it("are not sent when the daemon is down", async () => {
