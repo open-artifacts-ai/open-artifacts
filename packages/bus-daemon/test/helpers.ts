@@ -128,6 +128,10 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
         throw new Error("no codex in tests");
       },
       queuedFile: join(mkdtempSync(join(tmpdir(), "ob-cq-")), "q.json"),
+      agentsFile: join(
+        mkdtempSync(join(tmpdir(), "ob-ca-")),
+        "codex-agents.json",
+      ),
       ...over.codex,
     },
   });

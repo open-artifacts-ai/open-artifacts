@@ -91,6 +91,16 @@ export type CodexAttestor = {
     live: { thread: string; pid: number }[],
     relock: boolean,
   ) => Set<string>;
+  /** The start time pinned for a codex process, if it is pinned (#1748). */
+  startOf: (pid: number) => string | undefined;
+  /**
+   * #1748: takes back a thread this daemon attested before it restarted. The
+   * process must still be `codex` with the start time it was pinned at, and
+   * still hold the thread's lock (a `sweep` with relock). The trust is the
+   * daemon's own earlier attestation; nothing in CODEX_HOME is believed more
+   * than at the first hello. A thread that fails leaves nothing behind.
+   */
+  restore: (r: { thread: string; pid: number; start: string }) => boolean;
 };
 
 /** What a thread proved under one (P, start). */
@@ -363,10 +373,37 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     return still;
   };
 
+  const restore: CodexAttestor["restore"] = ({ thread, pid, start }) => {
+    const home = deps.home ?? codexHome();
+    const proc = procs([pid]).get(pid);
+    if (!proc || basename(proc.comm) !== "codex" || proc.start !== start)
+      return false;
+    // Another thread of this process pinned a different start: never mixed.
+    const was = pinned.get(pid);
+    if (was !== undefined && was !== start) return false;
+    const row = threadRow(home, thread);
+    const rollout = row?.rollout_path ?? globRollout(home, thread);
+    if (!rollout || !plainFile(rollout)) return false;
+    const meta = metaOf(rollout, thread);
+    if (!meta || typeof meta.cwd !== "string" || !isAbsolute(meta.cwd))
+      return false;
+    const had = was !== undefined;
+    pinned.set(pid, start);
+    proofs.set(`${pid}\0${start}\0${thread}`, { cwd: meta.cwd, rollout });
+    if (sweep([{ thread, pid }], true).has(thread)) return true;
+    // Failed: drop this thread's proof; the pin goes unless another thread uses it.
+    proofs.delete(`${pid}\0${start}\0${thread}`);
+    if (!had && ![...proofs.keys()].some((k) => k.startsWith(`${pid}\0`)))
+      pinned.delete(pid);
+    return false;
+  };
+
   return {
     attest: (hello) => check(hello, true),
     attestNow: (hello) => check(hello, false) as CodexAttest,
     sweep,
+    startOf: (pid) => pinned.get(pid),
+    restore,
   };
 }
 

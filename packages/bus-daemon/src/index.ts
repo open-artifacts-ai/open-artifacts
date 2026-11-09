@@ -40,6 +40,11 @@ import {
   procStartOf,
 } from "./attest.ts";
 import {
+  type CodexAgent,
+  readCodexAgents,
+  writeCodexAgents,
+} from "./codex-agents.ts";
+import {
   type CodexAttestDeps,
   codexAttestor,
   codexHome,
@@ -229,6 +234,8 @@ export type DaemonDeps = {
     wakes?: CodexTransportOptions["wakes"];
     /** msg_ids `codex queue` took; default ~/.oa-bus/codex-queued.json. */
     queuedFile?: string;
+    /** Live Codex threads kept across a restart (#1748); default ~/.oa-bus/codex-agents.json. */
+    agentsFile?: string;
   };
   pi?: {
     /** How long the extension has to hand a message to Pi and ack it. */
@@ -1383,6 +1390,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           live: true,
         });
         if (rec.kind === "opencode") ocServiceStart.set(rec.ref, ocStart(pid));
+        if (rec.kind === "codex") persistCodex();
         if (rec.kind === "claude-code") void claude.revive(rec.ref);
         conns.set(rec.ref, (conns.get(rec.ref) ?? 0) + 1);
         announceUp(rec);
@@ -1513,6 +1521,76 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   }, deps.socketCheckMs ?? 60_000);
   socketWatch.unref();
 
+  /** #1748: each live attested Codex thread, kept so a restart can take it back. */
+  const codexAgentsFile = cx.agentsFile ?? join(home(), "codex-agents.json");
+  let codexSaved: string | undefined;
+  const persistCodex = () => {
+    const rows: CodexAgent[] = [];
+    for (const a of agents.all()) {
+      if (a.kind !== "codex" || !a.live) continue;
+      const procStart = codexCheck.startOf(a.pid);
+      if (procStart === undefined) continue;
+      rows.push({
+        ref: a.ref,
+        pid: a.pid,
+        procStart,
+        proposedName: a.proposedName,
+        ...(a.sentName !== undefined ? { sentName: a.sentName } : {}),
+        busName: a.busName,
+        namespace: a.namespace,
+        global: a.global,
+        cwd: a.cwd,
+      });
+    }
+    const text = JSON.stringify(rows);
+    // Never touches the home until a thread has been attested.
+    if (codexSaved === undefined ? rows.length === 0 : text === codexSaved)
+      return;
+    try {
+      writeCodexAgents(codexAgentsFile, rows);
+      codexSaved = text;
+    } catch (e) {
+      log(
+        `could not save the live Codex threads: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+  /**
+   * #1748: a restarted daemon takes back the Codex threads it had attested,
+   * each only if its process is still the one pinned and still holds the
+   * thread's lock. The next `agent_up` (hub open) announces them by name.
+   */
+  const restoreCodex = () => {
+    if (deps.attest) return;
+    for (const r of readCodexAgents(codexAgentsFile)) {
+      if (agents.byRef(r.ref)) continue;
+      let ok = false;
+      try {
+        ok = codexCheck.restore({
+          thread: r.ref,
+          pid: r.pid,
+          start: r.procStart,
+        });
+      } catch {}
+      if (!ok) continue;
+      agents.up({
+        ref: r.ref,
+        kind: "codex",
+        proposedName: r.proposedName,
+        busName: r.busName,
+        namespace: r.namespace,
+        global: r.global,
+        pid: r.pid,
+        procStart: r.procStart,
+        cwd: r.cwd,
+        live: true,
+        ...(r.sentName !== undefined ? { sentName: r.sentName } : {}),
+      });
+      seenAt.set(r.ref, ++seenSeq);
+      if (debug) log(`restored codex thread ${r.ref.slice(0, 8)} pid ${r.pid}`);
+    }
+  };
+
   /**
    * A Codex thread is live while its process is the one pinned at its first
    * call (lstart, every sync) and still holds the thread's lock (lsof, every
@@ -1526,7 +1604,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       .map((a) => ({ thread: a.ref, pid: a.pid }));
     codexTicks = (codexTicks + 1) % relockEvery;
     // Stubbed attestation leaves no proofs to sweep.
-    if (!live.length || deps.attest) return;
+    if (!live.length || deps.attest) return persistCodex();
     const still = codexCheck.sweep(live, codexTicks === 0);
     let closed = false;
     for (const { thread } of live) {
@@ -1536,6 +1614,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       closed = true;
     }
     if (closed) announceSessions();
+    persistCodex();
   };
 
   const sync = () => {
@@ -1556,6 +1635,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       }
     }
   };
+  restoreCodex();
   sync();
   const watcher = setInterval(sync, cl.syncMs ?? 2000);
   watcher.unref();
