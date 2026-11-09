@@ -41,6 +41,7 @@ describe("set_status: shape", () => {
       "follow",
       "unfollow",
       "following",
+      "propose_reach",
     ]);
     for (const t of TOOLS) expect(t.description).not.toMatch(/claude/i);
   });

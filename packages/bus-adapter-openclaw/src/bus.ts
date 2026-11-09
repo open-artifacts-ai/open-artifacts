@@ -84,6 +84,12 @@ class Mailbox {
   notices = 0;
   /** The run the box last saw a prompt for. */
   currentRunId?: string;
+  /**
+   * The latest user-triggered run whose prompt hook ran (set only after the
+   * trigger check, so a cron, heartbeat, hook or memory run never sets it). Only
+   * this run's model_call_* events prove the root.
+   */
+  userRun?: string;
   /** The run now in progress is not a user's (a heartbeat on the main session): tools refuse. */
   nonUser = false;
   /** Deliveries whose text is still being built; they count against the cap. */
@@ -201,7 +207,8 @@ export class Bus {
     }
   }
 
-  private prove(ref: string): void {
+  private prove(ref: string, runId?: string): void {
+    if (!runId || this.boxes.get(ref)?.userRun !== runId) return;
     this.proven.delete(ref);
     this.proven.add(ref);
     if (this.proven.size > PROVEN_MAX) {
@@ -410,9 +417,12 @@ export class Bus {
    * (`proven`): a runtime that fires no model_call_* hook (the Codex
    * runtime, which stock `openai` uses; see runtimeRefused) could never ack,
    * and its mail would be injected again every turn. Such a root is held at
-   * zero deliveries, not one. A root is proven by its first
-   * model_call_started or model_call_ended, so mail starts flowing with the
-   * root's second run.
+   * zero deliveries, not one. A root is proven by the first model_call_started
+   * or model_call_ended of the latest user-triggered run (`userRun`, recorded
+   * here whether or not it carried mail, because mail is withheld until proof).
+   * An event with no runId, another runId (a run before an unprove, say), or
+   * from a cron, heartbeat, hook or memory run proves nothing. So mail starts
+   * flowing with the root's run after the first user run that reports a call.
    */
   buildPrompt(c: Caller & { runId?: string }): PromptResult | undefined {
     this.noteTrigger(c);
@@ -438,6 +448,9 @@ export class Bus {
           this.proven.delete(r.root.ref);
           break;
         }
+      // After the unprove loop: an unprove then leaves this run as the one
+      // that can prove, and a late event from an older run proves nothing.
+      b.userRun = c.runId;
     }
     const out: PromptResult = {};
     // Without a runId nothing can be acked, so nothing is handed over.
@@ -504,7 +517,7 @@ export class Bus {
   modelCallStarted(c: Caller, ev: { runId?: string }): void {
     const r = this.resolve(c, "key");
     if (!r.ok) return;
-    this.prove(r.root.ref);
+    this.prove(r.root.ref, ev.runId);
     this.activity(r.root.ref, ev.runId);
   }
 
@@ -526,7 +539,7 @@ export class Bus {
   modelCallEnded(c: Caller, ev: { runId?: string; outcome?: string }): void {
     const r = this.resolve(c, "key");
     if (!r.ok) return;
-    this.prove(r.root.ref);
+    this.prove(r.root.ref, ev.runId);
     this.activity(r.root.ref, ev.runId);
     if (!ev.runId) return;
     const b = this.boxes.get(r.root.ref);

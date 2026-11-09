@@ -23,6 +23,9 @@ import {
   type NoticeId,
   type OAuthClient,
   OAuthClientSchema,
+  type Onboarding,
+  type OnboardingPatch,
+  OnboardingSchema,
   PageSchema,
   type PublishInput,
   PublishResultSchema,
@@ -107,6 +110,7 @@ export const qk = {
   busRoles: ["bus", "roles"] as const,
   busLinks: ["bus", "links"] as const,
   settings: ["settings"] as const,
+  onboarding: ["onboarding"] as const,
   usage: ["usage"] as const,
   spaces: (q?: SpacesQueryInput) => ["spaces", q ?? {}] as const,
   space: (id: string) => ["spaces", id] as const,
@@ -208,6 +212,32 @@ export const useTokens = (enabled = true) =>
     queryKey: qk.tokens,
     queryFn: ({ signal }) => api.get(R.tokens, z.array(TokenSchema), signal),
   });
+/** The first-run checklist's server state (GET R.onboarding); the owner only. */
+export const useOnboarding = (enabled = true) =>
+  useQuery({
+    enabled,
+    queryKey: qk.onboarding,
+    queryFn: ({ signal }) => api.get(R.onboarding, OnboardingSchema, signal),
+  });
+/** PUT R.onboarding: turn on `dismissed` or `completed`; the cache shows the answer. */
+export const useSetOnboarding = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: OnboardingPatch) =>
+      api.send("PUT", R.onboarding, patch, OnboardingSchema),
+    onMutate: (patch) => {
+      const before = qc.getQueryData<Onboarding>(qk.onboarding);
+      if (before)
+        qc.setQueryData<Onboarding>(qk.onboarding, { ...before, ...patch });
+      return { before };
+    },
+    onError: (e, _p, ctx) => {
+      if (ctx?.before) qc.setQueryData(qk.onboarding, ctx.before);
+      failToast(e, "Couldn't save that.");
+    },
+    onSuccess: (r) => qc.setQueryData(qk.onboarding, r),
+  });
+};
 export const useOAuthClients = (enabled = true) =>
   useQuery({
     enabled,
@@ -487,7 +517,8 @@ export const useInviteMember = () => {
   return useMutation({
     mutationFn: (input: MemberInvite) =>
       api.send("POST", R.members, input, MemberInviteResultSchema),
-    // The first invite starts the Business trial: Me's billing changes.
+    // An invite can start the Business trial: Me carries the billing the
+    // checklist's trial line and the invite dialog's trial notice read.
     onSuccess: () =>
       Promise.all([
         qc.invalidateQueries({ queryKey: qk.members }),
@@ -501,7 +532,11 @@ export const useInviteMember = () => {
         (e.code === "invite_unreachable" ||
           e.code === "member_removed" ||
           e.code === "guest_lapsed" ||
-          e.code === "directory_managed")
+          e.code === "directory_managed" ||
+          // The dialog words a plan refusal itself (#1838); a toast with the
+          // server's text would say it a second, different way.
+          e.code.startsWith("plan_") ||
+          e.code === "billing_unavailable")
       )
         return;
       failToast(e, "Couldn't send the invite.");

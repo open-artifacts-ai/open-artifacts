@@ -33,6 +33,7 @@ import {
   sandboxRisk,
 } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
+import { openclawVerify } from "../steps/openclaw.ts";
 import { MIN_NODE } from "../steps/service.ts";
 import { habitsLine } from "./habits.ts";
 import { errorTail } from "./login.ts";
@@ -229,6 +230,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
     "omp",
     "codex",
     "hermes",
+    "openclaw",
   ] as Harness[]) {
     if (wiring[h] === "absent") continue;
     let version: string | undefined;
@@ -251,7 +253,13 @@ export async function doctor(ctx: Ctx): Promise<number> {
           home: ctx.userHome,
           env: ctx.env,
           exec: ctx.exec,
-        })))
+        }))) &&
+      (h !== "openclaw" ||
+        (await openclawVerify({
+          home: ctx.userHome,
+          env: ctx.env,
+          exec: ctx.exec,
+        })) === undefined)
     )
       pass(c.wired(h, version));
     else fail(c.notWired(h));
@@ -265,6 +273,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
       if (isolates === true) warn(c.claudeIsolates(tilde(ctx, settings)));
     }
     if (h === "codex") codexChecks(ctx, { pass, warn });
+    if (h === "openclaw") say(ctx, c.openclawDmNote());
   }
 
   // Not a pass or a warning: the habits are the user's choice either way.

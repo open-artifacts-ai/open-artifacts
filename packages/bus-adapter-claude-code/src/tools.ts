@@ -10,8 +10,11 @@ import {
   followText,
   linkedLiveNamespace,
   movedName,
+  REACH_OLD_DAEMON,
+  reachNamespacesOf,
+  reachProposedText,
   receiptText,
-  rosterLine,
+  rosterText,
   SetStatus,
   STATUS_COPY,
   selfText,
@@ -116,6 +119,24 @@ export const TOOLS = [
     description: "List the artifacts you follow.",
     inputSchema: none,
   },
+  {
+    name: "propose_reach",
+    description:
+      "Ask that the role you hold be able to message agents in more namespaces. Name only other namespaces: your role already reaches its own. This only asks: nothing changes until the person confirms on the link you get back.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        namespaces: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 10,
+        },
+      },
+      required: ["namespaces"],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 export type ToolResult = {
@@ -178,26 +199,12 @@ async function run(
     if (name === "set_status") return await statusTool(args, request);
     if (name === "follow" || name === "unfollow" || name === "following")
       return await followTool(name, args, request);
+    if (name === "propose_reach") return await reachTool(args, request);
     if (name === "list_agents") {
       const r = await request({ type: "list" });
       if (r.type !== "roster") return failed(r);
       const now = Date.now();
-      return text(
-        r.agents.length
-          ? r.agents
-              .map((a) =>
-                rosterLine(
-                  {
-                    ...a,
-                    queued: queued(a),
-                    away: a.state === "away" ? (a.since ?? "") : undefined,
-                  },
-                  now,
-                ),
-              )
-              .join("\n")
-          : "No agents in your namespace and linked ones.",
-      );
+      return text(rosterText(r.agents, now));
     }
     if (name === "send_message") {
       const to = String(args.to ?? "");
@@ -319,6 +326,30 @@ async function followTool(
     r.message !== FOLLOW_DAEMON_BAD_FRAME.wire
   )
     return text(FOLLOW_OLD_DAEMON, true);
+  return failed(r);
+}
+
+/**
+ * propose_reach (#1346). The frame carries the namespaces only: the daemon
+ * knows the session, so a caller cannot name another agent's. Refusals are
+ * the daemon's copy, as-is.
+ */
+async function reachTool(
+  args: Record<string, unknown>,
+  request: Request,
+): Promise<ToolResult> {
+  const given = reachNamespacesOf(args.namespaces);
+  if ("error" in given) return text(given.error, true);
+  const r = await request({
+    type: "propose_reach",
+    namespaces: given.namespaces,
+  });
+  if (r.type === "reach_proposed")
+    return text(
+      reachProposedText(given.namespaces, r.confirm_url, r.expires_at),
+    );
+  if (r.type === "error" && r.code === "bad_frame")
+    return text(REACH_OLD_DAEMON, true);
   return failed(r);
 }
 

@@ -158,6 +158,24 @@ describe("a session's unchanged name never loops renames (#1635)", () => {
     expect(h.of("rename")).toHaveLength(1);
   });
 
+  it("a name with refused characters is sent raw once; the hub's cleaned answer is no change (#1480)", async () => {
+    const { h, d } = await start();
+    write(d, 4242, "s-a", "OA Owner (2)");
+    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(1));
+    expect(h.of("rename")[0]?.proposed_name).toBe("OA Owner (2)");
+    h.toDaemon({
+      v: 1,
+      id: h.of("rename")[0]?.id as string,
+      type: "renamed",
+      agent_ref: "s-a",
+      bus_name: "OA Owner 2",
+    });
+    await settle();
+    write(d, 4242, "s-a", "OA Owner (2)");
+    await settle();
+    expect(h.of("rename")).toHaveLength(1);
+  });
+
   it("a real A to B to A rename reaches the hub", async () => {
     const { h, d } = await start();
     write(d, 4242, "s-a", "Other");

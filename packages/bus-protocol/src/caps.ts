@@ -63,6 +63,13 @@ export const BUS_CAPS = {
    * `hello_ok.caps`; a client sends them only when it did.
    */
   follow: "follow",
+  /**
+   * Session links (#1822): the client may send `link_bind` and decodes
+   * `link_bound`. The hub answers it only on a socket whose hello listed it
+   * (any other gets `bad_frame`, as an old hub would) and lists it in
+   * `hello_ok.caps`; a client sends it only when it did.
+   */
+  link: "link",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

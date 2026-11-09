@@ -93,7 +93,7 @@ export const useReply = (id: string, guest = false) =>
         body: v.body,
         ...(v.guestName ? { guestName: v.guestName } : {}),
         ...(v.mentions?.length ? { mentions: v.mentions } : {}),
-        ...(v.assign ? { assign: v.assign } : {}),
+        ...(v.toAsker ? { toAsker: true } : {}),
       },
       CommentSchema,
       undefined,
@@ -214,6 +214,8 @@ export function commentError(e: unknown, capped = false): string {
       return "That comment is gone.";
     case "conflict":
       return "This thread has too many replies. Start a new comment instead.";
+    case "not_an_ask":
+      return "That ask is no longer open to questions. Reply instead.";
     case "bad_request":
       return "That comment couldn't be found.";
     case "unauthorized":

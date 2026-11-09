@@ -27,11 +27,14 @@ import { utf8Exceeds } from "./utf8.js";
  * runtime older than the shell drops a message carrying a field it does not
  * know (all of them, not the field): bump this when a shell message gains one,
  * and have the shell leave that field out for a runtime that said an earlier
- * number. #1698: 2 adds `changed` on `comments.set` threads.
+ * number. #1698: 2 adds `changed` on `comments.set` threads. #1834: 3 adds
+ * `draft` on `comments.set`.
  */
-export const PROTOCOL_VERSION = 2;
+export const PROTOCOL_VERSION = 3;
 /** The first protocol whose runtime knows `changed` on a pin (#1698). */
 export const PROTOCOL_PIN_CHANGED = 2;
+/** The first protocol whose runtime draws the quote being commented on (#1834). */
+export const PROTOCOL_COMMENT_DRAFT = 3;
 
 export const RUNTIME_METHODS = [
   "db.get",
@@ -369,6 +372,12 @@ export const ShellToArtifactSchema = z.union([
         page: z.number().int().min(1).max(100_000).optional(),
       })
       .optional(),
+    /**
+     * The quote a comment is being written about (#1834): kept highlighted while
+     * the composer has focus, which takes the page's selection away. The same
+     * anchor a posted thread carries; dropped when the draft closes.
+     */
+    draft: selectionAnchorSchema.optional(),
   }),
   /** The reader tapped the shell's "Comment on selection": run the frame's Comment path (#1732). */
   z.strictObject({ oa: z.literal(1), type: z.literal("comments.comment") }),

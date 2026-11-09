@@ -14,10 +14,18 @@ export const COMMENT_BODY_MAX = 2000;
 export const COMMENT_GUEST_NAME_MAX = 50;
 
 export const CommentAuthorSchema = z.object({
-  kind: z.enum(["user", "guest"]),
+  /**
+   * `agent` (#1789): written over MCP or with a token, never a person. The
+   * server sets it; no client input can.
+   */
+  kind: z.enum(["user", "guest", "agent"]),
+  /** A user's id; for an agent, the member it acts for (in an ask's `to`, the agent's roster key). */
   id: z.string().optional(),
+  /** An agent's own name (never the person's), a guest's name, or a user's name. */
   name: z.string(),
-  /** An agent acting for the person, e.g. "via Claude Code". */
+  /** An agent only: the person it acts for, by public name (never an email). */
+  for: z.string().optional(),
+  /** @deprecated Old "via <label>"; the server no longer sets it (`kind: "agent"` carries the name). */
   agent: z.string().optional(),
   me: z.boolean(),
 });
@@ -197,6 +205,13 @@ export const ReplyBodySchema = z.object({
   body: commentBody,
   guestName,
   ...extras,
+  /**
+   * Address the reply to the thread root's ask author (#1614): anyone who may
+   * reply, viewers included. 400 not_an_ask when the root has no ask or its
+   * author is not an agent; 400 with mentions or assign. Its agents get a
+   * fixed notice; `mentions` on the returned comment says who and how it went.
+   */
+  toAsker: z.boolean().optional(),
 });
 export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 

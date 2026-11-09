@@ -33,7 +33,16 @@ import {
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import {
+  askRows,
+  indexAnswered,
+  indexAsk,
+  indexDeleted,
+  indexStatus,
+  reconcileAsks,
+} from "./asks.js";
+import {
   agentRoster,
+  askerRoster,
   type CommentNoticeKind,
   type DeliveryState,
   notifyAgent,
@@ -250,16 +259,14 @@ const authorView = (
       me: viewer.short !== null && viewer.short === a.ref,
     };
   const u = users.get(a.ref);
-  const out: CommentAuthor = {
-    kind: "user",
-    id: a.ref,
-    name: u ? shownName(u) : "Member",
-    me: viewer.userId !== null && viewer.userId === a.ref,
-  };
+  const me = viewer.userId !== null && viewer.userId === a.ref;
+  const person = u ? shownName(u) : "Member";
+  // A stored comment with an agent (written over MCP or with a token, or
+  // before #1789) reads as the agent at read time; no row is migrated.
   if (a.agent) {
     // A private token label shows only to its owner; everyone else sees
     // "<owner>'s agent" (a grant's client name is public).
-    out.agent =
+    const name =
       !isPrivateAgent(a.agent.via) || viewer.userId === a.ref
         ? a.agent.name
         : u
@@ -270,8 +277,15 @@ const authorView = (
               { id: a.ref, name: null, email: "" },
               viewer.userId,
             ).name;
+    return {
+      kind: "agent",
+      id: a.ref,
+      name: name.trim() === "" ? "Agent" : name,
+      for: person,
+      me,
+    };
   }
-  return out;
+  return { kind: "user", id: a.ref, name: person, me };
 };
 
 async function threadViews(
@@ -314,7 +328,7 @@ const partyView = (
   p.kind === "user"
     ? authorView({ kind: "user", ref: p.key }, viewer, users)
     : {
-        kind: "user",
+        kind: "agent",
         id: p.key,
         name: p.name,
         me: viewer.userId !== null && viewer.userId === p.owner,
@@ -393,7 +407,12 @@ export async function listComments(
   status: CommentStatus | "all",
   viewer: CommentViewer,
 ): Promise<CommentList> {
+  // A full read repairs the asks index (#1623); never fails the read. The rows
+  // are read first, so the threads are never older than the rows they are
+  // compared with.
+  const rows = status === "all" ? await askRows(env, artifactId) : null;
   const r = await call(() => stub(env, artifactId).commentsList(status));
+  if (rows) await reconcileAsks(env, artifactId, r.threads, r.truncated, rows);
   return {
     threads: await threadViews(env, r.threads, viewer),
     open: r.open,
@@ -438,6 +457,8 @@ export type CommentExtras = {
   mentions?: KeyRef[];
   assign?: KeyRef;
   ask?: AskInput;
+  /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions, assign or ask. */
+  toAsker?: boolean;
 };
 
 /** Who may mention, assign and ask. `moderator`: the owner or an editor. */
@@ -454,6 +475,8 @@ type Resolved = {
   /** The agents to make follow: mentioned, resolved from the viewer's own running agents. */
   follow: RosterAgent[];
   mentions: string[];
+  /** What the stored mention rows are: plain mentions, or the agents a reply to the asker reached (#1614). */
+  mentionKind: "mention" | "asker";
   assign: string | null;
 };
 
@@ -481,6 +504,7 @@ async function resolveExtras(
     agents: [],
     follow: [],
     mentions: [],
+    mentionKind: "mention",
     assign: null,
   };
   const wantsTargets = (x.mentions?.length ?? 0) > 0 || x.assign !== undefined;
@@ -571,6 +595,7 @@ async function resolveExtras(
     },
     agents: [...agents.values()],
     mentions: mentioned.map((m) => m.key),
+    mentionKind: "mention",
     assign: assigned?.key ?? null,
   };
 }
@@ -654,11 +679,14 @@ async function deliver(
   } finally {
     clearTimeout(timer);
   }
-  const states: { kind: "mention" | "assign"; key: string; state: string }[] =
-    [];
+  const states: {
+    kind: "mention" | "assign" | "asker";
+    key: string;
+    state: string;
+  }[] = [];
   for (const key of r.mentions)
     states.push({
-      kind: "mention",
+      kind: r.mentionKind,
       key,
       state: stateOf(outcome.get(key) ?? "dropped", false),
     });
@@ -719,12 +747,45 @@ export async function addThread(
     }),
   );
   const root = t.comments[0];
+  if (root?.ask) await indexAsk(env, a.id, t.id, root.id, root.ask.to);
   if (root && r.agents.length > 0) {
     const sent = await deliver(env, a, t.id, root, r);
     t.comments[0] = sent;
   }
   await announce(env, a.id, who, opts.after, r);
   return (await threadViews(env, [t], viewer))[0] as Thread;
+}
+
+/**
+ * A reply to the thread root's ask author (#1614). 400 not_an_ask unless the
+ * root carries an ask and its author is an agent (a person's ask has no agent
+ * to tell). The only addressee is that author's agents: the same target as
+ * ask_answered (askerRoster: the agents that follow the artifact and belong to
+ * the author's member; an MCP asker has no bus address until the open
+ * publisher/asker user decision is made, so the member is the only link).
+ * It can reach no other agent. The notice is fixed text with the ids.
+ */
+async function resolveToAsker(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+): Promise<Resolved> {
+  const t = await call(() => stub(env, artifactId).commentsGet(threadId));
+  const root = t.comments[0];
+  if (!root?.ask || root.author.kind !== "user" || !root.author.agent)
+    throw new ApiError(
+      "not_an_ask",
+      "This thread has no question from an agent to reply to",
+    );
+  const to = await askerRoster(env, artifactId, root.author.ref);
+  return {
+    extras: to.length ? { asker: to.map(storedAgent) } : undefined,
+    agents: to.map((agent) => ({ agent, kind: "asker" as const })),
+    follow: [],
+    mentions: to.map((a) => a.key),
+    mentionKind: "asker",
+    assign: null,
+  };
 }
 
 /** A reply. It does not reopen the thread. */
@@ -739,7 +800,19 @@ export async function addReply(
   opts: ExtrasOpts = {},
 ): Promise<Comment> {
   const text = checkBody(body);
-  const r = await resolveExtras(env, artifactId, who, extras, opts);
+  let r: Resolved;
+  if (extras.toAsker) {
+    if (
+      (extras.mentions?.length ?? 0) > 0 ||
+      extras.assign !== undefined ||
+      extras.ask !== undefined
+    )
+      throw new ApiError(
+        "bad_request",
+        "toAsker cannot be combined with mentions, assign or ask",
+      );
+    r = await resolveToAsker(env, artifactId, threadId);
+  } else r = await resolveExtras(env, artifactId, who, extras, opts);
   const c = await call(() =>
     stub(env, artifactId).commentsReply({
       threadId,
@@ -749,6 +822,12 @@ export async function addReply(
       ...(r.extras ? { extras: r.extras } : {}),
     }),
   );
+  // The thread's bound (one notice per window, a cap in all) left the reply
+  // without its mention rows: nobody is told, and the usual follower notice
+  // (its own limits) is the only one.
+  if (extras.toAsker && !c.mentions?.length)
+    r = { ...r, agents: [], mentions: [] };
+  if (c.ask) await indexAsk(env, artifactId, threadId, c.id, c.ask.to);
   if (r.agents.length === 0) {
     await announce(env, artifactId, who, opts.after, r);
     return commentView(env, c, viewer);
@@ -761,6 +840,16 @@ export async function addReply(
     .first<{ v: number }>();
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
   const sent = await deliver(env, a, threadId, c, r);
+  // The bound is spent when a notice goes out or is held; a reply whose agents
+  // all read "gone" (no session, or a stalled hub) gives it back (#1614).
+  if (
+    extras.toAsker &&
+    sent.mentions?.length &&
+    sent.mentions.every((m) => m.state === "gone")
+  )
+    await call(() =>
+      stub(env, artifactId).commentsAskerRefund({ threadId, at: c.createdAt }),
+    ).catch(() => undefined);
   await announce(env, artifactId, who, opts.after, r);
   return commentView(env, sent, viewer);
 }
@@ -791,6 +880,7 @@ export async function answerAsk(
       rate: rateKeyOf(who),
     }),
   );
+  await indexAnswered(env, artifactId, commentId);
   // The answer is stored: the asker's following agents hear of it, in the
   // background, and a failure never fails the answer (inBackground catches).
   if (after && !unchanged && c.author.kind === "user")
@@ -836,6 +926,7 @@ export async function setStatus(
       rate: rateKeyOf(who),
     }),
   );
+  await indexStatus(env, artifactId, threadId, status);
   return (await threadViews(env, [t], viewer))[0] as Thread;
 }
 
@@ -877,7 +968,8 @@ export async function deleteComment(
   moderator: boolean,
 ): Promise<void> {
   const a = who ? actorOf(who) : null;
-  await call(() =>
+  // `r` is undefined from an older DO mid-deploy: the delete stands, the index heals on read.
+  const r = await call(() =>
     stub(env, artifactId).commentsDelete({
       threadId,
       commentId,
@@ -886,4 +978,5 @@ export async function deleteComment(
       ...(who ? { rate: rateKeyOf(who) } : {}),
     }),
   );
+  await indexDeleted(env, artifactId, threadId, commentId, r?.root === true);
 }

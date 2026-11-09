@@ -178,6 +178,45 @@ describe("the invite dialog", () => {
     expect(screen.queryByText(NOTICE)).toBe(null);
   });
 
+  it("the merged dialog: trial notice and label stay while the invite is out, and it can't be closed", async () => {
+    pin("2026-11-09T12:00:00.000Z");
+    let answer: (r: Response) => void = () => {};
+    const held = new Promise<Response>((res) => {
+      answer = res;
+    });
+    mountHosted("/settings/members", { billing: SOLO }, undefined, [
+      http.post(`*${R.members}`, () => held),
+    ]);
+    fireEvent.click(await screen.findByRole("button", { name: "Add member" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Email"), {
+      target: { value: "ana@example.com" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: START }));
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("button", { name: "Cancel" }),
+      ).toBeDisabled(),
+    );
+    expect(within(dialog).getByText(NOTICE)).toBeVisible();
+    expect(within(dialog).getByRole("button", { name: START })).toBeDisabled();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    // The server's answer (an unmodelled error): the dialog settles, notice intact.
+    answer(
+      HttpResponse.json(
+        { error: { code: "internal", message: "x" } },
+        { status: 500 },
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("button", { name: "Cancel" }),
+      ).toBeEnabled(),
+    );
+    expect(within(dialog).getByText(NOTICE)).toBeVisible();
+  });
+
   it("an uncapped admin sees it", async () => {
     pin("2026-11-09T12:00:00.000Z");
     mountHosted("/settings/members", { billing: SOLO, actAs: "admin" });

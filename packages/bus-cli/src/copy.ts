@@ -17,7 +17,8 @@ export type HarnessName =
   | "pi"
   | "omp"
   | "codex"
-  | "hermes";
+  | "hermes"
+  | "openclaw";
 export const HARNESS_LABEL: Record<HarnessName, string> = {
   claude: "Claude Code",
   opencode: "OpenCode",
@@ -25,6 +26,7 @@ export const HARNESS_LABEL: Record<HarnessName, string> = {
   omp: "oh-my-pi",
   codex: "Codex",
   hermes: "Hermes",
+  openclaw: "OpenClaw",
 };
 /** The dashboard's labels for AGENT_KINDS. */
 export const KIND_LABEL: Record<AgentKind, string> = {
@@ -230,7 +232,9 @@ export function copy(style: Style) {
         )}`,
       ),
     noHarness: () => [
-      warn("No Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes found"),
+      warn(
+        "No Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw found",
+      ),
       next(`Install one, then run ${BUS_CMD} again.`),
     ],
     restarted: () => done("Restarted the OpenCode service to load the plugin"),
@@ -258,6 +262,31 @@ export function copy(style: Style) {
       next(
         `Run hermes plugins disable oa-bus, or remove oa-bus from plugins.enabled in ${config}.`,
       ),
+    ],
+    // After the configured line, when the OpenClaw plugin was installed and enabled.
+    openclawRestart: () => [
+      next("Run openclaw gateway restart to load the plugin."),
+    ],
+    // After the configured line, when OpenClaw is in Nix mode: plugin commands are off there.
+    openclawNix: () => [
+      warn("OpenClaw is in Nix mode, so oa-bus didn't change it."),
+      next("Add the oa-bus plugin through your Nix setup instead."),
+    ],
+    // After uninstall removed the OpenClaw plugin folder with no openclaw binary to uninstall it.
+    openclawNoCli: () => [
+      warn(
+        "Removed the oa-bus plugin files, but OpenClaw isn't on PATH, so its config may still enable oa-bus.",
+      ),
+      next(
+        "Once openclaw is on PATH again, run openclaw plugins uninstall oa-bus.",
+      ),
+    ],
+    // Doctor, and status when the plugin is installed. Static: nothing in OpenClaw's config is read.
+    openclawDmNote: () => [
+      "OpenClaw: by default (dmScope), everyone who sends it a direct message",
+      "shares one session, and that session is one bus address. If people other",
+      "than you can message it, set a per-peer dmScope and keep dmPolicy on",
+      "pairing or an allowlist.",
     ],
     opencodeNotRunning: () =>
       done("OpenCode service not running; it loads the plugin when it starts"),
@@ -374,8 +403,8 @@ export function copy(style: Style) {
       const lead = "No agents in namespace ";
       return [
         `${lead}${p("accent", clip(namespace, len(lead) + 5))} yet.`,
-        "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes in this folder.",
-        "It joins.",
+        "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw",
+        "in this folder. It joins.",
       ];
     },
     // 7. status: messages delivered after send_message stopped waiting.
@@ -744,6 +773,37 @@ export function copy(style: Style) {
       `${dirs.length} global ${dirs.length === 1 ? "directory" : "directories"}`,
       ...dirs.map((d) => `  ${clip(d, 2)}`),
     ],
+
+    // 13. lead templates (#1328). DRAFT: not in the transcript yet.
+    leadsNoHub: () => [
+      fail("This machine has no instance to check briefs against."),
+      next(`Run ${BUS_CMD} install first.`),
+    ],
+    leadsFolderUnusable: (dir: string, why: string) => [
+      fail(`${clip(dir, 40)} can't be used: ${why}.`),
+    ],
+    leadsNone: (dir: string) => [
+      "No lead templates.",
+      p("muted", clip(`Put <name>.json files in ${dir}.`, 3)),
+    ],
+    leadsNoSuch: (name: string, dir: string) => [
+      fail(`No template named ${clip(name, 30)} in ${clip(dir, 40)}.`),
+    ],
+    leadsOk: (t: {
+      name: string;
+      harness: string;
+      role: string;
+      cap: string;
+      hash: string;
+    }) =>
+      done(
+        `${clip(t.name, 40)}  ${t.harness}, role ${clip(t.role, 30)}, cap ${t.cap}`,
+        t.hash.slice(0, 12),
+      ),
+    leadsRefused: (name: string, why: string) =>
+      fail(`${clip(name, 24)}: ${clip(why, 30)}`),
+    leadsSummary: (ok: number, refused: number) =>
+      `${ok} usable, ${refused} refused. Nothing was started or changed.`,
 
     // 12. namespace approvals (#1525)
     nsUnusable: (path: string, why: string) => [
