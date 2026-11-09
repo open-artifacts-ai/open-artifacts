@@ -212,6 +212,16 @@ describe("selection state for the shell (#1732)", () => {
     expect(sels()).toHaveLength(2);
   });
 
+  it("reports a selection made before the shell's mode, once select arrives", async () => {
+    await start();
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    expect(sels()).toHaveLength(0);
+    await send({ type: "comments.mode", mode: "select" });
+    expect(last("comment.selection")).toMatchObject({ has: true, bottom: 120 });
+    expect(sels()).toHaveLength(1);
+  });
+
   it("posts nothing in view or pin mode", async () => {
     await start("view");
     select(textOf("a"), 4, textOf("a"), 9);
