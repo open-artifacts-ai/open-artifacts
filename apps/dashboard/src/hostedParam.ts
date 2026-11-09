@@ -20,7 +20,21 @@ const TOKENS: Record<string, HostedMockOptions> = {
     billing: {
       tier: "solo",
       status: "active",
-      trialEndsAt: "2026-12-01T00:00:00.000Z",
+      trialEndsAt: null,
+      // 20 days out, so the note always shows.
+      soloTrialEndsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      graceUntil: null,
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  // Solo after a used Business trial: trialEndsAt is the past trial, so no note.
+  "solo-used-trial": {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: "2026-10-01T00:00:00.000Z",
+      soloTrialEndsAt: null,
       graceUntil: null,
       creatorsThisMonth: 1,
       readOnly: false,

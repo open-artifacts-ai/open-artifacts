@@ -52,7 +52,7 @@ export function activeFreeCaps(env: Env): FreeCaps | null {
 
 /** 403 plan_limit for `limit` at `max`. */
 export function planLimitError(limit: PlanLimit, max: number): ApiError {
-  const details: PlanLimitDetails = { tier: "free", limit, max };
+  const details: PlanLimitDetails = { tier: "solo", limit, max };
   return new ApiError(
     "plan_limit",
     "This Solo instance has reached its limit. Delete what you no longer need, or ask the owner to move to a team plan.",
