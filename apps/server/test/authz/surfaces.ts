@@ -1953,6 +1953,26 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
+  // #1346: role reach; the conflict while they have no bus (or no such role).
+  "PUT /api/v1/bus/reach": {
+    refuse: invalid(),
+    real: {
+      req: () => ({
+        path: "",
+        body: {
+          role: { namespace: "probe/a", name: "probe-role" },
+          namespace: "probe/b",
+        },
+      }),
+      allow: either(ok(200), code("conflict")),
+    },
+  },
+  "DELETE /api/v1/bus/reach/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/bus/reach/probe-reach" }),
+      allow: ok(204),
+    },
+  },
 };
 
 /** A short random tag (space names). */
@@ -2134,6 +2154,10 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["GET /api/v1/bus/links", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/links", org("mcp.connect")],
   ["DELETE /api/v1/bus/links/:id", org("mcp.connect")],
+  // #1346: role reach; writes also need a cookie session (the handler).
+  ["GET /api/v1/bus/reach", org("mcp.connect"), [200]],
+  ["PUT /api/v1/bus/reach", org("mcp.connect")],
+  ["DELETE /api/v1/bus/reach/:id", org("mcp.connect")],
 ];
 
 /** Every instance route (an org or user policy) not reached through an artifact. */
