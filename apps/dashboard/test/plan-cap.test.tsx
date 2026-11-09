@@ -360,7 +360,8 @@ it.each([
     {
       billing: {
         tier: "solo" as const,
-        status: null,
+        // An owner sees the status; trial offers need an active plan.
+        status: "active" as const,
         trialEndsAt: null,
         graceUntil: null,
         readOnly: false,

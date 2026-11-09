@@ -905,6 +905,20 @@ export const SettingsSchema = z.object({
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
+/** GET/PUT R.onboarding: the first-run checklist's install-wide state. */
+export const OnboardingSchema = z.strictObject({
+  dismissed: z.boolean(),
+  completed: z.boolean(),
+});
+export type Onboarding = z.infer<typeof OnboardingSchema>;
+
+/** PUT R.onboarding: a flag only turns on (true), never off. */
+export const OnboardingPatchSchema = z.strictObject({
+  dismissed: z.literal(true).optional(),
+  completed: z.literal(true).optional(),
+});
+export type OnboardingPatch = z.infer<typeof OnboardingPatchSchema>;
+
 export const SettingsPatchSchema = SettingsSchema.partial().strict();
 export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
 

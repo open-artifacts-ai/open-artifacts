@@ -120,6 +120,8 @@ const page = (
   title: string,
   message: string,
   status: number,
+  /** Keep the link's secret in the page: the member can still open it again. */
+  keep = false,
 ) =>
   cardResponse(
     renderDoneCard({
@@ -128,6 +130,7 @@ const page = (
       busUrl: `${appOrigin(c.env)}${BUS_ROUTES.page}`,
     }),
     status,
+    keep,
   );
 
 const GONE = {
@@ -193,6 +196,16 @@ const refused = (c: Context<AppEnv>, why: keyof typeof REFUSED) => {
   const r = REFUSED[why];
   return page(c, r.title, r.message, r.status);
 };
+
+/** The decision may have applied before the audit write failed: a card the script renders, never "nothing changed". */
+const unsure = (c: Context<AppEnv>) =>
+  page(
+    c,
+    "Something went wrong",
+    "We could not confirm this finished. Check the role before trying again.",
+    500,
+    true,
+  );
 
 const failed = () =>
   messagePage(
@@ -415,6 +428,7 @@ export function mountRoleConfirm(app: AppType): void {
           priorHolderGone:
             p.priorAgentId !== null && p.priorHolderName === null,
           agentName: p.agentName,
+          reach: v.reach,
           minutesLeft: Math.max(
             1,
             Math.ceil((Date.parse(p.expiresAt) - Date.now()) / 60_000),
@@ -447,7 +461,7 @@ export function mountRoleConfirm(app: AppType): void {
     // #1299: confirming (or rejecting) new configuration is refused under a
     // plan cap; the GET pages and the view stay readable.
     const capped = busConfigRefusal(who.user);
-    if (capped) return messagePage("Not saved", capped.message, 403);
+    if (capped) return page(c, "Not saved", capped.message, 403, true);
     const body = await readConfirmBody(c);
     if (body === null) return messagePage("Not saved", "Invalid form.", 400);
     const secret = body.secret ?? "";
@@ -461,10 +475,12 @@ export function mountRoleConfirm(app: AppType): void {
         body.csrf ?? "",
       ))
     )
-      return messagePage(
+      return page(
+        c,
         "This page expired",
         "Nothing changed. Open the link again, then confirm.",
         403,
+        true,
       );
     const decision = body.decision;
     if (decision !== "confirm" && decision !== "reject")
@@ -486,7 +502,7 @@ export function mountRoleConfirm(app: AppType): void {
       return page(c, "Role updated", message, 200);
     } catch (e) {
       logError("bus_role_confirm_failed", e);
-      return failed();
+      return unsure(c);
     }
   });
 }

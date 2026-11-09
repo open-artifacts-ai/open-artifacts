@@ -124,7 +124,12 @@ export function codexHello(
     pid,
     ...(call.cwd ? { cwd: call.cwd } : {}),
     proposed_name: "codex",
-    caps: [ADAPTER_CAPS.mailbox, ADAPTER_CAPS.pending, ADAPTER_CAPS.follow],
+    caps: [
+      ADAPTER_CAPS.mailbox,
+      ADAPTER_CAPS.pending,
+      ADAPTER_CAPS.follow,
+      ADAPTER_CAPS.reach,
+    ],
     codex: {
       thread_id: call.threadId,
       call_id: call.callId,

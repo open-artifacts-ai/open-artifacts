@@ -7,7 +7,7 @@
 // - Google: admit's rules (googleTenantOk, googleNewRowOk);
 // - codes: codeRule, the rule codeEligibility applies.
 // One D1 read at most (the share lookup codeRule may ask for).
-import { inDomains } from "@oa/auth-core";
+import { inDomains, noDomainIdentityOk } from "@oa/auth-core";
 import { orderSignInMethods, type ShareRecipient } from "@oa/shared";
 import {
   type AuthConfig,
@@ -65,7 +65,13 @@ export async function reachOf(
     // consumer Google account registered with a work address has no hd and
     // would get "tenant"; we don't flag that rare case. Outside the domains,
     // only a Workspace secondary domain could pass, so that is "uncertain".
-    if (googleTenantOk(cfg, domain)) methods.push("google");
+    // No domains: only a Gmail address is certain; any other might be a
+    // Workspace whose hd matches its domain.
+    const certain =
+      cfg.domains.length === 0
+        ? noDomainIdentityOk(email, null)
+        : googleTenantOk(cfg, domain);
+    if (certain) methods.push("google");
     else googleUncertain = true;
   }
   if (
@@ -139,10 +145,15 @@ export async function shareReach(
   if (row && row.status !== "active") return { methods: [], role };
   // In a verified domain: an invite as a member would let them in, unless
   // no offered method admits a member there either.
-  const reason: ShareRecipient["reason"] = !r.inDomain
-    ? "outside_domains"
-    : (await inviteReach(env, email, "member")).methods.length > 0
-      ? "needs_invite"
-      : "no_sign_in_method";
+  // No domains at all: nothing is "outside" them, only an invite admits.
+  const noDomains = authConfig(env).domains.length === 0;
+  const inv = noDomains ? await inviteReach(env, email, "member") : null;
+  const reason: ShareRecipient["reason"] =
+    !r.inDomain && !noDomains
+      ? "outside_domains"
+      : (inv ?? (await inviteReach(env, email, "member"))).methods.length > 0 ||
+          inv?.googleUncertain
+        ? "needs_invite"
+        : "no_sign_in_method";
   return { methods: [], recipient: { canSignIn: false, reason }, role };
 }

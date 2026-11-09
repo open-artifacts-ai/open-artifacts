@@ -20,7 +20,8 @@ export type DaemonClient = {
       | "set_status"
       | "follow"
       | "unfollow"
-      | "following";
+      | "following"
+      | "propose_reach";
     id?: string;
     to?: string;
     /** send: the target's namespace (`to_namespace` on the hub wire). */
@@ -34,6 +35,8 @@ export type DaemonClient = {
     row?: true;
     /** follow, unfollow: an artifact id or link. */
     artifact?: string;
+    /** propose_reach: the namespaces the agent's role should reach. */
+    namespaces?: string[];
     /** A tool call: the reply carries this agent's late-delivery notices. */
     late?: true;
   }) => Promise<DaemonFrame>;

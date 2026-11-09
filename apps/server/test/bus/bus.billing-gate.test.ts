@@ -86,7 +86,8 @@ const openSocket = (token: string) =>
 
 const base = { trialEndsAt: 1, graceUntil: null, version: 1 };
 const LOCKS: Record<string, BillingRow> = {
-  trial_ended: { ...base, tier: "trial", status: "active" },
+  // A trial answer with no end date counts as ended (a passed date is Solo, #1756).
+  trial_ended: { ...base, trialEndsAt: null, tier: "trial", status: "active" },
   lapsed: { ...base, tier: "team", status: "lapsed" },
   payment_failed: { ...base, tier: "team", status: "past_due", graceUntil: 1 },
 };
@@ -194,10 +195,17 @@ const approveDecide = async (who: U) => {
 };
 
 /** POST /bus/roles/confirm or /bus/links/confirm as the card's script does (a fresh sign-in). */
-async function confirmPost(path: string, scope: string, who: U) {
+async function confirmPost(
+  path: string,
+  scope: string,
+  who: U,
+  badCsrf = false,
+) {
   const secret = "A".repeat(43);
   const cookie = await fresh(who.userId);
-  const csrf = await formCsrf(H, scope, who.userId, await sha256Hex(secret));
+  const csrf = badCsrf
+    ? "expired"
+    : await formCsrf(H, scope, who.userId, await sha256Hex(secret));
   const text = JSON.stringify({ secret, csrf, decision: "confirm" });
   return fetchAndWait(
     app,
@@ -218,6 +226,8 @@ const confirmRole = (who: U) =>
   confirmPost("/bus/roles/confirm", ROLE_CONFIRM_SCOPE, who);
 const confirmLink = (who: U) =>
   confirmPost("/bus/links/confirm", "bus-link-confirm", who);
+const confirmReach = (who: U) =>
+  confirmPost("/bus/reach/confirm", "bus-reach-confirm", who);
 
 /** A machine token for `who`, as the CLI holds it. */
 async function machineToken(who: U): Promise<string> {
@@ -242,6 +252,24 @@ const proposeLink = async (who: U) =>
         action: "link",
         a: "test.local/a",
         b: "test.local/b",
+      }),
+    }),
+    H,
+    props,
+  );
+
+const proposeReach = async (who: U) =>
+  fetchAndWait(
+    app,
+    new Request(`${APP}${R.busReachProposals}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${await machineToken(who)}`,
+      },
+      body: JSON.stringify({
+        nativeRef: "r1",
+        namespaces: ["test.local/b"],
       }),
     }),
     H,
@@ -305,15 +333,27 @@ describe.each(Object.entries(LOCKS))(
     });
 
     it("cannot confirm a role or a link", async () => {
-      for (const post of [confirmRole, confirmLink]) {
+      for (const post of [confirmRole, confirmLink, confirmReach]) {
         const r = await post(member);
         expect(r.status, await r.clone().text()).toBe(403);
-        expect(await r.text()).toMatch(PLAN_TEXT);
+        // A card the page shows as it is, keeping the link's secret.
+        expect(r.headers.get("content-type")).toContain("application/json");
+        const card = (await r.json()) as { html: string; keep: boolean };
+        expect(card.html).toMatch(PLAN_TEXT);
+        expect(card.keep).toBe(true);
       }
     });
 
     it("cannot propose a link with a machine token", async () => {
       const r = await proposeLink(member);
+      expect(r.status).toBe(403);
+      expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
+        "plan_read_only",
+      );
+    });
+
+    it("cannot propose reach with a machine token", async () => {
+      const r = await proposeReach(member);
       expect(r.status).toBe(403);
       expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
         "plan_read_only",
@@ -519,10 +559,11 @@ describe("a suspended member (an operator's stop)", () => {
     const { r, code } = await approveDecide(member);
     expect(r.status).toBeGreaterThanOrEqual(400);
     expect(await approvedAt(code)).toBeNull();
-    for (const post of [confirmRole, confirmLink]) {
+    for (const post of [confirmRole, confirmLink, confirmReach]) {
       expect((await post(member)).status).toBeGreaterThanOrEqual(400);
     }
     expect((await proposeLink(member)).status).toBeGreaterThanOrEqual(400);
+    expect((await proposeReach(member)).status).toBeGreaterThanOrEqual(400);
     expect(
       (await proposeRoleMcp(member).catch(() => ({ isError: true }))).isError,
     ).toBe(true);
@@ -572,10 +613,11 @@ describe("who the gate leaves alone", () => {
     const { r, code } = await approveDecide(owner);
     expect(r.status).toBe(200);
     expect(await approvedAt(code)).not.toBeNull();
-    for (const post of [confirmRole, confirmLink]) {
+    for (const post of [confirmRole, confirmLink, confirmReach]) {
       expect(await (await post(owner)).text()).not.toMatch(PLAN_TEXT);
     }
     expect((await proposeLink(owner)).status).not.toBe(403);
+    expect((await proposeReach(owner)).status).not.toBe(403);
     expect(textOf(await proposeRoleMcp(owner))).not.toMatch(
       /plan_(required|read_only)/,
     );
@@ -584,15 +626,31 @@ describe("who the gate leaves alone", () => {
     );
   });
 
+  it("an expired form token is a card that keeps the secret, with the real reason, on every flow", async () => {
+    for (const [path, scope] of [
+      ["/bus/roles/confirm", ROLE_CONFIRM_SCOPE],
+      ["/bus/links/confirm", "bus-link-confirm"],
+      ["/bus/reach/confirm", "bus-reach-confirm"],
+    ] as const) {
+      const r = await confirmPost(path, scope, owner, true);
+      expect(r.status, path).toBe(403);
+      expect(r.headers.get("content-type"), path).toContain("application/json");
+      const card = (await r.json()) as { html: string; keep: boolean };
+      expect(card.html, path).toContain("This page expired");
+      expect(card.keep, path).toBe(true);
+    }
+  });
+
   it("an uncapped member (a paid plan) is not plan-refused either", async () => {
     await lockTo(PAID);
     const { r, code } = await approveDecide(member);
     expect(r.status).toBe(200);
     expect(await approvedAt(code)).not.toBeNull();
-    for (const post of [confirmRole, confirmLink]) {
+    for (const post of [confirmRole, confirmLink, confirmReach]) {
       expect(await (await post(member)).text()).not.toMatch(PLAN_TEXT);
     }
     expect((await proposeLink(member)).status).not.toBe(403);
+    expect((await proposeReach(member)).status).not.toBe(403);
     expect(textOf(await proposeRoleMcp(member))).not.toMatch(
       /plan_(required|read_only)/,
     );
@@ -669,6 +727,9 @@ describe("FEATURES bus", () => {
       ["GET", "/bus/links/confirm"],
       ["POST", "/bus/links/confirm"],
       ["POST", R.busLinkProposals],
+      ["GET", "/bus/reach/confirm"],
+      ["POST", "/bus/reach/confirm"],
+      ["POST", R.busReachProposals],
     ];
     const hit = (e: typeof HOSTED_H, m: string, path: string) =>
       fetchAndWait(

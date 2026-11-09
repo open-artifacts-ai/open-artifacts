@@ -136,6 +136,7 @@ describe("the codex MCP adapter", () => {
       "follow",
       "unfollow",
       "following",
+      "propose_reach",
     ]);
     expect(d.hellos).toEqual([]);
   });
@@ -160,7 +161,7 @@ describe("the codex MCP adapter", () => {
         pid: 4321,
         cwd: WORK,
         proposed_name: "codex",
-        caps: ["mailbox", "pending", "follow"],
+        caps: ["mailbox", "pending", "follow", "reach"],
         attest: {},
         codex: {
           thread_id: THREAD,

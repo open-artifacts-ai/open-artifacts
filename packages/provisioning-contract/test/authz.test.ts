@@ -312,6 +312,34 @@ describe("R4 field rules (3.3)", () => {
     ).toEqual({ field: "testHooks", code: "forbidden" });
   });
 
+  describe("auth.domains empty: owner and invites only", () => {
+    const body = (domains: string[], ownerEmail: string) => ({
+      ownerEmail,
+      tier: "team",
+      auth: { providers: ["google"], domains },
+    });
+
+    it("token: any owner email passes with no domains", () => {
+      expect(
+        checkCreateFields(body([], "me@gmail.com"), "token", "prod", D),
+      ).toBeNull();
+    });
+
+    it("token: a domains set still pins the owner's domain", () => {
+      expect(
+        checkCreateFields(body(["acme.com"], "o@acme.com"), "token", "prod", D),
+      ).toBeNull();
+      expect(
+        checkCreateFields(
+          body(["acme.com"], "me@gmail.com"),
+          "token",
+          "prod",
+          D,
+        ),
+      ).toEqual({ field: "ownerEmail", code: "forbidden" });
+    });
+  });
+
   describe("auth.domainCodes: the owner must be able to sign in (#1088)", () => {
     const codes = {
       providers: ["email"],

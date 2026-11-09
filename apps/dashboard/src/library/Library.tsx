@@ -30,6 +30,7 @@ import { AppLink } from "./AppLink";
 import { ArtifactCard } from "./ArtifactCard";
 import { ArtifactRow } from "./ArtifactRow";
 import { Filters } from "./Filters";
+import { GetStarted } from "./GetStarted";
 import { LibraryIcon } from "./icons";
 import { ALERT, BAR, Empty, GRID, H1, LIST, PAGE } from "./ui";
 import { uniqueItems, useSentinel } from "./useInfinite";
@@ -281,6 +282,13 @@ export function Library({ scope }: { scope: Scope }) {
 
   const results = (
     <>
+      {!filtered && !space && scope === "all" && !showRevoked && (
+        // Your own artifacts only: ones shared with you aren't your first.
+        <GetStarted
+          hasArtifacts={items.some((a) => a.owner.id === meId)}
+          loaded={q.isSuccess}
+        />
+      )}
       <Filters
         format={s.format}
         agent={agent}

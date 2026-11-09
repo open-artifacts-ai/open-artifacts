@@ -36,7 +36,7 @@ export type RosterAgent = ArtifactAgent & {
   address: BusAddress;
 };
 
-async function agentKey(
+export async function agentKey(
   artifactId: string,
   userId: string,
   a: BusAddress,
@@ -59,8 +59,8 @@ export const ROSTER_MAX = FANOUT_MAX + OWN_AGENTS_MAX;
 type OwnAgents = {
   /** The viewer's open agents that are running now, as bus addresses (bounded). */
   addresses: BusAddress[];
-  /** The one hub read it took, for the `online` check of the same member. */
-  running: Set<string>;
+  /** Addresses whose daemon is connected now (state "live"), from the same hub read: `online`. A running agent whose machine is away is "queued", not online. */
+  live: Set<string>;
 };
 
 const addrKey = (a: BusAddress) => `${a.namespace}\n${a.name}`;
@@ -82,8 +82,10 @@ export async function viewerAgents(
   if (!(await accessLevel(env, callerOf(user), artifactId))) return null;
   const view = await busView(env, viewerId);
   const running = new Set<string>();
+  const live = new Set<string>();
   const addresses: BusAddress[] = [];
   for (const a of view.agents) {
+    if (a.state === "live") live.add(addrKey(a));
     if (!a.running) continue;
     const k = addrKey(a);
     if (running.has(k)) continue;
@@ -96,10 +98,10 @@ export async function viewerAgents(
     if (ok.success && addresses.length < OWN_AGENTS_MAX)
       addresses.push(ok.data);
   }
-  return { addresses, running };
+  return { addresses, live };
 }
 
-/** `viewerAgents` as roster entries (online: it is running), for a mention at POST time. */
+/** `viewerAgents` as roster entries (online: its daemon is connected), for a mention at POST time. */
 export async function viewerRosterAgents(
   env: Env,
   artifactId: string,
@@ -112,7 +114,7 @@ export async function viewerRosterAgents(
     out.push({
       key: await agentKey(artifactId, viewerId, address),
       name: address.name,
-      online: true,
+      online: own.live.has(addrKey(address)),
       userId: viewerId,
       address,
     });
@@ -127,7 +129,7 @@ export async function viewerRosterAgents(
  * (read fresh, as notices are). `viewerId` names whose agents are plain;
  * another member's agent is "<agent> (<member>)". With `online`, each member
  * is checked on their hub (a read per member); otherwise `online` is false
- * (the viewer's own are running by definition, so true). An own agent that
+ * (the viewer's own read it from their one hub read). An own agent that
  * also follows is one entry. At most ROSTER_MAX entries.
  */
 export async function agentRoster(
@@ -164,11 +166,13 @@ export async function agentRoster(
     const user = await getUser(env, userId);
     if (!user || !canConnect(user)) continue;
     if (!(await accessLevel(env, callerOf(user), artifactId))) continue;
-    let running = new Set<string>();
-    if (own && userId === viewerId) running = own.running;
+    // `online` is a connected daemon (state "live"); the menu list itself
+    // keeps `running`: an agent whose machine is away is listed, offline.
+    let live = new Set<string>();
+    if (own && userId === viewerId) live = own.live;
     else if (online) {
       const view = await busView(env, userId);
-      for (const a of view.agents) if (a.running) running.add(addrKey(a));
+      for (const a of view.agents) if (a.state === "live") live.add(addrKey(a));
     }
     const owner = userId === viewerId ? "" : ` (${shownName(user)})`;
     for (const address of addresses) {
@@ -176,7 +180,7 @@ export async function agentRoster(
       out.push({
         key: await agentKey(artifactId, userId, address),
         name: `${address.name}${owner}`,
-        online: running.has(addrKey(address)),
+        online: live.has(addrKey(address)),
         userId,
         address,
       });
@@ -193,12 +197,13 @@ export const storedAgent = (a: RosterAgent): StoredAgent => ({
   owner: a.userId,
 });
 
-export type CommentNoticeKind = "ask" | "mention" | "assign";
+export type CommentNoticeKind = "ask" | "mention" | "assign" | "asker";
 
 const WHAT: Record<CommentNoticeKind, string> = {
   ask: "there is a question for you on an artifact",
   mention: "you were mentioned in a comment on an artifact",
   assign: "work was assigned to you in a comment on an artifact",
+  asker: "someone replied to a question you asked on an artifact",
 };
 
 /** What a notice text can be about: a comment notice kind, or `answered` (an ask got its answer). */
@@ -255,7 +260,12 @@ export async function notifyAgent(
     url,
     to: { namespace: to.address.namespace, name: to.address.name },
     text: commentNoticeText(kind, version, url, { threadId, commentId }),
-    coalesceKey: `${artifactId}:${commentId}:${kind}`,
+    // A reply to an ask's author coalesces per thread (#1614): replies sent
+    // while its agent is away leave one waiting notice, never a pile.
+    coalesceKey:
+      kind === "asker"
+        ? `${artifactId}:${threadId}:asker`
+        : `${artifactId}:${commentId}:${kind}`,
     threadId,
     commentId,
   };
@@ -289,29 +299,11 @@ export async function notifyAnswered(
   commentId: string,
   askerId: string,
 ): Promise<void> {
-  const { results } = await stmt(
-    env.DB,
-    `select namespace, agent_name as name from follows
-     where artifact_id = ? and user_id = ?
-     order by created_at, namespace, agent_name limit ?`,
-  )
-    .bind(artifactId, askerId, FANOUT_MAX)
-    .all<{ namespace: string; name: string }>();
-  if (results.length === 0) return;
-  const user = await getUser(env, askerId);
-  if (!user || !(await accessLevel(env, callerOf(user), artifactId))) {
-    await stmt(env.DB, DROP_MEMBER_FOLLOWS).bind(askerId, artifactId).run();
-    logInfo("follow_dropped", {
-      artifactId,
-      userId: askerId,
-      reason: "no_access",
-    });
-    return;
-  }
-  if (!canConnect(user)) return;
+  const targets = await askerAgents(env, artifactId, askerId);
+  if (targets.length === 0) return;
   const url = appOrigin(env) + viewerPath(artifactId);
   const scope = newDeliveryScope();
-  for (const to of results) {
+  for (const to of targets) {
     const n: BusNotice = {
       id: newId(),
       kind: "ask_answered",
@@ -331,4 +323,60 @@ export async function notifyAnswered(
     const out = await deliverNotice(env, askerId, n, scope);
     logInfo("comment_notice", { artifactId, kind: "answered", outcome: out });
   }
+}
+
+/**
+ * The agents of an ask's author that can be told of something on the ask (#1535,
+ * #1614): the agents that follow the artifact and belong to `askerId`. That is
+ * the honest target for now: an MCP caller has no bus address, so until a
+ * publisher/asker link exists (an open user decision) the asker's member is
+ * the only link to an agent. A person-authored ask with no following agent
+ * gets nothing. The member is re-checked at send time as the follows fan-out
+ * does (a lapsed one loses their follows on the artifact and hears nothing).
+ * Reads at most FANOUT_MAX follow rows of one member. Never another member's.
+ */
+export async function askerAgents(
+  env: Env,
+  artifactId: string,
+  askerId: string,
+): Promise<BusAddress[]> {
+  const { results } = await stmt(
+    env.DB,
+    `select namespace, agent_name as name from follows
+     where artifact_id = ? and user_id = ?
+     order by created_at, namespace, agent_name limit ?`,
+  )
+    .bind(artifactId, askerId, FANOUT_MAX)
+    .all<{ namespace: string; name: string }>();
+  if (results.length === 0) return [];
+  const user = await getUser(env, askerId);
+  if (!user || !(await accessLevel(env, callerOf(user), artifactId))) {
+    await stmt(env.DB, DROP_MEMBER_FOLLOWS).bind(askerId, artifactId).run();
+    logInfo("follow_dropped", {
+      artifactId,
+      userId: askerId,
+      reason: "no_access",
+    });
+    return [];
+  }
+  if (!canConnect(user)) return [];
+  return results;
+}
+
+/** `askerAgents` as roster entries, for the card's delivery marks (#1614). */
+export async function askerRoster(
+  env: Env,
+  artifactId: string,
+  askerId: string,
+): Promise<RosterAgent[]> {
+  const out: RosterAgent[] = [];
+  for (const address of await askerAgents(env, artifactId, askerId))
+    out.push({
+      key: await agentKey(artifactId, askerId, address),
+      name: address.name,
+      online: false,
+      userId: askerId,
+      address,
+    });
+  return out;
 }

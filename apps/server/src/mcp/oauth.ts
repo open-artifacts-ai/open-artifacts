@@ -47,7 +47,7 @@ import {
   touchGrant,
   uaFamily,
 } from "../services/agent-usage.js";
-import { expireBusRoleProposalsOf } from "../services/bus.js";
+import { expireBusRoleProposalsOf, linkRequest } from "../services/bus.js";
 import { getSettings } from "../services/members.js";
 import { getUser, getUserWithEpoch } from "../services/users.js";
 import { CONSENT_TEMPLATE } from "./consent-template.js";
@@ -147,8 +147,10 @@ const apiHandler = {
     // A member demoted to guest loses agent access (grants are also revoked).
     if (!canConnect(user))
       return mcpUnauthorized(env, "Only members can connect agents");
-    const capped = await capMcpBody(req, env);
-    if (capped instanceof Response) return capped;
+    const capped0 = await capMcpBody(req, env);
+    if (capped0 instanceof Response) return capped0;
+    const link = await linkRequest(env, user.id, capped0);
+    const capped = link.req;
     const grantId = grantIdOf(
       (ctx as ExecutionContext & { auth?: { token?: string } }).auth?.token,
     );
@@ -156,6 +158,7 @@ const apiHandler = {
       name: props?.clientName || "unknown agent",
       version: null,
       ...(grantId ? { via: { kind: "grant" as const, id: grantId } } : {}),
+      ...(link.identity ? { identity: link.identity } : {}),
     };
     let server: ReturnType<typeof createServer> | undefined;
     // Audit rows from these tools name the grant (by id, never the token).

@@ -1,6 +1,8 @@
 // Bundles the CLI and everything it imports into dist/index.js, and copies the
 // adapters' assets to assets/, where `new URL("../assets/…", import.meta.url)`
 // finds them from dist/ just as it does from each adapter's src/.
+
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   cpSync,
@@ -71,6 +73,15 @@ writeFileSync(
 cpSync(at("../bus-adapter-hermes/assets/oa_bus"), at("assets/oa_bus"), {
   recursive: true,
   filter: (src) => !src.includes("__pycache__") && !src.endsWith(".pyc"),
+});
+// The OpenClaw plugin folder: built from its adapter, stamped with the same version.
+execFileSync(
+  process.execPath,
+  [at("../bus-adapter-openclaw/scripts/build.mjs")],
+  { stdio: "inherit", env: { ...process.env, OA_BUS_CLI_VERSION: version } },
+);
+cpSync(at("../bus-adapter-openclaw/dist"), at("assets/openclaw"), {
+  recursive: true,
 });
 cpSync(
   at("../bus-adapter-opencode/assets/opencode-tui/tui.js"),

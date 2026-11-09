@@ -88,6 +88,11 @@ export const actor = (
 ) => (a.kind === "agent" ? `${a.name} (agent)` : a.me ? you : a.name);
 
 const letter = (i: number) => String.fromCharCode(65 + i);
+/** Letters are shown unless every option's id already equals its label ("yes"/"Yes"). */
+const showLetters = (opts: { id: string; label: string }[]) =>
+  !opts.every(
+    (o) => o.id.trim().toLowerCase() === o.label.trim().toLowerCase(),
+  );
 
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
@@ -123,6 +128,7 @@ export function AskBlock({
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
+  const letters = showLetters(ask.options);
   const locked = !!pickedOpt && !changing;
   const decided = ask.closed && pickedOpt;
   const line = decided && (
@@ -138,6 +144,7 @@ export function AskBlock({
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
+          {letters ? `${letter(pickedIdx)}, ` : ""}
           {pickedOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
@@ -205,12 +212,14 @@ export function AskBlock({
                       );
                     }}
                   >
-                    <span
-                      data-option-key=""
-                      className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
-                    >
-                      {letter(i)}
-                    </span>
+                    {letters && (
+                      <span
+                        data-option-key=""
+                        className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
+                      >
+                        {letter(i)}
+                      </span>
+                    )}
                     <span className="min-w-0 flex-1 break-words">
                       <b>{o.label}</b>
                       {rec && (
@@ -238,7 +247,8 @@ export function AskBlock({
           )}
           {ask.answer && pickedOpt && (
             <p className={`${TXT} font-medium`} data-ask-answer="">
-              {actor(ask.answer.by, "You")} picked {letter(pickedIdx)} ·{" "}
+              {actor(ask.answer.by, "You")} picked{" "}
+              {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
               {versionDate(ask.answer.at)}
               {ask.closed ? " · closed" : ""}
               {canAnswer && locked && (
@@ -370,6 +380,42 @@ export function removeMention(
     return /[\r\n]/.test(lead) ? lead : "";
   });
   return atStart ? out.trimStart() : out;
+}
+
+/** A posted body with each `@name` from its mentions as a chip. Text spans only,
+    never HTML; a body with no mentions is the plain string. */
+export function MentionedText({
+  body,
+  mentions,
+}: {
+  body: string;
+  mentions?: readonly { key: string; name: string }[];
+}) {
+  if (!mentions?.length) return <>{body}</>;
+  const names = [...new Set(mentions.map((m) => m.name))]
+    .sort((x, y) => y.length - x.length)
+    .map(esc);
+  const re = new RegExp(`(^|\\s)@(${names.join("|")})${MENTION_END}`, "gi");
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of body.matchAll(re)) {
+    const at = m.index + (m[1]?.length ?? 0);
+    const end = at + 1 + (m[2]?.length ?? 0);
+    if (at > last) out.push(body.slice(last, at));
+    out.push(
+      <span
+        key={at}
+        data-mention-chip=""
+        className="rounded-full bg-[var(--oa-accent-soft)] px-1 py-0.5 text-[var(--oa-accent-fg)]"
+      >
+        {body.slice(at, end)}
+      </span>,
+    );
+    last = end;
+  }
+  if (last === 0) return <>{body}</>;
+  if (last < body.length) out.push(body.slice(last));
+  return <>{out}</>;
 }
 
 /** Who gets notified: the mentioned agents. */

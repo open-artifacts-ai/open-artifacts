@@ -125,6 +125,17 @@ describe("share recipient reach (review item 37)", () => {
     expect(m?.text).not.toContain("invite you");
   });
 
+  it("Google only, no domains: a non-Gmail address needs an invite, not outside_domains", async () => {
+    const { share } = await setup(direct, {
+      ...HOSTED,
+      AUTH_PROVIDERS: "google",
+      AUTH_DOMAINS: "",
+    });
+    const email = uniq("g", "out.com");
+    const r = (await share(email)).recipient;
+    expect(r).toEqual({ canSignIn: false, reason: "needs_invite" });
+  });
+
   it("email only, domain codes off, in-domain: no_sign_in_method (an invite wouldn't help), and the email says so", async () => {
     const { share, sent } = await setup(direct, {
       AUTH_PROVIDERS: "email",
