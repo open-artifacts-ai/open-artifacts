@@ -173,7 +173,7 @@ export function Filters(p: FilterProps) {
                   o.value === ALL ? undefined : (o.value as "needs_answer"),
                 )
               }
-              className={`h-[30px] rounded-full border px-[var(--oa-space-3)] ${TEXT} transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${on ? "border-transparent bg-primary text-primary-foreground" : "border-input bg-background text-foreground hover:bg-muted"}`}
+              className={`h-7 rounded-full border px-[var(--oa-space-3)] ${TEXT} transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${on ? "border-transparent bg-[var(--oa-accent)] text-[var(--oa-accent-text)]" : "border-input bg-background text-foreground hover:bg-muted"}`}
             >
               {o.label}
             </button>
