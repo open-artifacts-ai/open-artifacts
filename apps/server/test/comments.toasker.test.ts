@@ -254,13 +254,14 @@ describe("reply toAsker (#1614)", () => {
     const s = await setup();
     const t = await askBy(s.id, asAgent(owner), owner);
     bus.clear();
-    for (const u of [viewer, owner]) {
-      const res = await reply(s.id, t.id, u, {
-        toAsker: true,
-        mentions: [{ key: s.codex }],
-      });
-      expect(res.status).toBe(400);
-    }
+    for (const u of [viewer, owner])
+      for (const extra of [
+        { mentions: [{ key: s.codex }] },
+        { assign: { key: s.codex } },
+      ]) {
+        const res = await reply(s.id, t.id, u, { toAsker: true, ...extra });
+        expect(res.status).toBe(400);
+      }
     expect(bus.sent).toHaveLength(0);
   });
 
