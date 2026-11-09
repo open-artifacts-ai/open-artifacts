@@ -19,7 +19,13 @@ export const NOTICE_SENDER = "open-artifacts";
 
 /** `comment` (#1535): an ask, mention or assignment on a comment. */
 /** `commented` (#682): a comment was added to an artifact the agent follows. */
-export type NoticeKind = "shared" | "changed" | "comment" | "commented";
+/** `ask_answered` (#1535): a person answered an ask the agent's member posted. */
+export type NoticeKind =
+  | "shared"
+  | "changed"
+  | "comment"
+  | "commented"
+  | "ask_answered";
 
 /**
  * One notice for one address in one member's bus: the shape the server

@@ -37,6 +37,7 @@ import {
   type CommentNoticeKind,
   type DeliveryState,
   notifyAgent,
+  notifyAnswered,
   type RosterAgent,
   storedAgent,
 } from "./comment-agents.js";
@@ -714,6 +715,8 @@ export async function answerAsk(
   who: CommentWho,
   viewer: CommentViewer,
   optionId: string,
+  /** The artifact's current version and the request's ctx: the asker's agents hear of the answer (#1535), after the response. */
+  after?: Announce,
 ): Promise<Comment> {
   const c = await call(() =>
     stub(env, artifactId).commentsAnswer({
@@ -724,6 +727,20 @@ export async function answerAsk(
       rate: rateKeyOf(who),
     }),
   );
+  // The answer is stored: the asker's following agents hear of it, in the
+  // background, and a failure never fails the answer (inBackground catches).
+  if (after && c.author.kind === "user")
+    await inBackground(
+      after.ctx,
+      notifyAnswered(
+        env,
+        artifactId,
+        Math.max(1, after.version),
+        threadId,
+        commentId,
+        c.author.ref,
+      ),
+    );
   return commentView(env, c, viewer);
 }
 
