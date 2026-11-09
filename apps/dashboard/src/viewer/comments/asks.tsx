@@ -104,7 +104,6 @@ export function AskBlock({
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
   const locked = !!pickedOpt && !changing;
-  const asker = (c.author.agent ?? c.author.name).replace(/^via /, "");
   const decided = ask.closed && pickedOpt;
   const line = decided && (
     <>
@@ -143,12 +142,15 @@ export function AskBlock({
       {line}
       {(!decided || open) && (
         <div
-          className="flex flex-col gap-2 rounded-md p-2 ring-1 ring-[var(--oa-warning)]"
+          // Amber only while it needs this reader: an ask for you with no pick yet.
+          className={`flex flex-col gap-2 rounded-md p-2 ring-1 ${
+            canAnswer && !pickedOpt ? "ring-[var(--oa-warning)]" : "ring-border"
+          }`}
           data-ask=""
+          data-needs-you={canAnswer && !pickedOpt ? "" : undefined}
         >
-          <p className={`${TXT} ${MUTED}`}>
-            Ask · {asker} · {versionDate(c.createdAt)}
-          </p>
+          {/* The card's own header already names the asker and the time. */}
+          <p className={`${TXT} ${MUTED}`}>Ask</p>
           <p id={qid} className={`${TXT} font-semibold break-words`}>
             {ask.question}
           </p>

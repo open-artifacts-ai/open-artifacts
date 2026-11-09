@@ -201,14 +201,13 @@ describe("asks on the comments column", () => {
     expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
   });
 
-  it("heads the card 'Ask · asker · age', with a key badge per option and a Recommended tag", async () => {
+  it("heads the ask 'Ask', amber while it needs you, with a key badge per option and a Recommended tag", async () => {
     serveThreads(() => [askThread()]);
     mount(viewerPath(OWNED));
     const c = await col();
     await within(c).findByText("Which layout?");
-    expect(
-      within(c).getByText(/^Ask · OA Product · /, { selector: "p" }),
-    ).toBeInTheDocument();
+    expect(within(c).getByText("Ask", { selector: "p" })).toBeInTheDocument();
+    expect(c.querySelector("[data-ask]")).toHaveAttribute("data-needs-you");
     const keys = [...c.querySelectorAll("[data-option-key]")].map(
       (k) => k.textContent,
     );
@@ -219,6 +218,25 @@ describe("asks on the comments column", () => {
     expect(
       within(c).getByRole("button", { name: /Side by side/ }),
     ).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("drops the amber once you have picked", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          answer: {
+            optionId: "b",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText(/You picked B/);
+    expect(c.querySelector("[data-ask]")).not.toHaveAttribute("data-needs-you");
   });
 
   it("shows 'You picked B · time · Change' and Change reopens the options", async () => {
