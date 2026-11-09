@@ -368,6 +368,12 @@ const commentOf = (
                     by: authorView(c.ask.answer.by, viewer, users),
                     at: c.ask.answer.at,
                     typed: isTyped(c.ask.answer.by),
+                    yes:
+                      viewer.userId !== null &&
+                      isTyped(c.ask.answer.by) &&
+                      c.ask.answer.by.ref === viewer.userId &&
+                      c.author.kind === "user" &&
+                      c.author.ref === viewer.userId,
                   },
                 }
               : {}),

@@ -282,6 +282,7 @@ export function createCommentMock({
         by: mine(),
         at: iso(),
         typed: true,
+        yes: c.author.me,
       };
       emit(String(params.id), open(String(params.id)));
       return HttpResponse.json(c);

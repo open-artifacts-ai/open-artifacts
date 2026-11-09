@@ -415,4 +415,50 @@ describe("notice tier", () => {
       ].join("\n"),
     );
   });
+
+  it("answer.yes: true only for your own ask picked in the browser by you", async () => {
+    const s = await setup();
+    const yesFor = async (auth: string) =>
+      (await list(s.id, auth)).threads[0]?.comments[0]?.ask?.answer;
+    // Your own agent's ask, picked in the browser: your user's yes.
+    const mine = await askFrom(s.id, mcpWho(owner), s.claude);
+    await answer(s.id, mine.id, (mine.comments[0] as Comment).id, owner.cookie);
+    expect(await yesFor(owner.cookie)).toMatchObject({
+      typed: true,
+      yes: true,
+    });
+    // The same answer is not the editor's yes (read as another member).
+    expect(await yesFor(editor.cookie)).toMatchObject({
+      typed: true,
+      yes: false,
+    });
+  });
+
+  it("answer.yes is false when a token picks, even on your own ask", async () => {
+    const s = await setup();
+    const t = await askFrom(s.id, mcpWho(owner), s.claude);
+    await answer(s.id, t.id, (t.comments[0] as Comment).id, ownerPat);
+    const a = (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask
+      ?.answer;
+    expect(a).toMatchObject({ typed: false, yes: false });
+  });
+
+  it("answer.yes is false when another member's agent asked you and you picked in the browser", async () => {
+    const s = await setup();
+    const t = await askFrom(s.id, mcpWho(editor), owner.userId);
+    const r = await answer(
+      s.id,
+      t.id,
+      (t.comments[0] as Comment).id,
+      owner.cookie,
+    );
+    expect(r.status).toBe(200);
+    const a = ((await r.json()) as Comment).ask?.answer;
+    // Typed by you, on someone else's ask: not a yes for your agents.
+    expect(a).toMatchObject({ typed: true, yes: false });
+    expect(
+      (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask?.answer
+        ?.yes,
+    ).toBe(false);
+  });
 });

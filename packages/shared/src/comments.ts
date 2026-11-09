@@ -94,6 +94,12 @@ export const CommentAskSchema = z
         at: z.string(),
         /** #1797: picked in the web app (a browser session), never with a token. Only such an answer is a person's yes. */
         typed: z.boolean(),
+        /**
+         * #1797: your user's yes, computed for the caller by the server: typed,
+         * picked by the caller's own person, on an ask the caller's own person
+         * wrote (as themselves or through an agent). Never set by a client.
+         */
+        yes: z.boolean(),
       })
       .optional(),
     closed: z.boolean(),
