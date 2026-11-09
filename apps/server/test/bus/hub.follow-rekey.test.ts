@@ -290,6 +290,66 @@ describe("a reclaimed or restarted name keeps its follows (#1742)", () => {
   });
 });
 
+describe("a closed session that reopens (#1766 review)", () => {
+  const closeP = async (s: S, keep: string, ref: string) => {
+    s.d.send({
+      v: 1,
+      id: id("c"),
+      type: "sessions",
+      open: [keep],
+      closed: [ref],
+    } as never);
+    await settled(s, keep);
+  };
+  const reopen = async (s: S, ref: string, name: string) => {
+    s.d.send(up(id("u"), ref, name, s.namespace));
+    return (await waitFor(s.d, "agent_ok")).bus_name;
+  };
+  const taken = async () => {
+    const s = await setup();
+    const x = await artifactOf(s.m.userId);
+    const y = await artifactOf(s.m.userId);
+    const keep = await s.reg(uniq("keeper"));
+    const p = await s.reg(uniq("Lead"));
+    await follow(s, p.ref, x);
+    await closeP(s, keep.ref, p.ref);
+    // Q reclaims P's name and follows another artifact.
+    const q = await s.reg(p.name);
+    expect(q.name).toBe(p.name);
+    await follow(s, q.ref, y);
+    return { s, x, y, p, q };
+  };
+
+  it("P reopens under a suffixed name after Q reclaimed: Q's rows stay, nothing moves", async () => {
+    const { s, x, y, p, q } = await taken();
+    const got = await reopen(s, p.ref, p.name);
+    expect(got).not.toBe(p.name);
+    expect((await listed(s, q.ref)).sort()).toEqual([x, y].sort());
+    expect((await rows(s.m.userId)).every((r) => r.name === p.name)).toBe(true);
+  });
+
+  it("P reopens under a different name after Q reclaimed: Q's rows stay, nothing moves", async () => {
+    const { s, x, y, p, q } = await taken();
+    const got = await reopen(s, p.ref, uniq("Other"));
+    expect(got).not.toBe(p.name);
+    expect((await listed(s, q.ref)).sort()).toEqual([x, y].sort());
+    expect((await rows(s.m.userId)).every((r) => r.name === p.name)).toBe(true);
+  });
+
+  it("an ordinary reopen under a new name of a session holding its away reservation moves its rows", async () => {
+    const s = await setup();
+    const x = await artifactOf(s.m.userId);
+    const keep = await s.reg(uniq("keeper"));
+    const p = await s.reg(uniq("Lead"));
+    await follow(s, p.ref, x);
+    await closeP(s, keep.ref, p.ref);
+    const next = uniq("Next");
+    expect(await reopen(s, p.ref, next)).toBe(next);
+    expect(await listed(s, p.ref)).toEqual([x]);
+    expect(await rows(s.m.userId)).toMatchObject([{ name: next }]);
+  });
+});
+
 describe("the follow cap and dead follows", () => {
   /** `n` bare artifact rows (never read, only followed by raw inserts): publishing 200 takes seconds. */
   const fillers = async (userId: string, n: number) => {

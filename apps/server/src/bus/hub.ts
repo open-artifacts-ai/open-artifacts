@@ -4359,13 +4359,22 @@ export class BusHub extends DurableObject<Env> {
         // ref takes over the old one's agent row (address, former names, mail).
         if (f.replaces !== undefined && mailboxGated(ws))
           takeOver(sql, machineId, f.replaces, f.agent_ref, this.#now());
-        // #1766: where this session's follows are now, before agentUp moves it.
+        // #1766: where this session's follows are, read before agentUp (a
+        // reclaim deletes the away row). Only an address still this session's:
+        // its row is live, or it holds an unexpired away reservation of its own
+        // there. A closed session whose name someone else took owns nothing.
         const before = one<{ namespace: string; name: string }>(
           sql,
-          "select namespace, name from agents where machine_id = ? and native_ref = ? and org_id = ?",
+          `select a.namespace, a.name from agents a
+            where a.machine_id = ? and a.native_ref = ? and a.org_id = ?
+              and (a.live = 1 or exists (
+                select 1 from former_names f
+                 where f.agent_id = a.id and f.kind = 'away' and f.expires_at > ?
+                   and f.lname = lower(a.name) and f.namespace = a.namespace))`,
           machineId,
           f.agent_ref,
           OWNER_ORG_ID,
+          this.#now(),
         );
         const { reply, change, arms, moved } = this.#withReachNotice(() =>
           agentUp(sql, machineId, f, this.#now()),
@@ -4483,6 +4492,8 @@ export class BusHub extends DurableObject<Env> {
     const to = { namespace: after.namespace, name: after.name };
     const run = async (): Promise<void> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
+      // Counted like the index calls, so a test's afterAll waits for the D1 work.
+      this.indexInFlight++;
       try {
         const timeout = new Promise<never>((_, reject) => {
           timer = setTimeout(
@@ -4494,6 +4505,7 @@ export class BusHub extends DurableObject<Env> {
       } catch (e) {
         logError("bus_follow_rekey_failed", e);
       } finally {
+        this.indexInFlight--;
         clearTimeout(timer);
       }
     };
@@ -4505,7 +4517,9 @@ export class BusHub extends DurableObject<Env> {
   /**
    * #1766: every address this hub still holds for its member: a live agent, or
    * a name under an unexpired reservation (away, held, chosen), as knownKey.
-   * A follow row at any other address can never be reached again.
+   * A follow row at any other address is not reached by name any more. (A
+   * session closed past its reservation can still reopen, under a new name;
+   * its rows are then gone and it follows again.)
    */
   #knownAddresses(): Set<string> {
     const sql = this.ctx.storage.sql;
@@ -4562,10 +4576,11 @@ export class BusHub extends DurableObject<Env> {
       followed_at: e.followedAt,
     });
     // A rename's re-key lands first (bounded itself), so this sees the moved rows.
-    await this.#rekeyed;
+    // It counts against the limit while it waits.
     this.#followsInFlight++;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      await this.#rekeyed;
       const work =
         f.type === "follow"
           ? this.#followOrPrune(userId, to, f.artifact).then(
