@@ -170,7 +170,7 @@ function Composer({
   buttonsRight = false,
   lead,
 }: {
-  /** Offer @mentions and Assign: the agent list is fetched once an "@" is typed. */
+  /** Offer @mentions and Assign: the agent list is fetched on the composer's first focus. */
   mentionable?: boolean;
   /** The action row's own surface while it floats in the short sheet (#1657). */
   actions?: string;
@@ -514,10 +514,13 @@ function CommentRow({
   c: CommentT;
   root: boolean;
 }) {
-  const pending = asksForMe([...api.ordered, ...api.orphans]).filter(
-    (id) => id !== thread.id,
-  );
-  const nextAsk = pending[0];
+  // Page order (whole-page asks, then by position, then earlier text), wrapping around.
+  const order = [...api.ordered, ...api.orphans].map((t) => t.id);
+  const pending = new Set(asksForMe([...api.ordered, ...api.orphans]));
+  const at = order.indexOf(thread.id);
+  const nextAsk = [...order.slice(at + 1), ...order.slice(0, Math.max(at, 0))]
+    .filter((id) => id !== thread.id)
+    .find((id) => pending.has(id));
   const edit = useEditComment(api.artifactId, api.guest);
   const del = useDeleteComment(api.artifactId, api.guest);
   const [menu, setMenu] = useState(false);
@@ -587,6 +590,7 @@ function CommentRow({
           thread={thread}
           c={c}
           next={nextAsk ? () => api.select(nextAsk, true) : undefined}
+          reply={api.canComment ? () => api.select(thread.id, true) : undefined}
         />
       ) : (
         <p className={`whitespace-pre-wrap break-words ${TXT}`}>{c.body}</p>
@@ -635,6 +639,7 @@ function CommentRow({
 
 /** What the card says about where its quote went (from the frame's state). */
 function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
+  const isAsk = !!t.comments[0]?.ask;
   const a = t.anchor;
   const state = api.positions.get(t.id)?.state;
   if (a.kind === "note")
@@ -674,7 +679,9 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
     <div className="flex flex-col gap-1">
       {where && <p className={`${TXT} ${MUTED}`}>{where}</p>}
       {state === "partial" && (
-        <p className={`${TXT} ${MUTED}`}>Text changed since this comment</p>
+        <p className={`${TXT} ${MUTED}`}>
+          Text changed since this {isAsk ? "ask" : "comment"}
+        </p>
       )}
       <blockquote
         className={`flex items-start gap-1.5 border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED}`}

@@ -1,4 +1,4 @@
-import { R, viewerPath } from "@oa/shared";
+import { type ArtifactAgent, R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import {
   act,
@@ -20,6 +20,7 @@ import {
   it,
   vi,
 } from "vitest";
+import { mentionedKeys, mentionQuery } from "../src/viewer/comments/asks";
 import {
   calls,
   events,
@@ -203,9 +204,154 @@ describe("asks on the comments column", () => {
     expect(within(c).getByText(/1 ask for you/)).toBeInTheDocument();
     fireEvent.click(within(c).getByRole("button", { name: /List only/ }));
     await waitFor(() => expect(answered).toEqual({ optionId: "a" }));
+    expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
+  });
+
+  it("heads the ask 'Ask', amber while it needs you, with a key badge per option and a Recommended tag", async () => {
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(within(c).getByText("Ask", { selector: "p" })).toBeInTheDocument();
+    expect(c.querySelector("[data-ask]")).toHaveAttribute("data-needs-you");
+    const keys = [...c.querySelectorAll("[data-option-key]")].map(
+      (k) => k.textContent,
+    );
+    expect(keys).toEqual(["A", "B"]);
     expect(
-      await within(c).findByText(/You picked List only/),
+      within(c).getByRole("button", { name: /Side by side/ }),
+    ).toHaveTextContent("Recommended");
+    expect(
+      within(c).getByRole("button", { name: /Side by side/ }),
+    ).toHaveAttribute("aria-pressed", "false");
+  });
+
+  it("drops the amber once you have picked", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          answer: {
+            optionId: "b",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText(/You picked B/);
+    expect(c.querySelector("[data-ask]")).not.toHaveAttribute("data-needs-you");
+  });
+
+  it("shows 'You picked B · time · Change' and Change reopens the options", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          answer: {
+            optionId: "b",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const side = await within(c).findByRole("button", { name: /Side by side/ });
+    expect(side).toHaveAttribute("aria-pressed", "true");
+    expect(within(c).getByText(/You picked B/)).toBeInTheDocument();
+    expect(within(c).getByRole("button", { name: /List only/ })).toBeDisabled();
+    fireEvent.click(within(c).getByRole("button", { name: "Change" }));
+    expect(within(c).getByRole("button", { name: /List only/ })).toBeEnabled();
+  });
+
+  it("Change, then another option, sends the new answer and locks again once it lands", async () => {
+    let picked = "b";
+    let sent: unknown;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          answer: {
+            optionId: picked,
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+          },
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          sent = await request.json();
+          picked = "a";
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText(/You picked B/);
+    fireEvent.click(within(c).getByRole("button", { name: "Change" }));
+    fireEvent.click(within(c).getByRole("button", { name: /List only/ }));
+    await waitFor(() => expect(sent).toEqual({ optionId: "a" }));
+    expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
+    // The new answer ends Change mode: the others lock again.
+    expect(
+      within(c).getByRole("button", { name: /Side by side/ }),
+    ).toBeDisabled();
+    expect(
+      within(c).getByRole("button", { name: "Change" }),
     ).toBeInTheDocument();
+  });
+
+  it("clears an answer error once the ask shows as answered from elsewhere", async () => {
+    let answered = false;
+    serveThreads(() => [
+      askThread(
+        {},
+        answered
+          ? {
+              answer: {
+                optionId: "a",
+                by: { kind: "user", id: "me", name: "Me", me: true },
+                at: "2026-11-05T11:00:00Z",
+              },
+            }
+          : {},
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Side by side/ }),
+    );
+    expect(await within(c).findByRole("alert")).toBeInTheDocument();
+    answered = true;
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        () => new HttpResponse(null, { status: 500 }),
+      ),
+    );
+    // A refetch (here: a second failed tap's settle) now shows the ask answered.
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Side by side/ }),
+    );
+    await waitFor(() =>
+      expect(within(c).getByText(/You picked A/)).toBeInTheDocument(),
+    );
+    await waitFor(() => expect(within(c).queryByRole("alert")).toBeNull());
   });
 
   it("gives someone it isn't addressed to no answer buttons", async () => {
@@ -247,7 +393,7 @@ describe("asks on the comments column", () => {
     expect(await within(c).findByRole("alert")).toHaveTextContent(copy);
   });
 
-  it("collapses a decided, closed ask to one line that can be opened again", async () => {
+  it("collapses a decided, closed ask to one line that toggles, with a reply link", async () => {
     serveThreads(() => [
       askThread(
         { status: "resolved" },
@@ -266,14 +412,85 @@ describe("asks on the comments column", () => {
     fireEvent.click(
       await within(c).findByRole("button", { name: /Show resolved/ }),
     );
-    expect(
-      await within(c).findByText(
-        /Which layout\? Side by side · you, \d\d:\d\d/,
-      ),
-    ).toBeInTheDocument();
+    const line = await within(c).findByRole("button", { name: /Show$/ });
+    // The triangle is decoration: the name ends in "Show", not the glyph.
+    expect(line).toHaveTextContent(/Which layout\? Side by side · you, .+/);
+    // versionDate, not a 24-hour HH:MM.
+    expect(line.textContent).not.toMatch(/\d\d:\d\d/);
+    expect(line).toHaveAttribute("aria-expanded", "false");
     expect(within(c).queryByRole("button", { name: /List only/ })).toBeNull();
-    fireEvent.click(within(c).getByRole("button", { name: "Show" }));
+    fireEvent.click(line);
     expect(within(c).getByRole("button", { name: /List only/ })).toBeDisabled();
+    expect(line).toHaveTextContent("Hide ▴");
+    fireEvent.click(line);
+    expect(within(c).queryByRole("button", { name: /List only/ })).toBeNull();
+    fireEvent.click(
+      within(c).getByRole("button", { name: "Reply to ask for a change" }),
+    );
+    expect(
+      await within(c).findByRole("textbox", { name: "Reply" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Next ask goes to the following ask in page order, wrapping around", async () => {
+    const mk = (id: string, anchor: object) => {
+      const t = askThread({ id, anchor });
+      (t.comments[0] as { id: string }).id = `c-${id}`;
+      return t;
+    };
+    const text = (exact: string) => ({
+      kind: "text",
+      version: 1,
+      exact,
+      prefix: "",
+      suffix: "",
+    });
+    // Created in the reverse of page order.
+    const tText2 = mk("t2", text("two"));
+    const tText1 = mk("t1", text("one"));
+    const tNote = mk("n", { kind: "note" });
+    serveThreads(() => [tText2, tText1, tNote]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText("Which layout?");
+    await hello();
+    await act(async () =>
+      opts.at(-1)?.onCommentPositions([
+        { id: "t1", state: "ok", top: 10 },
+        { id: "t2", state: "ok", top: 50 },
+      ]),
+    );
+    const next = async (id: string, to: string) => {
+      const card = c.querySelector(`[data-thread="${id}"]`) as HTMLElement;
+      fireEvent.click(within(card).getByRole("button", { name: /Next ask/ }));
+      await waitFor(() =>
+        expect(c.querySelector(`[data-thread="${to}"]`)).toHaveAttribute(
+          "data-active",
+        ),
+      );
+    };
+    await next("n", "t1");
+    await next("t1", "t2");
+    await next("t2", "n");
+  });
+
+  it("says 'Text changed since this ask' on a partial ask anchor", async () => {
+    const t = askThread({
+      anchor: { kind: "text", version: 1, exact: "x", prefix: "", suffix: "" },
+    });
+    serveThreads(() => [t]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText("Which layout?");
+    await hello();
+    await act(async () =>
+      opts
+        .at(-1)
+        ?.onCommentPositions([{ id: "t-ask", state: "partial", top: 5 }]),
+    );
+    expect(
+      await within(c).findByText("Text changed since this ask"),
+    ).toBeInTheDocument();
   });
 });
 
@@ -425,6 +642,24 @@ describe("@ picker details", () => {
     expect(keys).toEqual(["agent:bob", "agent:product"]);
   });
 
+  it("matches @Bob's and @Bob- as Bob, and the picker does not swallow them", async () => {
+    const bob = {
+      key: "agent:bob",
+      name: "Bob",
+      online: true,
+    } as ArtifactAgent;
+    expect(mentionedKeys("hi @Bob's idea", [bob])).toEqual(["agent:bob"]);
+    expect(mentionedKeys("hi @Bob- ok", [bob])).toEqual(["agent:bob"]);
+    expect(mentionedKeys("hi @Bobby", [bob])).toEqual([]);
+    // A hyphen joined to more name is not Bob (review of #1763).
+    expect(mentionedKeys("hi @Bob-Smith here", [bob])).toEqual([]);
+    expect(mentionedKeys("hi @Bob.", [bob])).toEqual(["agent:bob"]);
+    expect(mentionedKeys("mail me@Bob today", [bob])).toEqual([]);
+    expect(mentionQuery("hi @Bob-")).toBe("Bob");
+    expect(mentionQuery("hi @Bob's")).toBeNull();
+    expect(mentionQuery("hi @OA Pro")).toBe("OA Pro");
+  });
+
   it("refuses more mentions than a comment may carry, in plain words", async () => {
     const many = Array.from({ length: 11 }, (_, i) => ({
       key: `agent:n${i}`,
@@ -502,7 +737,12 @@ describe("@ picker details", () => {
     ).toBeDisabled();
     expect(
       within(c).getByRole("button", { name: /Side by side/ }),
+    ).toBeDisabled();
+    fireEvent.click(within(c).getByRole("button", { name: "Change" }));
+    expect(
+      within(c).getByRole("button", { name: /Side by side/ }),
     ).toBeEnabled();
+    expect(within(c).getByRole("button", { name: /List only/ })).toBeDisabled();
   });
 });
 
@@ -563,7 +803,7 @@ describe("round 2", () => {
     );
     await within(c).findByText("On earlier text");
     const first = c.querySelector('[data-thread="t1"]') as HTMLElement;
-    fireEvent.click(within(first).getByRole("button", { name: "Next ask" }));
+    fireEvent.click(within(first).getByRole("button", { name: /Next ask/ }));
     await waitFor(() =>
       expect(c.querySelector('[data-thread="t2"]')).toHaveAttribute(
         "data-active",
