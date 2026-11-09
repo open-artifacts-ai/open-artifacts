@@ -33,11 +33,11 @@ import {
   sandboxRisk,
 } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
+import { MIN_NODE } from "../steps/service.ts";
 import { habitsLine } from "./habits.ts";
 import { errorTail } from "./login.ts";
 import { type Healthz, healthzBody, hostOf, updateTarget } from "./status.ts";
 
-const MIN_NODE = 22;
 const HEALTHZ_TIMEOUT_MS = 10_000;
 
 const sameOrigin = (url: string, hub: string) => {
