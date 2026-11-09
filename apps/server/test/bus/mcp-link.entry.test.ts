@@ -12,7 +12,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPat } from "../../src/auth/pat.js";
 import * as mcpServer from "../../src/mcp/server.js";
-import { type BusHubRpc, LINK_LOOKUP_MS } from "../../src/services/bus.js";
+import type { BusHubRpc } from "../../src/services/bus.js";
 import { sha256Hex } from "../../src/util/crypto.js";
 import { callWorker, E, MCP_URL, oauthToken } from "../mcp-helpers.js";
 import {

@@ -482,6 +482,7 @@ async function lookupProof(
 function takeProofArg(text: string): {
   text: string;
   proof?: unknown;
+  poisoned?: true;
 } {
   // The key could be written with JSON escapes (\u005f), so a body is only
   // parsed when it names the key or has any \u escape: ordinary bodies are not.
@@ -512,8 +513,19 @@ function takeProofArg(text: string): {
   const same =
     first !== MISSING &&
     seen.every((v) => typeof v === "string" && v === first);
-  return { text: JSON.stringify(msg), proof: same ? first : null };
+  try {
+    return { text: JSON.stringify(msg), proof: same ? first : null };
+  } catch (e) {
+    // workerd parses deeper nesting than it can stringify. The key was seen
+    // and removed from the parsed copy, so the original bytes must not go on:
+    // fail closed with a body the handler refuses (-32700), unlinked.
+    logError("bus_link_reencode_failed", e);
+    return { text: UNPARSEABLE, proof: null, poisoned: true };
+  }
 }
+
+/** Not JSON: the handler answers it with its usual parse error. */
+const UNPARSEABLE = "{";
 
 /**
  * #1822: the /mcp auth step's one link function. Takes the proof header off
@@ -530,6 +542,7 @@ export async function linkRequest(
   const header = req.headers.get(LINK_PROOF_HEADER);
   let out = req;
   let argProof: unknown;
+  let poisoned = false;
   try {
     if (header !== null) {
       const headers = new Headers(req.headers);
@@ -539,6 +552,8 @@ export async function linkRequest(
     if (req.method === "POST" && req.body) {
       const text = await out.clone().text();
       const taken = takeProofArg(text);
+      poisoned = taken.poisoned === true;
+      argProof = taken.proof;
       if (taken.text !== text) {
         const headers = new Headers(out.headers);
         headers.set(
@@ -551,11 +566,17 @@ export async function linkRequest(
           body: taken.text,
         });
       }
-      argProof = taken.proof;
     }
   } catch (e) {
     logError("bus_link_body_failed", e);
+    // Any failure after the key may have been seen: never forward the
+    // original bytes. Unlinked, with a body the handler refuses.
+    if (req.method === "POST" && req.body) {
+      poisoned = true;
+      out = new Request(out.url, { method: out.method, body: UNPARSEABLE });
+    }
   }
+  if (poisoned) return { req: out };
   const proof = header !== null ? header : argProof;
   if (proof === undefined) return { req: out };
   const identity = await lookupProof(env, userId, proof);
