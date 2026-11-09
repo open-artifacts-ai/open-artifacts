@@ -423,6 +423,15 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   ] as const)
     if (!agentCols.has(col))
       sql.exec(`alter table agents add column ${col} ${type}`);
+  // #1822: the session link. identity_id is opaque and random, minted at the
+  // first accepted link_bind; proof_hash is the sha256 of the session's
+  // current proof, null unless the session is live and bound.
+  for (const col of ["identity_id", "proof_hash"] as const)
+    if (!agentCols.has(col))
+      sql.exec(`alter table agents add column ${col} text`);
+  sql.exec(
+    "create index if not exists agents_proof_hash on agents(proof_hash) where proof_hash is not null",
+  );
   sql.exec(
     "create index if not exists agents_status_due on agents(status_due) where status_due is not null",
   );

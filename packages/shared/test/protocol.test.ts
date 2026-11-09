@@ -95,6 +95,30 @@ describe("parseShellMessage", () => {
         error: { code: "not_found", message: "x" },
       }),
     ).not.toBeNull();
+    // #1834: the quote being written about travels with the thread set, as the
+    // anchor a thread carries minus the version (a paint hint, not a record).
+    const quote = {
+      kind: "text",
+      exact: "quick",
+      prefix: "The ",
+      suffix: " fox",
+    };
+    expect(
+      parseShellMessage({
+        oa: 1,
+        type: "comments.set",
+        threads: [],
+        draft: quote,
+      }),
+    ).not.toBeNull();
+    expect(
+      parseShellMessage({
+        oa: 1,
+        type: "comments.set",
+        threads: [],
+        draft: { ...quote, kind: "note" },
+      }),
+    ).toBeNull();
     expect(parseShellMessage({ oa: 1, type: "thumb.request" })).not.toBeNull();
     expect(
       parseShellMessage({

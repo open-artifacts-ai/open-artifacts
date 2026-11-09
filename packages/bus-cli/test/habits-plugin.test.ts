@@ -1,6 +1,7 @@
 // The Hermes plugin's habits (#1602): the plugin adds the lines only while
 // <plugin dir>/habits.on exists, and the installer writes it only on a yes.
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -45,6 +46,20 @@ const ours = (home: string, env: Record<string, string> = {}) => {
   writeFileSync(join(dir, "bus.py"), "X = 1\n");
   return dir;
 };
+
+describe("setPluginHabits: a folder under an env that is gone (#1743)", () => {
+  it("off still reaches a Hermes marker written under another HERMES_HOME", () => {
+    const home = tmp();
+    const busHome = join(home, ".oa-bus");
+    const env = { HERMES_HOME: join(tmp(), "srv-hermes") };
+    const dir = ours(home, env);
+    setPluginHabits({ home, env, busHome }, [hermes], true);
+    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(true);
+    const r = removeHabits({ home, busHome });
+    expect(r.files).toContain(join(dir, HERMES_HABITS_MARKER));
+    expect(existsSync(join(dir, HERMES_HABITS_MARKER))).toBe(false);
+  });
+});
 
 describe("setPluginHabits", () => {
   it("yes writes the marker, no removes it", () => {
@@ -275,6 +290,42 @@ describe("install and uninstall with Hermes", () => {
     expect(existsSync(marker(ctx))).toBe(true);
     await uninstall({ purge: false }, ctx);
     expect(existsSync(hermesPluginDir(ctx.userHome, ctx.env))).toBe(false);
+  });
+  (process.getuid?.() === 0 ? it.skip : it)(
+    "--no-habits that cannot remove the marker says so, exits 1 and never prints Habits off",
+    async () => {
+      const ctx = setup();
+      await install({ hub: HUB }, ctx);
+      await install({ habits: "yes" }, ctx);
+      const dir = hermesPluginDir(ctx.userHome, ctx.env);
+      chmodSync(dir, 0o500);
+      try {
+        const before = ctx.out().length;
+        const code = await install({ habits: "no" }, ctx);
+        const text = ctx.out().slice(before).join("\n");
+        expect(code).toBe(1);
+        expect(text).not.toContain("Habits off");
+        expect(text).toContain(
+          "Habits are still on in some places (see below)",
+        );
+        expect(text).toContain("habits are still on");
+        expect(existsSync(marker(ctx))).toBe(true);
+      } finally {
+        chmodSync(dir, 0o755);
+      }
+    },
+  );
+  it("--no-habits is not failed by a harmless symlink at the Hermes plugin path", async () => {
+    const ctx = setup();
+    await install({ hub: HUB }, ctx);
+    const dir = hermesPluginDir(ctx.userHome, ctx.env);
+    rmSync(dir, { recursive: true, force: true });
+    const empty = join(ctx.userHome, "empty-plugin");
+    mkdirSync(empty);
+    symlinkSync(empty, dir);
+    const code = await install({ habits: "no" }, ctx);
+    expect(code).toBe(0);
+    expect(ctx.out().join("\n")).toContain("Habits off");
   });
   it("TTY yes in the flow writes it; no leaves it off and opts out", async () => {
     const yes = setup({ stdinIsTTY: true, readLine: vi.fn(async () => "y") });

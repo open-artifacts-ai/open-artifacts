@@ -242,6 +242,35 @@ const Following = z.strictObject({
 });
 
 /**
+ * The header a session's /mcp requests carry its link proof in (#1822), and
+ * the strict shape of that proof: 43 base64url characters (32 random bytes).
+ * Anything else is treated as no proof.
+ */
+export const LINK_PROOF_HEADER = "X-OA-Agent-Proof-Token";
+export const LinkProofSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+
+/** The sha256 hex of a proof: 64 lowercase hex characters. */
+export const LinkProofHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+/**
+ * Bind a proof to the agent `agent_ref` (#1822, `BUS_CAPS.link`). Only for an
+ * agent this socket registered. The hub keeps the hash on the agent row until
+ * the session closes; a new bind replaces it. Answered by `link_bound`, or
+ * `error` (`not_registered`, `bad_frame`).
+ */
+const LinkBind = z.strictObject({
+  ...base,
+  type: z.literal("link_bind"),
+  agent_ref: AgentRefSchema,
+  hash: LinkProofHashSchema,
+});
+
+const LinkBound = z.strictObject({
+  ...base,
+  type: z.literal("link_bound"),
+});
+
+/**
  * Most follows one member holds, so the most `follows` lists. Equals
  * FOLLOW_LIMIT in @oa/shared (a server test pins the two).
  */
@@ -439,6 +468,7 @@ export const CLIENT_FRAMES = [
   "follow",
   "unfollow",
   "following",
+  "link_bind",
 ] as const;
 export const SERVER_FRAMES = [
   "hello_ok",
@@ -454,6 +484,7 @@ export const SERVER_FRAMES = [
   "followed",
   "unfollowed",
   "follows",
+  "link_bound",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -471,6 +502,7 @@ export const ClientFrameSchema = z.discriminatedUnion("type", [
   Follow,
   Unfollow,
   Following,
+  LinkBind,
 ]);
 export const ServerFrameSchema = z.discriminatedUnion("type", [
   HelloOk,
@@ -486,6 +518,7 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   Followed,
   Unfollowed,
   Follows,
+  LinkBound,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -502,6 +535,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   Follow,
   Unfollow,
   Following,
+  LinkBind,
   HelloOk,
   AgentOk,
   ReceiptFrame,
@@ -515,6 +549,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   Followed,
   Unfollowed,
   Follows,
+  LinkBound,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;

@@ -1625,6 +1625,11 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     // An empty patch: settings.manage, then nothing to change.
     real: { req: () => ({ path: "", body: {} }), allow: ok(200) },
   },
+  // An empty patch: the owner rule, then nothing to write.
+  "PUT /api/v1/onboarding": {
+    refuse: invalid(),
+    real: { req: () => ({ path: "", body: {} }), allow: ok(200) },
+  },
   "POST /api/v1/spaces": {
     refuse: invalid(),
     real: {
@@ -2057,6 +2062,8 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["DELETE /api/v1/members/:id/restricted", org("restricted.member")],
   ["GET /api/v1/settings", org("settings.read"), [200]],
   ["PATCH /api/v1/settings", org("settings.manage")],
+  ["GET /api/v1/onboarding", org("onboarding.manage"), [200]],
+  ["PUT /api/v1/onboarding", org("onboarding.manage")],
   ["GET /api/v1/spaces", U, [200]],
   ["POST /api/v1/spaces", org("space.create")],
   ["GET /api/v1/spaces/:id", { user: true, space: "member" }, [200]],

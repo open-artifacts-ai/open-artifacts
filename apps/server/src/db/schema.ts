@@ -451,6 +451,35 @@ export const shares = sqliteTable(
   ],
 );
 
+/**
+ * The open asks of every artifact, for the library (#1623): `asksForYou` and
+ * the needs_answer filter. The artifact's Durable Object stays the source of
+ * truth; the comments service writes this table after each DO write, and a
+ * comments list read repairs it (reconcileAsks). One row per ask and person:
+ * `addressee` is the asked user, or the member whose agent was asked.
+ * `open` is 0 once the ask is answered or its thread resolved.
+ */
+export const artifactAsks = sqliteTable(
+  "artifact_asks",
+  {
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    threadId: text("thread_id").notNull(),
+    commentId: text("comment_id").notNull(),
+    addressee: text("addressee").notNull(),
+    open: integer("open").notNull(),
+    answered: integer("answered").notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.artifactId, t.commentId, t.addressee] }),
+    index("artifact_asks_thread_idx").on(t.artifactId, t.threadId),
+    index("artifact_asks_open_idx")
+      .on(t.addressee, t.artifactId)
+      .where(sql`${t.open} = 1`),
+  ],
+);
+
 export const tokens = sqliteTable("tokens", {
   id: text("id").primaryKey(),
   userId: text("user_id")

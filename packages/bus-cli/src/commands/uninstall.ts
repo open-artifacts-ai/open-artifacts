@@ -76,6 +76,8 @@ export async function uninstall(
         tilde(ctx, join(hermesHome(ctx.userHome, ctx.env), "config.yaml")),
       ),
     );
+  if (r.openclawNoCli) say(ctx, c.openclawNoCli());
+  if (r.openclawNix) say(ctx, c.openclawNix());
   if (r.folderOnly.includes("opencode")) say(ctx, c.removedPluginFolder());
   if (r.removed.length + r.folderOnly.length === 0) say(ctx, c.noneWired());
   for (const s of r.skipped)

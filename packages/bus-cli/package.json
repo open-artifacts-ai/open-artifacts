@@ -32,6 +32,7 @@
     "@oa/bus-adapter-claude-code": "workspace:*",
     "@oa/bus-adapter-hermes": "workspace:*",
     "@oa/bus-adapter-mcp-json": "workspace:*",
+    "@oa/bus-adapter-openclaw": "workspace:*",
     "@oa/bus-adapter-opencode": "workspace:*",
     "@oa/bus-adapter-pi": "workspace:*",
     "@oa/bus-daemon": "workspace:*",

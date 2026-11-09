@@ -543,6 +543,58 @@ describe("highlights and positions", () => {
     vi.useRealTimers();
   });
 
+  it("paints the quote being written about, and drops it when the draft closes (#1834)", async () => {
+    await start("select");
+    const quote = {
+      kind: "text" as const,
+      exact: "quick brown",
+      prefix: "The ",
+      suffix: " fox",
+    };
+    await send({ type: "comments.set", threads: [], draft: quote });
+    const active = () =>
+      highlights.get("oa-comment-active") as { ranges: Range[] };
+    expect(active().ranges).toHaveLength(1);
+    expect(active().ranges[0]?.toString()).toBe("quick brown");
+    // Nothing posted: no thread highlight, so clicking it opens nothing.
+    expect(highlights.get("oa-comment")).toMatchObject({ ranges: [] });
+    // The composer closed without posting: gone.
+    await send({ type: "comments.set", threads: [] });
+    expect(active().ranges).toHaveLength(0);
+    // And it re-resolves after the page changes under it.
+    await send({ type: "comments.set", threads: [], draft: quote });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    textOf("a").data = `Intro. ${textOf("a").data}`;
+    await vi.advanceTimersByTimeAsync(200);
+    await flush();
+    frames();
+    await flush();
+    vi.useRealTimers();
+    expect(active().ranges[0]?.toString()).toBe("quick brown");
+  });
+
+  it("forgets the draft quote when comments go off (#1850)", async () => {
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [],
+      draft: {
+        kind: "text",
+        exact: "quick brown",
+        prefix: "The ",
+        suffix: " fox",
+      },
+    });
+    const active = () =>
+      highlights.get("oa-comment-active") as { ranges: Range[] };
+    expect(active().ranges).toHaveLength(1);
+    await send({ type: "comments.mode", mode: "off" });
+    await send({ type: "comments.mode", mode: "select" });
+    // A later set carries no draft: nothing painted from the old one.
+    await send({ type: "comments.set", threads: [] });
+    expect(active().ranges).toHaveLength(0);
+  });
+
   it("clicking a highlight sends only the thread id", async () => {
     await start("select");
     await send({

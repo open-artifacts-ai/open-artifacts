@@ -44,6 +44,7 @@ export const SHAPE = {
   artifact_search: 300_000, // one per live artifact (rowid = the artifact's)
   reserved_artifacts: 1_000,
   uploads: 100_000,
+  artifact_asks: 3_000, // asks are rare: about one live artifact in a hundred
   tokens: 30_000,
   agent_grants: 50_000,
   bus_machines: 20_000,
@@ -455,6 +456,25 @@ export const RULES: Record<string, Rule> = {
         created_at: c.time(),
         consumed: c.rand() < 0.95 ? 1 : 0,
         received_at: c.rand() < 0.97 ? c.time() : null,
+      };
+    },
+  },
+  // #1623: the open-asks index. An ask names one or two people; most are
+  // still open.
+  artifact_asks: {
+    rows: (c) => c.count("artifact_asks"),
+    row(i, c) {
+      const a = c.artifacts[(i * 97) % c.artifacts.length];
+      const u = c.users[(i * 48271) % c.users.length];
+      if (!a || !u) return null;
+      const answered = c.rand() < 0.3 ? 1 : 0;
+      return {
+        artifact_id: a.id,
+        thread_id: c.id("th"),
+        comment_id: c.id("cm"),
+        addressee: u.id,
+        open: answered || c.rand() < 0.2 ? 0 : 1,
+        answered,
       };
     },
   },

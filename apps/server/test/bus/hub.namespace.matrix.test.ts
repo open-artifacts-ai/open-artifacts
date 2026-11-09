@@ -632,6 +632,7 @@ describe("RPC surface", () => {
       .sort();
     // The port's RPC surface (#1291): the Worker-only methods.
     expect(own).toEqual([
+      "agentByProof",
       "closeAll",
       "decideLinkProposal",
       "decideReachProposal",
