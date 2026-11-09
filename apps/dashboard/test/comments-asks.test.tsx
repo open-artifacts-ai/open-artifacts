@@ -290,6 +290,8 @@ describe("asks on the comments column", () => {
             optionId: "yes",
             by: { kind: "user", id: "me", name: "Me", me: true },
             at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: true,
           },
         },
       ),
