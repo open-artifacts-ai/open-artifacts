@@ -389,11 +389,13 @@ describe("/mcp proof by tool argument (#1856)", () => {
     const raw = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_artifacts","arguments":{"\\u005foa_agent_proof":"${proof}"}}}`;
     await callWorker(post(pat.token, raw), ev);
     expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toMatchObject({ name: expect.stringMatching(/^Lead/) });
     const text = (await bodies[0]?.text()) ?? "";
     expect(text).not.toContain(proof);
+    expect(text).not.toContain("oa_agent_proof");
   });
 
-  it("answers the same with a good, foreign, junk or no argument (no oracle), and the proof is not in the response, validation errors or audit rows", async () => {
+  it("answers the same with a good, foreign, junk or no argument (no oracle); the proof is not in the response, validation errors or the audit row of a delete", async () => {
     const proof = proofOf();
     const a = await bound(proof);
     const b = await bound(proofOf());
@@ -411,20 +413,29 @@ describe("/mcp proof by tool argument (#1856)", () => {
     expect(await go(patB, { [LINK_PROOF_ARG]: proof })).toEqual(none);
     expect(await go(patB, { [LINK_PROOF_ARG]: "junk" })).toEqual(none);
     expect(none.body).not.toContain(proof);
-    // A valid publish carrying it writes audit rows without it.
-    const ok = await workerFetch(
+    // A call that writes an audit row (delete_artifact), carrying the key.
+    const pub = await workerFetch(
       post(
         patA,
         call("publish_artifact", {
           title: "t",
           format: "markdown",
           content: "# x",
-          [LINK_PROOF_ARG]: proof,
         }),
       ),
     );
-    expect(await ok.text()).not.toContain(proof);
-    const rows = await e.DB.prepare("select * from audit_events").all();
+    const id = /"id":\s*"([A-Za-z0-9]{16})"/.exec(await pub.text())?.[1];
+    expect(id).toBeTruthy();
+    const del = await workerFetch(
+      post(patA, call("delete_artifact", { id, [LINK_PROOF_ARG]: proof })),
+    );
+    expect(await del.text()).not.toContain(proof);
+    const rows = await e.DB.prepare(
+      "select * from audit_events where action = 'artifact.delete' and target_id = ?",
+    )
+      .bind(id)
+      .all();
+    expect(rows.results).toHaveLength(1);
     expect(JSON.stringify(rows.results)).not.toContain(proof);
     expect(JSON.stringify(rows.results)).not.toContain(LINK_PROOF_ARG);
   });
@@ -434,10 +445,16 @@ describe("/mcp proof by tool argument (#1856)", () => {
     const a = await bound(proof);
     const pat = await createPat(e, a.userId, "agent-a");
     for (const agentByProof of [
-      () => Promise.reject(new Error("boom")),
-      () => new Promise<never>(() => {}),
+      (_h: string) => Promise.reject(new Error("boom")),
+      (_h: string) => new Promise<never>(() => {}),
     ]) {
-      const { ev } = spyHubs({ agentByProof });
+      let hubCalls = 0;
+      const { ev } = spyHubs({
+        agentByProof: (h) => {
+          hubCalls++;
+          return agentByProof(h);
+        },
+      });
       watchBodies();
       const t0 = Date.now();
       const r = await callWorker(
@@ -445,12 +462,13 @@ describe("/mcp proof by tool argument (#1856)", () => {
         ev as never,
       );
       expect(r.status).toBe(200);
-      expect(Date.now() - t0).toBeLessThan(LINK_LOOKUP_MS + 3000);
+      expect(hubCalls).toBe(1);
+      expect(Date.now() - t0).toBeLessThan(1000);
       expect(await bodies[0]?.text()).not.toContain(proof);
     }
   });
 
-  it("a malformed or oversize body behaves as before: no throw from the link step, and the same answer", async () => {
+  it("a malformed body is refused as before, and an oversize one is refused by the cap (before the link step)", async () => {
     const a = await bound(proofOf());
     const pat = await createPat(e, a.userId, "agent-a");
     const junk = await workerFetch(
@@ -465,5 +483,62 @@ describe("/mcp proof by tool argument (#1856)", () => {
     );
     const r = await workerFetch(post(pat.token, big));
     expect(r.status).toBe(413);
+  });
+
+  it("nesting that workerd parses but cannot re-encode fails closed: the handler never sees the key, and it is unlinked", async () => {
+    const proof = proofOf();
+    const a = await bound(proof);
+    const pat = await createPat(e, a.userId, "agent-a");
+    const { resolved, ev } = spyResolve();
+    watchBodies();
+    const depth = 20_000;
+    const raw = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_artifacts","arguments":{"${LINK_PROOF_ARG}":"${proof}","deep":${"[".repeat(depth)}${"]".repeat(depth)}}}}`;
+    const r = await callWorker(post(pat.token, raw), ev);
+    expect(resolved).toEqual([]);
+    expect(r.status).toBe(400);
+    for (const b of bodies) {
+      const t = await b.text();
+      expect(t).not.toContain(proof);
+      expect(t).not.toContain(LINK_PROOF_ARG);
+    }
+  });
+
+  it("with the bus off the key is still removed from the body", async () => {
+    const proof = proofOf();
+    const a = await bound(proof);
+    const pat = await createPat(e, a.userId, "agent-a");
+    watchBodies();
+    const r = await callWorker(
+      post(pat.token, call("list_artifacts", { [LINK_PROOF_ARG]: proof })),
+      E({ BUS_HUB: undefined }),
+    );
+    expect(r.status).toBe(200);
+    expect(await bodies[0]?.text()).not.toContain(proof);
+  });
+
+  it("a non-ASCII body keeps a correct content-length once the key is removed", async () => {
+    const proof = proofOf();
+    const a = await bound(proof);
+    const pat = await createPat(e, a.userId, "agent-a");
+    const { resolved, ev } = spyResolve();
+    watchBodies();
+    const r = await callWorker(
+      post(
+        pat.token,
+        call("list_artifacts", {
+          q: "héllo 日本語 \u{1F600}",
+          [LINK_PROOF_ARG]: proof,
+        }),
+      ),
+      ev,
+    );
+    expect(r.status).toBe(200);
+    expect(resolved).toHaveLength(1);
+    const rec = bodies[0] as unknown as Request;
+    const text = await rec.text();
+    expect(JSON.parse(text).params.arguments.q).toBe("héllo 日本語 \u{1F600}");
+    expect(Number(rec.headers.get("content-length"))).toBe(
+      new TextEncoder().encode(text).byteLength,
+    );
   });
 });
