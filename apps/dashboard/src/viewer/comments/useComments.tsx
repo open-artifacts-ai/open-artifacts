@@ -51,6 +51,8 @@ export type CommentsApi = {
   contentHash: string | null;
   /** The tool in use; "pin" only where pins are offered and the viewer can comment. */
   mode: "select" | "pin";
+  /** The reader turned Pin on themselves (not the default an image opens in). */
+  pinChosen: boolean;
   setMode: (m: "select" | "pin") => void;
   /** Viewing a pinned older version: the composer says so. */
   older: boolean;
@@ -95,6 +97,16 @@ export type CommentsApi = {
   /** The frame said hello: send it the mode and threads again. */
   resync: () => void;
 };
+
+/**
+ * Where Esc belongs to someone else: a text field, or a modal above the viewer.
+ * Our own phone sheet is `role="dialog"` without `aria-modal` (and the wide
+ * overlay is not modal), so a reader's Esc still leaves pin mode there. Radix
+ * dialogs set `aria-modal="true"` and `data-state="open"`; the alert dialog is
+ * matched by role for anything else.
+ */
+const MODAL_OR_FIELD =
+  "input, textarea, select, [aria-modal='true'], [data-state='open'][role='dialog'], [role='alertdialog']";
 
 const Ctx = createContext<CommentsApi | null>(null);
 export const CommentsProvider = Ctx.Provider;
@@ -177,24 +189,40 @@ export function useCommentsController({
   // reader's choice, once made, holds for this view.
   const [wantPin, setWantPin] = useState<boolean | null>(null);
   const pins = wantPin ?? pinFormat === "image";
+  // #1698: a pin mode the reader turned on is theirs to keep and to leave with
+  // Esc; the one an image opens in is only a default, so Esc goes on to close
+  // what it was aimed at (full screen, the phone sheet).
+  const pinChosen = wantPin === true;
+  const chosenRef = useRef(pinChosen);
+  chosenRef.current = pinChosen;
   // Pin mode only where pins are offered and the viewer can comment.
   const mode: "select" | "pin" =
     pins && pinFormat !== null && mayComment ? "pin" : "select";
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  // Esc leaves pin mode first. Capture phase, and stopped: in full screen the
-  // exit handler is on the document too, and must not also run.
+  // Esc leaves a pin mode the reader chose. Capture phase, and stopped: in full
+  // screen the exit handler is on the document too, and must not also run.
   useEffect(() => {
-    if (mode !== "pin") return;
+    if (mode !== "pin" || !pinChosen) return;
     const k = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // The key is not ours when an IME is composing, when a text field has it
+      // (the composer, the mention menu and the reply box close on Esc), or when
+      // a modal sits above the viewer (#1698 review).
+      if (e.isComposing) return;
+      const t = e.target;
+      if (
+        t instanceof HTMLElement &&
+        (t.isContentEditable || t.closest(MODAL_OR_FIELD) !== null)
+      )
+        return;
       e.preventDefault();
       e.stopPropagation();
       setWantPin(false);
     };
     document.addEventListener("keydown", k, true);
     return () => document.removeEventListener("keydown", k, true);
-  }, [mode]);
+  }, [mode, pinChosen]);
   // The frame's own copy of what to draw: ids and anchors only.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `hello` re-sends after the frame reloads
   useEffect(() => {
@@ -260,10 +288,15 @@ export function useCommentsController({
     if (draftRef.current && dirty.current) return;
     dirty.current = false;
     setDraft({ pin });
-    setWantPin(false);
+    // #1698: a chosen pin mode holds for the view, so the next pin is one
+    // click away; the default an image opens in falls back to Select.
+    if (!chosenRef.current) setWantPin(false);
     surface.current();
   }, []);
-  const onEscape = useCallback(() => setWantPin(false), []);
+  const onEscape = useCallback(() => {
+    // Same rule as the shell's own Esc: only a chosen pin mode is left.
+    if (chosenRef.current) setWantPin(false);
+  }, []);
   const onSelection = useCallback((has: boolean) => {
     // Only where the reader may comment, in Select mode; page code can send this any time.
     setSelected(has && mayRef.current && modeRef.current === "select");
@@ -321,6 +354,7 @@ export function useCommentsController({
       pinFormat,
       contentHash,
       mode,
+      pinChosen,
       setMode: (m) => setWantPin(m === "pin"),
       older,
       open: q.data?.open ?? 0,
@@ -387,6 +421,7 @@ export function useCommentsController({
       pinFormat,
       contentHash,
       mode,
+      pinChosen,
       onSelect,
       onPositions,
       onOpen,

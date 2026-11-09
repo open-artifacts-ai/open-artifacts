@@ -686,6 +686,47 @@ describe("pins", () => {
     );
   });
 
+  it("leaves Esc to the page when an IME, a field or a modal owns it (#1698)", async () => {
+    await start("pin");
+    const count = () =>
+      msgs().filter((m) => m.type === "comment.escape").length;
+    const before = count();
+    // A composing key.
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        isComposing: true,
+      }),
+    );
+    // A text field.
+    const field = document.createElement("textarea");
+    document.body.append(field);
+    field.focus();
+    field.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    // A plain element inside an open modal dialog.
+    const modal = document.createElement("div");
+    modal.setAttribute("aria-modal", "true");
+    const inside = document.createElement("button");
+    modal.append(inside);
+    document.body.append(modal);
+    inside.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await flush();
+    expect(count()).toBe(before);
+    // Outside all three, pin mode's Esc still reaches the shell.
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await flush();
+    expect(count()).toBe(before + 1);
+    field.remove();
+    modal.remove();
+  });
+
   it("does nothing in select mode, and pins are drawn in the overlay with their number", async () => {
     await start("select");
     document

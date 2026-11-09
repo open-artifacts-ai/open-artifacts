@@ -49,8 +49,9 @@ export const pinHint = () =>
   touch() ? "Tap to place a pin" : "Click to place a pin";
 
 /** "Esc to cancel", on a device with a keyboard only: touch has the Select button. */
-function EscHint() {
-  return touch() ? null : <span> · Esc to cancel</span>;
+function EscHint({ esc }: { esc: boolean }) {
+  // #1698: only where Esc actually leaves pin mode (a mode the reader chose).
+  return esc && !touch() ? <span> · Esc to cancel</span> : null;
 }
 
 /** Select and Pin tools for images and pdf pages (#1490). */
@@ -79,7 +80,7 @@ function Tools({ api }: { api: CommentsApi }) {
       {api.mode === "pin" && (
         <p className={`${TXT} ${MUTED}`}>
           <span>{pinHint()}</span>
-          <EscHint />
+          <EscHint esc={api.pinChosen} />
         </p>
       )}
     </div>
@@ -97,7 +98,7 @@ export function PinBar() {
     >
       <span className={`${TXT} whitespace-nowrap`}>
         <span>{pinHint()}</span>
-        <EscHint />
+        <EscHint esc={api.pinChosen} />
       </span>
       <Button size="xs" variant="ghost" onClick={() => api.setMode("select")}>
         Select
