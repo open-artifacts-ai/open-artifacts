@@ -502,7 +502,8 @@ function Who({
         {isAgent && a.for && (
           <span
             data-for=""
-            className={`${MUTED} min-w-0 truncate text-[length:var(--oa-text-xs)]`}
+            // Gives up its width long before the agent's name does.
+            className={`${MUTED} min-w-0 shrink-[100] truncate text-[length:var(--oa-text-xs)]`}
           >
             for {a.for}
           </span>
