@@ -3381,7 +3381,9 @@ export class BusHub extends DurableObject<Env> {
    * send keys, meta) and its alarm, and starts again empty. Idempotent.
    */
   async wipe(): Promise<void> {
+    let closed = 0;
     for (const ws of this.ctx.getWebSockets()) {
+      if (!notDaemon(this.ctx, ws)) closed++;
       const m = machineOf(ws);
       try {
         if (m !== null)
@@ -3406,6 +3408,7 @@ export class BusHub extends DurableObject<Env> {
     this.ctx.storage.sql.exec(HUB_SCHEMA);
     migrateHub(this.ctx.storage.sql);
     logEvent("wiped");
+    if (closed > 0) await this.#goneFromIndex();
   }
 
   async closeAll(
@@ -3449,6 +3452,7 @@ export class BusHub extends DurableObject<Env> {
     // `reason` is a fixed string from the caller; not logged (ids and counts only).
     void reason;
     logEvent("close_all", { closed: n, kind });
+    if (n > 0) await this.#goneFromIndex();
     return n;
   }
 
@@ -3482,7 +3486,9 @@ export class BusHub extends DurableObject<Env> {
 
     // Marked first (as a replaced socket is), so a frame still in flight is
     // never processed and the close that lands later runs no bookkeeping.
+    let closed = 0;
     for (const ws of this.ctx.getWebSockets(id)) {
+      closed++;
       try {
         ws.serializeAttachment({
           machineId: id,
@@ -3525,6 +3531,7 @@ export class BusHub extends DurableObject<Env> {
 
     notifyRoster(this.ctx, change);
     await this.#commitArm();
+    if (closed > 0) await this.#goneFromIndex();
     return true;
   }
 
@@ -3645,21 +3652,39 @@ export class BusHub extends DurableObject<Env> {
     const name = this.ctx.id.name;
     const idx = socketIndexStub(this.env);
     if (!idx || !name) return;
+    this.indexInFlight++;
     try {
       await idx.seen(name);
       this.#indexedAt = now;
     } catch (e) {
       logError("socket_index_failed", e);
+    } finally {
+      this.indexInFlight--;
     }
   }
+
+  /**
+   * Index calls (seen, gone) and close/error handlers this instance has started and not finished. A
+   * plain instance field, not a prototype member, so Workers RPC does not
+   * expose it. Tests read it inside the DO (runInDurableObject); a file's
+   * afterAll waits for 0 so the worker is not torn down with an RPC pending.
+   */
+  indexInFlight = 0;
 
   /**
    * #1299: when `closing` was the hub's last open daemon socket, removes the
    * hub's row from the install index (it outlives the index window while
    * sockets exist). Fails open: a missed `gone` is bounded by closeInstall
    * (a harmless closeAll on no sockets) and the index's cap.
+   *
+   * A peer that never echoes our close never triggers webSocketClose, so a
+   * close this hub started (revoke, closeAll, wipe, the frame that trips the
+   * rate limit or lands on a revoked or replaced socket) calls this itself,
+   * with no `closing` socket: the sockets it closed are already CLOSING, not
+   * OPEN. When the peer does echo, webSocketClose reports again; `gone` is
+   * idempotent.
    */
-  async #goneFromIndex(closing: WebSocket): Promise<void> {
+  async #goneFromIndex(closing?: WebSocket): Promise<void> {
     const open = () =>
       this.ctx
         .getWebSockets(DAEMON_TAG)
@@ -3669,17 +3694,22 @@ export class BusHub extends DurableObject<Env> {
     const idx = socketIndexStub(this.env);
     if (!idx || !name) return;
     this.#indexedAt = Number.NEGATIVE_INFINITY;
+    this.indexInFlight++;
     try {
       await idx.gone(name);
     } catch (e) {
       logError("socket_index_failed", e);
       return;
+    } finally {
+      this.indexInFlight--;
     }
+    // Always reset: a `seen` that returned while `gone` was in flight set the
+    // throttle after the row was deleted, and an accept within INDEX_REPORT_MS
+    // would then skip its report and leave a live socket with no row.
+    this.#indexedAt = Number.NEGATIVE_INFINITY;
     // A socket accepted while `gone` was in flight reported before it landed,
-    // so its report may have been deleted; and it set the throttle, so reset
-    // it or this report would be skipped and the live socket left unindexed.
+    // so its report may have been deleted: report again.
     if (open()) {
-      this.#indexedAt = Number.NEGATIVE_INFINITY;
       await this.#reportToIndex();
     }
   }
@@ -3689,9 +3719,17 @@ export class BusHub extends DurableObject<Env> {
     message: string | ArrayBuffer,
   ): Promise<void> {
     if (notDaemon(this.ctx, ws)) return;
-    if (this.#overBudget(ws)) return;
+    // Only the frame that closes the socket reports; late frames on a socket
+    // already closing (a rate-limited one keeps sending) must not each cost
+    // the shared index an RPC.
+    const wasOpen = ws.readyState === OPEN;
+    if (this.#overBudget(ws)) {
+      if (wasOpen && ws.readyState !== OPEN) await this.#goneFromIndex();
+      return;
+    }
     this.#onMessage(ws, message);
     await this.#commitArm();
+    if (wasOpen && ws.readyState !== OPEN) await this.#goneFromIndex();
   }
 
   /**
@@ -4034,26 +4072,39 @@ export class BusHub extends DurableObject<Env> {
   }
 
   override async webSocketClose(ws: WebSocket, code: number): Promise<void> {
-    // 1005/1006 are never sent on the wire.
-    closeSocket(ws, code === 1005 || code === 1006 ? 1000 : code, "closed");
-    // A socket this DO never accepted has no bookkeeping.
-    if (notDaemon(this.ctx, ws)) return;
-    this.#socketGone(ws);
-    await this.#commitArm();
-    await this.#goneFromIndex(ws);
+    // Counted from entry: a hub-started close leaves the socket CLOSING and
+    // the index idle until the client's echo lands here, so a test teardown
+    // must wait for the whole handler, not only its index call.
+    this.indexInFlight++;
+    try {
+      // 1005/1006 are never sent on the wire.
+      closeSocket(ws, code === 1005 || code === 1006 ? 1000 : code, "closed");
+      // A socket this DO never accepted has no bookkeeping.
+      if (notDaemon(this.ctx, ws)) return;
+      this.#socketGone(ws);
+      await this.#commitArm();
+      await this.#goneFromIndex(ws);
+    } finally {
+      this.indexInFlight--;
+    }
   }
 
   override async webSocketError(
     ws: WebSocket,
     _error?: unknown,
   ): Promise<void> {
-    // Closed first, as in webSocketClose: a socket left OPEN would still count
-    // as connected (machineOnline) in the push #socketGone triggers.
-    closeSocket(ws, 1011, "error");
-    if (notDaemon(this.ctx, ws)) return;
-    this.#socketGone(ws);
-    await this.#commitArm();
-    await this.#goneFromIndex(ws);
+    this.indexInFlight++;
+    try {
+      // Closed first, as in webSocketClose: a socket left OPEN would still
+      // count as connected (machineOnline) in the push #socketGone triggers.
+      closeSocket(ws, 1011, "error");
+      if (notDaemon(this.ctx, ws)) return;
+      this.#socketGone(ws);
+      await this.#commitArm();
+      await this.#goneFromIndex(ws);
+    } finally {
+      this.indexInFlight--;
+    }
   }
 
   /**
