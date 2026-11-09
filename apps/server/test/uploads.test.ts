@@ -113,6 +113,43 @@ describe("uploads", () => {
     expect(reserved).toBeNull();
   });
 
+  it("rejects a checksum mismatch without completing the upload, and permits a correct-byte retry", async () => {
+    const sha256 =
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"; // abc
+    const up = await create(alice.cookie, { path: "a.txt", size: 3, sha256 });
+    const bad = await put(up.url, "xyz");
+    expect(bad.status).toBe(400);
+    expect((await errOf(bad)).message).toContain("SHA-256");
+    const row = await env.DB.prepare(
+      "select r2_key, received_at, digest from uploads where id = ?",
+    )
+      .bind(up.uploadId)
+      .first<{
+        r2_key: string;
+        received_at: number | null;
+        digest: string | null;
+      }>();
+    expect(row).toMatchObject({ received_at: null, digest: null });
+    expect(await env.FILES.head(row?.r2_key ?? "")).toBeNull();
+    const publish = await api(app, R.artifacts, alice.cookie, {
+      method: "POST",
+      body: {
+        id: up.artifactId,
+        title: "checksum",
+        entry: "a.txt",
+        files: { "a.txt": { uploadId: up.uploadId } },
+      },
+    });
+    expect(publish.status).toBe(400);
+    expect((await put(up.url, "abc")).status).toBe(204);
+    expect((await put(up.url, "xyz")).status).toBe(409);
+    expect(
+      await env.DB.prepare("select digest from uploads where id = ?")
+        .bind(up.uploadId)
+        .first(),
+    ).toEqual({ digest: sha256 });
+  });
+
   it("reusing a consumed upload → 400", async () => {
     const row = await env.DB.prepare(
       "select id, path from uploads where artifact_id = ? and consumed = 1",

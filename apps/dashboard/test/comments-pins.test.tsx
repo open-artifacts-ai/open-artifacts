@@ -88,7 +88,7 @@ const hello = () =>
     await waitFor(() => expect(opts.length).toBeGreaterThan(0));
     opts.at(-1)?.onHello();
   });
-/** The column opens by itself only when there is something to show: open it. */
+/** The column starts closed (#1731): open it with the Comments button. */
 const col = async () => {
   const b = await screen.findByRole("button", { name: /^Comments/ });
   if (!screen.queryByRole("complementary", { name: "Comments" }))
@@ -407,6 +407,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   it("says the image or page changed only when both hashes are known and differ", async () => {
     asFormat("image", H2, { threads: [pinThread("a", 1, H1)] });
     mount(viewerPath(OWNED));
+    await col();
     expect(
       await screen.findByText("The image changed since this was placed."),
     ).toBeInTheDocument();
@@ -415,6 +416,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   it("says This file changed on a pdf (the hash covers the whole file)", async () => {
     asFormat("pdf", H2, { threads: [pinThread("a", 1, H1)] });
     mount(viewerPath(OWNED));
+    await col();
     expect(
       await screen.findByText("This file changed since this was placed."),
     ).toBeInTheDocument();
@@ -423,6 +425,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   it("says nothing when the hashes match, or the shown version's is unknown", async () => {
     asFormat("image", H1, { threads: [pinThread("a", 1, H1)] });
     mount(viewerPath(OWNED));
+    await col();
     await screen.findByText("Pin 1");
     expect(screen.queryByText(/changed since this was placed/)).toBeNull();
   });
@@ -430,6 +433,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   it("says nothing when the pin's own hash is null, even if the version's is known", async () => {
     asFormat("image", H2, { threads: [pinThread("a", 1, null)] });
     mount(viewerPath(OWNED));
+    await col();
     await screen.findByText("Pin 1");
     expect(screen.queryByText(/changed since this was placed/)).toBeNull();
   });
@@ -437,6 +441,7 @@ describe("comments: pins on images and pdfs (#1490)", () => {
   it("says nothing when the shown version has no hash", async () => {
     asFormat("image", null, { threads: [pinThread("a", 1, H1)] });
     mount(viewerPath(OWNED));
+    await col();
     await screen.findByText("Pin 1");
     expect(screen.queryByText(/changed since this was placed/)).toBeNull();
   });

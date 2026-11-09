@@ -2,6 +2,10 @@
 
 Rules for everyone working in this repo, people and agents alike.
 
+## Talk to us
+
+Join the [Open Artifacts Discord](https://discord.gg/3BwpMufj4a) to discuss a proposal before you build it, ask about an open PR, or get setup help. Decisions and reviews still happen on GitHub issues and PRs.
+
 ## Git
 
 - **Never use `git stash`.** The stash is shared by every worktree of a clone, so a

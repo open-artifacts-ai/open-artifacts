@@ -50,8 +50,17 @@ describe("connect-agents matches scripts/setup agent-config", () => {
   it("Claude Code", () => {
     expect(block("Claude Code", "sh")?.trim()).toBe(s.claudeCode);
   });
-  it("Codex CLI", () => {
-    expect(block("Codex CLI", "toml")?.trim()).toBe(s.codex);
+  it("Codex CLI OAuth commands configure setup's URL-only server", () => {
+    const commands = (block("Codex CLI", "sh") ?? "")
+      .trim()
+      .match(/^codex mcp add ([\w-]+) --url (\S+)\ncodex mcp login \1$/);
+    expect(commands).not.toBeNull();
+    const [, name, url] = commands ?? [];
+    // `mcp add --url` writes the same URL-only TOML that setup emits.
+    expect(s.codex).toBe(`[mcp_servers.${name}]\nurl = "${url}"`);
+  });
+  it("Codex CLI token fallback", () => {
+    expect(block("Codex CLI", "toml")?.trim()).toBe(s.codexToken);
   });
   it("Cursor, OpenCode (OAuth and token file) and generic JSON", () => {
     for (const [title, want] of [
