@@ -62,6 +62,15 @@ describe("authConfig", () => {
     ).toEqual(["spaces"]);
   });
 
+  test("AUTH_DOMAINS set but parsing to nothing is a config problem", () => {
+    const c = authConfig(direct({ AUTH_DOMAINS: "bad domain" }));
+    expect(c.domains).toEqual([]);
+    expect(c.problems.join()).toContain("AUTH_DOMAINS is set but has no valid");
+    expect(
+      authConfig(direct({ AUTH_DOMAINS: "" })).problems.join(),
+    ).not.toContain("has no valid");
+  });
+
   test("google without domains is on, invite only (never domain join)", () => {
     const c = authConfig(direct({ AUTH_DOMAINS: "" }));
     expect(c.google).not.toBeNull();

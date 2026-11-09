@@ -205,6 +205,12 @@ function build(env: Env): AuthConfig {
       `AUTH_DOMAINS has "${d}", which isn't a valid domain, so it's ignored. Fix or remove it.`,
     );
   const domains = parsed.domains;
+  // Set but nothing usable: a typo must not quietly become owner+invite-only.
+  const domainsSet = nonEmpty(env.AUTH_DOMAINS);
+  if (domainsSet && domains.length === 0)
+    problems.push(
+      "AUTH_DOMAINS is set but has no valid domain, so no domain is admitted (owner and invites only). Fix it, or clear it on purpose.",
+    );
 
   let turnstile: AuthConfig["turnstile"] = null;
   if (nonEmpty(env.TURNSTILE_SITE_KEY) && nonEmpty(env.TURNSTILE_SECRET))

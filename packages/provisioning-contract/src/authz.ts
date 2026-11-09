@@ -299,7 +299,8 @@ export const PROTOCOL_AUTHZ = {
  * - `required`: missing is 400 invalid_input.
  * - `required_true`: missing is 400; anything but true is 403.
  * - `required_in_auth_domains`: required, and the email's domain must be in
- *   `auth.domains` (403).
+ *   `auth.domains` (403), unless `auth.domains` is empty (owner and invites
+ *   only).
  * - `required_staging_test_domain`: required, and the email must be
  *   `@<STAGING_TEST_DOMAIN>` (403).
  * - `required_test_prefix`: required, and must start `rl-` (403).
@@ -449,6 +450,9 @@ export function checkCreateFields(
       return { field: f, code: "forbidden" };
     if (
       r === "required_in_auth_domains" &&
+      // No domains (Google, owner and invites only): the owner is the one
+      // admitted address, so there is no domain to hold them to.
+      (body.auth?.domains?.length ?? 0) > 0 &&
       !(body.auth?.domains ?? [])
         .map((d) => d.toLowerCase())
         .includes(emailDomain(v as string) ?? "")

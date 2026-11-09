@@ -715,4 +715,20 @@ describe("admit (Google, no domains)", () => {
     const r = await admit(env, authConfig(e()), id);
     expect(r).toMatchObject({ ok: true, user: { role: "guest" } });
   });
+
+  it("an invited Workspace address (hd = its domain) is admitted; tenant stays null", async () => {
+    const id = gm({ email: uniq("w", "acme.com") });
+    await seedUser(id.email, "member");
+    expect(await admit(env, authConfig(e()), id)).toMatchObject({
+      ok: true,
+      user: { email: id.email },
+    });
+  });
+
+  it("an uninvited Gmail account is refused", async () => {
+    expect(await admit(env, authConfig(e()), gm())).toEqual({
+      ok: false,
+      reason: "no_access",
+    });
+  });
 });

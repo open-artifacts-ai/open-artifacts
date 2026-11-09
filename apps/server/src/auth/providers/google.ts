@@ -3,6 +3,7 @@ import {
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_TOKEN_URL,
   GoogleTokenError,
+  noDomainIdentityOk,
   brokerRedeemRequest as signedRedeemRequest,
   verifyGoogleIdToken,
   verifyGoogleIdTokenAnyDomain,
@@ -170,20 +171,25 @@ export const googleProvider: OidcProvider = {
         g.transport.kind === "broker"
           ? await brokerNonce(g.transport.installId, a.nonce)
           : a.nonce;
-      // No domains: no hd check (a Gmail account has none) and no tenant;
-      // email_verified is still required and admission is by owner/invite.
-      const id =
-        g.domains.length === 0
-          ? await verifyGoogleIdTokenAnyDomain(
-              { clientId: g.clientId },
-              idToken,
-              expectNonce,
-            )
-          : await verifyGoogleIdToken(
-              { clientId: g.clientId, domains: g.domains },
-              idToken,
-              expectNonce,
-            );
+      // No domains: no tenant, and email_verified is still required;
+      // admission is by owner/invite. A consumer account can sit on any
+      // address (an ex-employee's, a lapsed domain), so the email only
+      // counts for a Gmail address, or when hd equals the email's domain.
+      let id: Awaited<ReturnType<typeof verifyGoogleIdTokenAnyDomain>>;
+      if (g.domains.length === 0) {
+        id = await verifyGoogleIdTokenAnyDomain(
+          { clientId: g.clientId },
+          idToken,
+          expectNonce,
+        );
+        if (!noDomainIdentityOk(id.email, id.hd))
+          throw new GoogleTokenError("tenant");
+      } else
+        id = await verifyGoogleIdToken(
+          { clientId: g.clientId, domains: g.domains },
+          idToken,
+          expectNonce,
+        );
       return {
         provider: "google",
         subject: id.sub,

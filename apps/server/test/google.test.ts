@@ -122,6 +122,42 @@ describe("google provider (direct)", () => {
     ).rejects.toMatchObject({ code: "unauthorized" });
   });
 
+  it("no domains: a consumer account on a work address (no hd) is refused", async () => {
+    const e = direct({ AUTH_DOMAINS: "" });
+    const b = await begin(e);
+    const code = g.issueCode(
+      { nonce: b.nonce, hd: undefined, email: "ex@acme.com" },
+      b.challenge,
+    );
+    await expect(
+      handleCallback(e, googleProvider, callback(b, code)),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+  });
+
+  it("no domains: Workspace hd equal to the email's domain is accepted, tenant null", async () => {
+    const e = direct({ AUTH_DOMAINS: "" });
+    const b = await begin(e);
+    const code = g.issueCode(
+      { nonce: b.nonce, hd: "acme.com", email: "me@acme.com" },
+      b.challenge,
+    );
+    expect(
+      await handleCallback(e, googleProvider, callback(b, code)),
+    ).toMatchObject({ email: "me@acme.com", tenant: null });
+  });
+
+  it("no domains: hd that differs from the email's domain is refused", async () => {
+    const e = direct({ AUTH_DOMAINS: "" });
+    const b = await begin(e);
+    const code = g.issueCode(
+      { nonce: b.nonce, hd: "evil.com", email: "me@acme.com" },
+      b.challenge,
+    );
+    await expect(
+      handleCallback(e, googleProvider, callback(b, code)),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+  });
+
   it("tenant B's token at install A is refused", async () => {
     const e = direct({ AUTH_DOMAINS: "a.com" });
     const b = await begin(e);
