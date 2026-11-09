@@ -631,6 +631,10 @@ export function createComments(
         reportSelection();
       }
       if (mode === "off") {
+        // No mode, no draft: a quote left behind would paint on the next set
+        // (#1850 review).
+        draftText = undefined;
+        draftCache = null;
         hideButton();
         clearPaint();
         lastReport = "";

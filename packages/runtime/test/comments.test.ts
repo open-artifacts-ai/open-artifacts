@@ -573,6 +573,28 @@ describe("highlights and positions", () => {
     expect(active().ranges[0]?.toString()).toBe("quick brown");
   });
 
+  it("forgets the draft quote when comments go off (#1850)", async () => {
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [],
+      draft: {
+        kind: "text",
+        exact: "quick brown",
+        prefix: "The ",
+        suffix: " fox",
+      },
+    });
+    const active = () =>
+      highlights.get("oa-comment-active") as { ranges: Range[] };
+    expect(active().ranges).toHaveLength(1);
+    await send({ type: "comments.mode", mode: "off" });
+    await send({ type: "comments.mode", mode: "select" });
+    // A later set carries no draft: nothing painted from the old one.
+    await send({ type: "comments.set", threads: [] });
+    expect(active().ranges).toHaveLength(0);
+  });
+
   it("clicking a highlight sends only the thread id", async () => {
     await start("select");
     await send({

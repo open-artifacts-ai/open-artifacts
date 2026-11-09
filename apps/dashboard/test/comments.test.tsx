@@ -1747,6 +1747,29 @@ describe("comments: the quote stays highlighted while writing (#1834)", () => {
     }[];
     expect(lastThreads.some((t) => t.id)).toBe(true);
   });
+  it("drops the held quote when the list never carries it (#1850)", async () => {
+    // A server that normalises the quote, or a refetch that misses the thread:
+    // the draft highlight must not stay on for good.
+    const posts = calls("POST");
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    fireEvent.change(box, { target: { value: "Tighten this" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // Held for a moment (the list is still empty)...
+    expect(sentQuote()).toMatchObject({ exact: "Landing" });
+    // ...and gone once the hold expires.
+    await wait(1700);
+    expect(sentQuote()).toBeUndefined();
+  });
 });
 
 describe("comments: a server without comments", () => {

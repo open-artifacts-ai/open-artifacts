@@ -124,6 +124,13 @@ export function useCommentsApi(): CommentsApi {
 }
 
 /** Signed-out visitors may comment on public artifacts (the approved spec); dataWriters is a separate, live-data setting. */
+/**
+ * How long a posted draft's quote stays painted if the list never shows its
+ * thread (#1834): long enough for a slow refetch, short enough that a server
+ * which normalises the quote does not leave a highlight behind.
+ */
+const HELD_QUOTE_MS = 1500;
+
 export const guestsMayComment = (a: ArtifactSummary) =>
   a.visibility === "public";
 
@@ -262,12 +269,28 @@ export function useCommentsController({
     getBridge,
   ]);
 
-  // #1834: the list caught up with a posted quote, so its thread now paints
-  // itself; the held quote goes. A slow refetch keeps the highlight meanwhile.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the payload
+  // #1834: the held quote goes as soon as its thread is in the list, which is
+  // what paints it from then on. The refetch usually settles BEFORE the post
+  // resolves, so this has to look for the thread, not wait for a change; and a
+  // list that never carries it (or normalises the quote) must not leave the
+  // highlight on, so the hold also expires.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the payload and the hold
   useEffect(() => {
-    if (heldQuote) setHeldQuote(null);
-  }, [all]);
+    if (!heldQuote) return;
+    const there = (all ?? []).some(
+      (t) =>
+        t.anchor.kind === "text" &&
+        t.anchor.exact === heldQuote.exact &&
+        t.anchor.prefix === heldQuote.prefix &&
+        t.anchor.suffix === heldQuote.suffix,
+    );
+    if (there) {
+      setHeldQuote(null);
+      return;
+    }
+    const t = setTimeout(() => setHeldQuote(null), HELD_QUOTE_MS);
+    return () => clearTimeout(t);
+  }, [all, heldQuote]);
 
   const ids = useRef(new Set<string>());
   ids.current = new Set((all ?? []).map((t) => t.id));
