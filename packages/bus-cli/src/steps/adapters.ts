@@ -44,6 +44,7 @@ import {
   removeCodexEntry,
   upsertCodexEntry,
 } from "./codex.ts";
+import { habitsOptedOut } from "./habits.ts";
 import {
   HERMES_NO_CLI,
   hermesPluginDir,
@@ -51,15 +52,32 @@ import {
   pluginState,
   uninstallHermes,
 } from "./hermes.ts";
+import {
+  installOpenclaw,
+  OPENCLAW_NIX,
+  OPENCLAW_NO_CLI,
+  OPENCLAW_PLUGIN,
+  openclawNix,
+  openclawPluginDir,
+  openclawPluginState,
+  uninstallOpenclaw,
+} from "./openclaw.ts";
 
 export type Exec = (
   cmd: string,
   args: string[],
   /** Extra environment for the command, on top of the CLI's own. */
-  opts?: { env?: Record<string, string> },
+  opts?: { env?: Record<string, string>; timeoutMs?: number },
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
-export type Harness = "claude" | "opencode" | "pi" | "omp" | "codex" | "hermes";
+export type Harness =
+  | "claude"
+  | "opencode"
+  | "pi"
+  | "omp"
+  | "codex"
+  | "hermes"
+  | "openclaw";
 
 export type AdapterDeps = {
   /** The user's home: harness configs live under it. */
@@ -71,7 +89,13 @@ export type AdapterDeps = {
   /** The argv that runs the CLI: `[node, <OA_BUS_HOME>/bin/dist/index.js]`, or one executable. */
   busBin: string[];
   /** `pi` is the one extension file Pi and oh-my-pi both load. */
-  assets: { pi: string; opencodePlugin: string; hermes?: string };
+  assets: {
+    pi: string;
+    opencodePlugin: string;
+    hermes?: string;
+    /** The built OpenClaw plugin folder. */
+    openclaw?: string;
+  };
   which: (cmd: string) => boolean;
   exec: Exec;
   /** The Codex desktop app's bundle; undefined where there is none to look for. */
@@ -94,6 +118,10 @@ export type InstallResult = {
   codexNoWake: boolean;
   /** Hermes's plugin was installed: running Hermes processes load it only after a restart. */
   hermesRestart: boolean;
+  /** OpenClaw's plugin was installed: a gateway that is not managed loads it only after `openclaw gateway restart`. */
+  openclawRestart: boolean;
+  /** OpenClaw is in Nix mode: its plugin commands are off, so nothing was done. */
+  openclawNix: boolean;
 };
 export type UninstallResult = {
   removed: Harness[];
@@ -105,6 +133,10 @@ export type UninstallResult = {
   opencodeRestarted: boolean;
   /** Hermes's plugin folder went with no `hermes` to run `plugins disable`. */
   hermesNoCli: boolean;
+  /** OpenClaw's plugin folder went with no `openclaw` to run `plugins uninstall`. */
+  openclawNoCli: boolean;
+  /** OpenClaw is in Nix mode: its plugin was left alone. */
+  openclawNix: boolean;
 };
 
 /** The harness entry (MCP server, OpenCode plugin) name. OpenBus uses `openbus`: both can be installed. */
@@ -117,6 +149,7 @@ const HARNESSES: Harness[] = [
   "omp",
   "codex",
   "hermes",
+  "openclaw",
 ];
 
 /** The shipped Pi (and oh-my-pi) extension and OpenCode TUI plugin. */
@@ -125,6 +158,8 @@ export const readAssets = (): AdapterDeps["assets"] => ({
   opencodePlugin: readFileSync(OPENCODE_TUI_PLUGIN, "utf8"),
   // A folder, not text: the plugin is several Python files.
   hermes: HERMES_PLUGIN,
+  // Built from packages/bus-adapter-openclaw (the CLI's bundle step does it).
+  openclaw: OPENCLAW_PLUGIN,
 });
 
 /** The bus home when it is not `<home>/.oa-bus`: the one value a harness entry must carry. */
@@ -562,6 +597,11 @@ const install: Record<Harness, Step> = {
   async hermes(deps) {
     return installHermes(deps);
   },
+
+  // OpenClaw loads a native plugin folder; its own CLI installs and enables it.
+  async openclaw(deps, notes) {
+    return installOpenclaw(deps, notes, habitsOptedOut(paths(deps).busDir));
+  },
 };
 
 // Uninstall works from the files, so it also cleans up after a harness the
@@ -662,6 +702,10 @@ const uninstall: Record<Harness, Step> = {
   async hermes(deps, notes) {
     return uninstallHermes(deps, notes);
   },
+
+  async openclaw(deps, notes) {
+    return uninstallOpenclaw(deps, notes);
+  },
 };
 
 async function each(
@@ -708,6 +752,8 @@ export async function installAdapters(
       : {}),
     codexNoWake: done.includes("codex") && notes.includes(CODEX_NO_BIN),
     hermesRestart: done.includes("hermes"),
+    openclawRestart: done.includes("openclaw"),
+    openclawNix: notes.includes(OPENCLAW_NIX),
   };
 }
 
@@ -727,6 +773,8 @@ export async function uninstallAdapters(
       deps.which("opencode") &&
       !notes.some((n) => n.startsWith(RESTART_FAILED)),
     hermesNoCli: notes.includes(HERMES_NO_CLI),
+    openclawNoCli: notes.includes(OPENCLAW_NO_CLI),
+    openclawNix: notes.includes(OPENCLAW_NIX),
   };
 }
 
@@ -737,6 +785,8 @@ export function checkAdapters(
   deps: Pick<AdapterDeps, "home" | "busHome" | "env" | "which" | "codexApp"> & {
     /** The shipped Hermes plugin folder to compare with; the package's own by default. */
     hermesPlugin?: string;
+    /** The shipped OpenClaw plugin folder to compare with; the package's own by default. */
+    openclawPlugin?: string;
     /** The argv entries run, when known without writing: Codex's command is compared too. */
     busBin?: string[];
   },
@@ -767,7 +817,10 @@ export function checkAdapters(
       ? hasOmp(deps)
       : h === "codex"
         ? codexHere(deps)
-        : deps.which(h))
+        : h === "openclaw"
+          ? // Plugin commands are off in Nix mode: nothing here to wire.
+            deps.which(h) && !openclawNix(deps.env)
+          : deps.which(h))
       ? "absent"
       : safely(ok)
         ? "configured"
@@ -815,6 +868,15 @@ export function checkAdapters(
         pluginState(
           hermesPluginDir(deps.home, deps.env ?? {}),
           deps.hermesPlugin ?? HERMES_PLUGIN,
+        ) === "current",
+    ),
+    // Files only: whether OpenClaw lists it as enabled and loaded is openclawVerify's.
+    openclaw: state(
+      "openclaw",
+      () =>
+        openclawPluginState(
+          openclawPluginDir(deps.home, deps.env ?? {}),
+          deps.openclawPlugin ?? OPENCLAW_PLUGIN,
         ) === "current",
     ),
   };

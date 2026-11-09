@@ -26,6 +26,7 @@ import { harnessSkills } from "@oa/shared/harness-skills";
 import type { Harness } from "./adapters.ts";
 import { codexHome } from "./codex.ts";
 import { hermesHome } from "./hermes.ts";
+import { openclawStateDir } from "./openclaw.ts";
 
 /** Immediately after the frontmatter: the only file we may replace. */
 export const SKILL_MARKER =
@@ -75,6 +76,8 @@ export const skillDir = (
     omp: agents,
     codex: join(codexHome(deps.home, e), "AGENTS.md"),
     hermes: join(hermesHome(deps.home, e), "skills"),
+    // OpenClaw's managed skills folder, in its state dir.
+    openclaw: join(openclawStateDir(deps.home, e), "skills"),
   }[h];
 };
 
@@ -325,7 +328,15 @@ export async function installSkill(
 /** Removes our marked files in every harness, and our Codex block, and nothing else. */
 export const uninstallSkill = (
   deps: Pick<SkillDeps, "home" | "env">,
-  harnesses: Harness[] = ["claude", "opencode", "pi", "omp", "codex", "hermes"],
+  harnesses: Harness[] = [
+    "claude",
+    "opencode",
+    "pi",
+    "omp",
+    "codex",
+    "hermes",
+    "openclaw",
+  ],
 ): SkillResult => {
   const written: string[] = [];
   const notes: string[] = [];

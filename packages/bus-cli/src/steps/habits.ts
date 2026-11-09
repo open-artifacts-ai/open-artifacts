@@ -11,6 +11,7 @@
 //   omp       none: its always-on file is unverified, so nothing is written
 //   hermes    none: the plugin adds the lines itself, only while a habits.on
 //             marker sits in its folder (PLUGIN_HARNESSES below)
+//   openclaw  none: the same, through the plugin folder's habits.on
 // pi's file is from pi's docs (configuration.md, "Context files"). OpenCode's is
 // from the design and its docs; no OpenCode source was available to check it.
 
@@ -31,6 +32,12 @@ import {
   hermesPluginDirs,
   pluginState,
 } from "./hermes.ts";
+import {
+  OPENCLAW_HABITS_MARKER,
+  openclawPluginDir,
+  openclawPluginDirs,
+  openclawPluginState,
+} from "./openclaw.ts";
 import { brokenLink, lineIndex, targetOf, writeAtomic } from "./skill.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
@@ -402,7 +409,7 @@ export function habitsOn(deps: HabitsDeps): string[] {
  */
 export type PluginHarness = {
   /** The key in checkAdapters' result. */
-  name: "hermes";
+  name: "hermes" | "openclaw";
   /** As shown to the user. */
   label: string;
   dir: (home: string, env: Env) => string;
@@ -420,6 +427,15 @@ export const PLUGIN_HARNESSES: PluginHarness[] = [
     dirs: hermesPluginDirs,
     marker: HERMES_HABITS_MARKER,
     ours: (dir) => pluginState(dir, undefined) !== "foreign" && !isLink(dir),
+  },
+  {
+    name: "openclaw",
+    label: "OpenClaw",
+    dir: openclawPluginDir,
+    dirs: openclawPluginDirs,
+    marker: OPENCLAW_HABITS_MARKER,
+    ours: (dir) =>
+      openclawPluginState(dir, undefined) !== "foreign" && !isLink(dir),
   },
 ];
 

@@ -17,7 +17,8 @@ export type HarnessName =
   | "pi"
   | "omp"
   | "codex"
-  | "hermes";
+  | "hermes"
+  | "openclaw";
 export const HARNESS_LABEL: Record<HarnessName, string> = {
   claude: "Claude Code",
   opencode: "OpenCode",
@@ -25,6 +26,7 @@ export const HARNESS_LABEL: Record<HarnessName, string> = {
   omp: "oh-my-pi",
   codex: "Codex",
   hermes: "Hermes",
+  openclaw: "OpenClaw",
 };
 /** The dashboard's labels for AGENT_KINDS. */
 export const KIND_LABEL: Record<AgentKind, string> = {
@@ -230,7 +232,9 @@ export function copy(style: Style) {
         )}`,
       ),
     noHarness: () => [
-      warn("No Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes found"),
+      warn(
+        "No Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw found",
+      ),
       next(`Install one, then run ${BUS_CMD} again.`),
     ],
     restarted: () => done("Restarted the OpenCode service to load the plugin"),
@@ -258,6 +262,31 @@ export function copy(style: Style) {
       next(
         `Run hermes plugins disable oa-bus, or remove oa-bus from plugins.enabled in ${config}.`,
       ),
+    ],
+    // After the configured line, when the OpenClaw plugin was installed and enabled.
+    openclawRestart: () => [
+      next("Restart the OpenClaw gateway to load the plugin."),
+      next(
+        "A managed gateway restarts itself; if yours is not managed, run openclaw gateway restart.",
+      ),
+    ],
+    // After the configured line, when OpenClaw is in Nix mode: plugin commands are off there.
+    openclawNix: () => [
+      warn("OpenClaw is in Nix mode, so the bus left it alone."),
+      next("Add the oa-bus plugin through your Nix setup instead."),
+    ],
+    // After uninstall removed the OpenClaw plugin folder with no openclaw binary to uninstall it.
+    openclawNoCli: () => [
+      warn(
+        "OpenClaw isn't on PATH, so oa-bus may still be enabled in OpenClaw.",
+      ),
+      next("Run openclaw plugins uninstall oa-bus once it is back."),
+    ],
+    // Doctor, and status when the plugin is installed. Static: nothing in OpenClaw's config is read.
+    openclawDmNote: () => [
+      "OpenClaw: with the default dmScope, every direct message sender shares",
+      "one session, and that session is one bus address. If others can message",
+      "it, set a per-peer dmScope and keep dmPolicy on pairing or an allowlist.",
     ],
     opencodeNotRunning: () =>
       done("OpenCode service not running; it loads the plugin when it starts"),
@@ -374,8 +403,8 @@ export function copy(style: Style) {
       const lead = "No agents in namespace ";
       return [
         `${lead}${p("accent", clip(namespace, len(lead) + 5))} yet.`,
-        "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes in this folder.",
-        "It joins.",
+        "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw",
+        "in this folder. It joins.",
       ];
     },
     // 7. status: messages delivered after send_message stopped waiting.
