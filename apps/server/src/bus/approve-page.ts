@@ -54,7 +54,7 @@ a.primary{display:inline-flex;align-items:center;height:36px;padding:0 16px;bord
 .foot{margin:16px 0 0;font-size:12px;color:var(--muted);text-align:center}
 .muted{color:var(--muted);font-size:12px;margin:0}
 p.muted+ul{margin-top:12px}
-.ns{display:block}
+.ns{display:block;padding-left:1em;text-indent:-1em}
 .slot{width:100%;max-width:440px}
 .nw{white-space:nowrap}
 .wrap{overflow-wrap:anywhere}
