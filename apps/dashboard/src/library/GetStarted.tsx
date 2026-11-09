@@ -1,38 +1,18 @@
 import { Button } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import {
   BUS_POLL_MS,
   qk,
   useMembers,
   useOAuthClients,
+  useOnboarding,
+  useSetOnboarding,
   useTokens,
 } from "../api/queries";
 import { useMe } from "../auth/useMe";
 import { AgentSetupBody } from "../settings/AgentSetupCard";
 import { AppLink } from "./AppLink";
-
-const hideKey = (userId: string) => `oa.getStarted.hidden.${userId}`;
-const readHidden = (userId: string) => {
-  try {
-    return localStorage.getItem(hideKey(userId)) === "1";
-  } catch {
-    return false;
-  }
-};
-
-// Decided once, the first time the checklist could show: a new instance has
-// connection, no artifact by anyone and no other member; an existing
-// instance never gets the box, whatever the owner's own page shows.
-const firstKey = (userId: string) => `oa.getStarted.first.${userId}`;
-const readFirst = (userId: string): boolean | null => {
-  try {
-    const v = localStorage.getItem(firstKey(userId));
-    return v === "1" ? true : v === "0" ? false : null;
-  } catch {
-    return null;
-  }
-};
 
 const dot =
   "grid size-5 flex-none place-items-center rounded-full border-[1.5px] text-[length:var(--oa-text-xs)] font-semibold";
@@ -94,36 +74,31 @@ const Waiting = ({ children }: { children: string }) => (
  * self-serve gaps 1A). The instance owner only, until every step is done or
  * they hide it; invited members get the plain Library. Each step ticks from
  * the server's record of the event: a connection (token or OAuth grant), an
- * artifact, an invited member. Hide is remembered in this browser.
+ * artifact, an invited member. Hide, and having finished, live on the server
+ * (R.onboarding), so every browser agrees and a finished list stays gone.
  */
 export function GetStarted({
   hasArtifacts,
-  anyArtifacts,
   loaded,
 }: {
   hasArtifacts: boolean;
-  /** Any artifact on the instance, by anyone, in the loaded page. */
-  anyArtifacts: boolean;
   loaded: boolean;
 }) {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const owner = me?.user.role === "owner";
   const userId = me?.user.id ?? "";
-  const [hidden, setHidden] = useState(() => readHidden(userId));
-  useEffect(() => setHidden(readHidden(userId)), [userId]);
-  const [first, setFirst] = useState(() => readFirst(userId));
-  useEffect(() => setFirst(readFirst(userId)), [userId]);
-  const live = owner && !hidden && first !== false;
+  const onboarding = useOnboarding(owner);
+  const setOnboarding = useSetOnboarding();
+  const finished =
+    onboarding.data?.dismissed === true || onboarding.data?.completed === true;
+  // Nothing is fetched or shown until the server has said it is still open.
+  const live = owner && onboarding.isSuccess && !finished;
   const tokens = useTokens(live);
   const clients = useOAuthClients(live);
   const members = useMembers(undefined, live);
   const connected =
     (tokens.data?.length ?? 0) > 0 || (clients.data?.length ?? 0) > 0;
-  // Anyone else who is not a guest means the instance is already in use.
-  const others = (members.data ?? []).some(
-    (m) => m.id !== userId && m.role !== "guest",
-  );
   const invited = (members.data ?? []).some(
     (m) => m.id !== userId && m.role !== "guest" && m.role !== "owner",
   );
@@ -132,15 +107,12 @@ export function GetStarted({
   const done = [connected, hasArtifacts, invited];
   const all = ready && done.every(Boolean);
 
-  // First run only: decide once, from the first complete read.
+  // Every step done: the server keeps that, so removing a member or a token
+  // later never brings the list back.
+  const { mutate: save } = setOnboarding;
   useEffect(() => {
-    if (!live || !ready || first !== null) return;
-    const v = !connected && !anyArtifacts && !others;
-    try {
-      localStorage.setItem(firstKey(userId), v ? "1" : "0");
-    } catch {}
-    setFirst(v);
-  }, [live, ready, first, connected, anyArtifacts, others, userId]);
+    if (live && all) save({ completed: true });
+  }, [live, all, save]);
 
   // Events happen elsewhere (an agent, another tab): re-read what is still
   // open, quietly, until it is done. Focus refetch covers returning to the tab.
@@ -161,15 +133,9 @@ export function GetStarted({
     return () => clearInterval(t);
   }, [live, all, qc, connected, invited, hasArtifacts]);
 
-  if (!live || !ready || first !== true || all || !me?.instance.mcpUrl)
-    return null;
+  if (!live || !ready || all || !me?.instance.mcpUrl) return null;
 
-  const hide = () => {
-    try {
-      localStorage.setItem(hideKey(userId), "1");
-    } catch {}
-    setHidden(true);
-  };
+  const hide = () => save({ dismissed: true });
   const count = done.filter(Boolean).length;
   const cur = done.indexOf(false);
   const st = (i: number) => (done[i] ? "done" : cur === i ? "cur" : "todo");
@@ -252,7 +218,11 @@ export function GetStarted({
           )}
           {!invited && cur === 2 && (
             <div className="flex gap-[var(--oa-space-2)]">
-              <Button asChild size="sm" className="h-[30px]">
+              <Button
+                asChild
+                size="sm"
+                className="h-[30px] bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]"
+              >
                 <AppLink href="/settings/members">Invite people</AppLink>
               </Button>
               <Button

@@ -1,6 +1,6 @@
 import type { Me } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { describe, expect, it } from "vitest";
 import { installHarness, mount, mountHosted, page, server } from "./harness";
@@ -16,8 +16,6 @@ const noTokens = () => [
   ),
 ];
 const owner = (m: Me): Me => ({ ...m, user: { ...m.user, role: "owner" } });
-const seedFirst = (v: "1" | "0" = "1") =>
-  localStorage.setItem(`oa.getStarted.first.${fixtures.me.user.id}`, v);
 const billing = (over: Record<string, unknown>) => (m: Me) => {
   const o = owner(m);
   return {
@@ -54,7 +52,6 @@ describe("Get started checklist", () => {
   });
 
   it("ticks the connection from a token, then the artifact", async () => {
-    seedFirst();
     server.use(
       none(),
       http.get("*/api/v1/members", () =>
@@ -82,7 +79,6 @@ describe("Get started checklist", () => {
   });
 
   it("ticks the invite once someone else is a member", async () => {
-    seedFirst();
     server.use(none(), ...noTokens());
     server.use(
       http.get("*/api/v1/members", () => HttpResponse.json(fixtures.members)),
@@ -101,11 +97,14 @@ describe("Get started checklist", () => {
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull(),
     );
+    // The server holds it: a fresh mount (another browser) is still hidden.
+    cleanup();
+    mount("/");
+    await screen.findByText("No artifacts yet");
+    expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull();
     expect(
-      Object.keys(localStorage).some((k) =>
-        k.startsWith("oa.getStarted.hidden"),
-      ),
-    ).toBe(true);
+      Object.keys(localStorage).filter((k) => k.includes("getStarted")),
+    ).toEqual([]);
   });
 
   it("leaves on its own once all three steps are done", async () => {
@@ -150,23 +149,6 @@ describe("Get started checklist", () => {
     expect(cur).toHaveTextContent("(current step)");
   });
 
-  it("is not first run when another member already exists", async () => {
-    server.use(
-      none(),
-      http.get("*/api/v1/tokens", () => HttpResponse.json([])),
-      http.get("*/api/v1/oauth-clients", () => HttpResponse.json([])),
-      http.get("*/api/v1/members", () => HttpResponse.json(fixtures.members)),
-    );
-    mount("/");
-    await screen.findByText("No artifacts yet");
-    await waitFor(() =>
-      expect(
-        localStorage.getItem(`oa.getStarted.first.${fixtures.me.user.id}`),
-      ).toBe("0"),
-    );
-    expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull();
-  });
-
   it("omits the trial line once a trial was used", async () => {
     hosted({ trialEndsAt: "2026-01-01T00:00:00.000Z" });
     await heading();
@@ -188,7 +170,6 @@ describe("Get started checklist", () => {
   });
 
   it("Not now hides the checklist once the first artifact exists", async () => {
-    seedFirst();
     mount("/");
     // Default fixtures: a token and artifacts, but only the owner as member.
     server.use(
@@ -206,31 +187,61 @@ describe("Get started checklist", () => {
     );
   });
 
-  it("is first-run only: an owner who already has a connection never sees it", async () => {
+  it("shows to an owner whose agent connected before their first visit", async () => {
+    // A token and an artifact by someone else already exist; the owner never
+    // opened the Library. It is open, not decided away by first-visit timing.
+    server.use(
+      none(),
+      http.get("*/api/v1/members", () =>
+        HttpResponse.json(fixtures.members.filter((m) => m.role === "owner")),
+      ),
+    );
+    mount("/");
+    await heading();
+    expect(screen.getByText("1 of 3")).toBeInTheDocument();
+    expect(screen.getByText("Your agent is connected.")).toBeInTheDocument();
+  });
+
+  it("stays gone once finished, even when a step later undoes", async () => {
+    let members = fixtures.members;
+    server.use(http.get("*/api/v1/members", () => HttpResponse.json(members)));
     mount("/");
     await screen.findByRole("link", { name: fixtures.artifacts[0]?.title });
-    await waitFor(() =>
-      expect(
-        localStorage.getItem(`oa.getStarted.first.${fixtures.me.user.id}`),
-      ).toBe("0"),
-    );
+    // All three done: the completion is saved on the server.
+    await waitFor(async () => {
+      const r = await fetch("/api/v1/onboarding");
+      expect(await r.json()).toMatchObject({ completed: true });
+    });
+    cleanup();
+    members = fixtures.members.filter((m) => m.role === "owner");
+    mount("/");
+    await screen.findByRole("link", { name: fixtures.artifacts[0]?.title });
     expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull();
   });
 
-  it("records the first run when shown, and keeps showing after connecting", async () => {
-    server.use(none(), ...noTokens());
-    mount("/");
-    await heading();
-    expect(
-      localStorage.getItem(`oa.getStarted.first.${fixtures.me.user.id}`),
-    ).toBe("1");
-  });
-
-  it("stays away when decided not first-run, even with an empty Library", async () => {
-    seedFirst("0");
-    server.use(none(), ...noTokens());
+  it("does not show once the server says it was hidden", async () => {
+    server.use(
+      none(),
+      ...noTokens(),
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json({ dismissed: true, completed: false }),
+      ),
+    );
     mount("/");
     await screen.findByText("No artifacts yet");
     expect(screen.queryByRole("heading", { name: "Get started" })).toBeNull();
+  });
+
+  it("styles Invite people with the accent", async () => {
+    mount("/");
+    server.use(
+      http.get("*/api/v1/members", () =>
+        HttpResponse.json(fixtures.members.filter((m) => m.role === "owner")),
+      ),
+    );
+    await heading();
+    expect(
+      screen.getByRole("link", { name: "Invite people" }).className,
+    ).toMatch(/--oa-accent/);
   });
 });
