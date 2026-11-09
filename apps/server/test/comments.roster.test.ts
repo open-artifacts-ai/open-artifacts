@@ -23,7 +23,7 @@ import {
 import { addThread, type CommentWho } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { getUser } from "../src/services/users.js";
-import { api, login } from "./helpers.js";
+import { api, fetchAndWait, login } from "./helpers.js";
 
 // #1535: the roster adds the VIEWER's own running agents, a mention makes the
 // agent follow, and a comment notice names its thread and comment.
@@ -316,6 +316,150 @@ describe("mention: a viewer's running agent, and the follow it makes", () => {
     expect((await followRows(s.id)).filter((r) => r.n === "Runner")).toEqual(
       [],
     );
+  });
+});
+
+describe("route and hub reads", () => {
+  const post = async (
+    h: ReturnType<typeof hubs>,
+    s: Awaited<ReturnType<typeof setup>>,
+    body: object,
+    as = s.owner,
+  ) => {
+    try {
+      const t = (await addThread(
+        h.env,
+        art(s.id),
+        who(as),
+        view(as),
+        { anchor: { kind: "note" }, body: "hi", ...body },
+        { moderator: true },
+      )) as Thread;
+      return { t };
+    } catch (e) {
+      return { code: (e as { code?: string }).code };
+    }
+  };
+  const keyOf = async (
+    s: Awaited<ReturnType<typeof setup>>,
+    h: ReturnType<typeof hubs>,
+    name: string,
+  ) =>
+    (await agentRoster(h.env, s.id, s.owner.userId, true, true)).find(
+      (x) => x.name === name,
+    )?.key as string;
+
+  it("GET agents lists the viewer's running agent through the route, with the hub injected", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    const h = hubs({ [s.owner.userId]: [agentRow("ns-o", "Runner")] });
+    const get = (cookie: string) =>
+      fetchAndWait(
+        app,
+        new Request(`http://app.localhost${R.artifactAgents(s.id)}`, {
+          headers: { cookie, "x-oa-request": "1" },
+        }),
+        h.env,
+      );
+    const r = await get(s.owner.cookie);
+    expect(r.status).toBe(200);
+    expect(
+      ((await r.json()) as { name: string; online: boolean }[]).map((x) => [
+        x.name,
+        x.online,
+      ]),
+    ).toEqual([["Runner", true]]);
+    // The editor sees none of the owner's: their own hub has nothing running.
+    await machineFor(s.editor.userId);
+    const e = await get(s.editor.cookie);
+    expect(await e.json()).toEqual([]);
+  });
+
+  it("a mention of a follower does no hub read", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    await follow(E, s.owner.userId, { namespace: "ns-o", name: "Fol" }, s.id);
+    const h = hubs({ [s.owner.userId]: [agentRow("ns-o", "Fol")] });
+    const key = await keyOf(s, h, "Fol");
+    h.seen.length = 0;
+    const r = await post(h, s, { mentions: [{ key }] });
+    expect(r.t?.comments[0]?.mentions?.[0]?.delivery).toBe("delivered");
+    expect(h.seen).toEqual([]);
+  });
+
+  it("an ask to a person, a junk key or a malformed key does no hub read", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    const h = hubs({ [s.owner.userId]: [agentRow("ns-o", "Runner")] });
+    const ask = (key: string) => ({
+      ask: {
+        question: "Which?",
+        options: [
+          { id: "a", label: "A" },
+          { id: "b", label: "B" },
+        ],
+        to: [{ key }],
+      },
+    });
+    expect((await post(h, s, ask(s.editor.userId))).t).toBeDefined();
+    expect((await post(h, s, ask("agent:nope"))).code).toBe("bad_request");
+    expect((await post(h, s, ask(`agent:${"0".repeat(32)}`))).code).toBe(
+      "bad_request",
+    );
+    // A well-formed key the follows do not hold is the one case that reads (once).
+    expect(h.seen).toEqual([`bus:${s.owner.userId}`]);
+  });
+
+  it("several of the viewer's own agents in one POST cost one hub read", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    const h = hubs({
+      [s.owner.userId]: [agentRow("ns-o", "A1"), agentRow("ns-o", "A2")],
+    });
+    const k1 = await keyOf(s, h, "A1");
+    const k2 = await keyOf(s, h, "A2");
+    h.seen.length = 0;
+    const r = await post(h, s, {
+      mentions: [{ key: k1 }],
+      assign: { key: k2 },
+    });
+    expect(r.t?.comments[0]?.assigned?.state).toBe("delivered");
+    expect(h.seen).toEqual([`bus:${s.owner.userId}`]);
+    // Both followed: the mention and the assignment.
+    expect((await followRows(s.id)).map((x) => x.n).sort()).toEqual([
+      "A1",
+      "A2",
+    ]);
+  });
+
+  it("an agent the follows already hold is not followed again", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    await follow(
+      E,
+      s.editor.userId,
+      { namespace: "ns-e", name: "Codex" },
+      s.id,
+    );
+    await E.DB.exec(
+      "create table if not exists follow_probe (n integer); delete from follow_probe; create trigger if not exists follow_probe_t before insert on follows begin insert into follow_probe values (1); end",
+    );
+    try {
+      const h = hubs({ [s.owner.userId]: [] });
+      const key = (await agentRoster(h.env, s.id, s.owner.userId, false)).find(
+        (x) => x.name.startsWith("Codex"),
+      )?.key as string;
+      const r = await post(h, s, { mentions: [{ key }] });
+      expect(r.t?.comments[0]?.mentions?.[0]?.delivery).toBe("delivered");
+      const n = await E.DB.prepare(
+        "select count(*) as c from follow_probe",
+      ).first<{
+        c: number;
+      }>();
+      expect(n?.c).toBe(0);
+    } finally {
+      await E.DB.exec("drop trigger follow_probe_t; drop table follow_probe");
+    }
   });
 });
 

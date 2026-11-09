@@ -450,9 +450,14 @@ type Resolved = {
   extras: NewExtras | undefined;
   /** Every agent the comment reaches, once, with why (assign beats ask beats mention). */
   agents: { agent: RosterAgent; kind: CommentNoticeKind }[];
+  /** The agents to make follow: mentioned or assigned, resolved from the viewer's own running agents. */
+  follow: RosterAgent[];
   mentions: string[];
   assign: string | null;
 };
+
+/** The key of a roster agent (comment-agents.ts agentKey). */
+const AGENT_KEY = /^agent:[0-9a-f]{32}$/;
 
 const unknownKey = (key: string) =>
   new ApiError("bad_request", `Unknown agent or person: ${key}`);
@@ -470,7 +475,13 @@ async function resolveExtras(
   x: CommentExtras,
   opts: ExtrasOpts,
 ): Promise<Resolved> {
-  const none = { extras: undefined, agents: [], mentions: [], assign: null };
+  const none: Resolved = {
+    extras: undefined,
+    agents: [],
+    follow: [],
+    mentions: [],
+    assign: null,
+  };
   const wantsTargets = (x.mentions?.length ?? 0) > 0 || x.assign !== undefined;
   if (!wantsTargets && !x.ask) return none;
   // An ask notifies agents too: the same rule as mentions and assignments.
@@ -489,16 +500,25 @@ async function resolveExtras(
   const roster = await agentRoster(env, artifactId, viewerId, false);
   // The viewer's own running agents (#1535) are keyed by a hash of their
   // address, so a key the follows do not hold can only be resolved by reading
-  // the viewer's hub. That read happens once, and only when a key misses: a
-  // mention of a follower costs D1 alone, and a stalled hub costs at most
-  // BUS_HUB_TIMEOUT_MS (busView's own bound, inside the POST's budget) and
-  // then reads as an unknown key. Only the viewer's own agents, never another member's.
+  // the viewer's hub. That read happens once per POST (memoised), only for a
+  // key shaped like an agent key that the follows do not hold: a mention of a
+  // follower, an ask to a person or a junk key costs D1 alone. busView bounds
+  // the read at BUS_HUB_TIMEOUT_MS (a stalled hub then reads as an unknown
+  // key). It sits OUTSIDE the POST's NOTICE_BUDGET_MS, so the worst case is
+  // about that bound plus the budget (about 4.5 s), and it runs before the
+  // rate-limit take: a thread's take is tied to the anchor check and a reply's
+  // sits in the DO write, so moving it ahead of this read is not a small change.
+  // Only the viewer's own agents, never another member's.
   let own: Promise<RosterAgent[]> | undefined;
+  /** Keys resolved from the viewer's own running agents: not in the follows. */
+  const viaOwn = new Set<string>();
   const find = async (key: string): Promise<RosterAgent | undefined> => {
     const a = roster.find((r) => r.key === key);
-    if (a || !viewerId) return a;
+    if (a || !viewerId || !AGENT_KEY.test(key)) return a;
     own ??= viewerRosterAgents(env, artifactId, viewerId);
-    return (await own).find((r) => r.key === key);
+    const found = (await own).find((r) => r.key === key);
+    if (found) viaOwn.add(key);
+    return found;
   };
   const agentOf = async (key: string): Promise<RosterAgent> => {
     const a = await find(key);
@@ -538,7 +558,13 @@ async function resolveExtras(
   for (const a of mentioned) agents.set(a.key, { agent: a, kind: "mention" });
   for (const a of asked) agents.set(a.key, { agent: a, kind: "ask" });
   if (assigned) agents.set(assigned.key, { agent: assigned, kind: "assign" });
+  // A mention or assignment makes an agent follow (#1535), but only one the
+  // follows did not hold: another member's unfollow is never undone.
+  const toFollow = [...mentioned, ...(assigned ? [assigned] : [])].filter((x) =>
+    viaOwn.has(x.key),
+  );
   return {
+    follow: [...new Map(toFollow.map((x) => [x.key, x])).values()],
     extras: {
       ...(ask ? { ask } : {}),
       ...(mentioned.length ? { mentions: mentioned.map(storedAgent) } : {}),
@@ -606,17 +632,12 @@ async function deliver(
     timer = setTimeout(() => res("dropped"), NOTICE_BUDGET_MS);
   });
   try {
-    // A mention makes the agent follow the artifact (#1535), beside the
-    // notice and under the same budget. Best effort: a failure is logged and
-    // changes neither the notice nor the comment.
-    const mentioned = new Set(r.mentions);
-    const follows = r.agents
-      .filter(
-        ({ agent, kind }) => kind === "mention" || mentioned.has(agent.key),
-      )
-      .map(({ agent }) =>
-        Promise.race([followMentioned(env, a.id, agent), late]),
-      );
+    // A mentioned or assigned agent of the viewer's that did not follow now
+    // follows (#1535), beside the notice and under the same budget. Best
+    // effort: a failure is logged and changes neither the notice nor the comment.
+    const follows = r.follow.map((agent) =>
+      Promise.race([followMentioned(env, a.id, agent), late]),
+    );
     const [outs] = await Promise.all([
       Promise.all(
         r.agents.map(({ agent, kind }) =>
