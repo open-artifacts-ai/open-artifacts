@@ -1537,9 +1537,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         proposedName: a.proposedName,
         ...(a.sentName !== undefined ? { sentName: a.sentName } : {}),
         busName: a.busName,
-        namespace: a.namespace,
-        global: a.global,
-        cwd: a.cwd,
       });
     }
     const text = JSON.stringify(rows);
@@ -1564,25 +1561,33 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     if (deps.attest) return;
     for (const r of readCodexAgents(codexAgentsFile)) {
       if (agents.byRef(r.ref)) continue;
-      let ok = false;
+      let proven: { cwd: string } | undefined;
       try {
-        ok = codexCheck.restore({
+        proven = codexCheck.restore({
           thread: r.ref,
           pid: r.pid,
           start: r.procStart,
         });
       } catch {}
-      if (!ok) continue;
+      if (!proven) continue;
+      // Scope comes from the proven cwd and today's config, as at a hello.
+      let ns: Namespace;
+      try {
+        ns = resolveNs(proven.cwd, true);
+      } catch {
+        continue;
+      }
+      if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
       agents.up({
         ref: r.ref,
         kind: "codex",
         proposedName: r.proposedName,
         busName: r.busName,
-        namespace: r.namespace,
-        global: r.global,
+        namespace: ns.namespace,
+        global: ns.global,
         pid: r.pid,
         procStart: r.procStart,
-        cwd: r.cwd,
+        cwd: proven.cwd,
         live: true,
         ...(r.sentName !== undefined ? { sentName: r.sentName } : {}),
       });

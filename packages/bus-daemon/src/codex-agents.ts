@@ -1,31 +1,31 @@
 import { chmodSync, renameSync, writeFileSync } from "node:fs";
+import { AgentRefSchema, LIMITS } from "@oa/bus-protocol";
 import { z } from "zod";
 import { readOwnFile } from "./own-file.ts";
 
 /**
  * #1748: what a restarted daemon needs to take back a Codex session it had
- * attested. Codex has no session file to rediscover, so the daemon keeps its
+ * attested. Scope (namespace, global, cwd) is never kept: restore derives it
+ * again from the rollout and the config. Codex has no session file to rediscover, so the daemon keeps its
  * own record of each live thread. The file is the daemon's: its 0700 home,
  * mode 0600, written whole through a rename. It is trusted only as far as it
  * goes: the process start and the thread's lock are proven again on restore.
  */
 export const CodexAgentSchema = z.strictObject({
-  ref: z.string().min(1).max(200),
+  /** Joined into the thread's lock path: a real ref, never `../`. */
+  ref: AgentRefSchema,
   pid: z.number().int().positive(),
   /** The process start as `ps` printed it when pinned. */
   procStart: z.string().min(1).max(100),
   proposedName: z.string().min(1).max(200),
   sentName: z.string().max(200).optional(),
   busName: z.string().min(1).max(200),
-  namespace: z.string().min(1).max(500),
-  global: z.boolean(),
-  cwd: z.string().min(1).max(4096),
 });
 export type CodexAgent = z.infer<typeof CodexAgentSchema>;
 
 const FileSchema = z.strictObject({
   v: z.literal(1),
-  agents: z.array(z.unknown()).max(1000),
+  agents: z.array(z.unknown()),
 });
 
 /**
@@ -45,6 +45,7 @@ export function readCodexAgents(
     const seen = new Set<string>();
     const out: CodexAgent[] = [];
     for (const raw of top.data.agents) {
+      if (out.length >= LIMITS.maxAgentsPerMachine) break;
       const one = CodexAgentSchema.safeParse(raw);
       if (!one.success || seen.has(one.data.ref)) continue;
       seen.add(one.data.ref);

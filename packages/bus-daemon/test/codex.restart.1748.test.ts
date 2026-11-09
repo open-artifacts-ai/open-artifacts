@@ -13,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hello } from "@oa/bus-ipc";
+import { LIMITS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type CodexAgent,
@@ -34,15 +35,18 @@ const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 
 const line = (type: string, payload: object) =>
   `${JSON.stringify({ timestamp: new Date().toISOString(), type, payload })}\n`;
-const meta = line("session_meta", {
-  id: THREAD,
-  session_id: THREAD,
-  cwd: CWD,
-  originator: "codex_exec",
-  cli_version: "0.165.0",
-  source: "exec",
-  thread_source: "user",
-});
+const metaOf = (over: object = {}) =>
+  line("session_meta", {
+    id: THREAD,
+    session_id: THREAD,
+    cwd: CWD,
+    originator: "codex_exec",
+    cli_version: "0.165.0",
+    source: "exec",
+    thread_source: "user",
+    ...over,
+  });
+const meta = metaOf();
 const call = (call_id: string) =>
   line("response_item", {
     type: "function_call",
@@ -54,7 +58,7 @@ const call = (call_id: string) =>
   });
 
 /** A temp CODEX_HOME, a fake process table and lock holders, and a daemon home file. */
-function world() {
+function world(source?: string) {
   const home = tmp("ob-r1748-");
   mkdirSync(join(home, "thread-writer-locks"));
   writeFileSync(join(home, "thread-writer-locks", `${THREAD}.lock`), "");
@@ -62,7 +66,7 @@ function world() {
   mkdirSync(day, { recursive: true });
   writeFileSync(
     join(day, `rollout-2026-10-29T02-11-43-${THREAD}.jsonl`),
-    meta + call("call_1"),
+    (source ? metaOf({ source }) : meta) + call("call_1"),
   );
   const state = {
     start: START,
@@ -133,9 +137,6 @@ describe("a Codex session survives a daemon restart (#1748)", () => {
           procStart: START,
           proposedName: "my-codex",
           busName: "my-codex",
-          namespace: "ns",
-          global: false,
-          cwd: CWD,
         },
       ],
     });
@@ -319,6 +320,101 @@ describe("a Codex session survives a daemon restart (#1748)", () => {
     expect(readCodexAgents(w.agentsFile, mine + 1)).toEqual([]);
   });
 
+  it("takes namespace and global from the resolver at restore, never the file", async () => {
+    const w = world();
+    const grant = { namespace: "ns", global: true, source: "cwd" as const };
+    const one = await daemonHarness({
+      attest: undefined,
+      codex: w.codex,
+      resolveNamespace: () => grant,
+    });
+    await one.adapter(THREAD, codexHello());
+    expect(one.daemon.agents.byRef(THREAD)?.global).toBe(true);
+    await stopAll();
+    // Scope in the file is refused outright: a forged record is dropped.
+    const forged = JSON.parse(readFileSync(w.agentsFile, "utf8"));
+    expect(forged.agents[0]).not.toHaveProperty("namespace");
+    expect(forged.agents[0]).not.toHaveProperty("global");
+    expect(forged.agents[0]).not.toHaveProperty("cwd");
+    const evil = join(tmp("ob-r1748e-"), "f.json");
+    writeFileSync(
+      evil,
+      JSON.stringify({
+        v: 1,
+        agents: [
+          { ...forged.agents[0], namespace: "other", global: true, cwd: "/x" },
+        ],
+      }),
+      { mode: 0o600 },
+    );
+    const bad = await daemonHarness({
+      attest: undefined,
+      codex: { ...w.codex, agentsFile: evil },
+    });
+    expect(bad.daemon.agents.all()).toEqual([]);
+    await stopAll();
+    // The folder left the global allowlist: the thread comes back, not global.
+    const cwds: string[] = [];
+    const two = await daemonHarness({
+      attest: undefined,
+      codex: w.codex,
+      resolveNamespace: (cwd) => {
+        cwds.push(cwd);
+        return { namespace: "ns", global: false, source: "cwd" };
+      },
+    });
+    expect(two.daemon.agents.byRef(THREAD)).toMatchObject({
+      live: true,
+      global: false,
+      cwd: CWD,
+    });
+    expect(cwds).toEqual([CWD]);
+    await stopAll();
+    // A cwd that no longer resolves drops the record.
+    const three = await daemonHarness({
+      attest: undefined,
+      codex: w.codex,
+      resolveNamespace: () => {
+        throw new Error("gone");
+      },
+    });
+    expect(three.daemon.agents.all()).toEqual([]);
+  });
+
+  it("drops a record whose thread is a subagent now", async () => {
+    const w = world();
+    await attestedThenStopped(w);
+    const sub = world(JSON.stringify({ subagent: "review" }));
+    const two = await daemonHarness({
+      attest: undefined,
+      codex: { ...sub.codex, agentsFile: w.agentsFile },
+    });
+    expect(two.daemon.agents.all()).toEqual([]);
+  });
+
+  it("refuses a ref that is a path, and keeps at most the machine cap", () => {
+    const f = join(tmp("ob-r1748d-"), "a.json");
+    const row = (ref: string) => ({
+      ref,
+      pid: 5,
+      procStart: START,
+      proposedName: "n",
+      busName: "n",
+    });
+    writeFileSync(
+      f,
+      JSON.stringify({ v: 1, agents: [row("../../x"), row("a/b")] }),
+      { mode: 0o600 },
+    );
+    expect(readCodexAgents(f)).toEqual([]);
+    const many = Array.from(
+      { length: LIMITS.maxAgentsPerMachine + 5 },
+      (_, i) => row(`t${i}`),
+    );
+    writeFileSync(f, JSON.stringify({ v: 1, agents: many }), { mode: 0o600 });
+    expect(readCodexAgents(f)).toHaveLength(LIMITS.maxAgentsPerMachine);
+  });
+
   it("one bad record loses only itself; duplicates keep the first", () => {
     const f = join(tmp("ob-r1748c-"), "a.json");
     const good: CodexAgent = {
@@ -327,9 +423,6 @@ describe("a Codex session survives a daemon restart (#1748)", () => {
       procStart: START,
       proposedName: "n",
       busName: "n",
-      namespace: "ns",
-      global: false,
-      cwd: CWD,
     };
     writeFileSync(
       f,

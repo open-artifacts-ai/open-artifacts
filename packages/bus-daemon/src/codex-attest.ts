@@ -100,7 +100,11 @@ export type CodexAttestor = {
    * daemon's own earlier attestation; nothing in CODEX_HOME is believed more
    * than at the first hello. A thread that fails leaves nothing behind.
    */
-  restore: (r: { thread: string; pid: number; start: string }) => boolean;
+  restore: (r: {
+    thread: string;
+    pid: number;
+    start: string;
+  }) => { cwd: string } | undefined;
 };
 
 /** What a thread proved under one (P, start). */
@@ -377,25 +381,32 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     const home = deps.home ?? codexHome();
     const proc = procs([pid]).get(pid);
     if (!proc || basename(proc.comm) !== "codex" || proc.start !== start)
-      return false;
+      return undefined;
     // Another thread of this process pinned a different start: never mixed.
     const was = pinned.get(pid);
-    if (was !== undefined && was !== start) return false;
+    if (was !== undefined && was !== start) return undefined;
     const row = threadRow(home, thread);
     const rollout = row?.rollout_path ?? globRollout(home, thread);
-    if (!rollout || !plainFile(rollout)) return false;
+    if (!rollout || !plainFile(rollout)) return undefined;
     const meta = metaOf(rollout, thread);
     if (!meta || typeof meta.cwd !== "string" || !isAbsolute(meta.cwd))
-      return false;
+      return undefined;
+    // The same bar as the first hello: never a subagent.
+    if (
+      isSubagent(row ? row.source : meta.source) ||
+      isSubagent(meta.source) ||
+      SPAWNED_SOURCES.has(String(meta.thread_source))
+    )
+      return undefined;
     const had = was !== undefined;
     pinned.set(pid, start);
     proofs.set(`${pid}\0${start}\0${thread}`, { cwd: meta.cwd, rollout });
-    if (sweep([{ thread, pid }], true).has(thread)) return true;
+    if (sweep([{ thread, pid }], true).has(thread)) return { cwd: meta.cwd };
     // Failed: drop this thread's proof; the pin goes unless another thread uses it.
     proofs.delete(`${pid}\0${start}\0${thread}`);
     if (!had && ![...proofs.keys()].some((k) => k.startsWith(`${pid}\0`)))
       pinned.delete(pid);
-    return false;
+    return undefined;
   };
 
   return {
