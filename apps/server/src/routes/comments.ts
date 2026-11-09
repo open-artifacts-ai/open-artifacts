@@ -318,6 +318,7 @@ export function mountComments(app: AppType): void {
       who,
       viewer,
       raw.data.optionId,
+      { version: artifact.currentVersion, ctx: execCtx(c) },
     );
     return c.json(out);
   });

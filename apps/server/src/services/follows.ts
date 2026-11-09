@@ -266,7 +266,7 @@ export async function following(
 export const deleteFollowsStmt = (env: Env, artifactId: string) =>
   stmt(env.DB, "delete from follows where artifact_id = ?").bind(artifactId);
 
-const DROP_MEMBER_FOLLOWS =
+export const DROP_MEMBER_FOLLOWS =
   "delete from follows where user_id = ?1 and artifact_id = ?2";
 
 // -------------------------------------------------- the share-notice setting

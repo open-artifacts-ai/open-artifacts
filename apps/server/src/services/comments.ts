@@ -37,6 +37,7 @@ import {
   type CommentNoticeKind,
   type DeliveryState,
   notifyAgent,
+  notifyAnswered,
   type RosterAgent,
   storedAgent,
   viewerRosterAgents,
@@ -450,7 +451,7 @@ type Resolved = {
   extras: NewExtras | undefined;
   /** Every agent the comment reaches, once, with why (assign beats ask beats mention). */
   agents: { agent: RosterAgent; kind: CommentNoticeKind }[];
-  /** The agents to make follow: mentioned or assigned, resolved from the viewer's own running agents. */
+  /** The agents to make follow: mentioned, resolved from the viewer's own running agents. */
   follow: RosterAgent[];
   mentions: string[];
   assign: string | null;
@@ -630,7 +631,7 @@ async function deliver(
     timer = setTimeout(() => res("dropped"), NOTICE_BUDGET_MS);
   });
   try {
-    // A mentioned or assigned agent of the viewer's that did not follow now
+    // A mentioned agent of the viewer's that did not follow now
     // follows (#1535), beside the notice and under the same budget. Best
     // effort: a failure is logged and changes neither the notice nor the comment.
     const follows = r.follow.map((agent) =>
@@ -778,8 +779,10 @@ export async function answerAsk(
   who: CommentWho,
   viewer: CommentViewer,
   optionId: string,
+  /** The artifact's current version and the request's ctx: the asker's agents hear of the answer (#1535), after the response. */
+  after?: Announce,
 ): Promise<Comment> {
-  const c = await call(() =>
+  const { comment: c, unchanged } = await call(() =>
     stub(env, artifactId).commentsAnswer({
       threadId,
       commentId,
@@ -788,6 +791,20 @@ export async function answerAsk(
       rate: rateKeyOf(who),
     }),
   );
+  // The answer is stored: the asker's following agents hear of it, in the
+  // background, and a failure never fails the answer (inBackground catches).
+  if (after && !unchanged && c.author.kind === "user")
+    await inBackground(
+      after.ctx,
+      notifyAnswered(
+        env,
+        artifactId,
+        Math.max(1, after.version),
+        threadId,
+        commentId,
+        c.author.ref,
+      ),
+    );
   return commentView(env, c, viewer);
 }
 

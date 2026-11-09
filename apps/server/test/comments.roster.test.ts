@@ -448,6 +448,25 @@ describe("route and hub reads", () => {
     expect((await followRows(s.id)).map((x) => x.n)).toEqual(["A2"]);
   });
 
+  it("an asked agent of the viewer's that is not mentioned is not followed", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    const h = hubs({ [s.owner.userId]: [agentRow("ns-o", "A1")] });
+    const k1 = await keyOf(s, h, "A1");
+    const r = await post(h, s, {
+      ask: {
+        question: "Which?",
+        options: [
+          { id: "a", label: "A" },
+          { id: "b", label: "B" },
+        ],
+        to: [{ key: k1 }],
+      },
+    });
+    expect(r.t?.comments[0]?.ask?.to[0]?.name).toBe("A1");
+    expect(await followRows(s.id)).toEqual([]);
+  });
+
   it("an agent the follows already hold is not followed again", async () => {
     const s = await setup();
     await machineFor(s.owner.userId);
