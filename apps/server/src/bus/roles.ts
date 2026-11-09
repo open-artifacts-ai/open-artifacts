@@ -2,7 +2,9 @@
 // that points at one agent by its stable id, so it follows a rename. The only
 // rerouting on the bus (design Decision 3): a send to a role resolves at send
 // time to its holder; the system never guesses one. Only the member sets a
-// role (BusHub.putRole, from the dashboard's REST); no frame does.
+// role (BusHub.putRole, from the dashboard's REST); no frame does. One
+// exception, by the user's decision (#1816): a session that reclaims an away
+// holder's name (#1742) takes that holder's roles, except a role with reach.
 //
 // Adapted from OpenBus v0.63.0 apps/server/src/hub/roles.ts, without the
 // agent card's `role` claim or the one-role-per-agent rule. A close does not
