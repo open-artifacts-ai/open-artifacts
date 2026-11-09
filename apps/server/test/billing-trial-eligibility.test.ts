@@ -49,33 +49,47 @@ beforeEach(async () => {
   await cachePlan(SOLO);
 });
 
-describe("the tick's trial retry counts members and admins, never guests", () => {
-  it("a guest alone starts nothing", async () => {
+const errCode = async (r: Response) =>
+  ((await r.json()) as { error: { code: string } }).error.code;
+
+describe("the tick never starts the Business trial", () => {
+  it("posts no /trial/start for a guest", async () => {
     await login(`g${++seq}-${tag}@a.com`, "guest");
     await tick();
     expect(trialStarts()).toBe(0);
   });
 
-  it("a member (an invite's role) retries the trial", async () => {
-    await login(`m${++seq}-${tag}@a.com`, "member");
-    await tick();
-    expect(trialStarts()).toBe(1);
-  });
-
-  it("an admin retries the trial", async () => {
+  it("posts none for a guest promoted to member (Google sign-in) or for a domain-joined member or admin", async () => {
+    const g = await login(`p${++seq}-${tag}@a.com`, "guest");
+    await env.DB.prepare("update users set role = 'member' where id = ?")
+      .bind(g.userId)
+      .run();
+    await login(`d${++seq}-${tag}@a.com`, "member");
     await login(`a${++seq}-${tag}@a.com`, "admin");
     await tick();
+    expect(trialStarts()).toBe(0);
+  });
+
+  it("an invite starts the trial once; a later tick adds no second start", async () => {
+    const r = await send(props, R.members, owner.cookie, {
+      method: "POST",
+      body: { email: `inv${++seq}-${tag}@a.com`, role: "member" },
+    });
+    expect(r.status).toBe(201);
+    expect(trialStarts()).toBe(1);
+    await tick();
     expect(trialStarts()).toBe(1);
   });
 
-  it("a guest beside a restored member still retries (the member counts)", async () => {
-    await login(`g${++seq}-${tag}@a.com`, "guest");
+  it("a restore starts the trial; the tick posts nothing before it", async () => {
     const m = await login(`r${++seq}-${tag}@a.com`, "member");
     await setStatus(m.userId, "removed");
     await tick();
     expect(trialStarts()).toBe(0);
-    await setStatus(m.userId, "active");
-    await tick();
+    const r = await send(props, R.memberRestore(m.userId), owner.cookie, {
+      method: "POST",
+    });
+    expect(r.status).toBe(200);
     expect(trialStarts()).toBe(1);
   });
 });
@@ -102,7 +116,7 @@ describe("trialEligible needs status active", () => {
     );
   });
 
-  it("the tick, an invite and a restore start no trial under a past_due Solo", async () => {
+  it("under a past_due Solo in grace, an invite and a restore answer plan_required and no trial starts", async () => {
     const now = Date.now();
     await clearBilling();
     await cachePlan(
@@ -116,12 +130,14 @@ describe("trialEligible needs status active", () => {
       body: { email: `pdinv-${tag}@a.com`, role: "member" },
     });
     expect(inv.status).toBe(403);
+    expect(await errCode(inv)).toBe("plan_required");
     const gone = await login(`pdgone-${tag}@a.com`, "member");
     await setStatus(gone.userId, "removed");
     const res = await send(props, R.memberRestore(gone.userId), owner.cookie, {
       method: "POST",
     });
     expect(res.status).toBe(403);
+    expect(await errCode(res)).toBe("plan_required");
     expect(trialStarts()).toBe(0);
   });
 });

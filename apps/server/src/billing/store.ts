@@ -161,8 +161,8 @@ export async function refreshPlan(
 
 /**
  * Signed POST /trial/start (idempotent: billing starts a trial once, from
- * free and active only) and cache the answer. Never throws; on failure the
- * scheduler tick retries while the instance is free with members.
+ * free and active only) and cache the answer. Never throws; null on failure
+ * (the invite or restore that asked refuses with billing_unavailable).
  */
 export async function startTrial(
   env: Env,
@@ -194,25 +194,11 @@ export async function startTrialAnswer(
 }
 
 /**
- * Free, the trial never started, and a member or admin besides the owner is
- * here: the tick retries the trial. Never a guest (a code sign-in or a share
- * makes one; sharing is free on every plan, so no guest starts a trial).
- */
-const TRIAL_PENDING = `select 1 from users where status = 'active' and role in ('member', 'admin') limit 1`;
-
-/**
- * The scheduler tick's billing step: read the tier; when the instance is
- * still free and trial-eligible but already has a member besides the owner
- * (the invite's trial start failed), start the trial again.
+ * The scheduler tick's billing step: read the tier. It never starts the
+ * Business trial: that starts only on an invite or a restore (members.ts),
+ * each of which announces it (#1851).
  */
 export async function billingTick(env: Env, now: number): Promise<void> {
   if (!billingActive(env)) return;
   await refreshPlan(env, now);
-  const row = await env.DB.prepare(READ_BOTH).first<{
-    plan: string | null;
-    check: string | null;
-  }>();
-  const plan = planOfRaw(env, row?.plan, row?.check, now);
-  if (plan?.trialEligible && (await env.DB.prepare(TRIAL_PENDING).first()))
-    await startTrial(env, now);
 }
