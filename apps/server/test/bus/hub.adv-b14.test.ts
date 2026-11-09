@@ -96,6 +96,23 @@ const liftBudget = async (machineId: string) => {
   });
 };
 
+/**
+ * Worst wall time per wire round trip (one send and its receipt) that this
+ * file's flood saw on a loaded host: the 800-key test below ran 6.6 s alone
+ * (8 ms a send) and still hit its 60 s timeout under machine load, so a send
+ * took at least 74 ms there (#1812). 100 ms is the measured floor rounded up.
+ */
+const LOADED_SEND_MS = 100;
+/** Slack over LOADED_SEND_MS for a runner slower than the one measured. */
+const FLOOD_HEADROOM = 3;
+/**
+ * Timeout for a test that makes `n` send round trips: n x loaded send x
+ * headroom. The hub-wide cap test makes SEND_KEYS_PER_AGENT + 4 sends, so
+ * 804 x 100 ms x 3 = 241 s, derived from its own work rather than a fixed
+ * 60 s.
+ */
+const floodTimeout = (n: number) => n * LOADED_SEND_MS * FLOOD_HEADROOM;
+
 describe("adv B14", () => {
   it("P1 query plans: find, cap count, cap delete and sweep are indexed", async () => {
     const plans = await inOwnerHub((s) => {
@@ -498,76 +515,83 @@ describe("adv B14", () => {
     s.close();
     t.close();
   });
-  it("hub-wide cap: 200 old pending keys and newer final ones: a new send evicts a final key, never refused", async () => {
-    await inOwnerHub((st) => st.storage.sql.exec("delete from send_keys"));
-    const sm = await machine("S");
-    const tm = await machine("T");
-    const am = await machine("A");
-    const s = await ready(sm.token);
-    const t = await ready(tm.token);
-    const a = await ready(am.token);
-    const n = ns("adv14hub");
-    await agent(s, "old", uniq("Old"), n);
-    await agent(s, "fresh", uniq("Fresh"), n);
-    await agent(s, "new", uniq("New"), n);
-    const sinks: string[] = [];
-    for (let i = 0; i < 4; i++) {
-      sinks.push(uniq(`Sink${i}`));
-      await agent(t, `k${i}`, sinks[i] as string, n);
-    }
-    const acker = uniq("Acker");
-    await agent(a, "acker", acker, n);
-    await offline(t);
-    await liftBudget(sm.id);
-    // SEND_KEYS_PER_AGENT old keys, all pending (the recipients are offline).
-    for (let i = 0; i < SEND_KEYS_PER_AGENT; i++) {
-      const r = (await reply(
-        s,
-        send(`o${i}`, "old", sinks[i % 4] as string, "x"),
-      )) as Receipt;
-      expect(r.state).toBe("pending");
-    }
-    // Then newer keys whose sends are delivered (final).
-    const fresh: string[] = [];
-    for (let i = 0; i < 3; i++) {
-      const r = (await reply(s, send(`f${i}`, "fresh", acker, "y"))) as Receipt;
-      fresh.push(r.msg_id);
-      const d = await waitFor(a, "deliver");
-      a.send({ v: 1, id: `a${i}`, type: "ack", msg_id: d.msg_id });
-      for (;;)
-        if ((await waitFor(s, "receipt_update")).msg_id === r.msg_id) break;
-    }
-    const keys = () =>
-      inOwnerHub((st) =>
-        st.storage.sql
-          .exec<{ msgId: string; final: number }>(
-            "select msg_id as msgId, final from send_keys",
-          )
-          .toArray(),
+  it(
+    "hub-wide cap: 200 old pending keys and newer final ones: a new send evicts a final key, never refused",
+    async () => {
+      await inOwnerHub((st) => st.storage.sql.exec("delete from send_keys"));
+      const sm = await machine("S");
+      const tm = await machine("T");
+      const am = await machine("A");
+      const s = await ready(sm.token);
+      const t = await ready(tm.token);
+      const a = await ready(am.token);
+      const n = ns("adv14hub");
+      await agent(s, "old", uniq("Old"), n);
+      await agent(s, "fresh", uniq("Fresh"), n);
+      await agent(s, "new", uniq("New"), n);
+      const sinks: string[] = [];
+      for (let i = 0; i < 4; i++) {
+        sinks.push(uniq(`Sink${i}`));
+        await agent(t, `k${i}`, sinks[i] as string, n);
+      }
+      const acker = uniq("Acker");
+      await agent(a, "acker", acker, n);
+      await offline(t);
+      await liftBudget(sm.id);
+      // SEND_KEYS_PER_AGENT old keys, all pending (the recipients are offline).
+      for (let i = 0; i < SEND_KEYS_PER_AGENT; i++) {
+        const r = (await reply(
+          s,
+          send(`o${i}`, "old", sinks[i % 4] as string, "x"),
+        )) as Receipt;
+        expect(r.state).toBe("pending");
+      }
+      // Then newer keys whose sends are delivered (final).
+      const fresh: string[] = [];
+      for (let i = 0; i < 3; i++) {
+        const r = (await reply(
+          s,
+          send(`f${i}`, "fresh", acker, "y"),
+        )) as Receipt;
+        fresh.push(r.msg_id);
+        const d = await waitFor(a, "deliver");
+        a.send({ v: 1, id: `a${i}`, type: "ack", msg_id: d.msg_id });
+        for (;;)
+          if ((await waitFor(s, "receipt_update")).msg_id === r.msg_id) break;
+      }
+      const keys = () =>
+        inOwnerHub((st) =>
+          st.storage.sql
+            .exec<{ msgId: string; final: number }>(
+              "select msg_id as msgId, final from send_keys",
+            )
+            .toArray(),
+        );
+      const before = await keys();
+      expect(before).toHaveLength(SEND_KEYS_PER_AGENT + 3);
+      expect(
+        before
+          .filter((k) => k.final === 1)
+          .map((k) => k.msgId)
+          .sort(),
+      ).toEqual([...fresh].sort());
+      // The hub is full: the oldest SEND_KEYS_PER_AGENT keys are all pending.
+      await inHub((i) =>
+        BusHub.setSendKeysTotalForTests(i, SEND_KEYS_PER_AGENT + 3),
       );
-    const before = await keys();
-    expect(before).toHaveLength(SEND_KEYS_PER_AGENT + 3);
-    expect(
-      before
-        .filter((k) => k.final === 1)
-        .map((k) => k.msgId)
-        .sort(),
-    ).toEqual([...fresh].sort());
-    // The hub is full: the oldest SEND_KEYS_PER_AGENT keys are all pending.
-    await inHub((i) =>
-      BusHub.setSendKeysTotalForTests(i, SEND_KEYS_PER_AGENT + 3),
-    );
-    const ok = await reply(s, send("n1", "new", acker, "z"));
-    expect(ok).toMatchObject({ type: "receipt", state: "pending" });
-    const after = await keys();
-    expect(after).toHaveLength(SEND_KEYS_PER_AGENT + 3);
-    expect(after.map((k) => k.msgId)).not.toContain(fresh[0]);
-    expect(after.filter((k) => k.final === 0)).toHaveLength(
-      SEND_KEYS_PER_AGENT + 1,
-    );
-    s.close();
-    a.close();
-  }, 60_000);
+      const ok = await reply(s, send("n1", "new", acker, "z"));
+      expect(ok).toMatchObject({ type: "receipt", state: "pending" });
+      const after = await keys();
+      expect(after).toHaveLength(SEND_KEYS_PER_AGENT + 3);
+      expect(after.map((k) => k.msgId)).not.toContain(fresh[0]);
+      expect(after.filter((k) => k.final === 0)).toHaveLength(
+        SEND_KEYS_PER_AGENT + 1,
+      );
+      s.close();
+      a.close();
+    },
+    floodTimeout(SEND_KEYS_PER_AGENT + 4),
+  );
 
   describe("every path that finalizes a receipt marks its key final", () => {
     const keyFinal = (msgId: string) =>
