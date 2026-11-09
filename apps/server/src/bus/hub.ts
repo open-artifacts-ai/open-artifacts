@@ -1225,7 +1225,8 @@ function awayHolder(
  * #1816: the roles the old row held move to the newcomer too, so a restarted
  * lead keeps its role. A role with a reach_grants row stays with the old row
  * (vacant): holding it grants cross-namespace reach, which needs the member's
- * confirmation (#1346), so it is re-pointed, never passed silently.
+ * confirmation (#1346), so it is re-pointed, never passed silently. Only
+ * roles in the reclaim's scope move (a global's any, else `namespace`'s).
  */
 function takeAwayName(
   sql: SqlStorage,
@@ -1245,11 +1246,14 @@ function takeAwayName(
   );
   sql.exec(
     `update roles set agent_id = ? where org_id = ? and agent_id = ?
+       and (? = 1 or roles.namespace = ?)
        and not exists (select 1 from reach_grants g
                         where g.org_id = roles.org_id and g.role_ns = roles.namespace and g.lname = roles.lname)`,
     toId,
     OWNER_ORG_ID,
     fromId,
+    global ? 1 : 0,
+    namespace,
   );
   while (deleteDeliveredBodies(sql, fromId, 500) >= 500) {
     // Next page.

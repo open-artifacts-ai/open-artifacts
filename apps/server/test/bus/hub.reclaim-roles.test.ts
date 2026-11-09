@@ -97,6 +97,11 @@ const agentId = async (ref: string) =>
     )
   )[0]?.id ?? "";
 
+const sqlRun = (q: string, ...binds: SqlStorageValue[]) =>
+  inHub((_, st) => {
+    st.storage.sql.exec(q, ...binds);
+  });
+
 const holds = async (namespace: string, role: string, ref: string) => {
   const r = await (await hubOf()).putRole(namespace, role, await agentId(ref));
   if (!r.ok) throw new Error(`putRole refused: ${r.reason}`);
@@ -179,21 +184,78 @@ describe("a reclaimed name keeps its roles (#1816)", () => {
     shut(s);
   });
 
-  it("the roster is told: roster_changed for the namespace reaches the sender's machine", async () => {
+  it("the holder changes from the old row to the newcomer, and only then", async () => {
     const s = await scene();
     const role = uniq("role");
     await holds(s.n, role, s.oldRef);
     await close(s.d, s.oldRef);
-    const before = framesSeen(s.snd).filter(
-      (f) => f.type === "roster_changed",
-    ).length;
-    await reg(s.d, uniq("new"), s.name, s.n);
-    const count = () =>
-      framesSeen(s.snd).filter((f) => f.type === "roster_changed").length;
-    for (let k = 0; k < 400 && count() <= before; k++)
-      await new Promise((res) => setTimeout(res, 5));
-    expect(count()).toBeGreaterThan(before);
+    expect(await holderRef(role)).toBe(s.oldRef);
+    const ref = uniq("new");
+    await reg(s.d, ref, s.name, s.n);
+    expect(await holderRef(role)).toBe(ref);
     shut(s);
+  });
+
+  it("a stale pointer in another namespace does not move", async () => {
+    const s = await scene();
+    const role = uniq("stale");
+    const other = ns("ro");
+    await sqlRun(
+      "insert into roles (id, org_id, namespace, name, lname, agent_id, set_at) select ?, org_id, ?, ?, ?, id, 0 from agents where native_ref = ?",
+      id("rl"),
+      other,
+      role,
+      role.toLowerCase(),
+      s.oldRef,
+    );
+    await close(s.d, s.oldRef);
+    const ref = uniq("new");
+    await reg(s.d, ref, s.name, s.n);
+    expect(await holderRef(role)).toBe(s.oldRef);
+    shut(s);
+  });
+
+  it("a newcomer already holding a role gains the second", async () => {
+    const s = await scene();
+    const [r1, r2] = [uniq("roleA"), uniq("roleB")];
+    await holds(s.n, r1, s.oldRef);
+    await close(s.d, s.oldRef);
+    const ref = uniq("new");
+    await reg(s.d, ref, uniq("Other"), s.n);
+    await holds(s.n, r2, ref);
+    const fid = id("rn");
+    s.d.send({
+      v: 1,
+      id: fid,
+      type: "rename",
+      agent_ref: ref,
+      proposed_name: s.name,
+    } as ClientFrame);
+    await waitFor(s.d, "renamed");
+    expect([await holderRef(r1), await holderRef(r2)]).toEqual([ref, ref]);
+    shut(s);
+  });
+
+  it("a role held by a global agent moves only to a global newcomer", async () => {
+    await setClock(base());
+    const n = ns("rg");
+    const d = await connect((await machine("G")).token);
+    const name = uniq("Glob");
+    const oldRef = uniq("old");
+    d.send(up(id("u"), oldRef, name, n, true));
+    await waitFor(d, "agent_ok");
+    const role = uniq("role");
+    await holds(n, role, oldRef);
+    await close(d, oldRef);
+    // A non-global newcomer cannot reclaim a global's name: no move.
+    const plain = uniq("plain");
+    expect(await reg(d, plain, name, n)).not.toBe(name);
+    expect(await holderRef(role)).toBe(oldRef);
+    const ref = uniq("new");
+    d.send(up(id("u"), ref, name, n, true));
+    expect((await waitFor(d, "agent_ok")).bus_name).toBe(name);
+    expect(await holderRef(role)).toBe(ref);
+    d.close();
   });
 
   it("a role with reach stays vacant for the newcomer and keeps its grants", async () => {
