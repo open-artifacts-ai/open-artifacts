@@ -150,10 +150,10 @@ export async function sendUsage(
 /**
  * True only for billing's own `bad_month` (a 400 whose small JSON body says
  * so, read by billingCall). Other 400s (bad_body: a shape or version
- * mismatch; bad_creators, bad_count: a rule that would hit every month) are
- * true of every month, and a skip loses the month for good, so they stop the
- * tick and retry, as do 401/403, 404/405, 408, 409, 410, 413, 429, the
- * gate's own refusal, 5xx and network failures.
+ * mismatch; bad_creators, bad_count: can be a changed rule rather than this
+ * month's data, #1820) may be true of every month, and a skip loses the month
+ * for good, so they stop the tick and retry, as do 401/403, 404/405, 408, 409,
+ * 410, 413, 429, the gate's own refusal, 5xx and network failures.
  */
 function refusedForGood(e: unknown): e is BillingUnavailableError {
   return (
