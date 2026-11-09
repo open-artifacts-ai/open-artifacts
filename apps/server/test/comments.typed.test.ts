@@ -381,4 +381,38 @@ describe("notice tier", () => {
     );
     expect(await typedOf()).toBe(true);
   });
+
+  it("a cookie that also carries a non-bearer Authorization header is not typed", async () => {
+    const s = await setup();
+    const r = await api(app, R.comments(s.id), owner.cookie, {
+      method: "POST",
+      body: { anchor: NOTE, body: "hello" },
+      headers: { authorization: "Basic dXNlcjpwYXNz" },
+    });
+    expect(r.status).toBe(201);
+    expect((((await r.json()) as Thread).comments[0] as Comment).typed).toBe(
+      false,
+    );
+  });
+
+  it("the owner's agent asks the editor's agent, the editor picks in the browser: the owner's agent hears the others line", async () => {
+    const s = await setup();
+    const t = await askFrom(s.id, mcpWho(owner), s.codex);
+    const cid = (t.comments[0] as Comment).id;
+    bus.sent = [];
+    const r = await answer(s.id, t.id, cid, editor.cookie);
+    expect(r.status).toBe(200);
+    // The pick is typed, but by someone else than the agent's own user.
+    expect(((await r.json()) as Comment).ask?.answer?.typed).toBe(true);
+    const n = sentTo("Claude");
+    expect(n).toHaveLength(1);
+    expect(n[0]?.text).toBe(
+      [
+        "Open Artifacts: a question you asked on an artifact has an answer (version 1).",
+        url(s.id),
+        ids(t),
+        OTHERS,
+      ].join("\n"),
+    );
+  });
 });
