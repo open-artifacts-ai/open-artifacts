@@ -515,9 +515,15 @@ describe("review fixes", () => {
     await E.DB.prepare("delete from artifact_asks where artifact_id = ?")
       .bind(id)
       .run();
-    for (const status of ["open", "resolved"])
-      await api(app, `${R.comments(id)}?status=${status}`, owner.cookie);
-    expect(await rows(id)).toEqual([]);
+    for (const status of ["open", "resolved"]) {
+      const r = await api(
+        app,
+        `${R.comments(id)}?status=${status}`,
+        owner.cookie,
+      );
+      expect(r.status).toBe(200);
+      expect(await rows(id)).toEqual([]);
+    }
     await api(app, `${R.comments(id)}?status=all`, owner.cookie);
     expect(await rows(id)).toHaveLength(1);
   });
