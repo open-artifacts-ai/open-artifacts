@@ -1025,7 +1025,8 @@ function assignName(
  * that is not revoked, of `kind`, and reserved the name in exactly this scope; else null. Anything
  * else blocks as in nameTaken: a live holder, any other former row (held,
  * chosen, another agent's, another scope's), a role, a name minted for
- * anyone else (a minted name is never reclaimed). Writes nothing; runs only
+ * anyone else (a minted name is never reclaimed), and a harness fallback
+ * name (below). Writes nothing; runs only
  * when the name is taken. Two bounded probes on former_names_lname.
  */
 function awayHolder(
@@ -1038,6 +1039,19 @@ function awayHolder(
   now: number,
 ): string | null {
   const lname = name.toLowerCase();
+  // Only a name someone gave the session. A harness fallback is never
+  // reclaimed (the daemon sends no name_kind, so it reads as chosen): the
+  // kind itself (codex, opencode, pi, omp, hermes, openclaw...), `<kind>-...`
+  // (Hermes proposes `hermes-<cwd>`), the hub's `agent`, Claude's
+  // `claude-<digits>`. An unrelated new thread of that kind must not take
+  // over its mail.
+  if (
+    lname === kind ||
+    lname.startsWith(`${kind}-`) ||
+    lname === FALLBACK_BUS_NAME ||
+    /^claude-\d+$/.test(lname)
+  )
+    return null;
   const rows = all<{
     agentId: string;
     kind: string;
@@ -4351,6 +4365,9 @@ export class BusHub extends DurableObject<Env> {
     );
     // A reply (`to_id`) goes only to the agent it answers: never to whoever
     // holds the name now (wireReason shows agent_gone only to an ids socket).
+    // One exception, after the send: a reply already queued to an away agent
+    // follows its name to a restarted session that reclaims it (#1742,
+    // takeAwayName moves the queued mail), as the sender was told "queued".
     // Role resolution stays inside resolveTarget, before this check.
     if (f.to_id !== undefined && (!res.ok || res.agent.id !== f.to_id)) {
       refuseSend(ws, f.id, "agent_gone");

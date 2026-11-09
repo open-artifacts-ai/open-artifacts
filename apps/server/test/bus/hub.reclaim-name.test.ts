@@ -623,4 +623,83 @@ describe("a restarted session takes back its own name (#1742)", () => {
     }
     shut(s);
   });
+
+  // The daemon's agent_up carries no name_kind, so a harness fallback name
+  // reads as chosen: it must never be taken over.
+  for (const [kind, fallback] of [
+    ["codex", "codex"],
+    ["opencode", "opencode"],
+    ["pi", "pi"],
+    ["omp", "omp"],
+    ["openclaw", "openclaw"],
+    ["hermes", "hermes"],
+    ["hermes", "hermes-myproject"],
+    ["claude-code", "agent"],
+    ["claude-code", "claude-1234"],
+    ["pi", "Agent"],
+  ] as const)
+    it(`a fallback name (${kind}: ${fallback}) is not reclaimed by an unrelated session, on agent_up or rename`, async () => {
+      const s = await scene();
+      const oldRef = uniq("old");
+      expect(await reg(s.d, oldRef, fallback, s.n, { kind })).toBe(fallback);
+      await close(s.d, oldRef);
+      const q = await send(s.snd, "snd", fallback, "not yours");
+      expect(q.state).toBe("pending");
+      const ref = uniq("new");
+      expect(await reg(s.d, ref, fallback, s.n, { kind })).toBe(
+        `${fallback}-2`,
+      );
+      const ref2 = uniq("new2");
+      await reg(s.d, ref2, uniq("Other"), s.n, { kind });
+      expect((await rename(s.d, ref2, fallback)).bus_name).not.toBe(fallback);
+      await new Promise((res) => setTimeout(res, 50));
+      expect(delivers(s.d)).toEqual([]);
+      expect(await awayRows(fallback)).toContain(oldRef);
+      expect(await pendingOf(oldRef)).toEqual([q.msg_id]);
+      shut(s);
+    });
+
+  it("a named session of a harness kind still reclaims its name", async () => {
+    const s = await scene();
+    const name = uniq("Review");
+    const oldRef = uniq("old");
+    expect(await reg(s.d, oldRef, name, s.n, { kind: "codex" })).toBe(name);
+    await close(s.d, oldRef);
+    expect(await reg(s.d, uniq("new"), name, s.n, { kind: "codex" })).toBe(
+      name,
+    );
+    shut(s);
+  });
+
+  it("a pushed, unacked body follows the name: the newcomer gets it under the same msg_id and its ack settles", async () => {
+    const s = await scene();
+    const r = await send(s.snd, "snd", s.name, "pushed, never acked");
+    await waitFor(s.d, "deliver");
+    await close(s.d, s.oldRef);
+    const ref = uniq("new");
+    expect(await reg(s.d, ref, s.name, s.n)).toBe(s.name);
+    for (
+      let k = 0;
+      k < 400 && !delivers(s.d).some((x) => x.to_ref === ref);
+      k++
+    )
+      await new Promise((res) => setTimeout(res, 5));
+    const dl = delivers(s.d).find((x) => x.to_ref === ref);
+    expect(dl).toMatchObject({ msg_id: r.msg_id });
+    expect(dl && "body" in dl && dl.body).toBe("pushed, never acked");
+    s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: r.msg_id });
+    for (let k = 0; k < 400; k++) {
+      const st = await sqlOf<{ state: string; ref: string }>(
+        "select r.state as state, a.native_ref as ref from receipts r join agents a on a.id = r.to_agent where r.id = ?",
+        r.msg_id,
+      );
+      if (st[0]?.state === "delivered") {
+        expect(st[0].ref).toBe(ref);
+        shut(s);
+        return;
+      }
+      await new Promise((res) => setTimeout(res, 5));
+    }
+    throw new Error("ack never settled");
+  });
 });
