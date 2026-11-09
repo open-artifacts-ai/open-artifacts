@@ -54,6 +54,7 @@ const comment = {
   author,
   createdAt: "2026-11-05T10:00:00Z",
   editedAt: null,
+  typed: true,
   can: { edit: true, delete: false },
 };
 
