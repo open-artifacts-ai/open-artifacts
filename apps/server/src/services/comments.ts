@@ -39,6 +39,7 @@ import {
   notifyAgent,
   type RosterAgent,
   storedAgent,
+  viewerRosterAgents,
 } from "./comment-agents.js";
 import {
   verifyQuote,
@@ -46,7 +47,12 @@ import {
   versionFormat,
 } from "./comment-anchor.js";
 import { type CommentStatus, cleanGuestName } from "./comment-rules.js";
-import { addressKey, inBackground, notifyCommented } from "./follows.js";
+import {
+  addressKey,
+  follow,
+  inBackground,
+  notifyCommented,
+} from "./follows.js";
 import { effectiveName, getUser } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -479,28 +485,37 @@ async function resolveExtras(
   if (parsed && !parsed.success)
     throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);
   const askIn = parsed?.success ? parsed.data : undefined;
-  const roster = await agentRoster(
-    env,
-    artifactId,
-    who.kind === "user" ? who.id : null,
-    false,
-  );
-  const agentOf = (key: string): RosterAgent => {
+  const viewerId = who.kind === "user" ? who.id : null;
+  const roster = await agentRoster(env, artifactId, viewerId, false);
+  // The viewer's own running agents (#1535) are keyed by a hash of their
+  // address, so a key the follows do not hold can only be resolved by reading
+  // the viewer's hub. That read happens once, and only when a key misses: a
+  // mention of a follower costs D1 alone, and a stalled hub costs at most
+  // BUS_HUB_TIMEOUT_MS (busView's own bound, inside the POST's budget) and
+  // then reads as an unknown key. Only the viewer's own agents, never another member's.
+  let own: Promise<RosterAgent[]> | undefined;
+  const find = async (key: string): Promise<RosterAgent | undefined> => {
     const a = roster.find((r) => r.key === key);
+    if (a || !viewerId) return a;
+    own ??= viewerRosterAgents(env, artifactId, viewerId);
+    return (await own).find((r) => r.key === key);
+  };
+  const agentOf = async (key: string): Promise<RosterAgent> => {
+    const a = await find(key);
     if (!a) throw unknownKey(key);
     return a;
   };
-  const mentioned = [...new Set((x.mentions ?? []).map((m) => m.key))].map(
-    agentOf,
-  );
-  const assigned = x.assign ? agentOf(x.assign.key) : null;
+  const mentioned: RosterAgent[] = [];
+  for (const key of new Set((x.mentions ?? []).map((m) => m.key)))
+    mentioned.push(await agentOf(key));
+  const assigned = x.assign ? await agentOf(x.assign.key) : null;
   let ask: NewExtras["ask"];
   const asked: RosterAgent[] = [];
   if (askIn) {
     const to: StoredParty[] = [];
     for (const { key } of askIn.to) {
       if (to.some((p) => p.key === key)) continue;
-      const a = roster.find((r) => r.key === key);
+      const a = await find(key);
       if (a) {
         to.push(storedAgent(a));
         asked.push(a);
@@ -553,6 +568,22 @@ const stateOf = (
 /** The most a comment POST waits, in total, for its notices to reach their hubs. */
 export const NOTICE_BUDGET_MS = 2500;
 
+/** The mentioned agent follows the artifact; never throws (a follow_limit or a lapsed member is logged). */
+async function followMentioned(
+  env: Env,
+  artifactId: string,
+  agent: RosterAgent,
+): Promise<void> {
+  try {
+    await follow(env, agent.userId, agent.address, artifactId);
+  } catch (e) {
+    logInfo("comment_mention_follow_failed", {
+      artifactId,
+      code: e instanceof ApiError ? e.code : "error",
+    });
+  }
+}
+
 /**
  * Sends the notices of a written comment and records how each mention and the
  * assignment went. Returns the comment as then stored.
@@ -575,14 +606,28 @@ async function deliver(
     timer = setTimeout(() => res("dropped"), NOTICE_BUDGET_MS);
   });
   try {
-    const outs = await Promise.all(
-      r.agents.map(({ agent, kind }) =>
-        Promise.race([
-          notifyAgent(env, a.id, version, c.id, kind, agent),
-          late,
-        ]),
+    // A mention makes the agent follow the artifact (#1535), beside the
+    // notice and under the same budget. Best effort: a failure is logged and
+    // changes neither the notice nor the comment.
+    const mentioned = new Set(r.mentions);
+    const follows = r.agents
+      .filter(
+        ({ agent, kind }) => kind === "mention" || mentioned.has(agent.key),
+      )
+      .map(({ agent }) =>
+        Promise.race([followMentioned(env, a.id, agent), late]),
+      );
+    const [outs] = await Promise.all([
+      Promise.all(
+        r.agents.map(({ agent, kind }) =>
+          Promise.race([
+            notifyAgent(env, a.id, version, threadId, c.id, kind, agent),
+            late,
+          ]),
+        ),
       ),
-    );
+      Promise.all(follows),
+    ]);
     r.agents.forEach(({ agent }, i) => {
       outcome.set(agent.key, outs[i] ?? "dropped");
     });
@@ -733,7 +778,7 @@ export async function artifactAgents(
   artifactId: string,
   viewerId: string | null,
 ): Promise<{ key: string; name: string; online: boolean }[]> {
-  return (await agentRoster(env, artifactId, viewerId, true)).map(
+  return (await agentRoster(env, artifactId, viewerId, true, true)).map(
     ({ key, name, online }) => ({ key, name, online }),
   );
 }
