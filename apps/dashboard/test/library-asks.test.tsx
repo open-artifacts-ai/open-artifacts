@@ -50,7 +50,7 @@ describe("Library: asks for you", () => {
     );
   });
 
-  it("marks the active chip and shows Nothing here. when empty", async () => {
+  it("marks the active chip and says which asks are missing when empty", async () => {
     server.use(http.get(`*${R.artifacts}`, () => page([], null)));
     mount("/");
     const chip = await screen.findByRole("button", {
@@ -62,6 +62,12 @@ describe("Library: asks for you", () => {
     );
     fireEvent.click(chip);
     await waitFor(() => expect(chip).toHaveAttribute("aria-pressed", "true"));
-    expect(await screen.findByText("Nothing here.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("No asks waiting on agents."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Needs your answer" }));
+    expect(
+      await screen.findByText("No asks need your answer."),
+    ).toBeInTheDocument();
   });
 });

@@ -338,11 +338,13 @@ export function Library({ scope }: { scope: Scope }) {
         <Empty
           icon={<LibraryIcon />}
           title={
-            s.filter
-              ? "Nothing here."
-              : filtered
-                ? "No artifacts match these filters"
-                : emptyTitle
+            s.filter === "needs_answer"
+              ? "No asks need your answer."
+              : s.filter === "waiting_on_agents"
+                ? "No asks waiting on agents."
+                : filtered
+                  ? "No artifacts match these filters"
+                  : emptyTitle
           }
           description={
             filtered ? (

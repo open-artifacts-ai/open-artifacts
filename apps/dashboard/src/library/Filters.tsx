@@ -185,16 +185,18 @@ export function Filters(p: FilterProps) {
           Clear filters
         </Button>
       )}
-      <span className="flex-1" />
-      <Choice
-        label="Layout"
-        options={[
-          { value: "grid", label: "Grid" },
-          { value: "list", label: "List" },
-        ]}
-        value={p.view}
-        onChange={p.onView}
-      />
+      {/* ml-auto, not a spacer: it keeps Grid/List at the right on any line it wraps to. */}
+      <div className="ml-auto">
+        <Choice
+          label="Layout"
+          options={[
+            { value: "grid", label: "Grid" },
+            { value: "list", label: "List" },
+          ]}
+          value={p.view}
+          onChange={p.onView}
+        />
+      </div>
     </div>
   );
 }
