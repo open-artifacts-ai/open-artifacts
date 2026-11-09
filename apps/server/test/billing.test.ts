@@ -52,6 +52,10 @@ import {
   refreshPlan,
   storePlan,
 } from "../src/billing/store.js";
+import {
+  type BillingUnavailableError,
+  billingCall,
+} from "../src/billing/transport.js";
 import { DIRECTORY_SYNC_CRON, scheduled } from "../src/cron.js";
 import type { Env } from "../src/env.js";
 import { billingRetry } from "../src/routes/billing.js";
@@ -93,7 +97,10 @@ let row: Row;
 let calls: Call[];
 let down: boolean;
 /** POST /usage answers this status for a month (a refusal), else 200. */
-let usageRefuse: Map<string, number>;
+let usageRefuse: Map<
+  string,
+  number | { status: number; text: string; gate?: boolean }
+>;
 /** When set, POST /trial/start answers this row (billing says the trial was used). */
 let trialAnswer: Row | null;
 let x: string;
@@ -134,8 +141,13 @@ const gate = {
     }
     if (path === "/usage") {
       const refused = usageRefuse.get(String(body.month));
-      if (refused)
+      if (typeof refused === "number")
         return Response.json({ error: "refused" }, { status: refused });
+      if (refused)
+        return new Response(refused.text, {
+          status: refused.status,
+          headers: refused.gate ? { "x-oa-gate": "1" } : {},
+        });
       return Response.json({ ok: true, month: body.month, count: body.count });
     }
     if (path === "/checkout")
@@ -1428,7 +1440,14 @@ describe("creator count", () => {
         .run();
       return { first, second, third };
     };
-    afterEach(() => vi.restoreAllMocks());
+    /** Billing's real 400 bodies. */
+    const refuse = (error: string, status = 400) => ({
+      status,
+      text: JSON.stringify({ error }),
+    });
+    const BAD_MONTH = refuse("bad_month");
+    const tick = (at = mid) =>
+      withBrokerProps({ props: PROPS }, () => usageTick(H, at));
     const sentMonths = () =>
       calls.filter((c) => c.path === "/usage").map((c) => c.body?.month);
     const setting = async (key: string) =>
@@ -1437,6 +1456,7 @@ describe("creator count", () => {
           .bind(key)
           .first<{ value: string }>()
       )?.value;
+    afterEach(() => vi.restoreAllMocks());
     const warnings = () => {
       const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
       warn.mockClear();
@@ -1448,32 +1468,37 @@ describe("creator count", () => {
       };
     };
 
-    it("a 400 skips that month, records it, and sends the later months", async () => {
+    it("bad_month skips that month, records it, and the next tick sends the later months", async () => {
       const { first, second, third } = await setup();
-      usageRefuse.set(second, 400);
+      usageRefuse.set(second, BAD_MONTH);
       const w = warnings();
-      await withBrokerProps({ props: PROPS }, () => usageTick(H, mid));
-      expect(sentMonths()).toEqual([first, second, third]);
-      expect(await setting(USAGE_SENT_KEY)).toBe(third);
+      await tick();
+      // One skip ends the tick.
+      expect(sentMonths()).toEqual([first, second]);
+      expect(await setting(USAGE_SENT_KEY)).toBe(second);
       expect(await setting(USAGE_SKIPPED_KEY)).toBe(second);
       // A fixed category only, no server text.
       expect(w.events()).toEqual([
         { evt: "billing_usage_skipped", month: second, why: "http_400" },
       ]);
-      // The next tick does not retry it.
       calls = [];
-      await withBrokerProps({ props: PROPS }, () =>
-        usageTick(H, mid + 40 * DAY),
-      );
-      expect(sentMonths()).not.toContain(second);
+      await tick(mid + 1000);
+      expect(sentMonths()).toEqual([third]);
+      expect(await setting(USAGE_SENT_KEY)).toBe(third);
     });
 
-    it("a second skipped month raises the alert key", async () => {
-      const { first, second } = await setup();
-      usageRefuse.set(first, 400);
-      usageRefuse.set(second, 400);
+    it("two refused months: one skipped per tick, the second on the next, then the log line", async () => {
+      const { first, second, third } = await setup();
+      usageRefuse.set(first, BAD_MONTH);
+      usageRefuse.set(second, BAD_MONTH);
       const w = warnings();
-      await withBrokerProps({ props: PROPS }, () => usageTick(H, mid));
+      await tick();
+      expect(sentMonths()).toEqual([first]);
+      expect(await setting(USAGE_SKIPPED_KEY)).toBe(first);
+      expect(w.events().map((e) => e.evt)).toEqual(["billing_usage_skipped"]);
+      calls = [];
+      await tick(mid + 1000);
+      expect(sentMonths()).toEqual([second]);
       expect(await setting(USAGE_SKIPPED_KEY)).toBe(`${first},${second}`);
       expect(w.events().map((e) => e.evt)).toEqual([
         "billing_usage_skipped",
@@ -1484,6 +1509,65 @@ describe("creator count", () => {
         evt: "billing_usage_skipping",
         count: 2,
       });
+      calls = [];
+      await tick(mid + 2000);
+      expect(sentMonths()).toEqual([third]);
+    });
+
+    it("the newest month refused: the pointer moves, and it is not re-sent or re-recorded", async () => {
+      const { first, second, third } = await setup();
+      await env.DB.prepare("insert into settings (key, value) values (?, ?)")
+        .bind(USAGE_SENT_KEY, second)
+        .run();
+      void first;
+      usageRefuse.set(third, BAD_MONTH);
+      await tick();
+      expect(sentMonths()).toEqual([third]);
+      expect(await setting(USAGE_SENT_KEY)).toBe(third);
+      expect(await setting(USAGE_SKIPPED_KEY)).toBe(third);
+      calls = [];
+      await tick(mid + 1000);
+      expect(sentMonths()).toEqual([]);
+      expect(await setting(USAGE_SKIPPED_KEY)).toBe(third);
+    });
+
+    it("a month already on the skipped list is not recorded twice and raises no alert", async () => {
+      const { first } = await setup();
+      await env.DB.prepare("insert into settings (key, value) values (?, ?)")
+        .bind(USAGE_SKIPPED_KEY, first)
+        .run();
+      usageRefuse.set(first, BAD_MONTH);
+      const w = warnings();
+      await tick();
+      expect(await setting(USAGE_SKIPPED_KEY)).toBe(first);
+      expect(await setting(USAGE_SENT_KEY)).toBe(first);
+      expect(w.events().map((e) => e.evt)).toEqual(["billing_usage_skipped"]);
+    });
+
+    it.each([
+      ["bad_body", refuse("bad_body")],
+      ["bad_creators", refuse("bad_creators")],
+      ["bad_count", refuse("bad_count")],
+      ["an unknown code", refuse("something_else")],
+      ["non-JSON", { status: 400, text: "Bad Request" }],
+      [
+        "oversized",
+        {
+          status: 400,
+          text: JSON.stringify({ error: "bad_month", pad: "x".repeat(300) }),
+        },
+      ],
+      [
+        "an error that is not a string",
+        { status: 400, text: '{"error":["bad_month"]}' },
+      ],
+    ])("a 400 that is %s skips nothing, across months", async (_n, bad) => {
+      const { first, second, third } = await setup();
+      for (const m of [first, second, third]) usageRefuse.set(m, bad);
+      await tick();
+      expect(sentMonths()).toEqual([first]);
+      expect(await setting(USAGE_SENT_KEY)).toBeUndefined();
+      expect(await setting(USAGE_SKIPPED_KEY)).toBeUndefined();
     });
 
     it.each([500, 502, 503])(
@@ -1491,13 +1575,13 @@ describe("creator count", () => {
       async (status) => {
         const { first, second, third } = await setup();
         usageRefuse.set(second, status);
-        await withBrokerProps({ props: PROPS }, () => usageTick(H, mid));
+        await tick();
         expect(sentMonths()).toEqual([first, second]);
         expect(await setting(USAGE_SENT_KEY)).toBe(first);
         expect(await setting(USAGE_SKIPPED_KEY)).toBeUndefined();
         usageRefuse.clear();
         calls = [];
-        await withBrokerProps({ props: PROPS }, () => usageTick(H, mid + 1000));
+        await tick(mid + 1000);
         expect(sentMonths()).toEqual([second, third]);
       },
     );
@@ -1505,47 +1589,58 @@ describe("creator count", () => {
     it("a network failure stops the tick and keeps the month", async () => {
       const { first } = await setup();
       down = true;
-      await withBrokerProps({ props: PROPS }, () => usageTick(H, mid));
+      await tick();
       expect(await setting(USAGE_SENT_KEY)).toBeUndefined();
       expect(await setting(USAGE_SKIPPED_KEY)).toBeUndefined();
       down = false;
-      await withBrokerProps({ props: PROPS }, () => usageTick(H, mid + 1000));
+      await tick(mid + 1000);
       expect(sentMonths()[0]).toBe(first);
     });
 
     it.each([401, 403, 404, 405, 408, 409, 410, 413, 429])(
-      "a %i is not a bad month: stop and retry, skip nothing",
+      "a %i with bad_month is not a skip: stop and retry",
       async (status) => {
         const { first, second, third } = await setup();
-        usageRefuse.set(first, status);
-        await withBrokerProps({ props: PROPS }, () => usageTick(H, mid));
+        usageRefuse.set(first, refuse("bad_month", status));
+        await tick();
         expect(sentMonths()).toEqual([first]);
         expect(await setting(USAGE_SENT_KEY)).toBeUndefined();
         expect(await setting(USAGE_SKIPPED_KEY)).toBeUndefined();
         usageRefuse.clear();
         calls = [];
-        await withBrokerProps({ props: PROPS }, () => usageTick(H, mid + 1000));
+        await tick(mid + 1000);
         expect(sentMonths()).toEqual([first, second, third]);
       },
     );
 
-    it("a gate refusal (x-oa-gate) even with a 400 is not skipped", async () => {
-      const { first } = await setup();
-      const refusing = {
-        fetch: async () =>
-          Response.json({}, { status: 400, headers: { "x-oa-gate": "1" } }),
-      };
-      await withBrokerProps({ props: { BILLING: refusing } }, () =>
-        usageTick(H, mid),
-      );
+    it("a gate-refused month (even bad_month on a 400) is not skipped and goes out on the next tick", async () => {
+      const { first, second, third } = await setup();
+      usageRefuse.set(first, { ...BAD_MONTH, gate: true });
+      await tick();
       expect(await setting(USAGE_SKIPPED_KEY)).toBeUndefined();
       expect(await setting(USAGE_SENT_KEY)).toBeUndefined();
-      void first;
+      usageRefuse.clear();
+      calls = [];
+      await tick(mid + 1000);
+      expect(sentMonths()).toEqual([first, second, third]);
+    });
+
+    it("billingCall keeps why = http_400 for other callers and carries the code only for bad_month", async () => {
+      const call = async (key: string) => {
+        usageRefuse.set(key, key === "x" ? BAD_MONTH : refuse("bad_body"));
+        return withBrokerProps({ props: PROPS }, () =>
+          billingCall(H, "/usage", { month: key }, mid),
+        ).catch((e) => e as BillingUnavailableError);
+      };
+      const a = await call("x");
+      expect([a.why, a.code]).toEqual(["http_400", "bad_month"]);
+      const b = await call("y");
+      expect([b.why, b.code]).toEqual(["http_400", undefined]);
     });
 
     it("self-hosted (no gate) sends and records nothing", async () => {
       const { second } = await setup();
-      usageRefuse.set(second, 400);
+      usageRefuse.set(second, BAD_MONTH);
       await withBrokerProps({ props: PROPS }, () => usageTick(SELF, mid));
       expect(calls).toEqual([]);
       expect(await setting(USAGE_SENT_KEY)).toBeUndefined();
