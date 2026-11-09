@@ -34,6 +34,8 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError } from "../log.js";
 import {
+  ASKER_NOTICE_WINDOW_MS,
+  ASKER_NOTICES_MAX,
   COMMENTS_MAX_REPLIES,
   type CommentStatus,
 } from "../services/comment-rules.js";
@@ -45,6 +47,7 @@ import {
   type ThumbResult,
 } from "../services/thumbs.js";
 import {
+  askerNoticeDue,
   askRow,
   bodyOk,
   COMMENTS_SCHEMA,
@@ -57,6 +60,7 @@ import {
   listThreads,
   type NewExtras,
   openCount,
+  refundAsker,
   replyCount,
   rootId,
   type StoredActor,
@@ -65,6 +69,7 @@ import {
   type StoredThread,
   setAnswer,
   setTargetState,
+  spendAsker,
   threadExists,
   threadStatus,
   touchThread,
@@ -2061,8 +2066,23 @@ export class ArtifactRuntime extends DurableObject<Env> {
         );
       this.countComment(a.rate);
       const now = this.iso();
+      let extras = a.extras;
+      // #1614: a reply to the ask's author is stored, but its agents are only
+      // told when the thread's bound allows it (otherwise no mention is kept
+      // and the service sends nothing).
+      if (
+        extras?.asker &&
+        !askerNoticeDue(
+          this.sql,
+          a.threadId,
+          new Date(this.now() - ASKER_NOTICE_WINDOW_MS).toISOString(),
+          ASKER_NOTICES_MAX,
+        )
+      )
+        extras = { ...extras, asker: undefined };
+      else if (extras?.asker) spendAsker(this.sql, a.threadId, now);
       const c = insertComment(this.sql, now, a.threadId, a.actor, a.body);
-      if (a.extras) insertExtras(this.sql, a.threadId, c.id, a.extras);
+      if (extras) insertExtras(this.sql, a.threadId, c.id, extras);
       touchThread(this.sql, a.threadId, now);
       return getComment(this.sql, a.threadId, c.id) as StoredComment;
     });
@@ -2119,7 +2139,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
   commentsTargetStates(a: {
     threadId: string;
     commentId: string;
-    states: { kind: "mention" | "assign"; key: string; state: string }[];
+    states: {
+      kind: "mention" | "assign" | "asker";
+      key: string;
+      state: string;
+    }[];
   }): StoredComment {
     this.ensureSchema();
     return this.ctx.storage.transactionSync(() => {
@@ -2129,6 +2153,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (!c) fail("not_found", "Not found");
       return c;
     });
+  }
+
+  /** Gives back the asker notice a reply spent (#1614) when its delivery found no session. `at` is the reply's createdAt. */
+  commentsAskerRefund(a: { threadId: string; at: string }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      refundAsker(this.sql, a.threadId, a.at),
+    );
   }
 
   /** Resolve or reopen; the same status again changes nothing. */
@@ -2237,6 +2269,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (root) {
         this.sql.exec("delete from comments where thread_id = ?", a.threadId);
         deleteExtras(this.sql, { threadId: a.threadId });
+        this.sql.exec(
+          "delete from comment_asker_notices where thread_id = ?",
+          a.threadId,
+        );
         this.sql.exec("delete from comment_threads where id = ?", a.threadId);
       } else {
         this.sql.exec("delete from comments where id = ?", a.commentId);
@@ -2294,6 +2330,7 @@ type RpcMethods =
   | "commentsReply"
   | "commentsAnswer"
   | "commentsTargetStates"
+  | "commentsAskerRefund"
   | "commentsStatus"
   | "commentsEdit"
   | "commentsDelete"

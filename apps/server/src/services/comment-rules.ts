@@ -7,6 +7,9 @@ import { stripNameControls } from "@oa/shared";
 export const COMMENTS_MAX_THREADS = 500;
 /** GET: most replies per thread (the root is extra); a 201st reply is 409. */
 export const COMMENTS_MAX_REPLIES = 200;
+/** #1614: a reply to an ask's author notifies its agents at most once per thread per window, and this many times per thread in all. */
+export const ASKER_NOTICE_WINDOW_MS = 60_000;
+export const ASKER_NOTICES_MAX = 20;
 /** GET: most comments across all the threads returned. */
 export const COMMENTS_MAX_TOTAL = 5000;
 /** GET: most body bytes across the threads returned (a DO RPC answer is capped near 32 MiB). */
