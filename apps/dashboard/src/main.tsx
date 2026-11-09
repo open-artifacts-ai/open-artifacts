@@ -452,6 +452,8 @@ async function startMocks() {
       // ?hosted=1 (or tokens, see hostedParam.ts): the hosted M1 mocks.
       hosted: parseHostedParam(params.get("hosted")),
       events,
+      // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
+      commentAsks: params.get("mock") === "asks",
       // ?mock=bus (#1293): the bus is on, with machines and agents.
       bus: params.get("mock") === "bus",
     }),

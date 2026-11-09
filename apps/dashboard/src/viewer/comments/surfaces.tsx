@@ -1,9 +1,10 @@
 import { Button } from "@oa/ui/shadcn";
-import { X } from "lucide-react";
+import { MessageSquare, X } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { TXT } from "../ui";
 import { ActionRowOutlet, ActionRowProvider } from "./actionRow";
 import { CommentsBody } from "./CommentsBody";
+import { useCommentsApi } from "./useComments";
 
 /** Where the comments list lives (Design's 1C + 3D). */
 export type Surface = "column" | "panel" | "dialog";
@@ -21,6 +22,15 @@ const media = (q: string) => ({
 });
 const wide = media(WIDE_QUERY);
 const phone = media(PHONE_QUERY);
+const coarse = media("(pointer: coarse)");
+const narrow = media("(max-width: 599.98px)");
+
+/** Touch input (#1732). */
+export const useCoarsePointer = () =>
+  useSyncExternalStore(coarse.subscribe, coarse.get, () => false);
+/** Below 600px: the header button's short label. */
+export const useNarrow = () =>
+  useSyncExternalStore(narrow.subscribe, narrow.get, () => false);
 
 /**
  * A margin column beside the page from 960px; below that, a tab of the side
@@ -31,6 +41,55 @@ export function useSurface(chromeless: boolean): Surface {
   const isPhone = useSyncExternalStore(phone.subscribe, phone.get, () => false);
   if (chromeless || isPhone) return "dialog";
   return isWide ? "column" : "panel";
+}
+
+/**
+ * #1732: on touch, a full-width bar at the bottom of the viewer while text is
+ * selected in the frame. Drawn by the shell (the frame's own button is off on
+ * touch). The polite region announces once, when the bar appears.
+ */
+const ANNOUNCE_MS = 10_000;
+
+export function SelectionBar() {
+  const api = useCommentsApi();
+  const touch = useCoarsePointer();
+  const show = touch && api.hasSelection;
+  // Announce when the bar appears, at most once per ANNOUNCE_MS: page code
+  // can flip the selection state as often as it likes.
+  const [say, setSay] = useState(false);
+  const lastSaid = useRef(0);
+  useEffect(() => {
+    if (!show) {
+      setSay(false);
+      return;
+    }
+    if (Date.now() - lastSaid.current < ANNOUNCE_MS) return;
+    lastSaid.current = Date.now();
+    setSay(true);
+  }, [show]);
+  return (
+    <>
+      <div role="status" className="sr-only">
+        {say ? "Comment on selection available" : ""}
+      </div>
+      {show && (
+        // The bar is the chrome surface; the 48px accent button sits above the
+        // home indicator (Design's final: plain bar, no quote line).
+        <div className="fixed inset-x-0 bottom-0 z-20 animate-in border-t border-t-border bg-card px-3 pt-2 pb-[calc(0.5rem_+_env(safe-area-inset-bottom))] duration-200 slide-in-from-bottom motion-reduce:animate-none!">
+          <button
+            type="button"
+            className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg border-0 bg-[var(--oa-accent)] font-semibold text-[var(--oa-accent-text)] text-[15px] hover:bg-[var(--oa-accent-fg)]"
+            // No preventDefault on press: WebKit then drops the tap's click.
+            // The frame keeps the last selection if this tap collapses it.
+            onClick={api.commentOnSelection}
+          >
+            <MessageSquare className="size-[18px]" aria-hidden="true" />
+            Comment on selection
+          </button>
+        </div>
+      )}
+    </>
+  );
 }
 
 /** The margin column: cards in document order beside the frame. */

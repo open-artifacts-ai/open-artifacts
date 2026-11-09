@@ -131,6 +131,23 @@ export const R = {
   busLinkProposals: "/api/v1/bus/links/proposals",
   /** DELETE -> 204: removes the caller's link (idempotent: unknown is 204 too). Same rules as PUT R.busLinks. */
   busLink: (id: string) => `/api/v1/bus/links/${seg(id)}`,
+  /**
+   * GET -> BusReachList: the member's role reach grants (#1346), with `live`
+   * false when the bus could not be asked. PUT BusReachPut -> `{ reach:
+   * BusReach }`: lets the role (namespace, name) reach one more namespace
+   * (idempotent: an existing grant is returned); 400 bad_request (invalid
+   * body, role name, or a target that is not canonical or is the role's own
+   * namespace), 409 conflict with details `{ reason }`: `role_unknown` (the
+   * role must exist first), `reach_limit` (BUS_REACH_MAX or
+   * BUS_REACH_PER_ROLE), or `no_bus` (no machine has connected yet); 403
+   * plan_read_only under a plan cap (new configuration, #1299). mcp.connect;
+   * PUT and DELETE take an interactive cookie session (a PAT, OAuth grant or
+   * machine token gets 404), so no AI agent grants reach: the member does,
+   * in a browser. GET and DELETE stay open under a plan cap.
+   */
+  busReach: "/api/v1/bus/reach",
+  /** DELETE -> 204: removes one reach grant (idempotent: unknown is 204 too). Same rules as PUT R.busReach, but open under a plan cap. */
+  busReachGrant: (id: string) => `/api/v1/bus/reach/${seg(id)}`,
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
   /**

@@ -12,6 +12,8 @@ import {
   displayKind,
   earlierStatusText,
   excerptOf,
+  followingText,
+  followText,
   linkedLiveNamespace,
   messageHeader,
   movedName,
@@ -24,6 +26,7 @@ import {
   statusSaysText,
   statusSetText,
   stripTerminalControls,
+  unfollowText,
 } from "@oa/bus-ipc";
 import { describe, expect, it } from "vitest";
 
@@ -47,6 +50,9 @@ const ts: Record<string, (...a: any[]) => unknown> = {
   cleanStatusLabel,
   statusSetText: (s, l) => statusSetText(s, none(l)),
   earlierStatusText,
+  followText,
+  unfollowText,
+  followingText,
   statusLabelTooLong,
   statusSaysText: (row, now) => statusSaysText(row, now) ?? null,
   rosterLine: (a, now) => rosterLine({ ...a, away: none(a.away) }, now),
@@ -189,6 +195,18 @@ describe("the Hermes plugin's text is bus-ipc's text", () => {
     cases.push(["statusLabelTooLong", [70]]);
     cases.push(["statusSetText", ["working", null]]);
     cases.push(["statusSetText", ["idle", "reviewing"]]);
+    const entry = {
+      url: "https://x.test/a/abc",
+      followed_at: "2026-11-09T10:00:00.000Z",
+    };
+    cases.push(["followText", [entry.url]]);
+    cases.push(["unfollowText", [true, "abc"]]);
+    cases.push(["unfollowText", [false, "abc"]]);
+    cases.push(["followingText", [[]]]);
+    cases.push([
+      "followingText",
+      [[entry, { ...entry, url: "https://x.test/a/def" }]],
+    ]);
     same(cases);
   });
 

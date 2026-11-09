@@ -19,7 +19,13 @@ export const NOTICE_SENDER = "open-artifacts";
 
 /** `comment` (#1535): an ask, mention or assignment on a comment. */
 /** `commented` (#682): a comment was added to an artifact the agent follows. */
-export type NoticeKind = "shared" | "changed" | "comment" | "commented";
+/** `ask_answered` (#1535): a person answered an ask the agent's member posted. */
+export type NoticeKind =
+  | "shared"
+  | "changed"
+  | "comment"
+  | "commented"
+  | "ask_answered";
 
 /**
  * One notice for one address in one member's bus: the shape the server
@@ -43,6 +49,9 @@ export type BusNotice = {
   coalesceKey: string;
   /** Hold until then (ms epoch); absent: deliver now. */
   notBefore?: number;
+  /** `comment` notices (#1535): the thread and comment the notice is about, server-generated ids only, for list_comments and add_comment. */
+  threadId?: string;
+  commentId?: string;
 };
 
 const BUS_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,62}[A-Za-z0-9_-])?$/;
@@ -102,6 +111,11 @@ export const BUS_LINK_MAX = 100;
 /** Links one namespace may have (#1567), so a send's lookup stays small. */
 export const BUS_LINKS_PER_NAMESPACE = 10;
 
+/** Role reach grants (#1346), one per role and target namespace, one member may hold. */
+export const BUS_REACH_MAX = 200;
+/** Namespaces one role may reach (#1346), so a send's and a roster's lookup stay small. */
+export const BUS_REACH_PER_ROLE = 10;
+
 /**
  * One link (#1567): the two namespaces see each other's agents and may
  * message each other. Stored once as a sorted pair (`a` < `b`) and read both
@@ -128,6 +142,39 @@ export const BusLinkPutSchema = z.strictObject({
   b: BusAddressSchema.shape.namespace,
 });
 export type BusLinkPut = z.infer<typeof BusLinkPutSchema>;
+
+/**
+ * One reach grant (#1346): the role (`role`) may message agents in
+ * `namespace`, and they may reply to its holder. One per role and target
+ * namespace; the role is the key, never the agent. Never transitive.
+ */
+export const BusReachSchema = z.strictObject({
+  id: z.string(),
+  role: z.strictObject({
+    namespace: BusAddressSchema.shape.namespace,
+    name: BusAddressSchema.shape.name,
+  }),
+  namespace: BusAddressSchema.shape.namespace,
+  createdAt: z.string(),
+});
+export type BusReach = z.infer<typeof BusReachSchema>;
+
+/** GET R.busReach, by role then namespace. `live` false: the bus could not be asked (reach is then []). */
+export const BusReachListSchema = z.strictObject({
+  reach: z.array(BusReachSchema).max(BUS_REACH_MAX),
+  live: z.boolean(),
+});
+export type BusReachList = z.infer<typeof BusReachListSchema>;
+
+/** PUT R.busReach: let the role reach `namespace` (a canonical namespace other than the role's own). */
+export const BusReachPutSchema = z.strictObject({
+  role: z.strictObject({
+    namespace: BusAddressSchema.shape.namespace,
+    name: BusAddressSchema.shape.name,
+  }),
+  namespace: BusAddressSchema.shape.namespace,
+});
+export type BusReachPut = z.infer<typeof BusReachPutSchema>;
 
 /** How long a link proposal's confirm link works (#1567): one hour. */
 export const BUS_LINK_PROPOSAL_TTL_MS = 60 * 60_000;

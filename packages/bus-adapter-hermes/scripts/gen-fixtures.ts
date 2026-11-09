@@ -35,7 +35,7 @@ const adapter: Set = {
         pid: 4242,
         cwd: "/home/u/proj",
         proposed_name: "hermes-proj",
-        caps: ["mailbox", "pending"],
+        caps: ["mailbox", "pending", "follow"],
         attest: { proc_start: "Fri Nov  6 21:00:00 2026" },
       },
     },
@@ -73,6 +73,12 @@ const adapter: Set = {
       name: "set_status without label",
       frame: { ...b, type: "set_status", state: "idle" },
     },
+    {
+      name: "follow",
+      frame: { ...b, type: "follow", artifact: "https://x.test/a/abc" },
+    },
+    { name: "unfollow", frame: { ...b, type: "unfollow", artifact: "abc" } },
+    { name: "following", frame: { ...b, type: "following" } },
   ],
   invalid: [
     {
@@ -128,6 +134,11 @@ const adapter: Set = {
     {
       name: "set_status with a bad state",
       frame: { ...b, type: "set_status", state: "asleep" },
+    },
+    { name: "follow with no artifact", frame: { ...b, type: "follow" } },
+    {
+      name: "unfollow with an empty artifact",
+      frame: { ...b, type: "unfollow", artifact: "" },
     },
     { name: "self with row false", frame: { ...b, type: "self", row: false } },
     { name: "wrong version", frame: { v: 2, id: "1", type: "list" } },
@@ -263,6 +274,31 @@ const daemon: Set = {
         earlier: { code: "rate_limited", message: "Too often." },
       },
     },
+    {
+      name: "followed",
+      frame: {
+        ...b,
+        type: "followed",
+        artifact_id: "abc",
+        url: "https://x.test/a/abc",
+        followed_at: "2026-11-09T10:00:00.000Z",
+      },
+    },
+    { name: "unfollowed", frame: { ...b, type: "unfollowed", removed: true } },
+    {
+      name: "follows",
+      frame: {
+        ...b,
+        type: "follows",
+        follows: [
+          {
+            artifact_id: "abc",
+            url: "https://x.test/a/abc",
+            followed_at: "2026-11-09T10:00:00.000Z",
+          },
+        ],
+      },
+    },
   ],
   invalid: [
     {
@@ -334,6 +370,14 @@ const daemon: Set = {
     {
       name: "agent that is not an object",
       frame: { ...b, type: "agent", agent: "bob" },
+    },
+    {
+      name: "followed with no url",
+      frame: { ...b, type: "followed", artifact_id: "abc", followed_at: "x" },
+    },
+    {
+      name: "unfollowed with a string",
+      frame: { ...b, type: "unfollowed", removed: "yes" },
     },
     { name: "version 0", frame: { v: 0, id: "1", type: "status_set" } },
     {

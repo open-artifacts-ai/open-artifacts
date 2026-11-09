@@ -482,6 +482,8 @@ const CAPPED_ALLOWED: readonly (readonly [string, RegExp])[] = [
   ["DELETE", /^\/api\/v1\/oauth-clients\/[^/]+$/],
   // #1291: revoking one's own bus machine (the route checks ownership).
   ["DELETE", /^\/api\/v1\/bus\/machines\/[^/]+$/],
+  // #1346: removing one of their own reach grants (a remove always works, #863).
+  ["DELETE", /^\/api\/v1\/bus\/reach\/[^/]+$/],
   // Dismissing their own guest-share notice (notices.own; guests get 404 there).
   ["POST", /^\/api\/v1\/notices\/guest_shares\/dismiss$/],
 ];

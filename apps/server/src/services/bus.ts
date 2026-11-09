@@ -4,6 +4,8 @@ import {
   type BusLink,
   type BusLinkProposed,
   type BusMachine,
+  type BusNotice,
+  type BusReach,
   type BusRole,
   type BusRoleProposal,
   type BusRoleProposeInput,
@@ -15,6 +17,7 @@ import type {
   LinkProposeResult,
   LinkViewResult,
 } from "../bus/link-proposals.js";
+import type { PutReachResult, ReachGrant } from "../bus/reach.js";
 import type {
   DecideResult,
   ProposalAudit,
@@ -30,6 +33,11 @@ import { lookupUserGrant } from "../mcp/oauth-api.js";
 import { b64urlEncode, sha256Hex } from "../util/crypto.js";
 import { type Via, viaKey } from "./agent-usage.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
+import type {
+  DeliveryOutcome,
+  DeliveryScope,
+  NoticeDelivery,
+} from "./bus-delivery.js";
 
 // The bus's D1 side and the dashboard's reads of a member's BusHub (#1291).
 // A BusHub exists only for a member with a machine that has connected at
@@ -77,6 +85,8 @@ export const busCloseKind = (reason: string): BusCloseKind =>
 export type BusHubRpc = {
   /** True; reads no member data and arms no alarm (the reserved ping hub). */
   ping(): Promise<true>;
+  /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */
+  deliverNotice(notice: BusNotice): Promise<DeliveryOutcome>;
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(): Promise<{ connected: string[]; agents: BusAgent[] }>;
   /** Closes the machine's sockets and drains its agents; false when unknown or already revoked. */
@@ -116,6 +126,16 @@ export type BusHubRpc = {
   >;
   /** #1567: removes a link; false when unknown. */
   deleteLink(id: string): Promise<boolean>;
+  /** #1346: the member's role reach grants. */
+  listReach(): Promise<ReachGrant[]>;
+  /** #1346: lets a role reach a namespace (idempotent); see bus/reach.ts addReach. */
+  putReach(
+    roleNamespace: string,
+    roleName: string,
+    target: string,
+  ): Promise<PutReachResult>;
+  /** #1346: removes a reach grant; false when unknown. */
+  deleteReach(id: string): Promise<boolean>;
   /** #1567: records a link proposal under its link's hash; links nothing. */
   proposeLink(
     input: { action: LinkProposalAction; a: string; b: string },
@@ -391,6 +411,37 @@ export async function hasConnectedMachine(
 }
 
 /**
+ * #1317: the Worker's NoticeDelivery: carries one notice to the member's
+ * BusHub. "dropped" without touching a hub when the bus is off, the member
+ * has no machine that ever connected (so no hub is created for them), the
+ * hub is slow (BUS_HUB_TIMEOUT_MS) or it fails. A plan cap (#1299) does not
+ * stop it: capped members' machines keep receiving; a suspended member's
+ * machines cannot connect, so their notices wait out the hold and expire.
+ */
+export const hubNoticeDelivery: NoticeDelivery = {
+  async deliver(env, userId, notice, scope?: DeliveryScope) {
+    if (!busOn(env)) return "dropped";
+    let has = scope?.hasBus.get(userId);
+    if (!has) {
+      has = hasConnectedMachine(env, userId);
+      scope?.hasBus.set(userId, has);
+    }
+    if (!(await has)) return "dropped";
+    const hub = busHub(env, userId);
+    if (!hub) return "dropped";
+    try {
+      return (
+        (await within(hub.deliverNotice(notice), BUS_HUB_TIMEOUT_MS)) ??
+        "dropped"
+      );
+    } catch (e) {
+      logError("bus_notice_failed", e);
+      return "dropped";
+    }
+  },
+};
+
+/**
  * Erase (#1204): deletes everything the member's BusHub holds (machine
  * labels, agents, mail). Only when one may exist (a machine that ever
  * connected; erase keeps those rows, emptied). Throws on failure, so the
@@ -598,6 +649,97 @@ export async function deleteBusLink(
   const hub = busHub(env, userId);
   if (!hub) return;
   await linkCall(hub.deleteLink(id));
+}
+
+// ----------------------------------------------------------- role reach
+
+/** Why a reach write was refused (#1346): the 409's details.reason. */
+export type ReachRefusal = "role_unknown" | "reach_limit" | "no_bus";
+
+const REACH_REFUSALS: Record<ReachRefusal, string> = {
+  role_unknown: "Set the role first",
+  reach_limit: "Too many reach grants",
+  no_bus: "Connect a machine to the bus first",
+};
+
+const toBusReach = (g: ReachGrant): BusReach => ({
+  id: g.id,
+  role: { namespace: g.roleNamespace, name: g.roleName },
+  namespace: g.namespace,
+  createdAt: new Date(g.createdAt).toISOString(),
+});
+
+/** A hub call for a reach write: ApiError internal when it fails or times out (retrying is safe). */
+async function reachCall<T>(p: Promise<T>): Promise<T> {
+  try {
+    const r = await within(p, BUS_HUB_TIMEOUT_MS * 5);
+    if (r === null) throw new Error("bus hub timed out");
+    return r;
+  } catch (e) {
+    logError("bus_reach_failed", e);
+    throw new ApiError("internal", "The bus could not be reached. Try again.");
+  }
+}
+
+/** #1346: the member's reach grants, or [] with live false when the hub can't be read (or none can exist yet). */
+export async function listBusReach(
+  env: Env,
+  userId: string,
+): Promise<{ reach: BusReach[]; live: boolean }> {
+  const none = { reach: [], live: false };
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return none;
+  const hub = busHub(env, userId);
+  if (!hub) return none;
+  try {
+    const grants = await within(hub.listReach(), BUS_HUB_TIMEOUT_MS);
+    return grants === null
+      ? none
+      : { reach: grants.map(toBusReach), live: true };
+  } catch (e) {
+    logError("bus_reach_list_failed", e);
+    return none;
+  }
+}
+
+/**
+ * #1346: lets the role (`roleNamespace`, `roleName`) reach `target`. The
+ * route validated the body; the hub checks again. 409 conflict with details
+ * { reason } on a refusal; `no_bus` before any machine connected (no BusHub
+ * is created for it).
+ */
+export async function putBusReach(
+  env: Env,
+  userId: string,
+  roleNamespace: string,
+  roleName: string,
+  target: string,
+): Promise<BusReach> {
+  const refuse = (reason: ReachRefusal) =>
+    new ApiError("conflict", REACH_REFUSALS[reason], { reason });
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  if (!(await hasConnectedMachine(env, userId))) throw refuse("no_bus");
+  const hub = busHub(env, userId);
+  if (!hub) throw refuse("no_bus");
+  const r = await reachCall(hub.putReach(roleNamespace, roleName, target));
+  if (r.ok) return toBusReach(r.grant);
+  if (r.reason === "invalid")
+    throw new ApiError("bad_request", `Invalid ${r.field}`, {
+      field: r.field,
+    });
+  throw refuse(r.reason);
+}
+
+/** #1346: removes the member's reach grant `id`. Idempotent: unknown is fine. */
+export async function deleteBusReach(
+  env: Env,
+  userId: string,
+  id: string,
+): Promise<void> {
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  if (!(await hasConnectedMachine(env, userId))) return;
+  const hub = busHub(env, userId);
+  if (!hub) return;
+  await reachCall(hub.deleteReach(id));
 }
 
 /** The link confirm page's path; the URL is `<origin>${LINK_CONFIRM_PATH}#<secret>` (the fragment never reaches a server or a log, #1426). */

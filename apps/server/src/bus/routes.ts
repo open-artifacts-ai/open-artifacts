@@ -19,6 +19,7 @@ import {
   AUTH,
   BusLinkProposeSchema,
   BusLinkPutSchema,
+  BusReachPutSchema,
   BusRolePutSchema,
   type Member,
   R,
@@ -45,14 +46,17 @@ import {
   busOn,
   busPing,
   deleteBusLink,
+  deleteBusReach,
   deleteBusRole,
   listBusAgents,
   listBusLinks,
   listBusMachines,
+  listBusReach,
   listBusRoles,
   MAX_ACTIVE_MACHINES,
   proposeBusLink,
   putBusLink,
+  putBusReach,
   putBusRole,
   revokeBusMachine,
 } from "../services/bus.js";
@@ -786,6 +790,46 @@ export function mountBus(app: AppType): void {
     if (!ROLE_ID.test(id))
       throw new ApiError("bad_request", "Invalid id", { field: "id" });
     await deleteBusLink(c.env, user.id, id);
+    return c.body(null, 204);
+  });
+
+  // #1346 role reach: the same rules as role and link writes (an interactive
+  // member session; an AI agent never grants reach). A grant is the member's
+  // own direct add, so it needs no further confirmation. A new grant is new
+  // bus configuration, so a plan cap refuses it (#1299); GET and DELETE stay
+  // open ("Remove always works", #863).
+  app.get(R.busReach, async (c) => {
+    const user = requireUser(c);
+    if (!canConnect(user)) throw notFound();
+    return c.json(await listBusReach(c.env, user.id));
+  });
+  app.put(R.busReach, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    busConfigCap(user);
+    const body = await jsonBody(c, BusReachPutSchema);
+    // The bus's own name rules (reserved names) on top of the wire shape.
+    if (!BusNameSchema.safeParse(body.role.name).success)
+      throw new ApiError("bad_request", "Invalid role", { field: "name" });
+    return c.json({
+      reach: await putBusReach(
+        c.env,
+        user.id,
+        body.role.namespace,
+        body.role.name,
+        body.namespace,
+      ),
+    });
+  });
+  app.delete(`${R.busReach}/:id`, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    const id = c.req.param("id") ?? "";
+    if (!ROLE_ID.test(id))
+      throw new ApiError("bad_request", "Invalid id", { field: "id" });
+    await deleteBusReach(c.env, user.id, id);
     return c.body(null, 204);
   });
 }

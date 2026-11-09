@@ -1,7 +1,7 @@
 import type { ArtifactSummary } from "@oa/shared";
 import { R } from "@oa/shared";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
-import { HttpResponse, http } from "msw";
+import { http } from "msw";
 import { describe, expect, it } from "vitest";
 import { arts, calls, installHarness, mount, page, server } from "./harness";
 
@@ -22,7 +22,7 @@ describe("Library: asks for you", () => {
     const router = mount("/");
     expect(await screen.findByText("2 asks for you")).toBeInTheDocument();
     fireEvent.click(
-      await screen.findByRole("radio", { name: "Needs your answer" }),
+      await screen.findByRole("button", { name: "Needs your answer" }),
     );
     await waitFor(() =>
       expect(router.state.location.search).toMatchObject({
@@ -41,12 +41,33 @@ describe("Library: asks for you", () => {
     const reqs = calls("GET");
     mount("/");
     fireEvent.click(
-      await screen.findByRole("radio", { name: "Waiting on agents" }),
+      await screen.findByRole("button", { name: "Waiting on agents" }),
     );
     await waitFor(() =>
       expect(
         reqs.some((u) => u.search.get("filter") === "waiting_on_agents"),
       ).toBe(true),
     );
+  });
+
+  it("marks the active chip and says which asks are missing when empty", async () => {
+    server.use(http.get(`*${R.artifacts}`, () => page([], null)));
+    mount("/");
+    const chip = await screen.findByRole("button", {
+      name: "Waiting on agents",
+    });
+    expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    fireEvent.click(chip);
+    await waitFor(() => expect(chip).toHaveAttribute("aria-pressed", "true"));
+    expect(
+      await screen.findByText("No asks waiting on agents."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Needs your answer" }));
+    expect(
+      await screen.findByText("No asks need your answer."),
+    ).toBeInTheDocument();
   });
 });

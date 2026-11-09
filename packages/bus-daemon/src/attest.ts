@@ -51,10 +51,11 @@ export function attest(hello: Hello, deps: AttestDeps = {}): Attest {
       return attestClaude(hello, deps);
     case "opencode":
       return attestOpenCode(hello, deps);
-    // omp runs under bun and Hermes under python, so comm is never read: the start time is the check.
+    // omp runs under bun and Hermes under python, OpenClaw under node, so comm is never read: the start time is the check.
     case "pi":
     case "omp":
-    case "hermes": {
+    case "hermes":
+    case "openclaw": {
       const kind = hello.kind;
       if (!hello.attest.proc_start) {
         return { ok: false, reason: `${kind} hello has no proc_start` };
@@ -67,12 +68,6 @@ export function attest(hello: Hello, deps: AttestDeps = {}): Attest {
       }
       return { ok: true };
     }
-    case "openclaw":
-      // The hub learns the kind first (#1693); the daemon admits it in a later release.
-      return {
-        ok: false,
-        reason: "openclaw is not supported by this daemon yet",
-      };
     case "codex":
       // Without the daemon's one wait for a late call line: runDaemon awaits `attest` itself.
       if (deps.codex) return deps.codex.attestNow(hello);

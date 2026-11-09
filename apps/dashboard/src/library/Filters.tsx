@@ -155,52 +155,48 @@ export function Filters(p: FilterProps) {
           ))}
         </SelectContent>
       </Select>
-      {/* Three toggles don't fit a phone: a select there, like Format. */}
-      <Choice
-        label="Waiting on"
-        options={WAITING}
-        value={p.waiting ?? ALL}
-        onChange={(v) =>
-          p.onWaiting(v === ALL ? undefined : (v as "needs_answer"))
-        }
-        className="max-[600px]:hidden"
-      />
-      <Select
-        value={p.waiting ?? ALL}
-        onValueChange={(v) =>
-          p.onWaiting(v === ALL ? undefined : (v as "needs_answer"))
-        }
+      {/* biome-ignore lint/a11y/useSemanticElements: a fieldset would bring its own border and legend */}
+      <div
+        role="group"
+        aria-label="Waiting on"
+        className="flex flex-wrap gap-[var(--oa-space-2)]"
       >
-        <SelectTrigger
-          aria-label="Waiting on"
-          size="sm"
-          className={`min-w-[140px] min-[601px]:hidden ${TEXT}`}
-        >
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent position="popper">
-          {WAITING.map((f) => (
-            <SelectItem key={f.value} value={f.value} className={TEXT}>
-              {f.label}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+        {WAITING.map((o) => {
+          const on = (p.waiting ?? ALL) === o.value;
+          return (
+            <button
+              key={o.value}
+              type="button"
+              aria-pressed={on}
+              onClick={() =>
+                p.onWaiting(
+                  o.value === ALL ? undefined : (o.value as "needs_answer"),
+                )
+              }
+              className={`h-7 rounded-full border px-[var(--oa-space-3)] ${TEXT} transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${on ? "border-transparent bg-[var(--oa-accent)] text-[var(--oa-accent-text)]" : "border-input bg-background text-foreground hover:bg-muted"}`}
+            >
+              {o.label}
+            </button>
+          );
+        })}
+      </div>
       {(p.format || p.agent || p.via || p.waiting) && (
         <Button variant="ghost" size="sm" className={TEXT} onClick={p.onClear}>
           Clear filters
         </Button>
       )}
-      <span className="flex-1" />
-      <Choice
-        label="Layout"
-        options={[
-          { value: "grid", label: "Grid" },
-          { value: "list", label: "List" },
-        ]}
-        value={p.view}
-        onChange={p.onView}
-      />
+      {/* ml-auto, not a spacer: it keeps Grid/List at the right on any line it wraps to. */}
+      <div className="ml-auto">
+        <Choice
+          label="Layout"
+          options={[
+            { value: "grid", label: "Grid" },
+            { value: "list", label: "List" },
+          ]}
+          value={p.view}
+          onChange={p.onView}
+        />
+      </div>
     </div>
   );
 }

@@ -74,6 +74,14 @@ export const ADAPTER_CAPS = {
    * whose welcome listed it, so neither side meets a frame its decoder lacks.
    */
   rename: "rename",
+  /**
+   * `follow` (#1317): the adapter may send `follow`, `unfollow` and
+   * `following`. The daemon lists `follow` in `welcome.caps` only for an
+   * adapter that listed it, and an adapter sends the frames only to a daemon
+   * whose welcome listed it. The adapter tools are offered either way: a
+   * daemon without it answers them with a plain "update" error instead.
+   */
+  follow: "follow",
 } as const;
 
 export const Hello = z.object({
@@ -208,6 +216,28 @@ export const Rename = z.object({
   name: z.string().min(1).max(64).refine(isWellFormed, WELL_FORMED),
 });
 /**
+ * Follow, unfollow or list follows (#1317). The agent is the connection's
+ * attested one and the member is the machine's: the frames name neither. The
+ * daemon forwards them to the hub only when its hello_ok listed `follow`.
+ */
+export const Follow = z.object({
+  ...base,
+  ...optIn,
+  type: z.literal("follow"),
+  artifact: z.string().min(1).max(2048).refine(isWellFormed, WELL_FORMED),
+});
+export const Unfollow = z.object({
+  ...base,
+  ...optIn,
+  type: z.literal("unfollow"),
+  artifact: z.string().min(1).max(2048).refine(isWellFormed, WELL_FORMED),
+});
+export const Following = z.object({
+  ...base,
+  ...optIn,
+  type: z.literal("following"),
+});
+/**
  * A local CLI asking the daemon how it is (`oa-bus status`, `install`). No
  * hello: the socket is the user's own (0600). `cwd` picks the namespace.
  */
@@ -230,6 +260,9 @@ export const AdapterFrame = z.discriminatedUnion("type", [
   Ack,
   SetStatus,
   Rename,
+  Follow,
+  Unfollow,
+  Following,
 ]);
 export type AdapterFrame = z.infer<typeof AdapterFrame>;
 
@@ -277,7 +310,7 @@ export const Welcome = z.object({
   bus_name: z.string(),
   namespace: z.string(),
   global: z.boolean(),
-  /** What this daemon accepts (ADAPTER_CAPS), only for an adapter that listed `rename`. */
+  /** What this daemon accepts (ADAPTER_CAPS), only for an adapter that listed `rename` or `follow`. */
   caps: z.array(z.string().max(32)).max(16).optional(),
 });
 export const Receipt = z.object({
@@ -313,6 +346,33 @@ export const StatusSet = z.object({
   type: z.literal("status_set"),
   /** An earlier status the hub refused, or that never reached it: show it with this result. */
   earlier: z.object({ code: z.string(), message: z.string() }).optional(),
+  ...late,
+});
+/** One followed artifact, as the hub lists it. */
+const FollowEntry = z.object({
+  artifact_id: z.string(),
+  url: z.string(),
+  followed_at: z.string(),
+});
+/** The reply to `follow`. */
+export const Followed = z.object({
+  ...base,
+  type: z.literal("followed"),
+  ...FollowEntry.shape,
+  ...late,
+});
+/** The reply to `unfollow`. */
+export const Unfollowed = z.object({
+  ...base,
+  type: z.literal("unfollowed"),
+  removed: z.boolean(),
+  ...late,
+});
+/** The reply to `following`, newest first. */
+export const Follows = z.object({
+  ...base,
+  type: z.literal("follows"),
+  follows: z.array(FollowEntry),
   ...late,
 });
 export const Body = z.object({
@@ -415,5 +475,8 @@ export const DaemonFrame = z.discriminatedUnion("type", [
   ErrorFrame,
   StatusReply,
   StatusSet,
+  Followed,
+  Unfollowed,
+  Follows,
 ]);
 export type DaemonFrame = z.infer<typeof DaemonFrame>;

@@ -196,6 +196,41 @@
           "message": "Too often."
         }
       }
+    },
+    {
+      "name": "followed",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "followed",
+        "artifact_id": "abc",
+        "url": "https://x.test/a/abc",
+        "followed_at": "2026-11-09T10:00:00.000Z"
+      }
+    },
+    {
+      "name": "unfollowed",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "unfollowed",
+        "removed": true
+      }
+    },
+    {
+      "name": "follows",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "follows",
+        "follows": [
+          {
+            "artifact_id": "abc",
+            "url": "https://x.test/a/abc",
+            "followed_at": "2026-11-09T10:00:00.000Z"
+          }
+        ]
+      }
     }
   ],
   "invalid": [
@@ -316,6 +351,25 @@
         "id": "1",
         "type": "agent",
         "agent": "bob"
+      }
+    },
+    {
+      "name": "followed with no url",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "followed",
+        "artifact_id": "abc",
+        "followed_at": "x"
+      }
+    },
+    {
+      "name": "unfollowed with a string",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "unfollowed",
+        "removed": "yes"
       }
     },
     {

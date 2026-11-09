@@ -81,6 +81,7 @@ export interface BridgeOptions {
   onCommentOpen?: (id: string) => void;
   /** A click in pin mode: x and y are 0..1 of the image or page. */
   onCommentEscape?: () => void;
+  onCommentSelection?: (has: boolean, bottom: number) => void;
   onCommentPin?: (
     pin: Extract<ArtifactToShell, { type: "comment.pin" }>["pin"],
   ) => void;
@@ -551,6 +552,9 @@ export function createBridge(opts: BridgeOptions) {
       case "comment.escape":
         opts.onCommentEscape?.();
         break;
+      case "comment.selection":
+        opts.onCommentSelection?.(m.has, m.bottom);
+        break;
       case "comment.pin":
         opts.onCommentPin?.(m.pin);
         break;
@@ -613,6 +617,10 @@ export function createBridge(opts: BridgeOptions) {
         threads,
         ...(ghost ? { ghost } : {}),
       });
+    },
+    /** #1732: the reader tapped "Comment on selection"; the frame runs its own Comment path. */
+    commentOnSelection() {
+      reply({ oa: 1, type: "comments.comment" });
     },
     focusComment(threadId: string) {
       reply({ oa: 1, type: "comments.focus", id: threadId });

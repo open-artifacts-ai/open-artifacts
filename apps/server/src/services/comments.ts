@@ -37,8 +37,10 @@ import {
   type CommentNoticeKind,
   type DeliveryState,
   notifyAgent,
+  notifyAnswered,
   type RosterAgent,
   storedAgent,
+  viewerRosterAgents,
 } from "./comment-agents.js";
 import {
   verifyQuote,
@@ -46,7 +48,12 @@ import {
   versionFormat,
 } from "./comment-anchor.js";
 import { type CommentStatus, cleanGuestName } from "./comment-rules.js";
-import { addressKey, inBackground, notifyCommented } from "./follows.js";
+import {
+  addressKey,
+  follow,
+  inBackground,
+  notifyCommented,
+} from "./follows.js";
 import { effectiveName, getUser } from "./users.js";
 
 // Comments on any artifact (#682): the service the REST routes call, and the
@@ -444,9 +451,14 @@ type Resolved = {
   extras: NewExtras | undefined;
   /** Every agent the comment reaches, once, with why (assign beats ask beats mention). */
   agents: { agent: RosterAgent; kind: CommentNoticeKind }[];
+  /** The agents to make follow: mentioned, resolved from the viewer's own running agents. */
+  follow: RosterAgent[];
   mentions: string[];
   assign: string | null;
 };
+
+/** The key of a roster agent (comment-agents.ts agentKey). */
+const AGENT_KEY = /^agent:[0-9a-f]{32}$/;
 
 const unknownKey = (key: string) =>
   new ApiError("bad_request", `Unknown agent or person: ${key}`);
@@ -464,14 +476,20 @@ async function resolveExtras(
   x: CommentExtras,
   opts: ExtrasOpts,
 ): Promise<Resolved> {
-  const none = { extras: undefined, agents: [], mentions: [], assign: null };
+  const none: Resolved = {
+    extras: undefined,
+    agents: [],
+    follow: [],
+    mentions: [],
+    assign: null,
+  };
   const wantsTargets = (x.mentions?.length ?? 0) > 0 || x.assign !== undefined;
   if (!wantsTargets && !x.ask) return none;
   // An ask notifies agents too: the same rule as mentions and assignments.
   if ((wantsTargets || x.ask) && !opts.moderator)
     throw new ApiError(
       "forbidden",
-      "Only the owner and editors can mention, assign or ask",
+      "Only the owner and editors can mention, assign or ask. Drop it, or post a plain comment.",
     );
   if (x.ask && who.kind !== "user")
     throw new ApiError("forbidden", "Sign in to ask a question");
@@ -479,28 +497,46 @@ async function resolveExtras(
   if (parsed && !parsed.success)
     throw new ApiError("bad_request", "Invalid ask", parsed.error.issues);
   const askIn = parsed?.success ? parsed.data : undefined;
-  const roster = await agentRoster(
-    env,
-    artifactId,
-    who.kind === "user" ? who.id : null,
-    false,
-  );
-  const agentOf = (key: string): RosterAgent => {
+  const viewerId = who.kind === "user" ? who.id : null;
+  const roster = await agentRoster(env, artifactId, viewerId, false);
+  // The viewer's own running agents (#1535) are keyed by a hash of their
+  // address, so a key the follows do not hold can only be resolved by reading
+  // the viewer's hub. That read happens once per POST (memoised), only for a
+  // key shaped like an agent key that the follows do not hold: a mention of a
+  // follower, an ask to a person or a junk key costs D1 alone. busView bounds
+  // the read at BUS_HUB_TIMEOUT_MS (a stalled hub then reads as an unknown
+  // key). It sits OUTSIDE the POST's NOTICE_BUDGET_MS, so the worst case is
+  // about that bound plus the budget (about 4.5 s), and it runs before the
+  // rate-limit take: a thread's take is tied to the anchor check and a reply's
+  // sits in the DO write, so moving it ahead of this read is not a small change.
+  // Only the viewer's own agents, never another member's.
+  let own: Promise<RosterAgent[]> | undefined;
+  /** Keys resolved from the viewer's own running agents: not in the follows. */
+  const viaOwn = new Set<string>();
+  const find = async (key: string): Promise<RosterAgent | undefined> => {
     const a = roster.find((r) => r.key === key);
+    if (a || !viewerId || !AGENT_KEY.test(key)) return a;
+    own ??= viewerRosterAgents(env, artifactId, viewerId);
+    const found = (await own).find((r) => r.key === key);
+    if (found) viaOwn.add(key);
+    return found;
+  };
+  const agentOf = async (key: string): Promise<RosterAgent> => {
+    const a = await find(key);
     if (!a) throw unknownKey(key);
     return a;
   };
-  const mentioned = [...new Set((x.mentions ?? []).map((m) => m.key))].map(
-    agentOf,
-  );
-  const assigned = x.assign ? agentOf(x.assign.key) : null;
+  const mentioned: RosterAgent[] = [];
+  for (const key of new Set((x.mentions ?? []).map((m) => m.key)))
+    mentioned.push(await agentOf(key));
+  const assigned = x.assign ? await agentOf(x.assign.key) : null;
   let ask: NewExtras["ask"];
   const asked: RosterAgent[] = [];
   if (askIn) {
     const to: StoredParty[] = [];
     for (const { key } of askIn.to) {
       if (to.some((p) => p.key === key)) continue;
-      const a = roster.find((r) => r.key === key);
+      const a = await find(key);
       if (a) {
         to.push(storedAgent(a));
         asked.push(a);
@@ -523,7 +559,11 @@ async function resolveExtras(
   for (const a of mentioned) agents.set(a.key, { agent: a, kind: "mention" });
   for (const a of asked) agents.set(a.key, { agent: a, kind: "ask" });
   if (assigned) agents.set(assigned.key, { agent: assigned, kind: "assign" });
+  // A mention makes an agent follow (#1535); an assignment or ask alone does
+  // not. Only one the follows did not hold: another member's unfollow is never undone.
+  const toFollow = mentioned.filter((x) => viaOwn.has(x.key));
   return {
+    follow: [...new Map(toFollow.map((x) => [x.key, x])).values()],
     extras: {
       ...(ask ? { ask } : {}),
       ...(mentioned.length ? { mentions: mentioned.map(storedAgent) } : {}),
@@ -550,6 +590,25 @@ const stateOf = (
       ? "queued"
       : "gone";
 
+/** The most a comment POST waits, in total, for its notices to reach their hubs. */
+export const NOTICE_BUDGET_MS = 2500;
+
+/** The mentioned agent follows the artifact; never throws (a follow_limit or a lapsed member is logged). */
+async function followMentioned(
+  env: Env,
+  artifactId: string,
+  agent: RosterAgent,
+): Promise<void> {
+  try {
+    await follow(env, agent.userId, agent.address, artifactId);
+  } catch (e) {
+    logInfo("comment_mention_follow_failed", {
+      artifactId,
+      code: e instanceof ApiError ? e.code : "error",
+    });
+  }
+}
+
 /**
  * Sends the notices of a written comment and records how each mention and the
  * assignment went. Returns the comment as then stored.
@@ -564,11 +623,37 @@ async function deliver(
   if (r.agents.length === 0) return c;
   const version = Math.max(1, a.currentVersion);
   const outcome = new Map<string, DeliveryState>();
-  for (const { agent, kind } of r.agents)
-    outcome.set(
-      agent.key,
-      await notifyAgent(env, a.id, version, c.id, kind, agent),
+  // Concurrent, and the POST waits NOTICE_BUDGET_MS at most in total: a
+  // stalled hub reads "dropped" (its notice may still arrive; "gone" for a
+  // mention, "queued" for an assignment).
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<DeliveryState>((res) => {
+    timer = setTimeout(() => res("dropped"), NOTICE_BUDGET_MS);
+  });
+  try {
+    // A mentioned agent of the viewer's that did not follow now
+    // follows (#1535), beside the notice and under the same budget. Best
+    // effort: a failure is logged and changes neither the notice nor the comment.
+    const follows = r.follow.map((agent) =>
+      Promise.race([followMentioned(env, a.id, agent), late]),
     );
+    const [outs] = await Promise.all([
+      Promise.all(
+        r.agents.map(({ agent, kind }) =>
+          Promise.race([
+            notifyAgent(env, a.id, version, threadId, c.id, kind, agent),
+            late,
+          ]),
+        ),
+      ),
+      Promise.all(follows),
+    ]);
+    r.agents.forEach(({ agent }, i) => {
+      outcome.set(agent.key, outs[i] ?? "dropped");
+    });
+  } finally {
+    clearTimeout(timer);
+  }
   const states: { kind: "mention" | "assign"; key: string; state: string }[] =
     [];
   for (const key of r.mentions)
@@ -694,8 +779,10 @@ export async function answerAsk(
   who: CommentWho,
   viewer: CommentViewer,
   optionId: string,
+  /** The artifact's current version and the request's ctx: the asker's agents hear of the answer (#1535), after the response. */
+  after?: Announce,
 ): Promise<Comment> {
-  const c = await call(() =>
+  const { comment: c, unchanged } = await call(() =>
     stub(env, artifactId).commentsAnswer({
       threadId,
       commentId,
@@ -704,6 +791,20 @@ export async function answerAsk(
       rate: rateKeyOf(who),
     }),
   );
+  // The answer is stored: the asker's following agents hear of it, in the
+  // background, and a failure never fails the answer (inBackground catches).
+  if (after && !unchanged && c.author.kind === "user")
+    await inBackground(
+      after.ctx,
+      notifyAnswered(
+        env,
+        artifactId,
+        Math.max(1, after.version),
+        threadId,
+        commentId,
+        c.author.ref,
+      ),
+    );
   return commentView(env, c, viewer);
 }
 
@@ -713,7 +814,7 @@ export async function artifactAgents(
   artifactId: string,
   viewerId: string | null,
 ): Promise<{ key: string; name: string; online: boolean }[]> {
-  return (await agentRoster(env, artifactId, viewerId, true)).map(
+  return (await agentRoster(env, artifactId, viewerId, true, true)).map(
     ({ key, name, online }) => ({ key, name, online }),
   );
 }
