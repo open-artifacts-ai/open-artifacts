@@ -1156,6 +1156,19 @@ function awayHolder(
   // Nothing else holds it: no live agent, no role, and no minted name (the
   // old agent's own included, which nameTaken skips for it).
   if (nameTaken(sql, namespace, name, global, r.agentId, now)) return null;
+  // #1346: a holder of a role with a reach grant keeps its name. Mail sent to
+  // it across namespaces (a reply, allowed because of the grant) must wait for
+  // the holder, never go to a newcomer that holds no grant.
+  const reaching = one(
+    sql,
+    `select 1 as x from roles r
+      where r.org_id = ? and r.agent_id = ?
+        and exists (select 1 from reach_grants g
+                     where g.org_id = r.org_id and g.role_ns = r.namespace and g.lname = r.lname)`,
+    OWNER_ORG_ID,
+    r.agentId,
+  );
+  if (reaching !== null) return null;
   const minted = one(
     sql,
     "select 1 as x from minted_names where org_id = ? and lname = ?",

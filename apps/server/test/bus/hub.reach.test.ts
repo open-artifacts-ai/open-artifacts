@@ -409,6 +409,73 @@ async function waitUntilAway(w: { x: string; hn: string }) {
   throw new Error("holder never went away");
 }
 
+async function renameTo(d: Daemon, ref: string, name: string) {
+  const id = `rn${++seq}`;
+  d.send({
+    v: 1,
+    id,
+    type: "rename",
+    agent_ref: ref,
+    proposed_name: name,
+  } as ClientFrame);
+  for (;;) {
+    const f = await d.next();
+    if (f.type === "error" && f.id === id) throw new Error(JSON.stringify(f));
+    if (f.type === "renamed" && f.id === id) return f.bus_name;
+  }
+}
+
+const delivers = (d: Daemon) =>
+  d.raw.filter((t) => t.includes('"type":"deliver"'));
+
+describe("name reclaim never hands reach mail to an agent with no grant (#1742)", () => {
+  it("agent_up: a newcomer asking for an away holder's name is suffixed and gets no mail", async () => {
+    const w = await world();
+    w.dh.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "h" });
+    await waitUntilAway(w);
+    const r = await send(w.db, "b", w.hn, w.x);
+    expect(r.state).toBe("pending");
+    const dn = await connect(REACH);
+    dn.send(up(`u${++seq}`, "newcomer", w.hn, w.x));
+    const got = (await waitFor(dn, "agent_ok")).bus_name;
+    expect(got).not.toBe(w.hn);
+    expect(got.startsWith(w.hn)).toBe(true);
+    await new Promise((res) => setTimeout(res, 200));
+    expect(delivers(dn)).toEqual([]);
+    dn.close();
+    w.close();
+  });
+
+  it("rename: a live peer renaming to an away holder's name is suffixed and gets no mail", async () => {
+    const w = await world();
+    w.dh.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "h" });
+    await waitUntilAway(w);
+    const r = await send(w.db, "b", w.hn, w.x);
+    expect(r.state).toBe("pending");
+    const got = await renameTo(w.dp, "p", w.hn);
+    expect(got).not.toBe(w.hn);
+    await new Promise((res) => setTimeout(res, 200));
+    expect(delivers(w.dp)).toEqual([]);
+    w.close();
+  });
+
+  it("a holder of a role with no grant is still reclaimed from, with its mail", async () => {
+    const w = await world();
+    await holds(w.x, "plain", w.pn);
+    w.dp.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "p" });
+    const hub = await hubOf();
+    for (let i = 0; i < 200; i++) {
+      if (!(await hub.snapshot()).agents.some((a) => a.name === w.pn)) break;
+      await new Promise((res) => setTimeout(res, 25));
+    }
+    const dn = await connect(REACH);
+    dn.send(up(`u${++seq}`, "newcomer", w.pn, w.x));
+    expect((await waitFor(dn, "agent_ok")).bus_name).toBe(w.pn);
+    w.close();
+    dn.close();
+  });
+});
+
 describe("caps", () => {
   it("a holder on a socket without reach sees today's isolation", async () => {
     const w = await world([BUS_CAPS.ids]);
