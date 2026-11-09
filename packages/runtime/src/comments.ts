@@ -1,3 +1,4 @@
+import type { SelectionAnchor } from "@oa/shared";
 import {
   type Anchor,
   type BlockHint,
@@ -101,6 +102,16 @@ export function createComments(
     "html";
   const hasPins = format === "image" || format === "pdf";
   let mode: Mode = "off";
+  /**
+   * The quote a comment is being written about (#1834), kept painted. No
+   * version: it is a paint hint, not a record (the resolver ignores it).
+   */
+  let draftText: SelectionAnchor | undefined;
+  let draftCache: {
+    text: SelectionAnchor;
+    ver: number;
+    range: Range | null;
+  } | null = null;
   let threads: Thread[] = [];
   let ghost: { x: number; y: number; page?: number } | undefined;
   /** Text index of the body, rebuilt when the text version or the body changes. */
@@ -215,6 +226,21 @@ export function createComments(
     return slots;
   }
 
+  /** The draft quote's range, resolved once per text version. */
+  function draftRange(): Range | null {
+    if (!draftText) return null;
+    if (draftCache?.text === draftText && draftCache.ver === textVer)
+      return draftCache.range;
+    const idx = getIndex();
+    const res = createTextResolver(idx.text)(draftText as TextAnchor);
+    const range =
+      res.state === "exact" || res.state === "partial"
+        ? rangeFromIndex(idx, res.start, res.end)
+        : null;
+    draftCache = { text: draftText, ver: textVer, range };
+    return range;
+  }
+
   const clearPaint = () => {
     painted = [];
     const reg = highlights();
@@ -241,8 +267,14 @@ export function createComments(
     }
     const reg = highlights();
     if (reg && typeof Highlight !== "undefined") {
+      // #1834: the quote being written about takes the active thread's colour,
+      // so choosing Comment highlights it and posting changes nothing.
+      const draft = draftRange();
       reg.set("oa-comment", new Highlight(...normal));
-      reg.set("oa-comment-active", new Highlight(...active));
+      reg.set(
+        "oa-comment-active",
+        new Highlight(...active, ...(draft ? [draft] : [])),
+      );
     }
   }
 
@@ -421,12 +453,58 @@ export function createComments(
     btn?.remove();
   }
 
+  /** The last rect of the selection: the button hangs under the end of it. */
+  function endRect(): DOMRect | null {
+    const s = selection();
+    if (!s) return null;
+    const rects = s.range.getClientRects();
+    return (rects[rects.length - 1] ?? s.range.getBoundingClientRect()) || null;
+  }
+
+  /** Centered under the end of the selection, kept inside the viewport. */
+  function place(rect: DOMRect) {
+    if (!btn) return;
+    const vw = document.documentElement.clientWidth || innerWidth;
+    const w = btn.offsetWidth;
+    const x = Math.max(
+      BTN_MARGIN,
+      Math.min(rect.right - w / 2, vw - w - BTN_MARGIN),
+    );
+    btn.style.left = `${x + scrollX}px`;
+    btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
+  }
+
+  /**
+   * A webfont that swaps in after the button shows reflows the page, which
+   * moves the selection's rect; the button would sit off center until the next
+   * selection (#1648). Its own width cannot change (the overlay is a closed
+   * shadow root with `:host{all:initial}` and a system-ui font), so what is
+   * placed again is the button, from a fresh rect. Later batches and a lazy
+   * `@font-face` fire `loadingdone` too, which is why the listener is on the
+   * font set rather than a one-shot `ready`. Other late reflows (images,
+   * layout shift) still need a ResizeObserver: not this fix.
+   */
+  function onFontsLoaded() {
+    if (mode !== "select" || !btn?.isConnected) return;
+    const rect = endRect();
+    if (rect) place(rect);
+  }
+
+  function fontSet(): FontFaceSet | undefined {
+    // A hostile page can define `document.fonts` with a throwing getter.
+    try {
+      return (
+        (document as Document & { fonts?: FontFaceSet }).fonts ?? undefined
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
   function showButton() {
     if (mode !== "select" || coarse()) return hideButton();
-    const s = selection();
-    if (!s) return hideButton();
-    const rects = s.range.getClientRects();
-    const rect = rects[rects.length - 1] ?? s.range.getBoundingClientRect();
+    const rect = endRect();
+    if (!rect) return hideButton();
     if (!btn) {
       btn = document.createElement("button");
       btn.innerHTML = `${BUBBLE}<span>Comment</span>`;
@@ -437,15 +515,7 @@ export function createComments(
       btn.className = "btn";
     }
     if (!btn.isConnected) overlay().append(btn);
-    // Centered under the end of the selection, kept inside the viewport.
-    const vw = document.documentElement.clientWidth || innerWidth;
-    const w = btn.offsetWidth;
-    const x = Math.max(
-      BTN_MARGIN,
-      Math.min(rect.right - w / 2, vw - w - BTN_MARGIN),
-    );
-    btn.style.left = `${x + scrollX}px`;
-    btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
+    place(rect);
   }
 
   function onCommentClick() {
@@ -534,10 +604,21 @@ export function createComments(
     if (best) open(best.id);
   }
 
+  /** Where Esc belongs to the page or to a dialog above the frame (#1698). */
+  const ESC_NOT_OURS =
+    "input, textarea, select, [aria-modal='true'], [data-state='open'][role='dialog'], [role='alertdialog']";
   // Esc in pin mode: the frame holds focus after a click, so tell the shell.
+  // Not while an IME, a field or a modal owns the key, matching the shell's guard.
   function onKey(e: KeyboardEvent) {
-    if (e.key === "Escape" && mode === "pin")
-      bridge.send({ oa: 1, type: "comment.escape" });
+    if (e.key !== "Escape" || mode !== "pin") return;
+    if (e.isComposing) return;
+    const t = e.target;
+    if (
+      t instanceof HTMLElement &&
+      (t.isContentEditable || t.closest(ESC_NOT_OURS) !== null)
+    )
+      return;
+    bridge.send({ oa: 1, type: "comment.escape" });
   }
 
   // ---- shell messages ----
@@ -550,6 +631,10 @@ export function createComments(
         reportSelection();
       }
       if (mode === "off") {
+        // No mode, no draft: a quote left behind would paint on the next set
+        // (#1850 review).
+        draftText = undefined;
+        draftCache = null;
         hideButton();
         clearPaint();
         lastReport = "";
@@ -560,6 +645,8 @@ export function createComments(
     } else if (m.type === "comments.set") {
       threads = m.threads;
       ghost = m.ghost;
+      draftText = m.draft;
+      draftCache = null;
       slots = null;
       report(true);
     } else if (m.type === "comments.comment") {
@@ -631,8 +718,12 @@ export function createComments(
   addEventListener("resize", onResize, { passive: true });
   addEventListener("scroll", onScroll, { passive: true });
 
+  const fonts = fontSet();
+  fonts?.addEventListener?.("loadingdone", onFontsLoaded);
+
   const dispose = () => {
     off();
+    fonts?.removeEventListener?.("loadingdone", onFontsLoaded);
     observer?.disconnect();
     document.removeEventListener("selectionchange", onSelectionChange);
     document.removeEventListener("click", onClick, true);

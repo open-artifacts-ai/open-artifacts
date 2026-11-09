@@ -1700,6 +1700,78 @@ describe("comments: capped members", () => {
   });
 });
 
+describe("comments: the quote stays highlighted while writing (#1834)", () => {
+  const quote = (exact: string) => ({
+    kind: "text" as const,
+    exact,
+    prefix: "",
+    suffix: "",
+  });
+  /** The third argument of the last comments.set: the draft quote. */
+  const sentQuote = () =>
+    setComments.mock.calls.at(-1)?.[2] as { exact: string } | undefined;
+
+  it("sends the quote while the composer is open, and drops it on cancel", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    await screen.findByRole("textbox", { name: "Add a comment" });
+    expect(sentQuote()).toMatchObject({ exact: "Landing" });
+    fireEvent.click(within(c).getByRole("button", { name: "Cancel" }));
+    await wait(30);
+    expect(sentQuote()).toBeUndefined();
+  });
+
+  it("keeps it until the posted thread arrives, then the thread paints itself", async () => {
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    fireEvent.change(box, { target: { value: "Tighten this" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // The draft is closed, but the quote is still sent: no frame without a
+    // highlight while the list refetches.
+    const afterPost = setComments.mock.calls
+      .slice(-3)
+      .map((call) => call[2] as { exact: string } | undefined)
+      .filter(Boolean);
+    expect(afterPost.length).toBeGreaterThan(0);
+    // Once the list carries the new thread, the held quote goes.
+    await waitFor(() => expect(sentQuote()).toBeUndefined());
+    const lastThreads = setComments.mock.calls.at(-1)?.[0] as {
+      id: string;
+    }[];
+    expect(lastThreads.some((t) => t.id)).toBe(true);
+  });
+  it("drops the held quote when the list never carries it (#1850)", async () => {
+    // A server that normalises the quote, or a refetch that misses the thread:
+    // the draft highlight must not stay on for good.
+    const posts = calls("POST");
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    fireEvent.change(box, { target: { value: "Tighten this" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // Held for a moment (the list is still empty)...
+    expect(sentQuote()).toMatchObject({ exact: "Landing" });
+    // ...and gone once the hold expires.
+    await wait(1700);
+    expect(sentQuote()).toBeUndefined();
+  });
+});
+
 describe("comments: a server without comments", () => {
   const commentsCalls = () => {
     const all = calls("GET");

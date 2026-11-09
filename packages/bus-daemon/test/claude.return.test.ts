@@ -82,7 +82,7 @@ const reply = (claudeSock: string, text: string) => ({
   from: `uds:${claudeSock}`,
 });
 
-type Reply = [string, string, string, string, string?];
+type Reply = [string, string, string, string, string?, boolean?];
 function transport(
   d: string,
   target: () => { socketPath: string; peerToken: string } | null,
@@ -302,10 +302,7 @@ describe("a reply reaches only the agent that wrote (#1323 follow-up)", () => {
       d,
       () => ({ socketPath: claudeSock, peerToken: "tok" }),
       (...r) => again.push(r),
-      {
-        hubIds: () => true,
-        onReplyRefused: (ref, name) => told.push([ref, name]),
-      },
+      { onReplyRefused: (ref, name) => told.push([ref, name]) },
     );
     await t2.revive("s1");
     await t2.deliver(agent, mail("m2", "alice", null));
@@ -341,7 +338,7 @@ describe("a reply reaches only the agent that wrote (#1323 follow-up)", () => {
     expect(existsSync(join(d, "sinks", `${name}.sock`))).toBe(false);
   });
 
-  it("a revived socket that does not know who wrote refuses the reply, when the hub names writers", async () => {
+  it("a revived socket that does not know who wrote marks the reply unnamed; the daemon decides at send", async () => {
     const { d, claudeSock, froms, replies, refused, t } = await setup();
     await t.deliver(agent, mail("m1", "alice", null));
     await t.close();
@@ -352,15 +349,14 @@ describe("a reply reaches only the agent that wrote (#1323 follow-up)", () => {
       d,
       () => ({ socketPath: claudeSock, peerToken: "tok" }),
       (...r) => again.push(r),
-      {
-        hubIds: () => true,
-        onReplyRefused: (ref, name) => told.push([ref, name]),
-      },
+      { onReplyRefused: (ref, name) => told.push([ref, name]) },
     );
     await t2.revive("s1");
     await dial(froms[0] as string, reply(claudeSock, "hi"));
-    await vi.waitFor(() => expect(told).toEqual([["s1", "alice"]]));
-    expect(again).toEqual([]);
+    await vi.waitFor(() =>
+      expect(again).toEqual([["s1", "alice", "hi", "n", undefined, true]]),
+    );
+    expect(told).toEqual([]);
     expect(replies).toEqual([]);
     expect(refused).toEqual([]);
   });
@@ -386,22 +382,5 @@ describe("a reply reaches only the agent that wrote (#1323 follow-up)", () => {
     );
     await t2.revive("s1");
     expect(existsSync(froms[0] as string)).toBe(false);
-  });
-
-  it("an older hub never names writers: a revived id-less socket answers within the TTL", async () => {
-    const { d, claudeSock, froms, t } = await setup();
-    await t.deliver(agent, mail("m1", "alice", null));
-    await t.close();
-    transports.splice(transports.indexOf(t), 1);
-    const again: Reply[] = [];
-    const t2 = transport(
-      d,
-      () => ({ socketPath: claudeSock, peerToken: "tok" }),
-      (...r) => again.push(r),
-      { hubIds: () => false },
-    );
-    await t2.revive("s1");
-    await dial(froms[0] as string, reply(claudeSock, "hi"));
-    await vi.waitFor(() => expect(again).toEqual([["s1", "alice", "hi", "n"]]));
   });
 });

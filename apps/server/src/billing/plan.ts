@@ -36,6 +36,10 @@ import { ApiError } from "../http/errors.js";
 // features go read-only; it never falls back upward. A real lapse arrives as
 // status "lapsed" and applies at once.
 //
+// A cached Business trial whose end has passed is Solo at once (#1756), not
+// read-only, until billing's next answer; billing's scheduler read and the
+// owner's on-demand read (me.ts) already refresh it, so no new timer.
+//
 // With the gate (planOfRaw): the billing tier, i.e. the cached answer, with
 // the 7-day last-good rule. With no answer yet, the provisioned TIER is the
 // last good tier; with neither, solo (trial allowed), never unenforced.
@@ -148,12 +152,22 @@ export function effectivePlan(
   envTier: string | undefined,
   now: number,
 ): EffectivePlan {
-  const base = last ?? {
+  const answer = last ?? {
     tier: parseTier(envTier) ?? ("solo" as const),
     status: "active" as const,
     trialEndsAt: null,
     graceUntil: null,
   };
+  // #1568, #1756: the end of the Business trial returns to Solo, never a full
+  // lock. A billing answer (not the provisioned TIER) whose trial date has
+  // passed is Solo now, with its status read as Solo's (lapsed or past due is
+  // the unpaid view-only lock), until billing's next answer replaces it.
+  const trialOver =
+    last !== null &&
+    answer.tier === "trial" &&
+    answer.trialEndsAt !== null &&
+    now > answer.trialEndsAt;
+  const base = trialOver ? { ...answer, tier: "solo" as const } : answer;
   const out = (reason: PlanReason | null, mode: PlanLock["mode"] | null) => ({
     tier: base.tier,
     status: base.status,
@@ -198,11 +212,8 @@ export function effectivePlan(
   // A billing answer for a trial with no end date counts as ended (fail
   // closed). Not the provisioned TIER fallback (`last` null): a trial
   // install provisioned before billing answered has no dates at all.
-  if (
-    base.tier === "trial" &&
-    ((last !== null && base.trialEndsAt === null) ||
-      (base.trialEndsAt !== null && now > base.trialEndsAt))
-  )
+  // (A passed trial date is Solo, above.)
+  if (base.tier === "trial" && last !== null && base.trialEndsAt === null)
     return out("trial_ended", "readOnly");
   // free is the pre-Solo tier: the solo lock, as before Solo existed.
   if (base.tier === "free" || base.tier === "solo") return out("solo", "solo");

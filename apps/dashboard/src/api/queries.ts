@@ -496,7 +496,11 @@ export const useInviteMember = () => {
         (e.code === "invite_unreachable" ||
           e.code === "member_removed" ||
           e.code === "guest_lapsed" ||
-          e.code === "directory_managed")
+          e.code === "directory_managed" ||
+          // The dialog words a plan refusal itself (#1838); a toast with the
+          // server's text would say it a second, different way.
+          e.code.startsWith("plan_") ||
+          e.code === "billing_unavailable")
       )
         return;
       failToast(e, "Couldn't send the invite.");

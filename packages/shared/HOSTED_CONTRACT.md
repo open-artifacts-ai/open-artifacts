@@ -96,6 +96,7 @@ Who else has an artifact open, as faces. Module: `viewer-presence.ts`.
 - **Anonymous id.** Session cookie `oa_pid` on the app origin, matching `PRESENCE_ID_RE`; the server treats it as opaque and ignores any other value.
 - **Ping.** A client opening `R.events` with `?ping=1` sends the text `ping` every `PRESENCE_PING_MS` (30 s); the server answers `pong` without waking. Such a socket with no ping for `PRESENCE_STALE_MS` (60 s) is swept (every `PRESENCE_SWEEP_MS`); a closed socket's face lingers `PRESENCE_GRACE_MS`. Sockets without `?ping=1` are never swept for silence. `ping` is the only client message allowed; any other closes with 1008.
 - **Agents.** Present for `AGENT_PRESENT_MS` (120 s) after a touch, "editing" while a write is that recent.
+- **Animals.** `ANIMALS` is 55 ids (13 `lucide: true`, 42 drawn). Compared with the first draft: removed beaver, camel, capybara, eagle, gecko, hippo, kangaroo, llama, moose, wolf, zebra (Design: unreadable at 16px); added bat, chicken, hamster, lizard, seahorse, starfish, toucan (presence is unshipped, so no compat).
 
 ## CHANGED existing shapes (all fields optional, appended last)
 
@@ -123,6 +124,7 @@ Who else has an artifact open, as faces. Module: `viewer-presence.ts`.
 | `ArtifactEventSchema` | `presence` frame, appended after `gone`: `{ type: "presence", viewers, total }` (see Presence, both tiers) |
 | `GetArtifactInput`, `ArtifactData*Input` (MCP get_artifact and the six data tools) | `activity?: string` (at most 80 chars): what the agent says it is doing, shown on its presence card |
 | `AuditActionSchema` | `bus.role.proposed`, `bus.role.confirmed`, `bus.role.refused`, `bus.role.expired` (#1372, self-host bus only: an AI agent proposed a role change over MCP, the member confirmed or refused it on its link, or the link ran out). Target `user` (the member whose bus it is); `detail { proposalId, action }` plus `roleId`, `agentId`, `priorAgentId` when set and `why` on a refusal (`rejected`, `changed`, `name_taken`, `agent_not_open`, `role_limit`, `used`, `expired`) or on an expiry caused by revoking the PAT or OAuth grant that proposed (`credential_revoked`, #1403). Ids and enums only; never the role name, namespace or link. Actor: the member (proposed: their PAT or OAuth grant; confirmed and refused: their browser session), or `system` for an expiry |
+| `AuditActionSchema` | `bus.reach.proposed`, `bus.reach.confirmed`, `bus.reach.refused`, `bus.reach.expired` (#1346, self-host bus only: a machine's agent proposed that the role it holds reach other namespaces, the member confirmed or refused it on its link, or the link ran out or its machine was revoked). Target `user`; `detail { proposalId, roleId, agentId, machineId }` plus `why` on a refusal (`rejected`, `changed`, `reach_limit`, `used`, `expired`) or on an expiry caused by revoking the proposing machine (`machine_revoked`). Ids and enums only; never the role name, a namespace or the link. Actor: the member's browser session for confirmed and refused, `system` for an expiry, the member for proposed (the machine token's owner) |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |
 
 ## Comments (#682, `comments.ts`)

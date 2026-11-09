@@ -4,6 +4,7 @@ import {
   type AgentInfo,
   type ConfigFile,
   type DaemonFrame,
+  FOLLOW_DAEMON_BAD_FRAME,
   type Hello,
   type Unframed,
 } from "@oa/bus-ipc";
@@ -360,7 +361,7 @@ export function routeLocal(
         return {
           type: "error",
           code: "bad_frame",
-          message: "follow is not supported on this connection",
+          message: FOLLOW_DAEMON_BAD_FRAME.noCap,
         };
       const cap = ctx.limited?.(ref);
       if (cap)
@@ -386,7 +387,7 @@ export function routeLocal(
         return {
           type: "error",
           code: "bad_frame",
-          message: "the frame is not valid on the hub wire",
+          message: FOLLOW_DAEMON_BAD_FRAME.wire,
         };
       const id = ctx.pending.open(frame.id, reply);
       if (ctx.hub.send(build(id))) return undefined;

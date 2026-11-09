@@ -2248,9 +2248,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
     moderator: boolean;
     /** The caller's rate key ("u:{id}" or "ip:{key}"): counts against the minute limit only. */
     rate?: string;
-  }): void {
+  }): { root: boolean } {
     this.ensureSchema();
-    this.ctx.storage.transactionSync(() => {
+    const out = this.ctx.storage.transactionSync(() => {
       if (a.rate) this.countComment(a.rate, false);
       const row = this.sql
         .exec<{ author: string }>(
@@ -2265,7 +2265,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
         a.by !== null && who.kind === a.by.kind && who.ref === a.by.ref;
       if (!mine && !a.moderator)
         fail("forbidden", "Only the author or an editor can delete a comment");
-      if (rootId(this.sql, a.threadId) === a.commentId) {
+      const root = rootId(this.sql, a.threadId) === a.commentId;
+      if (root) {
         this.sql.exec("delete from comments where thread_id = ?", a.threadId);
         deleteExtras(this.sql, { threadId: a.threadId });
         this.sql.exec(
@@ -2277,8 +2278,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
         this.sql.exec("delete from comments where id = ?", a.commentId);
         deleteExtras(this.sql, { commentId: a.commentId });
       }
+      return { root };
     });
     this.broadcastComments();
+    return out;
   }
 
   /** Wipes all data (called by purge). The schema is recreated lazily on next use. */
