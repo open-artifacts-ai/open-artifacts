@@ -127,7 +127,10 @@ export function TitleBar({
   newer = false,
   gone = false,
   comments,
+  asks,
 }: {
+  /** #1614: unanswered asks addressed to the viewer; absent when the page has no asks. */
+  asks?: { count: number; onClick: () => void };
   /** The Comments button (#682): the open count, and what it toggles. Absent when comments are off. */
   comments?: {
     open: number;
@@ -271,6 +274,27 @@ export function TitleBar({
         )}
       </div>
       <div className="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-2 max-[600px]:flex-[1_1_100%]">
+        {comments && asks && asks.count > 0 && (
+          <ShButton
+            variant="outline"
+            size="xs"
+            data-asks-for-you
+            className={`${SM} border-0 bg-[var(--oa-warning-soft)] font-semibold text-[var(--oa-warning)] shadow-[inset_0_0_0_1px_var(--oa-warning)] hover:bg-[var(--oa-warning-soft)] hover:text-[var(--oa-warning)]`}
+            disabled={gone}
+            onClick={asks.onClick}
+          >
+            {asks.count} ask{asks.count === 1 ? "" : "s"}
+            {narrow ? "" : " for you"}
+          </ShButton>
+        )}
+        {comments && asks?.count === 0 && (
+          <span
+            data-asks-none
+            className={`${TXT} whitespace-nowrap text-muted-foreground`}
+          >
+            No asks for you
+          </span>
+        )}
         {comments && (
           <ShButton
             variant="outline"

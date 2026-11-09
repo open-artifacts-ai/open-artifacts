@@ -986,3 +986,100 @@ describe("round 3 copy", () => {
     ).toBeInTheDocument();
   });
 });
+
+describe("asks for you in the toolbar and header (#1614)", () => {
+  const mk = (id: string, answered = false) => {
+    const t = askThread(
+      { id },
+      answered
+        ? {
+            answer: {
+              optionId: "a",
+              by: { kind: "user", id: "me", name: "Me", me: true },
+              at: "2026-11-05T11:00:00Z",
+            },
+          }
+        : {},
+    );
+    (t.comments[0] as { id: string }).id = `c-${id}`;
+    return t;
+  };
+  const toolbar = () => screen.findByRole("button", { name: /asks? for you$/ });
+  const active = () =>
+    document
+      .querySelector("[data-thread][data-active]")
+      ?.getAttribute("data-thread");
+
+  it("counts and pluralises", async () => {
+    serveThreads(() => [mk("a")]);
+    mount(viewerPath(OWNED));
+    expect(await toolbar()).toHaveTextContent("1 ask for you");
+  });
+
+  it("is hidden when the page has no asks", async () => {
+    serveThreads(() => [
+      { ...mk("a"), comments: [{ ...mk("a").comments[0], ask: undefined }] },
+    ]);
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: /^Comments/ });
+    await wait(50);
+    expect(screen.queryByText(/for you/)).not.toBeInTheDocument();
+  });
+
+  it("says 'No asks for you' once all are answered", async () => {
+    serveThreads(() => [mk("a", true), mk("b", true)]);
+    mount(viewerPath(OWNED));
+    expect(await screen.findByText("No asks for you")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /asks? for you$/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("steps through two asks and wraps, opening the closed column", async () => {
+    serveThreads(() => [mk("a"), mk("b")]);
+    mount(viewerPath(OWNED));
+    const b = await toolbar();
+    expect(b).toHaveTextContent("2 asks for you");
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(b);
+    await screen.findByRole("complementary", { name: "Comments" });
+    const first = await waitFor(() => {
+      const id = active();
+      expect(id).toBeTruthy();
+      return id;
+    });
+    fireEvent.click(b);
+    await waitFor(() => expect(active()).not.toBe(first));
+    fireEvent.click(b);
+    await waitFor(() => expect(active()).toBe(first));
+  });
+
+  it("the header count does the same", async () => {
+    serveThreads(() => [mk("a"), mk("b")]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const h = await within(c).findByRole("button", { name: "2 asks for you" });
+    fireEvent.click(h);
+    await waitFor(() => expect(active()).toBeTruthy());
+    const first = active();
+    fireEvent.click(h);
+    await waitFor(() => expect(active()).not.toBe(first));
+  });
+});
+
+describe("asks for you with a single ask (#1614)", () => {
+  it("clicking again still selects the ask when it is already active", async () => {
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const b = await screen.findByRole("button", { name: /1 ask for you$/ });
+    fireEvent.click(b);
+    await waitFor(() =>
+      expect(document.querySelector("[data-thread][data-active]")).toBeTruthy(),
+    );
+    focus.mockClear();
+    fireEvent.click(b);
+    await waitFor(() => expect(focus).toHaveBeenCalledWith("t-ask"));
+  });
+});

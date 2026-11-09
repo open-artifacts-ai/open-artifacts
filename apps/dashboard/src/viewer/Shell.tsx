@@ -22,6 +22,7 @@ import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
+import { asksForMe, nextAskFor } from "./comments/asks";
 import { CommentsBody, PinBar } from "./comments/CommentsBody";
 import {
   CommentsColumn,
@@ -546,6 +547,24 @@ function Viewer({
     selecting: cmt.hasSelection,
     onClick: cmt.hasSelection ? cmt.commentOnSelection : listButton.onClick,
   };
+  // #1614: "N asks for you" opens the comments surface (never toggles it shut) and steps to the next ask.
+  const allThreads = [...cmt.ordered, ...cmt.orphans];
+  const asksButton =
+    commentsOn && allThreads.some((t) => t.comments.some((c) => c.ask))
+      ? {
+          count: asksForMe(allThreads).length,
+          onClick: () => {
+            const id = nextAskFor(cmt, cmt.active, { includeSelf: true });
+            if (!id) return;
+            if (surface === "column") {
+              if (panelOpen) setPanel(true, "comments");
+              else setColOpen(true);
+            } else if (surface === "panel") setPanel(true, "comments");
+            else setDialogOpen(true);
+            cmt.select(id, true);
+          },
+        }
+      : undefined;
   return (
     <CommentsProvider value={cmt}>
       <div className="oa-viewer">
@@ -566,6 +585,7 @@ function Viewer({
               newer={newer}
               gone={gone !== null}
               comments={commentsButton}
+              asks={asksButton}
             />
             <SignupNudge
               authed={authed}

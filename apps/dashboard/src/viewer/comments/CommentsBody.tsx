@@ -36,6 +36,7 @@ import {
   matchAgents,
   mentionedKeys,
   mentionQuery,
+  nextAskFor,
 } from "./asks";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { type CommentsApi, useCommentsApi } from "./useComments";
@@ -514,13 +515,7 @@ function CommentRow({
   c: CommentT;
   root: boolean;
 }) {
-  // Page order (whole-page asks, then by position, then earlier text), wrapping around.
-  const order = [...api.ordered, ...api.orphans].map((t) => t.id);
-  const pending = new Set(asksForMe([...api.ordered, ...api.orphans]));
-  const at = order.indexOf(thread.id);
-  const nextAsk = [...order.slice(at + 1), ...order.slice(0, Math.max(at, 0))]
-    .filter((id) => id !== thread.id)
-    .find((id) => pending.has(id));
+  const nextAsk = nextAskFor(api, thread.id);
   const edit = useEditComment(api.artifactId, api.guest);
   const del = useDeleteComment(api.artifactId, api.guest);
   const [menu, setMenu] = useState(false);
@@ -950,6 +945,26 @@ function NoteComposer({ api }: { api: CommentsApi }) {
   );
 }
 
+/** Amber "N asks for you" button: steps to the next unanswered ask. */
+function AsksForYou({
+  count,
+  onClick,
+}: {
+  count: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-asks-for-you
+      className="cursor-pointer rounded-sm border-0 bg-[var(--oa-warning-soft)] px-2 py-0.5 font-semibold text-[var(--oa-warning)] shadow-[inset_0_0_0_1px_var(--oa-warning)] focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)]"
+    >
+      {count} ask{count === 1 ? "" : "s"} for you
+    </button>
+  );
+}
+
 /** The list, header and composers: one body for the column, panel tab and sheet. */
 export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
   const api = useCommentsApi();
@@ -965,23 +980,30 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
       <div className={`flex items-center justify-between gap-2 ${TXT}`}>
-        <span>
-          {api.listedOpen} open
-          {forMe.length > 0 &&
-            ` · ${forMe.length} ask${forMe.length === 1 ? "" : "s"} for you`}
-        </span>
-        {resolvedCount > 0 && (
-          <Button
-            size="xs"
-            variant="ghost"
-            aria-pressed={api.showResolved}
-            onClick={() => api.setShowResolved(!api.showResolved)}
-          >
-            {api.showResolved
-              ? "Hide resolved"
-              : `Show resolved (${resolvedCount})`}
-          </Button>
-        )}
+        <span>{api.listedOpen} open</span>
+        <div className="flex items-center gap-2">
+          {forMe.length > 0 && (
+            <AsksForYou
+              count={forMe.length}
+              onClick={() => {
+                const id = nextAskFor(api, api.active, { includeSelf: true });
+                if (id) api.select(id, true);
+              }}
+            />
+          )}
+          {resolvedCount > 0 && (
+            <Button
+              size="xs"
+              variant="ghost"
+              aria-pressed={api.showResolved}
+              onClick={() => api.setShowResolved(!api.showResolved)}
+            >
+              {api.showResolved
+                ? "Hide resolved"
+                : `Show resolved (${resolvedCount})`}
+            </Button>
+          )}
+        </div>
       </div>
       <Tools api={api} />
       {api.draft && api.canComment && (
