@@ -159,6 +159,11 @@ methods are never read.
   replaces the old hash; closing the session clears it. The first accepted
   bind gives the agent an opaque `identity_id`, kept through renames and moved
   with a name the hub hands over to a restarted session on the same machine.
+- `link_arg` in `hello_ok.caps` (#1856): this hub's `/mcp` removes
+  `_oa_agent_proof` before any tool schema sees it. A daemon tells a harness
+  adapter its proof was taken only when `hello_ok.caps` listed both `link` and
+  `link_arg`; an older hub gets no argument, because a strict tool schema would
+  refuse the call.
 - The hub answers a lookup by hash only for the member who owns it; the
   Worker asks only the hub of the credential's own member.
 

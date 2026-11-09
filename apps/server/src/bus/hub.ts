@@ -337,6 +337,7 @@ const HUB_CAPS = [
   BUS_CAPS.reach,
   BUS_CAPS.follow,
   BUS_CAPS.link,
+  BUS_CAPS.linkArg,
 ];
 
 /**
