@@ -15,6 +15,7 @@ import {
   frameId,
   HUB_MAILBOX_BYTES_CAP,
   hasCap,
+  isFallbackName,
   isId,
   LIMITS,
   MAILBOX_BYTES_CAP,
@@ -1134,13 +1135,7 @@ function awayHolder(
   // (Hermes proposes `hermes-<cwd>`), the hub's `agent`, Claude's
   // `claude-<digits>`. An unrelated new thread of that kind must not take
   // over its mail.
-  if (
-    lname === kind ||
-    lname.startsWith(`${kind}-`) ||
-    lname === FALLBACK_BUS_NAME ||
-    /^claude-\d+$/.test(lname)
-  )
-    return null;
+  if (isFallbackName(name, kind)) return null;
   const rows = all<{
     agentId: string;
     kind: string;
