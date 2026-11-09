@@ -1000,13 +1000,15 @@ export function CommentsBody({
         />
       )}
       {/* #1783: the short sheet is for the pinned card, so the whole-page box
-          is not there; dragging the sheet up to half brings it back. */}
-      {!short &&
-        (api.canComment ? (
+          is not shown there. Hidden with CSS, never unmounted: a typed draft has
+          to survive a pin tap, and dragging the sheet up brings the box back. */}
+      <div className={short ? "hidden" : "contents"}>
+        {api.canComment ? (
           <NoteComposer api={api} />
         ) : (
           api.guest && <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
-        ))}
+        )}
+      </div>
       {api.error != null && !api.threads.length ? (
         <div role="alert" className={`flex flex-col gap-2 ${TXT}`}>
           <p>Couldn't load comments.</p>

@@ -288,13 +288,22 @@ describe("comments: layouts", () => {
       within(sheet).queryByRole("textbox", {
         name: "Comment on the whole page",
       });
-    // Half height: the box is part of the list.
-    expect(wholePage()).not.toBeNull();
+    // jsdom loads no CSS, so `hidden` is a class here, not a display: none.
+    const wrapper = () =>
+      wholePage()?.closest("div.hidden, div.contents") as HTMLElement | null;
+    // Half height: the box is part of the list. A draft is typed into it.
+    const box = wholePage();
+    expect(box).not.toBeNull();
+    expect(wrapper()?.className).toContain("contents");
+    fireEvent.change(box as HTMLElement, {
+      target: { value: "Whole page: the hero is too loud" },
+    });
     await act(async () => opts.at(-1)?.onCommentOpen("p1"));
     expect(sheet).toHaveAttribute("data-sheet-height", "pin");
-    // Short: no whole-page box, and the pinned card with its reply is there,
-    // so the reader is not left with only an action row.
-    expect(wholePage()).toBeNull();
+    // Short: the box is hidden (not unmounted: the draft has to survive a pin
+    // tap), and the pinned card with its reply is there, so the reader is not
+    // left with only an action row.
+    expect(wrapper()?.className).toContain("hidden");
     expect(within(sheet).getByText("Which pin is this?")).toBeInTheDocument();
     expect(
       within(sheet).getByText("The one on the button."),
@@ -302,10 +311,20 @@ describe("comments: layouts", () => {
     expect(
       within(sheet).getByRole("button", { name: "Reply" }),
     ).toBeInTheDocument();
-    // A taller sheet brings the box back.
+    // A taller sheet brings the box back with the draft still in it.
     fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
     expect(sheet).toHaveAttribute("data-sheet-height", "full");
     expect(wholePage()).not.toBeNull();
+    expect(wholePage()).toHaveValue("Whole page: the hero is too loud");
+    expect(wrapper()?.className).toContain("contents");
+    // The other way a sheet grows: typing a reply (#1657). Same result, and the
+    // whole-page draft is still there.
+    fireEvent.click(screen.getByRole("button", { name: "Shrink comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    fireEvent.focus(within(sheet).getByRole("textbox", { name: "Reply" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(wrapper()?.className).toContain("contents");
+    expect(wholePage()).toHaveValue("Whole page: the hero is too loud");
   });
 
   it("the wide overlay keeps the whole-page box with a pin card open (#1783)", async () => {
