@@ -22,6 +22,7 @@ class FakeCtx:
     def __init__(self, inject_result=True):
         self.tools = {}
         self.hooks = {}
+        self.middleware = {}
         self.injected = []
         self.inject_result = inject_result
 
@@ -30,6 +31,9 @@ class FakeCtx:
 
     def register_hook(self, name, cb):
         self.hooks.setdefault(name, []).append(cb)
+
+    def register_middleware(self, kind, callback):
+        self.middleware.setdefault(kind, []).append(callback)
 
     def inject_message(self, content, role="user"):
         self.injected.append(content)
@@ -43,6 +47,7 @@ class FakeLink:
         self.ref = ref
         self.welcome = {"type": "welcome", "bus_name": bus_name, "namespace": "ns", "global": False}
         self.closed = False
+        self.proof = None
         self.acks = []
         self.requests = []
         self.replies = replies or {}

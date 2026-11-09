@@ -1390,6 +1390,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             : []),
           // #1346: the proposal goes to the hub over HTTP; no hub cap.
           ...(h.caps?.includes(ADAPTER_CAPS.reach) ? [ADAPTER_CAPS.reach] : []),
+          // #1856: a link_proof on this connection binds only its own agent.
+          ...(h.caps?.includes(ADAPTER_CAPS.link) ? [ADAPTER_CAPS.link] : []),
         ];
         return listed.length > 0 ? { caps: listed } : {};
       };
@@ -1565,7 +1567,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // shown; they count as shown once that reply is written.
       const answer = (f: DaemonFrame): boolean => {
         const late =
-          frame.type !== "ack" && frame.late
+          frame.type !== "ack" && frame.type !== "link_proof" && frame.late
             ? sent.lateFor(hello.agent_ref)
             : [];
         if (!late.length) return reply(f);
@@ -1597,6 +1599,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           }),
         followSupport: () =>
           !hub.open || !hubHelloed ? "down" : hubFollow ? "ok" : "old_hub",
+        linked: (ref, hash) => {
+          const rec = agents.byRef(ref);
+          if (!rec?.live) return false;
+          rec.linkHash = hash;
+          sendLink(rec);
+          return true;
+        },
         renamed: (ref, name) => {
           const rec = agents.byRef(ref);
           if (rec) renameFromAdapter(rec, name);

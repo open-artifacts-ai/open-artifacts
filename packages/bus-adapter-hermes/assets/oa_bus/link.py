@@ -1,5 +1,8 @@
 """One connection to the bus daemon, held open for one Hermes root session."""
 
+import base64
+import hashlib
+import os
 import socket
 import threading
 
@@ -12,6 +15,8 @@ CLIENT_VERSION = "0.0.0"
 # Above the daemon's 10 s hub wait plus its 5 s wait for delivered.
 REQUEST_TIMEOUT_S = 20.0
 HELLO_TIMEOUT_S = 5.0
+# The daemon is local and answers link_proof at once; past this the root stays unlinked.
+PROOF_TIMEOUT_S = 2.0
 RECONNECT_S = 3.0
 MAX_REFUSED_BACKOFF_S = 60.0
 
@@ -35,6 +40,9 @@ class Link:
     def __init__(self, ref, cwd, name, proc_start, pid, on_deliver, on_notice, on_lost, home=None):
         self.ref = ref
         self.welcome = {}
+        # #1822: this link's proof, in memory only (never written or logged); set once the
+        # daemon took its hash. A reconnect is a new Link, so a new proof.
+        self.proof = None
         self._hello = {
             "id": "hello",
             "type": "hello",
@@ -44,7 +52,7 @@ class Link:
             "pid": pid,
             "cwd": cwd,
             "proposed_name": name,
-            "caps": ["mailbox", "pending", "follow"],
+            "caps": ["mailbox", "pending", "follow", "link"],
             "attest": {"proc_start": proc_start} if proc_start else {},
         }
         self._home = home if home is not None else bus_home()
@@ -85,7 +93,23 @@ class Link:
         if self._refusal:
             self.close()
             raise LinkError(self._refusal, refused=True)
+        self._prove()
         return self
+
+    def _prove(self):
+        """Makes a proof and tells the daemon its hash, for a daemon whose welcome listed `link`.
+        Any failure leaves this root unlinked; the link and every tool keep working."""
+        try:
+            caps = self.welcome.get("caps")
+            if not isinstance(caps, list) or "link" not in caps:
+                return
+            proof = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode("ascii")
+            hash_ = hashlib.sha256(proof.encode("ascii")).hexdigest()
+            r = self.request({"type": "link_proof", "hash": hash_}, PROOF_TIMEOUT_S)
+            if r.get("type") == "link_proofed" and r.get("bound") is True and not self._ended:
+                self.proof = proof
+        except Exception:
+            pass
 
     def _send(self, partial):
         data = frames.encode(partial)

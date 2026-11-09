@@ -319,6 +319,26 @@ class Bus:
         for ref in refs:
             self.close(ref)
 
+    def proof_for(self, session_id):
+        """The proof of the open link of this session's root (#1822), or None.
+
+        None for a subagent or an unknown session, under the Codex runtime (or when that
+        cannot be told: its tool calls carry no plugin argument), and when no link is open
+        or its daemon took no proof. A closed link is reopened in the background.
+        """
+        try:
+            ref = self.roots.resolve(session_id)
+        except NotOnBus:
+            return None
+        if self._codex_runtime() is not False:
+            return None
+        root = self.state(ref)
+        link = root.link
+        if link is None or link.closed:
+            self.touch(ref)
+            return None
+        return link.proof
+
     # --- Delivery.
 
     def _on_notice(self, link, text, msg_id=None):

@@ -1,4 +1,6 @@
+import { createHash, randomBytes } from "node:crypto";
 import {
+  ADAPTER_CAPS,
   type DaemonClient,
   deliveredText,
   messageHeader,
@@ -34,6 +36,34 @@ export const SETTLE_MS = 100;
 export const IDLE_MS = 30 * 60_000;
 /** Roots that have shown their runtime reports model calls; kept past eviction. */
 export const PROVEN_MAX = 2000;
+/** The daemon gets this long to take a link_proof; an answer after it leaves the root unlinked. */
+export const PROOF_MS = 2000;
+/** Runs whose root the prompt hook has told us, so a tool hook can find its root. The oldest is dropped. */
+export const RUN_ROOTS_MAX = 500;
+/**
+ * The reserved tool argument (#1822) the instance's /mcp reads and removes. It
+ * is added at call time and is in no schema the model sees.
+ */
+export const PROOF_ARG = "_oa_agent_proof";
+/** The MCP server key an instance's entry has by default; an install may name it otherwise. */
+export const DEFAULT_MCP_SERVERS: readonly string[] = ["open-artifacts"];
+/** OpenClaw's own utility tools for an MCP server (agent-bundle-mcp-materialize): not the instance's tools. */
+const MCP_UTILITY_OPS = new Set([
+  "resources_list",
+  "resources_read",
+  "prompts_list",
+  "prompts_get",
+]);
+/**
+ * A server key as OpenClaw names it in a tool id (sanitizeToolFragment,
+ * agent-bundle-mcp-names, 2026.6.5): outside [A-Za-z0-9_-] becomes "-", a name
+ * not starting with a letter gets "mcp-", at most 30 characters.
+ */
+export function safeServerName(raw: string): string {
+  const n = raw.trim().replace(/[^A-Za-z0-9_-]/g, "-") || "mcp";
+  const safe = /^[A-Za-z]/.test(n) ? n : `mcp-${n}`;
+  return safe.slice(0, 30);
+}
 const RECONNECT_MS = 3000;
 const MAX_REFUSED_BACKOFF_MS = 60_000;
 
@@ -69,6 +99,8 @@ type Run = {
 
 class Mailbox {
   client?: DaemonClient;
+  /** This link's proof (#1822), kept in memory only; set once the daemon took its hash. */
+  proof?: { client: DaemonClient; value: string };
   connecting?: Promise<DaemonClient>;
   retryAt = 0;
   refusals = 0;
@@ -114,6 +146,12 @@ export type BusDeps = {
   settleMs?: number;
   /** Test seam: the idle sweep's period; 0 turns it off. */
   sweepMs?: number;
+  /** The MCP server keys that are this instance's. Default: DEFAULT_MCP_SERVERS. */
+  mcpServers?: () => readonly string[];
+  /** Test seam: 32 random bytes for a proof. */
+  random?: () => Buffer;
+  /** Test seam: PROOF_MS. */
+  proofMs?: number;
 };
 
 export type PromptResult = {
@@ -154,6 +192,8 @@ export class Bus {
   /** Roots whose runtime has reported a model call: only they are handed mail. */
   private proven = new Set<string>();
   private sweeper?: ReturnType<typeof setInterval>;
+  /** runId -> the root its user run is on, from the prompt hook. */
+  private runRoots = new Map<string, string>();
 
   /** Test and status use. */
   box(ref: string): Mailbox | undefined {
@@ -237,6 +277,7 @@ export class Bus {
         b.client = client;
         b.everLinked = true;
         b.refusals = 0;
+        await this.proveLink(b, client);
         return client;
       } catch (e) {
         const refused = e instanceof LinkError && e.refused;
@@ -258,6 +299,90 @@ export class Bus {
     })();
     b.connecting = attempt;
     return attempt;
+  }
+
+  /**
+   * #1822: a new random proof for this link, and its hash to the daemon on it.
+   * Only for a daemon whose welcome listed `link`, and only once it answers
+   * that it took the hash. Any failure leaves the root unlinked, never the link
+   * or a tool broken. The proof is never written or logged.
+   */
+  private async proveLink(b: Mailbox, client: DaemonClient): Promise<void> {
+    b.proof = undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const caps = client.welcome.caps;
+      if (!Array.isArray(caps) || !caps.includes(ADAPTER_CAPS.link)) return;
+      const value = (this.deps.random?.() ?? randomBytes(32)).toString(
+        "base64url",
+      );
+      const hash = createHash("sha256").update(value).digest("hex");
+      const r = await Promise.race([
+        client.request({ type: "link_proof", hash }),
+        new Promise<never>((_, rej) => {
+          timer = setTimeout(
+            () => rej(new Error("slow")),
+            this.deps.proofMs ?? PROOF_MS,
+          );
+          timer.unref?.();
+        }),
+      ]);
+      if (r.type === "link_proofed" && r.bound && client.state === "open")
+        b.proof = { client, value };
+    } catch {
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Whether `toolName` is a tool of this instance's MCP server (and no look-alike's). */
+  private isInstanceTool(toolName: string): boolean {
+    const servers = this.deps.mcpServers?.() ?? DEFAULT_MCP_SERVERS;
+    return servers.some((raw) => {
+      const prefix = `${safeServerName(raw)}__`;
+      if (!toolName.startsWith(prefix)) return false;
+      const rest = toolName.slice(prefix.length);
+      return rest !== "" && !MCP_UTILITY_OPS.has(rest);
+    });
+  }
+
+  /**
+   * before_tool_call. For a call to one of this instance's MCP tools on a root
+   * whose link holds a proof, the one reserved argument; nothing otherwise.
+   * The root is the one the run's prompt hook placed (OpenClaw's tool hook key
+   * can differ from the prompt hook's on direct chats, so the run id maps
+   * them); a run the prompt hook never placed, or a non-user run, gets none.
+   * Never throws: OpenClaw blocks the tool call when a hook does.
+   */
+  async toolCall(
+    ev: { toolName?: string; runId?: string },
+    ctx: { runId?: string },
+  ): Promise<{ params: Record<string, string> } | undefined> {
+    try {
+      const name = ev.toolName;
+      const runId = ev.runId ?? ctx.runId;
+      if (typeof name !== "string" || !runId || !this.isInstanceTool(name))
+        return undefined;
+      const ref = this.runRoots.get(runId);
+      const b = ref === undefined ? undefined : this.boxes.get(ref);
+      if (!b || !this.userRun(b.root)) return undefined;
+      if (!this.open(b)) await this.warm(b.root);
+      const p = b.proof;
+      if (!p || p.client !== b.client || p.client.state !== "open")
+        return undefined;
+      return { params: { [PROOF_ARG]: p.value } };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private noteRun(runId: string, ref: string): void {
+    this.runRoots.delete(runId);
+    this.runRoots.set(runId, ref);
+    if (this.runRoots.size > RUN_ROOTS_MAX) {
+      const oldest = this.runRoots.keys().next().value;
+      if (oldest !== undefined) this.runRoots.delete(oldest);
+    }
   }
 
   /** Opens the link in the background, so a turn never waits on it. */
@@ -431,6 +556,7 @@ export class Bus {
     const b = this.boxOf(r.root);
     b.lastActive = this.now();
     this.touch(r.root);
+    if (c.runId) this.noteRun(c.runId, r.root.ref);
     if (c.runId && b.currentRunId !== c.runId) {
       b.currentRunId = c.runId;
       // A run that failed (a failed answer, or a call that ended in an error) and
