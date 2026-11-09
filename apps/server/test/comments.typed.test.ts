@@ -116,10 +116,16 @@ const post = (id: string, auth: string, body: object) =>
     method: "POST",
     body: { anchor: NOTE, body: "hello", ...body },
   });
-const answer = (id: string, tid: string, cid: string, auth: string) =>
+const answer = (
+  id: string,
+  tid: string,
+  cid: string,
+  auth: string,
+  optionId = "wide",
+) =>
   api(app, R.commentAnswer(id, tid, cid), auth, {
     method: "POST",
-    body: { optionId: "wide" },
+    body: { optionId },
   });
 const list = async (id: string, auth: string) =>
   (await (await api(app, R.comments(id), auth)).json()) as CommentList;
@@ -355,5 +361,24 @@ describe("notice tier", () => {
         OTHERS,
       ].join("\n"),
     );
+  });
+
+  it("a token changing a browser answer makes it not typed; a browser one makes it typed again", async () => {
+    const s = await setup();
+    const t = await askFrom(s.id, mcpWho(owner), s.claude);
+    const cid = (t.comments[0] as Comment).id;
+    const typedOf = async () =>
+      (await list(s.id, owner.cookie)).threads[0]?.comments[0]?.ask?.answer
+        ?.typed;
+    expect((await answer(s.id, t.id, cid, owner.cookie)).status).toBe(200);
+    expect(await typedOf()).toBe(true);
+    expect(
+      (await answer(s.id, t.id, cid, ownerPat, "compact")).status,
+    ).toBe(200);
+    expect(await typedOf()).toBe(false);
+    expect(
+      (await answer(s.id, t.id, cid, owner.cookie, "wide")).status,
+    ).toBe(200);
+    expect(await typedOf()).toBe(true);
   });
 });
