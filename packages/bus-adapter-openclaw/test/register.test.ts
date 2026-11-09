@@ -49,6 +49,9 @@ describe("register", () => {
       "oabus_fetch",
       "oabus_self",
       "oabus_set_status",
+      "oabus_follow",
+      "oabus_unfollow",
+      "oabus_following",
     ]);
   });
 
