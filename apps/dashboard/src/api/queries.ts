@@ -487,7 +487,12 @@ export const useInviteMember = () => {
   return useMutation({
     mutationFn: (input: MemberInvite) =>
       api.send("POST", R.members, input, MemberInviteResultSchema),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.members }),
+    // The first invite starts the Business trial: Me's billing changes.
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: qk.members }),
+        qc.invalidateQueries({ queryKey: qk.me }),
+      ]),
     // invite_unreachable: the dialog says why under the email field.
     // member_removed: the dialog offers Restore; guest_lapsed: it says to share (parity 1).
     onError: (e) => {
@@ -1104,7 +1109,8 @@ export const useRestoreMember = () =>
   useInvalidating(
     (memberId: string) =>
       api.send("POST", R.memberRestore(memberId), undefined, MemberSchema),
-    () => [qk.members],
+    // A restore can start the trial too: Me's billing changes.
+    () => [qk.members, qk.me],
     "Couldn't restore them.",
     () => true,
   );

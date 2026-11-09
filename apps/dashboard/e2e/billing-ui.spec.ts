@@ -73,7 +73,7 @@ for (const width of WIDTHS)
       // The open animation is done: a shot mid-fade shows the page through it.
       await expect(dialog).toHaveCSS("opacity", "1");
       const start = dialog.getByRole("button", {
-        name: "Send invite and start trial",
+        name: "Add member and start trial",
       });
       const notice = dialog.getByText(
         "This starts your 14-day trial of Business.",
@@ -93,4 +93,32 @@ for (const width of WIDTHS)
       }
       await noSideScroll(page);
       await shoot(page, `invite-${label}-${width}`, info);
+    });
+
+// Restore starts the trial too: its confirm carries the same notice.
+for (const width of WIDTHS)
+  for (const [token, label] of [
+    ["solo,removed-people", "never-ran"],
+    ["solo-used-trial,removed-people", "trial-used"],
+  ] as const)
+    test(`restore dialog at ${width}px (${label})`, async ({ page }, info) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(`/settings/members?hosted=${token}`);
+      await page.getByRole("button", { name: /^Removed \(/ }).click();
+      await page
+        .getByRole("button", { name: /^Restore / })
+        .first()
+        .click();
+      const dialog = page.getByRole("alertdialog");
+      await expect(dialog).toBeVisible();
+      await expect(dialog).toHaveCSS("opacity", "1");
+      const notice = dialog.getByText(
+        "This starts your 14-day trial of Business.",
+      );
+      if (label === "never-ran") {
+        await expect(notice).toBeVisible();
+        await expect(dialog.getByText(/^Trial ends /)).toBeVisible();
+      } else await expect(notice).toHaveCount(0);
+      await noSideScroll(page);
+      await shoot(page, `restore-${label}-${width}`, info);
     });

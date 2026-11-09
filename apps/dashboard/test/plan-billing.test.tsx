@@ -591,7 +591,7 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
 // #1837: at 390px the comparison used to cut off Team and Business and the
 // Solo price. Below the sm breakpoint it stacks, one block per plan with every
 // row in full; from sm up it is the table. jsdom has no CSS, so these pin the
-// structure and the breakpoint classes; e2e/billing-mobile.spec.ts measures it.
+// structure and the breakpoint classes; e2e/billing-ui.spec.ts measures it.
 describe("the comparison on a phone (#1837)", () => {
   it("stacks every plan with every row, none cut off", async () => {
     mountHosted("/settings/plan", { billing: TEAM });

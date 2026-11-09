@@ -133,6 +133,15 @@ function RoleSelect({
   );
 }
 
+/** Design's notice where a person is added or restored and the trial starts (#1836). */
+function TrialNotice({ endsOn }: { endsOn: string }) {
+  return (
+    <Notice tone="info" title="This starts your 14-day trial of Business.">
+      Trial ends {endsOn}.
+    </Notice>
+  );
+}
+
 function InviteDialog({ onClose }: { onClose: () => void }) {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
@@ -270,7 +279,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
             Cancel
           </Button>
           <Button disabled={invite.isPending} onClick={submit}>
-            {trial ? "Send invite and start trial" : "Add member"}
+            {trial ? "Add member and start trial" : "Add member"}
           </Button>
         </>
       }
@@ -1146,20 +1155,26 @@ function RestoreDialog({
   const spaces = state.status === "authed" && hasFeature(state.me, "spaces");
   const label = personName(m);
   const first = personFirst(m);
+  // Restoring adds a person, so on a Solo whose trial never ran it starts it.
+  const trial =
+    open && trialWouldStart(state.status === "authed" ? state.me : null);
   return (
     <ConfirmDialog
       open={open}
       onClose={onClose}
       title={`Restore ${label}?`}
       body={
-        <p>
-          {/* Manager's ruling: a guest stays a guest; anyone else comes back a member. */}
-          {first} comes back{" "}
-          {m.role === "guest" ? "as a guest" : "as a member (no admin role)"},
-          with any manual restriction kept, and gets back the{" "}
-          {spaces && "personal "}artifacts you haven't transferred. Their old
-          tokens and agent connections stay off, so they sign in again.
-        </p>
+        <>
+          <p>
+            {/* Manager's ruling: a guest stays a guest; anyone else comes back a member. */}
+            {first} comes back{" "}
+            {m.role === "guest" ? "as a guest" : "as a member (no admin role)"},
+            with any manual restriction kept, and gets back the{" "}
+            {spaces && "personal "}artifacts you haven't transferred. Their old
+            tokens and agent connections stay off, so they sign in again.
+          </p>
+          {trial && <TrialNotice endsOn={trialEndsOn()} />}
+        </>
       }
       confirm="Restore"
       onConfirm={() =>
