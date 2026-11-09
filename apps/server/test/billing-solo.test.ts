@@ -6,7 +6,12 @@ import { env } from "cloudflare:workers";
 import { newId, PLAN_STALE_MS, R } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createPat } from "../src/auth/pat.js";
-import { effectivePlan, type StoredPlan } from "../src/billing/plan.js";
+import {
+  effectivePlan,
+  planOfRaw,
+  type StoredPlan,
+} from "../src/billing/plan.js";
+import type { Env } from "../src/env.js";
 import {
   type BillingRow,
   cachePlan,
@@ -106,6 +111,78 @@ describe("effectivePlan: solo", () => {
       reason: "lapsed",
     });
     expect(plan({ tier: "business" }).lock).toBeNull();
+  });
+});
+
+// #1756: the end of the Business trial returns to Solo, never a full lock,
+// until billing answers.
+describe("effectivePlan: a cached Business trial that has passed", () => {
+  const passed = { tier: "trial", trialEndsAt: mid - 1 } as const;
+
+  it("is the Solo lock at once, not read-only; the trial is used", () => {
+    const p = plan(passed);
+    expect(p.lock).toEqual({ mode: "solo", tier: "solo", reason: "solo" });
+    expect(p.tier).toBe("solo");
+    expect(p.readOnly).toBe(false);
+    expect(p.trialEligible).toBe(false);
+    expect(p.trialEndsAt).toBe(mid - 1);
+  });
+
+  it("holds through a billing outage inside the 7 days; after them it is read-only", () => {
+    const stored = at({ ...passed, asOf: mid - 6 * DAY });
+    const down = { checkedAt: mid, failingSince: mid - DAY, lastGoodAt: null };
+    expect(effectivePlan(stored, down, undefined, mid).lock?.mode).toBe(
+      "solo",
+    );
+    const late = at({ ...passed, asOf: mid - PLAN_STALE_MS - 1 });
+    expect(effectivePlan(late, down, undefined, mid)).toMatchObject({
+      readOnly: true,
+      reason: "billing_unreachable",
+    });
+  });
+
+  it("respects a paused or unpaid answer: lapsed, or past_due beyond grace, is view-only", () => {
+    for (const p of [
+      plan({ ...passed, status: "lapsed" }),
+      plan({ ...passed, status: "past_due", graceUntil: mid - 1 }),
+    ])
+      expect(p.lock).toEqual({
+        mode: "viewOnly",
+        tier: "solo",
+        reason: "solo_unpaid",
+      });
+    expect(
+      plan({ ...passed, status: "past_due", graceUntil: mid + DAY }).lock?.mode,
+    ).toBe("solo");
+    expect(plan({ ...passed, status: "suspended" })).toMatchObject({
+      readOnly: true,
+      reason: "suspended",
+    });
+  });
+
+  it("keeps the Business trial through its last millisecond", () => {
+    expect(plan({ tier: "trial", trialEndsAt: mid }).lock).toBeNull();
+  });
+
+  it("billing's next answer wins over the passed trial", () => {
+    expect(plan({ tier: "team" }).lock).toBeNull();
+    expect(plan({ tier: "solo", trialEndsAt: mid - 1 }).lock?.mode).toBe(
+      "solo",
+    );
+  });
+
+  it("without the gate there is no plan; a provisioned TIER=trial with no answer is untouched", () => {
+    const T = { ...H, TIER: "trial" } as unknown as Env;
+    const raw = JSON.stringify(at(passed));
+    expect(planOfRaw(T, raw, null, mid, { gate: false })).toBeNull();
+    expect(planOfRaw(T, null, null, mid, { gate: true })).toMatchObject({
+      tier: "trial",
+      lock: null,
+      readOnly: false,
+    });
+    expect(planOfRaw(T, raw, null, mid, { gate: true })?.lock?.mode).toBe(
+      "solo",
+    );
   });
 });
 
