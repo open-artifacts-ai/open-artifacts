@@ -530,6 +530,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           )
           .toArray().length > 0;
       sql.exec(SCHEMA);
+      // #1822: comment_targets.owner, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_targets')",
+          )
+          .toArray()
+          .some((c) => c.name === "owner")
+      )
+        sql.exec("alter table comment_targets add column owner text");
       if (legacy)
         sql.exec(`insert or ignore into totals (id, bytes, day, writes, cols)
           select 1, coalesce((select v from meta where k = 'bytes'), 0), 0, 0,

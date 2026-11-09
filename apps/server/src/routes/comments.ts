@@ -10,7 +10,7 @@ import type { Context } from "hono";
 import { z } from "zod";
 import type { ArtifactRow } from "../auth/authz.js";
 import { authorize, caller, canCtx } from "../auth/authz.js";
-import { can, type PolicyAction } from "../auth/policy.js";
+import { can, isGuestRole, type PolicyAction } from "../auth/policy.js";
 import { readCapped } from "../http/body.js";
 import { isEmbedRequest } from "../http/embed.js";
 import { ApiError } from "../http/errors.js";
@@ -107,7 +107,12 @@ async function identity(
   if (user)
     return {
       who: { kind: "user", id: user.id, agent: agentOf(c) },
-      viewer: { userId: user.id, short: null, moderator },
+      viewer: {
+        userId: user.id,
+        short: null,
+        moderator,
+        guest: isGuestRole(user.role),
+      },
       issued: null,
     };
   const token = c.req.header(ANON_ID_HEADER);
@@ -117,13 +122,13 @@ async function identity(
     const short = await readAnonId(c.env, artifactId, token);
     return {
       who: null,
-      viewer: { userId: null, short, moderator },
+      viewer: { userId: null, short, moderator, guest: true },
       issued: null,
     };
   }
   const anon = await resolveAnonId(c.env, artifactId, token, true);
   if (!anon) throw new Error("anonId not minted");
-  const viewer = { userId: null, short: anon.short, moderator };
+  const viewer = { userId: null, short: anon.short, moderator, guest: true };
   // The per-IP key the DO limits by (10 a minute): an IPv6 address by its /64.
   const key = ipKey(c.req.header("cf-connecting-ip") ?? "");
   if (!key)

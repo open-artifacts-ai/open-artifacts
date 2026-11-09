@@ -4,7 +4,13 @@
 // client name (for example "Claude Code") is a product and shows as is; a
 // grant's owner-set label lives only in agent_grants and never reaches a
 // version payload.
-import { type AgentRef, stripNameControls } from "@oa/shared";
+import {
+  type AgentRef,
+  ANIMALS,
+  type CommentAuthor,
+  PRESENCE_PALETTE_SIZE,
+  stripNameControls,
+} from "@oa/shared";
 
 /** Longest name shown, in code points. */
 const NAME_MAX = 80;
@@ -84,3 +90,197 @@ export function agentFor(
   if (!isPrivateAgent(via) || viewerId === publisher.id) return agent;
   return { name: ownersAgent(publisher), version: agent.version, masked: true };
 }
+
+// ---------------------------------------------------------------- faces (#1822)
+
+/** FNV-1a, 32 bit: the one small non-crypto hash for color and animal. */
+export const fnv1a = (s: string): number => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return h >>> 0;
+};
+
+/** Hub kind to the product it runs. Fixed: a client never names its own product. */
+const PRODUCTS: Record<string, string> = {
+  "claude-code": "Claude Code",
+  claude: "Claude Code",
+  codex: "Codex",
+  opencode: "OpenCode",
+  pi: "Pi",
+  omp: "omp",
+  hermes: "Hermes",
+  openclaw: "OpenClaw",
+};
+
+/** The face of one bus identity, the same on every artifact. Never returns the id. */
+export const faceOf = (identityId: string): { id: string; color: number } => ({
+  id: ANIMALS[fnv1a(identityId) % ANIMALS.length]?.id ?? "fox",
+  color: fnv1a(`color:${identityId}`) % PRESENCE_PALETTE_SIZE,
+});
+
+/** Lookalike letters (Cyrillic, Greek) to the Latin they imitate. */
+const LOOKALIKE: Record<string, string> = {
+  а: "a",
+  е: "e",
+  о: "o",
+  р: "p",
+  с: "c",
+  у: "y",
+  х: "x",
+  і: "i",
+  ј: "j",
+  ѕ: "s",
+  ԁ: "d",
+  һ: "h",
+  ӏ: "l",
+  ԛ: "q",
+  ԝ: "w",
+  к: "k",
+  м: "m",
+  н: "h",
+  т: "t",
+  в: "b",
+  α: "a",
+  β: "b",
+  ε: "e",
+  ι: "i",
+  κ: "k",
+  ν: "v",
+  ο: "o",
+  ρ: "p",
+  τ: "t",
+  υ: "u",
+  χ: "x",
+  γ: "y",
+  η: "n",
+  μ: "u",
+  ω: "w",
+  "0": "o",
+  "1": "l",
+  "|": "l",
+};
+
+/** A name's skeleton: NFKC, no marks, case folded, lookalikes mapped, letters and digits only. */
+export const skeleton = (name: string): string =>
+  [
+    ...stripNameControls(name)
+      .normalize("NFKC")
+      .normalize("NFD")
+      .replace(/\p{M}/gu, "")
+      .toLowerCase()
+      .toUpperCase()
+      .toLowerCase(),
+  ]
+    .map((c) => LOOKALIKE[c] ?? c)
+    .join("")
+    .replace(/[^\p{L}\p{N}]/gu, "");
+
+type Member = { id: string; name: string | null; email: string };
+
+/**
+ * Whose names are ambiguous: skeleton to the active members who have it. Built
+ * once per read from every active member, then asked per owner.
+ */
+export type NameClashes = Map<string, Set<string>>;
+
+export const nameClashes = (members: Iterable<Member>): NameClashes => {
+  const out: NameClashes = new Map();
+  for (const m of members) {
+    const n = publicName(m);
+    if (n === null) continue;
+    const k = skeleton(n);
+    const set = out.get(k) ?? new Set<string>();
+    set.add(m.id);
+    out.set(k, set);
+  }
+  return out;
+};
+
+/** Another active member has this member's name (or a lookalike of it). */
+export const clashes = (c: NameClashes, u: Member): boolean => {
+  const n = publicName(u);
+  if (n === null) return false;
+  const ids = c.get(skeleton(n));
+  return !!ids && [...ids].some((id) => id !== u.id);
+};
+
+/** Who is reading, for what an agent shows. `guest`: signed out, or a guest-role member. */
+export type FaceViewer = { userId: string | null; guest: boolean };
+
+/**
+ * "for <this>" on an agent: the owner's name when it is theirs alone; on a
+ * clash "<name> (<email>)" to a signed-in member and "Member" to a guest, so no
+ * agent reads as another person's. No owner row reads "Member".
+ */
+export const forLine = (
+  u: Member | undefined,
+  v: FaceViewer,
+  c: NameClashes,
+): string => {
+  if (!u) return "Member";
+  if (!clashes(c, u)) return shownName(u);
+  return v.guest ? "Member" : `${shownName(u)} (${u.email})`;
+};
+
+/** "<owner>'s agent"; MEMBERS_AGENT when the owner is unknown, nameless or clashes. */
+export const agentOwnedBy = (u: Member | undefined, c: NameClashes): string =>
+  !u || clashes(c, u) ? MEMBERS_AGENT : ownersAgent(u);
+
+/**
+ * An agent-written comment's author as `v` sees it, from the stored actor.
+ * Linked (the connection proved a bus session): the bus name, the product from
+ * the hub kind, an animal from the identity. A guest sees "<owner>'s agent"
+ * instead of the bus name. Unlinked: the connection's label under #1800's
+ * rules (a private token label only to its owner), linked false, no animal.
+ */
+export function agentFace(
+  actor: { ref: string; agent: NonNullable<StoredActorAgent> },
+  v: FaceViewer,
+  owner: Member | undefined,
+  c: NameClashes,
+): CommentAuthor {
+  const a = actor.agent;
+  const me = v.userId !== null && v.userId === actor.ref;
+  const base = {
+    kind: "agent" as const,
+    id: actor.ref,
+    for: forLine(owner, v, c),
+    me,
+  };
+  if (a.identity) {
+    const bus = cleanName(a.identity.name) ?? "Agent";
+    const product = PRODUCTS[a.identity.kind];
+    return {
+      ...base,
+      name: v.guest && !me ? agentOwnedBy(owner, c) : bus,
+      linked: true,
+      ...(product ? { product } : {}),
+      animal: faceOf(a.identity.identityId),
+    };
+  }
+  const name =
+    !isPrivateAgent(a.via) || me
+      ? a.name
+      : owner
+        ? agentOwnedBy(owner, c)
+        : agentFor(
+            { name: a.name, version: null },
+            a.via,
+            { id: actor.ref, name: null, email: "" },
+            v.userId,
+          ).name;
+  return {
+    ...base,
+    name: name.trim() === "" ? "Agent" : name,
+    linked: false,
+  };
+}
+
+type StoredActorAgent = {
+  name: string;
+  via: string | null;
+  identity?: { identityId: string; name: string; kind: string };
+};
