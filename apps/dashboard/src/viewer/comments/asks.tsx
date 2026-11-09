@@ -81,6 +81,11 @@ export function Delivery({ c }: { c: CommentT }) {
 }
 
 const letter = (i: number) => String.fromCharCode(65 + i);
+/** Letters are shown unless every option's id already equals its label ("yes"/"Yes"). */
+const showLetters = (opts: { id: string; label: string }[]) =>
+  !opts.every(
+    (o) => o.id.trim().toLowerCase() === o.label.trim().toLowerCase(),
+  );
 
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
@@ -116,6 +121,7 @@ export function AskBlock({
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
+  const letters = showLetters(ask.options);
   const locked = !!pickedOpt && !changing;
   const decided = ask.closed && pickedOpt;
   const line = decided && (
@@ -131,6 +137,7 @@ export function AskBlock({
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
+          {letters ? `${letter(pickedIdx)}, ` : ""}
           {pickedOpt.label} · {ask.answer?.by.me ? "you" : ask.answer?.by.name},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
@@ -198,12 +205,14 @@ export function AskBlock({
                       );
                     }}
                   >
-                    <span
-                      data-option-key=""
-                      className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
-                    >
-                      {letter(i)}
-                    </span>
+                    {letters && (
+                      <span
+                        data-option-key=""
+                        className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
+                      >
+                        {letter(i)}
+                      </span>
+                    )}
                     <span className="min-w-0 flex-1 break-words">
                       <b>{o.label}</b>
                       {rec && (
@@ -232,7 +241,8 @@ export function AskBlock({
           {ask.answer && pickedOpt && (
             <p className={`${TXT} font-medium`} data-ask-answer="">
               {ask.answer.by.me ? "You" : ask.answer.by.name} picked{" "}
-              {letter(pickedIdx)} · {versionDate(ask.answer.at)}
+              {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
+              {versionDate(ask.answer.at)}
               {ask.closed ? " · closed" : ""}
               {canAnswer && locked && (
                 <>
