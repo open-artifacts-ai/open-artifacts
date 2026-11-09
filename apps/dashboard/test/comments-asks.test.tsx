@@ -499,6 +499,35 @@ describe("asks on the comments column", () => {
 });
 
 describe("@mentions in the composer", () => {
+  it("puts the caret right after a picked name at once (#1795)", async () => {
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, () =>
+        HttpResponse.json([
+          { key: "agent:design", name: "OA Design", online: true },
+        ]),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = (await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
+    })) as HTMLTextAreaElement;
+    fireEvent.focus(box);
+    // The reader typed "@OA D" in front of words already in the box.
+    fireEvent.change(box, {
+      target: { value: "@OA D tail", selectionStart: 5, selectionEnd: 5 },
+    });
+    const menu = await within(c).findByRole("listbox", {
+      name: "Agents on this page",
+    });
+    fireEvent.mouseDown(
+      within(menu).getByRole("option", { name: /OA Design/ }),
+    );
+    expect(box).toHaveValue("@OA Design  tail");
+    // Not a frame later: keys typed right after the pick must land here.
+    expect(box.selectionStart).toBe(11);
+  });
+
   it("opens a picker on @, sends the picked key, and shows delivery in plain words", async () => {
     server.use(
       http.get(`*${R.artifactAgents(OWNED)}`, () =>

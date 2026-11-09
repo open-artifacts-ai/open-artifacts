@@ -11,7 +11,7 @@ import {
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
 import { Check, FileText, Quote as QuoteIcon } from "lucide-react";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import {
   commentError,
@@ -233,6 +233,7 @@ function Composer({
     query !== null && agents && !menuOff ? matchAgents(agents, query) : null;
   const matches = found ?? [];
   const menuOpen = matches.length > 0;
+  const pickedAt = useRef<number | null>(null);
   const pick = (a: ArtifactAgent) => {
     const before = text.slice(0, caret).replace(/@[\w .-]{0,40}$/, "");
     setText(`${before}@${a.name} ${text.slice(caret)}`);
@@ -240,11 +241,17 @@ function Composer({
     setCaret(at);
     setMenuOff(true);
     setActiveOpt(0);
-    requestAnimationFrame(() => {
-      ref.current?.focus();
-      ref.current?.setSelectionRange(at, at);
-    });
+    pickedAt.current = at;
   };
+  // Put the caret after the picked name in the same commit as the new text. A
+  // frame later is too late: keys typed in between land before it (#1795).
+  useLayoutEffect(() => {
+    const at = pickedAt.current;
+    if (at === null) return;
+    pickedAt.current = null;
+    ref.current?.focus();
+    ref.current?.setSelectionRange(at, at);
+  });
   useEffect(() => {
     if (autoFocus) ref.current?.focus();
   }, [autoFocus]);
