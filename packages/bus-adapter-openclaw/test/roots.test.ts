@@ -166,11 +166,7 @@ describe("state dir", () => {
   const home = () => "/home/u";
   it("is OPENCLAW_STATE_DIR first", () => {
     expect(
-      resolveStateDir(
-        { OPENCLAW_STATE_DIR: "/x/state" },
-        home,
-        none,
-      ),
+      resolveStateDir({ OPENCLAW_STATE_DIR: "/x/state" }, home, none),
     ).toBe("/x/state");
   });
   it("expands ~ against OPENCLAW_HOME", () => {
