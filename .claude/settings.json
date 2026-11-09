@@ -2,9 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(pnpm install --frozen-lockfile)",
-      "Bash(pnpm --dir ~/code/oa-wt-* install --frozen-lockfile)",
-      "Bash(pnpm --dir ~/code/oa-wt-* exec playwright test *)",
-      "Bash(VITE_MOCK=1 OA_E2E_PORT=* pnpm --dir ~/code/oa-wt-* exec playwright test *)",
+      "Bash(pnpm exec playwright test *)",
       "Bash(pnpm -s typecheck)",
       "Bash(pnpm -s lint)",
       "Bash(gh pr ready *)",
@@ -20,7 +18,13 @@
     ],
     "deny": [
       "Bash(oa-bus namespace approve:*)",
-      "Bash(npx @open-artifacts/bus namespace approve:*)"
+      "Bash(npx @open-artifacts/bus namespace approve:*)",
+      "Bash(gh pr review *--repo*)",
+      "Bash(gh pr review *-R*)",
+      "Bash(gh pr review *https://*)",
+      "Bash(gh pr comment *--repo*)",
+      "Bash(gh pr comment *-R*)",
+      "Bash(gh pr comment *https://*)"
     ]
   }
 }
