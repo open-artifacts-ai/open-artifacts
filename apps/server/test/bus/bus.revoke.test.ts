@@ -10,7 +10,7 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../src/app.js";
 import {
   AUTHZ_AT_HEADER,
-  type BusHub,
+  BusHub,
   CONNECT_DO_PATH,
   MACHINE_ID_HEADER,
   MACHINE_LABEL_HEADER,
@@ -23,6 +23,7 @@ import {
   type UserPresence,
 } from "../../src/runtime/presence.js";
 import { revokeUserLive } from "../../src/runtime/revoke.js";
+import { revokeBusMachine } from "../../src/services/bus.js";
 import {
   eraseMember,
   SYSTEM_ACTOR,
@@ -514,6 +515,95 @@ describe("bus rows outlive the index window (#1299)", () => {
     // The client's echo (afterAll's close) reaches webSocketClose later; its
     // `gone` is idempotent, and afterAll waits for that handler.
     expect((await hub.snapshot()).connected).toEqual([]);
+  });
+
+  // #1749: a hung index stalls no hub-started close. The hub's bound is
+  // lowered to 50 ms for the test (a real timer: setTimeout cannot be pinned
+  // in the DO); the signal is the close call resolving while `gone` is still
+  // gated, and indexInFlight (read inside the DO) staying 1 until it settles.
+  async function hungIndex(userId: string) {
+    const hub = await hubOf(userId);
+    const realNs = e.USER_PRESENCE;
+    if (!realNs) throw new Error("USER_PRESENCE unbound");
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let gones = 0;
+    const hungNs = {
+      idFromName: (n: string) => realNs.idFromName(n),
+      get: (id: DurableObjectId) => {
+        const real = realNs.get(id) as unknown as {
+          seen(n: string): Promise<void>;
+          gone(n: string): Promise<void>;
+        };
+        return {
+          seen: (n: string) => real.seen(n),
+          gone: async (n: string) => {
+            gones++;
+            await gate;
+            await real.gone(n);
+          },
+        };
+      },
+    };
+    await runInDurableObject(hub, (inst: BusHub) => {
+      const h = inst as unknown as { env: object };
+      h.env = Object.assign(Object.create(h.env), { USER_PRESENCE: hungNs });
+      BusHub.setIndexGoneTimeoutForTests(inst, 50);
+    });
+    const inFlight = () =>
+      runInDurableObject(hub, (inst: BusHub) => inst.indexInFlight);
+    return { hub, release, inFlight, gones: () => gones };
+  }
+
+  it("closeAll does not wait on a hung index; the sockets close and indexInFlight holds until it settles", async () => {
+    const u = await member();
+    const a = await connected(u, "one");
+    const x = await hungIndex(u.userId);
+    try {
+      expect(await x.hub.closeAll("test")).toBe(1);
+      expect(x.gones()).toBe(1);
+      expect((await a.d.closed).code).toBe(4403);
+      expect((await x.hub.snapshot()).connected).toEqual([]);
+      // The timed-out call still counts until it really settles.
+      expect(await x.inFlight()).toBeGreaterThan(0);
+    } finally {
+      x.release();
+    }
+    await vi.waitFor(async () => expect(await x.inFlight()).toBe(0));
+  });
+
+  it("wipe does not wait on a hung index; the storage is erased and the hub usable", async () => {
+    const u = await member();
+    const a = await connected(u, "one");
+    const x = await hungIndex(u.userId);
+    try {
+      await x.hub.wipe();
+      expect(x.gones()).toBe(1);
+      expect((await a.d.closed).code).toBe(4403);
+      expect((await x.hub.snapshot()).connected).toEqual([]);
+      expect(await x.inFlight()).toBeGreaterThan(0);
+    } finally {
+      x.release();
+    }
+    await vi.waitFor(async () => expect(await x.inFlight()).toBe(0));
+  });
+
+  it("revoke does not see a 503 from a hung index: the machine is revoked and its socket closed", async () => {
+    const u = await member();
+    const a = await connected(u, "one");
+    const x = await hungIndex(u.userId);
+    try {
+      await expect(revokeBusMachine(env, u.userId, a.id)).resolves.toBe(true);
+      expect(x.gones()).toBe(1);
+      expect((await a.d.closed).code).toBe(4403);
+      expect(await revokedAt(a.id)).not.toBeNull();
+      expect((await x.hub.snapshot()).connected).toEqual([]);
+    } finally {
+      x.release();
+    }
+    await vi.waitFor(async () => expect(await x.inFlight()).toBe(0));
   });
 
   it("a missing gone (the hub crashed) is harmless: closeInstall reaches the row, the cap prunes it", async () => {

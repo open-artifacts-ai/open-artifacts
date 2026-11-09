@@ -165,6 +165,12 @@ export const AUTHZ_AT_HEADER = "x-oa-bus-authz-at";
  * (429, Retry-After), so a connect racing closeAll never survives it.
  */
 export const SKEW_MS = 2000;
+/**
+ * #1749: how long a close this hub started waits for the install index's
+ * `gone`. Well under revokeBusMachine's 10 s `within`, so a slow index never
+ * turns a finished revoke into a 503.
+ */
+const INDEX_GONE_TIMEOUT_MS = 3000;
 
 /** Structured hub events: ids, codes, kinds and counts only (log.ts). */
 function logEvent(
@@ -266,6 +272,11 @@ type Attachment = {
   machineId: string;
   replaced?: true;
   revoked?: true;
+  /**
+   * The socket tripped its frame budget and was closed (#1749). Kept here so
+   * a wake (which clears #rateClosed) still processes none of its frames.
+   */
+  rateLimited?: true;
   /**
    * The capability tokens of the socket's latest `hello` (#1325), kept in
    * the attachment so they survive hibernation. Absent: no hello with caps.
@@ -4125,6 +4136,13 @@ export class BusHub extends DurableObject<Env> {
    */
   indexInFlight = 0;
 
+  #indexGoneTimeoutMs = INDEX_GONE_TIMEOUT_MS;
+
+  /** Tests only (static, not RPC): the bound on a `gone` call (null: INDEX_GONE_TIMEOUT_MS). */
+  static setIndexGoneTimeoutForTests(hub: BusHub, ms: number | null): void {
+    hub.#indexGoneTimeoutMs = ms ?? INDEX_GONE_TIMEOUT_MS;
+  }
+
   /**
    * #1299: when `closing` was the hub's last open daemon socket, removes the
    * hub's row from the install index (it outlives the index window while
@@ -4148,14 +4166,31 @@ export class BusHub extends DurableObject<Env> {
     const idx = socketIndexStub(this.env);
     if (!idx || !name) return;
     this.#indexedAt = Number.NEGATIVE_INFINITY;
+    // #1749: bounded, so a hung index stalls no close, erase or revoke. The
+    // call counts in indexInFlight until it really settles, not until the
+    // timeout, so a test teardown still waits for it.
     this.indexInFlight++;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await idx.gone(name);
+      const call = Promise.resolve()
+        .then(() => idx.gone(name))
+        .finally(() => {
+          this.indexInFlight--;
+        });
+      // A rejection after the timeout won is already logged as the timeout.
+      call.catch(() => {});
+      const timedOut = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("socket index gone timed out")),
+          this.#indexGoneTimeoutMs,
+        );
+      });
+      await Promise.race([call, timedOut]);
     } catch (e) {
       logError("socket_index_failed", e);
       return;
     } finally {
-      this.indexInFlight--;
+      clearTimeout(timer);
     }
     // Always reset: a `seen` that returned while `gone` was in flight set the
     // throttle after the row was deleted, and an accept within INDEX_REPORT_MS
@@ -4199,12 +4234,20 @@ export class BusHub extends DurableObject<Env> {
     const machineId = machineOf(ws);
     if (machineId === null) return false;
     const b = this.#machineBudget(machineId, now);
-    const ok = !this.#rateClosed.has(ws) && takeToken(b, now, FRAME_BUDGET);
+    const tripped =
+      this.#rateClosed.has(ws) || attachmentOf(ws)?.rateLimited === true;
+    const ok = !tripped && takeToken(b, now, FRAME_BUDGET);
     if (ok) return false;
     // The cooldown starts when this socket trips, not on its late frames.
-    if (!this.#rateClosed.has(ws)) {
+    if (!tripped) {
       b.cooldownUntil = now + LIMITS.rateLimitCooldownMs;
       this.#rateClosed.add(ws);
+      try {
+        const a = attachmentOf(ws);
+        if (a) ws.serializeAttachment({ ...a, rateLimited: true });
+      } catch {
+        // Already closed.
+      }
       logEvent("rate_limited", { kind: "frames", machineId });
     }
     closeSocket(ws, LIMITS.rateLimitCloseCode, "rate limited");
