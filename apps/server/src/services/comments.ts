@@ -251,16 +251,14 @@ const authorView = (
       me: viewer.short !== null && viewer.short === a.ref,
     };
   const u = users.get(a.ref);
-  const out: CommentAuthor = {
-    kind: "user",
-    id: a.ref,
-    name: u ? shownName(u) : "Member",
-    me: viewer.userId !== null && viewer.userId === a.ref,
-  };
+  const me = viewer.userId !== null && viewer.userId === a.ref;
+  const person = u ? shownName(u) : "Member";
+  // A stored comment with an agent (written over MCP or with a token, or
+  // before #1789) reads as the agent at read time; no row is migrated.
   if (a.agent) {
     // A private token label shows only to its owner; everyone else sees
     // "<owner>'s agent" (a grant's client name is public).
-    out.agent =
+    const name =
       !isPrivateAgent(a.agent.via) || viewer.userId === a.ref
         ? a.agent.name
         : u
@@ -271,8 +269,15 @@ const authorView = (
               { id: a.ref, name: null, email: "" },
               viewer.userId,
             ).name;
+    return {
+      kind: "agent",
+      id: a.ref,
+      name: name.trim() === "" ? "Agent" : name,
+      for: person,
+      me,
+    };
   }
-  return out;
+  return { kind: "user", id: a.ref, name: person, me };
 };
 
 async function threadViews(
@@ -315,7 +320,7 @@ const partyView = (
   p.kind === "user"
     ? authorView({ kind: "user", ref: p.key }, viewer, users)
     : {
-        kind: "user",
+        kind: "agent",
         id: p.key,
         name: p.name,
         me: viewer.userId !== null && viewer.userId === p.owner,

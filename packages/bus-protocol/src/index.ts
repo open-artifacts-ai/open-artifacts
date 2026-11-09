@@ -3,6 +3,7 @@ export * from "./config.ts";
 export * from "./device.ts";
 export * from "./ids.ts";
 export * from "./kinds.ts";
+export * from "./leads.ts";
 export * from "./limits.ts";
 export * from "./meta.ts";
 export * from "./names.ts";

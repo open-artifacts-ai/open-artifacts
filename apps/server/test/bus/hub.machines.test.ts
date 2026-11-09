@@ -78,6 +78,7 @@ const mirror = (h: BusHubStub) =>
 const RPC_ALLOWLIST = [
   "closeAll",
   "decideLinkProposal",
+  "decideReachProposal",
   "decideRoleProposal",
   "deleteLink",
   "deleteReach",
@@ -92,6 +93,7 @@ const RPC_ALLOWLIST = [
   "pendingProposalSources",
   "ping",
   "proposeLink",
+  "proposeReach",
   "proposeRole",
   "putLink",
   "putReach",
@@ -99,6 +101,7 @@ const RPC_ALLOWLIST = [
   "revokeMachine",
   "snapshot",
   "viewLinkProposal",
+  "viewReachProposal",
   "viewRoleProposal",
   "wipe",
 ];

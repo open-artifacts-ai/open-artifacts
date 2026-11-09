@@ -357,6 +357,12 @@ def following_text(follows):
     return "\n".join(f"{f['url']} (since {f['followed_at']})" for f in follows)
 
 
+# The bad_frame answers a current daemon gives a follow call itself (@oa/bus-ipc FOLLOW_DAEMON_BAD_FRAME).
+FOLLOW_DAEMON_BAD_FRAME = (
+    "follow is not supported on this connection",
+    "the frame is not valid on the hub wire",
+)
+
 FOLLOW_OLD_DAEMON = "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus."
 
 

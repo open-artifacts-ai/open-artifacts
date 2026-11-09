@@ -9,6 +9,7 @@ import {
   displayKind,
   earlierStatusText,
   excerptOf,
+  FOLLOW_DAEMON_BAD_FRAME,
   FOLLOW_OLD_DAEMON,
   followingText,
   followText,
@@ -1089,6 +1090,18 @@ describe("follow tools (#1317)", () => {
       new Error(FOLLOW_OLD_DAEMON),
     );
   });
+
+  for (const message of Object.values(FOLLOW_DAEMON_BAD_FRAME))
+    it(`the daemon's own bad_frame refusal "${message}" is shown as it is, not as an old daemon (#1766)`, async () => {
+      const { p } = await at(() => ({
+        type: "error",
+        code: "bad_frame",
+        message,
+      }));
+      await expect(p.call("follow", { artifact: "abc" })).rejects.toThrow(
+        new Error(`oa-bus: ${message}`),
+      );
+    });
 
   it("the asset's copy matches the shared copy", () => {
     expect(copy.followText(entry.url)).toBe(followText(entry.url));

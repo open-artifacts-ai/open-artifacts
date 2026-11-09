@@ -32,10 +32,13 @@ import {
   Delivery,
   type Extras,
   extrasBody,
+  MentionChips,
   MentionMenu,
   matchAgents,
   mentionedKeys,
   mentionQuery,
+  nextAskFor,
+  removeMention,
 } from "./asks";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { type CommentsApi, useCommentsApi } from "./useComments";
@@ -49,8 +52,9 @@ export const pinHint = () =>
   touch() ? "Tap to place a pin" : "Click to place a pin";
 
 /** "Esc to cancel", on a device with a keyboard only: touch has the Select button. */
-function EscHint() {
-  return touch() ? null : <span> · Esc to cancel</span>;
+function EscHint({ esc }: { esc: boolean }) {
+  // #1698: only where Esc actually leaves pin mode (a mode the reader chose).
+  return esc && !touch() ? <span> · Esc to cancel</span> : null;
 }
 
 /** Select and Pin tools for images and pdf pages (#1490). */
@@ -79,7 +83,7 @@ function Tools({ api }: { api: CommentsApi }) {
       {api.mode === "pin" && (
         <p className={`${TXT} ${MUTED}`}>
           <span>{pinHint()}</span>
-          <EscHint />
+          <EscHint esc={api.pinChosen} />
         </p>
       )}
     </div>
@@ -97,7 +101,7 @@ export function PinBar() {
     >
       <span className={`${TXT} whitespace-nowrap`}>
         <span>{pinHint()}</span>
-        <EscHint />
+        <EscHint esc={api.pinChosen} />
       </span>
       <Button size="xs" variant="ghost" onClick={() => api.setMode("select")}>
         Select
@@ -170,12 +174,11 @@ function Composer({
   buttonsRight = false,
   lead,
 }: {
-  /** Offer @mentions and Assign: the agent list is fetched on the composer's first focus. */
+  /** Offer @mentions: the agent list is fetched on the composer's first focus. */
   mentionable?: boolean;
   /** The action row's own surface while it floats in the short sheet (#1657). */
   actions?: string;
-  /** The new-comment layout: Assign on its own line, then Cancel and the
-      accent submit at the right. */
+  /** The new-comment layout: Cancel and the accent submit at the right. */
   buttonsRight?: boolean;
   /** Shown at the left of the button row (a guest's Sign in link). */
   lead?: React.ReactNode;
@@ -202,7 +205,6 @@ function Composer({
   const once = useRef(false);
   const ref = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState(0);
-  const [assign, setAssign] = useState("");
   const [menuOff, setMenuOff] = useState(false);
   const [activeOpt, setActiveOpt] = useState(0);
   const menuId = useId();
@@ -263,10 +265,8 @@ function Composer({
       const mentions = keys.map((key) => ({ key }));
       await onSubmit(body, {
         mentions,
-        ...(assign ? { assign: { key: assign } } : {}),
       });
       setText("");
-      setAssign("");
       if (!alwaysOpen) setOpen(false);
     } catch (e) {
       setError(e);
@@ -363,6 +363,13 @@ function Composer({
           onPick={pick}
         />
       )}
+      {agents && agents.length > 0 && (
+        <MentionChips
+          text={text}
+          agents={agents}
+          onRemove={(a) => setText((t) => removeMention(t, a.name, agents))}
+        />
+      )}
       {error != null && (
         <p role="alert" className={`${TXT} text-destructive`}>
           {commentError(error, capped)}
@@ -371,25 +378,6 @@ function Composer({
       )}
       {open &&
         (() => {
-          const assignSel = agents && agents.length > 0 && (
-            <label
-              className={`flex items-center gap-1 ${TXT} ${buttonsRight ? "w-full" : ""}`}
-            >
-              Assign to
-              <select
-                className={`min-w-0 rounded-md border border-input bg-background px-1 py-0.5 ${TXT}`}
-                value={assign}
-                onChange={(e) => setAssign(e.target.value)}
-              >
-                <option value="">No one</option>
-                {agents.map((a) => (
-                  <option key={a.key} value={a.key}>
-                    {a.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-          );
           const cancelBtn = (onCancel || !alwaysOpen) && (
             <Button size="xs" variant="ghost" onClick={cancel}>
               Cancel
@@ -401,7 +389,6 @@ function Composer({
                 data-oa-actions=""
                 className={`flex flex-col gap-2 ${actions}`}
               >
-                {assignSel}
                 <div className="flex flex-wrap items-center gap-2">
                   {lead}
                   <div className="ml-auto flex items-center gap-2">
@@ -432,7 +419,6 @@ function Composer({
                 {submit}
               </Button>
               {extra}
-              {assignSel}
               {cancelBtn}
             </div>
           );
@@ -514,13 +500,7 @@ function CommentRow({
   c: CommentT;
   root: boolean;
 }) {
-  // Page order (whole-page asks, then by position, then earlier text), wrapping around.
-  const order = [...api.ordered, ...api.orphans].map((t) => t.id);
-  const pending = new Set(asksForMe([...api.ordered, ...api.orphans]));
-  const at = order.indexOf(thread.id);
-  const nextAsk = [...order.slice(at + 1), ...order.slice(0, Math.max(at, 0))]
-    .filter((id) => id !== thread.id)
-    .find((id) => pending.has(id));
+  const nextAsk = nextAskFor(api, thread.id);
   const edit = useEditComment(api.artifactId, api.guest);
   const del = useDeleteComment(api.artifactId, api.guest);
   const [menu, setMenu] = useState(false);
@@ -589,7 +569,7 @@ function CommentRow({
           artifactId={api.artifactId}
           thread={thread}
           c={c}
-          next={nextAsk ? () => api.select(nextAsk, true) : undefined}
+          next={nextAsk ? () => api.reveal(nextAsk) : undefined}
           reply={api.canComment ? () => api.select(thread.id, true) : undefined}
         />
       ) : (
@@ -712,9 +692,18 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const expanded = isActive || rest.length === 0;
   const shown = expanded ? rest : [];
   const orphan = api.positions.get(t.id)?.state === "orphan";
+  const revealTick = api.revealed.tick;
+  const revealedHere = api.revealed.id === t.id;
+  // Runs on mount too, so a column that is just opening still scrolls and focuses.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card.
   useEffect(() => {
-    if (isActive) el.current?.scrollIntoView?.({ block: "nearest" });
-  }, [isActive]);
+    if (!isActive) return;
+    el.current?.scrollIntoView?.({ block: "nearest" });
+    if (revealedHere && revealTick > api.revealDone.current) {
+      api.revealDone.current = revealTick;
+      el.current?.focus({ preventScroll: true });
+    }
+  }, [isActive, revealTick]);
   if (!first) return null;
   const toggle = () => {
     setStatusErr(null);
@@ -728,7 +717,8 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       ref={el}
       data-thread={t.id}
       data-active={isActive ? "" : undefined}
-      className="rounded-lg border border-border bg-background p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
+      tabIndex={-1}
+      className="rounded-lg border focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] border-border bg-background p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
     >
       <div className="flex flex-col gap-2">
         <button
@@ -950,6 +940,26 @@ function NoteComposer({ api }: { api: CommentsApi }) {
   );
 }
 
+/** Amber "N asks for you" button: steps to the next unanswered ask. */
+function AsksForYou({
+  count,
+  onClick,
+}: {
+  count: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-asks-for-you
+      className="cursor-pointer rounded-sm border-0 bg-[var(--oa-warning-soft)] px-2 py-0.5 font-semibold text-[var(--oa-warning)] shadow-[inset_0_0_0_1px_var(--oa-warning)] focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)]"
+    >
+      {count} ask{count === 1 ? "" : "s"} for you
+    </button>
+  );
+}
+
 /** The list, header and composers: one body for the column, panel tab and sheet. */
 export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
   const api = useCommentsApi();
@@ -965,23 +975,30 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
       <div className={`flex items-center justify-between gap-2 ${TXT}`}>
-        <span>
-          {api.listedOpen} open
-          {forMe.length > 0 &&
-            ` · ${forMe.length} ask${forMe.length === 1 ? "" : "s"} for you`}
-        </span>
-        {resolvedCount > 0 && (
-          <Button
-            size="xs"
-            variant="ghost"
-            aria-pressed={api.showResolved}
-            onClick={() => api.setShowResolved(!api.showResolved)}
-          >
-            {api.showResolved
-              ? "Hide resolved"
-              : `Show resolved (${resolvedCount})`}
-          </Button>
-        )}
+        <span>{api.listedOpen} open</span>
+        <div className="flex items-center gap-2">
+          {forMe.length > 0 && (
+            <AsksForYou
+              count={forMe.length}
+              onClick={() => {
+                const id = nextAskFor(api, api.active, { includeSelf: true });
+                if (id) api.reveal(id);
+              }}
+            />
+          )}
+          {resolvedCount > 0 && (
+            <Button
+              size="xs"
+              variant="ghost"
+              aria-pressed={api.showResolved}
+              onClick={() => api.setShowResolved(!api.showResolved)}
+            >
+              {api.showResolved
+                ? "Hide resolved"
+                : `Show resolved (${resolvedCount})`}
+            </Button>
+          )}
+        </div>
       </div>
       <Tools api={api} />
       {api.draft && api.canComment && (

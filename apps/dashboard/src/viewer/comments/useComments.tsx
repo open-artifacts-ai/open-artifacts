@@ -36,7 +36,7 @@ export type CommentsApi = {
   /** Comments are on for this artifact and this viewer isn't an embed. */
   enabled: boolean;
   canComment: boolean;
-  /** Owner or editor, signed in: may @mention and assign agents (the server refuses anyone else). */
+  /** Owner or editor, signed in: may @mention agents (the server refuses anyone else). */
   canMention: boolean;
   /** A guest or restricted member: the server refuses their writes as read-only. */
   capped: boolean;
@@ -51,6 +51,8 @@ export type CommentsApi = {
   contentHash: string | null;
   /** The tool in use; "pin" only where pins are offered and the viewer can comment. */
   mode: "select" | "pin";
+  /** The reader turned Pin on themselves (not the default an image opens in). */
+  pinChosen: boolean;
   setMode: (m: "select" | "pin") => void;
   /** Viewing a pinned older version: the composer says so. */
   older: boolean;
@@ -69,6 +71,12 @@ export type CommentsApi = {
   active: string | null;
   /** Select a card; `frame` also scrolls to and flashes its highlight. */
   select: (id: string | null, frame?: boolean) => void;
+  /** Select, frame and bring the card into view and focus, even when it is already active. */
+  reveal: (id: string) => void;
+  /** The last reveal: its card scrolls and takes focus when `tick` changes. */
+  revealed: { id: string | null; tick: number };
+  /** The last `revealed.tick` a card focused for: a remounted card must not focus again. */
+  revealDone: { current: number };
   draft: Draft;
   cancelDraft: () => void;
   /** The draft's composer has (or no longer has) text the reader typed. */
@@ -95,6 +103,16 @@ export type CommentsApi = {
   /** The frame said hello: send it the mode and threads again. */
   resync: () => void;
 };
+
+/**
+ * Where Esc belongs to someone else: a text field, or a modal above the viewer.
+ * Our own phone sheet is `role="dialog"` without `aria-modal` (and the wide
+ * overlay is not modal), so a reader's Esc still leaves pin mode there. Radix
+ * dialogs set `aria-modal="true"` and `data-state="open"`; the alert dialog is
+ * matched by role for anything else.
+ */
+const MODAL_OR_FIELD =
+  "input, textarea, select, [aria-modal='true'], [data-state='open'][role='dialog'], [role='alertdialog']";
 
 const Ctx = createContext<CommentsApi | null>(null);
 export const CommentsProvider = Ctx.Provider;
@@ -177,24 +195,40 @@ export function useCommentsController({
   // reader's choice, once made, holds for this view.
   const [wantPin, setWantPin] = useState<boolean | null>(null);
   const pins = wantPin ?? pinFormat === "image";
+  // #1698: a pin mode the reader turned on is theirs to keep and to leave with
+  // Esc; the one an image opens in is only a default, so Esc goes on to close
+  // what it was aimed at (full screen, the phone sheet).
+  const pinChosen = wantPin === true;
+  const chosenRef = useRef(pinChosen);
+  chosenRef.current = pinChosen;
   // Pin mode only where pins are offered and the viewer can comment.
   const mode: "select" | "pin" =
     pins && pinFormat !== null && mayComment ? "pin" : "select";
   const modeRef = useRef(mode);
   modeRef.current = mode;
-  // Esc leaves pin mode first. Capture phase, and stopped: in full screen the
-  // exit handler is on the document too, and must not also run.
+  // Esc leaves a pin mode the reader chose. Capture phase, and stopped: in full
+  // screen the exit handler is on the document too, and must not also run.
   useEffect(() => {
-    if (mode !== "pin") return;
+    if (mode !== "pin" || !pinChosen) return;
     const k = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // The key is not ours when an IME is composing, when a text field has it
+      // (the composer, the mention menu and the reply box close on Esc), or when
+      // a modal sits above the viewer (#1698 review).
+      if (e.isComposing) return;
+      const t = e.target;
+      if (
+        t instanceof HTMLElement &&
+        (t.isContentEditable || t.closest(MODAL_OR_FIELD) !== null)
+      )
+        return;
       e.preventDefault();
       e.stopPropagation();
       setWantPin(false);
     };
     document.addEventListener("keydown", k, true);
     return () => document.removeEventListener("keydown", k, true);
-  }, [mode]);
+  }, [mode, pinChosen]);
   // The frame's own copy of what to draw: ids and anchors only.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `hello` re-sends after the frame reloads
   useEffect(() => {
@@ -241,6 +275,17 @@ export function useCommentsController({
     },
     [getBridge],
   );
+  const [revealed, setRevealed] = useState<{ id: string | null; tick: number }>(
+    { id: null, tick: 0 },
+  );
+  const revealDone = useRef(0);
+  const reveal = useCallback(
+    (tid: string) => {
+      select(tid, true);
+      setRevealed((r) => ({ id: tid, tick: r.tick + 1 }));
+    },
+    [select],
+  );
   const onSelect = useCallback((anchor: SelectionAnchor) => {
     // A pre-filled draft the reader must submit; page code can send this any time.
     if (!gates.current.select()) return;
@@ -260,10 +305,15 @@ export function useCommentsController({
     if (draftRef.current && dirty.current) return;
     dirty.current = false;
     setDraft({ pin });
-    setWantPin(false);
+    // #1698: a chosen pin mode holds for the view, so the next pin is one
+    // click away; the default an image opens in falls back to Select.
+    if (!chosenRef.current) setWantPin(false);
     surface.current();
   }, []);
-  const onEscape = useCallback(() => setWantPin(false), []);
+  const onEscape = useCallback(() => {
+    // Same rule as the shell's own Esc: only a chosen pin mode is left.
+    if (chosenRef.current) setWantPin(false);
+  }, []);
   const onSelection = useCallback((has: boolean) => {
     // Only where the reader may comment, in Select mode; page code can send this any time.
     setSelected(has && mayRef.current && modeRef.current === "select");
@@ -321,6 +371,7 @@ export function useCommentsController({
       pinFormat,
       contentHash,
       mode,
+      pinChosen,
       setMode: (m) => setWantPin(m === "pin"),
       older,
       open: q.data?.open ?? 0,
@@ -336,6 +387,9 @@ export function useCommentsController({
       positions,
       active,
       select,
+      reveal,
+      revealed,
+      revealDone,
       draft,
       cancelDraft: () => {
         dirty.current = false;
@@ -381,12 +435,15 @@ export function useCommentsController({
       positions,
       active,
       select,
+      reveal,
+      revealed,
       draft,
       showResolved,
       guestName,
       pinFormat,
       contentHash,
       mode,
+      pinChosen,
       onSelect,
       onPositions,
       onOpen,
