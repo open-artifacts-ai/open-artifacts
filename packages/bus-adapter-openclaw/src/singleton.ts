@@ -1,7 +1,7 @@
 import { existsSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Bus, DEFAULT_MCP_SERVERS } from "./bus.ts";
+import { Bus } from "./bus.ts";
 import { realConnect } from "./link.ts";
 import { resolveStateDir } from "./state-dir.ts";
 
@@ -42,11 +42,6 @@ export function processBus(): Bus {
     connect: realConnect(),
     stateDir: () => resolveStateDir(),
     habitsOn: markerOn(pluginDir()),
-    // An install that names the instance's MCP entry otherwise says so here (#1822).
-    mcpServers: () => [
-      ...DEFAULT_MCP_SERVERS,
-      ...(process.env.OA_BUS_MCP_SERVER ? [process.env.OA_BUS_MCP_SERVER] : []),
-    ],
   });
   return g[SLOT];
 }

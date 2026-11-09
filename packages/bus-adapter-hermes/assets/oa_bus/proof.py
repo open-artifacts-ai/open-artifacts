@@ -14,12 +14,10 @@ character outside [A-Za-z0-9_] with `_`, so `open-artifacts` and `open_artifacts
 make the same prefix. No record means no argument.
 """
 
-import os
-
 # The reserved argument the instance's /mcp reads and removes.
 ARG = "_oa_agent_proof"
 
-# The raw MCP server key of an instance's entry by default; OA_BUS_MCP_SERVER names another.
+# The raw MCP server key of an instance's entry: exactly this, nothing else is trusted.
 DEFAULT_SERVERS = ("open-artifacts",)
 
 # Hermes's own utility tools for an MCP server (tools/mcp_tool_schema.py _UTILITY_TOOL_SPECS):
@@ -35,10 +33,9 @@ _UTILITY = (
 )
 
 
-def proof_servers(env=None):
+def proof_servers():
     """The raw server names that are this instance's."""
-    extra = (env if env is not None else os.environ).get("OA_BUS_MCP_SERVER", "").strip()
-    return DEFAULT_SERVERS + ((extra,) if extra and extra not in DEFAULT_SERVERS else ())
+    return DEFAULT_SERVERS
 
 
 def hermes_server_of(tool_name):
