@@ -32,6 +32,7 @@ import {
   useRestoreMember,
   useSetRestricted,
 } from "../api/queries";
+import { trialEndsOn, trialWouldStart } from "../api/trial";
 import { emailEnabled } from "../auth/emailEnabled";
 import { useFrozen } from "../auth/permissions";
 import {
@@ -139,6 +140,11 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   const spaces = hasFeature(me, "spaces");
   const invite = useInviteMember();
   const domains = useSignInDomains();
+  // #1836: the first invite starts the Business trial; the dialog says so.
+  // Decided when the dialog opens, so the date doesn't move under the owner.
+  const [trial] = useState(() =>
+    trialWouldStart(me) ? { endsOn: trialEndsOn() } : null,
+  );
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Assignable>("member");
   const [error, setError] = useState<string | null>(null);
@@ -264,7 +270,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
             Cancel
           </Button>
           <Button disabled={invite.isPending} onClick={submit}>
-            Add member
+            {trial ? "Send invite and start trial" : "Add member"}
           </Button>
         </>
       }
@@ -332,6 +338,14 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
           </p>
         )}
         <RoleSelect label="Role" value={role} onChange={setRole} />
+        {trial && (
+          <Notice
+            tone="info"
+            title="This starts your 14-day trial of Business."
+          >
+            Trial ends {trial.endsOn}.
+          </Notice>
+        )}
       </form>
     </Modal>
   );
