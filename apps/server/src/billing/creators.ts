@@ -112,8 +112,8 @@ export async function creatorCount(env: Env, month: string): Promise<number> {
 /** settings key: the last month whose final report billing accepted. */
 export const USAGE_SENT_KEY = "billing.usage.sent";
 /**
- * settings key: months billing refused for good (a 4xx about the month
- * itself), comma-separated, oldest first, the last USAGE_SKIPPED_MAX kept.
+ * settings key: months billing refused for good (a 400: a bad month,
+ * creators or count), comma-separated, oldest first, the last USAGE_SKIPPED_MAX kept.
  * USAGE_SENT_KEY moves past them, so they are never retried.
  */
 export const USAGE_SKIPPED_KEY = "billing.usage.skipped";
@@ -149,16 +149,14 @@ export async function sendUsage(
 }
 
 /**
- * True when billing refused `month` itself: a 4xx other than 401/403 (a bad
- * or foreign signature, which is true of every month), 408 and 429 (try
- * again), and not the gate's own refusal (`gate_refused`). 5xx and network
- * failures are transient and never skip a month.
+ * True only for a 400: billing's /usage refuses a bad month, bad creators or
+ * a bad count with 400. A skip loses the month for good, so everything else
+ * stops the tick and retries: 401/403 (signature or install trouble, true of
+ * every month), 404/405 (routes not deployed), 408, 409, 410, 413, 429, the
+ * gate's own refusal (`gate_refused`), 5xx and network failures.
  */
 function refusedForGood(e: unknown): e is BillingUnavailableError {
-  if (!(e instanceof BillingUnavailableError)) return false;
-  const m = /^http_(4\d\d)$/.exec(e.why);
-  if (!m) return false;
-  return !["401", "403", "408", "429"].includes(m[1] as string);
+  return e instanceof BillingUnavailableError && e.why === "http_400";
 }
 
 /** Records `month` as skipped; returns how many months are now on the list. */
@@ -184,7 +182,7 @@ const USAGE_CATCH_UP_MAX = 24;
 /**
  * The scheduler tick's monthly report: every month after the last accepted
  * one (USAGE_SENT_KEY) up to the previous month, oldest first, each one's
- * final list. A 4xx about the month (not 401/403/408/429) skips it for good
+ * final list. A 400 (bad month, creators or count) skips the month for good
  * (USAGE_SKIPPED_KEY); any other failure stops the tick and the next one
  * retries from there. With nothing sent yet, from the oldest month with creators,
  * no earlier than the month billing first answered (LIVE_KEY).

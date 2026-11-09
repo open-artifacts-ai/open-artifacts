@@ -1448,9 +1448,9 @@ describe("creator count", () => {
       };
     };
 
-    it("a 4xx skips that month, records it, and sends the later months", async () => {
+    it("a 400 skips that month, records it, and sends the later months", async () => {
       const { first, second, third } = await setup();
-      usageRefuse.set(second, 422);
+      usageRefuse.set(second, 400);
       const w = warnings();
       await withBrokerProps({ props: PROPS }, () => usageTick(H, mid));
       expect(sentMonths()).toEqual([first, second, third]);
@@ -1458,7 +1458,7 @@ describe("creator count", () => {
       expect(await setting(USAGE_SKIPPED_KEY)).toBe(second);
       // A fixed category only, no server text.
       expect(w.events()).toEqual([
-        { evt: "billing_usage_skipped", month: second, why: "http_422" },
+        { evt: "billing_usage_skipped", month: second, why: "http_400" },
       ]);
       // The next tick does not retry it.
       calls = [];
@@ -1471,7 +1471,7 @@ describe("creator count", () => {
     it("a second skipped month raises the alert key", async () => {
       const { first, second } = await setup();
       usageRefuse.set(first, 400);
-      usageRefuse.set(second, 404);
+      usageRefuse.set(second, 400);
       const w = warnings();
       await withBrokerProps({ props: PROPS }, () => usageTick(H, mid));
       expect(await setting(USAGE_SKIPPED_KEY)).toBe(`${first},${second}`);
@@ -1513,8 +1513,8 @@ describe("creator count", () => {
       expect(sentMonths()[0]).toBe(first);
     });
 
-    it.each([401, 403, 408, 429])(
-      "a %i is trouble with the call, not the month: stop and retry, skip nothing",
+    it.each([401, 403, 404, 405, 408, 409, 410, 413, 429])(
+      "a %i is not a bad month: stop and retry, skip nothing",
       async (status) => {
         const { first, second, third } = await setup();
         usageRefuse.set(first, status);
@@ -1529,11 +1529,11 @@ describe("creator count", () => {
       },
     );
 
-    it("a gate refusal (x-oa-gate) with a 4xx is not skipped", async () => {
+    it("a gate refusal (x-oa-gate) even with a 400 is not skipped", async () => {
       const { first } = await setup();
       const refusing = {
         fetch: async () =>
-          Response.json({}, { status: 422, headers: { "x-oa-gate": "1" } }),
+          Response.json({}, { status: 400, headers: { "x-oa-gate": "1" } }),
       };
       await withBrokerProps({ props: { BILLING: refusing } }, () =>
         usageTick(H, mid),
@@ -1545,7 +1545,7 @@ describe("creator count", () => {
 
     it("self-hosted (no gate) sends and records nothing", async () => {
       const { second } = await setup();
-      usageRefuse.set(second, 422);
+      usageRefuse.set(second, 400);
       await withBrokerProps({ props: PROPS }, () => usageTick(SELF, mid));
       expect(calls).toEqual([]);
       expect(await setting(USAGE_SENT_KEY)).toBeUndefined();
