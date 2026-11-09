@@ -667,7 +667,11 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     }),
     // `live: false` while the bus is off. (The server's canConnect 404 isn't mocked.)
     http.get(`*${R.busAgents}`, () =>
-      HttpResponse.json({ agents: busAgents, live: opts.bus === true }),
+      HttpResponse.json({
+        agents: busAgents,
+        live: opts.bus === true,
+        droppedNotices: opts.bus ? f.busDroppedNotices : 0,
+      }),
     ),
     // #1296: role addresses, ordered by namespace then name.
     http.get(`*${R.busRoles}`, () =>
