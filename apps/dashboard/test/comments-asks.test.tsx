@@ -23,6 +23,7 @@ import {
 import {
   mentionedKeys,
   mentionQuery,
+  nextAskFor,
   removeMention,
 } from "../src/viewer/comments/asks";
 import {
@@ -1138,5 +1139,222 @@ describe("removeMention", () => {
   });
   it("removes every mention of the name", () => {
     expect(removeMention("@Bob hi @bob, ok", "Bob")).toBe("hi, ok");
+  });
+});
+
+describe("asks for you in the toolbar and header (#1614)", () => {
+  const mk = (id: string, answered = false) => {
+    const t = askThread(
+      { id },
+      answered
+        ? {
+            answer: {
+              optionId: "a",
+              by: { kind: "user", id: "me", name: "Me", me: true },
+              at: "2026-11-05T11:00:00Z",
+            },
+          }
+        : {},
+    );
+    (t.comments[0] as { id: string }).id = `c-${id}`;
+    return t;
+  };
+  const toolbar = () => screen.findByRole("button", { name: /asks? for you$/ });
+  const active = () =>
+    document
+      .querySelector("[data-thread][data-active]")
+      ?.getAttribute("data-thread");
+
+  it("counts and pluralises", async () => {
+    serveThreads(() => [mk("a")]);
+    mount(viewerPath(OWNED));
+    expect(await toolbar()).toHaveTextContent("1 ask for you");
+  });
+
+  it("is hidden when the page has no asks", async () => {
+    serveThreads(() => [
+      { ...mk("a"), comments: [{ ...mk("a").comments[0], ask: undefined }] },
+    ]);
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: /^Comments/ });
+    await wait(50);
+    expect(screen.queryByText(/for you/)).not.toBeInTheDocument();
+  });
+
+  it("says 'No asks for you' once all are answered", async () => {
+    serveThreads(() => [mk("a", true), mk("b", true)]);
+    mount(viewerPath(OWNED));
+    expect(await screen.findByText("No asks for you")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /asks? for you$/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("steps through two asks and wraps, opening the closed column", async () => {
+    serveThreads(() => [mk("a"), mk("b")]);
+    mount(viewerPath(OWNED));
+    const b = await toolbar();
+    expect(b).toHaveTextContent("2 asks for you");
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(b);
+    await screen.findByRole("complementary", { name: "Comments" });
+    const first = await waitFor(() => {
+      const id = active();
+      expect(id).toBeTruthy();
+      return id;
+    });
+    fireEvent.click(b);
+    await waitFor(() => expect(active()).not.toBe(first));
+    fireEvent.click(b);
+    await waitFor(() => expect(active()).toBe(first));
+  });
+
+  it("the header count does the same", async () => {
+    serveThreads(() => [mk("a"), mk("b")]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const h = await within(c).findByRole("button", { name: "2 asks for you" });
+    fireEvent.click(h);
+    await waitFor(() => expect(active()).toBeTruthy());
+    const first = active();
+    fireEvent.click(h);
+    await waitFor(() => expect(active()).not.toBe(first));
+  });
+});
+
+describe("asks for you with a single ask (#1614)", () => {
+  it("clicking again still selects the ask when it is already active", async () => {
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const b = await screen.findByRole("button", { name: /1 ask for you$/ });
+    fireEvent.click(b);
+    await waitFor(() =>
+      expect(document.querySelector("[data-thread][data-active]")).toBeTruthy(),
+    );
+    focus.mockClear();
+    fireEvent.click(b);
+    await waitFor(() => expect(focus).toHaveBeenCalledWith("t-ask"));
+  });
+});
+
+describe("asks for you: reveal, surfaces, gone (#1614)", () => {
+  const btn = () => screen.findByRole("button", { name: /1 ask for you$/ });
+
+  it("an already-active ask in an open column scrolls and takes focus on click", async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const b = (
+      await screen.findAllByRole("button", { name: /1 ask for you$/ })
+    )[0] as HTMLElement;
+    fireEvent.click(b);
+    const row = c.querySelector('[data-thread="t-ask"]') as HTMLElement;
+    await waitFor(() => expect(row).toHaveAttribute("data-active"));
+    await waitFor(() => expect(document.activeElement).toBe(row));
+    (document.activeElement as HTMLElement).blur();
+    scroll.mockClear();
+    fireEvent.click(b);
+    await waitFor(() => expect(scroll).toHaveBeenCalled());
+    await waitFor(() => expect(document.activeElement).toBe(row));
+  });
+
+  it("focus is one-shot: reopening the column does not focus the row again", async () => {
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      (
+        await screen.findAllByRole("button", { name: /1 ask for you$/ })
+      )[0] as HTMLElement,
+    );
+    const row = c.querySelector('[data-thread="t-ask"]') as HTMLElement;
+    await waitFor(() => expect(document.activeElement).toBe(row));
+    const toggle = screen.getByRole("button", { name: /^Comments/ });
+    fireEvent.click(toggle);
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    fireEvent.click(toggle);
+    const c2 = await screen.findByRole("complementary", { name: "Comments" });
+    const row2 = (await waitFor(() => {
+      const r = c2.querySelector('[data-thread="t-ask"]');
+      expect(r).toBeTruthy();
+      return r;
+    })) as HTMLElement;
+    await wait(50);
+    expect(document.activeElement).not.toBe(row2);
+  });
+
+  it("opens the side panel on a mid-width screen", async () => {
+    viewport(800);
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    fireEvent.click(await btn());
+    const tab = await screen.findByRole("tab", { name: /Comments/ });
+    expect(tab).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByText("Which layout?")).toBeInTheDocument();
+  });
+
+  it("opens the sheet on a phone, named for the ask count", async () => {
+    viewport(400);
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    fireEvent.click(await btn());
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(await within(sheet).findByText("Which layout?")).toBeInTheDocument();
+  });
+
+  it("is disabled once the artifact is gone", async () => {
+    serveThreads(() => [askThread()]);
+    mount(viewerPath(OWNED));
+    const b = await btn();
+    expect(b).toBeEnabled();
+    await act(() =>
+      fetch(R.artifact(OWNED), {
+        method: "DELETE",
+        headers: { "X-OA-Request": "1" },
+      }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /1 ask for you$/ }),
+      ).toBeDisabled(),
+    );
+  });
+});
+
+describe("nextAskFor", () => {
+  const th = (id: string, mine = true) =>
+    askThread(
+      { id },
+      mine ? {} : { to: [{ kind: "user", id: "x", name: "X", me: false }] },
+    ) as never;
+  const mkApi = (ordered: unknown[], orphans: unknown[] = []) =>
+    ({ ordered, orphans }) as never;
+
+  it("includeSelf with a null fromId returns the first pending ask", () => {
+    expect(
+      nextAskFor(mkApi([th("a"), th("b")]), null, { includeSelf: true }),
+    ).toBe("a");
+  });
+  it("a fromId not in the list starts from the top", () => {
+    expect(nextAskFor(mkApi([th("a"), th("b")]), "zzz")).toBe("a");
+  });
+  it("includeSelf returns fromId only when it is the sole pending ask", () => {
+    const api = mkApi([th("a"), th("b", false)]);
+    expect(nextAskFor(api, "a")).toBeUndefined();
+    expect(nextAskFor(api, "a", { includeSelf: true })).toBe("a");
+    expect(nextAskFor(api, "b", { includeSelf: true })).toBe("a");
+  });
+  it("finds asks in orphans, after the ordered ones", () => {
+    const api = mkApi([th("a", false)], [th("o")]);
+    expect(nextAskFor(api, "a")).toBe("o");
+    expect(nextAskFor(api, null)).toBe("o");
   });
 });

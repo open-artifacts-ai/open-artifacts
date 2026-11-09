@@ -1,4 +1,5 @@
 import type { ArtifactToShell, DataDoc } from "@oa/shared";
+import { PROTOCOL_VERSION } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CALL_TIMEOUT_MS,
@@ -82,7 +83,7 @@ describe("bridge", () => {
     expect(sent()[0]).toEqual({
       oa: 1,
       type: "hello",
-      protocol: 1,
+      protocol: PROTOCOL_VERSION,
       kind: "html",
     });
     let ready = false;
