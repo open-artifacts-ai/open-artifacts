@@ -1,6 +1,5 @@
 import type {
   ArtifactAgent,
-  CommentAssigned,
   CommentMention,
   Comment as CommentT,
   CommentThread,
@@ -15,11 +14,10 @@ import { versionDate } from "../versionDate";
 const MUTED = "text-muted-foreground";
 
 /** What the composer sends beyond the text. */
-export type Extras = { mentions: KeyRef[]; assign?: KeyRef };
+export type Extras = { mentions: KeyRef[] };
 
 export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
-  ...(x.assign ? { assign: x.assign } : {}),
 });
 
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
@@ -68,14 +66,9 @@ const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
     : d === "gone"
       ? `${name} is gone · mention another agent`
       : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
-const assignedLine = (name: string, st: CommentAssigned["state"]) =>
-  st === "queued"
-    ? `Assigned to ${name}, who is ${OFFLINE}`
-    : `Assigned to ${name}: ${st === "done" ? "Done" : st === "seen" ? "Seen" : "Delivered"}`;
-
-/** Delivery of each mention and the assignment, in plain words. Names are text, never HTML. */
+/** Delivery of each mention, in plain words. Names are text, never HTML. */
 export function Delivery({ c }: { c: CommentT }) {
-  if (!c.mentions?.length && !c.assigned) return null;
+  if (!c.mentions?.length) return null;
   return (
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>
       {c.mentions?.map((m) => (
@@ -83,11 +76,6 @@ export function Delivery({ c }: { c: CommentT }) {
           {deliveryLine(m.name, m.delivery)}
         </li>
       ))}
-      {c.assigned && (
-        <li data-assigned={c.assigned.key}>
-          {assignedLine(c.assigned.name, c.assigned.state)}
-        </li>
-      )}
     </ul>
   );
 }
@@ -344,6 +332,91 @@ export function mentionedKeys(
   return keys;
 }
 
+const MENTION_END = "(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))";
+
+/** Drops every `@name` that `mentionedKeys` would count (same boundary), with a
+    trailing `'s` and the space before it. An `@name` that is the start of a longer agent's
+    name is left alone. */
+export function removeMention(
+  text: string,
+  name: string,
+  agents: readonly ArtifactAgent[] = [],
+): string {
+  const longer = agents
+    .filter(
+      (a) =>
+        a.name.length > name.length &&
+        a.name.toLowerCase().startsWith(name.toLowerCase()),
+    )
+    .map((a) => new RegExp(`^@${esc(a.name)}${MENTION_END}`, "i"));
+  const re = new RegExp(
+    `(^|\\s)@${esc(name)}${MENTION_END}(?:['\u2019]s)?`,
+    "gi",
+  );
+  let atStart = false;
+  const out = text.replace(re, (m, lead: string, at: number) => {
+    if (longer.some((l) => l.test(text.slice(at + lead.length)))) return m;
+    if (at === 0) atStart = true;
+    // The space before it goes too, so "hi @Bob." leaves "hi." and
+    // "a @Bob b" leaves "a b"; the space after stays for the next match. A
+    // line break before it stays, so lines are not joined.
+    return /[\r\n]/.test(lead) ? lead : "";
+  });
+  return atStart ? out.trimStart() : out;
+}
+
+/** Who gets notified: the mentioned agents. */
+export function notifyNames(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): string[] {
+  const keys = new Set(mentionedKeys(text, agents));
+  return agents.filter((a) => keys.has(a.key)).map((a) => a.name);
+}
+
+/** The picked mentions as removable chips, and the "Will notify" line. */
+export function MentionChips({
+  text,
+  agents,
+  onRemove,
+}: {
+  text: string;
+  agents: readonly ArtifactAgent[];
+  onRemove: (a: ArtifactAgent) => void;
+}) {
+  const keys = mentionedKeys(text, agents);
+  const chips = agents.filter((a) => keys.includes(a.key));
+  const names = notifyNames(text, agents);
+  return (
+    <div aria-live="polite" className={`flex flex-col gap-1 ${TXT}`}>
+      {names.length > 0 && chips.length > 0 && (
+        <ul className="m-0 flex list-none flex-wrap gap-1 p-0">
+          {chips.map((a) => (
+            <li
+              key={a.key}
+              data-chip={a.key}
+              className="inline-flex items-center gap-1 rounded-full bg-[var(--oa-accent-soft)] py-0.5 pr-1 pl-2 text-[var(--oa-accent-fg)]"
+            >
+              @{a.name}
+              <button
+                type="button"
+                aria-label={`Remove mention of ${a.name}`}
+                className="inline-flex min-h-6 min-w-6 items-center justify-center rounded-full leading-none hover:bg-background/60"
+                onClick={() => onRemove(a)}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {names.length > 0 && (
+        <p className={`m-0 ${MUTED}`}>Will notify {names.join(", ")}</p>
+      )}
+    </div>
+  );
+}
+
 export function MentionMenu({
   id,
   matches,
@@ -381,6 +454,10 @@ export function MentionMenu({
               onPick(a);
             }}
           >
+            <span
+              aria-hidden="true"
+              className={`size-2 shrink-0 rounded-full ${a.online ? "bg-[var(--oa-success-fg,#157a3a)]" : "bg-muted-foreground/50"}`}
+            />
             <b className="min-w-0 flex-1 truncate">{a.name}</b>
             <span className={MUTED}>{a.online ? "online" : "offline"}</span>
           </div>

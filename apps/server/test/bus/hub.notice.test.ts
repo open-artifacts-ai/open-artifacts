@@ -4,7 +4,7 @@
 // set ahead of real time and reset after each test; waits are signals (a
 // roster round trip, a recorded disconnect), never sleeps.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import type { ServerFrame } from "@oa/bus-protocol";
+import { BUS_CAPS, type ServerFrame } from "@oa/bus-protocol";
 import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BusHub, NOTICE_HOLD_MS, NOTICES_MAX } from "../../src/bus/hub.js";
@@ -19,14 +19,20 @@ import {
   daemon,
   e,
   framesSeen,
-  hello,
   hubOf,
   machine,
   member,
   ns,
+  hello as plainHello,
   up,
   waitFor,
 } from "./helpers.js";
+
+/** A hello from a daemon that lists BUS_CAPS.follow (v0.139.0+), the notice gate. */
+const hello = (hid: string) =>
+  ({ ...plainHello(hid), caps: [BUS_CAPS.follow] }) as never;
+/** A hello from a daemon of v0.138.0 or older: no caps, a strict decoder that refuses `notice` frames. */
+const oldHello = (hid: string) => plainHello(hid);
 
 type Deliver = Extract<ServerFrame, { type: "deliver" }>;
 
@@ -58,11 +64,11 @@ afterEach(async () => {
 });
 
 /** A fresh member with one machine and one registered agent `name` in `namespace`. */
-async function setup(name = uniq("agent")) {
+async function setup(name = uniq("agent"), old = false) {
   const m = await member();
   const mach = await machine("Laptop", m.userId);
   const d = await daemon(mach.token);
-  d.send(hello(id("h")));
+  d.send(old ? oldHello(id("h")) : hello(id("h")));
   await waitFor(d, "hello_ok");
   const namespace = ns("notice");
   const ref = id("ref");
@@ -439,6 +445,83 @@ const seedNotice = (
       r.parked,
     ),
   );
+
+describe("a daemon that cannot decode notices (#1746)", () => {
+  it("parks the notice (held, no deliver frame) and flushes it on agent_up from a capable daemon", async () => {
+    const s = await setup(uniq("agent"), true);
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    const n = note({ namespace: s.namespace, name: s.name });
+    expect(await stub.deliverNotice(n)).toBe("held");
+    await settled(s.d, s.ref);
+    expect(delivers(s.d)).toEqual([]);
+    expect(await waiting(s.userId)).toBe(1);
+
+    // The alarm does not send it to the capless socket either.
+    await setClock(s.userId, t + 1000);
+    await runAlarm(s.userId);
+    await settled(s.d, s.ref);
+    expect(delivers(s.d)).toEqual([]);
+    expect(await waiting(s.userId)).toBe(1);
+
+    // An agent_up on the same capless socket does not flush it.
+    s.d.send(up(id("u"), s.ref, s.name, s.namespace));
+    await waitFor(s.d, "agent_ok");
+    await settled(s.d, s.ref);
+    expect(delivers(s.d)).toEqual([]);
+    expect(await waiting(s.userId)).toBe(1);
+
+    // The machine comes back updated: its agent_up brings the notice.
+    await goOffline(s.d, s.machineId, s.userId);
+    const d2 = await daemon(s.token);
+    d2.send(hello(id("h")));
+    await waitFor(d2, "hello_ok");
+    d2.send(up(id("u"), s.ref, s.name, s.namespace));
+    const f = await waitFor(d2, "deliver");
+    expect(f.body).toBe(n.text);
+    expect(await waiting(s.userId)).toBe(0);
+  });
+
+  it("expires a parked notice after an hour, as for an offline machine", async () => {
+    const s = await setup(uniq("agent"), true);
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    expect(
+      await stub.deliverNotice(note({ namespace: s.namespace, name: s.name })),
+    ).toBe("held");
+    await setClock(s.userId, t + NOTICE_HOLD_MS - 1);
+    await runAlarm(s.userId);
+    expect(await waiting(s.userId)).toBe(1);
+    await setClock(s.userId, t + NOTICE_HOLD_MS + 1);
+    await runAlarm(s.userId);
+    expect(await waiting(s.userId)).toBe(0);
+  });
+
+  it("a due held notice is parked by the alarm, not sent, while the socket has no cap", async () => {
+    const s = await setup(uniq("agent"), true);
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    const n = note(
+      { namespace: s.namespace, name: s.name },
+      { notBefore: t + 5000 },
+    );
+    expect(await stub.deliverNotice(n)).toBe("held");
+    await setClock(s.userId, t + 6000);
+    await runAlarm(s.userId);
+    await settled(s.d, s.ref);
+    expect(delivers(s.d)).toEqual([]);
+    expect(
+      await inHub(
+        s.userId,
+        (_, st) =>
+          st.storage.sql.exec("select parked as p from notices").one().p,
+      ),
+    ).toBe(1);
+  });
+});
 
 describe("notices reach only the addressed agent (#1317)", () => {
   it("sends to the addressed machine's socket, never another machine's", async () => {

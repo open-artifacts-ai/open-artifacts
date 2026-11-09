@@ -261,6 +261,54 @@ describe("role proposals over MCP (#1372)", () => {
     d.close();
   });
 
+  it("if the role applies but the audit write fails, the card says so as JSON, never nothing changed", async () => {
+    const { who, d, pat } = await withBus();
+    const n = ns("au");
+    const alice = await open(who.userId, d, n);
+    const p = proposed(
+      await propose(pat, {
+        action: "set",
+        namespace: n,
+        name: "audit-lead",
+        agent: alice.name,
+      }),
+    );
+    const csrf = csrfOf(
+      await (await get(p.secret, { cookie: who.cookie })).text(),
+    );
+    await env.DB.prepare(
+      "alter table audit_events rename to audit_events_x",
+    ).run();
+    let r: Response;
+    try {
+      // Raw, as the page's script gets it: the harness's `post` unwraps JSON.
+      r = await browser.postJson(
+        env,
+        BASE,
+        { cookie: who.cookie },
+        {
+          secret: p.secret,
+          csrf,
+          decision: "confirm",
+        },
+      );
+    } finally {
+      await env.DB.prepare(
+        "alter table audit_events_x rename to audit_events",
+      ).run();
+    }
+    expect(r.status).toBe(500);
+    expect(r.headers.get("content-type")).toContain("application/json");
+    const { html: card } = (await r.json()) as { html: string };
+    expect(card).toContain("We could not confirm this finished");
+    expect(card).not.toContain("Nothing changed");
+    // The role did apply.
+    expect(await roles(who.userId)).toMatchObject([
+      { namespace: n, name: "audit-lead" },
+    ]);
+    d.close();
+  });
+
   it("re-point and clear show the displaced and the new holder, and apply through the role's own code path", async () => {
     const { who, d, pat } = await withBus();
     const n = ns("rp");

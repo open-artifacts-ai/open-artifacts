@@ -32,7 +32,6 @@ const FORMATS = [
 const WAITING = [
   { value: ALL, label: "All" },
   { value: "needs_answer", label: "Needs your answer" },
-  { value: "waiting_on_agents", label: "Waiting on agents" },
 ];
 const TEXT = "text-[length:var(--oa-text-sm)]";
 const ITEM = `h-[30px] px-[var(--oa-space-3)] ${TEXT}`;
@@ -42,8 +41,8 @@ export type FilterProps = {
   agent: string | undefined;
   agents: string[];
   /** #1535: the waiting-on filter. */
-  waiting?: "needs_answer" | "waiting_on_agents";
-  onWaiting: (f: "needs_answer" | "waiting_on_agents" | undefined) => void;
+  waiting?: "needs_answer";
+  onWaiting: (f: "needs_answer" | undefined) => void;
   /** The agentVia filter (#589) and its connection's name, shown in the Agent select. */
   via?: { label: string };
   view: "grid" | "list";

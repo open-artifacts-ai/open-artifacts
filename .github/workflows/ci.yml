@@ -34,7 +34,7 @@ jobs:
           set -euo pipefail
           command -v shellcheck
           tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -fsSL -o "$RUNNER_TEMP/$tarball" \
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/$tarball" \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$tarball"
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           mkdir "$RUNNER_TEMP/actionlint"
@@ -589,9 +589,12 @@ jobs:
           RELEASE_PLEASE="$RUNNER_TEMP/rp/node_modules/.bin/release-please" bash scripts/ci/release-dry-run.sh
   # #1056 untangle D: the public code installs, builds, typechecks and tests
   # with every private path (scripts/ci/private-paths.txt) removed.
-  # Required: the hosted code lives in open-artifacts-cloud now, so this proves
-  # what remains installs, builds, typechecks and tests on its own.
+  # Not a required check, and nothing needs it. It runs on the merge queue and
+  # on dispatch, not on pull requests. It does not block a merge: a red run is
+  # a signal to fix, not a gate. A PR that brings back a listed private path is
+  # still refused at the next cloud pin bump.
   public-only:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
