@@ -593,7 +593,7 @@ export function systemService(d: ServiceDeps): Service {
       try {
         const r =
           typeof path === "string"
-            ? await d.exec("/usr/bin/env", [`PATH=${path}`, node, "-e", probe])
+            ? await d.exec(node, ["-e", probe], { env: { PATH: path } })
             : await d.exec(node, ["-e", probe]);
         if (r.code === 0) return undefined;
         return {

@@ -184,10 +184,14 @@ describe("pinned node check in doctor (#1448 item 4)", () => {
       { mode: 0o755 },
     );
     const doctorPath = `${good}:/usr/bin:/bin`;
-    const exec = async (cmd: string, args: string[]) => {
+    const exec = async (
+      cmd: string,
+      args: string[],
+      opts?: { env?: Record<string, string> },
+    ) => {
       try {
         const stdout = execFileSync(cmd, args, {
-          env: { PATH: doctorPath },
+          env: { PATH: doctorPath, ...opts?.env },
           encoding: "utf8",
           stdio: ["ignore", "pipe", "pipe"],
         });
