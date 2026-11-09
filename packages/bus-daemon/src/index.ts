@@ -1342,8 +1342,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           // A rename made while the link was down (#1635).
           if (hello.proposed_name !== undefined && prev.kind === "pi")
             renameFromAdapter(prev, hello.proposed_name);
-          // A Codex rename made while the link was down (#1748).
-          if (prev.kind === "codex") renameCodexThreads();
           return {
             bus_name: prev.busName,
             namespace: prev.namespace,
