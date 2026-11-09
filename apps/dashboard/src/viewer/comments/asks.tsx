@@ -34,6 +34,31 @@ export function asksForMe(threads: readonly CommentThread[]): string[] {
     .map((t) => t.id);
 }
 
+/**
+ * The next unanswered ask for the viewer after `fromId`, in page order (whole-page
+ * asks, then by position, then earlier text), wrapping. Never `fromId` itself.
+ */
+export function nextAskFor(
+  api: {
+    ordered: readonly CommentThread[];
+    orphans: readonly CommentThread[];
+  },
+  fromId: string | null,
+  opts: { includeSelf?: boolean } = {},
+): string | undefined {
+  const all = [...api.ordered, ...api.orphans];
+  const order = all.map((t) => t.id);
+  const pending = new Set(asksForMe(all));
+  const at = fromId ? order.indexOf(fromId) : -1;
+  const next = [...order.slice(at + 1), ...order.slice(0, Math.max(at, 0))]
+    .filter((id) => id !== fromId)
+    .find((id) => pending.has(id));
+  return (
+    next ??
+    (opts.includeSelf && fromId && pending.has(fromId) ? fromId : undefined)
+  );
+}
+
 const OFFLINE = "offline · it will get this when it's back";
 
 /** "Codex is offline · it will get this when it's back", "Claude Code: Delivered". */

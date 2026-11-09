@@ -71,6 +71,12 @@ export type CommentsApi = {
   active: string | null;
   /** Select a card; `frame` also scrolls to and flashes its highlight. */
   select: (id: string | null, frame?: boolean) => void;
+  /** Select, frame and bring the card into view and focus, even when it is already active. */
+  reveal: (id: string) => void;
+  /** The last reveal: its card scrolls and takes focus when `tick` changes. */
+  revealed: { id: string | null; tick: number };
+  /** The last `revealed.tick` a card focused for: a remounted card must not focus again. */
+  revealDone: { current: number };
   draft: Draft;
   cancelDraft: () => void;
   /** The draft's composer has (or no longer has) text the reader typed. */
@@ -269,6 +275,17 @@ export function useCommentsController({
     },
     [getBridge],
   );
+  const [revealed, setRevealed] = useState<{ id: string | null; tick: number }>(
+    { id: null, tick: 0 },
+  );
+  const revealDone = useRef(0);
+  const reveal = useCallback(
+    (tid: string) => {
+      select(tid, true);
+      setRevealed((r) => ({ id: tid, tick: r.tick + 1 }));
+    },
+    [select],
+  );
   const onSelect = useCallback((anchor: SelectionAnchor) => {
     // A pre-filled draft the reader must submit; page code can send this any time.
     if (!gates.current.select()) return;
@@ -370,6 +387,9 @@ export function useCommentsController({
       positions,
       active,
       select,
+      reveal,
+      revealed,
+      revealDone,
       draft,
       cancelDraft: () => {
         dirty.current = false;
@@ -415,6 +435,8 @@ export function useCommentsController({
       positions,
       active,
       select,
+      reveal,
+      revealed,
       draft,
       showResolved,
       guestName,
