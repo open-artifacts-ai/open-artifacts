@@ -103,6 +103,15 @@ const refused = (c: Context<AppEnv>, why: LinkRefusalReason) => {
   return page(c, r.title, r.message, r.status);
 };
 
+/** The decision may have applied before the call failed or timed out: a card the script renders, never "nothing changed". */
+const unsure = (c: Context<AppEnv>) =>
+  page(
+    c,
+    "Something went wrong",
+    "We could not confirm this finished. Check whether the two are linked before trying again.",
+    500,
+  );
+
 const failed = () =>
   messagePage(
     "Something went wrong",
@@ -252,7 +261,7 @@ export function mountLinkConfirm(app: AppType): void {
       return page(c, link ? "Linked" : "Unlinked", message, 200);
     } catch (e) {
       logError("bus_link_confirm_failed", e);
-      return failed();
+      return unsure(c);
     }
   });
 }
