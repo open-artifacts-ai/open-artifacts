@@ -848,18 +848,20 @@ describe("openclaw habits: on, then off", () => {
     const od = openclawPluginDir(other, {});
     put(join(od, "openclaw.plugin.json"), '{"id":"other"}');
     put(marker(od), "theirs\n");
-    expect(setPluginHabits({ home: other, env: {} }, [openclaw], false).changed).toEqual([]);
+    expect(
+      setPluginHabits({ home: other, env: {} }, [openclaw], false).changed,
+    ).toEqual([]);
     expect(existsSync(marker(od))).toBe(true);
     // And a yes still needs our marker.
-    expect(setPluginHabits({ home, env: {} }, [openclaw], true).changed).toEqual([]);
+    expect(
+      setPluginHabits({ home, env: {} }, [openclaw], true).changed,
+    ).toEqual([]);
   });
 
   describe("an off that cannot finish", () => {
     const listed = (busHome: string) =>
-      (
-        JSON.parse(readFileSync(join(busHome, "install.json"), "utf8")).habits
-          ?.pluginDirs?.openclaw ?? []
-      ) as string[];
+      (JSON.parse(readFileSync(join(busHome, "install.json"), "utf8")).habits
+        ?.pluginDirs?.openclaw ?? []) as string[];
     const seed = (busHome: string, dirs: string[]) =>
       put(
         join(busHome, "install.json"),
@@ -880,42 +882,56 @@ describe("openclaw habits: on, then off", () => {
       expect(listed(busHome)).toEqual([ghost]);
     });
 
-    unlessRoot("counts a folder it cannot reach as a failure, with a note, and keeps it", () => {
-      const home = tmp("oa-oc-habits-");
-      const busHome = join(home, ".oa-bus");
-      const root = tmp("oa-oc-locked-");
-      const dir = ours(join(root, "state", "extensions", "oa-bus"));
-      writeFileSync(marker(dir), "on\n");
-      seed(busHome, [dir]);
-      chmodSync(join(root, "state"), 0o000);
-      try {
-        const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
-        expect(r.incomplete).toBe(true);
-        expect(r.notes.join("\n")).toMatch(/Could not reach .*EACCES/);
-        expect(listed(busHome)).toEqual([dir]);
-      } finally {
-        chmodSync(join(root, "state"), 0o755);
-      }
-      expect(existsSync(marker(dir))).toBe(true);
-    });
+    unlessRoot(
+      "counts a folder it cannot reach as a failure, with a note, and keeps it",
+      () => {
+        const home = tmp("oa-oc-habits-");
+        const busHome = join(home, ".oa-bus");
+        const root = tmp("oa-oc-locked-");
+        const dir = ours(join(root, "state", "extensions", "oa-bus"));
+        writeFileSync(marker(dir), "on\n");
+        seed(busHome, [dir]);
+        chmodSync(join(root, "state"), 0o000);
+        try {
+          const r = setPluginHabits(
+            { home, env: {}, busHome },
+            [openclaw],
+            false,
+          );
+          expect(r.incomplete).toBe(true);
+          expect(r.notes.join("\n")).toMatch(/Could not reach .*EACCES/);
+          expect(listed(busHome)).toEqual([dir]);
+        } finally {
+          chmodSync(join(root, "state"), 0o755);
+        }
+        expect(existsSync(marker(dir))).toBe(true);
+      },
+    );
 
-    unlessRoot("counts a marker it cannot remove as a failure and keeps the folder listed", () => {
-      const home = tmp("oa-oc-habits-");
-      const busHome = join(home, ".oa-bus");
-      const dir = ours(join(tmp("oa-oc-ro-"), "extensions", "oa-bus"));
-      writeFileSync(marker(dir), "on\n");
-      seed(busHome, [dir]);
-      chmodSync(dir, 0o500);
-      try {
-        const r = setPluginHabits({ home, env: {}, busHome }, [openclaw], false);
-        expect(r.incomplete).toBe(true);
-        expect(r.notes.join("\n")).toContain("habits are still on");
-        expect(listed(busHome)).toEqual([dir]);
-      } finally {
-        chmodSync(dir, 0o755);
-      }
-      expect(existsSync(marker(dir))).toBe(true);
-    });
+    unlessRoot(
+      "counts a marker it cannot remove as a failure and keeps the folder listed",
+      () => {
+        const home = tmp("oa-oc-habits-");
+        const busHome = join(home, ".oa-bus");
+        const dir = ours(join(tmp("oa-oc-ro-"), "extensions", "oa-bus"));
+        writeFileSync(marker(dir), "on\n");
+        seed(busHome, [dir]);
+        chmodSync(dir, 0o500);
+        try {
+          const r = setPluginHabits(
+            { home, env: {}, busHome },
+            [openclaw],
+            false,
+          );
+          expect(r.incomplete).toBe(true);
+          expect(r.notes.join("\n")).toContain("habits are still on");
+          expect(listed(busHome)).toEqual([dir]);
+        } finally {
+          chmodSync(dir, 0o755);
+        }
+        expect(existsSync(marker(dir))).toBe(true);
+      },
+    );
 
     it("counts a symlinked folder as a failure and keeps it listed", () => {
       const home = tmp("oa-oc-habits-");
