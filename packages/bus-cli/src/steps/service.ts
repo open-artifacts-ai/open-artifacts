@@ -147,6 +147,9 @@ if (code !== undefined) process.exit(code);
 /** A POSIX sh single-quoted word. */
 const shQuote = (v: string) => `'${oneLine(v).replaceAll("'", `'\\''`)}'`;
 
+/** The oldest Node the bus runs on: doctor and the launcher share it. */
+export const MIN_NODE = 22;
+
 const DEFAULT_NODE_DIRS = [
   "/usr/local/bin",
   "/opt/homebrew/bin",
@@ -176,20 +179,31 @@ recorded=${shQuote(recorded)}
 # Builtins only: a minimal PATH may hold no dirname.
 case $0 in */*) here=\${0%/*} ;; *) here=. ;; esac
 here=$(cd "$here" && pwd)
+# A node that is ours to run: not this launcher, starts, and is v${MIN_NODE} or newer.
 ok() {
-  [ -f "$1" ] && [ -x "$1" ] && [ "\${1%/*}" != "$here" ] && OA_BUS_NODE_PROBE=1 "$1" --version >/dev/null 2>&1
+  [ -f "$1" ] && [ -x "$1" ] && [ "\${1%/*}" != "$here" ] || return 1
+  v=$(OA_BUS_NODE_PROBE=1 "$1" --version </dev/null 2>/dev/null) || return 1
+  v=\${v#v}
+  v=\${v%%.*}
+  case $v in '' | *[!0-9]*) return 1 ;; esac
+  [ "$v" -ge ${MIN_NODE} ]
 }
 if ok "$recorded"; then exec "$recorded" "$@"; fi
+case $- in *f*) noglob=1 ;; *) noglob=0 ;; esac
+set -f
 oldifs=$IFS
 IFS=:
 for d in $PATH; do
-  if [ -n "$d" ] && ok "$d/node"; then IFS=$oldifs; exec "$d/node" "$@"; fi
+  # Only absolute entries: a repo's ./node_modules/.bin/node must never run.
+  case $d in /*) ;; *) continue ;; esac
+  if ok "$d/node"; then IFS=$oldifs; exec "$d/node" "$@"; fi
 done
 IFS=$oldifs
+if [ "$noglob" = 0 ]; then set +f; fi
 for d in ${usual.join(" ")}; do
   if ok "$d/node"; then exec "$d/node" "$@"; fi
 done
-echo "oa-bus: Node.js not found. Install Node, then run: ${BUS_CMD} install" >&2
+echo "oa-bus: Node.js ${MIN_NODE} or newer not found. Install it, then run: ${BUS_CMD} install" >&2
 exit 127
 `;
 }
@@ -571,10 +585,16 @@ export function systemService(d: ServiceDeps): Service {
       if (!installed()) return undefined;
       const node = record().node;
       if (typeof node !== "string") return undefined;
+      // The service's PATH, not doctor's: a node only this shell can reach
+      // must show up (the launcher's PATH search is the service's).
+      const path = record().env?.PATH;
       const probe =
         "new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York'}).format(new Date())";
       try {
-        const r = await d.exec(node, ["-e", probe]);
+        const r =
+          typeof path === "string"
+            ? await d.exec("/usr/bin/env", [`PATH=${path}`, node, "-e", probe])
+            : await d.exec(node, ["-e", probe]);
         if (r.code === 0) return undefined;
         return {
           node,

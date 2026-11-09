@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -169,7 +169,50 @@ describe("pinned node check in doctor (#1448 item 4)", () => {
     expect(await svc.checkNode?.()).toEqual({
       node: launcher,
       reason:
-        "oa-bus: Node.js not found. Install Node, then run: npx @open-artifacts/bus install",
+        "oa-bus: Node.js 22 or newer not found. Install it, then run: npx @open-artifacts/bus install",
+    });
+  });
+
+  it("doctor probes with the service's PATH: a node only doctor's shell reaches is reported (#1729)", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const d = mkdtempSync(join(tmpdir(), "ob-doc-"));
+    const good = join(d, "good");
+    mkdirSync(good);
+    writeFileSync(
+      join(good, "node"),
+      '#!/bin/sh\nif [ "$1" = "--version" ]; then echo v22.1.0; fi\nexit 0\n',
+      { mode: 0o755 },
+    );
+    const doctorPath = `${good}:/usr/bin:/bin`;
+    const exec = async (cmd: string, args: string[]) => {
+      try {
+        const stdout = execFileSync(cmd, args, {
+          env: { PATH: doctorPath },
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        return { code: 0, stdout, stderr: "" };
+      } catch (e) {
+        const x = e as { status: number; stderr: string };
+        return { code: x.status, stdout: "", stderr: x.stderr };
+      }
+    };
+    const { ctx, svc } = mk(exec as never);
+    const bin = join(ctx.home, "bin");
+    mkdirSync(bin, { recursive: true });
+    const launcher = join(bin, "node");
+    writeFileSync(launcher, launcherText("/gone/node", []), { mode: 0o700 });
+    record(ctx.home, launcher);
+    // Before: no service env recorded, doctor's PATH finds the node.
+    expect(await svc.checkNode?.()).toBeUndefined();
+    // The service's PATH holds no node: it would fail after a reboot.
+    const f = join(ctx.home, "install.json");
+    const j = JSON.parse(readFileSync(f, "utf8"));
+    j.service.env = { PATH: join(d, "empty") };
+    writeFileSync(f, JSON.stringify(j));
+    expect(await svc.checkNode?.()).toEqual({
+      node: launcher,
+      reason: expect.stringContaining("22 or newer not found"),
     });
   });
 
