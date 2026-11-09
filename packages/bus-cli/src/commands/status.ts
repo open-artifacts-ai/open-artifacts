@@ -120,7 +120,8 @@ export const updateTarget = async (
 
 /**
  * #1822: whether this machine's Claude entry for the instance has the proof
- * helper, so its sessions show as the user on pages. Nothing when there is no
+ * helper, so it is set up to show as the session on pages (the daemon
+ * supporting link is not proof that a session is bound). Nothing when there is no
  * such entry.
  */
 const proofLine = (
@@ -137,10 +138,10 @@ const proofLine = (
   const state = proofState(claudeConfigFile(ctx.userHome, ctx.env), origin);
   if (state === "none") return undefined;
   if (state === "missing")
-    return `Claude Code: run ${BUS_CMD} install to show as yourself on pages.`;
+    return `Claude Code: run ${BUS_CMD} install to set this entry up to show as this session on pages.`;
   return daemonKnows
-    ? "Claude Code: shows as yourself on pages."
-    : "Claude Code: update to show as yourself on pages.";
+    ? "Claude Code: this entry is set up to show as this session on pages."
+    : "Claude Code: update the daemon so this entry can show as this session on pages.";
 };
 
 /**
