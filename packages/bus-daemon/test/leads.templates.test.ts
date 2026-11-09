@@ -18,7 +18,11 @@ import {
   listLeadTemplateNames,
   loadLeadTemplate,
 } from "../src/leads/templates.ts";
+import type { GroupCheck } from "../src/own-file.ts";
 
+/** The process's own group, standing as private: the fixtures' mode then depends on no umask. */
+const PRIVATE: GroupCheck = { gid: process.getgid?.(), isPrivate: () => true };
+const SHARED: GroupCheck = { gid: process.getgid?.(), isPrivate: () => false };
 const HUB = "https://artifacts.example.com";
 const BRIEF = `${HUB}/a/cZ3zRk6KxsHAc5tz`;
 
@@ -28,10 +32,7 @@ function setup() {
   const repo = join(root, "repo");
   const wt = join(root, "wt");
   const bin = join(root, "claude");
-  for (const d of [home, repo, wt]) {
-    mkdirSync(d);
-    chmodSync(d, 0o755);
-  }
+  for (const d of [home, repo, wt]) mkdirSync(d);
   writeFileSync(bin, "#!/bin/sh\n");
   chmodSync(bin, 0o755);
   chmodSync(home, 0o700);
@@ -55,8 +56,11 @@ function setup() {
     chmodSync(f, mode);
     return f;
   };
-  const load = (name: string, over: { uid?: number | undefined } = {}) =>
-    loadLeadTemplate(name, { home, hubOrigin: HUB, ...over });
+  const load = (
+    name: string,
+    over: { uid?: number | undefined; group?: GroupCheck } = {},
+  ) =>
+    loadLeadTemplate(name, { home, hubOrigin: HUB, group: PRIVATE, ...over });
   return { root, home, repo, wt, bin, dir, tpl, write, load };
 }
 const why = (r: LeadTemplateResult) =>
@@ -172,7 +176,9 @@ describe("loading a lead template", () => {
     const s = setup();
     s.write("docs", s.tpl);
     chmodSync(s.dir, 0o770);
-    expect(why(await s.load("docs"))).toMatch(/folder is writable by others/);
+    expect(why(await s.load("docs"))).toMatch(
+      /folder is writable by others: run chmod 700 /,
+    );
     chmodSync(s.dir, 0o700);
     expect((await s.load("docs")).state).toBe("ok");
 
@@ -241,23 +247,69 @@ describe("loading a lead template", () => {
     expect(existsSync("pwned")).toBe(false);
   });
 
-  it("refuses a repo or worktree_root that is the root, group-writable or another user's", async () => {
+  it("refuses the root, a world-writable folder, and another user's", async () => {
     const s = setup();
     s.write("docs", { ...s.tpl, repo: "/" });
-    expect(why(await s.load("docs"))).toMatch(/repo is not a valid|repo|root/);
-    expect((await s.load("docs")).state).toBe("refused");
+    expect(why(await s.load("docs"))).toMatch(
+      /repo: must not be the root folder/,
+    );
     s.write("docs", s.tpl);
-    chmodSync(s.repo, 0o775);
-    expect(why(await s.load("docs"))).toMatch(/repo is writable by others/);
-    chmodSync(s.repo, 0o755);
+    chmodSync(s.repo, 0o757);
+    expect(why(await s.load("docs"))).toMatch(
+      /repo is writable by everyone: run chmod 700 /,
+    );
+    chmodSync(s.repo, 0o700);
     chmodSync(s.wt, 0o777);
     expect(why(await s.load("docs"))).toMatch(
-      /worktree_root is writable by others/,
+      /worktree_root is writable by everyone/,
     );
-    chmodSync(s.wt, 0o755);
+    chmodSync(s.wt, 0o700);
     expect((await s.load("docs")).state).toBe("ok");
     const uid = process.getuid?.() ?? 0;
     expect(why(await s.load("docs", { uid: uid + 1 }))).toMatch(/another user/);
+  });
+
+  it("allows group-write (775) in the process's own private group", async () => {
+    const s = setup();
+    s.write("docs", s.tpl);
+    chmodSync(s.repo, 0o775);
+    chmodSync(s.wt, 0o775);
+    expect((await s.load("docs", { group: PRIVATE })).state).toBe("ok");
+  });
+
+  it("refuses group-write (775) in a shared group, saying how to fix it", async () => {
+    const s = setup();
+    s.write("docs", s.tpl);
+    chmodSync(s.repo, 0o775);
+    expect(why(await s.load("docs", { group: SHARED }))).toBe(
+      `repo is writable by a group others share: run chmod 700 ${s.repo}`,
+    );
+    chmodSync(s.repo, 0o700);
+    chmodSync(s.wt, 0o775);
+    expect(why(await s.load("docs", { group: SHARED }))).toMatch(
+      /worktree_root is writable by a group others share: run chmod 700 /,
+    );
+  });
+
+  it("refuses group-write when the folder's group is not the process's own", async () => {
+    const s = setup();
+    s.write("docs", s.tpl);
+    chmodSync(s.repo, 0o775);
+    const other: GroupCheck = {
+      gid: (process.getgid?.() ?? 0) + 1,
+      isPrivate: () => true,
+    };
+    expect(why(await s.load("docs", { group: other }))).toMatch(
+      /repo is writable by a group others share/,
+    );
+  });
+
+  it("a folder with no group-write is fine in any group", async () => {
+    const s = setup();
+    s.write("docs", s.tpl);
+    chmodSync(s.repo, 0o755);
+    chmodSync(s.wt, 0o755);
+    expect((await s.load("docs", { group: SHARED })).state).toBe("ok");
   });
 
   it("refuses a binary that is not named for its harness, such as /bin/sh", async () => {

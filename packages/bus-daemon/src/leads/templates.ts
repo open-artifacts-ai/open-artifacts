@@ -9,7 +9,7 @@ import {
   leadTemplateHash,
 } from "@oa/bus-protocol";
 import { home } from "../config.ts";
-import { readOwnFile } from "../own-file.ts";
+import { type GroupCheck, ownGroup, readOwnFile } from "../own-file.ts";
 
 /**
  * Lead templates (#1328). A template is read from `<OA_BUS_HOME>/leads/<name>.json`
@@ -39,6 +39,8 @@ export type LoadOpts = {
   uid?: number | undefined;
   /** The hub's origin: a brief on any other host is refused. */
   hubOrigin: string;
+  /** The process's group and whether it is private (#1527). Tests inject. */
+  group?: GroupCheck;
 };
 
 // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
@@ -72,20 +74,23 @@ export function checkLeadsDir(
   if (!st.isDirectory()) return "the leads folder is not a folder";
   if (uid !== undefined && st.uid !== uid)
     return "the leads folder belongs to another user";
-  if (st.mode & 0o022) return "the leads folder is writable by others";
+  if (st.mode & 0o022)
+    return `the leads folder is writable by others: run chmod 700 ${dir}`;
   return undefined;
 }
 
 /**
  * A folder named by absolute path: its own real path (no symlink or alias),
- * not the root, a folder, ours, and not writable by group or others. The same
- * rules as the leads folder, so a template cannot point a lead at a folder
+ * not the root, a folder, ours, not world-writable, and group-writable only in
+ * the process's own private group (#1527). The leads folder keeps the strict
+ * rule. A template cannot point a lead at a folder
  * someone else can reshape.
  */
 function checkRealDir(
   path: string,
   label: string,
   uid: number | undefined,
+  group: GroupCheck,
 ): string | undefined {
   if (path === "/") return `${label} is the root folder`;
   let real: string;
@@ -101,7 +106,12 @@ function checkRealDir(
     if (!st.isDirectory()) return `${label} is not a folder`;
     if (uid !== undefined && st.uid !== uid)
       return `${label} belongs to another user`;
-    if (st.mode & 0o022) return `${label} is writable by others`;
+    // World-write is always refused. Group-write only when the group is the
+    // process's own and private (#1527): a repo on a 002-umask box is 775.
+    if (st.mode & 0o002)
+      return `${label} is writable by everyone: run chmod 700 ${path}`;
+    if (st.mode & 0o020 && (st.gid !== group.gid || !group.isPrivate(st.gid)))
+      return `${label} is writable by a group others share: run chmod 700 ${path}`;
   } catch {
     return `${label} cannot be read`;
   }
@@ -179,10 +189,11 @@ export async function loadLeadTemplate(
   if (origin !== opts.hubOrigin)
     return refused(name, "brief is not on this machine's hub");
 
+  const group = opts.group ?? ownGroup();
   const bad =
-    checkRealDir(t.repo, "repo", uid) ??
+    checkRealDir(t.repo, "repo", uid, group) ??
     (t.worktree_root
-      ? checkRealDir(t.worktree_root, "worktree_root", uid)
+      ? checkRealDir(t.worktree_root, "worktree_root", uid, group)
       : undefined) ??
     checkBinary(t.binary, uid);
   if (bad) return refused(name, bad);

@@ -63,13 +63,13 @@ const MAX_PATH_CHARS = 4096;
 
 /**
  * One path segment: ASCII letters, digits, `.`, `_`, `-` and space, nothing
- * else, and not starting with `-` or a space (so it is never read as a flag)
+ * else, and not starting with `-` or a space (so it is never read as a flag) nor ending with a space
  * and never `.` or `..`. The allowlist is the point: tmux expands `#(...)`
  * in a start directory and shells expand `$`, backticks and quotes, so no
  * such character may appear. ASCII only, so there are no invisible or
  * look-alike characters and no normalization question.
  */
-const SEGMENT_RE = /^[A-Za-z0-9._][A-Za-z0-9._ -]*$/;
+const SEGMENT_RE = /^[A-Za-z0-9._](?:[A-Za-z0-9._ -]*[A-Za-z0-9._-])?$/;
 
 /**
  * An absolute POSIX path in its own normal form: starts with `/`, every

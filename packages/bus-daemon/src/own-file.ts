@@ -49,7 +49,7 @@ export type GroupCheck = {
   gid: number | undefined;
   isPrivate: (gid: number) => boolean;
 };
-const ownGroup = (): GroupCheck => ({
+export const ownGroup = (): GroupCheck => ({
   gid: process.getgid?.(),
   isPrivate: (gid) => {
     if (process.platform !== "linux") return false;
