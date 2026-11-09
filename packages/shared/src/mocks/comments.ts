@@ -55,7 +55,7 @@ export function createCommentMock({
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
   asksForYou: (id: string) => number;
-  /** Work assigned to an agent and not done. */
+  /** Always false: nothing is assigned to agents any more (the filter itself is the dashboard's to drop). */
   waitingOnAgents: (id: string) => boolean;
 } {
   const threads = new Map<string, CommentThread[]>();
@@ -216,34 +216,24 @@ export function createCommentMock({
         ? { kind: "user", id: k, name: agentOf(k)?.name ?? k, me: false }
         : { ...other, id: k };
   /**
-   * Ask, mentions and assign from a parsed body onto a new comment. mentions
-   * and assign are owner and editors only: a Response is the 403.
+   * Ask and mentions from a parsed body onto a new comment. mentions
+   * are owner and editors only: a Response is the 403.
    */
   const decorate = (
     c: Comment,
     j: {
       mentions?: { key: string }[];
-      assign?: { key: string };
     },
     id: string,
   ): Response | null => {
-    if ((j.mentions || j.assign) && !moderates(id))
-      return err(
-        "forbidden",
-        "Only the owner and editors can mention or assign",
-      );
+    if (j.mentions && !moderates(id))
+      return err("forbidden", "Only the owner and editors can mention");
     if (j.mentions)
       c.mentions = j.mentions.map((m) => ({
         key: m.key,
         name: agentOf(m.key)?.name ?? m.key,
         delivery: agentOf(m.key)?.online === false ? "queued" : "delivered",
       }));
-    if (j.assign)
-      c.assigned = {
-        key: j.assign.key,
-        name: agentOf(j.assign.key)?.name ?? j.assign.key,
-        state: agentOf(j.assign.key)?.online === false ? "queued" : "delivered",
-      };
     return null;
   };
   const closeAsks = (t: CommentThread) => {
@@ -403,7 +393,6 @@ export function createCommentMock({
             (c) => c.ask && !c.ask.answer && c.ask.to.some((a) => a.me),
           ),
       ).length,
-    waitingOnAgents: (id) =>
-      comments(id).some((c) => c.assigned && c.assigned.state !== "done"),
+    waitingOnAgents: () => false,
   };
 }

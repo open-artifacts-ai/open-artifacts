@@ -213,7 +213,7 @@ export function mountComments(app: AppType): void {
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }
         : who;
-    const { mentions, assign } = raw.data;
+    const { mentions } = raw.data;
     const out = await addReply(
       c.env,
       id,
@@ -221,7 +221,7 @@ export function mountComments(app: AppType): void {
       w,
       viewer,
       raw.data.body,
-      { mentions, assign },
+      { mentions },
       {
         moderator,
         after: { version: artifact.currentVersion, ctx: execCtx(c) },
@@ -323,7 +323,7 @@ export function mountComments(app: AppType): void {
     return c.json(out);
   });
 
-  // The agents that can be mentioned or assigned: for the owner and editors,
+  // The agents that can be mentioned: for the owner and editors,
   // who may; everyone else sees none (they are other people's agents).
   app.get(AGENTS, async (c) => {
     const { id, who: cw, level, artifact } = await open(c, "comments.read");
@@ -359,16 +359,10 @@ const execCtx = (
   }
 };
 
-/** 403 forbidden for mentions or an assignment from anyone but the owner and editors. */
-function mayTarget(
-  b: { mentions?: unknown[]; assign?: unknown },
-  moderator: boolean,
-): void {
-  if (((b.mentions?.length ?? 0) > 0 || b.assign !== undefined) && !moderator)
-    throw new ApiError(
-      "forbidden",
-      "Only the owner and editors can mention or assign",
-    );
+/** 403 forbidden for mentions from anyone but the owner and editors. */
+function mayTarget(b: { mentions?: unknown[] }, moderator: boolean): void {
+  if ((b.mentions?.length ?? 0) > 0 && !moderator)
+    throw new ApiError("forbidden", "Only the owner and editors can mention");
 }
 
 /** Whether the caller's level may delete anyone's comment. */

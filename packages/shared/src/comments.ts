@@ -100,13 +100,6 @@ export const CommentMentionSchema = z.object({
 });
 export type CommentMention = z.infer<typeof CommentMentionSchema>;
 
-export const CommentAssignedSchema = z.object({
-  key,
-  name: z.string(),
-  state: z.enum(["delivered", "queued", "seen", "done"]),
-});
-export type CommentAssigned = z.infer<typeof CommentAssignedSchema>;
-
 export const CommentSchema = z.object({
   id: z.string(),
   body: z.string(),
@@ -116,7 +109,6 @@ export const CommentSchema = z.object({
   can: z.object({ edit: z.boolean(), delete: z.boolean() }),
   ask: CommentAskSchema.optional(),
   mentions: z.array(CommentMentionSchema).optional(),
-  assigned: CommentAssignedSchema.optional(),
 });
 export type Comment = z.infer<typeof CommentSchema>;
 
@@ -177,10 +169,9 @@ export const AskInputSchema = z
   .refine(recommendedIsAnOption, recommendedMsg);
 export type AskInput = z.infer<typeof AskInputSchema>;
 
-/** Shared by NewThreadBody and ReplyBody (no ask: MCP-only in v1). mentions and assign: owner and editors only (403 forbidden). */
+/** Shared by NewThreadBody and ReplyBody (no ask: MCP-only in v1). mentions: owner and editors only (403 forbidden). */
 const extras = {
   mentions: z.array(KeyRefSchema).max(MENTIONS_MAX).optional(),
-  assign: KeyRefSchema.optional(),
 };
 
 /** POST R.comments body. */

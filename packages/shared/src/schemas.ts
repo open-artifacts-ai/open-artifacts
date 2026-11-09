@@ -377,7 +377,7 @@ export const ListQuerySchema = z
     cursor: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(100).default(25),
     includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
-    /** #1535: needs_answer = open asks addressed to the caller; waiting_on_agents = work assigned to an agent and not done. */
+    /** #1535: needs_answer = open asks addressed to the caller; waiting_on_agents = nothing now (assignments are gone; the filter is the dashboard's to drop). */
     filter: z.enum(["needs_answer", "waiting_on_agents"]).optional(),
     /**
      * Artifacts with any version from this connection (AgentViaSchema). Only

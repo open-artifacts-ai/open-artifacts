@@ -1,4 +1,4 @@
-// Agents in comments (#1535): who can be mentioned, assigned or asked on an
+// Agents in comments (#1535): who can be mentioned or asked on an
 // artifact, and how a comment reaches them. The roster is the agents that
 // follow the artifact (services/follows.ts): those are the addresses the bus
 // can deliver to. Delivery goes through bus-delivery.ts only, with a fixed
@@ -193,12 +193,11 @@ export const storedAgent = (a: RosterAgent): StoredAgent => ({
   owner: a.userId,
 });
 
-export type CommentNoticeKind = "ask" | "mention" | "assign";
+export type CommentNoticeKind = "ask" | "mention";
 
 const WHAT: Record<CommentNoticeKind, string> = {
   ask: "there is a question for you on an artifact",
   mention: "you were mentioned in a comment on an artifact",
-  assign: "work was assigned to you in a comment on an artifact",
 };
 
 /** What a notice text can be about: a comment notice kind, or `answered` (an ask got its answer). */

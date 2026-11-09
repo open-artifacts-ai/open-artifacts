@@ -2027,7 +2027,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     anchor: Anchor;
     version: number;
     body: string;
-    /** #1535: the ask, mentions and assignment, already resolved by the service. */
+    /** #1535: the ask and mentions, already resolved by the service. */
     extras?: NewExtras;
   }): StoredThread {
     this.checkBody(a.body);
@@ -2115,16 +2115,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return out;
   }
 
-  /** Records how a mention or the assignment was delivered (the service, after it tried). */
+  /** Records how a mention was delivered (the service, after it tried). */
   commentsTargetStates(a: {
     threadId: string;
     commentId: string;
-    states: { kind: "mention" | "assign"; key: string; state: string }[];
+    states: { key: string; state: string }[];
   }): StoredComment {
     this.ensureSchema();
     return this.ctx.storage.transactionSync(() => {
       for (const s of a.states)
-        setTargetState(this.sql, a.commentId, s.kind, s.key, s.state);
+        setTargetState(this.sql, a.commentId, s.key, s.state);
       const c = getComment(this.sql, a.threadId, a.commentId);
       if (!c) fail("not_found", "Not found");
       return c;

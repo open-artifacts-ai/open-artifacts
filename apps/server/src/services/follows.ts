@@ -430,7 +430,7 @@ export async function notifyCommented(
   version: number,
   authorId: string | null,
   now = Date.now(),
-  /** Addresses (`namespace` + NUL + `name`) already told of this comment (a mention, an ask or an assignment). */
+  /** Addresses (`namespace` + NUL + `name`) already told of this comment (a mention or an ask). */
   skip: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   // A guest's comment is not announced.

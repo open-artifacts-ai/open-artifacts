@@ -362,15 +362,6 @@ const commentOf = (
           })),
         }
       : {}),
-    ...(c.assigned
-      ? {
-          assigned: {
-            key: c.assigned.key,
-            name: c.assigned.name,
-            state: c.assigned.state as "delivered" | "queued" | "seen" | "done",
-          },
-        }
-      : {}),
   };
 };
 
@@ -416,7 +407,7 @@ const announce = (
   artifactId: string,
   who: CommentWho,
   after: Announce | undefined,
-  /** The comment's mentions, ask and assignment: those agents already heard of it. */
+  /** The comment's mentions and ask: those agents already heard of it. */
   r?: Resolved,
 ) =>
   after
@@ -436,11 +427,10 @@ const announce = (
 /** What a comment may carry besides its body (#1535). `ask` is for the MCP tool: no REST body takes it. */
 export type CommentExtras = {
   mentions?: KeyRef[];
-  assign?: KeyRef;
   ask?: AskInput;
 };
 
-/** Who may mention, assign and ask. `moderator`: the owner or an editor. */
+/** Who may mention and ask. `moderator`: the owner or an editor. */
 export type ExtrasOpts = {
   moderator?: boolean;
   /** Followers hear of the new comment (#682); absent: nobody is told. */
@@ -449,12 +439,11 @@ export type ExtrasOpts = {
 
 type Resolved = {
   extras: NewExtras | undefined;
-  /** Every agent the comment reaches, once, with why (assign beats ask beats mention). */
+  /** Every agent the comment reaches, once, with why (ask beats mention). */
   agents: { agent: RosterAgent; kind: CommentNoticeKind }[];
   /** The agents to make follow: mentioned, resolved from the viewer's own running agents. */
   follow: RosterAgent[];
   mentions: string[];
-  assign: string | null;
 };
 
 /** The key of a roster agent (comment-agents.ts agentKey). */
@@ -464,10 +453,10 @@ const unknownKey = (key: string) =>
   new ApiError("bad_request", `Unknown agent or person: ${key}`);
 
 /**
- * Checks and resolves mentions, assignment and ask. 403 forbidden unless the
- * caller is the owner or an editor (mentions and assign) or a signed-in person
+ * Checks and resolves mentions and ask. 403 forbidden unless the
+ * caller is the owner or an editor (mentions) or a signed-in person
  * (ask); 400 bad_request for a key that is no agent following the artifact
- * (mentions, assign) or no such agent or person who can read it (ask).
+ * (mentions) or no such agent or person who can read it (ask).
  */
 async function resolveExtras(
   env: Env,
@@ -481,15 +470,14 @@ async function resolveExtras(
     agents: [],
     follow: [],
     mentions: [],
-    assign: null,
   };
-  const wantsTargets = (x.mentions?.length ?? 0) > 0 || x.assign !== undefined;
+  const wantsTargets = (x.mentions?.length ?? 0) > 0;
   if (!wantsTargets && !x.ask) return none;
-  // An ask notifies agents too: the same rule as mentions and assignments.
+  // An ask notifies agents too: the same rule as mentions.
   if ((wantsTargets || x.ask) && !opts.moderator)
     throw new ApiError(
       "forbidden",
-      "Only the owner and editors can mention, assign or ask. Drop it, or post a plain comment.",
+      "Only the owner and editors can mention or ask. Drop it, or post a plain comment.",
     );
   if (x.ask && who.kind !== "user")
     throw new ApiError("forbidden", "Sign in to ask a question");
@@ -529,7 +517,6 @@ async function resolveExtras(
   const mentioned: RosterAgent[] = [];
   for (const key of new Set((x.mentions ?? []).map((m) => m.key)))
     mentioned.push(await agentOf(key));
-  const assigned = x.assign ? await agentOf(x.assign.key) : null;
   let ask: NewExtras["ask"];
   const asked: RosterAgent[] = [];
   if (askIn) {
@@ -558,8 +545,7 @@ async function resolveExtras(
   const agents = new Map<string, Resolved["agents"][number]>();
   for (const a of mentioned) agents.set(a.key, { agent: a, kind: "mention" });
   for (const a of asked) agents.set(a.key, { agent: a, kind: "ask" });
-  if (assigned) agents.set(assigned.key, { agent: assigned, kind: "assign" });
-  // A mention makes an agent follow (#1535); an assignment or ask alone does
+  // A mention makes an agent follow (#1535); an ask alone does
   // not. Only one the follows did not hold: another member's unfollow is never undone.
   const toFollow = mentioned.filter((x) => viaOwn.has(x.key));
   return {
@@ -567,28 +553,18 @@ async function resolveExtras(
     extras: {
       ...(ask ? { ask } : {}),
       ...(mentioned.length ? { mentions: mentioned.map(storedAgent) } : {}),
-      ...(assigned ? { assign: storedAgent(assigned) } : {}),
     },
     agents: [...agents.values()],
     mentions: mentioned.map((m) => m.key),
-    assign: assigned?.key ?? null,
   };
 }
 
 /**
  * How a notice's outcome reads on the comment. A held notice waits for the
- * machine ("queued"). A dropped one found no session: a mention reads "gone";
- * an assignment has no such state, so it stays "queued".
+ * machine ("queued"). A dropped one found no session and reads "gone".
  */
-const stateOf = (
-  out: DeliveryState,
-  assign: boolean,
-): "delivered" | "queued" | "gone" =>
-  out === "delivered"
-    ? "delivered"
-    : out === "held" || assign
-      ? "queued"
-      : "gone";
+const stateOf = (out: DeliveryState): "delivered" | "queued" | "gone" =>
+  out === "delivered" ? "delivered" : out === "held" ? "queued" : "gone";
 
 /** The most a comment POST waits, in total, for its notices to reach their hubs. */
 export const NOTICE_BUDGET_MS = 2500;
@@ -610,8 +586,7 @@ async function followMentioned(
 }
 
 /**
- * Sends the notices of a written comment and records how each mention and the
- * assignment went. Returns the comment as then stored.
+ * Sends the notices of a written comment and records how each mention went. Returns the comment as then stored.
  */
 async function deliver(
   env: Env,
@@ -624,8 +599,7 @@ async function deliver(
   const version = Math.max(1, a.currentVersion);
   const outcome = new Map<string, DeliveryState>();
   // Concurrent, and the POST waits NOTICE_BUDGET_MS at most in total: a
-  // stalled hub reads "dropped" (its notice may still arrive; "gone" for a
-  // mention, "queued" for an assignment).
+  // stalled hub reads "dropped" (its notice may still arrive).
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<DeliveryState>((res) => {
     timer = setTimeout(() => res("dropped"), NOTICE_BUDGET_MS);
@@ -654,20 +628,10 @@ async function deliver(
   } finally {
     clearTimeout(timer);
   }
-  const states: { kind: "mention" | "assign"; key: string; state: string }[] =
-    [];
-  for (const key of r.mentions)
-    states.push({
-      kind: "mention",
-      key,
-      state: stateOf(outcome.get(key) ?? "dropped", false),
-    });
-  if (r.assign)
-    states.push({
-      kind: "assign",
-      key: r.assign,
-      state: stateOf(outcome.get(r.assign) ?? "dropped", true),
-    });
+  const states = r.mentions.map((key) => ({
+    key,
+    state: stateOf(outcome.get(key) ?? "dropped"),
+  }));
   if (states.length === 0) return c;
   try {
     return await call(() =>
@@ -808,7 +772,7 @@ export async function answerAsk(
   return commentView(env, c, viewer);
 }
 
-/** The agents that can be mentioned, assigned or asked on the artifact. */
+/** The agents that can be mentioned or asked on the artifact. */
 export async function artifactAgents(
   env: Env,
   artifactId: string,

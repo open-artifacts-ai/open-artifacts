@@ -17,7 +17,7 @@ export const SHARE_NOTICE_MAX = 10;
  */
 export const NOTICE_SENDER = "open-artifacts";
 
-/** `comment` (#1535): an ask, mention or assignment on a comment. */
+/** `comment` (#1535): an ask or mention on a comment. */
 /** `commented` (#682): a comment was added to an artifact the agent follows. */
 /** `ask_answered` (#1535): a person answered an ask the agent's member posted. */
 export type NoticeKind =

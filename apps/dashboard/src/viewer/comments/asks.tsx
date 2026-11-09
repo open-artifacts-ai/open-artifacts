@@ -1,6 +1,5 @@
 import type {
   ArtifactAgent,
-  CommentAssigned,
   CommentMention,
   Comment as CommentT,
   CommentThread,
@@ -15,11 +14,10 @@ import { versionDate } from "../versionDate";
 const MUTED = "text-muted-foreground";
 
 /** What the composer sends beyond the text. */
-export type Extras = { mentions: KeyRef[]; assign?: KeyRef };
+export type Extras = { mentions: KeyRef[] };
 
 export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
-  ...(x.assign ? { assign: x.assign } : {}),
 });
 
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
@@ -43,14 +41,10 @@ const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
     : d === "gone"
       ? `${name} is gone · mention another agent`
       : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
-const assignedLine = (name: string, st: CommentAssigned["state"]) =>
-  st === "queued"
-    ? `Assigned to ${name}, who is ${OFFLINE}`
-    : `Assigned to ${name}: ${st === "done" ? "Done" : st === "seen" ? "Seen" : "Delivered"}`;
 
-/** Delivery of each mention and the assignment, in plain words. Names are text, never HTML. */
+/** Delivery of each mention, in plain words. Names are text, never HTML. */
 export function Delivery({ c }: { c: CommentT }) {
-  if (!c.mentions?.length && !c.assigned) return null;
+  if (!c.mentions?.length) return null;
   return (
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>
       {c.mentions?.map((m) => (
@@ -58,11 +52,6 @@ export function Delivery({ c }: { c: CommentT }) {
           {deliveryLine(m.name, m.delivery)}
         </li>
       ))}
-      {c.assigned && (
-        <li data-assigned={c.assigned.key}>
-          {assignedLine(c.assigned.name, c.assigned.state)}
-        </li>
-      )}
     </ul>
   );
 }
