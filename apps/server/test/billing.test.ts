@@ -1630,7 +1630,12 @@ describe("creator count", () => {
         usageRefuse.set(key, key === "x" ? BAD_MONTH : refuse("bad_body"));
         return withBrokerProps({ props: PROPS }, () =>
           billingCall(H, "/usage", { month: key }, mid),
-        ).catch((e) => e as BillingUnavailableError);
+        ).then(
+          () => {
+            throw new Error("expected a refusal");
+          },
+          (e: unknown) => e as BillingUnavailableError,
+        );
       };
       const a = await call("x");
       expect([a.why, a.code]).toEqual(["http_400", "bad_month"]);
