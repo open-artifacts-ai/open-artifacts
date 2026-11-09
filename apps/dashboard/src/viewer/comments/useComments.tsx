@@ -78,7 +78,8 @@ export type CommentsApi = {
   /** The last `revealed.tick` a card focused for: a remounted card must not focus again. */
   revealDone: { current: number };
   draft: Draft;
-  cancelDraft: () => void;
+  /** Close the draft. `posted`: keep its quote painted until the list carries the new thread (#1834). */
+  cancelDraft: (posted?: boolean) => void;
   /** The draft's composer has (or no longer has) text the reader typed. */
   setDraftDirty: (dirty: boolean) => void;
   showResolved: boolean;
@@ -185,6 +186,10 @@ export function useCommentsController({
   const [positions, setPositions] = useState<Positions>(new Map());
   const [active, setActive] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(null);
+  // #1834: a draft that was just posted stays painted until the refetched list
+  // carries its thread, so posting turns the draft highlight into the thread's
+  // without a frame in between. Cancel drops it at once.
+  const [heldQuote, setHeldQuote] = useState<SelectionAnchor | null>(null);
   const [showResolved, setShowResolved] = useState(false);
   const [guestName, setGuestName] = useState("");
   const [hello, setHello] = useState(0);
@@ -238,8 +243,12 @@ export function useCommentsController({
     b.setCommentsMode?.(enabled ? (mayComment ? mode : "view") : "off");
     // A pin being composed is drawn as a ghost until it posts or is cancelled.
     const pin = draft && "pin" in draft ? draft.pin : undefined;
+    // #1834: the quote being written about stays highlighted while the
+    // composer takes the page's selection away.
+    const quote: SelectionAnchor | undefined =
+      (draft && "anchor" in draft ? draft.anchor : heldQuote) ?? undefined;
     if (enabled)
-      b.setComments?.(frameThreads(threads, active, contentHash), pin);
+      b.setComments?.(frameThreads(threads, active, contentHash), pin, quote);
   }, [
     enabled,
     mayComment,
@@ -247,10 +256,18 @@ export function useCommentsController({
     threads,
     active,
     draft,
+    heldQuote,
     contentHash,
     hello,
     getBridge,
   ]);
+
+  // #1834: the list caught up with a posted quote, so its thread now paints
+  // itself; the held quote goes. A slow refetch keeps the highlight meanwhile.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the payload
+  useEffect(() => {
+    if (heldQuote) setHeldQuote(null);
+  }, [all]);
 
   const ids = useRef(new Set<string>());
   ids.current = new Set((all ?? []).map((t) => t.id));
@@ -391,8 +408,9 @@ export function useCommentsController({
       revealed,
       revealDone,
       draft,
-      cancelDraft: () => {
+      cancelDraft: (posted = false) => {
         dirty.current = false;
+        if (posted && draft && "anchor" in draft) setHeldQuote(draft.anchor);
         setDraft(null);
       },
       setDraftDirty: (d) => {

@@ -900,7 +900,9 @@ function NewThread({ api }: { api: CommentsApi }) {
             ...extrasBody(x),
             ...guest,
           });
-          api.cancelDraft();
+          // Posted: keep the quote painted until the list carries the thread
+          // (#1834), so the draft highlight becomes the thread's, no gap.
+          api.cancelDraft(true);
         }}
         failure={(e) =>
           e instanceof ApiClientError && e.code === "anchor_not_in_version" ? (
@@ -916,7 +918,10 @@ function NewThread({ api }: { api: CommentsApi }) {
                       body: last.current,
                       ...guest,
                     })
-                    .then(api.cancelDraft, () => {})
+                    .then(
+                      () => api.cancelDraft(true),
+                      () => {},
+                    )
                 }
               >
                 Add as a page note
