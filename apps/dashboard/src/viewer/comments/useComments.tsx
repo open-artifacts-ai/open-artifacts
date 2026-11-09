@@ -123,7 +123,6 @@ export function useCommentsApi(): CommentsApi {
   return c;
 }
 
-/** Signed-out visitors may comment on public artifacts (the approved spec); dataWriters is a separate, live-data setting. */
 /**
  * How long a posted draft's quote stays painted if the list never shows its
  * thread (#1834): long enough for a slow refetch, short enough that a server
@@ -131,6 +130,7 @@ export function useCommentsApi(): CommentsApi {
  */
 const HELD_QUOTE_MS = 1500;
 
+/** Signed-out visitors may comment on public artifacts (the approved spec); dataWriters is a separate, live-data setting. */
 export const guestsMayComment = (a: ArtifactSummary) =>
   a.visibility === "public";
 
