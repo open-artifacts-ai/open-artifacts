@@ -255,11 +255,72 @@ describe("a refused restore (#1838)", () => {
         name: "Restore",
       }),
     );
+    const row = await screen.findByText(/Inviting people is a team feature\./);
+    expect(row).toHaveTextContent(
+      "Inviting people is a team feature. Choose a plan to continue.",
+    );
     expect(
-      await screen.findByText(
-        "Inviting people is a team feature. Choose a plan to continue.",
+      within(row).getByRole("link", { name: "Choose a plan" }),
+    ).toHaveAttribute("href", "/settings/plan");
+  });
+
+  it("the Restore inside the invite dialog refuses with the same link, and the dialog stays until then", async () => {
+    let answer: (r: Response) => void = () => {};
+    const held = new Promise<Response>((res) => {
+      answer = res;
+    });
+    const gone = "Gx0001AbCdEfGhIj";
+    mountHosted("/settings/members", { billing: SOLO_USED }, undefined, [
+      http.post(`*${R.members}`, () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "member_removed",
+              message: "removed",
+              details: { userId: gone },
+            },
+          },
+          { status: 409 },
+        ),
       ),
-    ).toBeVisible();
+      http.post(`*${R.memberRestore(gone)}`, () => held),
+    ]);
+    fireEvent.click(await screen.findByRole("button", { name: "Add member" }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Email"), {
+      target: { value: "gus@outside.example" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Add member" }));
+    fireEvent.click(
+      await within(dialog).findByRole("button", { name: /^Restore / }),
+    );
+    await waitFor(() =>
+      expect(
+        within(dialog).getByRole("button", { name: "Cancel" }),
+      ).toBeDisabled(),
+    );
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+    answer(
+      HttpResponse.json(
+        {
+          error: {
+            code: "plan_required",
+            message: "server text",
+            details: { tier: "solo", reason: "solo" },
+          },
+        },
+        { status: 403 },
+      ),
+    );
+    const alert = await within(screen.getByRole("dialog")).findByText(
+      /Inviting people is a team feature\./,
+    );
+    expect(
+      within(alert).getByRole("link", { name: "Choose a plan" }),
+    ).toHaveAttribute("href", "/settings/plan");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 });
 

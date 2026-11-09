@@ -229,6 +229,27 @@ it("billingContext follows the banner: an admin with the plan cap is an owner (L
   );
 });
 
+it("a capped admin is an owner but is never offered the trial (cap rule)", () => {
+  const me = (role: string, cap: string | null) =>
+    ({
+      user: { role },
+      auth: { method: "google", readOnly: !!cap, cap, expiresAt: null },
+      instance: { billing: { tier: "solo", trialEndsAt: null } },
+    }) as never;
+  expect(billingContext(me("admin", "plan"))).toEqual({ owner: true });
+  expect(billingContext(me("admin", null))).toEqual({
+    owner: true,
+    trialNeverRan: true,
+  });
+  expect(billingContext(me("owner", null)).trialNeverRan).toBe(true);
+  // So a capped admin's refusal doesn't say "Invite someone".
+  expect(
+    errorCopy(planErr("plan_required", reason("solo")), "x", {
+      ...billingContext(me("admin", "plan")),
+    }),
+  ).toBe("Spaces are a team feature. Choose a plan to continue.");
+});
+
 it("plan_required", () => {
   const e = planErr("plan_required", reason("solo"));
   expect(errorCopy(e, "x")).toBe(

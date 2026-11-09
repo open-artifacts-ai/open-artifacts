@@ -164,7 +164,8 @@ export const billingContext = (
   const billing = me?.instance?.billing;
   return {
     owner,
-    ...(owner && billing
+    // A capped admin can't invite, so the copy never offers them the trial.
+    ...(owner && billing && (me?.auth?.cap ?? null) === null
       ? {
           trialNeverRan:
             billing.tier === "solo" && billing.trialEndsAt === null,

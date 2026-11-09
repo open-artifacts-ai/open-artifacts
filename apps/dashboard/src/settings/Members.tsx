@@ -135,7 +135,11 @@ function RoleSelect({
   );
 }
 
-/** "Choose a plan" in `text`, as a link to Plan and billing (an owner's refusal). */
+/**
+ * "Choose a plan" in `text`, as a link to Plan and billing. Only the owner
+ * wording of a plan refusal has those words (a member's says "choose a plan"
+ * in lower case, as plain text).
+ */
 function withPlanLink(text: string) {
   const at = text.indexOf("Choose a plan");
   if (at < 0) return text;
@@ -160,14 +164,13 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Assignable>("member");
   const [error, setError] = useState<string | null>(null);
-  // An owner's plan refusal: "Choose a plan" links to Plan and billing.
-  const [planLink, setPlanLink] = useState(false);
   // The address belongs to a removed member: offer Restore (parity 1).
   const [removed, setRemoved] = useState<{
     userId: string;
     email: string;
   } | null>(null);
   const restore = useRestoreMember();
+  const busy = invite.isPending || restore.isPending;
   const [added, setAdded] = useState<{
     email: string;
     emailed: boolean;
@@ -184,7 +187,6 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
     const parsed = parseInviteEmail(email);
     if (!parsed) return setError("Enter a valid email address (ASCII only).");
     setError(null);
-    setPlanLink(false);
     setRemoved(null);
     sending.current = true;
     invite.mutate(
@@ -222,9 +224,6 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
             e instanceof ApiClientError && e.code === "invite_unreachable"
               ? InviteUnreachableDetailsSchema.safeParse(e.details)
               : null;
-          const plan =
-            e instanceof ApiClientError && e.code === "plan_required";
-          setPlanLink(plan && billingContext(me).owner === true);
           setError(
             refused?.success
               ? inviteRefusedCopy(refused.data.reason, parsed, domains)
@@ -278,8 +277,9 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   }
   return (
     <Modal
-      // Closing mid-request would drop a refusal nobody sees.
-      onClose={invite.isPending ? () => {} : onClose}
+      // Closing mid-request would drop a refusal nobody sees (the invite's,
+      // or the Restore inside this dialog's).
+      onClose={busy ? () => {} : onClose}
       title="Add a member"
       description={
         sends
@@ -288,7 +288,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
       }
       footer={
         <>
-          <Button variant="ghost" disabled={invite.isPending} onClick={onClose}>
+          <Button variant="ghost" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
           <Button disabled={invite.isPending} onClick={submit}>
@@ -356,7 +356,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
         )}
         {error && (
           <p id="oa-invite-error" role="alert" className={errorText}>
-            {planLink ? withPlanLink(error) : error}
+            {withPlanLink(error)}
           </p>
         )}
         <RoleSelect label="Role" value={role} onChange={setRole} />
@@ -909,7 +909,7 @@ function RemovedRow({
       {refusal && <p className={`m-0 basis-full ${muted}`}>{refusal}</p>}
       {problem && (
         <p role="alert" className={`m-0 basis-full ${errorText}`}>
-          {problem}
+          {withPlanLink(problem)}
         </p>
       )}
       {!refusal && (
@@ -1128,7 +1128,7 @@ function DepartedRow({
       </div>
       {problem && (
         <p role="alert" className={`col-span-full m-0 ${errorText}`}>
-          {problem}
+          {withPlanLink(problem)}
         </p>
       )}
       {open && (
