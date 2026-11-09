@@ -18,7 +18,7 @@ import {
   mcpUnauthorized,
 } from "./mcp/server.js";
 import type { AgentAttr } from "./services/agent-usage.js";
-import { hubNoticeDelivery } from "./services/bus.js";
+import { hubNoticeDelivery, linkRequest } from "./services/bus.js";
 import { installDelivery } from "./services/bus-delivery.js";
 import { getUserWithEpoch } from "./services/users.js";
 
@@ -73,16 +73,18 @@ async function mcpWithPat(
     return mcpUnauthorized(env, "Only members can connect agents");
   const capped = await capMcpBody(req, env);
   if (capped instanceof Response) return capped;
+  const link = await linkRequest(env, user.id, capped);
   const agent: AgentAttr = {
     name: pat.label,
     version: null,
     via: { kind: "token", id: pat.tokenId },
+    ...(link.identity ? { identity: link.identity } : {}),
   };
   // Audit rows from these tools name the PAT (by id, never its text).
   return withCred({ kind: "pat", id: pat.tokenId }, () =>
     mcpHandler(env, () =>
       createServer({ env, user, sessionEpoch, agent, exec: ctx }),
-    ).fetch(capped, {
+    ).fetch(link.req, {
       // token is deliberately empty: tools never need it, and the SDK must not
       // be able to log or echo the PAT. clientId names the token row instead.
       authInfo: { token: "", clientId: `pat:${pat.tokenId}`, scopes: [] },

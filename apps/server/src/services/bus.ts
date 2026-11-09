@@ -1,3 +1,4 @@
+import { LINK_PROOF_HEADER, LinkProofSchema } from "@oa/bus-protocol";
 import {
   BUS_ROLE_PROPOSAL_TTL_MS,
   type BusAgent,
@@ -31,7 +32,7 @@ import { ApiError, appOrigin } from "../http/errors.js";
 import { logError } from "../log.js";
 import { lookupUserGrant } from "../mcp/oauth-api.js";
 import { b64urlEncode, sha256Hex } from "../util/crypto.js";
-import { type Via, viaKey } from "./agent-usage.js";
+import { type AgentIdentity, type Via, viaKey } from "./agent-usage.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
 import type {
   DeliveryOutcome,
@@ -87,6 +88,8 @@ export type BusHubRpc = {
   ping(): Promise<true>;
   /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */
   deliverNotice(notice: BusNotice): Promise<DeliveryOutcome>;
+  /** #1822: the live session whose proof hashes to `hash`, in this member's own hub; else null. */
+  agentByProof(hash: string): Promise<AgentIdentity | null>;
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(): Promise<{ connected: string[]; agents: BusAgent[] }>;
   /** Closes the machine's sockets and drains its agents; false when unknown or already revoked. */
@@ -408,6 +411,45 @@ export async function hasConnectedMachine(
     .bind(userId)
     .first<{ x: number }>();
   return r !== null;
+}
+
+/** #1822: how long /mcp waits for a proof lookup before the request goes on unlinked. */
+export const LINK_LOOKUP_MS = 300;
+
+/**
+ * #1822: the /mcp auth step's one link function. Takes the proof header off
+ * the request (always, so no tool or handler ever sees it) and, when the bus
+ * is on and the proof has the strict shape, asks ONLY the hub of `userId`,
+ * the owner of the request's credential, which session it belongs to. The
+ * lookup is person-scoped by construction: another member's proof is not in
+ * this member's hub. A miss, a malformed value, a slow or failing hub all
+ * give the same result, `identity` undefined; this never throws.
+ */
+export async function linkRequest(
+  env: Env,
+  userId: string,
+  req: Request,
+): Promise<{ req: Request; identity?: AgentIdentity }> {
+  const proof = req.headers.get(LINK_PROOF_HEADER);
+  if (proof === null) return { req };
+  const headers = new Headers(req.headers);
+  headers.delete(LINK_PROOF_HEADER);
+  const clean = new Request(req, { headers });
+  try {
+    if (!busOn(env) || !LinkProofSchema.safeParse(proof).success)
+      return { req: clean };
+    if (!(await hasConnectedMachine(env, userId))) return { req: clean };
+    const hub = busHub(env, userId);
+    if (!hub) return { req: clean };
+    const identity = await within(
+      hub.agentByProof(await sha256Hex(proof)),
+      LINK_LOOKUP_MS,
+    );
+    return identity ? { req: clean, identity } : { req: clean };
+  } catch (e) {
+    logError("bus_link_lookup_failed", e);
+    return { req: clean };
+  }
 }
 
 /**
