@@ -200,7 +200,7 @@ def _follow(name, args, link):
         return copy.unfollow_text(r["removed"] is True, artifact)
     if r["type"] == "follows":
         return copy.following_text(r["follows"])
-    if r["type"] == "error" and r.get("code") == "bad_frame":
+    if r["type"] == "error" and r.get("code") == "bad_frame" and r.get("message") not in copy.FOLLOW_DAEMON_BAD_FRAME:
         raise ToolError(copy.FOLLOW_OLD_DAEMON)
     _failed(r)
 
