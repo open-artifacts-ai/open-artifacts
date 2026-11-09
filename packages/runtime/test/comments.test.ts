@@ -543,6 +543,34 @@ describe("highlights and positions", () => {
     vi.useRealTimers();
   });
 
+  it("a click on a link inside a shadow root is the page's too (#1473)", async () => {
+    document.body.innerHTML = "<p id=a>The quick brown fox jumps.</p>";
+    const host = document.createElement("div");
+    const root = host.attachShadow({ mode: "open" });
+    const link = document.createElement("a");
+    link.href = "#x";
+    link.textContent = "quick";
+    root.append(link);
+    document.body.append(host);
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [{ id: "ex", anchor: anchorOf("quick") }],
+    });
+    // `target` is the host; `composedPath()[0]` is the link inside it.
+    link.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        composed: true,
+        cancelable: true,
+        clientX: 30,
+        clientY: 110,
+      }),
+    );
+    await flush();
+    expect(last("comment.open")).toBeUndefined();
+  });
+
   it("a click on a link inside a highlight is the page's, not the thread's (#1473)", async () => {
     document.body.innerHTML =
       '<p id=a>The <a id=lnk href="#x">quick</a> brown fox jumps.</p>';
@@ -939,7 +967,19 @@ describe("the page is left alone", () => {
     });
     select(textOf("a"), 4, textOf("a"), 9);
     expect(button()).not.toBeNull();
-    expect(snap()).toEqual(before);
+    // The body is untouched. The head gains exactly one style element, and only
+    // for the highlight rules (#1473: an adopted sheet could be dropped by the
+    // page and would then be restyled only at the next paint).
+    expect(document.body.outerHTML).toBe(before[1]);
+    const styles = document.head.querySelectorAll("style[data-oa=highlights]");
+    expect(styles).toHaveLength(1);
+    expect(styles[0]?.textContent).toContain("::highlight(oa-comment)");
+    expect(
+      document.head.outerHTML.replace(
+        /<style data-oa="highlights">[\s\S]*?<\/style>/,
+        "",
+      ),
+    ).toBe(before[0]);
     const added = Array.from(document.documentElement.childNodes).filter(
       (n) => !htmlKids.includes(n),
     );
@@ -948,6 +988,7 @@ describe("the page is left alone", () => {
     expect((added[0] as Element).childNodes).toHaveLength(0); // everything is in the shadow root
     ctl.abort();
     expect(Array.from(document.documentElement.childNodes)).toEqual(htmlKids);
+    expect(document.head.querySelector("style[data-oa=highlights]")).toBeNull();
   });
 });
 
