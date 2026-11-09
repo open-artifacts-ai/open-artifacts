@@ -226,14 +226,14 @@ describe("asks on the comments column", () => {
     ).toHaveAttribute("aria-pressed", "false");
   });
 
-  it("shows a key badge only on options whose key differs from the label", async () => {
+  it("shows letters on all options unless every id equals its label", async () => {
     serveThreads(() => [
       askThread(
         {},
         {
           options: [
-            { id: "yes", label: " Yes " },
-            { id: "b", label: "Other plan" },
+            { id: "wide", label: "Wide layout" },
+            { id: "compact", label: "Compact list" },
           ],
           recommended: undefined,
         },
@@ -245,10 +245,29 @@ describe("asks on the comments column", () => {
     const keys = [...c.querySelectorAll("[data-option-key]")].map(
       (k) => k.textContent,
     );
-    expect(keys).toEqual(["B"]);
+    expect(keys).toEqual(["A", "B"]);
   });
 
-  it("omits the key from the decided line when it equals the label", async () => {
+  it("shows no letters when every id equals its label", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          options: [
+            { id: "yes", label: " Yes " },
+            { id: "no", label: "No" },
+          ],
+          recommended: undefined,
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(c.querySelectorAll("[data-option-key]")).toHaveLength(0);
+  });
+
+  it("omits the letter from the decided line when it equals the label", async () => {
     serveThreads(() => [
       askThread(
         { status: "resolved" },
