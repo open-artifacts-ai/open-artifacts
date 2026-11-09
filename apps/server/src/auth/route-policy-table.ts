@@ -177,6 +177,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // any non-guest member; guest_summary: install-wide, the org owner only.
   "POST /api/v1/notices/guest_shares/dismiss": { org: "notices.own" },
   "POST /api/v1/notices/guest_summary/dismiss": { org: "notices.manage" },
+  // The first-run checklist's install-wide state: the uncapped org owner.
+  "GET /api/v1/onboarding": { org: "onboarding.manage" },
+  "PUT /api/v1/onboarding": { org: "onboarding.manage" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },
