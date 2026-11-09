@@ -2,6 +2,7 @@
 import {
   type DaemonClient,
   type DaemonFrame,
+  FOLLOW_DAEMON_BAD_FRAME,
   FOLLOW_OLD_DAEMON,
   followingText,
   followText,
@@ -108,6 +109,16 @@ describe("follow tools: refusals", () => {
       const d = daemon(() => ({ type: "error", code: "x", message }));
       const r = await call("follow", { artifact: "abc" }, d);
       expect(r).toEqual({
+        content: [{ type: "text", text: `oa-bus: ${message}` }],
+        isError: true,
+      });
+    }
+  });
+
+  it("the daemon's own bad_frame refusals are shown as they are, not as an old daemon (#1766)", async () => {
+    for (const message of Object.values(FOLLOW_DAEMON_BAD_FRAME)) {
+      const d = daemon(() => ({ type: "error", code: "bad_frame", message }));
+      expect(await call("follow", { artifact: "abc" }, d)).toEqual({
         content: [{ type: "text", text: `oa-bus: ${message}` }],
         isError: true,
       });

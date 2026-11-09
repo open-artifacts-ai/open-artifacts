@@ -13,8 +13,8 @@ export type LibraryFilters = {
   agentVia?: string;
   /** A space id from `?space=`; the caller's personal space reads as `mine`. */
   space?: string;
-  /** #1535: artifacts waiting on the caller's answer, or on agents. */
-  filter?: "needs_answer" | "waiting_on_agents";
+  /** #1535: artifacts waiting on the caller's answer. */
+  filter?: "needs_answer";
 };
 
 const ArtifactPage = PageSchema(ArtifactSummarySchema);

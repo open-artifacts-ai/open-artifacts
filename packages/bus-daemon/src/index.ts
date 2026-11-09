@@ -568,16 +568,30 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * is sent, from what the hub then says it supports (hubIds), never frozen
    * at queue time.
    */
-  type QueuedReply = { frame: SendFrame; peerId?: string; native?: boolean };
+  type QueuedReply = {
+    frame: SendFrame;
+    peerId?: string;
+    native?: boolean;
+    /** From a revived socket that did not know who wrote: refused if the hub names writers. */
+    unnamed?: boolean;
+  };
   const withTo = (r: QueuedReply): SendFrame =>
     hubIds && r.peerId ? { ...r.frame, to_id: r.peerId } : r.frame;
   // A Claude reply must not be lost to a hub reconnect. It waits for the
   // link's hello_ok, so it knows whether the hub takes to_id.
   const outbox = new Outbox<QueuedReply>({
-    send: (r, unsent) =>
-      hub.open && hubVersion !== undefined && !held(r.frame.from_ref)
-        ? sendToHub(withTo(r), r.native ?? true, unsent)
-        : false,
+    send: (r, unsent) => {
+      if (!hub.open || hubVersion === undefined || held(r.frame.from_ref))
+        return false;
+      // Revived without its writer's id, to a hub that names writers: the name
+      // may now belong to another agent, so refuse and tell the session.
+      if (r.unnamed && hubIds) {
+        const agent = agents.byRef(r.frame.from_ref);
+        if (agent) void claude.notify(agent, replyGoneText(r.frame.to_name));
+        return true;
+      }
+      return sendToHub(withTo(r), r.native ?? true, unsent);
+    },
     stale: (r) => !agents.byRef(r.frame.from_ref)?.live,
     log,
   });
@@ -597,7 +611,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     target: (ref) => claudeTarget(ref, claudeSessions),
     // A native reply is a message from the session: the sink names the sender, never the frame.
     // Every reply names the peer's namespace (the deliver's), so a same-named local peer cannot get it.
-    onReply: (agentRef, peerName, text, namespace, peerId) => {
+    onReply: (agentRef, peerName, text, namespace, peerId, unnamed) => {
       // A lone surrogate costs one character, not the reply.
       if (!isWellFormed(text))
         log(
@@ -619,10 +633,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       }
       // Only the agent that wrote, never whoever holds the name now: to_id
       // is added at send time (withTo).
-      outbox.push({ frame: f, ...(peerId ? { peerId } : {}) });
+      outbox.push({
+        frame: f,
+        ...(peerId ? { peerId } : {}),
+        ...(unnamed ? { unnamed } : {}),
+      });
     },
     // A reply the daemon would not send: the session is told, as information.
-    hubIds: () => hubIds,
     onReplyRefused: (agentRef, peerName) => {
       const agent = agents.byRef(agentRef);
       if (agent) void claude.notify(agent, replyGoneText(peerName));
