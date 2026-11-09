@@ -277,6 +277,9 @@ describe("the Hermes plugin's text is bus-ipc's text", () => {
       [],
       [mk("a", "hermes", "live")],
       [mk("hermes-proj", "hermes", "away")],
+      [mk("PI-6", "pi", "away")],
+      [mk("Claude-12", "claude-code", "away"), mk("AGENT", "pi", "away")],
+      [mk("a", "pi", "live"), mk("OMP-3", "omp", "away")],
       [mk("claude-9", "claude-code", "live"), mk("pi-7", "pi", "queued")],
       [
         mk("a", "hermes", "live"),

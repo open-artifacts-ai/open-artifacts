@@ -231,11 +231,11 @@ describe("claude mcp tools", () => {
       row("gamma", "away"),
     ]);
     expect(many.content[0].text).toBe(
-      "- claude-1262814 (claude-code, ns)\n- gamma (claude-code, ns) (away since 2026-11-05 10:00 UTC)\nand 2 away sessions with no chosen name",
+      "- claude-1262814 (claude-code, ns)\n- gamma (claude-code, ns) (away since 2026-11-05 10:00 UTC)\n2 more away sessions with no chosen name (not listed, still reachable by name)",
     );
     const one = await roster([row("alpha", "live"), row("claude-1", "away")]);
     expect(one.content[0].text).toBe(
-      "- alpha (claude-code, ns)\nand 1 away session with no chosen name",
+      "- alpha (claude-code, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
     );
     const none = await roster([row("alpha", "live")]);
     expect(none.content[0].text).toBe("- alpha (claude-code, ns)");

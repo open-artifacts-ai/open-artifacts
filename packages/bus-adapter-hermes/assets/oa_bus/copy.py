@@ -489,8 +489,9 @@ def is_fallback_name(name, kind):
     return low == kind or low.startswith(f"{kind}-") or low == "agent" or re.fullmatch(r"claude-\d+", low) is not None
 
 
-def collapsed_away_line(n):
-    return f"and {n} away {'session' if n == 1 else 'sessions'} with no chosen name"
+def collapsed_away_line(n, listed):
+    more = " more" if listed else ""
+    return f"{n}{more} away {'session' if n == 1 else 'sessions'} with no chosen name (not listed, still reachable by name)"
 
 
 def roster_text(agents, now_ms):
@@ -515,7 +516,7 @@ def roster_text(agents, now_ms):
             )
         )
     if collapsed:
-        lines.append(collapsed_away_line(collapsed))
+        lines.append(collapsed_away_line(collapsed, len(lines) > 0))
     return "\n".join(lines)
 
 

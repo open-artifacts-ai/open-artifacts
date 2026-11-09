@@ -1250,6 +1250,9 @@ describe("status, as Pi shows it", () => {
       [],
       [mk("a", "pi", "live")],
       [mk("pi-6", "pi", "away")],
+      [mk("PI-6", "pi", "away")],
+      [mk("Claude-12", "claude-code", "away"), mk("AGENT", "pi", "away")],
+      [mk("a", "pi", "live"), mk("OMP-3", "omp", "away")],
       [mk("pi-6", "pi", "live"), mk("pi-7", "pi", "queued")],
       [
         mk("a", "pi", "live"),
@@ -1265,6 +1268,8 @@ describe("status, as Pi shows it", () => {
       );
     expect(
       copy.rosterText([mk("a", "pi", "live"), mk("pi-6", "pi", "away")], NOW),
-    ).toBe("- a (pi, ns)\nand 1 away session with no chosen name");
+    ).toBe(
+      "- a (pi, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
+    );
   });
 });

@@ -368,7 +368,7 @@ describe("rosterText (#1860)", () => {
 
   it("one collapsed away row says session", () => {
     expect(text([a({}), away("pi-6")])).toBe(
-      "- alpha (pi, ns)\nand 1 away session with no chosen name",
+      "- alpha (pi, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
     );
   });
 
@@ -383,7 +383,7 @@ describe("rosterText (#1860)", () => {
         away("agent-4", "pi"),
       ]),
     ).toBe(
-      "- alpha (pi, ns)\n- agent-4 (pi, ns) (away since 2026-11-05 10:00 UTC)\nand 4 away sessions with no chosen name",
+      "- alpha (pi, ns)\n- agent-4 (pi, ns) (away since 2026-11-05 10:00 UTC)\n4 more away sessions with no chosen name (not listed, still reachable by name)",
     );
   });
 
@@ -399,9 +399,18 @@ describe("rosterText (#1860)", () => {
     );
   });
 
+  it("folds uppercase fallback names; one folded row alone says session", () => {
+    expect(text([away("PI-6"), a({ name: "x" })])).toBe(
+      "- x (pi, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
+    );
+    expect(text([away("Claude-12", "claude-code")])).toBe(
+      "1 away session with no chosen name (not listed, still reachable by name)",
+    );
+  });
+
   it("only collapsed rows: just the count line; empty: the old message", () => {
     expect(text([away("pi-1"), away("pi-2")])).toBe(
-      "and 2 away sessions with no chosen name",
+      "2 away sessions with no chosen name (not listed, still reachable by name)",
     );
     expect(text([])).toBe("No agents in your namespace and linked ones.");
   });

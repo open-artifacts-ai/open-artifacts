@@ -529,8 +529,8 @@ export function rosterLine(
 }
 
 /** The count line for away rows with a harness fallback name (#1860). */
-export function collapsedAwayLine(n: number): string {
-  return `and ${n} away ${n === 1 ? "session" : "sessions"} with no chosen name`;
+export function collapsedAwayLine(n: number, listed: boolean): string {
+  return `${n}${listed ? " more" : ""} away ${n === 1 ? "session" : "sessions"} with no chosen name (not listed, still reachable by name)`;
 }
 
 /**
@@ -571,7 +571,7 @@ export function rosterText(
       ),
     );
   }
-  if (collapsed > 0) lines.push(collapsedAwayLine(collapsed));
+  if (collapsed > 0) lines.push(collapsedAwayLine(collapsed, lines.length > 0));
   return lines.join("\n");
 }
 

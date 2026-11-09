@@ -522,8 +522,8 @@ const isFallbackName = (name: string, kind: string): boolean => {
 };
 
 /** @oa/bus-ipc collapsedAwayLine: the count of away fallback-named rows. */
-const collapsedAwayLine = (n: number): string =>
-  `and ${n} away ${n === 1 ? "session" : "sessions"} with no chosen name`;
+const collapsedAwayLine = (n: number, listed: boolean): string =>
+  `${n}${listed ? " more" : ""} away ${n === 1 ? "session" : "sessions"} with no chosen name (not listed, still reachable by name)`;
 
 /** @oa/bus-ipc rosterText: the list_agents text from the hub's roster rows. */
 function rosterText(
@@ -558,7 +558,7 @@ function rosterText(
       ),
     );
   }
-  if (collapsed > 0) lines.push(collapsedAwayLine(collapsed));
+  if (collapsed > 0) lines.push(collapsedAwayLine(collapsed, lines.length > 0));
   return lines.join("\n");
 }
 

@@ -391,7 +391,7 @@ describe("status in OpenCode", () => {
       [
         "- live-one (opencode, ns)",
         "- kept (opencode, ns) (away since 2026-11-05 10:00 UTC)",
-        "and 3 away sessions with no chosen name",
+        "3 more away sessions with no chosen name (not listed, still reachable by name)",
       ].join("\n"),
     );
   });
