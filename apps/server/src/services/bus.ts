@@ -1,4 +1,8 @@
-import { LINK_PROOF_HEADER, LinkProofSchema } from "@oa/bus-protocol";
+import {
+  LINK_PROOF_ARG,
+  LINK_PROOF_HEADER,
+  LinkProofSchema,
+} from "@oa/bus-protocol";
 import {
   BUS_ROLE_PROPOSAL_TTL_MS,
   type BusAgent,
@@ -437,42 +441,125 @@ export async function hasConnectedMachine(
 export const LINK_LOOKUP_MS = 300;
 
 /**
+ * #1822: the one lookup: asks ONLY the hub of `userId`, the owner of the
+ * request's credential, which session `proof` belongs to. Person-scoped by
+ * construction: another member's proof is not in this member's hub. A miss, a
+ * malformed value, a slow or failing hub all give null; this never throws.
+ */
+async function lookupProof(
+  env: Env,
+  userId: string,
+  proof: unknown,
+): Promise<AgentIdentity | null> {
+  try {
+    const p = LinkProofSchema.safeParse(proof);
+    if (!busOn(env) || !p.success) return null;
+    // One bound for the whole lookup, the machine read included, so a slow
+    // D1 read cannot slow /mcp either; a timeout is unlinked, like a miss.
+    return await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        return hub ? await hub.agentByProof(await sha256Hex(p.data)) : null;
+      })(),
+      LINK_LOOKUP_MS,
+    );
+  } catch (e) {
+    logError("bus_link_lookup_failed", e);
+    return null;
+  }
+}
+
+/**
+ * #1856: takes the reserved proof argument out of a tools/call body, so no
+ * schema check, handler, audit row or error text ever sees it. Returns the body
+ * to forward (the original bytes when nothing was removed) and the proof the
+ * call(s) carried: undefined when none carried one. In a JSON-RPC batch every
+ * tools/call must carry the SAME value (a missing one counts as a different
+ * value), else the whole request is unlinked (`proof: null`); other methods
+ * are never read or changed. A body that is not JSON is left as it is.
+ */
+function takeProofArg(text: string): {
+  text: string;
+  proof?: unknown;
+} {
+  // The key could be written with JSON escapes (\u005f), so a body is only
+  // parsed when it names the key or has any \u escape: ordinary bodies are not.
+  if (!text.includes(LINK_PROOF_ARG) && !text.includes("\\u")) return { text };
+  let msg: unknown;
+  try {
+    msg = JSON.parse(text);
+  } catch {
+    return { text };
+  }
+  const items = Array.isArray(msg) ? msg : [msg];
+  const MISSING = Symbol("missing");
+  const seen: unknown[] = [];
+  let removed = false;
+  for (const m of items) {
+    const rec = m as { method?: unknown; params?: { arguments?: unknown } };
+    if (rec === null || typeof rec !== "object" || rec.method !== "tools/call")
+      continue;
+    const args = rec.params?.arguments;
+    if (args !== null && typeof args === "object" && LINK_PROOF_ARG in args) {
+      seen.push((args as Record<string, unknown>)[LINK_PROOF_ARG]);
+      delete (args as Record<string, unknown>)[LINK_PROOF_ARG];
+      removed = true;
+    } else seen.push(MISSING);
+  }
+  if (!removed) return { text };
+  const first = seen[0];
+  const same =
+    first !== MISSING &&
+    seen.every((v) => typeof v === "string" && v === first);
+  return { text: JSON.stringify(msg), proof: same ? first : null };
+}
+
+/**
  * #1822: the /mcp auth step's one link function. Takes the proof header off
- * the request (always, so no tool or handler ever sees it) and, when the bus
- * is on and the proof has the strict shape, asks ONLY the hub of `userId`,
- * the owner of the request's credential, which session it belongs to. The
- * lookup is person-scoped by construction: another member's proof is not in
- * this member's hub. A miss, a malformed value, a slow or failing hub all
- * give the same result, `identity` undefined; this never throws.
+ * the request (always, so no tool or handler ever sees it); #1856: also takes
+ * the reserved proof argument off a tools/call body. The header wins when
+ * both are present. The proof is then looked up (lookupProof) in the owner's
+ * hub only. Every miss gives `identity` undefined; this never throws.
  */
 export async function linkRequest(
   env: Env,
   userId: string,
   req: Request,
 ): Promise<{ req: Request; identity?: AgentIdentity }> {
-  const proof = req.headers.get(LINK_PROOF_HEADER);
-  if (proof === null) return { req };
-  const headers = new Headers(req.headers);
-  headers.delete(LINK_PROOF_HEADER);
-  const clean = new Request(req, { headers });
+  const header = req.headers.get(LINK_PROOF_HEADER);
+  let out = req;
+  let argProof: unknown;
   try {
-    if (!busOn(env) || !LinkProofSchema.safeParse(proof).success)
-      return { req: clean };
-    // One bound for the whole lookup, the machine read included, so a slow
-    // D1 read cannot slow /mcp either; a timeout is unlinked, like a miss.
-    const identity = await within(
-      (async () => {
-        if (!(await hasConnectedMachine(env, userId))) return null;
-        const hub = busHub(env, userId);
-        return hub ? await hub.agentByProof(await sha256Hex(proof)) : null;
-      })(),
-      LINK_LOOKUP_MS,
-    );
-    return identity ? { req: clean, identity } : { req: clean };
+    if (header !== null) {
+      const headers = new Headers(req.headers);
+      headers.delete(LINK_PROOF_HEADER);
+      out = new Request(req, { headers });
+    }
+    if (req.method === "POST" && req.body) {
+      const text = await out.clone().text();
+      const taken = takeProofArg(text);
+      if (taken.text !== text) {
+        const headers = new Headers(out.headers);
+        headers.set(
+          "content-length",
+          String(new TextEncoder().encode(taken.text).byteLength),
+        );
+        out = new Request(out.url, {
+          method: out.method,
+          headers,
+          body: taken.text,
+        });
+      }
+      argProof = taken.proof;
+    }
   } catch (e) {
-    logError("bus_link_lookup_failed", e);
-    return { req: clean };
+    logError("bus_link_body_failed", e);
   }
+  const proof = header !== null ? header : argProof;
+  if (proof === undefined) return { req: out };
+  const identity = await lookupProof(env, userId, proof);
+  return identity ? { req: out, identity } : { req: out };
 }
 
 /**
