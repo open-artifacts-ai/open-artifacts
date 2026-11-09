@@ -1176,7 +1176,7 @@ function RestoreDialog({
           {trial && <TrialNotice endsOn={trialEndsOn()} />}
         </>
       }
-      confirm="Restore"
+      confirm={trial ? "Restore and start trial" : "Restore"}
       onConfirm={() =>
         restore.mutate(m.id, {
           onSuccess: () =>

@@ -297,6 +297,12 @@ describe("the Restore dialog", () => {
     const { dialog, posts } = await openRestore(SOLO);
     expect(within(dialog).getByText(NOTICE)).toBeVisible();
     expect(within(dialog).getByText("Trial ends Nov 23, 2026.")).toBeVisible();
+    expect(
+      within(dialog).getByRole("button", { name: "Restore and start trial" }),
+    ).toBeVisible();
+    expect(within(dialog).queryByRole("button", { name: "Restore" })).toBe(
+      null,
+    );
     expect(posts.some((p) => p.path.endsWith("/restore"))).toBe(false);
   });
 
@@ -307,12 +313,20 @@ describe("the Restore dialog", () => {
     });
     expect(within(dialog).queryByText(NOTICE)).toBe(null);
     expect(within(dialog).queryByText(/Trial ends/)).toBe(null);
+    expect(
+      within(dialog).getByRole("button", { name: "Restore" }),
+    ).toBeVisible();
+    expect(
+      within(dialog).queryByRole("button", { name: "Restore and start trial" }),
+    ).toBe(null);
     expect(posts.some((p) => p.path.endsWith("/restore"))).toBe(false);
   });
 
   it("Restore sends the request only on confirm", async () => {
     const { dialog, posts } = await openRestore(SOLO);
-    fireEvent.click(within(dialog).getByRole("button", { name: "Restore" }));
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Restore and start trial" }),
+    );
     await waitFor(() =>
       expect(posts.some((p) => p.path.endsWith("/restore"))).toBe(true),
     );

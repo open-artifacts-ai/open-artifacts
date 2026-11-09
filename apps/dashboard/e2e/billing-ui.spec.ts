@@ -118,7 +118,15 @@ for (const width of WIDTHS)
       if (label === "never-ran") {
         await expect(notice).toBeVisible();
         await expect(dialog.getByText(/^Trial ends /)).toBeVisible();
-      } else await expect(notice).toHaveCount(0);
+        await expect(
+          dialog.getByRole("button", { name: "Restore and start trial" }),
+        ).toBeVisible();
+      } else {
+        await expect(notice).toHaveCount(0);
+        await expect(
+          dialog.getByRole("button", { name: "Restore", exact: true }),
+        ).toBeVisible();
+      }
       await noSideScroll(page);
       await shoot(page, `restore-${label}-${width}`, info);
     });
