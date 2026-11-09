@@ -185,8 +185,11 @@ export async function notifyAgent(
  * (an open user decision) the asker's member is the only link to an agent. A
  * person-authored ask with no following agent gets nothing. The member is
  * re-checked at send time as the follows fan-out does (a lapsed one loses
- * their follows on the artifact and hears nothing). One waiting notice per
- * thread (the coalesce key), so a changed answer replaces it. Rate: the
+ * their follows on the artifact and hears nothing). The coalesce key is one
+ * per ask comment (a thread can hold two asks): a live agent gets each
+ * changed answer at once, and only a notice still waiting for an offline
+ * agent is replaced by the newer answer. The caller skips an answer whose
+ * option did not change (a retry). Rate: the
  * answer itself already counts against the caller's comment limit
  * (commentsAnswer), and the send reads at most FANOUT_MAX follow rows of one
  * member. Text is fixed, with no question, option or name. Never throws.
@@ -234,7 +237,7 @@ export async function notifyAnswered(
         threadId,
         commentId,
       }),
-      coalesceKey: `${artifactId}:${threadId}:answered`,
+      coalesceKey: `${artifactId}:${commentId}:answered`,
     };
     const out = await deliverNotice(env, askerId, n, scope);
     logInfo("comment_notice", { artifactId, kind: "answered", outcome: out });

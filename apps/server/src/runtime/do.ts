@@ -2076,7 +2076,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     by: StoredActor;
     optionId: string;
     rate: string;
-  }): StoredComment {
+  }): { comment: StoredComment; unchanged: boolean } {
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       this.countComment(a.rate, false);
@@ -2091,6 +2091,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (r.status === "resolved") fail("conflict", "This ask is closed");
       if (!r.ask.options.some((o) => o.id === a.optionId))
         fail("bad_request", "Unknown option");
+      // The same option again (a retry, a double click) changes nothing the asker needs to hear.
+      const unchanged = r.ask.answer?.optionId === a.optionId;
       const now = this.iso();
       setAnswer(this.sql, a.commentId, {
         optionId: a.optionId,
@@ -2098,7 +2100,10 @@ export class ArtifactRuntime extends DurableObject<Env> {
         at: now,
       });
       touchThread(this.sql, a.threadId, now);
-      return getComment(this.sql, a.threadId, a.commentId) as StoredComment;
+      return {
+        comment: getComment(this.sql, a.threadId, a.commentId) as StoredComment,
+        unchanged,
+      };
     });
     this.broadcastComments();
     return out;

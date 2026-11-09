@@ -718,7 +718,7 @@ export async function answerAsk(
   /** The artifact's current version and the request's ctx: the asker's agents hear of the answer (#1535), after the response. */
   after?: Announce,
 ): Promise<Comment> {
-  const c = await call(() =>
+  const { comment: c, unchanged } = await call(() =>
     stub(env, artifactId).commentsAnswer({
       threadId,
       commentId,
@@ -729,7 +729,7 @@ export async function answerAsk(
   );
   // The answer is stored: the asker's following agents hear of it, in the
   // background, and a failure never fails the answer (inBackground catches).
-  if (after && c.author.kind === "user")
+  if (after && !unchanged && c.author.kind === "user")
     await inBackground(
       after.ctx,
       notifyAnswered(
