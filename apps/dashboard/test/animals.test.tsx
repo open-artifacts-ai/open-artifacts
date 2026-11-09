@@ -19,7 +19,7 @@ const drawn = ANIMALS.filter((a) => !a.lucide);
 
 describe("AnimalIcon", () => {
   it("every ANIMALS id has an icon", () => {
-    expect(ANIMALS).toHaveLength(58);
+    expect(ANIMALS).toHaveLength(55);
     for (const a of ANIMALS) {
       const svg = svgOf(a.id);
       expect(svg.getAttribute("viewBox"), a.id).toBe("0 0 24 24");
@@ -63,7 +63,6 @@ describe("AnimalIcon", () => {
         "bear": "<path d="M6.41 7.78A8 8 0 0 1 17.59 7.78A2.8 2.8 0 1 1 18.9 9.46A8 8 0 1 1 5.1 9.46A2.8 2.8 0 1 1 6.41 7.78z"></path><path d="M8.6 12.5h.01M15.4 12.5h.01"></path><ellipse cx="12" cy="16.3" rx="2.6" ry="2"></ellipse><path d="M12 15.4h.01"></path>",
         "bee": "<ellipse cx="12" cy="14.5" rx="5" ry="6"></ellipse><path d="M7.2 13h9.6M7.5 17h9"></path><path d="M9.5 9C7 6.5 4.5 6.5 3.5 5.5c.5-2 4.5-2 6.5 1.5M14.5 9c2.5-2.5 5-2.5 6-3.5-.5-2-4.5-2-6.5 1.5"></path><path d="M11 8.5 9.8 6M13 8.5 14.2 6"></path><path d="M12 20.5v1.5"></path>",
         "butterfly": "<path d="M12 12C9.5 7.5 5 3.5 3.5 5.5 2.5 8 5.5 12 12 12z"></path><path d="M12 12c-4.5.5-7.5 3-6.5 5.5 1 2.5 5.5 1.5 6.5-5.5z"></path><g transform="matrix(-1 0 0 1 24 0)"><path d="M12 12C9.5 7.5 5 3.5 3.5 5.5 2.5 8 5.5 12 12 12z"></path><path d="M12 12c-4.5.5-7.5 3-6.5 5.5 1 2.5 5.5 1.5 6.5-5.5z"></path></g><path d="M12 8v11"></path><path d="M12 8 10.3 4.8M12 8l1.7-3.2"></path>",
-        "capybara": "<path d="M8 9H4a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h4v2.5a.5.5 0 0 0 .5.5h11a1.5 1.5 0 0 0 1.5-1.5V14c0-3.5-2.5-6-6-6-2.5 0-5.5 0-7.5 1z"></path><path d="M5 11.5h.01"></path><path d="M10.5 20v2M18 20v2"></path>",
         "chicken": "<path d="M5 13c0-3.5 3-6 7-6s7 2.5 7 6v1.5c0 3.5-3 6-7 6s-7-2.5-7-6z"></path><path d="M9.5 7.5c-1.5-1-1.5-3.5.5-3.8 1-1.5 3-1.5 4 0 2 .3 2 2.8.5 3.8"></path><path d="M9 12h.01M15 12h.01"></path><path d="M10.8 13.5h2.4L12 15.3z"></path><path d="M5 15.5c-2 0-3-1-3-2.5M19 15.5c2 0 3-1 3-2.5"></path><path d="M10 20.5v1.5M14 20.5v1.5"></path>",
         "cow": "<path d="M7.5 7h9l2 3.5v6a4.5 4.5 0 0 1-4.5 4.5h-4A4.5 4.5 0 0 1 5.5 16.5v-6z"></path><path d="M7.5 7C5.5 7 4.2 5.8 3.5 3.8M16.5 7c2 0 3.3-1.2 4-3.2M5.8 11 2.5 10M18.2 11l3.3-1"></path><path d="M8.6 11h.01M15.4 11h.01"></path><path d="M8.5 17h7"></path><path d="M10.2 18.7h.01M13.8 18.7h.01"></path>",
         "crab": "<ellipse cx="12" cy="14" rx="6.5" ry="4.5"></ellipse><circle cx="4.5" cy="6.5" r="2.2"></circle><circle cx="19.5" cy="6.5" r="2.2"></circle><path d="M6.3 11.5 5.5 8.6M17.7 11.5l.8-2.9"></path><path d="M7.5 17.5 5 20M10 18.3 9 21M14 18.3l1 2.7M16.5 17.5 19 20"></path><path d="M9.8 13h.01M14.2 13h.01"></path>",
@@ -78,14 +77,12 @@ describe("AnimalIcon", () => {
         "goat": "<path d="M8 7.5h8l1 6.5a5 5 0 0 1-2.5 4.3L12 21l-2.5-2.7A5 5 0 0 1 7 14z"></path><path d="M8 7.5C5.8 7.5 4.2 5.5 4.2 2.8M16 7.5c2.2 0 3.8-2 3.8-4.7M7.5 11 3.5 10M16.5 11l4-1"></path><path d="M9.2 11.5h.01M14.8 11.5h.01"></path><path d="M10.8 16.8h.01M13.2 16.8h.01"></path>",
         "hamster": "<path d="M6.31 7.9A8.2 8.2 0 0 1 17.69 7.9A2.2 2.2 0 1 1 18.8 9.22A8.2 8.2 0 1 1 5.2 9.22A2.2 2.2 0 1 1 6.31 7.9z"></path><path d="M8.5 12h.01M15.5 12h.01"></path><path d="M10.8 14.8h2.4L12 16z"></path><path d="M12 16v1.2M10 18a2 2 0 0 0 2-.8 2 2 0 0 0 2 .8"></path><path d="M4 15.5H2M4.5 18 2.5 19M20 15.5h2M19.5 18l2 1"></path>",
         "hedgehog": "<path d="M2.5 18.5 5.5 15L5.7 15.83L3.56 11.76L7.99 13.01L8.01 8.41L11.33 11.59L13.5 7.54L14.94 11.91L18.76 9.36L17.99 13.89L22.56 13.42L19.74 17.06L21 19H5z"></path><path d="M4.8 17.5h.01"></path>",
-        "hippo": "<path d="M2.5 18c0-5 2.5-9 5-9h9c2.5 0 5 4 5 9 0 2-1.5 3-3 3h-13c-1.5 0-3-1-3-3z"></path><path d="M5.5 9.5 5 7.5M18.5 9.5l.5-2"></path><path d="M8 12.5h.01M16 12.5h.01"></path><path d="M10 17.5h.01M14 17.5h.01"></path>",
         "horse": "<path d="M8 2.5 9.5 6h5L16 2.5l1.5 8-2.2 4.5v3.5a3.3 3.3 0 0 1-6.6 0V15L6.5 10.5z"></path><path d="M8.9 10.5h.01M15.1 10.5h.01"></path><path d="M10.5 18.5h.01M13.5 18.5h.01"></path>",
         "jellyfish": "<path d="M4 11a8 7.5 0 0 1 16 0c0 .6-.4 1-1 1H5c-.6 0-1-.4-1-1z"></path><path d="M7.5 12c0 2-1.5 2.5-1.5 4.5S7.5 19 7.5 21M12 12c0 2-1.5 3-1.5 5s1.5 2 1.5 4M16.5 12c0 2-1.5 2.5-1.5 4.5s1.5 2.5 1.5 4.5"></path><path d="M9 8.5h.01M15 8.5h.01"></path>",
         "koala": "<path d="M7.6 8.62A6.8 6.8 0 0 1 16.4 8.62A3.4 3.4 0 1 1 18.59 12.12A6.8 6.8 0 1 1 5.41 12.12A3.4 3.4 0 1 1 7.6 8.62z"></path><path d="M8.6 12.2h.01M15.4 12.2h.01"></path><path d="M10.4 13.5h3.2v3.3a1.6 1.6 0 0 1-3.2 0z"></path>",
         "ladybug": "<circle cx="12" cy="13.5" r="7.5"></circle><path d="M12 6v15"></path><path d="M10 4.5 8.5 2.5M14 4.5l1.5-2"></path><path d="M8.5 11h.01M15.5 11h.01M8.5 16.5h.01M15.5 16.5h.01"></path>",
         "lion": "<path d="M12 3.2A3.4 3.4 0 0 1 17.66 5.26A3.4 3.4 0 0 1 20.67 10.47A3.4 3.4 0 0 1 19.62 16.4A3.4 3.4 0 0 1 15.01 20.27A3.4 3.4 0 0 1 8.99 20.27A3.4 3.4 0 0 1 4.38 16.4A3.4 3.4 0 0 1 3.33 10.47A3.4 3.4 0 0 1 6.34 5.26A3.4 3.4 0 0 1 12 3.2z"></path><path d="M9.4 11h.01M14.6 11h.01"></path><path d="M10.8 14.2h2.4L12 15.5z"></path><path d="M12 15.5v1.3M10.4 17.4A1.7 1.7 0 0 0 12 16.8a1.7 1.7 0 0 0 1.6.6"></path>",
         "lizard": "<ellipse cx="12" cy="4.5" rx="2.2" ry="2.6"></ellipse><path d="M10 7.5c-1 3.5 0 7 2 9.5 2-2.5 3-6 2-9.5"></path><path d="M12 17c0 2.5 2.5 3 2.5 5"></path><path d="M10.2 9.5 6.5 8 5 10M13.8 9.5 17.5 8 19 10M10.5 14 6.5 15.5 5 17.5M13.5 14l4 1.5 1.5 2"></path><path d="M11.2 4h.01M12.8 4h.01"></path>",
-        "llama": "<path d="M9.5 6.5C8 5 8 3.5 9 2M14.5 6.5C16 5 16 3.5 15 2"></path><path d="M9 9a3 3 0 0 1 6 0v2a3 3 0 0 1-6 0z"></path><path d="M10 13.5 9 22M14 13.5l1 8.5"></path>",
         "monkey": "<path d="M6.26 8.65A7.2 7.2 0 0 1 17.74 8.65A3 3 0 1 1 19.19 12.64A7.2 7.2 0 1 1 4.81 12.64A3 3 0 1 1 6.26 8.65z"></path><path d="M12 12.4c-.7-1.9-4.4-1.8-4.4 1.2 0 2.7 1.9 4.8 4.4 4.8s4.4-2.1 4.4-4.8c0-3-3.7-3.1-4.4-1.2z"></path><path d="M10.1 13.2h.01M13.9 13.2h.01"></path><path d="M10.7 16.1h2.6"></path>",
         "octopus": "<path d="M5 11a7 7 0 0 1 14 0v2.5c0 1.5.8 2.5 2.5 3.5"></path><path d="M5 11v2.5c0 1.5-.8 2.5-2.5 3.5"></path><path d="M9 14.5v4c0 1.5-1 2.5-2.5 2.5M15 14.5v4c0 1.5 1 2.5 2.5 2.5M12 15v5"></path><path d="M9 10.5h.01M15 10.5h.01"></path>",
         "otter": "<path d="M6.17 8.31A7.8 7.8 0 0 1 17.83 8.31A1.9 1.9 0 1 1 18.99 10.04A7.8 7.8 0 1 1 5.01 10.04A1.9 1.9 0 1 1 6.17 8.31z"></path><path d="M8.7 12h.01M15.3 12h.01"></path><ellipse cx="12" cy="16.2" rx="3.3" ry="2.5"></ellipse><path d="M10.8 15.3h2.4L12 16.6z"></path><path d="M7 17.5h.01M17 17.5h.01"></path>",
@@ -108,7 +105,7 @@ describe("AnimalIcon", () => {
   });
 
   it("drawn icons are stroke only, with the shared stroke style", () => {
-    expect(drawn).toHaveLength(45);
+    expect(drawn).toHaveLength(42);
     for (const a of drawn) {
       const svg = svgOf(a.id);
       expect(svg.getAttribute("fill"), a.id).toBe("none");
