@@ -43,7 +43,7 @@ describe("viewer presence contract", () => {
       .map((a) => a.id)
       .sort();
     expect(ids).toEqual([...LUCIDE].sort());
-    for (const id of ["duck", "capybara", "axolotl", "llama"]) {
+    for (const id of ["duck", "axolotl", "otter", "koala"]) {
       expect(ANIMALS.some((a) => a.id === id && !a.lucide)).toBe(true);
     }
   });

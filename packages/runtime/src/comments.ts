@@ -1,3 +1,4 @@
+import type { SelectionAnchor } from "@oa/shared";
 import {
   type Anchor,
   type BlockHint,
@@ -101,6 +102,16 @@ export function createComments(
     "html";
   const hasPins = format === "image" || format === "pdf";
   let mode: Mode = "off";
+  /**
+   * The quote a comment is being written about (#1834), kept painted. No
+   * version: it is a paint hint, not a record (the resolver ignores it).
+   */
+  let draftText: SelectionAnchor | undefined;
+  let draftCache: {
+    text: SelectionAnchor;
+    ver: number;
+    range: Range | null;
+  } | null = null;
   let threads: Thread[] = [];
   let ghost: { x: number; y: number; page?: number } | undefined;
   /** Text index of the body, rebuilt when the text version or the body changes. */
@@ -215,6 +226,21 @@ export function createComments(
     return slots;
   }
 
+  /** The draft quote's range, resolved once per text version. */
+  function draftRange(): Range | null {
+    if (!draftText) return null;
+    if (draftCache?.text === draftText && draftCache.ver === textVer)
+      return draftCache.range;
+    const idx = getIndex();
+    const res = createTextResolver(idx.text)(draftText as TextAnchor);
+    const range =
+      res.state === "exact" || res.state === "partial"
+        ? rangeFromIndex(idx, res.start, res.end)
+        : null;
+    draftCache = { text: draftText, ver: textVer, range };
+    return range;
+  }
+
   const clearPaint = () => {
     painted = [];
     const reg = highlights();
@@ -241,8 +267,14 @@ export function createComments(
     }
     const reg = highlights();
     if (reg && typeof Highlight !== "undefined") {
+      // #1834: the quote being written about takes the active thread's colour,
+      // so choosing Comment highlights it and posting changes nothing.
+      const draft = draftRange();
       reg.set("oa-comment", new Highlight(...normal));
-      reg.set("oa-comment-active", new Highlight(...active));
+      reg.set(
+        "oa-comment-active",
+        new Highlight(...active, ...(draft ? [draft] : [])),
+      );
     }
   }
 
@@ -599,6 +631,10 @@ export function createComments(
         reportSelection();
       }
       if (mode === "off") {
+        // No mode, no draft: a quote left behind would paint on the next set
+        // (#1850 review).
+        draftText = undefined;
+        draftCache = null;
         hideButton();
         clearPaint();
         lastReport = "";
@@ -609,6 +645,8 @@ export function createComments(
     } else if (m.type === "comments.set") {
       threads = m.threads;
       ghost = m.ghost;
+      draftText = m.draft;
+      draftCache = null;
       slots = null;
       report(true);
     } else if (m.type === "comments.comment") {

@@ -51,7 +51,7 @@ const call = (
   });
 
 describe("opencode mcp tools", () => {
-  it("exposes the eight vendor-neutral tools, and no card", () => {
+  it("exposes the nine vendor-neutral tools, and no card", () => {
     expect(TOOLS.map((t) => t.name)).toEqual([
       "list_agents",
       "send_message",
@@ -61,6 +61,7 @@ describe("opencode mcp tools", () => {
       "follow",
       "unfollow",
       "following",
+      "propose_reach",
     ]);
   });
 
@@ -90,6 +91,23 @@ describe("opencode mcp tools", () => {
       {
         ref: "ses_a",
         frame: { type: "follow", artifact: "abc", late: true },
+      },
+    ]);
+  });
+
+  it("lists the reach cap, and a proposal is the session's own request (#1346)", async () => {
+    const svc = service({
+      ses_a: { root: "ses_a", directory: "/work/a", title: null },
+    });
+    await call(svc, "ses_a", "propose_reach", {
+      namespaces: ["x"],
+      nativeRef: "ses_b",
+    });
+    expect(svc.hellos[0]?.caps).toContain("reach");
+    expect(svc.requests).toEqual([
+      {
+        ref: "ses_a",
+        frame: { type: "propose_reach", namespaces: ["x"], late: true },
       },
     ]);
   });
@@ -365,6 +383,33 @@ describe("status in OpenCode", () => {
         "- d (opencode, ns)",
         "- e (opencode, ns)",
         "- f (opencode, ns) (away since 2026-11-05 10:00 UTC)",
+      ].join("\n"),
+    );
+  });
+
+  it("#1860: away fallback-named rows collapse to a count", async () => {
+    const away = (name: string) =>
+      row({
+        name,
+        state: "away",
+        live: false,
+        since: "2026-11-05T10:00:00.000Z",
+      });
+    const { text } = await run("list_agents", {}, () => ({
+      type: "roster",
+      agents: [
+        row({ name: "live-one" }),
+        away("opencode-3"),
+        away("opencode"),
+        away("agent"),
+        away("kept"),
+      ],
+    }));
+    expect(text).toBe(
+      [
+        "- live-one (opencode, ns)",
+        "- kept (opencode, ns) (away since 2026-11-05 10:00 UTC)",
+        "3 more away sessions with no chosen name (not listed, still reachable by name)",
       ].join("\n"),
     );
   });

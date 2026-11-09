@@ -99,6 +99,7 @@ export const NO_REFERRER: ReadonlySet<string> = new Set([
   // fragment (#1426), which a Referer never carries; no referrer anyway.
   "/bus/roles/confirm",
   "/bus/links/confirm",
+  "/bus/reach/confirm",
 ]);
 /**
  * Path prefixes that also send no referrer: the old confirm links carried the
@@ -107,6 +108,7 @@ export const NO_REFERRER: ReadonlySet<string> = new Set([
 export const NO_REFERRER_PREFIXES: readonly string[] = [
   "/bus/roles/confirm/",
   "/bus/links/confirm/",
+  "/bus/reach/confirm/",
 ];
 
 /**

@@ -27,6 +27,7 @@ CALLS = {
     "statusLabelTooLong": copy.status_label_too_long,
     "statusSaysText": copy.status_says_text,
     "rosterLine": copy.roster_line,
+    "rosterText": copy.roster_text,
     "selfText": copy.self_text,
     "wrap": lambda from_name, text, source: wrap.wrap(from_name, text, source),
     "daemonSocketPath": sockpath.daemon_socket_path,

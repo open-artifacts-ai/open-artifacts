@@ -148,7 +148,8 @@ export const planStatus = (
     };
   if (solo && b.soloTrialEndsAt && Date.parse(b.soloTrialEndsAt) > Date.now())
     return {
-      pill: { label: "Trial", tone: "info" },
+      // Not "Trial": that is the Business trial's word.
+      pill: { label: "Free month", tone: "info" },
       note: {
         tone: "info",
         text: `Your free month ends ${date(b.soloTrialEndsAt)}. Then $1/month or $12/year.`,

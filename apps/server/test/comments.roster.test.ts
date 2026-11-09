@@ -19,6 +19,7 @@ import {
 import {
   agentRoster,
   commentNoticeText,
+  viewerRosterAgents,
 } from "../src/services/comment-agents.js";
 import { addThread, type CommentWho } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
@@ -70,7 +71,12 @@ const machineFor = async (userId: string) =>
     .bind(newId(), userId, newId(), Date.now(), Date.now())
     .run();
 
-const agentRow = (namespace: string, name: string, running = true) => ({
+const agentRow = (
+  namespace: string,
+  name: string,
+  running = true,
+  state: "live" | "queued" | "away" = running ? "live" : "away",
+) => ({
   id: newId(),
   namespace,
   name,
@@ -78,7 +84,7 @@ const agentRow = (namespace: string, name: string, running = true) => ({
   machineId: "m",
   machineLabel: "m",
   global: false,
-  state: "open",
+  state,
   running,
   since: null,
   updatedAt: new Date().toISOString(),
@@ -184,6 +190,40 @@ describe("roster: the viewer's own running agents", () => {
     // The key is the follow's key: one hash for one address.
     const again = await agentRoster(E, s.id, s.owner.userId, false);
     expect(again.find((x) => x.name === "Runner")?.key).toBe(runner?.key);
+  });
+
+  it("online is a connected daemon: a running agent whose machine is away is listed, offline", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    await machineFor(s.editor.userId);
+    await follow(
+      E,
+      s.editor.userId,
+      { namespace: "ns-e", name: "Codex" },
+      s.id,
+    );
+    await follow(E, s.editor.userId, { namespace: "ns-e", name: "Live" }, s.id);
+    const h = hubs({
+      [s.owner.userId]: [
+        agentRow("ns-o", "Up"),
+        agentRow("ns-o", "Away", true, "queued"),
+      ],
+      [s.editor.userId]: [
+        agentRow("ns-e", "Codex", true, "queued"),
+        agentRow("ns-e", "Live"),
+      ],
+    });
+    const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
+    const by = Object.fromEntries(
+      r.map((x) => [x.name.replace(/ \(.*/, ""), x.online]),
+    );
+    expect(by).toEqual({ Up: true, Away: false, Codex: false, Live: true });
+    // The same through the POST-time lookup of the viewer's own.
+    const own = await viewerRosterAgents(h.env, s.id, s.owner.userId);
+    expect(Object.fromEntries(own.map((x) => [x.name, x.online]))).toEqual({
+      Up: true,
+      Away: false,
+    });
   });
 
   it("a viewer with no machine costs no hub read", async () => {

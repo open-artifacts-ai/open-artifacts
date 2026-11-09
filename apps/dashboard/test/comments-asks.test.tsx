@@ -234,6 +234,75 @@ describe("asks on the comments column", () => {
     ).toHaveAttribute("aria-pressed", "false");
   });
 
+  it("shows letters on all options unless every id equals its label", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          options: [
+            { id: "wide", label: "Wide layout" },
+            { id: "compact", label: "Compact list" },
+          ],
+          recommended: undefined,
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    const keys = [...c.querySelectorAll("[data-option-key]")].map(
+      (k) => k.textContent,
+    );
+    expect(keys).toEqual(["A", "B"]);
+  });
+
+  it("shows no letters when every id equals its label", async () => {
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          options: [
+            { id: "yes", label: " Yes " },
+            { id: "no", label: "No" },
+          ],
+          recommended: undefined,
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(c.querySelectorAll("[data-option-key]")).toHaveLength(0);
+  });
+
+  it("omits the letter from the decided line when it equals the label", async () => {
+    serveThreads(() => [
+      askThread(
+        { status: "resolved" },
+        {
+          options: [
+            { id: "yes", label: "Yes" },
+            { id: "no", label: "No" },
+          ],
+          recommended: undefined,
+          closed: true,
+          answer: {
+            optionId: "yes",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Show resolved/ }),
+    );
+    const line = await within(c).findByRole("button", { name: /Show$/ });
+    expect(line.textContent).toMatch(/^Which layout\? Yes · you, /);
+  });
+
   it("drops the amber once you have picked", async () => {
     serveThreads(() => [
       askThread(
@@ -432,7 +501,7 @@ describe("asks on the comments column", () => {
     );
     const line = await within(c).findByRole("button", { name: /Show$/ });
     // The triangle is decoration: the name ends in "Show", not the glyph.
-    expect(line).toHaveTextContent(/Which layout\? Side by side · you, .+/);
+    expect(line).toHaveTextContent(/Which layout\? B, Side by side · you, .+/);
     // versionDate, not a 24-hour HH:MM.
     expect(line.textContent).not.toMatch(/\d\d:\d\d/);
     expect(line).toHaveAttribute("aria-expanded", "false");
@@ -513,6 +582,35 @@ describe("asks on the comments column", () => {
 });
 
 describe("@mentions in the composer", () => {
+  it("puts the caret right after a picked name at once (#1795)", async () => {
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, () =>
+        HttpResponse.json([
+          { key: "agent:design", name: "OA Design", online: true },
+        ]),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = (await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
+    })) as HTMLTextAreaElement;
+    fireEvent.focus(box);
+    // The reader typed "@OA D" in front of words already in the box.
+    fireEvent.change(box, {
+      target: { value: "@OA D tail", selectionStart: 5, selectionEnd: 5 },
+    });
+    const menu = await within(c).findByRole("listbox", {
+      name: "Agents on this page",
+    });
+    fireEvent.mouseDown(
+      within(menu).getByRole("option", { name: /OA Design/ }),
+    );
+    expect(box).toHaveValue("@OA Design  tail");
+    // Not a frame later: keys typed right after the pick must land here.
+    expect(box.selectionStart).toBe(11);
+  });
+
   it("opens a picker on @, sends the picked key, and shows delivery in plain words", async () => {
     server.use(
       http.get(`*${R.artifactAgents(OWNED)}`, () =>
@@ -548,6 +646,42 @@ describe("@mentions in the composer", () => {
       body: "@OA Design why B?",
       mentions: [{ key: "agent:design" }],
     });
+  });
+
+  it("renders posted @names as chips, as text only", async () => {
+    const t = askThread();
+    const root = t.comments[0] as Record<string, unknown>;
+    delete root.ask;
+    root.body = "hi @C++ Bot and @OA Design. @OA Designer <b>x</b> @Bobby";
+    root.mentions = [
+      { key: "agent:c", name: "C++ Bot", delivery: "seen" },
+      { key: "agent:b", name: "OA Design", delivery: "seen" },
+    ];
+    serveThreads(() => [t]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText(/hi/);
+    const chips = [...c.querySelectorAll("[data-mention-chip]")].map(
+      (e) => e.textContent,
+    );
+    expect(chips).toEqual(["@C++ Bot", "@OA Design"]);
+    const p = c.querySelector("[data-mention-chip]")?.parentElement;
+    expect(p?.textContent).toBe(
+      "hi @C++ Bot and @OA Design. @OA Designer <b>x</b> @Bobby",
+    );
+    expect(p?.querySelector("b")).toBeNull();
+  });
+
+  it("renders a body without mentions as plain text", async () => {
+    const t = askThread();
+    const root = t.comments[0] as Record<string, unknown>;
+    delete root.ask;
+    root.body = "no @OA Design chip here";
+    serveThreads(() => [t]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("no @OA Design chip here");
+    expect(c.querySelector("[data-mention-chip]")).toBeNull();
   });
 
   it("renders each mention's delivery", async () => {
@@ -907,6 +1041,47 @@ describe("agent list loads on composer focus", () => {
     fireEvent.blur(box);
     fireEvent.focus(box);
     expect(n.count).toBe(1);
+  });
+
+  it("hints at @ in the placeholder for those who can mention", async () => {
+    serveThreads(() => [askThread({}, {})]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await wholePage(c)).toHaveAttribute(
+      "placeholder",
+      "Add a comment. Type @ to mention an agent.",
+    );
+    fireEvent.click(await within(c).findByRole("button", { name: "Reply" }));
+    expect(
+      await within(c).findByRole("textbox", { name: "Reply" }),
+    ).toHaveAttribute("placeholder", "Reply. Type @ to mention an agent.");
+  });
+
+  it("keeps the plain placeholder for a viewer", async () => {
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({
+          ...fixtures.artifacts.find((a) => a.id === OWNED),
+          access: "viewer",
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: true,
+            comment: true,
+          },
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await wholePage(c)).toHaveAttribute(
+      "placeholder",
+      "Comment on the whole page",
+    );
   });
 
   it("makes no call for a viewer who can't mention", async () => {

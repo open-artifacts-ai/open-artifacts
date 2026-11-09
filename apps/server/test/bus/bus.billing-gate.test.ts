@@ -86,7 +86,8 @@ const openSocket = (token: string) =>
 
 const base = { trialEndsAt: 1, graceUntil: null, version: 1 };
 const LOCKS: Record<string, BillingRow> = {
-  trial_ended: { ...base, tier: "trial", status: "active" },
+  // A trial answer with no end date counts as ended (a passed date is Solo, #1756).
+  trial_ended: { ...base, trialEndsAt: null, tier: "trial", status: "active" },
   lapsed: { ...base, tier: "team", status: "lapsed" },
   payment_failed: { ...base, tier: "team", status: "past_due", graceUntil: 1 },
 };
@@ -218,6 +219,8 @@ const confirmRole = (who: U) =>
   confirmPost("/bus/roles/confirm", ROLE_CONFIRM_SCOPE, who);
 const confirmLink = (who: U) =>
   confirmPost("/bus/links/confirm", "bus-link-confirm", who);
+const confirmReach = (who: U) =>
+  confirmPost("/bus/reach/confirm", "bus-reach-confirm", who);
 
 /** A machine token for `who`, as the CLI holds it. */
 async function machineToken(who: U): Promise<string> {
@@ -242,6 +245,24 @@ const proposeLink = async (who: U) =>
         action: "link",
         a: "test.local/a",
         b: "test.local/b",
+      }),
+    }),
+    H,
+    props,
+  );
+
+const proposeReach = async (who: U) =>
+  fetchAndWait(
+    app,
+    new Request(`${APP}${R.busReachProposals}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${await machineToken(who)}`,
+      },
+      body: JSON.stringify({
+        nativeRef: "r1",
+        namespaces: ["test.local/b"],
       }),
     }),
     H,
@@ -305,7 +326,7 @@ describe.each(Object.entries(LOCKS))(
     });
 
     it("cannot confirm a role or a link", async () => {
-      for (const post of [confirmRole, confirmLink]) {
+      for (const post of [confirmRole, confirmLink, confirmReach]) {
         const r = await post(member);
         expect(r.status, await r.clone().text()).toBe(403);
         expect(await r.text()).toMatch(PLAN_TEXT);
@@ -314,6 +335,14 @@ describe.each(Object.entries(LOCKS))(
 
     it("cannot propose a link with a machine token", async () => {
       const r = await proposeLink(member);
+      expect(r.status).toBe(403);
+      expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
+        "plan_read_only",
+      );
+    });
+
+    it("cannot propose reach with a machine token", async () => {
+      const r = await proposeReach(member);
       expect(r.status).toBe(403);
       expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
         "plan_read_only",
@@ -519,10 +548,11 @@ describe("a suspended member (an operator's stop)", () => {
     const { r, code } = await approveDecide(member);
     expect(r.status).toBeGreaterThanOrEqual(400);
     expect(await approvedAt(code)).toBeNull();
-    for (const post of [confirmRole, confirmLink]) {
+    for (const post of [confirmRole, confirmLink, confirmReach]) {
       expect((await post(member)).status).toBeGreaterThanOrEqual(400);
     }
     expect((await proposeLink(member)).status).toBeGreaterThanOrEqual(400);
+    expect((await proposeReach(member)).status).toBeGreaterThanOrEqual(400);
     expect(
       (await proposeRoleMcp(member).catch(() => ({ isError: true }))).isError,
     ).toBe(true);
@@ -572,10 +602,11 @@ describe("who the gate leaves alone", () => {
     const { r, code } = await approveDecide(owner);
     expect(r.status).toBe(200);
     expect(await approvedAt(code)).not.toBeNull();
-    for (const post of [confirmRole, confirmLink]) {
+    for (const post of [confirmRole, confirmLink, confirmReach]) {
       expect(await (await post(owner)).text()).not.toMatch(PLAN_TEXT);
     }
     expect((await proposeLink(owner)).status).not.toBe(403);
+    expect((await proposeReach(owner)).status).not.toBe(403);
     expect(textOf(await proposeRoleMcp(owner))).not.toMatch(
       /plan_(required|read_only)/,
     );
@@ -589,10 +620,11 @@ describe("who the gate leaves alone", () => {
     const { r, code } = await approveDecide(member);
     expect(r.status).toBe(200);
     expect(await approvedAt(code)).not.toBeNull();
-    for (const post of [confirmRole, confirmLink]) {
+    for (const post of [confirmRole, confirmLink, confirmReach]) {
       expect(await (await post(member)).text()).not.toMatch(PLAN_TEXT);
     }
     expect((await proposeLink(member)).status).not.toBe(403);
+    expect((await proposeReach(member)).status).not.toBe(403);
     expect(textOf(await proposeRoleMcp(member))).not.toMatch(
       /plan_(required|read_only)/,
     );
@@ -669,6 +701,9 @@ describe("FEATURES bus", () => {
       ["GET", "/bus/links/confirm"],
       ["POST", "/bus/links/confirm"],
       ["POST", R.busLinkProposals],
+      ["GET", "/bus/reach/confirm"],
+      ["POST", "/bus/reach/confirm"],
+      ["POST", R.busReachProposals],
     ];
     const hit = (e: typeof HOSTED_H, m: string, path: string) =>
       fetchAndWait(

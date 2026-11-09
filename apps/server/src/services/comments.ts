@@ -33,6 +33,14 @@ import {
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import {
+  askRows,
+  indexAnswered,
+  indexAsk,
+  indexDeleted,
+  indexStatus,
+  reconcileAsks,
+} from "./asks.js";
+import {
   agentRoster,
   type CommentNoticeKind,
   type DeliveryState,
@@ -421,7 +429,12 @@ export async function listComments(
   status: CommentStatus | "all",
   viewer: CommentViewer,
 ): Promise<CommentList> {
+  // A full read repairs the asks index (#1623); never fails the read. The rows
+  // are read first, so the threads are never older than the rows they are
+  // compared with.
+  const rows = status === "all" ? await askRows(env, artifactId) : null;
   const r = await call(() => stub(env, artifactId).commentsList(status));
+  if (rows) await reconcileAsks(env, artifactId, r.threads, r.truncated, rows);
   return {
     threads: await threadViews(env, r.threads, viewer),
     open: r.open,
@@ -760,6 +773,7 @@ export async function addThread(
     }),
   );
   const root = t.comments[0];
+  if (root?.ask) await indexAsk(env, a.id, t.id, root.id, root.ask.to);
   if (root && r.agents.length > 0) {
     const sent = await deliver(env, a, t.id, root, r);
     t.comments[0] = sent;
@@ -790,6 +804,7 @@ export async function addReply(
       ...(r.extras ? { extras: r.extras } : {}),
     }),
   );
+  if (c.ask) await indexAsk(env, artifactId, threadId, c.id, c.ask.to);
   if (r.agents.length === 0) {
     await announce(env, artifactId, who, opts.after, r);
     return commentView(env, c, viewer);
@@ -832,6 +847,7 @@ export async function answerAsk(
       rate: rateKeyOf(who),
     }),
   );
+  await indexAnswered(env, artifactId, commentId);
   // The answer is stored: the asker's following agents hear of it, in the
   // background, and a failure never fails the answer (inBackground catches).
   if (after && !unchanged && c.author.kind === "user")
@@ -881,6 +897,7 @@ export async function setStatus(
       rate: rateKeyOf(who),
     }),
   );
+  await indexStatus(env, artifactId, threadId, status);
   return (await threadViews(env, [t], viewer))[0] as Thread;
 }
 
@@ -923,7 +940,8 @@ export async function deleteComment(
   moderator: boolean,
 ): Promise<void> {
   const a = who ? actorOf(who) : null;
-  await call(() =>
+  // `r` is undefined from an older DO mid-deploy: the delete stands, the index heals on read.
+  const r = await call(() =>
     stub(env, artifactId).commentsDelete({
       threadId,
       commentId,
@@ -932,4 +950,5 @@ export async function deleteComment(
       ...(who ? { rate: rateKeyOf(who) } : {}),
     }),
   );
+  await indexDeleted(env, artifactId, threadId, commentId, r?.root === true);
 }

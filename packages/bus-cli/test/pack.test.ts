@@ -81,6 +81,9 @@ describe("the published oa-bus package", () => {
         "tools.py",
         "wrap.py",
       ].map((f) => `package/assets/oa_bus/${f}`),
+      ...["index.js", "openclaw.plugin.json", "package.json"].map(
+        (f) => `package/assets/openclaw/${f}`,
+      ),
       "package/assets/opencode-tui/tui.js",
       "package/dist/index.js",
       "package/package.json",
