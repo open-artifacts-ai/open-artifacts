@@ -21,6 +21,7 @@ import {
   vi,
 } from "vitest";
 import {
+  actor,
   mentionedKeys,
   mentionQuery,
   nextAskFor,
@@ -1199,6 +1200,16 @@ describe("round 3 copy", () => {
     expect(
       within(c).getByText("Only the owner and editors can wake agents."),
     ).toBeInTheDocument();
+  });
+});
+
+describe("actor (#1789)", () => {
+  it("never says you for the owner's agent, and tags agents", () => {
+    expect(actor({ kind: "agent", name: "Cursor", me: true }, "You")).toBe(
+      "Cursor (agent)",
+    );
+    expect(actor({ kind: "user", name: "Leo", me: true }, "You")).toBe("You");
+    expect(actor({ kind: "user", name: "Ada", me: false }, "You")).toBe("Ada");
   });
 });
 
