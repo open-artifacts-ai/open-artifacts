@@ -187,6 +187,121 @@ describe("shell messages are validated", () => {
   });
 });
 
+/** Pointer type for the frame: matchMedia answers only (pointer: coarse). */
+const pointer = (coarse: boolean) =>
+  vi.stubGlobal("matchMedia", (q: string) => ({
+    matches: coarse && q === "(pointer: coarse)",
+    media: q,
+  }));
+const wait100 = () => new Promise((r) => setTimeout(r, 130));
+const sels = () => msgs().filter((m) => m.type === "comment.selection");
+
+describe("selection state for the shell (#1732)", () => {
+  it("posts has and the last rect bottom, debounced, once per change", async () => {
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    select(textOf("a"), 4, textOf("a"), 10);
+    expect(sels()).toHaveLength(0);
+    await wait100();
+    expect(sels()).toHaveLength(1);
+    expect(last("comment.selection")).toMatchObject({ has: true, bottom: 120 });
+    getSelection()?.removeAllRanges();
+    document.dispatchEvent(new Event("selectionchange"));
+    await wait100();
+    expect(last("comment.selection")).toMatchObject({ has: false });
+    expect(sels()).toHaveLength(2);
+  });
+
+  it("posts nothing in view or pin mode", async () => {
+    await start("view");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    expect(sels()).toHaveLength(0);
+  });
+
+  it("touch: no floating button; fine pointer keeps it", async () => {
+    pointer(true);
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()).toBeNull();
+    await wait100();
+    expect(last("comment.selection")).toMatchObject({ has: true });
+  });
+
+  it("the shell command runs the Comment path, even after the selection collapsed", async () => {
+    pointer(true);
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    getSelection()?.removeAllRanges(); // iOS: a tap outside the frame
+    await send({ type: "comments.comment" });
+    expect(last("comment.select")).toMatchObject({
+      anchor: { kind: "text", exact: "quick" },
+    });
+    await wait100();
+    expect(last("comment.selection")).toMatchObject({ has: false });
+  });
+
+  it("the command with nothing ever selected sends nothing", async () => {
+    await start("select");
+    await send({ type: "comments.comment" });
+    expect(last("comment.select")).toBeUndefined();
+  });
+
+  it("touch: scrolls by the overlap when the selection ends within bar + 12px of the bottom", async () => {
+    pointer(true);
+    vi.stubGlobal("innerHeight", 600);
+    const by = vi.fn();
+    vi.stubGlobal("scrollBy", by);
+    Object.assign(rect, { bottom: 570 });
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    // bar 48 + 12 gap: the line must end by 540; it ends at 570.
+    expect(by).toHaveBeenCalledWith(0, 30);
+  });
+
+  it("touch: scrolls once when the bar appears, not while a handle is dragged (review of #1757)", async () => {
+    pointer(true);
+    vi.stubGlobal("innerHeight", 600);
+    const by = vi.fn();
+    vi.stubGlobal("scrollBy", by);
+    Object.assign(rect, { bottom: 570 });
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    expect(by).toHaveBeenCalledTimes(1);
+    Object.assign(rect, { bottom: 580 });
+    select(textOf("a"), 4, textOf("a"), 10);
+    await wait100();
+    expect(by).toHaveBeenCalledTimes(1);
+  });
+
+  it("a collapsed selection is forgotten after the tap window (review of #1757)", async () => {
+    pointer(true);
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    getSelection()?.removeAllRanges();
+    document.dispatchEvent(new Event("selectionchange"));
+    await wait100();
+    await new Promise((r) => setTimeout(r, 1600));
+    await send({ type: "comments.comment" });
+    expect(last("comment.select")).toBeUndefined();
+  });
+
+  it("touch: does not scroll when clear of the bar", async () => {
+    pointer(true);
+    vi.stubGlobal("innerHeight", 600);
+    const by = vi.fn();
+    vi.stubGlobal("scrollBy", by);
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    expect(by).not.toHaveBeenCalled();
+  });
+});
+
 describe("selection button", () => {
   it("shows for a selection in one block and sends an anchor without a version", async () => {
     await start("select");

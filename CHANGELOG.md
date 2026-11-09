@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.139.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.138.0...v0.139.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** follow, unfollow and following from the local client ([#1317](https://github.com/open-artifacts-ai/open-artifacts/issues/1317), step 2) ([#1767](https://github.com/open-artifacts-ai/open-artifacts/issues/1767)) ([c57475b](https://github.com/open-artifacts-ai/open-artifacts/commit/c57475bc1ebff5df6bbd3ca16919a1f4e204315a))
+
+## [0.138.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.137.0...v0.138.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** deliver server notices through the BusHub ([#1317](https://github.com/open-artifacts-ai/open-artifacts/issues/1317), step 1) ([#1746](https://github.com/open-artifacts-ai/open-artifacts/issues/1746)) ([f6a7e56](https://github.com/open-artifacts-ai/open-artifacts/commit/f6a7e561bc1cea1755bef02eeaeb35ebe0512f86))
+* **library:** asks filters as chips ([#1614](https://github.com/open-artifacts-ai/open-artifacts/issues/1614)) ([#1761](https://github.com/open-artifacts-ai/open-artifacts/issues/1761)) ([52a4e04](https://github.com/open-artifacts-ai/open-artifacts/commit/52a4e04d5c89d3148f288f337ce7b01b7e318782))
+* **provisioning-contract:** reserve look-alike and role slugs ([#1011](https://github.com/open-artifacts-ai/open-artifacts/issues/1011)) ([#1765](https://github.com/open-artifacts-ai/open-artifacts/issues/1765)) ([f20551d](https://github.com/open-artifacts-ai/open-artifacts/commit/f20551d49dec66e06d02dcf7702f81cc5b2dbf55))
+* **viewer:** ask card follow-ups ([#1614](https://github.com/open-artifacts-ai/open-artifacts/issues/1614)) ([#1763](https://github.com/open-artifacts-ai/open-artifacts/issues/1763)) ([175744e](https://github.com/open-artifacts-ai/open-artifacts/commit/175744e3a9477842ddd9781e86c513c0abad3312))
+
+
+### Bug Fixes
+
+* **bus:** a restarted or moved session takes back its own name ([#1742](https://github.com/open-artifacts-ai/open-artifacts/issues/1742)) ([#1770](https://github.com/open-artifacts-ai/open-artifacts/issues/1770)) ([7c93390](https://github.com/open-artifacts-ai/open-artifacts/commit/7c93390c7c0285f7f90895f18bfd83ab065d48eb))
+* **bus:** an expiry notice no longer claims 7 days passed ([#1760](https://github.com/open-artifacts-ai/open-artifacts/issues/1760)) ([#1773](https://github.com/open-artifacts-ai/open-artifacts/issues/1773)) ([60d5a15](https://github.com/open-artifacts-ai/open-artifacts/commit/60d5a1529a8e16866c68fc44c3a981706b91d53b))
+
+## [0.137.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.136.1...v0.137.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** Hermes habits only behind the user's --habits yes (habits.on marker) ([#1602](https://github.com/open-artifacts-ai/open-artifacts/issues/1602)) ([#1715](https://github.com/open-artifacts-ai/open-artifacts/issues/1715)) ([910a0f3](https://github.com/open-artifacts-ai/open-artifacts/commit/910a0f3bcc8b01a56ed6ad6fadda4615fe202dae))
+* **bus:** OpenClaw plugin adapter and openclaw kind ([#1693](https://github.com/open-artifacts-ai/open-artifacts/issues/1693)) ([#1714](https://github.com/open-artifacts-ai/open-artifacts/issues/1714)) ([b26d6c8](https://github.com/open-artifacts-ai/open-artifacts/commit/b26d6c82809bedf2594ab463f708ccf4a9332202))
+* **uploads:** verify optional client SHA-256 with R2 ([#1669](https://github.com/open-artifacts-ai/open-artifacts/issues/1669)) ([da8e78a](https://github.com/open-artifacts-ai/open-artifacts/commit/da8e78ac66c192b5ff4d646237965f055801c730))
+* **viewer:** comments column starts closed ([#1731](https://github.com/open-artifacts-ai/open-artifacts/issues/1731)) ([#1747](https://github.com/open-artifacts-ai/open-artifacts/issues/1747)) ([383f8c3](https://github.com/open-artifacts-ai/open-artifacts/commit/383f8c3442a3750c53e0ee6c30c55c5a34488e98))
+
+
+### Bug Fixes
+
+* **billing:** Solo follow-ups: plan error for view-only editors, solo plan_limit tier, Solo trial date ([#1639](https://github.com/open-artifacts-ai/open-artifacts/issues/1639), [#1568](https://github.com/open-artifacts-ai/open-artifacts/issues/1568)) ([#1753](https://github.com/open-artifacts-ai/open-artifacts/issues/1753)) ([c625428](https://github.com/open-artifacts-ai/open-artifacts/commit/c625428a01bdd967a8e09fc872235027b42336e5))
+* **setup:** default Codex CLI instructions to OAuth ([#1664](https://github.com/open-artifacts-ai/open-artifacts/issues/1664)) ([c8177c2](https://github.com/open-artifacts-ai/open-artifacts/commit/c8177c271069e62af02275096fbe77c7396f3d33))
+
 ## [0.136.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.136.0...v0.136.1) (2026-11-08)
 
 

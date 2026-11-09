@@ -16,7 +16,7 @@ import {
 } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Maximize2, MessageSquare } from "lucide-react";
+import { Maximize2, MessageSquare, MessageSquarePlus } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
 import {
@@ -28,6 +28,7 @@ import {
 import { accessLabel, useCan } from "../auth/permissions";
 import { toast } from "../layout/toast";
 import { ConfirmDialog } from "../settings/ConfirmDialog";
+import { useNarrow } from "./comments/surfaces";
 import { VersionsDot } from "./LiveChip";
 import { VERSIONS_PANEL_ID } from "./panels/Versions";
 import { fullPath } from "./paths";
@@ -128,7 +129,13 @@ export function TitleBar({
   comments,
 }: {
   /** The Comments button (#682): the open count, and what it toggles. Absent when comments are off. */
-  comments?: { open: number; expanded: boolean; onClick: () => void };
+  comments?: {
+    open: number;
+    expanded: boolean;
+    onClick: () => void;
+    /** #1732: text is selected; the button comments on it. */
+    selecting?: boolean;
+  };
   artifact: ArtifactSummary;
   version: number;
   explicitVersion: boolean;
@@ -145,6 +152,7 @@ export function TitleBar({
   /** Deleted or no access: Full screen, Versions and Share are disabled. */
   gone?: boolean;
 }) {
+  const narrow = useNarrow();
   const navigate = useNavigate();
   const qc = useQueryClient();
   const del = useDeleteArtifact(artifact.id);
@@ -267,18 +275,36 @@ export function TitleBar({
           <ShButton
             variant="outline"
             size="xs"
-            className={SM}
-            aria-label={
-              comments.open > 0 ? `Comments, ${comments.open} open` : "Comments"
+            className={
+              comments.selecting
+                ? `${SM} border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)] hover:bg-[var(--oa-accent-soft)] hover:text-[var(--oa-accent-fg)]`
+                : SM
             }
-            aria-expanded={comments.expanded}
+            aria-label={
+              comments.selecting
+                ? narrow
+                  ? "Comment"
+                  : "Comment on selection"
+                : comments.open > 0
+                  ? `Comments, ${comments.open} open`
+                  : "Comments"
+            }
+            aria-expanded={comments.selecting ? undefined : comments.expanded}
             disabled={gone}
             onClick={comments.onClick}
           >
             {/* A space in the text: the visible label must read "Comments 3", inside the name "Comments, 3 open". */}
-            <MessageSquare aria-hidden="true" className="size-3.5" />
-            Comments{" "}
-            {comments.open > 0 && (
+            {comments.selecting ? (
+              <MessageSquarePlus aria-hidden="true" className="size-3.5" />
+            ) : (
+              <MessageSquare aria-hidden="true" className="size-3.5" />
+            )}
+            {comments.selecting
+              ? narrow
+                ? "Comment"
+                : "Comment on selection"
+              : "Comments"}{" "}
+            {!comments.selecting && comments.open > 0 && (
               <span className="rounded-full bg-primary px-1.5 text-[length:var(--oa-text-xs)] text-primary-foreground">
                 {comments.open}
               </span>

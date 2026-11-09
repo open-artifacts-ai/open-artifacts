@@ -82,6 +82,7 @@ type Row = {
   tier: BillingTier;
   status: BillingStatus;
   trialEndsAt: number | null;
+  soloTrialEndsAt?: number | null;
   graceUntil: number | null;
   version: number;
 };
@@ -1421,6 +1422,28 @@ describe("Me.instance.billing and the billing routes", () => {
     // Self-hosted: absent.
     const self = await send(R.me, owner.cookie, { e: SELF });
     expect(MeSchema.parse(await self.json()).instance.billing).toBeUndefined();
+  });
+
+  it("soloTrialEndsAt: owner sees the Solo trial end, members null, trialEndsAt untouched", async () => {
+    const end = mid + 20 * DAY;
+    await cache({
+      tier: "solo",
+      trialEndsAt: null,
+      soloTrialEndsAt: end,
+      version: 6,
+    });
+    const o = (await getMe(owner.cookie)).instance.billing;
+    expect(o).toMatchObject({
+      tier: "solo",
+      trialEndsAt: null,
+      soloTrialEndsAt: new Date(end).toISOString(),
+    });
+    const m = (await getMe(member.cookie)).instance.billing;
+    expect(m).toMatchObject({ trialEndsAt: null, soloTrialEndsAt: null });
+    // The Business trial is still never used: the first invite may start it.
+    await cache({ tier: "solo", trialEndsAt: null, version: 7 });
+    const old = (await getMe(owner.cookie)).instance.billing;
+    expect(old).not.toHaveProperty("soloTrialEndsAt");
   });
 
   it("the billing routes need an interactive cookie session: a PAT, an OAuth grant and an MCP agent are refused, even the owner's", async () => {

@@ -24,11 +24,20 @@ export type { BusNotice, NoticeKind } from "@oa/shared";
 
 export type DeliveryOutcome = "delivered" | "held" | "dropped";
 
+/**
+ * One fan-out's memo (#1317): whether a member has a bus is one D1 read, so
+ * a fan-out that sends several notices to one member asks once. Never kept
+ * across requests (a member may connect their first machine any time).
+ */
+export type DeliveryScope = { hasBus: Map<string, Promise<boolean>> };
+export const newDeliveryScope = (): DeliveryScope => ({ hasBus: new Map() });
+
 export interface NoticeDelivery {
   deliver(
     env: Env,
     userId: string,
     notice: BusNotice,
+    scope?: DeliveryScope,
   ): Promise<DeliveryOutcome>;
 }
 
@@ -65,9 +74,10 @@ export async function deliverNotice(
   env: Env,
   userId: string,
   notice: BusNotice,
+  scope?: DeliveryScope,
 ): Promise<DeliveryOutcome> {
   try {
-    return await current.deliver(env, userId, notice);
+    return await current.deliver(env, userId, notice, scope);
   } catch {
     return "dropped";
   }

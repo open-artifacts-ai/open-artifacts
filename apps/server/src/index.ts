@@ -18,6 +18,8 @@ import {
   mcpUnauthorized,
 } from "./mcp/server.js";
 import type { AgentAttr } from "./services/agent-usage.js";
+import { hubNoticeDelivery } from "./services/bus.js";
+import { installDelivery } from "./services/bus-delivery.js";
 import { getUserWithEpoch } from "./services/users.js";
 
 export { BusHub } from "./bus/hub.js";
@@ -25,6 +27,9 @@ export { DirectorySync } from "./directory/sync-do.js";
 export type { Env } from "./env.js";
 export { ArtifactRuntime } from "./runtime/do.js";
 export { UserPresence } from "./runtime/presence.js";
+
+// #1317: server notices go to the member's BusHub (a member without a bus drops them).
+installDelivery(hubNoticeDelivery);
 
 // URL.hostname keeps the brackets for IPv6: "[::1]", never "::1".
 const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);

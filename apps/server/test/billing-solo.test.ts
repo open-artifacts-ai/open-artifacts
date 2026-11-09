@@ -46,6 +46,14 @@ describe("effectivePlan: solo", () => {
     expect(plan({ trialEndsAt: mid - DAY }).trialEligible).toBe(false);
   });
 
+  it("soloTrialEndsAt rides along and never touches trialEligible", () => {
+    const p = plan({ soloTrialEndsAt: mid + DAY });
+    expect(p.soloTrialEndsAt).toBe(mid + DAY);
+    expect(p.trialEndsAt).toBeNull();
+    expect(p.trialEligible).toBe(true);
+    expect(plan({}).soloTrialEndsAt).toBeUndefined();
+  });
+
   it("lapsed, and past_due after grace, are view-only: solo_unpaid", () => {
     for (const p of [
       plan({ status: "lapsed" }),
@@ -537,5 +545,61 @@ describe("no BILLING gate: no plan, nothing changes", () => {
       instance: { billing?: unknown };
     };
     expect(me.instance.billing).toBeUndefined();
+  });
+});
+
+describe("view-only: an uncapped editor on someone else's artifact", () => {
+  const ids = { shared: "", none: "", viewer: "" };
+  let stranger: U;
+  beforeAll(async () => {
+    stranger = await login(`stranger-${tag}@a.com`, "member");
+    await setPlan({ ...base, tier: "business", status: "active" });
+    ids.shared = ((await (await post(member)).json()) as { id: string }).id;
+    const s = await send(props, R.shares(ids.shared), member.cookie, {
+      method: "PUT",
+      body: { email: `owner-${tag}@a.com`, role: "editor" },
+    });
+    expect(s.status).toBe(200);
+    ids.none = ((await (await post(member)).json()) as { id: string }).id;
+    ids.viewer = ((await (await post(member)).json()) as { id: string }).id;
+    const v = await send(props, R.shares(ids.viewer), member.cookie, {
+      method: "PUT",
+      body: { email: `owner-${tag}@a.com`, role: "viewer" },
+    });
+    expect(v.status).toBe(200);
+    await setPlan(UNPAID);
+  });
+
+  it("the org owner with no access at all gets 404, not the plan error", async () => {
+    const p = await send(props, R.artifact(ids.none), owner.cookie, {
+      method: "PATCH",
+      body: { title: "renamed" },
+    });
+    expect(p.status).toBe(404);
+  });
+
+  it("the org owner with only a viewer share gets 404", async () => {
+    const p = await send(props, R.artifact(ids.viewer), owner.cookie, {
+      method: "PATCH",
+      body: { title: "renamed" },
+    });
+    expect(p.status).toBe(404);
+  });
+
+  it("gets the 403 plan error on a non-visibility PATCH, not a 404", async () => {
+    const p = await send(props, R.artifact(ids.shared), owner.cookie, {
+      method: "PATCH",
+      body: { title: "renamed" },
+    });
+    expect(p.status).toBe(403);
+    expect((await errCode(p))?.code).toBe("plan_read_only");
+  });
+
+  it("someone with no access at all still gets 404", async () => {
+    const p = await send(props, R.artifact(ids.shared), stranger.cookie, {
+      method: "PATCH",
+      body: { title: "renamed" },
+    });
+    expect(p.status).toBe(404);
   });
 });

@@ -12,7 +12,15 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  describe,
+  expect,
+  it,
+  onTestFinished,
+  vi,
+} from "vitest";
 import { isSoloPaused, useCan } from "../src/auth/permissions";
 import { planStatus } from "../src/settings/Plan";
 import {
@@ -54,7 +62,8 @@ const PAUSED = {
 const TRIAL = {
   tier: "solo" as const,
   status: "active" as const,
-  trialEndsAt: "2026-12-01T00:00:00.000Z",
+  trialEndsAt: null,
+  soloTrialEndsAt: "2026-12-01T00:00:00.000Z",
   graceUntil: null,
   creatorsThisMonth: 1,
   readOnly: false,
@@ -160,6 +169,12 @@ it("the mock refuses a publish with 403 plan_read_only on a paused Solo", async 
 });
 
 it("Plan and billing: a Solo trial shows its end and the two upgrades", async () => {
+  // The note hides a date already past: pin Date (timers stay real).
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-09T12:00:00.000Z"));
+  onTestFinished(() => {
+    vi.useRealTimers();
+  });
   mountHosted("/settings/plan", { billing: TRIAL });
   expect(
     await screen.findByRole("heading", { name: "Plan and billing" }),
@@ -515,4 +530,58 @@ it("planStatus: a past_due Team gets the past-due note", () => {
   expect(r.note?.text).toBe(
     "Payment failed. Update your card by Nov 20, 2026. After that, this instance becomes read-only.",
   );
+});
+
+describe("planStatus: the Solo month and the Business trial are separate dates", () => {
+  beforeAll(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-09T12:00:00.000Z"));
+  });
+  afterAll(() => {
+    vi.useRealTimers();
+  });
+
+  it("a Solo trial reads soloTrialEndsAt", () => {
+    const r = planStatus(TRIAL);
+    expect(r.pill.label).toBe("Trial");
+    expect(r.note?.text).toBe(
+      "Your free month ends Dec 1, 2026. Then $1/month or $12/year.",
+    );
+  });
+
+  it("a Solo row with a used Business trial shows no note and the Active pill", () => {
+    const used = {
+      ...TRIAL,
+      trialEndsAt: "2026-10-01T00:00:00.000Z",
+      soloTrialEndsAt: null,
+    };
+    expect(planStatus(used)).toEqual({ pill: { label: "Active", tone: "ok" } });
+    // An older answer carries no soloTrialEndsAt at all.
+    const { soloTrialEndsAt: _, ...old } = used;
+    expect(planStatus(old)).toEqual({ pill: { label: "Active", tone: "ok" } });
+  });
+
+  it("a paused Solo with a used Business trial reads Paused, no note", () => {
+    expect(
+      planStatus({ ...PAUSED, trialEndsAt: "2026-10-01T00:00:00.000Z" }),
+    ).toEqual({ pill: { label: "Paused", tone: "warn" } });
+  });
+
+  it("a Solo month already past shows no note", () => {
+    expect(
+      planStatus({ ...TRIAL, soloTrialEndsAt: "2026-11-01T00:00:00.000Z" }),
+    ).toEqual({ pill: { label: "Active", tone: "ok" } });
+  });
+
+  it("the Business trial keeps trialEndsAt", () => {
+    const r = planStatus({
+      ...TRIAL,
+      tier: "trial",
+      trialEndsAt: "2026-11-20T00:00:00.000Z",
+      soloTrialEndsAt: null,
+    });
+    expect(r.note?.text).toBe(
+      "Trial ends Nov 20, 2026. Everything in Business is on.",
+    );
+  });
 });

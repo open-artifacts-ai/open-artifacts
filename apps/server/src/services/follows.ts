@@ -31,7 +31,7 @@ import { takeAll } from "../email/send.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { logError, logInfo } from "../log.js";
-import { deliverNotice } from "./bus-delivery.js";
+import { deliverNotice, newDeliveryScope } from "./bus-delivery.js";
 import { getUser } from "./users.js";
 
 export { SHARE_NOTICE_MAX };
@@ -47,11 +47,17 @@ export const SHARED_PER_HOUR = 30;
  * followers get nothing this time (paging is a follow-up). It runs in the
  * publish's waitUntil, under the Worker's ~1000 subrequest cap shared with
  * the index enqueue. Worst case per row, when each row is its own member:
- * the member reload, the access check, the slot claim and the delivery, so
- * 4 calls; 200 rows are 800, plus the follower select, one batch for the
- * drop counters and the index enqueue, which leaves about 190 spare.
+ * the member reload, the access check, the slot claim and the delivery (the
+ * has-a-bus read and the hub call), so 5 calls (the has-a-bus read is asked
+ * once per member per fan-out); 150 rows are 750, plus the follower select,
+ * one batch for the drop counters and the index enqueue, which leaves about
+ * 240 spare. (200 rows were 1000: over.) Time is bounded too: past
+ * FANOUT_BUDGET_MS the rest get nothing this time, so a stalled hub (2 s
+ * each) cannot outlast the waitUntil.
  */
-export const FANOUT_MAX = 200;
+export const FANOUT_MAX = 150;
+/** Wall time one fan-out spends before it stops sending. */
+export const FANOUT_BUDGET_MS = 20_000;
 
 const notFound = () => new ApiError("not_found", "Not found");
 
@@ -455,8 +461,13 @@ async function fanOut(
          where artifact_id = ?
          order by last_notice_at is not null, last_notice_at, user_id limit ?`,
   )
-    .bind(artifactId, FANOUT_MAX)
+    .bind(artifactId, FANOUT_MAX + 1)
     .all<{ userId: string; namespace: string; name: string }>();
+  // One row past the limit tells us followers were left out this time.
+  if (results.length > FANOUT_MAX) {
+    results.length = FANOUT_MAX;
+    logInfo("fanout_limit_hit", { kind, artifactId, limit: FANOUT_MAX });
+  }
   const byUser = new Map<string, BusAddress[]>();
   for (const r of results) {
     if (kind === "changed" && !shouldNotifyFollower(r.userId, actorId ?? ""))
@@ -467,7 +478,13 @@ async function fanOut(
     byUser.set(r.userId, list);
   }
   const drops = new Map<string, number>();
+  const scope = newDeliveryScope();
+  const deadline = Date.now() + FANOUT_BUDGET_MS;
   for (const [userId, addresses] of byUser) {
+    if (Date.now() > deadline) {
+      logInfo("fanout_out_of_time", { kind, artifactId });
+      break;
+    }
     // Removed, erased or otherwise inactive: null, so even a public
     // artifact (readable by anyone) sends nothing and the follow goes.
     const user = await getUser(env, userId);
@@ -483,6 +500,10 @@ async function fanOut(
     if (kind === "commented" && capOfCaller(callerOf(user)) != null) continue;
     for (const to of addresses) {
       if (skip.has(addressKey(to))) continue;
+      if (Date.now() > deadline) {
+        logInfo("fanout_out_of_time", { kind, artifactId });
+        break;
+      }
       let at: number | undefined;
       if (kind === "changed") {
         const slot = await stmt(env.DB, SLOT)
@@ -506,7 +527,7 @@ async function fanOut(
         if (!claim) continue;
       }
       const n = notice(env, kind, artifactId, version, to, at);
-      if ((await deliverNotice(env, userId, n)) === "dropped") {
+      if ((await deliverNotice(env, userId, n, scope)) === "dropped") {
         drops.set(userId, (drops.get(userId) ?? 0) + 1);
         logInfo("bus_notice_dropped", {
           kind,

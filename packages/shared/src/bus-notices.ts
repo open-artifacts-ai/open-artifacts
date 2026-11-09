@@ -102,6 +102,11 @@ export const BUS_LINK_MAX = 100;
 /** Links one namespace may have (#1567), so a send's lookup stays small. */
 export const BUS_LINKS_PER_NAMESPACE = 10;
 
+/** Role reach grants (#1346), one per role and target namespace, one member may hold. */
+export const BUS_REACH_MAX = 200;
+/** Namespaces one role may reach (#1346), so a send's and a roster's lookup stay small. */
+export const BUS_REACH_PER_ROLE = 10;
+
 /**
  * One link (#1567): the two namespaces see each other's agents and may
  * message each other. Stored once as a sorted pair (`a` < `b`) and read both
