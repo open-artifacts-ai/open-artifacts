@@ -333,6 +333,9 @@ class Bus:
         if self._codex_runtime() is not False:
             return None
         root = self.state(ref)
+        # A finalized session stays closed until its next turn reopens it.
+        if root.stopped:
+            return None
         link = root.link
         if link is None or link.closed:
             self.touch(ref)

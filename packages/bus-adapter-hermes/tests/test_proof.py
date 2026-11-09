@@ -7,6 +7,7 @@ open-artifacts MCP tools only. Any failure leaves the root unlinked with every
 tool working. Waits are signals (events), never sleeps.
 """
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -21,7 +22,8 @@ import support
 from oa_bus import frames, link as link_mod, register
 from oa_bus.bus import Bus
 from oa_bus.link import Link
-from oa_bus.proof import ARG, instance_tool
+from oa_bus import proof as proof_mod
+from oa_bus.proof import ARG
 from oa_bus.roots import Roots
 from oa_bus.sockpath import daemon_socket_path
 
@@ -183,145 +185,207 @@ class FakeProofBus:
         return self.proof
 
 
-def middleware(servers, bus=None, names=("open-artifacts",)):
-    """register() against a ctx that has register_middleware; returns (ctx, bus, callback)."""
-    ctx = support.FakeCtx()
-    roots = Roots(lambda sid: sid)
-    real = Bus(roots, inject=ctx.inject_message, spawn=support.inline_spawn, start="t",
-               habits_marker=support.habits_marker())
-    bus = bus or FakeProofBus()
-    real.proof_for = bus.proof_for
-    register(ctx, roots=roots, bus=real, mcp_servers=servers_lookup(servers), proof_servers=names)
-    return ctx, bus, ctx.middleware["tool_execution"][0]
+class FakeHandlers:
+    """tools.mcp_tool_handlers: the one function that puts arguments on the wire."""
 
+    def __init__(self):
+        self.wire = []
 
-def servers_lookup(table):
-    return table.get
-
-
-def run(cb, tool_name, args, session_id="root-1", **kw):
-    """The callback as Hermes calls it; returns (what next_call got, result)."""
-    seen = []
-
-    def next_call(payload=None):
-        seen.append(payload)
+    async def _call_tool_racing_stdio_death(self, server, server_name, tool_name, args, progress_callback=None):
+        self.wire.append((server_name, tool_name, args))
         return "result"
 
-    out = cb(tool_name=tool_name, args=args, original_args=args, session_id=session_id,
-             task_id="", tool_call_id="c", turn_id="", api_request_id="", next_call=next_call,
-             middleware_schema_version="hermes.middleware.v1", telemetry_schema_version="x", **kw)
-    return seen, out
+
+class FakeRegistry:
+    """tools.registry.registry: dispatch hands the handler the same args object, as Hermes does.
+
+    `served` maps a registry name to the raw (server, tool) the MCP handler would call."""
+
+    def __init__(self, handlers, served):
+        self.handlers = handlers
+        self.served = served
+        self.above = []  # what every layer above the wire saw
+        self.kwargs = []
+
+    def dispatch(self, name, args, **kwargs):
+        self.kwargs.append(kwargs)
+        self.above.append(json.dumps(args))
+        if name not in self.served:
+            return "not mcp"
+        server_name, tool_name = self.served[name]
+        return asyncio.run(self.handlers._call_tool_racing_stdio_death(None, server_name, tool_name, args))
 
 
-TABLE = {
-    "mcp__open_artifacts__publish_artifact": "open-artifacts",
-    "mcp__open_artifacts__get_artifact": "open-artifacts",
-    "mcp__open_artifacts__list_resources": "open-artifacts",
-    "mcp__open_artifacts__subscribe_event": "open-artifacts",
-    # Sanitizing is lossy: these produce the same prefix as the real server's.
-    "mcp__open_artifacts__lookalike_underscore": "open_artifacts",
-    "mcp__open_artifacts__lookalike_space": "open artifacts",
-    "mcp__open_artifacts__lookalike_caps": "Open-Artifacts",
-    "mcp__open_artifacts_2__get_artifact": "open-artifacts-2",
-    "mcp__other__get_artifact": "other",
-    "mcp__oa_staging__get_artifact": "oa-staging",
+SERVED = {
+    "mcp__open_artifacts__get_artifact": ("open-artifacts", "get_artifact"),
+    # Sanitizing is lossy: all of these make the real server's prefix.
+    "mcp__open_artifacts__a": ("open_artifacts", "a"),
+    "mcp__open_artifacts__b": ("open artifacts", "b"),
+    "mcp__open_artifacts__c": ("Open-Artifacts", "c"),
+    "mcp__open_artifacts__d": ("open-artifacts ", "d"),
+    "mcp__open_artifacts_2__get_artifact": ("open-artifacts-2", "get_artifact"),
+    "mcp__other__get_artifact": ("other", "get_artifact"),
 }
 
 
-class Middleware(unittest.TestCase):
-    def test_registers_a_tool_execution_middleware_only(self):
-        ctx, *_ = middleware(TABLE)
-        self.assertEqual(sorted(ctx.middleware), ["tool_execution"])
-        self.assertEqual(len(ctx.middleware["tool_execution"]), 1)
+def installed(bus=None, names=("open-artifacts",)):
+    handlers = FakeHandlers()
+    registry = FakeRegistry(handlers, SERVED)
+    original = registry.dispatch
+    bus = bus or FakeProofBus()
+    ok = proof_mod.install(bus, names, registry=registry, handlers=handlers)
+    return ok, registry, handlers, bus, original
 
-    def test_adds_the_argument_to_this_instances_open_artifacts_tools(self):
-        _, bus, cb = middleware(TABLE)
+
+class WireInjection(unittest.TestCase):
+    """The argument is added at the last layer, below hooks, guardrails and approval prompts."""
+
+    def test_the_instances_tool_gets_it_on_the_wire_and_nothing_above_sees_it(self):
+        ok, registry, handlers, bus, _ = installed()
         args = {"id": "x"}
-        seen, out = run(cb, "mcp__open_artifacts__get_artifact", args)
+        out = registry.dispatch("mcp__open_artifacts__get_artifact", args, session_id="root-1", task_id="t")
+        self.assertTrue(ok)
         self.assertEqual(out, "result")
-        self.assertEqual(seen, [{"id": "x", ARG: "p" * 43}])
+        self.assertEqual(handlers.wire[0][2], {"id": "x", ARG: "p" * 43})
+        self.assertEqual(handlers.wire[0][:2], ("open-artifacts", "get_artifact"))
+        for seen in registry.above:
+            self.assertNotIn(ARG, seen)
+            self.assertNotIn("p" * 43, seen)
+        self.assertEqual(args, {"id": "x"})
         self.assertEqual(bus.asked, ["root-1"])
-        self.assertEqual(args, {"id": "x"})  # the model's own dict is not edited
+        self.assertEqual(registry.kwargs[0], {"session_id": "root-1", "task_id": "t"})
 
-    def test_the_models_own_value_for_the_argument_is_replaced(self):
-        _, _, cb = middleware(TABLE)
-        seen, _ = run(cb, "mcp__open_artifacts__get_artifact", {ARG: "forged"})
-        self.assertEqual(seen, [{ARG: "p" * 43}])
+    def test_the_models_own_value_for_the_argument_is_replaced_on_the_wire(self):
+        _, registry, handlers, *_ = installed()
+        registry.dispatch("mcp__open_artifacts__get_artifact", {ARG: "forged"}, session_id="root-1")
+        self.assertEqual(handlers.wire[0][2], {ARG: "p" * 43})
 
-    def test_never_a_look_alike_server_or_another_server(self):
-        _, bus, cb = middleware(TABLE)
-        for name in TABLE:
-            if TABLE[name] == "open-artifacts":
+    def test_never_a_look_alike_or_another_server(self):
+        _, registry, handlers, *_ = installed()
+        for name in SERVED:
+            if SERVED[name][0] == "open-artifacts":
                 continue
             with self.subTest(name):
-                args = {"a": 1}
-                seen, out = run(cb, name, args)
-                self.assertEqual(seen, [{"a": 1}])
-                self.assertEqual(out, "result")
+                registry.dispatch(name, {"a": 1}, session_id="root-1")
+                self.assertEqual(handlers.wire[-1][2], {"a": 1})
+
+    def test_the_instances_own_server_name_only_when_given(self):
+        _, registry, handlers, *_ = installed(names=("open-artifacts", "other"))
+        registry.dispatch("mcp__other__get_artifact", {}, session_id="root-1")
+        self.assertEqual(handlers.wire[-1][2], {ARG: "p" * 43})
+        registry.dispatch("mcp__open_artifacts_2__get_artifact", {}, session_id="root-1")
+        self.assertEqual(handlers.wire[-1][2], {})
+
+    def test_a_tool_that_is_not_mcp_goes_through_untouched(self):
+        _, registry, _, bus, _ = installed()
+        args = {"a": 1}
+        self.assertEqual(registry.dispatch("terminal", args, session_id="root-1"), "not mcp")
         self.assertEqual(bus.asked, [])
-
-    def test_an_unknown_tool_name_or_no_provenance_is_untouched(self):
-        _, bus, cb = middleware(TABLE)
-        for name in ("terminal", "mcp__open_artifacts__never_registered", "oabus_send_message", "", None):
-            with self.subTest(name):
-                seen, _ = run(cb, name, {"a": 1})
-                self.assertEqual(seen, [{"a": 1}])
-        self.assertEqual(bus.asked, [])
-
-    def test_hermes_own_utility_tools_of_the_server_are_untouched(self):
-        _, _, cb = middleware(TABLE)
-        for name in ("mcp__open_artifacts__list_resources", "mcp__open_artifacts__subscribe_event"):
-            seen, _ = run(cb, name, {"a": 1})
-            self.assertEqual(seen, [{"a": 1}])
-
-    def test_the_instances_own_server_name_when_it_is_given(self):
-        _, _, cb = middleware(TABLE, names=("open-artifacts", "oa-staging"))
-        seen, _ = run(cb, "mcp__oa_staging__get_artifact", {})
-        self.assertEqual(seen, [{ARG: "p" * 43}])
-        seen, _ = run(cb, "mcp__other__get_artifact", {})
-        self.assertEqual(seen, [{}])
 
     def test_no_proof_means_the_call_goes_as_it_was(self):
-        _, _, cb = middleware(TABLE, bus=FakeProofBus(proof=None))
-        seen, out = run(cb, "mcp__open_artifacts__get_artifact", {"a": 1})
-        self.assertEqual((seen, out), ([{"a": 1}], "result"))
+        _, registry, handlers, *_ = installed(bus=FakeProofBus(proof=None))
+        self.assertEqual(registry.dispatch("mcp__open_artifacts__get_artifact", {"a": 1}, session_id="r"), "result")
+        self.assertEqual(handlers.wire[0][2], {"a": 1})
 
     def test_a_failure_finding_the_proof_still_runs_the_tool_once(self):
-        _, _, cb = middleware(TABLE, bus=FakeProofBus(raises=True))
-        seen, out = run(cb, "mcp__open_artifacts__get_artifact", {"a": 1})
-        self.assertEqual((seen, out), ([{"a": 1}], "result"))
+        _, registry, handlers, *_ = installed(bus=FakeProofBus(raises=True))
+        self.assertEqual(registry.dispatch("mcp__open_artifacts__get_artifact", {"a": 1}, session_id="r"), "result")
+        self.assertEqual(len(handlers.wire), 1)
+        self.assertEqual(handlers.wire[0][2], {"a": 1})
 
-    def test_a_tool_error_is_not_swallowed(self):
-        _, _, cb = middleware(TABLE)
+    def test_a_call_that_did_not_come_through_dispatch_goes_as_it_was(self):
+        _, _, handlers, *_ = installed()
+        asyncio.run(handlers._call_tool_racing_stdio_death(None, "open-artifacts", "t", {"a": 1}))
+        self.assertEqual(handlers.wire[0][2], {"a": 1})
 
-        def next_call(payload=None):
+    def test_the_wrapper_takes_whatever_signature_hermes_gives_it(self):
+        _, _, handlers, *_ = installed()
+        asyncio.run(handlers._call_tool_racing_stdio_death(None, "open-artifacts", "t", args={"a": 1}, progress_callback=None))
+        self.assertEqual(handlers.wire[0][2], {"a": 1})
+
+    def test_a_tool_error_is_not_swallowed_and_leaves_nothing_behind(self):
+        _, registry, handlers, *_ = installed()
+
+        async def boom(*a, **k):
             raise ValueError("the tool failed")
 
+        handlers._call_tool_racing_stdio_death = boom
+        # install wrapped the old function; wrap again over the failing one
+        proof_mod.install(FakeProofBus(), ("open-artifacts",), registry=registry, handlers=handlers)
         with self.assertRaises(ValueError):
-            cb(tool_name="mcp__open_artifacts__get_artifact", args={}, session_id="root-1",
-               next_call=next_call)
+            registry.dispatch("mcp__open_artifacts__get_artifact", {}, session_id="root-1")
+        self.assertEqual(proof_mod._CALLS, {})
+
+    def test_two_sessions_at_once_each_send_their_own_proof(self):
+        class Bus:
+            def proof_for(self, sid):
+                return {"A": "a" * 43, "B": "b" * 43}[sid]
+
+        _, registry, handlers, *_ = installed(bus=Bus())
+        barrier = threading.Barrier(2)
+        orig = handlers._call_tool_racing_stdio_death
+
+        async def meet(*a, **k):
+            barrier.wait(5)
+            return await orig(*a, **k)
+
+        handlers._call_tool_racing_stdio_death = meet
+        proof_mod.install(Bus(), ("open-artifacts",), registry=registry, handlers=handlers)
+        same = {"id": "x"}
+        ts = [threading.Thread(target=registry.dispatch, args=("mcp__open_artifacts__get_artifact", same),
+                               kwargs={"session_id": sid}) for sid in ("A", "B")]
+        [t.start() for t in ts]
+        [t.join(10) for t in ts]
+        self.assertEqual(sorted(w[2][ARG] for w in handlers.wire), ["a" * 43, "b" * 43])
+
+    def test_installing_again_does_not_stack_and_uses_the_new_bus(self):
+        ok, registry, handlers, _, _ = installed()
+        newbus = FakeProofBus(proof="n" * 43)
+        self.assertTrue(proof_mod.install(newbus, ("open-artifacts",), registry=registry, handlers=handlers))
+        registry.dispatch("mcp__open_artifacts__get_artifact", {}, session_id="root-1")
+        self.assertEqual(handlers.wire[0][2], {ARG: "n" * 43})
+        self.assertEqual(len(registry.above), 1)
+
+    def test_a_hermes_without_the_functions_stays_unlinked_and_untouched(self):
+        registry = FakeRegistry(FakeHandlers(), SERVED)
+        before = registry.dispatch.__func__
+        self.assertFalse(proof_mod.install(FakeProofBus(), ("open-artifacts",), registry=registry, handlers=object()))
+        self.assertIs(registry.dispatch.__func__, before)
+        self.assertFalse(proof_mod.install(FakeProofBus(), ("open-artifacts",), registry=object(), handlers=FakeHandlers()))
 
     def test_no_schema_the_model_sees_carries_the_argument(self):
-        ctx, *_ = middleware(TABLE)
+        ctx = support.FakeCtx()
+        register(ctx, roots=Roots(lambda s: s), bus=Bus(Roots(lambda s: s), habits_marker=support.habits_marker()))
         for t in ctx.tools.values():
             self.assertNotIn(ARG, json.dumps(t["schema"]))
+        self.assertEqual(ctx.middleware, {})  # nothing on the middleware layer, which hooks and guards see
 
-    def test_an_older_hermes_without_register_middleware_registers_the_rest(self):
+
+class Plugin(unittest.TestCase):
+    def test_the_first_turn_installs_the_wire_hook_once(self):
+        calls = []
         ctx = support.FakeCtx()
-        ctx.register_middleware = None  # Hermes before middleware existed has no such method
-        register(ctx, roots=Roots(lambda s: s), bus=Bus(Roots(lambda s: s), habits_marker=support.habits_marker()))
-        self.assertTrue(ctx.tools)
-        self.assertFalse(getattr(ctx, "middleware", {}))
+        roots = Roots(lambda s: s)
+        bus = Bus(roots, spawn=support.inline_spawn, start="t", habits_marker=support.habits_marker())
+        bus.touch = lambda ref: None
+        register(ctx, roots=roots, bus=bus, proof_servers=("open-artifacts",),
+                 install=lambda b, names: calls.append((b, names)) or True)
+        self.assertEqual(calls, [])  # registering touches nothing of Hermes's
+        ctx.hooks["pre_llm_call"][0](session_id="s", platform="cli")
+        ctx.hooks["pre_llm_call"][0](session_id="s", platform="cli")
+        self.assertEqual(calls, [(bus, ("open-artifacts",))])
 
+    def test_an_install_that_raises_never_breaks_the_turn(self):
+        ctx = support.FakeCtx()
+        roots = Roots(lambda s: s)
+        bus = Bus(roots, spawn=support.inline_spawn, start="t", habits_marker=support.habits_marker())
+        bus.touch = lambda ref: None
 
-class InstanceTool(unittest.TestCase):
-    def test_provenance_is_the_exact_raw_server_name(self):
-        for raw, ok in (("open-artifacts", True), ("open_artifacts", False), ("open artifacts", False),
-                        ("Open-Artifacts", False), ("open-artifacts ", False), ("open-artifacts-2", False)):
-            with self.subTest(raw):
-                self.assertEqual(
-                    instance_tool("mcp__open_artifacts__x", {"mcp__open_artifacts__x": raw}.get,
-                                  ("open-artifacts",)), ok)
+        def boom(b, n):
+            raise RuntimeError("no")
+
+        register(ctx, roots=roots, bus=bus, install=boom)
+        ctx.hooks["pre_llm_call"][0](session_id="s", platform="cli")
 
 
 class ProofForABus(unittest.TestCase):
@@ -357,6 +421,13 @@ class ProofForABus(unittest.TestCase):
             with self.subTest(state):
                 self.bus._codex_runtime = lambda s=state: s
                 self.assertIsNone(self.bus.proof_for("root-1"))
+
+    def test_a_finalized_session_is_not_reopened(self):
+        self.bus.close("root-1")
+        opened = []
+        self.bus.ensure = lambda ref: opened.append(ref) or self.link
+        self.assertIsNone(self.bus.proof_for("root-1"))
+        self.assertEqual(opened, [])
 
     def test_none_when_the_link_has_no_proof(self):
         self.link.proof = None
