@@ -488,7 +488,7 @@ async function resolveExtras(
   if ((wantsTargets || x.ask) && !opts.moderator)
     throw new ApiError(
       "forbidden",
-      "Only the owner and editors can mention, assign or ask",
+      "Only the owner and editors can mention, assign or ask. Drop it, or post a plain comment.",
     );
   if (x.ask && who.kind !== "user")
     throw new ApiError("forbidden", "Sign in to ask a question");

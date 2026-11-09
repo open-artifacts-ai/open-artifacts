@@ -30,7 +30,7 @@ import {
 import { deleteShare, putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
-import { connect, textOf, tool } from "./mcp-helpers.js";
+import { connect, oauthToken, textOf, tool } from "./mcp-helpers.js";
 
 // #682 part 2: list_comments, add_comment, resolve_comment and the `comment`
 // notice. The tools call the services the REST routes call, so these tests
@@ -315,6 +315,223 @@ describe("comment tools over MCP", () => {
       body: { anchor: { kind: "note" }, body: "over" },
     });
     expect(rest.status).toBe(429);
+  });
+});
+
+describe("add_comment with an ask (#1535)", () => {
+  const OPTS = [
+    { id: "wide", label: "Wide hero", detail: "Full bleed" },
+    { id: "compact", label: "Compact hero" },
+  ];
+  const ASK = (to: string[]) => ({
+    question: "Which layout do we ship?",
+    options: OPTS,
+    recommended: { optionId: "compact", why: "Loads faster" },
+    to: to.map((key) => ({ key })),
+  });
+
+  it("an owner's PAT asks; REST readers see an ask and the addressee can answer", async () => {
+    const id = await pub();
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "viewer",
+    });
+    const t = sc<{ thread: Thread }>(
+      await tool(owner.client, "add_comment", {
+        id,
+        body: "Which layout?",
+        ask: ASK([reader.userId]),
+      }),
+    ).thread;
+    const root = t.comments[0];
+    expect(root?.ask).toMatchObject({
+      question: "Which layout do we ship?",
+      options: OPTS,
+      recommended: { optionId: "compact" },
+      closed: false,
+    });
+    const rest = (await (
+      await api(app, comments(id), reader.cookie)
+    ).json()) as CommentList;
+    const seen = rest.threads[0]?.comments[0];
+    expect(seen?.ask?.options.map((o) => o.id)).toEqual(["wide", "compact"]);
+    expect(seen?.ask?.to).toHaveLength(1);
+    const answered = await api(
+      app,
+      R.commentAnswer(id, t.id, root?.id ?? ""),
+      reader.cookie,
+      { method: "POST", body: { optionId: "wide" } },
+    );
+    expect(answered.status).toBe(200);
+  });
+
+  it("an ask on a reply works", async () => {
+    const id = await pub();
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "viewer",
+    });
+    const t = sc<{ thread: Thread }>(
+      await tool(owner.client, "add_comment", { id, body: "start" }),
+    ).thread;
+    const r = sc<{ comment: Comment }>(
+      await tool(owner.client, "add_comment", {
+        id,
+        threadId: t.id,
+        body: "Pick one",
+        ask: ASK([reader.userId]),
+      }),
+    );
+    expect(r.comment.ask?.question).toBe("Which layout do we ship?");
+  });
+
+  it("an OAuth caller asks like a PAT caller", async () => {
+    const o = await oauthToken(`mc-oauth-${tag}@x.com`);
+    const m = (await getUser(E, o.member.userId)) as Member;
+    const id = (
+      await publish(
+        E,
+        m,
+        { title: "d", format: "html", content: "<p>x</p>" } as never,
+        null,
+        undefined,
+        "create",
+      )
+    ).id;
+    await putShare(E, m, id, { email: reader.email, role: "viewer" });
+    const c = await connect(o.accessToken);
+    clients.push(c);
+    const t = sc<{ thread: Thread }>(
+      await tool(c, "add_comment", {
+        id,
+        body: "Which?",
+        ask: ASK([reader.userId]),
+      }),
+    ).thread;
+    expect(t.comments[0]?.ask?.closed).toBe(false);
+  });
+
+  it("an editor may ask; a viewer is refused as REST refuses mentions", async () => {
+    const id = await pub();
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "viewer",
+    });
+    await putShare(E, owner.member, id, {
+      email: stranger.email,
+      role: "editor",
+    });
+    const refused = await tool(reader.client, "add_comment", {
+      id,
+      body: "x",
+      ask: ASK([owner.userId]),
+    });
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toMatch(/^forbidden: Only the owner and editors/);
+    expect(textOf(refused)).toMatch(/plain comment/);
+    const ok = await tool(stranger.client, "add_comment", {
+      id,
+      body: "x",
+      ask: ASK([owner.userId]),
+    });
+    expect(ok.isError, textOf(ok)).toBeFalsy();
+  });
+
+  it("someone who cannot open the artifact is refused", async () => {
+    const id = await pub({ visibility: "private" });
+    const r = await tool(stranger.client, "add_comment", {
+      id,
+      body: "x",
+      ask: ASK([owner.userId]),
+    });
+    expect(textOf(r)).toMatch(/^not_found\b/);
+  });
+
+  it("the ask limits are REST's: options 2 to 6, 1 to 10 addressees, a question of 1000, no blank text", async () => {
+    const id = await pub();
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "viewer",
+    });
+    const base = ASK([reader.userId]);
+    // The good ask goes through, so each refusal below is about its one change.
+    expect(
+      (
+        await tool(owner.client, "add_comment", {
+          id,
+          body: "x",
+          ask: base,
+        })
+      ).isError,
+    ).toBeFalsy();
+    const bad = async (ask: Record<string, unknown>, why: RegExp) => {
+      const r = await tool(owner.client, "add_comment", {
+        id,
+        body: "x",
+        ask: { ...base, ...ask },
+      });
+      expect(r.isError).toBe(true);
+      expect(textOf(r)).toMatch(why);
+      expect(textOf(r)).not.toMatch(/Unknown agent or person/);
+    };
+    const two = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ id: `o${i}`, label: "L" }));
+    await bad({ options: [OPTS[0]], recommended: undefined }, /options/);
+    await bad({ options: two(7), recommended: undefined }, /options/);
+    await bad({ options: [OPTS[0], { ...OPTS[0] }] }, /unique/);
+    await bad({ to: [] }, /\bto\b/);
+    await bad(
+      { to: Array.from({ length: 11 }, () => ({ key: reader.userId })) },
+      /\bto\b/,
+    );
+    await bad({ question: "q".repeat(1001) }, /question/);
+    await bad({ question: "   " }, /question/);
+    await bad({ options: [OPTS[0], { id: "z", label: "  " }] }, /label/);
+    await bad({ recommended: { optionId: "nope", why: "x" } }, /recommended/);
+    // An addressee who cannot read the artifact.
+    const r = await tool(owner.client, "add_comment", {
+      id,
+      body: "x",
+      ask: ASK([stranger.userId]),
+    });
+    expect(textOf(r)).toMatch(/^bad_request: Unknown agent or person/);
+  });
+
+  it("an ask on a reply to a resolved thread is refused with a next step; open again, it works", async () => {
+    const id = await pub();
+    await putShare(E, owner.member, id, {
+      email: reader.email,
+      role: "viewer",
+    });
+    const t = sc<{ thread: Thread }>(
+      await tool(owner.client, "add_comment", { id, body: "start" }),
+    ).thread;
+    sc(await tool(owner.client, "resolve_comment", { id, threadId: t.id }));
+    const args = {
+      id,
+      threadId: t.id,
+      body: "Pick one",
+      ask: ASK([reader.userId]),
+    };
+    const refused = await tool(owner.client, "add_comment", args);
+    expect(refused.isError).toBe(true);
+    expect(textOf(refused)).toMatch(/^conflict: .*resolve_comment/);
+    // A plain reply on the resolved thread still works.
+    sc(
+      await tool(owner.client, "add_comment", {
+        id,
+        threadId: t.id,
+        body: "plain",
+      }),
+    );
+    sc(
+      await tool(owner.client, "resolve_comment", {
+        id,
+        threadId: t.id,
+        resolved: false,
+      }),
+    );
+    sc(await tool(owner.client, "add_comment", args));
   });
 });
 

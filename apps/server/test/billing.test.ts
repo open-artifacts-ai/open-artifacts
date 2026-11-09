@@ -903,6 +903,20 @@ describe("plan enforcement", () => {
     expect(listed.isError, textOf(listed)).toBeFalsy();
     for (const [name, args] of [
       ["add_comment", { body: "hi" }],
+      [
+        "add_comment",
+        {
+          body: "hi",
+          ask: {
+            question: "Which?",
+            options: [
+              { id: "a", label: "A" },
+              { id: "b", label: "B" },
+            ],
+            to: [{ key: "AAAAAAAAAAAAAAAA" }],
+          },
+        },
+      ],
       ["resolve_comment", { threadId: "AAAAAAAAAAAAAAAA" }],
     ] as const) {
       const r = await tool(client, name, { id, ...args });
