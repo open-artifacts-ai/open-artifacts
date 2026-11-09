@@ -571,6 +571,9 @@ export function createBridge(opts: BridgeOptions) {
   };
   const onLoad = () => {
     if (disposed) return;
+    // A (re)loaded frame has said nothing yet: its runtime may be older than the
+    // one whose hello we last read, so hold back fields it may not know (#1698).
+    frameProtocol = 0;
     if (frameLoad(iframe) === current && current.expected) {
       current.expected = false;
       return;

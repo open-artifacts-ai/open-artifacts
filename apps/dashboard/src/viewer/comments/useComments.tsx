@@ -189,6 +189,17 @@ export function useCommentsController({
     if (mode !== "pin" || !pinChosen) return;
     const k = (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
+      // The key is not ours when an IME is composing, when a text field has it
+      // (the composer, the mention menu and the reply box close on Esc), or when
+      // a modal sits above the viewer (#1698 review).
+      if (e.isComposing) return;
+      const t = e.target;
+      if (
+        t instanceof HTMLElement &&
+        (t.isContentEditable ||
+          t.closest("input, textarea, select, [aria-modal='true']") !== null)
+      )
+        return;
       e.preventDefault();
       e.stopPropagation();
       setWantPin(false);

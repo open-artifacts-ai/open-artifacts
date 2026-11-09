@@ -454,6 +454,24 @@ describe("comments (#682)", () => {
       }),
       "*",
     );
+    // The frame loads again: the new runtime has said nothing yet, so the
+    // marker is held back until it does (#1698 review).
+    frame.loaded();
+    b.setComments(pins);
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threads: [expect.not.objectContaining({ changed: true })],
+      }),
+      "*",
+    );
+    send({ oa: 1, type: "hello", protocol: 2, kind: "html" });
+    b.setComments(pins);
+    expect(post).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        threads: [expect.objectContaining({ changed: true })],
+      }),
+      "*",
+    );
   });
 
   it("sends the mode, the threads and a focus to the frame", () => {

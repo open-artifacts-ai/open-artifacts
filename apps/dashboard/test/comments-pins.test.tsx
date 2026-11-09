@@ -324,6 +324,37 @@ describe("comments: pins on images and pdfs (#1490)", () => {
     expect(screen.queryByText("Click to place a pin")).toBeNull();
   });
 
+  it("Esc in a text field, an IME or a modal does not leave a chosen pin mode (#1698)", async () => {
+    asFormat("image", H1);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(await tool("Select"));
+    fireEvent.click(await tool("Pin"));
+    await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("pin"));
+    setMode.mockClear();
+    // A composer's box owns Esc (it cancels the draft): pin mode stays.
+    const box = within(c).getByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.keyDown(box, { key: "Escape" });
+    // An IME composition owns it too.
+    fireEvent.keyDown(document.body, { key: "Escape", isComposing: true });
+    // So does a modal above the viewer.
+    const modal = document.createElement("div");
+    modal.setAttribute("aria-modal", "true");
+    const inside = document.createElement("button");
+    modal.append(inside);
+    document.body.append(modal);
+    inside.focus();
+    fireEvent.keyDown(inside, { key: "Escape" });
+    expect(setMode).not.toHaveBeenCalledWith("select");
+    expect(await tool("Pin")).toHaveAttribute("aria-pressed", "true");
+    modal.remove();
+    // Outside all three, Esc still leaves the mode the reader chose.
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("select"));
+  });
+
   it("a comment.pin on an image outside pin mode is ignored (page code can forge it)", async () => {
     asFormat("image", H1);
     mount(viewerPath(OWNED));
