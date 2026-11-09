@@ -201,7 +201,7 @@ describe("install: transcript state 1, first run", () => {
     expect(await run(ctx)).toBe(0);
     expect(ctx.out()).toEqual(
       expect.arrayContaining([
-        "[[warning]]![[/warning]]  No Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes found",
+        "[[warning]]![[/warning]]  No Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw found",
         "   Install one, then run npx @open-artifacts/bus again.",
       ]),
     );
@@ -234,8 +234,8 @@ describe("install: transcript state 1, first run", () => {
     await run(ctx);
     expect(withoutHabitsQuestion(ctx.out()).slice(-5)).toEqual([
       `No agents in namespace [[accent]]${NS}[[/accent]] yet.`,
-      "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes in this folder.",
-      "It joins.",
+      "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw",
+      "in this folder. It joins.",
       "",
       "[[muted]]Check this machine anytime with npx @open-artifacts/bus status.[[/muted]]",
     ]);

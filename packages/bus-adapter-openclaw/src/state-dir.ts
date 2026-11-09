@@ -38,10 +38,9 @@ const userPath = (input: string, env: Env, home: () => string): string => {
  * OpenClaw 2026.6.5:
  * - resolveStateDir (dist/config-utils-BEvSJyjG.js): OPENCLAW_STATE_DIR, else
  *   <home>/.openclaw, else a legacy <home>/.clawdbot when only that exists.
- * - applyCliProfileEnv (dist/profile-BEs8qKtq.js): `--profile <p>` sets
- *   OPENCLAW_PROFILE and, unless set, OPENCLAW_STATE_DIR to <home>/.openclaw-<p>
- *   (`default` is <home>/.openclaw). A process that only has OPENCLAW_PROFILE
- *   resolves the same way here.
+ * - OPENCLAW_PROFILE is not read: resolveStateDir ignores it. Only the
+ *   `--profile <p>` flag (applyCliProfileEnv, dist/profile-BEs8qKtq.js) sets
+ *   OPENCLAW_STATE_DIR to <home>/.openclaw-<p>, and a plugin sees that variable.
  */
 export function resolveStateDir(
   env: Env = process.env,
@@ -51,11 +50,6 @@ export function resolveStateDir(
   const override = env.OPENCLAW_STATE_DIR?.trim();
   if (override) return userPath(override, env, home);
   const h = homeDir(env, home);
-  const profile = env.OPENCLAW_PROFILE?.trim();
-  if (profile) {
-    const suffix = profile.toLowerCase() === "default" ? "" : `-${profile}`;
-    return join(h, `.openclaw${suffix}`);
-  }
   const next = join(h, ".openclaw");
   if (env.OPENCLAW_TEST_FAST === "1" || exists(next)) return next;
   const legacy = join(h, ".clawdbot");

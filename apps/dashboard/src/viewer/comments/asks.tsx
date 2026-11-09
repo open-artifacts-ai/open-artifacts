@@ -32,6 +32,31 @@ export function asksForMe(threads: readonly CommentThread[]): string[] {
     .map((t) => t.id);
 }
 
+/**
+ * The next unanswered ask for the viewer after `fromId`, in page order (whole-page
+ * asks, then by position, then earlier text), wrapping. Never `fromId` itself.
+ */
+export function nextAskFor(
+  api: {
+    ordered: readonly CommentThread[];
+    orphans: readonly CommentThread[];
+  },
+  fromId: string | null,
+  opts: { includeSelf?: boolean } = {},
+): string | undefined {
+  const all = [...api.ordered, ...api.orphans];
+  const order = all.map((t) => t.id);
+  const pending = new Set(asksForMe(all));
+  const at = fromId ? order.indexOf(fromId) : -1;
+  const next = [...order.slice(at + 1), ...order.slice(0, Math.max(at, 0))]
+    .filter((id) => id !== fromId)
+    .find((id) => pending.has(id));
+  return (
+    next ??
+    (opts.includeSelf && fromId && pending.has(fromId) ? fromId : undefined)
+  );
+}
+
 const OFFLINE = "offline · it will get this when it's back";
 
 /** "Codex is offline · it will get this when it's back", "Claude Code: Delivered". */
@@ -41,7 +66,6 @@ const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
     : d === "gone"
       ? `${name} is gone · mention another agent`
       : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
-
 /** Delivery of each mention, in plain words. Names are text, never HTML. */
 export function Delivery({ c }: { c: CommentT }) {
   if (!c.mentions?.length) return null;
@@ -57,6 +81,11 @@ export function Delivery({ c }: { c: CommentT }) {
 }
 
 const letter = (i: number) => String.fromCharCode(65 + i);
+/** Letters are shown unless every option's id already equals its label ("yes"/"Yes"). */
+const showLetters = (opts: { id: string; label: string }[]) =>
+  !opts.every(
+    (o) => o.id.trim().toLowerCase() === o.label.trim().toLowerCase(),
+  );
 
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
@@ -92,6 +121,7 @@ export function AskBlock({
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
+  const letters = showLetters(ask.options);
   const locked = !!pickedOpt && !changing;
   const decided = ask.closed && pickedOpt;
   const line = decided && (
@@ -107,6 +137,7 @@ export function AskBlock({
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
+          {letters ? `${letter(pickedIdx)}, ` : ""}
           {pickedOpt.label} · {ask.answer?.by.me ? "you" : ask.answer?.by.name},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
@@ -174,12 +205,14 @@ export function AskBlock({
                       );
                     }}
                   >
-                    <span
-                      data-option-key=""
-                      className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
-                    >
-                      {letter(i)}
-                    </span>
+                    {letters && (
+                      <span
+                        data-option-key=""
+                        className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
+                      >
+                        {letter(i)}
+                      </span>
+                    )}
                     <span className="min-w-0 flex-1 break-words">
                       <b>{o.label}</b>
                       {rec && (
@@ -208,7 +241,8 @@ export function AskBlock({
           {ask.answer && pickedOpt && (
             <p className={`${TXT} font-medium`} data-ask-answer="">
               {ask.answer.by.me ? "You" : ask.answer.by.name} picked{" "}
-              {letter(pickedIdx)} · {versionDate(ask.answer.at)}
+              {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
+              {versionDate(ask.answer.at)}
               {ask.closed ? " · closed" : ""}
               {canAnswer && locked && (
                 <>
@@ -308,6 +342,127 @@ export function mentionedKeys(
   return keys;
 }
 
+const MENTION_END = "(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))";
+
+/** Drops every `@name` that `mentionedKeys` would count (same boundary), with a
+    trailing `'s` and the space before it. An `@name` that is the start of a longer agent's
+    name is left alone. */
+export function removeMention(
+  text: string,
+  name: string,
+  agents: readonly ArtifactAgent[] = [],
+): string {
+  const longer = agents
+    .filter(
+      (a) =>
+        a.name.length > name.length &&
+        a.name.toLowerCase().startsWith(name.toLowerCase()),
+    )
+    .map((a) => new RegExp(`^@${esc(a.name)}${MENTION_END}`, "i"));
+  const re = new RegExp(
+    `(^|\\s)@${esc(name)}${MENTION_END}(?:['\u2019]s)?`,
+    "gi",
+  );
+  let atStart = false;
+  const out = text.replace(re, (m, lead: string, at: number) => {
+    if (longer.some((l) => l.test(text.slice(at + lead.length)))) return m;
+    if (at === 0) atStart = true;
+    // The space before it goes too, so "hi @Bob." leaves "hi." and
+    // "a @Bob b" leaves "a b"; the space after stays for the next match. A
+    // line break before it stays, so lines are not joined.
+    return /[\r\n]/.test(lead) ? lead : "";
+  });
+  return atStart ? out.trimStart() : out;
+}
+
+/** A posted body with each `@name` from its mentions as a chip. Text spans only,
+    never HTML; a body with no mentions is the plain string. */
+export function MentionedText({
+  body,
+  mentions,
+}: {
+  body: string;
+  mentions?: readonly { key: string; name: string }[];
+}) {
+  if (!mentions?.length) return <>{body}</>;
+  const names = [...new Set(mentions.map((m) => m.name))]
+    .sort((x, y) => y.length - x.length)
+    .map(esc);
+  const re = new RegExp(`(^|\\s)@(${names.join("|")})${MENTION_END}`, "gi");
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of body.matchAll(re)) {
+    const at = m.index + (m[1]?.length ?? 0);
+    const end = at + 1 + (m[2]?.length ?? 0);
+    if (at > last) out.push(body.slice(last, at));
+    out.push(
+      <span
+        key={at}
+        data-mention-chip=""
+        className="rounded-full bg-[var(--oa-accent-soft)] px-1 py-0.5 text-[var(--oa-accent-fg)]"
+      >
+        {body.slice(at, end)}
+      </span>,
+    );
+    last = end;
+  }
+  if (last === 0) return <>{body}</>;
+  if (last < body.length) out.push(body.slice(last));
+  return <>{out}</>;
+}
+
+/** Who gets notified: the mentioned agents. */
+export function notifyNames(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): string[] {
+  const keys = new Set(mentionedKeys(text, agents));
+  return agents.filter((a) => keys.has(a.key)).map((a) => a.name);
+}
+
+/** The picked mentions as removable chips, and the "Will notify" line. */
+export function MentionChips({
+  text,
+  agents,
+  onRemove,
+}: {
+  text: string;
+  agents: readonly ArtifactAgent[];
+  onRemove: (a: ArtifactAgent) => void;
+}) {
+  const keys = mentionedKeys(text, agents);
+  const chips = agents.filter((a) => keys.includes(a.key));
+  const names = notifyNames(text, agents);
+  return (
+    <div aria-live="polite" className={`flex flex-col gap-1 ${TXT}`}>
+      {names.length > 0 && chips.length > 0 && (
+        <ul className="m-0 flex list-none flex-wrap gap-1 p-0">
+          {chips.map((a) => (
+            <li
+              key={a.key}
+              data-chip={a.key}
+              className="inline-flex items-center gap-1 rounded-full bg-[var(--oa-accent-soft)] py-0.5 pr-1 pl-2 text-[var(--oa-accent-fg)]"
+            >
+              @{a.name}
+              <button
+                type="button"
+                aria-label={`Remove mention of ${a.name}`}
+                className="inline-flex min-h-6 min-w-6 items-center justify-center rounded-full leading-none hover:bg-background/60"
+                onClick={() => onRemove(a)}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {names.length > 0 && (
+        <p className={`m-0 ${MUTED}`}>Will notify {names.join(", ")}</p>
+      )}
+    </div>
+  );
+}
+
 export function MentionMenu({
   id,
   matches,
@@ -345,6 +500,10 @@ export function MentionMenu({
               onPick(a);
             }}
           >
+            <span
+              aria-hidden="true"
+              className={`size-2 shrink-0 rounded-full ${a.online ? "bg-[var(--oa-success-fg,#157a3a)]" : "bg-muted-foreground/50"}`}
+            />
             <b className="min-w-0 flex-1 truncate">{a.name}</b>
             <span className={MUTED}>{a.online ? "online" : "offline"}</span>
           </div>

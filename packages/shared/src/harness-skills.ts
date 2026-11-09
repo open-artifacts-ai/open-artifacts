@@ -11,6 +11,7 @@ export const HARNESSES = [
   "pi",
   "omp",
   "hermes",
+  "openclaw",
 ] as const;
 export type Harness = (typeof HARNESSES)[number];
 
@@ -51,6 +52,12 @@ export const harnessSkills: Record<Harness, HarnessSkill> = {
   // The path is under HERMES_HOME when that is set; the installer resolves it.
   hermes: {
     skillPath: "~/.hermes/skills/open-artifacts/SKILL.md",
+    busToolName: (tool) => `oabus_${tool}`,
+  },
+  // The plugin's tools carry the same `oabus_` prefix (packages/bus-adapter-openclaw/src/tools.ts).
+  // The path is under the state dir (OPENCLAW_STATE_DIR, a profile's); the installer resolves it.
+  openclaw: {
+    skillPath: "~/.openclaw/skills/open-artifacts/SKILL.md",
     busToolName: (tool) => `oabus_${tool}`,
   },
 };

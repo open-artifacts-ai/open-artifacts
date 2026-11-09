@@ -6,6 +6,7 @@ import {
   type BusMachine,
   type BusNotice,
   type BusReach,
+  type BusReachProposed,
   type BusRole,
   type BusRoleProposal,
   type BusRoleProposeInput,
@@ -18,6 +19,12 @@ import type {
   LinkViewResult,
 } from "../bus/link-proposals.js";
 import type { PutReachResult, ReachGrant } from "../bus/reach.js";
+import type {
+  ReachAudit,
+  ReachDecideResult,
+  ReachProposeResult,
+  ReachViewResult,
+} from "../bus/reach-proposals.js";
 import type {
   DecideResult,
   ProposalAudit,
@@ -136,6 +143,19 @@ export type BusHubRpc = {
   ): Promise<PutReachResult>;
   /** #1346: removes a reach grant; false when unknown. */
   deleteReach(id: string): Promise<boolean>;
+  /** #1346: records a reach proposal from a machine's agent under its link's hash; grants nothing. */
+  proposeReach(
+    input: { nativeRef: string; namespaces: string[] },
+    machineId: string,
+    tokenHash: string,
+  ): Promise<ReachProposeResult>;
+  /** #1346: the reach proposal behind a link's hash, for the confirm page. */
+  viewReachProposal(tokenHash: string): Promise<ReachViewResult>;
+  /** #1346: confirms (applies) or rejects the reach proposal behind a link's hash, once. */
+  decideReachProposal(
+    tokenHash: string,
+    decision: "confirm" | "reject",
+  ): Promise<ReachDecideResult>;
   /** #1567: records a link proposal under its link's hash; links nothing. */
   proposeLink(
     input: { action: LinkProposalAction; a: string; b: string },
@@ -163,8 +183,8 @@ export type BusHubRpc = {
     credentials: string[];
     machines: string[];
   }>;
-  /** #1403: expires a machine's pending link proposals. */
-  expireLinkProposalsOf(machineId: string): Promise<void>;
+  /** #1403: expires a machine's pending link and reach proposals; returns the reach ones for audit. */
+  expireLinkProposalsOf(machineId: string): Promise<ReachAudit[]>;
   /** #1403: expires the pending role proposals a PAT or OAuth grant made (`t:<id>` / `g:<id>`). */
   expireRoleProposalsOf(credential: string): Promise<ProposalAudit[]>;
   /** #1372: the newest role proposals. */
@@ -859,6 +879,15 @@ const detailOf = (a: ProposalAudit, why?: string) => ({
   ...(why ? { why } : {}),
 });
 
+/** A reach audit row's detail: ids and enums only (never the role name or a namespace). */
+const reachDetailOf = (a: ReachAudit, why?: string) => ({
+  proposalId: a.proposalId,
+  roleId: a.roleId,
+  agentId: a.agentId,
+  machineId: a.machineId,
+  ...(why ? { why } : {}),
+});
+
 /** bus.role.expired rows for proposals the hub just found overdue (system actor). */
 async function auditExpired(
   env: Env,
@@ -917,6 +946,24 @@ async function expireCredential(
   );
 }
 
+/** bus.reach.expired rows (system actor) for reach proposals the hub just expired; `why` when a revoke caused it. */
+async function auditReachExpired(
+  env: Env,
+  userId: string,
+  expired: ReachAudit[],
+  why?: string,
+): Promise<void> {
+  if (expired.length === 0) return;
+  const system: AuditActor = { kind: "system", id: null };
+  await env.DB.batch(
+    expired.map((a) =>
+      audit(env, "bus.reach.expired", auditTarget(userId), system, {
+        detail: reachDetailOf(a, why),
+      }),
+    ),
+  );
+}
+
 /** Whether the credential (`t:<id>` PAT or `g:<id>` OAuth grant) of member `userId` is gone or revoked. */
 async function credentialGone(
   env: Env,
@@ -965,7 +1012,12 @@ async function sweepRevokedProposers(
         .bind(m, userId)
         .first<{ revokedAt: number | null }>();
       if (row === null || row.revokedAt !== null)
-        await hub.expireLinkProposalsOf(m);
+        await auditReachExpired(
+          env,
+          userId,
+          await hub.expireLinkProposalsOf(m),
+          "machine_revoked",
+        );
     }
   } catch (e) {
     logError("bus_proposal_sweep_failed", e);
@@ -1123,4 +1175,178 @@ export async function decideBusRoleProposal(
       ),
     }).run();
   return r;
+}
+
+// ---------------------------------------------------------- reach proposals
+//
+// #1346: the agent that holds a role asks, with its machine's token, that the
+// role reach other namespaces; nothing changes until the member confirms the
+// one-time link in a browser (bus/reach-confirm.ts). Every proposal and
+// decision, and each expiry, is an audit row (ids and enums only: never the
+// role name, a namespace or the link).
+
+/** The reach confirm page's path; the URL is `<origin>${REACH_CONFIRM_PATH}#<secret>` (the fragment never reaches a server or a log, #1426). */
+export const REACH_CONFIRM_PATH = "/bus/reach/confirm";
+
+const REACH_PROPOSAL_REFUSALS = {
+  no_role:
+    "This agent holds no role. Ask the person to give it a role first, then ask again",
+  ambiguous:
+    "This agent holds more than one role, so it is not clear which should reach",
+  rate_limited: "This machine made too many reach proposals. Try again later",
+  proposal_limit:
+    "Too many reach changes are waiting for the member. Confirm or let them expire first",
+  no_bus: "Connect a machine to the bus first",
+} as const;
+
+/**
+ * The machine-token route's proposal (#1346): records a reach request for
+ * the role agent `input.nativeRef` of `machineId` holds, in the member's
+ * own hub, and returns its one-time confirm URL (the only copy of the
+ * secret; the hub keeps its sha256). Grants nothing. Audited
+ * bus.reach.proposed. 400 bad_request (a namespace), 409 conflict with
+ * details { reason }.
+ */
+export async function proposeBusReach(
+  env: Env,
+  userId: string,
+  machineId: string,
+  input: { nativeRef: string; namespaces: string[] },
+): Promise<BusReachProposed> {
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  const refuse = (reason: keyof typeof REACH_PROPOSAL_REFUSALS) =>
+    new ApiError("conflict", REACH_PROPOSAL_REFUSALS[reason], { reason });
+  if (!(await hasConnectedMachine(env, userId))) throw refuse("no_bus");
+  const hub = busHub(env, userId);
+  if (!hub) throw refuse("no_bus");
+  // A revoked machine's pending proposals expire (audited) before they
+  // count toward the pending limit.
+  await sweepRevokedProposers(env, userId, hub);
+  const secret = b64urlEncode(crypto.getRandomValues(new Uint8Array(32)));
+  const r = await reachProposalCall(
+    hub.proposeReach(input, machineId, await sha256Hex(secret)),
+  );
+  await auditReachExpired(env, userId, r.expired);
+  if (!r.ok) {
+    if (r.reason === "invalid")
+      throw new ApiError("bad_request", `Invalid ${r.field}`, {
+        field: r.field,
+      });
+    throw refuse(r.reason);
+  }
+  const p = r.proposal;
+  await audit(
+    env,
+    "bus.reach.proposed",
+    auditTarget(userId),
+    userActor(userId),
+    {
+      detail: reachDetailOf({
+        proposalId: p.id,
+        roleId: p.roleId,
+        agentId: p.agentId,
+        machineId: p.machineId,
+      }),
+    },
+  ).run();
+  return {
+    confirmUrl: `${appOrigin(env)}${REACH_CONFIRM_PATH}#${secret}`,
+    expiresAt: new Date(p.expiresAt).toISOString(),
+  };
+}
+
+/** A hub call for a reach proposal: ApiError internal when it fails or times out. */
+async function reachProposalCall<T>(p: Promise<T>): Promise<T> {
+  try {
+    const r = await within(p, BUS_HUB_TIMEOUT_MS * 5);
+    if (r === null) throw new Error("bus hub timed out");
+    return r;
+  } catch (e) {
+    logError("bus_reach_proposal_failed", e);
+    throw new ApiError("internal", "The bus could not be reached. Try again.");
+  }
+}
+
+/** The reach confirm page's read of the proposal behind `secret`, in the member's own hub only. null without a hub. */
+export async function viewBusReachProposal(
+  env: Env,
+  userId: string,
+  secret: string,
+): Promise<ReachViewResult | null> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
+  const hub = busHub(env, userId);
+  if (!hub) return null;
+  await sweepRevokedProposers(env, userId, hub);
+  const r = await reachProposalCall(
+    hub.viewReachProposal(await sha256Hex(secret)),
+  );
+  await auditReachExpired(env, userId, r.expired);
+  return r;
+}
+
+/**
+ * The reach confirm page's POST: decides the proposal behind `secret` in
+ * the member's own hub, once. Audited bus.reach.confirmed, or
+ * bus.reach.refused with `why`, with the member's browser session (the page
+ * refuses every other). null without a hub.
+ */
+export async function decideBusReachProposal(
+  env: Env,
+  userId: string,
+  secret: string,
+  decision: "confirm" | "reject",
+): Promise<ReachDecideResult | null> {
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return null;
+  const hub = busHub(env, userId);
+  if (!hub) return null;
+  await sweepRevokedProposers(env, userId, hub);
+  const r = await reachProposalCall(
+    hub.decideReachProposal(await sha256Hex(secret), decision),
+  );
+  const actor = userActor(userId);
+  // The decision is made: an audit write that fails is logged and rethrown
+  // so the page says it could not confirm, never "nothing changed".
+  try {
+    await auditReachExpired(env, userId, r.expired);
+    await auditReachDecision(env, userId, r, actor);
+  } catch (e) {
+    const a = r.audit ?? r.proposal;
+    logError("bus_reach_audit_failed", e, {
+      proposalId: a ? ("proposalId" in a ? a.proposalId : a.id) : null,
+      roleId: a?.roleId,
+      machineId: a?.machineId,
+    });
+    throw e;
+  }
+  return r;
+}
+
+/** The audit row of a decided (or already-spent) reach proposal. */
+async function auditReachDecision(
+  env: Env,
+  userId: string,
+  r: ReachDecideResult,
+  actor: AuditActor,
+): Promise<void> {
+  if (r.ok)
+    await audit(env, "bus.reach.confirmed", auditTarget(userId), actor, {
+      detail: reachDetailOf(r.audit),
+    }).run();
+  else if (r.audit !== null)
+    await audit(env, "bus.reach.refused", auditTarget(userId), actor, {
+      detail: reachDetailOf(r.audit, r.reason),
+    }).run();
+  else if (r.proposal !== null)
+    // A link already used or expired is a refusal too; an unknown one has nothing to name.
+    await audit(env, "bus.reach.refused", auditTarget(userId), actor, {
+      detail: reachDetailOf(
+        {
+          proposalId: r.proposal.id,
+          roleId: r.proposal.roleId,
+          agentId: r.proposal.agentId,
+          machineId: r.proposal.machineId,
+        },
+        r.reason,
+      ),
+    }).run();
 }

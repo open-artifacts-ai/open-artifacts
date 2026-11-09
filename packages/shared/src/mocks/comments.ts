@@ -55,8 +55,6 @@ export function createCommentMock({
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
   asksForYou: (id: string) => number;
-  /** Always false: nothing is assigned to agents any more (the filter itself is the dashboard's to drop). */
-  waitingOnAgents: (id: string) => boolean;
 } {
   const threads = new Map<string, CommentThread[]>();
   const mine = (): CommentAuthor => ({
@@ -213,7 +211,7 @@ export function createCommentMock({
     k === me.user.id
       ? mine()
       : agentOf(k)
-        ? { kind: "user", id: k, name: agentOf(k)?.name ?? k, me: false }
+        ? { kind: "agent", id: k, name: agentOf(k)?.name ?? k, me: false }
         : { ...other, id: k };
   /**
    * Ask and mentions from a parsed body onto a new comment. mentions
@@ -393,6 +391,5 @@ export function createCommentMock({
             (c) => c.ask && !c.ask.answer && c.ask.to.some((a) => a.me),
           ),
       ).length,
-    waitingOnAgents: () => false,
   };
 }

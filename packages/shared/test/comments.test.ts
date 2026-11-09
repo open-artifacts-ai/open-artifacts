@@ -380,7 +380,7 @@ describe("comments mock", () => {
   });
 });
 
-describe("asks, mentions and assign (#1535)", () => {
+describe("asks and mentions (#1535)", () => {
   const viewerArt = fixtures.artifacts.find(
     (a) => a.title === "Onboarding guide",
   );
@@ -542,10 +542,9 @@ describe("asks, mentions and assign (#1535)", () => {
     ).json();
     expect(need.items.map((a: { id: string }) => a.id)).toEqual([art.id]);
     expect(ArtifactSummarySchema.parse(need.items[0]).asksForYou).toBe(1);
-    const waiting = await (
-      await send("GET", `${O}${R.artifacts}?filter=waiting_on_agents`)
-    ).json();
-    expect(waiting.items).toEqual([]);
+    expect(
+      (await send("GET", `${O}${R.artifacts}?filter=waiting_on_agents`)).status,
+    ).toBe(400);
     expect((await send("GET", `${O}${R.artifacts}?filter=x`)).status).toBe(400);
   });
 

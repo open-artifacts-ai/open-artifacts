@@ -1,4 +1,5 @@
 import {
+  type Me,
   type Member,
   MemberInviteSchema,
   MemberRemovedDetailsSchema,
@@ -45,6 +46,7 @@ import { CopyLink } from "../layout/CopyLink";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
+import { PLAN_PAGE } from "../layout/PlanBanner";
 import {
   isReleased,
   personFirst,
@@ -54,6 +56,7 @@ import {
 import { toast } from "../layout/toast";
 import { UserAvatar } from "../layout/UserAvatar";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { AppLink } from "../library/AppLink";
 import { relativeTime } from "../library/time";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { clearDenied, denyMember, useDenied } from "./denied";
@@ -132,6 +135,25 @@ function RoleSelect({
   );
 }
 
+/**
+ * "Choose a plan" in `text`, as a link to Plan and billing. Only the owner
+ * wording of a plan refusal has those words (a member's says "choose a plan"
+ * in lower case, as plain text).
+ */
+function withPlanLink(text: string) {
+  const at = text.indexOf("Choose a plan");
+  if (at < 0) return text;
+  return (
+    <>
+      {text.slice(0, at)}
+      <AppLink href={PLAN_PAGE} className="underline">
+        Choose a plan
+      </AppLink>
+      {text.slice(at + "Choose a plan".length)}
+    </>
+  );
+}
+
 function InviteDialog({ onClose }: { onClose: () => void }) {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
@@ -148,6 +170,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
     email: string;
   } | null>(null);
   const restore = useRestoreMember();
+  const busy = invite.isPending || restore.isPending;
   const [added, setAdded] = useState<{
     email: string;
     emailed: boolean;
@@ -206,7 +229,10 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
               ? inviteRefusedCopy(refused.data.reason, parsed, domains)
               : e instanceof ApiClientError
                 ? e.code.startsWith("plan_") || e.code === "billing_unavailable"
-                  ? errorCopy(e, e.message, billingContext(me))
+                  ? errorCopy(e, e.message, {
+                      ...billingContext(me),
+                      refused: "invite",
+                    })
                   : e.message
                 : "Couldn't add.",
           );
@@ -251,7 +277,9 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   }
   return (
     <Modal
-      onClose={onClose}
+      // Closing mid-request would drop a refusal nobody sees (the invite's,
+      // or the Restore inside this dialog's).
+      onClose={busy ? () => {} : onClose}
       title="Add a member"
       description={
         sends
@@ -260,7 +288,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
       }
       footer={
         <>
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="ghost" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
           <Button disabled={invite.isPending} onClick={submit}>
@@ -317,7 +345,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
                   },
                   onError: (e) => {
                     setRemoved(null);
-                    setError(restoreRefusal(e, removed.email));
+                    setError(restoreRefusal(e, removed.email, undefined, me));
                   },
                 })
               }
@@ -328,7 +356,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
         )}
         {error && (
           <p id="oa-invite-error" role="alert" className={errorText}>
-            {error}
+            {withPlanLink(error)}
           </p>
         )}
         <RoleSelect label="Role" value={role} onChange={setRole} />
@@ -881,7 +909,7 @@ function RemovedRow({
       {refusal && <p className={`m-0 basis-full ${muted}`}>{refusal}</p>}
       {problem && (
         <p role="alert" className={`m-0 basis-full ${errorText}`}>
-          {problem}
+          {withPlanLink(problem)}
         </p>
       )}
       {!refusal && (
@@ -915,6 +943,7 @@ export const restoreRefusal = (
   e: unknown,
   first: string,
   atStart: string = first,
+  me?: Me | null,
 ) => {
   const code = e instanceof ApiClientError ? e.code : "";
   if (code === "directory_managed")
@@ -926,7 +955,11 @@ export const restoreRefusal = (
   if (code === "conflict") return ADDRESS_RELEASED;
   if (code === "member_erased")
     return `${atStart}'s account was erased, so it can't be restored. If they need access again, invite them.`;
-  return errorCopy(e, `Couldn't restore ${first}. Try again.`);
+  // A plan refusal of a restore is the same as of an invite: it adds a person.
+  return errorCopy(e, `Couldn't restore ${first}. Try again.`, {
+    ...billingContext(me),
+    refused: "invite",
+  });
 };
 
 /** Departed people who still have personal artifacts (counts only, never titles). */
@@ -1095,7 +1128,7 @@ function DepartedRow({
       </div>
       {problem && (
         <p role="alert" className={`col-span-full m-0 ${errorText}`}>
-          {problem}
+          {withPlanLink(problem)}
         </p>
       )}
       {open && (
@@ -1156,7 +1189,14 @@ function RestoreDialog({
               tone: "success",
             }),
           onError: (e) =>
-            onRefused(restoreRefusal(e, first, personFirstAtStart(m))),
+            onRefused(
+              restoreRefusal(
+                e,
+                first,
+                personFirstAtStart(m),
+                state.status === "authed" ? state.me : null,
+              ),
+            ),
         })
       }
     />

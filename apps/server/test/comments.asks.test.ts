@@ -373,7 +373,7 @@ describe("asks", () => {
       closed: false,
     });
     expect(c.ask?.to).toEqual([
-      expect.objectContaining({ id: viewer.userId, me: false }),
+      expect.objectContaining({ kind: "user", id: viewer.userId, me: false }),
     ]);
     const mine = (await (
       await api(app, R.comments(s.id), viewer.cookie)
@@ -451,6 +451,8 @@ describe("asks", () => {
     const s = await setup();
     const t = await ask(s.id, [s.claude]);
     expect(t.comments[0]?.ask?.to[0]).toMatchObject({
+      kind: "agent",
+      id: s.claude,
       name: "Claude",
       me: true,
     });
