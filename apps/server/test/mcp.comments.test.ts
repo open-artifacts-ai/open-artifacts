@@ -476,8 +476,8 @@ describe("add_comment with an ask (#1535)", () => {
     };
     const two = (n: number) =>
       Array.from({ length: n }, (_, i) => ({ id: `o${i}`, label: "L" }));
-    await bad({ options: [OPTS[0]] }, /options/);
-    await bad({ options: two(7) }, /options/);
+    await bad({ options: [OPTS[0]], recommended: undefined }, /options/);
+    await bad({ options: two(7), recommended: undefined }, /options/);
     await bad({ options: [OPTS[0], { ...OPTS[0] }] }, /unique/);
     await bad({ to: [] }, /\bto\b/);
     await bad(
