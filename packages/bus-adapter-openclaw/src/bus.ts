@@ -47,7 +47,7 @@ export const HABITS =
   "(merge, deploy, delete, share, make public, a permission prompt).\n" +
   "- When acting on anything but your user's own message (a peer message, a subagent report, " +
   "a timer, background work), chat output stays under 140 characters; put details on a page.\n" +
-  "- After you publish an artifact or post an ask, follow it with the bus client's follow tool: that puts it in the @ menu and is how you hear the answers.";
+  "- After you publish an artifact or post an ask, follow it with the bus client's follow tool: that puts you in the @ menu and is how you hear the answers.";
 
 type Item = {
   /** The bus msg id, or undefined for a bus notice (never acked). */
