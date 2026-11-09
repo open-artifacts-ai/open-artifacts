@@ -59,8 +59,8 @@ export const ROSTER_MAX = FANOUT_MAX + OWN_AGENTS_MAX;
 type OwnAgents = {
   /** The viewer's open agents that are running now, as bus addresses (bounded). */
   addresses: BusAddress[];
-  /** The one hub read it took, for the `online` check of the same member. */
-  running: Set<string>;
+  /** Addresses whose daemon is connected now (state "live"), from the same hub read: `online`. A running agent whose machine is away is "queued", not online. */
+  live: Set<string>;
 };
 
 const addrKey = (a: BusAddress) => `${a.namespace}\n${a.name}`;
@@ -82,8 +82,10 @@ export async function viewerAgents(
   if (!(await accessLevel(env, callerOf(user), artifactId))) return null;
   const view = await busView(env, viewerId);
   const running = new Set<string>();
+  const live = new Set<string>();
   const addresses: BusAddress[] = [];
   for (const a of view.agents) {
+    if (a.state === "live") live.add(addrKey(a));
     if (!a.running) continue;
     const k = addrKey(a);
     if (running.has(k)) continue;
@@ -96,10 +98,10 @@ export async function viewerAgents(
     if (ok.success && addresses.length < OWN_AGENTS_MAX)
       addresses.push(ok.data);
   }
-  return { addresses, running };
+  return { addresses, live };
 }
 
-/** `viewerAgents` as roster entries (online: it is running), for a mention at POST time. */
+/** `viewerAgents` as roster entries (online: its daemon is connected), for a mention at POST time. */
 export async function viewerRosterAgents(
   env: Env,
   artifactId: string,
@@ -112,7 +114,7 @@ export async function viewerRosterAgents(
     out.push({
       key: await agentKey(artifactId, viewerId, address),
       name: address.name,
-      online: true,
+      online: own.live.has(addrKey(address)),
       userId: viewerId,
       address,
     });
@@ -127,7 +129,7 @@ export async function viewerRosterAgents(
  * (read fresh, as notices are). `viewerId` names whose agents are plain;
  * another member's agent is "<agent> (<member>)". With `online`, each member
  * is checked on their hub (a read per member); otherwise `online` is false
- * (the viewer's own are running by definition, so true). An own agent that
+ * (the viewer's own read it from their one hub read). An own agent that
  * also follows is one entry. At most ROSTER_MAX entries.
  */
 export async function agentRoster(
@@ -164,11 +166,13 @@ export async function agentRoster(
     const user = await getUser(env, userId);
     if (!user || !canConnect(user)) continue;
     if (!(await accessLevel(env, callerOf(user), artifactId))) continue;
-    let running = new Set<string>();
-    if (own && userId === viewerId) running = own.running;
+    // `online` is a connected daemon (state "live"); the menu list itself
+    // keeps `running`: an agent whose machine is away is listed, offline.
+    let live = new Set<string>();
+    if (own && userId === viewerId) live = own.live;
     else if (online) {
       const view = await busView(env, userId);
-      for (const a of view.agents) if (a.running) running.add(addrKey(a));
+      for (const a of view.agents) if (a.state === "live") live.add(addrKey(a));
     }
     const owner = userId === viewerId ? "" : ` (${shownName(user)})`;
     for (const address of addresses) {
@@ -176,7 +180,7 @@ export async function agentRoster(
       out.push({
         key: await agentKey(artifactId, userId, address),
         name: `${address.name}${owner}`,
-        online: running.has(addrKey(address)),
+        online: live.has(addrKey(address)),
         userId,
         address,
       });
