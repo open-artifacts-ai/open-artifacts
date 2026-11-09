@@ -225,7 +225,7 @@ describe("installAdapters: openclaw", () => {
     expect(calls).toEqual([INSTALL(src), ENABLE, INSPECT]);
     for (const e of envs)
       expect(e).toEqual({ OPENCLAW_STATE_DIR: join(home, ".openclaw") });
-    for (const t of timeouts) expect(t).toBeGreaterThan(60_000);
+    for (const t of timeouts) expect(t).toBeGreaterThanOrEqual(30_000);
     expect(readdirSync(dest).sort()).toEqual(
       [
         ".oa-bus-managed",
@@ -275,12 +275,16 @@ describe("installAdapters: openclaw", () => {
     let n = 0;
     const real = deps.exec;
     deps.exec = (async (c, a, o) => {
-      if (a[1] === "inspect" && n++ === 0)
+      if (a[1] === "inspect" && n++ === 0) {
+        calls.push([c, ...a]);
         return {
           code: 0,
-          stdout: JSON.stringify({ plugin: { enabled: false, status: "disabled" } }),
+          stdout: JSON.stringify({
+            plugin: { enabled: false, status: "disabled" },
+          }),
           stderr: "",
         };
+      }
       return real(c, a, o);
     }) as Exec;
     calls.length = 0;
@@ -292,8 +296,7 @@ describe("installAdapters: openclaw", () => {
   it("gives inspect 30 s and install 180 s", async () => {
     const { deps, calls, timeouts } = setup();
     await installAdapters(deps);
-    const t = (verb: string) =>
-      timeouts[calls.findIndex((c) => c[2] === verb)];
+    const t = (verb: string) => timeouts[calls.findIndex((c) => c[2] === verb)];
     expect(t("install")).toBe(180_000);
     expect(t("enable")).toBeLessThanOrEqual(60_000);
     expect(t("inspect")).toBe(30_000);
@@ -314,7 +317,9 @@ describe("installAdapters: openclaw", () => {
     });
     const out = await installAdapters(deps);
     expect(out.installed).not.toContain("openclaw");
-    expect(out.skipped[0]?.reason).toContain(`a different copy loads from ${other}`);
+    expect(out.skipped[0]?.reason).toContain(
+      `a different copy loads from ${other}`,
+    );
   });
 
   it("accepts the same folder reached through a symlink", async () => {
@@ -744,9 +749,9 @@ describe("openclaw habits: on, then off", () => {
     const busHome = join(home, ".oa-bus");
     const env = { OPENCLAW_STATE_DIR: join(tmp("oa-oc-srv-"), "srv-oc") };
     const dir = ours(openclawPluginDir(home, env));
-    expect(setPluginHabits({ home, env, busHome }, [openclaw], true).changed).toEqual([
-      openclaw,
-    ]);
+    expect(
+      setPluginHabits({ home, env, busHome }, [openclaw], true).changed,
+    ).toEqual([openclaw]);
     expect(existsSync(marker(dir))).toBe(true);
     // The next command runs without that env.
     const r = removeHabits({ home, busHome });

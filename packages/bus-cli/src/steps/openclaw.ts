@@ -10,6 +10,7 @@ import {
   lstatSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
@@ -34,8 +35,10 @@ export const OPENCLAW_NIX =
 /** The note uninstall leaves when the folder went with no `openclaw` to uninstall it. */
 export const OPENCLAW_NO_CLI =
   "no openclaw binary found; its config may still list oa-bus";
-/** The slowest step is `plugins install`; the CLI's default 10 s kill is too short for it. */
-const OPENCLAW_TIMEOUT_MS = 180_000;
+/** The CLI's default 10 s kill is too short for OpenClaw: install is the slow one. */
+const INSTALL_TIMEOUT_MS = 180_000;
+const ENABLE_TIMEOUT_MS = 60_000;
+const INSPECT_TIMEOUT_MS = 30_000;
 
 type Env = Record<string, string | undefined>;
 
@@ -55,10 +58,10 @@ export function openclawHome(home: string, env: Env): string {
 }
 
 /**
- * The state dir the `openclaw` CLI would use: OPENCLAW_STATE_DIR, else the
- * profile's (OPENCLAW_PROFILE: <home>/.openclaw-<name>), else <home>/.openclaw,
- * or a legacy <home>/.clawdbot when only that exists. `--profile` is a flag
- * install cannot see.
+ * The state dir the `openclaw` CLI would use: OPENCLAW_STATE_DIR, else
+ * <home>/.openclaw, or a legacy <home>/.clawdbot when only that exists.
+ * OPENCLAW_PROFILE is ignored, as OpenClaw's resolveStateDir ignores it: only
+ * the `--profile` flag sets OPENCLAW_STATE_DIR, and install cannot see a flag.
  */
 export function openclawStateDir(home: string, env: Env): string {
   const h = openclawHome(home, env);
@@ -68,12 +71,6 @@ export function openclawStateDir(home: string, env: Env): string {
       override.startsWith("~")
         ? override.replace(/^~(?=$|[\\/])/, h)
         : override,
-    );
-  const profile = env.OPENCLAW_PROFILE?.trim();
-  if (profile)
-    return join(
-      h,
-      `.openclaw${profile.toLowerCase() === "default" ? "" : `-${profile}`}`,
     );
   const next = join(h, ".openclaw");
   if (env.OPENCLAW_TEST_FAST === "1" || existsSync(next)) return next;
@@ -120,13 +117,11 @@ const kind = (path: string): "dir" | "file" | "link" | undefined => {
   }
 };
 
-/** A folder that carries our plugin's manifest id: ours even when the marker is gone. */
-const hasOurManifest = (dir: string): boolean => {
+/** Whether `dir` holds exactly the shipped package files (a manifest id alone proves nothing). */
+const sameAsShipped = (dir: string, shipped: string | undefined): boolean => {
+  if (shipped === undefined) return false;
   try {
-    const m: unknown = JSON.parse(
-      readFileSync(join(dir, "openclaw.plugin.json"), "utf8"),
-    );
-    return (m as { id?: unknown } | null)?.id === OPENCLAW_PLUGIN_ID;
+    return pluginHash(dir) === pluginHash(shipped);
   } catch {
     return false;
   }
@@ -134,8 +129,9 @@ const hasOurManifest = (dir: string): boolean => {
 
 /**
  * Whether `dir` is our folder, and whether it matches the shipped plugin.
- * `plugins install --force` replaces the folder, marker included, so a folder
- * with our manifest id and no marker (an install cut short) is ours and stale.
+ * `plugins install --force` replaces the folder, marker included. A folder
+ * without our marker is ours only when its files are exactly the shipped ones
+ * (an install cut short): a fork that shares the manifest id is foreign.
  */
 export function openclawPluginState(
   dir: string,
@@ -148,7 +144,7 @@ export function openclawPluginState(
   try {
     marker = readFileSync(join(dir, OPENCLAW_MARKER), "utf8").trim();
   } catch {
-    return hasOurManifest(dir) ? "stale" : "foreign";
+    return sameAsShipped(dir, shipped) ? "stale" : "foreign";
   }
   if (!marker.startsWith("managed by the Open Artifacts bus installer"))
     return "foreign";
@@ -166,11 +162,12 @@ export function openclawPluginState(
 const exec = async (
   deps: Pick<AdapterDeps, "exec" | "home" | "env">,
   args: string[],
+  timeoutMs = ENABLE_TIMEOUT_MS,
 ) => {
   try {
     return await deps.exec("openclaw", args, {
       env: openclawEnv(deps.home, deps.env ?? {}),
-      timeoutMs: OPENCLAW_TIMEOUT_MS,
+      timeoutMs,
     });
   } catch (e) {
     return {
@@ -184,6 +181,14 @@ const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
 const why = (r: { code: number; stdout: string; stderr: string }) =>
   firstLine(r.stderr) || firstLine(r.stdout) || `exit ${r.code}`;
 
+const realOrSelf = (p: string): string => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+};
+
 /** The tools and hook the plugin must show at runtime for the install to count. */
 const NEED_TOOLS = ["oabus_self", "oabus_send_message", "oabus_fetch"];
 const NEED_HOOK = "before_prompt_build";
@@ -195,13 +200,11 @@ const NEED_HOOK = "before_prompt_build";
 export async function openclawVerify(
   deps: Pick<AdapterDeps, "exec" | "home" | "env">,
 ): Promise<string | undefined> {
-  const r = await exec(deps, [
-    "plugins",
-    "inspect",
-    OPENCLAW_PLUGIN_ID,
-    "--runtime",
-    "--json",
-  ]);
+  const r = await exec(
+    deps,
+    ["plugins", "inspect", OPENCLAW_PLUGIN_ID, "--runtime", "--json"],
+    INSPECT_TIMEOUT_MS,
+  );
   if (r.code !== 0) return why(r);
   let doc: unknown;
   try {
@@ -211,7 +214,12 @@ export async function openclawVerify(
     return "its output was not JSON";
   }
   const d = doc as {
-    plugin?: { enabled?: unknown; status?: unknown; toolNames?: unknown };
+    plugin?: {
+      enabled?: unknown;
+      status?: unknown;
+      toolNames?: unknown;
+      rootDir?: unknown;
+    };
     typedHooks?: { name?: unknown }[];
   };
   if (d.plugin?.enabled !== true) return "the plugin is not enabled";
@@ -223,6 +231,13 @@ export async function openclawVerify(
     return `its tools are not registered (${missing.join(", ")})`;
   if (!d.typedHooks?.some((h) => h.name === NEED_HOOK))
     return `its ${NEED_HOOK} hook is not registered`;
+  // A linked dev copy can override ours: habits.on would then do nothing.
+  const dest = openclawPluginDir(deps.home, deps.env ?? {});
+  const root = d.plugin.rootDir;
+  if (typeof root !== "string")
+    return "it did not say which folder the plugin loads from";
+  if (realOrSelf(root) !== realOrSelf(dest))
+    return `a different copy loads from ${root}, not ${dest}`;
   return undefined;
 }
 
@@ -253,22 +268,33 @@ export async function installOpenclaw(
     throw new Error(
       `${dest} exists and is not Open Artifacts bus's; left it untouched`,
     );
-  if (state !== "current") {
+  const habitsFile = join(dest, OPENCLAW_HABITS_MARKER);
+  // The user's "no" wins on every install, a current one included.
+  const dropHabitsIfOptedOut = () => {
+    if (optedOut && kind(dest) === "dir") rmSync(habitsFile, { force: true });
+  };
+  if (state === "current") {
+    dropHabitsIfOptedOut();
+    // Nothing to install; nothing to enable if it already loads.
+    if ((await openclawVerify(deps)) === undefined) return "done";
+  } else {
     // The user's yes to the habits lives in the folder `plugins install --force`
     // replaces: remember it, and put it back whether or not the install worked.
     const keepHabits =
-      state === "stale" &&
-      !optedOut &&
-      kind(join(dest, OPENCLAW_HABITS_MARKER)) === "file";
-    const r = await exec(deps, [
-      "plugins",
-      "install",
-      ...(state === "absent" ? [] : ["--force"]),
-      shipped,
-    ]);
+      state === "stale" && !optedOut && kind(habitsFile) === "file";
+    const r = await exec(
+      deps,
+      [
+        "plugins",
+        "install",
+        ...(state === "absent" ? [] : ["--force"]),
+        shipped,
+      ],
+      INSTALL_TIMEOUT_MS,
+    );
     const restore = () => {
       if (keepHabits && kind(dest) === "dir")
-        writeAtomic(join(dest, OPENCLAW_HABITS_MARKER), HABITS_MARKER_TEXT);
+        writeAtomic(habitsFile, HABITS_MARKER_TEXT);
     };
     if (r.code !== 0) {
       restore();
@@ -282,6 +308,8 @@ export async function installOpenclaw(
       join(dest, OPENCLAW_MARKER),
       `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
     );
+    // A habits.on in the shipped folder is not the user's yes.
+    rmSync(habitsFile, { force: true });
     restore();
   }
   const en = await exec(deps, ["plugins", "enable", OPENCLAW_PLUGIN_ID]);
@@ -303,7 +331,7 @@ export async function uninstallOpenclaw(
   notes: string[],
 ): Promise<"done" | "none"> {
   const dest = openclawPluginDir(deps.home, deps.env ?? {});
-  const state = openclawPluginState(dest, undefined);
+  const state = openclawPluginState(dest, deps.assets.openclaw);
   if (state === "absent") return "none";
   if (state === "foreign")
     throw new Error(`${dest} is not Open Artifacts bus's; left it untouched`);

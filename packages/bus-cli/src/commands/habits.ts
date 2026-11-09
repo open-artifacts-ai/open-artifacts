@@ -119,13 +119,9 @@ function turnOn(ctx: Ctx): number {
 function turnOff(ctx: Ctx): number {
   const r = removeHabits(deps(ctx));
   setHabitsOptOut(ctx.home, true, stamp(ctx));
-  const pluginMarkers = PLUGIN_HARNESSES.map((p) =>
-    join(p.dir(ctx.userHome, ctx.env), p.marker),
-  );
-  const blocks = r.files.filter((f) => !pluginMarkers.includes(f));
-  const offIn = PLUGIN_HARNESSES.filter((_, i) =>
-    r.files.includes(pluginMarkers[i] as string),
-  );
+  const pluginFiles = r.pluginFiles ?? [];
+  const blocks = r.files.filter((f) => !pluginFiles.includes(f));
+  const offIn = r.plugins ?? [];
   say(
     ctx,
     blocks.length > 0

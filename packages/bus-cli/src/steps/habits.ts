@@ -211,7 +211,13 @@ const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** `busHome` is where install.json lives; without it nothing is remembered. */
 export type HabitsDeps = { home: string; env?: Env; busHome?: string };
-export type HabitsResult = { files: string[]; notes: string[] };
+export type HabitsResult = {
+  files: string[];
+  notes: string[];
+  /** removeHabits: the plugin harnesses whose marker was removed, and each marker path (also in `files`). */
+  plugins?: PluginHarness[];
+  pluginFiles?: string[];
+};
 
 const isLink = (path: string): boolean => {
   try {
@@ -250,8 +256,23 @@ const record = (busHome: string | undefined) => {
     optedOut?: boolean;
     at?: string;
     files?: Record<string, FileRecord>;
+    pluginDirs?: unknown;
   };
-  return { optedOut: h.optedOut === true, at: h.at, files: h.files ?? {} };
+  return {
+    optedOut: h.optedOut === true,
+    at: h.at,
+    files: h.files ?? {},
+    pluginDirs: pluginDirsOf(h.pluginDirs),
+  };
+};
+/** The plugin folders the marker was written into, by harness; an old or odd record has none. */
+const pluginDirsOf = (v: unknown): Record<string, string[]> => {
+  const out: Record<string, string[]> = {};
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return out;
+  for (const [name, list] of Object.entries(v))
+    if (Array.isArray(list))
+      out[name] = list.filter((d): d is string => typeof d === "string");
+  return out;
 };
 const saveRecord = (
   busHome: string | undefined,
@@ -259,6 +280,7 @@ const saveRecord = (
     optedOut?: boolean;
     at?: string;
     files?: Record<string, FileRecord>;
+    pluginDirs?: Record<string, string[]>;
   },
 ) => {
   if (!busHome) return;
@@ -376,13 +398,13 @@ export function removeHabits(
   }
   // Plugin harnesses have no file above: their marker goes here (also on uninstall).
   const p = setPluginHabits(deps, PLUGIN_HARNESSES, false);
-  for (const x of p.changed) files.push(pluginPaths(deps, x).marker);
+  files.push(...p.markers);
   notes.push(...p.notes);
   // Uninstall must not create a record in a folder that has none (it would make
   // a foreign OA_BUS_HOME look like ours to --purge).
   if (deps.busHome && existsSync(join(deps.busHome, "install.json")))
     saveRecord(deps.busHome, { files: kept });
-  return { files, notes };
+  return { files, notes, plugins: p.changed, pluginFiles: p.markers };
 }
 
 /** Files that hold the current or an older block, across every harness. */
@@ -468,23 +490,45 @@ export function pluginHabitsState(
   }
 }
 
+/** Remembers a folder the marker was written into, so off finds it whatever the env then is. */
+const rememberDir = (
+  busHome: string | undefined,
+  p: PluginHarness,
+  dir: string,
+) => {
+  if (!busHome) return;
+  const { pluginDirs } = record(busHome);
+  const have = pluginDirs[p.name] ?? [];
+  if (!have.includes(dir))
+    saveRecord(busHome, {
+      pluginDirs: { ...pluginDirs, [p.name]: [...have, dir] },
+    });
+};
+
 /**
  * Sets the marker in each given plugin's folder. Refuses, with a note, a
  * folder that is not ours or is a symlink, and a marker that is a symlink.
  * Turning off removes only the marker (a symlink is unlinked, never followed).
  */
 export function setPluginHabits(
-  deps: { home: string; env?: Env },
+  deps: { home: string; env?: Env; busHome?: string },
   plugins: PluginHarness[],
   on: boolean,
-): { changed: PluginHarness[]; notes: string[] } {
+): { changed: PluginHarness[]; notes: string[]; markers: string[] } {
   const changed: PluginHarness[] = [];
   const notes: string[] = [];
+  const markers: string[] = [];
   for (const p of plugins) {
-    // On: the active profile's folder. Off: every profile's, so no marker is left behind.
+    // On: the active profile's folder. Off: every profile's, and every folder a
+    // marker was recorded in (the env that chose it may be gone), so none is left behind.
     const dirs = on
       ? [pluginPaths(deps, p).dir]
-      : p.dirs(deps.home, deps.env ?? {});
+      : [
+          ...new Set([
+            ...p.dirs(deps.home, deps.env ?? {}),
+            ...(record(deps.busHome).pluginDirs[p.name] ?? []),
+          ]),
+        ];
     for (const dir of dirs) {
       const marker = join(dir, p.marker);
       try {
@@ -507,17 +551,28 @@ export function setPluginHabits(
             continue;
           }
           writeAtomic(marker, HABITS_MARKER_TEXT);
+          markers.push(marker);
+          rememberDir(deps.busHome, p, dir);
           if (!changed.includes(p)) changed.push(p);
         } else if (existsSync(marker) || isLink(marker)) {
           rmSync(marker, { force: true });
+          markers.push(marker);
           if (!changed.includes(p)) changed.push(p);
         }
       } catch (e) {
         notes.push(`Could not update the ${p.label} plugin: ${reason(e)}`);
       }
     }
+    // Swept: nothing is left to remember. Never creates a record that is not there.
+    if (!on && deps.busHome && existsSync(join(deps.busHome, "install.json"))) {
+      const { pluginDirs } = record(deps.busHome);
+      if (pluginDirs[p.name] !== undefined) {
+        const { [p.name]: _gone, ...rest } = pluginDirs;
+        saveRecord(deps.busHome, { pluginDirs: rest });
+      }
+    }
   }
-  return { changed, notes };
+  return { changed, notes, markers };
 }
 
 /** The opt-out lives in the install record, so a reinstall keeps it. */
