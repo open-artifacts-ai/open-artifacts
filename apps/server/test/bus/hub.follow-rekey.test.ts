@@ -6,7 +6,7 @@
 // `following` right after `renamed` is deterministic.
 
 import type { ServerFrame } from "@oa/bus-protocol";
-import { FOLLOW_LIMIT, type Member } from "@oa/shared";
+import { FOLLOW_LIMIT, type Member, newId } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { publish } from "../../src/services/artifacts.js";
 import { notifyChanged } from "../../src/services/follows.js";
@@ -291,15 +291,23 @@ describe("a reclaimed or restarted name keeps its follows (#1742)", () => {
 });
 
 describe("the follow cap and dead follows", () => {
-  const manyArtifacts = async (userId: string, n: number) => {
-    const out: string[] = [];
-    for (let i = 0; i < n; i++) out.push(await artifactOf(userId));
-    return out;
+  /** `n` bare artifact rows (never read, only followed by raw inserts): publishing 200 takes seconds. */
+  const fillers = async (userId: string, n: number) => {
+    const ids = Array.from({ length: n }, () => newId());
+    await e.DB.batch(
+      ids.map((i) =>
+        e.DB.prepare(
+          "insert into artifacts (id, owner_id, title, format, created_at, updated_at) values (?, ?, 'f', 'markdown', 1, 1)",
+        ).bind(i, userId),
+      ),
+    );
+    return ids;
   };
 
   it("one address at the cap lists exactly the cap and refuses a new follow", async () => {
     const s = await setup();
-    const arts = await manyArtifacts(s.m.userId, FOLLOW_LIMIT + 1);
+    const arts = await fillers(s.m.userId, FOLLOW_LIMIT);
+    const target = await artifactOf(s.m.userId);
     const a = await s.reg(uniq("full"));
     await e.DB.batch(
       arts
@@ -308,7 +316,7 @@ describe("the follow cap and dead follows", () => {
     );
     const r = await ask(
       s,
-      { type: "follow", from_ref: a.ref, artifact: arts[FOLLOW_LIMIT] },
+      { type: "follow", from_ref: a.ref, artifact: target },
       "error",
     );
     expect(r.code).toBe("follow_limit");
@@ -318,8 +326,8 @@ describe("the follow cap and dead follows", () => {
 
   it("at the cap with dead rows, follow clears them and succeeds; live and away rows stay", async () => {
     const s = await setup();
-    const [art, other] = await manyArtifacts(s.m.userId, 2);
-    if (!art || !other) throw new Error("no artifacts");
+    const art = await artifactOf(s.m.userId);
+    const other = await artifactOf(s.m.userId);
     const live = await s.reg(uniq("live"));
     const gone = await s.reg(uniq("gone"));
     await follow(s, live.ref, art);
@@ -352,7 +360,8 @@ describe("the follow cap and dead follows", () => {
 
   it("at the cap with only live (and away) rows, follow_limit stays and nothing is removed", async () => {
     const s = await setup();
-    const arts = await manyArtifacts(s.m.userId, FOLLOW_LIMIT);
+    const arts = await fillers(s.m.userId, FOLLOW_LIMIT - 1);
+    const target = await artifactOf(s.m.userId);
     const live = await s.reg(uniq("live"));
     const gone = await s.reg(uniq("gone"));
     await e.DB.batch([
@@ -371,7 +380,7 @@ describe("the follow cap and dead follows", () => {
     await settled(s, live.ref);
     const r = await ask(
       s,
-      { type: "follow", from_ref: live.ref, artifact: arts[FOLLOW_LIMIT - 1] },
+      { type: "follow", from_ref: live.ref, artifact: target },
       "error",
     );
     expect(r.code).toBe("follow_limit");
