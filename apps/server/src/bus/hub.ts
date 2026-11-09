@@ -320,6 +320,16 @@ const followGated = (ws: WebSocket): boolean => {
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.follow);
 };
 
+/**
+ * Notices (#1746): the `notice` frame arrived with daemon v0.138.0, but only
+ * v0.139.0 began listing a cap (BUS_CAPS.follow), so that cap is the gate. A
+ * daemon without it has a strict decoder that refuses the frame (`bad_frame`)
+ * while the hub would report `delivered`. Such a socket is treated as an
+ * offline machine: the notice parks and goes out on an agent_up from a
+ * socket with the cap. 0.138.x daemons count as old, which is acceptable.
+ */
+const noticeGated = (ws: WebSocket): boolean => followGated(ws);
+
 /** #1317: follow requests one hub runs at once (each is a D1 round trip); past it, `rate_limited`. */
 const FOLLOWS_IN_FLIGHT_MAX = 8;
 /** #1317: how long a follow request waits on D1 before the agent is told `internal`. */
@@ -5888,7 +5898,9 @@ export class BusHub extends DurableObject<Env> {
       );
       return "dropped";
     }
-    const socket = liveSocket(this.ctx, agent.machineId);
+    const live = liveSocket(this.ctx, agent.machineId);
+    // A socket that cannot decode a notice counts as offline (noticeGated).
+    const socket = live && noticeGated(live) ? live : null;
     const notBefore = n.notBefore ?? now;
     if (socket && notBefore <= now) {
       sql.exec(
@@ -5936,6 +5948,8 @@ export class BusHub extends DurableObject<Env> {
    * parked ones. Bounded by NOTICE_FLUSH_BATCH.
    */
   #flushNoticesFor(ws: WebSocket, agent: AgentRow): void {
+    // A socket without the cap cannot decode a notice: leave them parked.
+    if (!noticeGated(ws)) return;
     const sql = this.ctx.storage.sql;
     const now = this.#now();
     const rows = all<NoticeRow>(
@@ -5994,7 +6008,8 @@ export class BusHub extends DurableObject<Env> {
     );
     for (const r of due) {
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
-      const socket = agent && liveSocket(this.ctx, agent.machineId);
+      const live = agent && liveSocket(this.ctx, agent.machineId);
+      const socket = live && noticeGated(live) ? live : null;
       if (agent && socket) {
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
