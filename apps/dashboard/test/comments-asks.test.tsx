@@ -1486,6 +1486,7 @@ describe("Ask a question (#1794)", () => {
             author: { kind: "user", id: "me", name: "Me", me: true },
             createdAt: "2026-11-05T11:00:00Z",
             editedAt: null,
+            typed: true,
             can: { edit: true, delete: true },
             mentions: [
               { key: "agent:p", name: "OA Product", delivery: "delivered" },
@@ -1615,6 +1616,8 @@ describe("Ask a question (#1794)", () => {
         optionId: "a",
         by: { kind: "user", id: "me", name: "Me", me: true },
         at: "2026-11-05T11:00:00Z",
+        typed: true,
+        yes: true,
       },
     });
     picked.id = "t-1";
