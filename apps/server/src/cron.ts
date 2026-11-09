@@ -127,9 +127,9 @@ async function run(
           logError("cron_task_failed", e),
         ),
       );
-      // Hosted billing: read the tier through this tick's BILLING gate (and
-      // retry a trial start an invite couldn't make), then the monthly
-      // creator report. Both never throw; nothing on a self-hosted install.
+      // Hosted billing: read the tier through this tick's BILLING gate, then
+      // the monthly creator report. Both never throw; nothing on a self-hosted
+      // install.
       if (billingActive(env))
         ctx.waitUntil(
           (async () => {
