@@ -131,9 +131,7 @@ describe("effectivePlan: a cached Business trial that has passed", () => {
   it("holds through a billing outage inside the 7 days; after them it is read-only", () => {
     const stored = at({ ...passed, asOf: mid - 6 * DAY });
     const down = { checkedAt: mid, failingSince: mid - DAY, lastGoodAt: null };
-    expect(effectivePlan(stored, down, undefined, mid).lock?.mode).toBe(
-      "solo",
-    );
+    expect(effectivePlan(stored, down, undefined, mid).lock?.mode).toBe("solo");
     const late = at({ ...passed, asOf: mid - PLAN_STALE_MS - 1 });
     expect(effectivePlan(late, down, undefined, mid)).toMatchObject({
       readOnly: true,

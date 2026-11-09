@@ -86,7 +86,8 @@ const openSocket = (token: string) =>
 
 const base = { trialEndsAt: 1, graceUntil: null, version: 1 };
 const LOCKS: Record<string, BillingRow> = {
-  trial_ended: { ...base, tier: "trial", status: "active" },
+  // A trial answer with no end date counts as ended (a passed date is Solo, #1756).
+  trial_ended: { ...base, trialEndsAt: null, tier: "trial", status: "active" },
   lapsed: { ...base, tier: "team", status: "lapsed" },
   payment_failed: { ...base, tier: "team", status: "past_due", graceUntil: 1 },
 };
