@@ -5,6 +5,7 @@ import {
   BusNameSchema,
   IsoTimeSchema,
   KindTokenSchema,
+  LinkProofHashSchema,
   MachineLabelSchema,
   MsgIdSchema,
   ReceiptReasonSchema,
@@ -251,6 +252,20 @@ export const StatusRequest = z.object({
 });
 export type StatusRequest = z.infer<typeof StatusRequest>;
 
+/**
+ * `oa-bus mcp-proof` telling the daemon a Claude process's proof hash (#1822).
+ * No hello, like `status`: the socket is the user's own (0600). `pid` is the
+ * Claude process the helper found; the daemon binds the hash only to a live
+ * Claude record it attested for that pid.
+ */
+export const LinkProofRequest = z.object({
+  ...base,
+  type: z.literal("link_proof"),
+  pid: z.number().int().positive(),
+  hash: LinkProofHashSchema,
+});
+export type LinkProofRequest = z.infer<typeof LinkProofRequest>;
+
 export const AdapterFrame = z.discriminatedUnion("type", [
   Hello,
   Send,
@@ -426,6 +441,8 @@ export const StatusReply = z.object({
   hub_since: z.number().optional(),
   /** The hub's `server_version` from its last `hello_ok`. Absent before one, and from older daemons. */
   hub_version: z.string().optional(),
+  /** This daemon takes `link_proof` (#1822). Older daemons omit it. */
+  link: z.boolean().optional(),
   /** The namespace `cwd` resolves to, when the request named one. */
   namespace: z.string().optional(),
   /** One roster per namespace: this machine's sessions', or only `cwd`'s. */
@@ -464,7 +481,15 @@ export const StatusReply = z.object({
 });
 export type StatusReply = z.infer<typeof StatusReply>;
 
+/** The reply to `link_proof`: whether a live Claude record took the hash. */
+export const LinkProofed = z.object({
+  ...base,
+  type: z.literal("link_proofed"),
+  bound: z.boolean(),
+});
+
 export const DaemonFrame = z.discriminatedUnion("type", [
+  LinkProofed,
   Welcome,
   Receipt,
   Roster,

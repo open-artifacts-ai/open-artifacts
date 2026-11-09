@@ -34,6 +34,12 @@ import {
 import { PI_EXTENSION } from "@oa/bus-adapter-pi";
 import { codexBinFile, codexBinPin } from "@oa/bus-daemon";
 import {
+  claudeConfigFile,
+  installProof,
+  type ProofIo,
+  uninstallProof,
+} from "./claude-proof.ts";
+import {
   codexConfig,
   codexEntry,
   codexEntryOf,
@@ -68,6 +74,8 @@ export type AdapterDeps = {
   busHome?: string;
   /** CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME, OPENCODE_CONFIG_DIR, PI_CODING_AGENT_DIR, PI_CONFIG_DIR, OMP_PROFILE, PI_PROFILE, CODEX_HOME, PATH. */
   env?: Record<string, string | undefined>;
+  /** The instance's origin: its user-scope Claude entry gets the proof helper (#1822). */
+  hub?: string;
   /** The argv that runs the CLI: `[node, <OA_BUS_HOME>/bin/dist/index.js]`, or one executable. */
   busBin: string[];
   /** `pi` is the one extension file Pi and oh-my-pi both load. */
@@ -153,7 +161,7 @@ const paths = (deps: AdapterDeps) => {
     join(env.XDG_CONFIG_HOME ?? join(deps.home, ".config"), "opencode");
   const busDir = deps.busHome ?? join(deps.home, ".oa-bus");
   return {
-    claude: join(env.CLAUDE_CONFIG_DIR ?? deps.home, ".claude.json"),
+    claude: claudeConfigFile(deps.home, env),
     // OpenCode reads both; edit the one the user has, else create .json.
     opencodeConfigs: [
       join(opencode, "opencode.json"),
@@ -386,6 +394,30 @@ async function run(deps: AdapterDeps, cmd: string, args: string[]) {
   }
 }
 
+/** The proof helper of the instance's Claude entry (#1822); never stops the install. */
+function claudeProof(deps: AdapterDeps, notes: string[]) {
+  if (deps.hub === undefined) return;
+  try {
+    const note = installProof(
+      proofIo(deps),
+      deps.hub,
+      deps.busBin,
+      movedHome(deps),
+    );
+    if (note) notes.push(note);
+  } catch (e) {
+    notes.push(
+      `could not add the proof helper to the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+const proofIo = (deps: AdapterDeps): ProofIo => ({
+  file: paths(deps).claude,
+  record: paths(deps).record,
+  write: writeAtomic,
+});
+
 const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
 
 const RESTART_FAILED = "opencode service restart failed";
@@ -432,7 +464,10 @@ const install: Record<Harness, Step> = {
       "mcp",
       "claude",
     ]);
-    if (add.code === 0) return "done";
+    if (add.code === 0) {
+      claudeProof(deps, notes);
+      return "done";
+    }
     const path = paths(deps).claude;
     const doc = readDoc(path);
     save(
@@ -448,6 +483,7 @@ const install: Record<Harness, Step> = {
     notes.push(
       `claude mcp add failed (${firstLine(add.stderr)}); wrote ${path} directly`,
     );
+    claudeProof(deps, notes);
     return "done";
   },
 
@@ -568,6 +604,14 @@ const install: Record<Harness, Step> = {
 // user removed first; the binaries are used only when present.
 const uninstall: Record<Harness, Step> = {
   async claude(deps, notes) {
+    // The user's entry goes back first; it is not the oa_bus entry below.
+    try {
+      uninstallProof(proofIo(deps));
+    } catch (e) {
+      notes.push(
+        `could not take the proof helper off the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
     if (deps.which("claude")) {
       const r = await run(deps, "claude", [
         "mcp",

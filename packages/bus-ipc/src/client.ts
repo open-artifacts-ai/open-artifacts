@@ -298,3 +298,50 @@ export function daemonStatus(opts: {
     });
   });
 }
+
+/**
+ * Tells the daemon `hash` is the proof of the Claude process `pid` (#1822).
+ * True when a live Claude record took it. Rejects when the daemon is down,
+ * silent, or too old to know the frame; the caller fails open.
+ */
+export function daemonLinkProof(opts: {
+  path: string;
+  pid: number;
+  hash: string;
+  timeoutMs?: number;
+}): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const sock = connect(opts.path);
+    const decoder = new LineDecoder();
+    const done = (f: () => void) => {
+      clearTimeout(timer);
+      sock.destroy();
+      f();
+    };
+    const timer = setTimeout(
+      () => done(() => reject(new Error("daemon did not answer link_proof"))),
+      opts.timeoutMs ?? 2000,
+    );
+    sock.once("error", (e) => done(() => reject(e)));
+    sock.once("close", () =>
+      done(() => reject(new Error("daemon connection closed"))),
+    );
+    sock.once("connect", () =>
+      sock.write(
+        `${JSON.stringify({ v: 1, id: "link", type: "link_proof", pid: opts.pid, hash: opts.hash })}\n`,
+      ),
+    );
+    sock.on("data", (chunk) => {
+      try {
+        for (const raw of decoder.push(chunk)) {
+          const f = DaemonFrame.parse(raw);
+          if (f.type === "link_proofed") return done(() => resolve(f.bound));
+          if (f.type === "error")
+            return done(() => reject(new Error(f.message)));
+        }
+      } catch (e) {
+        done(() => reject(e instanceof Error ? e : new Error(String(e))));
+      }
+    });
+  });
+}

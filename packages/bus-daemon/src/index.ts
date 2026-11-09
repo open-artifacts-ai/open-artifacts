@@ -328,6 +328,21 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     if (sent) rec.sentName = rec.proposedName;
     return sent;
   };
+  /**
+   * #1822: binds the record's proof hash on the hub, for a hub that said it
+   * takes `link_bind`. Sent when the hash arrives and after each (re)register;
+   * a failure (`not_registered`, a dropped link) is left to the next of those.
+   */
+  const sendLink = (rec: AgentRecord) => {
+    if (!hubLink || !rec.live || rec.linkHash === undefined) return;
+    hub.send({
+      v: 1,
+      id: frameId(),
+      type: "link_bind",
+      agent_ref: rec.ref,
+      hash: rec.linkHash,
+    });
+  };
   /** Never a loop: one retry after a long wait; a reconnect replays it sooner. */
   const markLimited = (ref: string, message: string) => {
     if (!limited.has(ref))
@@ -878,6 +893,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubMailbox = false;
   /** The hub's last hello_ok listed BUS_CAPS.follow: follow frames may go (#1317). */
   let hubFollow = false;
+  /** The hub's last hello_ok listed BUS_CAPS.link: link_bind may go (#1822). */
+  let hubLink = false;
   /** This link has had its hello_ok (reset when the link drops). */
   let hubHelloed = false;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
@@ -904,6 +921,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             // Answered: the hub knows the new ref, the handover is done.
             delete agent.replaces;
             flushRename(agent);
+            // The hub forgot the hash with the last link: say it again.
+            sendLink(agent);
           }
           // Registered on this link: its sends lost to the last one go again.
           resends.up(frame.agent_ref);
@@ -1001,6 +1020,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         case "follows":
           pending.settle(frame);
           return;
+        case "link_bound":
+          return;
         case "body":
           // A fetched body is a peer's text, like a delivered one.
           pending.settle({ ...frame, body: stripTerminalControls(frame.body) });
@@ -1012,6 +1033,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
           hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
+          hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
           hubHelloed = true;
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
@@ -1072,6 +1094,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // A replay before the next hello_ok must not carry `replaces`.
       hubMailbox = false;
       hubFollow = false;
+      hubLink = false;
       hubHelloed = false;
       statusRelay.dropped();
       receipts.release();
@@ -1139,6 +1162,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // A codex hello proves one call id, so it buys one request: `hello.pid`
     // is a claim (no peer credentials), and a won race must not become a session.
     oneRequest: (h) => h.kind === "codex",
+    // #1822: `oa-bus mcp-proof` names the Claude process it runs under. Only a
+    // live Claude record this daemon attested for that very pid takes the hash;
+    // an unknown pid binds nothing.
+    onLinkProof: (req) => {
+      const rec = agents
+        .all()
+        .find((a) => a.kind === "claude-code" && a.live && a.pid === req.pid);
+      if (!rec || rec.procStart === undefined) return { bound: false };
+      if ((cl.procStart ?? claudeProcStartOf)(req.pid) !== rec.procStart)
+        return { bound: false };
+      rec.linkHash = req.hash;
+      sendLink(rec);
+      return { bound: true };
+    },
     // `oa-bus status` and install's "Daemon running": one roster per namespace
     // this machine's open sessions are in (or only the cwd's).
     onStatus: async (req) => {
@@ -1210,6 +1247,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         ...(hub.open || !hubEver || hubDroppedAt === undefined
           ? {}
           : { hub_since: hubDroppedAt }),
+        link: true,
         ...(hubVersion === undefined ? {} : { hub_version: hubVersion }),
         ...(only === undefined ? {} : { namespace: only }),
         namespaces,
@@ -1379,6 +1417,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
           ...(mine ? { sessionName: mine.name } : {}),
+          // Claude's MCP server reconnects per tool call: the proof stays.
+          ...(prev?.linkHash !== undefined ? { linkHash: prev.linkHash } : {}),
           cwd,
           live: true,
         });

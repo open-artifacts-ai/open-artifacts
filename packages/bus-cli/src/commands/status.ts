@@ -1,5 +1,5 @@
 import { stripTerminalControls } from "@oa/bus-ipc";
-import { semverGte } from "@oa/bus-protocol";
+import { BUS_CMD, semverGte } from "@oa/bus-protocol";
 import {
   type Ctx,
   configFileLines,
@@ -11,6 +11,7 @@ import {
 import { ago, forHowLong, type HubLink } from "../copy.ts";
 import { readMachine } from "../machine.ts";
 import { habitsLine } from "./habits.ts";
+import { claudeConfigFile, proofState } from "../steps/claude-proof.ts";
 import { rosters } from "./install.ts";
 
 export const hostOf = (hub: string) => {
@@ -118,6 +119,31 @@ export const updateTarget = async (
 };
 
 /**
+ * #1822: whether this machine's Claude entry for the instance has the proof
+ * helper, so its sessions show as the user on pages. Nothing when there is no
+ * such entry.
+ */
+const proofLine = (
+  ctx: Ctx,
+  hub: string,
+  daemonKnows: boolean,
+): string | undefined => {
+  let origin: string;
+  try {
+    origin = new URL(hub).origin;
+  } catch {
+    return undefined;
+  }
+  const state = proofState(claudeConfigFile(ctx.userHome, ctx.env), origin);
+  if (state === "none") return undefined;
+  if (state === "missing")
+    return `Claude Code: run ${BUS_CMD} install to show as yourself on pages.`;
+  return daemonKnows
+    ? "Claude Code: shows as yourself on pages."
+    : "Claude Code: update to show as yourself on pages.";
+};
+
+/**
  * Transcript state 7. Read-only; never prints the token. Exit 0 only when
  * the daemon reports an open hub link.
  */
@@ -163,6 +189,8 @@ export async function status(ctx: Ctx): Promise<number> {
   if (update) say(ctx, c.updateAvailable(update, st.version));
   const habits = habitsLine(ctx);
   if (habits) say(ctx, habits);
+  const proof = proofLine(ctx, m.hub, st.link === true);
+  if (proof) say(ctx, proof);
   // Before the hub check: a refused file explains a missing config either way.
   if (st.config_files?.length) say(ctx, configFileLines(ctx, st.config_files));
   if (st.hub !== "connected") {

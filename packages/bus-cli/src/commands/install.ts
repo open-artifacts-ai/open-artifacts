@@ -175,10 +175,12 @@ async function harnessesStep(
   hub: string | undefined,
 ): Promise<boolean> {
   const c = ctx.copy;
+  const hubOrigin = hub ? originOf(hub) : machineOrigin(ctx);
   const out = await installAdapters({
     home: ctx.userHome,
     busHome: ctx.home,
     env: ctx.env,
+    ...(hubOrigin ? { hub: hubOrigin } : {}),
     // The service runs this same copy.
     busBin: ctx.service.cli(),
     assets: readAssets(),
