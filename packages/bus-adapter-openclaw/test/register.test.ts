@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import type { PluginApi } from "../src/api.ts";
 import { registerBus } from "../src/register.ts";
@@ -53,6 +54,15 @@ describe("register", () => {
       "oabus_unfollow",
       "oabus_following",
     ]);
+  });
+
+  it("declares every tool in the manifest: OpenClaw drops the whole registration otherwise", () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
+    ) as { contracts: { tools: string[] } };
+    expect([...manifest.contracts.tools].sort()).toEqual(
+      [...TOOL_NAMES].sort(),
+    );
   });
 
   it("keeps one link, one queue and one ack when register runs again and again", async () => {
