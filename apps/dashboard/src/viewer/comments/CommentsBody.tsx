@@ -687,7 +687,9 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
 function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const isActive = api.active === t.id;
   const reply = useReply(api.artifactId, api.guest);
-  const [asking, setAsking] = useState(false);
+  // The agent a question goes to, kept while the box is open so a pick
+  // elsewhere doesn't swap the draft away (the server then says why).
+  const [asking, setAsking] = useState<string | null>(null);
   const status = useSetThreadStatus(api.artifactId, api.guest);
   const [statusErr, setStatusErr] = useState<unknown>(null);
   const el = useRef<HTMLLIElement>(null);
@@ -711,7 +713,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   }, [isActive, revealTick]);
   // Leaving the thread drops the question mode.
   useEffect(() => {
-    if (!isActive) setAsking(false);
+    if (!isActive) setAsking(null);
   }, [isActive]);
   if (!first) return null;
   // "Ask a question" (#1794): an open, unanswered ask from an agent, to someone who may reply.
@@ -785,9 +787,9 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             c={first}
             root
             askQuestion={
-              asker
+              asker && !asking
                 ? () => {
-                    setAsking(true);
+                    setAsking(asker);
                     api.select(t.id, true);
                   }
                 : undefined
@@ -812,20 +814,20 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             {commentError(statusErr, api.capped)}
           </p>
         )}
-        {asker && asking && isActive ? (
+        {asking && isActive ? (
           <>
             {api.guest && <GuestName api={api} />}
             <Composer
               key="ask"
               label="Question"
-              placeholder={`Ask ${asker} a question`}
+              placeholder={`Ask ${asking} a question`}
               submit="Send"
               autoFocus
               buttonsRight
-              onCancel={() => setAsking(false)}
+              onCancel={() => setAsking(null)}
               lead={
                 <span className={`${TXT} ${MUTED}`} data-to-asker="">
-                  To {asker}, the agent that asked
+                  To {asking}, the agent that asked
                 </span>
               }
               onSubmit={async (body) => {
@@ -835,7 +837,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
                   toAsker: true,
                   ...(api.guest ? { guestName: api.guestName.trim() } : {}),
                 });
-                setAsking(false);
+                setAsking(null);
               }}
             />
           </>

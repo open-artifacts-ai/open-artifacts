@@ -1330,6 +1330,80 @@ describe("Ask a question (#1794)", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("keeps the draft when the ask is answered meanwhile, and says why it can't send", async () => {
+    let t = agentAsk();
+    serveThreads(() => [t]);
+    server.use(
+      http.post("*/api/v1/artifacts/:id/comments/:tid/replies", () =>
+        HttpResponse.json(
+          { error: { code: "not_an_ask", message: "x" } },
+          { status: 400 },
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Ask a question" }),
+    );
+    const box = await within(c).findByRole("textbox", { name: "Question" });
+    fireEvent.change(box, { target: { value: "Why B?" } });
+    t = agentAsk({ closed: true });
+    await act(async () => {
+      events.emitComments(OWNED, 2);
+    });
+    await waitFor(() =>
+      expect(
+        within(c).queryByRole("button", { name: "Ask a question" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(within(c).getByRole("textbox", { name: "Question" })).toHaveValue(
+      "Why B?",
+    );
+    fireEvent.click(within(c).getByRole("button", { name: "Send" }));
+    expect(
+      await within(c).findByText(
+        "That ask is no longer open to questions. Reply instead.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("leaving the thread drops the question box", async () => {
+    const other = askThread({ id: "t-2" }, {});
+    (other.comments[0] as { id: string }).id = "c-2";
+    delete (other.comments[0] as { ask?: unknown }).ask;
+    (other.comments[0] as { body: string }).body = "Other thread";
+    serveThreads(() => [agentAsk(), other]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Ask a question" }),
+    );
+    await within(c).findByRole("textbox", { name: "Question" });
+    const second = document.querySelector("[data-thread='t-2']") as HTMLElement;
+    fireEvent.click(within(second).getAllByRole("button")[0]!);
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-thread='t-2'][data-active]"),
+      ).toBeTruthy(),
+    );
+    const first = document.querySelector(
+      "[data-thread='t-ask']",
+    ) as HTMLElement;
+    fireEvent.click(within(first).getAllByRole("button")[0]!);
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-thread='t-ask'][data-active]"),
+      ).toBeTruthy(),
+    );
+    expect(
+      within(c).queryByRole("textbox", { name: "Question" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(first).getByRole("textbox", { name: "Reply" }),
+    ).toBeInTheDocument();
+  });
+
   it("is not offered once picked, when closed, or when a person asked", async () => {
     const picked = agentAsk({
       answer: {

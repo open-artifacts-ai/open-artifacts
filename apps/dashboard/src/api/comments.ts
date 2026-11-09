@@ -214,6 +214,8 @@ export function commentError(e: unknown, capped = false): string {
       return "That comment is gone.";
     case "conflict":
       return "This thread has too many replies. Start a new comment instead.";
+    case "not_an_ask":
+      return "That ask is no longer open to questions. Reply instead.";
     case "bad_request":
       return "That comment couldn't be found.";
     case "unauthorized":
