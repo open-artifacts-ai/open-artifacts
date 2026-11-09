@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.144.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.143.0...v0.144.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** the Agents page can show today's dropped notices ([#1317](https://github.com/open-artifacts-ai/open-artifacts/issues/1317)) ([#1870](https://github.com/open-artifacts-ai/open-artifacts/issues/1870)) ([35a72f6](https://github.com/open-artifacts-ai/open-artifacts/commit/35a72f62217d12b611387027d8782941cdc3191c))
+
 ## [0.143.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.142.0...v0.143.0) (2026-11-09)
 
 
