@@ -151,6 +151,16 @@ export function createComments(
       try {
         sheet = new CSSStyleSheet();
         sheet.replaceSync(PAGE_CSS);
+      } catch {
+        sheet = undefined;
+      }
+    }
+    // Adopted again when the page dropped it (#1473): a page that rewrites
+    // `adoptedStyleSheets` would otherwise take the highlights with it, and the
+    // paint that follows this call is what shows them. Cheap: includes() on a
+    // short list, once per paint.
+    if (sheet && !document.adoptedStyleSheets.includes(sheet)) {
+      try {
         document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
       } catch {
         sheet = undefined;
@@ -555,6 +565,15 @@ export function createComments(
     }
     const sel = getSelection();
     if (sel && sel.rangeCount > 0 && !sel.isCollapsed) return;
+    // #1473: a link or a control under the pointer does its own thing; opening
+    // the thread too would both navigate and cover the page.
+    const hit = e.target instanceof Element ? e.target : null;
+    if (
+      hit?.closest(
+        "a[href], button, input, select, textarea, label, [role='button'], [role='link']",
+      )
+    )
+      return;
     let best: { id: string; size: number } | undefined;
     for (const p of painted) {
       for (const r of Array.from(p.range.getClientRects())) {
@@ -706,6 +725,9 @@ export function createComments(
       );
     host?.remove();
   };
-  signal?.addEventListener("abort", dispose);
+  // #1473: a signal that was already aborted never fires `abort`, so the host,
+  // the listener and the stylesheet would stay behind.
+  if (signal?.aborted) dispose();
+  else signal?.addEventListener("abort", dispose);
   return { flush: () => report(false), dispose };
 }

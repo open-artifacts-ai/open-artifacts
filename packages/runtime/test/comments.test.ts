@@ -543,6 +543,34 @@ describe("highlights and positions", () => {
     vi.useRealTimers();
   });
 
+  it("a click on a link inside a highlight is the page's, not the thread's (#1473)", async () => {
+    document.body.innerHTML =
+      '<p id=a>The <a id=lnk href="#x">quick</a> brown fox jumps.</p>';
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [{ id: "ex", anchor: anchorOf("quick") }],
+    });
+    // Inside the painted rect: the link navigates, and the thread must not open
+    // as well.
+    document.getElementById("lnk")?.dispatchEvent(
+      new MouseEvent("click", {
+        bubbles: true,
+        cancelable: true,
+        clientX: 30,
+        clientY: 110,
+      }),
+    );
+    await flush();
+    expect(last("comment.open")).toBeUndefined();
+    // The same spot on plain text still opens it.
+    textOf("a").parentElement?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, clientX: 30, clientY: 110 }),
+    );
+    await flush();
+    expect(last("comment.open")).toMatchObject({ id: "ex" });
+  });
+
   it("clicking a highlight sends only the thread id", async () => {
     await start("select");
     await send({
@@ -564,6 +592,21 @@ describe("highlights and positions", () => {
     await flush();
     await flush();
     expect(last("comment.open")).toBeUndefined();
+  });
+});
+
+describe("an already aborted signal (#1473)", () => {
+  it("never attaches, so no overlay host and no messages", async () => {
+    ctl.abort();
+    createRuntime({ loadSchemas: async () => schemas, signal: ctl.signal });
+    await flush();
+    await send({ type: "comments.mode", mode: "select" });
+    await send({
+      type: "comments.set",
+      threads: [{ id: "ex", anchor: anchorOf("quick") }],
+    });
+    expect(msgs()).toEqual([]);
+    expect(document.documentElement.querySelector(":scope > div")).toBeNull();
   });
 });
 
