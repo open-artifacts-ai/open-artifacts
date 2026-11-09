@@ -372,13 +372,13 @@ describe("notice tier", () => {
         ?.typed;
     expect((await answer(s.id, t.id, cid, owner.cookie)).status).toBe(200);
     expect(await typedOf()).toBe(true);
-    expect(
-      (await answer(s.id, t.id, cid, ownerPat, "compact")).status,
-    ).toBe(200);
+    expect((await answer(s.id, t.id, cid, ownerPat, "compact")).status).toBe(
+      200,
+    );
     expect(await typedOf()).toBe(false);
-    expect(
-      (await answer(s.id, t.id, cid, owner.cookie, "wide")).status,
-    ).toBe(200);
+    expect((await answer(s.id, t.id, cid, owner.cookie, "wide")).status).toBe(
+      200,
+    );
     expect(await typedOf()).toBe(true);
   });
 });
