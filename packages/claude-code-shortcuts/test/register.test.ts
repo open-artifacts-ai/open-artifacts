@@ -153,6 +153,59 @@ describe("tool middleware", () => {
     expect((await h.command()).text).toContain(`Artifact ${id}`);
   });
 
+  describe("delete_artifact and undelete_artifact (#2016)", () => {
+    const tool = (name: string, extra: Record<string, unknown> = {}) => ({
+      tool: `mcp__custom_alias__${name}`,
+      id,
+      ...extra,
+    });
+    const deleted = { structuredContent: { id, deleted: true } };
+    const restored = { structuredContent: { id, title: "Synthetic title" } };
+
+    it("a successful delete drops the row from the command and the band; undelete restores it", async () => {
+      const h = host();
+      await h.publish();
+      await h.call("tool.call", tool("delete_artifact"), deleted);
+      expect((await h.command()).text).toContain("No artifact");
+      const { value } = await h.draw();
+      expect(JSON.stringify(value)).not.toContain("Synthetic title");
+      await h.call("tool.call", tool("undelete_artifact"), restored);
+      expect((await h.command()).text).toContain("Synthetic title");
+      expect((await h.command()).text).toContain("published v3");
+    });
+
+    it("an error result or the input alone changes nothing", async () => {
+      const h = host();
+      await h.publish();
+      for (const out of [
+        { isError: true, structuredContent: deleted.structuredContent },
+        { deny: "no" },
+        { result: "not_found" },
+      ])
+        await h.call("tool.call", tool("delete_artifact"), out);
+      expect((await h.command()).text).toContain("Synthetic title");
+      await h.call("tool.call", tool("delete_artifact"), deleted);
+      await h.call("tool.call", tool("undelete_artifact"), {
+        isError: true,
+        structuredContent: restored.structuredContent,
+      });
+      expect((await h.command()).text).toContain("No artifact");
+    });
+
+    it("ignores other namespaces and undeletes of artifacts it never held", async () => {
+      const h = host();
+      await h.publish();
+      await h.call(
+        "tool.call",
+        { tool: "mcp__unrelated__delete_artifact", id },
+        deleted,
+      );
+      expect((await h.command()).text).toContain("Synthetic title");
+      await h.call("tool.call", tool("undelete_artifact"), restored);
+      expect(h.data.size).toBe(1);
+    });
+  });
+
   it.each([
     { deny: "no" },
     { isError: true, ...result() },

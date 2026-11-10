@@ -2,11 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   applyPublish,
   checked,
+  deletion,
+  dropRow,
   LIMIT,
   originOf,
   published,
+  reinstate,
   restore,
   titleOf,
+  undeletion,
 } from "../plugin/hooks/model.ts";
 
 const origin = "https://oa-artifacts.example.com";
@@ -361,5 +365,60 @@ describe("receipt title (#2015)", () => {
     expect(applyPublish([old], receipt, undefined, 2)[0]?.title).toBe(
       "Old row",
     );
+  });
+});
+
+describe("delete and undelete (#2016)", () => {
+  it("reads a delete receipt only from a successful result with deleted: true", () => {
+    const ok = { structuredContent: { id: receipt.id, deleted: true } };
+    expect(deletion(ok)).toEqual({ id: receipt.id });
+    expect(deletion({ result: JSON.stringify(ok.structuredContent) })).toEqual({
+      id: receipt.id,
+    });
+    for (const bad of [
+      { isError: true, structuredContent: ok.structuredContent },
+      { deny: "no" },
+      { structuredContent: { id: receipt.id } },
+      { structuredContent: { id: receipt.id, deleted: false } },
+      { structuredContent: { id: "bad id!", deleted: true } },
+      { result: "not_found" },
+    ])
+      expect(deletion(bad)).toBeNull();
+  });
+
+  it("reads an undelete receipt only from a successful summary with an id and title", () => {
+    const ok = { structuredContent: { id: receipt.id, title: "T" } };
+    expect(undeletion(ok)).toEqual({ id: receipt.id });
+    for (const bad of [
+      { isError: true, structuredContent: ok.structuredContent },
+      { structuredContent: { id: receipt.id } },
+      { structuredContent: { id: receipt.id, deleted: true } },
+      { result: "not_found" },
+    ])
+      expect(undeletion(bad)).toBeNull();
+  });
+
+  it("moves a row to the deleted list and back, keeping its data and order", () => {
+    let rows = applyPublish([], receipt, "Keep me", 1);
+    rows = applyPublish(
+      rows,
+      {
+        ...receipt,
+        id: "Zz3dEfGhJk4mNpQr",
+        url: `${origin}/a/Zz3dEfGhJk4mNpQr`,
+      },
+      "Newer",
+      2,
+    );
+    const gone = dropRow(rows, [], receipt.id);
+    expect(gone?.rows.map((a) => a.title)).toEqual(["Newer"]);
+    expect(gone?.deleted.map((a) => a.title)).toEqual(["Keep me"]);
+    expect(
+      dropRow(gone?.rows ?? [], gone?.deleted ?? [], receipt.id),
+    ).toBeNull();
+    const back = reinstate(gone?.rows ?? [], gone?.deleted ?? [], receipt.id);
+    expect(back?.rows.map((a) => a.title)).toEqual(["Newer", "Keep me"]);
+    expect(back?.deleted).toEqual([]);
+    expect(reinstate(rows, [], receipt.id)).toBeNull();
   });
 });
