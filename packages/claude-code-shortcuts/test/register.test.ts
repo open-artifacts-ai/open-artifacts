@@ -3,11 +3,12 @@ import { register } from "../plugin/hooks/register.ts";
 
 const origin = "https://instance.example.com";
 const id = "Ab3dEfGhJk4mNpQr";
-const result = (version = 3, artifactId = id) => ({
+const result = (version = 3, artifactId = id, title?: string) => ({
   result: JSON.stringify({
     id: artifactId,
     version,
     url: `${origin}/a/${artifactId}`,
+    ...(title === undefined ? {} : { title }),
   }),
 });
 type Hook = NonNullable<Parameters<Parameters<typeof register>[0]>[2]>;
@@ -113,6 +114,43 @@ describe("tool middleware", () => {
     expect(stored).not.toContain("not stored");
     expect(stored).not.toContain("credentials");
     expect((await h.command()).text).toContain("published v3");
+  });
+
+  it("an edits-only publish shows the receipt's title in the command", async () => {
+    const h = host();
+    await h.call(
+      "tool.call",
+      {
+        tool: "mcp__custom_alias__publish_artifact",
+        id,
+        edits: [{ old: "a", new: "b" }],
+      },
+      result(4, id, "Stored by server"),
+    );
+    expect((await h.command()).text).toContain("Stored by server");
+    expect((await h.command()).text).not.toContain(`Artifact ${id}`);
+  });
+
+  it("the input title wins over the receipt's", async () => {
+    const h = host();
+    await h.publish(result(3, id, "Receipt title"));
+    const text = (await h.command()).text;
+    expect(text).toContain("Synthetic title");
+    expect(text).not.toContain("Receipt title");
+  });
+
+  it("an old server without a title in the receipt still falls back to the id", async () => {
+    const h = host();
+    await h.call(
+      "tool.call",
+      {
+        tool: "mcp__custom_alias__publish_artifact",
+        id,
+        edits: [{ old: "a", new: "b" }],
+      },
+      result(),
+    );
+    expect((await h.command()).text).toContain(`Artifact ${id}`);
   });
 
   it.each([

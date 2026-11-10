@@ -310,3 +310,56 @@ describe("real MCP read payloads", () => {
     ).toBeNull();
   });
 });
+
+describe("receipt title (#2015)", () => {
+  const withTitle = (title: unknown) => ({
+    structuredContent: { ...receipt, title },
+  });
+
+  it("reads a string title from the receipt and treats a missing or non-string one as absent", () => {
+    expect(published(withTitle("Stored title"), origin)?.title).toBe(
+      "Stored title",
+    );
+    expect(published({ structuredContent: receipt }, origin)?.title).toBe(
+      undefined,
+    );
+    for (const bad of [null, 7, {}, ["x"]])
+      expect(published(withTitle(bad), origin)?.title).toBeUndefined();
+  });
+
+  it("an edits-only publish (no input title) shows the receipt's title", () => {
+    const r = published(withTitle("Stored title"), origin);
+    if (!r) throw new Error("receipt");
+    expect(applyPublish([], r, undefined, 1)[0]?.title).toBe("Stored title");
+  });
+
+  it("the input title wins over the receipt's, which wins over the previous row", () => {
+    const r = published(withTitle("Receipt title"), origin);
+    if (!r) throw new Error("receipt");
+    expect(applyPublish([], r, "Input title", 1)[0]?.title).toBe("Input title");
+    const [old] = applyPublish([], receipt, "Old row", 1);
+    if (!old) throw new Error("row");
+    expect(applyPublish([old], r, undefined, 2)[0]?.title).toBe(
+      "Receipt title",
+    );
+  });
+
+  it("cleans the receipt title and falls back as before without one", () => {
+    const r = published(withTitle("  A‮  b\n"), origin);
+    if (!r) throw new Error("receipt");
+    expect(applyPublish([], r, undefined, 1)[0]?.title).toBe("A b");
+    const blank = published(withTitle("\n\t "), origin);
+    if (!blank) throw new Error("receipt");
+    expect(applyPublish([], blank, undefined, 1)[0]?.title).toBe(
+      `Artifact ${receipt.id}`,
+    );
+    expect(applyPublish([], receipt, undefined, 1)[0]?.title).toBe(
+      `Artifact ${receipt.id}`,
+    );
+    const [old] = applyPublish([], receipt, "Old row", 1);
+    if (!old) throw new Error("row");
+    expect(applyPublish([old], receipt, undefined, 2)[0]?.title).toBe(
+      "Old row",
+    );
+  });
+});

@@ -219,6 +219,8 @@ export async function publish(
   };
   /** The dataWriters this publish writes (#681); undefined: unchanged. */
   let dataWriters: DataWriters | undefined;
+  /** The artifact's title once this publish lands: the input's, else the stored one (#2015). */
+  let title: string | undefined = input.title;
   /** Sharing fields changed on an existing artifact: live sockets must reconnect. */
   let accessChanged = false;
   /** A visibility change on an existing artifact: audited in the batch. */
@@ -259,6 +261,7 @@ export async function publish(
           { path: "spaceId", reason: "use_move" },
         );
       create = false;
+      title ??= a.title;
       seen = a.currentVersion;
       const sharing =
         input.visibility !== undefined ||
@@ -622,6 +625,7 @@ export async function publish(
     id,
     version,
     url: appOrigin(env) + viewerPath(id),
+    ...(title === undefined ? {} : { title }),
     ...(warning ? { warning } : {}),
   };
 }
@@ -1832,6 +1836,7 @@ export async function publishSettings(
     id: a.id,
     version: a.currentVersion,
     url: appOrigin(env) + viewerPath(a.id),
+    title: a.title,
     ...(a.warning ? { warning: a.warning } : {}),
   };
 }

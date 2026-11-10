@@ -158,7 +158,13 @@ export function published(result: unknown, origin: string) {
   return consistent(result, (data) => {
     const url = viewerUrl(data.url, data.id, origin);
     return url && version(data.version)
-      ? { id: data.id as string, url, version: data.version }
+      ? {
+          id: data.id as string,
+          url,
+          version: data.version,
+          // Servers before #2015 send none; a non-string is treated as absent.
+          ...(typeof data.title === "string" ? { title: data.title } : {}),
+        }
       : null;
   });
 }
@@ -221,7 +227,11 @@ export function applyPublish(
     {
       id: receipt.id,
       url: receipt.url,
-      title: titleOf(title) || old?.title || `Artifact ${receipt.id}`,
+      title:
+        titleOf(title) ||
+        titleOf(receipt.title) ||
+        old?.title ||
+        `Artifact ${receipt.id}`,
       publishedVersion: receipt.version,
       publishedAt: now,
       lastCheckedCurrentVersion: old?.lastCheckedCurrentVersion ?? null,
