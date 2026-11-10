@@ -76,6 +76,8 @@ export const TierAnswerSchema = z.object({
    */
   soloTrialEndsAt: z.number().int().nullable().optional(),
   graceUntil: z.number().int().nullable(),
+  /** A Stripe customer exists for this install. Absent from an answer that predates it (unknown). */
+  hasCustomer: z.boolean().optional(),
   version: z.number().int().nonnegative(),
   asOf: z.number().int().positive(),
 });
@@ -132,6 +134,8 @@ export type EffectivePlan = {
   trialEndsAt: number | null;
   /** The Solo trial's end; absent when the answer carried none. */
   soloTrialEndsAt?: number | null;
+  /** Absent when billing's answer carried none (unknown). */
+  hasCustomer?: boolean;
   graceUntil: number | null;
   readOnly: boolean;
   reason?: PlanReason;
@@ -174,6 +178,9 @@ export function effectivePlan(
     trialEndsAt: base.trialEndsAt,
     ...("soloTrialEndsAt" in base && base.soloTrialEndsAt !== undefined
       ? { soloTrialEndsAt: base.soloTrialEndsAt }
+      : {}),
+    ...("hasCustomer" in base && base.hasCustomer !== undefined
+      ? { hasCustomer: base.hasCustomer }
       : {}),
     graceUntil: base.graceUntil,
     readOnly: mode === "readOnly" || mode === "viewOnly",

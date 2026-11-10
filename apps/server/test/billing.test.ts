@@ -88,6 +88,7 @@ type Row = {
   status: BillingStatus;
   trialEndsAt: number | null;
   soloTrialEndsAt?: number | null;
+  hasCustomer?: boolean;
   graceUntil: number | null;
   version: number;
 };
@@ -1688,6 +1689,48 @@ describe("Me.instance.billing and the billing routes", () => {
     // Self-hosted: absent.
     const self = await send(R.me, owner.cookie, { e: SELF });
     expect(MeSchema.parse(await self.json()).instance.billing).toBeUndefined();
+  });
+
+  it("hasCustomer: owner sees it, members never; absent stays absent (unknown)", async () => {
+    await cache({ tier: "business", version: 7, hasCustomer: false });
+    expect((await getMe(owner.cookie)).instance.billing?.hasCustomer).toBe(
+      false,
+    );
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "hasCustomer",
+    );
+    await cache({ tier: "business", version: 8, hasCustomer: true });
+    expect((await getMe(owner.cookie)).instance.billing?.hasCustomer).toBe(
+      true,
+    );
+    await cache({ tier: "business", version: 9 });
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "hasCustomer",
+    );
+  });
+
+  it("portal: billing's 409 no_customer is 409 no_billing_customer; other 409s and failures stay 503", async () => {
+    await cache({ tier: "business", version: 2 });
+    const orig = gate.fetch;
+    const portal = () =>
+      send(R.billingPortal, owner.cookie, { method: "POST", body: {} });
+    try {
+      gate.fetch = async () =>
+        Response.json({ error: "no_customer" }, { status: 409 });
+      const r = await portal();
+      expect(r.status).toBe(409);
+      expect((await errOf(r)).code).toBe("no_billing_customer");
+      gate.fetch = async () =>
+        Response.json({ error: "something_else" }, { status: 409 });
+      const o = await portal();
+      expect(o.status).toBe(503);
+      expect((await errOf(o)).code).toBe("billing_unavailable");
+      gate.fetch = async () =>
+        Response.json({ error: "no_customer" }, { status: 500 });
+      expect((await portal()).status).toBe(503);
+    } finally {
+      gate.fetch = orig;
+    }
   });
 
   it("soloTrialEndsAt: owner sees the Solo trial end, members null, trialEndsAt untouched", async () => {

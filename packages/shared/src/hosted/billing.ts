@@ -75,6 +75,12 @@ export const PlanViewSchema = z.object({
   soloTrialEndsAt: z.string().nullable().optional(),
   /** ISO; while past_due, the grace period's end. Owner and admins; null for others. */
   graceUntil: z.string().nullable(),
+  /**
+   * Whether billing has a Stripe customer for this instance (the portal needs
+   * one). Owner and admins only; absent for others and when billing's answer
+   * predates it (unknown: the dashboard keeps showing Manage billing).
+   */
+  hasCustomer: z.boolean().optional(),
   /** Distinct creators this UTC calendar month so far (CREATOR definition). Owner and admins only. */
   creatorsThisMonth: z.number().int().nonnegative().optional(),
   /**

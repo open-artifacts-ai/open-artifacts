@@ -118,6 +118,8 @@ const planCopy = (
     }
     case "billing_unavailable":
       return "Billing isn't reachable right now. Try again in a minute.";
+    case "no_billing_customer":
+      return "This plan is set by the operator, so there is no billing to manage here.";
   }
 };
 

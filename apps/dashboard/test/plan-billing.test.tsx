@@ -211,6 +211,35 @@ it("Plan and billing: Team shows Manage billing, which opens the portal", async 
   expect(screen.getByText("4")).toBeVisible();
 });
 
+it("Plan and billing: a paid plan with no Stripe customer has no Manage billing", async () => {
+  mountHosted("/settings/plan", { billing: { ...TEAM, hasCustomer: false } });
+  expect(
+    await screen.findByText(/This plan is set by the operator/),
+  ).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
+  expect(screen.queryByText(/Invoices and card/)).toBeNull();
+});
+
+it("Plan and billing: hasCustomer true or unknown keeps Manage billing", async () => {
+  mountHosted("/settings/plan", { billing: { ...TEAM, hasCustomer: true } });
+  expect(
+    await screen.findByRole("button", { name: "Manage billing" }),
+  ).toBeVisible();
+  cleanup();
+  mountHosted("/settings/plan", { billing: TEAM });
+  expect(
+    await screen.findByRole("button", { name: "Manage billing" }),
+  ).toBeVisible();
+});
+
+it("Plan and billing: a solo plan with no customer still offers Checkout", async () => {
+  mountHosted("/settings/plan", { billing: { ...TRIAL, hasCustomer: false } });
+  expect(
+    await screen.findByRole("button", { name: "Upgrade to Team" }),
+  ).toBeVisible();
+  expect(screen.queryByText(/set by the operator/)).toBeNull();
+});
+
 it("Plan and billing: Upgrade starts Checkout for the chosen tier", async () => {
   const posts = calls("POST");
   mountHosted("/settings/plan", { billing: TRIAL });

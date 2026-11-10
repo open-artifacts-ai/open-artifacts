@@ -1460,6 +1460,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       if (o.selfHosted || c.isAnon(request) || !isAdmin()) return notFound();
       if (o.billingDown)
         return err("billing_unavailable", "Billing is unavailable");
+      // The server's answer when billing has no Stripe customer.
+      if (billing.hasCustomer === false)
+        return err("no_billing_customer", "No billing account");
       return billingUrl("portal");
     }),
     http.post("*/api/v1/billing/usage", ({ request }) => {

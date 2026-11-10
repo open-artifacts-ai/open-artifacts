@@ -91,6 +91,13 @@ async function stripeUrl(
     if (!r.success) throw new BillingUnavailableError("bad_answer");
     return { url: r.data.url };
   } catch (e) {
+    // A plan with no Stripe customer (provisioned or comped) has no portal:
+    // a fixed 409 the dashboard can explain, not "unreachable".
+    if (e instanceof BillingUnavailableError && e.code === "no_customer")
+      throw new ApiError(
+        "no_billing_customer",
+        "This plan has no billing account, so there is no portal to open",
+      );
     const why = e instanceof BillingUnavailableError ? e.why : "error";
     logWarn("billing_url_failed", undefined, { route: path, why });
     throw unavailable();

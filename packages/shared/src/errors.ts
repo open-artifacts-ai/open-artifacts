@@ -54,6 +54,7 @@ export const ERROR_CODES = [
   "plan_read_only",
   "plan_limit",
   "billing_unavailable",
+  "no_billing_customer",
   // Comments (#682).
   "invalid_anchor",
   "invalid_body",
@@ -160,6 +161,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   plan_limit: 403,
   /** R.billingCheckout / R.billingPortal / R.billingUsage while billing can't be reached. */
   billing_unavailable: 503,
+  /** R.billingPortal on a plan with no Stripe customer (provisioned or comped): there is no portal to open. */
+  no_billing_customer: 409,
   /** Comments (#682). */
   invalid_anchor: 400,
   invalid_body: 400,
