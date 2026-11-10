@@ -498,8 +498,11 @@ export async function agentIdentityOf(
 /**
  * #1889: the current bus names of `userId`'s own agents by identity id, from
  * that member's hub only (the caller takes `userId` from the stored owner of a
- * comment or party). At most NAMES_OF_MAX ids. A miss, a slow or failing hub
- * give an empty map (the caller keeps the stored name); never throws.
+ * comment or party). More than NAMES_OF_MAX ids go in several hub calls of
+ * that size, all under the one LINK_LOOKUP_MS bound. The hasConnectedMachine
+ * gate means "ever connected": a member whose machine never connected has no
+ * hub to ask. A miss, a slow or failing hub give an empty map (the caller keeps
+ * the stored name); never throws.
  */
 export async function agentNamesOf(
   env: Env,
@@ -513,9 +516,13 @@ export async function agentNamesOf(
       (async () => {
         if (!(await hasConnectedMachine(env, userId))) return null;
         const hub = busHub(env, userId);
-        return hub
-          ? await hub.namesOf(identityIds.slice(0, NAMES_OF_MAX))
-          : null;
+        if (!hub) return null;
+        const chunks: string[][] = [];
+        for (let i = 0; i < identityIds.length; i += NAMES_OF_MAX)
+          chunks.push(identityIds.slice(i, i + NAMES_OF_MAX));
+        return (
+          await Promise.all(chunks.map((ids) => hub.namesOf(ids)))
+        ).flat();
       })(),
       LINK_LOOKUP_MS,
     );

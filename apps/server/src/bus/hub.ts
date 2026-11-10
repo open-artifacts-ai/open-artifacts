@@ -3810,7 +3810,7 @@ export class BusHub extends DurableObject<Env> {
    * #1889: the current bus name of each agent identity in `identityIds`, from
    * this member's own hub only (an id of another member's agent is not here,
    * so it returns nothing). Returns ONLY `{identityId, name}`: no namespace,
-   * kind, machine or state. A live row wins, then the latest one. At most
+   * kind, machine or state (one row per identity). At most
    * NAMES_OF_MAX ids are read. Worker only.
    */
   async namesOf(

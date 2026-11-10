@@ -357,10 +357,18 @@ const authorView = (
 /** Per isolate: the name map and when it was built; stale up to CLASH_TTL_MS is fine. */
 const CLASH_TTL_MS = 60_000;
 let clashCache: { at: number; map: NameClashes } | null = null;
-/** For tests: forget the cached name map. */
+/** For tests: forget the cached name map and the cached current agent names. */
 export const resetNameClashCache = (): void => {
   clashCache = null;
+  namesCache.clear();
 };
+
+/** #1889: most distinct owners one view reads current names for; the rest keep stored names. */
+export const NAMES_OWNERS_MAX = 25;
+/** #1889: current names are kept per isolate for this long (keyed by owner and identity), at most NAMES_CACHE_MAX of them. */
+export const NAMES_TTL_MS = 30_000;
+const NAMES_CACHE_MAX = 2000;
+const namesCache = new Map<string, { name: string; at: number }>();
 
 /** Every member's name, removed ones too (their names stay reserved), cached. */
 async function allClashes(env: Env): Promise<NameClashes> {
@@ -412,7 +420,7 @@ async function ctxFor(
  * each bounded (LINK_LOOKUP_MS). Only an owner's own hub is asked for that
  * owner's identity ids. A miss, a timeout or a failure leaves the stored name.
  */
-async function currentNames(
+export async function currentNames(
   env: Env,
   s: { comments: StoredComment[]; actors?: (StoredActor | null)[] },
 ): Promise<Map<string, string>> {
@@ -435,10 +443,22 @@ async function currentNames(
       if (p.kind === "agent") add(p.owner, p.identity?.identityId);
   }
   const out = new Map<string, string>();
+  const now = Date.now();
+  const need = new Map<string, string[]>();
+  for (const [owner, ids] of byOwner)
+    for (const id of ids) {
+      const hit = namesCache.get(`${owner}\n${id}`);
+      if (hit && now - hit.at < NAMES_TTL_MS) out.set(id, hit.name);
+      else need.set(owner, [...(need.get(owner) ?? []), id]);
+    }
+  // Owners beyond the cap keep their stored names.
   await Promise.all(
-    [...byOwner].map(async ([owner, ids]) => {
-      for (const [id, name] of await agentNamesOf(env, owner, [...ids]))
+    [...need].slice(0, NAMES_OWNERS_MAX).map(async ([owner, ids]) => {
+      for (const [id, name] of await agentNamesOf(env, owner, ids)) {
         out.set(id, name);
+        if (namesCache.size >= NAMES_CACHE_MAX) namesCache.clear();
+        namesCache.set(`${owner}\n${id}`, { name, at: now });
+      }
     }),
   );
   return out;

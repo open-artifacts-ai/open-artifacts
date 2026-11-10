@@ -18,7 +18,9 @@ import { agentRoster } from "../src/services/comment-agents.js";
 import {
   addThread,
   type CommentViewer,
+  currentNames,
   listComments,
+  NAMES_OWNERS_MAX,
   resetNameClashCache,
 } from "../src/services/comments.js";
 import { getUser } from "../src/services/users.js";
@@ -135,8 +137,11 @@ async function scene(mode: Hubs["mode"] = "ok") {
   const e2 = busEnv(hubs);
   const key = (await agentRoster(e2, id, owner.userId, true, true))[0]
     ?.key as string;
-  const rename = (name: string) =>
+  const rename = (name: string) => {
     hubs.names.get(`bus:${owner.userId}`)?.set(IDENT.identityId, name);
+    // Past the cache: the rename is what the next list reads.
+    resetNameClashCache();
+  };
   const agentWho = (identified: boolean) => ({
     kind: "user" as const,
     id: owner.userId,
@@ -288,5 +293,93 @@ describe("a renamed agent shows its current name (#1889)", () => {
     expect(s.hubs.namesAsked.map((x) => x.hub)).not.toContain(
       `bus:${s.owner.userId}`,
     );
+  });
+});
+
+describe("lookups are bounded and cached (#1889)", () => {
+  const fake = (
+    mine: (
+      hub: string,
+      ids: string[],
+    ) => { identityId: string; name: string }[],
+  ) => {
+    const calls: { hub: string; n: number }[] = [];
+    const ns = {
+      idFromName: (n: string) => n,
+      get: (hub: string) => ({
+        namesOf: async (ids: string[]) => {
+          calls.push({ hub, n: ids.length });
+          return mine(hub, ids);
+        },
+      }),
+    };
+    return { calls, e: { ...E, BUS_HUB: ns } as unknown as Env };
+  };
+  const commentWith = (owner: string, ids: string[]) =>
+    ({
+      id: newId(),
+      body: "x",
+      author: { kind: "user", ref: owner },
+      createdAt: "",
+      editedAt: null,
+      mentions: ids.map((identityId) => ({
+        kind: "agent",
+        key: `agent:${identityId}`,
+        name: "Old",
+        owner,
+        state: "delivered",
+        identity: { identityId, kind: "claude-code" },
+      })),
+    }) as never;
+  const machine = (userId: string) =>
+    E.DB.prepare(
+      "insert into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'm', ?, ?, ?)",
+    )
+      .bind(newId(), userId, newId(), Date.now(), Date.now())
+      .run();
+
+  it("more than NAMES_OWNERS_MAX owners: only that many hubs are read, the rest keep stored names", async () => {
+    resetNameClashCache();
+    const owners: string[] = [];
+    for (let i = 0; i < NAMES_OWNERS_MAX + 2; i++) {
+      const u = await mk("n-cap", `Cap ${tag} ${++seq}`);
+      await machine(u.userId);
+      owners.push(u.userId);
+    }
+    const { calls, e } = fake((_h, ids) =>
+      ids.map((identityId) => ({ identityId, name: "New" })),
+    );
+    const names = await currentNames(e, {
+      comments: owners.map((o, i) => commentWith(o, [`id-cap-${tag}-${i}`])),
+    });
+    expect(calls).toHaveLength(NAMES_OWNERS_MAX);
+    expect(names.size).toBe(NAMES_OWNERS_MAX);
+  });
+
+  it("150 ids for one owner all resolve, in calls of at most 100", async () => {
+    resetNameClashCache();
+    const u = await mk("n-many", `Many ${tag} ${++seq}`);
+    await machine(u.userId);
+    const ids = Array.from({ length: 150 }, (_, i) => `id-many-${tag}-${i}`);
+    const { calls, e } = fake((_h, got) =>
+      got.map((identityId) => ({ identityId, name: `N-${identityId}` })),
+    );
+    const names = await currentNames(e, {
+      comments: [commentWith(u.userId, ids)],
+    });
+    expect(names.size).toBe(150);
+    expect(names.get(ids[149] as string)).toBe(`N-${ids[149]}`);
+    expect(calls.map((c) => c.n)).toEqual([100, 50]);
+  });
+
+  it("a second list inside the TTL makes no hub call", async () => {
+    const s = await scene();
+    await s.post({ mentions: [{ key: s.key }] });
+    s.rename("Runner Two");
+    await s.list(signedIn(s.other));
+    s.hubs.namesAsked.length = 0;
+    const c = (await s.list(signedIn(s.other))).threads[0]?.comments[0];
+    expect(s.hubs.namesAsked).toHaveLength(0);
+    expect(c?.author.name).toBe("Runner Two");
   });
 });
