@@ -214,7 +214,7 @@ const WHAT_TEXT: Record<CommentTextKind, string> = {
 };
 
 /** What the "your user" tier says it is, per kind (#1797). */
-const WHAT_YOURS: Record<Exclude<CommentTextKind, "assign">, string> = {
+const WHAT_YOURS: Record<CommentTextKind, string> = {
   ask: "asked you a question",
   mention: "mentioned you in a comment on an artifact",
   answered: "answered your question",
@@ -249,13 +249,11 @@ export function commentNoticeText(
       : [];
   return [
     `Open Artifacts: ${
-      fromYourUser && kind !== "assign"
-        ? `your user ${WHAT_YOURS[kind]}`
-        : WHAT_TEXT[kind]
+      fromYourUser ? `your user ${WHAT_YOURS[kind]}` : WHAT_TEXT[kind]
     } (version ${version}).`,
     url,
     ...idLine,
-    fromYourUser && kind !== "assign"
+    fromYourUser
       ? kind === "answered"
         ? ANSWERED_YOURS_TAIL
         : YOUR_USER_TAIL
