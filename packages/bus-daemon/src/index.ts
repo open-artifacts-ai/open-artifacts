@@ -415,15 +415,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const running = cl.isRunning ?? isRunning;
   const claudeSessions = {
     dir: cl.sessionsDir ?? claudeSessionsDir(),
-    procStart: cachedProcStart(cl.procStart ?? claudeProcStartOf, running, {
-      ttlMs: cl.syncMs ?? 2000,
-    }),
+    procStart: cachedProcStart(cl.procStart ?? claudeProcStartOf, running),
     isRunning: running,
   };
   const oc = deps.opencode ?? {};
   const ocRunning = oc.isRunning ?? isRunning;
+  // OpenCode's file does not change when its pid is reused: keep the short TTL (few sessions).
   const ocStart = cachedProcStart(oc.procStart ?? procStartOf, ocRunning, {
     ttlMs: cl.syncMs ?? 2000,
+    jitter: 0,
   });
   const ocComm = oc.comm ?? commOf;
   const cx = deps.codex ?? {};
