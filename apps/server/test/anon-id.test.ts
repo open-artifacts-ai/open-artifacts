@@ -9,7 +9,7 @@ import {
   newId,
   R,
 } from "@oa/shared";
-import { beforeAll, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import {
   ANON_TOKEN_MAX_AGE_S,
@@ -382,7 +382,12 @@ async function v1Token(id: string): Promise<string> {
 
 describe("anonId token expiry", () => {
   const DAY = 86_400;
-  const nowS = Math.floor(Date.now() / 1000);
+  // Read per test, not once when the file loads: a slow shard can run a test
+  // long after that (#2000).
+  let nowS = 0;
+  beforeEach(() => {
+    nowS = Math.floor(Date.now() / 1000);
+  });
   const freshId = () =>
     b64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
   const idOf = (t: string | null | undefined) => (t ?? "").split(".")[0];
@@ -427,7 +432,7 @@ describe("anonId token expiry", () => {
     expect(idOf(edge?.issued)).toBe(bid);
   });
 
-  it("sliding renewal: a write at age MAX-1 keeps the id, a young token is untouched", async () => {
+  it("sliding renewal: a write a minute before MAX keeps the id, a young token is untouched", async () => {
     const id = await optIn();
     const bid = freshId();
     const short = (await shortOn(id, await issueAnonToken(env, bid, nowS)))
@@ -435,7 +440,8 @@ describe("anonId token expiry", () => {
     const aged = await issueAnonToken(
       env,
       bid,
-      nowS - ANON_TOKEN_MAX_AGE_S + 1,
+      // A minute of margin: the server reads its own clock at the write (#2000).
+      nowS - ANON_TOKEN_MAX_AGE_S + 60,
     );
     const w = await write(id, "a", aged);
     expect(w.status).toBe(200);
