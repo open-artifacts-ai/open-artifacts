@@ -1,8 +1,18 @@
 import type { Me } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  renderHook,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { describe, expect, it } from "vitest";
+import type { ReactNode } from "react";
+import { describe, expect, it, vi } from "vitest";
+import { qk, useInviteMember } from "../src/api/queries";
 import { installHarness, mount, mountHosted, page, server } from "./harness";
 
 installHarness();
@@ -64,6 +74,34 @@ describe("Get started checklist", () => {
     expect(screen.getByText("Your agent is connected.")).toBeInTheDocument();
     expect(
       screen.getByText("Waiting for the first artifact…"),
+    ).toBeInTheDocument();
+  });
+
+  it("ticks the artifact from the server when the own one is past the loaded pages (#1832)", async () => {
+    // Only someone else's artifact is loaded; the server knows the owner has one.
+    const theirs = fixtures.artifacts[0];
+    if (!theirs) throw new Error("no fixture");
+    server.use(
+      http.get("*/api/v1/artifacts", () =>
+        page(
+          [{ ...theirs, owner: { ...theirs.owner, id: "someone-else" } }],
+          "next",
+        ),
+      ),
+      ...noTokens(),
+      http.get("*/api/v1/onboarding", () =>
+        HttpResponse.json({
+          dismissed: false,
+          completed: false,
+          hasArtifacts: true,
+        }),
+      ),
+    );
+    mount("/");
+    await heading();
+    expect(screen.getByText("1 of 3")).toBeInTheDocument();
+    expect(
+      screen.getByText("Your first artifact is in your Library."),
     ).toBeInTheDocument();
   });
 
@@ -243,5 +281,33 @@ describe("Get started checklist", () => {
     expect(
       screen.getByRole("link", { name: "Invite people" }).className,
     ).toMatch(/--oa-accent/);
+  });
+
+  it("re-reads Me and the members after an invite (the trial line and invite step)", async () => {
+    server.use(
+      http.post("*/api/v1/members", () =>
+        HttpResponse.json(
+          {
+            ...fixtures.members.find((m) => m.role !== "owner"),
+            emailed: false,
+          },
+          { status: 201 },
+        ),
+      ),
+    );
+    const qc = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    });
+    const spy = vi.spyOn(qc, "invalidateQueries");
+    const wrap = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => useInviteMember(), { wrapper: wrap });
+    await act(() =>
+      result.current.mutateAsync({ email: "new@example.com", role: "member" }),
+    );
+    const keys = spy.mock.calls.map((c) => c[0]?.queryKey);
+    expect(keys).toContainEqual(qk.me);
+    expect(keys).toContainEqual(qk.members);
   });
 });

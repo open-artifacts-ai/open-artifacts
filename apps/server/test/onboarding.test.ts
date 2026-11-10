@@ -26,10 +26,15 @@ describe("R.onboarding", () => {
     expect((await get(o.cookie)).body).toEqual({
       dismissed: false,
       completed: false,
+      hasArtifacts: false,
     });
     const r = await put(o.cookie, { dismissed: true });
     expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ dismissed: true, completed: false });
+    expect(await r.json()).toEqual({
+      dismissed: true,
+      completed: false,
+      hasArtifacts: false,
+    });
     // Another session of the same owner (another browser) reads it.
     const again = await login(`own2-${tag()}@example.com`, "owner");
     expect((await get(again.cookie)).body?.dismissed).toBe(true);
@@ -41,6 +46,7 @@ describe("R.onboarding", () => {
     expect(await (await put(o.cookie, { completed: true })).json()).toEqual({
       dismissed: false,
       completed: true,
+      hasArtifacts: false,
     });
     const first = await env.DB.prepare(
       "select value from settings where key = 'onboarding:completed'",
@@ -64,7 +70,26 @@ describe("R.onboarding", () => {
     expect((await get(o.cookie)).body).toEqual({
       dismissed: false,
       completed: false,
+      hasArtifacts: false,
     });
+  });
+
+  it("says whether the caller owns a live artifact (#1832)", async () => {
+    const o = await login(`own-${tag()}@example.com`, "owner");
+    const other = await login(`own2-${tag()}@example.com`, "owner");
+    expect((await get(o.cookie)).body?.hasArtifacts).toBe(false);
+    const r = await api(app, R.artifacts, o.cookie, {
+      method: "POST",
+      body: { title: "first", format: "html", content: "<p>hi</p>" },
+    });
+    expect(r.status).toBe(201);
+    const { id } = (await r.json()) as { id: string };
+    expect((await get(o.cookie)).body?.hasArtifacts).toBe(true);
+    expect((await get(other.cookie)).body?.hasArtifacts).toBe(false);
+    expect(
+      (await api(app, R.artifact(id), o.cookie, { method: "DELETE" })).status,
+    ).toBeLessThan(300);
+    expect((await get(o.cookie)).body?.hasArtifacts).toBe(false);
   });
 
   it("rejects a flag turned off or unknown fields", async () => {

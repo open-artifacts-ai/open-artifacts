@@ -18,13 +18,13 @@ function owner(c: Context<AppEnv>) {
 
 export function mountOnboarding(app: AppType): void {
   app.get(R.onboarding, async (c) => {
-    owner(c);
-    return c.json(await getOnboarding(c.env));
+    const user = owner(c);
+    return c.json(await getOnboarding(c.env, user.id));
   });
 
   app.put(R.onboarding, async (c) => {
-    owner(c);
+    const user = owner(c);
     const patch = await jsonBody(c, OnboardingPatchSchema);
-    return c.json(await setOnboarding(c.env, patch));
+    return c.json(await setOnboarding(c.env, user.id, patch));
   });
 }
