@@ -4,7 +4,7 @@ import { newId } from "@oa/shared";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
 import { createPat } from "../src/auth/pat.js";
 import { login } from "./helpers.js";
-import { connect, settle, tool } from "./mcp-helpers.js";
+import { close, connect, settle, tool } from "./mcp-helpers.js";
 
 // #2027: tool() must await the waitUntil work its call started.
 
@@ -14,7 +14,7 @@ beforeAll(async () => {
   client = await connect((await createPat(env, u.userId, "drain")).token);
 });
 afterAll(async () => {
-  await client.close();
+  await close(client);
 });
 
 it("tool() returns only after the publish's index_enqueue log is out", async () => {

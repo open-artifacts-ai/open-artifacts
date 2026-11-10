@@ -68,11 +68,15 @@ export async function connect(
       if (opts.props)
         Object.defineProperty(ctx, "props", { value: opts.props });
       contexts.get(client)?.push(ctx);
-      return worker.fetch(
+      const r = await worker.fetch(
         new Request(String(url), init as RequestInit) as never,
         (opts.env ?? E()) as never,
         ctx as never,
       );
+      // As fetchAndWait does, for direct client calls. Waiting on a ctx again
+      // later is safe: it also awaits waitUntils registered after this wait.
+      await waitOnExecutionContext(ctx);
+      return r;
     },
   });
   contexts.set(client, []);
@@ -94,6 +98,12 @@ export async function settle(client: Client): Promise<void> {
   while (pending?.length) {
     await waitOnExecutionContext(pending.shift() as ExecutionContext);
   }
+}
+
+/** settle(client), then client.close(): nothing is left running at teardown. */
+export async function close(client: Client): Promise<void> {
+  await settle(client);
+  await client.close();
 }
 
 export type ToolResult = {

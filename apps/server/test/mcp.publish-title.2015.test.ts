@@ -4,7 +4,7 @@ import { newId } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createPat } from "../src/auth/pat.js";
 import { login } from "./helpers.js";
-import { connect, textOf, tool } from "./mcp-helpers.js";
+import { close, connect, textOf, tool } from "./mcp-helpers.js";
 
 // #2015: publish_artifact's result carries the artifact's current title, so a
 // client that did not send a title (edits-only, settings-only) can show it.
@@ -16,7 +16,7 @@ beforeAll(async () => {
   client = await connect((await createPat(env, u.userId, "title")).token);
 });
 afterAll(async () => {
-  await client.close();
+  await close(client);
 });
 
 const call = async (args: Record<string, unknown>) => {
