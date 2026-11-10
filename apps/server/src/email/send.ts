@@ -29,6 +29,12 @@ export function emailDailyCap(env: Pick<Env, "EMAIL_DAILY_CAP">): number {
 }
 /** Emails one recipient address may receive per UTC day, instance-wide. */
 export const MAX_EMAILS_PER_RECIPIENT_PER_DAY = 5;
+/**
+ * Comment notice emails (#1467) per recipient address per UTC day: their own
+ * bucket, apart from invites/shares and from sign-in codes (auth/codes.ts),
+ * so a busy thread can't use up either budget.
+ */
+export const MAX_COMMENT_EMAILS_PER_RECIPIENT_PER_DAY = 20;
 const ALL_KEY = "email:*";
 
 // One plain addr-spec: no quotes, commas, semicolons, angle brackets, comments
@@ -135,7 +141,13 @@ export function fromName(instance: string | null | undefined): string {
     : encodeWords(phrase);
 }
 
-export type EmailKind = "invite" | "share" | "code" | "space" | "directory";
+export type EmailKind =
+  | "invite"
+  | "share"
+  | "code"
+  | "space"
+  | "directory"
+  | "comment";
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 class EmailTimeout extends Error {}
@@ -256,10 +268,15 @@ export async function sendEmail(
     if (!caps) {
       const day = utcDay(now);
       const toKey = await sha256Hex(to.toLowerCase());
-      caps = [
-        [ALL_KEY, emailDailyCap(env), day],
-        [`email:to:${toKey}`, MAX_EMAILS_PER_RECIPIENT_PER_DAY, day],
-      ];
+      caps = [[ALL_KEY, emailDailyCap(env), day]];
+      if (opts.kind === "comment")
+        caps.push([
+          `email:c:to:${toKey}`,
+          MAX_COMMENT_EMAILS_PER_RECIPIENT_PER_DAY,
+          day,
+        ]);
+      else
+        caps.push([`email:to:${toKey}`, MAX_EMAILS_PER_RECIPIENT_PER_DAY, day]);
       if (userId)
         caps.push([`email:${userId}`, MAX_EMAILS_PER_USER_PER_DAY, day]);
       if (opts.artifactId)
