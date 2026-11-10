@@ -24,7 +24,7 @@ for (const width of [1280, 390])
       // Online first, away after; the look-alike pair carries its machine.
       await expect(rows.nth(0)).toContainText("online");
       await expect(menu).toContainText("OA Manager-2");
-      await expect(menu).toContainText("Sam's · online");
+      await expect(menu).toContainText("online · Sam's");
       await expect(menu).toContainText("away 19h · workstation");
       if (OUT) {
         mkdirSync(OUT, { recursive: true });
