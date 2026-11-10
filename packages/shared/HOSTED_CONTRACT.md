@@ -424,9 +424,13 @@ live artifact, history included, each distinct blob once (an inline file by
 its content digest, an upload by its key), trashed artifacts excluded),
 `FREE_DATA_DOCS` (live-data docs per artifact), `FREE_DATA_DAILY_WRITES`
 (live-data writes per artifact per UTC day), `FREE_DATA_DAILY_WRITES_TOTAL`
-(live-data writes per install per UTC day, across all artifacts, viewer and
-anonymous writes included; a single D1 counter row, read and bumped only
-while the cap is on). On the free tier only, past one:
+(live-data writes per install per UTC day, across all artifacts: data
+writes, per-viewer storage writes and the owner's data reset; a single D1
+counter row, read and bumped only while the cap is on. Viewer-level and
+anonymous writes are refused once today's total reaches 80% of the cap;
+editor level and above may write up to the full cap; `max` in the error is
+the bound that applied. A write refused after it is counted (429,
+too_large, a bad body) still counts.) On the free tier only, past one:
 403 `plan_limit`, details `PlanLimitDetails { tier: "solo", limit, max }` (a server from before Solo sent tier "free", still accepted)
 (`limit` storage_bytes | data_docs | data_daily_writes | data_daily_writes_total).
 
