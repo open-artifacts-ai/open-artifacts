@@ -224,7 +224,7 @@ describe("status and doctor report the service", () => {
         "   Run npx @open-artifacts/bus install to point it at your current Node.",
         "[[warning]]![[/warning]]  The daemon stops when you log out (systemd lingering is off).",
         "   Run loginctl enable-linger $USER to keep it running.",
-        "[[muted]]1 failed, 1 warning, 4 passed.[[/muted]]",
+        "[[muted]]1 failed, 2 warnings, 4 passed.[[/muted]]",
       ]),
     );
     expect(ctx.out()).not.toContain(NO_SERVICE[0]);

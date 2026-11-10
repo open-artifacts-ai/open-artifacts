@@ -16,6 +16,7 @@ import {
 import { removeHabits } from "../steps/habits.ts";
 import { hermesHome } from "../steps/hermes.ts";
 import { uninstallOutputStyle } from "../steps/output-style.ts";
+import { removeShim } from "../steps/path-shim.ts";
 import { purge } from "../steps/purge.ts";
 import { uninstallSkill } from "../steps/skill.ts";
 import { hostOf } from "./status.ts";
@@ -84,6 +85,21 @@ export async function uninstall(
   } catch (e) {
     say(ctx, [
       `Could not remove the habits block: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
+  // The oa-bus command (#1626): only our shim, only for this bus home.
+  try {
+    if (
+      removeShim({
+        userHome: ctx.userHome,
+        busHome: ctx.home,
+        platform: ctx.platform,
+      })
+    )
+      say(ctx, c.shimRemoved("the oa-bus command"));
+  } catch (e) {
+    say(ctx, [
+      `Could not remove the oa-bus command: ${e instanceof Error ? e.message : String(e)}`,
     ]);
   }
   // Quiet on success: the wiring lines above already say what was removed.

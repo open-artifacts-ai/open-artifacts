@@ -688,6 +688,39 @@ export function copy(style: Style) {
       done(
         `Artifacts Teammate output style installed in ${where} (${on ? "on" : "installed, not selected"})`,
       ),
+    // #1626: the `oa-bus` shim on PATH.
+    shimInstalled: (where: string) =>
+      done(`oa-bus command installed in ${clip(where, 30)}`),
+    shimNotOnPath: (dir: string, hint: string) => [
+      warn(
+        `${clip(dir, 30)} is not on your PATH, so \`oa-bus\` won't run yet.`,
+      ),
+      next(`Add it: ${hint}`),
+    ],
+    shimForeign: (where: string) => [
+      warn(`Left ${clip(where, 30)} alone: it is not ours.`),
+      next(
+        `\`oa-bus\` runs that one. Remove it, or use ${BUS_CMD}, to run this install.`,
+      ),
+    ],
+    shimRemoved: (where: string) =>
+      done(`Removed the oa-bus command from ${clip(where, 30)}`),
+    shimDoctorOk: (where: string) =>
+      done(`oa-bus on your PATH runs this install (${clip(where, 30)})`),
+    shimDoctorOffPath: (where: string, hint: string) => [
+      warn(`oa-bus is not on your PATH (the command is in ${clip(where, 30)})`),
+      next(`Add it: ${hint}`),
+    ],
+    shimDoctorOther: (where: string) => [
+      warn(`oa-bus on your PATH is not this install's (${clip(where, 30)})`),
+      next(
+        `Remove it, or put this install's first. Re-run ${BUS_CMD} install to refresh ours.`,
+      ),
+    ],
+    shimDoctorMissing: () => [
+      warn("oa-bus is not on your PATH"),
+      next(`Run ${BUS_CMD} install to add it.`),
+    ],
     codexSkill: (where: string) =>
       done(`Codex skill installed in ${clip(where, 20)}`),
     codexSkillTwice: (file: string, block: string) => [
