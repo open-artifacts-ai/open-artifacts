@@ -408,7 +408,7 @@ export async function handleCallback(
   provider: OidcProvider,
   req: Request,
 ): Promise<
-  VerifiedIdentity & { next: string; reauth: boolean; silent: boolean }
+  VerifiedIdentity & { next: string; reauth: boolean; silent?: true }
 > {
   const keys = await stateKeys(env);
   const q = new URL(req.url).searchParams;
@@ -454,7 +454,12 @@ export async function handleCallback(
       nonce: st.nonce,
       bstate: q.get("bstate") ?? undefined,
     });
-    return { ...id, next, reauth: st.ra === true, silent: st.sl === true };
+    return {
+      ...id,
+      next,
+      reauth: st.ra === true,
+      ...(st.sl === true ? { silent: true as const } : {}),
+    };
   } catch (e) {
     if (e instanceof ApiError)
       throw new OidcRedeemError(
