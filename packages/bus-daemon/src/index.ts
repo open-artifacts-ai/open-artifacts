@@ -410,10 +410,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * takes `link_bind`. Sent when the hash arrives and after each (re)register;
    * a failure (`not_registered`, a dropped link) is left to the next of those.
    */
-  const sendLink = (rec: AgentRecord) => {
+  const sendLink = (rec: AgentRecord, only?: string) => {
     if (!hubLink || !rec.live) return;
-    // Oldest first, so the newest ends as the hub's newest.
-    for (const hash of rec.linkHashes ?? [])
+    // A new proof sends itself; a (re)register replays all, oldest first, so
+    // the newest ends as the hub's newest (#1984).
+    for (const hash of only === undefined ? (rec.linkHashes ?? []) : [only])
       hub.send({
         v: 1,
         id: frameId(),
@@ -920,7 +921,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (!p || p.procStart !== rec.procStart) continue;
       pendingProofs.delete(rec.pid);
       rec.linkHashes = withLinkHash(rec.linkHashes, p.hash);
-      sendLink(rec);
+      sendLink(rec, p.hash);
     }
   };
   /**
@@ -1362,7 +1363,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (rec && rec.procStart !== undefined) {
         if (rec.procStart !== start) return { bound: false };
         rec.linkHashes = withLinkHash(rec.linkHashes, req.hash);
-        sendLink(rec);
+        sendLink(rec, req.hash);
         return { bound: true };
       }
       // Still no record: hold it for the one that may appear (same pid and
@@ -1752,7 +1753,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           const rec = agents.byRef(ref);
           if (!rec?.live) return false;
           rec.linkHashes = withLinkHash(rec.linkHashes, hash);
-          sendLink(rec);
+          sendLink(rec, hash);
           return true;
         },
         renamed: (ref, name) => {

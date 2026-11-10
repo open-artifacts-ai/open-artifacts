@@ -54,9 +54,8 @@ describe("helloed link_proof (#1856)", () => {
     const bind = await h.next("link_bind");
     expect(bind).toMatchObject({ agent_ref: "A", hash: HASH });
     await a.request({ type: "link_proof", hash: HASH2 } as never);
-    await h.next("link_bind", 3);
+    await h.next("link_bind", 2);
     expect(h.of("link_bind").map((f) => [f.agent_ref, f.hash])).toEqual([
-      ["A", HASH],
       ["A", HASH],
       ["A", HASH2],
     ]);

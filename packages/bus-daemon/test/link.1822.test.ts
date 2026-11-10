@@ -104,30 +104,37 @@ describe("link_proof to link_bind (#1822)", () => {
     const { h, helloOk, agentOk } = await start([BUS_CAPS.ids, BUS_CAPS.link]);
     await proof(h, 4242, HASH);
     await proof(h, 4242, HASH2);
-    // The second proof sends both hashes: a later run never drops the first.
-    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(3));
-    expect(h.of("link_bind").map((f) => f.hash)).toEqual([HASH, HASH, HASH2]);
+    // Each proof sends itself only; the hub adds it to the first (#1984).
+    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(2));
+    expect(h.of("link_bind").map((f) => f.hash)).toEqual([HASH, HASH2]);
     h.hubSock()?.close();
     await vi.waitFor(() => expect(h.of("agent_up").length).toBeGreaterThan(1));
     helloOk();
     agentOk(h.of("agent_up").length);
-    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(5));
-    expect(h.of("link_bind").slice(3)).toMatchObject([
+    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(4));
+    expect(h.of("link_bind").slice(2)).toMatchObject([
       { agent_ref: "s-a", hash: HASH },
       { agent_ref: "s-a", hash: HASH2 },
     ]);
   });
 
   it("keeps at most four hashes, the newest (#1984)", async () => {
-    const { h } = await start([BUS_CAPS.ids, BUS_CAPS.link]);
+    const { h, helloOk, agentOk } = await start([BUS_CAPS.ids, BUS_CAPS.link]);
     const hs = ["1", "2", "3", "4", "5"].map((c) => c.repeat(64));
     for (const x of hs) await proof(h, 4242, x);
-    // 1 + 2 + 3 + 4 + 4 frames.
-    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(14));
+    // One frame per proof, never a replay of the held ones.
+    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(5));
+    expect(h.of("link_bind").map((f) => f.hash)).toEqual(hs);
+    // A reconnect replays the last four, oldest first.
+    h.hubSock()?.close();
+    await vi.waitFor(() => expect(h.of("agent_up").length).toBeGreaterThan(1));
+    helloOk();
+    agentOk(h.of("agent_up").length);
+    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(9));
     expect(
       h
         .of("link_bind")
-        .slice(10)
+        .slice(5)
         .map((f) => f.hash),
     ).toEqual(hs.slice(1));
   });
