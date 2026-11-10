@@ -1810,9 +1810,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
 
   const sync = () => {
-    // A rename held back (the hub's hour, the 3-a-minute window) goes when it
-    // can; Pi and omp have no session file to prompt it.
-    for (const rec of agents.all()) if (rec.live) flushRename(rec);
     for (const [what, fn] of [
       ["claude", syncClaude],
       ["opencode", syncOpenCode],
@@ -1826,6 +1823,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         );
       }
     }
+    // After the syncs, so a name held back goes as its latest value, not the
+    // one it had when the hold began. Pi and omp have no session file to
+    // prompt it.
+    for (const rec of agents.all()) if (rec.live) flushRename(rec);
   };
   restoreCodex();
   sync();
