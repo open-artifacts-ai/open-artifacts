@@ -1,0 +1,14 @@
+{
+  "name": "open-artifacts",
+  "displayName": "Open Artifacts",
+  "version": "0.146.0",
+  "description": "The Artifacts Teammate output style for Claude Code. For now this plugin only offers the style; it does not yet add the Open Artifacts MCP server or skill.",
+  "author": {
+    "name": "Open Artifacts",
+    "url": "https://github.com/open-artifacts-ai"
+  },
+  "homepage": "https://github.com/open-artifacts-ai/open-artifacts",
+  "repository": "https://github.com/open-artifacts-ai/open-artifacts",
+  "license": "MIT",
+  "keywords": ["output-style", "open-artifacts"]
+}

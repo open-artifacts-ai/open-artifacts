@@ -1,0 +1,15 @@
+{
+  "name": "open-artifacts",
+  "description": "Open Artifacts plugins for Claude Code",
+  "owner": {
+    "name": "Open Artifacts",
+    "url": "https://github.com/open-artifacts-ai"
+  },
+  "plugins": [
+    {
+      "name": "open-artifacts",
+      "source": "./plugins/open-artifacts",
+      "description": "The Artifacts Teammate output style. It does not yet add the Open Artifacts MCP server or skill."
+    }
+  ]
+}
