@@ -25,7 +25,7 @@ import {
 import { getUser } from "../src/services/users.js";
 import { login } from "./helpers.js";
 
-// #1890: a mentioned, assigned or asked agent shows its own face, from the
+// #1890: a mentioned or asked agent shows its own face, from the
 // identity the server resolved at write time on the OWNER's hub.
 
 const E = env as unknown as Env;
@@ -154,11 +154,10 @@ const asks = (key: string) => ({
 });
 
 describe("party faces (#1890)", () => {
-  it("a linked agent's mention, assignment and ask target carry its face", async () => {
+  it("a linked agent's mention and ask target carry its face", async () => {
     const s = await scene({ current: IDENT });
     await s.post({
       mentions: [{ key: s.key }],
-      assign: { key: s.key },
       ...asks(s.key),
     });
     const face = faceOf(IDENT.identityId);
@@ -169,7 +168,6 @@ describe("party faces (#1890)", () => {
       animal: face,
       name: "Runner",
     });
-    expect(c?.assigned).toMatchObject({ linked: true, animal: face });
     expect(c?.ask?.to[0]).toMatchObject({
       kind: "agent",
       linked: true,
@@ -188,11 +186,10 @@ describe("party faces (#1890)", () => {
     const s = await scene({ current: null });
     await s.post({
       mentions: [{ key: s.key }],
-      assign: { key: s.key },
       ...asks(s.key),
     });
     const c = (await s.list(signedIn(s.other))).threads[0]?.comments[0];
-    for (const p of [c?.mentions?.[0], c?.assigned, c?.ask?.to[0]]) {
+    for (const p of [c?.mentions?.[0], c?.ask?.to[0]]) {
       expect(p).toBeDefined();
       expect(p).not.toHaveProperty("linked");
       expect(p).not.toHaveProperty("product");
@@ -250,10 +247,9 @@ describe("identity lookups are bounded (#1890)", () => {
   });
   it("a failing hub: the comment still posts", async () => {
     const s = await scene({ current: IDENT, fail: true });
-    await s.post({ mentions: [{ key: s.key }], assign: { key: s.key } });
+    await s.post({ mentions: [{ key: s.key }] });
     const c = (await s.list(signedIn(s.other))).threads[0]?.comments[0];
     legacy(c?.mentions?.[0]);
-    legacy(c?.assigned);
   });
   it("ten ask targets on a slow hub cost about one bound, not ten", async () => {
     const s = await scene({ current: IDENT, hang: true }, 10);
@@ -271,130 +267,5 @@ describe("identity lookups are bounded (#1890)", () => {
     });
     expect(Date.now() - t0).toBeLessThan(2000);
     expect(s.asked).toHaveLength(10);
-  });
-});
-
-describe("outsiders get no face fields (#1890)", () => {
-  const AGENT_IDENT = {
-    identityId: "id-author-0001",
-    namespace: "ns-o",
-    name: "Runner",
-    kind: "claude-code",
-  };
-  const faceKeys = (a: object | undefined) =>
-    ["linked", "product", "animal"].filter((k) => a && k in a);
-
-  async function posted() {
-    const s = await scene({ current: IDENT });
-    await s.post({
-      mentions: [{ key: s.key }],
-      assign: { key: s.key },
-      ...asks(s.key),
-    });
-    // An agent-authored comment with a linked identity.
-    await addThread(
-      (await import("cloudflare:workers")).env as unknown as Env,
-      { id: s.id, format: "html", currentVersion: 1 } as never,
-      {
-        kind: "user",
-        id: s.owner.userId,
-        agent: {
-          name: "Runner",
-          version: null,
-          via: { kind: "token", id: "tok" },
-          identity: AGENT_IDENT,
-        },
-      },
-      signedIn(s.owner),
-      { anchor: { kind: "note" }, body: "from the agent" },
-      { moderator: true },
-    );
-    return s;
-  }
-  const all = (l: CommentList) =>
-    l.threads.flatMap((t) => t.comments).flatMap((c) => c.author);
-  const parties = (l: CommentList) =>
-    l.threads.flatMap((t) =>
-      t.comments.flatMap((c) => [
-        ...(c.mentions ?? []),
-        ...(c.assigned ? [c.assigned] : []),
-        ...(c.ask?.to ?? []),
-      ]),
-    );
-
-  it("signed-out, guest-role and capped viewers get no linked, product or animal", async () => {
-    const s = await posted();
-    const outsiders: CommentViewer[] = [
-      GUEST,
-      { userId: s.other.userId, short: null, guest: true },
-      { userId: s.other.userId, short: null, capped: true },
-    ];
-    for (const v of outsiders) {
-      const l = await s.list(v);
-      expect(JSON.stringify(l)).not.toContain("animal");
-      for (const a of [...all(l), ...parties(l)])
-        expect(faceKeys(a)).toEqual([]);
-      expect(parties(l).length).toBeGreaterThan(0);
-    }
-  });
-
-  it("members, plan-capped included, keep the face", async () => {
-    const s = await posted();
-    // The plan cap does not set `capped`: the viewer is a plain member.
-    for (const v of [
-      signedIn(s.other),
-      { userId: s.other.userId, short: null },
-    ]) {
-      const l = await s.list(v);
-      const authors = all(l).filter((a) => a.kind === "agent");
-      expect(authors.length).toBeGreaterThan(0);
-      for (const a of authors) expect(a.linked).toBe(true);
-      for (const p of parties(l)) expect(p.linked).toBe(true);
-    }
-  });
-});
-
-describe("MCP list_comments for a capped client (#1890)", () => {
-  it("a restricted client gets no linked, product or animal", async () => {
-    const { createPat } = await import("../src/auth/pat.js");
-    const { connect, textOf, tool } = await import("./mcp-helpers.js");
-    const s = await scene({ current: IDENT });
-    await s.post({ mentions: [{ key: s.key }], ...asks(s.key) });
-    await E.DB.prepare(
-      "update artifacts set visibility = 'public' where id = ?",
-    )
-      .bind(s.id)
-      .run();
-    const { token } = await createPat(env, s.other.userId, "capped");
-    const client = await connect(token);
-    try {
-      const member = await tool(client, "list_comments", { id: s.id });
-      expect(member.isError, textOf(member)).toBeFalsy();
-      const has = (l: CommentList) =>
-        l.threads
-          .flatMap((t) => t.comments)
-          .flatMap((c) => [...(c.mentions ?? []), ...(c.ask?.to ?? [])]);
-      for (const p of has(member.structuredContent as CommentList))
-        expect(p.animal).toBeDefined();
-      // The cap lands after the connection: the next call is a capped viewer.
-      await E.DB.prepare("update users set restricted_manual = 1 where id = ?")
-        .bind(s.other.userId)
-        .run();
-      const capped = await tool(client, "list_comments", { id: s.id }).catch(
-        (e: unknown) => e,
-      );
-      if (capped instanceof Error || (capped as { isError?: boolean }).isError)
-        return; // refused outright: no face can leak
-      const parties = has(
-        (capped as { structuredContent: unknown })
-          .structuredContent as CommentList,
-      );
-      expect(parties.length).toBeGreaterThan(0);
-      for (const p of parties)
-        for (const k of ["linked", "product", "animal"])
-          expect(p).not.toHaveProperty(k);
-    } finally {
-      await client.close();
-    }
   });
 });

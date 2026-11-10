@@ -23,7 +23,8 @@ import {
 // anchors it built from the page's own text, ids, states and pixel offsets.
 // Nothing here adds a node to the page tree except one overlay host under
 // <html> (its UI sits in a shadow root), and highlights use the CSS Custom
-// Highlight API with an adopted stylesheet. This is tidiness, not a security
+// Highlight API with an adopted stylesheet (an inline <style> would be blocked
+// by a page's `style-src 'self'`). This is tidiness, not a security
 // boundary: the page's own script shares this window, so it can see every
 // message, reach the overlay and forge every message the frame sends. The
 // shell must treat them all as hints.
@@ -66,12 +67,23 @@ const OVERLAY_CSS = `
 .btn svg{width:14px;height:14px;flex:none}
 .mark{position:absolute;width:6px;height:16px;border-radius:2px;background:#e0a000;pointer-events:auto;cursor:pointer}
 .mark.on{background:#1f5fbf}
-.pin{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;background:#1f5fbf;color:#fff;font:700 12px/22px system-ui,sans-serif;text-align:center;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px #0006}
-.pin.on{outline:3px solid #e0a000}
+/* A pin is a 30px speech bubble whose bottom-left corner is the anchor: left/top
+   are the stored point and the margin lifts the bubble above it, so the tail
+   is exactly on x,y. It holds the pin's number (the frame never carries names).
+   Ring: 2px white. Open (.on): plus a 2.5px amber ring. */
+.pin{position:absolute;width:30px;height:30px;margin:-30px 0 0 0;border-radius:15px 15px 15px 3px;background:#1f5fbf;color:#fff;font:600 12.5px/30px system-ui,sans-serif;text-align:center;pointer-events:auto;cursor:pointer;box-shadow:0 0 0 2px #fff,0 3px 8px rgba(0,0,0,.3)}
+/* Edges: flip, never clip. The sharp corner stays on x,y. Near the top the
+   bubble hangs below the point; near the right edge it sits left of it. */
+.pin.flip-y{margin:0;border-radius:3px 15px 15px 15px}
+.pin.flip-x{margin:-30px 0 0 -30px;border-radius:15px 15px 3px 15px}
+.pin.flip-x.flip-y{margin:0 0 0 -30px;border-radius:15px 3px 15px 15px}
+.pin.on{z-index:1;box-shadow:0 0 0 2px #fff,0 0 0 4.5px #e0a000,0 3px 8px rgba(0,0,0,.3)}
+/* Placing: a translucent accent bubble with a dashed edge. */
 .pin.ghost{background:#1f5fbf55;border:2px dashed #1f5fbf;box-sizing:border-box;box-shadow:none;pointer-events:none}
-/* A pin whose page changed: a dashed ring, not a colour alone, plus a title. */
-.pin.changed{outline:2px dashed #8a5a00;outline-offset:2px}
-.pin.changed.on{box-shadow:0 0 0 3px #e0a000aa,0 1px 4px #0006}
+/* A pin whose page changed: a dashed outline outside the ring, not a colour alone, plus a title. */
+.pin.changed{outline:2px dashed #8a5a00;outline-offset:4px}
+/* Open and changed: the dashed outline sits past the 4.5px amber ring, so both read. */
+.pin.changed.on{outline-offset:6.5px}
 `;
 const PAGE_CSS =
   "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}";
@@ -102,6 +114,8 @@ export function createComments(
     "html";
   const hasPins = format === "image" || format === "pdf";
   let mode: Mode = "off";
+  /** Disposed: nothing may paint or send again (#1473 review). */
+  let ended = false;
   /**
    * The quote a comment is being written about (#1834), kept painted. No
    * version: it is a paint hint, not a record (the resolver ignores it).
@@ -155,18 +169,37 @@ export function createComments(
     return layer;
   };
 
+  /**
+   * The page's highlight rules: an adopted sheet, never an inline `<style>`.
+   * An artifact page can ship a CSP that blocks inline styles
+   * (`style-src 'self'`), and constructable sheets are not subject to it
+   * (#1473 review). A page that rewrites `document.adoptedStyleSheets` takes
+   * ours with it, so it is adopted again by anything that can notice: a paint,
+   * a page mutation, a click or a selection change.
+   */
   let sheet: CSSStyleSheet | undefined;
-  const highlights = (): Registry | undefined => {
-    if (typeof CSS === "undefined" || !("highlights" in CSS)) return undefined;
-    if (!sheet && typeof CSSStyleSheet !== "undefined") {
+  const adoptSheet = () => {
+    if (typeof CSSStyleSheet === "undefined") return;
+    if (!sheet) {
       try {
         sheet = new CSSStyleSheet();
         sheet.replaceSync(PAGE_CSS);
-        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
       } catch {
-        sheet = undefined;
+        return;
       }
     }
+    // Never rebuilt after a failed adoption: the sheet is created once.
+    if (document.adoptedStyleSheets.includes(sheet)) return;
+    try {
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    } catch {
+      // No setter (older engines, jsdom): nothing to adopt into.
+    }
+  };
+
+  const highlights = (): Registry | undefined => {
+    if (typeof CSS === "undefined" || !("highlights" in CSS)) return undefined;
+    adoptSheet();
     return (CSS as unknown as { highlights: Registry }).highlights;
   };
 
@@ -180,6 +213,18 @@ export function createComments(
     return index;
   };
 
+  /** Pin bubbles are this tall and wide; one near an edge flips so it is never clipped. */
+  const BUBBLE_PX = 30;
+  /** The classes that keep the bubble's sharp corner on x,y near the top or right edge. */
+  const flips = (x: number, y: number): string =>
+    [
+      y < BUBBLE_PX ? "flip-y" : "",
+      x > (document.documentElement.clientWidth || innerWidth) - BUBBLE_PX
+        ? "flip-x"
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
   const clampTop = (n: number) => Math.min(10_000_000, Math.max(0, n));
   const docTop = (r: DOMRect) => clampTop(r.top + scrollY);
 
@@ -310,7 +355,12 @@ export function createComments(
         const y = box.top + scrollY + th.anchor.y * box.height;
         out.push({ id: th.id, state: "pin", top: clampTop(y) });
         if (!th.resolved) {
-          const cls = ["pin", isActive ? "on" : "", th.changed ? "changed" : ""]
+          const cls = [
+            "pin",
+            isActive ? "on" : "",
+            th.changed ? "changed" : "",
+            flips(x, clampTop(y)),
+          ]
             .filter(Boolean)
             .join(" ");
           const d = mark(cls, x, clampTop(y), String(th.n ?? ""));
@@ -343,12 +393,11 @@ export function createComments(
         Anchor,
         { kind: "pin" }
       >);
-      if (box)
-        mark(
-          "pin ghost",
-          box.left + scrollX + ghost.x * box.width,
-          clampTop(box.top + scrollY + ghost.y * box.height),
-        );
+      if (box) {
+        const gx = box.left + scrollX + ghost.x * box.width;
+        const gy = clampTop(box.top + scrollY + ghost.y * box.height);
+        mark(["pin ghost", flips(gx, gy)].filter(Boolean).join(" "), gx, gy);
+      }
     }
     if (marks.length || layer)
       overlay().replaceChildren(...marks, ...(btn?.isConnected ? [btn] : []));
@@ -385,6 +434,7 @@ export function createComments(
     });
   };
   const onSelectionChange = () => {
+    adoptSheet();
     schedule(false, true);
     if (mode !== "select") return;
     clearTimeout(selTimer);
@@ -568,6 +618,7 @@ export function createComments(
   // ---- clicks on the page: pin placement and highlight hits ----
   function onClick(e: MouseEvent) {
     if (mode === "off" || e.composedPath()[0] === host) return;
+    adoptSheet();
     if (mode === "pin") {
       if (!hasPins) return;
       const target = e.target instanceof Element ? e.target : null;
@@ -592,6 +643,18 @@ export function createComments(
     }
     const sel = getSelection();
     if (sel && sel.rangeCount > 0 && !sel.isCollapsed) return;
+    // #1473: a link or a control under the pointer does its own thing; opening
+    // the thread too would both navigate and cover the page.
+    // `composedPath()[0]`, not `target`: inside a shadow root the target is the
+    // host, and a link in there would not be seen (#1473 review).
+    const inner = e.composedPath()[0];
+    const hit = inner instanceof Element ? inner : null;
+    if (
+      hit?.closest(
+        "a[href], button, input, select, textarea, label, [role='button'], [role='link']",
+      )
+    )
+      return;
     let best: { id: string; size: number } | undefined;
     for (const p of painted) {
       for (const r of Array.from(p.range.getClientRects())) {
@@ -700,6 +763,9 @@ export function createComments(
     );
   };
   const onMutation = (records: MutationRecord[]) => {
+    // A page that rewrote `adoptedStyleSheets` may not repaint anything: the
+    // observer is the first thing to notice (#1473 review).
+    adoptSheet();
     if (records.every(ours)) return;
     textVer++;
     const now = Date.now();
@@ -755,6 +821,7 @@ export function createComments(
     clearTimeout(selTimer);
     clearTimeout(keptTimer);
     if (raf) cancelAnimationFrame(raf);
+    ended = true;
     const reg = highlights();
     reg?.delete("oa-comment");
     reg?.delete("oa-comment-active");
@@ -764,6 +831,10 @@ export function createComments(
       );
     host?.remove();
   };
-  signal?.addEventListener("abort", dispose);
-  return { flush: () => report(false), dispose };
+  // #1473: a signal that was already aborted never fires `abort`, so the host,
+  // the listener and the stylesheet would stay behind.
+  if (signal?.aborted) dispose();
+  else signal?.addEventListener("abort", dispose);
+  // `flush` after dispose would paint again and put the host back.
+  return { flush: () => (ended ? undefined : report(false)), dispose };
 }

@@ -208,13 +208,13 @@ describe("thread_reply notices (#1900)", () => {
     expect(n.notice.text).not.toContain("again");
   });
 
-  it("an assigned agent is a participant", async () => {
+  it("an assign (dropped in #1792) makes no participant", async () => {
     const s = await setup();
     const t = (await (await post(s.id, editor, {})).json()) as Thread;
     await reply(s.id, t.id, editor, { assign: { key: s.pi } });
     bus.clear();
     await reply(s.id, t.id, viewer);
-    expect(names()).toEqual(["Pi"]);
+    expect(names()).toEqual([]);
   });
 
   it("an agent that commented as a verified identity is a participant, only that agent", async () => {

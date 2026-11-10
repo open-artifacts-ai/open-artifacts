@@ -60,7 +60,7 @@ function AgentTile({
 }
 
 /**
- * The face of a mentioned, assigned or asked agent (#1890), small and inline,
+ * The face of a mentioned or asked agent (#1890), small and inline,
  * the same tile as a comment author's. Nothing for a party with no identity
  * fields (a legacy payload renders as it always did) and nothing for a guest.
  */

@@ -133,6 +133,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
   business: { tier: "business" },
   frozen: { directory: "frozen" },
   "sync-off": { directory: "off" },
+  // Business before its first connect (#2009): sync on, nothing connected yet.
+  "not-connected": { unbound: true },
   admin: { actAs: "admin" },
   "guest-notices": { selfHosted: true, guestShares: 2, guestOwners: 2 },
   "guest-departed": {
@@ -170,7 +172,7 @@ const TOKENS: Record<string, HostedMockOptions> = {
  * Mock-only: `?hosted=` turns on the hosted mocks. Comma tokens: 1 (defaults),
  * access, email-only, turnstile, unhealthy (backoff), auth-failed,
  * scope-missing, customer-mismatch, trial, solo, solo-paused,
- * plan-team-lapsed, plan-team-payment-failed, plan-team-suspended, plan-team-unreachable, team, business, frozen, sync-off,
+ * plan-team-lapsed, plan-team-payment-failed, plan-team-suspended, plan-team-unreachable, team, business, frozen, sync-off, not-connected,
  * admin (you are an admin, not the owner), guest-notices (an Access-only
  * install with parity 2's notices, spaces off), guest-departed (the same, one
  * guest owner has left), spaces-on, workspace-change (the confirm

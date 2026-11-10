@@ -727,10 +727,55 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   useEffect(() => {
     if (!isActive) return;
     el.current?.scrollIntoView?.({ block: "nearest" });
+    // #1783: in the short pin sheet a thread with 2+ replies shows its last
+    // reply just above the floating action row, not the card's top.
+    const card = el.current;
+    const last =
+      t.comments.length > 2 ? t.comments[t.comments.length - 1] : null;
+    let frame = 0;
+    let watch: ResizeObserver | undefined;
+    // Only where the sheet owns a floating row (its outlet exists): the wide
+    // overlay at pin height has none and does not scroll.
+    const outlet = card
+      ?.closest('[data-sheet-height="pin"]')
+      ?.querySelector<HTMLElement>("[data-oa-action-outlet]");
+    if (card && last && outlet) {
+      const go = () => {
+        // Hidden (not claimed yet) or gone (the sheet grew for typing): wait
+        // for a real measure, never scroll on 0.
+        if (!outlet.isConnected || outlet.offsetHeight === 0) return;
+        const reply = card.querySelector<HTMLElement>(
+          `[data-comment="${last.id}"]`,
+        );
+        if (!reply) return;
+        // The row's own height, which already includes the safe-area inset.
+        // The composer claims the outlet after this effect, so the height
+        // changes from 0 once it shows: the observer re-measures and scrolls.
+        reply.style.scrollMarginBottom = `${outlet.offsetHeight}px`;
+        // One measure is enough: later size changes (typing) don't re-scroll.
+        watch?.disconnect();
+        const reduce =
+          window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ===
+          true;
+        reply.scrollIntoView?.({
+          block: "end",
+          behavior: reduce ? "auto" : "smooth",
+        });
+      };
+      frame = requestAnimationFrame(go);
+      if (typeof ResizeObserver !== "undefined") {
+        watch = new ResizeObserver(go);
+        watch.observe(outlet);
+      }
+    }
     if (revealedHere && revealTick > api.revealDone.current) {
       api.revealDone.current = revealTick;
       el.current?.focus({ preventScroll: true });
     }
+    return () => {
+      cancelAnimationFrame(frame);
+      watch?.disconnect();
+    };
   }, [isActive, revealTick]);
   // Leaving the thread drops the question mode.
   useEffect(() => {
@@ -1057,9 +1102,12 @@ export function CommentsBody({
   /** Grow to fill the surface. Off in the phone sheet's short height, where the
       action row's outlet follows the list as a sibling (#1711). */
   grow = true,
+  /** The phone sheet's short height, kept for reading one pinned card (#1783). */
+  short = false,
 }: {
   textFormat?: boolean;
   grow?: boolean;
+  short?: boolean;
 }) {
   const api = useCommentsApi();
   const resolvedCount = api.threads.filter(
@@ -1114,11 +1162,16 @@ export function CommentsBody({
           api={api}
         />
       )}
-      {api.canComment ? (
-        <NoteComposer api={api} />
-      ) : (
-        api.guest && <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
-      )}
+      {/* #1783: the short sheet is for the pinned card, so the whole-page box
+          is not shown there. Hidden with CSS, never unmounted: a typed draft has
+          to survive a pin tap, and dragging the sheet up brings the box back. */}
+      <div className={short ? "hidden" : "contents"}>
+        {api.canComment ? (
+          <NoteComposer api={api} />
+        ) : (
+          api.guest && <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
+        )}
+      </div>
       {api.error != null && !api.threads.length ? (
         <div role="alert" className={`flex flex-col gap-2 ${TXT}`}>
           <p>Couldn't load comments.</p>

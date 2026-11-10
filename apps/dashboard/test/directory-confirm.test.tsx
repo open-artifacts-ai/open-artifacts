@@ -71,7 +71,7 @@ const expiryText = new Intl.DateTimeFormat(undefined, {
 }).format(new Date(EXPIRES));
 
 it("Connect opens the pre-Google dialog: no count, Cancel and Continue to Google", async () => {
-  mountHosted("/settings/directory", { directory: "off" });
+  mountHosted("/settings/directory", { unbound: true });
   fireEvent.click(
     within(await status()).getByRole("button", {
       name: "Connect Google Workspace",

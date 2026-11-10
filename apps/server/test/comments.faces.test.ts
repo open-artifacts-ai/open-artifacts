@@ -227,7 +227,7 @@ describe("agent faces (#1822)", () => {
     await post(id, owner, agentWho(owner, IDENT));
     const c = await first(id, GUEST);
     expect(c?.author.name).toBe(`${nm}'s agent`);
-    // No animal, product or linked: it is a stable id across artifacts (#1890).
+    // No animal, product or linked: a stable id across artifacts.
     expect(c?.author.animal).toBeUndefined();
     expect(c?.author.linked).toBeUndefined();
     expect(c?.author.product).toBeUndefined();

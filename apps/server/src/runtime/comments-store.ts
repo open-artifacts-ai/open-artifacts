@@ -44,6 +44,10 @@ create index if not exists comment_targets_thread on comment_targets (thread_id)
 create table if not exists comment_asker_notices (
   thread_id text primary key, last_at text not null, prev_at text, n integer not null
 );
+create table if not exists comment_email_notices (
+  thread_id text not null, user_id text not null, last_at text not null, prev_at text,
+  primary key (thread_id, user_id)
+);
 create table if not exists comment_participants (
   thread_id text not null, key text not null, name text not null, owner text not null,
   namespace text not null, page integer not null default 0, primary key (thread_id, key)
@@ -83,7 +87,7 @@ export type StoredActor = {
 };
 
 /**
- * Someone an ask, mention or assignment names (#1535). A person is their user
+ * Someone an ask or mention names (#1535). A person is their user
  * id (`key`; the name is read from the user row when shown). An agent is an
  * opaque key from the artifact's roster, its display `name`, and `owner`, the
  * member whose agent it is (never shown; it decides who may answer for it).
@@ -102,7 +106,6 @@ export type StoredParty =
 export type StoredIdentity = { identityId: string; kind: string };
 
 export type MentionState = "delivered" | "queued" | "seen" | "gone";
-export type AssignState = "delivered" | "queued" | "seen" | "done";
 
 export type StoredAsk = {
   question: string;
@@ -131,7 +134,6 @@ export type StoredComment = {
   editedAt: string | null;
   ask?: StoredAsk;
   mentions?: StoredTarget[];
-  assigned?: StoredTarget;
 };
 
 /** What a new comment carries besides its text (#1535). */
@@ -139,13 +141,12 @@ export type StoredAgent = Extract<StoredParty, { kind: "agent" }>;
 export type NewExtras = {
   ask?: Omit<StoredAsk, "answer" | "closed">;
   mentions?: StoredAgent[];
-  assign?: StoredAgent;
   /** A reply addressed to the ask's author (#1614): stored as a mention of its agents, under its own kind so the notice can be bounded. */
   asker?: StoredAgent[];
 };
 
 /**
- * #1900: an agent that joined a thread (mentioned, assigned, asked, or
+ * #1900: an agent that joined a thread (mentioned, asked, or
  * commented as a verified identity). `key` is the roster key (artifact, member,
  * bus address); `namespace` and `name` are the bus address a notice goes to;
  * `owner` the member whose agent it is.
@@ -323,13 +324,11 @@ type AskRow = {
 };
 type TargetRow = {
   comment_id: string;
-  kind: string;
   key: string;
   name: string;
   state: string;
   owner: string | null;
   identity: string | null;
-  status: string;
 };
 
 const askOf = (r: AskRow): StoredAsk => ({
@@ -350,7 +349,7 @@ const askOf = (r: AskRow): StoredAsk => ({
   closed: r.status === "resolved",
 });
 
-/** Sets ask, mentions and assigned on `comments` (of the threads `threadIds`) from their tables. */
+/** Sets ask and mentions on `comments` (of the threads `threadIds`) from their tables. */
 function attachExtras(
   sql: SqlStorage,
   threadIds: string[],
@@ -369,30 +368,27 @@ function attachExtras(
     if (c) c.ask = askOf(r);
   }
   for (const r of sql.exec<TargetRow>(
-    `select g.comment_id, g.kind, g.key, g.name, g.state, g.owner, g.identity, t.status
-     from comment_targets g join comment_threads t on t.id = g.thread_id
-     where g.thread_id in (select value from json_each(?)) order by g.rowid`,
+    `select g.comment_id, g.key, g.name, g.state, g.owner, g.identity
+     from comment_targets g
+     where g.kind in ('mention', 'asker') and g.thread_id in (select value from json_each(?)) order by g.rowid`,
     ids,
   )) {
     const c = byId.get(r.comment_id);
     if (!c) continue;
-    // Resolving the thread finishes the work assigned in it.
-    const done = r.kind === "assign" && r.status === "resolved";
     const t: StoredTarget = {
       key: r.key,
       name: r.name,
-      state: done ? "done" : r.state,
+      state: r.state,
       ...(r.owner ? { owner: r.owner } : {}),
       ...(r.identity
         ? { identity: JSON.parse(r.identity) as StoredIdentity }
         : {}),
     };
-    if (r.kind === "assign") c.assigned = t;
-    else c.mentions = [...(c.mentions ?? []), t];
+    c.mentions = [...(c.mentions ?? []), t];
   }
 }
 
-/** `c` with its ask, mentions and assigned read back. */
+/** `c` with its ask and mentions read back. */
 export function withExtras(
   sql: SqlStorage,
   threadId: string,
@@ -402,7 +398,7 @@ export function withExtras(
   return c;
 }
 
-/** Stores the ask, mentions and assignment of a new comment, in the caller's transaction. */
+/** Stores the ask and mentions of a new comment, in the caller's transaction. */
 export function insertExtras(
   sql: SqlStorage,
   threadId: string,
@@ -420,7 +416,7 @@ export function insertExtras(
       x.ask.recommended ? JSON.stringify(x.ask.recommended) : null,
       JSON.stringify(x.ask.to),
     );
-  const put = (kind: "mention" | "assign" | "asker", p: StoredAgent) =>
+  const put = (kind: "mention" | "asker", p: StoredAgent) =>
     sql.exec(
       `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state, owner, identity)
        values (?, ?, ?, ?, ?, 'queued', ?, ?)`,
@@ -433,7 +429,6 @@ export function insertExtras(
       p.identity ? JSON.stringify(p.identity) : null,
     );
   for (const m of x.mentions ?? []) put("mention", m);
-  if (x.assign) put("assign", x.assign);
   for (const m of x.asker ?? []) put("asker", m);
 }
 
@@ -481,6 +476,53 @@ export function refundAsker(
     `update comment_asker_notices set last_at = coalesce(prev_at, '0'), prev_at = null, n = n - 1
      where thread_id = ? and last_at = ? and n > 0`,
     threadId,
+    at,
+  );
+}
+
+/**
+ * Comment emails (#1467): at most one per (thread, person) per window. Claims
+ * the slot for each of `userIds` that has none since `sinceIso` and returns
+ * those; `at` is the time recorded. `refundEmail` gives one back when the
+ * send failed (only while `at` is still the last).
+ */
+export function claimEmail(
+  sql: SqlStorage,
+  threadId: string,
+  userIds: string[],
+  sinceIso: string,
+  at: string,
+): string[] {
+  const won: string[] = [];
+  for (const u of userIds) {
+    const r = sql
+      .exec<{ user_id: string }>(
+        `insert into comment_email_notices (thread_id, user_id, last_at, prev_at) values (?1, ?2, ?3, null)
+         on conflict (thread_id, user_id) do update set prev_at = last_at, last_at = excluded.last_at
+         where comment_email_notices.last_at <= ?4
+         returning user_id`,
+        threadId,
+        u,
+        at,
+        sinceIso,
+      )
+      .toArray();
+    if (r.length) won.push(u);
+  }
+  return won;
+}
+
+export function refundEmail(
+  sql: SqlStorage,
+  threadId: string,
+  userId: string,
+  at: string,
+): void {
+  sql.exec(
+    `update comment_email_notices set last_at = coalesce(prev_at, ''), prev_at = null
+     where thread_id = ? and user_id = ? and last_at = ?`,
+    threadId,
+    userId,
     at,
   );
 }
@@ -577,11 +619,11 @@ export function refundThreadReply(
     );
 }
 
-/** Sets one mention's or the assignment's state. */
+/** Sets one mention's state. */
 export function setTargetState(
   sql: SqlStorage,
   commentId: string,
-  kind: "mention" | "assign" | "asker",
+  kind: "mention" | "asker",
   key: string,
   state: string,
 ): void {

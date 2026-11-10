@@ -1,11 +1,17 @@
 import {
   applyPublish,
   checked,
+  deletion,
+  dropRow,
   originOf,
   published,
   record,
+  reinstate,
   restore,
+  retitle,
   type Shortcut,
+  titleOf,
+  undeletion,
 } from "./model.ts";
 
 // The small public API surface this plugin uses; no client internals or credentials.
@@ -49,6 +55,11 @@ async function load(
   return restore(await $.store.get(key(origin, session)), origin);
 }
 
+/** Rows dropped by delete_artifact, kept so a successful undelete can restore them. */
+function deletedKey(origin: string, session: string) {
+  return `deleted-${key(origin, session)}`;
+}
+
 // Serialize one session's writes without coupling different sessions.
 function save(
   $: Api,
@@ -74,6 +85,41 @@ function save(
   return write;
 }
 
+/** Applies `update` to the rows and the deleted list as one serialized write. */
+function saveBoth(
+  $: Api,
+  session: string,
+  origin: string,
+  writes: Map<string, Promise<void>>,
+  update: (
+    rows: Shortcut[],
+    deleted: Shortcut[],
+  ) => { rows: Shortcut[]; deleted: Shortcut[] } | null,
+) {
+  const k = key(origin, session);
+  const write = (writes.get(k) ?? Promise.resolve())
+    .catch(() => {})
+    .then(async () => {
+      const rows = await load($, session, origin);
+      const deleted = restore(
+        await $.store.get(deletedKey(origin, session)),
+        origin,
+      );
+      const next = update(rows, deleted);
+      if (!next) return;
+      if (next.deleted !== deleted)
+        await $.store.set(deletedKey(origin, session), next.deleted);
+      if (next.rows !== rows) await $.store.set(k, next.rows);
+    });
+  writes.set(k, write);
+  void write
+    .finally(() => {
+      if (writes.get(k) === write) writes.delete(k);
+    })
+    .catch(() => {});
+  return write;
+}
+
 export function register(
   on: On,
   options: Readonly<Record<string, unknown>> = {},
@@ -85,6 +131,8 @@ export function register(
       : "open-artifacts";
   const validNamespace = /^[A-Za-z0-9_-]+$/.test(namespace);
   const publishTool = `mcp__${namespace}__publish_artifact`;
+  const deleteTool = `mcp__${namespace}__delete_artifact`;
+  const undeleteTool = `mcp__${namespace}__undelete_artifact`;
   const readTool = `mcp__${namespace}__get_artifact`;
   const writes = new Map<string, Promise<void>>();
 
@@ -101,56 +149,83 @@ export function register(
     return next(e);
   });
 
-  on("tool.call", { tool: [publishTool, readTool] }, async ($, e, next) => {
-    if (!origin || !validNamespace) return next(e);
-    let session: string | undefined;
-    try {
-      session = await $.session.id();
-    } catch {
-      /* Presentation is optional. */
-    }
-    const result = await next(e);
-    if (!session) return result;
-    try {
-      if (e.tool === publishTool) {
-        // Settings-only calls create no version, so they are not a publish shortcut.
-        if (e.id && !("content" in e || "files" in e || "edits" in e))
-          return result;
-        const receipt = published(result, origin);
-        if (!receipt) return result;
-        const now = await $.clock.now();
-        await save($, session, origin, writes, (rows) =>
-          applyPublish(rows, receipt, e.title, now),
-        );
-      } else {
-        const receipt = checked(result);
-        if (!receipt) return result;
-        const now = await $.clock.now();
-        await save($, session, origin, writes, (rows) => {
-          const old = rows.find((a) => a.id === receipt.id);
-          if (
-            !old ||
-            receipt.version <
-              Math.max(old.publishedVersion, old.lastCheckedCurrentVersion ?? 0)
-          )
-            return rows;
-          return rows.map((a) =>
-            a.id === receipt.id
-              ? {
-                  ...a,
-                  lastCheckedCurrentVersion: receipt.version,
-                  lastCheckedAt: now,
-                }
-              : a,
-          );
-        });
+  on(
+    "tool.call",
+    { tool: [publishTool, readTool, deleteTool, undeleteTool] },
+    async ($, e, next) => {
+      if (!origin || !validNamespace) return next(e);
+      let session: string | undefined;
+      try {
+        session = await $.session.id();
+      } catch {
+        /* Presentation is optional. */
       }
-      $.ui.invalidate("ui.render");
-    } catch {
-      /* Never repeat, replace or fail a tool because shortcut bookkeeping failed. */
-    }
-    return result;
-  });
+      const result = await next(e);
+      if (!session) return result;
+      try {
+        if (e.tool === publishTool) {
+          const receipt = published(result, origin);
+          if (!receipt) return result;
+          if (e.id && !("content" in e || "files" in e || "edits" in e)) {
+            // Settings-only calls create no version, so they add no shortcut;
+            // a rename only updates the title of a row that already exists.
+            await save($, session, origin, writes, (rows) =>
+              retitle(rows, receipt.id, titleOf(e.title) || receipt.title),
+            );
+            $.ui.invalidate("ui.render");
+            return result;
+          }
+          const now = await $.clock.now();
+          await saveBoth($, session, origin, writes, (rows, deleted) => ({
+            rows: applyPublish(rows, receipt, e.title, now),
+            // A publish landing makes any kept deleted copy stale.
+            deleted: deleted.some((a) => a.id === receipt.id)
+              ? deleted.filter((a) => a.id !== receipt.id)
+              : deleted,
+          }));
+        } else if (e.tool === deleteTool || e.tool === undeleteTool) {
+          // Only a successful result counts, never the tool input.
+          const gone = e.tool === deleteTool;
+          const receipt = gone ? deletion(result) : undeletion(result);
+          if (!receipt) return result;
+          await saveBoth($, session, origin, writes, (rows, deleted) =>
+            gone
+              ? dropRow(rows, deleted, receipt.id)
+              : reinstate(rows, deleted, receipt.id),
+          );
+        } else {
+          const receipt = checked(result);
+          if (!receipt) return result;
+          const now = await $.clock.now();
+          await save($, session, origin, writes, (rows) => {
+            const old = rows.find((a) => a.id === receipt.id);
+            if (
+              !old ||
+              receipt.version <
+                Math.max(
+                  old.publishedVersion,
+                  old.lastCheckedCurrentVersion ?? 0,
+                )
+            )
+              return rows;
+            return rows.map((a) =>
+              a.id === receipt.id
+                ? {
+                    ...a,
+                    lastCheckedCurrentVersion: receipt.version,
+                    lastCheckedAt: now,
+                  }
+                : a,
+            );
+          });
+        }
+        $.ui.invalidate("ui.render");
+      } catch {
+        /* Never repeat, replace or fail a tool because shortcut bookkeeping failed. */
+      }
+      return result;
+    },
+  );
 
   on("command.run", { command: "oa-artifacts" }, async ($) => {
     if (!origin || !validNamespace)
@@ -172,7 +247,7 @@ export function register(
                     ? [
                         `Last checked: v${a.lastCheckedCurrentVersion} at ${new Date(a.lastCheckedAt).toISOString()}`,
                       ]
-                    : ["Current version not checked."]),
+                    : []),
                   a.url,
                 ].join("\n"),
               )

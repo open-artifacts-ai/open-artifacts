@@ -353,7 +353,7 @@ export function agentFace(
 
 /**
  * The face of a named bus agent whose identity was stored when it was
- * mentioned, assigned or asked (#1890): the same agentFace as an author, so
+ * mentioned or asked (#1890): the same agentFace as an author, so
  * linked, product and animal agree. `owner` is its stored owner's id.
  */
 export const partyIdentityFace = (

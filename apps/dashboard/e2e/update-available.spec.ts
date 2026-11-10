@@ -79,11 +79,18 @@ test("member: no chip and no Version card", async ({ page }) => {
   await expect(chip(page)).toHaveCount(0);
 });
 
-test("null update: nothing", async ({ page }) => {
+test("null update: no chip; the card shows only the upgrade line", async ({
+  page,
+}) => {
   await page.goto("/settings/instance");
   await expect(page.getByLabel("Instance name")).toBeVisible();
   await expect(chip(page)).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "Version" })).toHaveCount(0);
+  const card = page.getByRole("region", { name: "Version" });
+  await expect(card).toContainText("To upgrade, tell your agent: Follow");
+  await expect(card.getByRole("link", { name: /upgrade\.md/ })).toHaveAttribute(
+    "target",
+    "_blank",
+  );
 });
 
 for (const scheme of ["light", "dark"] as const) {

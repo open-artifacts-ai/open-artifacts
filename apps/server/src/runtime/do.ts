@@ -53,6 +53,7 @@ import {
   askRow,
   bodyOk,
   COMMENTS_SCHEMA,
+  claimEmail,
   deleteExtras,
   getComment,
   getThread,
@@ -63,6 +64,7 @@ import {
   type NewExtras,
   openCount,
   refundAsker,
+  refundEmail,
   refundThreadReply,
   replyCount,
   rootId,
@@ -2057,7 +2059,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     anchor: Anchor;
     version: number;
     body: string;
-    /** #1535: the ask, mentions and assignment, already resolved by the service. */
+    /** #1535: the ask and mentions, already resolved by the service. */
     extras?: NewExtras;
     /** #1900: the agents this comment brings into the thread. */
     participants?: StoredParticipant[];
@@ -2167,12 +2169,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return out;
   }
 
-  /** Records how a mention or the assignment was delivered (the service, after it tried). */
+  /** Records how a mention was delivered (the service, after it tried). */
   commentsTargetStates(a: {
     threadId: string;
     commentId: string;
     states: {
-      kind: "mention" | "assign" | "asker";
+      kind: "mention" | "asker";
       key: string;
       state: string;
     }[];
@@ -2192,6 +2194,31 @@ export class ArtifactRuntime extends DurableObject<Env> {
     this.ensureSchema();
     this.ctx.storage.transactionSync(() =>
       refundAsker(this.sql, a.threadId, a.at),
+    );
+  }
+
+  /** Comment emails (#1467): the people of `userIds` with no email for the thread since `sinceIso`; their slots are taken at `at`. */
+  commentsEmailClaim(a: {
+    threadId: string;
+    userIds: string[];
+    sinceIso: string;
+    at: string;
+  }): string[] {
+    this.ensureSchema();
+    return this.ctx.storage.transactionSync(() =>
+      claimEmail(this.sql, a.threadId, a.userIds, a.sinceIso, a.at),
+    );
+  }
+
+  /** Gives back one comment-email slot taken at `at` when the send failed. */
+  commentsEmailRefund(a: {
+    threadId: string;
+    userId: string;
+    at: string;
+  }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      refundEmail(this.sql, a.threadId, a.userId, a.at),
     );
   }
 
@@ -2421,6 +2448,8 @@ type RpcMethods =
   | "commentsAnswer"
   | "commentsTargetStates"
   | "commentsAskerRefund"
+  | "commentsEmailClaim"
+  | "commentsEmailRefund"
   | "commentsThreadReplyTake"
   | "commentsThreadReplyRefund"
   | "commentsStatus"

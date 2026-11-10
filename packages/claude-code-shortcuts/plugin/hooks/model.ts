@@ -158,9 +158,69 @@ export function published(result: unknown, origin: string) {
   return consistent(result, (data) => {
     const url = viewerUrl(data.url, data.id, origin);
     return url && version(data.version)
-      ? { id: data.id as string, url, version: data.version }
+      ? {
+          id: data.id as string,
+          url,
+          version: data.version,
+          // Servers before #2015 send none; a non-string is treated as absent.
+          ...(typeof data.title === "string" ? { title: data.title } : {}),
+        }
       : null;
   });
+}
+
+/** A successful delete_artifact: only `{ id, deleted: true }` counts, never the input. */
+export function deletion(result: unknown) {
+  return consistent(result, (data) =>
+    data.deleted === true && typeof data.id === "string" && ID.test(data.id)
+      ? { id: data.id }
+      : null,
+  );
+}
+
+/** A successful undelete_artifact returns the artifact summary. */
+export function undeletion(result: unknown) {
+  return consistent(result, (data) =>
+    data.deleted === undefined &&
+    typeof data.id === "string" &&
+    ID.test(data.id) &&
+    typeof data.title === "string"
+      ? { id: data.id }
+      : null,
+  );
+}
+
+/** Moves the row to the deleted list (kept so an undelete can restore it); null when there is none. */
+export function dropRow(rows: Shortcut[], deleted: Shortcut[], id: string) {
+  const row = rows.find((a) => a.id === id);
+  if (!row) return null;
+  return {
+    rows: rows.filter((a) => a.id !== id),
+    deleted: [row, ...deleted.filter((a) => a.id !== id)].slice(0, LIMIT),
+  };
+}
+
+/** Puts a dropped row back in publication order; null when none was kept. */
+export function reinstate(rows: Shortcut[], deleted: Shortcut[], id: string) {
+  const row = deleted.find((a) => a.id === id);
+  if (!row) return null;
+  // A current row is newer than the kept copy: keep it, drop the copy.
+  if (rows.some((a) => a.id === id))
+    return { rows, deleted: deleted.filter((a) => a.id !== id) };
+  return {
+    rows: [row, ...rows.filter((a) => a.id !== id)]
+      .sort((a, b) => b.publishedAt - a.publishedAt)
+      .slice(0, LIMIT),
+    deleted: deleted.filter((a) => a.id !== id),
+  };
+}
+
+/** A rename seen in a receipt: only the title of an existing row changes. */
+export function retitle(rows: Shortcut[], id: string, title: unknown) {
+  const clean = titleOf(title);
+  const old = rows.find((a) => a.id === id);
+  if (!clean || !old || old.title === clean) return rows;
+  return rows.map((a) => (a.id === id ? { ...a, title: clean } : a));
 }
 
 export function checked(result: unknown) {
@@ -221,7 +281,11 @@ export function applyPublish(
     {
       id: receipt.id,
       url: receipt.url,
-      title: titleOf(title) || old?.title || `Artifact ${receipt.id}`,
+      title:
+        titleOf(title) ||
+        titleOf(receipt.title) ||
+        old?.title ||
+        `Artifact ${receipt.id}`,
       publishedVersion: receipt.version,
       publishedAt: now,
       lastCheckedCurrentVersion: old?.lastCheckedCurrentVersion ?? null,

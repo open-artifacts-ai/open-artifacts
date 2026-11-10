@@ -156,7 +156,10 @@ function Viewer({
   restoreScroll,
   onAccessLost,
   onUndelete,
+  shown = true,
 }: {
+  /** This layer is the one on screen (not a preloaded version behind it). */
+  shown?: boolean;
   chromeless: boolean;
   /** The column's open/closed choice, kept by the shell across version swaps. */
   colState: [boolean | null, (v: boolean | null) => void];
@@ -210,6 +213,7 @@ function Viewer({
   const search = useSearch({ strict: false }) as {
     panel?: string;
     tab?: string;
+    thread?: unknown;
   };
   const panelOpen = search.panel === "open";
   const requestedTab: PanelTab = isPanelTab(search.tab)
@@ -253,6 +257,9 @@ function Viewer({
   const pinCard =
     cmt.threads.find((t) => t.id === cmt.active && t.anchor.kind === "pin")
       ?.id ?? null;
+  // #1783: a pin with replies needs the half height to show one.
+  const pinReplies =
+    (cmt.threads.find((t) => t.id === pinCard)?.comments.length ?? 0) > 1;
   // A sheet or overlay would cover the page: leave it while placing a pin.
   useEffect(() => {
     if (cmt.mode === "pin") setDialogOpen(false);
@@ -511,6 +518,34 @@ function Viewer({
       ? { count: asksForMe(all).length }
       : undefined;
   }, [cmt.ordered, cmt.orphans]);
+  // #1467: a comment email links to ?thread=<id>. Once the list has loaded,
+  // open the comments at that thread (showing resolved ones if it is), then
+  // drop the parameter so a reload or Back doesn't jump again. Only the shown
+  // layer acts; a failed list waits for its Retry.
+  const wantThread =
+    typeof search.thread === "string" && search.thread
+      ? search.thread
+      : undefined;
+  const threadDone = useRef<string | null>(null);
+  useEffect(() => {
+    if (!wantThread || !shown || threadDone.current === wantThread) return;
+    if (cmt.loading || cmt.error) return;
+    threadDone.current = wantThread;
+    const t = cmt.threads.find((x) => x.id === wantThread);
+    if (t?.status === "resolved") cmt.setShowResolved(true);
+    // The panel keeps its open tab in the URL: set it in the same navigation
+    // that drops the parameter, so neither write undoes the other.
+    const viaPanel =
+      !!t && surface !== "dialog" && (surface === "panel" || panelOpen);
+    if (t && !viaPanel) openSurface.current();
+    if (t) cmt.reveal(t.id);
+    void navigate({
+      to: ".",
+      replace: true,
+      search: (({ thread: _, ...p }: Record<string, unknown>) =>
+        viaPanel ? { ...p, panel: "open", tab: "comments" } : p) as never,
+    });
+  }, [wantThread, shown, cmt, navigate, surface, panelOpen]);
   if ((content.notFound || signedOut) && isEmbed())
     return <NotPublic id={artifact.id} />;
   if (content.notFound) return <NotFound />;
@@ -688,6 +723,7 @@ function Viewer({
           <CommentsDialog
             textFormat={textFormat}
             pinCard={pinCard}
+            pinReplies={pinReplies}
             onClose={() => setDialogOpen(false)}
           />
         )}
@@ -895,6 +931,7 @@ function ArtifactShell({
                   ? { email: me.me.user.email, name: me.me.user.name }
                   : null
               }
+              shown={shown}
               slot={shown ? slot : undefined}
               newer={shown && newer}
               gone={live.gone}

@@ -189,12 +189,8 @@ export function mountMe(app: AppType): void {
   // Session (CSRF-guarded by csrf() in createApp) or PAT; guests included.
   app.patch(R.me, async (c) => {
     const user = requireUser(c);
-    const { displayName } = await jsonBody(c, MePatchSchema);
-    const { member, profile } = await setDisplayName(
-      c.env,
-      user.id,
-      displayName,
-    );
+    const patch = await jsonBody(c, MePatchSchema);
+    const { member, profile } = await setDisplayName(c.env, user.id, patch);
     return c.json(await toMe(c, member, profile));
   });
 
