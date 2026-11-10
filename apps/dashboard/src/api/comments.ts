@@ -205,7 +205,7 @@ export function commentError(e: unknown, capped = false): string {
     case "invalid_body":
       return `A comment needs 1 to ${COMMENT_BODY_MAX.toLocaleString("en")} characters.`;
     case "anchor_not_in_version":
-      return "That text isn't in this version.";
+      return "That version of the page is gone.";
     case "comments_off":
       return "Comments are off for this page.";
     case "forbidden":

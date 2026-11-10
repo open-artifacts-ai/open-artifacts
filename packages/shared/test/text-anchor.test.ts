@@ -296,6 +296,34 @@ describe("short quotes need context (M1)", () => {
   });
 });
 
+describe("no context at all (#1739)", () => {
+  const bare = (exact: string) => ({ exact, prefix: "", suffix: "" });
+  it("an unfound quote is orphan, not collapsed at the start", () => {
+    expect(
+      resolveTextAnchor("Some page text here.", bare("not on the page at all")),
+    ).toEqual({ state: "orphan" });
+  });
+  it("a short quote does not match inside a longer word", () => {
+    expect(resolveTextAnchor("the cat sat", bare("he"))).toEqual({
+      state: "orphan",
+    });
+  });
+  it("a short quote on word boundaries is still exact", () => {
+    expect(resolveTextAnchor("the cat, he sat", bare("he"))).toMatchObject({
+      state: "exact",
+      start: 9,
+      end: 11,
+    });
+  });
+  it("an empty prefix with a suffix sent still means the document start", () => {
+    const a = { exact: "gone words", prefix: "", suffix: " and the rest" };
+    expect(resolveTextAnchor("all of it rewritten", a)).toEqual({
+      state: "collapsed",
+      at: 0,
+    });
+  });
+});
+
 describe("a weak hit beside its context is still the quote (N1)", () => {
   it("keeps TODO when the line around it was reworded", () => {
     const before = "Shopping list\n- milk\n- eggs\n- TODO: fix login";
