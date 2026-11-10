@@ -70,3 +70,26 @@ describe("codex link_proof (#1856)", () => {
     expect(c.welcome.caps ?? []).not.toContain(ADAPTER_CAPS.link);
   });
 });
+
+describe("a proxied codex hello is link-only (#1856)", () => {
+  it("takes link_proof but no other request", async () => {
+    const h = await daemonHarness({
+      attest: () => ({ ok: true, linkOnly: true }),
+    });
+    h.toDaemon({
+      id: "w",
+      type: "hello_ok",
+      machine_id: "1".repeat(16),
+      machine_label: "laptop",
+      server_version: "1",
+      caps: [BUS_CAPS.ids, BUS_CAPS.link, BUS_CAPS.linkArg],
+    });
+    const a = await h.adapter(TA, codexHello(TA, "call_a"));
+    const r = await a.request({ type: "list" } as never).catch((e) => e);
+    expect(JSON.stringify(r)).toMatch(/unauthorized|only take a link_proof/);
+    const b = await h.adapter(TB, codexHello(TB, "call_b"));
+    expect(
+      await b.request({ type: "link_proof", hash: HASH_B } as never),
+    ).toMatchObject({ type: "link_proofed", bound: true });
+  });
+});

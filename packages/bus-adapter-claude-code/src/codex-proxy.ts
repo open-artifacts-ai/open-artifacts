@@ -3,6 +3,9 @@ import { ADAPTER_CAPS, type DaemonClient, type Hello } from "@oa/bus-ipc";
 import { codexCall, codexHello } from "./codex.ts";
 import { Forwarder, LINK_MS, PROOF_MS, PROOFS_MAX, within } from "./forward.ts";
 
+/** The call id Codex mints for each call an `exec` makes (the daemon's own test). */
+const EXEC_CALL = /^exec-[0-9a-f-]{36}$/;
+
 export type CodexProxyDeps = {
   /** The instance's origin. */
   instance: string;
@@ -98,6 +101,10 @@ export class CodexProxy {
       // A subagent, or a call without the thread's identity: unlinked.
       const call = codexCall(meta);
       if ("refuse" in call) return undefined;
+      // Code mode (the call id is an exec's `exec-<uuid>`): a proxied call
+      // would use up the exec's one bus slot, so it goes unlinked. A plain
+      // call carries an item id too (Codex 0.165 capture), so the id's shape decides.
+      if (EXEC_CALL.test(call.callId)) return undefined;
       const hello = codexHello(
         call,
         this.deps.pid ?? process.pid,

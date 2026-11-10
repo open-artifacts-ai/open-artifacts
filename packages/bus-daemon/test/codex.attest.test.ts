@@ -1202,6 +1202,7 @@ describe("codex attestation of the proxy's calls (#1856)", () => {
       ok: true,
       cwd: CWD,
       pid: 100,
+      linkOnly: true,
     });
   });
 
@@ -1212,7 +1213,12 @@ describe("codex attestation of the proxy's calls (#1856)", () => {
       ...fakeProcs(),
       namespaces: () => [NS],
     });
-    expect(check.attestNow(codexHello()).ok).toBe(true);
+    // oa_bus is not link-only; a proxied call is.
+    expect(check.attestNow(codexHello())).toEqual({
+      ok: true,
+      cwd: CWD,
+      pid: 100,
+    });
     // A shell call is not an MCP call under any allowed namespace.
     const shell = codexHome({
       rollout:
@@ -1233,7 +1239,7 @@ describe("codex attestation of the proxy's calls (#1856)", () => {
     expect(s.attestNow(codexHello()).ok).toBe(false);
   });
 
-  it("matches a name that carries the namespace as a prefix when no namespace field is written", async () => {
+  it("needs the proxied namespace exactly: a name prefix alone is refused", async () => {
     const { home } = codexHome({
       rollout:
         meta() +
@@ -1250,10 +1256,10 @@ describe("codex attestation of the proxy's calls (#1856)", () => {
       ...fakeProcs(),
       namespaces: () => [NS],
     });
-    expect(check.attestNow(codexHello()).ok).toBe(true);
+    expect(check.attestNow(codexHello()).ok).toBe(false);
   });
 
-  it("admits a code-mode exec that names a proxied tool, once per exec, and not without the allowlist", async () => {
+  it("never admits a code-mode exec for a proxied tool; an oa_bus exec is unaffected", async () => {
     const { home } = cmHome(
       cmMeta() +
         turnEv("task_started") +
@@ -1261,22 +1267,19 @@ describe("codex attestation of the proxy's calls (#1856)", () => {
           input: `await tools.${NS}__list_artifacts({});`,
         }),
     );
-    const none = codexAttestor({ home, ...fakeProcs() });
-    expect(none.attestNow(codeHello()).ok).toBe(false);
     const check = codexAttestor({
       home,
       ...fakeProcs(),
       namespaces: () => [NS],
     });
-    expect(check.attestNow(codeHello())).toEqual({
-      ok: true,
-      cwd: CWD,
-      pid: 100,
+    expect(check.attestNow(codeHello()).ok).toBe(false);
+    const bus = cmHome();
+    const b = codexAttestor({
+      home: bus.home,
+      ...fakeProcs(),
+      namespaces: () => [NS],
     });
-    expect(check.attestNow(codeHello({ call_id: EXEC2 }))).toEqual({
-      ok: false,
-      reason: CODEX_REFUSALS.oneExec,
-    });
+    expect(b.attestNow(codeHello())).toEqual({ ok: true, cwd: CWD, pid: 100 });
   });
 
   it("still refuses a subagent thread on a proxied call", async () => {

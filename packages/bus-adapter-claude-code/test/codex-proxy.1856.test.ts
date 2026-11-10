@@ -242,16 +242,13 @@ describe("Codex proxy: a proof per thread, bound on every call (#1856)", () => {
     expect(t.seen.every((s) => !s.headers.has(LINK_PROOF_HEADER))).toBe(true);
   });
 
-  it("passes a code-mode exec's item id and its exec call id to the hello", async () => {
+  it("does not link a code-mode call (an exec- call id): no hello, no header, so the exec's one bus slot stays free", async () => {
     const t = setup();
     const id = "exec-0a1b2c3d-0a1b-0a1b-0a1b-0a1b2c3d4e5f";
-    await t.proxy.call(call(meta(TA, id, { item: "ctc_77" })));
-    expect(t.hellos[0]?.codex).toMatchObject({
-      thread_id: TA,
-      call_id: id,
-      item_id: "ctc_77",
-    });
-    expect(t.seen[0]?.headers.has(LINK_PROOF_HEADER)).toBe(true);
+    const r = await t.proxy.call(call(meta(TA, id, { item: "ctc_77" })));
+    expect(r).toEqual({ content: [] });
+    expect(t.hellos).toEqual([]);
+    expect(t.seen[0]?.headers.has(LINK_PROOF_HEADER)).toBe(false);
   });
 
   it("forwards the call to /mcp only, redirect never followed", async () => {

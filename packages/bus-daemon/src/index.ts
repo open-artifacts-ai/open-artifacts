@@ -430,6 +430,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const ocComm = oc.comm ?? commOf;
   const cx = deps.codex ?? {};
   /** One per daemon: it pins each Codex process's start and the call ids used. */
+  /** Hellos admitted from a proxied call (#1856): link_proof only. */
+  const linkOnly = new WeakSet<object>();
   const codexCheck = codexAttestor({
     // #1856: the proxied instance entry's calls are attested as the adapter's are.
     namespaces: () => codexProxyNamespaces(home()),
@@ -1437,6 +1439,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (!check.ok) return { error: check.reason };
         // Claude's MCP server is a new process per tool call; the session is the identity.
         const pid = check.pid ?? hello.pid;
+        if (check.linkOnly) linkOnly.add(hello);
         const prev = agents.byRef(hello.agent_ref);
         // A resumed session may beat the next sync tick: the files decide whose it is.
         if (prev?.live && prev.kind === "claude-code" && prev.pid !== pid) {
@@ -1575,6 +1578,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     },
     onFrame: (frame, hello, reply) => {
       if (frame.type === "hello") return undefined;
+      // #1856: a proxied Open Artifacts call proves the thread's link and nothing else.
+      if (linkOnly.has(hello) && frame.type !== "link_proof")
+        return {
+          type: "error",
+          id: frame.id,
+          code: "unauthorized",
+          message: "this connection may only take a link_proof",
+        };
       // A tool call's reply carries the agent's late deliveries not yet
       // shown; they count as shown once that reply is written.
       const answer = (f: DaemonFrame): boolean => {

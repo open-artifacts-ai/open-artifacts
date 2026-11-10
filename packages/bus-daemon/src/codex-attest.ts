@@ -107,7 +107,13 @@ export type CodexAttestDeps = {
 };
 
 export type CodexAttest =
-  | { ok: true; cwd: string; pid: number }
+  | {
+      ok: true;
+      cwd: string;
+      pid: number;
+      /** #1856: the call was a proxied Open Artifacts call: only link_proof may follow. */
+      linkOnly?: true;
+    }
   | { ok: false; reason: string };
 
 export type CodexAttestor = {
@@ -147,7 +153,12 @@ export type CodexAttestor = {
 /** What a thread proved under one (P, start). */
 type Proof = { cwd: string; rollout: string };
 
-type OpenCall = { at: number; turn: string | undefined };
+type OpenCall = {
+  at: number;
+  turn: string | undefined;
+  /** A call under the proxied entry's namespace, not oa_bus (#1856). */
+  proxied?: true;
+};
 
 /** A code-mode `exec` custom_tool_call with no output yet (C27). */
 type OpenExec = OpenCall & { call: string };
@@ -370,6 +381,8 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     const itemUsed = () =>
       item !== undefined && (usedItems.get(thread)?.has(item) ?? false);
     const ok: CodexAttest = { ok: true, cwd: proof.cwd, pid: p };
+    const okFor = (sc: Scan): CodexAttest =>
+      sc.open.get(cx.call_id)?.proxied ? { ...ok, linkOnly: true } : ok;
     const admitExec = (): CodexAttest => {
       spend(thread, cx.call_id);
       spendItem(thread, item as string);
@@ -379,7 +392,7 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     advance(scan, ns);
     if (isOpen(scan)) {
       spend(thread, cx.call_id);
-      return ok;
+      return okFor(scan);
     }
     // One hello per exec: a second Open Artifacts bus call in it is told to use its own.
     if (itemUsed()) return no(CODEX_REFUSALS.oneExec);
@@ -391,7 +404,7 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     const sc = scan;
     return sleep(retryMs).then(() => {
       advance(sc, ns);
-      if (isOpen(sc)) return ok;
+      if (isOpen(sc)) return okFor(sc);
       if (itemUsed()) return no(CODEX_REFUSALS.oneExec);
       return execOpen(sc) ? admitExec() : no(CODEX_REFUSALS.callNotFound);
     });
@@ -638,7 +651,7 @@ function visitLine(
       p.namespace === undefined &&
       typeof p.id === "string" &&
       typeof p.input === "string" &&
-      namespaces.some((ns) => (p.input as string).includes(`${ns}__`))
+      (p.input as string).includes(`${CODEX_TOOL_NAMESPACE}__`)
     )
       execs.set(p.id, {
         call: p.call_id,
@@ -648,19 +661,24 @@ function visitLine(
     return;
   }
   if (line?.type === "response_item" && p.type === "function_call") {
-    const ours = namespaces.some(
-      (ns) =>
-        p.namespace === ns ||
-        (p.namespace === undefined &&
-          typeof p.name === "string" &&
-          p.name.startsWith(`${ns}__`)),
-    );
+    // oa_bus keeps its name-prefix form; a proxied entry's namespace must match exactly.
+    const bus =
+      p.namespace === CODEX_TOOL_NAMESPACE ||
+      (p.namespace === undefined &&
+        typeof p.name === "string" &&
+        p.name.startsWith(`${CODEX_TOOL_NAMESPACE}__`));
+    const proxied =
+      !bus &&
+      typeof p.namespace === "string" &&
+      namespaces.includes(p.namespace);
+    const ours = bus || proxied;
     // An unparseable timestamp reads as NaN: never at or after a start.
     const turn = record(p.internal_chat_message_metadata_passthrough)?.turn_id;
     if (ours)
       open.set(p.call_id, {
         at: Date.parse(String(line.timestamp)),
         turn: typeof turn === "string" ? turn : undefined,
+        ...(proxied ? { proxied: true as const } : {}),
       });
     return;
   }
