@@ -630,6 +630,16 @@ describe("Receipts: a delivered after an expiry (#1760)", () => {
     expect(r.owed("s1")).toEqual([]);
   });
 
+  it("#1951: the in-flight Expired notice failing drops the correction, since the agent saw nothing", () => {
+    const { store, r } = start();
+    r.update({ msg_id: ID, state: "expired" });
+    r.update({ msg_id: ID, state: "delivered" }, true);
+    r.notTold(ID);
+    expect(r.owed("s1")).toEqual([]);
+    expect(r.notice(ID)).toBeUndefined();
+    expect(store.isDelivered(ID)).toBe(true);
+  });
+
   it("delivered then expired is unchanged: stays delivered, no notice", () => {
     const { store, r } = start();
     r.update({ msg_id: ID, state: "delivered" });

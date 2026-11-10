@@ -282,6 +282,15 @@ export class SentStore {
     return owed;
   }
 
+  /** The Expired notice never reached the agent, so the correction (which says to ignore it) is dropped. */
+  dropCorrection(msgId: string): void {
+    const e = this.#all.get(msgId);
+    if (!e?.correction) return;
+    const { correction: _, ...rest } = e;
+    this.#all.set(msgId, rest);
+    this.#save();
+  }
+
   /** Whether `msgId` is owed a correction. */
   correctionOwed(msgId: string): boolean {
     return this.#all.get(msgId)?.correction === true;
@@ -622,6 +631,11 @@ export class Receipts {
       return { msgId, meta, state: "corrected" };
     const outcome = this.store.outcome(msgId);
     return meta && outcome ? { msgId, meta, ...outcome } : undefined;
+  }
+
+  /** Its notice failed to reach the sender: a correction to it is moot. */
+  notTold(msgId: string): void {
+    this.store.dropCorrection(msgId);
   }
 
   /** The sender has been told: forget the message. */

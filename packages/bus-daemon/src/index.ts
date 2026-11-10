@@ -590,10 +590,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       .then(
         (ok) => {
           if (ok) receipts.told(n.msgId, n.state === "corrected");
-          else log(`could not tell ${agent.busName} about ${n.meta.to_name}`);
+          else {
+            if (n.state !== "corrected") receipts.notTold(n.msgId);
+            log(`could not tell ${agent.busName} about ${n.meta.to_name}`);
+          }
         },
-        (e: unknown) =>
-          log(`notice failed: ${e instanceof Error ? e.message : String(e)}`),
+        (e: unknown) => {
+          if (n.state !== "corrected") receipts.notTold(n.msgId);
+          log(`notice failed: ${e instanceof Error ? e.message : String(e)}`);
+        },
       )
       .finally(() => {
         telling.delete(n.msgId);
