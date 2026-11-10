@@ -679,9 +679,10 @@ export function copy(style: Style) {
       next(`(${clip(where, 5)}).`),
       next("Restart Claude Code sessions to use it."),
     ],
-    outputStyleKept: (style: string) =>
+    // `style` is undefined when the choice is not a style name (null, a number, "default").
+    outputStyleKept: (style?: string) =>
       done(
-        `Added the Artifacts Teammate output style. You're on ${style}; switch with /output-style.`,
+        `Added the Artifacts Teammate output style. You're on ${style ?? "the default style"}; switch with /output-style.`,
       ),
     outputStyleDoctor: (where: string, on: boolean) =>
       done(

@@ -232,7 +232,7 @@ async function harnessesStep(
   );
   for (const n of skill.notes) say(ctx, [n]);
   if (skill.failedUrl) skillFailure.set(ctx, skill.failedUrl);
-  // The Claude Code output style: written, never activated; the user picks it.
+  // The Claude Code output style: written, and turned on only when the person has no style chosen.
   try {
     const style = installOutputStyle(
       {
@@ -247,7 +247,7 @@ async function harnessesStep(
     if (style.settings === "set" && style.written[0])
       say(ctx, c.outputStyleOn(tilde(ctx, style.written[0])));
     else if (style.settings === "kept" && style.first)
-      say(ctx, c.outputStyleKept(style.kept ?? "your own style"));
+      say(ctx, c.outputStyleKept(style.kept));
   } catch (e) {
     say(ctx, [
       `Could not write the output style: ${e instanceof Error ? e.message : String(e)}`,

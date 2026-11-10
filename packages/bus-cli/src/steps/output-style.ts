@@ -168,10 +168,18 @@ function turnOn(deps: Where, out: OutputStyleResult) {
     // Our own earlier choice, or the person's: either way nothing to change.
     if (cur.style !== OUTPUT_STYLE_NAME) {
       out.settings = "kept";
-      out.kept = typeof cur.style === "string" ? cur.style : String(cur.style);
+      // Only a real style name is worth saying; null, a number or "default" is the default style.
+      if (
+        typeof cur.style === "string" &&
+        cur.style !== "" &&
+        cur.style.toLowerCase() !== "default"
+      )
+        out.kept = cur.style;
     }
     return;
   }
+  // We set it once. If the person took it out since, that is their choice: never again.
+  if (readRecord(busHome)?.set) return;
   try {
     writeRecord(busHome, {
       set: true,
@@ -182,7 +190,7 @@ function turnOn(deps: Where, out: OutputStyleResult) {
     });
     const next =
       cur.text === undefined || cur.text.trim() === ""
-        ? `${JSON.stringify({ outputStyle: OUTPUT_STYLE_NAME }, null, 2)}\n`
+        ? createdText()
         : setJsoncValue(cur.text, ["outputStyle"], OUTPUT_STYLE_NAME);
     writeAtomic(path, next);
     out.settings = "set";
@@ -234,22 +242,29 @@ export function installOutputStyle(
   return out;
 }
 
-/** Puts settings.json back, only if we set the key and its value is still ours. */
+/** What we write when there was no settings.json: a file still equal to this is only ours. */
+const createdText = () =>
+  `${JSON.stringify({ outputStyle: OUTPUT_STYLE_NAME }, null, 2)}\n`;
+
+/**
+ * Puts settings.json back. With our record: only if the value is still ours.
+ * Without one (lost or corrupt install.json): the key goes only when it is our
+ * exact style name, so the file never points at a style we removed.
+ */
 function turnOff(deps: Where, out: OutputStyleResult) {
   const busHome = deps.busHome;
   const rec = readRecord(busHome);
-  if (!busHome || !rec?.set) return;
-  const path = rec.file ?? claudeSettingsFile(deps);
+  const path = claudeSettingsFile(deps);
   try {
     const cur = readSettings(path);
-    if (cur.ok && cur.text !== undefined && cur.style === rec.value) {
+    if (cur.ok && cur.text !== undefined && cur.style === OUTPUT_STYLE_NAME) {
       const next = removeJsoncValue(cur.text, ["outputStyle"]);
-      // A file we created, with nothing else in it now, goes again.
-      const empty = Object.keys(parseJsonc(next, path)).length === 0;
-      if (rec.createdFile && empty) rmSync(path);
+      // A file we created goes again only while it is byte for byte what we wrote.
+      if (rec?.set && rec.createdFile && cur.text === createdText())
+        rmSync(path);
       else writeAtomic(path, next);
     }
-    writeRecord(busHome, undefined);
+    if (busHome && rec) writeRecord(busHome, undefined);
   } catch (e) {
     out.notes.push(
       `Left ${path} alone: ${e instanceof Error ? e.message : String(e)}`,
@@ -266,7 +281,7 @@ export function uninstallOutputStyle(deps: Where): OutputStyleResult {
   try {
     if (isLink(dir) || isLink(path)) {
       out.notes.push(
-        `Left ${isLink(dir) ? dir : path} alone: it is a symlink, so the output style was not written there.`,
+        `Left ${isLink(dir) ? dir : path} alone: it is a symlink, so the output style was not removed there.`,
       );
       return out;
     }

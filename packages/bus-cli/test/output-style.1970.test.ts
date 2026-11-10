@@ -422,3 +422,75 @@ describe("turning the style on in settings.json", () => {
     expect(outputStyleState({ home: h })?.on).toBe(true);
   });
 });
+
+describe("review fixes (#1985)", () => {
+  it("uninstall keeps a settings.json we created once the user has added a comment", () => {
+    const h = home();
+    installOutputStyle(withBus(h), ["claude"]);
+    const mine = `// my notes\n${readFileSync(settingsOf(h), "utf8")}`;
+    writeFileSync(settingsOf(h), mine);
+    uninstallOutputStyle(withBus(h));
+    expect(existsSync(settingsOf(h))).toBe(true);
+    expect(readFileSync(settingsOf(h), "utf8")).toContain("// my notes");
+    expect(readFileSync(settingsOf(h), "utf8")).not.toContain("outputStyle");
+  });
+
+  it("without a record, uninstall drops the key only when it is exactly our name", () => {
+    const h = home();
+    put(settingsOf(h), `{"a":1,"outputStyle":"${NAME}"}\n`);
+    uninstallOutputStyle(withBus(h));
+    expect(JSON.parse(readFileSync(settingsOf(h), "utf8"))).toEqual({ a: 1 });
+    put(settingsOf(h), '{"outputStyle":"Explanatory"}\n');
+    uninstallOutputStyle(withBus(h));
+    expect(readFileSync(settingsOf(h), "utf8")).toBe(
+      '{"outputStyle":"Explanatory"}\n',
+    );
+  });
+
+  it("with a corrupt install.json, uninstall still drops our key", () => {
+    const h = home();
+    put(settingsOf(h), "{}\n");
+    installOutputStyle(withBus(h), ["claude"]);
+    writeFileSync(join(h, ".oa-bus/install.json"), "not json");
+    uninstallOutputStyle(withBus(h));
+    expect(readFileSync(settingsOf(h), "utf8")).not.toContain("outputStyle");
+  });
+
+  it("never sets the key again once we set it and the user removed it", () => {
+    const h = home();
+    put(settingsOf(h), '{"a":1}\n');
+    installOutputStyle(withBus(h), ["claude"]);
+    put(settingsOf(h), '{"a":1}\n');
+    const r = installOutputStyle(withBus(h), ["claude"]);
+    expect(r.settings).toBeUndefined();
+    expect(readFileSync(settingsOf(h), "utf8")).toBe('{"a":1}\n');
+  });
+
+  it("does not say 'null' for a kept value that is not a style name", () => {
+    for (const v of ["null", "7", '""', '"default"']) {
+      const h = home();
+      put(settingsOf(h), `{"outputStyle": ${v}}`);
+      const r = installOutputStyle(withBus(h), ["claude"]);
+      expect(r.settings).toBe("kept");
+      expect(r.kept).toBeUndefined();
+    }
+  });
+
+  it("uses the current config dir for settings.json, not the recorded path", () => {
+    const h = home();
+    installOutputStyle(withBus(h), ["claude"]);
+    const rec = recordOf(h);
+    writeFileSync(
+      join(h, ".oa-bus/install.json"),
+      JSON.stringify({
+        outputStyle: { ...rec, file: join(h, "elsewhere.json") },
+      }),
+    );
+    put(join(h, "elsewhere.json"), `{"outputStyle":"${NAME}"}`);
+    uninstallOutputStyle(withBus(h));
+    expect(readFileSync(join(h, "elsewhere.json"), "utf8")).toContain(
+      "outputStyle",
+    );
+    expect(existsSync(settingsOf(h))).toBe(false);
+  });
+});
