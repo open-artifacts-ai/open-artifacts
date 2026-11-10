@@ -33,7 +33,7 @@ JSON
 
 Replace both example values with your existing connection. The host saves these non-secret options in **user** settings; project `settings.json` and `settings.local.json` are not sources for plugin options. Restart the session or reload its plugin after configuring it. The same existing project MCP connection is used. Do not pass CLI `--plugin-dir` or isolation flags to `claude --desktop`; that launcher does not accept them.
 
-If you open a terminal session in Claude Desktop through Remote Control, the band doesn't show there: the plugin runs in the terminal, and Desktop only mirrors the transcript. The tested Desktop path is a Code session started in Desktop, with the plugin loaded from the project's .claude/skills folder.
+In Claude Desktop, the band shows in a Code session started in Desktop, with the plugin loaded from the project's .claude/skills folder. It doesn't show in a terminal session opened through Remote Control: the plugin runs in the terminal, and Desktop only mirrors the transcript.
 
 Respect organization policy and the host's trust prompts. A policy that withholds a mod or command is not bypassed by this integration. The plugin does not depend on `classic.SessionStart`.
 
