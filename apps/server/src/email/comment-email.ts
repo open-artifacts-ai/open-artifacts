@@ -1,45 +1,51 @@
 // Comment notice emails (#1467): the template and the unsubscribe token.
-// Every user-facing string is in COPY below.
-
+// Product's copy (spec ms8jhYp1q57oEpgq, v2), verbatim. Every user-facing
+// string is in COPY below.
 import { deriveKey } from "../auth/keys.js";
 import type { Env } from "../env.js";
 import { escapeHtml } from "../mcp/template.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
 import { type EmailContent, fill, oneLine } from "./templates.js";
 
-// copy: pending Product (#1467)
+/** Why a person is emailed, most specific first: ask, mention, reply, thread. */
+export type CommentEmailReason = "ask" | "mention" | "reply" | "thread";
+
 const COPY = {
-  newThread: "{{who}} commented on {{title}}",
-  reply: "{{who}} replied on {{title}}",
-  textBody: `{{lead}}
-
-Open the conversation: {{url}}
-
-You get this because you own this page or took part in this thread. At most one email per thread every 15 minutes.
-
-Stop emails about comments: {{unsubUrl}}
-`,
-  htmlBody: `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>{{lead}}</title></head>
-<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
-<p>{{lead}}</p>
-<p><a href="{{url}}">Open the conversation</a></p>
-<p style="color:#5d636e">You get this because you own this page or took part in this thread. At most one email per thread every 15 minutes. <a href="{{unsubUrl}}">Stop emails about comments</a></p>
-</body></html>
-`,
-  leadNew: "{{who}} started a thread on {{title}}.",
-  leadReply: "{{who}} replied in a thread on {{title}}.",
-  confirmTitle: "Stop comment emails?",
-  confirmBody: "You will no longer get emails about comments.",
-  confirmButton: "Stop comment emails",
-  doneTitle: "Comment emails are off",
-  doneBody: "You will no longer get emails about comments.",
+  subject: {
+    thread: "{{author}} commented on {{title}}",
+    reply: "{{author}} replied on {{title}}",
+    mention: "{{author}} mentioned you on {{title}}",
+    ask: "{{author}} asked you a question on {{title}}",
+  },
+  opening: {
+    thread: "{{author}} commented on {{title}}:",
+    reply: "{{author}} replied in a thread you're in on {{title}}:",
+    mention: "{{author}} mentioned you on {{title}}:",
+    ask: "{{author}} asked you a question on {{title}}. Pick an answer on the page:",
+  },
+  reason: {
+    thread: "you own this page",
+    reply: "you're in this thread",
+    mention: "you were mentioned",
+    ask: "the question is for you",
+  },
+  leftOut:
+    "{{k}} more comments today weren't emailed. They're all on the page.",
+  open: "Open the comment",
+  window:
+    "New replies in this thread for the next 15 minutes stay on the page, with no email.",
+  because: "You're getting this because {{reason}}.",
+  stop: "Stop comment emails",
+  settings: "Change this in Settings",
+  offTitle: "Comment emails are off.",
+  offBody:
+    "You won't get emails about comments on {{instance}}. Turn them back on in Settings.",
   badTitle: "This link is not valid",
   badBody: "The unsubscribe link is invalid or damaged.",
 } as const;
 export const UNSUB_COPY = COPY;
 
-/** The unsubscribe route (GET confirm page, POST one-click). */
+/** The unsubscribe route (GET and POST both turn comment emails off). */
 export const COMMENT_UNSUB_PATH = "/auth/unsubscribe/comments";
 const TOKEN_VERSION = "v1";
 const PURPOSE = "comment-email-off";
@@ -79,27 +85,62 @@ export async function verifyUnsubToken(
   return ok ? userId : null;
 }
 
+export const EXCERPT_MAX = 300;
+export const TITLE_MAX = 60;
+
+/**
+ * The comment as a plain-text excerpt: whitespace collapsed, cut to 300
+ * characters, and any link made unclickable (scheme "://" and "www." are
+ * broken), so only our own links are live.
+ */
+export function excerptOf(body: string): string {
+  return oneLine(body, EXCERPT_MAX)
+    .replace(/\b([a-z][a-z0-9+.-]*):\/\//gi, "$1[:]//")
+    .replace(/\bwww\./gi, "www[.]");
+}
+
 export function commentEmail(p: {
-  /** The comment's author's display name. */
-  who: string;
+  /** A person's name, or "{agent} ({person}'s agent)". */
+  author: string;
   title: string;
-  reply: boolean;
+  reason: CommentEmailReason;
+  excerpt: string;
   /** Absolute links on the app origin. */
   url: string;
   unsubUrl: string;
+  settingsUrl: string;
+  /** Comments the daily cap left out since the last email. */
+  leftOut: number;
 }): EmailContent {
   const values: Record<string, string> = {
-    who: oneLine(p.who, 80),
-    title: oneLine(p.title, 200),
-    url: p.url,
-    unsubUrl: p.unsubUrl,
+    author: oneLine(p.author, 120),
+    title: oneLine(p.title, TITLE_MAX),
   };
-  const lead = fill(p.reply ? COPY.leadReply : COPY.leadNew, values);
-  const v = { ...values, lead };
+  const opening = fill(COPY.opening[p.reason], values);
+  const because = fill(COPY.because, { reason: COPY.reason[p.reason] });
+  const left =
+    p.leftOut > 0 ? fill(COPY.leftOut, { k: String(p.leftOut) }) : null;
+  const text = [
+    opening,
+    `"${p.excerpt}"`,
+    ...(left ? [left] : []),
+    `${COPY.open}: ${p.url}\n${COPY.window}`,
+    `${because}\n${COPY.stop}: ${p.unsubUrl}\n${COPY.settings}: ${p.settingsUrl}`,
+  ].join("\n\n");
+  const e = escapeHtml;
+  const html = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>${e(opening)}</title></head>
+<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<p>${e(opening)}</p>
+<p>"${e(p.excerpt)}"</p>
+${left ? `<p>${e(left)}</p>\n` : ""}<p><a href="${e(p.url)}">${e(COPY.open)}</a><br>${e(COPY.window)}</p>
+<p style="color:#5d636e">${e(because)}<br><a href="${e(p.unsubUrl)}">${e(COPY.stop)}</a><br><a href="${e(p.settingsUrl)}">${e(COPY.settings)}</a></p>
+</body></html>
+`;
   return {
-    subject: oneLine(fill(p.reply ? COPY.reply : COPY.newThread, values), 150),
-    text: fill(COPY.textBody, v),
-    html: fill(COPY.htmlBody, v, escapeHtml),
+    subject: oneLine(fill(COPY.subject[p.reason], values), 150),
+    text,
+    html,
     headers: {
       "List-Unsubscribe": `<${p.unsubUrl}>`,
       "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",

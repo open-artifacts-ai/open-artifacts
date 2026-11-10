@@ -25,6 +25,7 @@ import {
   type CommentWho,
 } from "../src/services/comments.js";
 import { getUser } from "../src/services/users.js";
+import { sha256Hex } from "../src/util/crypto.js";
 import { api, login } from "./helpers.js";
 
 // #1467: comment emails. Who gets one, the throttle, the cap bucket, the
@@ -367,21 +368,24 @@ describe("the unsubscribe token", () => {
         .first<{ v: number }>()
     )?.v;
 
-  it("GET only confirms; POST turns off that one person's flag, again and again", async () => {
+  it("GET and POST both turn off that one person's flag, again and again, and say so", async () => {
     const u = await mk("unsub");
+    const w = await mk("unsub2");
     const v = await mk("bystander");
     const t = encodeURIComponent(await signUnsubToken(E, u.userId));
     const g = await hit("GET", `${COMMENT_UNSUB_PATH}?t=${t}`);
     expect(g.status).toBe(200);
-    expect(await flag(u.userId)).toBe(1);
+    expect(await g.text()).toContain("Comment emails are off.");
+    expect(await flag(u.userId)).toBe(0);
     // One-click: the token rides the URL, the body is the RFC 8058 line.
+    const tw = encodeURIComponent(await signUnsubToken(E, w.userId));
     const p1 = await hit(
       "POST",
-      `${COMMENT_UNSUB_PATH}?t=${t}`,
+      `${COMMENT_UNSUB_PATH}?t=${tw}`,
       "List-Unsubscribe=One-Click",
     );
     expect(p1.status).toBe(200);
-    expect(await flag(u.userId)).toBe(0);
+    expect(await flag(w.userId)).toBe(0);
     const p2 = await hit("POST", COMMENT_UNSUB_PATH, `t=${t}`);
     expect(p2.status).toBe(200);
     expect(await flag(u.userId)).toBe(0);
@@ -398,5 +402,136 @@ describe("the unsubscribe token", () => {
       (await hit("POST", `${COMMENT_UNSUB_PATH}?t=${t}x`, "")).status,
     ).toBe(400);
     expect(await flag(u.userId)).toBe(1);
+  });
+});
+
+describe("Product's spec: reasons, copy, off pages, left-out count", () => {
+  const stored = async (s: Awaited<ReturnType<typeof setup>>, id: string) =>
+    (await runtimeStub(E, s.id).commentsGet(id)).comments[0] as never as {
+      author: unknown;
+      body: string;
+    };
+
+  it("ask beats mention beats reply; one email per person per comment, verbatim copy", async () => {
+    const s = await setup();
+    const t = await thread(
+      E,
+      s.id,
+      person(s.editor),
+      s.editor,
+      "see https://evil.example/x and www.evil.example",
+    );
+    const root = (await runtimeStub(E, s.id).commentsGet(t.id))
+      .comments[0] as never as Record<string, unknown>;
+    const m = mailer();
+    const n = await emailCommentRecipients(m.e, {
+      artifactId: s.id,
+      threadId: t.id,
+      comment: {
+        ...root,
+        author: { kind: "user", ref: s.editor.userId },
+        ask: { to: [{ kind: "user", key: s.other.userId }] },
+        mentions: [
+          { key: "k", name: "n", state: "delivered", owner: s.other.userId },
+          { key: "k2", name: "n2", state: "delivered", owner: s.owner.userId },
+        ],
+      } as never,
+      reply: false,
+    });
+    expect(n).toBe(2);
+    const toOther = m.sent.find((x) => x.to === s.other.email) as Sent;
+    const toOwner = m.sent.find((x) => x.to === s.owner.email) as Sent;
+    expect(toOther.subject).toMatch(/asked you a question on Doc$/);
+    expect(toOther.text).toContain("Pick an answer on the page:");
+    expect(toOther.text).toContain(
+      "You're getting this because the question is for you.",
+    );
+    expect(toOwner.subject).toMatch(/mentioned you on Doc$/);
+    expect(toOwner.text).toContain(
+      "You're getting this because you were mentioned.",
+    );
+    expect(toOther.text).toContain(
+      "New replies in this thread for the next 15 minutes stay on the page, with no email.",
+    );
+    expect(toOther.text).toContain("Change this in Settings: ");
+    // The comment's links are not clickable; ours are.
+    expect(toOther.text).toContain("https[:]//evil.example/x");
+    expect(toOther.text).toContain("www[.]evil.example");
+    expect(toOther.html).not.toContain("https://evil");
+    void stored;
+  });
+
+  it("the person whose agent wrote it is emailed only when mentioned or asked", async () => {
+    const s = await setup();
+    const t = await thread(E, s.id, agentOf(s.editor), s.editor);
+    const root = (await runtimeStub(E, s.id).commentsGet(t.id))
+      .comments[0] as never as Record<string, unknown>;
+    const job = (extra: object) => ({
+      artifactId: s.id,
+      threadId: t.id,
+      comment: { ...root, ...extra } as never,
+      reply: true,
+    });
+    const m = mailer();
+    expect(await emailCommentRecipients(m.e, job({}))).toBe(0);
+    expect(
+      await emailCommentRecipients(
+        m.e,
+        job({
+          mentions: [
+            { key: "k", name: "n", state: "delivered", owner: s.editor.userId },
+          ],
+        }),
+      ),
+    ).toBe(1);
+    const mail = m.sent[0] as Sent;
+    expect(mail.subject).toContain("Claude Code (");
+    expect(mail.subject).toContain("'s agent) mentioned you on Doc");
+  });
+
+  it("nothing is sent on a page with comments turned off; the title is cut to 60", async () => {
+    const s = await setup();
+    await E.DB.prepare("update artifacts set title = ? where id = ?")
+      .bind("T".repeat(100), s.id)
+      .run();
+    const m = mailer();
+    await thread(m.e, s.id, person(s.editor), s.editor);
+    expect((m.sent[0] as Sent).subject).toContain(`${"T".repeat(59)}…`);
+    await E.DB.prepare("update artifacts set comments = 0 where id = ?")
+      .bind(s.id)
+      .run();
+    const m2 = mailer();
+    await thread(m2.e, s.id, person(s.editor), s.editor);
+    expect(m2.sent).toEqual([]);
+  });
+
+  it("excerpt is 300 characters", async () => {
+    const s = await setup();
+    const m = mailer();
+    await thread(m.e, s.id, person(s.editor), s.editor, "x".repeat(500));
+    const q = (m.sent[0] as Sent).text.match(/"(x+…?)"/)?.[1] ?? "";
+    expect(Array.from(q)).toHaveLength(300);
+  });
+
+  it("comments the daily cap left out are counted and named in the next email", async () => {
+    const s = await setup();
+    const day = new Date().toISOString().slice(0, 10);
+    const key = `email:c:to:${await sha256Hex(s.owner.email.toLowerCase())}`;
+    await E.DB.prepare(
+      "insert into counters (key, n, day) values (?, ?, ?) on conflict (key) do update set n = excluded.n, day = excluded.day",
+    )
+      .bind(key, MAX_COMMENT_EMAILS_PER_RECIPIENT_PER_DAY, day)
+      .run();
+    const m = mailer();
+    await thread(m.e, s.id, person(s.editor), s.editor);
+    await thread(m.e, s.id, person(s.editor), s.editor);
+    expect(m.sent).toEqual([]);
+    await E.DB.prepare("delete from counters where key = ?").bind(key).run();
+    await thread(m.e, s.id, person(s.editor), s.editor);
+    expect((m.sent[0] as Sent).text).toContain(
+      "2 more comments today weren't emailed. They're all on the page.",
+    );
+    await thread(m.e, s.id, person(s.editor), s.editor);
+    expect((m.sent[1] as Sent).text).not.toContain("more comments today");
   });
 });

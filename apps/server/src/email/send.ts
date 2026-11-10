@@ -250,6 +250,8 @@ export async function sendEmail(
      * no caller forgets it. `undefined` reads settings here (bounded).
      */
     instance: string | null | undefined;
+    /** Set to `{ limited: true }` when a daily cap refused the send (the caller may count what it left out). */
+    outcome?: { limited?: boolean };
   },
 ): Promise<boolean> {
   const now = opts.now ?? Date.now();
@@ -283,6 +285,7 @@ export async function sendEmail(
         caps.push([`email:a:${opts.artifactId}:${toKey}`, 1, day]);
     }
     if ((await takeAll(env, caps)) !== -1) {
+      if (opts.outcome) opts.outcome.limited = true;
       logFailed(opts.kind, "rate_limited");
       return false;
     }
