@@ -1701,6 +1701,34 @@ describe("comments: capped members", () => {
     expect(commentError(e, false)).toBe("That comment is gone.");
   });
 
+  it("a comment refused by the plan cap reads the plan copy, not the generic one", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    const { errorCopy } = await import("../src/api/errorCopy");
+    const solo = new ApiClientError("plan_required", "Plan required", 403);
+    const ro = new ApiClientError("plan_read_only", "Read-only", 403, {
+      reason: "lapsed",
+    });
+    for (const owner of [true, false]) {
+      for (const e of [solo, ro]) {
+        const copy = commentError(e, false, { owner });
+        expect(copy).toBe(errorCopy(e, "", { owner }));
+        expect(copy).not.toBe("Couldn't post your comment. Try again.");
+      }
+    }
+    expect(commentError(solo, false)).toMatch(/Solo/);
+    expect(commentError(ro, false, { owner: true })).toMatch(/lapsed/);
+  });
+
+  it("a capped member's read-only 404 still wins over the plan copy path", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    const e = new ApiClientError("space_forbidden", "No", 403);
+    expect(commentError(e, true, { owner: true })).toBe(
+      "Your account can only view, so you can't comment.",
+    );
+  });
+
   it("an uncapped 404 still says the comment is gone", async () => {
     capped(null);
     refused();

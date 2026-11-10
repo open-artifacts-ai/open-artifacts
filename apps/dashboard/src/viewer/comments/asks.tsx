@@ -7,7 +7,11 @@ import type {
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useEffect, useId, useState } from "react";
-import { answerError, useAnswerAsk } from "../../api/comments";
+import {
+  answerError,
+  useAnswerAsk,
+  useCommentErrorCtx,
+} from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
 
@@ -116,6 +120,7 @@ export function AskBlock({
   const ask = c.ask;
   const answer = useAnswerAsk(artifactId);
   const [err, setErr] = useState<unknown>(null);
+  const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
   const qid = useId();
@@ -276,7 +281,7 @@ export function AskBlock({
           )}
           {err != null && (
             <p role="alert" className={`${TXT} text-destructive`}>
-              {answerError(err)}
+              {answerError(err, errCtx)}
             </p>
           )}
           <div className="flex gap-2">
