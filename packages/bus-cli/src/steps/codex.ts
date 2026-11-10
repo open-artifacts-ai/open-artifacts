@@ -480,3 +480,21 @@ function remove(path: string, text: string, doc: Doc): string {
   for (const at of all.reverse()) lines = cut(lines, at);
   return checked(path, doc, joinLines(lines), undefined);
 }
+
+/** `codex --version` of the binary the daemon would use; undefined when unreadable. */
+export async function readCodexVersion(o: {
+  exec: (
+    cmd: string,
+    args: string[],
+  ) => Promise<{ code: number; stdout: string }>;
+  path?: string;
+  app?: string;
+}): Promise<string | undefined> {
+  try {
+    const bin = findCodexBin({ path: o.path, app: o.app });
+    const r = await o.exec(bin ?? "codex", ["--version"]);
+    return /(\d+\.\d+\.\d+\S*)/.exec(r.code === 0 ? r.stdout : "")?.[1];
+  } catch {
+    return undefined;
+  }
+}

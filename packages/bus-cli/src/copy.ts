@@ -672,6 +672,7 @@ export function copy(style: Style) {
     ],
     // Codex's checks, after its wiring line (C26e).
     codexWakes: (bin: string) => done(`Codex wakes with ${clip(bin, 20)}`),
+    codexSkill: (where: string) => done(`Codex skill in ${clip(where, 20)}`),
     codexNoWakeCheck: () => [
       warn("No codex binary found, so idle Codex threads are not woken"),
       next(`Install the Codex CLI, then run ${BUS_CMD} install again.`),

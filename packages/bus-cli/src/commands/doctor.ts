@@ -43,6 +43,7 @@ import {
 import { hermesEnabled } from "../steps/hermes.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
 import { MIN_NODE } from "../steps/service.ts";
+import { codexSkillWhere } from "../steps/skill.ts";
 import { habitsLine } from "./habits.ts";
 import { errorTail } from "./login.ts";
 import { type Healthz, healthzBody, hostOf, updateTarget } from "./status.ts";
@@ -126,6 +127,8 @@ function codexChecks(
     if (shell !== service)
       out.warn(c.codexHomeMismatch(tilde(ctx, shell), tilde(ctx, service)));
   }
+  const skill = codexSkillWhere({ home: ctx.userHome, env: ctx.env });
+  if (skill) out.pass(c.codexSkill(tilde(ctx, skill)));
   const config = codexConfig(ctx.userHome, ctx.env);
   let risk: ReturnType<typeof sandboxRisk>;
   try {
