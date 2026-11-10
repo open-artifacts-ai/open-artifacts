@@ -80,7 +80,7 @@ export function VersionCard({ update }: { update: InstanceUpdate | null }) {
         <UpgradeLine />
       </SettingsCard>
     );
-  const nudge = shouldNudge(update);
+  const nudge: boolean = shouldNudge(update);
   return (
     <SettingsCard id="oa-version" title="Version">
       <dl className={KV}>
