@@ -380,6 +380,15 @@ describe("skill.md drift", () => {
     },
   );
 
+  it("a hosted install with BUS_HUB renders the bus lines and the harness note", async () => {
+    const e = E({ HOSTED: "1" });
+    const md = await skill(e);
+    expect(md).toContain("To message agents, use the bus tools");
+    const h = await (await get(`${APP}/skill.md?harness=claude`, {}, e)).text();
+    expect(h).toContain("This copy is for one harness");
+    expect(h).toContain("`mcp__oa_bus__list_agents` is list_agents");
+  });
+
   it("renders one harness's bus tool names, and only when asked", async () => {
     const plain = await skill();
     expect(plain).not.toContain("This copy is for one harness");
