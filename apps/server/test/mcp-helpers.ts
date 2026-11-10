@@ -85,8 +85,21 @@ export async function connect(
   return client;
 }
 
-// Per client: the ExecutionContexts of its requests not yet waited on.
+// Per client: the ExecutionContexts of its requests. Never pruned until
+// close(); waiting on a ctx with no work left resolves at once.
 const contexts = new WeakMap<Client, ExecutionContext[]>();
+
+// One shared in-flight wait per ctx. waitOnExecutionContext takes the ctx's
+// promises out of its list, so a second concurrent wait on the same ctx would
+// find it empty and return before the first one's work is done.
+const inflight = new WeakMap<ExecutionContext, Promise<void>>();
+const waitCtx = (c: ExecutionContext): Promise<void> => {
+  const running = inflight.get(c);
+  if (running) return running;
+  const p = waitOnExecutionContext(c).finally(() => inflight.delete(c));
+  inflight.set(c, p);
+  return p;
+};
 
 /**
  * Awaits every waitUntil the client's requests started (including work those
@@ -94,23 +107,15 @@ const contexts = new WeakMap<Client, ExecutionContext[]>();
  * stream. Call after direct client calls; tool() does it for you.
  */
 export async function settle(client: Client): Promise<void> {
-  const pending = contexts.get(client);
-  while (pending?.length) {
-    // Remove a ctx only after its wait finished, so a concurrent settle()
-    // on the same client still sees it and waits too.
-    const batch = [...pending];
-    await Promise.all(batch.map((c) => waitOnExecutionContext(c)));
-    for (const c of batch) {
-      const i = pending.indexOf(c);
-      if (i >= 0) pending.splice(i, 1);
-    }
-  }
+  const list = contexts.get(client);
+  if (list) await Promise.all([...list].map(waitCtx));
 }
 
 /** settle(client), then client.close(): nothing is left running at teardown. */
 export async function close(client: Client): Promise<void> {
   await settle(client);
   await client.close();
+  contexts.delete(client);
 }
 
 export type ToolResult = {

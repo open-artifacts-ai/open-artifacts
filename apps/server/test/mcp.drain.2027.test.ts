@@ -41,24 +41,27 @@ it("settle() on a client with nothing pending returns", async () => {
   await settle(client);
 });
 
-it("two concurrent tool() calls on one client each see their own logs", async () => {
+it("concurrent tool() calls on one client each see their own log", async () => {
   const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+  const enqueued = (id: string) =>
+    logs.mock.calls.some(
+      ([l]) =>
+        String(l).includes('"evt":"index_enqueue"') && String(l).includes(id),
+    );
   try {
-    const rs = await Promise.all(
-      ["A", "B"].map((n) =>
+    await Promise.all(
+      ["A", "B", "C", "D"].map((n) =>
         tool(client, "publish_artifact", {
           title: `Concurrent ${n}`,
           format: "markdown",
           content: `# ${n}\n`,
+        }).then((r) => {
+          expect(r.isError).toBeFalsy();
+          // Checked the moment this call returns, not after the others.
+          expect(enqueued(String(r.structuredContent?.id))).toBe(true);
         }),
       ),
     );
-    for (const r of rs) expect(r.isError).toBeFalsy();
-    expect(
-      logs.mock.calls.filter(([l]) =>
-        String(l).includes('"evt":"index_enqueue"'),
-      ),
-    ).toHaveLength(2);
   } finally {
     logs.mockRestore();
   }
