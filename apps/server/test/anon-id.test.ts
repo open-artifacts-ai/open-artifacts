@@ -548,19 +548,16 @@ describe("ANON_WRITES_PER_MIN", () => {
     return { r, calls };
   };
 
-  it("by default anonymous writes still spend RL_ANON per IP (review item 38)", async () => {
+  it("with RL_ANON_WRITES unbound (an older wrangler config), RL_ANON stands in as the ceiling", async () => {
     const id = await optIn();
-    const { r, calls } = await writeVia(id, {});
+    const { r, calls } = await writeVia(id, { RL_ANON_WRITES: undefined });
     expect(r.status).toBe(200);
     expect(calls).toEqual(["anon:ip:192.0.2.44"]);
   });
 
-  it("RL_ANON_WRITES, when bound, replaces RL_ANON for writes so a raised ANON_WRITES_PER_MIN works", async () => {
+  it("RL_ANON_WRITES, when bound, is the install-wide per-IP ceiling and RL_ANON is not charged", async () => {
     const id = await optIn();
-    const ok = await writeVia(id, {
-      RL_ANON_WRITES: { ok: true },
-      RL_ANON: undefined,
-    });
+    const ok = await writeVia(id, { RL_ANON_WRITES: { ok: true } });
     expect(ok.r.status).toBe(200);
     expect(ok.calls).toEqual(["RL_ANON_WRITES:ip:192.0.2.44"]);
     const denied = await writeVia(id, { RL_ANON_WRITES: { ok: false } });
@@ -568,16 +565,60 @@ describe("ANON_WRITES_PER_MIN", () => {
     expect(denied.calls).toEqual(["RL_ANON_WRITES:ip:192.0.2.44"]);
   });
 
-  it("with HOSTED=1 both limiters apply (hosted only tightens)", async () => {
+  it("the ceiling key has no artifact id: two artifacts share one budget per IP", async () => {
+    const a = await optIn();
+    const b = await optIn();
+    const ra = await writeVia(a, { RL_ANON_WRITES: { ok: true } });
+    const rb = await writeVia(b, { RL_ANON_WRITES: { ok: true } });
+    expect(ra.calls).toEqual(rb.calls);
+    expect(ra.calls[0]).not.toContain(a);
+  });
+
+  it("HOSTED=1 changes nothing: the ceiling alone is charged", async () => {
     const id = await optIn();
     const { calls } = await writeVia(id, {
       RL_ANON_WRITES: { ok: true },
       HOSTED: "1",
     });
-    expect(calls).toEqual([
-      "anon:ip:192.0.2.44",
-      "RL_ANON_WRITES:ip:192.0.2.44",
-    ]);
+    expect(calls).toEqual(["RL_ANON_WRITES:ip:192.0.2.44"]);
+  });
+
+  it("a write must pass both: the DO's per-artifact budget still refuses under an open ceiling", async () => {
+    const id = await optIn();
+    await runInDurableObject(
+      runtimeStub(env, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (i) => {
+        i.now = () => Date.UTC(2026, 0, 1, 12, 0, 30);
+        (i as unknown as { env: object }).env = {
+          ...(i as unknown as { env: object }).env,
+          ANON_WRITES_PER_MIN: "1",
+        };
+      },
+    );
+    const w = () => writeVia(id, { RL_ANON_WRITES: { ok: true } });
+    expect((await w()).r.status).toBe(200);
+    expect((await w()).r.status).toBe(429);
+  });
+
+  it("one IP's budget on one artifact does not starve another artifact", async () => {
+    const a = await optIn();
+    const b = await optIn();
+    for (const id of [a, b])
+      await runInDurableObject(
+        runtimeStub(env, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+        (i) => {
+          i.now = () => Date.UTC(2026, 0, 1, 12, 0, 30);
+          (i as unknown as { env: object }).env = {
+            ...(i as unknown as { env: object }).env,
+            ANON_WRITES_PER_MIN: "2",
+          };
+        },
+      );
+    const ip = uniqueIp();
+    for (let n = 0; n < 2; n++)
+      expect((await write(a, `d${n}`, null, ip)).status).toBe(200);
+    expect((await write(a, "x", null, ip)).status).toBe(429);
+    expect((await write(b, "x", null, ip)).status).toBe(200);
   });
 
   it("the DO applies it per IP, across anonIds", async () => {
