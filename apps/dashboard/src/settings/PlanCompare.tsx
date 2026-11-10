@@ -2,7 +2,7 @@
 // plan cards, then the grouped comparison table with Team tinted. The current
 // plan's card says so; higher plans offer the existing upgrade; lower plans
 // have no button. Yearly Team and Business prices are proposed until the user
-// confirms them and Billing makes them, and the page says so.
+// confirms them and Billing makes them: until then they show monthly prices.
 import {
   Badge,
   Button,
@@ -18,6 +18,13 @@ import { muted } from "./ui";
 
 export type Column = "solo" | "team" | "business";
 type Interval = "month" | "year";
+
+/**
+ * Yearly Team and Business prices ($8 and $20 a creator a month) wait for the
+ * user's yes and Billing's Stripe prices (#2007). Until then the toggle changes
+ * Solo only, and nothing shows a price checkout can't charge.
+ */
+const YEARLY_TEAM_BUSINESS = false;
 
 const ORDER: readonly Column[] = ["solo", "team", "business"];
 const NAMES: Record<Column, string> = {
@@ -193,7 +200,7 @@ function Toggle({
         ))}
       </fieldset>
       <span className="text-[length:var(--oa-text-sm)] font-medium text-[var(--oa-success)]">
-        Save up to 20%
+        {YEARLY_TEAM_BUSINESS ? "Save up to 20%" : "2 months free on Solo"}
       </span>
     </div>
   );
@@ -229,7 +236,9 @@ export function PlanCompare({
       </div>
       <div className="grid gap-[var(--oa-space-3)] md:grid-cols-3">
         {ORDER.map((c, i) => {
-          const p = PRICE[c][interval];
+          // Team and Business have no yearly price checkout can charge yet: monthly under both.
+          const p =
+            PRICE[c][c === "solo" || YEARLY_TEAM_BUSINESS ? interval : "month"];
           const current = c === column;
           return (
             <section
@@ -301,12 +310,6 @@ export function PlanCompare({
           );
         })}
       </div>
-      {interval === "year" && (
-        <p className={`m-0 ${muted}`}>
-          Proposed, not decided: Team and Business at 20% off yearly ($8 and $20
-          a creator a month). Solo&apos;s $10 a year is already decided.
-        </p>
-      )}
       <ScrollFade>
         <Table>
           <TableHeader>
@@ -335,7 +338,7 @@ export function PlanCompare({
                   <TableHead
                     scope="colgroup"
                     colSpan={4}
-                    className="pt-[var(--oa-space-4)] text-[length:var(--oa-text-xs)] font-semibold tracking-wide text-muted-foreground uppercase"
+                    className="pt-[var(--oa-space-4)] text-[length:var(--oa-text-xs)] font-semibold text-muted-foreground"
                   >
                     {g.title}
                   </TableHead>

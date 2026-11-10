@@ -631,21 +631,19 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
 // plans upgrade; lower plans have no button.
 describe("plan cards and comparison (#2007)", () => {
   const card = (c: string) => screen.getByTestId(`plan-card-${c}`);
-  it("opens on yearly with the proposed note, and Monthly switches the prices", async () => {
+  it("opens on yearly; only Solo has a yearly price until Billing makes Team and Business ones", async () => {
     mountHosted("/settings/plan", { billing: TEAM });
     const year = await screen.findByRole("button", { name: "Yearly" });
     expect(year).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByText("Save up to 20%")).toBeVisible();
-    expect(card("team")).toHaveTextContent("$8 per creator a month");
-    expect(card("team")).toHaveTextContent("$96 a year, billed yearly");
-    expect(card("business")).toHaveTextContent("$20 per creator a month");
+    expect(screen.getByText("2 months free on Solo")).toBeVisible();
     expect(card("solo")).toHaveTextContent("$10 a year");
-    expect(screen.getByText(/^Proposed, not decided:/)).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "Monthly" }));
+    // No price checkout can't charge: Team and Business stay monthly.
     expect(card("team")).toHaveTextContent("$10 per creator a month");
     expect(card("business")).toHaveTextContent("$25 per creator a month");
+    expect(screen.queryByText(/\$8|\$20|Proposed/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Monthly" }));
     expect(card("solo")).toHaveTextContent("$1 a month");
-    expect(screen.queryByText(/^Proposed, not decided:/)).toBeNull();
+    expect(card("team")).toHaveTextContent("$10 per creator a month");
   });
 
   it("Team: its card is the current plan, Business upgrades through the portal, Solo has no button", async () => {
