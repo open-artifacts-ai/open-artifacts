@@ -1284,6 +1284,8 @@ export default function oaBus(pi: Pi): void {
   // share this one fetch, where the wrap cannot tell whose request it sees.
   /** The proof the daemon bound for this session's link; undefined until then. */
   let face: string | undefined;
+  /** A session switch has begun: no header until it is over or was cancelled. */
+  let held = false;
   /** This extension instance's fetch wrap, while it is on. */
   let ompWrap: { restore: () => void } | undefined;
   const ompOrigin = (): string | undefined => {
@@ -1333,7 +1335,7 @@ export default function oaBus(pi: Pi): void {
         if (on && (typeof input === "string" || input instanceof URL)) {
           if (isMcp(new URL(String(input)), origin))
             // A proof header the user set is never sent as it is.
-            headers = withProof(init, face);
+            headers = withProof(init, held ? undefined : face);
         }
       } catch {
         headers = undefined;
@@ -1405,6 +1407,7 @@ export default function oaBus(pi: Pi): void {
   const dropHeader = () => {
     proof = undefined;
     face = undefined;
+    held = false;
     if (headed) register();
   };
   /** A turn on a link the daemon did not take a proof for: offer it again, at most once a minute. */
@@ -1525,6 +1528,12 @@ export default function oaBus(pi: Pi): void {
   pi.on("turn_start", (_event, ctx) => {
     if (subagent(ctx)) return;
     renamed(ctx);
+    if (
+      held &&
+      identity?.kind === "omp" &&
+      identityOf(ctx).ref === identity.ref
+    )
+      held = false;
     retryProof();
   });
 
@@ -1543,10 +1552,19 @@ export default function oaBus(pi: Pi): void {
   const switched = (_event: unknown, ctx: Ctx) => {
     if (subagent(ctx) || stopped || identity?.kind !== "omp") return;
     const id = identityOf(ctx);
-    if (id.ref === identity.ref) return;
+    if (id.ref === identity.ref) {
+      held = false;
+      return;
+    }
     dropHeader();
     void ensure(id).catch(reconnect);
   };
+  // The switch emits before_switch first, and can be cancelled there: hold the
+  // header back so a /mcp call inside newSession carries no old proof; a turn
+  // on the same session id gives it back.
+  pi.on("session_before_switch", (_event, ctx) => {
+    if (!subagent(ctx) && identity?.kind === "omp") held = true;
+  });
   pi.on("session_switch", switched);
   pi.on("session_branch", switched);
   pi.on("session_shutdown", (_event, ctx) => {
