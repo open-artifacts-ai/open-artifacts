@@ -70,6 +70,15 @@ export const BUS_CAPS = {
    * `hello_ok.caps`; a client sends it only when it did.
    */
   link: "link",
+  /**
+   * Link argument (#1856): `/mcp` reads and removes the reserved tool argument
+   * `_oa_agent_proof` (LINK_PROOF_ARG) on every `tools/call`. Only a hub that
+   * lists it in `hello_ok.caps` may be sent calls carrying it: an older one
+   * would hand the argument to a strict tool schema and fail the call. A
+   * daemon tells a harness adapter its proof was taken (`link_proofed.bound`)
+   * only when the hub listed both `link` and this.
+   */
+  linkArg: "link_arg",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

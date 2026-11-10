@@ -42,6 +42,18 @@ export type PluginApi = {
     handler: (ev: { prompt?: string }, ctx: HookContext) => unknown,
   ): void;
   on(
+    hook: "before_tool_call",
+    handler: (
+      ev: {
+        toolName?: string;
+        params?: Record<string, unknown>;
+        runId?: string;
+      },
+      ctx: HookContext,
+    ) => unknown,
+    opts?: { priority?: number; timeoutMs?: number },
+  ): void;
+  on(
     hook: "before_message_write",
     handler: (
       ev: {

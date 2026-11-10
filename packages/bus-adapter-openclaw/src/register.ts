@@ -1,5 +1,5 @@
 import type { PluginApi } from "./api.ts";
-import type { Bus } from "./bus.ts";
+import { BEFORE_TOOL_CALL_PRIORITY, type Bus } from "./bus.ts";
 import { TOOL_NAMES, toolsFor } from "./tools.ts";
 
 /**
@@ -13,6 +13,14 @@ export function registerBus(api: PluginApi, bus: Bus): void {
   if (api.config !== undefined) bus.config = api.config;
   api.registerTool((ctx) => toolsFor(bus, ctx), { names: TOOL_NAMES });
   api.on("before_prompt_build", (_ev, ctx) => bus.promptBuild(ctx));
+  // #1822: the reserved proof argument, on calls to this instance's MCP tools only.
+  // OpenClaw runs higher priorities first and keeps the last `params` any hook returns, so ours
+  // goes first: another plugin's rewrite replaces it, and that call goes unlinked.
+  api.on(
+    "before_tool_call",
+    (ev, ctx) => bus.toolCall(ev, { runId: ev?.runId ?? ctx?.runId }),
+    { priority: BEFORE_TOOL_CALL_PRIORITY },
+  );
   // Observed only (never blocks or edits): the role and stopReason of an
   // assistant message tell a failed model call from an answered one.
   api.on("before_message_write", (ev, ctx) => {

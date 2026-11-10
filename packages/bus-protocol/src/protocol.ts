@@ -247,6 +247,8 @@ const Following = z.strictObject({
  * Anything else is treated as no proof.
  */
 export const LINK_PROOF_HEADER = "X-OA-Agent-Proof-Token";
+/** #1856: the reserved tool argument harnesses that cannot set a header carry the proof in. */
+export const LINK_PROOF_ARG = "_oa_agent_proof";
 export const LinkProofSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 
 /** The sha256 hex of a proof: 64 lowercase hex characters. */
