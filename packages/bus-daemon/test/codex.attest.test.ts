@@ -22,10 +22,12 @@ import type { Hello } from "@oa/bus-ipc";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { attest } from "../src/attest.ts";
 import {
+  CODEX_PROXY_ENTRY_FILE,
   CODEX_REFUSALS,
   type CodexAttestDeps,
   callOpen,
   codexAttestor,
+  codexProxyNamespaces,
   devParts,
   holdingFiles,
   holdsFileLinux,
@@ -1169,5 +1171,149 @@ describe("a hello whose connection closes during the wait (C26c R1)", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(h.daemon.agents.byRef(THREAD)).toBeUndefined();
     expect(h.of("agent_up")).toEqual([]);
+  });
+});
+
+// #1856: the Open Artifacts proxy's calls carry the instance entry's own tool
+// namespace (`mcp__<entry name>`), which the daemon knows only from an allowlist.
+describe("codex attestation of the proxy's calls (#1856)", () => {
+  const NS = "mcp__open_artifacts";
+  const proxied = () => codexHome({ rollout: meta() + call("call_1", NS) });
+
+  it("refuses a call under another server's namespace unless the allowlist names it", async () => {
+    const { home } = proxied();
+    const refused = codexAttestor({ home, ...fakeProcs() });
+    expect(refused.attestNow(codexHello())).toEqual({
+      ok: false,
+      reason: CODEX_REFUSALS.callNotFound,
+    });
+    const other = codexAttestor({
+      home,
+      ...fakeProcs(),
+      namespaces: () => ["mcp__elsewhere"],
+    });
+    expect(other.attestNow(codexHello()).ok).toBe(false);
+    const allowed = codexAttestor({
+      home,
+      ...fakeProcs(),
+      namespaces: () => [NS],
+    });
+    expect(allowed.attestNow(codexHello())).toEqual({
+      ok: true,
+      cwd: CWD,
+      pid: 100,
+    });
+  });
+
+  it("keeps the oa_bus namespace working beside the allowlist, and refuses a shell call", async () => {
+    const oa = codexHome();
+    const check = codexAttestor({
+      home: oa.home,
+      ...fakeProcs(),
+      namespaces: () => [NS],
+    });
+    expect(check.attestNow(codexHello()).ok).toBe(true);
+    // A shell call is not an MCP call under any allowed namespace.
+    const shell = codexHome({
+      rollout:
+        meta() +
+        line("response_item", {
+          type: "function_call",
+          id: "fc_2",
+          name: "shell",
+          arguments: "{}",
+          call_id: "call_1",
+        }),
+    });
+    const s = codexAttestor({
+      home: shell.home,
+      ...fakeProcs(),
+      namespaces: () => [NS],
+    });
+    expect(s.attestNow(codexHello()).ok).toBe(false);
+  });
+
+  it("matches a name that carries the namespace as a prefix when no namespace field is written", async () => {
+    const { home } = codexHome({
+      rollout:
+        meta() +
+        line("response_item", {
+          type: "function_call",
+          id: "fc_2",
+          name: `${NS}__list_artifacts`,
+          arguments: "{}",
+          call_id: "call_1",
+        }),
+    });
+    const check = codexAttestor({
+      home,
+      ...fakeProcs(),
+      namespaces: () => [NS],
+    });
+    expect(check.attestNow(codexHello()).ok).toBe(true);
+  });
+
+  it("admits a code-mode exec that names a proxied tool, once per exec, and not without the allowlist", async () => {
+    const { home } = cmHome(
+      cmMeta() +
+        turnEv("task_started") +
+        exec("ctc_synthetic01", "call_exec1", TURN, undefined, {
+          input: `await tools.${NS}__list_artifacts({});`,
+        }),
+    );
+    const none = codexAttestor({ home, ...fakeProcs() });
+    expect(none.attestNow(codeHello()).ok).toBe(false);
+    const check = codexAttestor({
+      home,
+      ...fakeProcs(),
+      namespaces: () => [NS],
+    });
+    expect(check.attestNow(codeHello())).toEqual({
+      ok: true,
+      cwd: CWD,
+      pid: 100,
+    });
+    expect(check.attestNow(codeHello({ call_id: EXEC2 }))).toEqual({
+      ok: false,
+      reason: CODEX_REFUSALS.oneExec,
+    });
+  });
+
+  it("still refuses a subagent thread on a proxied call", async () => {
+    const { home } = proxied();
+    const check = codexAttestor({
+      home,
+      ...fakeProcs(),
+      namespaces: () => [NS],
+    });
+    expect(check.attestNow(codexHello({ thread_source: "subagent" }))).toEqual({
+      ok: false,
+      reason: CODEX_REFUSALS.subagent,
+    });
+  });
+});
+
+describe("the proxy's tool namespace from the moved entry (#1856)", () => {
+  const dir = () => mkdtempSync(join(tmpdir(), "ob-cxns-"));
+  const put = (d: string, v: unknown) =>
+    writeFileSync(join(d, CODEX_PROXY_ENTRY_FILE), JSON.stringify(v));
+
+  it("is mcp__ plus the entry's name as Codex shows it: other characters become _", async () => {
+    const d = dir();
+    put(d, { name: "open-artifacts" });
+    expect(codexProxyNamespaces(d)).toEqual(["mcp__open_artifacts"]);
+    put(d, { name: "oa.prod v2" });
+    expect(codexProxyNamespaces(d)).toEqual(["mcp__oa_prod_v2"]);
+  });
+
+  it("is empty for a missing, broken or nameless file, and for oa_bus itself", async () => {
+    const d = dir();
+    expect(codexProxyNamespaces(d)).toEqual([]);
+    writeFileSync(join(d, CODEX_PROXY_ENTRY_FILE), "{nope");
+    expect(codexProxyNamespaces(d)).toEqual([]);
+    put(d, { name: 7 });
+    expect(codexProxyNamespaces(d)).toEqual([]);
+    put(d, { name: "" });
+    expect(codexProxyNamespaces(d)).toEqual([]);
   });
 });

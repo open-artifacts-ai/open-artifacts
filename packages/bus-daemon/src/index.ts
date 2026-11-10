@@ -49,6 +49,7 @@ import {
   type CodexAttestDeps,
   codexAttestor,
   codexHome,
+  codexProxyNamespaces,
 } from "./codex-attest.ts";
 import { codexThreadNames } from "./codex-names.ts";
 import {
@@ -429,7 +430,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const ocComm = oc.comm ?? commOf;
   const cx = deps.codex ?? {};
   /** One per daemon: it pins each Codex process's start and the call ids used. */
-  const codexCheck = codexAttestor(cx);
+  const codexCheck = codexAttestor({
+    // #1856: the proxied instance entry's calls are attested as the adapter's are.
+    namespaces: () => codexProxyNamespaces(home()),
+    ...cx,
+  });
   /** Lock proofs run lsof (about 50-100 ms each), so not on every sync. */
   const relockEvery = cx.relockEvery ?? 15;
   let codexTicks = 0;

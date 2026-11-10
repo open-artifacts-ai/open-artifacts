@@ -38,6 +38,34 @@ export const CODEX_REFUSALS = {
  */
 export const CODEX_TOOL_NAMESPACE = "mcp__oa_bus";
 
+/**
+ * #1856: where install keeps the instance entry it swapped for the Codex
+ * proxy, in the bus home. Its `name` is the entry's key, whose tool namespace
+ * the proxy's calls carry.
+ */
+export const CODEX_PROXY_ENTRY_FILE = "codex-mcp-entry.json";
+
+/**
+ * The tool namespace of the proxied entry, as Codex names it: `mcp__` and the
+ * key, every character outside [A-Za-z0-9_] as `_` (codex-codex-mcp tools.rs,
+ * sanitize_responses_api_tool_name). Empty when no entry was swapped or the
+ * file is unreadable. Codex adds a hash suffix when two servers' names
+ * collapse to one; such a call is then simply not attested (unlinked).
+ */
+export function codexProxyNamespaces(busHome: string): string[] {
+  try {
+    const v: unknown = JSON.parse(
+      readFileSync(`${busHome}/${CODEX_PROXY_ENTRY_FILE}`, "utf8"),
+    );
+    const name = (v as { name?: unknown } | null)?.name;
+    if (typeof name !== "string" || name === "") return [];
+    const ns = `mcp__${name.replace(/[^A-Za-z0-9_]/g, "_")}`;
+    return ns === CODEX_TOOL_NAMESPACE ? [] : [ns];
+  } catch {
+    return [];
+  }
+}
+
 /** A thread's first scan starts this far from the end: the open call is near it. */
 const TAIL_CAP = 8 * 1024 * 1024;
 /**
@@ -71,6 +99,11 @@ export type CodexAttestDeps = {
   retryMs?: number;
   /** The wait itself; default a timer, so the daemon keeps serving. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * #1856: tool namespaces besides `mcp__oa_bus` whose calls may be attested
+   * (the instance's proxied entry). Read at each check.
+   */
+  namespaces?: () => readonly string[];
 };
 
 export type CodexAttest =
@@ -342,7 +375,8 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
       spendItem(thread, item as string);
       return ok;
     };
-    advance(scan);
+    const ns = [CODEX_TOOL_NAMESPACE, ...(deps.namespaces?.() ?? [])];
+    advance(scan, ns);
     if (isOpen(scan)) {
       spend(thread, cx.call_id);
       return ok;
@@ -356,7 +390,7 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     spend(thread, cx.call_id);
     const sc = scan;
     return sleep(retryMs).then(() => {
-      advance(sc);
+      advance(sc, ns);
       if (isOpen(sc)) return ok;
       if (itemUsed()) return no(CODEX_REFUSALS.oneExec);
       return execOpen(sc) ? admitExec() : no(CODEX_REFUSALS.callNotFound);
@@ -450,7 +484,10 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
 }
 
 /** Reads the rollout's new complete lines into `scan.open`. */
-function advance(scan: Scan): void {
+function advance(
+  scan: Scan,
+  namespaces: readonly string[] = [CODEX_TOOL_NAMESPACE],
+): void {
   let fd: number;
   try {
     fd = openSync(scan.rollout, "r");
@@ -471,7 +508,7 @@ function advance(scan: Scan): void {
       skipFirst = scan.offset > 0;
     }
     scan.offset = readLines(fd, scan.offset, size, skipFirst, (l) => {
-      visitLine(scan, l);
+      visitLine(scan, l, namespaces);
       return false;
     });
   } finally {
@@ -549,7 +586,11 @@ const TURN_ENDS: ReadonlySet<string> = new Set([
  * custom_tool_call whose script names an Open Artifacts bus tool opens and closes the
  * same way, keyed by its item id (C27); `task_started` marks the latest turn.
  */
-function visitLine(st: Seen, text: string): void {
+function visitLine(
+  st: Seen,
+  text: string,
+  namespaces: readonly string[] = [CODEX_TOOL_NAMESPACE],
+): void {
   if (!/call|task_complete|turn_aborted|task_started|item_completed/.test(text))
     return;
   const { open, execs } = st;
@@ -597,7 +638,7 @@ function visitLine(st: Seen, text: string): void {
       p.namespace === undefined &&
       typeof p.id === "string" &&
       typeof p.input === "string" &&
-      p.input.includes(`${CODEX_TOOL_NAMESPACE}__`)
+      namespaces.some((ns) => (p.input as string).includes(`${ns}__`))
     )
       execs.set(p.id, {
         call: p.call_id,
@@ -607,11 +648,13 @@ function visitLine(st: Seen, text: string): void {
     return;
   }
   if (line?.type === "response_item" && p.type === "function_call") {
-    const ours =
-      p.namespace === CODEX_TOOL_NAMESPACE ||
-      (p.namespace === undefined &&
-        typeof p.name === "string" &&
-        p.name.startsWith(`${CODEX_TOOL_NAMESPACE}__`));
+    const ours = namespaces.some(
+      (ns) =>
+        p.namespace === ns ||
+        (p.namespace === undefined &&
+          typeof p.name === "string" &&
+          p.name.startsWith(`${ns}__`)),
+    );
     // An unparseable timestamp reads as NaN: never at or after a start.
     const turn = record(p.internal_chat_message_metadata_passthrough)?.turn_id;
     if (ours)
