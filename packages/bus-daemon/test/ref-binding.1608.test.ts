@@ -175,4 +175,27 @@ describe("binding expiry (#1956)", () => {
     // The open link stays bound even with its pid gone.
     expect(h.daemon.bindings.count()).toBe(1);
   });
+
+  it("sweeps without a fresh procStart read per run", async () => {
+    const st = { t: 0, alive: true };
+    const procStart = vi.fn(() => "Mon Nov  9 10:00:00 2026");
+    const h = await daemonHarness({
+      bindingNow: () => st.t,
+      claude: { isRunning: () => st.alive, procStart, syncMs: 10 },
+    });
+    const a = await h.adapter("A", { kind: "pi" });
+    a.close();
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef("A")?.live).toBe(false),
+    );
+    st.t = HOUR;
+    h.daemon.bindings.sweep();
+    const calls = procStart.mock.calls.length;
+    for (let i = 2; i < 6; i++) {
+      st.t = i * 2 * 60_000 + HOUR;
+      h.daemon.bindings.sweep();
+    }
+    expect(procStart.mock.calls.length).toBe(calls);
+    expect(h.daemon.bindings.count()).toBe(1);
+  });
 });

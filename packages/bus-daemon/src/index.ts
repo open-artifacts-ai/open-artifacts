@@ -321,6 +321,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const bindingLapsed = (
     ref: string,
     claim: { pid: number; start?: string; closedAt?: number },
+    startOf: (pid: number) => string | null,
   ): boolean => {
     if (conns.has(ref)) return false;
     if (
@@ -329,17 +330,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     )
       return true;
     if (!running(claim.pid)) return true;
-    const now = claim.start === undefined ? null : startOfPid(claim.pid);
+    const now = claim.start === undefined ? null : startOf(claim.pid);
     return now !== null && claim.start !== undefined && now !== claim.start;
   };
   let bindingSweptAt = 0;
-  /** Cheap: pid liveness is kill(pid, 0), start times come from the cache. Runs on the sync tick, rate limited. */
+  /** Cheap: pid liveness is kill(pid, 0) and start times come from the cached read, never a fresh `ps` (#1928). Runs on the sync tick, rate limited. */
   const sweepBindings = () => {
     const t = bindingNow();
     if (t - bindingSweptAt < BINDING_SWEEP_MS) return;
     bindingSweptAt = t;
     for (const [ref, claim] of bindings)
-      if (bindingLapsed(ref, claim)) bindings.delete(ref);
+      if (bindingLapsed(ref, claim, (p) => claudeSessions.procStart(p)))
+        bindings.delete(ref);
   };
 
   /**
@@ -1489,7 +1491,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         let bindToken: string | undefined;
         // A binding lapses when its claimant is gone, its pid has another start time, or it sat closed too long.
         const claim = bindings.get(hello.agent_ref);
-        if (claim && bindingLapsed(hello.agent_ref, claim))
+        if (claim && bindingLapsed(hello.agent_ref, claim, startOfPid))
           bindings.delete(hello.agent_ref);
         const held = bindings.get(hello.agent_ref);
         // Every kind is checked: a claude-code or opencode hello cannot take a bound pi ref.
