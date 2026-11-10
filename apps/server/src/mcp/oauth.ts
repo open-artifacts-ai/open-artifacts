@@ -47,10 +47,11 @@ import {
   touchGrant,
   uaFamily,
 } from "../services/agent-usage.js";
-import { expireBusRoleProposalsOf, linkRequest } from "../services/bus.js";
+import { expireBusRoleProposalsOf } from "../services/bus.js";
 import { getSettings } from "../services/members.js";
 import { getUser, getUserWithEpoch } from "../services/users.js";
 import { CONSENT_TEMPLATE } from "./consent-template.js";
+import { guardMcpEntry, linkOrUnlinked } from "./entry.js";
 import {
   listAllUserGrants,
   lookupUserGrant,
@@ -128,7 +129,17 @@ const grantIdOf = (token: string | undefined): string | null => {
  * the grant's use in waitUntil (touchGrant: at most one write a minute).
  */
 const apiHandler = {
-  async fetch(req: Request, env: Env, ctx: ExecutionContext) {
+  fetch(req: Request, env: Env, ctx: ExecutionContext) {
+    return guardMcpEntry(req, () => apiFetch(req, env, ctx));
+  },
+};
+
+async function apiFetch(
+  req: Request,
+  env: Env,
+  ctx: ExecutionContext,
+): Promise<Response> {
+  {
     const props = (ctx as ExecutionContext & { props?: Partial<GrantProps> })
       .props;
     const row = props?.userId
@@ -149,7 +160,7 @@ const apiHandler = {
       return mcpUnauthorized(env, "Only members can connect agents");
     const capped0 = await capMcpBody(req, env);
     if (capped0 instanceof Response) return capped0;
-    const link = await linkRequest(env, user.id, capped0);
+    const link = await linkOrUnlinked(env, user.id, capped0);
     const capped = link.req;
     const grantId = grantIdOf(
       (ctx as ExecutionContext & { auth?: { token?: string } }).auth?.token,
@@ -186,8 +197,8 @@ const apiHandler = {
       );
     }
     return res;
-  },
-};
+  }
+}
 
 /** Providers per app instance (the defaultHandler) and resource URL (env-derived). */
 const providers = new WeakMap<object, Map<string, OAuthProvider<Env>>>();
