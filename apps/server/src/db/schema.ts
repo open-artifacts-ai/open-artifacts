@@ -408,6 +408,10 @@ export const versions = sqliteTable(
     // `t:<tokenId>` (NULL: a session, or written before 0012; `r:`: a private
     // label scrubbed when its publisher's row was deleted, SCRUBBED_VIA).
     agentVia: text("agent_via"),
+    // #1968: JSON {identityId, namespace, name, kind} of the bus session the
+    // publishing request proved (#1822), set by the server only. NULL: a web
+    // publish, an unlinked agent, or a row from before 0031. Never in an API payload.
+    agentIdentity: text("agent_identity"),
     createdBy: text("created_by")
       .notNull()
       .references(() => users.id),

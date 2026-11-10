@@ -273,13 +273,19 @@ export const storedAgent = (a: RosterAgent): StoredAgent => ({
   owner: a.userId,
 });
 
-export type CommentNoticeKind = "ask" | "mention" | "assign" | "asker";
+export type CommentNoticeKind =
+  | "ask"
+  | "mention"
+  | "assign"
+  | "asker"
+  | "thread_reply";
 
 const WHAT: Record<CommentNoticeKind, string> = {
   ask: "there is a question for you on an artifact",
   mention: "you were mentioned in a comment on an artifact",
   assign: "work was assigned to you in a comment on an artifact",
   asker: "someone replied to a question you asked on an artifact",
+  thread_reply: "someone replied in a comment thread you're in",
 };
 
 /** What a notice text can be about: a comment notice kind, or `answered` (an ask got its answer). */
@@ -296,6 +302,7 @@ const WHAT_YOURS: Record<Exclude<CommentTextKind, "assign">, string> = {
   mention: "mentioned you in a comment on an artifact",
   answered: "answered your question",
   asker: "replied to a question you asked on an artifact",
+  thread_reply: "replied in a comment thread you're in",
 };
 
 const YOUR_USER_TAIL =
@@ -375,7 +382,10 @@ export async function notifyAgent(
     coalesceKey:
       kind === "asker"
         ? `${artifactId}:${threadId}:asker`
-        : `${artifactId}:${commentId}:${kind}`,
+        : kind === "thread_reply"
+          ? // One waiting notice per agent per thread (#1900): replies while it is unread replace it, so it points at the latest comment.
+            `${artifactId}:${threadId}:thread_reply:${to.key}`
+          : `${artifactId}:${commentId}:${kind}`,
     threadId,
     commentId,
   };

@@ -218,6 +218,13 @@
       "when": 1794318361980,
       "tag": "0030_data_writes_total",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1794332271033,
+      "tag": "0031_version_agent_identity",
+      "breakpoints": true
     }
   ]
 }
