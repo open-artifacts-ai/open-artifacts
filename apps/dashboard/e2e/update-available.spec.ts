@@ -79,7 +79,9 @@ test("member: no chip and no Version card", async ({ page }) => {
   await expect(chip(page)).toHaveCount(0);
 });
 
-test("null update: no chip; the card shows only the upgrade line", async ({ page }) => {
+test("null update: no chip; the card shows only the upgrade line", async ({
+  page,
+}) => {
   await page.goto("/settings/instance");
   await expect(page.getByLabel("Instance name")).toBeVisible();
   await expect(chip(page)).toHaveCount(0);
