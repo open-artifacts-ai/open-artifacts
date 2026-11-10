@@ -171,6 +171,8 @@ export function syncDot(me: Me | null): Stage | null {
   const d: InstanceDirectory | null = me?.instance.directory ?? null;
   const role = me?.user.role;
   if (!d || (role !== "owner" && role !== "admin")) return null;
+  // Only a running sync asks for attention: off (Solo, Team) and frozen don't (#2009).
+  if (d.mode !== "google") return null;
   if (d.state && d.state !== "ok") return stageOf(d.state, d.unhealthySince);
   return d.heldSweeps > 0 ? "warning" : null;
 }

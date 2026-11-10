@@ -51,6 +51,7 @@ import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
 import { useDocumentTitle, useInstanceName } from "../layout/useDocumentTitle";
+import { AppLink } from "../library/AppLink";
 import { relativeTime } from "../library/time";
 import { GroupPicker } from "./GroupPicker";
 import {
@@ -370,6 +371,33 @@ function Header({
   );
 }
 
+/** #2009: frozen is Team after Business; the way back to group sync is Business. */
+function UpgradeLine() {
+  const state = useMe();
+  const me = state.status === "authed" ? state.me : null;
+  const plan =
+    !!me?.instance.billing &&
+    (me.user.role === "owner" || me.user.role === "admin");
+  return (
+    <p className={muted}>
+      Google group sync is part of Business.{" "}
+      {plan ? (
+        <>
+          <AppLink
+            href="/settings/plan"
+            className="underline underline-offset-2"
+          >
+            Upgrade to Business
+          </AppLink>{" "}
+          to sync again.
+        </>
+      ) : (
+        "Upgrade to Business to sync again."
+      )}
+    </p>
+  );
+}
+
 function StatusHeader({
   sync,
   owner,
@@ -498,6 +526,7 @@ function StatusHeader({
             "Space memberships are managed manually."
           )}
         </p>
+        <UpgradeLine />
       </Header>
     );
 
@@ -1106,7 +1135,21 @@ function Reauth() {
 const isReauth = (e: unknown) =>
   e instanceof ApiClientError && e.code === "reauth_required";
 
+/** #2009: directory sync off (Solo, or Team that never synced) has no page; an old link lands on Connections. */
 export function Directory() {
+  const state = useMe();
+  const off =
+    state.status === "authed" &&
+    (state.me.instance.directory?.mode ?? "off") === "off";
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (off) void navigate({ to: "/settings/connections", replace: true });
+  }, [off, navigate]);
+  if (state.status !== "authed" || off) return null;
+  return <DirectoryPage />;
+}
+
+function DirectoryPage() {
   useDocumentTitle("Directory");
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;

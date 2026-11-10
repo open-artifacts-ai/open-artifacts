@@ -100,7 +100,8 @@ export function SettingsLayout() {
           (t) =>
             role &&
             t.roles.includes(role) &&
-            (!t.directory || directory) &&
+            // #2009: no tab while directory sync is off (Solo, or Team that never synced).
+            (!t.directory || (directory && directory.mode !== "off")) &&
             (!t.plan || me?.instance.billing) &&
             (!t.spaces || canAdminSpaces(me)) &&
             (!t.bus || machines === "full" || machines === "revoke") &&
