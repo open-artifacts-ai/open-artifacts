@@ -13,7 +13,9 @@ describe.each(["pi", "omp", "hermes", "openclaw"] as const)(
       const h = await daemonHarness();
       const a = await h.adapter("A", { kind });
       expect(typeof a.welcome.bind_token).toBe("string");
-      await expect(h.adapter("A", { kind })).rejects.toThrow(REF_BOUND);
+      await expect(
+        h.adapter("A", { kind, bind_token: undefined }),
+      ).rejects.toThrow(REF_BOUND);
     });
 
     it("refuses a wrong token", async () => {
@@ -39,7 +41,9 @@ describe.each(["pi", "omp", "hermes", "openclaw"] as const)(
       const a = await h.adapter("A", { kind });
       a.close();
       await h.next("sessions", 2);
-      await expect(h.adapter("A", { kind })).rejects.toThrow(REF_BOUND);
+      await expect(
+        h.adapter("A", { kind, bind_token: undefined }),
+      ).rejects.toThrow(REF_BOUND);
     });
 
     it("lets the token holder replace a link that is still half-open", async () => {
@@ -61,7 +65,9 @@ describe.each(["pi", "omp", "hermes", "openclaw"] as const)(
 it("refuses a different kind claiming a bound ref", async () => {
   const h = await daemonHarness();
   await h.adapter("A", { kind: "pi" });
-  await expect(h.adapter("A", { kind: "omp" })).rejects.toThrow(REF_BOUND);
+  await expect(
+    h.adapter("A", { kind: "omp", bind_token: undefined }),
+  ).rejects.toThrow(REF_BOUND);
 });
 
 it("frees the ref once the claimant's process is gone", async () => {
@@ -70,7 +76,11 @@ it("frees the ref once the claimant's process is gone", async () => {
   const a = await h.adapter("A", { kind: "pi" });
   a.close();
   await h.next("sessions", 2);
-  await expect(h.adapter("A", { kind: "pi" })).rejects.toThrow(REF_BOUND);
+  await expect(
+    h.adapter("A", { kind: "pi", bind_token: undefined }),
+  ).rejects.toThrow(REF_BOUND);
   alive = false;
-  await expect(h.adapter("A", { kind: "pi" })).resolves.toBeDefined();
+  await expect(
+    h.adapter("A", { kind: "pi", bind_token: undefined }),
+  ).resolves.toBeDefined();
 });
