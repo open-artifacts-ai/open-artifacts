@@ -118,6 +118,8 @@ const planCopy = (
     }
     case "billing_unavailable":
       return "Billing isn't reachable right now. Try again in a minute.";
+    case "no_billing_customer":
+      return "Open Artifacts set up this plan for you, so there's nothing to pay or manage here.";
   }
 };
 

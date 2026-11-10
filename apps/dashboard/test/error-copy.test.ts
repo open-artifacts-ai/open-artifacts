@@ -304,6 +304,14 @@ it("billing_unavailable", () => {
   ).toBe("Billing isn't reachable right now. Try again in a minute.");
 });
 
+it("no_billing_customer", () => {
+  expect(
+    errorCopy(new ApiClientError("no_billing_customer", "s", 409), "x"),
+  ).toBe(
+    "Open Artifacts set up this plan for you, so there's nothing to pay or manage here.",
+  );
+});
+
 it("space_forbidden under the plan cap says the instance is read-only", () => {
   const e = planErr("space_forbidden");
   expect(errorCopy(e, "x", { capped: true, cap: "plan" })).toBe(

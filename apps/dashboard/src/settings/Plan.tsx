@@ -273,6 +273,11 @@ export function Plan() {
   // canceled subscription.
   const lapsedPaid = paid && billing.status === "lapsed";
   const busy = go.isPending;
+  // The portal needs a Stripe customer. A provisioned or comped plan has
+  // none (hasCustomer false): no Manage billing, since billing would refuse.
+  // Absent means billing's answer predates the field: keep the button.
+  const portal = (paid && !lapsedPaid) || billing.status === "past_due";
+  const operatorPlan = portal && billing.hasCustomer === false;
   return (
     <div className={STACK}>
       <SettingsCard id="plan-card" title="Plan and billing">
@@ -292,7 +297,7 @@ export function Plan() {
               <dd className="m-0">{billing.creatorsThisMonth}</dd>
             </>
           )}
-          {!ended && (
+          {!ended && !operatorPlan && (
             <>
               <dt className={muted}>Price</dt>
               <dd className="m-0">{PRICE[billing.tier]}</dd>
@@ -300,7 +305,12 @@ export function Plan() {
           )}
         </dl>
         <div className="flex flex-wrap items-center gap-[var(--oa-space-2)]">
-          {(paid && !lapsedPaid) || billing.status === "past_due" ? (
+          {operatorPlan ? (
+            <span className={muted}>
+              Open Artifacts set up this plan for you, so there&apos;s nothing
+              to pay or manage here.
+            </span>
+          ) : portal ? (
             <Button disabled={busy} onClick={() => go.mutate("portal")}>
               Manage billing
             </Button>
@@ -356,7 +366,7 @@ export function Plan() {
               </Button>
             </>
           )}
-          {paid && !lapsedPaid && (
+          {paid && !lapsedPaid && !operatorPlan && (
             <span className={muted}>
               Invoices and card are in the billing portal.
             </span>
