@@ -295,17 +295,11 @@ export async function notifyAgent(
       fromYourUser,
     ),
     // A reply to an ask's author coalesces per thread (#1614): replies sent
-    // while its agent is away leave one waiting notice, never a pile. A
-    // mention or assignment coalesces per artifact (#1752): comments on one
-    // artifact cannot fill the hub-wide waiting cap; the agent reads the
-    // rest with list_comments. An ask stays per comment: a question is not
-    // folded into another.
+    // while its agent is away leave one waiting notice, never a pile.
     coalesceKey:
       kind === "asker"
         ? `${artifactId}:${threadId}:asker`
-        : kind === "mention" || kind === "assign"
-          ? `${artifactId}:${kind}`
-          : `${artifactId}:${commentId}:${kind}`,
+        : `${artifactId}:${commentId}:${kind}`,
     threadId,
     commentId,
   };

@@ -19,7 +19,6 @@ import {
 import {
   agentRoster,
   commentNoticeText,
-  notifyAgent,
   viewerRosterAgents,
 } from "../src/services/comment-agents.js";
 import { addThread, type CommentWho } from "../src/services/comments.js";
@@ -605,28 +604,5 @@ describe("comment notice text", () => {
         "version",
       ].sort(),
     );
-  });
-});
-
-describe("notice coalescing (#1752)", () => {
-  const to = {
-    key: "k",
-    name: "a",
-    online: true,
-    userId: "u1",
-    address: { namespace: "ns", name: "a" },
-  };
-  const keyOf = async (kind: "mention" | "assign" | "ask", c: string) => {
-    bus.sent = [];
-    await notifyAgent(E, "art1", 1, `t-${c}`, c, kind, to);
-    return (bus.sent[0]?.notice as BusNotice | undefined)?.coalesceKey;
-  };
-  it("mentions and assignments on one artifact share a key per kind", async () => {
-    expect(await keyOf("mention", "c1")).toBe(await keyOf("mention", "c2"));
-    expect(await keyOf("assign", "c1")).toBe(await keyOf("assign", "c2"));
-    expect(await keyOf("mention", "c1")).not.toBe(await keyOf("assign", "c1"));
-  });
-  it("an ask keeps its own key per comment", async () => {
-    expect(await keyOf("ask", "c1")).not.toBe(await keyOf("ask", "c2"));
   });
 });
