@@ -82,6 +82,7 @@ export function createCommentMock({
     author: by,
     createdAt: iso(),
     editedAt: null,
+    typed: by.kind === "user",
     can: { edit: by.me, delete: by.me || moderator },
   });
   const moderates = (id: string) => {
@@ -276,7 +277,13 @@ export function createCommentMock({
       );
       if (!j.success || !c.ask.options.some((o) => o.id === j.data.optionId))
         return err("bad_request", "Unknown option");
-      c.ask.answer = { optionId: j.data.optionId, by: mine(), at: iso() };
+      c.ask.answer = {
+        optionId: j.data.optionId,
+        by: mine(),
+        at: iso(),
+        typed: true,
+        yes: c.author.me,
+      };
       emit(String(params.id), open(String(params.id)));
       return HttpResponse.json(c);
     }),
