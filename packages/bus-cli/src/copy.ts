@@ -690,6 +690,15 @@ export function copy(style: Style) {
         next(`Run opencode upgrade, then ${BUS_CMD} install again.`),
       ];
     },
+    // doctor: OpenCode's Open Artifacts entry runs oa-bus, and oa-bus is gone (#1856).
+    opencodeProxyMissing: (name: string, program: string) => [
+      fail(
+        `OpenCode's ${name} entry runs ${clip(program, 60)}, which is missing.`,
+      ),
+      next(
+        `Run ${BUS_CMD} install again, or ${BUS_CMD} uninstall to put your own entry back.`,
+      ),
+    ],
     opencodeUnknown: () => [
       warn("OpenCode version unknown"),
       next(

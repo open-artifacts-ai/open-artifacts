@@ -24,7 +24,11 @@ import {
   tilde,
 } from "../context.ts";
 import { readMachine } from "../machine.ts";
-import { checkAdapters, type Harness } from "../steps/adapters.ts";
+import {
+  checkAdapters,
+  type Harness,
+  opencodeProxyProblem,
+} from "../steps/adapters.ts";
 import {
   codexConfig,
   codexHome,
@@ -271,6 +275,15 @@ export async function doctor(ctx: Ctx): Promise<number> {
       const isolates = claudeIsolates(settings);
       if (isolates === false) pass(c.claudeAccepts());
       if (isolates === true) warn(c.claudeIsolates(tilde(ctx, settings)));
+    }
+    if (h === "opencode") {
+      const gone = opencodeProxyProblem({
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        which: ctx.which,
+      });
+      if (gone) fail(c.opencodeProxyMissing(gone.name, gone.missing));
     }
     if (h === "codex") codexChecks(ctx, { pass, warn });
     if (h === "openclaw") say(ctx, c.openclawDmNote());

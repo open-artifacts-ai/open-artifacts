@@ -17,6 +17,7 @@ export type Command = (
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
   | { cmd: "mcp-proof"; tokenFile?: string }
+  | { cmd: "mcp-proxy"; hub: string; tokenFile?: string }
   | { cmd: "status" }
   | { cmd: "logs" }
   | { cmd: "doctor" }
@@ -42,6 +43,7 @@ const COMMANDS = new Set([
   "daemon",
   "mcp",
   "mcp-proof",
+  "mcp-proxy",
   "status",
   "logs",
   "doctor",
@@ -77,6 +79,7 @@ const FLAGS: Record<string, string[]> = {
   daemon: ["instance"],
   uninstall: ["purge"],
   "mcp-proof": ["token-file"],
+  "mcp-proxy": ["instance", "token-file"],
   namespace: ["yes"],
 };
 
@@ -152,10 +155,20 @@ export function parse(argv: string[]): Command {
   const home = values.home;
   if (values.version)
     return { cmd: "version", noColor, ...(home ? { home } : {}) };
+  if (cmd === "mcp-proxy" && !values.instance)
+    throw new Error(
+      `usage: ${BUS_CMD} mcp-proxy --instance <url> [--token-file <path>]`,
+    );
   const parsed =
     cmd === "mcp-proof"
       ? { cmd, ...(tokenFile ? { tokenFile } : {}) }
-      : route(cmd, values, rest);
+      : cmd === "mcp-proxy"
+        ? {
+            cmd,
+            hub: values.instance as string,
+            ...(tokenFile ? { tokenFile } : {}),
+          }
+        : route(cmd, values, rest);
   return { ...parsed, noColor, ...(home ? { home } : {}) } as Command;
 }
 
