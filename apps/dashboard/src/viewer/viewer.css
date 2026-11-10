@@ -608,3 +608,16 @@ a.oa-lpill-gone {
 .oa-bare .oa-vlayer > .oa-viewer {
   height: 100%;
 }
+
+/* Presence (#949, 4A): one set of nine, no dark override; white on each. */
+:root {
+  --oa-presence-0: #0e6e8c;
+  --oa-presence-1: #1f6f5a;
+  --oa-presence-2: #2456c4;
+  --oa-presence-3: #4d6b12;
+  --oa-presence-4: #5b48b8;
+  --oa-presence-5: #7a3f99;
+  --oa-presence-6: #8a4d0f;
+  --oa-presence-7: #a3305f;
+  --oa-presence-8: #b04a14;
+}

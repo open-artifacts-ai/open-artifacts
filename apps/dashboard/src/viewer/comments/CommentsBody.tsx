@@ -10,7 +10,7 @@ import {
 } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
-import { Bot, Check, FileText, Quote as QuoteIcon } from "lucide-react";
+import { Check, FileText, Quote as QuoteIcon } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import {
@@ -26,6 +26,7 @@ import {
 import { isEmbed } from "../../embed";
 import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
+import { AuthorFace, AuthorSub, initials } from "./AuthorFace";
 import {
   AskBlock,
   actor,
@@ -443,18 +444,7 @@ function Composer({
   );
 }
 
-/** Up to two initials of a display name. */
-export function initials(name: string): string {
-  const w = name.trim().split(/\s+/).filter(Boolean);
-  const first = (x?: string) => Array.from(x ?? "")[0] ?? "";
-  const out =
-    w.length > 1
-      ? `${first(w[0])}${first(w[w.length - 1])}`
-      : Array.from(w[0] ?? "?")
-          .slice(0, 2)
-          .join("");
-  return out.toUpperCase();
-}
+export { initials };
 
 function Who({
   a,
@@ -468,23 +458,7 @@ function Who({
   const isAgent = a.kind === "agent";
   return (
     <div className="flex min-w-0 items-start gap-2">
-      {isAgent ? (
-        <span
-          aria-hidden="true"
-          data-avatar="agent"
-          className="flex size-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-foreground"
-        >
-          <Bot className="size-3.5" />
-        </span>
-      ) : (
-        <span
-          aria-hidden="true"
-          data-avatar=""
-          className={`flex size-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[length:var(--oa-text-xs)] font-medium text-foreground`}
-        >
-          {initials(a.name)}
-        </span>
-      )}
+      <AuthorFace a={a} />
       <div className="flex min-w-0 flex-col self-center">
         <p className={`m-0 flex min-w-0 items-baseline gap-x-1 ${TXT}`}>
           <b className="min-w-0 truncate" title={a.name}>
@@ -506,16 +480,8 @@ function Who({
             {edited && " · edited"}
           </span>
         </p>
-        {/* #1789 (Design): "for <person>" on its own muted line, so the agent's
-          name keeps the row in a narrow column. */}
-        {isAgent && a.for && (
-          <span
-            data-for=""
-            className={`${MUTED} min-w-0 truncate text-[length:var(--oa-text-xs)]`}
-          >
-            for {a.for}
-          </span>
-        )}
+        {/* #1789/#1822: product (or "not linked") and "for <person>" on a muted line. */}
+        <AuthorSub a={a} />
       </div>
     </div>
   );
