@@ -3068,18 +3068,20 @@ function settle(
   const r = one<{ fromAgent: string; size: number }>(
     sql,
     `select r.from_agent as fromAgent, r.size from receipts r join agents a on a.id = r.to_agent
-     where r.id = ? and r.org_id = ? and r.state = 'pending' and a.machine_id = ?
+     where r.id = ? and r.org_id = ? and a.machine_id = ?
+       and (r.state = 'pending' or (? = 'delivered' and r.state = 'expired' and r.reason = 'lost_body'))
        and r.rowid > a.session_start_rowid`,
     msgId,
     OWNER_ORG_ID,
     machineId,
+    outcome,
   );
   if (!r) return null;
   // R7 (accepted): an ack after expires_at but before the sweep counts as
   // delivered; the harness really did take it.
   if (outcome === "delivered")
     sql.exec(
-      "update receipts set state = 'delivered', acked_at = ?, final_at = ? where id = ? and state = 'pending'",
+      "update receipts set state = 'delivered', reason = null, notified_at = null, acked_at = ?, final_at = ? where id = ? and (state = 'pending' or (state = 'expired' and reason = 'lost_body'))",
       now,
       now,
       msgId,
@@ -3293,6 +3295,16 @@ function senderRef(f: ClientFrame): string | null {
 
 /** #1317: waiting server notices a hub keeps; a notice over it is dropped (a replace of a waiting one is not). */
 export const NOTICES_MAX = 500;
+/**
+ * #1828: rows held for a LIVE daemon too old to read a notice (parked = 2)
+ * have their own caps, per address and hub-wide, and do not count toward
+ * NOTICES_MAX; a new notice over either is dropped. Offline-machine rows
+ * (parked = 1) count toward NOTICES_MAX as before, with no per-address cap.
+ */
+export const NOTICES_OLD_PER_ADDRESS = 20;
+export const NOTICES_OLD_MAX = 500;
+/** #1828: ids named in one notice_expired log line. */
+const NOTICE_LOG_IDS = 20;
 /** #1317: how long an offline machine's notice waits (the v1 rule). */
 export const NOTICE_HOLD_MS = HOUR_MS;
 /** #1317: notices one agent_up sends, so a reconnect stays one bounded step. */
@@ -5552,12 +5564,15 @@ export class BusHub extends DurableObject<Env> {
   /**
    * pending -> expired, once: the guarded update is the only transition, so a
    * receipt is never expired (or the sender told) twice, and an expired one
-   * never becomes delivered (settle also requires pending).
+   * never becomes delivered (settle also requires pending), except that a
+   * `lost_body` expiry (the hub lost a body it had already pushed) is settled
+   * delivered by the recipient's own late ack (#1760). `lost_body` is stored
+   * only: the wire carries a reasonless expiry, as before.
    */
   #expire(
     msgId: string,
     fromAgent: string,
-    reason?: "recipient_closed" | "revoked",
+    reason?: "recipient_closed" | "revoked" | "lost_body",
   ): void {
     const sql = this.ctx.storage.sql;
     const hit = all(
@@ -6039,7 +6054,7 @@ export class BusHub extends DurableObject<Env> {
           ?.body ??
         null;
       if (body === null) {
-        this.#expire(r.id, r.fromAgent);
+        this.#expire(r.id, r.fromAgent, "lost_body");
         return;
       }
       this.#arm(r.expiresAt);
@@ -6127,6 +6142,32 @@ export class BusHub extends DurableObject<Env> {
 
   // ----------------------------------------------------------------- notices
 
+  /** #1828: why one more old-daemon-held row (not counting its own key) does not fit, or null. */
+  #oldHeldOver(ns: string, lname: string, ckey: string): string | null {
+    const sql = this.ctx.storage.sql;
+    const notSelf = "not (to_ns = ? and to_lname = ? and ckey = ?)";
+    const atAddress =
+      one<{ n: number }>(
+        sql,
+        `select count(*) as n from notices where parked = 2 and to_ns = ? and to_lname = ? and ${notSelf}`,
+        ns,
+        lname,
+        ns,
+        lname,
+        ckey,
+      )?.n ?? 0;
+    if (atAddress >= NOTICES_OLD_PER_ADDRESS) return "old_daemon_address_cap";
+    const all2 =
+      one<{ n: number }>(
+        sql,
+        `select count(*) as n from notices where parked = 2 and ${notSelf}`,
+        ns,
+        lname,
+        ckey,
+      )?.n ?? 0;
+    return all2 >= NOTICES_OLD_MAX ? "old_daemon_cap" : null;
+  }
+
   #acceptNotice(n: BusNotice): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
@@ -6160,17 +6201,31 @@ export class BusHub extends DurableObject<Env> {
         "select 1 as x from notices where to_ns = ? and to_lname = ? and ckey = ?",
         ...key,
       ) !== null;
-    if (!exists) {
+    // Due with no usable socket: parked until the machine's agent_up (1), or
+    // held for a live daemon too old to read it (2, own caps).
+    const parked = notBefore > now ? 0 : live ? 2 : 1;
+    if (parked === 2) {
+      const reason = this.#oldHeldOver(n.to.namespace, lname, n.coalesceKey);
+      if (reason) {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          ...key,
+        );
+        logEvent("notice_dropped", { reason });
+        return "dropped";
+      }
+    } else if (!exists) {
       const held =
-        one<{ n: number }>(sql, "select count(*) as n from notices")?.n ?? 0;
+        one<{ n: number }>(
+          sql,
+          "select count(*) as n from notices where parked < 2",
+        )?.n ?? 0;
       if (held >= NOTICES_MAX) {
         logEvent("notice_dropped", { reason: "cap" });
         return "dropped";
       }
     }
     const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
-    // Due with no live socket: parked until the machine's agent_up.
-    const parked = notBefore <= now ? 1 : 0;
     sql.exec(
       `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked)
        values (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -6181,7 +6236,7 @@ export class BusHub extends DurableObject<Env> {
       expiresAt,
       parked,
     );
-    this.#arm(parked === 1 ? expiresAt : notBefore);
+    this.#arm(parked > 0 ? expiresAt : notBefore);
     this.#arm(expiresAt);
     return "held";
   }
@@ -6222,7 +6277,7 @@ export class BusHub extends DurableObject<Env> {
     // bounded steps to this live socket) instead of leaving them parked.
     if (rows.length >= NOTICE_FLUSH_BATCH) {
       sql.exec(
-        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked = 1",
+        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked > 0",
         agent.name.toLowerCase(),
         agent.namespace,
         agent.global === 1 ? 1 : 0,
@@ -6239,11 +6294,25 @@ export class BusHub extends DurableObject<Env> {
    */
   #sweepNotices(now: number): boolean {
     const sql = this.ctx.storage.sql;
-    const gone = purge(
+    // #1828: an expired notice was never delivered: count it (ids and counts only).
+    const expired = all<{ rid: number; id: string; parked: number }>(
       sql,
-      "delete from notices where rowid in (select rowid from notices where expires_at <= ? limit ?) returning rowid",
+      "select rowid as rid, id, parked from notices where expires_at <= ? limit ?",
       now,
+      BATCH,
     );
+    for (const r of expired)
+      sql.exec("delete from notices where rowid = ?", r.rid);
+    if (expired.length > 0)
+      logEvent("notice_expired", {
+        count: expired.length,
+        parked: expired.filter((r) => r.parked > 0).length,
+        ids: expired
+          .slice(0, NOTICE_LOG_IDS)
+          .map((r) => r.id)
+          .join(","),
+      });
+    const gone = expired.length >= BATCH;
     const due = all<NoticeRow>(
       sql,
       `select ${NOTICE_COLS} from notices where parked = 0 and not_before <= ? order by not_before limit ?`,
@@ -6263,12 +6332,27 @@ export class BusHub extends DurableObject<Env> {
         );
         sendFrame(socket, noticeFrame(agent, r.text));
       } else if (agent) {
-        sql.exec(
-          "update notices set parked = 1 where to_ns = ? and to_lname = ? and ckey = ?",
-          r.toNs,
-          r.toLname,
-          r.ckey,
-        );
+        // A live socket that cannot read it: old-daemon share; none: offline.
+        const reason = live
+          ? this.#oldHeldOver(r.toNs, r.toLname, r.ckey)
+          : null;
+        if (reason) {
+          sql.exec(
+            "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+            r.toNs,
+            r.toLname,
+            r.ckey,
+          );
+          logEvent("notice_dropped", { reason });
+        } else {
+          sql.exec(
+            "update notices set parked = ? where to_ns = ? and to_lname = ? and ckey = ?",
+            live ? 2 : 1,
+            r.toNs,
+            r.toLname,
+            r.ckey,
+          );
+        }
       } else {
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
@@ -6338,7 +6422,7 @@ export class BusHub extends DurableObject<Env> {
     );
     if (lost.length >= BATCH) more = true;
     for (const r of lost)
-      if (!this.#held.has(r.id)) this.#expire(r.id, r.fromAgent);
+      if (!this.#held.has(r.id)) this.#expire(r.id, r.fromAgent, "lost_body");
 
     // 2a. open-bus #422: machines offline past OFFLINE_REAP_MS have their
     // agents closed (before the close drain, which takes their leftover mail).

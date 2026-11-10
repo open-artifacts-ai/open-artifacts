@@ -7,9 +7,14 @@ import type {
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useEffect, useId, useState } from "react";
-import { answerError, useAnswerAsk } from "../../api/comments";
+import {
+  answerError,
+  useAnswerAsk,
+  useCommentErrorCtx,
+} from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
+import { linkify } from "./linkify";
 
 const MUTED = "text-muted-foreground";
 
@@ -116,6 +121,7 @@ export function AskBlock({
   const ask = c.ask;
   const answer = useAnswerAsk(artifactId);
   const [err, setErr] = useState<unknown>(null);
+  const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
   const qid = useId();
@@ -183,7 +189,7 @@ export function AskBlock({
           {/* The card's own header already names the asker and the time. */}
           <p className={`${TXT} ${MUTED}`}>Ask</p>
           <p id={qid} className={`${TXT} font-semibold break-words`}>
-            {ask.question}
+            {linked(ask.question, 0)}
           </p>
           <ul
             aria-labelledby={qid}
@@ -276,7 +282,7 @@ export function AskBlock({
           )}
           {err != null && (
             <p role="alert" className={`${TXT} text-destructive`}>
-              {answerError(err)}
+              {answerError(err, errCtx)}
             </p>
           )}
           <div className="flex gap-2">
@@ -399,7 +405,7 @@ export function MentionedText({
   body: string;
   mentions?: readonly { key: string; name: string }[];
 }) {
-  if (!mentions?.length) return <>{body}</>;
+  if (!mentions?.length) return <>{linked(body, 0)}</>;
   const names = [...new Set(mentions.map((m) => m.name))]
     .sort((x, y) => y.length - x.length)
     .map(esc);
@@ -409,7 +415,7 @@ export function MentionedText({
   for (const m of body.matchAll(re)) {
     const at = m.index + (m[1]?.length ?? 0);
     const end = at + 1 + (m[2]?.length ?? 0);
-    if (at > last) out.push(body.slice(last, at));
+    if (at > last) out.push(...linked(body.slice(last, at), last));
     out.push(
       <span
         key={at}
@@ -421,9 +427,31 @@ export function MentionedText({
     );
     last = end;
   }
-  if (last === 0) return <>{body}</>;
-  if (last < body.length) out.push(body.slice(last));
+  if (last === 0) return <>{linked(body, 0)}</>;
+  if (last < body.length) out.push(...linked(body.slice(last), last));
   return <>{out}</>;
+}
+
+/** Plain text with its http(s) URLs as links that open in a new tab. */
+function linked(text: string, base: number): React.ReactNode[] {
+  let at = base;
+  return linkify(text).map((p) => {
+    const key = at;
+    at += p.text.length;
+    return p.url ? (
+      <a
+        key={key}
+        href={p.text}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="break-all underline"
+      >
+        {p.text}
+      </a>
+    ) : (
+      p.text
+    );
+  });
 }
 
 /** Who gets notified: the mentioned agents. */
