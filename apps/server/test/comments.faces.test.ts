@@ -269,6 +269,71 @@ describe("agent faces (#1822)", () => {
     );
   });
 
+  it("an asked agent's bus name is masked for a guest in the body, question and options", async () => {
+    const owner = await mk("f-own", newName());
+    const id = await pub(owner);
+    await E.DB.prepare(
+      "insert into bus_machines (id, user_id, label, token_hash, created_at, last_used_at) values (?, ?, 'm', ?, ?, ?)",
+    )
+      .bind(newId(), owner.userId, newId(), Date.now(), Date.now())
+      .run();
+    const ns = {
+      idFromName: (n: string) => n,
+      get: () => ({
+        snapshot: async () => ({
+          connected: [],
+          agents: [
+            {
+              id: newId(),
+              namespace: "ns-o",
+              name: "Runner",
+              kind: "claude",
+              machineId: "m",
+              machineLabel: "m",
+              global: false,
+              state: "live",
+              running: true,
+              since: null,
+              updatedAt: new Date().toISOString(),
+            },
+          ],
+        }),
+      }),
+    };
+    const e2 = { ...E, BUS_HUB: ns } as unknown as Env;
+    const key = (await agentRoster(e2, id, owner.userId, true, true))[0]
+      ?.key as string;
+    await addThread(
+      e2,
+      art(id),
+      { kind: "user", id: owner.userId },
+      signedIn(owner),
+      {
+        anchor: { kind: "note" },
+        body: "cc @runner",
+        ask: {
+          question: "Should @RUNNER go?",
+          options: [
+            { id: "a", label: "Yes, @Runner", detail: "@runner does it" },
+            { id: "b", label: "No" },
+          ],
+          recommended: { optionId: "a", why: "@Runner knows" },
+          to: [{ key }],
+        },
+      },
+      { moderator: true },
+    );
+    const seen = async (v: CommentViewer) =>
+      JSON.stringify((await listComments(e2, id, "all", v)).threads);
+    const guest = await seen(GUEST);
+    expect(guest.toLowerCase()).not.toContain("runner");
+    expect(guest).toContain(`@${nm}'s agent`);
+    // A member sees the bus name as written.
+    const member = await seen(signedIn(owner));
+    expect(member).toContain("@runner");
+    expect(member).toContain("Should @RUNNER go?");
+  });
+
   it("a for line is on a mention and on an ask's to, set from the owner", async () => {
     const owner = await mk("f-own", newName());
     const id = await pub(owner);
