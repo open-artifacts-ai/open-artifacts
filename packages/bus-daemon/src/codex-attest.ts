@@ -498,6 +498,20 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     return undefined;
   };
 
+  /** The thread's rollout names a user thread, not a subagent or spawned one. */
+  const isUserThread = (home: string, thread: string): boolean => {
+    const row = threadRow(home, thread);
+    const rollout = row?.rollout_path ?? globRollout(home, thread);
+    if (!rollout || !plainFile(rollout)) return false;
+    const meta = metaOf(rollout, thread);
+    if (!meta) return false;
+    return !(
+      isSubagent(row ? row.source : meta.source) ||
+      isSubagent(meta.source) ||
+      SPAWNED_SOURCES.has(String(meta.thread_source))
+    );
+  };
+
   const holders: CodexAttestor["holders"] = (threads) => {
     const home = deps.home ?? codexHome();
     const files = threads.filter((t) => plainFile(lockOf(home, t)));
@@ -513,6 +527,8 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     if (!rows) return undefined;
     const out = new Map<string, { pid: number; start: string }>();
     for (const t of files) {
+      // A mapped thread that is a subagent is never woken (the same bar as a hello).
+      if (!isUserThread(home, t)) continue;
       for (const pid of held.get(lockOf(home, t)) ?? []) {
         const row = rows.get(pid);
         if (!row || basename(row.comm) !== "codex") continue;

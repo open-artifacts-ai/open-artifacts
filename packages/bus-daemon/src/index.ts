@@ -280,6 +280,10 @@ export type DaemonDeps = {
     wokenFile?: string;
     /** #2029: the shortest gap between hub roster reads for one thread; default 5 min. */
     wakeAskMs?: number;
+    /** #2029: how long a sent wake waits for the thread's own call before `wake_unanswered`; default 5 min. */
+    wakeAnswerMs?: number;
+    /** #2029: the shortest gap between two wakes of one thread; default 1 h. */
+    wakeAgainMs?: number;
   };
   pi?: {
     /** How long the extension has to hand a message to Pi and ack it. */
@@ -1987,6 +1991,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const wakeLogged = new Set<string>();
   const wakeAsked = new Map<string, number>();
   let waking = false;
+  /** Wakes sent and not yet answered by the thread's own call, and the mail count at each. */
+  const wakeSent = new Map<
+    string,
+    { ref: string; at: number; logged: boolean }
+  >();
+  const wakeWaiting = new Map<string, number>();
+  const WAKES_MAX = 3;
   /**
    * #2029: an away Codex thread whose lock a `codex` process we have not
    * proved holds, with mail waiting at the hub, gets ONE fixed bus-written
@@ -1997,6 +2008,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     waking = true;
     try {
       const now = awayNow();
+      // A wake whose thread never called `self`: the mail stays held, never delivered.
+      for (const [k, w] of wakeSent) {
+        if (agents.byRef(w.ref)?.live) wakeSent.delete(k);
+        else if (!w.logged && now - w.at >= (cx.wakeAnswerMs ?? 300_000)) {
+          w.logged = true;
+          log(`codex wake ${w.ref.slice(0, 8)} wake_unanswered`);
+        }
+      }
       const rows = [...awayRows.values()].filter(
         (r) => now - r.lastLive <= AWAY_IDLE_MS && !agents.byRef(r.ref)?.live,
       );
@@ -2014,7 +2033,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (!h) continue;
         const key = `wake:${r.ref}:${h.pid}:${h.start.replace(/\s+/g, "_")}`;
         const who = `codex wake ${r.ref.slice(0, 8)} pid ${h.pid}`;
-        if (woken.has(key)) continue;
+        let n = 1;
+        while (n <= WAKES_MAX && woken.has(`${key}#${n}`)) n++;
+        if (n > WAKES_MAX) continue;
+        const againAfter =
+          n > 1 ? (woken.at(`${key}#${n - 1}`) ?? now) : undefined;
+        // A further wake only after an hour, and only for mail newer than the last wake's.
+        if (againAfter !== undefined) {
+          if (
+            now - againAfter < (cx.wakeAgainMs ?? 3_600_000) ||
+            !wakeWaiting.has(key)
+          )
+            continue;
+        }
         const asker = agents.all().find((a) => a.live);
         if (!asker || !hub.open || hubVersion === undefined) {
           once(key, `${who} skipped: no live agent to ask the hub`);
@@ -2039,6 +2070,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           once(key, `${who} skipped: no mail waiting`);
           continue;
         }
+        if (n > 1 && row.waiting <= (wakeWaiting.get(key) ?? Infinity)) {
+          once(key + n, `${who} skipped: no new mail since the last wake`);
+          continue;
+        }
         if (!(await codex.canWake(h.pid))) {
           once(
             key,
@@ -2048,7 +2083,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         }
         // Recorded first: a failure or a refusal is never tried again for this start.
         try {
-          woken.add(key);
+          woken.add(`${key}#${n}`);
         } catch (e) {
           once(
             key,
@@ -2056,7 +2091,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           );
           continue;
         }
-        const res = await codex.wake(r.ref, h.pid, key, CODEX_WAKE_TEXT);
+        const res = await codex.wake(
+          r.ref,
+          h.pid,
+          `${key}#${n}`,
+          CODEX_WAKE_TEXT,
+        );
+        wakeWaiting.set(key, row.waiting);
+        if (res === "sent")
+          wakeSent.set(key, { ref: r.ref, at: now, logged: false });
         log(
           res === "sent"
             ? `${who} sent`

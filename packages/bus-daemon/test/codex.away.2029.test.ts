@@ -340,6 +340,147 @@ describe("waking an away Codex thread (#2029)", () => {
     void two;
   });
 
+  it("logs wake_unanswered when the thread never calls self; the mail stays held, nothing is delivered", async () => {
+    const w = world();
+    const { two, logs } = await restarted(w, { wakeAnswerMs: 0 });
+    const stop = answerLists(two, () => 2);
+    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await vi.waitFor(() =>
+      expect(logs.some((l) => /wake_unanswered/.test(l))).toBe(true),
+    );
+    // The sender still sees held: no ack, and the thread is not admitted.
+    expect(two.of("ack")).toHaveLength(0);
+    expect(two.daemon.agents.byRef(THREAD)).toBeUndefined();
+    expect(logs.filter((l) => /wake_unanswered/.test(l))).toHaveLength(1);
+    stop();
+  });
+
+  it("wakes again only for newer mail, an hour on, at most 3 times per app-server start", async () => {
+    const w = world();
+    // Same mail count: never again.
+    const a = await restarted(w, { wakeAgainMs: 0 });
+    const stopA = answerLists(a.two, () => 2);
+    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(w.runs()).toHaveLength(1);
+    stopA();
+    await stopAll();
+
+    const w2 = world();
+    let waiting = 1;
+    const b = await restarted(w2, { wakeAgainMs: 0 });
+    const stopB = answerLists(b.two, () => waiting++);
+    await vi.waitFor(() => expect(w2.runs()).toHaveLength(3));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(w2.runs()).toHaveLength(3);
+    stopB();
+    await stopAll();
+
+    // Too soon (the default hour): newer mail does not wake it.
+    const w3 = world();
+    let n3 = 1;
+    const c = await restarted(w3);
+    const stopC = answerLists(c.two, () => n3++);
+    await vi.waitFor(() => expect(w3.runs()).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(w3.runs()).toHaveLength(1);
+    stopC();
+  });
+
+  it("spends the wake before codex queue runs, so a timeout or crash cannot wake twice", async () => {
+    const w = world();
+    const seen: boolean[] = [];
+    const run = async () => {
+      seen.push(readFileSync(w.files.wokenFile, "utf8").includes("#1"));
+      return { code: null, stderr: "" };
+    };
+    const { two } = await restarted(w, { run });
+    const stop = answerLists(two, () => 2);
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    expect(seen).toEqual([true]);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(seen).toHaveLength(1);
+    stop();
+    await stopAll();
+    // And a restarted daemon on the same app-server does not try again.
+    const three = await daemonHarness({
+      attest: undefined,
+      codex: { ...w.codex, run },
+      claude: { syncMs: 20 },
+    });
+    const stop3 = answerLists(three, () => 2);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(seen).toHaveLength(1);
+    stop3();
+  });
+
+  it("rows come only from this daemon's own proofs: an unproved thread under CODEX_HOME is never woken", async () => {
+    const w = world();
+    const OTHER = "01a18536-7f07-7680-b17c-199e3dadf888";
+    writeFileSync(join(w.home, "thread-writer-locks", `${OTHER}.lock`), "");
+    writeFileSync(
+      join(
+        w.home,
+        "sessions",
+        "2026",
+        "10",
+        "29",
+        `rollout-2026-10-29T02-11-43-${OTHER}.jsonl`,
+      ),
+      rollout(OTHER, "call_1"),
+    );
+    w.state.locks.set(OTHER, [P2]);
+    const { two } = await restarted(w);
+    const stop = answerLists(two, () => 2);
+    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(w.runs().map((r) => JSON.parse(r)[1])).toEqual([
+      `--thread=${THREAD}`,
+    ]);
+    expect(
+      readCodexAway(w.files.awayFile, Date.now()).map((r) => r.ref),
+    ).not.toContain(OTHER);
+    stop();
+  });
+
+  it("skips a mapped thread that is now a subagent", async () => {
+    const w = world();
+    const { two } = await (async () => {
+      const one = await daemonHarness({ attest: undefined, codex: w.codex });
+      await one.adapter(THREAD, codexHello(THREAD, A1));
+      await one.adapter(ASKER, codexHello(ASKER, A2));
+      await stopAll();
+      writeFileSync(
+        join(
+          w.home,
+          "sessions",
+          "2026",
+          "10",
+          "29",
+          `rollout-2026-10-29T02-11-43-${THREAD}.jsonl`,
+        ),
+        rollout(THREAD, "call_1").replace(
+          '"source":"exec"',
+          '"source":"subagent"',
+        ),
+      );
+      w.state.alive.add(P2);
+      w.state.locks.set(THREAD, [P2]);
+      return {
+        two: await daemonHarness({
+          attest: undefined,
+          codex: { ...w.codex },
+          claude: { syncMs: 20 },
+        }),
+      };
+    })();
+    const stop = answerLists(two, () => 2);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(w.runs()).toHaveLength(0);
+    expect(two.of("list")).toHaveLength(0);
+    stop();
+  });
+
   it("caps the map at 64 rows", () => {
     const f = join(tmp("ob-w2029c-"), "away.json");
     const rows = Array.from({ length: 80 }, (_, i) => ({
