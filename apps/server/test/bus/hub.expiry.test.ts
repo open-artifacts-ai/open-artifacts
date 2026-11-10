@@ -326,10 +326,10 @@ describe("reconnect flush", () => {
     await setClock(Date.now() + LIMITS.ackTimeoutMs + 1000);
     await runAlarm();
     // What the sender is told today: expired, though the agent took it.
-    expect(await waitFor(s, "receipt_update")).toMatchObject({
-      msg_id: r.msg_id,
-      state: "expired",
-    });
+    const u = await waitFor(s, "receipt_update");
+    expect(u).toMatchObject({ msg_id: r.msg_id, state: "expired" });
+    // lost_body is stored only; the wire carries no reason.
+    expect(u.reason).toBeUndefined();
     expect(await receiptRow(r.msg_id)).toMatchObject({ reason: "lost_body" });
     // The late ack settles it, from the recipient's own machine only.
     t.send(ack("a1", r.msg_id));
@@ -343,6 +343,46 @@ describe("reconnect flush", () => {
       state: "delivered",
       reason: null,
     });
+    close(t);
+  });
+
+  it("#1760: a repeat ack on a settled lost_body receipt is a no-op, one delivered update", async () => {
+    const { s, t, receiver, close } = await setup();
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "pushed"));
+    await waitFor(t, "deliver");
+    await evictHeld();
+    await setClock(Date.now() + LIMITS.ackTimeoutMs + 1000);
+    await runAlarm();
+    await waitFor(s, "receipt_update");
+    t.send(ack("a1", r.msg_id));
+    await waitFor(s, "receipt_update");
+    t.send(ack("a2", r.msg_id));
+    await barrier(t);
+    await barrier(s);
+    expect(updates(s, r.msg_id).map((u) => u.state)).toEqual([
+      "expired",
+      "delivered",
+    ]);
+    expect(await receiptRow(r.msg_id)).toMatchObject({ state: "delivered" });
+    close(t);
+  });
+
+  it("#1760: a refuse on a lost_body receipt settles nothing", async () => {
+    const { s, t, receiver, close } = await setup();
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "pushed"));
+    await waitFor(t, "deliver");
+    await evictHeld();
+    await setClock(Date.now() + LIMITS.ackTimeoutMs + 1000);
+    await runAlarm();
+    await waitFor(s, "receipt_update");
+    t.send({ v: 1, id: "r1", type: "refuse", msg_id: r.msg_id } as ClientFrame);
+    await barrier(t);
+    await barrier(s);
+    expect(await receiptRow(r.msg_id)).toMatchObject({
+      state: "expired",
+      reason: "lost_body",
+    });
+    expect(updates(s, r.msg_id)).toHaveLength(1);
     close(t);
   });
 
