@@ -552,9 +552,11 @@ describe("approval page: the person types the code (RFC 8628 5.4)", () => {
     expect(html).toContain(
       `Requested just now from Germany · code <span class="mono nw">${d.user_code}</span>`,
     );
-    expect(html).not.toContain("FRA");
-    expect(html).not.toContain("Frankfurt");
-    expect(html).not.toContain("3320");
+    // The random user code (A-Z, 2-9) can itself spell "FRA": drop it first.
+    const noCode = html.split(d.user_code).join("");
+    expect(noCode).not.toContain("FRA");
+    expect(noCode).not.toContain("Frankfurt");
+    expect(noCode).not.toContain("3320");
     const row = await env.DB.prepare(
       "select origin_network as n from bus_device_codes where user_code = ?",
     )
