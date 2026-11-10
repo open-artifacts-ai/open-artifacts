@@ -736,6 +736,9 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       ?.querySelector<HTMLElement>("[data-oa-action-outlet]");
     if (card && last && outlet) {
       const go = () => {
+        // Hidden (not claimed yet) or gone (the sheet grew for typing): wait
+        // for a real measure, never scroll on 0.
+        if (!outlet.isConnected || outlet.offsetHeight === 0) return;
         const reply = card.querySelector<HTMLElement>(
           `[data-comment="${last.id}"]`,
         );
@@ -744,6 +747,8 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         // The composer claims the outlet after this effect, so the height
         // changes from 0 once it shows: the observer re-measures and scrolls.
         reply.style.scrollMarginBottom = `${outlet.offsetHeight}px`;
+        // One measure is enough: later size changes (typing) don't re-scroll.
+        watch?.disconnect();
         const reduce =
           window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ===
           true;

@@ -293,6 +293,30 @@ describe("comments: layouts", () => {
         body: `${id} comment ${i}`,
       })),
     });
+    // jsdom measures nothing: the floating row's outlet is 56px once shown.
+    let outletH = 56;
+    const realH = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "offsetHeight",
+    );
+    beforeEach(() => {
+      outletH = 56;
+      Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+        configurable: true,
+        get() {
+          return (this as HTMLElement).hasAttribute("data-oa-action-outlet")
+            ? outletH
+            : 0;
+        },
+      });
+    });
+    afterEach(() => {
+      if (realH)
+        Object.defineProperty(HTMLElement.prototype, "offsetHeight", realH);
+      else
+        delete (HTMLElement.prototype as { offsetHeight?: number })
+          .offsetHeight;
+    });
     const open = async (reduced = false) => {
       viewport(400, false, reduced);
       server.use(
@@ -331,7 +355,7 @@ describe("comments: layouts", () => {
       );
       const el = spy.mock.contexts.at(-1) as HTMLElement;
       expect(el.getAttribute("data-comment")).toBe("p3-c3");
-      expect(el.style.scrollMarginBottom).toBe("0px");
+      expect(el.style.scrollMarginBottom).toBe("56px");
     });
     it("the margin uses the row's height once the outlet shows, even after the first frame", async () => {
       const spy = vi.fn();
@@ -347,20 +371,52 @@ describe("comments: layouts", () => {
         unobserve() {}
       } as unknown as typeof ResizeObserver;
       try {
+        outletH = 0; // hidden at the first frame
         await open();
         await act(async () => opts.at(-1)?.onCommentOpen("p3"));
-        await waitFor(() => expect(spy).toHaveBeenCalled());
-        const outlet = document.querySelector<HTMLElement>(
-          "[data-oa-action-outlet]",
+        await new Promise((r) => setTimeout(r, 50));
+        expect(spy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ block: "end" }),
         );
-        expect(outlet).not.toBeNull();
-        // The row appears after the first frame: 56px tall.
-        Object.defineProperty(outlet, "offsetHeight", { value: 56 });
-        const before = spy.mock.calls.length;
+        outletH = 56; // the composer claims it
         act(() => fire());
-        expect(spy.mock.calls.length).toBeGreaterThan(before);
+        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "smooth" });
         const el = spy.mock.contexts.at(-1) as HTMLElement;
         expect(el.style.scrollMarginBottom).toBe("56px");
+      } finally {
+        globalThis.ResizeObserver = OriginalRO;
+      }
+    });
+    it("focusing the reply box after the first measure doesn't scroll again", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      let fire: () => void = () => {};
+      let disconnected = false;
+      const OriginalRO = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        constructor(cb: () => void) {
+          fire = cb;
+        }
+        observe() {}
+        disconnect() {
+          disconnected = true;
+        }
+        unobserve() {}
+      } as unknown as typeof ResizeObserver;
+      try {
+        await open();
+        await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+        await waitFor(() =>
+          expect(spy).toHaveBeenCalledWith({
+            block: "end",
+            behavior: "smooth",
+          }),
+        );
+        expect(disconnected).toBe(true);
+        const calls = spy.mock.calls.length;
+        outletH = 0; // the sheet grew for typing: the outlet is gone
+        act(() => fire());
+        expect(spy.mock.calls.length).toBe(calls);
       } finally {
         globalThis.ResizeObserver = OriginalRO;
       }
