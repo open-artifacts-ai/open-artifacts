@@ -12,10 +12,17 @@ import type { ArtifactRow } from "../auth/authz.js";
 import {
   authorize,
   caller,
+  callerOf,
   canCtx,
+  capOfCaller,
   interactiveSession,
 } from "../auth/authz.js";
-import { can, isGuestRole, type PolicyAction } from "../auth/policy.js";
+import {
+  can,
+  capsReads,
+  isGuestRole,
+  type PolicyAction,
+} from "../auth/policy.js";
 import { readCapped } from "../http/body.js";
 import { isEmbedRequest } from "../http/embed.js";
 import { ApiError } from "../http/errors.js";
@@ -124,6 +131,7 @@ async function identity(
         short: null,
         moderator,
         guest: isGuestRole(user.role),
+        capped: capsReads(capOfCaller(callerOf(user))),
       },
       issued: null,
     };

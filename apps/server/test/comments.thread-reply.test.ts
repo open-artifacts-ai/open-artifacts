@@ -601,6 +601,32 @@ describe("the publishing agent joins page-wide threads (#1968)", () => {
     expect(bus.sent).toHaveLength(0);
   });
 
+  it("a capped (guest or restricted) member's root and reply notify nobody; a plan-capped member's still does", async () => {
+    const s = await setup({}, LINKED);
+    const art = { id: s.id, format: "html", currentVersion: 1 } as never;
+    const as = (capped: boolean) => ({
+      userId: viewer.userId,
+      short: null,
+      capped,
+    });
+    const me = { kind: "user", id: viewer.userId } as const;
+    // The route sets `capped` from capsReads(cap): guest and restricted, never "plan".
+    await addThread(E, art, me, as(true), { anchor: NOTE, body: "capped" });
+    expect(bus.sent).toHaveLength(0);
+    const m = (await (
+      await post(s.id, editor, { mentions: [{ key: s.pi }] })
+    ).json()) as Thread;
+    bus.clear();
+    await addReply(E, s.id, m.id, me, as(true), "capped reply");
+    expect(threadReplies()).toHaveLength(0);
+    expect(await counts(s.id)).toBe(0);
+    await addThread(E, art, me, as(false), { anchor: NOTE, body: "locked" });
+    expect(toNames()).toEqual(["Claude"]);
+    bus.clear();
+    await addReply(E, s.id, m.id, me, as(false), "locked reply");
+    expect(names()).toEqual(["Pi"]);
+  });
+
   it("another member (not the agent's person) reaches it with the data tier", async () => {
     const s = await setup({}, LINKED);
     await post(s.id, editor, {});

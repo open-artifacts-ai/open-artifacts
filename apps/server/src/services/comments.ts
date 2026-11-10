@@ -109,7 +109,17 @@ export type CommentViewer = {
   moderator?: boolean;
   /** Signed out, or a guest-role member: sees "<person>'s agent", never a bus name (#1822). */
   guest?: boolean;
+  /**
+   * A guest or restricted cap (capsReads): not a full member for what reaches
+   * an agent without an @ (#1900, #1968). The billing "plan" cap does not set
+   * it. Signed-out visitors are `guest`.
+   */
+  capped?: boolean;
 };
+
+/** Anonymous, guest-role, or capped to guest or restricted: never wakes an agent without an @. */
+const outsider = (v: CommentViewer): boolean =>
+  v.guest === true || v.capped === true;
 
 const faceViewer = (v: CommentViewer): FaceViewer => ({
   userId: v.userId,
@@ -1020,7 +1030,7 @@ export async function addThread(
     anchor.kind === "note" &&
     r.agents.length === 0 &&
     who.kind === "user" &&
-    viewer.guest !== true
+    !outsider(viewer)
       ? await pagePublisher(env, a, who)
       : null;
   if (page) {
@@ -1108,8 +1118,7 @@ async function threadReply(
 ): Promise<void> {
   // Members only (#1900, #1968): never an agent, a signed-out visitor, a guest
   // or a guest-role member.
-  if (c.author.kind !== "user" || c.author.agent || viewer.guest === true)
-    return;
+  if (c.author.kind !== "user" || c.author.agent || outsider(viewer)) return;
   try {
     const due = await call(() =>
       stub(env, a.id).commentsThreadReplyTake({
