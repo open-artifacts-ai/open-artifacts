@@ -79,15 +79,35 @@ export function suffixName(base: string, n: number): string {
  * NAME_RE itself is the wire contract and is not widened.
  */
 export function candidateName(proposed: string): string {
-  if (/[\p{L}\p{N}]/u.test(proposed.replace(/[A-Za-z0-9]/g, "")))
-    return FALLBACK_BUS_NAME;
+  // #1916: a Claude Code /fork title is "<parent> \u2442 <prompt words>". The
+  // name is the parent plus " fork"; the parent part is trimmed so it fits.
+  const mark = proposed.indexOf(FORK_MARK);
+  if (mark >= 0) {
+    const parent = cleanName(
+      proposed.slice(0, mark),
+      LIMITS.maxBusNameChars - FORK_SUFFIX.length,
+    );
+    if (parent === null) return FALLBACK_BUS_NAME;
+    const out = `${parent}${FORK_SUFFIX}`;
+    return BusNameSchema.safeParse(out).success ? out : FALLBACK_BUS_NAME;
+  }
+  return cleanName(proposed, LIMITS.maxBusNameChars) ?? FALLBACK_BUS_NAME;
+}
+
+/** U+2442 OCR fork, which Claude Code puts between a fork's parent title and prompt. */
+const FORK_MARK = "\u2442";
+const FORK_SUFFIX = " fork";
+
+/** The cleaning of `candidateName`, capped at `cap`; null when nothing usable is left. */
+function cleanName(proposed: string, cap: number): string | null {
+  if (/[\p{L}\p{N}]/u.test(proposed.replace(/[A-Za-z0-9]/g, ""))) return null;
   const cleaned = proposed
     .replace(/[^A-Za-z0-9 ._-]/g, "")
     .replace(/ {2,}/g, " ")
     .replace(/^[^A-Za-z0-9]+/, "")
-    .slice(0, LIMITS.maxBusNameChars)
+    .slice(0, cap)
     .replace(/[ .]+$/, "");
-  return BusNameSchema.safeParse(cleaned).success ? cleaned : FALLBACK_BUS_NAME;
+  return BusNameSchema.safeParse(cleaned).success ? cleaned : null;
 }
 
 /**
@@ -98,6 +118,9 @@ export function candidateName(proposed: string): string {
  * other's away reservation or queued mail. A fallback is never "dropped".
  */
 export function droppedRefusedChars(proposed: string): boolean {
+  // #1916: a fork is never its parent, so it may not reclaim the parent's
+  // away address or mail, even when the parent part falls back.
+  if (proposed.includes(FORK_MARK)) return true;
   const out = candidateName(proposed);
   if (out === FALLBACK_BUS_NAME) return false;
   const old = proposed

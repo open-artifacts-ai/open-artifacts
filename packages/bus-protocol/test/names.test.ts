@@ -238,3 +238,30 @@ describe("reserved bus names", () => {
       expect(droppedRefusedChars(x), x).toBe(false);
   });
 });
+
+describe("fork session names (#1916)", () => {
+  it("names a fork by its parent plus fork", () => {
+    expect(
+      candidateName(
+        "OA Manager \u2442 One thing I noticed If I -mention an agent",
+      ),
+    ).toBe("OA Manager fork");
+    expect(candidateName("OA Manager\u2442x")).toBe("OA Manager fork");
+    expect(candidateName("a \u2442 b \u2442 c")).toBe("a fork");
+  });
+  it("falls back on an empty parent", () => {
+    expect(candidateName("\u2442 hello")).toBe("agent");
+    expect(candidateName("  \u2442 hello")).toBe("agent");
+  });
+  it("trims the parent so fork survives the cap", () => {
+    const out = candidateName(`${"x".repeat(80)} \u2442 hi`);
+    expect(out.length).toBe(64);
+    expect(out.endsWith("x fork")).toBe(true);
+    expect(BusNameSchema.safeParse(out).success).toBe(true);
+  });
+  it("never lets a fork reclaim the parent's address", () => {
+    expect(droppedRefusedChars("OA Manager \u2442 hello")).toBe(true);
+    expect(droppedRefusedChars("\u2442 hello")).toBe(true);
+    expect(droppedRefusedChars("OA Manager")).toBe(false);
+  });
+});
