@@ -413,7 +413,7 @@ describe("skill.md drift", () => {
     for (const h of ["pi", "omp"] as const) {
       const md = await (await get(`${APP}/skill.md?harness=${h}`)).text();
       expect(md).toContain(
-        "Several harnesses read this copy, and each names the bus tools differently: `oabus_list_agents` and `oabus_send_message` in pi, oh-my-pi, OpenClaw and Hermes, `mcp__oa_bus__list_agents` and `mcp__oa_bus__send_message` in Codex, `oa_bus_list_agents` and `oa_bus_send_message` in OpenCode. Use the names your harness shows.",
+        "Several harnesses read this copy, and each names the bus tools differently: `oabus_list_agents` and `oabus_send_message` in pi, oh-my-pi, OpenClaw and Hermes; `mcp__oa_bus__list_agents` and `mcp__oa_bus__send_message` in Codex; `oa_bus_list_agents` and `oa_bus_send_message` in OpenCode. Use the names your harness shows.",
       );
       expect(md).not.toContain("This copy is for one harness");
       shared.push(md);

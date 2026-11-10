@@ -93,8 +93,7 @@ export const harnessNote = (
   // OpenCode, OpenClaw and, when opted in, Hermes, so that copy names each
   // harness's bus tools.
   if (skillPath.startsWith("~/.agents/skills/"))
-    return "Several harnesses read this copy, and each names the bus tools differently: `oabus_list_agents` and `oabus_send_message` in pi, oh-my-pi, OpenClaw and Hermes, `mcp__oa_bus__list_agents` and `mcp__oa_bus__send_message` in Codex, `oa_bus_list_agents` and `oa_bus_send_message` in OpenCode. Use the names your harness shows.\n\n";
-  if (!busToolName) return "";
+    return "Several harnesses read this copy, and each names the bus tools differently: `oabus_list_agents` and `oabus_send_message` in pi, oh-my-pi, OpenClaw and Hermes; `mcp__oa_bus__list_agents` and `mcp__oa_bus__send_message` in Codex; `oa_bus_list_agents` and `oa_bus_send_message` in OpenCode. Use the names your harness shows.\n\n";
   return `This copy is for one harness: here \`${busToolName("list_agents")}\` is list_agents and \`${busToolName("send_message")}\` is send_message.\n\n`;
 };
 

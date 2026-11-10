@@ -18,11 +18,8 @@ export type Harness = (typeof HARNESSES)[number];
 export type HarnessSkill = {
   /** Where the installer writes SKILL.md, or the marked block for codex. */
   skillPath: string;
-  /**
-   * The bus tool name this harness shows for `tool` (send_message, …).
-   * Undefined means the extension exposes the bare names.
-   */
-  busToolName?: (tool: string) => string;
+  /** The bus tool name this harness shows for `tool` (send_message, …). */
+  busToolName: (tool: string) => string;
   /** Codex 0.47 has no skill loader: its text goes into AGENTS.md. */
   agentsMd?: boolean;
 };
