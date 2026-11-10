@@ -465,6 +465,16 @@ function sendFrame(ws: WebSocket, frame: ServerFrame): void {
   }
 }
 
+/** #1752: like sendFrame, but false when the socket refused the frame (closing or closed), so a notice is not counted delivered. */
+function trySendFrame(ws: WebSocket, frame: ServerFrame): boolean {
+  try {
+    ws.send(encodeFrame(frame));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function sendError(
   ws: WebSocket,
   id: string | undefined,
@@ -3307,8 +3317,10 @@ export const NOTICES_OLD_MAX = 500;
 const NOTICE_LOG_IDS = 20;
 /** #1317: how long an offline machine's notice waits (the v1 rule). */
 export const NOTICE_HOLD_MS = HOUR_MS;
-/** #1317: notices one agent_up sends, so a reconnect stays one bounded step. */
-const NOTICE_FLUSH_BATCH = 100;
+/** #1317: notices one agent_up (or one alarm step) sends, so a reconnect never injects a pile of turns at once (#1752). */
+const NOTICE_FLUSH_BATCH = 10;
+/** #1752: the wait between two steps of a backlog of notices to one live agent. */
+const NOTICE_PACE_MS = 2000;
 
 type NoticeRow = {
   toNs: string;
@@ -6188,12 +6200,15 @@ export class BusHub extends DurableObject<Env> {
     const socket = live && noticeGated(live) ? live : null;
     const notBefore = n.notBefore ?? now;
     if (socket && notBefore <= now) {
-      sql.exec(
-        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-        ...key,
-      );
-      sendFrame(socket, noticeFrame(agent, n.text));
-      return "delivered";
+      // A socket that refuses the frame (#1752) leaves the notice held
+      // (parked) for the next agent_up, never stored as delivered.
+      if (trySendFrame(socket, noticeFrame(agent, n.text))) {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          ...key,
+        );
+        return "delivered";
+      }
     }
     const exists =
       one<{ x: number }>(
@@ -6203,7 +6218,9 @@ export class BusHub extends DurableObject<Env> {
       ) !== null;
     // Due with no usable socket: parked until the machine's agent_up (1), or
     // held for a live daemon too old to read it (2, own caps).
-    const parked = notBefore > now ? 0 : live ? 2 : 1;
+    // A socket that can read notices but refused the frame (#1752) is
+    // offline-like (1), never "too old" (2).
+    const parked = notBefore > now ? 0 : live && !socket ? 2 : 1;
     if (parked === 2) {
       const reason = this.#oldHeldOver(n.to.namespace, lname, n.coalesceKey);
       if (reason) {
@@ -6265,13 +6282,13 @@ export class BusHub extends DurableObject<Env> {
     for (const r of rows) {
       // The address resolves to this agent now, or the notice is not its.
       if (liveVisibleIn(sql, r.toNs, r.toLname)?.id !== agent.id) continue;
+      if (!trySendFrame(ws, noticeFrame(agent, r.text))) break;
       sql.exec(
         "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
         r.toNs,
         r.toLname,
         r.ckey,
       );
-      sendFrame(ws, noticeFrame(agent, r.text));
     }
     // A full batch: more may wait. Hand the rest to the alarm (it sends in
     // bounded steps to this live socket) instead of leaving them parked.
@@ -6282,7 +6299,7 @@ export class BusHub extends DurableObject<Env> {
         agent.namespace,
         agent.global === 1 ? 1 : 0,
       );
-      this.#arm(now + 1);
+      this.#arm(now + NOTICE_PACE_MS);
     }
   }
 
@@ -6319,21 +6336,30 @@ export class BusHub extends DurableObject<Env> {
       now,
       BATCH,
     );
+    // Parking and dropping are cheap; only sends are paced (#1752).
+    let sent = 0;
+    let paced = false;
     for (const r of due) {
+      if (sent >= NOTICE_FLUSH_BATCH) {
+        paced = true;
+        break;
+      }
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
       const live = agent && liveSocket(this.ctx, agent.machineId);
       const socket = live && noticeGated(live) ? live : null;
-      if (agent && socket) {
+      if (agent && socket && trySendFrame(socket, noticeFrame(agent, r.text))) {
+        sent++;
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
           r.toNs,
           r.toLname,
           r.ckey,
         );
-        sendFrame(socket, noticeFrame(agent, r.text));
       } else if (agent) {
         // A live socket that cannot read it: old-daemon share; none: offline.
-        const reason = live
+        // A capable socket that refused the frame (#1752) is offline-like (1).
+        const tooOld = live && !socket;
+        const reason = tooOld
           ? this.#oldHeldOver(r.toNs, r.toLname, r.ckey)
           : null;
         if (reason) {
@@ -6347,7 +6373,7 @@ export class BusHub extends DurableObject<Env> {
         } else {
           sql.exec(
             "update notices set parked = ? where to_ns = ? and to_lname = ? and ckey = ?",
-            live ? 2 : 1,
+            tooOld ? 2 : 1,
             r.toNs,
             r.toLname,
             r.ckey,
@@ -6362,7 +6388,9 @@ export class BusHub extends DurableObject<Env> {
         );
       }
     }
-    return gone || due.length >= BATCH;
+    // A full step: the rest go out a pace later (#1752), not at once.
+    if (paced) this.#arm(now + NOTICE_PACE_MS);
+    return gone || (!paced && due.length >= BATCH);
   }
 
   // ------------------------------------------------------------------- alarm

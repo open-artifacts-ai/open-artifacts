@@ -529,6 +529,114 @@ describe("a daemon that cannot decode notices (#1746)", () => {
   });
 });
 
+/** The server side of every socket throws on send, as a closing socket does. */
+const breakSockets = (userId: string) =>
+  inHub(userId, (_, st) => {
+    for (const ws of st.getWebSockets())
+      ws.send = () => {
+        throw new Error("closed");
+      };
+  });
+const parkedValues = (userId: string) =>
+  inHub(userId, (_, st) =>
+    st.storage.sql
+      .exec("select parked from notices order by rowid")
+      .toArray()
+      .map((r) => r.parked),
+  );
+
+describe("a socket that refuses the frame (#1752)", () => {
+  it("holds the notice, not delivered, and sends it on the next agent_up", async () => {
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    // The server side of the socket throws on send, as a closing socket does.
+    await inHub(s.userId, (_, st) => {
+      for (const ws of st.getWebSockets())
+        ws.send = () => {
+          throw new Error("closed");
+        };
+    });
+    const n = note({ namespace: s.namespace, name: s.name });
+    expect(await stub.deliverNotice(n)).toBe("held");
+    expect(await waiting(s.userId)).toBe(1);
+    // Parked as 1 (offline-like: sent on the next agent_up), not a cap-less daemon's state.
+    expect(await parkedValues(s.userId)).toEqual([1]);
+
+    await goOffline(s.d, s.machineId, s.userId);
+    const d2 = await daemon(s.token);
+    d2.send(hello(id("h")));
+    await waitFor(d2, "hello_ok");
+    d2.send(up(id("u"), s.ref, s.name, s.namespace));
+    const f = await waitFor(d2, "deliver");
+    expect(f.body).toBe(n.text);
+    expect(await waiting(s.userId)).toBe(0);
+  });
+
+  it("the alarm sweep parks (1) a due notice whose send throws, and it still goes on agent_up", async () => {
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    const n = note(
+      { namespace: s.namespace, name: s.name },
+      { notBefore: t + 1000 },
+    );
+    expect(await stub.deliverNotice(n)).toBe("held");
+    expect(await parkedValues(s.userId)).toEqual([0]);
+    await breakSockets(s.userId);
+    await setClock(s.userId, t + 1000);
+    await runAlarm(s.userId);
+    expect(await waiting(s.userId)).toBe(1);
+    expect(await parkedValues(s.userId)).toEqual([1]);
+
+    await goOffline(s.d, s.machineId, s.userId);
+    const d2 = await daemon(s.token);
+    d2.send(hello(id("h")));
+    await waitFor(d2, "hello_ok");
+    d2.send(up(id("u"), s.ref, s.name, s.namespace));
+    expect((await waitFor(d2, "deliver")).body).toBe(n.text);
+    expect(await waiting(s.userId)).toBe(0);
+  });
+
+  it("the agent_up flush keeps a notice whose send throws, still parked (1)", async () => {
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    await goOffline(s.d, s.machineId, s.userId);
+    await seedNotice(s.userId, {
+      toNs: s.namespace,
+      name: s.name,
+      key: "k0",
+      notBefore: t - 1,
+      expiresAt: t + NOTICE_HOLD_MS,
+      parked: 1,
+    });
+    const d2 = await daemon(s.token);
+    d2.send(hello(id("h")));
+    await waitFor(d2, "hello_ok");
+    await breakSockets(s.userId);
+    d2.send(up(id("u"), s.ref, s.name, s.namespace));
+    // The agent is live again once its agent_up was handled, flush included.
+    await vi.waitFor(
+      async () =>
+        expect(
+          await inHub(
+            s.userId,
+            (_, st) =>
+              st.storage.sql
+                .exec("select live from agents where native_ref = ?", s.ref)
+                .one().live,
+          ),
+        ).toBe(1),
+      { timeout: 10_000 },
+    );
+    expect(await waiting(s.userId)).toBe(1);
+    expect(await parkedValues(s.userId)).toEqual([1]);
+  });
+});
+
 describe("notices reach only the addressed agent (#1317)", () => {
   it("sends to the addressed machine's socket, never another machine's", async () => {
     const s = await setup();
@@ -654,13 +762,19 @@ describe("notices reach only the addressed agent (#1317)", () => {
     d2.send(up(id("u"), s.ref, s.name, s.namespace));
     await waitFor(d2, "agent_ok");
     await settled(d2, s.ref);
-    expect(delivers(d2)).toHaveLength(100);
-    expect(await waiting(s.userId)).toBe(total - 100);
-    // The rest wait on an alarm armed for the next tick, not the hour's expiry.
+    // A reconnect injects one small step, never the whole backlog (#1752).
+    expect(delivers(d2)).toHaveLength(10);
+    expect(await waiting(s.userId)).toBe(total - 10);
+    // The rest wait on a paced alarm, not the hour's expiry.
     const alarm = await inHub(s.userId, (_, st) => st.storage.getAlarm());
     expect(alarm).not.toBeNull();
-    expect(alarm).toBeLessThanOrEqual(t + 1);
-    for (let i = 0; i < 5 && (await waiting(s.userId)) > 0; i++)
+    // A 2 s pace, not the next tick and not the hour's expiry.
+    expect(alarm).toBeGreaterThanOrEqual(t + 2000);
+    expect(alarm).toBeLessThanOrEqual(t + 2000 + 1000);
+    await runAlarm(s.userId);
+    await settled(d2, s.ref);
+    expect(delivers(d2)).toHaveLength(20);
+    for (let i = 0; i < 20 && (await waiting(s.userId)) > 0; i++)
       await runAlarm(s.userId);
     expect(await waiting(s.userId)).toBe(0);
     await settled(d2, s.ref);
