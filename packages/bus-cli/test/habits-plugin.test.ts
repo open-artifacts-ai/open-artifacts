@@ -444,4 +444,31 @@ describe("off: a symlinked Hermes profiles folder (#1717)", () => {
       }
     },
   );
+  it("does not throw when the Hermes root is a file", () => {
+    const home = tmp();
+    writeFileSync(join(home, ".hermes"), "x");
+    const r = setPluginHabits({ home }, [hermes], false);
+    expect(r.notes).toEqual([
+      `The Hermes profiles folder ${join(home, ".hermes", "profiles")} isn't a folder, so there were no profiles to check.`,
+    ]);
+    expect(r.incomplete).toBe(false);
+  });
+  it.skipIf(process.getuid?.() === 0)(
+    "does not throw when the Hermes root cannot be searched",
+    () => {
+      const home = tmp();
+      const root = join(home, ".hermes");
+      mkdirSync(join(root, "profiles"), { recursive: true });
+      chmodSync(root, 0o000);
+      try {
+        const r = setPluginHabits({ home }, [hermes], false);
+        expect(r.notes).toContain(
+          `Couldn't read the Hermes profiles folder ${join(root, "profiles")} (EACCES), so habits may still be on in a profile there.`,
+        );
+        expect(r.incomplete).toBe(true);
+      } finally {
+        chmodSync(root, 0o755);
+      }
+    },
+  );
 });

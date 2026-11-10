@@ -199,7 +199,11 @@ export function hermesProfilesScan(
   platform: NodeJS.Platform = process.platform,
 ): { names: string[]; note?: string; incomplete: boolean } {
   const path = join(hermesRoot(home, env, platform), "profiles");
-  const isLink = lstatSync(path, { throwIfNoEntry: false })?.isSymbolicLink();
+  // An lstat that fails reads as "not a link"; readdirSync's error decides the note.
+  let isLink = false;
+  try {
+    isLink = lstatSync(path).isSymbolicLink();
+  } catch {}
   const target = () => {
     try {
       return realpathSync(path);
