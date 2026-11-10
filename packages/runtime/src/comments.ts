@@ -71,6 +71,11 @@ const OVERLAY_CSS = `
    is exactly on x,y. It holds the pin's number (the frame never carries names).
    Ring: 2px white. Open (.on): plus a 2.5px amber ring. */
 .pin{position:absolute;width:30px;height:30px;margin:-30px 0 0 0;border-radius:15px 15px 15px 3px;background:#1f5fbf;color:#fff;font:600 12.5px/30px system-ui,sans-serif;text-align:center;pointer-events:auto;cursor:pointer;box-shadow:0 0 0 2px #fff,0 3px 8px rgba(0,0,0,.3)}
+/* Edges: flip, never clip. The sharp corner stays on x,y. Near the top the
+   bubble hangs below the point; near the right edge it sits left of it. */
+.pin.flip-y{margin:0;border-radius:3px 15px 15px 15px}
+.pin.flip-x{margin:-30px 0 0 -30px;border-radius:15px 15px 3px 15px}
+.pin.flip-x.flip-y{margin:0 0 0 -30px;border-radius:15px 3px 15px 15px}
 .pin.on{box-shadow:0 0 0 2px #fff,0 0 0 4.5px #e0a000,0 3px 8px rgba(0,0,0,.3)}
 /* Placing: a translucent accent bubble with a dashed edge. */
 .pin.ghost{background:#1f5fbf55;border:2px dashed #1f5fbf;box-sizing:border-box;box-shadow:none;pointer-events:none}
@@ -184,6 +189,18 @@ export function createComments(
     return index;
   };
 
+  /** Pin bubbles are this tall and wide; one near an edge flips so it is never clipped. */
+  const BUBBLE_PX = 30;
+  /** The classes that keep the bubble's sharp corner on x,y near the top or right edge. */
+  const flips = (x: number, y: number): string =>
+    [
+      y < BUBBLE_PX ? "flip-y" : "",
+      x > (document.documentElement.clientWidth || innerWidth) - BUBBLE_PX
+        ? "flip-x"
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
   const clampTop = (n: number) => Math.min(10_000_000, Math.max(0, n));
   const docTop = (r: DOMRect) => clampTop(r.top + scrollY);
 
@@ -314,7 +331,12 @@ export function createComments(
         const y = box.top + scrollY + th.anchor.y * box.height;
         out.push({ id: th.id, state: "pin", top: clampTop(y) });
         if (!th.resolved) {
-          const cls = ["pin", isActive ? "on" : "", th.changed ? "changed" : ""]
+          const cls = [
+            "pin",
+            isActive ? "on" : "",
+            th.changed ? "changed" : "",
+            flips(x, clampTop(y)),
+          ]
             .filter(Boolean)
             .join(" ");
           const d = mark(cls, x, clampTop(y), String(th.n ?? ""));
@@ -347,12 +369,11 @@ export function createComments(
         Anchor,
         { kind: "pin" }
       >);
-      if (box)
-        mark(
-          "pin ghost",
-          box.left + scrollX + ghost.x * box.width,
-          clampTop(box.top + scrollY + ghost.y * box.height),
-        );
+      if (box) {
+        const gx = box.left + scrollX + ghost.x * box.width;
+        const gy = clampTop(box.top + scrollY + ghost.y * box.height);
+        mark(["pin ghost", flips(gx, gy)].filter(Boolean).join(" "), gx, gy);
+      }
     }
     if (marks.length || layer)
       overlay().replaceChildren(...marks, ...(btn?.isConnected ? [btn] : []));

@@ -1040,6 +1040,61 @@ describe("pins", () => {
       expect(r).toContain("border-radius:15px 15px 15px 3px");
     });
 
+    it("near the top or right edge it flips, and the sharp corner stays exactly on x,y", async () => {
+      // The image box is 200x100 at 20,10 in this DOM; make the page 230px wide.
+      Object.defineProperty(document.documentElement, "clientWidth", {
+        configurable: true,
+        value: 230,
+      });
+      const cases = [
+        // [x, y (fractions), classes, the sharp corner: 0 tl, 1 tr, 2 br, 3 bl]
+        [0.3, 0.5, "pin", 3],
+        [0.3, 0.1, "pin flip-y", 0],
+        [0.95, 0.5, "pin flip-x", 2],
+        [0.95, 0.1, "pin flip-y flip-x", 1],
+      ] as const;
+      for (const [fx, fy, cls, corner] of cases) {
+        await start("select");
+        await send({
+          type: "comments.set",
+          threads: [
+            {
+              id: "p1",
+              n: 1,
+              anchor: {
+                kind: "pin",
+                version: 1,
+                x: fx,
+                y: fy,
+                contentHash: "h",
+              },
+            },
+          ],
+        });
+        const pin = roots.at(-1)?.querySelector<HTMLElement>(".pin");
+        expect(pin?.className).toBe(cls);
+        // The both-edges rule is written .flip-x.flip-y.
+        const sel = (cls.includes("flip-y flip-x") ? "pin flip-x flip-y" : cls)
+          .split(" ")
+          .join(".");
+        const r = rule(`.${sel}`);
+        const margin = /margin:([^;]*)/.exec(r)?.[1]?.split(/\s+/) ?? [];
+        const [mt, , , ml] = (
+          margin.length === 1 ? Array(4).fill(margin[0]) : margin
+        ).map((v) => Number.parseFloat(v));
+        const radii = /border-radius:([^;]*)/.exec(r)?.[1]?.split(/\s+/) ?? [];
+        expect(radii.findIndex((v) => v === "3px")).toBe(corner);
+        const left = Number.parseFloat(pin?.style.left ?? "");
+        const top = Number.parseFloat(pin?.style.top ?? "");
+        // The corner's offset in the 30px box: tl 0,0; tr 30,0; br 30,30; bl 0,30.
+        const cx = corner === 1 || corner === 2 ? 30 : 0;
+        const cy = corner === 2 || corner === 3 ? 30 : 0;
+        expect(left + (ml ?? 0) + cx).toBeCloseTo(20 + fx * 200, 5);
+        expect(top + (mt ?? 0) + cy).toBeCloseTo(10 + fy * 100, 5);
+      }
+      Reflect.deleteProperty(document.documentElement, "clientWidth");
+    });
+
     it("carries the pin number, never a name or initial", async () => {
       const pin = await pinAt();
       expect(pin.textContent).toBe("7");
