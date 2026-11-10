@@ -328,6 +328,7 @@ export function rosterBlock(
   return {
     lines: [
       c.rosterHeader(ns.namespace, rows.length - queued, queued),
+      ...(ns.source ? [c.namespaceSource(ns.source)] : []),
       ...shown.flatMap((r) => {
         const says = c.rosterSays(r, now);
         return [c.rosterRow(r), ...(says ? [says] : [])];

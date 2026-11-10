@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   BUS_CMD,
   type BusConfig,
@@ -11,12 +11,19 @@ import {
 } from "@oa/bus-protocol";
 import {
   approveCommand,
-  type ConfigIssues,
+  ConfigIssues,
   configIssue,
   configPaths,
 } from "./config-issues.ts";
-import { globalFile, isGlobalDir, readGlobalDirs } from "./global.ts";
-import { isApproved, namespacesFile, readApprovals } from "./namespaces.ts";
+import { globalFile, isGlobalDir, readGlobalDirs, sameDir } from "./global.ts";
+import {
+  isApproved,
+  namespacesFile,
+  readApprovals,
+  readRemotes,
+  remotesFile,
+  writeRemotes,
+} from "./namespaces.ts";
 import { type GroupCheck, readOwnFile } from "./own-file.ts";
 
 export type Namespace = {
@@ -37,6 +44,13 @@ export type NamespaceDeps = {
   globalFile?: string;
   /** The user's namespace approvals; default `<OA_BUS_HOME>/namespaces.json`. */
   namespacesFile?: string;
+  /**
+   * The file recording each git folder's first remote-derived namespace
+   * (#1570). Unset: no pinning, so a caller opts in (the daemon, doctor, link).
+   */
+  remotesFile?: string;
+  /** With `remotesFile`: false reads the record but never writes it (doctor). */
+  recordRemote?: boolean;
   /** Collects the config files refused or noted, for status, doctor and self. */
   issues?: ConfigIssues;
   /** Tests inject the group check (which group is the user's private one). */
@@ -87,13 +101,16 @@ export function resolveNamespace(
       );
   const remoteUrl = (deps.gitRemote ?? gitRemote)(cwd);
   const root = (deps.gitRoot ?? gitRoot)(cwd);
-  const derived = namespaceFrom({
+  let derived = namespaceFrom({
     remoteUrl,
     gitRootName: root ? basename(root) : null,
     cwd,
   });
   const source =
     remoteUrl && normalizeRemote(remoteUrl) ? "git" : root ? "dir" : "cwd";
+  // #1570: the remote is the repo's own say; a change from the first one needs the user's approval.
+  if (source === "git" && root && deps.remotesFile && !missing)
+    derived = pinRemote(root, derived, deps);
   const fallback: Namespace = { namespace: derived, global, source };
   if (!cfg.namespace || !nsFile) return fallback;
   // The same as the derived namespace: nothing to approve.
@@ -117,6 +134,101 @@ export function resolveNamespace(
     `ignoring namespace "${cfg.namespace}" in ${nsFile}: not approved; run: ${approveCommand(dir)}`,
   );
   return fallback;
+}
+
+/**
+ * The namespace a git folder gets from its remote. The first one seen is
+ * recorded without a prompt; a later one that differs is used only when the
+ * user approved it for the folder (as #1525), else the recorded one stays and
+ * the change waits as pending.
+ */
+function pinRemote(
+  rootPath: string,
+  derived: string,
+  deps: NamespaceDeps,
+): string {
+  const uid = deps.uid ?? process.getuid?.();
+  const recordFile = deps.remotesFile ?? remotesFile();
+  let root = rootPath;
+  try {
+    root = realpathSync(rootPath);
+  } catch {}
+  const marker = join(root, ".git");
+  const list = readRemotes(recordFile);
+  if (list.error) {
+    once(
+      deps,
+      `remotes:${recordFile}:${list.error}`,
+      `${recordFile} ${list.error}: remotes are not pinned`,
+    );
+    return derived;
+  }
+  const prior = list.entries.find((e) => sameDir(e.dir, root));
+  const write = (entries: typeof list.entries) => {
+    if (deps.recordRemote === false) return;
+    try {
+      writeRemotes(entries, dirname(recordFile));
+    } catch (e) {
+      once(
+        deps,
+        `remotes-write:${recordFile}`,
+        `cannot write ${recordFile}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+  if (!prior) {
+    write([...list.entries, { dir: root, namespace: derived }]);
+    return derived;
+  }
+  if (prior.namespace === derived) {
+    deps.issues?.setPending(marker, uid, undefined);
+    return derived;
+  }
+  if (approved(join(root, "x"), derived, deps)) {
+    write(
+      list.entries.map((e) => (e === prior ? { ...e, namespace: derived } : e)),
+    );
+    deps.issues?.setPending(marker, uid, undefined);
+    return derived;
+  }
+  deps.issues?.setPending(marker, uid, {
+    file: marker,
+    dir: root,
+    namespace: derived,
+    approvals: deps.namespacesFile,
+    reason: `now derives namespace "${derived}" from its git remote, but it first got "${prior.namespace}", and you have not approved the change`,
+    recorded: prior.namespace,
+  });
+  once(
+    deps,
+    `remote:${root}:${derived}`,
+    `keeping namespace "${prior.namespace}" for ${root}: its git remote now gives "${derived}", not approved; run: ${approveCommand(root)}`,
+  );
+  return prior.namespace;
+}
+
+/**
+ * The git remote change of the folder `dir` is in that waits for approval
+ * (#1570): the repo root, the namespace its remote now gives and the one it
+ * first got. Reads only; nothing is recorded.
+ */
+export function remoteChange(
+  dir: string,
+  deps: Pick<
+    NamespaceDeps,
+    "remotesFile" | "namespacesFile" | "gitRemote" | "gitRoot"
+  >,
+): { root: string; namespace: string; recorded: string } | undefined {
+  const issues = new ConfigIssues();
+  try {
+    resolveNamespace(dir, { ...deps, issues, recordRemote: false });
+  } catch {
+    return undefined;
+  }
+  const p = issues.remoteChanges()[0];
+  return p?.recorded === undefined
+    ? undefined
+    : { root: p.dir, namespace: p.namespace, recorded: p.recorded };
 }
 
 /** Whether the user approved `namespace` for the directory holding `file`. */

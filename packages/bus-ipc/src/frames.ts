@@ -340,9 +340,14 @@ export const ConfigFile = z.object({
 });
 export type ConfigFile = z.infer<typeof ConfigFile>;
 
+/** Where a namespace came from (#1570): an approved `.oa-bus.json`, the git remote, the git folder's name, or the cwd's. */
+export const NamespaceSource = z.enum(["config", "git", "dir", "cwd"]);
+
 export const AgentInfo = z.object({
   name: z.string(),
   namespace: z.string(),
+  /** `self` only (#1570). */
+  namespace_source: NamespaceSource.optional(),
   kind: KIND_TOKEN,
   /** `state === "live"`; kept for older adapters. */
   live: z.boolean(),
@@ -503,6 +508,8 @@ export const StatusReply = z.object({
   namespaces: z.array(
     z.object({
       namespace: z.string(),
+      /** Where it came from (#1570); absent from older daemons. */
+      source: NamespaceSource.optional(),
       agents: z.array(
         z.object({
           name: z.string(),

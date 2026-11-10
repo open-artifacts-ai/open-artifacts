@@ -78,6 +78,7 @@ import {
   liveClaudeSessions,
 } from "./liveness/claude.ts";
 import { type Namespace, resolveNamespace } from "./namespace.ts";
+import { remotesFile } from "./namespaces.ts";
 import { Outbox } from "./outbox.ts";
 import {
   lstartEpoch,
@@ -404,7 +405,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     (
       deps.resolveNamespace ??
       ((dir) =>
-        resolveNamespace(dir, { log, allowMissing, issues: configIssues }))
+        resolveNamespace(dir, {
+          log,
+          allowMissing,
+          issues: configIssues,
+          remotesFile: remotesFile(),
+        }))
     )(cwd);
 
   const cl = deps.claude ?? {};
@@ -898,6 +904,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           proposedName: old?.busName ?? s.name,
           busName: prev?.busName ?? old?.busName ?? s.name,
           namespace: ns.namespace,
+          namespaceSource: ns.source,
           global: ns.global,
           pid: s.pid,
           procStart: s.procStart,
@@ -1338,7 +1345,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                 machine: cfg.label,
                 state: "live" as const,
               }));
-          return { namespace, agents: rows };
+          const source = local[0]?.namespaceSource;
+          return {
+            namespace,
+            ...(source ? { source } : {}),
+            agents: rows,
+          };
         }),
       );
       const config_files = configFiles(
@@ -1532,6 +1544,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           proposedName: old?.busName ?? proposedName,
           busName: prev?.busName ?? old?.busName ?? proposedName,
           namespace: ns.namespace,
+          namespaceSource: ns.source,
           global: ns.global,
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
@@ -1760,6 +1773,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         proposedName: r.proposedName,
         busName: r.busName,
         namespace: ns.namespace,
+        namespaceSource: ns.source,
         global: ns.global,
         pid: r.pid,
         procStart: r.procStart,

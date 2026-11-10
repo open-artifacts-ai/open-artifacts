@@ -12,11 +12,14 @@ import {
   namespacesFile,
   nearestConfig,
   readGlobalDirs,
+  remotesFile,
+  resolveNamespace,
   scanConfigFiles,
 } from "@oa/bus-daemon";
 import {
   type Ctx,
   configFileLines,
+  plain,
   probeDaemon,
   say,
   sayErr,
@@ -283,10 +286,22 @@ export async function doctor(ctx: Ctx): Promise<number> {
   const allow = globalFile(ctx.home);
   const list = readGlobalDirs(allow);
   if (list.error) warn(c.globalUnusable(tilde(ctx, allow), list.error));
+  // #1570: the namespace this folder gets, and where it comes from.
+  try {
+    const ns = resolveNamespace(ctx.cwd, {
+      globalFile: allow,
+      namespacesFile: namespacesFile(ctx.home),
+      remotesFile: remotesFile(ctx.home),
+      recordRemote: false,
+      allowMissing: true,
+    });
+    pass(c.namespaceIs(plain(ns.namespace), ns.source));
+  } catch {}
   // The cwd's own `.oa-bus.json` files, read as the daemon reads them.
   const files = scanConfigFiles(ctx.cwd, {
     globalFile: allow,
     namespacesFile: namespacesFile(ctx.home),
+    remotesFile: remotesFile(ctx.home),
   }).filter((f) => f.file !== allow);
   if (files.length > 0) {
     n.warnings += files.length;
