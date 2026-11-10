@@ -7,6 +7,13 @@ export {
   SUBAGENT_REFUSAL,
   TURN_META,
 } from "./codex.ts";
+export {
+  BUSY_MESSAGE,
+  type ConnectDeps,
+  type ConnectOutcome,
+  connectOutcome,
+  noSessionMessage,
+} from "./connect.ts";
 export { frameOf, type InjectArgs, InjectError, inject } from "./inject.ts";
 export {
   ancestorChain,
@@ -17,7 +24,9 @@ export {
   claudeSessionsDir,
   findSession,
   notASession,
+  PS_TIMEOUT_MS,
   peerTokenFor,
+  ProcStartUnknownError,
   procStartOf,
   readSessionFile,
   sessionHello,

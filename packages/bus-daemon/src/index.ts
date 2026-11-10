@@ -415,16 +415,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const running = cl.isRunning ?? isRunning;
   const claudeSessions = {
     dir: cl.sessionsDir ?? claudeSessionsDir(),
-    procStart: cachedProcStart(cl.procStart ?? claudeProcStartOf, running, {
-      ttlMs: cl.syncMs ?? 2000,
-    }),
+    procStart: cachedProcStart(cl.procStart ?? claudeProcStartOf, running),
     isRunning: running,
   };
   const oc = deps.opencode ?? {};
   const ocRunning = oc.isRunning ?? isRunning;
-  const ocStart = cachedProcStart(oc.procStart ?? procStartOf, ocRunning, {
-    ttlMs: cl.syncMs ?? 2000,
-  });
+  const ocStart = cachedProcStart(oc.procStart ?? procStartOf, ocRunning);
   const ocComm = oc.comm ?? commOf;
   const cx = deps.codex ?? {};
   /** One per daemon: it pins each Codex process's start and the call ids used. */

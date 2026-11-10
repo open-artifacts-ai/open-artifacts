@@ -1,10 +1,11 @@
+import { existsSync } from "node:fs";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { BUS_CMD, connectDaemon, type DaemonClient } from "@oa/bus-ipc";
+import { connectDaemon, type DaemonClient } from "@oa/bus-ipc";
 import {
   ancestorChain,
   busHome,
@@ -12,9 +13,9 @@ import {
   claudeSessionsDir,
   findSession,
   hasClaudeAncestor,
-  NOT_UNDER_CLAUDE,
   sessionHello,
 } from "./session.ts";
+import { connectOutcome, noSessionMessage } from "./connect.ts";
 import { daemonSocketPath, socketDirProblem } from "./socket-path.ts";
 import { callTool, TOOLS } from "./tools.ts";
 
@@ -23,23 +24,23 @@ const HOME = busHome();
 const SOCKET = daemonSocketPath(HOME);
 
 /** One connection per tool call: the daemon attests the session behind this process. */
-async function connect(): Promise<DaemonClient | null> {
-  try {
-    const session = findSession(process.pid, {
-      sessionsDir: SESSIONS,
-      ancestors: ancestorChain,
-      procStart: claudeProcStartOf,
-    });
+const connect = () =>
+  connectOutcome<DaemonClient>({
+    findSession: () =>
+      findSession(process.pid, {
+        sessionsDir: SESSIONS,
+        ancestors: ancestorChain,
+        procStart: claudeProcStartOf,
+      }),
     // A short socket folder another user could reach is never dialed.
-    if (!session || socketDirProblem(HOME)) return null;
-    return await connectDaemon({
-      path: SOCKET,
-      hello: sessionHello(session, process.pid, process.cwd()),
-    });
-  } catch {
-    return null;
-  }
-}
+    socketDirProblem: () => socketDirProblem(HOME),
+    socketExists: () => existsSync(SOCKET),
+    connect: (session) =>
+      connectDaemon({
+        path: SOCKET,
+        hello: sessionHello(session, process.pid, process.cwd()),
+      }),
+  });
 
 const server = new Server(
   { name: "oa_bus", version: "0.1.0" },
@@ -61,13 +62,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [...TOOLS],
 }));
 server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
-  const client = await connect();
-  if (!client) {
-    const text = underClaude()
-      ? `oa-bus: no Claude session or daemon found. Run \`${BUS_CMD} install\`.`
-      : NOT_UNDER_CLAUDE;
+  const out = await connect();
+  if (out.kind !== "ok") {
+    const text = noSessionMessage(out.kind, underClaude());
     return { content: [{ type: "text", text }], isError: true };
   }
+  const client = out.client;
   try {
     return await callTool(
       req.params.name,
