@@ -30,6 +30,7 @@ import {
   HERMES_HABITS_MARKER,
   hermesPluginDir,
   hermesPluginDirs,
+  hermesProfilesScan,
   pluginState,
 } from "./hermes.ts";
 import {
@@ -449,6 +450,8 @@ export type PluginHarness = {
   dir: (home: string, env: Env) => string;
   /** Every folder the plugin may be in, across profiles: turning off sweeps them all. */
   dirs: (home: string, env: Env) => string[];
+  /** Turning off only: what reading the folder `dirs` walks through said; unread means profiles went unswept. */
+  scan?: (home: string, env: Env) => { note?: string; incomplete: boolean };
   marker: string;
   /** Whether `dir` is our plugin folder (it carries our ownership marker). */
   ours: (dir: string) => boolean;
@@ -461,6 +464,7 @@ export const PLUGIN_HARNESSES: PluginHarness[] = [
     label: "Hermes",
     dir: hermesPluginDir,
     dirs: hermesPluginDirs,
+    scan: hermesProfilesScan,
     marker: HERMES_HABITS_MARKER,
     ours: (dir) => pluginState(dir, undefined) !== "foreign" && !isLink(dir),
   },
@@ -590,6 +594,11 @@ export function setPluginHabits(
       notes.push(msg);
       incomplete = true;
     };
+    const scan = p.scan?.(deps.home, deps.env ?? {});
+    if (scan?.note !== undefined) {
+      if (scan.incomplete) left(scan.note);
+      else notes.push(scan.note);
+    }
     for (const dir of dirs) {
       const marker = join(dir, p.marker);
       const d = probe(dir);

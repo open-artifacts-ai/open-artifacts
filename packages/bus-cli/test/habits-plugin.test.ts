@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -352,4 +353,122 @@ describe("install and uninstall with Hermes", () => {
     await install({ habits: "show" }, ctx);
     expect(ctx.out().join("\n")).toContain("Hermes plugin: not installed");
   });
+});
+
+describe("off: a symlinked Hermes profiles folder (#1717)", () => {
+  const profileDir = (root: string, name: string) =>
+    join(root, "profiles", name, "plugins", "oa-bus");
+  const withMarker = (dir: string) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, HERMES_MARKER),
+      "managed by the Open Artifacts bus installer: x\n",
+    );
+    writeFileSync(join(dir, HERMES_HABITS_MARKER), "on\n");
+  };
+  it("says the folder is a link and where it points, and still sweeps it", () => {
+    const home = tmp();
+    const elsewhere = join(tmp(), "shared-profiles");
+    const behind = join(elsewhere, "work", "plugins", "oa-bus");
+    withMarker(behind);
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    symlinkSync(elsewhere, join(home, ".hermes", "profiles"));
+    const r = setPluginHabits({ home }, [hermes], false);
+    expect(existsSync(join(behind, HERMES_HABITS_MARKER))).toBe(false);
+    expect(r.notes).toContain(
+      `The Hermes profiles folder ${join(home, ".hermes", "profiles")} is a symlink to ${realpathSync(elsewhere)}. Its profiles were checked too.`,
+    );
+    expect(r.incomplete).toBe(false);
+  });
+  it("says nothing about a plain profiles folder", () => {
+    const home = tmp();
+    withMarker(profileDir(join(home, ".hermes"), "work"));
+    const r = setPluginHabits({ home }, [hermes], false);
+    expect(r.notes).toEqual([]);
+    expect(r.incomplete).toBe(false);
+  });
+  it("says a dangling link has no profiles, without failing the off", () => {
+    const home = tmp();
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    const gone = join(tmp(), "gone");
+    symlinkSync(gone, join(home, ".hermes", "profiles"));
+    const r = setPluginHabits({ home }, [hermes], false);
+    expect(r.notes).toEqual([
+      `The Hermes profiles folder ${join(home, ".hermes", "profiles")} is a symlink to ${gone}, which doesn't exist, so there were no profiles to check.`,
+    ]);
+    expect(r.incomplete).toBe(false);
+  });
+  it("says nothing when a plain profiles folder is missing", () => {
+    const home = tmp();
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    const r = setPluginHabits({ home }, [hermes], false);
+    expect(r.notes).toEqual([]);
+    expect(r.incomplete).toBe(false);
+  });
+  it("says a profiles path that is a file is not a folder", () => {
+    const home = tmp();
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    writeFileSync(join(home, ".hermes", "profiles"), "x");
+    const r = setPluginHabits({ home }, [hermes], false);
+    expect(r.notes).toEqual([
+      `The Hermes profiles folder ${join(home, ".hermes", "profiles")} isn't a folder, so there were no profiles to check.`,
+    ]);
+    expect(r.incomplete).toBe(false);
+  });
+  it("says a link loop could not be read and marks the off incomplete", () => {
+    const home = tmp();
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    const p = join(home, ".hermes", "profiles");
+    symlinkSync(p, p);
+    const r = setPluginHabits({ home }, [hermes], false);
+    expect(r.notes).toEqual([
+      `Couldn't read the Hermes profiles folder ${p} (ELOOP), so habits may still be on in a profile there.`,
+    ]);
+    expect(r.incomplete).toBe(true);
+  });
+  it.skipIf(process.getuid?.() === 0)(
+    "says an unreadable plain profiles folder could not be read",
+    () => {
+      const home = tmp();
+      const p = join(home, ".hermes", "profiles");
+      mkdirSync(join(p, "work"), { recursive: true });
+      chmodSync(p, 0o000);
+      try {
+        const r = setPluginHabits({ home }, [hermes], false);
+        expect(r.notes).toEqual([
+          `Couldn't read the Hermes profiles folder ${p} (EACCES), so habits may still be on in a profile there.`,
+        ]);
+        expect(r.incomplete).toBe(true);
+      } finally {
+        chmodSync(p, 0o755);
+      }
+    },
+  );
+  it("does not throw when the Hermes root is a file", () => {
+    const home = tmp();
+    writeFileSync(join(home, ".hermes"), "x");
+    const r = setPluginHabits({ home }, [hermes], false);
+    expect(r.notes).toEqual([
+      `The Hermes profiles folder ${join(home, ".hermes", "profiles")} isn't a folder, so there were no profiles to check.`,
+    ]);
+    expect(r.incomplete).toBe(false);
+  });
+  it.skipIf(process.getuid?.() === 0)(
+    "does not throw when the Hermes root cannot be searched",
+    () => {
+      const home = tmp();
+      const root = join(home, ".hermes");
+      mkdirSync(join(root, "profiles"), { recursive: true });
+      chmodSync(root, 0o000);
+      try {
+        const r = setPluginHabits({ home }, [hermes], false);
+        expect(r.notes).toContain(
+          `Couldn't read the Hermes profiles folder ${join(root, "profiles")} (EACCES), so habits may still be on in a profile there.`,
+        );
+        expect(r.incomplete).toBe(true);
+      } finally {
+        chmodSync(root, 0o755);
+      }
+    },
+  );
 });
