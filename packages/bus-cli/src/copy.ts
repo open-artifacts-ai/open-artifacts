@@ -365,7 +365,7 @@ export function copy(style: Style, bus: string = BUS_CMD) {
       warn(
         `Update available: ${cutMiddle(hub, 19, more)} (this machine runs ${cutMiddle(mine, 19, more)})`,
       ),
-      next(`Run ${bus}@latest install.`),
+      next(`Run ${BUS_CMD}@latest install.`),
     ],
     // Status and doctor, when the hub's `/healthz` names a problem (#294).
     hubProblem: (problem: string) => [
