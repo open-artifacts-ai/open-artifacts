@@ -955,6 +955,17 @@ type Link = {
   close: () => void;
 };
 
+/**
+ * #1608: the daemon's binding token per ref, in memory only. A reconnect (and a
+ * /reload, which re-evaluates this module in the same process) echoes it.
+ */
+const bindTokens = (() => {
+  const g = globalThis as Record<symbol, unknown>;
+  const key = Symbol.for("oa-bus.bindTokens");
+  if (!(g[key] instanceof Map)) g[key] = new Map<string, string>();
+  return g[key] as Map<string, string>;
+})();
+
 function open(
   id: Identity,
   start: string | undefined,
@@ -1070,6 +1081,8 @@ function open(
           welcomed = true;
           clearTimeout(helloTimer);
           link.welcome = f;
+          if (typeof f.bind_token === "string")
+            bindTokens.set(id.ref, f.bind_token);
           resolve(link);
           continue;
         }
@@ -1111,6 +1124,7 @@ function open(
         // #1635: and may send a rename.
         // #1856: and may send a link_proof.
         caps: ["mailbox", "pending", "rename", "follow", "reach", "link"],
+        bind_token: bindTokens.get(id.ref),
         attest: start ? { proc_start: start } : {},
       }),
     );
