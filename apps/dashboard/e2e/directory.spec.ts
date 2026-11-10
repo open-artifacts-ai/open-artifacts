@@ -45,7 +45,7 @@ const STATES: [string, string, string][] = [
   ["1", "healthy", "Healthy"],
   ["unhealthy", "retrying", "Retrying"],
   ["frozen", "frozen", "Frozen"],
-  ["sync-off", "off", "Not connected"],
+  ["not-connected", "not connected", "Not connected"],
 ];
 
 for (const scheme of ["light", "dark"] as const)

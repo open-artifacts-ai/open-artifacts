@@ -355,20 +355,7 @@ it.each([
     OPTS,
     "Your trial ended, so this instance is read-only until you pick a plan.",
   ],
-  [
-    "plan_required",
-    {
-      billing: {
-        tier: "solo" as const,
-        // An owner sees the status; trial offers need an active plan.
-        status: "active" as const,
-        trialEndsAt: null,
-        graceUntil: null,
-        readOnly: false,
-      },
-    },
-    "Spaces are a team feature. Invite someone to start your free 14-day trial, or choose a plan.",
-  ],
+  // plan_required (Solo) can't reach this page since #2009: Solo has no Directory.
 ])(
   "a Snooze refused with %s toasts the plan copy; the row stays held",
   async (_code, opts, copy) => {
