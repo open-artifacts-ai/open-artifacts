@@ -3305,8 +3305,10 @@ function senderRef(f: ClientFrame): string | null {
 export const NOTICES_MAX = 500;
 /** #1317: how long an offline machine's notice waits (the v1 rule). */
 export const NOTICE_HOLD_MS = HOUR_MS;
-/** #1317: notices one agent_up sends, so a reconnect stays one bounded step. */
-const NOTICE_FLUSH_BATCH = 100;
+/** #1317: notices one agent_up (or one alarm step) sends, so a reconnect never injects a pile of turns at once (#1752). */
+const NOTICE_FLUSH_BATCH = 10;
+/** #1752: the wait between two steps of a backlog of notices to one live agent. */
+const NOTICE_PACE_MS = 2000;
 
 type NoticeRow = {
   toNs: string;
@@ -6240,7 +6242,7 @@ export class BusHub extends DurableObject<Env> {
         agent.namespace,
         agent.global === 1 ? 1 : 0,
       );
-      this.#arm(now + 1);
+      this.#arm(now + NOTICE_PACE_MS);
     }
   }
 
@@ -6261,7 +6263,7 @@ export class BusHub extends DurableObject<Env> {
       sql,
       `select ${NOTICE_COLS} from notices where parked = 0 and not_before <= ? order by not_before limit ?`,
       now,
-      BATCH,
+      NOTICE_FLUSH_BATCH,
     );
     for (const r of due) {
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
@@ -6290,7 +6292,9 @@ export class BusHub extends DurableObject<Env> {
         );
       }
     }
-    return gone || due.length >= BATCH;
+    // A full step: the rest go out a pace later (#1752), not at once.
+    if (due.length >= NOTICE_FLUSH_BATCH) this.#arm(now + NOTICE_PACE_MS);
+    return gone;
   }
 
   // ------------------------------------------------------------------- alarm

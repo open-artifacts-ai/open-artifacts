@@ -676,13 +676,17 @@ describe("notices reach only the addressed agent (#1317)", () => {
     d2.send(up(id("u"), s.ref, s.name, s.namespace));
     await waitFor(d2, "agent_ok");
     await settled(d2, s.ref);
-    expect(delivers(d2)).toHaveLength(100);
-    expect(await waiting(s.userId)).toBe(total - 100);
-    // The rest wait on an alarm armed for the next tick, not the hour's expiry.
+    // A reconnect injects one small step, never the whole backlog (#1752).
+    expect(delivers(d2)).toHaveLength(10);
+    expect(await waiting(s.userId)).toBe(total - 10);
+    // The rest wait on a paced alarm, not the hour's expiry.
     const alarm = await inHub(s.userId, (_, st) => st.storage.getAlarm());
     expect(alarm).not.toBeNull();
-    expect(alarm).toBeLessThanOrEqual(t + 1);
-    for (let i = 0; i < 5 && (await waiting(s.userId)) > 0; i++)
+    expect(alarm).toBeLessThanOrEqual(t + 2000);
+    await runAlarm(s.userId);
+    await settled(d2, s.ref);
+    expect(delivers(d2)).toHaveLength(20);
+    for (let i = 0; i < 20 && (await waiting(s.userId)) > 0; i++)
       await runAlarm(s.userId);
     expect(await waiting(s.userId)).toBe(0);
     await settled(d2, s.ref);
