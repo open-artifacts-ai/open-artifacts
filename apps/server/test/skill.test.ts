@@ -370,15 +370,15 @@ describe("skill.md drift", () => {
     expect(section).not.toContain("Publishing for another agent");
   });
 
-  it.each([
-    ["the bus is off (BUS_HUB unbound)", { BUS_HUB: undefined }],
-    ["the install is hosted (until #1299)", { HOSTED: "1" }],
-  ])("names no bus tool when %s", async (_, over) => {
-    const md = await skill(E(over));
-    expect(md).not.toContain("Find peers by bus name");
-    expect(md).not.toContain("To message agents, use the bus tools");
-    expect(md).not.toContain("{{");
-  });
+  it.each([["the bus is off (BUS_HUB unbound)", { BUS_HUB: undefined }]])(
+    "names no bus tool when %s",
+    async (_, over) => {
+      const md = await skill(E(over));
+      expect(md).not.toContain("Find peers by bus name");
+      expect(md).not.toContain("To message agents, use the bus tools");
+      expect(md).not.toContain("{{");
+    },
+  );
 
   it("renders one harness's bus tool names, and only when asked", async () => {
     const plain = await skill();
@@ -439,18 +439,18 @@ describe("skill.md drift", () => {
     expect(plainSent.status).toBe(200);
   });
 
-  it.each([
-    ["the hub is unbound", { BUS_HUB: undefined }],
-    ["the install is hosted", { HOSTED: "1" }],
-  ])("is the plain skill when %s, harness or not", async (_, over) => {
-    const e = E(over);
-    const plain = await get(`${APP}/skill.md`, {}, e);
-    const harnessed = await get(`${APP}/skill.md?harness=claude`, {}, e);
-    const plainMd = await plain.text();
-    expect(await harnessed.text()).toBe(plainMd);
-    expect(plainMd).not.toContain("This copy is for one harness");
-    expect(harnessed.headers.get("etag")).toBe(plain.headers.get("etag"));
-  });
+  it.each([["the hub is unbound", { BUS_HUB: undefined }]])(
+    "is the plain skill when %s, harness or not",
+    async (_, over) => {
+      const e = E(over);
+      const plain = await get(`${APP}/skill.md`, {}, e);
+      const harnessed = await get(`${APP}/skill.md?harness=claude`, {}, e);
+      const plainMd = await plain.text();
+      expect(await harnessed.text()).toBe(plainMd);
+      expect(plainMd).not.toContain("This copy is for one harness");
+      expect(harnessed.headers.get("etag")).toBe(plain.headers.get("etag"));
+    },
+  );
 
   it.each([
     ["spaces off", ""],

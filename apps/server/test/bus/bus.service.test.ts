@@ -101,12 +101,11 @@ describe("busView live", () => {
     BUS_HUB_TIMEOUT_MS + 10_000,
   );
 
-  it("the bus unbound or hosted: not live, even with no machine that ever connected", async () => {
+  it("the bus unbound: not live, even with no machine that ever connected", async () => {
     const m = await member();
     await machine("never", m.userId);
     const unbound = { ...e, BUS_HUB: undefined } as Env;
-    const hosted = { ...e, HOSTED: "1" } as Env;
-    for (const env of [unbound, hosted]) {
+    for (const env of [unbound]) {
       const v = await busView(env, m.userId);
       expect(v.live).toBe(false);
       expect(v.agents).toEqual([]);

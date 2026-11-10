@@ -273,28 +273,12 @@ describe("GET /bus: who loads it", () => {
     expect(body).not.toContain("You can't connect new machines");
   });
 
-  it("HOSTED=1: every /bus route is 404 and nothing is read", async () => {
+  it("HOSTED=1: /bus answers like self-host (#1299)", async () => {
     const m = await login(email("hosted"), "member");
     const { deps, calls } = doubles({ view: { machines: [machine()] } });
-    const H = { HOSTED: "1" };
-    expect((await get(deps, "/bus", m.cookie, H)).status).toBe(404);
-    expect((await get(deps, revokeUrl("m1"), m.cookie, H)).status).toBe(404);
-    const t = await revokeToken(m.userId, "m1");
-    expect(
-      (await post(deps, revokeUrl("m1"), m.cookie, [["csrf", t]], { env: H }))
-        .status,
-    ).toBe(404);
-    const s = await shareToken(m.userId);
-    expect(
-      (await post(deps, SHARE, m.cookie, [["csrf", s]], { env: H })).status,
-    ).toBe(404);
-    expect(calls).toEqual({
-      busView: [],
-      machine: [],
-      revoke: [],
-      get: [],
-      set: [],
-    });
+    const r = await get(deps, "/bus", m.cookie, { HOSTED: "1" });
+    expect(r.status).toBe(200);
+    expect(calls.busView.length).toBe(1);
   });
 });
 

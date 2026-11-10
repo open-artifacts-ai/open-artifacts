@@ -78,7 +78,7 @@ import {
 
 // The bus's Worker routes (#1291, design "Contracts: Local client to
 // instance"). Every /bus route answers 404 while the bus is off (BUS_HUB
-// unbound, or HOSTED=1 until #1299). /api/v1/bus/* are the dashboard's.
+// unbound). /api/v1/bus/* are the dashboard's.
 
 /** RL_ANON keys (30 per key per minute). */
 export const RL_KEYS = {

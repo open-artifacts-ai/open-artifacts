@@ -39,8 +39,8 @@ export interface Env {
   /**
    * One BusHub DO per member (bus/hub.ts, #1291), named "bus:" + user id.
    * Bound in every config since #1315 (the class shipped unbound in 0.109.0,
-   * tag v4). Unbound, every /bus route answers 404; HOSTED=1 answers 404
-   * too, until #1299.
+   * tag v4). Unbound, every /bus route answers 404. Hosted installs bind it
+   * like any other (#1299).
    */
   BUS_HUB?: DurableObjectNamespace<BusHub>;
   ASSETS: Fetcher;
