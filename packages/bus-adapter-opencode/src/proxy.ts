@@ -202,14 +202,18 @@ export class OpenCodeProxy {
       redirect: "manual",
       signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
     });
-    if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400))
+    if (
+      res.type === "opaqueredirect" ||
+      (res.status >= 300 && res.status < 400)
+    )
       throw new Error(
         "the instance answered with a redirect; Open Artifacts /mcp does not redirect",
       );
     if (!res.ok)
       throw new Error(`the instance answered with HTTP ${res.status}`);
     const text = await res.text();
-    if (text.length > MAX_BODY) throw new Error("the instance's answer is too large");
+    if (text.length > MAX_BODY)
+      throw new Error("the instance's answer is too large");
     let msg: Rpc | undefined;
     try {
       msg = parseAnswer(
@@ -217,9 +221,14 @@ export class OpenCodeProxy {
         (res.headers.get("content-type") ?? "").includes("text/event-stream"),
       );
     } catch {}
-    if (!msg) throw new Error("the instance's answer was not a JSON-RPC message");
+    if (!msg)
+      throw new Error("the instance's answer was not a JSON-RPC message");
     if (msg.error !== undefined) {
-      const e = msg.error as { code?: number; message?: string; data?: unknown };
+      const e = msg.error as {
+        code?: number;
+        message?: string;
+        data?: unknown;
+      };
       throw new McpError(e.code ?? -32603, e.message ?? "error", e.data);
     }
     return msg.result;

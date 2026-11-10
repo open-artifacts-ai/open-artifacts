@@ -4,9 +4,9 @@
 import { createHash } from "node:crypto";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { McpError } from "@modelcontextprotocol/sdk/types.js";
 import { ADAPTER_CAPS, type DaemonClient, type Hello } from "@oa/bus-ipc";
 import { LINK_PROOF_HEADER } from "@oa/bus-protocol";
-import { McpError } from "@modelcontextprotocol/sdk/types.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mcpUrl, OpenCodeProxy } from "../src/proxy.ts";
 import type { OpenCodeSession } from "../src/session.ts";
@@ -67,18 +67,20 @@ function setup(
       } as unknown as DaemonClient;
     });
   let n = 0;
-  const fetchFn = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-    order.push("fetch");
-    seen.push({
-      url: String(url),
-      init: { ...init, headers: new Headers(init?.headers) } as Seen["init"],
-    });
-    n += 1;
-    return (
-      over.respond?.(n) ??
-      Response.json({ jsonrpc: "2.0", id: 1, result: { content: [] } })
-    );
-  });
+  const fetchFn = vi.fn(
+    async (url: string | URL | Request, init?: RequestInit) => {
+      order.push("fetch");
+      seen.push({
+        url: String(url),
+        init: { ...init, headers: new Headers(init?.headers) } as Seen["init"],
+      });
+      n += 1;
+      return (
+        over.respond?.(n) ??
+        Response.json({ jsonrpc: "2.0", id: 1, result: { content: [] } })
+      );
+    },
+  );
   const proxy = new OpenCodeProxy({
     instance: over.instance ?? INSTANCE,
     token: over.token ?? (() => "tok-file-value"),
@@ -117,7 +119,9 @@ describe("OpenCode proxy: the proof header", () => {
       { ref: "ses_a", hash: sha(a as string) },
       { ref: "ses_b", hash: sha(b as string) },
     ]);
-    expect(t.hellos.map((h) => [h.agent_ref, h.cwd, h.attest.session_id])).toEqual([
+    expect(
+      t.hellos.map((h) => [h.agent_ref, h.cwd, h.attest.session_id]),
+    ).toEqual([
       ["ses_a", "/work/a", "ses_a"],
       ["ses_b", "/work/b", "ses_b"],
     ]);
@@ -171,10 +175,29 @@ describe("OpenCode proxy: the proof header", () => {
   });
 
   const failures: [string, Parameters<typeof setup>[0]][] = [
-    ["the daemon refuses the hello", { connect: async () => { throw new Error("no"); } }],
+    [
+      "the daemon refuses the hello",
+      {
+        connect: async () => {
+          throw new Error("no");
+        },
+      },
+    ],
     ["the session cannot be found", { resolve: async () => null }],
-    ["the lookup throws", { resolve: async () => { throw new Error("boom"); } }],
-    ["the session has no directory", { resolve: async () => ({ root: "ses_a", directory: null, title: null }) }],
+    [
+      "the lookup throws",
+      {
+        resolve: async () => {
+          throw new Error("boom");
+        },
+      },
+    ],
+    [
+      "the session has no directory",
+      {
+        resolve: async () => ({ root: "ses_a", directory: null, title: null }),
+      },
+    ],
     ["link_proof throws", { bound: new Error("closed") }],
   ];
   for (const [name, over] of failures)
@@ -220,7 +243,12 @@ describe("OpenCode proxy: where the proof and the token go", () => {
 
   it("an opaque redirect (a runtime that hides the status) is refused too", async () => {
     const t = setup({
-      respond: () => ({ type: "opaqueredirect", status: 0, ok: false }) as unknown as Response,
+      respond: () =>
+        ({
+          type: "opaqueredirect",
+          status: 0,
+          ok: false,
+        }) as unknown as Response,
     });
     await expect(t.proxy.list({})).rejects.toThrow(/redirect/i);
   });
@@ -229,7 +257,9 @@ describe("OpenCode proxy: where the proof and the token go", () => {
     const t = setup();
     await t.proxy.list({});
     await t.proxy.call(callArgs("ses_a"));
-    expect(new Set(t.seen.map((s) => s.url))).toEqual(new Set([`${INSTANCE}/mcp`]));
+    expect(new Set(t.seen.map((s) => s.url))).toEqual(
+      new Set([`${INSTANCE}/mcp`]),
+    );
   });
 
   it("sends the token file's value as Authorization, read at each call", async () => {
@@ -248,18 +278,30 @@ describe("OpenCode proxy: where the proof and the token go", () => {
   });
 
   it("an error never repeats the token or the proof", async () => {
-    const t = setup({ respond: () => new Response("nope tok-file-value", { status: 500 }) });
+    const t = setup({
+      respond: () => new Response("nope tok-file-value", { status: 500 }),
+    });
     const e = await fail(t.proxy.call(callArgs("ses_a")));
     expect(String(e.message)).not.toContain("tok-file-value");
     expect(String(e.message)).toMatch(/500/);
-    expect(String(e.message)).not.toContain(proofOf(t.seen[0] as Seen) ?? "none");
+    expect(String(e.message)).not.toContain(
+      proofOf(t.seen[0] as Seen) ?? "none",
+    );
   });
 
   it("accepts only the instance origin", () => {
-    expect(mcpUrl("https://oa.example.com").href).toBe("https://oa.example.com/mcp");
-    expect(mcpUrl("https://oa.example.com/").href).toBe("https://oa.example.com/mcp");
-    expect(mcpUrl("http://127.0.0.1:8787").href).toBe("http://127.0.0.1:8787/mcp");
-    expect(mcpUrl("http://localhost:8787").href).toBe("http://localhost:8787/mcp");
+    expect(mcpUrl("https://oa.example.com").href).toBe(
+      "https://oa.example.com/mcp",
+    );
+    expect(mcpUrl("https://oa.example.com/").href).toBe(
+      "https://oa.example.com/mcp",
+    );
+    expect(mcpUrl("http://127.0.0.1:8787").href).toBe(
+      "http://127.0.0.1:8787/mcp",
+    );
+    expect(mcpUrl("http://localhost:8787").href).toBe(
+      "http://localhost:8787/mcp",
+    );
     for (const bad of [
       "http://oa.example.com",
       "https://user:pw@oa.example.com",
@@ -279,7 +321,9 @@ describe("OpenCode proxy: the wire", () => {
     await t.proxy.call(callArgs("ses_a"));
     const s = t.seen[0] as Seen;
     expect(s.init.method).toBe("POST");
-    expect(s.init.headers.get("accept")).toBe("application/json, text/event-stream");
+    expect(s.init.headers.get("accept")).toBe(
+      "application/json, text/event-stream",
+    );
     expect(JSON.parse(s.init.body as string)).toMatchObject({
       jsonrpc: "2.0",
       method: "tools/call",
@@ -301,7 +345,11 @@ describe("OpenCode proxy: the wire", () => {
   it("turns a JSON-RPC error into an McpError", async () => {
     const t = setup({
       respond: () =>
-        Response.json({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "bad arg" } }),
+        Response.json({
+          jsonrpc: "2.0",
+          id: 1,
+          error: { code: -32602, message: "bad arg" },
+        }),
     });
     const e = await fail(t.proxy.call(callArgs()));
     expect(e).toBeInstanceOf(McpError);
@@ -314,7 +362,11 @@ describe("OpenCode proxy: a real redirect leaves nothing behind", () => {
   afterEach(() => {
     for (const s of servers.splice(0)) s.close();
   });
-  const listen = (h: (req: IncomingMessage) => void, status?: number, location?: string) =>
+  const listen = (
+    h: (req: IncomingMessage) => void,
+    status?: number,
+    location?: string,
+  ) =>
     new Promise<string>((res) => {
       const s = createServer((req, rsp) => {
         h(req);
@@ -322,7 +374,9 @@ describe("OpenCode proxy: a real redirect leaves nothing behind", () => {
         rsp.end("{}");
       });
       servers.push(s);
-      s.listen(0, "127.0.0.1", () => res(`http://127.0.0.1:${(s.address() as AddressInfo).port}`));
+      s.listen(0, "127.0.0.1", () =>
+        res(`http://127.0.0.1:${(s.address() as AddressInfo).port}`),
+      );
     });
 
   it("the other origin receives no request at all", async () => {
@@ -337,14 +391,21 @@ describe("OpenCode proxy: a real redirect leaves nothing behind", () => {
         ({
           welcome: { caps: [ADAPTER_CAPS.link] },
           state: "open",
-          request: async () => ({ v: 1, id: "1", type: "link_proofed", bound: true }),
+          request: async () => ({
+            v: 1,
+            id: "1",
+            type: "link_proofed",
+            bound: true,
+          }),
           close: () => {},
         }) as unknown as DaemonClient,
       resolve: async (id) => ROOTS[id] ?? null,
     });
     await expect(proxy.call(callArgs("ses_a"))).rejects.toThrow(/redirect/i);
     expect(own).toHaveLength(1);
-    expect(own[0]?.headers[LINK_PROOF_HEADER.toLowerCase()]).toMatch(PROOF_SHAPE);
+    expect(own[0]?.headers[LINK_PROOF_HEADER.toLowerCase()]).toMatch(
+      PROOF_SHAPE,
+    );
     expect(other).toHaveLength(0);
   });
 });

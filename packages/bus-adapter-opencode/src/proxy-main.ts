@@ -58,11 +58,15 @@ export async function startProxy(opts: {
     { name: "open-artifacts", version: "0.1.0" },
     { capabilities: { tools: {} }, ...(instructions ? { instructions } : {}) },
   );
-  server.setRequestHandler(ListToolsRequestSchema, async (req, extra) =>
-    (await proxy.list(req.params, extra.signal)) as { tools: never[] },
+  server.setRequestHandler(
+    ListToolsRequestSchema,
+    async (req, extra) =>
+      (await proxy.list(req.params, extra.signal)) as { tools: never[] },
   );
-  server.setRequestHandler(CallToolRequestSchema, async (req, extra) =>
-    (await proxy.call(req.params, extra.signal)) as { content: never[] },
+  server.setRequestHandler(
+    CallToolRequestSchema,
+    async (req, extra) =>
+      (await proxy.call(req.params, extra.signal)) as { content: never[] },
   );
   await server.connect(new StdioServerTransport());
 }
