@@ -86,7 +86,7 @@
       <div class="stat"><b id="sMapped">-</b><span>on the map</span></div>
       <div class="stat"><b id="sCountries">-</b><span>countries</span></div>
     </div>
-    <div class="live"><i class="dot" id="dot"></i><span id="liveText">Starting</span><button id="refresh">Check now</button></div>
+    <div class="live"><i class="dot" id="dot"></i><span id="liveText">Starting</span><button id="refresh" type="button">Check now</button></div>
   </header>
   <div id="map"></div>
   <aside>
@@ -190,7 +190,7 @@ function render() {
       g.map((x) => `<a href="https://github.com/${esc(x.login)}" target="_blank" rel="noopener"><img src="${esc(x.avatar)}&s=44" alt=""><span><b>${esc(x.name || x.login)}</b><br><small>@${esc(x.login)}</small></span></a>`).join("") + "</div>";
     const m = L.marker([p.lat, p.lon], { icon }).bindPopup(html);
     m.addTo(markers);
-    g.forEach((x) => (x._marker = m));
+    for (const x of g) x._marker = m;
     bounds.push([p.lat, p.lon]);
   }
   if (!fitted && bounds.length) { map.fitBounds(bounds, { padding: [40, 40], maxZoom: 4 }); fitted = true; }
@@ -206,10 +206,10 @@ function render() {
   const box = document.getElementById("latest");
   box.innerHTML = latest.map((p) => `<div class="person${typeof p.lat === "number" ? "" : " nomap"}" data-login="${esc(p.login)}">
       <img src="${esc(p.avatar)}&s=56" alt=""><div><b>${esc(p.name || p.login)}</b><span>${esc(p.location || "No location")} · ${p.starredAt ? ago(p.starredAt) : ""}</span></div></div>`).join("");
-  box.querySelectorAll(".person").forEach((el) => el.onclick = () => {
+  box.querySelectorAll(".person").forEach((el) => { el.onclick = () => {
     const p = people.get(el.dataset.login);
     if (p && p._marker) { map.setView(p._marker.getLatLng(), Math.max(map.getZoom(), 5)); p._marker.openPopup(); }
-  });
+  }; });
 
   document.getElementById("sStars").textContent = liveStars ?? starCount;
   document.getElementById("sMapped").textContent = mapped.length;
