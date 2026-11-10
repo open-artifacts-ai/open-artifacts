@@ -422,7 +422,38 @@ describe("anonId token expiry", () => {
       true,
       nowS * 1000,
     );
-    expect(edge).toEqual({ short, issued: null });
+    expect(edge?.short).toBe(short);
+    // Past half its life a minting write renews the token for the same id.
+    expect(idOf(edge?.issued)).toBe(bid);
+  });
+
+  it("sliding renewal: a write at age MAX-1 keeps the id, a young token is untouched", async () => {
+    const id = await optIn();
+    const bid = freshId();
+    const short = (await shortOn(id, await issueAnonToken(env, bid, nowS)))
+      .short;
+    const aged = await issueAnonToken(
+      env,
+      bid,
+      nowS - ANON_TOKEN_MAX_AGE_S + 1,
+    );
+    const w = await write(id, "a", aged);
+    expect(w.status).toBe(200);
+    const renewed = w.headers.get(ANON_ID_HEADER);
+    expect(renewed).toMatch(TOKEN_RE);
+    expect(idOf(renewed)).toBe(bid);
+    expect(renewed).not.toBe(aged);
+    expect(await byOf(w)).toBe(`anon:${short}`);
+    // The renewed token is current: it no longer renews.
+    expect(
+      (await write(id, "b", renewed)).headers.get(ANON_ID_HEADER),
+    ).toBeNull();
+    // Younger than half the life: no new token. Reads never renew.
+    const young = await issueAnonToken(env, bid, nowS - 10 * DAY);
+    expect(
+      (await write(id, "c", young)).headers.get(ANON_ID_HEADER),
+    ).toBeNull();
+    expect((await shortOn(id, aged)).issued).toBeNull();
   });
 
   it("a v1 token is never upgraded: a fresh id is minted and it names no author", async () => {

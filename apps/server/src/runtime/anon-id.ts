@@ -19,11 +19,18 @@ import { b64urlDecode, b64urlEncode } from "../util/crypto.js";
  * name. An iat more than ANON_TOKEN_SKEW_S in the future is rejected the same
  * way.
  *
+ * Sliding renewal: a minting write presenting a current token older than
+ * ANON_TOKEN_REFRESH_S gets a fresh token for the SAME id, so a guest in
+ * regular use keeps their id. Only an unused token dies (a leaked one that is
+ * used stays alive; that is the accepted tradeoff).
+ *
  * The public id is per artifact, so one browser can't be linked across
  * artifacts: short = base64url(HMAC-SHA256(k1, "short:" + artifactId + ":" + id))
  * truncated to ANON_ID_SHORT_LEN chars. It stays on k1 so v1 labels survive.
  */
 export const ANON_TOKEN_MAX_AGE_S = 30 * 24 * 60 * 60;
+/** A current token older than this is re-issued (same id) on a minting write. */
+export const ANON_TOKEN_REFRESH_S = ANON_TOKEN_MAX_AGE_S / 2;
 export const ANON_TOKEN_SKEW_S = 5 * 60;
 const ID = "[A-Za-z0-9_-]{21}[AQgw]";
 const SIG = "[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]";
@@ -98,19 +105,25 @@ async function verifyToken(
   keys: Keys,
   token: string,
   nowS: number,
-): Promise<{ id: string; renew: boolean } | null> {
+): Promise<{ id: string; renew: boolean; refresh: boolean } | null> {
   const v2 = V2_RE.exec(token);
   if (v2) {
     const [, id = "", iat36 = "", sig = ""] = v2;
     if (!(await verify(keys.v2, sig, `anon:${id}:${iat36}`))) return null;
     const iat = Number.parseInt(iat36, 36);
     if (iat > nowS + ANON_TOKEN_SKEW_S) return null;
-    return { id, renew: nowS - iat > ANON_TOKEN_MAX_AGE_S };
+    const age = nowS - iat;
+    return {
+      id,
+      renew: age > ANON_TOKEN_MAX_AGE_S,
+      refresh: age > ANON_TOKEN_REFRESH_S,
+    };
   }
   const v1 = V1_RE.exec(token);
   if (v1) {
     const [, id = "", sig = ""] = v1;
-    if (await verify(keys.v1, sig, `anon:${id}`)) return { id, renew: true };
+    if (await verify(keys.v1, sig, `anon:${id}`))
+      return { id, renew: true, refresh: true };
   }
   return null;
 }
@@ -142,8 +155,11 @@ export async function resolveAnonId(
   const keys = await anonKeys(env);
   const nowS = Math.floor(now / 1000);
   const ok = token ? await verifyToken(keys, token, nowS) : null;
-  if (ok && !ok.renew)
-    return { short: await shortOf(keys.v1, artifactId, ok.id), issued: null };
+  if (ok && !ok.renew) {
+    const short = await shortOf(keys.v1, artifactId, ok.id);
+    if (!mint || !ok.refresh) return { short, issued: null };
+    return { short, issued: await issueAnonToken(env, ok.id, nowS) };
+  }
   if (!mint) return null;
   const id = b64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
   return {

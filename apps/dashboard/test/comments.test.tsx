@@ -1056,7 +1056,7 @@ describe("comments: guests and Retry-After", () => {
   beforeEach(async () => {
     (await import("../src/viewer/anonId")).resetAnonMemory();
   });
-  const TOKEN = `${"A".repeat(22)}.k1.${"B".repeat(43)}`;
+  const TOKEN = `${"A".repeat(22)}.${Math.floor(Date.now() / 1000).toString(36)}.${"B".repeat(43)}`;
   const guestMocks = () => {
     const seenTokens: (string | null)[] = [];
     server.use(
