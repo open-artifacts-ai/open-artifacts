@@ -291,7 +291,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
       if (isolates === false) pass(c.claudeAccepts());
       if (isolates === true) warn(c.claudeIsolates(tilde(ctx, settings)));
       const style = outputStyleState({ home: ctx.userHome, env: ctx.env });
-      if (style) pass(c.outputStyleInstalled(tilde(ctx, style)));
+      if (style) pass(c.outputStyleDoctor(tilde(ctx, style.path), style.on));
     }
     if (h === "opencode") {
       const gone = opencodeProxyProblem({

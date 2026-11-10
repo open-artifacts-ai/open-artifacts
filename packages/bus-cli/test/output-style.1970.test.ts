@@ -183,7 +183,7 @@ describe("uninstallOutputStyle", () => {
     const r = uninstallOutputStyle({ home: h });
     expect(readFileSync(file(h), "utf8")).toBe("my own style\n");
     expect(r.written).toEqual([]);
-    expect(r.notes.join(" ")).toContain("not an Open Artifacts");
+    expect(r.notes.join(" ")).toContain("no Open Artifacts marker");
   });
 
   it("honors CLAUDE_CONFIG_DIR", () => {
@@ -230,8 +230,195 @@ describe("outputStyleState", () => {
     const h = home();
     expect(outputStyleState({ home: h })).toBeUndefined();
     installOutputStyle({ home: h, text }, ["claude"]);
-    expect(outputStyleState({ home: h })).toBe(file(h));
+    expect(outputStyleState({ home: h })).toEqual({ path: file(h), on: false });
     writeFileSync(file(h), "mine\n");
     expect(outputStyleState({ home: h })).toBeUndefined();
+  });
+});
+
+// Turning it on: outputStyle in settings.json, only when the key is absent.
+const settingsOf = (h: string, dir = join(h, ".claude")) =>
+  join(dir, "settings.json");
+const recordOf = (h: string) =>
+  JSON.parse(readFileSync(join(h, ".oa-bus/install.json"), "utf8")).outputStyle;
+const withBus = (h: string, env = {}) => ({
+  home: h,
+  busHome: join(h, ".oa-bus"),
+  env,
+  text,
+});
+const NAME = "Artifacts Teammate";
+const put = (path: string, body: string) => {
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, body);
+};
+
+describe("turning the style on in settings.json", () => {
+  it("sets outputStyle when the key is absent, keeping every other byte", () => {
+    const h = home();
+    const before = '// mine\n{\n\t"theme": "dark",   "a": [1,2]\n}\n';
+    put(settingsOf(h), before);
+    const r = installOutputStyle(withBus(h), ["claude"]);
+    expect(r.settings).toBe("set");
+    const after = readFileSync(settingsOf(h), "utf8");
+    expect(JSON.parse(after.replace("// mine", ""))).toEqual({
+      theme: "dark",
+      a: [1, 2],
+      outputStyle: NAME,
+    });
+    expect(
+      after.startsWith('// mine\n{\n\t"theme": "dark",   "a": [1,2]'),
+    ).toBe(true);
+    expect(recordOf(h)).toMatchObject({
+      set: true,
+      value: NAME,
+      absentBefore: true,
+    });
+  });
+
+  it("keeps an existing choice, whatever it is", () => {
+    for (const v of ['"Explanatory"', '"default"', "null", "7"]) {
+      const h = home();
+      const before = `{"outputStyle": ${v}}\n`;
+      put(settingsOf(h), before);
+      const r = installOutputStyle(withBus(h), ["claude"]);
+      expect(readFileSync(settingsOf(h), "utf8")).toBe(before);
+      expect(r.settings).toBe("kept");
+      expect(r.written).toHaveLength(1);
+      expect(existsSync(join(h, ".oa-bus/install.json"))).toBe(false);
+    }
+  });
+
+  it("names the kept style", () => {
+    const h = home();
+    put(settingsOf(h), '{"outputStyle":"Explanatory"}');
+    expect(installOutputStyle(withBus(h), ["claude"]).kept).toBe("Explanatory");
+  });
+
+  it("creates a missing settings.json with just the key, and uninstall removes it again", () => {
+    const h = home();
+    installOutputStyle(withBus(h), ["claude"]);
+    expect(JSON.parse(readFileSync(settingsOf(h), "utf8"))).toEqual({
+      outputStyle: NAME,
+    });
+    expect(recordOf(h)).toMatchObject({ set: true, createdFile: true });
+    uninstallOutputStyle(withBus(h));
+    expect(existsSync(settingsOf(h))).toBe(false);
+    expect(recordOf(h)).toBeUndefined();
+  });
+
+  it("uninstall restores the file byte for byte", () => {
+    const h = home();
+    const before = '{\n  // keep\n  "theme": "dark"\n}\n';
+    put(settingsOf(h), before);
+    installOutputStyle(withBus(h), ["claude"]);
+    uninstallOutputStyle(withBus(h));
+    expect(readFileSync(settingsOf(h), "utf8")).toBe(before);
+    expect(existsSync(file(h))).toBe(false);
+  });
+
+  it("uninstall keeps a value the user changed after the install", () => {
+    const h = home();
+    put(settingsOf(h), '{"theme":"dark"}\n');
+    installOutputStyle(withBus(h), ["claude"]);
+    put(settingsOf(h), '{"theme":"dark","outputStyle":"Learning"}\n');
+    uninstallOutputStyle(withBus(h));
+    expect(readFileSync(settingsOf(h), "utf8")).toBe(
+      '{"theme":"dark","outputStyle":"Learning"}\n',
+    );
+    expect(recordOf(h)).toBeUndefined();
+  });
+
+  it("uninstall keeps a settings.json the user added keys to", () => {
+    const h = home();
+    installOutputStyle(withBus(h), ["claude"]);
+    put(settingsOf(h), `{"outputStyle":"${NAME}","theme":"dark"}\n`);
+    uninstallOutputStyle(withBus(h));
+    expect(JSON.parse(readFileSync(settingsOf(h), "utf8"))).toEqual({
+      theme: "dark",
+    });
+  });
+
+  it("a reinstall keeps the record of what we did", () => {
+    const h = home();
+    installOutputStyle(withBus(h), ["claude"]);
+    const r = installOutputStyle(withBus(h), ["claude"]);
+    expect(r.settings).toBeUndefined();
+    expect(recordOf(h)).toMatchObject({
+      set: true,
+      absentBefore: true,
+      createdFile: true,
+    });
+    uninstallOutputStyle(withBus(h));
+    expect(existsSync(settingsOf(h))).toBe(false);
+  });
+
+  it("leaves an unparseable settings.json untouched, with a note", () => {
+    const h = home();
+    const bad = '{"theme": "dark",, }';
+    put(settingsOf(h), bad);
+    const r = installOutputStyle(withBus(h), ["claude"]);
+    expect(readFileSync(settingsOf(h), "utf8")).toBe(bad);
+    expect(r.settings).toBeUndefined();
+    expect(r.notes.join(" ")).toContain("settings.json alone");
+    expect(r.written).toHaveLength(1);
+    expect(existsSync(join(h, ".oa-bus/install.json"))).toBe(false);
+  });
+
+  it("leaves a settings.json that is not an object untouched", () => {
+    const h = home();
+    put(settingsOf(h), "[1]\n");
+    installOutputStyle(withBus(h), ["claude"]);
+    expect(readFileSync(settingsOf(h), "utf8")).toBe("[1]\n");
+  });
+
+  it("leaves a symlinked settings.json untouched", () => {
+    const h = home();
+    put(join(h, "dotfiles/settings.json"), '{"a":1}\n');
+    mkdirSync(join(h, ".claude"), { recursive: true });
+    symlinkSync(join(h, "dotfiles/settings.json"), settingsOf(h));
+    const r = installOutputStyle(withBus(h), ["claude"]);
+    expect(readFileSync(join(h, "dotfiles/settings.json"), "utf8")).toBe(
+      '{"a":1}\n',
+    );
+    expect(lstatSync(settingsOf(h)).isSymbolicLink()).toBe(true);
+    expect(r.notes.join(" ")).toContain("symlink");
+  });
+
+  it("does not turn it on when the style file is the user's", () => {
+    const h = home();
+    put(file(h), "my own style\n");
+    put(settingsOf(h), "{}\n");
+    installOutputStyle(withBus(h), ["claude"]);
+    expect(readFileSync(settingsOf(h), "utf8")).toBe("{}\n");
+  });
+
+  it("honors CLAUDE_CONFIG_DIR for settings.json and uninstall", () => {
+    const h = home();
+    const dir = join(h, "cfg");
+    const env = { CLAUDE_CONFIG_DIR: dir };
+    installOutputStyle(withBus(h, env), ["claude"]);
+    expect(JSON.parse(readFileSync(settingsOf(h, dir), "utf8"))).toEqual({
+      outputStyle: NAME,
+    });
+    expect(existsSync(join(h, ".claude"))).toBe(false);
+    uninstallOutputStyle(withBus(h, env));
+    expect(existsSync(settingsOf(h, dir))).toBe(false);
+  });
+
+  it("never edits settings.json when Claude Code is not wired", () => {
+    const h = home();
+    put(settingsOf(h), "{}\n");
+    installOutputStyle(withBus(h), ["pi"]);
+    expect(readFileSync(settingsOf(h), "utf8")).toBe("{}\n");
+  });
+
+  it("state says on only when settings.json selects it", () => {
+    const h = home();
+    put(settingsOf(h), '{"outputStyle":"Explanatory"}');
+    installOutputStyle(withBus(h), ["claude"]);
+    expect(outputStyleState({ home: h })?.on).toBe(false);
+    put(settingsOf(h), `{"outputStyle":"${NAME}"}`);
+    expect(outputStyleState({ home: h })?.on).toBe(true);
   });
 });

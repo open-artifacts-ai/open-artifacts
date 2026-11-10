@@ -672,15 +672,20 @@ export function copy(style: Style) {
     ],
     // Codex's checks, after its wiring line (C26e).
     codexWakes: (bin: string) => done(`Codex wakes with ${clip(bin, 20)}`),
-    // After a first write of the Claude Code output style (#1970).
+    // The Claude Code output style (#1970): turned on, or added beside the person's own choice.
+    // Product's sentence, wrapped to the 80 columns every transcript line keeps.
     outputStyleOn: (where: string) => [
-      done(`Added the Artifacts Teammate output style: ${clip(where, 50)}`),
-      next("To turn it on in Claude Code, run /output-style and pick it."),
+      done("Turned on the Artifacts Teammate output style"),
+      next(`(${clip(where, 5)}).`),
+      next("Restart Claude Code sessions to use it."),
     ],
-    outputStyleInstalled: (where: string) =>
+    outputStyleKept: (style: string) =>
       done(
-        `Artifacts Teammate output style installed in ${clip(where, 46)}`,
-        "pick it with /output-style",
+        `Added the Artifacts Teammate output style. You're on ${style}; switch with /output-style.`,
+      ),
+    outputStyleDoctor: (where: string, on: boolean) =>
+      done(
+        `Artifacts Teammate output style installed in ${where} (${on ? "on" : "installed, not selected"})`,
       ),
     codexSkill: (where: string) =>
       done(`Codex skill installed in ${clip(where, 20)}`),

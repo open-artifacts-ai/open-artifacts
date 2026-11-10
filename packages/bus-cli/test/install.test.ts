@@ -76,14 +76,6 @@ const allHarnesses = (over: Partial<Ctx> = {}) => ({
   ...over,
 });
 
-/** The output style's first-write note (#1970) has its own tests (output-style.1970.test.ts); the transcripts predate it. */
-const withoutStyleNote = (lines: string[]) =>
-  lines.filter(
-    (l) =>
-      !l.includes("Artifacts Teammate output style") &&
-      !l.includes("/output-style"),
-  );
-
 /** The habits question for the agent's user closes a no-TTY install; it has its own tests (habits.test.ts). */
 const withoutHabitsQuestion = (lines: string[]) => {
   const at = lines.indexOf(
@@ -104,7 +96,7 @@ describe("install: transcript state 1, first run", () => {
     expect(await run(ctx)).toBe(0);
     const [first, after] = transcript("## 1. First run, browser opens");
     const waiting = (first as string[]).length - 1;
-    expect(withoutHabitsQuestion(withoutStyleNote(ctx.out()))).toEqual([
+    expect(withoutHabitsQuestion(ctx.out())).toEqual([
       ...(first as string[]).slice(0, waiting),
       "Waiting for approval (up to 10 minutes)…",
       ...(after as string[]),
@@ -380,7 +372,8 @@ describe("install: daemon confirmation", () => {
       "[[danger]]×[[/danger]]  The daemon did not start within 10 seconds.",
       "   Run npx @open-artifacts/bus doctor to see why.",
     ]);
-    expect(withoutStyleNote(ctx.out()).at(-1)).toMatch(/OpenCode service/);
+    // The harness lines (the output style's too) come before the daemon step.
+    expect(ctx.out().some((l) => /OpenCode service/.test(l))).toBe(true);
   });
 });
 
@@ -482,9 +475,7 @@ describe("install: transcript states 2 to 6", () => {
     );
     expect(await run(ctx)).toBe(0);
     const [block] = transcript("## 5. Already registered");
-    expect(withoutStyleNote(ctx.out()).slice(0, 8)).toEqual(
-      (block as string[]).slice(0, 8),
-    );
+    expect(ctx.out().slice(0, 8)).toEqual((block as string[]).slice(0, 8));
     // Nothing is fetched from the hub here; the only call is the skill file the
     // installer writes for the harnesses it already configured.
     for (const call of vi.mocked(ctx.fetch).mock.calls)
@@ -917,9 +908,32 @@ describe("install: the Claude Code output style (#1970)", () => {
     );
     expect(readFileSync(path, "utf8")).toContain("name: Artifacts Teammate");
     const out = ctx.out().join("\n");
-    expect(out).toContain("Added the Artifacts Teammate output style");
-    expect(out).toContain("run /output-style and pick it");
+    expect(out).toContain(
+      "Turned on the Artifacts Teammate output style\n   (~/.claude/output-styles/artifacts-teammate.md).\n   Restart Claude Code sessions to use it.",
+    );
+    const settings = join(ctx.userHome, ".claude/settings.json");
+    expect(JSON.parse(readFileSync(settings, "utf8"))).toEqual({
+      outputStyle: "Artifacts Teammate",
+    });
     expect(await uninstall({ purge: false }, ctx)).toBe(0);
     expect(existsSync(path)).toBe(false);
+    expect(existsSync(settings)).toBe(false);
+  });
+
+  it("keeps the person's own style and says so", async () => {
+    const ctx = fakeCtx({
+      fetch: hub([{ status: "pending" }, approved]),
+      ...allHarnesses(),
+    });
+    const settings = join(ctx.userHome, ".claude/settings.json");
+    mkdirSync(join(ctx.userHome, ".claude"), { recursive: true });
+    writeFileSync(settings, '{"outputStyle":"Explanatory"}\n');
+    expect(await run(ctx)).toBe(0);
+    expect(ctx.out()).toContain(
+      "[[success]]✓[[/success]]  Added the Artifacts Teammate output style. You're on Explanatory; switch with /output-style.",
+    );
+    expect(readFileSync(settings, "utf8")).toBe(
+      '{"outputStyle":"Explanatory"}\n',
+    );
   });
 });

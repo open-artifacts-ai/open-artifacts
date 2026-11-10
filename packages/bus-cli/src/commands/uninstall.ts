@@ -62,7 +62,11 @@ export async function uninstall(
   }
   // The Claude Code output style: only our marked file, never the user's.
   try {
-    const style = uninstallOutputStyle({ home: ctx.userHome, env: ctx.env });
+    const style = uninstallOutputStyle({
+      home: ctx.userHome,
+      busHome: ctx.home,
+      env: ctx.env,
+    });
     for (const n of style.notes) say(ctx, [n]);
   } catch (e) {
     say(ctx, [

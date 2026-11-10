@@ -235,12 +235,19 @@ async function harnessesStep(
   // The Claude Code output style: written, never activated; the user picks it.
   try {
     const style = installOutputStyle(
-      { home: ctx.userHome, env: ctx.env, text: outputStyleSource() },
+      {
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        text: outputStyleSource(),
+      },
       out.installed,
     );
     for (const n of style.notes) say(ctx, [n]);
-    if (style.first && style.written[0])
+    if (style.settings === "set" && style.written[0])
       say(ctx, c.outputStyleOn(tilde(ctx, style.written[0])));
+    else if (style.settings === "kept" && style.first)
+      say(ctx, c.outputStyleKept(style.kept ?? "your own style"));
   } catch (e) {
     say(ctx, [
       `Could not write the output style: ${e instanceof Error ? e.message : String(e)}`,
