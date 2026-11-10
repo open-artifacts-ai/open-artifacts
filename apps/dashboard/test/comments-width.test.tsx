@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
+import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   CommentsResizer,
@@ -10,6 +11,7 @@ import {
   maxWidth,
   resetWidthStore,
   useCommentsWidth,
+  useCommentsWidthVar,
 } from "../src/viewer/commentsWidth";
 
 const setWin = (w: number) => {
@@ -26,6 +28,12 @@ function Probe() {
       {width}
     </div>
   );
+}
+function Holder({ onRender }: { onRender: () => void }) {
+  onRender();
+  const ref = useRef<HTMLDivElement>(null);
+  useCommentsWidthVar(ref);
+  return <div ref={ref} data-testid="root" />;
 }
 const handle = () => screen.getByRole("separator");
 const val = () => Number(handle().getAttribute("aria-valuenow"));
@@ -58,6 +66,29 @@ describe("#1986 clamp math", () => {
     }
     localStorage.setItem(KEY, "420");
     expect(loadWidth()).toBe(420);
+  });
+});
+
+describe("#1986 width var", () => {
+  it("sets --oa-comments-w on the root and follows a drag without re-rendering it", () => {
+    let renders = 0;
+    render(
+      <>
+        <Holder onRender={() => renders++} />
+        <CommentsResizer />
+      </>,
+    );
+    const root = screen.getByTestId("root");
+    expect(root.style.getPropertyValue("--oa-comments-w")).toBe("352px");
+    const before = renders;
+    const h = handle();
+    h.setPointerCapture = () => {};
+    fireEvent.pointerDown(h, { pointerId: 1, clientX: 900 });
+    fireEvent.pointerMove(h, { pointerId: 1, clientX: 800 });
+    expect(root.style.getPropertyValue("--oa-comments-w")).toBe("452px");
+    fireEvent.pointerMove(h, { pointerId: 1, clientX: 700 });
+    expect(renders).toBe(before);
+    fireEvent.pointerUp(h, { pointerId: 1, clientX: 700 });
   });
 });
 
@@ -121,6 +152,66 @@ describe("#1986 handle", () => {
     expect(val()).toBe(560);
     fireEvent.pointerUp(h, { pointerId: 1, clientX: 0 });
     expect(localStorage.getItem(KEY)).toBe("560");
+  });
+  const bodyWith = () => {
+    const body = document.createElement("div");
+    document.body.append(body);
+    return body;
+  };
+  it("unmounting mid-drag clears data-resizing and the draft", () => {
+    const body = bodyWith();
+    const { unmount } = render(<CommentsResizer />, {
+      container: body,
+    });
+    const h = handle();
+    h.setPointerCapture = () => {};
+    fireEvent.pointerDown(h, { pointerId: 1, clientX: 900 });
+    fireEvent.pointerMove(h, { pointerId: 1, clientX: 800 });
+    expect(body.dataset.resizing).toBe("");
+    unmount();
+    expect(body.dataset.resizing).toBeUndefined();
+    resetWidthStore();
+    render(<CommentsResizer />);
+    expect(val()).toBe(352);
+    expect(localStorage.getItem(KEY)).toBeNull();
+    body.remove();
+  });
+  it("the handle going away below 960px mid-drag clears the drag too", () => {
+    const body = bodyWith();
+    render(<CommentsResizer />, {
+      container: body,
+    });
+    const h = handle();
+    h.setPointerCapture = () => {};
+    fireEvent.pointerDown(h, { pointerId: 1, clientX: 900 });
+    fireEvent.pointerMove(h, { pointerId: 1, clientX: 800 });
+    setWin(900);
+    expect(body.dataset.resizing).toBeUndefined();
+    setWin(1280);
+    expect(val()).toBe(352);
+    body.remove();
+  });
+  it("lost pointer capture ends the drag and saves the width", () => {
+    const body = bodyWith();
+    render(<CommentsResizer />, {
+      container: body,
+    });
+    const h = handle();
+    h.setPointerCapture = () => {};
+    fireEvent.pointerDown(h, { pointerId: 1, clientX: 900 });
+    fireEvent.pointerMove(h, { pointerId: 1, clientX: 800 });
+    fireEvent.lostPointerCapture(h, { pointerId: 1 });
+    expect(body.dataset.resizing).toBeUndefined();
+    expect(localStorage.getItem(KEY)).toBe("452");
+    body.remove();
+  });
+  it("a click with no movement stores nothing", () => {
+    render(<CommentsResizer />);
+    const h = handle();
+    h.setPointerCapture = () => {};
+    fireEvent.pointerDown(h, { pointerId: 1, clientX: 900 });
+    fireEvent.pointerUp(h, { pointerId: 1, clientX: 900 });
+    expect(localStorage.getItem(KEY)).toBeNull();
   });
   it("clamps the stored width on load and on window resize without overwriting it", () => {
     localStorage.setItem(KEY, "550");

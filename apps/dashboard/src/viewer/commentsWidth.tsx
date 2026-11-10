@@ -3,6 +3,9 @@
 import {
   type KeyboardEvent,
   type PointerEvent,
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
   useRef,
   useSyncExternalStore,
 } from "react";
@@ -105,16 +108,47 @@ export function useCommentsWidth(): Snap {
   );
 }
 
+/**
+ * Keep --oa-comments-w on `ref`'s element current without re-rendering the
+ * caller: a drag moves the width on every pointermove.
+ */
+export function useCommentsWidthVar(ref: RefObject<HTMLElement | null>) {
+  // Every render (the element may be a different one), plus every change.
+  useLayoutEffect(() => {
+    const apply = () =>
+      ref.current?.style.setProperty("--oa-comments-w", `${snap.width}px`);
+    apply();
+    return subscribe(apply);
+  });
+}
+
 /** The drag handle on the comments column's left edge. Renders nothing below 960px. */
 export function CommentsResizer() {
   const s = useCommentsWidth();
   const start = useRef<{ x: number; w: number } | null>(null);
-  if (!s.enabled) return null;
+  const body = useRef<HTMLElement | null>(null);
+  const { enabled } = s;
+  // The handle going away mid-drag (window under 960px, column closed) must
+  // not leave the frame inert or an unsaved width behind.
+  useEffect(() => {
+    if (!enabled) return;
+    return () => {
+      if (!start.current) return;
+      start.current = null;
+      if (body.current) delete body.current.dataset.resizing;
+      body.current = null;
+      draft = null;
+      recompute();
+    };
+  }, [enabled]);
+  if (!enabled) return null;
   const setDragging = (el: HTMLElement, on: boolean) => {
-    const body = el.parentElement;
-    if (body) {
-      if (on) body.dataset.resizing = "";
-      else delete body.dataset.resizing;
+    if (on) {
+      body.current = el.parentElement;
+      if (body.current) body.current.dataset.resizing = "";
+    } else {
+      if (body.current) delete body.current.dataset.resizing;
+      body.current = null;
     }
   };
   const onKey = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -135,7 +169,8 @@ export function CommentsResizer() {
     start.current = null;
     setDragging(e.currentTarget, false);
     e.currentTarget.releasePointerCapture?.(e.pointerId);
-    commit(draft ?? s.width);
+    // A click with no movement changes and stores nothing.
+    if (draft !== null) commit(draft);
   };
   return (
     // A focusable, valued separator is a splitter widget; <hr> cannot carry that.
@@ -168,6 +203,7 @@ export function CommentsResizer() {
       }}
       onPointerUp={end}
       onPointerCancel={end}
+      onLostPointerCapture={end}
     />
   );
 }
