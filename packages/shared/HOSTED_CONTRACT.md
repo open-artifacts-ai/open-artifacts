@@ -379,7 +379,7 @@ locked too), so its alarm calls nothing and fails nothing (no
 `sync_google` back. No transition deletes anything.
 
 `Me.instance.billing` (`PlanView`; not `plan`, which is the Workers plan):
-`{ tier, status, trialEndsAt, soloTrialEndsAt?, graceUntil, creatorsThisMonth?, readOnly, reason? }`.
+`{ tier, status, trialEndsAt, soloTrialEndsAt?, graceUntil, hasCustomer?, creatorsThisMonth?, readOnly, reason? }`.
 `tier` solo | free | trial | team | business (free is the pre-Solo value: hosted billing that predates Solo still answers it, with today's rules, and the hosted half moves billing to answer solo); `status` active | past_due | lapsed |
 suspended. Everyone gets `tier`, `readOnly`, `reason`. `status`,
 `trialEndsAt`, `soloTrialEndsAt`, `graceUntil` (ISO) and `creatorsThisMonth`
@@ -387,10 +387,14 @@ go to the org owner and admins only, the plan cap included; everyone else gets
 null and no count. `trialEndsAt` is the Business trial's alone (a Solo row
 with one is a used Business trial); `soloTrialEndsAt` is the Solo 30-day
 trial's end, optional, absent when billing's answer predates it.
+`hasCustomer` (boolean, optional) says whether billing has a Stripe customer
+for the instance (a provisioned or comped plan has none, so no portal): owner
+and admins only, the plan cap included; absent for everyone else and when
+billing's answer predates it (unknown: the dashboard keeps Manage billing).
 
 | State | What it does | `reason` |
 |---|---|---|
-| solo or free, active, or past_due within `graceUntil` | one person and their agents ($1/month or $12/year after a 30-day no-card trial). Team features answer `plan_required`; the first invite passes while the Business trial never ran and starts the 14-day trial. Billing MUST report a Solo whose 30-day trial ended with no card as status `lapsed` | `solo` |
+| solo or free, active, or past_due within `graceUntil` | one person and their agents ($1/month or $10/year after a 30-day no-card trial). Team features answer `plan_required`; the first invite passes while the Business trial never ran and starts the 14-day trial. Billing MUST report a Solo whose 30-day trial ended with no card as status `lapsed` | `solo` |
 | solo lapsed, or solo past_due past grace | **view-only** for everyone, the org owner included (lock mode `viewOnly`, `readOnly: true`): publishing (a new artifact or version, REST and MCP) and live-data writes (artifact data set, update, delete, anonymous visitors too), uploads for a new artifact, restoring a version, and runtime storage writes (PUT and DELETE) answer 403 `plan_read_only`; team features answer `plan_read_only` too, and the Business trial does not start. Every read, sharing and visibility, the owner's and admins' billing POSTs, revoking tokens and machines, and profile edits keep working. Non-owners carry the `plan` cap as under solo (so a member's other writes, comments included, are refused); the owner has no cap, and the lock binds them for publishing and live-data writes | `solo_unpaid` |
 | trial (until `trialEndsAt`), team, business, past_due within `graceUntil` | today's behaviour | none |
 | trial ended, lapsed, past_due past grace, suspended | read-only (`readOnly: true`): team features answer `plan_read_only` | `trial_ended`, `lapsed`, `payment_failed`, `suspended` |
@@ -444,7 +448,9 @@ off hosted):
 `POST R.billingCheckout` `BillingCheckoutInput { tier: solo | team | business, interval?: month | year }` (interval required for solo, 400 for any other tier) →
 `BillingUrl { url }` (Stripe Checkout); `POST R.billingPortal` → `BillingUrl`
 (Customer Portal); `POST R.billingUsage` → `BillingUsage { month, count }`.
-503 `billing_unavailable` when billing can't be reached. Billing's 503
+503 `billing_unavailable` when billing can't be reached. `POST R.billingPortal`
+answers 409 `no_billing_customer` when billing has no Stripe customer for the
+instance (billing's 409 `no_customer`; no other route or status maps to it). Billing's 503
 `{ error: "retry" }` (Stripe still running the same idempotent request) is
 retried once, with the same signed body, after a short backoff. Checkout
 sends billing `{ install, ts, plan }`, plus `interval` for solo only; the billing service maps solo+month and solo+year to the Solo prices (hosted half, #1568). Checkout and Portal
@@ -453,7 +459,7 @@ and `/portal`); until those ship they answer 503 `billing_unavailable`.
 
 Errors: `plan_required` (403) and `plan_read_only` (403), details
 `PlanRefusalDetails { tier, reason }`; `plan_limit` (403), details
-`PlanLimitDetails`; `billing_unavailable` (503). Mocks:
+`PlanLimitDetails`; `billing_unavailable` (503); `no_billing_customer` (409). Mocks:
 `createHostedMock({ billing, billingDown })`.
 
 ## Test hooks (`hosted/test-hooks.ts`, types only)

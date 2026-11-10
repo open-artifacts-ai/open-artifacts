@@ -127,6 +127,9 @@ async function toMe(
                 : null,
           }
         : {}),
+      ...(details && plan.hasCustomer !== undefined
+        ? { hasCustomer: plan.hasCustomer }
+        : {}),
       graceUntil:
         details && plan.graceUntil !== null
           ? new Date(plan.graceUntil).toISOString()
