@@ -11,8 +11,10 @@ export {
   rootOf,
   rootSession,
 } from "./session.ts";
+export { mcpUrl, OpenCodeProxy } from "./proxy.ts";
 export {
   handleToolCall,
+  helloFor,
   SESSION_META,
   TOOLS,
   type ToolResult,
