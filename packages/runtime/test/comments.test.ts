@@ -378,6 +378,57 @@ describe("selection button", () => {
     expect(f.listening()).toBe(0);
   });
 
+  describe("late reflows (ResizeObserver)", () => {
+    let sizes: { cb: () => void; on: Element[]; off: boolean }[] = [];
+    beforeEach(() => {
+      sizes = [];
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          s: { cb: () => void; on: Element[]; off: boolean };
+          constructor(cb: () => void) {
+            this.s = { cb, on: [], off: false };
+            sizes.push(this.s);
+          }
+          observe(el: Element) {
+            this.s.on.push(el);
+          }
+          disconnect() {
+            this.s.off = true;
+          }
+        },
+      );
+    });
+    const reflow = () => {
+      for (const s of sizes) if (!s.off) s.cb();
+      frames();
+    };
+
+    it("places the button again when an image load reflows the page", async () => {
+      vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(
+        100,
+      );
+      await start("select");
+      select(textOf("a"), 4, textOf("a"), 9);
+      expect(button()?.style.left).toBe("30px");
+      vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+        { ...rect, right: 140, bottom: 200 },
+      ] as unknown as DOMRectList);
+      reflow();
+      expect(button()?.style.left).toBe("90px");
+      expect(button()?.style.top).toBe("206px");
+    });
+
+    it("observes <html> once and disconnects on dispose", async () => {
+      createRuntime({ loadSchemas: async () => schemas, signal: ctl.signal });
+      await flush();
+      const live = sizes.filter((s) => s.on.includes(document.documentElement));
+      expect(live).toHaveLength(1);
+      ctl.abort();
+      expect(live[0]?.off).toBe(true);
+    });
+  });
+
   it("has a bubble icon, is centered under the selection end, and clamps to the viewport", async () => {
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
     await start("select");
