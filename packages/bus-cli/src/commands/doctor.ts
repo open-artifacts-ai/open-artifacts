@@ -295,7 +295,9 @@ export async function doctor(ctx: Ctx): Promise<number> {
       recordRemote: false,
       allowMissing: true,
     });
-    pass(c.namespaceIs(plain(ns.namespace), ns.source));
+    // Only the sources a repo or file controls; a plain folder name is no news.
+    if (ns.source === "git" || ns.source === "config")
+      say(ctx, c.namespaceIs(plain(ns.namespace), ns.source));
   } catch {}
   // The cwd's own `.oa-bus.json` files, read as the daemon reads them.
   const files = scanConfigFiles(ctx.cwd, {
