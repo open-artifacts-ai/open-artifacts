@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { lstatSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import { claudeSessionsDir } from "@oa/bus-adapter-claude-code";
@@ -160,6 +161,9 @@ const LATE_WINDOW_MS = 60 * 60_000;
 const piLike = (kind: string) =>
   kind === "pi" || kind === "omp" || kind === "hermes" || kind === "openclaw";
 
+/** #1608: the fixed refusal for a second concurrent claim on a bound pi-like ref. */
+export const REF_BOUND = "agent_ref is bound to another live connection";
+
 export type DaemonDeps = {
   transports?: Partial<Record<AgentRecord["kind"], DeliverFn>>;
   /** Per-harness notices to a sending session; OpenCode and Pi add theirs here. */
@@ -292,6 +296,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const conns = new Map<string, number>();
   /** Each Pi session's open extension connections, newest last: Pi receives on them. */
   const piLinks = new Map<string, Map<Hello, (f: DaemonFrame) => void>>();
+  /** #1608: who first claimed each pi-like ref; kept after its link closes, until its pid dies. */
+  const bindings = new Map<
+    string,
+    { token: string; pid: number; kind: string; start?: string }
+  >();
 
   /**
    * A /clear handover not yet announced: it waits for hello_ok (#1582), so the
@@ -413,6 +422,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const returnDir = cl.socketsDir ?? claudeReturnDir();
   // Before anything listens: a socket path that cannot work is a lasting failure.
   prepareSocketDir(listenPath, returnDir);
+  const startOfPid = cl.procStart ?? claudeProcStartOf;
   const running = cl.isRunning ?? isRunning;
   const claudeSessions = {
     dir: cl.sessionsDir ?? claudeSessionsDir(),
@@ -1432,6 +1442,42 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (!check.ok) return { error: check.reason };
         // Claude's MCP server is a new process per tool call; the session is the identity.
         const pid = check.pid ?? hello.pid;
+        // #1608: a pi-like ref belongs to the adapter that claimed it first, link
+        // after link, until the claimant's process is gone. A pid and its start
+        // time are no proof of who is speaking (any same-user process can send
+        // them), so the welcome issued a token that every later hello must echo.
+        let bindToken: string | undefined;
+        // A binding lapses when its claimant is gone or its pid now has another start time.
+        const claim = bindings.get(hello.agent_ref);
+        if (claim) {
+          const now = claim.start === undefined ? null : startOfPid(claim.pid);
+          if (
+            !running(claim.pid) ||
+            (now !== null && claim.start !== undefined && now !== claim.start)
+          )
+            bindings.delete(hello.agent_ref);
+        }
+        const held = bindings.get(hello.agent_ref);
+        // Every kind is checked: a claude-code or opencode hello cannot take a bound pi ref.
+        if (
+          held &&
+          (held.kind !== hello.kind ||
+            !piLike(hello.kind) ||
+            held.token !== hello.bind_token)
+        )
+          return { error: REF_BOUND };
+        if (piLike(hello.kind))
+          bindToken = held?.token ?? randomBytes(24).toString("base64url");
+        const bound = (): { bind_token?: string } => {
+          if (bindToken === undefined) return {};
+          bindings.set(hello.agent_ref, {
+            token: bindToken,
+            pid,
+            kind: hello.kind,
+            ...(startOfPid(pid) ? { start: startOfPid(pid) as string } : {}),
+          });
+          return { bind_token: bindToken };
+        };
         const prev = agents.byRef(hello.agent_ref);
         // A resumed session may beat the next sync tick: the files decide whose it is.
         if (prev?.live && prev.kind === "claude-code" && prev.pid !== pid) {
@@ -1482,6 +1528,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             namespace: prev.namespace,
             global: prev.global,
             ...capsFor(hello),
+            ...bound(),
           };
         }
         // Claude's session file names its cwd; other kinds state one.
@@ -1559,6 +1606,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           namespace: rec.namespace,
           global: rec.global,
           ...capsFor(hello),
+          ...bound(),
         };
       };
       // A connection gone during the wait admits nothing: no agent, no conns.

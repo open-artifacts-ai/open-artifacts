@@ -69,6 +69,14 @@ import {
   uninstallOpenclaw,
 } from "./openclaw.ts";
 import {
+  installEntry as installOcEntry,
+  type OcEntryIo,
+  OPENCODE_ENTRY_FILE,
+  proxyEntries,
+  proxyProgramMissing,
+  restoreEntry as restoreOcEntry,
+} from "./opencode-proof.ts";
+import {
   moveEntry,
   OMP_ORIGIN_FILE,
   PI_ENTRY_FILE,
@@ -215,6 +223,8 @@ const paths = (deps: AdapterDeps) => {
     ],
     opencodeCli: join(opencode, "cli.json"),
     record: join(busDir, "install.json"),
+    // #1856: where install keeps the OpenCode entry it replaced with the proxy.
+    opencodeEntry: join(busDir, OPENCODE_ENTRY_FILE),
     // #1856: Pi's own MCP config, and where install keeps the entry it moved.
     piMcp: join(
       agentDirEnv(deps.home, env) ?? join(deps.home, ".pi/agent"),
@@ -465,6 +475,20 @@ function claudeProof(deps: AdapterDeps, notes: string[]) {
   }
 }
 
+const ocEntryIo = (deps: AdapterDeps): OcEntryIo => ({
+  files: paths(deps).opencodeConfigs.filter(present),
+  moved: paths(deps).opencodeEntry,
+  read: readJsonc,
+  save: (file, before, next, ok) => {
+    target(file);
+    saveText(file, before, next, ok);
+  },
+  writeMoved: (data) => writeAtomic(paths(deps).opencodeEntry, data, 0o600),
+  home: deps.home,
+  busBin: deps.busBin,
+  ...(movedHome(deps) ? { busHome: movedHome(deps) as string } : {}),
+});
+
 const piEntryIo = (deps: AdapterDeps): PiEntryIo => ({
   file: paths(deps).piMcp,
   moved: paths(deps).piEntry,
@@ -654,6 +678,15 @@ const install: Record<Harness, Step> = {
       isDeepStrictEqual(servers(d)?.[NAME], server),
     );
     saveText(p.opencodeCli, cli, nextCli, (d) => listed(d, p.opencodePlugin));
+    // #1856: never stops the install; the entry just stays as it was.
+    if (deps.hub !== undefined)
+      try {
+        notes.push(...installOcEntry(ocEntryIo(deps), deps.hub).notes);
+      } catch (e) {
+        notes.push(
+          `could not set up the Open Artifacts entry in OpenCode's config: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
     await restartOpencode(deps, notes);
     return "done";
   },
@@ -754,6 +787,17 @@ const uninstall: Record<Harness, Step> = {
 
   async opencode(deps, notes) {
     const p = paths(deps);
+    // The entry goes back first: it is the user's, and works without the proxy.
+    let restored = false;
+    try {
+      restored = restoreOcEntry(ocEntryIo(deps));
+    } catch (e) {
+      // The moved file stays, so a second uninstall can put it back.
+      notes.push(
+        `Kept ${p.opencodeEntry}: could not put the Open Artifacts entry back in OpenCode's config (${e instanceof Error ? e.message : String(e)}). Fix that file, then run uninstall again.`,
+      );
+      throw new Error("kept the proxy, the entry is still moved");
+    }
     const record = readRecord(p.record);
     // Drop what install created once it is empty again, deepest first.
     const prune = (file: string, text: string) =>
@@ -787,10 +831,10 @@ const uninstall: Record<Harness, Step> = {
     writeRecord(p.record, record, left);
     const hadPlugin = existsSync(p.opencodePlugin);
     rmSync(p.opencodePlugin, { recursive: true, force: true });
-    if (!saved.some(Boolean) && !hadPlugin) return "none";
+    if (!saved.some(Boolean) && !hadPlugin && !restored) return "none";
     if (deps.which("opencode")) await restartOpencode(deps, notes);
     // No config named Open Artifacts bus any more: only our plugin folder was left.
-    return saved.some(Boolean) ? "done" : "folder";
+    return saved.some(Boolean) || restored ? "done" : "folder";
   },
 
   async pi(deps, notes) {
@@ -930,6 +974,24 @@ export async function uninstallAdapters(
     openclawNoCli: notes.includes(OPENCLAW_NO_CLI),
     openclawNix: notes.includes(OPENCLAW_NIX),
   };
+}
+
+/**
+ * Read-only (#1856): a proxy entry in OpenCode's config whose program is gone,
+ * so the user's Open Artifacts tools in OpenCode would not start.
+ */
+export function opencodeProxyProblem(
+  deps: Pick<AdapterDeps, "home" | "env" | "which"> & { busHome?: string },
+): { name: string; missing: string } | undefined {
+  const p = paths(deps as AdapterDeps);
+  for (const f of p.opencodeConfigs.filter(present))
+    try {
+      for (const { name, entry } of proxyEntries(readFileSync(f, "utf8"))) {
+        const missing = proxyProgramMissing(entry, undefined, deps.which);
+        if (missing !== undefined) return { name, missing };
+      }
+    } catch {}
+  return undefined;
 }
 
 export type AdapterState = "configured" | "missing" | "absent";

@@ -38,6 +38,10 @@ class LinkError(Exception):
         self.refused = refused
 
 
+# #1608: the daemon's binding token per ref, in memory only. A reconnect is a new Link and echoes it.
+_BIND_TOKENS = {}
+
+
 class Link:
     """Connects and says hello in `open`; then `deliver` and `notice` frames arrive on a reader thread."""
 
@@ -60,6 +64,7 @@ class Link:
             "cwd": cwd,
             "proposed_name": name,
             "caps": ["mailbox", "pending", "follow", "link"],
+            **({"bind_token": _BIND_TOKENS[ref]} if ref in _BIND_TOKENS else {}),
             "attest": {"proc_start": proc_start} if proc_start else {},
         }
         self._home = home if home is not None else bus_home()
@@ -229,6 +234,8 @@ class Link:
         if not self._welcomed.is_set():
             if f["type"] == "welcome":
                 self.welcome = f
+                if isinstance(f.get("bind_token"), str):
+                    _BIND_TOKENS[self.ref] = f["bind_token"]
             else:
                 self._refusal = str(f.get("message") or "the daemon refused hello")
             self._welcomed.set()
