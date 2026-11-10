@@ -130,6 +130,8 @@ describe("Settings → Instance Version card", () => {
     );
     expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull();
     expect(c).not.toHaveTextContent("Update available");
+    expect(c).not.toHaveTextContent("To upgrade, tell your agent");
+    expect(screen.queryByRole("button", { name: "Copy prompt" })).toBeNull();
   });
 
   it("breaking: the warning line, Upgrade still enabled", async () => {
@@ -162,7 +164,7 @@ describe("Settings → Instance Version card", () => {
     expect(link).toHaveAttribute("href", `${location.origin}/upgrade.md`);
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener");
-    fireEvent.click(within(c).getByRole("button", { name: "Copy" }));
+    fireEvent.click(within(c).getByRole("button", { name: "Copy prompt" }));
     await waitFor(() => expect(write).toHaveBeenCalledWith(PROMPT));
     expect(await screen.findByText(COPIED)).toBeInTheDocument();
   });

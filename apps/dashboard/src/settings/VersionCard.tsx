@@ -62,7 +62,7 @@ function UpgradeLine() {
         className="text-[length:var(--oa-text-sm)]"
         onClick={copy}
       >
-        {copied ? "Copied" : "Copy"}
+        {copied ? "Copied" : "Copy prompt"}
       </Button>
       <span role="status" aria-live="polite" className="sr-only">
         {copied ? COPIED : ""}
@@ -146,7 +146,7 @@ export function VersionCard({ update }: { update: InstanceUpdate | null }) {
           <UpgradeActions update={update} describedBy="oa-upgrade-help" />
         </div>
       )}
-      {!nudge && <UpgradeLine />}
+      {!nudge && !update.custom && <UpgradeLine />}
     </SettingsCard>
   );
 }
