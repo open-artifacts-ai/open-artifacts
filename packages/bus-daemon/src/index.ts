@@ -420,7 +420,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
   const oc = deps.opencode ?? {};
   const ocRunning = oc.isRunning ?? isRunning;
-  const ocStart = cachedProcStart(oc.procStart ?? procStartOf, ocRunning);
+  // OpenCode's file does not change when its pid is reused: keep the short TTL (few sessions).
+  const ocStart = cachedProcStart(oc.procStart ?? procStartOf, ocRunning, {
+    ttlMs: cl.syncMs ?? 2000,
+    jitter: 0,
+  });
   const ocComm = oc.comm ?? commOf;
   const cx = deps.codex ?? {};
   /** One per daemon: it pins each Codex process's start and the call ids used. */
