@@ -130,6 +130,7 @@ const outsider = (v: CommentViewer): boolean =>
 const faceViewer = (v: CommentViewer): FaceViewer => ({
   userId: v.userId,
   guest: v.guest === true || v.userId === null,
+  outsider: outsider(v) || v.userId === null,
 });
 
 const rateKeyOf = (w: CommentWho): string =>
@@ -438,7 +439,8 @@ const identityFace = (
   viewer: CommentViewer,
   users: Ctx,
 ): Pick<CommentAuthor, "linked" | "product" | "animal"> => {
-  if (!p.identity || !p.owner) return {};
+  if (!p.identity || !p.owner || outsider(viewer) || viewer.userId === null)
+    return {};
   const f = partyIdentityFace(
     { name: p.name, owner: p.owner, identity: p.identity },
     faceViewer(viewer),
