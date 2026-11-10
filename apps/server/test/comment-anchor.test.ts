@@ -54,6 +54,26 @@ describe("visible text", () => {
       "&nosuch; \uFFFD \uFFFD \uFFFD",
     );
   });
+  it("keeps xmp and plaintext text as written, as a browser shows it (#1738)", async () => {
+    expect(
+      await text("<p>a &le; b</p><xmp>x &le; <b>y</b></xmp><p>c &amp; d</p>"),
+    ).toBe("a ≤ b x &le; <b>y</b> c & d");
+    expect(
+      await text("<p>a &le;</p><plaintext>x &le; <b>y</b></plaintext>"),
+    ).toBe("a ≤ x &le; <b>y</b></plaintext>");
+  });
+  it("keeps a fragment page's top-level text (#1895)", async () => {
+    expect(await text("Hello <b>x</b> world &le;")).toBe("Hello x world ≤");
+    expect(await text("<xmp>a</xmp>T &le;")).toBe("aT ≤");
+    expect(await text("<script>s()</script>tail")).toBe("tail");
+  });
+  it("skips iframe, noembed and noframes fallback text", async () => {
+    expect(
+      await text(
+        "<p>a</p><iframe>no frames</iframe><noembed>n</noembed><noframes>f</noframes><p>b</p>",
+      ),
+    ).toBe("a b");
+  });
   it("decodes the full named set, legacy forms and windows-1252 numbers", () => {
     expect(
       decodeEntities(

@@ -1,9 +1,11 @@
 import {
   type Anchor,
   type AnchorInput,
+  type ArtifactAgent,
   type AskInput,
   AskInputSchema,
   anchorInputSchema,
+  BusAddressSchema,
   type Comment,
   type CommentAuthor,
   type CommentList,
@@ -11,6 +13,7 @@ import {
   type KeyRef,
   type CommentThread as Thread,
 } from "@oa/shared";
+import { canConnect } from "../auth/agents.js";
 import { type ArtifactRow, accessLevel, callerOf } from "../auth/authz.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
@@ -21,19 +24,34 @@ import {
   type NewExtras,
   type StoredActor,
   type StoredComment,
+  type StoredParticipant,
   type StoredParty,
   type StoredThread,
 } from "../runtime/comments-store.js";
 import { runtimeCall, runtimeStub } from "../runtime/do.js";
 import {
-  agentFor,
-  isPrivateAgent,
-  ownersAgent,
+  agentFace,
+  agentOwnedBy,
+  type FaceViewer,
+  forLine,
+  type NameClashes,
+  nameClashes,
+  plainAgentName,
   shownName,
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
 import {
+  askRows,
+  indexAnswered,
+  indexAsk,
+  indexDeleted,
+  indexStatus,
+  reconcileAsks,
+} from "./asks.js";
+import {
+  agentKey,
   agentRoster,
+  askerRoster,
   type CommentNoticeKind,
   type DeliveryState,
   notifyAgent,
@@ -64,7 +82,17 @@ import { effectiveName, getUser } from "./users.js";
 
 /** Who is acting: a signed-in person (maybe through an agent) or a signed-out guest. */
 export type CommentWho =
-  | { kind: "user"; id: string; agent?: AgentAttr | null }
+  | {
+      kind: "user";
+      id: string;
+      agent?: AgentAttr | null;
+      /**
+       * #1797: the request authenticated with a browser session (never a PAT,
+       * a grant or MCP). The route sets it from the credential kind, never
+       * from the body or from a missing agent.
+       */
+      typed?: boolean;
+    }
   | {
       kind: "guest";
       /** The per-artifact anonymous id (anon-id.ts short). */
@@ -80,7 +108,24 @@ export type CommentViewer = {
   short: string | null;
   /** The viewer's level may delete anyone's comment (owner, manager, editor). */
   moderator?: boolean;
+  /** Signed out, or a guest-role member: sees "<person>'s agent", never a bus name (#1822). */
+  guest?: boolean;
+  /**
+   * A guest or restricted cap (capsReads): not a full member for what reaches
+   * an agent without an @ (#1900, #1968). The billing "plan" cap does not set
+   * it. Signed-out visitors are `guest`.
+   */
+  capped?: boolean;
 };
+
+/** Anonymous, guest-role, or capped to guest or restricted: never wakes an agent without an @. */
+const outsider = (v: CommentViewer): boolean =>
+  v.guest === true || v.capped === true;
+
+const faceViewer = (v: CommentViewer): FaceViewer => ({
+  userId: v.userId,
+  guest: v.guest === true || v.userId === null,
+});
 
 const rateKeyOf = (w: CommentWho): string =>
   w.kind === "user" ? `u:${w.id}` : w.rate;
@@ -90,11 +135,22 @@ const actorOf = (w: CommentWho): StoredActor =>
     ? {
         kind: "user",
         ref: w.id,
+        ...(w.typed === true && !w.agent ? { typed: true as const } : {}),
         ...(w.agent
           ? {
               agent: {
                 name: w.agent.name,
                 via: w.agent.via ? viaKey(w.agent.via) : null,
+                // Only the server sets this, from a proof it checked (#1822).
+                ...(w.agent.identity
+                  ? {
+                      identity: {
+                        identityId: w.agent.identity.identityId,
+                        name: w.agent.identity.name,
+                        kind: w.agent.identity.kind,
+                      },
+                    }
+                  : {}),
               },
             }
           : {}),
@@ -238,10 +294,13 @@ async function usersById(
   return out;
 }
 
+/** What a view reads from: the users it names and who shares a name (#1822), once per call. */
+type Ctx = { users: Map<string, UserLite>; clash: NameClashes };
+
 const authorView = (
   a: StoredActor,
   viewer: CommentViewer,
-  users: Map<string, UserLite>,
+  { users, clash }: Ctx,
 ): CommentAuthor => {
   if (a.kind === "guest")
     return {
@@ -250,29 +309,65 @@ const authorView = (
       me: viewer.short !== null && viewer.short === a.ref,
     };
   const u = users.get(a.ref);
-  const out: CommentAuthor = {
-    kind: "user",
-    id: a.ref,
-    name: u ? shownName(u) : "Member",
-    me: viewer.userId !== null && viewer.userId === a.ref,
-  };
-  if (a.agent) {
-    // A private token label shows only to its owner; everyone else sees
-    // "<owner>'s agent" (a grant's client name is public).
-    out.agent =
-      !isPrivateAgent(a.agent.via) || viewer.userId === a.ref
-        ? a.agent.name
-        : u
-          ? ownersAgent(u)
-          : agentFor(
-              { name: a.agent.name, version: null },
-              a.agent.via,
-              { id: a.ref, name: null, email: "" },
-              viewer.userId,
-            ).name;
-  }
-  return out;
+  // A stored comment with an agent (written over MCP or with a token, or
+  // before #1789) reads as the agent at read time; no row is migrated.
+  if (a.agent)
+    return agentFace(
+      { ref: a.ref, agent: a.agent },
+      faceViewer(viewer),
+      u,
+      clash,
+    );
+  const me = viewer.userId !== null && viewer.userId === a.ref;
+  return { kind: "user", id: a.ref, name: u ? shownName(u) : "Member", me };
 };
+
+/** Per isolate: the name map and when it was built; stale up to CLASH_TTL_MS is fine. */
+const CLASH_TTL_MS = 60_000;
+let clashCache: { at: number; map: NameClashes } | null = null;
+/** For tests: forget the cached name map. */
+export const resetNameClashCache = (): void => {
+  clashCache = null;
+};
+
+/** Every member's name, removed ones too (their names stay reserved), cached. */
+async function allClashes(env: Env): Promise<NameClashes> {
+  if (clashCache && Date.now() - clashCache.at < CLASH_TTL_MS)
+    return clashCache.map;
+  const { results } = await env.DB.prepare(
+    "select id, email, name, display_name as displayName from users",
+  ).all<{
+    id: string;
+    email: string;
+    name: string;
+    displayName: string | null;
+  }>();
+  const map = nameClashes(
+    results.map((r) => ({ id: r.id, email: r.email, name: effectiveName(r) })),
+  );
+  clashCache = { at: Date.now(), map };
+  return map;
+}
+
+/** Whether a comment shows an agent by name (then `for` needs the clash check). */
+const hasAgent = (c: StoredComment): boolean =>
+  !!c.author.agent ||
+  !!c.mentions?.length ||
+  !!c.assigned ||
+  !!c.ask?.answer?.by.agent ||
+  !!c.ask?.to.some((p) => p.kind === "agent");
+
+async function ctxFor(
+  env: Env,
+  ids: Set<string>,
+  agents: boolean,
+): Promise<Ctx> {
+  const [users, clash] = await Promise.all([
+    usersById(env, ids),
+    agents ? allClashes(env) : Promise.resolve(new Map() as NameClashes),
+  ]);
+  return { users, clash };
+}
 
 async function threadViews(
   env: Env,
@@ -284,7 +379,11 @@ async function threadViews(
     if (t.resolvedBy?.kind === "user") ids.add(t.resolvedBy.ref);
     for (const c of t.comments) userIds(c, ids);
   }
-  const users = await usersById(env, ids);
+  const users = await ctxFor(
+    env,
+    ids,
+    threads.some((t) => t.comments.some(hasAgent) || t.resolvedBy?.agent),
+  );
   return threads.map((t) => ({
     id: t.id,
     anchor: t.anchor,
@@ -300,8 +399,9 @@ async function threadViews(
 /** The users a comment shows by name: its author and, on an ask, who was asked and who answered. */
 function userIds(c: StoredComment, into: Set<string>): void {
   if (c.author.kind === "user") into.add(c.author.ref);
+  for (const m of c.mentions ?? []) if (m.owner) into.add(m.owner);
   if (!c.ask) return;
-  for (const p of c.ask.to) if (p.kind === "user") into.add(p.key);
+  for (const p of c.ask.to) into.add(p.kind === "user" ? p.key : p.owner);
   if (c.ask.answer?.by.kind === "user") into.add(c.ask.answer.by.ref);
 }
 
@@ -309,36 +409,129 @@ function userIds(c: StoredComment, into: Set<string>): void {
 const partyView = (
   p: StoredParty,
   viewer: CommentViewer,
-  users: Map<string, UserLite>,
+  users: Ctx,
 ): CommentAuthor =>
   p.kind === "user"
     ? authorView({ kind: "user", ref: p.key }, viewer, users)
     : {
-        kind: "user",
+        kind: "agent",
         id: p.key,
-        name: p.name,
+        name: agentName(p.name, users.users.get(p.owner), viewer, users.clash),
+        for: forLine(users.users.get(p.owner), faceViewer(viewer), users.clash),
         me: viewer.userId !== null && viewer.userId === p.owner,
       };
+
+/** A roster agent's bus name; a guest sees "<owner>'s agent" instead (#1822). */
+const agentName = (
+  bus: string,
+  owner: UserLite | undefined,
+  viewer: CommentViewer,
+  clash: NameClashes,
+): string =>
+  faceViewer(viewer).guest && !(viewer.userId && viewer.userId === owner?.id)
+    ? agentOwnedBy(owner, clash)
+    : plainAgentName(bus);
+
+const escRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * A body with each "@<stored name>" of a mention or assignment swapped for the
+ * name shown (one pass), whatever the case. An "@" inside a word, an email or
+ * a URL is not a mention, and a longer name wins over its prefix. A name
+ * with more letters after it is masked too, so no bus name stays visible.
+ */
+export const maskBody = (body: string, pairs: [string, string][]): string => {
+  const changed = pairs.filter(([from, to]) => from !== to);
+  if (changed.length === 0) return body;
+  const re = new RegExp(
+    `(?<![\\p{L}\\p{N}_.+\\-/])(?:${changed
+      .map(([f]) => `@${escRe(f)}`)
+      .sort((x, y) => y.length - x.length)
+      .join("|")})`,
+    "giu",
+  );
+  const exact = new Map(changed.map(([f, t]) => [`@${f}`.toLowerCase(), t]));
+  return body.replace(re, (m) => {
+    const t =
+      exact.get(m.toLowerCase()) ??
+      changed.find(([f]) => new RegExp(`^@${escRe(f)}$`, "iu").test(m))?.[1];
+    return t === undefined ? m : `@${t}`;
+  });
+};
+
+/** A stored actor a person typed in the web app (#1797); an agent row or an old row is not. */
+const isTyped = (a: StoredActor): boolean =>
+  a.kind === "user" && a.typed === true && !a.agent;
 
 const commentOf = (
   c: StoredComment,
   viewer: CommentViewer,
-  users: Map<string, UserLite>,
+  users: Ctx,
 ): Comment => {
   const author = authorView(c.author, viewer, users);
+  const shown = (c.mentions ?? []).map((m) =>
+    agentName(
+      m.name,
+      m.owner ? users.users.get(m.owner) : undefined,
+      viewer,
+      users.clash,
+    ),
+  );
+  const assignedName = c.assigned
+    ? agentName(
+        c.assigned.name,
+        c.assigned.owner ? users.users.get(c.assigned.owner) : undefined,
+        viewer,
+        users.clash,
+      )
+    : "";
+  const asked = (c.ask?.to ?? []).flatMap((p): [string, string][] =>
+    p.kind === "agent"
+      ? [
+          [
+            p.name,
+            agentName(p.name, users.users.get(p.owner), viewer, users.clash),
+          ],
+        ]
+      : [],
+  );
+  const pairs: [string, string][] = [
+    ...(c.mentions ?? []).map((m, i): [string, string] => [
+      m.name,
+      shown[i] ?? m.name,
+    ]),
+    ...(c.assigned
+      ? [[c.assigned.name, assignedName] as [string, string]]
+      : []),
+    ...asked,
+  ];
   return {
     id: c.id,
-    body: c.body,
+    body: maskBody(c.body, pairs),
     author,
     createdAt: c.createdAt,
     editedAt: c.editedAt,
+    typed: isTyped(c.author),
     can: { edit: author.me, delete: author.me || viewer.moderator === true },
     ...(c.ask
       ? {
           ask: {
-            question: c.ask.question,
-            options: c.ask.options,
-            ...(c.ask.recommended ? { recommended: c.ask.recommended } : {}),
+            question: maskBody(c.ask.question, pairs),
+            options: c.ask.options.map((o) => ({
+              ...o,
+              label: maskBody(o.label, pairs),
+              ...(o.detail !== undefined
+                ? { detail: maskBody(o.detail, pairs) }
+                : {}),
+            })),
+            ...(c.ask.recommended
+              ? {
+                  recommended: {
+                    ...c.ask.recommended,
+                    why: maskBody(c.ask.recommended.why, pairs),
+                  },
+                }
+              : {}),
             to: c.ask.to.map((p) => partyView(p, viewer, users)),
             ...(c.ask.answer
               ? {
@@ -346,6 +539,13 @@ const commentOf = (
                     optionId: c.ask.answer.optionId,
                     by: authorView(c.ask.answer.by, viewer, users),
                     at: c.ask.answer.at,
+                    typed: isTyped(c.ask.answer.by),
+                    yes:
+                      viewer.userId !== null &&
+                      isTyped(c.ask.answer.by) &&
+                      c.ask.answer.by.ref === viewer.userId &&
+                      c.author.kind === "user" &&
+                      c.author.ref === viewer.userId,
                   },
                 }
               : {}),
@@ -355,9 +555,18 @@ const commentOf = (
       : {}),
     ...(c.mentions?.length
       ? {
-          mentions: c.mentions.map((m) => ({
+          mentions: c.mentions.map((m, i) => ({
             key: m.key,
-            name: m.name,
+            name: shown[i] ?? m.name,
+            ...(m.owner
+              ? {
+                  for: forLine(
+                    users.users.get(m.owner),
+                    faceViewer(viewer),
+                    users.clash,
+                  ),
+                }
+              : {}),
             delivery: m.state as "delivered" | "queued" | "seen" | "gone",
           })),
         }
@@ -366,7 +575,7 @@ const commentOf = (
       ? {
           assigned: {
             key: c.assigned.key,
-            name: c.assigned.name,
+            name: assignedName,
             state: c.assigned.state as "delivered" | "queued" | "seen" | "done",
           },
         }
@@ -381,7 +590,7 @@ async function commentView(
 ): Promise<Comment> {
   const ids = new Set<string>();
   userIds(c, ids);
-  return commentOf(c, viewer, await usersById(env, ids));
+  return commentOf(c, viewer, await ctxFor(env, ids, hasAgent(c)));
 }
 
 // -------------------------------------------------------------------- reads
@@ -393,7 +602,12 @@ export async function listComments(
   status: CommentStatus | "all",
   viewer: CommentViewer,
 ): Promise<CommentList> {
+  // A full read repairs the asks index (#1623); never fails the read. The rows
+  // are read first, so the threads are never older than the rows they are
+  // compared with.
+  const rows = status === "all" ? await askRows(env, artifactId) : null;
   const r = await call(() => stub(env, artifactId).commentsList(status));
+  if (rows) await reconcileAsks(env, artifactId, r.threads, r.truncated, rows);
   return {
     threads: await threadViews(env, r.threads, viewer),
     open: r.open,
@@ -438,6 +652,8 @@ export type CommentExtras = {
   mentions?: KeyRef[];
   assign?: KeyRef;
   ask?: AskInput;
+  /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions, assign or ask. */
+  toAsker?: boolean;
 };
 
 /** Who may mention, assign and ask. `moderator`: the owner or an editor. */
@@ -454,8 +670,91 @@ type Resolved = {
   /** The agents to make follow: mentioned, resolved from the viewer's own running agents. */
   follow: RosterAgent[];
   mentions: string[];
+  /** What the stored mention rows are: plain mentions, or the agents a reply to the asker reached (#1614). */
+  mentionKind: "mention" | "asker";
   assign: string | null;
+  /** #1900: the agents this comment names (mentioned, assigned, asked), who join the thread. */
+  participants: StoredParticipant[];
 };
+
+const participantOf = (a: RosterAgent): StoredParticipant => ({
+  ...storedAgent(a),
+  namespace: a.address.namespace,
+});
+
+/**
+ * #1900: an agent that comments joins the thread, but only one the server
+ * identified (#1822): that proof gives the exact bus address. An agent with no
+ * identity (a legacy token, an unlinked grant) cannot be told apart from the
+ * member's other agents, so it does not join by commenting.
+ */
+async function authorParticipant(
+  artifactId: string,
+  who: CommentWho,
+): Promise<StoredParticipant[]> {
+  const id = who.kind === "user" ? who.agent?.identity : undefined;
+  if (who.kind !== "user" || !id) return [];
+  const address = { namespace: id.namespace, name: id.name };
+  if (!BusAddressSchema.safeParse(address).success) return [];
+  return [
+    {
+      kind: "agent",
+      key: await agentKey(artifactId, who.id, address),
+      name: id.name,
+      owner: who.id,
+      namespace: id.namespace,
+    },
+  ];
+}
+
+/**
+ * #1968: the agent that published the version a page-wide thread starts on, as
+ * a roster agent, or null. Only a linked one counts: the version carries the
+ * server-set identity (#1822) of the bus session that proved itself on the
+ * publisher's own hub, so the address is exact and never another member's.
+ * Null for a web publish, an unlinked agent, a publisher who can no longer
+ * read the artifact or hold a bus, and the author's own agent.
+ */
+async function pagePublisher(
+  env: Env,
+  a: Pick<ArtifactRow, "id" | "currentVersion">,
+  who: CommentWho,
+): Promise<RosterAgent | null> {
+  const row = await stmt(
+    env.DB,
+    "select agent_identity as identity, created_by as userId from versions where artifact_id = ? and version = ?",
+  )
+    .bind(a.id, a.currentVersion)
+    .first<{ identity: string | null; userId: string }>();
+  if (!row?.identity) return null;
+  let id: { identityId?: unknown; namespace?: unknown; name?: unknown };
+  try {
+    id = JSON.parse(row.identity);
+  } catch {
+    return null;
+  }
+  const address = BusAddressSchema.safeParse({
+    namespace: id.namespace,
+    name: id.name,
+  });
+  if (!address.success) return null;
+  if (who.kind === "user" && who.agent?.identity?.identityId === id.identityId)
+    return null;
+  const user = await getUser(env, row.userId);
+  if (
+    !user ||
+    !canConnect(user) ||
+    !(await accessLevel(env, callerOf(user), a.id))
+  )
+    return null;
+  return {
+    key: await agentKey(a.id, row.userId, address.data),
+    name: address.data.name,
+    online: false,
+    userId: row.userId,
+    address: address.data,
+  };
+}
 
 /** The key of a roster agent (comment-agents.ts agentKey). */
 const AGENT_KEY = /^agent:[0-9a-f]{32}$/;
@@ -481,7 +780,9 @@ async function resolveExtras(
     agents: [],
     follow: [],
     mentions: [],
+    mentionKind: "mention",
     assign: null,
+    participants: [],
   };
   const wantsTargets = (x.mentions?.length ?? 0) > 0 || x.assign !== undefined;
   if (!wantsTargets && !x.ask) return none;
@@ -571,7 +872,9 @@ async function resolveExtras(
     },
     agents: [...agents.values()],
     mentions: mentioned.map((m) => m.key),
+    mentionKind: "mention",
     assign: assigned?.key ?? null,
+    participants: [...agents.values()].map((x) => participantOf(x.agent)),
   };
 }
 
@@ -641,7 +944,20 @@ async function deliver(
       Promise.all(
         r.agents.map(({ agent, kind }) =>
           Promise.race([
-            notifyAgent(env, a.id, version, threadId, c.id, kind, agent),
+            notifyAgent(
+              env,
+              a.id,
+              version,
+              threadId,
+              c.id,
+              kind,
+              agent,
+              // Only a comment a person typed, to an agent of that same
+              // person. An assignment (going away, #1792) stays data.
+              kind !== "assign" &&
+                isTyped(c.author) &&
+                c.author.ref === agent.userId,
+            ),
             late,
           ]),
         ),
@@ -654,11 +970,14 @@ async function deliver(
   } finally {
     clearTimeout(timer);
   }
-  const states: { kind: "mention" | "assign"; key: string; state: string }[] =
-    [];
+  const states: {
+    kind: "mention" | "assign" | "asker";
+    key: string;
+    state: string;
+  }[] = [];
   for (const key of r.mentions)
     states.push({
-      kind: "mention",
+      kind: r.mentionKind,
       key,
       state: stateOf(outcome.get(key) ?? "dropped", false),
     });
@@ -707,6 +1026,24 @@ export async function addThread(
   };
   const { anchor, version } = await checkAnchor(env, a, raw.anchor, take);
   if (!taken) await take();
+  const page =
+    // Members only (#1968): not a signed-out visitor, a guest or a guest-role member.
+    anchor.kind === "note" &&
+    r.agents.length === 0 &&
+    who.kind === "user" &&
+    !outsider(viewer)
+      ? await pagePublisher(env, a, who)
+      : null;
+  if (page) {
+    r.extras = { ...r.extras, mentions: [storedAgent(page)] };
+    r.agents.push({ agent: page, kind: "mention" });
+    r.mentions.push(page.key);
+  }
+  const participants = [
+    ...r.participants,
+    ...(page ? [{ ...participantOf(page), page: true as const }] : []),
+    ...(await authorParticipant(a.id, who)),
+  ];
   const t = await call(() =>
     stub(env, a.id).commentsAdd({
       actor: actorOf(who),
@@ -716,15 +1053,151 @@ export async function addThread(
       version,
       body,
       ...(r.extras ? { extras: r.extras } : {}),
+      ...(participants.length ? { participants } : {}),
     }),
   );
   const root = t.comments[0];
+  if (root?.ask) await indexAsk(env, a.id, t.id, root.id, root.ask.to);
   if (root && r.agents.length > 0) {
     const sent = await deliver(env, a, t.id, root, r);
     t.comments[0] = sent;
   }
   await announce(env, a.id, who, opts.after, r);
   return (await threadViews(env, [t], viewer))[0] as Thread;
+}
+
+/**
+ * A reply to the thread root's ask author (#1614). 400 not_an_ask unless the
+ * root carries an ask and its author is an agent (a person's ask has no agent
+ * to tell). The only addressee is that author's agents: the same target as
+ * ask_answered (askerRoster: the agents that follow the artifact and belong to
+ * the author's member; an MCP asker has no bus address until the open
+ * publisher/asker user decision is made, so the member is the only link).
+ * It can reach no other agent. The notice is fixed text with the ids.
+ */
+async function resolveToAsker(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+): Promise<Resolved> {
+  const t = await call(() => stub(env, artifactId).commentsGet(threadId));
+  const root = t.comments[0];
+  if (!root?.ask || root.author.kind !== "user" || !root.author.agent)
+    throw new ApiError(
+      "not_an_ask",
+      "This thread has no question from an agent to reply to",
+    );
+  const to = await askerRoster(env, artifactId, root.author.ref);
+  return {
+    extras: to.length ? { asker: to.map(storedAgent) } : undefined,
+    agents: to.map((agent) => ({ agent, kind: "asker" as const })),
+    follow: [],
+    mentions: to.map((a) => a.key),
+    mentionKind: "asker",
+    assign: null,
+    // The asker's agents are not named one by one: the asking agent joins by its own comment.
+    participants: [],
+  };
+}
+
+/**
+ * #1900: a reply from a person (a signed-in member typing or calling without an
+ * agent, or a guest) tells the thread's participant agents, except the ones
+ * this same comment already reached (mention, assign, ask, reply to the
+ * asker). An agent's reply never does this. The bound (a cap per thread, none once resolved) is spent in the DO; an agent
+ * whose member lost access or cannot hold a bus is skipped and its spend given
+ * back. A notice goes only to the exact participant, never its member's other
+ * agents. Never throws.
+ */
+async function threadReply(
+  env: Env,
+  a: Pick<ArtifactRow, "id" | "currentVersion">,
+  threadId: string,
+  c: StoredComment,
+  r: Resolved,
+  viewer: CommentViewer,
+): Promise<void> {
+  // Members only (#1900, #1968): never an agent, a signed-out visitor, a guest
+  // or a guest-role member.
+  if (c.author.kind !== "user" || c.author.agent || outsider(viewer)) return;
+  try {
+    const due = await call(() =>
+      stub(env, a.id).commentsThreadReplyTake({
+        threadId,
+        at: c.createdAt,
+        exclude: r.agents.map((x) => x.agent.key),
+        // A reply that @-mentions someone is for them (#1968).
+        skipPage: r.agents.length > 0,
+      }),
+    );
+    if (due.length === 0) return;
+    const reached: RosterAgent[] = [];
+    const users = new Map<string, boolean>();
+    for (const p of due) {
+      let ok = users.get(p.owner);
+      if (ok === undefined) {
+        const user = await getUser(env, p.owner);
+        ok =
+          !!user &&
+          canConnect(user) &&
+          !!(await accessLevel(env, callerOf(user), a.id));
+        users.set(p.owner, ok);
+      }
+      if (ok)
+        reached.push({
+          key: p.key,
+          name: p.name,
+          online: false,
+          userId: p.owner,
+          address: { namespace: p.namespace, name: p.name },
+        });
+    }
+    const version = Math.max(1, a.currentVersion);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<DeliveryState>((res) => {
+      timer = setTimeout(() => res("dropped"), NOTICE_BUDGET_MS);
+    });
+    let outs: DeliveryState[];
+    try {
+      outs = await Promise.all(
+        reached.map((agent) =>
+          Promise.race([
+            notifyAgent(
+              env,
+              a.id,
+              version,
+              threadId,
+              c.id,
+              "thread_reply",
+              agent,
+              isTyped(c.author) && c.author.ref === agent.userId,
+            ),
+            late,
+          ]),
+        ),
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+    // Spent for a notice that went out or is held; given back for the rest.
+    const back = [
+      ...due.filter((p) => !reached.some((x) => x.key === p.key)),
+      ...reached.filter((_, i) => outs[i] === "dropped"),
+    ].map((p) => p.key);
+    if (back.length > 0)
+      await call(() =>
+        stub(env, a.id).commentsThreadReplyRefund({
+          threadId,
+          at: c.createdAt,
+          keys: back,
+        }),
+      ).catch(() => undefined);
+  } catch (e) {
+    logInfo("comment_thread_reply_failed", {
+      artifactId: a.id,
+      code: e instanceof ApiError ? e.code : "error",
+    });
+  }
 }
 
 /** A reply. It does not reopen the thread. */
@@ -739,7 +1212,23 @@ export async function addReply(
   opts: ExtrasOpts = {},
 ): Promise<Comment> {
   const text = checkBody(body);
-  const r = await resolveExtras(env, artifactId, who, extras, opts);
+  let r: Resolved;
+  if (extras.toAsker) {
+    if (
+      (extras.mentions?.length ?? 0) > 0 ||
+      extras.assign !== undefined ||
+      extras.ask !== undefined
+    )
+      throw new ApiError(
+        "bad_request",
+        "toAsker cannot be combined with mentions, assign or ask",
+      );
+    r = await resolveToAsker(env, artifactId, threadId);
+  } else r = await resolveExtras(env, artifactId, who, extras, opts);
+  const participants = [
+    ...r.participants,
+    ...(await authorParticipant(artifactId, who)),
+  ];
   const c = await call(() =>
     stub(env, artifactId).commentsReply({
       threadId,
@@ -747,12 +1236,15 @@ export async function addReply(
       rate: rateKeyOf(who),
       body: text,
       ...(r.extras ? { extras: r.extras } : {}),
+      ...(participants.length ? { participants } : {}),
     }),
   );
-  if (r.agents.length === 0) {
-    await announce(env, artifactId, who, opts.after, r);
-    return commentView(env, c, viewer);
-  }
+  // The thread's bound (one notice per window, a cap in all) left the reply
+  // without its mention rows: nobody is told, and the usual follower notice
+  // (its own limits) is the only one.
+  if (extras.toAsker && !c.mentions?.length)
+    r = { ...r, agents: [], mentions: [] };
+  if (c.ask) await indexAsk(env, artifactId, threadId, c.id, c.ask.to);
   const row = await stmt(
     env.DB,
     "select current_version as v from artifacts where id = ?",
@@ -760,7 +1252,23 @@ export async function addReply(
     .bind(artifactId)
     .first<{ v: number }>();
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
+  // #1900: a person's reply also tells the thread's other agents, once each.
+  await threadReply(env, a, threadId, c, r, viewer);
+  if (r.agents.length === 0) {
+    await announce(env, artifactId, who, opts.after, r);
+    return commentView(env, c, viewer);
+  }
   const sent = await deliver(env, a, threadId, c, r);
+  // The bound is spent when a notice goes out or is held; a reply whose agents
+  // all read "gone" (no session, or a stalled hub) gives it back (#1614).
+  if (
+    extras.toAsker &&
+    sent.mentions?.length &&
+    sent.mentions.every((m) => m.state === "gone")
+  )
+    await call(() =>
+      stub(env, artifactId).commentsAskerRefund({ threadId, at: c.createdAt }),
+    ).catch(() => undefined);
   await announce(env, artifactId, who, opts.after, r);
   return commentView(env, sent, viewer);
 }
@@ -791,6 +1299,7 @@ export async function answerAsk(
       rate: rateKeyOf(who),
     }),
   );
+  await indexAnswered(env, artifactId, commentId);
   // The answer is stored: the asker's following agents hear of it, in the
   // background, and a failure never fails the answer (inBackground catches).
   if (after && !unchanged && c.author.kind === "user")
@@ -803,19 +1312,37 @@ export async function answerAsk(
         threadId,
         commentId,
         c.author.ref,
+        // Only an answer the asker picked themselves in the web app.
+        c.ask?.answer !== undefined &&
+          isTyped(c.ask.answer.by) &&
+          c.ask.answer.by.ref === c.author.ref,
       ),
     );
   return commentView(env, c, viewer);
 }
 
-/** The agents that can be mentioned, assigned or asked on the artifact. */
+/**
+ * The agents that can be mentioned, assigned or asked on the artifact. A
+ * guest or signed-out viewer gets no machine and no last-active time, only the
+ * state (a signed-out viewer never reaches here: the route lists none).
+ */
 export async function artifactAgents(
   env: Env,
   artifactId: string,
   viewerId: string | null,
-): Promise<{ key: string; name: string; online: boolean }[]> {
+  guest = false,
+): Promise<ArtifactAgent[]> {
+  const masked = guest || viewerId === null;
   return (await agentRoster(env, artifactId, viewerId, true, true)).map(
-    ({ key, name, online }) => ({ key, name, online }),
+    ({ key, name, online, state, lastActiveAt, machine, owner }) => ({
+      key,
+      name,
+      online,
+      state,
+      lastActiveAt: masked ? null : lastActiveAt,
+      machine: masked ? null : machine,
+      owner,
+    }),
   );
 }
 
@@ -836,6 +1363,7 @@ export async function setStatus(
       rate: rateKeyOf(who),
     }),
   );
+  await indexStatus(env, artifactId, threadId, status);
   return (await threadViews(env, [t], viewer))[0] as Thread;
 }
 
@@ -857,6 +1385,7 @@ export async function editComment(
       commentId,
       by: { kind: a.kind, ref: a.ref },
       body: text,
+      typed: a.kind === "user" && a.typed === true,
       rate: rateKeyOf(who),
     }),
   );
@@ -877,7 +1406,8 @@ export async function deleteComment(
   moderator: boolean,
 ): Promise<void> {
   const a = who ? actorOf(who) : null;
-  await call(() =>
+  // `r` is undefined from an older DO mid-deploy: the delete stands, the index heals on read.
+  const r = await call(() =>
     stub(env, artifactId).commentsDelete({
       threadId,
       commentId,
@@ -886,4 +1416,5 @@ export async function deleteComment(
       ...(who ? { rate: rateKeyOf(who) } : {}),
     }),
   );
+  await indexDeleted(env, artifactId, threadId, commentId, r?.root === true);
 }

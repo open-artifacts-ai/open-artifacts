@@ -38,7 +38,7 @@ jobs:
       # GITHUB_TOKEN trigger no workflows, so the release PR's required checks would
       # never run.
       - id: app
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
@@ -46,49 +46,43 @@ jobs:
       # reads main's head, not this run's sha, so a run queued behind the
       # concurrency group could otherwise create a release whose tag is not
       # its head_sha, and the release gates would refuse that tag. The
-      # release commit is the merge commit of the one merged release PR still
-      # labelled "autorelease: pending". A pending release PR merged before
-      # this commit never got its own run (batched by the merge queue, or
-      # cancelled while pending): fail loudly rather than stall with no tag.
+      # decision lives in scripts/ci/release-kind.ts (tested): the release
+      # commit recognises itself from its own subject and the PR it names,
+      # read directly, never from the closed-issues list that can trail a
+      # just-merged PR (#1782). A merged pending release PR with no own run
+      # fails loudly with what to do, rather than stalling with no tag.
       # Reads only, with the App token (this job's GITHUB_TOKEN has no scope).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: scripts/ci
+          persist-credentials: false
+          token: ${{ steps.app.outputs.token }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .nvmrc
       - id: kind
         name: Is this push the release commit?
         env:
           GH_TOKEN: ${{ steps.app.outputs.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
-        run: |
-          fail() { echo "::error::$1"; exit 1; }
-          issues=$(gh api "repos/$REPO/issues?state=closed&labels=autorelease:%20pending&per_page=100") || fail "could not list pending release PRs"
-          # One page, no pagination: a full page could hide the pending PR.
-          count=$(jq -r 'length' <<< "$issues") || fail "could not read pending release PRs"
-          [ "$count" -lt 100 ] || fail "pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud"
-          nums=$(jq -r '[.[] | select(.pull_request.merged_at != null) | .number] | join(" ")' <<< "$issues") || fail "could not read pending release PRs"
-          read -ra pending <<< "$nums"
-          if [ "${#pending[@]}" -eq 0 ]; then
-            echo "is_release=false" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          [ "${#pending[@]}" -eq 1 ] || fail "more than one merged release PR is pending (${pending[*]}): see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud"
-          n=${pending[0]}
-          merge=$(gh api "repos/$REPO/pulls/$n" -q .merge_commit_sha) || fail "could not read #$n"
-          [[ "$merge" =~ ^[0-9a-f]{40}$ ]] || fail "could not read #$n's merge commit"
-          if [ "$merge" = "$SHA" ]; then
-            echo "is_release=true" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          # Merged after this commit: its own run is queued behind this one.
-          status=$(gh api "repos/$REPO/compare/$SHA...$merge" -q .status) || fail "could not compare $SHA with $merge"
-          if [ "$status" = ahead ]; then
-            echo "Release commit $merge (#$n) is newer; its own run creates the release."
-            echo "is_release=false" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          fail "release commit $merge (#$n) has no own run: see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud"
+        run: node --experimental-strip-types --no-warnings scripts/ci/release-kind.ts --repo "$REPO" --sha "$SHA" >> "$GITHUB_OUTPUT"
       - id: rp
-        uses: googleapis/release-please-action@v4
+        uses: googleapis/release-please-action@5c625bfb5d1ff62eadeeb3772007f7f66fdcf071 # v4
         with:
           skip-github-release: ${{ steps.kind.outputs.is_release != 'true' }}
           token: ${{ steps.app.outputs.token }}
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+      # The action finds the release PR through its own closed-PR list, which
+      # can lag too. If `kind` found this commit to be the release commit and
+      # no release came out, fail instead of ending green with no tag.
+      - name: The release commit created its release
+        if: ${{ steps.kind.outputs.is_release == 'true' && steps.rp.outputs.release_created != 'true' }}
+        run: |
+          echo "::error::This commit is the release commit (kind: is_release=true) but release-please created no release, so no tag exists. Re-run this run (gh run rerun $GITHUB_RUN_ID): the action's own PR lookup can lag a just-merged PR."
+          exit 1
   deploy-landing:
     needs: [release-please]
     # always(): on workflow_dispatch the release-please job is skipped.
@@ -100,8 +94,9 @@ jobs:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           ref: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
       - id: gate
         run: |
@@ -109,7 +104,7 @@ jobs:
       - if: steps.gate.outputs.present == 'true'
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - if: steps.gate.outputs.present == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -180,8 +175,9 @@ jobs:
           [ -n "$OWNER" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
           [[ ! "$OWNER" =~ [[:upper:][:space:]] ]] || { echo "::error::OA_OWNER_EMAIL must be trimmed and lowercase"; exit 1; }
       - if: steps.guard.outputs.deploy == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           ref: ${{ env.TAG }}
           # Tags and history: the migration guard compares TAG with the
           # previous stable release.
@@ -189,7 +185,7 @@ jobs:
       - if: steps.guard.outputs.deploy == 'true'
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - if: steps.guard.outputs.deploy == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -327,14 +323,14 @@ jobs:
           [ -n "$OWNER" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
           [[ ! "$OWNER" =~ [[:upper:][:space:]] ]] || { echo "::error::OA_OWNER_EMAIL must be trimmed and lowercase"; exit 1; }
       - if: steps.guard.outputs.deploy == 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ env.TAG }}
           persist-credentials: false
       - if: steps.guard.outputs.deploy == 'true'
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - if: steps.guard.outputs.deploy == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -378,10 +374,11 @@ jobs:
       # the release for a guarded dispatch: prod is not on this tag, so don't verify it.
       SKIP_PROD: ${{ (needs.deploy-prod.outputs.installed == 'false' || needs.deploy-prod.outputs.held == 'true') && '--skip-prod' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           ref: ${{ needs.release-please.outputs.tag_name || inputs.tag }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
       - name: Verify the release is live

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 export const OPENCODE_TUI_PLUGIN = fileURLToPath(
   new URL("../assets/opencode-tui/tui.js", import.meta.url),
 );
+export { mcpUrl, OpenCodeProxy } from "./proxy.ts";
 export {
   type Api,
   type OpenCodeSession,
@@ -13,6 +14,7 @@ export {
 } from "./session.ts";
 export {
   handleToolCall,
+  helloFor,
   SESSION_META,
   TOOLS,
   type ToolResult,

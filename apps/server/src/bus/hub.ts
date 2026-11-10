@@ -9,14 +9,17 @@ import {
   type ClientFrame,
   candidateName,
   decodeClientFrame,
+  droppedRefusedChars,
   encodeFrame,
   FALLBACK_BUS_NAME,
   type FormerName,
   frameId,
   HUB_MAILBOX_BYTES_CAP,
   hasCap,
+  isFallbackName,
   isId,
   LIMITS,
+  LinkProofHashSchema,
   MAILBOX_BYTES_CAP,
   MAILBOX_PENDING_CAP,
   MAILBOX_RETAIN_MS,
@@ -48,13 +51,21 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError, logInfo } from "../log.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
+import type { AgentIdentity } from "../services/agent-usage.js";
 import {
   type BusCloseKind,
   busCloseKind,
   MAX_ACTIVE_MACHINES,
 } from "../services/bus.js";
 import type { DeliveryOutcome } from "../services/bus-delivery.js";
-import { follow, following, unfollow } from "../services/follows.js";
+import {
+  follow,
+  following,
+  knownKey,
+  moveFollows,
+  pruneDeadFollows,
+  unfollow,
+} from "../services/follows.js";
 import { VERSION } from "../version.gen.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
@@ -85,6 +96,16 @@ import {
   reachNamespaces,
   removeReach,
 } from "./reach.js";
+import {
+  decideReachProposal,
+  expireReachProposalsOfMachine,
+  proposeReach,
+  type ReachAudit,
+  type ReachDecideResult,
+  type ReachProposeResult,
+  type ReachViewResult,
+  viewReachProposal,
+} from "./reach-proposals.js";
 import {
   type DecideResult,
   decideProposal,
@@ -158,6 +179,12 @@ export const AUTHZ_AT_HEADER = "x-oa-bus-authz-at";
  * (429, Retry-After), so a connect racing closeAll never survives it.
  */
 export const SKEW_MS = 2000;
+/**
+ * #1749: how long a close this hub started waits for the install index's
+ * `gone`. Well under revokeBusMachine's 10 s `within`, so a slow index never
+ * turns a finished revoke into a 503.
+ */
+const INDEX_GONE_TIMEOUT_MS = 3000;
 
 /** Structured hub events: ids, codes, kinds and counts only (log.ts). */
 function logEvent(
@@ -168,6 +195,9 @@ function logEvent(
 }
 
 const HOUR_MS = 3_600_000;
+
+/** SET clause of every close: the status goes, and so does the session's link proof (#1822). */
+const CLOSE_CLEAR = `${STATUS_CLEAR}, proof_hash = null`;
 /** meta key: when the last closeAll started (ms). */
 const REVOKED_AT_KEY = "revoked_at";
 /**
@@ -260,6 +290,11 @@ type Attachment = {
   replaced?: true;
   revoked?: true;
   /**
+   * The socket tripped its frame budget and was closed (#1749). Kept here so
+   * a wake (which clears #rateClosed) still processes none of its frames.
+   */
+  rateLimited?: true;
+  /**
    * The capability tokens of the socket's latest `hello` (#1325), kept in
    * the attachment so they survive hibernation. Absent: no hello with caps.
    */
@@ -301,6 +336,8 @@ const HUB_CAPS = [
   BUS_CAPS.links,
   BUS_CAPS.reach,
   BUS_CAPS.follow,
+  BUS_CAPS.link,
+  BUS_CAPS.linkArg,
 ];
 
 /**
@@ -312,6 +349,22 @@ const followGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.follow);
 };
+
+/** #1822: link_bind goes only to a socket whose hello listed BUS_CAPS.link. */
+const linkGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.link);
+};
+
+/**
+ * Notices (#1746): the `notice` frame arrived with daemon v0.138.0, but only
+ * v0.139.0 began listing a cap (BUS_CAPS.follow), so that cap is the gate. A
+ * daemon without it has a strict decoder that refuses the frame (`bad_frame`)
+ * while the hub would report `delivered`. Such a socket is treated as an
+ * offline machine: the notice parks and goes out on an agent_up from a
+ * socket with the cap. 0.138.x daemons count as old, which is acceptable.
+ */
+const noticeGated = (ws: WebSocket): boolean => followGated(ws);
 
 /** #1317: follow requests one hub runs at once (each is a D1 round trip); past it, `rate_limited`. */
 const FOLLOWS_IN_FLIGHT_MAX = 8;
@@ -409,6 +462,16 @@ function sendFrame(ws: WebSocket, frame: ServerFrame): void {
     ws.send(encodeFrame(frame));
   } catch {
     // The socket is closing; the daemon resyncs on reconnect.
+  }
+}
+
+/** #1752: like sendFrame, but false when the socket refused the frame (closing or closed), so a notice is not counted delivered. */
+function trySendFrame(ws: WebSocket, frame: ServerFrame): boolean {
+  try {
+    ws.send(encodeFrame(frame));
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -771,6 +834,48 @@ function machineChange(sql: SqlStorage, machineId: string): RosterChange {
   };
 }
 
+/** #1984: most proofs a live session holds; a newer bind evicts the oldest. */
+export const PROOFS_PER_SESSION = 4;
+
+/**
+ * #1822: adds the hash of `agentId`'s proof to the session's proofs (at most
+ * PROOFS_PER_SESSION: the oldest goes) and mints the agent's identity_id at
+ * its first bind. Another row holding the same hash loses it, so a hash names
+ * one session. `agents.proof_hash` mirrors the newest proof.
+ */
+function bindProof(sql: SqlStorage, agentId: string, hash: string): void {
+  const lost = all<{ agent_id: string }>(
+    sql,
+    "delete from agent_proofs where hash = ? and agent_id != ? returning agent_id",
+    hash,
+    agentId,
+  );
+  sql.exec(
+    `insert into agent_proofs (hash, agent_id, seq)
+     values (?, ?, (select coalesce(max(seq), 0) + 1 from agent_proofs))
+     on conflict (hash) do update set agent_id = excluded.agent_id, seq = excluded.seq`,
+    hash,
+    agentId,
+  );
+  sql.exec(
+    `delete from agent_proofs where agent_id = ? and hash not in
+       (select hash from agent_proofs where agent_id = ? order by seq desc limit ?)`,
+    agentId,
+    agentId,
+    PROOFS_PER_SESSION,
+  );
+  sql.exec(
+    "update agents set identity_id = coalesce(identity_id, ?) where id = ?",
+    randomHex(32),
+    agentId,
+  );
+  for (const id of [agentId, ...lost.map((r) => r.agent_id)])
+    sql.exec(
+      "update agents set proof_hash = (select hash from agent_proofs where agent_id = agents.id order by seq desc limit 1) where id = ?",
+      id,
+    );
+}
+
 /** The open agent `ref` on this machine, or null: the from_ref identity check. */
 function registeredAgent(
   sql: SqlStorage,
@@ -1075,7 +1180,9 @@ function assignName(
   for (const base of new Set([asked, FALLBACK_BUS_NAME])) {
     if (free(base)) return { name: base, mint: null };
     // #1742: only the exact chosen name is ever taken back, never a suffix.
-    if (reclaim && base === asked) {
+    // #1480: and never one reached by dropping refused characters: `OA Manager!`
+    // is not `OA Manager`.
+    if (reclaim && base === asked && !droppedRefusedChars(proposed)) {
       const from = awayHolder(
         sql,
         namespace,
@@ -1127,13 +1234,7 @@ function awayHolder(
   // (Hermes proposes `hermes-<cwd>`), the hub's `agent`, Claude's
   // `claude-<digits>`. An unrelated new thread of that kind must not take
   // over its mail.
-  if (
-    lname === kind ||
-    lname.startsWith(`${kind}-`) ||
-    lname === FALLBACK_BUS_NAME ||
-    /^claude-\d+$/.test(lname)
-  )
-    return null;
+  if (isFallbackName(name, kind)) return null;
   const rows = all<{
     agentId: string;
     kind: string;
@@ -1221,6 +1322,12 @@ function awayHolder(
  * be able to see anything the old session had acked. Acked bodies never
  * move: they are deleted, the old row keeps none. Returns the moved msg_ids.
  * Bounded by MAILBOX_PENDING_CAP.
+ *
+ * #1816: the roles the old row held move to the newcomer too, so a restarted
+ * lead keeps its role. A role with a reach_grants row stays with the old row
+ * (vacant): holding it grants cross-namespace reach, which needs the member's
+ * confirmation (#1346), so it is re-pointed, never passed silently. Only
+ * roles in the reclaim's scope move (a global's any, else `namespace`'s).
  */
 function takeAwayName(
   sql: SqlStorage,
@@ -1238,8 +1345,40 @@ function takeAwayName(
     global ? 1 : 0,
     namespace,
   );
+  sql.exec(
+    `update roles set agent_id = ? where org_id = ? and agent_id = ?
+       and (? = 1 or roles.namespace = ?)
+       and not exists (select 1 from reach_grants g
+                        where g.org_id = roles.org_id and g.role_ns = roles.namespace and g.lname = roles.lname)`,
+    toId,
+    OWNER_ORG_ID,
+    fromId,
+    global ? 1 : 0,
+    namespace,
+  );
   while (deleteDeliveredBodies(sql, fromId, 500) >= 500) {
     // Next page.
+  }
+  // #1822: the session link follows the name, but only between two sessions
+  // of one machine.
+  const idFrom = one<{ identityId: string | null }>(
+    sql,
+    `select f.identity_id as identityId from agents f join agents t on t.machine_id = f.machine_id
+      where f.id = ? and t.id = ?`,
+    fromId,
+    toId,
+  );
+  if (idFrom?.identityId) {
+    sql.exec(
+      "update agents set identity_id = ? where id = ?",
+      idFrom.identityId,
+      toId,
+    );
+    sql.exec(
+      "update agents set identity_id = null, proof_hash = null where id = ?",
+      fromId,
+    );
+    sql.exec("delete from agent_proofs where agent_id = ?", fromId);
   }
   const have = one<{ n: number; b: number }>(
     sql,
@@ -1822,7 +1961,7 @@ function takeOver(
   );
   if (taken?.live !== 1) return;
   sql.exec(
-    `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR} where id = ?`,
+    `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${CLOSE_CLEAR} where id = ?`,
     now,
     now,
     taken.id,
@@ -1840,7 +1979,7 @@ function agentDown(
   // One statement (B11): the close is the hot path of sessions{closed}.
   return one<{ id: string; namespace: string; global: number }>(
     sql,
-    `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR} where machine_id = ? and native_ref = ? and live = 1 and org_id = ? returning id, namespace, global`,
+    `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${CLOSE_CLEAR} where machine_id = ? and native_ref = ? and live = 1 and org_id = ? returning id, namespace, global`,
     now,
     now,
     machineId,
@@ -2129,7 +2268,11 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
  * namespace: that namespace on agents_live_ns_lname plus the globals on
  * agents_global_name, merged here (as roster() does).
  */
-function agentList(ctx: DurableObjectState, namespace?: string): BusAgent[] {
+function agentList(
+  ctx: DurableObjectState,
+  namespace?: string,
+  withAway = false,
+): BusAgent[] {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
   const from = "from agents a join machines m on m.id = a.machine_id";
@@ -2162,10 +2305,24 @@ function agentList(ctx: DurableObjectState, namespace?: string): BusAgent[] {
       .sort(byNamespaceName)
       .slice(0, cap);
   }
-  // TODO(#1295 part C): list away agents here (agentDto already gives them
-  // state "away", running=false and `since`) once the dashboard renders them.
-  // Until then Roster.tsx would show them as Queued and ShareNotices would
-  // offer them as targets, so only open agents are listed.
+  // #1295 part C: away agents (closed, name still reserved) are listed only on
+  // request (the @ menu); Roster.tsx and ShareNotices would show them as Queued
+  // or offer them as targets, so every other reader gets open agents only.
+  if (withAway) {
+    const away = all<AgentWithMachine>(
+      sql,
+      `select ${AGENT_DTO_COLS} ${from} where a.org_id = ? and a.live = 0 and m.revoked_at is null
+         and a.id in (select f.agent_id from former_names f
+           where f.org_id = ? and f.kind = 'away' and f.expires_at > ?)
+       order by a.namespace, lower(a.name), a.name limit ?`,
+      OWNER_ORG_ID,
+      OWNER_ORG_ID,
+      Date.now(),
+      cap,
+    );
+    // Open agents first, then away, together at most `cap` (away rows count).
+    rows = [...rows, ...away].slice(0, cap);
+  }
   const online = new Map<string, boolean>();
   const dtos = rows.map((r) => {
     let on = online.get(r.machineId);
@@ -2471,8 +2628,11 @@ function resolveTarget(
   now: number,
   withLinks = false,
   withReach = false,
+  withMailbox = false,
 ): Resolution {
   const lname = toName.toLowerCase();
+  // #1349: an away role holder takes mail only for a mailbox-capable sender.
+  const awayAt = withMailbox ? now : undefined;
   // A former name is never held by two agents in one scope (nameTaken);
   // if it ever were, the send is ambiguous rather than delivered to either.
   const formerIn = (
@@ -2484,7 +2644,7 @@ function resolveTarget(
     return rows.length > 1 ? refused("ambiguous") : { ok: true, agent: hit };
   };
   const visibleIn = (ns: string): Resolution | null => {
-    const role = resolveRoleIn(sql, OWNER_ORG_ID, ns, lname);
+    const role = resolveRoleIn(sql, OWNER_ORG_ID, ns, lname, awayAt);
     if (role) return role;
     const hit = liveVisibleIn(sql, ns, lname);
     return hit ? { ok: true, agent: hit } : formerIn({ ns });
@@ -2524,7 +2684,7 @@ function resolveTarget(
             ? r
             : null;
         const reply =
-          back(resolveRoleIn(sql, OWNER_ORG_ID, toNamespace, lname)) ??
+          back(resolveRoleIn(sql, OWNER_ORG_ID, toNamespace, lname, awayAt)) ??
           back(
             (() => {
               const h = liveVisibleIn(sql, toNamespace, lname);
@@ -2551,19 +2711,31 @@ function resolveTarget(
     // names no namespace. Live first, then away. One hit resolves; hits in
     // two of them are ambiguous (the sender names `to_namespace`).
     if (linked.length > 0 && toNamespace === undefined) {
-      for (const look of [
-        visibleIn,
-        (ns: string) => awayAgent(sql, ns, lname, now),
-      ]) {
-        const found = new Map<string, Resolution>();
-        for (const ns of linked) {
-          const h = look(ns);
-          if (h) found.set(h.ok ? h.agent.id : h.reason, h);
+      const keyOf = (h: Resolution) => (h.ok ? h.agent.id : h.reason);
+      const lives = new Map<string, Resolution>();
+      const liveNs = new Set<string>();
+      for (const ns of linked) {
+        const h = visibleIn(ns);
+        if (h) {
+          lives.set(keyOf(h), h);
+          liveNs.add(ns);
         }
-        const only = [...found.values()];
-        if (only.length > 1) return refused("ambiguous");
-        if (only[0]) return only[0];
       }
+      const first = [...lives.values()];
+      if (first.length > 1) return refused("ambiguous");
+      const one1 = first[0];
+      // A live agent resolves alone. A vacant or away role (#1816) is one
+      // candidate among the away agents of the other linked namespaces.
+      if (one1 && one1.ok && one1.agent.live === 1) return one1;
+      const found = new Map<string, Resolution>(lives);
+      for (const ns of linked) {
+        if (liveNs.has(ns)) continue;
+        const h = awayAgent(sql, ns, lname, now);
+        if (h) found.set(keyOf(h), h);
+      }
+      const only = [...found.values()];
+      if (only.length > 1) return refused("ambiguous");
+      if (only[0]) return only[0];
     }
     // Other namespaces are invisible and unreachable (spec goal 5, scenario
     // 6): a name live only elsewhere is unknown_agent, so no probe can tell
@@ -2585,8 +2757,12 @@ function resolveTarget(
   if (own) return own;
   // #1296: a role in exactly one other namespace, unless a live agent (or a
   // live former name) outside that namespace's scope shares the name.
-  const role = resolveRoleAnywhere(sql, OWNER_ORG_ID, lname, (ns) =>
-    nameOutside(sql, lname, ns, now, sender.id),
+  const role = resolveRoleAnywhere(
+    sql,
+    OWNER_ORG_ID,
+    lname,
+    (ns) => nameOutside(sql, lname, ns, now, sender.id),
+    awayAt,
   );
   if (role) return role;
   // A live global sorts first and is the only live agent with its name (and
@@ -2944,18 +3120,20 @@ function settle(
   const r = one<{ fromAgent: string; size: number }>(
     sql,
     `select r.from_agent as fromAgent, r.size from receipts r join agents a on a.id = r.to_agent
-     where r.id = ? and r.org_id = ? and r.state = 'pending' and a.machine_id = ?
+     where r.id = ? and r.org_id = ? and a.machine_id = ?
+       and (r.state = 'pending' or (? = 'delivered' and r.state = 'expired' and r.reason = 'lost_body'))
        and r.rowid > a.session_start_rowid`,
     msgId,
     OWNER_ORG_ID,
     machineId,
+    outcome,
   );
   if (!r) return null;
   // R7 (accepted): an ack after expires_at but before the sweep counts as
   // delivered; the harness really did take it.
   if (outcome === "delivered")
     sql.exec(
-      "update receipts set state = 'delivered', acked_at = ?, final_at = ? where id = ? and state = 'pending'",
+      "update receipts set state = 'delivered', reason = null, notified_at = null, acked_at = ?, final_at = ? where id = ? and (state = 'pending' or (state = 'expired' and reason = 'lost_body'))",
       now,
       now,
       msgId,
@@ -3162,15 +3340,29 @@ function senderRef(f: ClientFrame): string | null {
     f.type === "unfollow" ||
     f.type === "following"
     ? f.from_ref
-    : null;
+    : f.type === "link_bind"
+      ? f.agent_ref
+      : null;
 }
 
 /** #1317: waiting server notices a hub keeps; a notice over it is dropped (a replace of a waiting one is not). */
 export const NOTICES_MAX = 500;
+/**
+ * #1828: rows held for a LIVE daemon too old to read a notice (parked = 2)
+ * have their own caps, per address and hub-wide, and do not count toward
+ * NOTICES_MAX; a new notice over either is dropped. Offline-machine rows
+ * (parked = 1) count toward NOTICES_MAX as before, with no per-address cap.
+ */
+export const NOTICES_OLD_PER_ADDRESS = 20;
+export const NOTICES_OLD_MAX = 500;
+/** #1828: ids named in one notice_expired log line. */
+const NOTICE_LOG_IDS = 20;
 /** #1317: how long an offline machine's notice waits (the v1 rule). */
 export const NOTICE_HOLD_MS = HOUR_MS;
-/** #1317: notices one agent_up sends, so a reconnect stays one bounded step. */
-const NOTICE_FLUSH_BATCH = 100;
+/** #1317: notices one agent_up (or one alarm step) sends, so a reconnect never injects a pile of turns at once (#1752). */
+const NOTICE_FLUSH_BATCH = 10;
+/** #1752: the wait between two steps of a backlog of notices to one live agent. */
+const NOTICE_PACE_MS = 2000;
 
 type NoticeRow = {
   toNs: string;
@@ -3386,7 +3578,9 @@ export class BusHub extends DurableObject<Env> {
    * The dashboard's one read (services/bus.ts busView): the machines with a
    * live socket now, and the open agents of unrevoked machines (agentList).
    */
-  async snapshot(): Promise<{ connected: string[]; agents: BusAgent[] }> {
+  async snapshot(opts?: {
+    away?: boolean;
+  }): Promise<{ connected: string[]; agents: BusAgent[] }> {
     const connected = all<StoredMachine>(
       this.ctx.storage.sql,
       `select ${MACHINE_COLS} from machines where org_id = ? and revoked_at is null`,
@@ -3394,7 +3588,10 @@ export class BusHub extends DurableObject<Env> {
     )
       .filter((m) => machineOnline(this.ctx, m.id))
       .map((m) => m.id);
-    return { connected, agents: agentList(this.ctx) };
+    return {
+      connected,
+      agents: agentList(this.ctx, undefined, opts?.away === true),
+    };
   }
 
   // ------------------------------------------------------------------- roles
@@ -3574,6 +3771,21 @@ export class BusHub extends DurableObject<Env> {
     return outcome;
   }
 
+  /**
+   * #1822: the live session whose proof hashes to `hash`, or null. Reads this
+   * member's own agents only (one hub per member), so a proof of another
+   * member never resolves here. Worker only.
+   */
+  async agentByProof(hash: string): Promise<AgentIdentity | null> {
+    if (!LinkProofHashSchema.safeParse(hash).success) return null;
+    return one<AgentIdentity>(
+      this.ctx.storage.sql,
+      "select a.identity_id as identityId, a.namespace, a.name, a.kind from agent_proofs p join agents a on a.id = p.agent_id where p.hash = ? and a.live = 1 and a.identity_id is not null and a.org_id = ?",
+      hash,
+      OWNER_ORG_ID,
+    );
+  }
+
   /** #1299: answers true. Reads no member data and arms no alarm (the constructor still creates the schema); the hosted canary's liveness probe. */
   ping(): true {
     return true;
@@ -3685,6 +3897,70 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
+   * #1346: records a reach proposal from agent `nativeRef` of `machineId`
+   * under `tokenHash` (the sha256 of its confirm link's secret). Grants
+   * nothing; the role is the one the agent holds, found here. Worker only
+   * (services/bus.ts proposeBusReach, from the machine-token route).
+   */
+  async proposeReach(
+    input: { nativeRef: string; namespaces: string[] },
+    machineId: string,
+    tokenHash: string,
+  ): Promise<ReachProposeResult> {
+    const r = proposeReach(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      input,
+      machineId,
+      tokenHash,
+      this.#now(),
+      newId,
+    );
+    logEvent("reach_proposed", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /** #1346: the reach proposal behind `tokenHash`, for the confirm page. Worker only. */
+  async viewReachProposal(tokenHash: string): Promise<ReachViewResult> {
+    return viewReachProposal(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      tokenHash,
+      this.#now(),
+    );
+  }
+
+  /**
+   * #1346: confirms (applies, through addReach) or rejects the reach
+   * proposal behind `tokenHash`, once. Worker only, and only from the
+   * confirm page's POST (bus/reach-confirm.ts: a browser session and its
+   * form token). Reach-capable sockets hear `roster_changed` when grants
+   * were added.
+   */
+  async decideReachProposal(
+    tokenHash: string,
+    decision: "confirm" | "reject",
+  ): Promise<ReachDecideResult> {
+    const r = decideReachProposal(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      tokenHash,
+      decision,
+      this.#now(),
+      newId,
+      (fn) => this.ctx.storage.transactionSync(fn),
+    );
+    if (r.ok && r.changed !== null)
+      notifyRoster(this.ctx, {
+        namespaces: [r.changed],
+        global: false,
+        reachOnly: true,
+      });
+    logEvent("reach_decided", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r;
+  }
+
+  /**
    * #1372: records an AI agent's role proposal under `tokenHash` (the
    * sha256 of its confirm link's secret, minted by the Worker). Changes no
    * role. Worker only (services/bus.ts proposeBusRole, from MCP).
@@ -3766,9 +4042,9 @@ export class BusHub extends DurableObject<Env> {
     machines: string[];
   }> {
     const sql = this.ctx.storage.sql;
-    const col = (q: string) =>
+    const col = (q: string, ...org: string[]) =>
       sql
-        .exec(q, OWNER_ORG_ID)
+        .exec(q, ...(org.length > 0 ? org : [OWNER_ORG_ID]))
         .toArray()
         .map((r) => String(Object.values(r)[0]));
     return {
@@ -3776,18 +4052,30 @@ export class BusHub extends DurableObject<Env> {
         "select distinct credential from role_proposals where org_id = ? and status = 'pending' and credential is not null",
       ),
       machines: col(
-        "select distinct machine_id from link_proposals where org_id = ? and status = 'pending'",
+        "select machine_id from link_proposals where org_id = ? and status = 'pending' union select machine_id from reach_proposals where org_id = ? and status = 'pending'",
+        OWNER_ORG_ID,
+        OWNER_ORG_ID,
       ),
     };
   }
 
-  /** #1403: expires the machine's pending link proposals (a machine revoked in bulk). Worker only. */
-  async expireLinkProposalsOf(machineId: string): Promise<void> {
+  /**
+   * #1403: expires the machine's pending link and reach proposals (a machine
+   * revoked in bulk). Returns the reach ones, for their audit rows. Worker only.
+   */
+  async expireLinkProposalsOf(machineId: string): Promise<ReachAudit[]> {
+    const now = this.#now();
     expireLinkProposalsOfMachine(
       this.ctx.storage.sql,
       OWNER_ORG_ID,
       machineId,
-      this.#now(),
+      now,
+    );
+    return expireReachProposalsOfMachine(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      machineId,
+      now,
     );
   }
 
@@ -3955,7 +4243,7 @@ export class BusHub extends DurableObject<Env> {
     // CLOSED_AGENTS_PER_MACHINE), never the rest of its closed history.
     const ids = sql
       .exec(
-        `update agents set live = 0, last_name = name, updated_at = ?, ${STATUS_CLEAR} where machine_id = ? and live = 1 returning id`,
+        `update agents set live = 0, last_name = name, updated_at = ?, ${CLOSE_CLEAR} where machine_id = ? and live = 1 returning id`,
         now,
         id,
       )
@@ -4118,6 +4406,13 @@ export class BusHub extends DurableObject<Env> {
    */
   indexInFlight = 0;
 
+  #indexGoneTimeoutMs = INDEX_GONE_TIMEOUT_MS;
+
+  /** Tests only (static, not RPC): the bound on a `gone` call (null: INDEX_GONE_TIMEOUT_MS). */
+  static setIndexGoneTimeoutForTests(hub: BusHub, ms: number | null): void {
+    hub.#indexGoneTimeoutMs = ms ?? INDEX_GONE_TIMEOUT_MS;
+  }
+
   /**
    * #1299: when `closing` was the hub's last open daemon socket, removes the
    * hub's row from the install index (it outlives the index window while
@@ -4141,24 +4436,45 @@ export class BusHub extends DurableObject<Env> {
     const idx = socketIndexStub(this.env);
     if (!idx || !name) return;
     this.#indexedAt = Number.NEGATIVE_INFINITY;
+    // #1749: bounded, so a hung index stalls no close, erase or revoke. The
+    // call, and the repair after it, count in indexInFlight until they
+    // really settle, not until the timeout, so a test teardown still waits.
     this.indexInFlight++;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const call = Promise.resolve().then(() => idx.gone(name));
+    // The repair runs when `gone` really lands, even after the bound gave up
+    // on it: always reset, because a `seen` that returned while `gone` was in
+    // flight set the throttle after the row was deleted, and an accept
+    // within INDEX_REPORT_MS would skip its report and leave a live socket
+    // with no row. A socket accepted while `gone` was in flight reported
+    // before it landed, so its report may have been deleted: report again.
+    const settled = call
+      .then(
+        async () => {
+          this.#indexedAt = Number.NEGATIVE_INFINITY;
+          if (open()) await this.#reportToIndex();
+        },
+        () => {}, // logged by the race below, or after the bound: ignored
+      )
+      .finally(() => {
+        this.indexInFlight--;
+      });
+    this.ctx.waitUntil(settled);
     try {
-      await idx.gone(name);
+      const timedOut = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error("socket index gone timed out")),
+          this.#indexGoneTimeoutMs,
+        );
+      });
+      await Promise.race([call, timedOut]);
     } catch (e) {
       logError("socket_index_failed", e);
       return;
     } finally {
-      this.indexInFlight--;
+      clearTimeout(timer);
     }
-    // Always reset: a `seen` that returned while `gone` was in flight set the
-    // throttle after the row was deleted, and an accept within INDEX_REPORT_MS
-    // would then skip its report and leave a live socket with no row.
-    this.#indexedAt = Number.NEGATIVE_INFINITY;
-    // A socket accepted while `gone` was in flight reported before it landed,
-    // so its report may have been deleted: report again.
-    if (open()) {
-      await this.#reportToIndex();
-    }
+    await settled;
   }
 
   override async webSocketMessage(
@@ -4192,12 +4508,20 @@ export class BusHub extends DurableObject<Env> {
     const machineId = machineOf(ws);
     if (machineId === null) return false;
     const b = this.#machineBudget(machineId, now);
-    const ok = !this.#rateClosed.has(ws) && takeToken(b, now, FRAME_BUDGET);
+    const tripped =
+      this.#rateClosed.has(ws) || attachmentOf(ws)?.rateLimited === true;
+    const ok = !tripped && takeToken(b, now, FRAME_BUDGET);
     if (ok) return false;
     // The cooldown starts when this socket trips, not on its late frames.
-    if (!this.#rateClosed.has(ws)) {
+    if (!tripped) {
       b.cooldownUntil = now + LIMITS.rateLimitCooldownMs;
       this.#rateClosed.add(ws);
+      try {
+        const a = attachmentOf(ws);
+        if (a) ws.serializeAttachment({ ...a, rateLimited: true });
+      } catch {
+        // Already closed.
+      }
       logEvent("rate_limited", { kind: "frames", machineId });
     }
     closeSocket(ws, LIMITS.rateLimitCloseCode, "rate limited");
@@ -4266,6 +4590,12 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
 
+    // #1822: without the cap the frame is as unknown as it is to an older hub.
+    if (f.type === "link_bind" && !linkGated(ws)) {
+      reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
+      return;
+    }
+
     // Review Focus 1: a socket acts only for agents it registered itself.
     const ref = senderRef(f);
     const sender = ref === null ? null : registeredAgent(sql, machineId, ref);
@@ -4305,7 +4635,8 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.mailbox) ||
           hasCap(f, BUS_CAPS.links) ||
           hasCap(f, BUS_CAPS.reach) ||
-          hasCap(f, BUS_CAPS.follow)
+          hasCap(f, BUS_CAPS.follow) ||
+          hasCap(f, BUS_CAPS.link)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -4318,7 +4649,7 @@ export class BusHub extends DurableObject<Env> {
         // inline batch and one queue row (B11).
         const downed = all<{ id: string; namespace: string; global: number }>(
           sql,
-          `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR}
+          `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${CLOSE_CLEAR}
             where machine_id = ? and live = 1 and org_id = ?
               and native_ref in (select value from json_each(?))
            returning id, namespace, global`,
@@ -4352,6 +4683,23 @@ export class BusHub extends DurableObject<Env> {
         // ref takes over the old one's agent row (address, former names, mail).
         if (f.replaces !== undefined && mailboxGated(ws))
           takeOver(sql, machineId, f.replaces, f.agent_ref, this.#now());
+        // #1766: where this session's follows are, read before agentUp (a
+        // reclaim deletes the away row). Only an address still this session's:
+        // its row is live, or it holds an unexpired away reservation of its own
+        // there. A closed session whose name someone else took owns nothing.
+        const before = one<{ namespace: string; name: string }>(
+          sql,
+          `select a.namespace, a.name from agents a
+            where a.machine_id = ? and a.native_ref = ? and a.org_id = ?
+              and (a.live = 1 or exists (
+                select 1 from former_names f
+                 where f.agent_id = a.id and f.kind = 'away' and f.expires_at > ?
+                   and f.lname = lower(a.name) and f.namespace = a.namespace))`,
+          machineId,
+          f.agent_ref,
+          OWNER_ORG_ID,
+          this.#now(),
+        );
         const { reply, change, arms, moved } = this.#withReachNotice(() =>
           agentUp(sql, machineId, f, this.#now()),
         );
@@ -4360,6 +4708,7 @@ export class BusHub extends DurableObject<Env> {
         sendFrame(ws, reply);
         notifyRoster(this.ctx, change, ws);
         const a = registeredAgent(sql, machineId, f.agent_ref);
+        const rekeyed = a ? this.#rekeyFollows(before, a) : undefined;
         if (a) {
           // Its queued mail, then what it missed as a sender.
           this.#flush(ws, a);
@@ -4369,7 +4718,7 @@ export class BusHub extends DurableObject<Env> {
             this.#arm(this.#now() + 1);
           }
         }
-        return;
+        return rekeyed;
       }
       case "agent_down": {
         const a = this.#withReachNotice(() =>
@@ -4423,6 +4772,14 @@ export class BusHub extends DurableObject<Env> {
       case "unfollow":
       case "following":
         return sender ? this.#follows(ws, f, sender) : undefined;
+      case "link_bind":
+        // Only an agent this socket registered (the check above): a machine
+        // can bind a proof only for a session it hosts.
+        if (sender) {
+          bindProof(sql, sender.id, f.hash);
+          sendFrame(ws, { v: 1, id: f.id, type: "link_bound" });
+        }
+        return;
       case "rename": {
         // R393b: only a live agent this socket registered may be renamed.
         const a = registeredAgent(sql, machineId, f.agent_ref);
@@ -4436,10 +4793,79 @@ export class BusHub extends DurableObject<Env> {
           );
           return;
         }
-        this.#rename(ws, f, a);
-        return;
+        return this.#rename(ws, f, a);
       }
     }
+  }
+
+  /**
+   * #1766: follows are keyed by address, so a session whose address changed
+   * (a rename, or an agent_up that moved it) takes its rows along. The D1 work
+   * is returned for webSocketMessage to await after the arm commit, bounded by
+   * FOLLOW_TIMEOUT_MS and best effort: a failure logs and never fails the
+   * rename. A follow request waits for it (#rekeyed), so `following` right
+   * after `renamed` sees the moved rows. A reclaim keeps the address: no call.
+   */
+  #rekeyed: Promise<void> = Promise.resolve();
+  #rekeyFollows(
+    before: { namespace: string; name: string } | null,
+    after: { namespace: string; name: string },
+  ): Promise<void> | undefined {
+    if (
+      before === null ||
+      (before.namespace === after.namespace && before.name === after.name)
+    )
+      return undefined;
+    const userId = this.ctx.id.name?.startsWith("bus:")
+      ? this.ctx.id.name.slice(4)
+      : null;
+    if (userId === null) return undefined;
+    const from = { namespace: before.namespace, name: before.name };
+    const to = { namespace: after.namespace, name: after.name };
+    const run = async (): Promise<void> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      // Counted like the index calls, so a test's afterAll waits for the D1 work.
+      this.indexInFlight++;
+      try {
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("follow re-key timed out")),
+            FOLLOW_TIMEOUT_MS,
+          );
+        });
+        await Promise.race([moveFollows(this.env, userId, from, to), timeout]);
+      } catch (e) {
+        logError("bus_follow_rekey_failed", e);
+      } finally {
+        this.indexInFlight--;
+        clearTimeout(timer);
+      }
+    };
+    const p = this.#rekeyed.then(run);
+    this.#rekeyed = p;
+    return p;
+  }
+
+  /**
+   * #1766: every address this hub still holds for its member: a live agent, or
+   * a name under an unexpired reservation (away, held, chosen), as knownKey.
+   * A follow row at any other address is not reached by name any more. (A
+   * session closed past its reservation can still reopen, under a new name;
+   * its rows are then gone and it follows again.)
+   */
+  #knownAddresses(): Set<string> {
+    const sql = this.ctx.storage.sql;
+    const known = new Set<string>();
+    for (const r of sql.exec<{ namespace: string; name: string }>(
+      "select namespace, name from agents where live = 1",
+    ))
+      known.add(knownKey(r));
+    for (const r of sql.exec<{ namespace: string; name: string }>(
+      "select namespace, name from former_names where expires_at > ?",
+      this.#now(),
+    ))
+      known.add(knownKey(r));
+    return known;
   }
 
   #followsInFlight = 0;
@@ -4462,6 +4888,7 @@ export class BusHub extends DurableObject<Env> {
       ? this.ctx.id.name.slice(4)
       : null;
     if (userId === null) {
+      logEvent("follow_no_member", { machineId: agent.machineId });
       sendError(ws, f.id, "internal", "Could not follow right now");
       return;
     }
@@ -4480,12 +4907,15 @@ export class BusHub extends DurableObject<Env> {
       url: e.url,
       followed_at: e.followedAt,
     });
+    // A rename's re-key lands first (bounded itself), so this sees the moved rows.
+    // It counts against the limit while it waits.
     this.#followsInFlight++;
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
+      await this.#rekeyed;
       const work =
         f.type === "follow"
-          ? follow(this.env, userId, to, f.artifact).then(
+          ? this.#followOrPrune(userId, to, f.artifact).then(
               (e) =>
                 ({ v: 1, id: f.id, type: "followed", ...wire(e) }) as const,
             )
@@ -4530,6 +4960,31 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
+   * follow, and at follow_limit (#1766) delete the member's follows at
+   * addresses no live, away or reserved agent holds, then try once more. A
+   * live or away agent's rows are never touched; still full: follow_limit.
+   */
+  async #followOrPrune(
+    userId: string,
+    to: { namespace: string; name: string },
+    ref: string,
+  ) {
+    try {
+      return await follow(this.env, userId, to, ref);
+    } catch (e) {
+      if (!(e instanceof ApiError && e.code === "follow_limit")) throw e;
+      const n = await pruneDeadFollows(
+        this.env,
+        userId,
+        this.#knownAddresses(),
+      );
+      if (n === 0) throw e;
+      logEvent("follows_pruned", { n });
+      return follow(this.env, userId, to, ref);
+    }
+  }
+
+  /**
    * `rename` (R393b, #1325) for a live agent: `renamed`, or `error
    * rate_limited` past LIMITS.renamesPerHour name changes in a rolling hour
    * or with no room for one more chosen former name (formerRoom).
@@ -4544,7 +4999,7 @@ export class BusHub extends DurableObject<Env> {
     ws: WebSocket,
     f: Extract<ClientFrame, { type: "rename" }>,
     agent: AgentRow,
-  ): void {
+  ): Promise<void> | undefined {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
     const global = agent.global === 1;
@@ -4570,13 +5025,13 @@ export class BusHub extends DurableObject<Env> {
     // limit, then the commit: a no-op never counts, a refusal changes nothing.
     if (name === agent.name) {
       sendFrame(ws, reply);
-      return;
+      return undefined;
     }
     const at: Scope = { namespace: agent.namespace, global };
     if (!renameAllowed(sql, agent.id, now)) {
       logEvent("rate_limited", { kind: "rename", machineId: agent.machineId });
       sendError(ws, f.id, "rate_limited", RENAME_MESSAGES.rate);
-      return;
+      return undefined;
     }
     if (!formerRoom(sql, agent.id, agent.name, at, name, at, now)) {
       logEvent("rate_limited", {
@@ -4584,7 +5039,7 @@ export class BusHub extends DurableObject<Env> {
         machineId: agent.machineId,
       });
       sendError(ws, f.id, "rate_limited", RENAME_MESSAGES.room);
-      return;
+      return undefined;
     }
     const former = agent.name;
     for (const t of recordRename(sql, agent.id, former, at, name, at, now))
@@ -4615,6 +5070,7 @@ export class BusHub extends DurableObject<Env> {
       this.#adoptHeld(moved, agent);
       this.#flush(ws, agent);
     }
+    return this.#rekeyFollows(agent, { namespace: agent.namespace, name });
   }
 
   /** #1742: a held (pushed, unacked) body of a moved receipt now belongs to its new recipient. */
@@ -4800,7 +5256,7 @@ export class BusHub extends DurableObject<Env> {
       }
       const rows = all<{ id: string; namespace: string; global: number }>(
         sql,
-        `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${STATUS_CLEAR}
+        `update agents set live = 0, last_name = name, updated_at = ?, away_since = ?, ${CLOSE_CLEAR}
           where rowid in (select rowid from agents where machine_id = ? and live = 1 and org_id = ? limit ?)
          returning id, namespace, global`,
         now,
@@ -4857,6 +5313,7 @@ export class BusHub extends DurableObject<Env> {
       now,
       linksGated(ws),
       reachGated(ws),
+      mailboxGated(ws),
     );
     // A reply (`to_id`) goes only to the agent it answers: never to whoever
     // holds the name now (wireReason shows agent_gone only to an ids socket).
@@ -5166,12 +5623,15 @@ export class BusHub extends DurableObject<Env> {
   /**
    * pending -> expired, once: the guarded update is the only transition, so a
    * receipt is never expired (or the sender told) twice, and an expired one
-   * never becomes delivered (settle also requires pending).
+   * never becomes delivered (settle also requires pending), except that a
+   * `lost_body` expiry (the hub lost a body it had already pushed) is settled
+   * delivered by the recipient's own late ack (#1760). `lost_body` is stored
+   * only: the wire carries a reasonless expiry, as before.
    */
   #expire(
     msgId: string,
     fromAgent: string,
-    reason?: "recipient_closed" | "revoked",
+    reason?: "recipient_closed" | "revoked" | "lost_body",
   ): void {
     const sql = this.ctx.storage.sql;
     const hit = all(
@@ -5653,7 +6113,7 @@ export class BusHub extends DurableObject<Env> {
           ?.body ??
         null;
       if (body === null) {
-        this.#expire(r.id, r.fromAgent);
+        this.#expire(r.id, r.fromAgent, "lost_body");
         return;
       }
       this.#arm(r.expiresAt);
@@ -5741,6 +6201,32 @@ export class BusHub extends DurableObject<Env> {
 
   // ----------------------------------------------------------------- notices
 
+  /** #1828: why one more old-daemon-held row (not counting its own key) does not fit, or null. */
+  #oldHeldOver(ns: string, lname: string, ckey: string): string | null {
+    const sql = this.ctx.storage.sql;
+    const notSelf = "not (to_ns = ? and to_lname = ? and ckey = ?)";
+    const atAddress =
+      one<{ n: number }>(
+        sql,
+        `select count(*) as n from notices where parked = 2 and to_ns = ? and to_lname = ? and ${notSelf}`,
+        ns,
+        lname,
+        ns,
+        lname,
+        ckey,
+      )?.n ?? 0;
+    if (atAddress >= NOTICES_OLD_PER_ADDRESS) return "old_daemon_address_cap";
+    const all2 =
+      one<{ n: number }>(
+        sql,
+        `select count(*) as n from notices where parked = 2 and ${notSelf}`,
+        ns,
+        lname,
+        ckey,
+      )?.n ?? 0;
+    return all2 >= NOTICES_OLD_MAX ? "old_daemon_cap" : null;
+  }
+
   #acceptNotice(n: BusNotice): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
@@ -5756,15 +6242,20 @@ export class BusHub extends DurableObject<Env> {
       );
       return "dropped";
     }
-    const socket = liveSocket(this.ctx, agent.machineId);
+    const live = liveSocket(this.ctx, agent.machineId);
+    // A socket that cannot decode a notice counts as offline (noticeGated).
+    const socket = live && noticeGated(live) ? live : null;
     const notBefore = n.notBefore ?? now;
     if (socket && notBefore <= now) {
-      sql.exec(
-        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-        ...key,
-      );
-      sendFrame(socket, noticeFrame(agent, n.text));
-      return "delivered";
+      // A socket that refuses the frame (#1752) leaves the notice held
+      // (parked) for the next agent_up, never stored as delivered.
+      if (trySendFrame(socket, noticeFrame(agent, n.text))) {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          ...key,
+        );
+        return "delivered";
+      }
     }
     const exists =
       one<{ x: number }>(
@@ -5772,17 +6263,33 @@ export class BusHub extends DurableObject<Env> {
         "select 1 as x from notices where to_ns = ? and to_lname = ? and ckey = ?",
         ...key,
       ) !== null;
-    if (!exists) {
+    // Due with no usable socket: parked until the machine's agent_up (1), or
+    // held for a live daemon too old to read it (2, own caps).
+    // A socket that can read notices but refused the frame (#1752) is
+    // offline-like (1), never "too old" (2).
+    const parked = notBefore > now ? 0 : live && !socket ? 2 : 1;
+    if (parked === 2) {
+      const reason = this.#oldHeldOver(n.to.namespace, lname, n.coalesceKey);
+      if (reason) {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          ...key,
+        );
+        logEvent("notice_dropped", { reason });
+        return "dropped";
+      }
+    } else if (!exists) {
       const held =
-        one<{ n: number }>(sql, "select count(*) as n from notices")?.n ?? 0;
+        one<{ n: number }>(
+          sql,
+          "select count(*) as n from notices where parked < 2",
+        )?.n ?? 0;
       if (held >= NOTICES_MAX) {
         logEvent("notice_dropped", { reason: "cap" });
         return "dropped";
       }
     }
     const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
-    // Due with no live socket: parked until the machine's agent_up.
-    const parked = notBefore <= now ? 1 : 0;
     sql.exec(
       `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked)
        values (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -5793,7 +6300,7 @@ export class BusHub extends DurableObject<Env> {
       expiresAt,
       parked,
     );
-    this.#arm(parked === 1 ? expiresAt : notBefore);
+    this.#arm(parked > 0 ? expiresAt : notBefore);
     this.#arm(expiresAt);
     return "held";
   }
@@ -5804,6 +6311,8 @@ export class BusHub extends DurableObject<Env> {
    * parked ones. Bounded by NOTICE_FLUSH_BATCH.
    */
   #flushNoticesFor(ws: WebSocket, agent: AgentRow): void {
+    // A socket without the cap cannot decode a notice: leave them parked.
+    if (!noticeGated(ws)) return;
     const sql = this.ctx.storage.sql;
     const now = this.#now();
     const rows = all<NoticeRow>(
@@ -5820,24 +6329,24 @@ export class BusHub extends DurableObject<Env> {
     for (const r of rows) {
       // The address resolves to this agent now, or the notice is not its.
       if (liveVisibleIn(sql, r.toNs, r.toLname)?.id !== agent.id) continue;
+      if (!trySendFrame(ws, noticeFrame(agent, r.text))) break;
       sql.exec(
         "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
         r.toNs,
         r.toLname,
         r.ckey,
       );
-      sendFrame(ws, noticeFrame(agent, r.text));
     }
     // A full batch: more may wait. Hand the rest to the alarm (it sends in
     // bounded steps to this live socket) instead of leaving them parked.
     if (rows.length >= NOTICE_FLUSH_BATCH) {
       sql.exec(
-        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked = 1",
+        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked > 0",
         agent.name.toLowerCase(),
         agent.namespace,
         agent.global === 1 ? 1 : 0,
       );
-      this.#arm(now + 1);
+      this.#arm(now + NOTICE_PACE_MS);
     }
   }
 
@@ -5849,35 +6358,74 @@ export class BusHub extends DurableObject<Env> {
    */
   #sweepNotices(now: number): boolean {
     const sql = this.ctx.storage.sql;
-    const gone = purge(
+    // #1828: an expired notice was never delivered: count it (ids and counts only).
+    const expired = all<{ rid: number; id: string; parked: number }>(
       sql,
-      "delete from notices where rowid in (select rowid from notices where expires_at <= ? limit ?) returning rowid",
+      "select rowid as rid, id, parked from notices where expires_at <= ? limit ?",
       now,
+      BATCH,
     );
+    for (const r of expired)
+      sql.exec("delete from notices where rowid = ?", r.rid);
+    if (expired.length > 0)
+      logEvent("notice_expired", {
+        count: expired.length,
+        parked: expired.filter((r) => r.parked > 0).length,
+        ids: expired
+          .slice(0, NOTICE_LOG_IDS)
+          .map((r) => r.id)
+          .join(","),
+      });
+    const gone = expired.length >= BATCH;
     const due = all<NoticeRow>(
       sql,
       `select ${NOTICE_COLS} from notices where parked = 0 and not_before <= ? order by not_before limit ?`,
       now,
       BATCH,
     );
+    // Parking and dropping are cheap; only sends are paced (#1752).
+    let sent = 0;
+    let paced = false;
     for (const r of due) {
+      if (sent >= NOTICE_FLUSH_BATCH) {
+        paced = true;
+        break;
+      }
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
-      const socket = agent && liveSocket(this.ctx, agent.machineId);
-      if (agent && socket) {
+      const live = agent && liveSocket(this.ctx, agent.machineId);
+      const socket = live && noticeGated(live) ? live : null;
+      if (agent && socket && trySendFrame(socket, noticeFrame(agent, r.text))) {
+        sent++;
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
           r.toNs,
           r.toLname,
           r.ckey,
         );
-        sendFrame(socket, noticeFrame(agent, r.text));
       } else if (agent) {
-        sql.exec(
-          "update notices set parked = 1 where to_ns = ? and to_lname = ? and ckey = ?",
-          r.toNs,
-          r.toLname,
-          r.ckey,
-        );
+        // A live socket that cannot read it: old-daemon share; none: offline.
+        // A capable socket that refused the frame (#1752) is offline-like (1).
+        const tooOld = live && !socket;
+        const reason = tooOld
+          ? this.#oldHeldOver(r.toNs, r.toLname, r.ckey)
+          : null;
+        if (reason) {
+          sql.exec(
+            "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+            r.toNs,
+            r.toLname,
+            r.ckey,
+          );
+          logEvent("notice_dropped", { reason });
+        } else {
+          sql.exec(
+            "update notices set parked = ? where to_ns = ? and to_lname = ? and ckey = ?",
+            tooOld ? 2 : 1,
+            r.toNs,
+            r.toLname,
+            r.ckey,
+          );
+        }
       } else {
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
@@ -5887,7 +6435,9 @@ export class BusHub extends DurableObject<Env> {
         );
       }
     }
-    return gone || due.length >= BATCH;
+    // A full step: the rest go out a pace later (#1752), not at once.
+    if (paced) this.#arm(now + NOTICE_PACE_MS);
+    return gone || (!paced && due.length >= BATCH);
   }
 
   // ------------------------------------------------------------------- alarm
@@ -5936,9 +6486,9 @@ export class BusHub extends DurableObject<Env> {
 
     // 2. Lost bodies: held_at set, no mail row and not in memory means the
     // body died with an eviction. Expired, never delivered.
-    const lost = all<{ id: string; fromAgent: string }>(
+    const lost = all<{ id: string; fromAgent: string; expiresAt: number }>(
       sql,
-      `select id, from_agent as fromAgent from receipts
+      `select id, from_agent as fromAgent, expires_at as expiresAt from receipts
        where state = 'pending' and held_at is not null and held_at <= ?
          and not exists (select 1 from mail where mail.id = receipts.id)
        order by held_at limit ?`,
@@ -5946,8 +6496,14 @@ export class BusHub extends DurableObject<Env> {
       BATCH,
     );
     if (lost.length >= BATCH) more = true;
+    // Past its TTL it expires as TTL (final), so a late ack cannot flip it (#1951).
     for (const r of lost)
-      if (!this.#held.has(r.id)) this.#expire(r.id, r.fromAgent);
+      if (!this.#held.has(r.id))
+        this.#expire(
+          r.id,
+          r.fromAgent,
+          r.expiresAt <= now ? undefined : "lost_body",
+        );
 
     // 2a. open-bus #422: machines offline past OFFLINE_REAP_MS have their
     // agents closed (before the close drain, which takes their leftover mail).

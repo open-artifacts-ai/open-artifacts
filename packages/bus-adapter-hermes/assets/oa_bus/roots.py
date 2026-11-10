@@ -53,6 +53,32 @@ def hermes_lineage_root(session_id):
     return lineage[0] if lineage and session_id in lineage else None
 
 
+def hermes_session_title(root_ref, db=None):
+    """The title the user set on this conversation (/title), or None.
+
+    Hermes's public SessionDB.get_session_title and get_session_title_source,
+    on the same read-only handle as the lineage lookup. Automatic titles
+    (source "derived" or "llm") are not the user's and give None. Any failure
+    is None: the link then keeps the directory name.
+    """
+    try:
+        if db is None:
+            from hermes_constants import get_hermes_home
+            from hermes_state import SessionDB
+
+            path = get_hermes_home() / "state.db"
+            if not path.exists():
+                return None
+            db = _dbs.get(path)
+            if db is None:
+                db = _dbs[path] = SessionDB(path, read_only=True)
+        if db.get_session_title_source(root_ref) != "user":
+            return None
+        return db.get_session_title(root_ref) or None
+    except Exception:
+        return None
+
+
 class Roots:
     def __init__(self, lineage_root=hermes_lineage_root):
         self._lineage_root = lineage_root

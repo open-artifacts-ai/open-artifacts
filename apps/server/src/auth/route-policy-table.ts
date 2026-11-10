@@ -177,6 +177,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // any non-guest member; guest_summary: install-wide, the org owner only.
   "POST /api/v1/notices/guest_shares/dismiss": { org: "notices.own" },
   "POST /api/v1/notices/guest_summary/dismiss": { org: "notices.manage" },
+  // The first-run checklist's install-wide state: the uncapped org owner.
+  "GET /api/v1/onboarding": { org: "onboarding.manage" },
+  "PUT /api/v1/onboarding": { org: "onboarding.manage" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },
@@ -362,6 +365,28 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /api/v1/bus/links/proposals": {
     signed:
       "bus machine token (oa_machine_), D1; records a proposal only; its member under a plan cap is refused (#1299)",
+  },
+  // #1346: an agent's reach proposal, the link rules above: a bus machine
+  // token records it, the member confirms on the one-time page below.
+  "POST /api/v1/bus/reach/proposals": {
+    signed:
+      "bus machine token (oa_machine_), D1; records a proposal only; its member under a plan cap is refused (#1299)",
+  },
+  "GET /bus/reach/confirm": {
+    public:
+      "reach confirm page, no secret in the request; hops to sign-in, interactive session",
+  },
+  "GET /bus/reach/confirm/:token": {
+    public:
+      "notice for the old path-style link; reads nothing, changes nothing",
+  },
+  "POST /bus/reach/confirm/view": {
+    public:
+      "reach proposal details; interactive session, page CSRF, the caller's own hub",
+  },
+  "POST /bus/reach/confirm": {
+    public:
+      "reach proposal decision; interactive session, form CSRF, plan cap refuses (#1299), the caller's own hub, single use",
   },
   "GET /bus/links/confirm": {
     public:

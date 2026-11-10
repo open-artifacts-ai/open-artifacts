@@ -130,7 +130,7 @@ it("a paused Solo owner sees the paused prompt and no upload control", async () 
   const banner = within(await screen.findByTestId("plan-banner"));
   expect(
     banner.getByText(
-      "Your Solo plan is paused. Keep publishing for $1/month or $12/year.",
+      "Your Solo plan is paused. Keep publishing for $1/month or $10/year.",
     ),
   ).toBeVisible();
   expect(banner.getByRole("link", { name: "Plan and billing" })).toBeVisible();
@@ -180,9 +180,11 @@ it("Plan and billing: a Solo trial shows its end and the two upgrades", async ()
     await screen.findByRole("heading", { name: "Plan and billing" }),
   ).toBeVisible();
   expect(screen.getAllByText("Solo").length).toBeGreaterThan(0);
+  expect(screen.getByText("Free month")).toBeVisible();
+  expect(screen.queryByText("Trial")).toBeNull();
   expect(
     screen.getByText(
-      "Your free month ends Dec 1, 2026. Then $1/month or $12/year.",
+      "Your free month ends Dec 1, 2026. Then $1/month or $10/year.",
     ),
   ).toBeVisible();
   // Solo is a flat price per instance: no creator count.
@@ -207,6 +209,38 @@ it("Plan and billing: Team shows Manage billing, which opens the portal", async 
   );
   expect(posts.some((c) => c.path.endsWith("/billing/portal"))).toBe(true);
   expect(screen.getByText("4")).toBeVisible();
+});
+
+it("Plan and billing: a paid plan with no Stripe customer has no Manage billing", async () => {
+  mountHosted("/settings/plan", { billing: { ...TEAM, hasCustomer: false } });
+  expect(
+    await screen.findByText(/Open Artifacts set up this plan for you/),
+  ).toBeVisible();
+  const card = within(document.getElementById("plan-card") as HTMLElement);
+  expect(card.queryByText("Price")).toBeNull();
+  expect(screen.getByText("Creators this month")).toBeVisible();
+  expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
+  expect(screen.queryByText(/Invoices and card/)).toBeNull();
+});
+
+it("Plan and billing: hasCustomer true or unknown keeps Manage billing", async () => {
+  mountHosted("/settings/plan", { billing: { ...TEAM, hasCustomer: true } });
+  expect(
+    await screen.findByRole("button", { name: "Manage billing" }),
+  ).toBeVisible();
+  cleanup();
+  mountHosted("/settings/plan", { billing: TEAM });
+  expect(
+    await screen.findByRole("button", { name: "Manage billing" }),
+  ).toBeVisible();
+});
+
+it("Plan and billing: a solo plan with no customer still offers Checkout", async () => {
+  mountHosted("/settings/plan", { billing: { ...TRIAL, hasCustomer: false } });
+  expect(
+    await screen.findByRole("button", { name: "Upgrade to Team" }),
+  ).toBeVisible();
+  expect(screen.queryByText(/set up this plan for you/)).toBeNull();
 });
 
 it("Plan and billing: Upgrade starts Checkout for the chosen tier", async () => {
@@ -241,18 +275,18 @@ it("Plan and billing: a paused Solo says so and offers the upgrades", async () =
   expect(await screen.findByText("Paused")).toBeVisible();
   expect(
     within(screen.getByTestId("plan-banner")).getByText(
-      "Your Solo plan is paused. Keep publishing for $1/month or $12/year.",
+      "Your Solo plan is paused. Keep publishing for $1/month or $10/year.",
     ),
   ).toBeVisible();
   expect(screen.getByRole("button", { name: "Pay $1/month" })).toBeVisible();
-  expect(screen.getByRole("button", { name: "Pay $12/year" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Pay $10/year" })).toBeVisible();
   expect(screen.getByRole("button", { name: "Upgrade to Team" })).toBeVisible();
 });
 
-it("Plan and billing: Pay $12/year starts Solo Checkout with the year interval", async () => {
+it("Plan and billing: Pay $10/year starts Solo Checkout with the year interval", async () => {
   const posts = calls("POST");
   mountHosted("/settings/plan", { billing: TRIAL });
-  fireEvent.click(await screen.findByRole("button", { name: "Pay $12/year" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Pay $10/year" }));
   await waitFor(() =>
     expect(lastRedirect).toHaveBeenCalledWith(
       "https://checkout.stripe.com/c/pay/cs_test_mock_checkout_solo_year",
@@ -327,7 +361,9 @@ it("Plan and billing: an ended trial is titled Trial ended, with no price row", 
   );
   expect(await screen.findByText("Trial ended")).toBeVisible();
   expect(screen.queryByText("Business trial")).toBeNull();
-  expect(screen.queryByText("Price", { selector: "dt" })).toBeNull();
+  // The plan card's price row. (The stacked comparison has its own Price rows.)
+  const card = document.getElementById("plan-card") as HTMLElement;
+  expect(within(card).queryByText("Price", { selector: "dt" })).toBeNull();
 });
 
 it("Plan and billing: Pay $1/month is the primary button, the rest are outline", async () => {
@@ -336,7 +372,7 @@ it("Plan and billing: Pay $1/month is the primary button, the rest are outline",
   const cls = (n: string) =>
     screen.getByRole("button", { name: n }).getAttribute("data-variant");
   expect(month.getAttribute("data-variant")).toBe("default");
-  for (const n of ["Pay $12/year", "Upgrade to Business", "Upgrade to Team"])
+  for (const n of ["Pay $10/year", "Upgrade to Business", "Upgrade to Team"])
     expect(cls(n)).toBe("outline");
 });
 
@@ -543,9 +579,10 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
 
   it("a Solo trial reads soloTrialEndsAt", () => {
     const r = planStatus(TRIAL);
-    expect(r.pill.label).toBe("Trial");
+    // #1843: not "Trial", the Business trial's word.
+    expect(r.pill.label).toBe("Free month");
     expect(r.note?.text).toBe(
-      "Your free month ends Dec 1, 2026. Then $1/month or $12/year.",
+      "Your free month ends Dec 1, 2026. Then $1/month or $10/year.",
     );
   });
 
@@ -573,15 +610,57 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
     ).toEqual({ pill: { label: "Active", tone: "ok" } });
   });
 
-  it("the Business trial keeps trialEndsAt", () => {
+  it("the Business trial keeps trialEndsAt and its Trial pill", () => {
     const r = planStatus({
       ...TRIAL,
       tier: "trial",
       trialEndsAt: "2026-11-20T00:00:00.000Z",
       soloTrialEndsAt: null,
     });
+    expect(r.pill.label).toBe("Trial");
     expect(r.note?.text).toBe(
       "Trial ends Nov 20, 2026. Everything in Business is on.",
+    );
+  });
+});
+
+// #1837: at 390px the comparison used to cut off Team and Business and the
+// Solo price. Below the sm breakpoint it stacks, one block per plan with every
+// row in full; from sm up it is the table. jsdom has no CSS, so these pin the
+// structure and the breakpoint classes; e2e/billing-ui.spec.ts measures it.
+describe("the comparison on a phone (#1837)", () => {
+  it("stacks every plan with every row, none cut off", async () => {
+    mountHosted("/settings/plan", { billing: TEAM });
+    const stack = await screen.findByTestId("compare-stacked");
+    expect(stack.className).toContain("sm:hidden");
+    for (const plan of ["Solo", "Team", "Business"])
+      expect(
+        within(stack).getByRole("heading", { name: plan }),
+      ).toBeInTheDocument();
+    // The Solo price in full, not "$1 a month or $10 a year, pe".
+    expect(
+      within(stack).getByText("$1 a month or $10 a year, per instance"),
+    ).toBeInTheDocument();
+    expect(within(stack).getByText("$10 per creator")).toBeInTheDocument();
+    expect(within(stack).getByText("$25 per creator")).toBeInTheDocument();
+    // 5 rows for each of the 3 plans.
+    expect(within(stack).getAllByRole("term")).toHaveLength(15);
+    expect(within(stack).getAllByRole("definition")).toHaveLength(15);
+  });
+
+  it("marks the current plan and no other", async () => {
+    mountHosted("/settings/plan", { billing: TEAM });
+    const stack = await screen.findByTestId("compare-stacked");
+    const current = stack.querySelectorAll('[aria-current="true"]');
+    expect(current).toHaveLength(1);
+    expect(current[0]).toHaveTextContent("Team");
+  });
+
+  it("the table shows only from sm up", async () => {
+    mountHosted("/settings/plan", { billing: TEAM });
+    const table = await screen.findByRole("table");
+    expect(table.closest('[data-testid="compare-table"]')?.className).toContain(
+      "hidden sm:block",
     );
   });
 });

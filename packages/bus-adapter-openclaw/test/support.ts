@@ -11,6 +11,12 @@ export class Hub {
   connects: string[] = [];
   clients: FakeClient[] = [];
   down = false;
+  /** What the daemon's welcome lists in `caps` (#1856: `link` takes a link_proof). */
+  welcomeCaps: string[] | undefined = ["link"];
+  /** How the daemon answers a link_proof: bound, not bound, or an error frame. */
+  proofAnswer: "bound" | "unbound" | "error" | "hang" = "bound";
+  /** Every link_proof the daemon got: which root's link, and the hash. */
+  proofs: { ref: string; hash: string; client: FakeClient }[] = [];
   push(m: Msg): void {
     this.unacked.set(m.id, m);
     for (const c of this.clients) if (c.state === "open") c.deliver(m);
@@ -18,7 +24,7 @@ export class Hub {
   connect = async (root: Root): Promise<DaemonClient> => {
     this.connects.push(root.ref);
     if (this.down) throw new Error("the daemon is not reachable");
-    const c = new FakeClient(this);
+    const c = new FakeClient(this, root.ref);
     this.clients.push(c);
     return c as unknown as DaemonClient;
   };
@@ -26,7 +32,7 @@ export class Hub {
 
 export class FakeClient {
   state: "open" | "closed" = "open";
-  welcome = {
+  welcome: Record<string, unknown> = {
     type: "welcome",
     bus_name: "openclaw-1",
     namespace: "ns",
@@ -34,7 +40,12 @@ export class FakeClient {
   };
   private cb?: (f: unknown) => void;
   private ncb?: (t: string) => void;
-  constructor(private hub: Hub) {}
+  constructor(
+    private hub: Hub,
+    readonly ref = "",
+  ) {
+    if (hub.welcomeCaps) this.welcome.caps = hub.welcomeCaps;
+  }
   deliver(m: Msg) {
     this.cb?.({
       v: 1,
@@ -60,7 +71,18 @@ export class FakeClient {
     this.hub.acks.push(id);
     this.hub.unacked.delete(id);
   }
-  async request(f: { type: string }) {
+  async request(f: { type: string; hash?: string }) {
+    if (f.type === "link_proof") {
+      this.hub.proofs.push({
+        ref: this.ref,
+        hash: String(f.hash),
+        client: this,
+      });
+      if (this.hub.proofAnswer === "hang") return new Promise<never>(() => {});
+      if (this.hub.proofAnswer === "error")
+        return { type: "error", code: "bad_frame", message: "no" };
+      return { type: "link_proofed", bound: this.hub.proofAnswer === "bound" };
+    }
     if (f.type === "self")
       return {
         type: "agent",

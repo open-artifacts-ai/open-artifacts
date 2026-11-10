@@ -9,6 +9,7 @@ import {
   displayKind,
   earlierStatusText,
   excerptOf,
+  FOLLOW_DAEMON_BAD_FRAME,
   FOLLOW_OLD_DAEMON,
   followingText,
   followText,
@@ -17,9 +18,13 @@ import {
   movedName,
   neutralizeBody,
   oversizedText,
+  REACH_OLD_DAEMON,
   REFUSAL,
+  reachNamespacesOf,
+  reachProposedText,
   receiptText,
   rosterLine,
+  rosterText,
   STATUS_COPY,
   selfText,
   statusLabelTooLong,
@@ -205,7 +210,7 @@ describe("pi extension asset", () => {
     expect(src.split("\n")[0]).toMatch(/managed file/i);
   });
 
-  it("registers the eight tools with the same JSON-Schema parameters as the MCP tools", () => {
+  it("registers the nine tools with the same JSON-Schema parameters as the MCP tools", () => {
     const p = fakePi();
     oa_bus(p.pi as never);
     expect([...p.tools.keys()]).toEqual(TOOLS.map((t) => piName(t.name)));
@@ -215,6 +220,7 @@ describe("pi extension asset", () => {
         "oabus_follow",
         "oabus_following",
         "oabus_list_agents",
+        "oabus_propose_reach",
         "oabus_self",
         "oabus_send_message",
         "oabus_set_status",
@@ -232,7 +238,7 @@ describe("pi extension asset", () => {
   it("registers no name the OpenBus extension registers, so Pi starts with both (#1448)", () => {
     const p = fakePi();
     oa_bus(p.pi as never);
-    expect(p.tools.size).toBe(8);
+    expect(p.tools.size).toBe(9);
     for (const name of p.tools.keys())
       expect(OPENBUS_TOOLS).not.toContain(name);
   });
@@ -259,7 +265,7 @@ describe("pi extension asset", () => {
       pid: process.pid,
       cwd: "/work/repo",
       proposed_name: "My Pi",
-      caps: ["mailbox", "pending", "rename", "follow"],
+      caps: ["mailbox", "pending", "rename", "follow", "reach", "link"],
       attest: { proc_start: procStartOf(process.pid) },
     });
     // `TZ=UTC LC_ALL=C ps -o lstart=`: "Fri Oct 23 08:13:26 2026".
@@ -843,7 +849,7 @@ describe("one file for Pi and oh-my-pi (C23b)", () => {
     oa_bus(p.pi as never);
     for (const t of p.tools.values()) expect(t).not.toHaveProperty("loadMode");
     const o = ompHost();
-    expect(o.tools.size).toBe(8);
+    expect(o.tools.size).toBe(9);
     expect(o.tools.get("oabus_send_message")).toMatchObject({
       loadMode: "essential",
     });
@@ -1090,6 +1096,18 @@ describe("follow tools (#1317)", () => {
     );
   });
 
+  for (const message of Object.values(FOLLOW_DAEMON_BAD_FRAME))
+    it(`the daemon's own bad_frame refusal "${message}" is shown as it is, not as an old daemon (#1766)`, async () => {
+      const { p } = await at(() => ({
+        type: "error",
+        code: "bad_frame",
+        message,
+      }));
+      await expect(p.call("follow", { artifact: "abc" })).rejects.toThrow(
+        new Error(`oa-bus: ${message}`),
+      );
+    });
+
   it("the asset's copy matches the shared copy", () => {
     expect(copy.followText(entry.url)).toBe(followText(entry.url));
     expect(copy.unfollowText(true, "abc")).toBe(unfollowText(true, "abc"));
@@ -1098,6 +1116,103 @@ describe("follow tools (#1317)", () => {
       followingText([entry, entry]),
     );
     expect(copy.FOLLOW_OLD_DAEMON).toBe(FOLLOW_OLD_DAEMON);
+  });
+});
+
+describe("propose_reach tool (#1346)", () => {
+  const at = (answer: (f: Frame) => Record<string, unknown>) =>
+    started((f) => (f.type === "propose_reach" ? answer(f) : undefined));
+  const sent = (d: Awaited<ReturnType<typeof started>>["d"]) =>
+    d.conns[0].frames.filter((f) => f.type !== "hello");
+  const url = `https://x.test/bus/reach/confirm#${"A".repeat(43)}`;
+
+  it("sends the namespaces only, whatever else the caller names", async () => {
+    const { d, p } = await at(() => ({
+      type: "reach_proposed",
+      confirm_url: url,
+      expires_at: "2026-11-09T11:00:00.000Z",
+    }));
+    const out = await p.call("propose_reach", {
+      namespaces: [" a/b ", "c"],
+      nativeRef: "someone-else",
+      from_ref: "someone-else",
+    });
+    expect(out).toBe(
+      reachProposedText(["a/b", "c"], url, "2026-11-09T11:00:00.000Z"),
+    );
+    expect(out).toContain("Nothing has changed");
+    expect(out).not.toContain("\u2014");
+    const [f] = sent(d);
+    expect(f).toMatchObject({
+      type: "propose_reach",
+      namespaces: ["a/b", "c"],
+    });
+    expect(f).not.toHaveProperty("nativeRef");
+    expect(f).not.toHaveProperty("from_ref");
+  });
+
+  it("the tool's schema has no field that names a session", () => {
+    const t = TOOLS.find((x) => x.name === "propose_reach");
+    expect(Object.keys(t?.inputSchema.properties ?? {})).toEqual([
+      "namespaces",
+    ]);
+    expect(t?.inputSchema.additionalProperties).toBe(false);
+  });
+
+  it("refuses bad namespaces before sending anything", async () => {
+    const { d, p } = await at(() => ({ type: "reach_proposed" }));
+    for (const namespaces of [
+      [],
+      undefined,
+      "a",
+      ["A"],
+      [""],
+      Array.from({ length: 11 }, (_, i) => `n${i}`),
+    ])
+      await expect(p.call("propose_reach", { namespaces })).rejects.toThrow(
+        /oa-bus: namespaces/,
+      );
+    expect(sent(d)).toEqual([]);
+  });
+
+  it("shows the daemon's refusal as-is", async () => {
+    const { p } = await at(() => ({
+      type: "error",
+      code: "no_role",
+      message: "You hold no role.",
+    }));
+    await expect(
+      p.call("propose_reach", { namespaces: ["x"] }),
+    ).rejects.toThrow(new Error("oa-bus: You hold no role."));
+  });
+
+  it("a daemon without the frame (bad_frame) says to update", async () => {
+    const { p } = await at(() => ({
+      type: "error",
+      code: "bad_frame",
+      message: "Invalid input",
+    }));
+    await expect(
+      p.call("propose_reach", { namespaces: ["x"] }),
+    ).rejects.toThrow(new Error(REACH_OLD_DAEMON));
+  });
+
+  it("the asset's copy matches the shared copy", () => {
+    expect(copy.reachProposedText(["a", "b"], "u", "t")).toBe(
+      reachProposedText(["a", "b"], "u", "t"),
+    );
+    expect(copy.REACH_OLD_DAEMON).toBe(REACH_OLD_DAEMON);
+    for (const v of [
+      [],
+      ["a"],
+      ["A"],
+      [" a ", "a", "b"],
+      ["a b"],
+      ["x".repeat(129)],
+      Array.from({ length: 11 }, (_, i) => `n${i}`),
+      "a",
+    ])
+      expect(copy.reachNamespacesOf(v)).toEqual(reachNamespacesOf(v));
   });
 });
 
@@ -1220,5 +1335,42 @@ describe("status, as Pi shows it", () => {
     expect(copy.rosterLine(a, NOW)).toBe(rosterLine(a, NOW));
     expect(copy.statusSaysText(r, NOW)).toBe(statusSaysText(r, NOW));
     expect(copy.selfText(row(r))).toBe(selfText(row(r)));
+  });
+
+  it("#1860: rosterText matches @oa/bus-ipc", () => {
+    const since = "2026-11-05T10:00:00.000Z";
+    const mk = (name: string, kind: string, state: string) => ({
+      name,
+      kind,
+      namespace: "ns",
+      live: state === "live",
+      state,
+      ...(state === "away" ? { since } : {}),
+    });
+    const sets = [
+      [],
+      [mk("a", "pi", "live")],
+      [mk("pi-6", "pi", "away")],
+      [mk("PI-6", "pi", "away")],
+      [mk("Claude-12", "claude-code", "away"), mk("AGENT", "pi", "away")],
+      [mk("a", "pi", "live"), mk("OMP-3", "omp", "away")],
+      [mk("pi-6", "pi", "live"), mk("pi-7", "pi", "queued")],
+      [
+        mk("a", "pi", "live"),
+        mk("claude-12", "claude-code", "away"),
+        mk("omp-3", "omp", "away"),
+        mk("agent", "pi", "away"),
+        mk("kept", "pi", "away"),
+      ],
+    ];
+    for (const s of sets)
+      expect(copy.rosterText(s as never, NOW)).toBe(
+        rosterText(s as never, NOW),
+      );
+    expect(
+      copy.rosterText([mk("a", "pi", "live"), mk("pi-6", "pi", "away")], NOW),
+    ).toBe(
+      "- a (pi, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
+    );
   });
 });

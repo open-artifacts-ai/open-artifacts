@@ -201,3 +201,22 @@ export function verifyGoogleIdTokenAnyDomain(
 ): Promise<GoogleAnyIdentity> {
   return verifyClaims(opts, idToken, nonce, null);
 }
+
+/** Consumer Google mail domains: accounts here carry no hd claim. */
+const CONSUMER_DOMAINS = ["gmail.com", "googlemail.com"] as const;
+
+/**
+ * Whether a verified Google identity may be matched to its email when the
+ * install lists no domains. A consumer account can be registered on any
+ * address (an ex-employee's, a lapsed domain), so the email alone proves
+ * nothing: accept only a Gmail/Googlemail address with no hd, or an hd equal
+ * to the email's own domain (Workspace proves it controls that domain).
+ */
+export function noDomainIdentityOk(email: string, hd: string | null): boolean {
+  const at = email.lastIndexOf("@");
+  if (at < 0) return false;
+  const domain = email.slice(at + 1).toLowerCase();
+  if (hd === null)
+    return (CONSUMER_DOMAINS as readonly string[]).includes(domain);
+  return hd.toLowerCase() === domain;
+}

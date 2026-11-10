@@ -977,7 +977,7 @@ describe("agents", () => {
       Object.fromEntries(
         (await list(id, who)).threads.map((t) => [
           t.comments[0]?.body,
-          t.comments[0]?.author.agent,
+          t.comments[0]?.author.name,
         ]),
       );
     expect(await agents(viewer)).toEqual({
@@ -1106,6 +1106,32 @@ describe("review fixes (#682)", () => {
     expect((await miss()).status).toBe(429);
   });
 
+  it("the limit also covers a quote checked against the stored html: the 11th unfound quote is 429", async () => {
+    const id = await pub({ visibility: "public" });
+    await inDo(id, (i) => {
+      i.now = () => 1_800_000_000_000;
+    });
+    const ip = uniqueIp();
+    const miss = () =>
+      call(id, null, "", {
+        method: "POST",
+        ip,
+        body: {
+          anchor: {
+            kind: "text",
+            version: 1,
+            exact: "no such text",
+            prefix: "",
+            suffix: "",
+          },
+          body: "x",
+          guestName: "Guest",
+        },
+      });
+    for (let n = 0; n < 10; n++) expect((await miss()).status).toBe(201);
+    expect((await miss()).status).toBe(429);
+  });
+
   it("signed-in status changes count against 30 a minute; a no-op neither broadcasts nor changes", async () => {
     const id = await pub({ visibility: "team" });
     await inDo(id, (i) => {
@@ -1130,55 +1156,69 @@ describe("review fixes (#682)", () => {
     expect((await set("open")).status).toBe(429);
   });
 
-  it("an expired but valid guest token still names its author (read, edit, delete, status); a forged one does not", async () => {
+  it("an expired or v1 guest token names no author; its comments stay visible by display name", async () => {
     const id = await pub({ visibility: "public" });
     const ip = uniqueIp();
-    const old = await issueAnonToken(
-      env,
-      `${"b".repeat(21)}A`,
-      Math.floor(Date.now() / 1000) - 31 * 24 * 3600,
-    );
-    const h = { [ANON_ID_HEADER]: old };
+    const bid = `${"b".repeat(21)}A`;
+    const nowS = Math.floor(Date.now() / 1000);
+    // Written while the token was current.
+    const cur = { [ANON_ID_HEADER]: await issueAnonToken(env, bid, nowS) };
     const mine = await call(id, null, "", {
       method: "POST",
       ip,
-      headers: h,
-      body: { anchor: NOTE, body: "old timer" },
+      headers: cur,
+      body: { anchor: NOTE, body: "old timer", name: "Ann" },
     });
     expect(mine.status).toBe(201);
     const t = await thread(mine);
     const path = `/${t.id}/comments/${(t.comments[0] as Comment).id}`;
+    expect(
+      (await list(id, null, "", cur)).threads[0]?.comments[0]?.author.me,
+    ).toBe(true);
+    // The same id, now expired.
+    const old = await issueAnonToken(env, bid, nowS - 31 * 24 * 3600);
+    const h = { [ANON_ID_HEADER]: old };
     const seen = await list(id, null, "", h);
-    expect(seen.threads[0]?.comments[0]?.author.me).toBe(true);
-    const edit = await call(id, null, path, {
-      method: "PATCH",
-      ip,
-      headers: h,
-      body: { body: "still mine" },
-    });
-    expect(edit.status).toBe(200);
-    expect(edit.headers.get(ANON_ID_HEADER)).toBeNull();
+    expect(seen.threads[0]?.comments[0]?.author.me).toBe(false);
+    expect(seen.threads[0]?.comments[0]?.body).toBe("old timer");
+    const edit = (m: string, headers: Record<string, string>) =>
+      call(id, null, path, {
+        method: m,
+        ip,
+        headers,
+        ...(m === "PATCH" ? { body: { body: "x" } } : {}),
+      });
+    expect((await edit("PATCH", h)).status).toBe(403);
+    expect((await edit("DELETE", h)).status).toBe(403);
     const res = await call(id, null, `/${t.id}`, {
       method: "PATCH",
       ip,
       headers: h,
       body: { status: "resolved" },
     });
-    expect((await thread(res)).resolvedBy).toMatchObject({ me: true });
+    // Anyone may resolve; the expired token just isn't named as the resolver.
+    expect(res.status).toBe(200);
+    expect((await thread(res)).resolvedBy).toMatchObject({ me: false });
+    // A new comment with the expired token gets a fresh id, not the old one.
+    const again = await call(id, null, "", {
+      method: "POST",
+      ip,
+      headers: h,
+      body: { anchor: NOTE, body: "new" },
+    });
+    expect(again.status).toBe(201);
+    const fresh = again.headers.get(ANON_ID_HEADER) as string;
+    expect(fresh.split(".")[0]).not.toBe(bid);
+    // The old comment is not the fresh token's either.
+    const afterNew = await list(id, null, "", { [ANON_ID_HEADER]: fresh });
+    expect(
+      afterNew.threads.flatMap((x) => x.comments).filter((c) => c.author.me),
+    ).toHaveLength(1);
+    // A forged token does not name the author either.
     const forged = { [ANON_ID_HEADER]: `${old.slice(0, -2)}AA` };
-    expect(
-      (
-        await call(id, null, path, {
-          method: "PATCH",
-          ip,
-          headers: forged,
-          body: { body: "x" },
-        })
-      ).status,
-    ).toBe(403);
-    expect(
-      (await call(id, null, path, { method: "DELETE", ip, headers: h })).status,
-    ).toBe(204);
+    expect((await edit("PATCH", forged)).status).toBe(403);
+    // The holder of the current token still can.
+    expect((await edit("DELETE", cur)).status).toBe(204);
   });
 
   it("a guest token from artifact A is not the author on artifact B", async () => {

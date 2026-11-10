@@ -92,6 +92,8 @@ export type OrgAction =
   | "notices.manage"
   /** See and dismiss one's own guest-share notice (Me.notices.guestShares): any non-guest member. */
   | "notices.own"
+  /** Read and change the first-run checklist state (R.onboarding): the uncapped org owner. */
+  | "onboarding.manage"
   | "audit.read"
   | "members.manage"
   | "members.manageAdmins"
@@ -520,6 +522,8 @@ export function orgCan(
     case "signin.problems":
     // The install-wide guest summary and its dismissal (parity 2).
     case "notices.manage":
+    // The first-run checklist's state (R.onboarding).
+    case "onboarding.manage":
     // Acting on an org owner or admin (role, removal, suspension, Google
     // link reset): owner only (#475).
     case "members.manageAdmins":

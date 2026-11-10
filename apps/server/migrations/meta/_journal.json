@@ -204,6 +204,27 @@
       "when": 1794029432307,
       "tag": "0028_upload_expected_sha256",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1794218703944,
+      "tag": "0029_artifact_asks",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1794318361980,
+      "tag": "0030_data_writes_total",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "6",
+      "when": 1794332271033,
+      "tag": "0031_version_agent_identity",
+      "breakpoints": true
     }
   ]
 }

@@ -12,11 +12,14 @@ import {
   namespacesFile,
   nearestConfig,
   readGlobalDirs,
+  remotesFile,
+  resolveNamespace,
   scanConfigFiles,
 } from "@oa/bus-daemon";
 import {
   type Ctx,
   configFileLines,
+  plain,
   probeDaemon,
   say,
   sayErr,
@@ -24,7 +27,12 @@ import {
   tilde,
 } from "../context.ts";
 import { readMachine } from "../machine.ts";
-import { checkAdapters, type Harness } from "../steps/adapters.ts";
+import {
+  checkAdapters,
+  codexProxyProblem,
+  type Harness,
+  opencodeProxyProblem,
+} from "../steps/adapters.ts";
 import {
   codexConfig,
   codexHome,
@@ -33,7 +41,10 @@ import {
   sandboxRisk,
 } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
+import { openclawVerify } from "../steps/openclaw.ts";
+import { outputStyleState } from "../steps/output-style.ts";
 import { MIN_NODE } from "../steps/service.ts";
+import { codexSkillState } from "../steps/skill.ts";
 import { habitsLine } from "./habits.ts";
 import { errorTail } from "./login.ts";
 import { type Healthz, healthzBody, hostOf, updateTarget } from "./status.ts";
@@ -117,6 +128,15 @@ function codexChecks(
     if (shell !== service)
       out.warn(c.codexHomeMismatch(tilde(ctx, shell), tilde(ctx, service)));
   }
+  const skill = codexSkillState({ home: ctx.userHome, env: ctx.env });
+  if (skill.file && skill.block && skill.shared)
+    out.warn(c.codexSkillSharedTwice());
+  else if (skill.file && skill.block)
+    out.warn(
+      c.codexSkillTwice(tilde(ctx, skill.file), tilde(ctx, skill.block)),
+    );
+  else if (skill.file ?? skill.block)
+    out.pass(c.codexSkill(tilde(ctx, (skill.file ?? skill.block) as string)));
   const config = codexConfig(ctx.userHome, ctx.env);
   let risk: ReturnType<typeof sandboxRisk>;
   try {
@@ -229,6 +249,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
     "omp",
     "codex",
     "hermes",
+    "openclaw",
   ] as Harness[]) {
     if (wiring[h] === "absent") continue;
     let version: string | undefined;
@@ -251,7 +272,13 @@ export async function doctor(ctx: Ctx): Promise<number> {
           home: ctx.userHome,
           env: ctx.env,
           exec: ctx.exec,
-        })))
+        }))) &&
+      (h !== "openclaw" ||
+        (await openclawVerify({
+          home: ctx.userHome,
+          env: ctx.env,
+          exec: ctx.exec,
+        })) === undefined)
     )
       pass(c.wired(h, version));
     else fail(c.notWired(h));
@@ -263,8 +290,29 @@ export async function doctor(ctx: Ctx): Promise<number> {
       const isolates = claudeIsolates(settings);
       if (isolates === false) pass(c.claudeAccepts());
       if (isolates === true) warn(c.claudeIsolates(tilde(ctx, settings)));
+      const style = outputStyleState({ home: ctx.userHome, env: ctx.env });
+      if (style) pass(c.outputStyleDoctor(tilde(ctx, style.path), style.on));
     }
-    if (h === "codex") codexChecks(ctx, { pass, warn });
+    if (h === "opencode") {
+      const gone = opencodeProxyProblem({
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        which: ctx.which,
+      });
+      if (gone) fail(c.opencodeProxyMissing(gone.name, gone.missing));
+    }
+    if (h === "codex") {
+      codexChecks(ctx, { pass, warn });
+      const gone = codexProxyProblem({
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        which: ctx.which,
+      });
+      if (gone) fail(c.codexProxyMissing(gone.name, gone.missing));
+    }
+    if (h === "openclaw") say(ctx, c.openclawDmNote());
   }
 
   // Not a pass or a warning: the habits are the user's choice either way.
@@ -274,10 +322,24 @@ export async function doctor(ctx: Ctx): Promise<number> {
   const allow = globalFile(ctx.home);
   const list = readGlobalDirs(allow);
   if (list.error) warn(c.globalUnusable(tilde(ctx, allow), list.error));
+  // #1570: the namespace this folder gets, and where it comes from.
+  try {
+    const ns = resolveNamespace(ctx.cwd, {
+      globalFile: allow,
+      namespacesFile: namespacesFile(ctx.home),
+      remotesFile: remotesFile(ctx.home),
+      recordRemote: false,
+      allowMissing: true,
+    });
+    // Only the sources a repo or file controls; a plain folder name is no news.
+    if (ns.source === "git" || ns.source === "config")
+      say(ctx, c.namespaceIs(plain(ns.namespace), ns.source));
+  } catch {}
   // The cwd's own `.oa-bus.json` files, read as the daemon reads them.
   const files = scanConfigFiles(ctx.cwd, {
     globalFile: allow,
     namespacesFile: namespacesFile(ctx.home),
+    remotesFile: remotesFile(ctx.home),
   }).filter((f) => f.file !== allow);
   if (files.length > 0) {
     n.warnings += files.length;

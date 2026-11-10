@@ -297,8 +297,11 @@ export function createTextResolver(
           )
         : [];
       starts.sort((a, b) => a - b);
-      if (prefix === "" && starts.length === 0) ends = [0];
-      if (suffix === "" && ends.length === 0) starts = [text.length];
+      // A document edge counts only when the other side was sent: with no
+      // context at all (an agent over MCP or REST), nothing says where it was.
+      if (prefix === "" && suffix !== "" && starts.length === 0) ends = [0];
+      if (suffix === "" && prefix !== "" && ends.length === 0)
+        starts = [text.length];
       spots = { ends, starts };
       return spots;
     };
@@ -330,7 +333,9 @@ export function createTextResolver(
         const ss = commonPrefix(hay, s + hlen, suf);
         const score =
           solid(pre.slice(pre.length - ps)) + solid(suf.slice(0, ss));
-        if (short && score < need && !bounded(hay, s, s + hlen)) continue;
+        // No context at all (need 0) still needs word boundaries: "he" is not in "the".
+        if (short && (score < need || need === 0) && !bounded(hay, s, s + hlen))
+          continue;
         const dist =
           wantLine === undefined
             ? 0
@@ -455,7 +460,9 @@ export function createTextResolver(
  *   prefix and/or suffix. `at` is the offset where the quote used to start.
  *   An empty prefix or suffix (a document edge) says nothing while the other
  *   side can be found. A shortened (16 or 8 char) context probe counts only
- *   if it is unique, or nearest the block.line hint.
+ *   if it is unique, or nearest the block.line hint. With no context at all
+ *   there is no spot: an unfound quote is orphan, and a short one must sit on
+ *   word boundaries to be exact.
  * - orphan: neither quote nor spot.
  * block.path and block.page are not used here (flat text has no blocks).
  */

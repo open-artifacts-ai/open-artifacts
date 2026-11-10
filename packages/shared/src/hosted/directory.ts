@@ -257,6 +257,10 @@ export const AuditActionSchema = z.enum([
   "bus.role.confirmed",
   "bus.role.refused",
   "bus.role.expired",
+  "bus.reach.proposed",
+  "bus.reach.confirmed",
+  "bus.reach.refused",
+  "bus.reach.expired",
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 

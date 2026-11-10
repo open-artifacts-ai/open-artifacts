@@ -19,6 +19,7 @@ import {
   AUTH,
   BusLinkProposeSchema,
   BusLinkPutSchema,
+  BusReachProposeSchema,
   BusReachPutSchema,
   BusRolePutSchema,
   type Member,
@@ -39,7 +40,7 @@ import {
   pageResponse,
   sessionUser,
 } from "../http/pages.js";
-import { logInfo } from "../log.js";
+import { logError, logInfo } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import {
@@ -55,11 +56,13 @@ import {
   listBusRoles,
   MAX_ACTIVE_MACHINES,
   proposeBusLink,
+  proposeBusReach,
   putBusLink,
   putBusReach,
   putBusRole,
   revokeBusMachine,
 } from "../services/bus.js";
+import { droppedToday } from "../services/follows.js";
 import { getSettings } from "../services/members.js";
 import { getUser } from "../services/users.js";
 import { hmacSign, sha256Hex } from "../util/crypto.js";
@@ -701,7 +704,16 @@ export function mountBus(app: AppType): void {
   app.get(R.busAgents, async (c) => {
     const user = requireUser(c);
     if (!canConnect(user)) throw notFound();
-    return c.json(await listBusAgents(c.env, user.id));
+    // The caller's own dropped-notice count for today rides along (#1317): one D1 read, no hub call.
+    const [view, droppedNotices] = await Promise.all([
+      listBusAgents(c.env, user.id),
+      // Best effort: a D1 failure here never fails the Agents list.
+      droppedToday(c.env, user.id).catch((e) => {
+        logError("bus_dropped_count_failed", e);
+        return 0;
+      }),
+    ]);
+    return c.json({ ...view, droppedNotices });
   });
 
   // #1296 role addresses. The gate allows mcp.connect; a write also takes a
@@ -802,6 +814,26 @@ export function mountBus(app: AppType): void {
     const user = requireUser(c);
     if (!canConnect(user)) throw notFound();
     return c.json(await listBusReach(c.env, user.id));
+  });
+  // #1346: the agent holding a role asks, with its machine's token (never a
+  // session, a PAT or an OAuth grant), that the role reach namespaces. It
+  // only records a proposal; the member confirms its one-time URL in a
+  // browser (bus/reach-confirm.ts). The role is the one the hub finds the
+  // agent holding, never one the caller names.
+  app.post(R.busReachProposals, async (c) => {
+    if (!busOn(c.env)) throw notFound();
+    const token = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
+    if (!isMachineToken(token)) return unauthorized();
+    const m = await stmt(c.env.DB, MACHINE_BY_HASH)
+      .bind(await sha256Hex(token))
+      .first<{ id: string; userId: string; revokedAt: number | null }>();
+    if (!m || m.revokedAt !== null) return unauthorized();
+    const user = await getUser(c.env, m.userId);
+    if (!user || !canConnect(user)) return unauthorized();
+    // #1299: a plan-capped member's machine may not propose new reach.
+    busConfigCap(user);
+    const body = await jsonBody(c, BusReachProposeSchema);
+    return c.json(await proposeBusReach(c.env, user.id, m.id, body));
   });
   app.put(R.busReach, async (c) => {
     const user = roleWriter(c);

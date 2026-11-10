@@ -34,8 +34,11 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError } from "../log.js";
 import {
+  ASKER_NOTICE_WINDOW_MS,
+  ASKER_NOTICES_MAX,
   COMMENTS_MAX_REPLIES,
   type CommentStatus,
+  THREAD_REPLY_NOTICES_MAX,
 } from "../services/comment-rules.js";
 import { indexVersionOrThrow } from "../services/search.js";
 import {
@@ -45,6 +48,8 @@ import {
   type ThumbResult,
 } from "../services/thumbs.js";
 import {
+  addParticipants,
+  askerNoticeDue,
   askRow,
   bodyOk,
   COMMENTS_SCHEMA,
@@ -57,14 +62,19 @@ import {
   listThreads,
   type NewExtras,
   openCount,
+  refundAsker,
+  refundThreadReply,
   replyCount,
   rootId,
   type StoredActor,
   type StoredComment,
   type StoredList,
+  type StoredParticipant,
   type StoredThread,
   setAnswer,
   setTargetState,
+  spendAsker,
+  takeThreadReply,
   threadExists,
   threadStatus,
   touchThread,
@@ -525,6 +535,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           )
           .toArray().length > 0;
       sql.exec(SCHEMA);
+      // #1822: comment_targets.owner, for DOs created before it.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_targets')",
+          )
+          .toArray()
+          .some((c) => c.name === "owner")
+      )
+        sql.exec("alter table comment_targets add column owner text");
       if (legacy)
         sql.exec(`insert or ignore into totals (id, bytes, day, writes, cols)
           select 1, coalesce((select v from meta where k = 'bytes'), 0), 0, 0,
@@ -543,8 +563,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
    * today's writes, and whether `collection`/`id` exists. Reads only.
    */
   capUsage(
-    collection: string,
-    id: string,
+    collection?: string,
+    id?: string,
   ): { docs: number; writesToday: number; exists: boolean } {
     const day = Math.floor(this.now() / DAY_MS);
     const r = this.sql
@@ -553,8 +573,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
            (select case when day = ? then writes else 0 end from totals where id = 1) as writes,
            exists (select 1 from docs where collection = ? and id = ?) as "exists"`,
         day,
-        dataName(collection, "collection"),
-        dataName(id, "id"),
+        collection === undefined ? "" : dataName(collection, "collection"),
+        id === undefined ? "" : dataName(id, "id"),
       )
       .one();
     return {
@@ -2029,12 +2049,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
     body: string;
     /** #1535: the ask, mentions and assignment, already resolved by the service. */
     extras?: NewExtras;
+    /** #1900: the agents this comment brings into the thread. */
+    participants?: StoredParticipant[];
   }): StoredThread {
     this.checkBody(a.body);
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       if (!a.counted) this.countComment(a.rate);
-      return insertThread(this.sql, this.iso(), a);
+      const t = insertThread(this.sql, this.iso(), a);
+      if (a.participants) addParticipants(this.sql, t.id, a.participants);
+      return t;
     });
     this.broadcastComments();
     return out;
@@ -2047,6 +2071,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
     rate: string;
     body: string;
     extras?: NewExtras;
+    /** #1900: the agents this comment brings into the thread. */
+    participants?: StoredParticipant[];
   }): StoredComment {
     this.checkBody(a.body);
     this.ensureSchema();
@@ -2061,8 +2087,24 @@ export class ArtifactRuntime extends DurableObject<Env> {
         );
       this.countComment(a.rate);
       const now = this.iso();
+      let extras = a.extras;
+      // #1614: a reply to the ask's author is stored, but its agents are only
+      // told when the thread's bound allows it (otherwise no mention is kept
+      // and the service sends nothing).
+      if (
+        extras?.asker &&
+        !askerNoticeDue(
+          this.sql,
+          a.threadId,
+          new Date(this.now() - ASKER_NOTICE_WINDOW_MS).toISOString(),
+          ASKER_NOTICES_MAX,
+        )
+      )
+        extras = { ...extras, asker: undefined };
+      else if (extras?.asker) spendAsker(this.sql, a.threadId, now);
       const c = insertComment(this.sql, now, a.threadId, a.actor, a.body);
-      if (a.extras) insertExtras(this.sql, a.threadId, c.id, a.extras);
+      if (extras) insertExtras(this.sql, a.threadId, c.id, extras);
+      if (a.participants) addParticipants(this.sql, a.threadId, a.participants);
       touchThread(this.sql, a.threadId, now);
       return getComment(this.sql, a.threadId, c.id) as StoredComment;
     });
@@ -2119,7 +2161,11 @@ export class ArtifactRuntime extends DurableObject<Env> {
   commentsTargetStates(a: {
     threadId: string;
     commentId: string;
-    states: { kind: "mention" | "assign"; key: string; state: string }[];
+    states: {
+      kind: "mention" | "assign" | "asker";
+      key: string;
+      state: string;
+    }[];
   }): StoredComment {
     this.ensureSchema();
     return this.ctx.storage.transactionSync(() => {
@@ -2129,6 +2175,50 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (!c) fail("not_found", "Not found");
       return c;
     });
+  }
+
+  /** Gives back the asker notice a reply spent (#1614) when its delivery found no session. `at` is the reply's createdAt. */
+  commentsAskerRefund(a: { threadId: string; at: string }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      refundAsker(this.sql, a.threadId, a.at),
+    );
+  }
+
+  /**
+   * #1900: the participant agents a person's reply (stored at `at`) tells, with
+   * the bound spent: none in a resolved thread, `exclude` (already reached by
+   * the same comment) skipped, a cap per thread.
+   */
+  commentsThreadReplyTake(a: {
+    threadId: string;
+    at: string;
+    exclude: string[];
+    skipPage?: boolean;
+  }): StoredParticipant[] {
+    this.ensureSchema();
+    return this.ctx.storage.transactionSync(() =>
+      takeThreadReply(
+        this.sql,
+        a.threadId,
+        new Set(a.exclude),
+        a.at,
+        THREAD_REPLY_NOTICES_MAX,
+        a.skipPage === true,
+      ),
+    );
+  }
+
+  /** Gives back the thread-reply notices spent at `at` for `keys` when delivery found no session. */
+  commentsThreadReplyRefund(a: {
+    threadId: string;
+    at: string;
+    keys: string[];
+  }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      refundThreadReply(this.sql, a.threadId, a.keys, a.at),
+    );
   }
 
   /** Resolve or reopen; the same status again changes nothing. */
@@ -2174,6 +2264,12 @@ export class ArtifactRuntime extends DurableObject<Env> {
     commentId: string;
     by: { kind: "user" | "guest"; ref: string };
     body: string;
+    /**
+     * #1797: the edit came from a browser session. A comment stays typed only
+     * when its last editor was typed too: a token edit of a typed comment
+     * makes it not typed.
+     */
+    typed?: boolean;
     /** The caller's rate key ("u:{id}" or "ip:{key}"): counts against the minute limit only. */
     rate?: string;
   }): StoredComment {
@@ -2193,6 +2289,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
       if (who.kind !== a.by.kind || who.ref !== a.by.ref)
         fail("forbidden", "Only the author can edit a comment");
       const now = this.iso();
+      if (who.typed && a.typed !== true) {
+        const { typed: _typed, ...rest } = who;
+        this.sql.exec(
+          "update comments set author = ? where id = ?",
+          JSON.stringify(rest),
+          a.commentId,
+        );
+      }
       this.sql.exec(
         "update comments set body = ?, edited_at = ? where id = ?",
         a.body.trim(),
@@ -2216,9 +2320,9 @@ export class ArtifactRuntime extends DurableObject<Env> {
     moderator: boolean;
     /** The caller's rate key ("u:{id}" or "ip:{key}"): counts against the minute limit only. */
     rate?: string;
-  }): void {
+  }): { root: boolean } {
     this.ensureSchema();
-    this.ctx.storage.transactionSync(() => {
+    const out = this.ctx.storage.transactionSync(() => {
       if (a.rate) this.countComment(a.rate, false);
       const row = this.sql
         .exec<{ author: string }>(
@@ -2233,16 +2337,31 @@ export class ArtifactRuntime extends DurableObject<Env> {
         a.by !== null && who.kind === a.by.kind && who.ref === a.by.ref;
       if (!mine && !a.moderator)
         fail("forbidden", "Only the author or an editor can delete a comment");
-      if (rootId(this.sql, a.threadId) === a.commentId) {
+      const root = rootId(this.sql, a.threadId) === a.commentId;
+      if (root) {
         this.sql.exec("delete from comments where thread_id = ?", a.threadId);
         deleteExtras(this.sql, { threadId: a.threadId });
+        this.sql.exec(
+          "delete from comment_asker_notices where thread_id = ?",
+          a.threadId,
+        );
+        this.sql.exec(
+          "delete from comment_participants where thread_id = ?",
+          a.threadId,
+        );
+        this.sql.exec(
+          "delete from comment_reply_notices where thread_id = ?",
+          a.threadId,
+        );
         this.sql.exec("delete from comment_threads where id = ?", a.threadId);
       } else {
         this.sql.exec("delete from comments where id = ?", a.commentId);
         deleteExtras(this.sql, { commentId: a.commentId });
       }
+      return { root };
     });
     this.broadcastComments();
+    return out;
   }
 
   /** Wipes all data (called by purge). The schema is recreated lazily on next use. */
@@ -2291,6 +2410,9 @@ type RpcMethods =
   | "commentsReply"
   | "commentsAnswer"
   | "commentsTargetStates"
+  | "commentsAskerRefund"
+  | "commentsThreadReplyTake"
+  | "commentsThreadReplyRefund"
   | "commentsStatus"
   | "commentsEdit"
   | "commentsDelete"

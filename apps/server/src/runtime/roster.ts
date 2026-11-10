@@ -11,9 +11,9 @@ import {
   PRESENCE_PALETTE_SIZE,
   type PresenceEntry,
 } from "@oa/shared";
-import { cleanName, publicName } from "../services/agent-display.js";
+import { cleanName, fnv1a, publicName } from "../services/agent-display.js";
 
-export { cleanName };
+export { cleanName, fnv1a };
 
 /** What the route passes for a viewer (`name` null for anon or nameless). */
 export type PresenceIdentity = {
@@ -36,16 +36,6 @@ export type AgentRow = {
   seen: number;
   lastWrite: number | null;
   activity: string | null;
-};
-
-/** FNV-1a, 32 bit: the one small non-crypto hash for color and animal. */
-export const fnv1a = (s: string): number => {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return h >>> 0;
 };
 
 /** Stable color index; an agent's key is per session, so each gets its own. */

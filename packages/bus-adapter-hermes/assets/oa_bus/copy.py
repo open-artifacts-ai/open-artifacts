@@ -357,6 +357,12 @@ def following_text(follows):
     return "\n".join(f"{f['url']} (since {f['followed_at']})" for f in follows)
 
 
+# The bad_frame answers a current daemon gives a follow call itself (@oa/bus-ipc FOLLOW_DAEMON_BAD_FRAME).
+FOLLOW_DAEMON_BAD_FRAME = (
+    "follow is not supported on this connection",
+    "the frame is not valid on the hub wire",
+)
+
 FOLLOW_OLD_DAEMON = "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus."
 
 
@@ -475,6 +481,43 @@ def roster_line(a, now_ms):
         mark = ""
     tail = f"  {says}" if says else ""
     return f"- {a['name']} ({display_kind(a['kind'])}, {a['namespace']}{where}){mark}{tail}"
+
+
+def is_fallback_name(name, kind):
+    """bus-protocol isFallbackName: a name only the harness gave the session."""
+    low = name.lower()
+    return low == kind or low.startswith(f"{kind}-") or low == "agent" or re.fullmatch(r"claude-\d+", low) is not None
+
+
+def collapsed_away_line(n, listed):
+    more = " more" if listed else ""
+    return f"{n}{more} away {'session' if n == 1 else 'sessions'} with no chosen name (not listed, still reachable by name)"
+
+
+def roster_text(agents, now_ms):
+    """bus-ipc rosterText: the list_agents text from the hub's roster rows."""
+    if not agents:
+        return "No agents in your namespace and linked ones."
+    lines = []
+    collapsed = 0
+    for a in agents:
+        away = a.get("state") == "away"
+        if away and is_fallback_name(a["name"], a["kind"]):
+            collapsed += 1
+            continue
+        lines.append(
+            roster_line(
+                {
+                    **a,
+                    "queued": (a.get("state") or ("live" if a.get("live") else "queued")) == "queued",
+                    "away": str(a.get("since", "")) if away else None,
+                },
+                now_ms,
+            )
+        )
+    if collapsed:
+        lines.append(collapsed_away_line(collapsed, len(lines) > 0))
+    return "\n".join(lines)
 
 
 def self_text(agent):

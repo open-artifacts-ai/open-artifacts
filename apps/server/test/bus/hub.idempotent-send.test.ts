@@ -479,62 +479,76 @@ describe("B14 idempotent send", () => {
     close();
   });
 
-  it("a flood of unique ids keeps at most SEND_KEYS_PER_AGENT keys for the agent; other agents are unaffected", async () => {
-    expect(SEND_KEYS_PER_AGENT).toBe(800);
-    expect(SEND_KEYS_PER_AGENT).toBe(MAILBOX_PENDING_CAP * 4);
-    const { s, t, sm, tm, n, sender, close } = await setup();
-    // The cap's behavior is the same at any size: a small one keeps the
-    // flood at 5x the cap fast.
-    const CAP = 50;
-    await inHub((i) => BusHub.setSendKeysPerAgentForTests(i, CAP));
-    // The other agent keeps its own keys.
-    for (let k = 0; k < 3; k++)
-      await sendAndReceipt(t, send(`o${k}`, "rref", sender));
-    const other = await agentId("rref", tm.id);
-    expect(await keysOf(other)).toBe(3);
-    // Only accepted sends store keys, and only final keys are evicted: one
-    // sink that acks every message, in waves under its inbox cap.
-    const sink = uniq("Sink");
-    await agent(t, "sink", sink, n);
-    const N = CAP * 5;
-    const WAVE = LIMITS.inboxCap - 10;
+  /**
+   * The flood below sends, delivers and acks 251 messages. Alone it takes 3.4
+   * s (14 ms a message); under machine load it ran past the 20 s default, so
+   * a message took at least 80 ms there (#1812). 100 ms is that floor rounded
+   * up, and the headroom covers a runner slower than the one measured.
+   */
+  const FLOOD_MESSAGES = 50 * 5 + 1;
+  const LOADED_MESSAGE_MS = 100;
+  const FLOOD_HEADROOM = 3;
 
-    // Lift the frame budgets so the flood is not rate limited (a frozen
-    // clock keeps the refill from clamping the tokens back to the burst).
-    await setClock(Date.now() + 1000);
-    await inHub((i, st) => {
-      for (const id of [sm.id, tm.id])
-        for (const ws of st.getWebSockets(id))
-          BusHub.setFrameTokensForTests(i, ws, 1_000_000);
-    });
-    let first: Receipt | undefined;
-    let last: Receipt | undefined;
-    for (let k = 0; k <= N; k += WAVE) {
-      const end = Math.min(k + WAVE, N + 1);
-      for (let j = k; j < end - 1; j++) s.send(send(`f${j}`, "sref", sink));
-      last = await sendAndReceipt(s, send(`f${end - 1}`, "sref", sink));
-      expect(last.state).toBe("pending");
-      if (k === 0) first = last;
-      for (let j = k; j < end; j++) {
-        const d = await waitFor(t, "deliver");
-        t.send(ack(`a${j}`, d.msg_id));
+  it(
+    "a flood of unique ids keeps at most SEND_KEYS_PER_AGENT keys for the agent; other agents are unaffected",
+    async () => {
+      expect(SEND_KEYS_PER_AGENT).toBe(800);
+      expect(SEND_KEYS_PER_AGENT).toBe(MAILBOX_PENDING_CAP * 4);
+      const { s, t, sm, tm, n, sender, close } = await setup();
+      // The cap's behavior is the same at any size: a small one keeps the
+      // flood at 5x the cap fast.
+      const CAP = 50;
+      await inHub((i) => BusHub.setSendKeysPerAgentForTests(i, CAP));
+      // The other agent keeps its own keys.
+      for (let k = 0; k < 3; k++)
+        await sendAndReceipt(t, send(`o${k}`, "rref", sender));
+      const other = await agentId("rref", tm.id);
+      expect(await keysOf(other)).toBe(3);
+      // Only accepted sends store keys, and only final keys are evicted: one
+      // sink that acks every message, in waves under its inbox cap.
+      const sink = uniq("Sink");
+      await agent(t, "sink", sink, n);
+      const N = CAP * 5;
+      const WAVE = LIMITS.inboxCap - 10;
+
+      // Lift the frame budgets so the flood is not rate limited (a frozen
+      // clock keeps the refill from clamping the tokens back to the burst).
+      await setClock(Date.now() + 1000);
+      await inHub((i, st) => {
+        for (const id of [sm.id, tm.id])
+          for (const ws of st.getWebSockets(id))
+            BusHub.setFrameTokensForTests(i, ws, 1_000_000);
+      });
+      let first: Receipt | undefined;
+      let last: Receipt | undefined;
+      for (let k = 0; k <= N; k += WAVE) {
+        const end = Math.min(k + WAVE, N + 1);
+        for (let j = k; j < end - 1; j++) s.send(send(`f${j}`, "sref", sink));
+        last = await sendAndReceipt(s, send(`f${end - 1}`, "sref", sink));
+        expect(last.state).toBe("pending");
+        if (k === 0) first = last;
+        for (let j = k; j < end; j++) {
+          const d = await waitFor(t, "deliver");
+          t.send(ack(`a${j}`, d.msg_id));
+        }
+        await barrier(t);
       }
-      await barrier(t);
-    }
-    const me = await agentId("sref", sm.id);
-    expect(await keysOf(me)).toBe(CAP);
-    expect(await keysOf(other)).toBe(3);
-    // The newest keys survive; the oldest was dropped and sends fresh.
-    expect((await sendAndReceipt(s, send(`f${N}`, "sref", sink))).msg_id).toBe(
-      last?.msg_id,
-    );
-    const again = await sendAndReceipt(s, send(`f${WAVE - 1}`, "sref", sink));
-    expect(again.state).toBe("pending");
-    expect(again.msg_id).not.toBe(first?.msg_id);
-    expect(await keysOf(me)).toBe(CAP);
-    expect(await keysOf(other)).toBe(3);
-    allParse(s, t);
-    await inHub((i) => BusHub.setSendKeysPerAgentForTests(i, null));
-    close();
-  });
+      const me = await agentId("sref", sm.id);
+      expect(await keysOf(me)).toBe(CAP);
+      expect(await keysOf(other)).toBe(3);
+      // The newest keys survive; the oldest was dropped and sends fresh.
+      expect(
+        (await sendAndReceipt(s, send(`f${N}`, "sref", sink))).msg_id,
+      ).toBe(last?.msg_id);
+      const again = await sendAndReceipt(s, send(`f${WAVE - 1}`, "sref", sink));
+      expect(again.state).toBe("pending");
+      expect(again.msg_id).not.toBe(first?.msg_id);
+      expect(await keysOf(me)).toBe(CAP);
+      expect(await keysOf(other)).toBe(3);
+      allParse(s, t);
+      await inHub((i) => BusHub.setSendKeysPerAgentForTests(i, null));
+      close();
+    },
+    FLOOD_MESSAGES * LOADED_MESSAGE_MS * FLOOD_HEADROOM,
+  );
 });

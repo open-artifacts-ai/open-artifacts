@@ -15,7 +15,8 @@
         "caps": [
           "mailbox",
           "pending",
-          "follow"
+          "follow",
+          "link"
         ],
         "attest": {
           "proc_start": "Fri Nov  6 21:00:00 2026"
@@ -143,9 +144,64 @@
         "id": "1",
         "type": "following"
       }
+    },
+    {
+      "name": "link_proof (#1856: a hash, no pid)",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proof",
+        "hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
     }
   ],
   "invalid": [
+    {
+      "name": "link_proof that names a pid",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proof",
+        "hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "pid": 4242
+      }
+    },
+    {
+      "name": "link_proof that names an agent",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proof",
+        "hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "agent_ref": "other"
+      }
+    },
+    {
+      "name": "link_proof with no hash",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proof"
+      }
+    },
+    {
+      "name": "link_proof with a hash in capitals",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proof",
+        "hash": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+      }
+    },
+    {
+      "name": "link_proof with a short hash",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proof",
+        "hash": "abc123"
+      }
+    },
     {
       "name": "unknown kind",
       "frame": {

@@ -32,6 +32,7 @@ describe("tunables", () => {
       "FREE_STORAGE_BYTES",
       "FREE_DATA_DOCS",
       "FREE_DATA_DAILY_WRITES",
+      "FREE_DATA_DAILY_WRITES_TOTAL",
     ]) {
       const check = TUNABLES[n]?.check;
       expect(check, n).toBeDefined();

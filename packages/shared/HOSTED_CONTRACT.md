@@ -96,6 +96,7 @@ Who else has an artifact open, as faces. Module: `viewer-presence.ts`.
 - **Anonymous id.** Session cookie `oa_pid` on the app origin, matching `PRESENCE_ID_RE`; the server treats it as opaque and ignores any other value.
 - **Ping.** A client opening `R.events` with `?ping=1` sends the text `ping` every `PRESENCE_PING_MS` (30 s); the server answers `pong` without waking. Such a socket with no ping for `PRESENCE_STALE_MS` (60 s) is swept (every `PRESENCE_SWEEP_MS`); a closed socket's face lingers `PRESENCE_GRACE_MS`. Sockets without `?ping=1` are never swept for silence. `ping` is the only client message allowed; any other closes with 1008.
 - **Agents.** Present for `AGENT_PRESENT_MS` (120 s) after a touch, "editing" while a write is that recent.
+- **Animals.** `ANIMALS` is 55 ids (13 `lucide: true`, 42 drawn). Compared with the first draft: removed beaver, camel, capybara, eagle, gecko, hippo, kangaroo, llama, moose, wolf, zebra (Design: unreadable at 16px); added bat, chicken, hamster, lizard, seahorse, starfish, toucan (presence is unshipped, so no compat).
 
 ## CHANGED existing shapes (all fields optional, appended last)
 
@@ -123,6 +124,7 @@ Who else has an artifact open, as faces. Module: `viewer-presence.ts`.
 | `ArtifactEventSchema` | `presence` frame, appended after `gone`: `{ type: "presence", viewers, total }` (see Presence, both tiers) |
 | `GetArtifactInput`, `ArtifactData*Input` (MCP get_artifact and the six data tools) | `activity?: string` (at most 80 chars): what the agent says it is doing, shown on its presence card |
 | `AuditActionSchema` | `bus.role.proposed`, `bus.role.confirmed`, `bus.role.refused`, `bus.role.expired` (#1372, self-host bus only: an AI agent proposed a role change over MCP, the member confirmed or refused it on its link, or the link ran out). Target `user` (the member whose bus it is); `detail { proposalId, action }` plus `roleId`, `agentId`, `priorAgentId` when set and `why` on a refusal (`rejected`, `changed`, `name_taken`, `agent_not_open`, `role_limit`, `used`, `expired`) or on an expiry caused by revoking the PAT or OAuth grant that proposed (`credential_revoked`, #1403). Ids and enums only; never the role name, namespace or link. Actor: the member (proposed: their PAT or OAuth grant; confirmed and refused: their browser session), or `system` for an expiry |
+| `AuditActionSchema` | `bus.reach.proposed`, `bus.reach.confirmed`, `bus.reach.refused`, `bus.reach.expired` (#1346, self-host bus only: a machine's agent proposed that the role it holds reach other namespaces, the member confirmed or refused it on its link, or the link ran out or its machine was revoked). Target `user`; `detail { proposalId, roleId, agentId, machineId }` plus `why` on a refusal (`rejected`, `changed`, `reach_limit`, `used`, `expired`) or on an expiry caused by revoking the proposing machine (`machine_revoked`). Ids and enums only; never the role name, a namespace or the link. Actor: the member's browser session for confirmed and refused, `system` for an expiry, the member for proposed (the machine token's owner) |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |
 
 ## Comments (#682, `comments.ts`)
@@ -339,6 +341,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `unsupported_format` | 400 | publish (`R.artifacts`, `R.versions`, MCP `publish_artifact`) with no `format` whose entry name implies none (`inferFormat` returns `image` for `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, and `code` only for known text: the `LANGUAGES` keys, `PLAIN_TEXT_EXTENSIONS`, Makefile, Dockerfile; else null) and whose bytes aren't UTF-8 text. When the name implies none but the bytes are text (a `LICENSE`, `.gitignore`), the publish goes ahead as `code`, language `"text"`. Details `{ path, reason: "no_viewer" }`; message `UNSUPPORTED_FORMAT_MESSAGE`. A HEIC/HEIF entry (named `.heic`/`.heif`, or an ISO BMFF `ftyp` at byte 4 with brand `heic`, `heix`, `hevc`, `heim`, `heis`, `mif1` or `msf1`) is refused whatever the `format`: details `{ path, reason: "heic" }`, message `HEIC_MESSAGE`. Nothing is written or consumed |
 | `invalid_anchor` | 400 | `POST R.comments` with an anchor that fails its schema (or a pin `contentHash` outside `[A-Za-z0-9_-]{1,128}`); details: the issues (#682) |
 | `invalid_body` | 400 | a comment body empty after trim, or over 2,000 characters (#682) |
+| `not_an_ask` | 400 | `POST R.commentReplies` with `toAsker` where the thread's root has no ask, or the ask's author is not an agent (#1614) |
 | `anchor_not_in_version` | 422 | a version that does not exist, or an html version with no entry file (#682); a quote the html does not show is accepted with its prefix and suffix kept from the live page, at most 32 characters each side; no block hint (#1735) |
 | `comments_off` | 403 | any comments route on an artifact whose `comments` setting is off (#682) |
 | `forbidden` | 403 | a comment route the caller may open but not take: editing another's comment, deleting without being the author or an editor, any comments route from an embed (#682) |
@@ -376,7 +379,7 @@ locked too), so its alarm calls nothing and fails nothing (no
 `sync_google` back. No transition deletes anything.
 
 `Me.instance.billing` (`PlanView`; not `plan`, which is the Workers plan):
-`{ tier, status, trialEndsAt, soloTrialEndsAt?, graceUntil, creatorsThisMonth?, readOnly, reason? }`.
+`{ tier, status, trialEndsAt, soloTrialEndsAt?, graceUntil, hasCustomer?, creatorsThisMonth?, readOnly, reason? }`.
 `tier` solo | free | trial | team | business (free is the pre-Solo value: hosted billing that predates Solo still answers it, with today's rules, and the hosted half moves billing to answer solo); `status` active | past_due | lapsed |
 suspended. Everyone gets `tier`, `readOnly`, `reason`. `status`,
 `trialEndsAt`, `soloTrialEndsAt`, `graceUntil` (ISO) and `creatorsThisMonth`
@@ -384,10 +387,14 @@ go to the org owner and admins only, the plan cap included; everyone else gets
 null and no count. `trialEndsAt` is the Business trial's alone (a Solo row
 with one is a used Business trial); `soloTrialEndsAt` is the Solo 30-day
 trial's end, optional, absent when billing's answer predates it.
+`hasCustomer` (boolean, optional) says whether billing has a Stripe customer
+for the instance (a provisioned or comped plan has none, so no portal): owner
+and admins only, the plan cap included; absent for everyone else and when
+billing's answer predates it (unknown: the dashboard keeps Manage billing).
 
 | State | What it does | `reason` |
 |---|---|---|
-| solo or free, active, or past_due within `graceUntil` | one person and their agents ($1/month or $12/year after a 30-day no-card trial). Team features answer `plan_required`; the first invite passes while the Business trial never ran and starts the 14-day trial. Billing MUST report a Solo whose 30-day trial ended with no card as status `lapsed` | `solo` |
+| solo or free, active, or past_due within `graceUntil` | one person and their agents ($1/month or $10/year after a 30-day no-card trial). Team features answer `plan_required`; the first invite passes while the Business trial never ran and starts the 14-day trial. Billing MUST report a Solo whose 30-day trial ended with no card as status `lapsed` | `solo` |
 | solo lapsed, or solo past_due past grace | **view-only** for everyone, the org owner included (lock mode `viewOnly`, `readOnly: true`): publishing (a new artifact or version, REST and MCP) and live-data writes (artifact data set, update, delete, anonymous visitors too), uploads for a new artifact, restoring a version, and runtime storage writes (PUT and DELETE) answer 403 `plan_read_only`; team features answer `plan_read_only` too, and the Business trial does not start. Every read, sharing and visibility, the owner's and admins' billing POSTs, revoking tokens and machines, and profile edits keep working. Non-owners carry the `plan` cap as under solo (so a member's other writes, comments included, are refused); the owner has no cap, and the lock binds them for publishing and live-data writes | `solo_unpaid` |
 | trial (until `trialEndsAt`), team, business, past_due within `graceUntil` | today's behaviour | none |
 | trial ended, lapsed, past_due past grace, suspended | read-only (`readOnly: true`): team features answer `plan_read_only` | `trial_ended`, `lapsed`, `payment_failed`, `suspended` |
@@ -420,9 +427,16 @@ Free-tier caps (configuration; each OFF until set, positive integers):
 live artifact, history included, each distinct blob once (an inline file by
 its content digest, an upload by its key), trashed artifacts excluded),
 `FREE_DATA_DOCS` (live-data docs per artifact), `FREE_DATA_DAILY_WRITES`
-(live-data writes per artifact per UTC day). On the free tier only, past one:
+(live-data writes per artifact per UTC day), `FREE_DATA_DAILY_WRITES_TOTAL`
+(live-data writes per install per UTC day, across all artifacts: data
+writes, per-viewer storage writes and the owner's data reset; a single D1
+counter row, read and bumped only while the cap is on. Viewer-level and
+anonymous writes are refused once today's total reaches 80% of the cap;
+editor level and above may write up to the full cap; `max` in the error is
+the bound that applied. A write refused after it is counted (429,
+too_large, a bad body) still counts.) On the free tier only, past one:
 403 `plan_limit`, details `PlanLimitDetails { tier: "solo", limit, max }` (a server from before Solo sent tier "free", still accepted)
-(`limit` storage_bytes | data_docs | data_daily_writes).
+(`limit` storage_bytes | data_docs | data_daily_writes | data_daily_writes_total).
 
 A creator (the bill) is a user who published a version, or wrote live data
 at editor level or above, in the UTC month, by any credential (an agent
@@ -434,7 +448,9 @@ off hosted):
 `POST R.billingCheckout` `BillingCheckoutInput { tier: solo | team | business, interval?: month | year }` (interval required for solo, 400 for any other tier) →
 `BillingUrl { url }` (Stripe Checkout); `POST R.billingPortal` → `BillingUrl`
 (Customer Portal); `POST R.billingUsage` → `BillingUsage { month, count }`.
-503 `billing_unavailable` when billing can't be reached. Billing's 503
+503 `billing_unavailable` when billing can't be reached. `POST R.billingPortal`
+answers 409 `no_billing_customer` when billing has no Stripe customer for the
+instance (billing's 409 `no_customer`; no other route or status maps to it). Billing's 503
 `{ error: "retry" }` (Stripe still running the same idempotent request) is
 retried once, with the same signed body, after a short backoff. Checkout
 sends billing `{ install, ts, plan }`, plus `interval` for solo only; the billing service maps solo+month and solo+year to the Solo prices (hosted half, #1568). Checkout and Portal
@@ -443,7 +459,7 @@ and `/portal`); until those ship they answer 503 `billing_unavailable`.
 
 Errors: `plan_required` (403) and `plan_read_only` (403), details
 `PlanRefusalDetails { tier, reason }`; `plan_limit` (403), details
-`PlanLimitDetails`; `billing_unavailable` (503). Mocks:
+`PlanLimitDetails`; `billing_unavailable` (503); `no_billing_customer` (409). Mocks:
 `createHostedMock({ billing, billingDown })`.
 
 ## Test hooks (`hosted/test-hooks.ts`, types only)

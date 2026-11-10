@@ -32,7 +32,17 @@ import {
   opencodeVersion,
 } from "@oa/bus-adapter-opencode";
 import { PI_EXTENSION } from "@oa/bus-adapter-pi";
-import { codexBinFile, codexBinPin } from "@oa/bus-daemon";
+import {
+  CODEX_PROXY_ENTRY_FILE,
+  codexBinFile,
+  codexBinPin,
+} from "@oa/bus-daemon";
+import {
+  claudeConfigFile,
+  installProof,
+  type ProofIo,
+  uninstallProof,
+} from "./claude-proof.ts";
 import {
   codexConfig,
   codexEntry,
@@ -45,21 +55,66 @@ import {
   upsertCodexEntry,
 } from "./codex.ts";
 import {
+  CODEX_MIN_VERSION,
+  type CxEntryIo,
+  proxyProgramMissing as cxProxyProgramMissing,
+  installEntry as installCxEntry,
+  pendingEntry as pendingCxEntry,
+  restoreEntry as restoreCxEntry,
+} from "./codex-proof.ts";
+import { habitsOptedOut } from "./habits.ts";
+import {
   HERMES_NO_CLI,
   hermesPluginDir,
   installHermes,
   pluginState,
   uninstallHermes,
 } from "./hermes.ts";
+import {
+  installOpenclaw,
+  OPENCLAW_NIX,
+  OPENCLAW_NO_CLI,
+  OPENCLAW_PLUGIN,
+  openclawNix,
+  openclawPluginDir,
+  openclawPluginState,
+  uninstallOpenclaw,
+} from "./openclaw.ts";
+import {
+  installEntry as installOcEntry,
+  type OcEntryIo,
+  OPENCODE_ENTRY_FILE,
+  proxyEntries,
+  proxyProgramMissing,
+  restoreEntry as restoreOcEntry,
+} from "./opencode-proof.ts";
+import {
+  moveEntry,
+  OMP_ORIGIN_FILE,
+  PI_ENTRY_FILE,
+  PI_MIN_VERSION,
+  type PiEntryIo,
+  pendingEntry,
+  restoreEntry,
+} from "./pi-proof.ts";
+
+export { OMP_ORIGIN_FILE };
 
 export type Exec = (
   cmd: string,
   args: string[],
   /** Extra environment for the command, on top of the CLI's own. */
-  opts?: { env?: Record<string, string> },
+  opts?: { env?: Record<string, string>; timeoutMs?: number },
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
-export type Harness = "claude" | "opencode" | "pi" | "omp" | "codex" | "hermes";
+export type Harness =
+  | "claude"
+  | "opencode"
+  | "pi"
+  | "omp"
+  | "codex"
+  | "hermes"
+  | "openclaw";
 
 export type AdapterDeps = {
   /** The user's home: harness configs live under it. */
@@ -68,10 +123,18 @@ export type AdapterDeps = {
   busHome?: string;
   /** CLAUDE_CONFIG_DIR, XDG_CONFIG_HOME, OPENCODE_CONFIG_DIR, PI_CODING_AGENT_DIR, PI_CONFIG_DIR, OMP_PROFILE, PI_PROFILE, CODEX_HOME, PATH. */
   env?: Record<string, string | undefined>;
+  /** The instance's origin: its user-scope Claude entry gets the proof helper (#1822). */
+  hub?: string;
   /** The argv that runs the CLI: `[node, <OA_BUS_HOME>/bin/dist/index.js]`, or one executable. */
   busBin: string[];
   /** `pi` is the one extension file Pi and oh-my-pi both load. */
-  assets: { pi: string; opencodePlugin: string; hermes?: string };
+  assets: {
+    pi: string;
+    opencodePlugin: string;
+    hermes?: string;
+    /** The built OpenClaw plugin folder. */
+    openclaw?: string;
+  };
   which: (cmd: string) => boolean;
   exec: Exec;
   /** The Codex desktop app's bundle; undefined where there is none to look for. */
@@ -94,6 +157,10 @@ export type InstallResult = {
   codexNoWake: boolean;
   /** Hermes's plugin was installed: running Hermes processes load it only after a restart. */
   hermesRestart: boolean;
+  /** OpenClaw's plugin was installed: a gateway that is not managed loads it only after `openclaw gateway restart`. */
+  openclawRestart: boolean;
+  /** OpenClaw is in Nix mode: its plugin commands are off, so nothing was done. */
+  openclawNix: boolean;
 };
 export type UninstallResult = {
   removed: Harness[];
@@ -105,6 +172,10 @@ export type UninstallResult = {
   opencodeRestarted: boolean;
   /** Hermes's plugin folder went with no `hermes` to run `plugins disable`. */
   hermesNoCli: boolean;
+  /** OpenClaw's plugin folder went with no `openclaw` to run `plugins uninstall`. */
+  openclawNoCli: boolean;
+  /** OpenClaw is in Nix mode: its plugin was left alone. */
+  openclawNix: boolean;
 };
 
 /** The harness entry (MCP server, OpenCode plugin) name. OpenBus uses `openbus`: both can be installed. */
@@ -117,6 +188,7 @@ const HARNESSES: Harness[] = [
   "omp",
   "codex",
   "hermes",
+  "openclaw",
 ];
 
 /** The shipped Pi (and oh-my-pi) extension and OpenCode TUI plugin. */
@@ -125,6 +197,8 @@ export const readAssets = (): AdapterDeps["assets"] => ({
   opencodePlugin: readFileSync(OPENCODE_TUI_PLUGIN, "utf8"),
   // A folder, not text: the plugin is several Python files.
   hermes: HERMES_PLUGIN,
+  // Built from packages/bus-adapter-openclaw (the CLI's bundle step does it).
+  openclaw: OPENCLAW_PLUGIN,
 });
 
 /** The bus home when it is not `<home>/.oa-bus`: the one value a harness entry must carry. */
@@ -153,7 +227,7 @@ const paths = (deps: AdapterDeps) => {
     join(env.XDG_CONFIG_HOME ?? join(deps.home, ".config"), "opencode");
   const busDir = deps.busHome ?? join(deps.home, ".oa-bus");
   return {
-    claude: join(env.CLAUDE_CONFIG_DIR ?? deps.home, ".claude.json"),
+    claude: claudeConfigFile(deps.home, env),
     // OpenCode reads both; edit the one the user has, else create .json.
     opencodeConfigs: [
       join(opencode, "opencode.json"),
@@ -161,6 +235,15 @@ const paths = (deps: AdapterDeps) => {
     ],
     opencodeCli: join(opencode, "cli.json"),
     record: join(busDir, "install.json"),
+    // #1856: where install keeps the OpenCode entry it replaced with the proxy.
+    opencodeEntry: join(busDir, OPENCODE_ENTRY_FILE),
+    // #1856: Pi's own MCP config, and where install keeps the entry it moved.
+    piMcp: join(
+      agentDirEnv(deps.home, env) ?? join(deps.home, ".pi/agent"),
+      "mcp.json",
+    ),
+    piEntry: join(busDir, PI_ENTRY_FILE),
+    ompOrigin: join(busDir, OMP_ORIGIN_FILE),
     // OpenCode registers the folder that holds tui.js.
     opencodePlugin: join(busDir, "integrations/opencode", NAME),
     pi: join(
@@ -170,6 +253,8 @@ const paths = (deps: AdapterDeps) => {
     omp: join(ompAgentDir(deps.home, env), "extensions/oa-bus.ts"),
     codex: codexConfig(deps.home, env),
     codexBin: codexBinFile(busDir),
+    // #1856: where install keeps the Codex entry it swapped for the proxy.
+    codexEntry: join(busDir, CODEX_PROXY_ENTRY_FILE),
     busDir,
   };
 };
@@ -386,6 +471,161 @@ async function run(deps: AdapterDeps, cmd: string, args: string[]) {
   }
 }
 
+/** The proof helper of the instance's Claude entry (#1822); never stops the install. */
+function claudeProof(deps: AdapterDeps, notes: string[]) {
+  if (deps.hub === undefined) return;
+  try {
+    const note = installProof(
+      proofIo(deps),
+      deps.hub,
+      deps.busBin,
+      movedHome(deps),
+    );
+    if (note) notes.push(note);
+  } catch (e) {
+    notes.push(
+      `could not add the proof helper to the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+const ocEntryIo = (deps: AdapterDeps): OcEntryIo => ({
+  files: paths(deps).opencodeConfigs.filter(present),
+  moved: paths(deps).opencodeEntry,
+  read: readJsonc,
+  save: (file, before, next, ok) => {
+    target(file);
+    saveText(file, before, next, ok);
+  },
+  writeMoved: (data) => writeAtomic(paths(deps).opencodeEntry, data, 0o600),
+  home: deps.home,
+  busBin: deps.busBin,
+  ...(movedHome(deps) ? { busHome: movedHome(deps) as string } : {}),
+});
+
+const cxEntryIo = (deps: AdapterDeps): CxEntryIo => ({
+  file: paths(deps).codex,
+  moved: paths(deps).codexEntry,
+  write: (text) => writeAtomic(paths(deps).codex, text),
+  writeMoved: (data) => writeAtomic(paths(deps).codexEntry, data, 0o600),
+  busBin: deps.busBin,
+  ...(movedHome(deps) ? { busHome: movedHome(deps) as string } : {}),
+});
+
+/**
+ * #1856: the instance's /mcp entry in Codex's config.toml becomes the local
+ * proxy, so each thread can prove which bus agent it is. Only for a Codex
+ * that sends the thread id with each call (0.123 or later); an older or
+ * unknown one keeps its entry. Never stops the install.
+ */
+async function codexEntryStep(deps: AdapterDeps, notes: string[]) {
+  if (deps.hub === undefined) return;
+  try {
+    const io = cxEntryIo(deps);
+    const pending = pendingCxEntry(io, deps.hub);
+    if (pending === undefined) {
+      // Already ours, or none: bring an earlier proxy entry up to date.
+      notes.push(...installCxEntry(io, deps.hub).notes);
+      return;
+    }
+    if ("note" in pending) {
+      notes.push(pending.note);
+      return;
+    }
+    const bin = findCodexBin({ path: deps.env?.PATH, app: deps.codexApp });
+    const r = await run(deps, bin ?? "codex", ["--version"]);
+    const version = /(\d+\.\d+\.\d+\S*)/.exec(
+      r.code === 0 ? r.stdout : "",
+    )?.[1];
+    if (version === undefined) {
+      notes.push(
+        `left the ${pending.name} entry in ${io.file} as it is: oa-bus couldn't read this Codex's version. Its tools still work.`,
+      );
+      return;
+    }
+    if ((compareVersions(version, CODEX_MIN_VERSION) ?? -1) < 0) {
+      notes.push(
+        `left the ${pending.name} entry in ${io.file} as it is: Codex needs ${CODEX_MIN_VERSION.replace(/\.0$/, "")} or later to show as its own session on pages. Its tools still work.`,
+      );
+      return;
+    }
+    notes.push(...installCxEntry(io, deps.hub).notes);
+  } catch (e) {
+    notes.push(
+      `could not set up the Open Artifacts entry in Codex's config: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+const piEntryIo = (deps: AdapterDeps): PiEntryIo => ({
+  file: paths(deps).piMcp,
+  moved: paths(deps).piEntry,
+  write: writeAtomic,
+});
+
+/**
+ * #1856: the instance's /mcp entry leaves Pi's mcp.json, so the extension can
+ * register it with the session's proof (Pi lets an mcp.json entry beat a
+ * registered server). Only for a Pi that has `registerMcpServer`, so an older
+ * one keeps its entry. Never stops the install.
+ */
+async function piEntry(deps: AdapterDeps, notes: string[]) {
+  if (deps.hub === undefined) return;
+  try {
+    const io = piEntryIo(deps);
+    const name = pendingEntry(io, deps.hub);
+    if (name === undefined) return;
+    // omp may read this same folder, and has no registerMcpServer: it would lose its tools.
+    if (sharedFile(deps) && hasOmp(deps)) {
+      notes.push(
+        `left the ${name} entry in ${io.file} as it is: oh-my-pi reads the same file, and moving the entry would take its tools away. Pi won't show as its own session on pages.`,
+      );
+      return;
+    }
+    const r = await run(deps, "pi", ["--version"]);
+    const version = r.code === 0 ? r.stdout.trim().split(/\s+/)[0] : undefined;
+    if (
+      version === undefined ||
+      (compareVersions(version, PI_MIN_VERSION) ?? -1) < 0
+    ) {
+      notes.push(
+        `left the ${name} entry in ${io.file} as it is: Pi needs ${PI_MIN_VERSION} or later to show as its own session on pages. Its tools still work.`,
+      );
+      return;
+    }
+    moveEntry(io, deps.hub);
+  } catch (e) {
+    notes.push(
+      `could not set up the Open Artifacts entry in Pi's mcp.json: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+/**
+ * #1856: tells omp's extension which origin is the instance, so its fetch wrap
+ * adds the proof header to that origin's /mcp and nothing else. Never stops the install.
+ */
+function ompOrigin(deps: AdapterDeps, notes: string[]) {
+  if (deps.hub === undefined) return;
+  try {
+    writeAtomic(
+      paths(deps).ompOrigin,
+      `${JSON.stringify({ origin: new URL(deps.hub).origin })}\n`,
+      0o600,
+    );
+  } catch (e) {
+    notes.push(
+      `could not write ${paths(deps).ompOrigin}: ${e instanceof Error ? e.message : String(e)}. oh-my-pi will not show as its own session on pages; its tools still work.`,
+    );
+  }
+}
+
+const proofIo = (deps: AdapterDeps): ProofIo => ({
+  file: paths(deps).claude,
+  record: paths(deps).record,
+  write: writeAtomic,
+});
+
 const firstLine = (s: string) => s.trim().split("\n")[0] ?? "";
 
 const RESTART_FAILED = "opencode service restart failed";
@@ -432,7 +672,10 @@ const install: Record<Harness, Step> = {
       "mcp",
       "claude",
     ]);
-    if (add.code === 0) return "done";
+    if (add.code === 0) {
+      claudeProof(deps, notes);
+      return "done";
+    }
     const path = paths(deps).claude;
     const doc = readDoc(path);
     save(
@@ -448,6 +691,7 @@ const install: Record<Harness, Step> = {
     notes.push(
       `claude mcp add failed (${firstLine(add.stderr)}); wrote ${path} directly`,
     );
+    claudeProof(deps, notes);
     return "done";
   },
 
@@ -502,22 +746,33 @@ const install: Record<Harness, Step> = {
       isDeepStrictEqual(servers(d)?.[NAME], server),
     );
     saveText(p.opencodeCli, cli, nextCli, (d) => listed(d, p.opencodePlugin));
+    // #1856: never stops the install; the entry just stays as it was.
+    if (deps.hub !== undefined)
+      try {
+        notes.push(...installOcEntry(ocEntryIo(deps), deps.hub).notes);
+      } catch (e) {
+        notes.push(
+          `could not set up the Open Artifacts entry in OpenCode's config: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
     await restartOpencode(deps, notes);
     return "done";
   },
 
-  async pi(deps) {
+  async pi(deps, notes) {
     if (!deps.which("pi")) return "absent";
     writeAtomic(
       paths(deps).pi,
       withHome(deps.assets.pi, movedHome(deps)),
       0o644,
     );
+    await piEntry(deps, notes);
     return "done";
   },
 
-  async omp(deps, _notes, done) {
+  async omp(deps, notes, done) {
     if (!hasOmp(deps)) return "absent";
+    ompOrigin(deps, notes);
     // Pi's step just wrote the one file both load.
     if (sharedFile(deps) && done.includes("pi")) return "done";
     writeAtomic(
@@ -555,6 +810,7 @@ const install: Record<Harness, Step> = {
       rmSync(p.codexBin, { force: true });
       notes.push(CODEX_NO_BIN);
     }
+    await codexEntryStep(deps, notes);
     return "done";
   },
 
@@ -562,12 +818,25 @@ const install: Record<Harness, Step> = {
   async hermes(deps) {
     return installHermes(deps);
   },
+
+  // OpenClaw loads a native plugin folder; its own CLI installs and enables it.
+  async openclaw(deps, notes) {
+    return installOpenclaw(deps, notes, habitsOptedOut(paths(deps).busDir));
+  },
 };
 
 // Uninstall works from the files, so it also cleans up after a harness the
 // user removed first; the binaries are used only when present.
 const uninstall: Record<Harness, Step> = {
   async claude(deps, notes) {
+    // The user's entry goes back first; it is not the oa_bus entry below.
+    try {
+      uninstallProof(proofIo(deps));
+    } catch (e) {
+      notes.push(
+        `could not take the proof helper off the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
     if (deps.which("claude")) {
       const r = await run(deps, "claude", [
         "mcp",
@@ -587,6 +856,17 @@ const uninstall: Record<Harness, Step> = {
 
   async opencode(deps, notes) {
     const p = paths(deps);
+    // The entry goes back first: it is the user's, and works without the proxy.
+    let restored = false;
+    try {
+      restored = restoreOcEntry(ocEntryIo(deps));
+    } catch (e) {
+      // The moved file stays, so a second uninstall can put it back.
+      notes.push(
+        `Kept ${p.opencodeEntry}: could not put the Open Artifacts entry back in OpenCode's config (${e instanceof Error ? e.message : String(e)}). Fix that file, then run uninstall again.`,
+      );
+      throw new Error("kept the proxy, the entry is still moved");
+    }
     const record = readRecord(p.record);
     // Drop what install created once it is empty again, deepest first.
     const prune = (file: string, text: string) =>
@@ -620,31 +900,54 @@ const uninstall: Record<Harness, Step> = {
     writeRecord(p.record, record, left);
     const hadPlugin = existsSync(p.opencodePlugin);
     rmSync(p.opencodePlugin, { recursive: true, force: true });
-    if (!saved.some(Boolean) && !hadPlugin) return "none";
+    if (!saved.some(Boolean) && !hadPlugin && !restored) return "none";
     if (deps.which("opencode")) await restartOpencode(deps, notes);
     // No config named Open Artifacts bus any more: only our plugin folder was left.
-    return saved.some(Boolean) ? "done" : "folder";
+    return saved.some(Boolean) || restored ? "done" : "folder";
   },
 
-  async pi(deps) {
+  async pi(deps, notes) {
+    // The entry goes back first: it is the user's, and works without the extension.
+    const io = piEntryIo(deps);
+    let restored = false;
+    try {
+      restored = restoreEntry(io);
+    } catch (e) {
+      // The extension and the moved file stay, so Pi keeps its Open Artifacts tools.
+      notes.push(
+        `Kept the Pi extension and ${io.moved}: could not put the Open Artifacts entry back in ${io.file} (${e instanceof Error ? e.message : String(e)}). Fix that file, then run uninstall again.`,
+      );
+      throw new Error("kept the extension, the entry is still moved");
+    }
     const path = paths(deps).pi;
-    if (!existsSync(path)) return "none";
+    if (!existsSync(path)) return restored ? "done" : "none";
     rmSync(path, { force: true });
     return "done";
   },
 
   async omp(deps, _notes, done) {
-    // Pi's step removed the one file both loaded.
+    rmSync(paths(deps).ompOrigin, { force: true });
+    // Pi's step removed the one file both loaded, or kept it for the entry it could not put back.
     if (sharedFile(deps) && done.includes("pi")) return "done";
+    if (sharedFile(deps) && existsSync(paths(deps).piEntry)) return "none";
     const path = paths(deps).omp;
     if (!existsSync(path)) return "none";
     rmSync(path, { force: true });
     return "done";
   },
 
-  async codex(deps) {
+  async codex(deps, notes) {
     const p = paths(deps);
     let saved = false;
+    // The user's entry goes back first: it is theirs, and works without us.
+    try {
+      saved = restoreCxEntry(cxEntryIo(deps));
+    } catch (e) {
+      notes.push(
+        `Kept ${p.codexEntry}: could not put the Open Artifacts entry back in ${p.codex} (${e instanceof Error ? e.message : String(e)}). Fix that file, then run uninstall again.`,
+      );
+      throw new Error("kept the entry, it is still swapped");
+    }
     if (present(p.codex)) {
       const { text, doc } = readToml(p.codex);
       const next = removeCodexEntry(p.codex, text, doc);
@@ -661,6 +964,10 @@ const uninstall: Record<Harness, Step> = {
 
   async hermes(deps, notes) {
     return uninstallHermes(deps, notes);
+  },
+
+  async openclaw(deps, notes) {
+    return uninstallOpenclaw(deps, notes);
   },
 };
 
@@ -689,6 +996,19 @@ async function each(
   return { done, folder, absent, skipped };
 }
 
+/** Notes the commands do not already show with their own line (a flag of the result). */
+export const unshownNotes = (notes: string[]) =>
+  notes.filter(
+    (n) =>
+      n !== CODEX_NO_BIN &&
+      n !== HERMES_NO_CLI &&
+      n !== OPENCLAW_NO_CLI &&
+      n !== OPENCLAW_NIX &&
+      // The service line says it, and the removal is already in "Removed from".
+      !n.startsWith(RESTART_FAILED) &&
+      !n.startsWith("removed oa_bus from "),
+  );
+
 /** Registers Open Artifacts bus with every harness on PATH; a broken one is skipped, never clobbered. */
 export async function installAdapters(
   deps: AdapterDeps,
@@ -708,6 +1028,8 @@ export async function installAdapters(
       : {}),
     codexNoWake: done.includes("codex") && notes.includes(CODEX_NO_BIN),
     hermesRestart: done.includes("hermes"),
+    openclawRestart: done.includes("openclaw"),
+    openclawNix: notes.includes(OPENCLAW_NIX),
   };
 }
 
@@ -727,7 +1049,27 @@ export async function uninstallAdapters(
       deps.which("opencode") &&
       !notes.some((n) => n.startsWith(RESTART_FAILED)),
     hermesNoCli: notes.includes(HERMES_NO_CLI),
+    openclawNoCli: notes.includes(OPENCLAW_NO_CLI),
+    openclawNix: notes.includes(OPENCLAW_NIX),
   };
+}
+
+/**
+ * Read-only (#1856): a proxy entry in OpenCode's config whose program is gone,
+ * so the user's Open Artifacts tools in OpenCode would not start.
+ */
+export function opencodeProxyProblem(
+  deps: Pick<AdapterDeps, "home" | "env" | "which"> & { busHome?: string },
+): { name: string; missing: string } | undefined {
+  const p = paths(deps as AdapterDeps);
+  for (const f of p.opencodeConfigs.filter(present))
+    try {
+      for (const { name, entry } of proxyEntries(readFileSync(f, "utf8"))) {
+        const missing = proxyProgramMissing(entry, undefined, deps.which);
+        if (missing !== undefined) return { name, missing };
+      }
+    } catch {}
+  return undefined;
 }
 
 export type AdapterState = "configured" | "missing" | "absent";
@@ -737,6 +1079,8 @@ export function checkAdapters(
   deps: Pick<AdapterDeps, "home" | "busHome" | "env" | "which" | "codexApp"> & {
     /** The shipped Hermes plugin folder to compare with; the package's own by default. */
     hermesPlugin?: string;
+    /** The shipped OpenClaw plugin folder to compare with; the package's own by default. */
+    openclawPlugin?: string;
     /** The argv entries run, when known without writing: Codex's command is compared too. */
     busBin?: string[];
   },
@@ -767,7 +1111,10 @@ export function checkAdapters(
       ? hasOmp(deps)
       : h === "codex"
         ? codexHere(deps)
-        : deps.which(h))
+        : h === "openclaw"
+          ? // Plugin commands are off in Nix mode: nothing here to wire.
+            deps.which(h) && !openclawNix(deps.env)
+          : deps.which(h))
       ? "absent"
       : safely(ok)
         ? "configured"
@@ -817,5 +1164,27 @@ export function checkAdapters(
           deps.hermesPlugin ?? HERMES_PLUGIN,
         ) === "current",
     ),
+    // Files only: whether OpenClaw lists it as enabled and loaded is openclawVerify's.
+    openclaw: state(
+      "openclaw",
+      () =>
+        openclawPluginState(
+          openclawPluginDir(deps.home, deps.env ?? {}),
+          deps.openclawPlugin ?? OPENCLAW_PLUGIN,
+        ) === "current",
+    ),
   };
+}
+
+/** #1856: the Codex proxy entry's program is gone (oa-bus moved or removed). */
+export function codexProxyProblem(
+  deps: Pick<AdapterDeps, "home" | "env" | "which"> & { busHome?: string },
+): { name: string; missing: string } | undefined {
+  const p = paths(deps as AdapterDeps);
+  if (!present(p.codex)) return undefined;
+  try {
+    return cxProxyProgramMissing(readToml(p.codex).doc, deps.which);
+  } catch {
+    return undefined;
+  }
 }

@@ -141,7 +141,10 @@ ADAPTER_TYPES = (
     "follow",
     "unfollow",
     "following",
+    "link_proof",
 )
+
+_PROOF_HASH = re.compile(r"[0-9a-f]{64}")
 
 
 def check_adapter_frame(frame):
@@ -167,6 +170,7 @@ def check_adapter_frame(frame):
             and all(_is_str(c, 0, 32) for c in v),
             "up to 16 short strings",
         )
+        _opt(frame, "bind_token", lambda v: _is_str(v, 16, 128), "16 to 128 chars")
         if "attest" in frame:
             a = frame["attest"]
             if not isinstance(a, dict):
@@ -202,6 +206,18 @@ def check_adapter_frame(frame):
             lambda v: _is_str(v, 1, 2048) and well_formed(v),
             "a well-formed artifact id or link",
         )
+    elif t == "link_proof":
+        # #1856: the hash of this root's proof, on its own link. It names no pid
+        # and no agent: the daemon binds it to the agent this link's hello attested.
+        _need(
+            frame,
+            "hash",
+            lambda v: isinstance(v, str) and _PROOF_HASH.fullmatch(v) is not None,
+            "a sha256 hex",
+        )
+        extra = set(frame) - {"v", "id", "type", "hash"}
+        if extra:
+            _fail(f"link_proof: unexpected {sorted(extra)[0]}")
     elif t == "self":
         if "row" in frame and frame["row"] is not True:
             _fail("row: expected true")
@@ -225,6 +241,7 @@ DAEMON_TYPES = (
     "followed",
     "unfollowed",
     "follows",
+    "link_proofed",
 )
 
 
@@ -321,6 +338,8 @@ def parse_daemon_frame(frame):
             ),
             "a list of follows",
         )
+    elif t == "link_proofed":
+        _need(frame, "bound", lambda v: isinstance(v, bool), "a boolean")
     elif t == "status_set":
         _opt(
             frame,

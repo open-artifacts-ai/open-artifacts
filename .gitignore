@@ -18,7 +18,8 @@ apps/server/src/mcp/tool-manifest.json
 !.env.example
 .dev.vars*
 coverage/
-.claude/
+.claude/*
+!.claude/settings.json
 .astro/
 test-results/
 playwright-report/

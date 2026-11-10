@@ -1,6 +1,5 @@
 import type {
   ArtifactAgent,
-  CommentAssigned,
   CommentMention,
   Comment as CommentT,
   CommentThread,
@@ -8,18 +7,22 @@ import type {
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useEffect, useId, useState } from "react";
-import { answerError, useAnswerAsk } from "../../api/comments";
+import {
+  answerError,
+  useAnswerAsk,
+  useCommentErrorCtx,
+} from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
+import { linkify } from "./linkify";
 
 const MUTED = "text-muted-foreground";
 
 /** What the composer sends beyond the text. */
-export type Extras = { mentions: KeyRef[]; assign?: KeyRef };
+export type Extras = { mentions: KeyRef[] };
 
 export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
-  ...(x.assign ? { assign: x.assign } : {}),
 });
 
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
@@ -34,6 +37,31 @@ export function asksForMe(threads: readonly CommentThread[]): string[] {
     .map((t) => t.id);
 }
 
+/**
+ * The next unanswered ask for the viewer after `fromId`, in page order (whole-page
+ * asks, then by position, then earlier text), wrapping. Never `fromId` itself.
+ */
+export function nextAskFor(
+  api: {
+    ordered: readonly CommentThread[];
+    orphans: readonly CommentThread[];
+  },
+  fromId: string | null,
+  opts: { includeSelf?: boolean } = {},
+): string | undefined {
+  const all = [...api.ordered, ...api.orphans];
+  const order = all.map((t) => t.id);
+  const pending = new Set(asksForMe(all));
+  const at = fromId ? order.indexOf(fromId) : -1;
+  const next = [...order.slice(at + 1), ...order.slice(0, Math.max(at, 0))]
+    .filter((id) => id !== fromId)
+    .find((id) => pending.has(id));
+  return (
+    next ??
+    (opts.includeSelf && fromId && pending.has(fromId) ? fromId : undefined)
+  );
+}
+
 const OFFLINE = "offline · it will get this when it's back";
 
 /** "Codex is offline · it will get this when it's back", "Claude Code: Delivered". */
@@ -43,14 +71,9 @@ const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
     : d === "gone"
       ? `${name} is gone · mention another agent`
       : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
-const assignedLine = (name: string, st: CommentAssigned["state"]) =>
-  st === "queued"
-    ? `Assigned to ${name}, who is ${OFFLINE}`
-    : `Assigned to ${name}: ${st === "done" ? "Done" : st === "seen" ? "Seen" : "Delivered"}`;
-
-/** Delivery of each mention and the assignment, in plain words. Names are text, never HTML. */
+/** Delivery of each mention, in plain words. Names are text, never HTML. */
 export function Delivery({ c }: { c: CommentT }) {
-  if (!c.mentions?.length && !c.assigned) return null;
+  if (!c.mentions?.length) return null;
   return (
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>
       {c.mentions?.map((m) => (
@@ -58,16 +81,23 @@ export function Delivery({ c }: { c: CommentT }) {
           {deliveryLine(m.name, m.delivery)}
         </li>
       ))}
-      {c.assigned && (
-        <li data-assigned={c.assigned.key}>
-          {assignedLine(c.assigned.name, c.assigned.state)}
-        </li>
-      )}
     </ul>
   );
 }
 
+/** Who did it, in words: "you" for the viewer's own act, never for their agent
+    (#1789: an owner's token answers with \`me\` set), and "<name> (agent)" for an agent. */
+export const actor = (
+  a: { kind: string; name: string; me: boolean },
+  you: string,
+) => (a.kind === "agent" ? `${a.name} (agent)` : a.me ? you : a.name);
+
 const letter = (i: number) => String.fromCharCode(65 + i);
+/** Letters are shown unless every option's id already equals its label ("yes"/"Yes"). */
+const showLetters = (opts: { id: string; label: string }[]) =>
+  !opts.every(
+    (o) => o.id.trim().toLowerCase() === o.label.trim().toLowerCase(),
+  );
 
 /** The ask on a comment: question, options, recommendation, and the answer buttons for those it is addressed to. */
 export function AskBlock({
@@ -76,6 +106,7 @@ export function AskBlock({
   c,
   next,
   reply,
+  askQuestion,
 }: {
   artifactId: string;
   thread: CommentThread;
@@ -84,10 +115,13 @@ export function AskBlock({
   next?: () => void;
   /** Open this thread's reply composer, when the viewer may comment. */
   reply?: () => void;
+  /** Open a question to the agent that asked (#1794), when the viewer may reply. */
+  askQuestion?: () => void;
 }) {
   const ask = c.ask;
   const answer = useAnswerAsk(artifactId);
   const [err, setErr] = useState<unknown>(null);
+  const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
   const qid = useId();
@@ -103,6 +137,7 @@ export function AskBlock({
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
+  const letters = showLetters(ask.options);
   const locked = !!pickedOpt && !changing;
   const decided = ask.closed && pickedOpt;
   const line = decided && (
@@ -118,7 +153,8 @@ export function AskBlock({
           {ask.question.trimEnd().endsWith("?")
             ? `${ask.question} `
             : `${ask.question}: `}
-          {pickedOpt.label} · {ask.answer?.by.me ? "you" : ask.answer?.by.name},{" "}
+          {letters ? `${letter(pickedIdx)}, ` : ""}
+          {pickedOpt.label} · {ask.answer ? actor(ask.answer.by, "you") : ""},{" "}
           {versionDate(ask.answer?.at ?? "")}
         </span>
         <span className="shrink-0 font-semibold">
@@ -153,7 +189,7 @@ export function AskBlock({
           {/* The card's own header already names the asker and the time. */}
           <p className={`${TXT} ${MUTED}`}>Ask</p>
           <p id={qid} className={`${TXT} font-semibold break-words`}>
-            {ask.question}
+            {linked(ask.question, 0)}
           </p>
           <ul
             aria-labelledby={qid}
@@ -185,12 +221,14 @@ export function AskBlock({
                       );
                     }}
                   >
-                    <span
-                      data-option-key=""
-                      className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
-                    >
-                      {letter(i)}
-                    </span>
+                    {letters && (
+                      <span
+                        data-option-key=""
+                        className="mt-0.5 shrink-0 rounded bg-[var(--oa-accent-soft)] px-1.5 font-mono text-[length:var(--oa-text-xs)] font-semibold"
+                      >
+                        {letter(i)}
+                      </span>
+                    )}
                     <span className="min-w-0 flex-1 break-words">
                       <b>{o.label}</b>
                       {rec && (
@@ -218,8 +256,9 @@ export function AskBlock({
           )}
           {ask.answer && pickedOpt && (
             <p className={`${TXT} font-medium`} data-ask-answer="">
-              {ask.answer.by.me ? "You" : ask.answer.by.name} picked{" "}
-              {letter(pickedIdx)} · {versionDate(ask.answer.at)}
+              {actor(ask.answer.by, "You")} picked{" "}
+              {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
+              {versionDate(ask.answer.at)}
               {ask.closed ? " · closed" : ""}
               {canAnswer && locked && (
                 <>
@@ -243,10 +282,15 @@ export function AskBlock({
           )}
           {err != null && (
             <p role="alert" className={`${TXT} text-destructive`}>
-              {answerError(err)}
+              {answerError(err, errCtx)}
             </p>
           )}
           <div className="flex gap-2">
+            {askQuestion && !pickedOpt && !ask.closed && (
+              <Button size="xs" variant="outline" onClick={askQuestion}>
+                Ask a question
+              </Button>
+            )}
             {next && canAnswer && (
               <Button size="xs" variant="outline" onClick={next}>
                 Next ask ↓
@@ -286,7 +330,7 @@ export function matchAgents(
     )
   )
     return null;
-  return agents.filter((a) => a.name.toLowerCase().includes(q));
+  return sortAgents(agents.filter((a) => a.name.toLowerCase().includes(q)));
 }
 
 const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -319,14 +363,217 @@ export function mentionedKeys(
   return keys;
 }
 
+const MENTION_END = "(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))";
+
+/** Drops every `@name` that `mentionedKeys` would count (same boundary), with a
+    trailing `'s` and the space before it. An `@name` that is the start of a longer agent's
+    name is left alone. */
+export function removeMention(
+  text: string,
+  name: string,
+  agents: readonly ArtifactAgent[] = [],
+): string {
+  const longer = agents
+    .filter(
+      (a) =>
+        a.name.length > name.length &&
+        a.name.toLowerCase().startsWith(name.toLowerCase()),
+    )
+    .map((a) => new RegExp(`^@${esc(a.name)}${MENTION_END}`, "i"));
+  const re = new RegExp(
+    `(^|\\s)@${esc(name)}${MENTION_END}(?:['\u2019]s)?`,
+    "gi",
+  );
+  let atStart = false;
+  const out = text.replace(re, (m, lead: string, at: number) => {
+    if (longer.some((l) => l.test(text.slice(at + lead.length)))) return m;
+    if (at === 0) atStart = true;
+    // The space before it goes too, so "hi @Bob." leaves "hi." and
+    // "a @Bob b" leaves "a b"; the space after stays for the next match. A
+    // line break before it stays, so lines are not joined.
+    return /[\r\n]/.test(lead) ? lead : "";
+  });
+  return atStart ? out.trimStart() : out;
+}
+
+/** A posted body with each `@name` from its mentions as a chip. Text spans only,
+    never HTML; a body with no mentions is the plain string. */
+export function MentionedText({
+  body,
+  mentions,
+}: {
+  body: string;
+  mentions?: readonly { key: string; name: string }[];
+}) {
+  if (!mentions?.length) return <>{linked(body, 0)}</>;
+  const names = [...new Set(mentions.map((m) => m.name))]
+    .sort((x, y) => y.length - x.length)
+    .map(esc);
+  const re = new RegExp(`(^|\\s)@(${names.join("|")})${MENTION_END}`, "gi");
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of body.matchAll(re)) {
+    const at = m.index + (m[1]?.length ?? 0);
+    const end = at + 1 + (m[2]?.length ?? 0);
+    if (at > last) out.push(...linked(body.slice(last, at), last));
+    out.push(
+      <span
+        key={at}
+        data-mention-chip=""
+        className="rounded-full bg-[var(--oa-accent-soft)] px-1 py-0.5 text-[var(--oa-accent-fg)]"
+      >
+        {body.slice(at, end)}
+      </span>,
+    );
+    last = end;
+  }
+  if (last === 0) return <>{linked(body, 0)}</>;
+  if (last < body.length) out.push(...linked(body.slice(last), last));
+  return <>{out}</>;
+}
+
+/** Plain text with its http(s) URLs as links that open in a new tab. */
+function linked(text: string, base: number): React.ReactNode[] {
+  let at = base;
+  return linkify(text).map((p) => {
+    const key = at;
+    at += p.text.length;
+    return p.url ? (
+      <a
+        key={key}
+        href={p.text}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="break-all underline"
+      >
+        {p.text}
+      </a>
+    ) : (
+      p.text
+    );
+  });
+}
+
+/** Who gets notified: the mentioned agents. */
+export function notifyNames(
+  text: string,
+  agents: readonly ArtifactAgent[],
+): string[] {
+  const keys = new Set(mentionedKeys(text, agents));
+  return agents.filter((a) => keys.has(a.key)).map((a) => a.name);
+}
+
+/** The picked mentions as removable chips, and the "Will notify" line. */
+export function MentionChips({
+  text,
+  agents,
+  onRemove,
+}: {
+  text: string;
+  agents: readonly ArtifactAgent[];
+  onRemove: (a: ArtifactAgent) => void;
+}) {
+  const keys = mentionedKeys(text, agents);
+  const chips = agents.filter((a) => keys.includes(a.key));
+  const names = notifyNames(text, agents);
+  return (
+    <div aria-live="polite" className={`flex flex-col gap-1 ${TXT}`}>
+      {names.length > 0 && chips.length > 0 && (
+        <ul className="m-0 flex list-none flex-wrap gap-1 p-0">
+          {chips.map((a) => (
+            <li
+              key={a.key}
+              data-chip={a.key}
+              className="inline-flex items-center gap-1 rounded-full bg-[var(--oa-accent-soft)] py-0.5 pr-1 pl-2 text-[var(--oa-accent-fg)]"
+            >
+              @{a.name}
+              <button
+                type="button"
+                aria-label={`Remove mention of ${a.name}`}
+                className="inline-flex min-h-6 min-w-6 items-center justify-center rounded-full leading-none hover:bg-background/60"
+                onClick={() => onRemove(a)}
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {names.length > 0 && (
+        <p className={`m-0 ${MUTED}`}>Will notify {names.join(", ")}</p>
+      )}
+    </div>
+  );
+}
+
+const isOnline = (a: ArtifactAgent) =>
+  a.state === "online" || (a.state === undefined && a.online);
+
+const isUnknown = (a: ArtifactAgent) => a.state === undefined && !a.online;
+const rankOf = (a: ArtifactAgent) => (isOnline(a) ? 0 : isUnknown(a) ? 2 : 1);
+
+/** Online first, then away, then agents with no state (the bus did not answer); each alphabetical. */
+export function sortAgents(agents: readonly ArtifactAgent[]): ArtifactAgent[] {
+  return [...agents].sort(
+    (x, y) =>
+      rankOf(x) - rankOf(y) ||
+      x.name.localeCompare(y.name, "en", { sensitivity: "base" }),
+  );
+}
+
+/** "OA Manager-2" and "OA Manager (Sam)" both have the stem "oa manager". */
+const stemOf = (name: string) =>
+  name
+    .replace(/ \([^)]*\)$/, "")
+    .replace(/-\d+$/, "")
+    .toLowerCase();
+
+/** "19h", "5m", "3d": how long ago an away session was last active. */
+function ago(iso: string | null | undefined, now = Date.now()): string {
+  const t = iso ? Date.parse(iso) : Number.NaN;
+  if (Number.isNaN(t)) return "";
+  const m = Math.max(0, Math.round((now - t) / 60_000));
+  if (m < 60) return `${m}m`;
+  if (m < 48 * 60) return `${Math.floor(m / 60)}h`;
+  return `${Math.floor(m / 1440)}d`;
+}
+
+/**
+ * "online" or "away 19h" for the viewer's own agent, with the machine after a
+ * dot when the name stem repeats among their own agents. Another member's
+ * agent leads with its owner and shows the state alone: "online · Sam's".
+ */
+function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
+  // No state at all: the bus did not answer, so nothing is claimed (an empty column; "Sam's" alone for another member's).
+  if (a.state === undefined && !a.online && !a.owner) return "";
+  if (a.owner && a.state === undefined && !a.online) return `${a.owner}'s`;
+  if (a.owner) return `${isOnline(a) ? "online" : "away"} \u00b7 ${a.owner}'s`;
+  const head = isOnline(a)
+    ? "online"
+    : ["away", ago(a.lastActiveAt)].filter(Boolean).join(" ");
+  const stem = stemOf(a.name);
+  const repeats =
+    all.filter((o) => !o.owner && stemOf(o.name) === stem).length > 1;
+  return repeats && a.machine ? `${head} \u00b7 ${a.machine}` : head;
+}
+
+/** The row's name: the bare agent name when the status line already names the owner ("Sam's"). */
+const rowName = (a: ArtifactAgent) =>
+  a.owner && a.name.endsWith(` (${a.owner})`)
+    ? a.name.slice(0, -` (${a.owner})`.length)
+    : a.name;
+
 export function MentionMenu({
   id,
   matches,
+  all = matches,
   active,
   onPick,
 }: {
   id: string;
   matches: readonly ArtifactAgent[];
+  /** Every agent on the menu's roster: a machine shows on rows whose name stem repeats among these. */
+  all?: readonly ArtifactAgent[];
   active: number;
   onPick: (a: ArtifactAgent) => void;
 }) {
@@ -349,15 +596,25 @@ export function MentionMenu({
             role="option"
             tabIndex={-1}
             aria-selected={i === active}
-            className={`flex w-full cursor-pointer items-center gap-2 px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:bg-muted`}
+            className={`flex w-full cursor-pointer items-center gap-2 border-l-[3px] border-transparent px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:border-[var(--oa-accent)] aria-selected:bg-[var(--oa-accent-soft)]`}
             // Picked on mouse down so the textarea keeps focus; the keys are on the textarea.
             onMouseDown={(e) => {
               e.preventDefault();
               onPick(a);
             }}
           >
-            <b className="min-w-0 flex-1 truncate">{a.name}</b>
-            <span className={MUTED}>{a.online ? "online" : "offline"}</span>
+            {!isUnknown(a) && (
+              <span
+                aria-hidden="true"
+                className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
+              />
+            )}
+            <b
+              className={`min-w-0 flex-1 truncate ${a.state === "away" ? MUTED : ""}`}
+            >
+              {rowName(a)}
+            </b>
+            <span className={MUTED}>{stateText(a, all)}</span>
           </div>
         ))
       )}
