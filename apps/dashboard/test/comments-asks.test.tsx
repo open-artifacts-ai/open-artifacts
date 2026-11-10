@@ -871,13 +871,11 @@ describe("the @ menu rows (per-session state, order, machine, selection)", () =>
       ...MENU,
     ];
     open(matchAgents(theirs, "oa") ?? []);
-    expect(
-      screen.getByRole("option", {
-        name: /OA Manager \(Sam\).*Sam's · online$/,
-      }),
-    ).toBeInTheDocument();
-    const away = screen.getByRole("option", { name: /OA Manager-2 \(Sam\)/ });
-    expect(away.textContent).toMatch(/Sam's · away$/);
+    const row = screen.getByRole("option", { name: /Sam's · online$/ });
+    // The owner shows once, in the status: the row's name is the bare agent name.
+    expect(row.querySelector("b")?.textContent).toBe("OA Manager");
+    const away = screen.getByRole("option", { name: /Sam's · away$/ });
+    expect(away.querySelector("b")?.textContent).toBe("OA Manager-2");
     expect(away.textContent).not.toMatch(/\d+[mhd]|laptop|workstation/);
     // A stem repeating only against someone else's agent adds no machine.
     expect(

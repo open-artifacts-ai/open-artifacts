@@ -551,6 +551,12 @@ function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
   return repeats && a.machine ? `${head} \u00b7 ${a.machine}` : head;
 }
 
+/** The row's name: the bare agent name when the status line already names the owner ("Sam's"). */
+const rowName = (a: ArtifactAgent) =>
+  a.owner && a.name.endsWith(` (${a.owner})`)
+    ? a.name.slice(0, -` (${a.owner})`.length)
+    : a.name;
+
 export function MentionMenu({
   id,
   matches,
@@ -598,7 +604,7 @@ export function MentionMenu({
             <b
               className={`min-w-0 flex-1 truncate ${isOnline(a) ? "" : MUTED}`}
             >
-              {a.name}
+              {rowName(a)}
             </b>
             <span className={MUTED}>{stateText(a, all)}</span>
           </div>
