@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import {
   basename,
   dirname,
@@ -184,10 +184,17 @@ function pinRemote(
   try {
     realCwd = realpathSync(cwd);
   } catch {}
+  // Only of the same repo (same real git common dir): a recorded parent
+  // folder holding an independent nested repo is not a prior of it.
+  const here = commonOf(cwd, cwd, deps);
   const priors = list.entries.filter(
-    (e) => roots.some((r) => sameDir(e.dir, r)) || contains(e.dir, realCwd),
+    (e) =>
+      roots.some((r) => sameDir(e.dir, r)) ||
+      (contains(e.dir, realCwd) &&
+        here !== null &&
+        commonOf(e.dir, e.dir, deps) === here),
   );
-  const odd = oddGit(rootPath, cwd, deps);
+  const odd = oddGit(rootPath, cwd);
   // A prior under either key that disagrees holds the change: the checkout
   // controls its git common dir, so that key alone is not enough.
   const prior = priors.find((e) => e.namespace !== derived) ?? priors[0];
@@ -285,35 +292,27 @@ function contains(dir: string, path: string): boolean {
   return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
-/**
- * True when git's answers cannot be trusted to place the checkout: the top
- * level does not hold the cwd, or the common dir is neither the top level's
- * own .git nor a .git that lists the top level as a linked worktree.
- */
-function oddGit(root: string, cwd: string, deps: NamespaceDeps): boolean {
+/** The real path of the git common dir `git` gives for `dir`; null if none. */
+function commonOf(
+  dir: string,
+  base: string,
+  deps: NamespaceDeps,
+): string | null {
   let common: string | null = null;
-  if (deps.gitCommonDir) common = deps.gitCommonDir(cwd);
-  else if (!deps.gitRoot) common = gitCommonDir(cwd);
+  if (deps.gitCommonDir) common = deps.gitCommonDir(dir);
+  else if (!deps.gitRoot) common = gitCommonDir(dir);
+  if (!common) return null;
   try {
-    const top = realpathSync(root);
-    if (!contains(top, realpathSync(cwd))) return true;
-    if (!common) return false;
-    let c: string;
-    try {
-      c = realpathSync(resolve(cwd, common));
-    } catch {
-      return false;
-    }
-    if (c === join(top, ".git")) return false;
-    if (basename(c) !== ".git") return true;
-    const wt = join(c, "worktrees");
-    for (const n of readdirSync(wt)) {
-      try {
-        const g = readFileSync(join(wt, n, "gitdir"), "utf8").trim();
-        if (realpathSync(g) === join(top, ".git")) return false;
-      } catch {}
-    }
-    return true;
+    return realpathSync(resolve(base, common));
+  } catch {
+    return null;
+  }
+}
+
+/** True when git's top level does not hold the cwd: its answers misplace the checkout. */
+function oddGit(root: string, cwd: string): boolean {
+  try {
+    return !contains(realpathSync(root), realpathSync(cwd));
   } catch {
     return true;
   }

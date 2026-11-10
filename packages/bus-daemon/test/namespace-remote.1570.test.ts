@@ -1,4 +1,5 @@
 // #1570: a git remote derives the namespace only as first recorded; a change needs the #1525 approval.
+import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
@@ -268,47 +269,127 @@ describe("a checkout that lies about where it is (#1570)", () => {
     common: string,
   ) => t.deps({ gitRoot: () => fresh, gitCommonDir: () => common });
 
-  it("holds a change when the work tree and git dir both point away from the cwd", () => {
-    const t = setup();
-    resolveNamespace(t.root, t.deps());
-    const fresh = tmp();
-    t.setUrl("git@github.com:victim/secrets.git");
-    const issues = new ConfigIssues();
-    const ns = resolveNamespace(t.root, {
-      ...redirected(t, fresh, join(t.root, ".git2")),
-      issues,
-    });
-    expect(ns.namespace).toBe("github.com/acme/app");
-    expect(issues.list(undefined, { pending: true })).toHaveLength(1);
-  });
-
-  it("holds it from a subfolder of the recorded repo", () => {
-    const t = setup();
-    resolveNamespace(t.root, t.deps());
-    const sub = join(t.root, "a", "b");
-    mkdirSync(sub, { recursive: true });
-    t.setUrl("git@github.com:victim/secrets.git");
-    const ns = resolveNamespace(
-      sub,
-      redirected(t, tmp(), join(t.root, ".git2")),
-    );
-    expect(ns.namespace).toBe("github.com/acme/app");
-  });
-
   it("records nothing under a work tree that does not hold the cwd", () => {
     const t = setup();
     const fresh = tmp();
     resolveNamespace(t.root, redirected(t, fresh, join(fresh, ".git")));
     expect(readRemotes(t.remotes).entries).toEqual([]);
   });
+});
 
-  it("takes effect only with an approval for the recorded folder", () => {
-    const t = setup();
-    resolveNamespace(t.root, t.deps());
-    t.setUrl("git@github.com:victim/secrets.git");
-    const deps = redirected(t, tmp(), join(t.root, ".git2"));
-    expect(resolveNamespace(t.root, deps).namespace).toBe(
+describe("which repo a prior belongs to (#1570)", () => {
+  const g = (cwd: string, ...a: string[]) =>
+    execFileSync("git", ["-c", "protocol.file.allow=always", ...a], {
+      cwd,
+      stdio: "pipe",
+    });
+  const init = (dir: string) => {
+    mkdirSync(dir, { recursive: true });
+    g(dir, "init", "-q");
+    g(
+      dir,
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@t",
+      "commit",
+      "-q",
+      "--allow-empty",
+      "-m",
+      "x",
+    );
+  };
+  const real = (extra: object = {}) => {
+    const base = tmp();
+    const remotes = join(base, "remotes.json");
+    let url = "git@github.com:acme/app.git";
+    return {
+      base,
+      remotes,
+      setUrl: (u: string) => (url = u),
+      deps: (more: object = {}) => ({
+        gitRemote: () => url,
+        remotesFile: remotes,
+        namespacesFile: approvals(),
+        ...extra,
+        ...more,
+      }),
+    };
+  };
+  const pinned = (cwd: string, t: ReturnType<typeof real>) => {
+    expect(resolveNamespace(cwd, t.deps()).namespace).toBe(
       "github.com/acme/app",
     );
+    t.setUrl("git@github.com:victim/secrets.git");
+    const issues = new ConfigIssues();
+    expect(resolveNamespace(cwd, t.deps({ issues })).namespace).toBe(
+      "github.com/acme/app",
+    );
+    expect(issues.list(undefined, { pending: true })).toHaveLength(1);
+  };
+
+  it("does not let a recorded parent capture a nested independent repo", () => {
+    const t = real();
+    const parent = join(t.base, "p");
+    init(parent);
+    resolveNamespace(parent, t.deps());
+    const child = join(parent, "child");
+    init(child);
+    t.setUrl("git@github.com:other/child.git");
+    const issues = new ConfigIssues();
+    expect(resolveNamespace(child, t.deps({ issues })).namespace).toBe(
+      "github.com/other/child",
+    );
+    expect(issues.list(undefined, { pending: true })).toHaveLength(0);
+    expect(
+      readRemotes(t.remotes).entries.find((e) => e.dir === parent),
+    ).toEqual({ dir: parent, namespace: "github.com/acme/app" });
+  });
+
+  it("pins a submodule", () => {
+    const t = real();
+    const lib = join(t.base, "lib");
+    init(lib);
+    const main = join(t.base, "main");
+    init(main);
+    g(main, "submodule", "add", "-q", lib, "sub");
+    pinned(join(main, "sub"), t);
+  });
+
+  it("pins a repo with a separate git dir", () => {
+    const t = real();
+    const w = join(t.base, "w");
+    mkdirSync(w);
+    g(w, "init", "-q", "--separate-git-dir", join(t.base, "gd"));
+    pinned(w, t);
+  });
+
+  it("pins a worktree of a bare repo kept in .bare", () => {
+    const t = real();
+    const src = join(t.base, "src");
+    init(src);
+    const top = join(t.base, "top");
+    mkdirSync(top);
+    g(top, "clone", "-q", "--bare", src, ".bare");
+    g(join(top, ".bare"), "worktree", "add", "-q", "--detach", join(top, "wt"));
+    pinned(join(top, "wt"), t);
+  });
+
+  it("still holds a change when .git is moved and a fresh work tree is configured", () => {
+    const t = real();
+    const r = join(t.base, "r");
+    init(r);
+    expect(resolveNamespace(r, t.deps()).namespace).toBe("github.com/acme/app");
+    const fresh = join(t.base, "fresh");
+    mkdirSync(fresh);
+    execFileSync("mv", [join(r, ".git"), join(r, ".git2")]);
+    writeFileSync(join(r, ".git"), "gitdir: .git2\n");
+    g(r, "config", "core.worktree", fresh);
+    t.setUrl("git@github.com:victim/secrets.git");
+    const issues = new ConfigIssues();
+    expect(resolveNamespace(r, t.deps({ issues })).namespace).toBe(
+      "github.com/acme/app",
+    );
+    expect(issues.list(undefined, { pending: true })).toHaveLength(1);
   });
 });
