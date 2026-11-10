@@ -19,6 +19,7 @@ import { connect, textOf, tool } from "./mcp-helpers.js";
 
 let client: Client;
 let logs: MockInstance<typeof console.log>;
+const versions = new Set<string>();
 
 // #2024: each publish with a new version enqueues indexing in waitUntil, which
 // the streamed MCP response doesn't wait for, so its index_enqueue log could
@@ -34,21 +35,29 @@ beforeAll(async () => {
   client = await connect((await createPat(env, u.userId, "title")).token);
 });
 afterAll(async () => {
-  // Four publishes made a version: create, edits, renaming publish, edits.
-  await vi.waitFor(() => expect(enqueued()).toBe(4), { timeout: 10_000 });
-  await client.close();
-  logs.mockRestore();
+  try {
+    // One index_enqueue per new version the publishes made. Under the 10 s
+    // hook timeout, so a miss fails here with a clear message.
+    await vi.waitFor(() => expect(enqueued()).toBe(versions.size), {
+      timeout: 5_000,
+    });
+  } finally {
+    await client.close();
+    logs.mockRestore();
+  }
 });
 
 const call = async (args: Record<string, unknown>) => {
   const r = await tool(client, "publish_artifact", args);
   expect(r.isError, textOf(r)).toBeFalsy();
-  return r.structuredContent as {
+  const out = r.structuredContent as {
     id: string;
     version: number;
     url: string;
     title?: string;
   };
+  versions.add(`${out.id}@${out.version}`);
+  return out;
 };
 
 describe("publish_artifact returns the current title", () => {
