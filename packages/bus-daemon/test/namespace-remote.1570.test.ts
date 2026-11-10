@@ -316,6 +316,14 @@ describe("which repo a prior belongs to (#1570)", () => {
       }),
     };
   };
+  const pinned2 = (cwd: string, t: ReturnType<typeof real>) => {
+    t.setUrl("git@github.com:victim/secrets.git");
+    const issues = new ConfigIssues();
+    expect(resolveNamespace(cwd, t.deps({ issues })).namespace).toBe(
+      "github.com/acme/app",
+    );
+    expect(issues.list(undefined, { pending: true })).toHaveLength(1);
+  };
   const pinned = (cwd: string, t: ReturnType<typeof real>) => {
     expect(resolveNamespace(cwd, t.deps()).namespace).toBe(
       "github.com/acme/app",
@@ -344,6 +352,62 @@ describe("which repo a prior belongs to (#1570)", () => {
     expect(
       readRemotes(t.remotes).entries.find((e) => e.dir === parent),
     ).toEqual({ dir: parent, namespace: "github.com/acme/app" });
+  });
+
+  it("holds a change when a subfolder the agent ran in becomes its own repo", () => {
+    const t = real();
+    const q = join(t.base, "q");
+    init(q);
+    const sub = join(q, "sub");
+    mkdirSync(sub);
+    expect(resolveNamespace(sub, t.deps()).namespace).toBe(
+      "github.com/acme/app",
+    );
+    g(sub, "init", "-q");
+    pinned2(sub, t);
+  });
+
+  it("holds a change when a subfolder's .git file points outside", () => {
+    const t = real();
+    const q = join(t.base, "q");
+    init(q);
+    const sub = join(q, "sub");
+    mkdirSync(sub);
+    expect(resolveNamespace(sub, t.deps()).namespace).toBe(
+      "github.com/acme/app",
+    );
+    const out = join(t.base, "out");
+    init(out);
+    writeFileSync(join(sub, ".git"), `gitdir: ${join(out, ".git")}\n`);
+    pinned2(sub, t);
+  });
+
+  it("holds a change in a subfolder of the recorded repo", () => {
+    const t = real();
+    const q = join(t.base, "q");
+    init(q);
+    const sub = join(q, "a");
+    mkdirSync(sub);
+    expect(resolveNamespace(q, t.deps()).namespace).toBe("github.com/acme/app");
+    t.setUrl("git@github.com:victim/secrets.git");
+    expect(resolveNamespace(sub, t.deps()).namespace).toBe(
+      "github.com/acme/app",
+    );
+  });
+
+  it("leaves a nested repo no agent ran in before independent", () => {
+    const t = real();
+    const q = join(t.base, "q");
+    init(q);
+    resolveNamespace(q, t.deps());
+    const n = join(q, "n");
+    init(n);
+    t.setUrl("git@github.com:other/n.git");
+    const issues = new ConfigIssues();
+    expect(resolveNamespace(n, t.deps({ issues })).namespace).toBe(
+      "github.com/other/n",
+    );
+    expect(issues.list(undefined, { pending: true })).toHaveLength(0);
   });
 
   it("pins a submodule", () => {

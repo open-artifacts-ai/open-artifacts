@@ -167,7 +167,7 @@ function pinRemote(
 ): string {
   const uid = deps.uid ?? process.getuid?.();
   const recordFile = deps.remotesFile ?? remotesFile();
-  const roots = recordRoots(rootPath, cwd, deps);
+  const keys = recordRoots(rootPath, cwd, deps);
   const list = readRemotes(recordFile);
   if (list.error) {
     // Kept visible as a config issue in doctor and status (inspectRemotes).
@@ -184,6 +184,9 @@ function pinRemote(
   try {
     realCwd = realpathSync(cwd);
   } catch {}
+  // The agent's own folder is a key too, so a subfolder it ran in stays held
+  // if it later becomes a repo of its own.
+  const roots = keys.includes(realCwd) ? keys : [...keys, realCwd];
   // Only of the same repo (same real git common dir): a recorded parent
   // folder holding an independent nested repo is not a prior of it.
   const here = commonOf(cwd, cwd, deps);
