@@ -996,6 +996,72 @@ describe("pins", () => {
     expect(last("comment.open")).toMatchObject({ id: "p1" });
   });
 
+  describe("the bubble (#682)", () => {
+    const css = () => roots.at(-1)?.querySelector("style")?.textContent ?? "";
+    const rule = (sel: string) => {
+      const m = new RegExp(`${sel.replace(/\./g, "\\.")}\\{([^}]*)\\}`).exec(
+        css(),
+      );
+      return m?.[1] ?? "";
+    };
+    const pinAt = async (extra: object = {}) => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          {
+            id: "p1",
+            n: 7,
+            ...extra,
+            anchor: {
+              kind: "pin",
+              version: 1,
+              x: 0.5,
+              y: 0.25,
+              contentHash: "h",
+            },
+          },
+        ],
+      });
+      return roots.at(-1)?.querySelector<HTMLElement>(".pin") as HTMLElement;
+    };
+
+    it("its tail point is the anchor: left/top are x,y and the margin lifts the bubble by its own height", async () => {
+      const pin = await pinAt();
+      // The stored point, as before (the image box is 240x140 at 0,0 here).
+      expect(pin.style.left).toBe("120px");
+      expect(pin.style.top).toBe("35px");
+      const r = rule(".pin");
+      expect(r).toContain("width:30px");
+      expect(r).toContain("height:30px");
+      // Bottom-left corner on the point: nothing moves it sideways, and the
+      // top margin is exactly minus the height.
+      expect(r).toContain("margin:-30px 0 0 0");
+      expect(r).toContain("border-radius:15px 15px 15px 3px");
+    });
+
+    it("carries the pin number, never a name or initial", async () => {
+      const pin = await pinAt();
+      expect(pin.textContent).toBe("7");
+    });
+
+    it("has a white ring and a soft shadow; open adds a 2.5px amber ring", async () => {
+      const pin = await pinAt({ active: true });
+      expect(pin.className).toBe("pin on");
+      expect(rule(".pin")).toContain("0 0 0 2px #fff");
+      expect(rule(".pin")).toContain("rgba(0,0,0,.3)");
+      expect(rule(".pin.on")).toContain("0 0 0 2px #fff,0 0 0 4.5px #e0a000");
+    });
+
+    it("placing is a translucent accent bubble; changed is a dashed outline", async () => {
+      const pin = await pinAt({ changed: true });
+      expect(pin.className).toBe("pin changed");
+      expect(rule(".pin.ghost")).toContain("background:#1f5fbf55");
+      expect(rule(".pin.ghost")).toContain("dashed");
+      expect(rule(".pin.changed")).toContain("outline:2px dashed #8a5a00");
+    });
+  });
+
   it("draws a dimmed, unnumbered ghost pin for the one being composed, and clears it", async () => {
     await start("select");
     await send({
