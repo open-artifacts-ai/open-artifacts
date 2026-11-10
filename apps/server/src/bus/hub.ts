@@ -3293,6 +3293,14 @@ function senderRef(f: ClientFrame): string | null {
 
 /** #1317: waiting server notices a hub keeps; a notice over it is dropped (a replace of a waiting one is not). */
 export const NOTICES_MAX = 500;
+/**
+ * #1828: parked (due, no live capable socket) notices one address keeps. They
+ * do not count toward NOTICES_MAX, so an old daemon cannot crowd out capable
+ * agents' waiting notices; this bounds them per address instead.
+ */
+export const NOTICES_PARKED_PER_ADDRESS = 20;
+/** #1828: ids named in one notice_expired log line. */
+const NOTICE_LOG_IDS = 20;
 /** #1317: how long an offline machine's notice waits (the v1 rule). */
 export const NOTICE_HOLD_MS = HOUR_MS;
 /** #1317: notices one agent_up sends, so a reconnect stays one bounded step. */
@@ -6160,17 +6168,30 @@ export class BusHub extends DurableObject<Env> {
         "select 1 as x from notices where to_ns = ? and to_lname = ? and ckey = ?",
         ...key,
       ) !== null;
+    // Due with no live socket: parked until the machine's agent_up.
+    const parked = notBefore <= now ? 1 : 0;
     if (!exists) {
-      const held =
-        one<{ n: number }>(sql, "select count(*) as n from notices")?.n ?? 0;
-      if (held >= NOTICES_MAX) {
-        logEvent("notice_dropped", { reason: "cap" });
+      // #1828: parked rows have their own per-address share; the hub-wide cap
+      // counts the rest, so one old daemon cannot drop a capable agent's.
+      const held = parked
+        ? (one<{ n: number }>(
+            sql,
+            "select count(*) as n from notices where parked = 1 and to_ns = ? and to_lname = ?",
+            n.to.namespace,
+            lname,
+          )?.n ?? 0)
+        : (one<{ n: number }>(
+            sql,
+            "select count(*) as n from notices where parked = 0",
+          )?.n ?? 0);
+      if (held >= (parked ? NOTICES_PARKED_PER_ADDRESS : NOTICES_MAX)) {
+        logEvent("notice_dropped", {
+          reason: parked ? "parked_cap" : "cap",
+        });
         return "dropped";
       }
     }
     const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
-    // Due with no live socket: parked until the machine's agent_up.
-    const parked = notBefore <= now ? 1 : 0;
     sql.exec(
       `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked)
        values (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -6239,11 +6260,25 @@ export class BusHub extends DurableObject<Env> {
    */
   #sweepNotices(now: number): boolean {
     const sql = this.ctx.storage.sql;
-    const gone = purge(
+    // #1828: an expired notice was never delivered: count it (ids and counts only).
+    const expired = all<{ rid: number; id: string; parked: number }>(
       sql,
-      "delete from notices where rowid in (select rowid from notices where expires_at <= ? limit ?) returning rowid",
+      "select rowid as rid, id, parked from notices where expires_at <= ? limit ?",
       now,
+      BATCH,
     );
+    for (const r of expired)
+      sql.exec("delete from notices where rowid = ?", r.rid);
+    if (expired.length > 0)
+      logEvent("notice_expired", {
+        count: expired.length,
+        parked: expired.filter((r) => r.parked === 1).length,
+        ids: expired
+          .slice(0, NOTICE_LOG_IDS)
+          .map((r) => r.id)
+          .join(","),
+      });
+    const gone = expired.length >= BATCH;
     const due = all<NoticeRow>(
       sql,
       `select ${NOTICE_COLS} from notices where parked = 0 and not_before <= ? order by not_before limit ?`,

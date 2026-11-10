@@ -7,7 +7,12 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS, type ServerFrame } from "@oa/bus-protocol";
 import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BusHub, NOTICE_HOLD_MS, NOTICES_MAX } from "../../src/bus/hub.js";
+import {
+  BusHub,
+  NOTICE_HOLD_MS,
+  NOTICES_MAX,
+  NOTICES_PARKED_PER_ADDRESS,
+} from "../../src/bus/hub.js";
 import { hubNoticeDelivery } from "../../src/services/bus.js";
 import {
   newDeliveryScope,
@@ -715,5 +720,112 @@ describe("hubNoticeDelivery (the Worker adapter, #1317)", () => {
     const env = { ...e, BUS_HUB: undefined } as unknown as typeof e;
     const n = note({ namespace: s.namespace, name: s.name });
     expect(await hubNoticeDelivery.deliver(env, s.userId, n)).toBe("dropped");
+  });
+});
+
+/** console.log lines that are JSON events named `evt`. */
+const logged = (spy: { mock: { calls: unknown[][] } }, evt: string) =>
+  spy.mock.calls
+    .map((c) => {
+      try {
+        return JSON.parse(String(c[0])) as Record<string, unknown>;
+      } catch {
+        return null;
+      }
+    })
+    .filter((x): x is Record<string, unknown> => x?.evt === evt);
+
+describe("old-daemon notices: counted expiry and their own share (#1828)", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("counts a parked notice that expires undelivered, with ids and counts only", async () => {
+    const log = vi.spyOn(console, "log");
+    const s = await setup(uniq("agent"), true);
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    const n = note({ namespace: s.namespace, name: s.name });
+    expect(await stub.deliverNotice(n)).toBe("held");
+    await setClock(s.userId, t + NOTICE_HOLD_MS + 1);
+    await runAlarm(s.userId);
+    expect(logged(log, "bus_notice_expired")).toEqual([
+      { evt: "bus_notice_expired", count: 1, parked: 1, ids: n.id },
+    ]);
+  });
+
+  it("a held fan-out is not a drop and not an expiry", async () => {
+    const log = vi.spyOn(console, "log");
+    const s = await setup(uniq("agent"), true);
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    const to = { namespace: s.namespace, name: s.name };
+    for (let k = 0; k < 3; k++)
+      expect(await stub.deliverNotice(note(to))).toBe("held");
+    expect(logged(log, "bus_notice_dropped")).toEqual([]);
+    expect(logged(log, "bus_notice_expired")).toEqual([]);
+  });
+
+  it("an old machine's parked notices cannot crowd out a capable machine's, in one hub", async () => {
+    const log = vi.spyOn(console, "log");
+    const old = await setup(uniq("old"), true);
+    const t = base();
+    await setClock(old.userId, t);
+    const cap = await addMachine(old.userId, old.namespace, uniq("capable"));
+    const stub = await hubOf(old.userId);
+    // The hub-wide count is full of parked rows for some other address.
+    await inHub(old.userId, (_, st) => {
+      for (let k = 0; k < NOTICES_MAX; k++)
+        st.storage.sql.exec(
+          `insert into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked)
+           values (?, 'x', ?, 'n', 't', ?, ?, 1)`,
+          old.namespace,
+          `k${k}`,
+          t - 1,
+          t + NOTICE_HOLD_MS,
+        );
+    });
+    // The capable agent's waiting notice still fits.
+    expect(
+      await stub.deliverNotice(
+        note(
+          { namespace: old.namespace, name: cap.name },
+          { notBefore: t + 60_000 },
+        ),
+      ),
+    ).toBe("held");
+    expect(logged(log, "bus_notice_dropped")).toEqual([]);
+    // The old agent has its own per-address share: the next one is dropped.
+    const to = { namespace: old.namespace, name: old.name };
+    for (let k = 0; k < NOTICES_PARKED_PER_ADDRESS; k++)
+      expect(await stub.deliverNotice(note(to))).toBe("held");
+    expect(await stub.deliverNotice(note(to))).toBe("dropped");
+    expect(logged(log, "bus_notice_dropped")).toEqual([
+      { evt: "bus_notice_dropped", reason: "parked_cap" },
+    ]);
+    // A capable agent's due notice is delivered live.
+    expect(
+      await stub.deliverNotice(
+        note({ namespace: old.namespace, name: cap.name }),
+      ),
+    ).toBe("delivered");
+  });
+
+  it("the reconnect gap before hello holds the notice, then agent_up sends it", async () => {
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    await goOffline(s.d, s.machineId, s.userId);
+    const d2 = await daemon(s.token); // connected, no hello yet: no caps
+    const n = note({ namespace: s.namespace, name: s.name });
+    expect(await stub.deliverNotice(n)).toBe("held");
+    expect(delivers(d2)).toEqual([]);
+    d2.send(hello(id("h")));
+    await waitFor(d2, "hello_ok");
+    d2.send(up(id("u"), s.ref, s.name, s.namespace));
+    const f = await waitFor(d2, "deliver");
+    expect(f.body).toBe(n.text);
+    expect(await waiting(s.userId)).toBe(0);
   });
 });
