@@ -100,20 +100,43 @@ describe("link_proof to link_bind (#1822)", () => {
     expect(h.of("link_bind")).toHaveLength(0);
   });
 
-  it("sends the current hash again after a reconnect", async () => {
+  it("sends every held hash again after a reconnect, oldest first (#1984)", async () => {
     const { h, helloOk, agentOk } = await start([BUS_CAPS.ids, BUS_CAPS.link]);
     await proof(h, 4242, HASH);
     await proof(h, 4242, HASH2);
+    // Each proof sends itself only; the hub adds it to the first (#1984).
     await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(2));
+    expect(h.of("link_bind").map((f) => f.hash)).toEqual([HASH, HASH2]);
     h.hubSock()?.close();
     await vi.waitFor(() => expect(h.of("agent_up").length).toBeGreaterThan(1));
     helloOk();
     agentOk(h.of("agent_up").length);
-    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(3));
-    expect(h.of("link_bind")[2]).toMatchObject({
-      agent_ref: "s-a",
-      hash: HASH2,
-    });
+    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(4));
+    expect(h.of("link_bind").slice(2)).toMatchObject([
+      { agent_ref: "s-a", hash: HASH },
+      { agent_ref: "s-a", hash: HASH2 },
+    ]);
+  });
+
+  it("keeps at most four hashes, the newest (#1984)", async () => {
+    const { h, helloOk, agentOk } = await start([BUS_CAPS.ids, BUS_CAPS.link]);
+    const hs = ["1", "2", "3", "4", "5"].map((c) => c.repeat(64));
+    for (const x of hs) await proof(h, 4242, x);
+    // One frame per proof, never a replay of the held ones.
+    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(5));
+    expect(h.of("link_bind").map((f) => f.hash)).toEqual(hs);
+    // A reconnect replays the last four, oldest first.
+    h.hubSock()?.close();
+    await vi.waitFor(() => expect(h.of("agent_up").length).toBeGreaterThan(1));
+    helloOk();
+    agentOk(h.of("agent_up").length);
+    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(9));
+    expect(
+      h
+        .of("link_bind")
+        .slice(5)
+        .map((f) => f.hash),
+    ).toEqual(hs.slice(1));
   });
 
   describe("a proof before the record", () => {

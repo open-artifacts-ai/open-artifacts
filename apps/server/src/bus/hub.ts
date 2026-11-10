@@ -834,23 +834,46 @@ function machineChange(sql: SqlStorage, machineId: string): RosterChange {
   };
 }
 
+/** #1984: most proofs a live session holds; a newer bind evicts the oldest. */
+export const PROOFS_PER_SESSION = 4;
+
 /**
- * #1822: stores the hash of `agentId`'s proof, replacing any earlier one, and
- * mints the agent's identity_id at its first bind. Another row holding the
- * same hash loses it, so a hash names one session.
+ * #1822: adds the hash of `agentId`'s proof to the session's proofs (at most
+ * PROOFS_PER_SESSION: the oldest goes) and mints the agent's identity_id at
+ * its first bind. Another row holding the same hash loses it, so a hash names
+ * one session. `agents.proof_hash` mirrors the newest proof.
  */
 function bindProof(sql: SqlStorage, agentId: string, hash: string): void {
-  sql.exec(
-    "update agents set proof_hash = null where proof_hash = ? and id != ?",
+  const lost = all<{ agent_id: string }>(
+    sql,
+    "delete from agent_proofs where hash = ? and agent_id != ? returning agent_id",
     hash,
     agentId,
   );
   sql.exec(
-    "update agents set proof_hash = ?, identity_id = coalesce(identity_id, ?) where id = ?",
+    `insert into agent_proofs (hash, agent_id, seq)
+     values (?, ?, (select coalesce(max(seq), 0) + 1 from agent_proofs))
+     on conflict (hash) do update set agent_id = excluded.agent_id, seq = excluded.seq`,
     hash,
+    agentId,
+  );
+  sql.exec(
+    `delete from agent_proofs where agent_id = ? and hash not in
+       (select hash from agent_proofs where agent_id = ? order by seq desc limit ?)`,
+    agentId,
+    agentId,
+    PROOFS_PER_SESSION,
+  );
+  sql.exec(
+    "update agents set identity_id = coalesce(identity_id, ?) where id = ?",
     randomHex(32),
     agentId,
   );
+  for (const id of [agentId, ...lost.map((r) => r.agent_id)])
+    sql.exec(
+      "update agents set proof_hash = (select hash from agent_proofs where agent_id = agents.id order by seq desc limit 1) where id = ?",
+      id,
+    );
 }
 
 /** The open agent `ref` on this machine, or null: the from_ref identity check. */
@@ -1355,6 +1378,7 @@ function takeAwayName(
       "update agents set identity_id = null, proof_hash = null where id = ?",
       fromId,
     );
+    sql.exec("delete from agent_proofs where agent_id = ?", fromId);
   }
   const have = one<{ n: number; b: number }>(
     sql,
@@ -3756,7 +3780,7 @@ export class BusHub extends DurableObject<Env> {
     if (!LinkProofHashSchema.safeParse(hash).success) return null;
     return one<AgentIdentity>(
       this.ctx.storage.sql,
-      "select identity_id as identityId, namespace, name, kind from agents where proof_hash = ? and live = 1 and identity_id is not null and org_id = ?",
+      "select a.identity_id as identityId, a.namespace, a.name, a.kind from agent_proofs p join agents a on a.id = p.agent_id where p.hash = ? and a.live = 1 and a.identity_id is not null and a.org_id = ?",
       hash,
       OWNER_ORG_ID,
     );
