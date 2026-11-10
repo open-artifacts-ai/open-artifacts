@@ -1,19 +1,24 @@
 // #1963: Codex 0.76+ gets the skill as a file under $CODEX_HOME/skills; older
 // or unreadable versions keep the marked block in AGENTS.md.
 import {
+  chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { readCodexVersion } from "../src/steps/codex.ts";
 import {
   CODEX_BEGIN,
   CODEX_END,
   codexSkillFile,
+  codexSkillState,
   installSkill,
   SKILL_MARKER,
   uninstallSkill,
@@ -162,5 +167,143 @@ describe("Codex skill placement by version (#1963)", () => {
     withAgents(h, `${crlf}\r\n${CODEX_BEGIN}\r\nx\r\n${CODEX_END}\r\n`);
     uninstallSkill({ home: h }, ["codex"]);
     expect(readFileSync(agents(h), "utf8")).toBe(crlf);
+  });
+});
+
+describe("review fixes (#1963)", () => {
+  const file = (h: string) =>
+    codexSkillFile({ home: h }, "open-artifacts-oa-example");
+  const v76 = (h: string) => ({ home: h, codexVersion: "0.76.0", fetchSkill });
+
+  it("M1: never deletes AGENTS.md; a block-only file is written empty", async () => {
+    const h = mk();
+    await installSkill({ home: h, fetchSkill }, origin, ["codex"]);
+    uninstallSkill({ home: h }, ["codex"]);
+    expect(readFileSync(agents(h), "utf8")).toBe("");
+    // Migration to a file leaves an empty AGENTS.md too.
+    const h2 = mk();
+    withAgents(h2, block);
+    await installSkill(v76(h2), origin, ["codex"]);
+    expect(readFileSync(agents(h2), "utf8")).toBe("");
+  });
+
+  it("M1: through a dotfiles symlink the link and its target stay", () => {
+    const h = mk();
+    const dots = mk();
+    const target = join(dots, "AGENTS.md");
+    writeFileSync(target, block);
+    mkdirSync(join(h, ".codex"), { recursive: true });
+    symlinkSync(target, agents(h));
+    uninstallSkill({ home: h }, ["codex"]);
+    expect(lstatSync(agents(h)).isSymbolicLink()).toBe(true);
+    expect(readFileSync(target, "utf8")).toBe("");
+  });
+
+  it("M2: an unreadable version after a file install keeps the file, no block", async () => {
+    const h = mk();
+    await installSkill(v76(h), origin, ["codex"]);
+    await installSkill({ home: h, fetchSkill }, origin, ["codex"]);
+    expect(existsSync(file(h))).toBe(true);
+    expect(
+      existsSync(agents(h)) ? readFileSync(agents(h), "utf8") : "",
+    ).not.toContain(CODEX_BEGIN);
+  });
+
+  it("M3: skills folder shared with pi/omp: no file, block kept, note", async () => {
+    const h = mk();
+    const shared = join(h, ".agents", "skills");
+    mkdirSync(shared, { recursive: true });
+    mkdirSync(join(h, ".codex"), { recursive: true });
+    symlinkSync(shared, join(h, ".codex", "skills"));
+    const piFile = join(shared, "open-artifacts-oa-example", "SKILL.md");
+    mkdirSync(join(piFile, ".."), { recursive: true });
+    writeFileSync(piFile, "pi's own text\n");
+    const r = await installSkill(v76(h), origin, ["codex"]);
+    expect(readFileSync(piFile, "utf8")).toBe("pi's own text\n");
+    expect(readFileSync(agents(h), "utf8")).toContain(CODEX_BEGIN);
+    expect(r.notes.join(" ")).toContain("pi and omp");
+  });
+
+  it("L1: a downgrade brings the block back and removes our file", async () => {
+    const h = mk();
+    await installSkill(v76(h), origin, ["codex"]);
+    await installSkill(
+      { home: h, codexVersion: "0.75.0", fetchSkill },
+      origin,
+      ["codex"],
+    );
+    expect(existsSync(file(h))).toBe(false);
+    expect(readFileSync(agents(h), "utf8")).toContain(CODEX_BEGIN);
+  });
+
+  it("L2: a broken or edited block means no skill file and the note", async () => {
+    for (const bad of [
+      `${CODEX_BEGIN}\nold\n`,
+      `<!-- BEGIN Open Artifacts skill (edited) -->\nold\n${CODEX_END}\n`,
+    ]) {
+      const h = mk();
+      withAgents(h, bad);
+      const r = await installSkill(v76(h), origin, ["codex"]);
+      expect(existsSync(file(h))).toBe(false);
+      expect(readFileSync(agents(h), "utf8")).toBe(bad);
+      expect(r.notes.join(" ")).toContain("Fix or remove the block");
+    }
+  });
+
+  it("L3: every block of ours goes", () => {
+    const h = mk();
+    withAgents(h, `a\n\n${block}\nmid\n\n${block}`);
+    uninstallSkill({ home: h }, ["codex"]);
+    expect(readFileSync(agents(h), "utf8")).toBe("a\n\nmid\n");
+  });
+
+  it("L4: the blank before a mid-file block stays; no dangling CR", () => {
+    const h = mk();
+    withAgents(h, `a\n\n${block}b\n`);
+    uninstallSkill({ home: h }, ["codex"]);
+    expect(readFileSync(agents(h), "utf8")).toBe("a\n\nb\n");
+    const h2 = mk();
+    withAgents(h2, `a\r\n${CODEX_BEGIN}\r\nx\r\n${CODEX_END}`);
+    uninstallSkill({ home: h2 }, ["codex"]);
+    expect(readFileSync(agents(h2), "utf8")).toBe("a\r\n");
+  });
+
+  it("L5: a failing AGENTS.md cleanup keeps the file in written and names AGENTS.md", async () => {
+    const h = mk();
+    mkdirSync(agents(h), { recursive: true });
+    const r = await installSkill(v76(h), origin, ["codex"]);
+    expect(r.written).toContain(file(h));
+    expect(r.notes.join(" ")).toContain(`Could not update ${agents(h)}`);
+    expect(existsSync(file(h))).toBe(true);
+  });
+
+  it("L6: the version comes from the configured Codex command", async () => {
+    const dir = mk();
+    const bin = join(dir, "mycodex");
+    writeFileSync(bin, "#!/bin/sh\n");
+    chmodSync(bin, 0o755);
+    const cfg = join(dir, "bin.json");
+    writeFileSync(cfg, JSON.stringify({ bin }));
+    const seen: string[] = [];
+    const v = await readCodexVersion({
+      configFile: cfg,
+      exec: async (cmd) => {
+        seen.push(cmd);
+        return { code: 0, stdout: "codex-cli 0.80.1\n" };
+      },
+    });
+    expect(seen).toEqual([bin]);
+    expect(v).toBe("0.80.1");
+  });
+
+  it("doctor state: file, block, or both", async () => {
+    const h = mk();
+    await installSkill(v76(h), origin, ["codex"]);
+    expect(codexSkillState({ home: h })).toEqual({ file: file(h) });
+    withAgents(h, block);
+    expect(codexSkillState({ home: h })).toEqual({
+      file: file(h),
+      block: agents(h),
+    });
   });
 });

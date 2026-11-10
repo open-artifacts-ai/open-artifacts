@@ -422,7 +422,7 @@ describe("ownership and uninstall hardening", () => {
     const r = uninstallSkill({ home: h });
     expect(r.notes.join(" ")).toContain("EISDIR");
     expect(existsSync(claudeSkill(h))).toBe(false);
-    expect(existsSync(join(h, ".codex", "AGENTS.md"))).toBe(false);
+    expect(readFileSync(join(h, ".codex", "AGENTS.md"), "utf8")).toBe("");
   });
 
   it("turns a Codex read error into a note", () => {

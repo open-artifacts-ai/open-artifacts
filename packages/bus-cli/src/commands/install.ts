@@ -5,6 +5,7 @@ import {
   opencodeVersion,
   supportsPromptId,
 } from "@oa/bus-adapter-opencode";
+import { codexBinFile } from "@oa/bus-daemon";
 import { BUS_CMD, type StatusReply } from "@oa/bus-ipc";
 import {
   askDaemon,
@@ -209,6 +210,7 @@ async function harnessesStep(
   // non-zero at the end, after the daemon (or whatever follows) has had its turn.
   const codexVersion = out.installed.includes("codex")
     ? await readCodexVersion({
+        configFile: codexBinFile(ctx.home),
         exec: ctx.exec,
         path: ctx.env.PATH,
         app: ctx.codexApp,

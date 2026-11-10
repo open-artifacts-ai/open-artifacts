@@ -483,6 +483,8 @@ function remove(path: string, text: string, doc: Doc): string {
 
 /** `codex --version` of the binary the daemon would use; undefined when unreadable. */
 export async function readCodexVersion(o: {
+  /** The daemon's pin file (codexBinFile), tried before PATH and the app. */
+  configFile?: string;
   exec: (
     cmd: string,
     args: string[],
@@ -491,7 +493,11 @@ export async function readCodexVersion(o: {
   app?: string;
 }): Promise<string | undefined> {
   try {
-    const bin = findCodexBin({ path: o.path, app: o.app });
+    const bin = findCodexBin({
+      configFile: o.configFile,
+      path: o.path,
+      app: o.app,
+    });
     const r = await o.exec(bin ?? "codex", ["--version"]);
     return /(\d+\.\d+\.\d+\S*)/.exec(r.code === 0 ? r.stdout : "")?.[1];
   } catch {
