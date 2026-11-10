@@ -92,6 +92,13 @@ export const ADAPTER_CAPS = {
    * hub cap: a hub without the route answers 404.
    */
   reach: "reach",
+  /**
+   * `link` (#1856): the adapter may send a hello'd `link_proof` (its root's
+   * proof hash, no pid) and decodes `link_proofed`. The daemon lists `link` in
+   * `welcome.caps` only for an adapter that listed it, and an adapter sends
+   * the frame only to a daemon whose welcome listed it.
+   */
+  link: "link",
 } as const;
 
 export { REACH_PROPOSAL_MAX };
@@ -288,6 +295,21 @@ export const LinkProofRequest = z.object({
 });
 export type LinkProofRequest = z.infer<typeof LinkProofRequest>;
 
+/**
+ * A harness adapter telling the daemon its root's proof hash on its own
+ * hello'd link (#1856, `ADAPTER_CAPS.link`). It names no agent and no pid: the
+ * daemon binds the hash to the agent this connection's hello attested, so a
+ * link cannot speak for any other. Strict, so a frame that tries is refused.
+ */
+export const AdapterLinkProof = z
+  .object({
+    ...base,
+    type: z.literal("link_proof"),
+    hash: LinkProofHashSchema,
+  })
+  .strict();
+export type AdapterLinkProof = z.infer<typeof AdapterLinkProof>;
+
 export const AdapterFrame = z.discriminatedUnion("type", [
   Hello,
   Send,
@@ -301,6 +323,7 @@ export const AdapterFrame = z.discriminatedUnion("type", [
   Unfollow,
   Following,
   ProposeReach,
+  AdapterLinkProof,
 ]);
 export type AdapterFrame = z.infer<typeof AdapterFrame>;
 
@@ -512,7 +535,7 @@ export const StatusReply = z.object({
 });
 export type StatusReply = z.infer<typeof StatusReply>;
 
-/** The reply to `link_proof`: whether a live Claude record took the hash. */
+/** The reply to `link_proof` (either form): whether a live record took the hash. */
 export const LinkProofed = z.object({
   ...base,
   type: z.literal("link_proofed"),

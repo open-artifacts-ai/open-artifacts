@@ -319,6 +319,25 @@ class Bus:
         for ref in refs:
             self.close(ref)
 
+    def proof_for(self, session_id):
+        """The proof of the open link of this session's root (#1822), or None. A read only: it never
+        opens a link or makes state, so a session whose root this bus does not hold (another
+        profile's), has no open link, or was finalized gets no proof.
+
+        None too for a subagent or an unknown session, and under the Codex runtime (or when that
+        cannot be told: its tool calls carry no plugin argument)."""
+        try:
+            ref = self.roots.resolve(session_id)
+        except NotOnBus:
+            return None
+        if self._codex_runtime() is not False:
+            return None
+        root = self._by_root.get(ref)
+        link = root.link if root is not None and not root.stopped else None
+        if link is None or link.closed:
+            return None
+        return link.proof
+
     # --- Delivery.
 
     def _on_notice(self, link, text, msg_id=None):
@@ -465,6 +484,11 @@ class Bus:
                 habits = (root.link is not None and not root.link.closed
                           and self._habits_on())
         self.touch(ref)
+        # #1822: a hub that was down when the link opened: offer the proof again (rate limited
+        # by the link), off this thread, since it waits for the daemon.
+        link = root.link
+        if link is not None and not link.closed and link.proof is None:
+            self._spawn(link.retry_proof)
         if not out and not habits:
             return None
         for _text, msg_id in out:

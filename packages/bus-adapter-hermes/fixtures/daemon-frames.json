@@ -218,6 +218,15 @@
       }
     },
     {
+      "name": "link_proofed",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proofed",
+        "bound": true
+      }
+    },
+    {
       "name": "follows",
       "frame": {
         "v": 1,
@@ -234,6 +243,23 @@
     }
   ],
   "invalid": [
+    {
+      "name": "link_proofed with no bound",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proofed"
+      }
+    },
+    {
+      "name": "link_proofed with a string bound",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proofed",
+        "bound": "yes"
+      }
+    },
     {
       "name": "deliver with both body and notice",
       "frame": {

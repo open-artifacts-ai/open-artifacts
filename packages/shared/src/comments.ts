@@ -88,7 +88,19 @@ export const CommentAskSchema = z
     recommended: askRecommended,
     to: z.array(CommentAuthorSchema),
     answer: z
-      .object({ optionId: key, by: CommentAuthorSchema, at: z.string() })
+      .object({
+        optionId: key,
+        by: CommentAuthorSchema,
+        at: z.string(),
+        /** #1797: picked in the web app (a browser session), never with a token. Only such an answer is a person's yes. */
+        typed: z.boolean(),
+        /**
+         * #1797: your user's yes, computed for the caller by the server: typed,
+         * picked by the caller's own person, on an ask the caller's own person
+         * wrote (as themselves or through an agent). Never set by a client.
+         */
+        yes: z.boolean(),
+      })
       .optional(),
     closed: z.boolean(),
   })
@@ -121,6 +133,12 @@ export const CommentSchema = z.object({
   author: CommentAuthorSchema,
   createdAt: z.string(),
   editedAt: z.string().nullable(),
+  /**
+   * #1797: typed by a person in the web app (a browser session, no token, no
+   * MCP). Set by the server from the credential; no client input can. Old
+   * comments read false.
+   */
+  typed: z.boolean(),
   can: z.object({ edit: z.boolean(), delete: z.boolean() }),
   ask: CommentAskSchema.optional(),
   mentions: z.array(CommentMentionSchema).optional(),
