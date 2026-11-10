@@ -7,6 +7,8 @@ import { helloFor, SESSION_META } from "./tools.ts";
 
 /** The daemon gets this long to take a link_proof; later, the call goes unlinked. */
 export const PROOF_MS = 2000;
+/** The whole link step (session lookup, hello, link_proof) gets this long; later, the call goes unlinked. */
+export const LINK_MS = 3000;
 /** One request to the instance. */
 export const UPSTREAM_MS = 60_000;
 /** Sessions whose proof is kept; the oldest is dropped (it gets a new one next call). */
@@ -44,6 +46,8 @@ export type ProxyDeps = {
   /** Test seam: 32 random bytes for a proof. */
   random?: () => Buffer;
   proofMs?: number;
+  /** Test seam: LINK_MS. */
+  linkMs?: number;
   upstreamMs?: number;
 };
 
@@ -134,20 +138,46 @@ export class OpenCodeProxy {
   /**
    * The caller's own daemon link, held open until the request is answered, and
    * its proof once the daemon says it took the hash. Never throws: no proof
-   * means an unlinked call.
+   * means an unlinked call. The whole step has one time cap; a link that opens
+   * after it is closed and never used.
    */
   private async link(
     meta: Record<string, unknown> | undefined,
   ): Promise<{ client: DaemonClient; proof?: string } | undefined> {
-    let client: DaemonClient | undefined;
+    const st: { client?: DaemonClient; late?: boolean } = {};
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cap = new Promise<undefined>((res) => {
+      timer = setTimeout(() => {
+        st.late = true;
+        st.client?.close();
+        res(undefined);
+      }, this.deps.linkMs ?? LINK_MS);
+      timer.unref?.();
+    });
+    try {
+      return await Promise.race([this.openLink(meta, st), cap]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async openLink(
+    meta: Record<string, unknown> | undefined,
+    st: { client?: DaemonClient; late?: boolean },
+  ): Promise<{ client: DaemonClient; proof?: string } | undefined> {
     try {
       const sessionId = meta?.[SESSION_META];
       if (typeof sessionId !== "string" || !sessionId) return undefined;
       const session = await this.deps.resolve(sessionId);
-      if (!session?.directory) return undefined;
-      client = await this.deps.connect(
+      if (!session?.directory || st.late) return undefined;
+      const client = await this.deps.connect(
         helloFor(sessionId, session, [ADAPTER_CAPS.link]),
       );
+      st.client = client;
+      if (st.late) {
+        client.close();
+        return undefined;
+      }
       const caps = client.welcome.caps;
       if (!Array.isArray(caps) || !caps.includes(ADAPTER_CAPS.link))
         return { client };
@@ -172,7 +202,7 @@ export class OpenCodeProxy {
         clearTimeout(timer);
       }
     } catch {
-      return client ? { client } : undefined;
+      return st.client ? { client: st.client } : undefined;
     }
   }
 
@@ -207,13 +237,13 @@ export class OpenCodeProxy {
       (res.status >= 300 && res.status < 400)
     )
       throw new Error(
-        "the instance answered with a redirect; Open Artifacts /mcp does not redirect",
+        "Open Artifacts answered with a redirect, but /mcp never redirects. Check the instance URL in OpenCode's config.",
       );
     if (!res.ok)
-      throw new Error(`the instance answered with HTTP ${res.status}`);
+      throw new Error(`Open Artifacts answered with HTTP ${res.status}`);
     const text = await res.text();
     if (text.length > MAX_BODY)
-      throw new Error("the instance's answer is too large");
+      throw new Error("Open Artifacts' answer is too large");
     let msg: Rpc | undefined;
     try {
       msg = parseAnswer(
@@ -222,7 +252,7 @@ export class OpenCodeProxy {
       );
     } catch {}
     if (!msg)
-      throw new Error("the instance's answer was not a JSON-RPC message");
+      throw new Error("Open Artifacts' answer was not a JSON-RPC message");
     if (msg.error !== undefined) {
       const e = msg.error as {
         code?: number;

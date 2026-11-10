@@ -16,6 +16,7 @@ import { describe, expect, it } from "vitest";
 import {
   type AdapterDeps,
   installAdapters,
+  opencodeProxyProblem,
   uninstallAdapters,
 } from "../src/steps/adapters.ts";
 import { OPENCODE_ENTRY_FILE } from "../src/steps/opencode-proof.ts";
@@ -37,7 +38,12 @@ const ENV = {
   headers: { Authorization: "Bearer {env:OA_TOKEN}" },
 };
 const OTHER = { type: "remote", url: "https://elsewhere.test/mcp" };
-const PROXY = (file = TOKEN_FILE, bin = [BIN]) => ({
+/** The proxy entry; the token path is always absolute, as OpenCode would resolve it. */
+const PROXY = (
+  h: string,
+  file = join(h, TOKEN_FILE.slice(2)),
+  bin = [BIN],
+) => ({
   type: "local",
   command: [...bin, "mcp-proxy", "--instance", HUB, "--token-file", file],
 });
@@ -89,7 +95,7 @@ describe("oa-bus install and uninstall, OpenCode /mcp entry (#1856)", () => {
       "last",
       "oa_bus",
     ]);
-    expect(servers["open-artifacts"]).toEqual(PROXY());
+    expect(servers["open-artifacts"]).toEqual(PROXY(t.h));
     expect(servers.first).toEqual(OTHER);
     expect(statSync(t.moved).mode & 0o777).toBe(0o600);
     // The token's path is kept, its value is never read.
@@ -122,7 +128,7 @@ describe("oa-bus install and uninstall, OpenCode /mcp entry (#1856)", () => {
     const original = `${JSON.stringify({ mcp: { "open-artifacts": TOKEN } }, null, 2)}\n`;
     const t = setup(original);
     await installAdapters(t.deps);
-    expect(t.json().mcp["open-artifacts"]).toEqual(PROXY());
+    expect(t.json().mcp["open-artifacts"]).toEqual(PROXY(t.h));
     await uninstallAdapters(t.deps);
     expect(t.json().mcp["open-artifacts"]).toEqual(TOKEN);
   });
@@ -130,7 +136,7 @@ describe("oa-bus install and uninstall, OpenCode /mcp entry (#1856)", () => {
   it("works for an entry under any name the user chose", async () => {
     const t = setup(doc({ work: TOKEN }));
     await installAdapters(t.deps);
-    expect(t.json().mcp.servers.work).toEqual(PROXY());
+    expect(t.json().mcp.servers.work).toEqual(PROXY(t.h));
   });
 
   for (const [kind, e] of [
@@ -170,7 +176,7 @@ describe("oa-bus install and uninstall, OpenCode /mcp entry (#1856)", () => {
     t.deps.busBin = ["/opt/node", "/h/oa-bus.js"];
     await installAdapters(t.deps);
     expect(t.json().mcp.servers["open-artifacts"]).toEqual(
-      PROXY(TOKEN_FILE, ["/opt/node", "/h/oa-bus.js"]),
+      PROXY(t.h, undefined, ["/opt/node", "/h/oa-bus.js"]),
     );
     await uninstallAdapters(t.deps);
     expect(t.json().mcp.servers["open-artifacts"]).toEqual(TOKEN);
@@ -193,5 +199,114 @@ describe("oa-bus install and uninstall, OpenCode /mcp entry (#1856)", () => {
     const out = await installAdapters(t.deps).catch((e) => e);
     expect(out).not.toBeInstanceOf(Error);
     expect(existsSync(t.moved)).toBe(false);
+  });
+
+  it("resolves the token path as OpenCode does: ~/ to home, a relative path from the config's folder", async () => {
+    for (const [written, want] of [
+      ["~/.open-artifacts/t", (h: string) => join(h, ".open-artifacts/t")],
+      ["./secrets/t", (h: string) => join(h, ".config/opencode/secrets/t")],
+      ["../t", (h: string) => join(h, ".config/t")],
+      ["tok", (h: string) => join(h, ".config/opencode/tok")],
+      ["/abs/t", () => "/abs/t"],
+    ] as const) {
+      const e = {
+        ...TOKEN,
+        headers: { Authorization: `Bearer {file:${written}}` },
+      };
+      const t = setup(doc({ "open-artifacts": e }));
+      await installAdapters(t.deps);
+      expect(
+        t.json().mcp.servers["open-artifacts"].command.at(-1),
+        written,
+      ).toBe(want(t.h));
+      await uninstallAdapters(t.deps);
+      expect(t.json().mcp.servers["open-artifacts"]).toEqual(e);
+    }
+  });
+
+  it("keeps the entry's other fields on the proxy, and restores the entry whole", async () => {
+    const e = { ...TOKEN, timeout: 12000, enabled: true };
+    const t = setup(doc({ "open-artifacts": e }));
+    await installAdapters(t.deps);
+    expect(t.json().mcp.servers["open-artifacts"]).toEqual({
+      ...PROXY(t.h),
+      timeout: 12000,
+      enabled: true,
+    });
+    // A refresh keeps them too.
+    t.deps.busBin = ["/opt/node", "/h/oa-bus.js"];
+    await installAdapters(t.deps);
+    expect(t.json().mcp.servers["open-artifacts"]).toMatchObject({
+      timeout: 12000,
+    });
+    await uninstallAdapters(t.deps);
+    expect(t.json().mcp.servers["open-artifacts"]).toEqual(e);
+  });
+
+  it("leaves an entry whose address the proxy refuses (http off this machine)", async () => {
+    const http = "http://oa.example.com";
+    const e = { ...TOKEN, url: `${http}/mcp` };
+    const t = setup(doc({ "open-artifacts": e }), { hub: http });
+    const out = await installAdapters(t.deps);
+    expect(t.json().mcp.servers["open-artifacts"]).toEqual(e);
+    expect(out.notes.join("\n")).toMatch(/left the open-artifacts entry/);
+    expect(existsSync(t.moved)).toBe(false);
+    // Loopback http is fine.
+    const lo = "http://127.0.0.1:8787";
+    const l = setup(doc({ dev: { ...TOKEN, url: `${lo}/mcp` } }), { hub: lo });
+    await installAdapters(l.deps);
+    expect(l.json().mcp.servers.dev.type).toBe("local");
+  });
+
+  it("says how to undo, and the OAuth note uses Product's wording", async () => {
+    const t = setup(doc({ "open-artifacts": TOKEN }));
+    const out = await installAdapters(t.deps);
+    expect(out.notes.join("\n")).toMatch(/npx @open-artifacts\/bus uninstall/);
+    const o = setup(doc({ "open-artifacts": OAUTH }));
+    const r = await installAdapters(o.deps);
+    expect(r.notes).toContain(
+      `left the open-artifacts entry in ${o.file} as it is: it signs in with \`opencode mcp auth\` or another kind of token that oa-bus can't pass on. Its tools still work, but OpenCode won't show as its own session on pages.`,
+    );
+  });
+
+  it("checkOpencodeProxy names a proxy entry whose program is gone, and nothing else", async () => {
+    const t = setup(doc({ "open-artifacts": TOKEN }));
+    t.deps.busBin = ["/nonexistent/oa-bus"];
+    await installAdapters(t.deps);
+    const probe = (which: (c: string) => boolean = () => false) =>
+      opencodeProxyProblem({ home: t.h, env: {}, which });
+    expect(probe()).toEqual({
+      name: "open-artifacts",
+      missing: "/nonexistent/oa-bus",
+    });
+    // A program that exists, a bare name found on PATH: fine.
+    const t2 = setup(doc({ "open-artifacts": TOKEN }));
+    t2.deps.busBin = [process.execPath];
+    await installAdapters(t2.deps);
+    expect(
+      opencodeProxyProblem({ home: t2.h, env: {}, which: () => false }),
+    ).toBeUndefined();
+    const t3 = setup(doc({ "open-artifacts": TOKEN }));
+    t3.deps.busBin = ["oa-bus"];
+    await installAdapters(t3.deps);
+    expect(
+      opencodeProxyProblem({ home: t3.h, env: {}, which: () => false })
+        ?.missing,
+    ).toBe("oa-bus");
+    expect(
+      opencodeProxyProblem({
+        home: t3.h,
+        env: {},
+        which: (c) => c === "oa-bus",
+      }),
+    ).toBeUndefined();
+    // No proxy entry at all: nothing to say.
+    expect(
+      opencodeProxyProblem({
+        home: setup(doc({ a: OTHER })).h,
+        env: {},
+        which: () => false,
+      }),
+    ).toBeUndefined();
   });
 });

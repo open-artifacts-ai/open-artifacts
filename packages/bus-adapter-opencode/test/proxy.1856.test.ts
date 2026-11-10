@@ -34,6 +34,7 @@ function setup(
     respond?: (n: number) => Response;
     instance?: string;
     proofMs?: number;
+    linkMs?: number;
   } = {},
 ) {
   const hellos: Hello[] = [];
@@ -88,6 +89,7 @@ function setup(
     connect,
     resolve: over.resolve ?? (async (id) => ROOTS[id] ?? null),
     ...(over.proofMs ? { proofMs: over.proofMs } : {}),
+    ...(over.linkMs ? { linkMs: over.linkMs } : {}),
   });
   return { proxy, hellos, hashes, order, closed, seen, fetchFn };
 }
@@ -225,6 +227,41 @@ describe("OpenCode proxy: the proof header", () => {
   });
 });
 
+describe("OpenCode proxy: the link step has one time cap", () => {
+  it("a lookup that never answers goes out unlinked", async () => {
+    const t = setup({ linkMs: 10, resolve: () => new Promise(() => {}) });
+    await t.proxy.call(callArgs("ses_a"));
+    expect(t.seen).toHaveLength(1);
+    expect(proofOf(t.seen[0] as Seen)).toBeNull();
+  });
+
+  it("a hello that never answers goes out unlinked", async () => {
+    const t = setup({ linkMs: 10, connect: () => new Promise(() => {}) });
+    await t.proxy.call(callArgs("ses_a"));
+    expect(proofOf(t.seen[0] as Seen)).toBeNull();
+  });
+
+  it("a link that opens after the cap is closed, and never gives a header", async () => {
+    let open!: (c: DaemonClient) => void;
+    const late = new Promise<DaemonClient>((r) => {
+      open = r;
+    });
+    const t = setup({ linkMs: 10, connect: () => late });
+    await t.proxy.call(callArgs("ses_a"));
+    const closed = vi.fn();
+    const requested = vi.fn();
+    open({
+      welcome: { caps: [ADAPTER_CAPS.link] },
+      state: "open",
+      request: requested,
+      close: closed,
+    } as unknown as DaemonClient);
+    await vi.waitFor(() => expect(closed).toHaveBeenCalled());
+    expect(requested).not.toHaveBeenCalled();
+    expect(proofOf(t.seen[0] as Seen)).toBeNull();
+  });
+});
+
 describe("OpenCode proxy: where the proof and the token go", () => {
   it("posts only to the instance's /mcp, never following a redirect", async () => {
     const t = setup({
@@ -234,7 +271,9 @@ describe("OpenCode proxy: where the proof and the token go", () => {
           headers: { location: "https://evil.example/mcp" },
         }),
     });
-    await expect(t.proxy.call(callArgs("ses_a"))).rejects.toThrow(/redirect/i);
+    await expect(t.proxy.call(callArgs("ses_a"))).rejects.toThrow(
+      "Open Artifacts answered with a redirect, but /mcp never redirects. Check the instance URL in OpenCode's config.",
+    );
     expect(t.fetchFn).toHaveBeenCalledTimes(1);
     expect(t.seen[0]?.url).toBe(`${INSTANCE}/mcp`);
     expect(t.seen[0]?.init.redirect).toBe("manual");
@@ -250,7 +289,9 @@ describe("OpenCode proxy: where the proof and the token go", () => {
           ok: false,
         }) as unknown as Response,
     });
-    await expect(t.proxy.list({})).rejects.toThrow(/redirect/i);
+    await expect(t.proxy.list({})).rejects.toThrow(
+      "Open Artifacts answered with a redirect, but /mcp never redirects. Check the instance URL in OpenCode's config.",
+    );
   });
 
   it("every request, list and call, goes to the same exact URL", async () => {
@@ -283,7 +324,7 @@ describe("OpenCode proxy: where the proof and the token go", () => {
     });
     const e = await fail(t.proxy.call(callArgs("ses_a")));
     expect(String(e.message)).not.toContain("tok-file-value");
-    expect(String(e.message)).toMatch(/500/);
+    expect(String(e.message)).toBe("Open Artifacts answered with HTTP 500");
     expect(String(e.message)).not.toContain(
       proofOf(t.seen[0] as Seen) ?? "none",
     );
@@ -401,7 +442,9 @@ describe("OpenCode proxy: a real redirect leaves nothing behind", () => {
         }) as unknown as DaemonClient,
       resolve: async (id) => ROOTS[id] ?? null,
     });
-    await expect(proxy.call(callArgs("ses_a"))).rejects.toThrow(/redirect/i);
+    await expect(proxy.call(callArgs("ses_a"))).rejects.toThrow(
+      "Open Artifacts answered with a redirect, but /mcp never redirects. Check the instance URL in OpenCode's config.",
+    );
     expect(own).toHaveLength(1);
     expect(own[0]?.headers[LINK_PROOF_HEADER.toLowerCase()]).toMatch(
       PROOF_SHAPE,

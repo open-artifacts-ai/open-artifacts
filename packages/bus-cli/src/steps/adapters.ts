@@ -72,6 +72,8 @@ import {
   installEntry as installOcEntry,
   type OcEntryIo,
   OPENCODE_ENTRY_FILE,
+  proxyEntries,
+  proxyProgramMissing,
   restoreEntry as restoreOcEntry,
 } from "./opencode-proof.ts";
 
@@ -464,6 +466,7 @@ const ocEntryIo = (deps: AdapterDeps): OcEntryIo => ({
     saveText(file, before, next, ok);
   },
   writeMoved: (data) => writeAtomic(paths(deps).opencodeEntry, data, 0o600),
+  home: deps.home,
   busBin: deps.busBin,
   ...(movedHome(deps) ? { busHome: movedHome(deps) as string } : {}),
 });
@@ -863,6 +866,24 @@ export async function uninstallAdapters(
   };
 }
 
+/**
+ * Read-only (#1856): a proxy entry in OpenCode's config whose program is gone,
+ * so the user's Open Artifacts tools in OpenCode would not start.
+ */
+export function opencodeProxyProblem(
+  deps: Pick<AdapterDeps, "home" | "env" | "which"> & { busHome?: string },
+): { name: string; missing: string } | undefined {
+  const p = paths(deps as AdapterDeps);
+  for (const f of p.opencodeConfigs.filter(present))
+    try {
+      for (const { name, entry } of proxyEntries(readFileSync(f, "utf8"))) {
+        const missing = proxyProgramMissing(entry, undefined, deps.which);
+        if (missing !== undefined) return { name, missing };
+      }
+    } catch {}
+  return undefined;
+}
+
 export type AdapterState = "configured" | "missing" | "absent";
 
 /** Read-only: whether each harness on PATH has Open Artifacts bus registered. Never execs. */
@@ -966,3 +987,16 @@ export function checkAdapters(
     ),
   };
 }
+
+/** Notes the commands do not already show with their own line (a flag of the result). */
+export const unshownNotes = (notes: string[]) =>
+  notes.filter(
+    (n) =>
+      n !== CODEX_NO_BIN &&
+      n !== HERMES_NO_CLI &&
+      n !== OPENCLAW_NO_CLI &&
+      n !== OPENCLAW_NIX &&
+      // The service line says it, and the removal is already in "Removed from".
+      !n.startsWith(RESTART_FAILED) &&
+      !n.startsWith("removed oa_bus from "),
+  );
