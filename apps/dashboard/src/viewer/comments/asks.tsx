@@ -184,7 +184,7 @@ export function AskBlock({
           {/* The card's own header already names the asker and the time. */}
           <p className={`${TXT} ${MUTED}`}>Ask</p>
           <p id={qid} className={`${TXT} font-semibold break-words`}>
-            {ask.question}
+            {linked(ask.question, 0)}
           </p>
           <ul
             aria-labelledby={qid}

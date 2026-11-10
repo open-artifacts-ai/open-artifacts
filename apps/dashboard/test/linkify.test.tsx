@@ -58,6 +58,13 @@ describe("linkify", () => {
   it("stops at angle brackets", () => {
     expect(urls("<https://a.com/x>")).toEqual(["https://a.com/x"]);
   });
+  it("trims a long run of closers in linear time", () => {
+    const t = performance.now();
+    expect(urls(`https://a.com/x${")".repeat(20000)}`)).toEqual([
+      "https://a.com/x",
+    ]);
+    expect(performance.now() - t).toBeLessThan(50);
+  });
   it("does not link other schemes or bare domains", () => {
     expect(urls("javascript:alert(1)")).toEqual([]);
     expect(urls("data:text/html,hi")).toEqual([]);

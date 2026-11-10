@@ -6,17 +6,20 @@ const URL_RE = /https?:\/\/[^\s<>]+/gi;
 const TRAIL = new Set([".", ",", ";", ":", "!", "?", "'", '"']);
 const PAIRS: Record<string, string> = { ")": "(", "]": "[" };
 
-const count = (s: string, c: string) => s.split(c).length - 1;
-
 function trim(raw: string): string {
-  let u = raw;
-  for (;;) {
-    const last = u.at(-1) ?? "";
+  const seen: Record<string, number> = { "(": 0, ")": 0, "[": 0, "]": 0 };
+  for (const c of raw) if (c in seen) seen[c] = (seen[c] ?? 0) + 1;
+  let end = raw.length;
+  while (end > 0) {
+    const last = raw[end - 1] ?? "";
     const open = PAIRS[last];
-    if (TRAIL.has(last) || (open && count(u, last) > count(u, open))) {
-      u = u.slice(0, -1);
-    } else return u;
+    if (TRAIL.has(last)) end--;
+    else if (open && (seen[last] ?? 0) > (seen[open] ?? 0)) {
+      seen[last] = (seen[last] ?? 0) - 1;
+      end--;
+    } else break;
   }
+  return raw.slice(0, end);
 }
 
 export function linkify(text: string): LinkPiece[] {
