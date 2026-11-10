@@ -224,6 +224,7 @@ class Bus:
         self._lock = threading.Lock()
         self._by_root = {}
         self._timers = set()
+        self._down = False
 
     # --- Links.
 
@@ -257,6 +258,7 @@ class Bus:
             if root.link is not None and not root.link.closed:
                 return root.link
             root.stopped = False
+            self._down = False
             try:
                 link = self._connect(root, self._on_deliver, self._on_notice, self._on_lost)
             except LinkError as e:
@@ -316,7 +318,14 @@ class Bus:
         if link is not None:
             link.close()
 
+    def wiring_free(self):
+        """True only when this Bus is shut down (close_all): another Bus may then take over the proof
+        wiring (a plugin reload). Never while it is running, even in a reconnect gap with no open
+        link: another profile's Bus must not take it for good."""
+        return self._down
+
     def close_all(self):
+        self._down = True
         with self._lock:
             refs = list(self._by_root)
         for ref in refs:

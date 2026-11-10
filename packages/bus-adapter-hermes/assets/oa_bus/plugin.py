@@ -58,4 +58,9 @@ def register(ctx, roots=None, bus=None, proof_servers=None, install=None):
     ctx.register_hook("on_session_finalize", on_session_finalize)
     ctx.register_hook("subagent_start", subagent_start)
     atexit.register(bus.close_all)
+    # A reload unloads the plugin without exiting: shut this Bus then, so the next one can take over
+    # the proof wiring. An older Hermes has no on_unload.
+    on_unload = getattr(ctx, "on_unload", None)
+    if callable(on_unload):
+        on_unload(bus.close_all)
     return bus
