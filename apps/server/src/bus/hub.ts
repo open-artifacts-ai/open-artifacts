@@ -3068,18 +3068,20 @@ function settle(
   const r = one<{ fromAgent: string; size: number }>(
     sql,
     `select r.from_agent as fromAgent, r.size from receipts r join agents a on a.id = r.to_agent
-     where r.id = ? and r.org_id = ? and r.state = 'pending' and a.machine_id = ?
+     where r.id = ? and r.org_id = ? and a.machine_id = ?
+       and (r.state = 'pending' or (? = 'delivered' and r.state = 'expired' and r.reason = 'lost_body'))
        and r.rowid > a.session_start_rowid`,
     msgId,
     OWNER_ORG_ID,
     machineId,
+    outcome,
   );
   if (!r) return null;
   // R7 (accepted): an ack after expires_at but before the sweep counts as
   // delivered; the harness really did take it.
   if (outcome === "delivered")
     sql.exec(
-      "update receipts set state = 'delivered', acked_at = ?, final_at = ? where id = ? and state = 'pending'",
+      "update receipts set state = 'delivered', reason = null, notified_at = null, acked_at = ?, final_at = ? where id = ? and (state = 'pending' or (state = 'expired' and reason = 'lost_body'))",
       now,
       now,
       msgId,
@@ -5562,12 +5564,15 @@ export class BusHub extends DurableObject<Env> {
   /**
    * pending -> expired, once: the guarded update is the only transition, so a
    * receipt is never expired (or the sender told) twice, and an expired one
-   * never becomes delivered (settle also requires pending).
+   * never becomes delivered (settle also requires pending), except that a
+   * `lost_body` expiry (the hub lost a body it had already pushed) is settled
+   * delivered by the recipient's own late ack (#1760). `lost_body` is stored
+   * only: the wire carries a reasonless expiry, as before.
    */
   #expire(
     msgId: string,
     fromAgent: string,
-    reason?: "recipient_closed" | "revoked",
+    reason?: "recipient_closed" | "revoked" | "lost_body",
   ): void {
     const sql = this.ctx.storage.sql;
     const hit = all(
@@ -6049,7 +6054,7 @@ export class BusHub extends DurableObject<Env> {
           ?.body ??
         null;
       if (body === null) {
-        this.#expire(r.id, r.fromAgent);
+        this.#expire(r.id, r.fromAgent, "lost_body");
         return;
       }
       this.#arm(r.expiresAt);
@@ -6417,7 +6422,7 @@ export class BusHub extends DurableObject<Env> {
     );
     if (lost.length >= BATCH) more = true;
     for (const r of lost)
-      if (!this.#held.has(r.id)) this.#expire(r.id, r.fromAgent);
+      if (!this.#held.has(r.id)) this.#expire(r.id, r.fromAgent, "lost_body");
 
     // 2a. open-bus #422: machines offline past OFFLINE_REAP_MS have their
     // agents closed (before the close drain, which takes their leftover mail).

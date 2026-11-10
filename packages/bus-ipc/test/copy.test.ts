@@ -415,3 +415,15 @@ describe("rosterText (#1860)", () => {
     expect(text([])).toBe("No agents in your namespace and linked ones.");
   });
 });
+
+describe("correctedDeliveredText (#1760)", () => {
+  it("reads Product's wording, with and without an excerpt", async () => {
+    const { correctedDeliveredText } = await import("../src/copy.ts");
+    expect(correctedDeliveredText("peer")).toBe(
+      "✓  Delivered after all: your message to peer reached it. Ignore the earlier Expired notice.",
+    );
+    expect(correctedDeliveredText("peer", "hi")).toBe(
+      '✓  Delivered after all: your message to peer, "hi",\n   reached it. Ignore the earlier Expired notice.',
+    );
+  });
+});

@@ -10,6 +10,7 @@ export {
 export {
   cleanStatusLabel,
   collapsedAwayLine,
+  correctedDeliveredText,
   deliveredText,
   displayKind,
   earlierStatusText,
