@@ -704,7 +704,7 @@ export function copy(style: Style) {
       ),
     ],
     shimRemoved: (where: string) =>
-      done(`Removed the oa-bus command from ${clip(where, 30)}`),
+      done(`Removed the oa-bus command: ${clip(where, 30)}`),
     shimDoctorOk: (where: string) =>
       done(`oa-bus on your PATH runs this install (${clip(where, 30)})`),
     shimDoctorOffPath: (where: string, hint: string) => [

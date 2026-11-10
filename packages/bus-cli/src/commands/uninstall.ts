@@ -89,14 +89,12 @@ export async function uninstall(
   }
   // The oa-bus command (#1626): only our shim, only for this bus home.
   try {
-    if (
-      removeShim({
-        userHome: ctx.userHome,
-        busHome: ctx.home,
-        platform: ctx.platform,
-      })
-    )
-      say(ctx, c.shimRemoved("the oa-bus command"));
+    const gone = removeShim({
+      userHome: ctx.userHome,
+      busHome: ctx.home,
+      platform: ctx.platform,
+    });
+    if (gone) say(ctx, c.shimRemoved(tilde(ctx, gone)));
   } catch (e) {
     say(ctx, [
       `Could not remove the oa-bus command: ${e instanceof Error ? e.message : String(e)}`,

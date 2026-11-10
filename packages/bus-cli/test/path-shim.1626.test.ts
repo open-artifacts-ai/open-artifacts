@@ -126,7 +126,7 @@ describe("oa-bus on PATH (#1626)", () => {
       path: file,
     });
     expect(readFileSync(file, "utf8")).toBe("#!/bin/sh\necho mine\n");
-    expect(removeShim(w)).toBe(false);
+    expect(removeShim(w)).toBeUndefined();
     expect(readFileSync(file, "utf8")).toBe("#!/bin/sh\necho mine\n");
 
     const l = world();
@@ -138,7 +138,7 @@ describe("oa-bus on PATH (#1626)", () => {
       installShim({ ...l, env: { PATH: `${l.local}:/usr/bin` } }).kind,
     ).toBe("foreign");
     expect(lstatSync(join(l.local, "oa-bus")).isSymbolicLink()).toBe(true);
-    expect(removeShim(l)).toBe(false);
+    expect(removeShim(l)).toBeUndefined();
     expect(lstatSync(join(l.local, "oa-bus")).isSymbolicLink()).toBe(true);
   });
 
@@ -146,9 +146,9 @@ describe("oa-bus on PATH (#1626)", () => {
     const w = world();
     const env = { PATH: `${w.local}:/usr/bin` };
     installShim({ ...w, env });
-    expect(removeShim({ ...w, env })).toBe(true);
+    expect(removeShim({ ...w, env })).toBe(join(w.local, "oa-bus"));
     expect(existsSync(join(w.local, "oa-bus"))).toBe(false);
-    expect(removeShim({ ...w, env })).toBe(false);
+    expect(removeShim({ ...w, env })).toBeUndefined();
   });
 
   it("OA_BUS_HOME: the shim carries the moved home, and only that home's uninstall removes it", () => {
@@ -161,9 +161,9 @@ describe("oa-bus on PATH (#1626)", () => {
       encoding: "utf8",
     });
     expect(run.stdout.trim()).toBe(`ran:${moved}:${w.argv[1]} x`);
-    expect(removeShim({ ...w, busHome: join(tmp(), "other") })).toBe(false);
+    expect(removeShim({ ...w, busHome: join(tmp(), "other") })).toBeUndefined();
     expect(existsSync(join(w.local, "oa-bus"))).toBe(true);
-    expect(removeShim({ ...w, env })).toBe(true);
+    expect(removeShim({ ...w, env })).toBe(join(w.local, "oa-bus"));
   });
 
   it("Windows: no shim, nothing written", () => {
@@ -172,7 +172,7 @@ describe("oa-bus on PATH (#1626)", () => {
     expect(r.kind).toBe("skipped");
     expect(existsSync(w.local)).toBe(false);
     expect(shimState({ ...w, env: { PATH: w.local } })).toBeUndefined();
-    expect(removeShim(w)).toBe(false);
+    expect(removeShim(w)).toBeUndefined();
   });
 
   it("state: ours on PATH, missing, another oa-bus first, ours off PATH", () => {
@@ -286,6 +286,9 @@ describe("the commands (#1626)", () => {
       service: withService(w) as never,
     });
     await uninstall({ purge: false }, un);
+    expect(un.all().join("\n")).toContain(
+      "Removed the oa-bus command: ~/.local/bin/oa-bus",
+    );
     expect(existsSync(join(w.local, "oa-bus"))).toBe(false);
   });
 });

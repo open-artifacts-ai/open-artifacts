@@ -133,19 +133,19 @@ export function installShim(o: ShimOpts & { argv: string[] }): ShimResult {
   };
 }
 
-/** Removes our shim for this bus home from every candidate dir; true when one went. */
+/** Removes our shim for this bus home from every candidate dir; the path that went, if any. */
 export function removeShim(
   o: Omit<ShimOpts, "env"> & { env?: unknown },
-): boolean {
-  if (isWindows(o.platform)) return false;
-  let removed = false;
+): string | undefined {
+  if (isWindows(o.platform)) return undefined;
+  let removed: string | undefined;
   for (const dir of candidates({ ...o, env: {} })) {
     const file = join(dir, NAME);
     const owner = ownerOf(file, o.busHome);
     if (!owner?.ours) continue;
     if (owner.home !== undefined && owner.home !== resolve(o.busHome)) continue;
     rmSync(file, { force: true });
-    removed = true;
+    removed = file;
   }
   return removed;
 }
