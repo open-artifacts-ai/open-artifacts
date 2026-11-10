@@ -204,12 +204,23 @@ export function dropRow(rows: Shortcut[], deleted: Shortcut[], id: string) {
 export function reinstate(rows: Shortcut[], deleted: Shortcut[], id: string) {
   const row = deleted.find((a) => a.id === id);
   if (!row) return null;
+  // A current row is newer than the kept copy: keep it, drop the copy.
+  if (rows.some((a) => a.id === id))
+    return { rows, deleted: deleted.filter((a) => a.id !== id) };
   return {
     rows: [row, ...rows.filter((a) => a.id !== id)]
       .sort((a, b) => b.publishedAt - a.publishedAt)
       .slice(0, LIMIT),
     deleted: deleted.filter((a) => a.id !== id),
   };
+}
+
+/** A rename seen in a receipt: only the title of an existing row changes. */
+export function retitle(rows: Shortcut[], id: string, title: unknown) {
+  const clean = titleOf(title);
+  const old = rows.find((a) => a.id === id);
+  if (!clean || !old || old.title === clean) return rows;
+  return rows.map((a) => (a.id === id ? { ...a, title: clean } : a));
 }
 
 export function checked(result: unknown) {

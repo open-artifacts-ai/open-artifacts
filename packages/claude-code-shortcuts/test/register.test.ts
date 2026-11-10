@@ -172,6 +172,45 @@ describe("tool middleware", () => {
     expect((await h.command()).text).toContain(`Artifact ${id}`);
   });
 
+  it("a settings-only rename updates an existing row's title and adds no row or version", async () => {
+    const h = host();
+    await h.publish();
+    await h.call(
+      "tool.call",
+      { tool: "mcp__custom_alias__publish_artifact", id, title: "Renamed" },
+      result(3, id, "Renamed"),
+    );
+    const text = (await h.command()).text;
+    expect(text).toContain("Renamed · published v3");
+    expect(text).not.toContain("Synthetic title");
+    const other = host();
+    await other.call(
+      "tool.call",
+      { tool: "mcp__custom_alias__publish_artifact", id, title: "Renamed" },
+      result(3, id, "Renamed"),
+    );
+    expect(other.data.size).toBe(0);
+  });
+
+  it("a publish landing for an id drops its kept deleted copy", async () => {
+    const h = host();
+    await h.publish();
+    await h.call(
+      "tool.call",
+      { tool: "mcp__custom_alias__delete_artifact", id },
+      { structuredContent: { id, deleted: true } },
+    );
+    await h.publish(result(4, id, "Fresh"), { title: "Fresh" });
+    await h.call(
+      "tool.call",
+      { tool: "mcp__custom_alias__undelete_artifact", id },
+      { structuredContent: { id, title: "Fresh" } },
+    );
+    const text = (await h.command()).text;
+    expect(text).toContain("Fresh · published v4");
+    expect(text).not.toContain("Synthetic title");
+  });
+
   describe("delete_artifact and undelete_artifact (#2016)", () => {
     const tool = (name: string, extra: Record<string, unknown> = {}) => ({
       tool: `mcp__custom_alias__${name}`,

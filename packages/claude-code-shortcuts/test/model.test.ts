@@ -9,6 +9,7 @@ import {
   published,
   reinstate,
   restore,
+  retitle,
   titleOf,
   undeletion,
 } from "../plugin/hooks/model.ts";
@@ -420,5 +421,26 @@ describe("delete and undelete (#2016)", () => {
     expect(back?.rows.map((a) => a.title)).toEqual(["Newer", "Keep me"]);
     expect(back?.deleted).toEqual([]);
     expect(reinstate(rows, [], receipt.id)).toBeNull();
+  });
+});
+
+describe("review lows on delete and rename (#2016)", () => {
+  it("reinstate keeps a current row and drops the stale kept copy", () => {
+    const [stale] = applyPublish([], receipt, "Stale", 1);
+    const current = applyPublish([], { ...receipt, version: 5 }, "Current", 9);
+    if (!stale) throw new Error("row");
+    const back = reinstate(current, [stale], receipt.id);
+    expect(back?.rows).toBe(current);
+    expect(back?.rows[0]?.title).toBe("Current");
+    expect(back?.deleted).toEqual([]);
+  });
+
+  it("retitle changes only the title of an existing row", () => {
+    const rows = applyPublish([], receipt, "Old", 1);
+    const next = retitle(rows, receipt.id, "New");
+    expect(next[0]).toEqual({ ...rows[0], title: "New" });
+    expect(retitle(rows, receipt.id, "Old")).toBe(rows);
+    expect(retitle(rows, receipt.id, "  ")).toBe(rows);
+    expect(retitle(rows, "Other3dEfGhJk4mN", "New")).toBe(rows);
   });
 });

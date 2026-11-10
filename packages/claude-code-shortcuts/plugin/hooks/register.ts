@@ -8,7 +8,9 @@ import {
   record,
   reinstate,
   restore,
+  retitle,
   type Shortcut,
+  titleOf,
   undeletion,
 } from "./model.ts";
 
@@ -105,8 +107,9 @@ function saveBoth(
       );
       const next = update(rows, deleted);
       if (!next) return;
-      await $.store.set(deletedKey(origin, session), next.deleted);
-      await $.store.set(k, next.rows);
+      if (next.deleted !== deleted)
+        await $.store.set(deletedKey(origin, session), next.deleted);
+      if (next.rows !== rows) await $.store.set(k, next.rows);
     });
   writes.set(k, write);
   void write
@@ -161,15 +164,24 @@ export function register(
       if (!session) return result;
       try {
         if (e.tool === publishTool) {
-          // Settings-only calls create no version, so they are not a publish shortcut.
-          if (e.id && !("content" in e || "files" in e || "edits" in e))
-            return result;
           const receipt = published(result, origin);
           if (!receipt) return result;
+          if (e.id && !("content" in e || "files" in e || "edits" in e)) {
+            // Settings-only calls create no version, so they add no shortcut;
+            // a rename only updates the title of a row that already exists.
+            await save($, session, origin, writes, (rows) =>
+              retitle(rows, receipt.id, titleOf(e.title) || receipt.title),
+            );
+            return result;
+          }
           const now = await $.clock.now();
-          await save($, session, origin, writes, (rows) =>
-            applyPublish(rows, receipt, e.title, now),
-          );
+          await saveBoth($, session, origin, writes, (rows, deleted) => ({
+            rows: applyPublish(rows, receipt, e.title, now),
+            // A publish landing makes any kept deleted copy stale.
+            deleted: deleted.some((a) => a.id === receipt.id)
+              ? deleted.filter((a) => a.id !== receipt.id)
+              : deleted,
+          }));
         } else if (e.tool === deleteTool || e.tool === undeleteTool) {
           // Only a successful result counts, never the tool input.
           const gone = e.tool === deleteTool;
