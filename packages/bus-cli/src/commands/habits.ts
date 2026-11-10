@@ -3,6 +3,7 @@
 // files it goes in, are steps/habits.ts.
 
 import { join } from "node:path";
+import { BUS_CMD } from "@oa/bus-protocol";
 import { type Ctx, say, sayErr, tilde } from "../context.ts";
 import { checkAdapters } from "../steps/adapters.ts";
 import {
@@ -214,7 +215,8 @@ export async function habitsAfterInstall(
   const asked = pending.map((p) => p.path);
   const question = habitsQuestion(
     pending.map((p) => p.label ?? one(ctx, p.path)),
-    ctx.busCmd,
+    // --json goes to an agent that may hand the commands to its user's own shell.
+    json ? BUS_CMD : ctx.busCmd,
   );
   if (ctx.stdinIsTTY && ctx.readLine && !json) {
     say(ctx, "", disclosure(ctx, pending));
