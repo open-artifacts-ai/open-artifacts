@@ -160,8 +160,7 @@ function pinRemote(
 ): string {
   const uid = deps.uid ?? process.getuid?.();
   const recordFile = deps.remotesFile ?? remotesFile();
-  const root = recordRoot(rootPath, cwd, deps);
-  const marker = join(root, ".git");
+  const roots = recordRoots(rootPath, cwd, deps);
   const list = readRemotes(recordFile);
   if (list.error) {
     // Kept visible as a config issue in doctor and status (inspectRemotes).
@@ -172,13 +171,21 @@ function pinRemote(
     );
     return derived;
   }
-  const prior = list.entries.find((e) => sameDir(e.dir, root));
+  const priors = roots.flatMap((r) => {
+    const e = list.entries.find((x) => sameDir(x.dir, r));
+    return e ? [e] : [];
+  });
+  // A prior under either key that disagrees holds the change: the checkout
+  // controls its git common dir, so that key alone is not enough.
+  const prior = priors.find((e) => e.namespace !== derived) ?? priors[0];
+  const root = prior?.dir ?? roots[0] ?? rootPath;
+  const marker = join(root, ".git");
   const write = (entries: typeof list.entries) => {
     if (deps.recordRemote === false) return;
     try {
       // A deleted checkout's entry must not hold a later one at that path.
       writeRemotes(
-        entries.filter((e) => e === prior || existsSync(e.dir)),
+        entries.filter((e) => priors.includes(e) || existsSync(e.dir)),
         dirname(recordFile),
       );
     } catch (e) {
@@ -189,12 +196,17 @@ function pinRemote(
       );
     }
   };
+  const missing = (namespace: string) =>
+    roots
+      .filter((r) => !priors.some((e) => sameDir(e.dir, r)))
+      .map((dir) => ({ dir, namespace }));
   if (!prior) {
-    write([...list.entries, { dir: root, namespace: derived }]);
+    write([...list.entries, ...missing(derived)]);
     return derived;
   }
   if (prior.namespace === derived) {
     deps.issues?.setPending(marker, uid, undefined);
+    if (missing(derived).length) write([...list.entries, ...missing(derived)]);
     return derived;
   }
   if (quiet) {
@@ -202,9 +214,12 @@ function pinRemote(
     return derived;
   }
   if (approved(join(root, "x"), derived, deps)) {
-    write(
-      list.entries.map((e) => (e === prior ? { ...e, namespace: derived } : e)),
-    );
+    write([
+      ...list.entries.map((e) =>
+        priors.includes(e) ? { ...e, namespace: derived } : e,
+      ),
+      ...missing(derived),
+    ]);
     deps.issues?.setPending(marker, uid, undefined);
     return derived;
   }
@@ -225,11 +240,12 @@ function pinRemote(
 }
 
 /**
- * The folder a repo's record is keyed by: the work tree that holds the shared
- * git dir, so every worktree of one repo shares one record (a new worktree
- * cannot start a fresh one). Falls back to the checkout's own root.
+ * The folders a repo's record is keyed by: the work tree that holds the shared
+ * git dir (so every worktree of one repo shares one record) and the checkout's
+ * own root. The checkout controls its git dir, so a prior entry under either
+ * key holds a change.
  */
-function recordRoot(root: string, cwd: string, deps: NamespaceDeps): string {
+function recordRoots(root: string, cwd: string, deps: NamespaceDeps): string[] {
   let common: string | null = null;
   if (deps.gitCommonDir) common = deps.gitCommonDir(cwd);
   else if (!deps.gitRoot) common = gitCommonDir(cwd);
@@ -237,13 +253,18 @@ function recordRoot(root: string, cwd: string, deps: NamespaceDeps): string {
   try {
     real = realpathSync(root);
   } catch {}
-  if (!common) return real;
+  if (!common) return [real];
   try {
     const c = realpathSync(resolve(cwd, common));
-    return basename(c) === ".git" ? dirname(c) : c;
+    const key = basename(c) === ".git" ? dirname(c) : c;
+    return key === real ? [real] : [key, real];
   } catch {
-    return real;
+    return [real];
   }
+}
+
+function recordRoot(root: string, cwd: string, deps: NamespaceDeps): string {
+  return recordRoots(root, cwd, deps)[0] as string;
 }
 
 /** The record key of the repo `dir` is in; undefined outside git. For `self`. */

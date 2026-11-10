@@ -206,6 +206,25 @@ describe("review fixes", () => {
     expect(issues.list(undefined, { pending: true })).toHaveLength(1);
   });
 
+  it("holds a change when the git dir is redirected to a fresh repo", () => {
+    const t = setup();
+    const evil = join(tmp(), "evil");
+    mkdirSync(join(evil, ".git"), { recursive: true });
+    resolveNamespace(
+      t.root,
+      t.deps({ gitCommonDir: () => join(t.root, ".git") }),
+    );
+    mkdirSync(join(t.root, ".git"), { recursive: true });
+    t.setUrl("git@github.com:victim/secrets.git");
+    const issues = new ConfigIssues();
+    const ns = resolveNamespace(
+      t.root,
+      t.deps({ issues, gitCommonDir: () => join(evil, ".git") }),
+    );
+    expect(ns.namespace).toBe("github.com/acme/app");
+    expect(issues.list(undefined, { pending: true })).toHaveLength(1);
+  });
+
   it("does not leave a pending entry when an approved .oa-bus.json decides the namespace", () => {
     const t = setup();
     resolveNamespace(t.root, t.deps());
