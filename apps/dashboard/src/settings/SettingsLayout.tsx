@@ -4,7 +4,7 @@ import { type ReactNode, useEffect } from "react";
 import { useMe } from "../auth/useMe";
 import { useMachinesAccess } from "../bus/access";
 import { ATTENTION, AttentionDot } from "../layout/AttentionDot";
-import { SyncDot, syncDot } from "../layout/SyncBanner";
+import { directoryModeOf, SyncDot, syncDot } from "../layout/SyncBanner";
 import { AppLink } from "../library/AppLink";
 import { useNoAgentsPage } from "./AgentSetupCard";
 import { useDeparted } from "./departed";
@@ -101,7 +101,7 @@ export function SettingsLayout() {
             role &&
             t.roles.includes(role) &&
             // #2009: no tab while directory sync is off (Solo, or Team that never synced).
-            (!t.directory || (directory && directory.mode !== "off")) &&
+            (!t.directory || (directory && directoryModeOf(me) !== "off")) &&
             (!t.plan || me?.instance.billing) &&
             (!t.spaces || canAdminSpaces(me)) &&
             (!t.bus || machines === "full" || machines === "revoke") &&
