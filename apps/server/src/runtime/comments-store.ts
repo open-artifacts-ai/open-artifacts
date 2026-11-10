@@ -44,6 +44,10 @@ create index if not exists comment_targets_thread on comment_targets (thread_id)
 create table if not exists comment_asker_notices (
   thread_id text primary key, last_at text not null, prev_at text, n integer not null
 );
+create table if not exists comment_email_notices (
+  thread_id text not null, user_id text not null, last_at text not null, prev_at text,
+  primary key (thread_id, user_id)
+);
 create table if not exists comment_limits (
   id integer primary key check (id = 1), day integer not null, n integer not null
 );
@@ -446,6 +450,53 @@ export function refundAsker(
     `update comment_asker_notices set last_at = coalesce(prev_at, '0'), prev_at = null, n = n - 1
      where thread_id = ? and last_at = ? and n > 0`,
     threadId,
+    at,
+  );
+}
+
+/**
+ * Comment emails (#1467): at most one per (thread, person) per window. Claims
+ * the slot for each of `userIds` that has none since `sinceIso` and returns
+ * those; `at` is the time recorded. `refundEmail` gives one back when the
+ * send failed (only while `at` is still the last).
+ */
+export function claimEmail(
+  sql: SqlStorage,
+  threadId: string,
+  userIds: string[],
+  sinceIso: string,
+  at: string,
+): string[] {
+  const won: string[] = [];
+  for (const u of userIds) {
+    const r = sql
+      .exec<{ user_id: string }>(
+        `insert into comment_email_notices (thread_id, user_id, last_at, prev_at) values (?1, ?2, ?3, null)
+         on conflict (thread_id, user_id) do update set prev_at = last_at, last_at = excluded.last_at
+         where comment_email_notices.last_at <= ?4
+         returning user_id`,
+        threadId,
+        u,
+        at,
+        sinceIso,
+      )
+      .toArray();
+    if (r.length) won.push(u);
+  }
+  return won;
+}
+
+export function refundEmail(
+  sql: SqlStorage,
+  threadId: string,
+  userId: string,
+  at: string,
+): void {
+  sql.exec(
+    `update comment_email_notices set last_at = coalesce(prev_at, ''), prev_at = null
+     where thread_id = ? and user_id = ? and last_at = ?`,
+    threadId,
+    userId,
     at,
   );
 }

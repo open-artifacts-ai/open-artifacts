@@ -78,6 +78,14 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // same-origin) and the pending code cookie carry the protection.
   "POST /auth/code/request": { public: "code request; login guard, Turnstile" },
   "POST /auth/code/verify": { public: "code verify; login guard" },
+  // #1467 comment-email unsubscribe: a signed token (one person, one flag)
+  // is the only credential; GET changes nothing.
+  "GET /auth/unsubscribe/comments": {
+    public: "comment email unsubscribe confirm; signed token",
+  },
+  "POST /auth/unsubscribe/comments": {
+    public: "comment email unsubscribe (RFC 8058 one-click); signed token",
+  },
   "POST /auth/logout": { public: "sign-out (same-origin, CSRF)" },
   "GET /auth/dev-login": { public: "dev only; refused outside dev" },
   // P2 test hooks: 404 unless TEST_HOOKS is on (test-hooks/index.ts decides).

@@ -51,6 +51,7 @@ import {
   askRow,
   bodyOk,
   COMMENTS_SCHEMA,
+  claimEmail,
   deleteExtras,
   getComment,
   getThread,
@@ -61,6 +62,7 @@ import {
   type NewExtras,
   openCount,
   refundAsker,
+  refundEmail,
   replyCount,
   rootId,
   type StoredActor,
@@ -2173,6 +2175,31 @@ export class ArtifactRuntime extends DurableObject<Env> {
     );
   }
 
+  /** Comment emails (#1467): the people of `userIds` with no email for the thread since `sinceIso`; their slots are taken at `at`. */
+  commentsEmailClaim(a: {
+    threadId: string;
+    userIds: string[];
+    sinceIso: string;
+    at: string;
+  }): string[] {
+    this.ensureSchema();
+    return this.ctx.storage.transactionSync(() =>
+      claimEmail(this.sql, a.threadId, a.userIds, a.sinceIso, a.at),
+    );
+  }
+
+  /** Gives back one comment-email slot taken at `at` when the send failed. */
+  commentsEmailRefund(a: {
+    threadId: string;
+    userId: string;
+    at: string;
+  }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      refundEmail(this.sql, a.threadId, a.userId, a.at),
+    );
+  }
+
   /** Resolve or reopen; the same status again changes nothing. */
   commentsStatus(a: {
     threadId: string;
@@ -2355,6 +2382,8 @@ type RpcMethods =
   | "commentsAnswer"
   | "commentsTargetStates"
   | "commentsAskerRefund"
+  | "commentsEmailClaim"
+  | "commentsEmailRefund"
   | "commentsStatus"
   | "commentsEdit"
   | "commentsDelete"
