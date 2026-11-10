@@ -255,6 +255,31 @@ describe("upgrade.md content", () => {
     expect(s8).toMatch(/From `healthcheck` \(DNS[^\n]*run step 7 again/);
   });
 
+  it("step 5 finds the install directory and answers the modules purge", async () => {
+    const s5 = (await upgrade()).split("## 5. ")[1].split("## 6. ")[0];
+    // #1873: the install can be somewhere other than ~/open-artifacts, and the
+    // state file is what tells the agent which directory it is.
+    expect(s5).toContain(".openartifacts/state.json");
+    expect(s5).toContain("ask the user which directory they cloned into");
+    expect(s5).toContain("do not make a second copy");
+    expect(s5).toContain("~/open-artifacts");
+    // #1872: an older install's node_modules makes pnpm ask to purge it, and a
+    // non-interactive shell cannot answer.
+    expect(s5).toContain("ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY");
+    expect(s5).toContain("--config.confirmModulesPurge=false");
+  });
+
+  it("step 10 offers the bus client and leaves the habits question to the user", async () => {
+    // #1871: the server side ships with the deploy; the client is a separate
+    // install that only the user can approve.
+    const s10 = (await upgrade()).split("## 10. ")[1] ?? "";
+    expect(s10).toContain("npx @open-artifacts/bus install --instance");
+    expect(s10).toContain("--habits");
+    expect(s10).toContain("--no-habits");
+    expect(s10).toContain("npx @open-artifacts/bus status");
+    expect(s10).toContain("Ask the user");
+  });
+
   it("origin is https for a real host, even on a dev Worker", async () => {
     const md = await renderUpgrade({
       APP_HOST: "staging.open-artifacts.com",

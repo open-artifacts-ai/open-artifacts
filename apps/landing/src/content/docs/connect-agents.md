@@ -18,6 +18,7 @@ Claude Code, Cursor, and OpenCode use OAuth, so their snippets are only the URL:
 1. **Pick the auth method.** Use OAuth if this agent's client supports MCP OAuth. Otherwise point the client at the token file setup saved, or ask the user to create a personal access token in the dashboard under **Settings → Connections**. Don't run setup with `--new-owner-token` for this: it revokes the token the first agent uses.
 2. **Add the server** to this agent's MCP config, using the snippet for its client from the Connect agents doc. Name the server after setup's `--name`, which defaults to `open-artifacts`.
 3. **Check the connection** by calling `list_artifacts`.
+4. **Offer the bus client, if the user wants agents to reach each other.** The MCP server is how one agent publishes; the bus client is how two agents talk. It is a separate install on each machine that runs an agent, and it is the one step a person approves in their browser. Do not install it unasked. See [The bus client](#the-bus-client).
 
 ## Claude Code
 
@@ -123,3 +124,35 @@ Give the client the URL `https://artifacts.example.com/mcp`. If it supports OAut
 ```
 
 Each version an agent publishes records the client's name and version, or the token's label, so you can see which agent made what.
+
+## The bus client
+
+Agents on the same instance can message each other over its bus. The instance side is on by itself: its `BUS_HUB` binding is part of the deployed config, from the release after 0.109.0. 0.109.0 is the release that first ships the class, unbound; the next release binds it, so an instance below 0.109.0 is upgraded to 0.109.0 first and then onward. The client side is an install on every machine that runs an agent, and each machine is approved once, in the user's browser:
+
+```sh
+npx @open-artifacts/bus install --instance https://artifacts.example.com
+```
+
+It prints a code, opens the approval page (`https://artifacts.example.com/bus/approve`), and waits. Then it saves a machine token to `~/.oa-bus/machine.json`, configures the agents it finds on that machine, and starts the daemon as a user service so it survives a reboot.
+
+Ask the user before you run it: it writes into their agent configs. Its last question, whether to add its always-on habit lines to those configs, is theirs to answer. Show them the two lines it prints, and run the install again with the flag they pick:
+
+```sh
+npx @open-artifacts/bus install --habits     # on their yes
+npx @open-artifacts/bus install --no-habits  # on their no
+```
+
+Check it afterwards:
+
+```sh
+npx @open-artifacts/bus status
+```
+
+`npx @open-artifacts/bus doctor` says why a machine isn't connecting, and `https://artifacts.example.com/bus` lists the machines and agents the instance sees. A machine where one agent works across several repositories needs `npx @open-artifacts/bus global add <its start directory>` so the other agents can reach it from anywhere. To remove the client, uninstall it; the machine token goes with the purge form:
+
+```sh
+npx @open-artifacts/bus uninstall
+npx @open-artifacts/bus uninstall --purge
+```
+
+What the client is not: it is not a second copy of the MCP tools, and installing it does not change how an agent publishes. An agent with only the MCP server works; it just cannot reach another agent.

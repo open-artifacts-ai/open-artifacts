@@ -8,7 +8,7 @@ Upgrades keep all your artifacts, versions, shares, and live-page data. Database
 
 ## Steps
 
-1. **Go to the existing install:** `cd` into the directory setup cloned into (by default `~/open-artifacts`). If it's gone, for example on a new machine or in CI, clone the latest release as in [setup](/docs/setup/) and continue from step 3. Without its saved state, add the install's `--name` (and `--account-id` if the login has several accounts); setup reads the hosts and owner email from the deployed Worker. It also re-verifies Access, so you may need the Access token again if the Cloudflare login can't read Access; save it as in [setup](/docs/setup/).
+1. **Go to the existing install:** `cd` into the directory setup cloned into (by default `~/open-artifacts`). That path is only the default. The install directory is the one holding `.openartifacts/state.json`, which is where setup saved the hostnames, the owner email and the deployed version, and the directory every step below runs from, including a rollback. If you can't tell which directory it is, look for `.openartifacts/state.json` there, and if that doesn't find it, ask the user which directory they cloned into. Don't guess and don't clone a second copy while the first exists: a new copy has no state, so setup asks for every value again and the rollback can't run. If the directory is gone, for example on a new machine or in CI, clone the latest release as in [setup](/docs/setup/) and continue from step 3. Without its saved state, add the install's `--name` (and `--account-id` if the login has several accounts); setup reads the hosts and owner email from the deployed Worker. It also re-verifies Access, so you may need the Access token again if the Cloudflare login can't read Access; save it as in [setup](/docs/setup/).
 2. **Check out the latest release.** This is the latest stable GitHub release; pre-releases are skipped. Release tags look like `vX.Y.Z`:
 
    ```sh
@@ -20,13 +20,29 @@ Upgrades keep all your artifacts, versions, shares, and live-page data. Database
    If `TAG` comes back empty or `curl` fails, stop and tell the user: "Open Artifacts has no stable release yet; check back later."
 
    An instance below 0.109.0 upgrades to `v0.109.0` first, then to the latest: from 0.109.0 the agent bus's storage ships one release before the code that turns it on. Setup stops with `action_required` and says so.
-3. **Install dependencies:** `pnpm install`.
+3. **Install dependencies:** `pnpm install`. An install made by an older release has a `node_modules` directory from an older pnpm, or from another package manager, so pnpm first wants to purge it and reinstall it from the lockfile. With no terminal to answer its question, it stops at `ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY`. The purge is expected and loses nothing; it discards only installed packages, which the lockfile restores. Answer it in the same command:
+
+   ```sh
+   pnpm install --frozen-lockfile --config.confirmModulesPurge=false
+   ```
 4. **Preview, if you like:** `pnpm --reporter=silent oa:setup --upgrade --check --json` is read-only. It reports each step as `done` or `todo` without changing anything, so you can see what the upgrade would do. Steps that always run show `todo`; that isn't pending work.
 5. **Run the upgrade:** `pnpm --reporter=silent oa:setup --upgrade --json`. It reuses the hostnames and email saved by setup. Every step runs, but only `deploy` (new database migrations, then a redeploy), `healthcheck`, `selftest` and `agent-config` do work: `prereqs` reports `ok` (its `data.warnings` and `data.notes` hold plan warnings and notes) and `resources` verifies, and `access`, `secrets` and `owner-token` report `skipped` unless something is missing. It keeps the existing owner token and needs no `OA_ACCESS_TOKEN` when the state is saved. It never creates resources: if one is missing, it reports `action_required` and asks for a full setup. Go by the exit code, as in setup:
    - **0:** done.
    - **2:** relay the `action_required` line's `message` to the user verbatim, wait until they've done it, then run the same command again.
    - **1:** show the user the `error` line's `message`. If it says to rerun setup without `--upgrade`, run `pnpm --reporter=silent oa:setup --json`, then the upgrade again. That run may need the Access token again. Get its save line from `pnpm --reporter=silent oa:setup --token-links --json` (`saveCommand`) and have the user run it in their own terminal (in Claude Code, type `! ` then the line). Never paste a token into the chat. If `read` fails, the shell can't hide input, so use a real terminal. Setup then reads `~/.open-artifacts/<name>-access-token`.
-6. **Tell the user** which version is now running: the `deploy` line's `data.deployedVersion`.
+6. **Offer the bus client.** The upgrade leaves the instance able to carry bus traffic (its `BUS_HUB` binding is part of the deployed config), but no agent is connected to it yet: that takes a client on each machine that runs an agent. Ask the user first, because it writes to their agent configs and needs their approval:
+
+   ```sh
+   npx @open-artifacts/bus install --instance https://<your-app-host>
+   ```
+
+   It opens the user's browser to approve the machine, saves a machine token to `~/.oa-bus/machine.json`, configures the agents it finds on the machine, and starts the daemon. At the end it asks the user whether to add its always-on habit lines to their agent instructions: that question is theirs, so relay the two lines it prints and run the install again with the flag they choose, shown below. Check it with `npx @open-artifacts/bus status`, and send the user to `https://<your-app-host>/bus` to see the machines and agents. A machine where one agent works across several repositories needs `npx @open-artifacts/bus global add <its start directory>` so the other agents can reach it from anywhere. If the user says no, say the server is on and the client is not, and leave it.
+
+   ```sh
+   npx @open-artifacts/bus install --habits     # on their yes
+   npx @open-artifacts/bus install --no-habits  # on their no
+   ```
+7. **Tell the user** which version is now running: the `deploy` line's `data.deployedVersion`.
 
 ## The guarded migration (0017, image format)
 
