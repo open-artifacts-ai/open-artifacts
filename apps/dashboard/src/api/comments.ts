@@ -7,6 +7,7 @@ import {
   CommentSchema,
   CommentThreadSchema,
   MENTIONS_MAX,
+  type Me,
   type NewThreadBody,
   R,
   type ReplyBody,
@@ -20,7 +21,13 @@ import {
   withMintLock,
 } from "../viewer/anonId";
 import { ApiClientError, api, type RequestExtra } from "./client";
-import { cappedCopy } from "./errorCopy";
+import {
+  billingContext,
+  cappedCopy,
+  type ErrorContext,
+  errorCopy,
+} from "./errorCopy";
+import { qk } from "./queries";
 
 export const commentsKey = (id: string) => ["comments", id] as const;
 
@@ -185,8 +192,37 @@ const wait = (s: number) =>
     ? `${Math.max(1, s)} second${s <= 1 ? "" : "s"}`
     : `${Math.ceil(s / 60)} minutes`;
 
+const isPlanRefusal = (code: string | null) =>
+  code === "plan_required" || code === "plan_read_only";
+
+/** No Me (anonymous) or a capped account: billing details never reach them. */
+const planOutsider = (ctx?: ErrorContext) => !ctx || ctx.capped === true;
+
+/** Who the caller is for the plan copy (owners read the action, members whom to ask). */
+// A missing Me is an outsider: a signed-out viewer never reaches a plan code
+// (authz.ts:449, the 401 path), so this is the safe default while Me loads or fails.
+export const commentErrorCtx = (me: Me | null | undefined): ErrorContext =>
+  me
+    ? {
+        ...billingContext(me),
+        // Only a guest or restricted account is an outsider; cap "plan" is a
+        // locked instance's member or admin, who keep the plan copy.
+        capped: me.auth?.cap === "guest" || me.auth?.cap === "restricted",
+      }
+    : { capped: true };
+
+export const useCommentErrorCtx = (): ErrorContext => {
+  // Read the cached Me; a comment surface never fetches it just for error copy.
+  const qc = useQueryClient();
+  return commentErrorCtx(qc.getQueryData<Me>(qk.me));
+};
+
 /** The copy for a failed comment call (Product's strings where the spec has them). */
-export function commentError(e: unknown, capped = false): string {
+export function commentError(
+  e: unknown,
+  capped = false,
+  ctx?: ErrorContext,
+): string {
   if (e instanceof TooManyMentions)
     return `Mention at most ${MENTIONS_MAX} agents in one comment.`;
   const code = e instanceof ApiClientError ? e.code : null;
@@ -197,6 +233,11 @@ export function commentError(e: unknown, capped = false): string {
     (code === "not_found" || code === "forbidden" || code === "space_forbidden")
   )
     return cappedCopy("comment");
+  // The plan cap refuses a comment write: the plan copy the rest of the app uses.
+  if (isPlanRefusal(code))
+    return planOutsider(ctx)
+      ? cappedCopy("comment")
+      : errorCopy(e, "Couldn't post your comment. Try again.", ctx);
   switch (code) {
     case "rate_limited":
       return e instanceof ApiClientError && e.retryAfter
@@ -226,7 +267,11 @@ export function commentError(e: unknown, capped = false): string {
 }
 
 /** Copy for a failed answer: 403 not asked, 409 closed, 400 unknown option. */
-export function answerError(e: unknown): string {
+export function answerError(e: unknown, ctx?: ErrorContext): string {
+  if (e instanceof ApiClientError && isPlanRefusal(e.code))
+    return planOutsider(ctx)
+      ? cappedCopy("answer")
+      : errorCopy(e, "Couldn't send your answer. Try again.", ctx);
   const status = e instanceof ApiClientError ? e.status : 0;
   if (status === 403)
     return "Only the people this ask is addressed to can answer.";

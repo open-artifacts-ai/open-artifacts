@@ -78,9 +78,10 @@ const Waiting = ({ children }: { children: string }) => (
  * (R.onboarding), so every browser agrees and a finished list stays gone.
  */
 export function GetStarted({
-  hasArtifacts,
+  hasArtifacts: inLibrary,
   loaded,
 }: {
+  /** An own artifact is on the Library pages already loaded. */
   hasArtifacts: boolean;
   loaded: boolean;
 }) {
@@ -97,6 +98,8 @@ export function GetStarted({
   const tokens = useTokens(live);
   const clients = useOAuthClients(live);
   const members = useMembers(undefined, live);
+  // The server says so even when the own artifact is past the loaded pages (#1832).
+  const hasArtifacts = inLibrary || onboarding.data?.hasArtifacts === true;
   const connected =
     (tokens.data?.length ?? 0) > 0 || (clients.data?.length ?? 0) > 0;
   const invited = (members.data ?? []).some(
@@ -128,7 +131,10 @@ export function GetStarted({
         void qc.invalidateQueries({ queryKey: qk.oauthClients });
       }
       if (!invited) void qc.invalidateQueries({ queryKey: qk.members });
-      if (!hasArtifacts) void qc.invalidateQueries({ queryKey: ["artifacts"] });
+      if (!hasArtifacts) {
+        void qc.invalidateQueries({ queryKey: qk.onboarding });
+        void qc.invalidateQueries({ queryKey: ["artifacts"] });
+      }
     }, BUS_POLL_MS);
     return () => clearInterval(t);
   }, [live, all, qc, connected, invited, hasArtifacts]);

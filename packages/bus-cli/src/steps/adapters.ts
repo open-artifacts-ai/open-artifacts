@@ -68,6 +68,14 @@ import {
   openclawPluginState,
   uninstallOpenclaw,
 } from "./openclaw.ts";
+import {
+  moveEntry,
+  PI_ENTRY_FILE,
+  PI_MIN_VERSION,
+  type PiEntryIo,
+  pendingEntry,
+  restoreEntry,
+} from "./pi-proof.ts";
 
 export type Exec = (
   cmd: string,
@@ -204,6 +212,12 @@ const paths = (deps: AdapterDeps) => {
     ],
     opencodeCli: join(opencode, "cli.json"),
     record: join(busDir, "install.json"),
+    // #1856: Pi's own MCP config, and where install keeps the entry it moved.
+    piMcp: join(
+      agentDirEnv(deps.home, env) ?? join(deps.home, ".pi/agent"),
+      "mcp.json",
+    ),
+    piEntry: join(busDir, PI_ENTRY_FILE),
     // OpenCode registers the folder that holds tui.js.
     opencodePlugin: join(busDir, "integrations/opencode", NAME),
     pi: join(
@@ -447,6 +461,50 @@ function claudeProof(deps: AdapterDeps, notes: string[]) {
   }
 }
 
+const piEntryIo = (deps: AdapterDeps): PiEntryIo => ({
+  file: paths(deps).piMcp,
+  moved: paths(deps).piEntry,
+  write: writeAtomic,
+});
+
+/**
+ * #1856: the instance's /mcp entry leaves Pi's mcp.json, so the extension can
+ * register it with the session's proof (Pi lets an mcp.json entry beat a
+ * registered server). Only for a Pi that has `registerMcpServer`, so an older
+ * one keeps its entry. Never stops the install.
+ */
+async function piEntry(deps: AdapterDeps, notes: string[]) {
+  if (deps.hub === undefined) return;
+  try {
+    const io = piEntryIo(deps);
+    const name = pendingEntry(io, deps.hub);
+    if (name === undefined) return;
+    // omp may read this same folder, and has no registerMcpServer: it would lose its tools.
+    if (sharedFile(deps) && hasOmp(deps)) {
+      notes.push(
+        `left the ${name} entry in ${io.file} as it is: oh-my-pi reads the same file, and moving the entry would take its tools away. Pi won't show as its own session on pages.`,
+      );
+      return;
+    }
+    const r = await run(deps, "pi", ["--version"]);
+    const version = r.code === 0 ? r.stdout.trim().split(/\s+/)[0] : undefined;
+    if (
+      version === undefined ||
+      (compareVersions(version, PI_MIN_VERSION) ?? -1) < 0
+    ) {
+      notes.push(
+        `left the ${name} entry in ${io.file} as it is: Pi needs ${PI_MIN_VERSION} or later to show as its own session on pages. Its tools still work.`,
+      );
+      return;
+    }
+    moveEntry(io, deps.hub);
+  } catch (e) {
+    notes.push(
+      `could not set up the Open Artifacts entry in Pi's mcp.json: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
 const proofIo = (deps: AdapterDeps): ProofIo => ({
   file: paths(deps).claude,
   record: paths(deps).record,
@@ -577,13 +635,14 @@ const install: Record<Harness, Step> = {
     return "done";
   },
 
-  async pi(deps) {
+  async pi(deps, notes) {
     if (!deps.which("pi")) return "absent";
     writeAtomic(
       paths(deps).pi,
       withHome(deps.assets.pi, movedHome(deps)),
       0o644,
     );
+    await piEntry(deps, notes);
     return "done";
   },
 
@@ -710,16 +769,29 @@ const uninstall: Record<Harness, Step> = {
     return saved.some(Boolean) ? "done" : "folder";
   },
 
-  async pi(deps) {
+  async pi(deps, notes) {
+    // The entry goes back first: it is the user's, and works without the extension.
+    const io = piEntryIo(deps);
+    let restored = false;
+    try {
+      restored = restoreEntry(io);
+    } catch (e) {
+      // The extension and the moved file stay, so Pi keeps its Open Artifacts tools.
+      notes.push(
+        `Kept the Pi extension and ${io.moved}: could not put the Open Artifacts entry back in ${io.file} (${e instanceof Error ? e.message : String(e)}). Fix that file, then run uninstall again.`,
+      );
+      throw new Error("kept the extension, the entry is still moved");
+    }
     const path = paths(deps).pi;
-    if (!existsSync(path)) return "none";
+    if (!existsSync(path)) return restored ? "done" : "none";
     rmSync(path, { force: true });
     return "done";
   },
 
   async omp(deps, _notes, done) {
-    // Pi's step removed the one file both loaded.
+    // Pi's step removed the one file both loaded, or kept it for the entry it could not put back.
     if (sharedFile(deps) && done.includes("pi")) return "done";
+    if (sharedFile(deps) && existsSync(paths(deps).piEntry)) return "none";
     const path = paths(deps).omp;
     if (!existsSync(path)) return "none";
     rmSync(path, { force: true });
@@ -776,6 +848,19 @@ async function each(
   }
   return { done, folder, absent, skipped };
 }
+
+/** Notes the commands do not already show with their own line (a flag of the result). */
+export const unshownNotes = (notes: string[]) =>
+  notes.filter(
+    (n) =>
+      n !== CODEX_NO_BIN &&
+      n !== HERMES_NO_CLI &&
+      n !== OPENCLAW_NO_CLI &&
+      n !== OPENCLAW_NIX &&
+      // The service line says it, and the removal is already in "Removed from".
+      !n.startsWith(RESTART_FAILED) &&
+      !n.startsWith("removed oa_bus from "),
+  );
 
 /** Registers Open Artifacts bus with every harness on PATH; a broken one is skipped, never clobbered. */
 export async function installAdapters(
