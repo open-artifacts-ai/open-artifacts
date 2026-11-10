@@ -23,6 +23,14 @@ export type ProofDeps = {
 const isClaude = (name: string) =>
   name === "claude" || /\/claude\/versions\/[^/]+$/.test(name);
 
+/** One `ps -o ppid=,comm=` line. The full path is kept when it is Claude's versions file. */
+export function parsePs(out: string): { ppid: number; name: string } | null {
+  const m = /^(\d+)\s+(.+)$/.exec(out.trim());
+  if (!m) return null;
+  const comm = m[2] as string;
+  return { ppid: Number(m[1]), name: isClaude(comm) ? comm : basename(comm) };
+}
+
 /** `/proc` on Linux; `ps` elsewhere. */
 function readProc(pid: number): { ppid: number; name: string } | null {
   try {
@@ -41,8 +49,7 @@ function readProc(pid: number): { ppid: number; name: string } | null {
       ["-o", "ppid=,comm=", "-p", String(pid)],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     ).trim();
-    const m = /^(\d+)\s+(.+)$/.exec(out);
-    return m ? { ppid: Number(m[1]), name: basename(m[2] as string) } : null;
+    return parsePs(out);
   } catch {
     return null;
   }
