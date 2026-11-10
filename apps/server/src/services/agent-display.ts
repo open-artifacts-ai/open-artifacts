@@ -258,7 +258,16 @@ export const clashes = (c: NameClashes, u: Member): boolean => {
 };
 
 /** Who is reading, for what an agent shows. `guest`: signed out, or a guest-role member. */
-export type FaceViewer = { userId: string | null; guest: boolean };
+export type FaceViewer = {
+  userId: string | null;
+  guest: boolean;
+  /**
+   * Signed out, a guest role, or a guest or restricted cap (never the plan
+   * cap): gets no linked, product or animal, so the stable animal id cannot
+   * join one agent's masked comments across artifacts (#1890).
+   */
+  outsider?: boolean;
+};
 
 /**
  * "for <this>" on an agent: the owner's name when it is theirs alone; on a
@@ -306,9 +315,13 @@ export function agentFace(
     return {
       ...base,
       name: v.guest && !me ? agentOwnedBy(owner, c) : bus,
-      linked: true,
-      ...(product ? { product } : {}),
-      animal: faceOf(a.identity.identityId),
+      ...(v.outsider
+        ? {}
+        : {
+            linked: true,
+            ...(product ? { product } : {}),
+            animal: faceOf(a.identity.identityId),
+          }),
     };
   }
   // An unlinked grant's client name is self-asserted: shown only when it is
@@ -334,7 +347,7 @@ export function agentFace(
   return {
     ...base,
     name: name.trim() === "" ? "Agent" : name,
-    linked: false,
+    ...(v.outsider ? {} : { linked: false }),
   };
 }
 

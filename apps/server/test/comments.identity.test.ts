@@ -226,10 +226,8 @@ describe("party faces (#1890)", () => {
     const s = await scene({ current: IDENT });
     await s.post({ mentions: [{ key: s.key }], ...asks(s.key) });
     const c = (await s.list(GUEST)).threads[0]?.comments[0];
-    expect(c?.mentions?.[0]).toMatchObject({
-      linked: true,
-      animal: faceOf(IDENT.identityId),
-    });
+    expect(c?.mentions?.[0]).not.toHaveProperty("animal");
+    expect(c?.mentions?.[0]).not.toHaveProperty("linked");
     expect(c?.mentions?.[0]?.name).toBe(`${s.owner.member.name}'s agent`);
     expect(JSON.stringify(c)).not.toContain("Runner");
   });

@@ -221,14 +221,16 @@ describe("agent faces (#1822)", () => {
     });
   });
 
-  it("a guest sees <person>'s agent and the animal, never the bus name", async () => {
+  it("a guest sees <person>'s agent and no face, never the bus name", async () => {
     const owner = await mk("f-own", newName());
     const id = await pub(owner);
     await post(id, owner, agentWho(owner, IDENT));
     const c = await first(id, GUEST);
     expect(c?.author.name).toBe(`${nm}'s agent`);
-    expect(c?.author.animal).toBeDefined();
-    expect(c?.author.linked).toBe(true);
+    // No animal, product or linked: a stable id across artifacts.
+    expect(c?.author.animal).toBeUndefined();
+    expect(c?.author.linked).toBeUndefined();
+    expect(c?.author.product).toBeUndefined();
     expect(JSON.stringify(c)).not.toContain("OA Product");
     // A guest-role member is a guest too.
     const g = await first(id, { ...signedIn(await mk("f-g")), guest: true });
@@ -241,7 +243,8 @@ describe("agent faces (#1822)", () => {
     const b = await pub(owner);
     await post(a, owner, agentWho(owner, IDENT));
     await post(b, owner, agentWho(owner, IDENT));
-    const [x, y] = [await first(a, GUEST), await first(b, GUEST)];
+    const viewer = signedIn(await mk("f-v"));
+    const [x, y] = [await first(a, viewer), await first(b, viewer)];
     expect(x?.author.animal).toEqual(y?.author.animal);
   });
 
