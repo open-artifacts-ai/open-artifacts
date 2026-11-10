@@ -465,6 +465,16 @@ function sendFrame(ws: WebSocket, frame: ServerFrame): void {
   }
 }
 
+/** #1752: like sendFrame, but false when the socket refused the frame (closing or closed), so a notice is not counted delivered. */
+function trySendFrame(ws: WebSocket, frame: ServerFrame): boolean {
+  try {
+    ws.send(encodeFrame(frame));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function sendError(
   ws: WebSocket,
   id: string | undefined,
@@ -6147,12 +6157,15 @@ export class BusHub extends DurableObject<Env> {
     const socket = live && noticeGated(live) ? live : null;
     const notBefore = n.notBefore ?? now;
     if (socket && notBefore <= now) {
-      sql.exec(
-        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-        ...key,
-      );
-      sendFrame(socket, noticeFrame(agent, n.text));
-      return "delivered";
+      // A socket that refuses the frame (#1752) leaves the notice held
+      // (parked) for the next agent_up, never stored as delivered.
+      if (trySendFrame(socket, noticeFrame(agent, n.text))) {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          ...key,
+        );
+        return "delivered";
+      }
     }
     const exists =
       one<{ x: number }>(
@@ -6210,13 +6223,13 @@ export class BusHub extends DurableObject<Env> {
     for (const r of rows) {
       // The address resolves to this agent now, or the notice is not its.
       if (liveVisibleIn(sql, r.toNs, r.toLname)?.id !== agent.id) continue;
+      if (!trySendFrame(ws, noticeFrame(agent, r.text))) break;
       sql.exec(
         "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
         r.toNs,
         r.toLname,
         r.ckey,
       );
-      sendFrame(ws, noticeFrame(agent, r.text));
     }
     // A full batch: more may wait. Hand the rest to the alarm (it sends in
     // bounded steps to this live socket) instead of leaving them parked.
@@ -6254,14 +6267,13 @@ export class BusHub extends DurableObject<Env> {
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
       const live = agent && liveSocket(this.ctx, agent.machineId);
       const socket = live && noticeGated(live) ? live : null;
-      if (agent && socket) {
+      if (agent && socket && trySendFrame(socket, noticeFrame(agent, r.text))) {
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
           r.toNs,
           r.toLname,
           r.ckey,
         );
-        sendFrame(socket, noticeFrame(agent, r.text));
       } else if (agent) {
         sql.exec(
           "update notices set parked = 1 where to_ns = ? and to_lname = ? and ckey = ?",

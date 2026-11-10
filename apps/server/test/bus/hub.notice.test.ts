@@ -523,6 +523,34 @@ describe("a daemon that cannot decode notices (#1746)", () => {
   });
 });
 
+describe("a socket that refuses the frame (#1752)", () => {
+  it("holds the notice, not delivered, and sends it on the next agent_up", async () => {
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    // The server side of the socket throws on send, as a closing socket does.
+    await inHub(s.userId, (_, st) => {
+      for (const ws of st.getWebSockets())
+        ws.send = () => {
+          throw new Error("closed");
+        };
+    });
+    const n = note({ namespace: s.namespace, name: s.name });
+    expect(await stub.deliverNotice(n)).toBe("held");
+    expect(await waiting(s.userId)).toBe(1);
+
+    await goOffline(s.d, s.machineId, s.userId);
+    const d2 = await daemon(s.token);
+    d2.send(hello(id("h")));
+    await waitFor(d2, "hello_ok");
+    d2.send(up(id("u"), s.ref, s.name, s.namespace));
+    const f = await waitFor(d2, "deliver");
+    expect(f.body).toBe(n.text);
+    expect(await waiting(s.userId)).toBe(0);
+  });
+});
+
 describe("notices reach only the addressed agent (#1317)", () => {
   it("sends to the addressed machine's socket, never another machine's", async () => {
     const s = await setup();
