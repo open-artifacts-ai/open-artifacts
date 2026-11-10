@@ -211,6 +211,13 @@
       "when": 1794218703944,
       "tag": "0029_artifact_asks",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "6",
+      "when": 1794318361980,
+      "tag": "0030_data_writes_total",
+      "breakpoints": true
     }
   ]
 }

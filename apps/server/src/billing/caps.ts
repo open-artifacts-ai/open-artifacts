@@ -18,6 +18,11 @@ import { billingActive } from "./plan.js";
 //   pass).
 // - FREE_DATA_DAILY_WRITES: live-data writes per artifact per UTC day,
 //   below the instance's own DATA_DAILY_WRITES. Past it, 403 plan_limit.
+// - FREE_DATA_DAILY_WRITES_TOTAL: live-data writes per install per UTC day,
+//   across all artifacts (viewer and anonymous writes included). One D1 row
+//   (data_writes_total), bumped by the write's own check, so no read or
+//   write happens while the cap is off. Past it, 403 plan_limit. A write
+//   that passes this check and then fails (a bad body) still counts.
 // The checks run before the write (a soft cap: two concurrent writes at the
 // edge may both pass).
 
@@ -34,12 +39,16 @@ const positive = (raw: string | undefined): number | null => {
 export const freeCapsOf = (
   env: Pick<
     Env,
-    "FREE_STORAGE_BYTES" | "FREE_DATA_DOCS" | "FREE_DATA_DAILY_WRITES"
+    | "FREE_STORAGE_BYTES"
+    | "FREE_DATA_DOCS"
+    | "FREE_DATA_DAILY_WRITES"
+    | "FREE_DATA_DAILY_WRITES_TOTAL"
   >,
 ): FreeCaps => ({
   storage_bytes: positive(env.FREE_STORAGE_BYTES),
   data_docs: positive(env.FREE_DATA_DOCS),
   data_daily_writes: positive(env.FREE_DATA_DAILY_WRITES),
+  data_daily_writes_total: positive(env.FREE_DATA_DAILY_WRITES_TOTAL),
 });
 
 /** The caps that apply now: hosted, on the solo (or transition free) tier; else null. */
@@ -113,14 +122,43 @@ export async function requireFreeData(
   adds: boolean,
 ): Promise<void> {
   const caps = activeFreeCaps(env);
-  if (!caps || (caps.data_docs === null && caps.data_daily_writes === null))
-    return;
-  const u = await usage();
-  if (
-    caps.data_daily_writes !== null &&
-    u.writesToday >= caps.data_daily_writes
+  if (!caps) return;
+  if (caps.data_docs !== null || caps.data_daily_writes !== null) {
+    const u = await usage();
+    if (
+      caps.data_daily_writes !== null &&
+      u.writesToday >= caps.data_daily_writes
+    )
+      throw planLimitError("data_daily_writes", caps.data_daily_writes);
+    if (
+      adds &&
+      caps.data_docs !== null &&
+      !u.exists &&
+      u.docs >= caps.data_docs
+    )
+      throw planLimitError("data_docs", caps.data_docs);
+  }
+  // Last, so a write the per-artifact caps refuse is not counted here.
+  if (caps.data_daily_writes_total !== null)
+    await countTotalWrite(env, caps.data_daily_writes_total);
+}
+
+/**
+ * FREE_DATA_DAILY_WRITES_TOTAL: counts one write against today's install-wide
+ * total, or refuses it at `max`. One atomic statement: the upsert bumps the
+ * row (restarting it on a new UTC day) only while under `max`, and returns
+ * nothing when it did not.
+ */
+async function countTotalWrite(env: Env, max: number): Promise<void> {
+  const day = Math.floor(Date.now() / 86_400_000);
+  const r = await env.DB.prepare(
+    `insert into data_writes_total (id, day, n) values (1, ?1, 1)
+     on conflict(id) do update set
+       n = case when day = ?1 then n + 1 else 1 end, day = ?1
+     where day <> ?1 or n < ?2
+     returning n`,
   )
-    throw planLimitError("data_daily_writes", caps.data_daily_writes);
-  if (adds && caps.data_docs !== null && !u.exists && u.docs >= caps.data_docs)
-    throw planLimitError("data_docs", caps.data_docs);
+    .bind(day, max)
+    .first<{ n: number }>();
+  if (!r) throw planLimitError("data_daily_writes_total", max);
 }

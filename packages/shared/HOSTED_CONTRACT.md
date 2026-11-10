@@ -423,9 +423,12 @@ Free-tier caps (configuration; each OFF until set, positive integers):
 live artifact, history included, each distinct blob once (an inline file by
 its content digest, an upload by its key), trashed artifacts excluded),
 `FREE_DATA_DOCS` (live-data docs per artifact), `FREE_DATA_DAILY_WRITES`
-(live-data writes per artifact per UTC day). On the free tier only, past one:
+(live-data writes per artifact per UTC day), `FREE_DATA_DAILY_WRITES_TOTAL`
+(live-data writes per install per UTC day, across all artifacts, viewer and
+anonymous writes included; a single D1 counter row, read and bumped only
+while the cap is on). On the free tier only, past one:
 403 `plan_limit`, details `PlanLimitDetails { tier: "solo", limit, max }` (a server from before Solo sent tier "free", still accepted)
-(`limit` storage_bytes | data_docs | data_daily_writes).
+(`limit` storage_bytes | data_docs | data_daily_writes | data_daily_writes_total).
 
 A creator (the bill) is a user who published a version, or wrote live data
 at editor level or above, in the UTC month, by any credential (an agent

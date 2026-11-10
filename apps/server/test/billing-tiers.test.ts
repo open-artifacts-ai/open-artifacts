@@ -473,6 +473,71 @@ describe("free-tier caps: config, off until set", () => {
     expect((await put(e, id, "z")).status).toBe(200);
   });
 
+  it("FREE_DATA_DAILY_WRITES_TOTAL: counts writes across artifacts, refuses past it, restarts on a new UTC day", async () => {
+    await cachePlan(FREE, mid);
+    await env.DB.prepare("delete from data_writes_total").run();
+    const count = async () =>
+      (
+        await env.DB.prepare("select n from data_writes_total").first<{
+          n: number;
+        }>()
+      )?.n ?? null;
+    const e = { ...H, FREE_DATA_DAILY_WRITES_TOTAL: "3" } as Env;
+    const a = ((await (await publish(e)).json()) as { id: string }).id;
+    const b2 = ((await (await publish(e)).json()) as { id: string }).id;
+    expect((await put(e, a, "x")).status).toBe(200);
+    expect((await put(e, b2, "x")).status).toBe(200);
+    expect((await put(e, a, "y")).status).toBe(200);
+    const over = await put(e, b2, "y");
+    expect(over.status).toBe(403);
+    expect(await errOf(over)).toMatchObject({
+      code: "plan_limit",
+      details: { tier: "solo", limit: "data_daily_writes_total", max: 3 },
+    });
+    expect(await count()).toBe(3);
+    // Another UTC day: the count restarts.
+    vi.setSystemTime(mid + DAY);
+    try {
+      expect((await put(e, b2, "y")).status).toBe(200);
+      expect(await count()).toBe(1);
+    } finally {
+      vi.setSystemTime(mid);
+    }
+    // A paid tier: never capped, never counted.
+    await env.DB.prepare("delete from data_writes_total").run();
+    await cachePlan(row({ tier: "team", version: 2 }), mid);
+    for (const d of ["a", "b", "c", "d"])
+      expect((await put(e, a, d)).status).toBe(200);
+    expect(await count()).toBeNull();
+  });
+
+  it("FREE_DATA_DAILY_WRITES_TOTAL: off or invalid counts nothing; a write the per-artifact cap refuses is not counted", async () => {
+    await cachePlan(FREE, mid);
+    await env.DB.prepare("delete from data_writes_total").run();
+    const n = async () =>
+      (
+        await env.DB.prepare(
+          "select coalesce(sum(n), 0) as n from data_writes_total",
+        ).first<{ n: number }>()
+      )?.n;
+    const id = ((await (await publish(H)).json()) as { id: string }).id;
+    for (const v of [undefined, "", "0", "-1", "abc"])
+      expect(
+        (await put({ ...H, FREE_DATA_DAILY_WRITES_TOTAL: v } as Env, id, "a"))
+          .status,
+      ).toBe(200);
+    expect(await n()).toBe(0);
+    const e = {
+      ...H,
+      FREE_DATA_DOCS: "1",
+      FREE_DATA_DAILY_WRITES_TOTAL: "10",
+    } as Env;
+    const id2 = ((await (await publish(e)).json()) as { id: string }).id;
+    expect((await put(e, id2, "a")).status).toBe(200);
+    expect((await put(e, id2, "b")).status).toBe(403);
+    expect(await n()).toBe(1);
+  });
+
   it("set: stored bytes refuse an upload past the cap, and publishing once it is reached", async () => {
     await cachePlan(FREE, mid);
     const id = ((await (await publish(H)).json()) as { id: string }).id;
