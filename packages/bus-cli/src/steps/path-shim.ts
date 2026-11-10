@@ -194,10 +194,15 @@ const executable = (f: string) => {
 /** Read-only, for doctor: what `oa-bus` resolves to, and whether that is this install. undefined on Windows. */
 export function shimState(o: ShimOpts): ShimState | undefined {
   if (isWindows(o.platform)) return undefined;
-  // npx puts its cache's node_modules/.bin first, holding the package's own
-  // oa-bus: that is not the command a person types.
+  // npx puts its cache's node_modules/.bin (under `_npx`) first, holding the
+  // package's own oa-bus: not the command a person types. A project's own
+  // node_modules/.bin still counts.
   const dirs = pathDirs(o.env.PATH).filter(
-    (d) => !d.endsWith(`${sep}node_modules${sep}.bin`),
+    (d) =>
+      !(
+        d.endsWith(`${sep}node_modules${sep}.bin`) &&
+        d.split(sep).includes("_npx")
+      ),
   );
   for (const dir of dirs) {
     const file = join(dir, NAME);

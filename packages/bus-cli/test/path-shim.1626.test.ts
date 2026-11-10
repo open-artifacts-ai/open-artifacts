@@ -214,6 +214,17 @@ describe("review fixes (#1626)", () => {
     );
   });
 
+  it("a project's own node_modules/.bin oa-bus is still seen", () => {
+    const w = world();
+    installShim({ ...w, env: { PATH: `${w.local}:/usr/bin` } });
+    const proj = join(tmp(), "project", "node_modules", ".bin");
+    mkdirSync(proj, { recursive: true });
+    writeFileSync(join(proj, "oa-bus"), "#!/bin/sh\n", { mode: 0o755 });
+    expect(
+      shimState({ ...w, env: { PATH: `${proj}:${w.local}:/usr/bin` } }),
+    ).toMatchObject({ kind: "other", path: join(proj, "oa-bus") });
+  });
+
   it("install never replaces our shim that names another bus home", () => {
     const w = world();
     const env = { PATH: `${w.local}:/usr/bin` };
