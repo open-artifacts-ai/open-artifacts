@@ -91,7 +91,13 @@ export function agentFor(
   viewerId: string | null,
 ): AgentRef {
   if (via === SCRUBBED_VIA) return { ...agent, masked: true };
-  if (!isPrivateAgent(via) || viewerId === publisher.id) return agent;
+  if (!isPrivateAgent(via))
+    return {
+      name: knownProduct(agent.name) ?? ownersAgent(publisher),
+      version: agent.version,
+      ...(knownProduct(agent.name) ? {} : { masked: true }),
+    };
+  if (viewerId === publisher.id) return agent;
   return { name: ownersAgent(publisher), version: agent.version, masked: true };
 }
 
@@ -117,6 +123,16 @@ const PRODUCTS: Record<string, string> = {
   omp: "omp",
   hermes: "Hermes",
   openclaw: "OpenClaw",
+};
+
+/**
+ * The product a grant's self-asserted client name stands for: only an exact
+ * match of a known product (case-insensitive, after cleanName), in canonical
+ * casing; else null. A client never names itself anything else (#1894).
+ */
+export const knownProduct = (name: string): string | null => {
+  const given = (cleanName(name) ?? "").toLowerCase();
+  return Object.values(PRODUCTS).find((p) => p.toLowerCase() === given) ?? null;
 };
 
 /** The face of one bus identity, the same on every artifact. Never returns the id. */
