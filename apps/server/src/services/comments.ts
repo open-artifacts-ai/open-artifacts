@@ -20,7 +20,9 @@ import {
   bodyOk,
   type NewExtras,
   type StoredActor,
+  type StoredAgent,
   type StoredComment,
+  type StoredIdentity,
   type StoredParty,
   type StoredThread,
 } from "../runtime/comments-store.js";
@@ -32,6 +34,7 @@ import {
   forLine,
   type NameClashes,
   nameClashes,
+  partyIdentityFace,
   plainAgentName,
   shownName,
 } from "./agent-display.js";
@@ -44,6 +47,7 @@ import {
   indexStatus,
   reconcileAsks,
 } from "./asks.js";
+import { agentIdentityOf } from "./bus.js";
 import {
   agentRoster,
   askerRoster,
@@ -399,12 +403,39 @@ const partyView = (
   p.kind === "user"
     ? authorView({ kind: "user", ref: p.key }, viewer, users)
     : {
+        // A stored identity adds linked, product and animal (#1890); a party
+        // without one keeps this shape, with no `linked`.
+        ...identityFace(p, viewer, users),
         kind: "agent",
         id: p.key,
         name: agentName(p.name, users.users.get(p.owner), viewer, users.clash),
         for: forLine(users.users.get(p.owner), faceViewer(viewer), users.clash),
         me: viewer.userId !== null && viewer.userId === p.owner,
       };
+
+/** The identity fields of a named agent, from its stored identity; none without one. */
+const identityFace = (
+  p: {
+    name: string;
+    owner?: string;
+    identity?: StoredIdentity;
+  },
+  viewer: CommentViewer,
+  users: Ctx,
+): Pick<CommentAuthor, "linked" | "product" | "animal"> => {
+  if (!p.identity || !p.owner) return {};
+  const f = partyIdentityFace(
+    { name: p.name, owner: p.owner, identity: p.identity },
+    faceViewer(viewer),
+    users.users.get(p.owner),
+    users.clash,
+  );
+  return {
+    linked: f.linked,
+    ...(f.product ? { product: f.product } : {}),
+    ...(f.animal ? { animal: f.animal } : {}),
+  };
+};
 
 /** A roster agent's bus name; a guest sees "<owner>'s agent" instead (#1822). */
 const agentName = (
@@ -552,6 +583,7 @@ const commentOf = (
                   ),
                 }
               : {}),
+            ...identityFace(m, viewer, users),
             delivery: m.state as "delivered" | "queued" | "seen" | "gone",
           })),
         }
@@ -561,6 +593,7 @@ const commentOf = (
           assigned: {
             key: c.assigned.key,
             name: assignedName,
+            ...identityFace(c.assigned, viewer, users),
             state: c.assigned.state as "delivered" | "queued" | "seen" | "done",
           },
         }
@@ -730,6 +763,20 @@ async function resolveExtras(
     if (!a) throw unknownKey(key);
     return a;
   };
+  // #1890: the bus identity of each agent named, from its OWNER's hub. The
+  // owner is the roster entry's userId (validated above), never client input.
+  // Memoised per key; a miss or a slow hub leaves the identity off.
+  const ids = new Map<string, Promise<StoredIdentity | null>>();
+  const identityOf = (a: RosterAgent): Promise<StoredIdentity | null> => {
+    let p = ids.get(a.key);
+    if (!p) {
+      p = agentIdentityOf(env, a.userId, a.address);
+      ids.set(a.key, p);
+    }
+    return p;
+  };
+  const stored = async (a: RosterAgent): Promise<StoredAgent> =>
+    storedAgent(a, await identityOf(a));
   const mentioned: RosterAgent[] = [];
   for (const key of new Set((x.mentions ?? []).map((m) => m.key)))
     mentioned.push(await agentOf(key));
@@ -742,7 +789,7 @@ async function resolveExtras(
       if (to.some((p) => p.key === key)) continue;
       const a = await find(key);
       if (a) {
-        to.push(storedAgent(a));
+        to.push(await stored(a));
         asked.push(a);
         continue;
       }
@@ -770,8 +817,10 @@ async function resolveExtras(
     follow: [...new Map(toFollow.map((x) => [x.key, x])).values()],
     extras: {
       ...(ask ? { ask } : {}),
-      ...(mentioned.length ? { mentions: mentioned.map(storedAgent) } : {}),
-      ...(assigned ? { assign: storedAgent(assigned) } : {}),
+      ...(mentioned.length
+        ? { mentions: await Promise.all(mentioned.map(stored)) }
+        : {}),
+      ...(assigned ? { assign: await stored(assigned) } : {}),
     },
     agents: [...agents.values()],
     mentions: mentioned.map((m) => m.key),
@@ -972,7 +1021,7 @@ async function resolveToAsker(
     );
   const to = await askerRoster(env, artifactId, root.author.ref);
   return {
-    extras: to.length ? { asker: to.map(storedAgent) } : undefined,
+    extras: to.length ? { asker: to.map((a) => storedAgent(a)) } : undefined,
     agents: to.map((agent) => ({ agent, kind: "asker" as const })),
     follow: [],
     mentions: to.map((a) => a.key),

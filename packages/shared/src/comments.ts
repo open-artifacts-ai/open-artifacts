@@ -121,9 +121,18 @@ export const MentionDeliverySchema = z.enum([
   "seen",
   "gone",
 ]);
+/** #1890: a mentioned, assigned or asked agent's identity fields, as an author's (CommentAuthorSchema). Absent: unknown. */
+const partyFace = {
+  linked: z.boolean().optional(),
+  product: z.string().optional(),
+  animal: z
+    .object({ id: z.string(), color: z.number().int().min(0) })
+    .optional(),
+};
 export const CommentMentionSchema = z.object({
   key,
   name: z.string(),
+  ...partyFace,
   /** The person the agent acts for, set by the server (#1822). */
   for: z.string().optional(),
   delivery: MentionDeliverySchema,
@@ -133,6 +142,7 @@ export type CommentMention = z.infer<typeof CommentMentionSchema>;
 export const CommentAssignedSchema = z.object({
   key,
   name: z.string(),
+  ...partyFace,
   state: z.enum(["delivered", "queued", "seen", "done"]),
 });
 export type CommentAssigned = z.infer<typeof CommentAssignedSchema>;

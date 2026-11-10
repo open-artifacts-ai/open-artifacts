@@ -87,6 +87,7 @@ const RPC_ALLOWLIST = [
   "deliverNotice",
   "expireLinkProposalsOf",
   "expireRoleProposalsOf",
+  "identityOf",
   "listLinks",
   "listReach",
   "listRoleProposals",

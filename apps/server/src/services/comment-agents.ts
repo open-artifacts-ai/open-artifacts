@@ -20,7 +20,7 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { appOrigin } from "../http/errors.js";
 import { logInfo } from "../log.js";
-import type { StoredAgent } from "../runtime/comments-store.js";
+import type { StoredAgent, StoredIdentity } from "../runtime/comments-store.js";
 import { shownName } from "./agent-display.js";
 import { busView } from "./bus.js";
 import { deliverNotice, newDeliveryScope } from "./bus-delivery.js";
@@ -190,11 +190,15 @@ export async function agentRoster(
 }
 
 /** A roster agent as the comment store keeps it. */
-export const storedAgent = (a: RosterAgent): StoredAgent => ({
+export const storedAgent = (
+  a: RosterAgent,
+  identity?: StoredIdentity | null,
+): StoredAgent => ({
   kind: "agent",
   key: a.key,
   name: a.address.name,
   owner: a.userId,
+  ...(identity ? { identity } : {}),
 });
 
 export type CommentNoticeKind = "ask" | "mention" | "assign" | "asker";

@@ -101,6 +101,11 @@ export type BusHubRpc = {
   deliverNotice(notice: BusNotice): Promise<DeliveryOutcome>;
   /** #1822: the live session whose proof hashes to `hash`, in this member's own hub; else null. */
   agentByProof(hash: string): Promise<AgentIdentity | null>;
+  /** #1890: the identity id and kind of this member's agent at the address (live or away), else null. */
+  identityOf(
+    namespace: string,
+    name: string,
+  ): Promise<{ identityId: string; kind: string } | null>;
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(): Promise<{ connected: string[]; agents: BusAgent[] }>;
   /** Closes the machine's sockets and drains its agents; false when unknown or already revoked. */
@@ -435,6 +440,35 @@ export async function hasConnectedMachine(
     .bind(userId)
     .first<{ x: number }>();
   return r !== null;
+}
+
+/**
+ * #1890: the identity of `userId`'s own agent at `address`, from that member's
+ * hub only (the caller takes `userId` from a roster entry the server
+ * validated, never from client input). A miss, a slow or failing hub give
+ * null; this never throws.
+ */
+export async function agentIdentityOf(
+  env: Env,
+  userId: string,
+  address: { namespace: string; name: string },
+): Promise<{ identityId: string; kind: string } | null> {
+  try {
+    if (!busOn(env)) return null;
+    return await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        return hub
+          ? await hub.identityOf(address.namespace, address.name)
+          : null;
+      })(),
+      LINK_LOOKUP_MS,
+    );
+  } catch (e) {
+    logError("bus_identity_lookup_failed", e);
+    return null;
+  }
 }
 
 /** #1822: how long /mcp waits for a proof lookup before the request goes on unlinked. */
