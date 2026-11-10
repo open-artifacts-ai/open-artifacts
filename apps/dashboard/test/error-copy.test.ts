@@ -308,7 +308,7 @@ it("no_billing_customer", () => {
   expect(
     errorCopy(new ApiClientError("no_billing_customer", "s", 409), "x"),
   ).toBe(
-    "This plan is set by the operator, so there is no billing to manage here.",
+    "Open Artifacts set up this plan for you, so there's nothing to pay or manage here.",
   );
 });
 

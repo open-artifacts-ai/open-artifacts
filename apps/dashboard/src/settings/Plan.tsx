@@ -297,7 +297,7 @@ export function Plan() {
               <dd className="m-0">{billing.creatorsThisMonth}</dd>
             </>
           )}
-          {!ended && (
+          {!ended && !operatorPlan && (
             <>
               <dt className={muted}>Price</dt>
               <dd className="m-0">{PRICE[billing.tier]}</dd>
@@ -307,8 +307,8 @@ export function Plan() {
         <div className="flex flex-wrap items-center gap-[var(--oa-space-2)]">
           {operatorPlan ? (
             <span className={muted}>
-              This plan is set by the operator. There is no billing to manage
-              here.
+              Open Artifacts set up this plan for you, so there&apos;s nothing
+              to pay or manage here.
             </span>
           ) : portal ? (
             <Button disabled={busy} onClick={() => go.mutate("portal")}>

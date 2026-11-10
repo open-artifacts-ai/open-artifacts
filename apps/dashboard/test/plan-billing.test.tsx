@@ -214,8 +214,11 @@ it("Plan and billing: Team shows Manage billing, which opens the portal", async 
 it("Plan and billing: a paid plan with no Stripe customer has no Manage billing", async () => {
   mountHosted("/settings/plan", { billing: { ...TEAM, hasCustomer: false } });
   expect(
-    await screen.findByText(/This plan is set by the operator/),
+    await screen.findByText(/Open Artifacts set up this plan for you/),
   ).toBeVisible();
+  const card = within(document.getElementById("plan-card") as HTMLElement);
+  expect(card.queryByText("Price")).toBeNull();
+  expect(screen.getByText("Creators this month")).toBeVisible();
   expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
   expect(screen.queryByText(/Invoices and card/)).toBeNull();
 });
@@ -237,7 +240,7 @@ it("Plan and billing: a solo plan with no customer still offers Checkout", async
   expect(
     await screen.findByRole("button", { name: "Upgrade to Team" }),
   ).toBeVisible();
-  expect(screen.queryByText(/set by the operator/)).toBeNull();
+  expect(screen.queryByText(/set up this plan for you/)).toBeNull();
 });
 
 it("Plan and billing: Upgrade starts Checkout for the chosen tier", async () => {
