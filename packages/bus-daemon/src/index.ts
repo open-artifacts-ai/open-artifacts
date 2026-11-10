@@ -622,13 +622,25 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     )
       .then(
         (ok) => {
-          if (ok) receipts.told(n.msgId);
-          else log(`could not tell ${agent.busName} about ${n.meta.to_name}`);
+          if (ok) receipts.told(n.msgId, n.state === "corrected");
+          else {
+            if (n.state !== "corrected") receipts.notTold(n.msgId);
+            log(`could not tell ${agent.busName} about ${n.meta.to_name}`);
+          }
         },
-        (e: unknown) =>
-          log(`notice failed: ${e instanceof Error ? e.message : String(e)}`),
+        (e: unknown) => {
+          if (n.state !== "corrected") receipts.notTold(n.msgId);
+          log(`notice failed: ${e instanceof Error ? e.message : String(e)}`);
+        },
       )
-      .finally(() => telling.delete(n.msgId));
+      .finally(() => {
+        telling.delete(n.msgId);
+        // A correction that came while this notice was in flight goes after it.
+        if (n.state !== "corrected") {
+          const next = receipts.notice(n.msgId);
+          if (next?.state === "corrected") tell(next);
+        }
+      });
   };
   const tellOwed = (ref: string) => {
     for (const n of receipts.owed(ref)) tell(n);
@@ -1088,7 +1100,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         }
         case "receipt_update":
-          tell(receipts.update(frame));
+          tell(receipts.update(frame, telling.has(frame.msg_id)));
           return;
         case "error": {
           if (statusRelay.answer(frame)) return;
