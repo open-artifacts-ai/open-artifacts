@@ -10,6 +10,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -209,6 +210,32 @@ export function hermesPluginDirs(
   const active = hermesPluginDir(home, env, platform);
   if (!out.includes(active)) out.push(active);
   return out;
+}
+
+/**
+ * A note when `<root>/profiles` is a symlink: the sweep follows it, and the
+ * user should know it is a link and where it points. Nothing for a plain folder.
+ */
+export function hermesProfilesNote(
+  home: string,
+  env: Env,
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  const path = join(hermesRoot(home, env, platform), "profiles");
+  try {
+    if (!lstatSync(path).isSymbolicLink()) return undefined;
+  } catch {
+    return undefined;
+  }
+  try {
+    return `The Hermes profiles folder ${path} is a symlink to ${realpathSync(path)}. Its profiles were checked too.`;
+  } catch {
+    let to = "somewhere else";
+    try {
+      to = resolve(dirname(path), readlinkSync(path));
+    } catch {}
+    return `The Hermes profiles folder ${path} is a symlink to ${to}, which isn't there. No profiles were checked behind it.`;
+  }
 }
 
 /** The env Hermes's CLI runs with, so it and our files agree on the home. */

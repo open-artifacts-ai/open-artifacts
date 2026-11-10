@@ -7,6 +7,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -351,5 +352,50 @@ describe("install and uninstall with Hermes", () => {
     const ctx = setup();
     await install({ habits: "show" }, ctx);
     expect(ctx.out().join("\n")).toContain("Hermes plugin: not installed");
+  });
+});
+
+describe("off: a symlinked Hermes profiles folder (#1717)", () => {
+  const profileDir = (root: string, name: string) =>
+    join(root, "profiles", name, "plugins", "oa-bus");
+  const withMarker = (dir: string) => {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, HERMES_MARKER),
+      "managed by the Open Artifacts bus installer: x\n",
+    );
+    writeFileSync(join(dir, HERMES_HABITS_MARKER), "on\n");
+  };
+  it("says the folder is a link and where it points, and still sweeps it", () => {
+    const home = tmp();
+    const elsewhere = join(tmp(), "shared-profiles");
+    const behind = join(elsewhere, "work", "plugins", "oa-bus");
+    withMarker(behind);
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    symlinkSync(elsewhere, join(home, ".hermes", "profiles"));
+    const r = setPluginHabits({ home }, [hermes], false);
+    expect(existsSync(join(behind, HERMES_HABITS_MARKER))).toBe(false);
+    expect(r.notes).toContain(
+      `The Hermes profiles folder ${join(home, ".hermes", "profiles")} is a symlink to ${realpathSync(elsewhere)}. Its profiles were checked too.`,
+    );
+    expect(r.incomplete).toBe(false);
+  });
+  it("says nothing about a plain profiles folder", () => {
+    const home = tmp();
+    withMarker(profileDir(join(home, ".hermes"), "work"));
+    const r = setPluginHabits({ home }, [hermes], false);
+    expect(r.notes).toEqual([]);
+    expect(r.incomplete).toBe(false);
+  });
+  it("says a dangling link could not be checked, without failing the off", () => {
+    const home = tmp();
+    mkdirSync(join(home, ".hermes"), { recursive: true });
+    const gone = join(tmp(), "gone");
+    symlinkSync(gone, join(home, ".hermes", "profiles"));
+    const r = setPluginHabits({ home }, [hermes], false);
+    expect(r.notes).toContain(
+      `The Hermes profiles folder ${join(home, ".hermes", "profiles")} is a symlink to ${gone}, which isn't there. No profiles were checked behind it.`,
+    );
+    expect(r.incomplete).toBe(false);
   });
 });

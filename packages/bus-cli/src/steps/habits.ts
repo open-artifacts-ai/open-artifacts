@@ -30,6 +30,7 @@ import {
   HERMES_HABITS_MARKER,
   hermesPluginDir,
   hermesPluginDirs,
+  hermesProfilesNote,
   pluginState,
 } from "./hermes.ts";
 import {
@@ -446,6 +447,8 @@ export type PluginHarness = {
   dir: (home: string, env: Env) => string;
   /** Every folder the plugin may be in, across profiles: turning off sweeps them all. */
   dirs: (home: string, env: Env) => string[];
+  /** Turning off only: notes about the folders that `dirs` walks through. */
+  dirNotes?: (home: string, env: Env) => string[];
   marker: string;
   /** Whether `dir` is our plugin folder (it carries our ownership marker). */
   ours: (dir: string) => boolean;
@@ -458,6 +461,10 @@ export const PLUGIN_HARNESSES: PluginHarness[] = [
     label: "Hermes",
     dir: hermesPluginDir,
     dirs: hermesPluginDirs,
+    dirNotes: (home, env) => {
+      const n = hermesProfilesNote(home, env);
+      return n === undefined ? [] : [n];
+    },
     marker: HERMES_HABITS_MARKER,
     ours: (dir) => pluginState(dir, undefined) !== "foreign" && !isLink(dir),
   },
@@ -583,6 +590,7 @@ export function setPluginHabits(
     ];
     // Recorded folders whose marker is now verified gone: the only ones forgotten.
     const done = new Set<string>();
+    notes.push(...(p.dirNotes?.(deps.home, deps.env ?? {}) ?? []));
     const left = (msg: string) => {
       notes.push(msg);
       incomplete = true;
