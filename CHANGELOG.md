@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.145.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.144.0...v0.145.0) (2026-11-10)
+
+
+### Features
+
+* **bus:** Claude Code session link, helper, daemon bind and install ([#1822](https://github.com/open-artifacts-ai/open-artifacts/issues/1822)) ([#1858](https://github.com/open-artifacts-ai/open-artifacts/issues/1858)) ([997b9c0](https://github.com/open-artifacts-ai/open-artifacts/commit/997b9c0093ee78d9a329dff7e25eaa9ceda3f52e))
+
 ## [0.144.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.143.0...v0.144.0) (2026-11-09)
 
 
