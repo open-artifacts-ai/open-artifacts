@@ -3294,11 +3294,13 @@ function senderRef(f: ClientFrame): string | null {
 /** #1317: waiting server notices a hub keeps; a notice over it is dropped (a replace of a waiting one is not). */
 export const NOTICES_MAX = 500;
 /**
- * #1828: parked (due, no live capable socket) notices one address keeps. They
- * do not count toward NOTICES_MAX, so an old daemon cannot crowd out capable
- * agents' waiting notices; this bounds them per address instead.
+ * #1828: rows held for a LIVE daemon too old to read a notice (parked = 2)
+ * have their own caps, per address and hub-wide, and do not count toward
+ * NOTICES_MAX; a new notice over either is dropped. Offline-machine rows
+ * (parked = 1) count toward NOTICES_MAX as before, with no per-address cap.
  */
-export const NOTICES_PARKED_PER_ADDRESS = 20;
+export const NOTICES_OLD_PER_ADDRESS = 20;
+export const NOTICES_OLD_MAX = 500;
 /** #1828: ids named in one notice_expired log line. */
 const NOTICE_LOG_IDS = 20;
 /** #1317: how long an offline machine's notice waits (the v1 rule). */
@@ -6135,6 +6137,32 @@ export class BusHub extends DurableObject<Env> {
 
   // ----------------------------------------------------------------- notices
 
+  /** #1828: why one more old-daemon-held row (not counting its own key) does not fit, or null. */
+  #oldHeldOver(ns: string, lname: string, ckey: string): string | null {
+    const sql = this.ctx.storage.sql;
+    const notSelf = "not (to_ns = ? and to_lname = ? and ckey = ?)";
+    const atAddress =
+      one<{ n: number }>(
+        sql,
+        `select count(*) as n from notices where parked = 2 and to_ns = ? and to_lname = ? and ${notSelf}`,
+        ns,
+        lname,
+        ns,
+        lname,
+        ckey,
+      )?.n ?? 0;
+    if (atAddress >= NOTICES_OLD_PER_ADDRESS) return "old_daemon_address_cap";
+    const all2 =
+      one<{ n: number }>(
+        sql,
+        `select count(*) as n from notices where parked = 2 and ${notSelf}`,
+        ns,
+        lname,
+        ckey,
+      )?.n ?? 0;
+    return all2 >= NOTICES_OLD_MAX ? "old_daemon_cap" : null;
+  }
+
   #acceptNotice(n: BusNotice): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
@@ -6168,26 +6196,27 @@ export class BusHub extends DurableObject<Env> {
         "select 1 as x from notices where to_ns = ? and to_lname = ? and ckey = ?",
         ...key,
       ) !== null;
-    // Due with no live socket: parked until the machine's agent_up.
-    const parked = notBefore <= now ? 1 : 0;
-    if (!exists) {
-      // #1828: parked rows have their own per-address share; the hub-wide cap
-      // counts the rest, so one old daemon cannot drop a capable agent's.
-      const held = parked
-        ? (one<{ n: number }>(
-            sql,
-            "select count(*) as n from notices where parked = 1 and to_ns = ? and to_lname = ?",
-            n.to.namespace,
-            lname,
-          )?.n ?? 0)
-        : (one<{ n: number }>(
-            sql,
-            "select count(*) as n from notices where parked = 0",
-          )?.n ?? 0);
-      if (held >= (parked ? NOTICES_PARKED_PER_ADDRESS : NOTICES_MAX)) {
-        logEvent("notice_dropped", {
-          reason: parked ? "parked_cap" : "cap",
-        });
+    // Due with no usable socket: parked until the machine's agent_up (1), or
+    // held for a live daemon too old to read it (2, own caps).
+    const parked = notBefore > now ? 0 : live ? 2 : 1;
+    if (parked === 2) {
+      const reason = this.#oldHeldOver(n.to.namespace, lname, n.coalesceKey);
+      if (reason) {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          ...key,
+        );
+        logEvent("notice_dropped", { reason });
+        return "dropped";
+      }
+    } else if (!exists) {
+      const held =
+        one<{ n: number }>(
+          sql,
+          "select count(*) as n from notices where parked < 2",
+        )?.n ?? 0;
+      if (held >= NOTICES_MAX) {
+        logEvent("notice_dropped", { reason: "cap" });
         return "dropped";
       }
     }
@@ -6202,7 +6231,7 @@ export class BusHub extends DurableObject<Env> {
       expiresAt,
       parked,
     );
-    this.#arm(parked === 1 ? expiresAt : notBefore);
+    this.#arm(parked > 0 ? expiresAt : notBefore);
     this.#arm(expiresAt);
     return "held";
   }
@@ -6243,7 +6272,7 @@ export class BusHub extends DurableObject<Env> {
     // bounded steps to this live socket) instead of leaving them parked.
     if (rows.length >= NOTICE_FLUSH_BATCH) {
       sql.exec(
-        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked = 1",
+        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked > 0",
         agent.name.toLowerCase(),
         agent.namespace,
         agent.global === 1 ? 1 : 0,
@@ -6272,7 +6301,7 @@ export class BusHub extends DurableObject<Env> {
     if (expired.length > 0)
       logEvent("notice_expired", {
         count: expired.length,
-        parked: expired.filter((r) => r.parked === 1).length,
+        parked: expired.filter((r) => r.parked > 0).length,
         ids: expired
           .slice(0, NOTICE_LOG_IDS)
           .map((r) => r.id)
@@ -6298,12 +6327,27 @@ export class BusHub extends DurableObject<Env> {
         );
         sendFrame(socket, noticeFrame(agent, r.text));
       } else if (agent) {
-        sql.exec(
-          "update notices set parked = 1 where to_ns = ? and to_lname = ? and ckey = ?",
-          r.toNs,
-          r.toLname,
-          r.ckey,
-        );
+        // A live socket that cannot read it: old-daemon share; none: offline.
+        const reason = live
+          ? this.#oldHeldOver(r.toNs, r.toLname, r.ckey)
+          : null;
+        if (reason) {
+          sql.exec(
+            "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+            r.toNs,
+            r.toLname,
+            r.ckey,
+          );
+          logEvent("notice_dropped", { reason });
+        } else {
+          sql.exec(
+            "update notices set parked = ? where to_ns = ? and to_lname = ? and ckey = ?",
+            live ? 2 : 1,
+            r.toNs,
+            r.toLname,
+            r.ckey,
+          );
+        }
       } else {
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",

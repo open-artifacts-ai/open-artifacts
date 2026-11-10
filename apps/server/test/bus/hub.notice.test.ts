@@ -11,7 +11,8 @@ import {
   BusHub,
   NOTICE_HOLD_MS,
   NOTICES_MAX,
-  NOTICES_PARKED_PER_ADDRESS,
+  NOTICES_OLD_MAX,
+  NOTICES_OLD_PER_ADDRESS,
 } from "../../src/bus/hub.js";
 import { hubNoticeDelivery } from "../../src/services/bus.js";
 import {
@@ -524,7 +525,7 @@ describe("a daemon that cannot decode notices (#1746)", () => {
         (_, st) =>
           st.storage.sql.exec("select parked as p from notices").one().p,
       ),
-    ).toBe(1);
+    ).toBe(2);
   });
 });
 
@@ -766,49 +767,129 @@ describe("old-daemon notices: counted expiry and their own share (#1828)", () =>
     expect(logged(log, "bus_notice_expired")).toEqual([]);
   });
 
-  it("an old machine's parked notices cannot crowd out a capable machine's, in one hub", async () => {
+  const parkedOf = (userId: string, p: number) =>
+    inHub(
+      userId,
+      (_, st) =>
+        st.storage.sql
+          .exec("select count(*) as n from notices where parked = ?", p)
+          .one().n as number,
+    );
+
+  it("an offline machine keeps more than 20 notices per address, up to NOTICES_MAX", async () => {
+    const log = vi.spyOn(console, "log");
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    await goOffline(s.d, s.machineId, s.userId);
+    const to = { namespace: s.namespace, name: s.name };
+    for (let k = 0; k < NOTICES_OLD_PER_ADDRESS + 5; k++)
+      expect(await stub.deliverNotice(note(to))).toBe("held");
+    expect(await parkedOf(s.userId, 1)).toBe(NOTICES_OLD_PER_ADDRESS + 5);
+    expect(logged(log, "bus_notice_dropped")).toEqual([]);
+  });
+
+  it("the hub-wide cap is exactly NOTICES_MAX for notices not held for an old daemon", async () => {
+    const log = vi.spyOn(console, "log");
+    const s = await setup();
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    const to = { namespace: s.namespace, name: s.name };
+    for (let k = 0; k < NOTICES_MAX; k++)
+      expect(
+        await stub.deliverNotice(note(to, { notBefore: t + 60_000 })),
+      ).toBe("held");
+    expect(await waiting(s.userId)).toBe(NOTICES_MAX);
+    expect(await stub.deliverNotice(note(to, { notBefore: t + 60_000 }))).toBe(
+      "dropped",
+    );
+    expect(logged(log, "bus_notice_dropped")).toEqual([
+      { evt: "bus_notice_dropped", reason: "cap" },
+    ]);
+  });
+
+  it("an old daemon is capped per address at insert and cannot crowd out a capable machine", async () => {
     const log = vi.spyOn(console, "log");
     const old = await setup(uniq("old"), true);
     const t = base();
     await setClock(old.userId, t);
     const cap = await addMachine(old.userId, old.namespace, uniq("capable"));
     const stub = await hubOf(old.userId);
-    // The hub-wide count is full of parked rows for some other address.
-    await inHub(old.userId, (_, st) => {
-      for (let k = 0; k < NOTICES_MAX; k++)
-        st.storage.sql.exec(
-          `insert into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked)
-           values (?, 'x', ?, 'n', 't', ?, ?, 1)`,
-          old.namespace,
-          `k${k}`,
-          t - 1,
-          t + NOTICE_HOLD_MS,
-        );
-    });
-    // The capable agent's waiting notice still fits.
-    expect(
-      await stub.deliverNotice(
-        note(
-          { namespace: old.namespace, name: cap.name },
-          { notBefore: t + 60_000 },
-        ),
-      ),
-    ).toBe("held");
-    expect(logged(log, "bus_notice_dropped")).toEqual([]);
-    // The old agent has its own per-address share: the next one is dropped.
     const to = { namespace: old.namespace, name: old.name };
-    for (let k = 0; k < NOTICES_PARKED_PER_ADDRESS; k++)
+    for (let k = 0; k < NOTICES_OLD_PER_ADDRESS; k++)
       expect(await stub.deliverNotice(note(to))).toBe("held");
     expect(await stub.deliverNotice(note(to))).toBe("dropped");
     expect(logged(log, "bus_notice_dropped")).toEqual([
-      { evt: "bus_notice_dropped", reason: "parked_cap" },
+      { evt: "bus_notice_dropped", reason: "old_daemon_address_cap" },
     ]);
-    // A capable agent's due notice is delivered live.
+    expect(await parkedOf(old.userId, 2)).toBe(NOTICES_OLD_PER_ADDRESS);
+    // They do not count toward NOTICES_MAX: a capable agent fills it whole.
+    const ct = { namespace: old.namespace, name: cap.name };
+    for (let k = 0; k < NOTICES_MAX; k++)
+      expect(
+        await stub.deliverNotice(note(ct, { notBefore: t + 60_000 })),
+      ).toBe("held");
+    expect(await stub.deliverNotice(note(ct))).toBe("delivered");
+  });
+
+  it("old daemons share a hub-wide ceiling of NOTICES_OLD_MAX", async () => {
+    const log = vi.spyOn(console, "log");
+    const old = await setup(uniq("old"), true);
+    const t = base();
+    await setClock(old.userId, t);
+    const stub = await hubOf(old.userId);
+    const names = [old.name];
+    for (let k = 1; k < NOTICES_OLD_MAX / NOTICES_OLD_PER_ADDRESS + 1; k++) {
+      const name = uniq("o");
+      old.d.send(up(id("u"), id("ref"), name, old.namespace));
+      const ok = await waitFor(old.d, "agent_ok");
+      names.push(ok.bus_name);
+    }
+    let held = 0;
+    for (const name of names)
+      for (
+        let k = 0;
+        k < NOTICES_OLD_PER_ADDRESS && held < NOTICES_OLD_MAX;
+        k++
+      ) {
+        expect(
+          await stub.deliverNotice(note({ namespace: old.namespace, name })),
+        ).toBe("held");
+        held++;
+      }
+    expect(await parkedOf(old.userId, 2)).toBe(NOTICES_OLD_MAX);
+    const last = names[names.length - 1] as string;
     expect(
-      await stub.deliverNotice(
-        note({ namespace: old.namespace, name: cap.name }),
+      await stub.deliverNotice(note({ namespace: old.namespace, name: last })),
+    ).toBe("dropped");
+    expect(logged(log, "bus_notice_dropped").at(-1)).toEqual({
+      evt: "bus_notice_dropped",
+      reason: "old_daemon_cap",
+    });
+  }, 60_000);
+
+  it("the alarm's park step honors the old-daemon caps", async () => {
+    const log = vi.spyOn(console, "log");
+    const s = await setup(uniq("old"), true);
+    const t = base();
+    await setClock(s.userId, t);
+    const stub = await hubOf(s.userId);
+    const to = { namespace: s.namespace, name: s.name };
+    for (let k = 0; k < NOTICES_OLD_PER_ADDRESS + 3; k++)
+      expect(await stub.deliverNotice(note(to, { notBefore: t + 5000 }))).toBe(
+        "held",
+      );
+    await setClock(s.userId, t + 6000);
+    await runAlarm(s.userId);
+    expect(await parkedOf(s.userId, 2)).toBe(NOTICES_OLD_PER_ADDRESS);
+    expect(await waiting(s.userId)).toBe(NOTICES_OLD_PER_ADDRESS);
+    expect(
+      logged(log, "bus_notice_dropped").filter(
+        (e) => e.reason === "old_daemon_address_cap",
       ),
-    ).toBe("delivered");
+    ).toHaveLength(3);
   });
 
   it("the reconnect gap before hello holds the notice, then agent_up sends it", async () => {
