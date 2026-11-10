@@ -55,9 +55,9 @@ async function recipients(
   );
   for (const p of c.ask?.to ?? [])
     if (p.kind === "user") by.get("ask")?.add(p.key);
-  // A mention names an agent; its person is the one told.
-  for (const m of c.mentions ?? [])
-    if (m.owner) by.get("mention")?.add(m.owner);
+  // A mention names an agent, not a person: nobody is emailed for it (the
+  // agent's person is not told). The "mention" reason stays for when a
+  // mention can name a person.
   if (j.reply) {
     const t = await runtimeStub(env, j.artifactId).commentsGet(j.threadId);
     for (const x of t.comments)

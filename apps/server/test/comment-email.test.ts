@@ -431,6 +431,7 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
         ...root,
         author: { kind: "user", ref: s.editor.userId },
         ask: { to: [{ kind: "user", key: s.other.userId }] },
+        // A mention names an agent: nobody is emailed for it.
         mentions: [
           { key: "k", name: "n", state: "delivered", owner: s.other.userId },
           { key: "k2", name: "n2", state: "delivered", owner: s.owner.userId },
@@ -438,6 +439,7 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
       } as never,
       reply: false,
     });
+    // The ask tells its person; the owner (new thread) has the thread reason.
     expect(n).toBe(2);
     const toOther = m.sent.find((x) => x.to === s.other.email) as Sent;
     const toOwner = m.sent.find((x) => x.to === s.owner.email) as Sent;
@@ -446,9 +448,9 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
     expect(toOther.text).toContain(
       "You're getting this because the question is for you.",
     );
-    expect(toOwner.subject).toMatch(/mentioned you on Doc$/);
+    expect(toOwner.subject).toMatch(/commented on Doc$/);
     expect(toOwner.text).toContain(
-      "You're getting this because you were mentioned.",
+      "You're getting this because you own this page.",
     );
     expect(toOther.text).toContain(
       "New replies in this thread for the next 15 minutes stay on the page, with no email.",
@@ -461,7 +463,7 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
     void stored;
   });
 
-  it("the person whose agent wrote it is emailed only when mentioned or asked", async () => {
+  it("the person whose agent wrote it is emailed only when asked (an agent's mention emails no one)", async () => {
     const s = await setup();
     const t = await thread(E, s.id, agentOf(s.editor), s.editor);
     const root = (await runtimeStub(E, s.id).commentsGet(t.id))
@@ -483,10 +485,16 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
           ],
         }),
       ),
+    ).toBe(0);
+    expect(
+      await emailCommentRecipients(
+        m.e,
+        job({ ask: { to: [{ kind: "user", key: s.editor.userId }] } }),
+      ),
     ).toBe(1);
     const mail = m.sent[0] as Sent;
     expect(mail.subject).toContain("Claude Code (");
-    expect(mail.subject).toContain("'s agent) mentioned you on Doc");
+    expect(mail.subject).toContain("'s agent) asked you a question on Doc");
   });
 
   it("nothing is sent on a page with comments turned off; the title is cut to 60", async () => {
