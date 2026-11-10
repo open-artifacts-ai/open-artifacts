@@ -17,6 +17,7 @@ import {
   commentError,
   TooManyMentions,
   useArtifactAgents,
+  useCommentErrorCtx,
   useCreateThread,
   useDeleteComment,
   useEditComment,
@@ -204,6 +205,7 @@ function Composer({
 }) {
   const api = useCommentsApi();
   const { capped, canMention, guest } = api;
+  const errCtx = useCommentErrorCtx();
   const [text, setText] = useState(initial);
   const [open, setOpen] = useState(alwaysOpen);
   const [error, setError] = useState<unknown>(null);
@@ -389,7 +391,7 @@ function Composer({
       )}
       {error != null && (
         <p role="alert" className={`${TXT} text-destructive`}>
-          {commentError(error, capped)}
+          {commentError(error, capped, errCtx)}
           {failure?.(error)}
         </p>
       )}
@@ -502,6 +504,7 @@ function CommentRow({
   askQuestion?: () => void;
 }) {
   const nextAsk = nextAskFor(api, thread.id);
+  const errCtx = useCommentErrorCtx();
   const edit = useEditComment(api.artifactId, api.guest);
   const del = useDeleteComment(api.artifactId, api.guest);
   const [menu, setMenu] = useState(false);
@@ -593,7 +596,7 @@ function CommentRow({
           </p>
           {delError != null && (
             <p role="alert" className={`${TXT} text-destructive`}>
-              {commentError(delError, api.capped)}
+              {commentError(delError, api.capped, errCtx)}
             </p>
           )}
           <div className="flex gap-2">
@@ -691,6 +694,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   // elsewhere doesn't swap the draft away (the server then says why).
   const [asking, setAsking] = useState<string | null>(null);
   const status = useSetThreadStatus(api.artifactId, api.guest);
+  const errCtx = useCommentErrorCtx();
   const [statusErr, setStatusErr] = useState<unknown>(null);
   const el = useRef<HTMLLIElement>(null);
   const navigate = useNavigate();
@@ -812,7 +816,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         )}
         {statusErr != null && (
           <p role="alert" className={`${TXT} text-destructive`}>
-            {commentError(statusErr, api.capped)}
+            {commentError(statusErr, api.capped, errCtx)}
           </p>
         )}
         {asking && isActive ? (

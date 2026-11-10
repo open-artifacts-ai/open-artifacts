@@ -14,6 +14,7 @@ import { createApp } from "../src/app.js";
 import {
   ANON_TOKEN_MAX_AGE_S,
   issueAnonToken,
+  readAnonId,
   resolveAnonId,
 } from "../src/runtime/anon-id.js";
 import {
@@ -395,7 +396,7 @@ describe("anonId token expiry", () => {
     expect(await byOf(await write(id, "a", t))).toBe(`anon:${r.short}`);
   });
 
-  it("an expired token is re-minted with the same id and short id", async () => {
+  it("an expired token is never re-issued: a minting write gets a fresh id", async () => {
     const id = await optIn();
     const bid = freshId();
     const fresh = await issueAnonToken(env, bid, nowS);
@@ -406,10 +407,13 @@ describe("anonId token expiry", () => {
     const renewed = w.headers.get(ANON_ID_HEADER);
     expect(renewed).toMatch(TOKEN_RE);
     expect(renewed).not.toBe(old);
-    expect(idOf(renewed)).toBe(bid);
-    expect(await byOf(w)).toBe(`anon:${short}`);
-    // The renewed token is accepted without another re-mint.
-    expect(await shortOn(id, renewed)).toEqual({ short, issued: null });
+    expect(idOf(renewed)).not.toBe(bid);
+    expect(await byOf(w)).not.toBe(`anon:${short}`);
+    // The new token is accepted without another mint.
+    expect((await shortOn(id, renewed)).issued).toBeNull();
+    // readAnonId names nobody for the expired token, somebody for a current one.
+    expect(await readAnonId(env, id, old, nowS * 1000)).toBeNull();
+    expect(await readAnonId(env, id, fresh, nowS * 1000)).toBe(short);
     // Exactly at the limit is still valid.
     const edge = await resolveAnonId(
       env,
@@ -418,25 +422,52 @@ describe("anonId token expiry", () => {
       true,
       nowS * 1000,
     );
-    expect(edge).toEqual({ short, issued: null });
+    expect(edge?.short).toBe(short);
+    // Past half its life a minting write renews the token for the same id.
+    expect(idOf(edge?.issued)).toBe(bid);
   });
 
-  it("a v1 token is upgraded to v2 with the same id and short id", async () => {
+  it("sliding renewal: a write at age MAX-1 keeps the id, a young token is untouched", async () => {
+    const id = await optIn();
+    const bid = freshId();
+    const short = (await shortOn(id, await issueAnonToken(env, bid, nowS)))
+      .short;
+    const aged = await issueAnonToken(
+      env,
+      bid,
+      nowS - ANON_TOKEN_MAX_AGE_S + 1,
+    );
+    const w = await write(id, "a", aged);
+    expect(w.status).toBe(200);
+    const renewed = w.headers.get(ANON_ID_HEADER);
+    expect(renewed).toMatch(TOKEN_RE);
+    expect(idOf(renewed)).toBe(bid);
+    expect(renewed).not.toBe(aged);
+    expect(await byOf(w)).toBe(`anon:${short}`);
+    // The renewed token is current: it no longer renews.
+    expect(
+      (await write(id, "b", renewed)).headers.get(ANON_ID_HEADER),
+    ).toBeNull();
+    // Younger than half the life: no new token. Reads never renew.
+    const young = await issueAnonToken(env, bid, nowS - 10 * DAY);
+    expect(
+      (await write(id, "c", young)).headers.get(ANON_ID_HEADER),
+    ).toBeNull();
+    expect((await shortOn(id, aged)).issued).toBeNull();
+  });
+
+  it("a v1 token is never upgraded: a fresh id is minted and it names no author", async () => {
     const id = await optIn();
     const bid = freshId();
     const v1 = await v1Token(bid);
+    const old = (await shortOn(id, await issueAnonToken(env, bid, nowS))).short;
     const first = await shortOn(id, v1);
-    const up = first.issued;
-    expect(up).toMatch(TOKEN_RE);
-    expect(idOf(up)).toBe(bid);
-    expect(first.short).toBe(
-      (await shortOn(id, await issueAnonToken(env, bid, nowS))).short,
-    );
-    expect(await shortOn(id, up)).toEqual({
-      short: first.short,
-      issued: null,
-    });
-    // A forged v1 token gets a new id.
+    expect(first.issued).toMatch(TOKEN_RE);
+    expect(idOf(first.issued)).not.toBe(bid);
+    expect(first.short).not.toBe(old);
+    expect(await readAnonId(env, id, v1)).toBeNull();
+    expect(await resolveAnonId(env, id, v1, false)).toBeNull();
+    // A forged v1 token gets a new id too.
     const w = await write(id, "f", `${freshId()}.${v1.split(".")[1]}`);
     expect(idOf(w.headers.get(ANON_ID_HEADER))).not.toBe(bid);
   });
@@ -517,19 +548,16 @@ describe("ANON_WRITES_PER_MIN", () => {
     return { r, calls };
   };
 
-  it("by default anonymous writes still spend RL_ANON per IP (review item 38)", async () => {
+  it("with RL_ANON_WRITES unbound (an older wrangler config), RL_ANON stands in as the ceiling", async () => {
     const id = await optIn();
-    const { r, calls } = await writeVia(id, {});
+    const { r, calls } = await writeVia(id, { RL_ANON_WRITES: undefined });
     expect(r.status).toBe(200);
     expect(calls).toEqual(["anon:ip:192.0.2.44"]);
   });
 
-  it("RL_ANON_WRITES, when bound, replaces RL_ANON for writes so a raised ANON_WRITES_PER_MIN works", async () => {
+  it("RL_ANON_WRITES, when bound, is the install-wide per-IP ceiling and RL_ANON is not charged", async () => {
     const id = await optIn();
-    const ok = await writeVia(id, {
-      RL_ANON_WRITES: { ok: true },
-      RL_ANON: undefined,
-    });
+    const ok = await writeVia(id, { RL_ANON_WRITES: { ok: true } });
     expect(ok.r.status).toBe(200);
     expect(ok.calls).toEqual(["RL_ANON_WRITES:ip:192.0.2.44"]);
     const denied = await writeVia(id, { RL_ANON_WRITES: { ok: false } });
@@ -537,16 +565,60 @@ describe("ANON_WRITES_PER_MIN", () => {
     expect(denied.calls).toEqual(["RL_ANON_WRITES:ip:192.0.2.44"]);
   });
 
-  it("with HOSTED=1 both limiters apply (hosted only tightens)", async () => {
+  it("the ceiling key has no artifact id: two artifacts share one budget per IP", async () => {
+    const a = await optIn();
+    const b = await optIn();
+    const ra = await writeVia(a, { RL_ANON_WRITES: { ok: true } });
+    const rb = await writeVia(b, { RL_ANON_WRITES: { ok: true } });
+    expect(ra.calls).toEqual(rb.calls);
+    expect(ra.calls[0]).not.toContain(a);
+  });
+
+  it("HOSTED=1 changes nothing: the ceiling alone is charged", async () => {
     const id = await optIn();
     const { calls } = await writeVia(id, {
       RL_ANON_WRITES: { ok: true },
       HOSTED: "1",
     });
-    expect(calls).toEqual([
-      "anon:ip:192.0.2.44",
-      "RL_ANON_WRITES:ip:192.0.2.44",
-    ]);
+    expect(calls).toEqual(["RL_ANON_WRITES:ip:192.0.2.44"]);
+  });
+
+  it("a write must pass both: the DO's per-artifact budget still refuses under an open ceiling", async () => {
+    const id = await optIn();
+    await runInDurableObject(
+      runtimeStub(env, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (i) => {
+        i.now = () => Date.UTC(2026, 0, 1, 12, 0, 30);
+        (i as unknown as { env: object }).env = {
+          ...(i as unknown as { env: object }).env,
+          ANON_WRITES_PER_MIN: "1",
+        };
+      },
+    );
+    const w = () => writeVia(id, { RL_ANON_WRITES: { ok: true } });
+    expect((await w()).r.status).toBe(200);
+    expect((await w()).r.status).toBe(429);
+  });
+
+  it("one IP's budget on one artifact does not starve another artifact", async () => {
+    const a = await optIn();
+    const b = await optIn();
+    for (const id of [a, b])
+      await runInDurableObject(
+        runtimeStub(env, id) as unknown as DurableObjectStub<ArtifactRuntime>,
+        (i) => {
+          i.now = () => Date.UTC(2026, 0, 1, 12, 0, 30);
+          (i as unknown as { env: object }).env = {
+            ...(i as unknown as { env: object }).env,
+            ANON_WRITES_PER_MIN: "2",
+          };
+        },
+      );
+    const ip = uniqueIp();
+    for (let n = 0; n < 2; n++)
+      expect((await write(a, `d${n}`, null, ip)).status).toBe(200);
+    expect((await write(a, "x", null, ip)).status).toBe(429);
+    expect((await write(b, "x", null, ip)).status).toBe(200);
   });
 
   it("the DO applies it per IP, across anonIds", async () => {

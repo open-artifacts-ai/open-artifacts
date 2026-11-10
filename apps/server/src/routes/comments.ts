@@ -129,8 +129,8 @@ async function identity(
     };
   const token = c.req.header(ANON_ID_HEADER);
   if (!mint) {
-    // Reads, edits, deletes and status changes: who the token says, an
-    // expired one included; never a new token.
+    // Reads, edits, deletes and status changes: who a current token says; an
+    // expired or v1 one says nobody. Never a new token.
     const short = await readAnonId(c.env, artifactId, token);
     return {
       who: null,
