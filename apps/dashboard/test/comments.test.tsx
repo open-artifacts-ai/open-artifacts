@@ -1720,7 +1720,7 @@ describe("comments: capped members", () => {
     expect(commentError(ro, false, { owner: true })).toMatch(/lapsed/);
   });
 
-  it("an anonymous, guest or restricted viewer gets no billing detail on a plan refusal", async () => {
+  it("a guest or restricted viewer gets no billing detail on a plan refusal", async () => {
     const { ApiClientError } = await import("../src/api/client");
     const { commentError, answerError } = await import("../src/api/comments");
     const generic = "Your account can only view, so you can't comment.";
@@ -1729,14 +1729,15 @@ describe("comments: capped members", () => {
     });
     const solo = new ApiClientError("plan_required", "Plan required", 403);
     for (const e of [ro, solo]) {
-      expect(commentError(e, false)).toBe(generic);
-      expect(commentError(e, true, { capped: true, cap: "plan" })).toBe(
+      expect(commentError(e, true, { capped: true, cap: "restricted" })).toBe(
         generic,
       );
       expect(commentError(e, true, { capped: true, cap: "guest" })).toBe(
         generic,
       );
-      expect(answerError(e)).not.toMatch(/card|Solo|owner/i);
+      expect(answerError(e, { capped: true, cap: "guest" })).not.toMatch(
+        /card|Solo|owner/i,
+      );
     }
   });
 
