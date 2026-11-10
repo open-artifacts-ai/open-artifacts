@@ -699,6 +699,15 @@ export function copy(style: Style) {
         `Run ${BUS_CMD} install again, or ${BUS_CMD} uninstall to put your own entry back.`,
       ),
     ],
+    // doctor: Codex's Open Artifacts entry runs oa-bus, and oa-bus is gone (#1856).
+    codexProxyMissing: (name: string, program: string) => [
+      fail(
+        `Codex's ${name} entry runs ${clip(program, 60)}, which is missing.`,
+      ),
+      next(
+        `Run ${BUS_CMD} install again, or ${BUS_CMD} uninstall to put your own entry back.`,
+      ),
+    ],
     opencodeUnknown: () => [
       warn("OpenCode version unknown"),
       next(

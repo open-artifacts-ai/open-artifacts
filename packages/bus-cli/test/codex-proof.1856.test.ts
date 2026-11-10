@@ -220,6 +220,14 @@ describe("oa-bus install and uninstall, Codex /mcp entry (#1856)", () => {
       `url = "${HUB}/mcp"\nbearer_token_env_var = "OA_TOKEN"\noauth_resource = "r"`,
     ],
     [
+      "an auth block (Codex rejects it on stdio)",
+      `url = "${HUB}/mcp"\nbearer_token_env_var = "OA_TOKEN"\nauth = { type = "x" }`,
+    ],
+    [
+      "a remote environment",
+      `url = "${HUB}/mcp"\nbearer_token_env_var = "OA_TOKEN"\nenvironment_id = "box-1"`,
+    ],
+    [
       "another instance",
       `url = "https://elsewhere.test/mcp"\nbearer_token_env_var = "OA_TOKEN"`,
     ],
@@ -254,6 +262,37 @@ describe("oa-bus install and uninstall, Codex /mcp entry (#1856)", () => {
       )
         expect(out.notes.join("\n")).toMatch(/left the open-artifacts entry/);
     });
+
+  it("swaps an entry whose environment_id is local", async () => {
+    const t = setup(
+      ORIGINAL.replace(
+        "tool_timeout_sec = 90",
+        'tool_timeout_sec = 90\nenvironment_id = "local"',
+      ),
+    );
+    await installAdapters(t.deps);
+    expect(t.toml().mcp_servers["open-artifacts"]).toHaveProperty("command");
+  });
+
+  it("swaps one entry at most: a second remote entry for the instance stays, with a note, and uninstall restores the first", async () => {
+    const second = REMOTE.replaceAll("open-artifacts", "second");
+    const t = setup(ORIGINAL);
+    await installAdapters(t.deps);
+    // A second remote entry for the instance, listed before the swapped one.
+    const mid = `${second}\n\n${t.read()}`;
+    writeFileSync(t.file, mid);
+    const out = await installAdapters(t.deps);
+    expect(t.read()).toBe(mid);
+    expect(t.toml().mcp_servers.second).toHaveProperty("url");
+    expect(out.notes.join("\n")).toMatch(
+      /left the second entry .*the open-artifacts entry is already the oa-bus proxy/,
+    );
+    expect(JSON.parse(readFileSync(t.moved, "utf8")).name).toBe(
+      "open-artifacts",
+    );
+    await uninstallAdapters(t.deps);
+    expect(t.read()).toBe(`${second}\n\n${ORIGINAL}`);
+  });
 
   it("leaves an entry written as an inline table alone, with a note", async () => {
     const original = `${PREFIX}[mcp_servers]\nopen-artifacts = { url = "${HUB}/mcp", bearer_token_env_var = "OA_TOKEN" }\n`;
@@ -303,7 +342,7 @@ describe("oa-bus install and uninstall, Codex /mcp entry (#1856)", () => {
         expect(t.toml().mcp_servers["open-artifacts"]).toHaveProperty("url");
         expect(existsSync(t.moved)).toBe(false);
         expect(out.notes.join("\n")).toMatch(
-          /Codex needs 0\.123 or later|could not tell which Codex/,
+          /Codex needs 0\.123 or later|oa-bus couldn't read this Codex's version\. Its tools still work\./,
         );
       }
     });

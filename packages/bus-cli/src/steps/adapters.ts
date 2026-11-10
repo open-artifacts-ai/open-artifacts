@@ -57,6 +57,7 @@ import {
 import {
   CODEX_MIN_VERSION,
   type CxEntryIo,
+  proxyProgramMissing as cxProxyProgramMissing,
   installEntry as installCxEntry,
   pendingEntry as pendingCxEntry,
   restoreEntry as restoreCxEntry,
@@ -538,7 +539,7 @@ async function codexEntryStep(deps: AdapterDeps, notes: string[]) {
     )?.[1];
     if (version === undefined) {
       notes.push(
-        `left the ${pending.name} entry in ${io.file} as it is: could not tell which Codex this is. Its tools still work, but Codex won't show as its own session on pages.`,
+        `left the ${pending.name} entry in ${io.file} as it is: oa-bus couldn't read this Codex's version. Its tools still work.`,
       );
       return;
     }
@@ -1173,4 +1174,17 @@ export function checkAdapters(
         ) === "current",
     ),
   };
+}
+
+/** #1856: the Codex proxy entry's program is gone (oa-bus moved or removed). */
+export function codexProxyProblem(
+  deps: Pick<AdapterDeps, "home" | "env" | "which"> & { busHome?: string },
+): { name: string; missing: string } | undefined {
+  const p = paths(deps as AdapterDeps);
+  if (!present(p.codex)) return undefined;
+  try {
+    return cxProxyProgramMissing(readToml(p.codex).doc, deps.which);
+  } catch {
+    return undefined;
+  }
 }

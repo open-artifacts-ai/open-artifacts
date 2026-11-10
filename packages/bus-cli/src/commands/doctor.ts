@@ -26,6 +26,7 @@ import {
 import { readMachine } from "../machine.ts";
 import {
   checkAdapters,
+  codexProxyProblem,
   type Harness,
   opencodeProxyProblem,
 } from "../steps/adapters.ts";
@@ -285,7 +286,16 @@ export async function doctor(ctx: Ctx): Promise<number> {
       });
       if (gone) fail(c.opencodeProxyMissing(gone.name, gone.missing));
     }
-    if (h === "codex") codexChecks(ctx, { pass, warn });
+    if (h === "codex") {
+      codexChecks(ctx, { pass, warn });
+      const gone = codexProxyProblem({
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        which: ctx.which,
+      });
+      if (gone) fail(c.codexProxyMissing(gone.name, gone.missing));
+    }
     if (h === "openclaw") say(ctx, c.openclawDmNote());
   }
 

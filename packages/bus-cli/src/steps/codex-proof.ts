@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
+import { isAbsolute } from "node:path";
 import { mcpUrl } from "@oa/bus-adapter-claude-code";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { parse } from "smol-toml";
@@ -38,6 +39,7 @@ const OURS = ["command", "args", "env", "env_vars"] as const;
 const MOVED_KEYS = ["url", "bearer_token_env_var"] as const;
 /** Remote or stdio keys the proxy cannot stand in for. */
 const BLOCKING = [
+  "auth",
   "bearer_token",
   "http_headers",
   "env_http_headers",
@@ -188,6 +190,18 @@ function edit(
   };
 }
 
+/** Another entry is already swapped for the proxy: one at most, so uninstall can put it back. */
+function otherSwapped(
+  io: CxEntryIo,
+  doc: Doc,
+  name: string,
+): string | undefined {
+  const m = readMoved(io.moved);
+  if (!m || m.name === name) return undefined;
+  const cur = servers(doc)[m.name];
+  return isRecord(cur) && ourEntry(cur, m.origin) ? m.name : undefined;
+}
+
 type Plan =
   | { kind: "none" }
   | { kind: "note"; note: string }
@@ -239,6 +253,12 @@ function plan(doc: Doc, origin: string): Plan {
         "oa-bus only passes on https addresses, or http to localhost.",
       );
     }
+    // A non-local environment would run oa-bus somewhere else; Codex rejects auth on a stdio entry.
+    if (
+      e.auth !== undefined ||
+      (e.environment_id !== undefined && e.environment_id !== "local")
+    )
+      return left("it is written in a form oa-bus can't edit.");
     const blocker = BLOCKING.find((k) => e[k] !== undefined);
     const tokenEnv = e.bearer_token_env_var;
     if (
@@ -263,8 +283,16 @@ export function pendingEntry(
   io: CxEntryIo,
   origin: string,
 ): { name: string } | { note: string } | undefined {
-  const p = plan(readToml(io.file).doc, origin);
-  if (p.kind === "swap") return { name: p.name };
+  const { doc } = readToml(io.file);
+  const p = plan(doc, origin);
+  if (p.kind === "swap") {
+    const other = otherSwapped(io, doc, p.name);
+    if (other !== undefined)
+      return {
+        note: `left the ${p.name} entry in ${io.file} as it is: the ${other} entry is already the oa-bus proxy, and only one can be. Its tools still work, but Codex won't show as its own session on pages.`,
+      };
+    return { name: p.name };
+  }
   if (p.kind === "note") return { note: p.note };
   return undefined;
 }
@@ -317,6 +345,15 @@ export function installEntry(io: CxEntryIo, origin: string): Outcome {
   const p = plan(doc, origin);
   if (p.kind === "note") return { notes: [p.note] };
   if (p.kind === "none") return { notes: [] };
+  if (p.kind === "swap") {
+    const other = otherSwapped(io, doc, p.name);
+    if (other !== undefined)
+      return {
+        notes: [
+          `left the ${p.name} entry in ${io.file} as it is: the ${other} entry is already the oa-bus proxy, and only one can be. Its tools still work, but Codex won't show as its own session on pages.`,
+        ],
+      };
+  }
   if (p.kind === "ours") {
     const tokenEnv = (ourEntry(p.entry, origin) as { tokenEnv: string })
       .tokenEnv;
@@ -416,4 +453,27 @@ function linesOf(text: string): Line[] {
   const last = ls.at(-1);
   if (last && last.text === "" && last.eol === "") ls.pop();
   return ls;
+}
+
+/**
+ * The first program a Codex proxy entry runs that is not there: an absolute
+ * path that does not exist, or a bare name not on PATH. Undefined when there
+ * is no proxy entry or it is fine.
+ */
+export function proxyProgramMissing(
+  doc: Doc,
+  which: (cmd: string) => boolean,
+): { name: string; missing: string } | undefined {
+  for (const [name, e] of Object.entries(servers(doc))) {
+    if (!isRecord(e) || typeof e.command !== "string") continue;
+    const a = Array.isArray(e.args) ? (e.args as unknown[]) : [];
+    const i = a.lastIndexOf(PROXY_CMD);
+    if (i < 0 || a[i + 3] !== "--for" || a[i + 4] !== "codex") continue;
+    for (const part of [e.command, ...a.slice(0, i)]) {
+      if (typeof part !== "string") continue;
+      if (isAbsolute(part) ? !existsSync(part) : !which(part))
+        return { name, missing: part };
+    }
+  }
+  return undefined;
 }
