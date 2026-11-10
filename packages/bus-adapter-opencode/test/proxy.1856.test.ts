@@ -95,6 +95,13 @@ const callArgs = (sessionID?: string) => ({
   arguments: { q: 1 },
   ...(sessionID ? { _meta: { [SESSION_META]: sessionID } } : {}),
 });
+const fail = (p: Promise<unknown>) =>
+  p.then(
+    () => {
+      throw new Error("resolved, wanted a failure");
+    },
+    (x: unknown) => x as Error & { code?: number },
+  );
 const proofOf = (s: Seen) => s.init.headers.get(LINK_PROOF_HEADER);
 
 describe("OpenCode proxy: the proof header", () => {
@@ -242,7 +249,7 @@ describe("OpenCode proxy: where the proof and the token go", () => {
 
   it("an error never repeats the token or the proof", async () => {
     const t = setup({ respond: () => new Response("nope tok-file-value", { status: 500 }) });
-    const e = await t.proxy.call(callArgs("ses_a")).catch((x: unknown) => x as { message: string; code: number });
+    const e = await fail(t.proxy.call(callArgs("ses_a")));
     expect(String(e.message)).not.toContain("tok-file-value");
     expect(String(e.message)).toMatch(/500/);
     expect(String(e.message)).not.toContain(proofOf(t.seen[0] as Seen) ?? "none");
@@ -296,7 +303,7 @@ describe("OpenCode proxy: the wire", () => {
       respond: () =>
         Response.json({ jsonrpc: "2.0", id: 1, error: { code: -32602, message: "bad arg" } }),
     });
-    const e = await t.proxy.call(callArgs()).catch((x: unknown) => x as { message: string; code: number });
+    const e = await fail(t.proxy.call(callArgs()));
     expect(e).toBeInstanceOf(McpError);
     expect(e.code).toBe(-32602);
   });
