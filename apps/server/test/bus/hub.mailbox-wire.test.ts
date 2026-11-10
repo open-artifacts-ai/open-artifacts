@@ -310,6 +310,28 @@ describe("mailbox wire (#1295 PR B)", () => {
     old.close();
   });
 
+  it("#2029: an away roster row counts its pending mail (capped); an agent with none, and a live row, carry no count", async () => {
+    const { rcv, snd, ref, name } = await trio(MB);
+    const before = (await list(snd, "snd")).r.agents.find(
+      (a) => a.bus_name === name,
+    );
+    expect(before).not.toHaveProperty("waiting");
+    await close(rcv, ref);
+    const none = (await list(snd, "snd")).r.agents.find(
+      (a) => a.bus_name === name,
+    );
+    expect(none).toMatchObject({ state: "away" });
+    expect(none).not.toHaveProperty("waiting");
+    await send(snd, "snd", name);
+    await send(snd, "snd", name);
+    const row = (await list(snd, "snd")).r.agents.find(
+      (a) => a.bus_name === name,
+    );
+    expect(row).toMatchObject({ state: "away", waiting: 2 });
+    rcv.close();
+    snd.close();
+  });
+
   const upReplacing = (ref: string, name: string, n: string, old: string) =>
     ({ ...up(id("u"), ref, name, n), replaces: old }) as ClientFrame;
 

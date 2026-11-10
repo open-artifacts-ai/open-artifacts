@@ -95,6 +95,8 @@ export type CodexAttestDeps = {
    * or one /proc/locks read (Linux) for all of them.
    */
   holding?: (pairs: Hold[]) => boolean[] | undefined;
+  /** #2029: every pid holding each file, for `holders`; default one lsof. */
+  holdersOf?: (files: string[]) => Map<string, number[]> | undefined;
   /** Wait before reading an absent call once more; default 50 ms. */
   retryMs?: number;
   /** The wait itself; default a timer, so the daemon keeps serving. */
@@ -134,6 +136,15 @@ export type CodexAttestor = {
     live: { thread: string; pid: number; live?: boolean }[],
     relock: boolean,
   ) => Set<string>;
+  /**
+   * #2029: for each thread given, a `codex` process that holds its writer lock
+   * and has no proof for it, with the start `ps` shows. A thread nobody holds,
+   * or whose holder is proven or not `codex`, is absent. Undefined when lsof
+   * or ps could not run. Admits nothing.
+   */
+  holders: (
+    threads: string[],
+  ) => Map<string, { pid: number; start: string }> | undefined;
   /** The start time pinned for a codex process, if it is pinned (#1748). */
   startOf: (pid: number) => string | undefined;
   /**
@@ -487,7 +498,34 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     return undefined;
   };
 
+  const holders: CodexAttestor["holders"] = (threads) => {
+    const home = deps.home ?? codexHome();
+    const files = threads.filter((t) => plainFile(lockOf(home, t)));
+    if (!files.length) return new Map();
+    const held = (deps.holdersOf ?? lsofHolders)(
+      files.map((t) => lockOf(home, t)),
+    );
+    if (!held) return undefined;
+    const pids = new Set<number>();
+    for (const t of files)
+      for (const p of held.get(lockOf(home, t)) ?? []) pids.add(p);
+    const rows = pids.size ? procs([...pids]) : new Map<number, Proc>();
+    if (!rows) return undefined;
+    const out = new Map<string, { pid: number; start: string }>();
+    for (const t of files) {
+      for (const pid of held.get(lockOf(home, t)) ?? []) {
+        const row = rows.get(pid);
+        if (!row || basename(row.comm) !== "codex") continue;
+        if (proofs.has(`${pid}\0${row.start}\0${t}`)) continue;
+        out.set(t, { pid, start: row.start });
+        break;
+      }
+    }
+    return out;
+  };
+
   return {
+    holders,
     attest: (hello) => check(hello, true),
     attestNow: (hello) => check(hello, false) as CodexAttest,
     sweep,
@@ -897,6 +935,40 @@ export function holdingFiles(pairs: Hold[]): boolean[] | undefined {
     const r = real(file);
     return r !== undefined && (holders.get(r)?.has(pid) ?? false);
   });
+}
+
+/** Every pid `lsof` lists for each file, by the file's real path; undefined when lsof could not run. */
+export function lsofHolders(
+  files: string[],
+): Map<string, number[]> | undefined {
+  let out: string;
+  try {
+    out = execFileSync(systemTool("lsof"), ["-F", "pn", ...files], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2000,
+    });
+  } catch (e) {
+    if (!exitedOne(e)) return undefined;
+    out = String((e as { stdout?: unknown }).stdout ?? "");
+  }
+  const byReal = new Map<string, number[]>();
+  let pid = 0;
+  for (const l of out.split("\n")) {
+    if (l.startsWith("p")) pid = Number(l.slice(1));
+    else if (l.startsWith("n") && pid > 0) {
+      const list = byReal.get(l.slice(1)) ?? [];
+      list.push(pid);
+      byReal.set(l.slice(1), list);
+    }
+  }
+  const res = new Map<string, number[]>();
+  for (const f of files) {
+    try {
+      res.set(f, byReal.get(realpathSync(f)) ?? []);
+    } catch {}
+  }
+  return res;
 }
 
 /** A Linux st_dev split as /proc/locks prints it (glibc's major/minor). */

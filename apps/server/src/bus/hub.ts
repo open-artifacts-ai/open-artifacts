@@ -2120,6 +2120,8 @@ function roster(
     if (away.length > 0) rows = [...rows, ...away].sort(byScope).slice(0, cap);
   }
   const awaySince = new Map<string, number>();
+  /** #2029: pending mail per away row, counted up to WAITING_CAP. */
+  const waiting = new Map<string, number>();
   if (withAway) {
     const ids = rows.filter((r) => r.live !== 1).map((r) => r.id);
     if (ids.length > 0)
@@ -2129,6 +2131,15 @@ function roster(
         JSON.stringify(ids),
       ))
         if (r.t !== null) awaySince.set(r.id, r.t);
+    for (const id of ids) {
+      const n = one<{ n: number }>(
+        sql,
+        "select count(*) as n from (select 1 from receipts indexed by receipts_to where to_agent = ? and state = 'pending' limit ?)",
+        id,
+        WAITING_CAP,
+      );
+      if (n && n.n > 0) waiting.set(id, n.n);
+    }
   }
   const online = new Map<string, boolean>();
   const stateOf = (machineId: string): "live" | "queued" => {
@@ -2160,6 +2171,9 @@ function roster(
         ...(r.live !== 1 && awaySince.has(r.id)
           ? { since: new Date(awaySince.get(r.id) as number).toISOString() }
           : {}),
+        ...(r.live !== 1 && waiting.has(r.id)
+          ? { waiting: waiting.get(r.id) as number }
+          : {}),
         // The key is omitted, never null, if a row's machine has no label.
         ...(label === undefined ? {} : { machine_label: label }),
         ...statusWire(r),
@@ -2168,6 +2182,9 @@ function roster(
     }),
   };
 }
+
+/** #2029: the most pending mail a roster away row counts. */
+const WAITING_CAP = 100;
 
 /**
  * R393b: each row's live former names for the roster (OpenBus #451: those

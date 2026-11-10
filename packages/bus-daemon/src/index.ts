@@ -24,6 +24,7 @@ import {
   unconfirmedText,
 } from "@oa/bus-ipc";
 import {
+  AgentRefSchema,
   BUS_CAPS,
   BUS_CMD,
   BUS_ROUTES,
@@ -52,6 +53,13 @@ import {
   codexHome,
   codexProxyNamespaces,
 } from "./codex-attest.ts";
+import {
+  AWAY_IDLE_MS,
+  type CodexAway,
+  readCodexAway,
+  trimAway,
+  writeCodexAway,
+} from "./codex-away.ts";
 import { codexThreadNames } from "./codex-names.ts";
 import {
   type Config,
@@ -106,6 +114,7 @@ import {
 import { AgentStatusRelay, STATUS_COPY } from "./status.ts";
 import { ClaudeTransport } from "./transports/claude.ts";
 import {
+  CODEX_WAKE_TEXT,
   CodexTransport,
   type CodexTransportOptions,
   codexBinFile,
@@ -265,6 +274,12 @@ export type DaemonDeps = {
     queuedFile?: string;
     /** Live Codex threads kept across a restart (#1748); default ~/.oa-bus/codex-agents.json. */
     agentsFile?: string;
+    /** #2029: Codex threads proved here, kept for wake; default ~/.oa-bus/codex-away.json. */
+    awayFile?: string;
+    /** #2029: wakes already tried, kept 7 days; default ~/.oa-bus/codex-woken.json. */
+    wokenFile?: string;
+    /** #2029: the shortest gap between hub roster reads for one thread; default 5 min. */
+    wakeAskMs?: number;
   };
   pi?: {
     /** How long the extension has to hand a message to Pi and ack it. */
@@ -1679,7 +1694,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           live: true,
         });
         if (rec.kind === "opencode") ocServiceStart.set(rec.ref, ocStart(pid));
-        if (rec.kind === "codex") persistCodex();
+        if (rec.kind === "codex") {
+          persistCodex();
+          trackAway();
+        }
         if (rec.kind === "claude-code") void claude.revive(rec.ref);
         conns.set(rec.ref, (conns.get(rec.ref) ?? 0) + 1);
         claimProofs();
@@ -1918,6 +1936,142 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     }
   };
 
+  /** #2029: each Codex thread proved here, kept so mail held for it can wake it. */
+  const awayFile = cx.awayFile ?? join(home(), "codex-away.json");
+  const awayNow = deps.bindingNow ?? Date.now;
+  const HOUR = 3_600_000;
+  const awayRows = new Map<string, CodexAway>(
+    readCodexAway(awayFile, awayNow()).map((r) => [r.ref, r]),
+  );
+  let awaySaved: string | undefined;
+  const trackAway = () => {
+    const now = awayNow();
+    for (const a of agents.all()) {
+      if (a.kind !== "codex") continue;
+      const prev = awayRows.get(a.ref);
+      const lastLive = a.live
+        ? Math.floor(now / HOUR) * HOUR
+        : (prev?.lastLive ?? Math.floor(now / HOUR) * HOUR);
+      if (
+        !WireNamespaceSchema.safeParse(a.namespace).success ||
+        !AgentRefSchema.safeParse(a.ref).success
+      )
+        continue;
+      awayRows.set(a.ref, {
+        ref: a.ref,
+        name: a.busName,
+        namespace: a.namespace,
+        lastLive,
+      });
+    }
+    const kept = trimAway([...awayRows.values()], now);
+    awayRows.clear();
+    for (const r of kept) awayRows.set(r.ref, r);
+    const text = JSON.stringify(kept);
+    if (awaySaved === undefined ? kept.length === 0 : text === awaySaved)
+      return;
+    try {
+      writeCodexAway(awayFile, kept);
+      awaySaved = text;
+    } catch (e) {
+      log(
+        `could not save the Codex away threads: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+  const woken = new HeldStore(
+    cx.wokenFile ?? join(home(), "codex-woken.json"),
+    { ttlMs: 7 * 24 * HOUR },
+  );
+  /** Decisions already logged, and the last hub roster read, per `thread:pid:start`. */
+  const wakeLogged = new Set<string>();
+  const wakeAsked = new Map<string, number>();
+  let waking = false;
+  /**
+   * #2029: an away Codex thread whose lock a `codex` process we have not
+   * proved holds, with mail waiting at the hub, gets ONE fixed bus-written
+   * text per app-server start. The thread proves itself with its own call.
+   */
+  const wakeAway = async () => {
+    if (waking) return;
+    waking = true;
+    try {
+      const now = awayNow();
+      const rows = [...awayRows.values()].filter(
+        (r) => now - r.lastLive <= AWAY_IDLE_MS && !agents.byRef(r.ref)?.live,
+      );
+      if (!rows.length) return;
+      const held = codexCheck.holders(rows.map((r) => r.ref));
+      if (!held) return;
+      const once = (key: string, msg: string) => {
+        if (wakeLogged.has(key + msg)) return;
+        wakeLogged.add(key + msg);
+        if (wakeLogged.size > 500) wakeLogged.clear();
+        log(msg);
+      };
+      for (const r of rows) {
+        const h = held.get(r.ref);
+        if (!h) continue;
+        const key = `wake:${r.ref}:${h.pid}:${h.start.replace(/\s+/g, "_")}`;
+        const who = `codex wake ${r.ref.slice(0, 8)} pid ${h.pid}`;
+        if (woken.has(key)) continue;
+        const asker = agents.all().find((a) => a.live);
+        if (!asker || !hub.open || hubVersion === undefined) {
+          once(key, `${who} skipped: no live agent to ask the hub`);
+          continue;
+        }
+        const last = wakeAsked.get(key);
+        if (last !== undefined && now - last < (cx.wakeAskMs ?? 300_000))
+          continue;
+        wakeAsked.set(key, now);
+        const roster = await hubRoster(asker.ref);
+        if (!roster) {
+          once(key + now, `${who} skipped: the hub did not answer`);
+          continue;
+        }
+        const row = roster.find(
+          (a) =>
+            a.state === "away" &&
+            a.name === r.name &&
+            a.namespace === r.namespace,
+        );
+        if (!row?.waiting) {
+          once(key, `${who} skipped: no mail waiting`);
+          continue;
+        }
+        if (!(await codex.canWake(h.pid))) {
+          once(
+            key,
+            `${who} skipped: the process does not wake on a queued message`,
+          );
+          continue;
+        }
+        // Recorded first: a failure or a refusal is never tried again for this start.
+        try {
+          woken.add(key);
+        } catch (e) {
+          once(
+            key,
+            `${who} skipped: could not record the wake (${e instanceof Error ? e.message : String(e)})`,
+          );
+          continue;
+        }
+        const res = await codex.wake(r.ref, h.pid, key, CODEX_WAKE_TEXT);
+        log(
+          res === "sent"
+            ? `${who} sent`
+            : res === "no_host"
+              ? `${who} skipped: the process does not wake on a queued message`
+              : `${who} failed: ${res}`,
+        );
+      }
+    } catch (e) {
+      log(`codex wake failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      waking = false;
+    }
+  };
+
   /**
    * A Codex thread is live while its process is the one pinned at its first
    * call (lstart, every sync) and still holds the thread's lock (lsof, every
@@ -1925,11 +2079,21 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * thread loaded, not that a user is watching (the shared daemon keeps threads).
    */
   const syncCodex = () => {
+    try {
+      syncCodexInner();
+    } finally {
+      trackAway();
+      if (!deps.attest && relockTickNow) void wakeAway();
+    }
+  };
+  let relockTickNow = false;
+  const syncCodexInner = () => {
     renameCodexThreads();
     // Not-live threads join only on a relock tick: a thread that dropped its
     // lock keeps its proof, and comes back when the same process holds it again.
     codexTicks = (codexTicks + 1) % relockEvery;
     const relockTick = codexTicks === 0;
+    relockTickNow = relockTick;
     const all = agents
       .all()
       .filter((a) => a.kind === "codex" && (a.live || relockTick))
