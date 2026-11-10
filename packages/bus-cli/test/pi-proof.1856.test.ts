@@ -147,7 +147,9 @@ describe("oa-bus install and uninstall, Pi mcp.json entry (#1856)", () => {
       const r = await installAdapters(s.deps);
       expect(s.read()).toBe(original);
       expect(() => statSync(s.moved)).toThrow();
-      expect(r.notes.join("\n")).toMatch(/open-artifacts entry/);
+      expect(r.notes.join("\n")).toContain(
+        "Pi needs 1.5.0 or later to show as its own session on pages. Its tools still work.",
+      );
     }
   });
 
@@ -238,7 +240,9 @@ describe("oa-bus install and uninstall, Pi mcp.json entry (#1856)", () => {
     const r = await installAdapters(deps);
     expect(readFileSync(join(d, "mcp.json"), "utf8")).toBe(original);
     expect(() => statSync(s.moved)).toThrow();
-    expect(r.notes.join("\n")).toMatch(/share this folder/);
+    expect(r.notes.join("\n")).toContain(
+      "oh-my-pi reads the same file, and moving the entry would take its tools away. Pi won't show as its own session on pages.",
+    );
   });
 
   it("uninstall that cannot put the entry back keeps the extension (also for oh-my-pi) and the moved file", async () => {

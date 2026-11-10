@@ -865,7 +865,7 @@ describe("install and uninstall: the Pi entry notes (#1856)", () => {
     seed(ctx);
     await install({ label: LABEL, hub: HUB }, ctx);
     expect(ctx.out().join("\n")).toContain(
-      `left the open-artifacts entry in ${mcpFile(ctx)} as it is`,
+      `left the open-artifacts entry in ${mcpFile(ctx)} as it is: Pi needs 1.5.0 or later to show as its own session on pages. Its tools still work.`,
     );
   });
 

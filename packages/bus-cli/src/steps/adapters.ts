@@ -482,7 +482,7 @@ async function piEntry(deps: AdapterDeps, notes: string[]) {
     // omp may read this same folder, and has no registerMcpServer: it would lose its tools.
     if (sharedFile(deps) && hasOmp(deps)) {
       notes.push(
-        `left the ${name} entry in ${io.file} as it is: Pi and oh-my-pi share this folder, so this Pi cannot show as a session on pages`,
+        `left the ${name} entry in ${io.file} as it is: oh-my-pi reads the same file, and moving the entry would take its tools away. Pi won't show as its own session on pages.`,
       );
       return;
     }
@@ -493,7 +493,7 @@ async function piEntry(deps: AdapterDeps, notes: string[]) {
       (compareVersions(version, PI_MIN_VERSION) ?? -1) < 0
     ) {
       notes.push(
-        `left the ${name} entry in ${io.file} as it is: this Pi cannot show as a session on pages (needs ${PI_MIN_VERSION} or later)`,
+        `left the ${name} entry in ${io.file} as it is: Pi needs ${PI_MIN_VERSION} or later to show as its own session on pages. Its tools still work.`,
       );
       return;
     }
