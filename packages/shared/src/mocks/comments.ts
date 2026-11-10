@@ -20,8 +20,47 @@ import type { ArtifactSummary } from "../schemas.js";
 
 /** The agents the mock lists for every artifact (R.artifactAgents). */
 export const MOCK_AGENTS: ArtifactAgent[] = [
-  { key: "agent:claude-code", name: "Claude Code", online: true },
-  { key: "agent:codex", name: "Codex", online: false },
+  {
+    key: "agent:claude-code",
+    name: "Claude Code",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: "laptop",
+  },
+  {
+    key: "agent:manager-2",
+    name: "OA Manager-2",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: "laptop",
+  },
+  {
+    key: "agent:codex",
+    name: "Codex",
+    online: false,
+    state: "away",
+    lastActiveAt: new Date(Date.now() - 2 * 3600_000).toISOString(),
+    machine: "laptop",
+  },
+  {
+    key: "agent:sam-bot",
+    name: "OA Manager (Sam)",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: null,
+    owner: "Sam",
+  },
+  {
+    key: "agent:manager",
+    name: "OA Manager",
+    online: false,
+    state: "away",
+    lastActiveAt: new Date(Date.now() - 19 * 3600_000).toISOString(),
+    machine: "workstation",
+  },
 ];
 
 type Deps = {

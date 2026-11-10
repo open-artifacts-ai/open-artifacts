@@ -42,7 +42,9 @@ import {
 } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
+import { outputStyleState } from "../steps/output-style.ts";
 import { MIN_NODE } from "../steps/service.ts";
+import { codexSkillState } from "../steps/skill.ts";
 import { habitsLine } from "./habits.ts";
 import { errorTail } from "./login.ts";
 import { type Healthz, healthzBody, hostOf, updateTarget } from "./status.ts";
@@ -126,6 +128,15 @@ function codexChecks(
     if (shell !== service)
       out.warn(c.codexHomeMismatch(tilde(ctx, shell), tilde(ctx, service)));
   }
+  const skill = codexSkillState({ home: ctx.userHome, env: ctx.env });
+  if (skill.file && skill.block && skill.shared)
+    out.warn(c.codexSkillSharedTwice());
+  else if (skill.file && skill.block)
+    out.warn(
+      c.codexSkillTwice(tilde(ctx, skill.file), tilde(ctx, skill.block)),
+    );
+  else if (skill.file ?? skill.block)
+    out.pass(c.codexSkill(tilde(ctx, (skill.file ?? skill.block) as string)));
   const config = codexConfig(ctx.userHome, ctx.env);
   let risk: ReturnType<typeof sandboxRisk>;
   try {
@@ -279,6 +290,8 @@ export async function doctor(ctx: Ctx): Promise<number> {
       const isolates = claudeIsolates(settings);
       if (isolates === false) pass(c.claudeAccepts());
       if (isolates === true) warn(c.claudeIsolates(tilde(ctx, settings)));
+      const style = outputStyleState({ home: ctx.userHome, env: ctx.env });
+      if (style) pass(c.outputStyleDoctor(tilde(ctx, style.path), style.on));
     }
     if (h === "opencode") {
       const gone = opencodeProxyProblem({

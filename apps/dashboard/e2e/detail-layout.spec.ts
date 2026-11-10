@@ -60,8 +60,8 @@ for (const [name, url] of VIEWS)
         if (name === "panel") {
           const panel = page.getByRole("complementary", { name: "Side panel" });
           const pb = await panel.boundingBox();
-          // 320px of content (353px with padding and border) beside the frame; the full width over it below 960px.
-          expect(Math.round(pb?.width ?? 0)).toBe(width < 960 ? width : 353);
+          // 320px of content (352px with padding and border; #1986 default) beside the frame; the full width over it below 960px.
+          expect(Math.round(pb?.width ?? 0)).toBe(width < 960 ? width : 352);
           await expect(
             page.getByRole("tab", { name: "Versions" }),
           ).toHaveAttribute("aria-selected", "true");
