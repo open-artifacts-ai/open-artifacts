@@ -1,8 +1,8 @@
 // Open Artifacts bus extension for Pi and oh-my-pi. Installed by `oa-bus install`; managed file. Do not edit: reinstall overwrites it.
 // Standalone: Pi loads it from its extensions directory, so it imports node built-ins only.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -52,6 +52,9 @@ type Pi = {
     ): Promise<ToolResult>;
   }): void;
   on(event: string, handler: (event: unknown, ctx: Ctx) => unknown): void;
+  /** Pi only, and not every version: absent on omp and older Pi (#1856). */
+  registerMcpServer?(name: string, config: Json): void;
+  unregisterMcpServer?(name: string): void;
   sendMessage(
     message: {
       customType: string;
@@ -65,6 +68,15 @@ type Pi = {
     },
   ): void;
 };
+
+/** #1856: the header the instance's /mcp reads a session's link proof from (LINK_PROOF_HEADER). */
+const PROOF_HEADER = "X-OA-Agent-Proof-Token";
+/** The daemon gets this long to take a link_proof; an answer after it leaves the session unlinked. */
+const PROOF_MS = 2_000;
+/** A proof the daemon did not take is offered again at most this often. */
+const PROOF_RETRY_MS = 60_000;
+/** Written by `oa-bus install`: the instance's /mcp entry it moved out of Pi's mcp.json. */
+const ENTRY_FILE = "pi-mcp-entry.json";
 
 /** Above the daemon's 10 s hub wait plus its 5 s wait for delivered. */
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -933,6 +945,8 @@ type Link = {
   ack: (msgId: string) => void;
   /** #1635: tell the daemon the session's new name; false when this daemon does not take it. */
   rename: (name: string) => boolean;
+  /** #1856: this link's proof hash, to a daemon whose welcome listed `link`; true only when it bound it. */
+  prove: (hash: string) => Promise<boolean>;
   closed: () => boolean;
   close: () => void;
 };
@@ -999,6 +1013,13 @@ function open(
           return false;
         write({ type: "rename", id: `rename-${++seq}`, name });
         return true;
+      },
+      prove: async (hash) => {
+        const caps = link.welcome.caps;
+        if (ended || !Array.isArray(caps) || !caps.includes("link"))
+          return false;
+        const r = await link.request({ type: "link_proof", hash }, PROOF_MS);
+        return r.type === "link_proofed" && r.bound === true;
       },
       closed: () => ended,
       close: () => {
@@ -1084,7 +1105,8 @@ function open(
         // #1295: this asset decodes away rows and the new refusals.
         // #1525: and a config file that is pending approval.
         // #1635: and may send a rename.
-        caps: ["mailbox", "pending", "rename", "follow", "reach"],
+        // #1856: and may send a link_proof.
+        caps: ["mailbox", "pending", "rename", "follow", "reach", "link"],
         attest: start ? { proc_start: start } : {},
       }),
     );
@@ -1168,6 +1190,111 @@ export default function oaBus(pi: Pi): void {
     link.ack(msgId);
   };
 
+  // --- #1856: the session proves which bus agent it is on the instance's /mcp.
+  // install moved the instance's entry out of Pi's mcp.json into ENTRY_FILE;
+  // this registers it for the session, with the proof header only while this
+  // session's own link is bound to it. The proof is random per link, lives in
+  // memory, and is never written, logged or sent anywhere but as its hash.
+  type Proof = {
+    link: Link;
+    value: string;
+    at: number;
+    busy: boolean;
+    taken: boolean;
+  };
+  let proof: Proof | undefined;
+
+  const isRecord = (v: unknown): v is Json =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  /** The moved entry, or undefined when there is none or it is not one Pi would take. */
+  const entryOf = (): { name: string; config: Json } | undefined => {
+    try {
+      const v: unknown = JSON.parse(
+        readFileSync(join(home(), ENTRY_FILE), "utf8"),
+      );
+      if (
+        isRecord(v) &&
+        typeof v.name === "string" &&
+        /^[A-Za-z0-9_-]+$/.test(v.name) &&
+        isRecord(v.config)
+      )
+        return { name: v.name, config: v.config };
+    } catch {}
+    return undefined;
+  };
+  /** Pi 1.5+ only, never omp: its own MCP client reads what is registered. */
+  const mcpHere = () =>
+    identity?.kind === "pi" && typeof pi.registerMcpServer === "function";
+  /** Registers the entry, plain or with `value` as the proof header. Never throws. */
+  const register = (value?: string) => {
+    if (!mcpHere()) return;
+    const entry = entryOf();
+    if (!entry) return;
+    let config = entry.config;
+    if (value !== undefined) {
+      const headers: Json = {};
+      const own = isRecord(config.headers) ? config.headers : {};
+      for (const [k, v] of Object.entries(own))
+        if (k.toLowerCase() !== PROOF_HEADER.toLowerCase()) headers[k] = v;
+      config = { ...config, headers: { ...headers, [PROOF_HEADER]: value } };
+    }
+    try {
+      pi.registerMcpServer?.(entry.name, config);
+    } catch {}
+  };
+  const offerProof = async (p: Proof) => {
+    if (p.busy) return;
+    p.busy = true;
+    p.at = Date.now();
+    try {
+      const hash = createHash("sha256").update(p.value).digest("hex");
+      const bound = await p.link.prove(hash);
+      // Only for the link that is still this session's, and only once bound.
+      if (bound && proof === p && !p.link.closed() && !stopped) {
+        p.taken = true;
+        register(p.value);
+      }
+    } catch {
+    } finally {
+      p.busy = false;
+    }
+  };
+  /** A new proof for a new link; nothing for a daemon that did not list `link`. */
+  const proveLink = (l: Link) => {
+    proof = undefined;
+    const caps = l.welcome.caps;
+    if (!mcpHere() || !entryOf()) return;
+    if (!Array.isArray(caps) || !caps.includes("link")) return;
+    proof = {
+      link: l,
+      value: randomBytes(32).toString("base64url"),
+      at: Date.now(),
+      busy: false,
+      taken: false,
+    };
+    void offerProof(proof);
+  };
+  /** The link is gone: the header goes with it. */
+  const dropProof = () => {
+    const p = proof;
+    proof = undefined;
+    if (p?.taken) register();
+  };
+  /** A turn on a link the daemon did not take a proof for: offer it again, at most once a minute. */
+  const retryProof = () => {
+    const p = proof;
+    if (
+      !p ||
+      p.taken ||
+      p.busy ||
+      p.link !== current ||
+      p.link.closed() ||
+      Date.now() - p.at < PROOF_RETRY_MS
+    )
+      return;
+    void offerProof(p);
+  };
+
   const reconnect = (e?: unknown) => {
     if (stopped || retry || !identity) return;
     const refused = (e as { refused?: boolean } | undefined)?.refused === true;
@@ -1184,6 +1311,7 @@ export default function oaBus(pi: Pi): void {
     if (current?.ref === id.ref && !current.closed())
       return Promise.resolve(current);
     if (connecting?.ref === id.ref) return connecting.link;
+    dropProof();
     current?.close();
     current = undefined;
     const link = open(id, start, {
@@ -1197,7 +1325,10 @@ export default function oaBus(pi: Pi): void {
           );
         } catch {}
       },
-      lost: () => reconnect(),
+      lost: () => {
+        if (proof?.link.closed()) dropProof();
+        reconnect();
+      },
     }).then(
       (l) => {
         if (connecting?.link === link) connecting = undefined;
@@ -1207,6 +1338,7 @@ export default function oaBus(pi: Pi): void {
         }
         current = l;
         refusals = 0;
+        proveLink(l);
         // Renamed while this hello was in flight (#1635).
         if (
           identity.kind !== "omp" &&
@@ -1267,18 +1399,25 @@ export default function oaBus(pi: Pi): void {
   });
   // A turn start checks too (cheap when unchanged); omp is skipped in renamed().
   pi.on("turn_start", (_event, ctx) => {
-    if (!subagent(ctx)) renamed(ctx);
+    if (subagent(ctx)) return;
+    renamed(ctx);
+    retryProof();
   });
 
   pi.on("session_start", async (_event, ctx) => {
     if (subagent(ctx)) return;
     stopped = false;
+    // The entry works unlinked: no header until this session's link is bound.
+    identity = identityOf(ctx);
+    register();
     // Pi is reachable while this link is open; a daemon that is down is retried.
     await ensure(identityOf(ctx)).catch(reconnect);
   });
   pi.on("session_shutdown", (_event, ctx) => {
     if (subagent(ctx)) return;
     stopped = true;
+    identity = identity ?? identityOf(ctx);
+    dropProof();
     if (retry) clearTimeout(retry);
     retry = undefined;
     connecting = undefined;

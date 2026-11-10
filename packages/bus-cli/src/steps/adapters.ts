@@ -68,6 +68,14 @@ import {
   openclawPluginState,
   uninstallOpenclaw,
 } from "./openclaw.ts";
+import {
+  moveEntry,
+  PI_ENTRY_FILE,
+  PI_MIN_VERSION,
+  type PiEntryIo,
+  pendingEntry,
+  restoreEntry,
+} from "./pi-proof.ts";
 
 export type Exec = (
   cmd: string,
@@ -204,6 +212,12 @@ const paths = (deps: AdapterDeps) => {
     ],
     opencodeCli: join(opencode, "cli.json"),
     record: join(busDir, "install.json"),
+    // #1856: Pi's own MCP config, and where install keeps the entry it moved.
+    piMcp: join(
+      agentDirEnv(deps.home, env) ?? join(deps.home, ".pi/agent"),
+      "mcp.json",
+    ),
+    piEntry: join(busDir, PI_ENTRY_FILE),
     // OpenCode registers the folder that holds tui.js.
     opencodePlugin: join(busDir, "integrations/opencode", NAME),
     pi: join(
@@ -447,6 +461,43 @@ function claudeProof(deps: AdapterDeps, notes: string[]) {
   }
 }
 
+const piEntryIo = (deps: AdapterDeps): PiEntryIo => ({
+  file: paths(deps).piMcp,
+  moved: paths(deps).piEntry,
+  write: writeAtomic,
+});
+
+/**
+ * #1856: the instance's /mcp entry leaves Pi's mcp.json, so the extension can
+ * register it with the session's proof (Pi lets an mcp.json entry beat a
+ * registered server). Only for a Pi that has `registerMcpServer`, so an older
+ * one keeps its entry. Never stops the install.
+ */
+async function piEntry(deps: AdapterDeps, notes: string[]) {
+  if (deps.hub === undefined) return;
+  try {
+    const io = piEntryIo(deps);
+    const name = pendingEntry(io, deps.hub);
+    if (name === undefined) return;
+    const r = await run(deps, "pi", ["--version"]);
+    const version = r.code === 0 ? r.stdout.trim().split(/\s+/)[0] : undefined;
+    if (
+      version === undefined ||
+      (compareVersions(version, PI_MIN_VERSION) ?? -1) < 0
+    ) {
+      notes.push(
+        `left the ${name} entry in ${io.file} as it is: this Pi cannot show as a session on pages (needs ${PI_MIN_VERSION} or later)`,
+      );
+      return;
+    }
+    moveEntry(io, deps.hub);
+  } catch (e) {
+    notes.push(
+      `could not set up the Open Artifacts entry in Pi's mcp.json: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
 const proofIo = (deps: AdapterDeps): ProofIo => ({
   file: paths(deps).claude,
   record: paths(deps).record,
@@ -577,13 +628,14 @@ const install: Record<Harness, Step> = {
     return "done";
   },
 
-  async pi(deps) {
+  async pi(deps, notes) {
     if (!deps.which("pi")) return "absent";
     writeAtomic(
       paths(deps).pi,
       withHome(deps.assets.pi, movedHome(deps)),
       0o644,
     );
+    await piEntry(deps, notes);
     return "done";
   },
 
@@ -710,9 +762,18 @@ const uninstall: Record<Harness, Step> = {
     return saved.some(Boolean) ? "done" : "folder";
   },
 
-  async pi(deps) {
+  async pi(deps, notes) {
+    // The entry goes back first: it is the user's, and works without the extension.
+    let restored = false;
+    try {
+      restored = restoreEntry(piEntryIo(deps));
+    } catch (e) {
+      notes.push(
+        `could not put the Open Artifacts entry back in Pi's mcp.json: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
     const path = paths(deps).pi;
-    if (!existsSync(path)) return "none";
+    if (!existsSync(path)) return restored ? "done" : "none";
     rmSync(path, { force: true });
     return "done";
   },
