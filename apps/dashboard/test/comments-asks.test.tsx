@@ -2,6 +2,7 @@ import { type ArtifactAgent, R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import {
   act,
+  cleanup,
   configure,
   fireEvent,
   getConfig,
@@ -1297,6 +1298,35 @@ describe("asks for you in the toolbar and header (#1614)", () => {
     expect(await screen.findByText("No asks for you")).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: /asks? for you$/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("opens the comments at the thread a comment email links to (#1467)", async () => {
+    const resolved = { ...mk("r"), status: "resolved" as const };
+    serveThreads(() => [mk("a"), mk("b"), resolved]);
+    const router = mount(`${viewerPath(OWNED)}?thread=b`);
+    expect(router.state.location.searchStr).toContain("thread=b");
+    await screen.findByRole("complementary", { name: "Comments" });
+    await waitFor(() => expect(active()).toBe("b"));
+    await waitFor(() =>
+      expect(router.state.location.searchStr).not.toContain("thread="),
+    );
+    cleanup();
+    serveThreads(() => [mk("a"), resolved]);
+    mount(`${viewerPath(OWNED)}?thread=r`);
+    await screen.findByRole("complementary", { name: "Comments" });
+    await waitFor(() => expect(active()).toBe("r"));
+  });
+
+  it("drops a thread link to a thread that is gone", async () => {
+    serveThreads(() => [mk("a")]);
+    const router = mount(`${viewerPath(OWNED)}?thread=gone`);
+    await toolbar();
+    await waitFor(() =>
+      expect(router.state.location.searchStr).not.toContain("thread="),
+    );
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
     ).not.toBeInTheDocument();
   });
 

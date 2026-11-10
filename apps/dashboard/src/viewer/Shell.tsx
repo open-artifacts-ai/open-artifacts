@@ -209,6 +209,7 @@ function Viewer({
   const search = useSearch({ strict: false }) as {
     panel?: string;
     tab?: string;
+    thread?: unknown;
   };
   const panelOpen = search.panel === "open";
   const requestedTab: PanelTab = isPanelTab(search.tab)
@@ -507,6 +508,29 @@ function Viewer({
       ? { count: asksForMe(all).length }
       : undefined;
   }, [cmt.ordered, cmt.orphans]);
+  // #1467: a comment email links to ?thread=<id>. Once the list has loaded,
+  // open the comments at that thread (showing resolved ones if it is), then
+  // drop the parameter so a reload or Back doesn't jump again.
+  const wantThread =
+    typeof search.thread === "string" && search.thread
+      ? search.thread
+      : undefined;
+  const threadDone = useRef<string | null>(null);
+  useEffect(() => {
+    if (!wantThread || threadDone.current === wantThread || cmt.loading) return;
+    threadDone.current = wantThread;
+    const t = cmt.threads.find((x) => x.id === wantThread);
+    if (t) {
+      if (t.status === "resolved") cmt.setShowResolved(true);
+      openSurface.current();
+      cmt.reveal(t.id);
+    }
+    void navigate({
+      to: ".",
+      replace: true,
+      search: (({ thread: _, ...p }: Record<string, unknown>) => p) as never,
+    });
+  }, [wantThread, cmt, navigate]);
   if ((content.notFound || signedOut) && isEmbed())
     return <NotPublic id={artifact.id} />;
   if (content.notFound) return <NotFound />;

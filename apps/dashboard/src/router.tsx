@@ -28,6 +28,7 @@ import { Connections } from "./settings/Agents";
 import { Directory } from "./settings/Directory";
 import { Instance } from "./settings/Instance";
 import { Members } from "./settings/Members";
+import { Notifications } from "./settings/Notifications";
 import { Plan } from "./settings/Plan";
 import { Profile } from "./settings/Profile";
 import { Gate, SettingsLayout } from "./settings/SettingsLayout";
@@ -284,6 +285,7 @@ const routeTree = root.addChildren([
   route("/a/$id/diff/$from/$to", DiffRoute),
   settings.addChildren([
     gated("/settings/profile", [...ADMINS, "member"], "/", Profile),
+    gated("/settings/notifications", [...ADMINS, "member"], "/", Notifications),
     gated("/settings/members", ADMINS, "/settings/connections", Members),
     createRoute({
       getParentRoute: () => settings,
