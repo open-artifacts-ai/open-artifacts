@@ -103,12 +103,14 @@ export type PlanRefusalDetails = z.infer<typeof PlanRefusalDetailsSchema>;
  * A free-tier cap (apps/server billing/caps.ts; each is off until the
  * operator sets it): storage_bytes (FREE_STORAGE_BYTES), data_docs per
  * artifact (FREE_DATA_DOCS), data_daily_writes per artifact per UTC day
- * (FREE_DATA_DAILY_WRITES).
+ * (FREE_DATA_DAILY_WRITES), data_daily_writes_total per install per UTC day
+ * across all artifacts (FREE_DATA_DAILY_WRITES_TOTAL).
  */
 export const PlanLimitSchema = z.enum([
   "storage_bytes",
   "data_docs",
   "data_daily_writes",
+  "data_daily_writes_total",
 ]);
 export type PlanLimit = z.infer<typeof PlanLimitSchema>;
 
