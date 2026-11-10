@@ -149,7 +149,8 @@ export function AskBlock({
   }, [picked]);
   if (!ask) return null;
   const mine = ask.to.some((a) => a.me);
-  // Addressed agents with identity fields; legacy ones add no line.
+  // Addressed agents with identity fields; legacy ones add no line, and the
+  // server sends none to a signed-out, guest or restricted viewer (#1890).
   const asked = ask.to.filter(
     (a) => a.kind === "agent" && a.linked !== undefined,
   );
@@ -294,7 +295,7 @@ export function AskBlock({
               )}
             </p>
           )}
-          {!guest && asked.length > 0 && (
+          {asked.length > 0 && (
             <p
               data-ask-to=""
               className={`flex flex-wrap items-center gap-x-2 gap-y-1 ${TXT} ${MUTED}`}
@@ -456,9 +457,12 @@ export function MentionedText({
   for (const m of body.matchAll(re)) {
     const at = m.index + (m[1]?.length ?? 0);
     const end = at + 1 + (m[2]?.length ?? 0);
-    const face = mentions.find(
+    // The chip is text, so it has only a name: two agents sharing it are
+    // ambiguous and get no face rather than the wrong one.
+    const same = mentions.filter(
       (x) => x.name.toLowerCase() === (m[2] ?? "").toLowerCase(),
     );
+    const face = same.length === 1 ? same[0] : undefined;
     if (at > last) out.push(...linked(body.slice(last, at), last));
     out.push(
       <span

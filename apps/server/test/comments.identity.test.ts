@@ -226,10 +226,8 @@ describe("party faces (#1890)", () => {
     const s = await scene({ current: IDENT });
     await s.post({ mentions: [{ key: s.key }], ...asks(s.key) });
     const c = (await s.list(GUEST)).threads[0]?.comments[0];
-    expect(c?.mentions?.[0]).toMatchObject({
-      linked: true,
-      animal: faceOf(IDENT.identityId),
-    });
+    expect(c?.mentions?.[0]).not.toHaveProperty("animal");
+    expect(c?.mentions?.[0]).not.toHaveProperty("linked");
     expect(c?.mentions?.[0]?.name).toBe(`${s.owner.member.name}'s agent`);
     expect(JSON.stringify(c)).not.toContain("Runner");
   });
@@ -273,5 +271,85 @@ describe("identity lookups are bounded (#1890)", () => {
     });
     expect(Date.now() - t0).toBeLessThan(2000);
     expect(s.asked).toHaveLength(10);
+  });
+});
+
+describe("outsiders get no face fields (#1890)", () => {
+  const AGENT_IDENT = {
+    identityId: "id-author-0001",
+    namespace: "ns-o",
+    name: "Runner",
+    kind: "claude-code",
+  };
+  const faceKeys = (a: object | undefined) =>
+    ["linked", "product", "animal"].filter((k) => a && k in a);
+
+  async function posted() {
+    const s = await scene({ current: IDENT });
+    await s.post({
+      mentions: [{ key: s.key }],
+      assign: { key: s.key },
+      ...asks(s.key),
+    });
+    // An agent-authored comment with a linked identity.
+    await addThread(
+      (await import("cloudflare:workers")).env as unknown as Env,
+      { id: s.id, format: "html", currentVersion: 1 } as never,
+      {
+        kind: "user",
+        id: s.owner.userId,
+        agent: {
+          name: "Runner",
+          version: null,
+          via: { kind: "token", id: "tok" },
+          identity: AGENT_IDENT,
+        },
+      },
+      signedIn(s.owner),
+      { anchor: { kind: "note" }, body: "from the agent" },
+      { moderator: true },
+    );
+    return s;
+  }
+  const all = (l: CommentList) =>
+    l.threads.flatMap((t) => t.comments).flatMap((c) => c.author);
+  const parties = (l: CommentList) =>
+    l.threads.flatMap((t) =>
+      t.comments.flatMap((c) => [
+        ...(c.mentions ?? []),
+        ...(c.assigned ? [c.assigned] : []),
+        ...(c.ask?.to ?? []),
+      ]),
+    );
+
+  it("signed-out, guest-role and capped viewers get no linked, product or animal", async () => {
+    const s = await posted();
+    const outsiders: CommentViewer[] = [
+      GUEST,
+      { userId: s.other.userId, short: null, guest: true },
+      { userId: s.other.userId, short: null, capped: true },
+    ];
+    for (const v of outsiders) {
+      const l = await s.list(v);
+      expect(JSON.stringify(l)).not.toContain("animal");
+      for (const a of [...all(l), ...parties(l)])
+        expect(faceKeys(a)).toEqual([]);
+      expect(parties(l).length).toBeGreaterThan(0);
+    }
+  });
+
+  it("members, plan-capped included, keep the face", async () => {
+    const s = await posted();
+    // The plan cap does not set `capped`: the viewer is a plain member.
+    for (const v of [
+      signedIn(s.other),
+      { userId: s.other.userId, short: null },
+    ]) {
+      const l = await s.list(v);
+      const authors = all(l).filter((a) => a.kind === "agent");
+      expect(authors.length).toBeGreaterThan(0);
+      for (const a of authors) expect(a.linked).toBe(true);
+      for (const p of parties(l)) expect(p.linked).toBe(true);
+    }
   });
 });

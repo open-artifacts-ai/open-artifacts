@@ -99,6 +99,21 @@ describe("#1890 a mentioned agent shows its face", () => {
   });
 });
 
+describe("#1890 chip lookup", () => {
+  it("two mentions with one name are ambiguous: no face, never the wrong one", () => {
+    const { container } = render(
+      <MentionedText
+        body="cc @Runner"
+        mentions={[
+          { ...linked, key: "agent:a", name: "Runner" },
+          { ...unlinked, key: "agent:b", name: "runner" },
+        ]}
+      />,
+    );
+    expect(container.querySelector("[data-avatar]")).toBeNull();
+  });
+});
+
 describe("#1890 an ask's addressees", () => {
   beforeEach(() => {
     opts.length = 0;
@@ -188,6 +203,15 @@ describe("#1890 an ask's addressees", () => {
     expect(to.querySelector('[data-linked="false"]')).not.toBeNull();
     expect(to.textContent).toContain("OA Product");
     expect(to.textContent).toContain("Claude Code");
+  });
+  it("an outsider's payload (agents without face fields) adds no To line, signed in or not", async () => {
+    serve([
+      { kind: "agent", id: "agent:x", name: "Leo's agent", me: false },
+      { kind: "user", id: "u", name: "Bea", me: false },
+    ]);
+    const c = await open();
+    await within(c).findByText("Which layout?");
+    expect(c.querySelector("[data-ask-to]")).toBeNull();
   });
   it("a legacy addressee adds no line", async () => {
     serve([{ kind: "agent", id: "agent:old", name: "Old Bot", me: false }]);
