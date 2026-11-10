@@ -17,7 +17,15 @@ export type Command = (
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
   | { cmd: "mcp-proof"; tokenFile?: string }
-  | { cmd: "mcp-proxy"; hub: string; tokenFile?: string }
+  | {
+      cmd: "mcp-proxy";
+      hub: string;
+      tokenFile?: string;
+      /** The environment variable that holds the token (Codex passes it by name). */
+      tokenEnv?: string;
+      /** Which harness runs the proxy; OpenCode when absent. */
+      for?: "opencode" | "codex";
+    }
   | { cmd: "status" }
   | { cmd: "logs" }
   | { cmd: "doctor" }
@@ -79,7 +87,7 @@ const FLAGS: Record<string, string[]> = {
   daemon: ["instance"],
   uninstall: ["purge"],
   "mcp-proof": ["token-file"],
-  "mcp-proxy": ["instance", "token-file"],
+  "mcp-proxy": ["instance", "token-file", "token-env", "for"],
   namespace: ["yes"],
 };
 
@@ -95,6 +103,8 @@ export function parse(argv: string[]): Command {
       instance: { type: "string" },
       home: { type: "string" },
       "token-file": { type: "string" },
+      "token-env": { type: "string" },
+      for: { type: "string" },
       "no-open": { type: "boolean", default: false },
       yes: { type: "boolean", short: "y", default: false },
       check: { type: "boolean", default: false },
@@ -157,8 +167,17 @@ export function parse(argv: string[]): Command {
     return { cmd: "version", noColor, ...(home ? { home } : {}) };
   if (cmd === "mcp-proxy" && !values.instance)
     throw new Error(
-      `usage: ${BUS_CMD} mcp-proxy --instance <url> [--token-file <path>]`,
+      `usage: ${BUS_CMD} mcp-proxy --instance <url> [--for codex] [--token-file <path> | --token-env <name>]`,
     );
+  if (cmd === "mcp-proxy") {
+    const f = values.for;
+    if (f !== undefined && f !== "opencode" && f !== "codex")
+      throw new Error("--for takes opencode or codex");
+    if (values["token-env"] !== undefined && f !== "codex")
+      throw new Error("--token-env needs --for codex");
+    if (values["token-env"] !== undefined && tokenFile)
+      throw new Error("give --token-file or --token-env, not both");
+  }
   const parsed =
     cmd === "mcp-proof"
       ? { cmd, ...(tokenFile ? { tokenFile } : {}) }
@@ -167,6 +186,8 @@ export function parse(argv: string[]): Command {
             cmd,
             hub: values.instance as string,
             ...(tokenFile ? { tokenFile } : {}),
+            ...(values["token-env"] ? { tokenEnv: values["token-env"] } : {}),
+            ...(values.for ? { for: values.for as "opencode" | "codex" } : {}),
           }
         : route(cmd, values, rest);
   return { ...parsed, noColor, ...(home ? { home } : {}) } as Command;
