@@ -8,6 +8,7 @@ import {
   type ArtifactAgent,
   type BusAddress,
   BusAddressSchema,
+  type BusAgent,
   type BusNotice,
   isId,
   NOTICE_SENDER,
@@ -56,21 +57,68 @@ export const OWN_AGENTS_MAX = 50;
 /** Most agents a roster returns in all: every follow the fan-out reads plus the viewer's own. */
 export const ROSTER_MAX = FANOUT_MAX + OWN_AGENTS_MAX;
 
+/** What the hub says of one session: its state, when it was last active and where it runs. */
+type Session = Pick<
+  ArtifactAgent,
+  "state" | "online" | "lastActiveAt" | "machine"
+>;
+
+/** The hub's agents by address; an open session wins over an away one of the same address. */
+function sessionsOf(agents: readonly BusAgent[]): Map<string, BusAgent> {
+  const m = new Map<string, BusAgent>();
+  for (const a of agents) {
+    const k = addrKey(a);
+    const have = m.get(k);
+    if (!have || (!have.running && a.running)) m.set(k, a);
+  }
+  return m;
+}
+
+/** The short machine name: a host label loses its domain ("laptop.tail.ts.net" is "laptop"). */
+const shortMachine = (label: string): string | null =>
+  label.split(".")[0]?.trim() || null;
+
+/**
+ * One session as the menu shows it. Online only while the session itself is
+ * live (open on a connected machine). An open session on a machine that is
+ * not connected, and a closed one the bus still lists, are away.
+ */
+function sessionOf(a: BusAgent): Session {
+  const online = a.state === "live";
+  return {
+    state: online ? "online" : "away",
+    online,
+    lastActiveAt: a.since ?? a.updatedAt,
+    machine: shortMachine(a.machineLabel),
+  };
+}
+
+/** An address the hub was not asked about (POST time): no state is known. */
+const UNKNOWN: Session = {
+  state: "away",
+  online: false,
+  lastActiveAt: null,
+  machine: null,
+};
+
 type OwnAgents = {
-  /** The viewer's open agents that are running now, as bus addresses (bounded). */
+  /** The viewer's agents the bus lists (open first, then away), as bus addresses (bounded). */
   addresses: BusAddress[];
-  /** Addresses whose daemon is connected now (state "live"), from the same hub read: `online`. A running agent whose machine is away is "queued", not online. */
-  live: Set<string>;
+  /** The same hub read by address, for each agent's state. */
+  sessions: Map<string, BusAgent>;
+  /** Whether the hub's state is known (false: unreadable, nothing is dropped). */
+  known: boolean;
 };
 
 const addrKey = (a: BusAddress) => `${a.namespace}\n${a.name}`;
 
 /**
- * The viewer's own running agents (#1535: the @ menu lists the agents the
- * viewer runs, besides the ones that follow). One `busView` of the VIEWER
- * only, never another member's. A viewer who cannot hold a bus, cannot read
- * the artifact or has no machine that ever connected costs no hub read
- * (busView reads D1 alone then). Never throws on the hub side.
+ * The viewer's own agents on the bus (#1535: the @ menu lists the agents the
+ * viewer runs, besides the ones that follow), open ones first and then those
+ * away. One `busView` of the VIEWER only, never another member's. A viewer
+ * who cannot hold a bus, cannot read the artifact or has no machine that
+ * ever connected costs no hub read (busView reads D1 alone then). Never
+ * throws on the hub side.
  */
 export async function viewerAgents(
   env: Env,
@@ -80,16 +128,13 @@ export async function viewerAgents(
   const user = await getUser(env, viewerId);
   if (!user || !canConnect(user)) return null;
   if (!(await accessLevel(env, callerOf(user), artifactId))) return null;
-  const view = await busView(env, viewerId);
-  const running = new Set<string>();
-  const live = new Set<string>();
+  const view = await busView(env, viewerId, { away: true });
+  const sessions = sessionsOf(view.agents);
   const addresses: BusAddress[] = [];
-  for (const a of view.agents) {
-    if (a.state === "live") live.add(addrKey(a));
-    if (!a.running) continue;
-    const k = addrKey(a);
-    if (running.has(k)) continue;
-    running.add(k);
+  const ordered = [...sessions.values()].sort(
+    (x, y) => Number(y.running) - Number(x.running),
+  );
+  for (const a of ordered) {
     // An address the bus would refuse a follow for (a reserved name) is no mention target.
     const ok = BusAddressSchema.safeParse({
       namespace: a.namespace,
@@ -98,10 +143,10 @@ export async function viewerAgents(
     if (ok.success && addresses.length < OWN_AGENTS_MAX)
       addresses.push(ok.data);
   }
-  return { addresses, live };
+  return { addresses, sessions, known: view.live };
 }
 
-/** `viewerAgents` as roster entries (online: its daemon is connected), for a mention at POST time. */
+/** `viewerAgents` as roster entries (online: the session is live), for a mention at POST time. */
 export async function viewerRosterAgents(
   env: Env,
   artifactId: string,
@@ -114,12 +159,15 @@ export async function viewerRosterAgents(
     out.push({
       key: await agentKey(artifactId, viewerId, address),
       name: address.name,
-      online: own.live.has(addrKey(address)),
+      ...sessionFor(own.sessions.get(addrKey(address))),
       userId: viewerId,
       address,
     });
   return out;
 }
+
+const sessionFor = (a: BusAgent | undefined): Session =>
+  a ? sessionOf(a) : UNKNOWN;
 
 /**
  * The agents that can be mentioned on `artifactId` and reached now: the ones
@@ -166,27 +214,39 @@ export async function agentRoster(
     const user = await getUser(env, userId);
     if (!user || !canConnect(user)) continue;
     if (!(await accessLevel(env, callerOf(user), artifactId))) continue;
-    // `online` is a connected daemon (state "live"); the menu list itself
-    // keeps `running`: an agent whose machine is away is listed, offline.
-    let live = new Set<string>();
-    if (own && userId === viewerId) live = own.live;
+    // The menu shows the bus: each session's own state, and no address the
+    // bus no longer lists. Without a hub read (POST time) or with an
+    // unreadable hub nothing is known, so nothing is dropped and none is online.
+    let sessions: Map<string, BusAgent> | null = null;
+    if (own && userId === viewerId) sessions = own.known ? own.sessions : null;
     else if (online) {
-      const view = await busView(env, userId);
-      for (const a of view.agents) if (a.state === "live") live.add(addrKey(a));
+      const view = await busView(env, userId, { away: true });
+      if (view.live) sessions = sessionsOf(view.agents);
     }
     const owner = userId === viewerId ? "" : ` (${shownName(user)})`;
     for (const address of addresses) {
-      if (out.length >= ROSTER_MAX) return out;
+      const a = sessions?.get(addrKey(address));
+      if (sessions && !a) continue;
+      if (out.length >= ROSTER_MAX) return sortRoster(out);
       out.push({
         key: await agentKey(artifactId, userId, address),
-        name: `${address.name}${owner}`,
-        online: live.has(addrKey(address)),
+        name: `${a?.name ?? address.name}${owner}`,
+        ...sessionFor(a),
         userId,
         address,
       });
     }
   }
-  return out;
+  return sortRoster(out);
+}
+
+/** Online first, then away, each alphabetical. */
+function sortRoster(out: RosterAgent[]): RosterAgent[] {
+  return out.sort(
+    (x, y) =>
+      Number(y.online) - Number(x.online) ||
+      x.name.localeCompare(y.name, "en", { sensitivity: "base" }),
+  );
 }
 
 /** A roster agent as the comment store keeps it. */
@@ -413,7 +473,7 @@ export async function askerRoster(
     out.push({
       key: await agentKey(artifactId, askerId, address),
       name: address.name,
-      online: false,
+      ...UNKNOWN,
       userId: askerId,
       address,
     });

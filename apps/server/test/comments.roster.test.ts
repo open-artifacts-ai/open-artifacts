@@ -137,7 +137,7 @@ const followRows = async (id: string) =>
   ).results;
 
 describe("roster: the viewer's own running agents", () => {
-  it("lists the viewer's running agent without a follow, never another member's, never a stopped one", async () => {
+  it("lists the viewer's running agent without a follow, never another member's; a stopped one is away", async () => {
     const s = await setup();
     await machineFor(s.owner.userId);
     await machineFor(s.editor.userId);
@@ -149,7 +149,10 @@ describe("roster: the viewer's own running agents", () => {
       [s.editor.userId]: [agentRow("ns-e", "EditorBot")],
     });
     const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
-    expect(r.map((x) => [x.name, x.online])).toEqual([["Runner", true]]);
+    expect(r.map((x) => [x.name, x.online])).toEqual([
+      ["Runner", true],
+      ["Idle", false],
+    ]);
     expect(await followRows(s.id)).toEqual([]);
     // Only the viewer's hub was read.
     expect(h.seen).toEqual([`bus:${s.owner.userId}`]);
@@ -176,8 +179,10 @@ describe("roster: the viewer's own running agents", () => {
       { namespace: "ns-e", name: "Codex" },
       s.id,
     );
+    await machineFor(s.editor.userId);
     const h = hubs({
       [s.owner.userId]: [agentRow("ns-o", "Runner"), agentRow("ns-o", "Other")],
+      [s.editor.userId]: [agentRow("ns-e", "Codex")],
     });
     const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
     expect(r.map((x) => x.name).sort()).toEqual([
@@ -243,6 +248,134 @@ describe("roster: the viewer's own running agents", () => {
     const h = hubs({ [s.owner.userId]: many });
     const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
     expect(r.length).toBe(50);
+  });
+});
+
+/** An away row as the hub lists it with away agents asked for: closed, name kept, `since` set. */
+const awayRow = (
+  namespace: string,
+  name: string,
+  since: string,
+  label = "m",
+) => ({
+  ...agentRow(namespace, name, false, "away"),
+  machineLabel: label,
+  since,
+});
+
+describe("@ menu: per-session state, last active and machine", () => {
+  it("a live session is online, an away session is away with its last active time and machine", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    const since = new Date(Date.now() - 19 * 3600_000).toISOString();
+    const h = hubs({
+      [s.owner.userId]: [
+        { ...agentRow("ns-o", "Up"), machineLabel: "laptop.tail.ts.net" },
+        awayRow("ns-o", "Gone", since, "workstation"),
+      ],
+    });
+    const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
+    expect(
+      r.map((x) => [x.name, x.state, x.online, x.lastActiveAt, x.machine]),
+    ).toEqual([
+      ["Up", "online", true, expect.any(String), "laptop"],
+      ["Gone", "away", false, since, "workstation"],
+    ]);
+  });
+
+  it("a session on a machine that is not connected is away, not online", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    const h = hubs({
+      [s.owner.userId]: [agentRow("ns-o", "Queued", true, "queued")],
+    });
+    const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
+    expect(r.map((x) => [x.name, x.state, x.online])).toEqual([
+      ["Queued", "away", false],
+    ]);
+  });
+
+  it("a follow whose session the bus no longer lists is not in the menu", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    await machineFor(s.editor.userId);
+    await follow(E, s.owner.userId, { namespace: "ns-o", name: "Ended" }, s.id);
+    await follow(
+      E,
+      s.editor.userId,
+      { namespace: "ns-e", name: "Ghost" },
+      s.id,
+    );
+    await follow(E, s.editor.userId, { namespace: "ns-e", name: "Here" }, s.id);
+    const h = hubs({
+      [s.owner.userId]: [agentRow("ns-o", "Kept")],
+      [s.editor.userId]: [agentRow("ns-e", "Here")],
+    });
+    const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
+    expect(r.map((x) => x.name.replace(/ \(.*/, "")).sort()).toEqual([
+      "Here",
+      "Kept",
+    ]);
+  });
+
+  it("without a hub read (POST time) a follower is kept", async () => {
+    const s = await setup();
+    await follow(
+      E,
+      s.editor.userId,
+      { namespace: "ns-e", name: "Ghost" },
+      s.id,
+    );
+    const r = await agentRoster(E, s.id, s.owner.userId, false);
+    expect(r.map((x) => [x.name.replace(/ \(.*/, ""), x.online])).toEqual([
+      ["Ghost", false],
+    ]);
+  });
+
+  it("online first, then away, each alphabetical; the same agent never twice", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    await follow(E, s.owner.userId, { namespace: "ns-o", name: "Zed" }, s.id);
+    const t = new Date().toISOString();
+    const h = hubs({
+      [s.owner.userId]: [
+        awayRow("ns-o", "Alpha", t),
+        agentRow("ns-o", "Zed"),
+        agentRow("ns-o", "Mid"),
+        awayRow("ns-o", "Beta", t),
+      ],
+    });
+    const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
+    expect(r.map((x) => [x.name, x.state])).toEqual([
+      ["Mid", "online"],
+      ["Zed", "online"],
+      ["Alpha", "away"],
+      ["Beta", "away"],
+    ]);
+    expect(new Set(r.map((x) => x.key)).size).toBe(r.length);
+  });
+
+  it("asks the hub for away sessions", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    let asked: unknown = "never";
+    const ns = {
+      idFromName: (n: string) => n,
+      get: () => ({
+        snapshot: async (o?: unknown) => {
+          asked = o;
+          return { connected: [], agents: [] };
+        },
+      }),
+    };
+    await agentRoster(
+      { ...E, BUS_HUB: ns } as unknown as Env,
+      s.id,
+      s.owner.userId,
+      true,
+      true,
+    );
+    expect(asked).toEqual({ away: true });
   });
 });
 

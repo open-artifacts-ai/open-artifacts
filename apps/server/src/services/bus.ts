@@ -102,7 +102,9 @@ export type BusHubRpc = {
   /** #1822: the live session whose proof hashes to `hash`, in this member's own hub; else null. */
   agentByProof(hash: string): Promise<AgentIdentity | null>;
   /** The machines with a live socket now, and the open agents, in one read. */
-  snapshot(): Promise<{ connected: string[]; agents: BusAgent[] }>;
+  snapshot(opts?: {
+    away?: boolean;
+  }): Promise<{ connected: string[]; agents: BusAgent[] }>;
   /** Closes the machine's sockets and drains its agents; false when unknown or already revoked. */
   revokeMachine(id: string): Promise<boolean>;
   /**
@@ -272,12 +274,16 @@ async function hubSnapshot(
   env: Env,
   userId: string,
   everConnected: boolean,
+  away = false,
 ): Promise<{ connected: Set<string>; agents: BusAgent[] } | null> {
   if (!busOn(env) || !everConnected) return null;
   const hub = busHub(env, userId);
   if (!hub) return null;
   try {
-    const s = await within(hub.snapshot(), BUS_HUB_TIMEOUT_MS);
+    const s = await within(
+      hub.snapshot(away ? { away: true } : undefined),
+      BUS_HUB_TIMEOUT_MS,
+    );
     return s && { connected: new Set(s.connected), agents: s.agents };
   } catch (e) {
     logError("bus_snapshot_failed", e);
@@ -304,7 +310,12 @@ export type BusView = {
  * slow or failing hub gives the D1 rows with `connected` null. A member with
  * no machine that ever connected never reaches a DO.
  */
-export async function busView(env: Env, userId: string): Promise<BusView> {
+export async function busView(
+  env: Env,
+  userId: string,
+  /** Also the agents away (closed, name kept): the @ menu lists them as away. */
+  opts: { away?: boolean } = {},
+): Promise<BusView> {
   const { results } = await stmt(env.DB, MACHINES_OF)
     .bind(userId, MAX_LISTED)
     .all<MachineDbRow>();
@@ -312,6 +323,7 @@ export async function busView(env: Env, userId: string): Promise<BusView> {
     env,
     userId,
     results.some((m) => m.lastUsedAt !== null),
+    opts.away === true,
   );
   const machines = results.map((m) => machineOf(m, snap?.connected ?? null));
   // Every active machine is listed (MAX_ACTIVE_MACHINES == MAX_LISTED).

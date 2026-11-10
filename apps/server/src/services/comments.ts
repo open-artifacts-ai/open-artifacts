@@ -1,6 +1,7 @@
 import {
   type Anchor,
   type AnchorInput,
+  type ArtifactAgent,
   type AskInput,
   AskInputSchema,
   anchorInputSchema,
@@ -1100,9 +1101,16 @@ export async function artifactAgents(
   env: Env,
   artifactId: string,
   viewerId: string | null,
-): Promise<{ key: string; name: string; online: boolean }[]> {
+): Promise<ArtifactAgent[]> {
   return (await agentRoster(env, artifactId, viewerId, true, true)).map(
-    ({ key, name, online }) => ({ key, name, online }),
+    ({ key, name, online, state, lastActiveAt, machine }) => ({
+      key,
+      name,
+      online,
+      state,
+      lastActiveAt,
+      machine,
+    }),
   );
 }
 

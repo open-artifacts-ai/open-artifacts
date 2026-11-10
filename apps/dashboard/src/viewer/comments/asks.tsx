@@ -330,7 +330,7 @@ export function matchAgents(
     )
   )
     return null;
-  return agents.filter((a) => a.name.toLowerCase().includes(q));
+  return sortAgents(agents.filter((a) => a.name.toLowerCase().includes(q)));
 }
 
 const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -506,14 +506,56 @@ export function MentionChips({
   );
 }
 
+const isOnline = (a: ArtifactAgent) =>
+  a.state === "online" || (a.state === undefined && a.online);
+
+/** Online first, then away, each alphabetical (the order the bus list reads in). */
+export function sortAgents(agents: readonly ArtifactAgent[]): ArtifactAgent[] {
+  return [...agents].sort(
+    (x, y) =>
+      Number(isOnline(y)) - Number(isOnline(x)) ||
+      x.name.localeCompare(y.name, "en", { sensitivity: "base" }),
+  );
+}
+
+/** "OA Manager-2" and "OA Manager (Sam)" both have the stem "oa manager". */
+const stemOf = (name: string) =>
+  name
+    .replace(/ \([^)]*\)$/, "")
+    .replace(/-\d+$/, "")
+    .toLowerCase();
+
+/** "19h", "5m", "3d": how long ago an away session was last active. */
+function ago(iso: string | null | undefined, now = Date.now()): string {
+  const t = iso ? Date.parse(iso) : Number.NaN;
+  if (Number.isNaN(t)) return "";
+  const m = Math.max(0, Math.round((now - t) / 60_000));
+  if (m < 60) return `${m}m`;
+  if (m < 48 * 60) return `${Math.floor(m / 60)}h`;
+  return `${Math.floor(m / 1440)}d`;
+}
+
+/** "online", "away 19h", and the machine after a dot when the name stem repeats. */
+function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
+  const head = isOnline(a)
+    ? "online"
+    : ["away", ago(a.lastActiveAt)].filter(Boolean).join(" ");
+  const stem = stemOf(a.name);
+  const repeats = all.filter((o) => stemOf(o.name) === stem).length > 1;
+  return repeats && a.machine ? `${head} \u00b7 ${a.machine}` : head;
+}
+
 export function MentionMenu({
   id,
   matches,
+  all = matches,
   active,
   onPick,
 }: {
   id: string;
   matches: readonly ArtifactAgent[];
+  /** Every agent on the menu's roster: a machine shows on rows whose name stem repeats among these. */
+  all?: readonly ArtifactAgent[];
   active: number;
   onPick: (a: ArtifactAgent) => void;
 }) {
@@ -536,7 +578,7 @@ export function MentionMenu({
             role="option"
             tabIndex={-1}
             aria-selected={i === active}
-            className={`flex w-full cursor-pointer items-center gap-2 px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:bg-muted`}
+            className={`flex w-full cursor-pointer items-center gap-2 border-l-[3px] border-transparent px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:border-[var(--oa-accent)] aria-selected:bg-[var(--oa-accent-soft)]`}
             // Picked on mouse down so the textarea keeps focus; the keys are on the textarea.
             onMouseDown={(e) => {
               e.preventDefault();
@@ -545,10 +587,14 @@ export function MentionMenu({
           >
             <span
               aria-hidden="true"
-              className={`size-2 shrink-0 rounded-full ${a.online ? "bg-[var(--oa-success-fg,#157a3a)]" : "bg-muted-foreground/50"}`}
+              className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
             />
-            <b className="min-w-0 flex-1 truncate">{a.name}</b>
-            <span className={MUTED}>{a.online ? "online" : "offline"}</span>
+            <b
+              className={`min-w-0 flex-1 truncate ${isOnline(a) ? "" : MUTED}`}
+            >
+              {a.name}
+            </b>
+            <span className={MUTED}>{stateText(a, all)}</span>
           </div>
         ))
       )}

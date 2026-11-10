@@ -251,7 +251,14 @@ export type AnswerBody = z.infer<typeof AnswerBodySchema>;
 export const ArtifactAgentSchema = z.object({
   key,
   name: z.string(),
+  /** `state === "online"`; kept for readers that predate `state`. */
   online: z.boolean(),
+  /** The session itself: online (live now) or away (listed on the bus, not live). Ended sessions are not listed. */
+  state: z.enum(["online", "away"]).optional(),
+  /** When an away session was last active (ISO); null when unknown. */
+  lastActiveAt: z.string().nullable().optional(),
+  /** The machine's short label; null when unknown. */
+  machine: z.string().nullable().optional(),
 });
 export type ArtifactAgent = z.infer<typeof ArtifactAgentSchema>;
 
