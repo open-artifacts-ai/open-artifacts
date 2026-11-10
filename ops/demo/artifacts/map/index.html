@@ -118,7 +118,8 @@ let liveStars = null;
 for (const p of SEED) people.set(p.login, p);
 
 const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
-const AVATAR = "https://avatars.githubusercontent.com/";
+/* Exactly GitHub's avatar URL shape: it goes into a CSS url(), so no quotes or other hosts. */
+const AVATAR_RE = /^https:\/\/avatars\.githubusercontent\.com\/u\/\d{1,12}\?v=\d{1,3}$/;
 const str = (v, n) => (typeof v === "string" && v.length <= n ? v : null);
 const coord = (v, lim) => (typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= lim ? v : null);
 /* An ISO time no later than now, so a doc can't date itself into the future and dodge rechecks. */
@@ -126,7 +127,7 @@ const iso = (v) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test
 /* Live data is writable by any visitor, so a doc is only shown when it looks like a GitHub profile. */
 function clean(d) {
   if (!d || typeof d !== "object" || typeof d.login !== "string" || !LOGIN_RE.test(d.login)) return null;
-  if (typeof d.avatar !== "string" || !d.avatar.startsWith(AVATAR) || d.avatar.length > 200) return null;
+  if (typeof d.avatar !== "string" || !AVATAR_RE.test(d.avatar)) return null;
   const lat = coord(d.lat, 90), lon = coord(d.lon, 180);
   return { login: d.login, name: str(d.name, 100), avatar: d.avatar, location: str(d.location, 100),
     lat: lat !== null && lon !== null ? lat : null, lon: lat !== null && lon !== null ? lon : null,
@@ -135,7 +136,6 @@ function clean(d) {
 function adopt(raw) {
   const doc = clean(raw);
   if (!doc) return;
-  starLogins.add(doc.login); starCount = starLogins.size;
   const cur = people.get(doc.login);
   if (!cur || (doc.checkedAt || "") >= (cur.checkedAt || "")) people.set(doc.login, doc);
 }
@@ -269,6 +269,9 @@ async function geocode(loc) {
   } catch { return { lat: null, lon: null, place: null, country: null }; }
 }
 
+/* Logins GitHub answered 404 for this session: never looked up again. */
+const gone = new Set();
+
 /* One profile; a failure other than the rate limit skips it instead of stopping the poll. */
 async function tryLookup(login, starredAt) {
   try { return await lookup(login, starredAt); }
@@ -281,7 +284,7 @@ async function lookup(login, starredAt) {
   catch (err) {
     if (err.message !== "http 404") throw err;
     // No such account (deleted, or a made-up doc): drop it everywhere.
-    people.delete(login); starLogins.delete(login); starCount = starLogins.size;
+    gone.add(login); people.delete(login); starLogins.delete(login); starCount = starLogins.size;
     if (coll) { try { await coll.delete(login); } catch {} }
     return null;
   }
@@ -306,6 +309,7 @@ async function poll() {
     const { body: events } = await gh(`repos/${REPO}/events?per_page=100`);
     for (const e of events.filter((x) => x.type === "WatchEvent").reverse()) {
       const login = e.actor.login;
+      if (gone.has(login) || !LOGIN_RE.test(login)) continue;
       if (!starLogins.has(login)) { starLogins.add(login); starCount = starLogins.size; }
       if (!people.has(login)) { if (await tryLookup(login, e.created_at)) fresh.add(login); render(); }
     }
