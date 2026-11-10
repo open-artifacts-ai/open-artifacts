@@ -406,11 +406,14 @@ describe("skill.md drift", () => {
       const md = await (await get(`${APP}/skill.md?harness=${h}`)).text();
       expect(md).toContain(`\`${tool}\` is send_message`);
     }
+    // #1963: pi and omp's copy sits in a folder Codex and OpenCode read too,
+    // so it names every harness's bus tools, not just the plain ones.
     for (const h of ["pi", "omp"] as const) {
       const md = await (await get(`${APP}/skill.md?harness=${h}`)).text();
       expect(md).toContain(
-        "the bus tools use their plain names, `list_agents` and `send_message`",
+        "Several harnesses read this copy, and each names the bus tools differently: `list_agents` and `send_message` in pi and oh-my-pi, `mcp__oa_bus__list_agents` and `mcp__oa_bus__send_message` in Codex, `oa_bus_list_agents` and `oa_bus_send_message` in OpenCode. Use the names your harness shows.",
       );
+      expect(md).not.toContain("This copy is for one harness");
     }
 
     // An unknown harness is the plain skill, byte for byte.
@@ -422,6 +425,10 @@ describe("skill.md drift", () => {
       await get(`${APP}/skill.md?harness=claude`, {}, E({ BUS_HUB: undefined }))
     ).text();
     expect(off).not.toContain("This copy is for one harness");
+    const offPi = await (
+      await get(`${APP}/skill.md?harness=pi`, {}, E({ BUS_HUB: undefined }))
+    ).text();
+    expect(offPi).not.toContain("Several harnesses read this copy");
   });
 
   it("304s a harness ETag and 200s the plain one", async () => {

@@ -88,8 +88,10 @@ export const harnessNote = (
 ): string => {
   if (!harness || !on) return "";
   const { busToolName } = harnessSkills[harness];
+  // #1963: pi and omp's copy goes to ~/.agents/skills, which Codex (0.94+) and
+  // OpenCode read too, so it names each harness's bus tools.
   if (!busToolName)
-    return "This copy is for one harness: here the bus tools use their plain names, `list_agents` and `send_message`.\n\n";
+    return "Several harnesses read this copy, and each names the bus tools differently: `list_agents` and `send_message` in pi and oh-my-pi, `mcp__oa_bus__list_agents` and `mcp__oa_bus__send_message` in Codex, `oa_bus_list_agents` and `oa_bus_send_message` in OpenCode. Use the names your harness shows.\n\n";
   return `This copy is for one harness: here \`${busToolName("list_agents")}\` is list_agents and \`${busToolName("send_message")}\` is send_message.\n\n`;
 };
 
