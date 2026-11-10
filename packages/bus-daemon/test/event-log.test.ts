@@ -89,6 +89,15 @@ describe("createEventLog", () => {
     await log.flush();
     expect(readFileSync(`${f}.1`, "utf8")).toBe("x".repeat(190));
   });
+  it("bounds the queue, counts drops and says so once drained", async () => {
+    const f = join(tmp(), "events.log");
+    const log = createEventLog(f, { maxPending: 3, now: () => at });
+    for (let i = 0; i < 10; i++) log("e", { id: String(i) });
+    await log.flush();
+    const lines = readFileSync(f, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(4);
+    expect(lines.at(-1)).toBe("2026-11-11T10:00:00.000Z events_dropped n=7");
+  });
   it("swallows an fs error and never throws", async () => {
     const d = tmp();
     writeFileSync(join(d, "file"), "");

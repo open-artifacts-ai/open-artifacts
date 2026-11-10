@@ -59,8 +59,8 @@ export async function daemon(
     signals.once("SIGTERM", onSignal);
     run({
       version: ctx.version,
-      // Always on: ~/.oa-bus/logs/daemon.log, the file `oa-bus logs` tails.
-      events: createEventLog(join(ctx.home, "logs", "daemon.log")),
+      // Always on: ~/.oa-bus/logs/events.log (the service owns daemon.log's fd); `oa-bus logs` shows both.
+      events: createEventLog(join(ctx.home, "logs", "events.log")),
       // Only an older token was revoked: a restart picks up the new one.
       onRevoked: (replaced) => end(replaced ? 1 : REVOKED_EXIT),
       // Exit non-zero: the service restarts the daemon, which binds again.

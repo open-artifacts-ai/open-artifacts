@@ -25,6 +25,9 @@ const FIELDS = new Set([
 
 const MAX_VALUE = 120;
 
+/** Lines waiting for the disk; past it, lines are dropped and counted. */
+export const EVENT_LOG_MAX_PENDING = 1000;
+
 export type EventFields = Record<string, string | number | boolean | undefined>;
 export type EventLog = {
   (event: string, fields?: EventFields): void;
@@ -61,7 +64,7 @@ export function formatEvent(
  */
 export function createEventLog(
   file: string,
-  opts: { maxBytes?: number; now?: () => Date } = {},
+  opts: { maxBytes?: number; maxPending?: number; now?: () => Date } = {},
 ): EventLog {
   const max = opts.maxBytes ?? EVENT_LOG_MAX_BYTES;
   const now = opts.now ?? (() => new Date());
@@ -87,12 +90,37 @@ export function createEventLog(
       size = undefined;
     }
   };
+  const maxPending = opts.maxPending ?? EVENT_LOG_MAX_PENDING;
+  let pending = 0;
+  let dropped = 0;
+  const enqueue = (line: string): void => {
+    pending++;
+    chain = chain
+      .then(() => write(line))
+      .then(() => {
+        pending--;
+        // Drained: say once how many lines were lost meanwhile.
+        if (pending === 0 && dropped > 0) {
+          const n = dropped;
+          dropped = 0;
+          enqueue(`${formatEvent(now(), "events_dropped", {})} n=${n}\n`);
+        }
+      });
+  };
   const log = ((event: string, fields?: EventFields) => {
     try {
       const line = `${formatEvent(now(), event, fields)}\n`;
-      chain = chain.then(() => write(line));
+      if (pending >= maxPending) dropped++;
+      else enqueue(line);
     } catch {}
   }) as EventLog;
-  log.flush = () => chain;
+  log.flush = async () => {
+    // The drain line is queued from inside the chain: wait until it settles.
+    let c: Promise<void>;
+    do {
+      c = chain;
+      await c;
+    } while (c !== chain);
+  };
   return log;
 }
