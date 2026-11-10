@@ -214,4 +214,35 @@ describe("MCP list_comments", () => {
     expect(all.length).toBeGreaterThanOrEqual(4);
     for (const a of all) expect(a.animal).toBeDefined();
   });
+
+  it("a client restricted after it connected gets no linked, product or animal", async () => {
+    const u = await mk("of-late");
+    const { token } = await createPat(env, u.userId, "late");
+    const client = await connect(token);
+    clients.push(client);
+    const before = await tool(client, "list_comments", { id });
+    expect(before.isError, textOf(before)).toBeFalsy();
+    for (const a of faces(before.structuredContent as CommentList).filter(
+      (x) => x.kind !== "user" && x.kind !== "guest",
+    ))
+      expect(a.animal).toBeDefined();
+    // The cap lands after the connection: the next call is a capped viewer.
+    await E.DB.prepare("update users set restricted_manual = 1 where id = ?")
+      .bind(u.userId)
+      .run();
+    // Either the server already refuses the capped caller outright (canConnect
+    // on each request), or, while it still serves the call, nothing of a face.
+    const capped = await tool(client, "list_comments", { id }).catch(
+      (e: unknown) => e,
+    );
+    if (capped instanceof Error) {
+      expect(capped.message).toContain("Only members can connect agents");
+      return;
+    }
+    const r = capped as Awaited<ReturnType<typeof tool>>;
+    expect(r.isError, textOf(r)).toBeFalsy();
+    const all = faces(r.structuredContent as CommentList);
+    expect(all.length).toBeGreaterThanOrEqual(4);
+    for (const a of all) for (const k of FACE) expect(a).not.toHaveProperty(k);
+  });
 });
