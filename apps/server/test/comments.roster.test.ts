@@ -265,6 +265,7 @@ describe("mention: a viewer's running agent, and the follow it makes", () => {
     expect(t.comments[0]?.mentions?.[0]).toEqual({
       key,
       name: "Runner",
+      for: "Member",
       delivery: "delivered",
     });
     expect(bus.sent.map((x) => x.notice.to)).toEqual([

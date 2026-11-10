@@ -37,7 +37,7 @@ create table if not exists comment_asks (
 create index if not exists comment_asks_thread on comment_asks (thread_id);
 create table if not exists comment_targets (
   comment_id text not null, thread_id text not null, kind text not null,
-  key text not null, name text not null, state text not null,
+  key text not null, name text not null, state text not null, owner text,
   primary key (comment_id, kind, key)
 );
 create index if not exists comment_targets_thread on comment_targets (thread_id);
@@ -60,7 +60,12 @@ export type StoredActor = {
   kind: "user" | "guest";
   ref: string;
   name?: string;
-  agent?: { name: string; via: string | null };
+  agent?: {
+    name: string;
+    via: string | null;
+    /** The bus session the connection proved (#1822), set by the server at write time. */
+    identity?: { identityId: string; name: string; kind: string };
+  };
   /**
    * #1797: written from a browser session (a person typing in the web app),
    * set by the route from the credential kind. Absent on older rows: not typed.
@@ -92,7 +97,13 @@ export type StoredAsk = {
   closed: boolean;
 };
 
-export type StoredTarget = { key: string; name: string; state: string };
+/** `owner`: the member whose agent it is (#1822; absent on rows from before). */
+export type StoredTarget = {
+  key: string;
+  name: string;
+  state: string;
+  owner?: string;
+};
 
 export type StoredComment = {
   id: string;
@@ -286,6 +297,7 @@ type TargetRow = {
   key: string;
   name: string;
   state: string;
+  owner: string | null;
   status: string;
 };
 
@@ -326,7 +338,7 @@ function attachExtras(
     if (c) c.ask = askOf(r);
   }
   for (const r of sql.exec<TargetRow>(
-    `select g.comment_id, g.kind, g.key, g.name, g.state, t.status
+    `select g.comment_id, g.kind, g.key, g.name, g.state, g.owner, t.status
      from comment_targets g join comment_threads t on t.id = g.thread_id
      where g.thread_id in (select value from json_each(?)) order by g.rowid`,
     ids,
@@ -335,7 +347,12 @@ function attachExtras(
     if (!c) continue;
     // Resolving the thread finishes the work assigned in it.
     const done = r.kind === "assign" && r.status === "resolved";
-    const t = { key: r.key, name: r.name, state: done ? "done" : r.state };
+    const t: StoredTarget = {
+      key: r.key,
+      name: r.name,
+      state: done ? "done" : r.state,
+      ...(r.owner ? { owner: r.owner } : {}),
+    };
     if (r.kind === "assign") c.assigned = t;
     else c.mentions = [...(c.mentions ?? []), t];
   }
@@ -371,13 +388,14 @@ export function insertExtras(
     );
   const put = (kind: "mention" | "assign" | "asker", p: StoredAgent) =>
     sql.exec(
-      `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state)
-       values (?, ?, ?, ?, ?, 'queued')`,
+      `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state, owner)
+       values (?, ?, ?, ?, ?, 'queued', ?)`,
       commentId,
       threadId,
       kind,
       p.key,
       p.name,
+      p.owner,
     );
   for (const m of x.mentions ?? []) put("mention", m);
   if (x.assign) put("assign", x.assign);
