@@ -403,6 +403,35 @@ describe("selection button", () => {
     expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
   });
 
+  it("centers under the RTL selection end, including nested direction and viewport clamps", async () => {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+    // happy-dom does not map dir attributes to computed direction.
+    document.body.innerHTML =
+      '<p dir="ltr"><span id="rtl" style="direction:rtl">שלום עולם</span></p>';
+    const text = textOf("rtl");
+    await start("select");
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, left: 200, right: 300 },
+    ] as unknown as DOMRectList);
+    select(text, 0, text, 4);
+    expect(button()?.style.left).toBe("150px");
+    expect(button()?.style.top).toBe("126px");
+    expect(getSelection()?.toString()).toBe("שלום");
+
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, left: 10, right: 110 },
+    ] as unknown as DOMRectList);
+    select(text, 0, text, 3);
+    expect(button()?.style.left).toBe("4px");
+
+    const vw = document.documentElement.clientWidth || innerWidth;
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, left: vw + 50, right: vw + 150 },
+    ] as unknown as DOMRectList);
+    select(text, 0, text, 4);
+    expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
+  });
+
   it("does not show for an empty selection or when off", async () => {
     await start("select");
     select(textOf("a"), 3, textOf("a"), 4); // one space

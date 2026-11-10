@@ -6,6 +6,7 @@ import {
   socketDirProblem,
 } from "@oa/bus-adapter-claude-code";
 import {
+  ADAPTER_CAPS,
   CLIENT_VERSION,
   connectDaemon,
   type DaemonClient,
@@ -65,7 +66,7 @@ export function realConnect(
       pid: process.pid,
       cwd: root.cwd,
       proposed_name: root.proposedName,
-      caps: ["mailbox", "pending", "follow"],
+      caps: ["mailbox", "pending", "follow", ADAPTER_CAPS.link],
       attest: start ? { proc_start: start } : {},
     };
     try {

@@ -86,6 +86,19 @@ const close = async (d: Daemon, userId: string, ref: string) => {
   }
 };
 
+describe("link_arg cap (#1856)", () => {
+  it("hello_ok lists link_arg: this hub's /mcp strips the proof argument", async () => {
+    const m = await member();
+    const mach = await machine("Laptop", m.userId);
+    const d = await daemon(mach.token);
+    d.send({ ...hello(id("h")), caps: [BUS_CAPS.link] } as ClientFrame);
+    const ok = await waitFor(d, "hello_ok");
+    expect(ok.caps).toEqual(
+      expect.arrayContaining([BUS_CAPS.link, BUS_CAPS.linkArg]),
+    );
+  });
+});
+
 describe("link_bind (#1822)", () => {
   it("binds the agent the socket registered; the hash resolves to its session", async () => {
     const s = await scene();

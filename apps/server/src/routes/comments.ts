@@ -9,7 +9,12 @@ import {
 import type { Context } from "hono";
 import { z } from "zod";
 import type { ArtifactRow } from "../auth/authz.js";
-import { authorize, caller, canCtx } from "../auth/authz.js";
+import {
+  authorize,
+  caller,
+  canCtx,
+  interactiveSession,
+} from "../auth/authz.js";
 import { can, isGuestRole, type PolicyAction } from "../auth/policy.js";
 import { readCapped } from "../http/body.js";
 import { isEmbedRequest } from "../http/embed.js";
@@ -106,7 +111,14 @@ async function identity(
   const user = c.var.user;
   if (user)
     return {
-      who: { kind: "user", id: user.id, agent: agentOf(c) },
+      who: {
+        kind: "user",
+        id: user.id,
+        agent: agentOf(c),
+        // From the credential kind: a browser session only (#1797). Never
+        // from the body, nor from a missing agent (a PAT may carry no label).
+        typed: interactiveSession(c),
+      },
       viewer: {
         userId: user.id,
         short: null,

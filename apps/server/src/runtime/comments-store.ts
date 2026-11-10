@@ -66,6 +66,12 @@ export type StoredActor = {
     /** The bus session the connection proved (#1822), set by the server at write time. */
     identity?: { identityId: string; name: string; kind: string };
   };
+  /**
+   * #1797: written from a browser session (a person typing in the web app),
+   * set by the route from the credential kind. Absent on older rows: not typed.
+   * Only a user can carry it.
+   */
+  typed?: true;
 };
 
 /**

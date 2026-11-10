@@ -975,6 +975,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubFollow = false;
   /** The hub's last hello_ok listed BUS_CAPS.link: link_bind may go (#1822). */
   let hubLink = false;
+  /** The hub's last hello_ok listed BUS_CAPS.linkArg: its /mcp strips the proof argument (#1856). */
+  let hubLinkArg = false;
   /** This link has had its hello_ok (reset when the link drops). */
   let hubHelloed = false;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
@@ -1114,6 +1116,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
           hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
           hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
+          hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
           hubHelloed = true;
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
@@ -1175,6 +1178,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubMailbox = false;
       hubFollow = false;
       hubLink = false;
+      hubLinkArg = false;
       hubHelloed = false;
       statusRelay.dropped();
       receipts.release();
@@ -1390,6 +1394,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             : []),
           // #1346: the proposal goes to the hub over HTTP; no hub cap.
           ...(h.caps?.includes(ADAPTER_CAPS.reach) ? [ADAPTER_CAPS.reach] : []),
+          // #1856: a link_proof on this connection binds only its own agent.
+          ...(h.caps?.includes(ADAPTER_CAPS.link) ? [ADAPTER_CAPS.link] : []),
         ];
         return listed.length > 0 ? { caps: listed } : {};
       };
@@ -1565,7 +1571,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // shown; they count as shown once that reply is written.
       const answer = (f: DaemonFrame): boolean => {
         const late =
-          frame.type !== "ack" && frame.late
+          frame.type !== "ack" && frame.type !== "link_proof" && frame.late
             ? sent.lateFor(hello.agent_ref)
             : [];
         if (!late.length) return reply(f);
@@ -1597,6 +1603,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           }),
         followSupport: () =>
           !hub.open || !hubHelloed ? "down" : hubFollow ? "ok" : "old_hub",
+        linked: (ref, hash) => {
+          // The adapter then adds the argument to its calls: only for a hub
+          // whose /mcp strips it (an older one fails a strict tool schema).
+          if (!hubLink || !hubLinkArg) return false;
+          const rec = agents.byRef(ref);
+          if (!rec?.live) return false;
+          rec.linkHash = hash;
+          sendLink(rec);
+          return true;
+        },
         renamed: (ref, name) => {
           const rec = agents.byRef(ref);
           if (rec) renameFromAdapter(rec, name);
