@@ -6,6 +6,8 @@ export type AgentRecord = {
   proposedName: string;
   busName: string;
   namespace: string;
+  /** Where the namespace came from (#1570): shown by status, doctor and self. */
+  namespaceSource?: "config" | "git" | "dir" | "cwd";
   global: boolean;
   pid: number;
   cwd: string;

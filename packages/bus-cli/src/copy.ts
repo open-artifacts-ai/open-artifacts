@@ -51,6 +51,15 @@ export type RosterAgent = StatusFields & {
   state: "live" | "queued";
 };
 
+const sourceText = (source: "config" | "git" | "dir" | "cwd") =>
+  source === "config"
+    ? "an approved .oa-bus.json"
+    : source === "git"
+      ? "the git remote"
+      : source === "dir"
+        ? "the git folder's name"
+        : "the folder's name";
+
 const len = (s: string) => [...s].length;
 
 /**
@@ -378,6 +387,9 @@ export function copy(style: Style) {
       const lead = `${n} agent${n === 1 ? "" : "s"} in namespace `;
       return `${lead}${p("accent", clip(namespace, len(lead) + 2 + len(meta)))}  ${p("muted", meta)}`;
     },
+    /** #1570: where a namespace came from, under its header. */
+    namespaceSource: (source: "config" | "git" | "dir" | "cwd") =>
+      p("muted", `  namespace from ${sourceText(source)}`),
     rosterRow: (a: RosterAgent) =>
       `  ${cell(a.name, 20, more)}${cell(kindLabel(a.kind), 13, more)}${cell(a.machine, 22, more)}${
         a.state === "live"
@@ -606,6 +618,11 @@ export function copy(style: Style) {
       next(p("muted", clip(`It ${why}.`, 3))),
       next(`Remove it, then run ${BUS_CMD} global add <dir> again.`),
     ],
+    /** doctor (#1570): the folder's namespace and where it comes from. */
+    namespaceIs: (
+      namespace: string,
+      source: "config" | "git" | "dir" | "cwd",
+    ) => `Namespace ${namespace} (from ${sourceText(source)})`,
     /** A refused or noted config file (#1527): the reason, then the exact fix. Paths arrive already shortened. */
     configFile: (f: {
       file: string;
@@ -694,6 +711,15 @@ export function copy(style: Style) {
     opencodeProxyMissing: (name: string, program: string) => [
       fail(
         `OpenCode's ${name} entry runs ${clip(program, 60)}, which is missing.`,
+      ),
+      next(
+        `Run ${BUS_CMD} install again, or ${BUS_CMD} uninstall to put your own entry back.`,
+      ),
+    ],
+    // doctor: Codex's Open Artifacts entry runs oa-bus, and oa-bus is gone (#1856).
+    codexProxyMissing: (name: string, program: string) => [
+      fail(
+        `Codex's ${name} entry runs ${clip(program, 60)}, which is missing.`,
       ),
       next(
         `Run ${BUS_CMD} install again, or ${BUS_CMD} uninstall to put your own entry back.`,
@@ -835,6 +861,11 @@ export function copy(style: Style) {
     ],
     nsAsk: (dir: string, namespace: string) => [
       `${dir} sets its namespace to ${namespace}.`,
+      "Agents started there join it and can message everyone in it.",
+    ],
+    /** #1570: a git remote now derives another namespace than the folder first got. */
+    nsAskRemote: (dir: string, namespace: string, recorded: string) => [
+      `${dir} first got the namespace ${recorded}; its git remote now gives ${namespace}.`,
       "Agents started there join it and can message everyone in it.",
     ],
     nsPrompt: () => "Approve it? [y/N] ",

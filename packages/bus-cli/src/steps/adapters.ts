@@ -32,7 +32,11 @@ import {
   opencodeVersion,
 } from "@oa/bus-adapter-opencode";
 import { PI_EXTENSION } from "@oa/bus-adapter-pi";
-import { codexBinFile, codexBinPin } from "@oa/bus-daemon";
+import {
+  CODEX_PROXY_ENTRY_FILE,
+  codexBinFile,
+  codexBinPin,
+} from "@oa/bus-daemon";
 import {
   claudeConfigFile,
   installProof,
@@ -50,6 +54,14 @@ import {
   removeCodexEntry,
   upsertCodexEntry,
 } from "./codex.ts";
+import {
+  CODEX_MIN_VERSION,
+  type CxEntryIo,
+  proxyProgramMissing as cxProxyProgramMissing,
+  installEntry as installCxEntry,
+  pendingEntry as pendingCxEntry,
+  restoreEntry as restoreCxEntry,
+} from "./codex-proof.ts";
 import { habitsOptedOut } from "./habits.ts";
 import {
   HERMES_NO_CLI,
@@ -241,6 +253,8 @@ const paths = (deps: AdapterDeps) => {
     omp: join(ompAgentDir(deps.home, env), "extensions/oa-bus.ts"),
     codex: codexConfig(deps.home, env),
     codexBin: codexBinFile(busDir),
+    // #1856: where install keeps the Codex entry it swapped for the proxy.
+    codexEntry: join(busDir, CODEX_PROXY_ENTRY_FILE),
     busDir,
   };
 };
@@ -488,6 +502,60 @@ const ocEntryIo = (deps: AdapterDeps): OcEntryIo => ({
   busBin: deps.busBin,
   ...(movedHome(deps) ? { busHome: movedHome(deps) as string } : {}),
 });
+
+const cxEntryIo = (deps: AdapterDeps): CxEntryIo => ({
+  file: paths(deps).codex,
+  moved: paths(deps).codexEntry,
+  write: (text) => writeAtomic(paths(deps).codex, text),
+  writeMoved: (data) => writeAtomic(paths(deps).codexEntry, data, 0o600),
+  busBin: deps.busBin,
+  ...(movedHome(deps) ? { busHome: movedHome(deps) as string } : {}),
+});
+
+/**
+ * #1856: the instance's /mcp entry in Codex's config.toml becomes the local
+ * proxy, so each thread can prove which bus agent it is. Only for a Codex
+ * that sends the thread id with each call (0.123 or later); an older or
+ * unknown one keeps its entry. Never stops the install.
+ */
+async function codexEntryStep(deps: AdapterDeps, notes: string[]) {
+  if (deps.hub === undefined) return;
+  try {
+    const io = cxEntryIo(deps);
+    const pending = pendingCxEntry(io, deps.hub);
+    if (pending === undefined) {
+      // Already ours, or none: bring an earlier proxy entry up to date.
+      notes.push(...installCxEntry(io, deps.hub).notes);
+      return;
+    }
+    if ("note" in pending) {
+      notes.push(pending.note);
+      return;
+    }
+    const bin = findCodexBin({ path: deps.env?.PATH, app: deps.codexApp });
+    const r = await run(deps, bin ?? "codex", ["--version"]);
+    const version = /(\d+\.\d+\.\d+\S*)/.exec(
+      r.code === 0 ? r.stdout : "",
+    )?.[1];
+    if (version === undefined) {
+      notes.push(
+        `left the ${pending.name} entry in ${io.file} as it is: oa-bus couldn't read this Codex's version. Its tools still work.`,
+      );
+      return;
+    }
+    if ((compareVersions(version, CODEX_MIN_VERSION) ?? -1) < 0) {
+      notes.push(
+        `left the ${pending.name} entry in ${io.file} as it is: Codex needs ${CODEX_MIN_VERSION.replace(/\.0$/, "")} or later to show as its own session on pages. Its tools still work.`,
+      );
+      return;
+    }
+    notes.push(...installCxEntry(io, deps.hub).notes);
+  } catch (e) {
+    notes.push(
+      `could not set up the Open Artifacts entry in Codex's config: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
 
 const piEntryIo = (deps: AdapterDeps): PiEntryIo => ({
   file: paths(deps).piMcp,
@@ -742,6 +810,7 @@ const install: Record<Harness, Step> = {
       rmSync(p.codexBin, { force: true });
       notes.push(CODEX_NO_BIN);
     }
+    await codexEntryStep(deps, notes);
     return "done";
   },
 
@@ -867,9 +936,18 @@ const uninstall: Record<Harness, Step> = {
     return "done";
   },
 
-  async codex(deps) {
+  async codex(deps, notes) {
     const p = paths(deps);
     let saved = false;
+    // The user's entry goes back first: it is theirs, and works without us.
+    try {
+      saved = restoreCxEntry(cxEntryIo(deps));
+    } catch (e) {
+      notes.push(
+        `Kept ${p.codexEntry}: could not put the Open Artifacts entry back in ${p.codex} (${e instanceof Error ? e.message : String(e)}). Fix that file, then run uninstall again.`,
+      );
+      throw new Error("kept the entry, it is still swapped");
+    }
     if (present(p.codex)) {
       const { text, doc } = readToml(p.codex);
       const next = removeCodexEntry(p.codex, text, doc);
@@ -1096,4 +1174,17 @@ export function checkAdapters(
         ) === "current",
     ),
   };
+}
+
+/** #1856: the Codex proxy entry's program is gone (oa-bus moved or removed). */
+export function codexProxyProblem(
+  deps: Pick<AdapterDeps, "home" | "env" | "which"> & { busHome?: string },
+): { name: string; missing: string } | undefined {
+  const p = paths(deps as AdapterDeps);
+  if (!present(p.codex)) return undefined;
+  try {
+    return cxProxyProgramMissing(readToml(p.codex).doc, deps.which);
+  } catch {
+    return undefined;
+  }
 }

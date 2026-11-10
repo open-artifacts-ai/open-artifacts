@@ -14,6 +14,16 @@ export {
   connectOutcome,
   noSessionMessage,
 } from "./connect.ts";
+export {
+  type ForwardDeps,
+  Forwarder,
+  LINK_MS,
+  mcpUrl,
+  PROOF_MS,
+  PROOFS_MAX,
+  UPSTREAM_MS,
+  within,
+} from "./forward.ts";
 export { frameOf, type InjectArgs, InjectError, inject } from "./inject.ts";
 export {
   ancestorChain,

@@ -1,4 +1,4 @@
-export { BUS_CMD } from "@oa/bus-protocol";
+export { BUS_CMD, LINK_PROOF_HEADER } from "@oa/bus-protocol";
 export {
   connectDaemon,
   type DaemonClient,

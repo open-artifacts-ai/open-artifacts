@@ -9,6 +9,8 @@ import {
   namespacesFile,
   readApprovals,
   readOwnFile,
+  remoteChange,
+  remotesFile,
   sameDir,
   writeApprovals,
 } from "@oa/bus-daemon";
@@ -91,20 +93,35 @@ export async function namespace(
   const own = readOwnFile(cfgFile, process.getuid?.(), {
     allowGroupWrite: true,
   });
-  if (own.state === "none") {
-    sayErr(ctx, c.nsNoFile(shown(ctx, real)));
-    return 1;
-  }
-  if (own.state === "unsafe") {
-    sayErr(ctx, c.nsFileUnusable(shown(ctx, cfgFile), own.why));
-    return 1;
-  }
   let ns: string | undefined;
-  try {
-    const parsed = BusConfigSchema.safeParse(JSON.parse(own.text));
-    if (parsed.success) ns = parsed.data.namespace;
-  } catch {}
+  if (own.state === "ok") {
+    try {
+      const parsed = BusConfigSchema.safeParse(JSON.parse(own.text));
+      if (parsed.success) ns = parsed.data.namespace;
+    } catch {}
+  }
+  // #1570: no namespace in a file, but a git remote that changed what the folder gets.
+  let remote: { root: string; recorded: string } | undefined;
   if (!ns) {
+    const change = remoteChange(real, {
+      remotesFile: remotesFile(ctx.home),
+      namespacesFile: file,
+    });
+    if (change) {
+      real = change.root;
+      ns = change.namespace;
+      remote = change;
+    }
+  }
+  if (!ns) {
+    if (own.state === "none") {
+      sayErr(ctx, c.nsNoFile(shown(ctx, real)));
+      return 1;
+    }
+    if (own.state === "unsafe") {
+      sayErr(ctx, c.nsFileUnusable(shown(ctx, cfgFile), own.why));
+      return 1;
+    }
     say(ctx, c.nsNoNamespace(shown(ctx, cfgFile)));
     return 1;
   }
@@ -117,7 +134,12 @@ export async function namespace(
       sayErr(ctx, c.nsNeedTty(approveCommand(real)));
       return 1;
     }
-    say(ctx, c.nsAsk(shown(ctx, real), plain(ns)));
+    say(
+      ctx,
+      remote
+        ? c.nsAskRemote(shown(ctx, real), plain(ns), plain(remote.recorded))
+        : c.nsAsk(shown(ctx, real), plain(ns)),
+    );
     const answer = (await ctx.readLine(c.nsPrompt())).trim().toLowerCase();
     if (answer !== "y" && answer !== "yes") {
       say(ctx, c.nsDeclined());

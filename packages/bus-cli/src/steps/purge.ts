@@ -11,6 +11,7 @@ const FILES = [
   "claude-held.json",
   "claude-held.injected.json",
   "opencode-uncertain.json",
+  "codex-mcp-entry.json",
   "revoked",
 ];
 /** Leftovers of an interrupted atomic write or socket close. */
