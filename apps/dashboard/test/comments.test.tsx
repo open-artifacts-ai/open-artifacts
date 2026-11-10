@@ -1740,6 +1740,17 @@ describe("comments: capped members", () => {
     }
   });
 
+  it("a missing Me plus a plan refusal gives the generic capped copy", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError, commentErrorCtx } = await import(
+      "../src/api/comments"
+    );
+    const e = new ApiClientError("plan_required", "Plan required", 403);
+    expect(commentError(e, false, commentErrorCtx(undefined))).toBe(
+      "Your account can only view, so you can't comment.",
+    );
+  });
+
   it("a member or admin under a plan lock (cap plan) keeps the plan copy", async () => {
     const { ApiClientError } = await import("../src/api/client");
     const { commentError } = await import("../src/api/comments");

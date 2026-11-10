@@ -199,6 +199,8 @@ const isPlanRefusal = (code: string | null) =>
 const planOutsider = (ctx?: ErrorContext) => !ctx || ctx.capped === true;
 
 /** Who the caller is for the plan copy (owners read the action, members whom to ask). */
+// A missing Me is an outsider: a signed-out viewer never reaches a plan code
+// (authz.ts:449, the 401 path), so this is the safe default while Me loads or fails.
 export const commentErrorCtx = (me: Me | null | undefined): ErrorContext =>
   me
     ? {
