@@ -21,42 +21,35 @@ const noSideScroll = async (page: Page) =>
     ),
   ).toBe(0);
 
-for (const width of WIDTHS) {
-  test(`plan comparison at ${width}px (solo)`, async ({ page }, info) => {
-    await page.setViewportSize({ width, height: 900 });
-    await page.goto("/settings/plan?hosted=solo");
-    const compare = page.getByRole("region", { name: "Compare plans" });
-    await expect(compare).toBeVisible();
-    const stacked = page.getByTestId("compare-stacked");
-    const table = page.getByRole("table");
-    if (width === 390) {
-      await expect(stacked).toBeVisible();
-      await expect(table).toBeHidden();
-      // Every price in full: nothing clips inside its box.
-      for (const price of [
-        "$1 a month or $10 a year, per instance",
-        "$10 per creator",
-        "$25 per creator",
-      ]) {
-        const el = stacked.getByText(price, { exact: true });
-        await expect(el).toBeVisible();
-        const clipped = await el.evaluate((n) => n.scrollWidth > n.clientWidth);
-        expect(clipped, price).toBe(false);
-        const box = await el.boundingBox();
+for (const width of WIDTHS)
+  for (const interval of ["Yearly", "Monthly"] as const)
+    test(`plan cards and comparison at ${width}px, ${interval} (solo, #2007)`, async ({
+      page,
+    }, info) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/settings/plan?hosted=solo");
+      const compare = page.getByRole("region", { name: "Compare plans" });
+      await expect(compare).toBeVisible();
+      await compare.getByRole("button", { name: interval }).click();
+      // Every card's price in full, inside the viewport.
+      for (const c of ["solo", "team", "business"]) {
+        const card = page.getByTestId(`plan-card-${c}`);
+        await expect(card).toBeVisible();
+        const box = await card.boundingBox();
         expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(width);
       }
-      for (const plan of ["Solo", "Team", "Business"])
-        await expect(
-          stacked.getByRole("heading", { name: plan }),
-        ).toBeVisible();
-    } else {
-      await expect(table).toBeVisible();
-      await expect(stacked).toBeHidden();
-    }
-    await noSideScroll(page);
-    await shoot(page, `plan-solo-${width}`, info);
-  });
-}
+      // Phone: the cards stack, one under the next.
+      const solo = await page.getByTestId("plan-card-solo").boundingBox();
+      const team = await page.getByTestId("plan-card-team").boundingBox();
+      if (width === 390)
+        expect(team?.y ?? 0).toBeGreaterThan(
+          (solo?.y ?? 0) + (solo?.height ?? 0),
+        );
+      else expect(team?.y).toBe(solo?.y);
+      await expect(page.getByRole("table")).toBeVisible();
+      await noSideScroll(page);
+      await shoot(page, `plan-solo-${width}-${interval.toLowerCase()}`, info);
+    });
 
 for (const width of WIDTHS)
   for (const [token, label] of [

@@ -84,7 +84,7 @@ for (const scheme of ["light", "dark"] as const)
       };
 
       test("the pre-Google dialog", async ({ page }, info) => {
-        await page.goto("/settings/directory?hosted=sync-off");
+        await page.goto("/settings/directory?hosted=not-connected");
         await status(page)
           .getByRole("button", { name: "Connect Google Workspace" })
           .click();

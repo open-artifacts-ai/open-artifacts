@@ -275,6 +275,8 @@ export const PublishResultSchema = z.object({
   id: z.string(),
   version: z.number().int(),
   url: z.string().url(),
+  /** The artifact's current title after the call (#2015); absent on restore_version. */
+  title: z.string().optional(),
   /** Set when the artifact ends up public, declares db and lets viewers write data (#681). */
   warning: z.string().optional(),
 });

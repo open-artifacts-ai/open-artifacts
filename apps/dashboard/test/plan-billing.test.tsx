@@ -372,8 +372,10 @@ it("Plan and billing: Pay $1/month is the primary button, the rest are outline",
   const cls = (n: string) =>
     screen.getByRole("button", { name: n }).getAttribute("data-variant");
   expect(month.getAttribute("data-variant")).toBe("default");
-  for (const n of ["Pay $10/year", "Upgrade to Business", "Upgrade to Team"])
+  for (const n of ["Pay $10/year", "Upgrade to Business"])
     expect(cls(n)).toBe("outline");
+  // #2007: Team is the plan for most teams, so its card's button leads.
+  expect(cls("Upgrade to Team")).toBe("default");
 });
 
 it("Plan and billing: the footer scopes per-creator billing to Team and Business", async () => {
@@ -624,43 +626,97 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
   });
 });
 
-// #1837: at 390px the comparison used to cut off Team and Business and the
-// Solo price. Below the sm breakpoint it stacks, one block per plan with every
-// row in full; from sm up it is the table. jsdom has no CSS, so these pin the
-// structure and the breakpoint classes; e2e/billing-ui.spec.ts measures it.
-describe("the comparison on a phone (#1837)", () => {
-  it("stacks every plan with every row, none cut off", async () => {
+// #2007: Design's pricing A in Settings. Cards and a grouped table with a
+// Monthly/Yearly toggle, yearly first. The current plan's card says so; higher
+// plans upgrade; lower plans have no button.
+describe("plan cards and comparison (#2007)", () => {
+  const card = (c: string) => screen.getByTestId(`plan-card-${c}`);
+  it("opens on yearly; only Solo has a yearly price until Billing makes Team and Business ones", async () => {
     mountHosted("/settings/plan", { billing: TEAM });
-    const stack = await screen.findByTestId("compare-stacked");
-    expect(stack.className).toContain("sm:hidden");
-    for (const plan of ["Solo", "Team", "Business"])
-      expect(
-        within(stack).getByRole("heading", { name: plan }),
-      ).toBeInTheDocument();
-    // The Solo price in full, not "$1 a month or $10 a year, pe".
+    const year = await screen.findByRole("button", { name: "Yearly" });
+    expect(year).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByText("2 months free on Solo")).toBeVisible();
+    expect(card("solo")).toHaveTextContent("$10 a year");
+    // No price checkout can't charge: Team and Business stay monthly.
+    expect(card("team")).toHaveTextContent("$10 per creator a month");
+    expect(card("business")).toHaveTextContent("$25 per creator a month");
+    expect(screen.queryByText(/\$8|\$20|Proposed/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Monthly" }));
+    expect(card("solo")).toHaveTextContent("$1 a month");
+    expect(card("team")).toHaveTextContent("$10 per creator a month");
+  });
+
+  it("Team: its card is the current plan, Business upgrades through the portal, Solo has no button", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", { billing: TEAM });
+    await screen.findByTestId("plan-card-team");
     expect(
-      within(stack).getByText("$1 a month or $10 a year, per instance"),
-    ).toBeInTheDocument();
-    expect(within(stack).getByText("$10 per creator")).toBeInTheDocument();
-    expect(within(stack).getByText("$25 per creator")).toBeInTheDocument();
-    // 5 rows for each of the 3 plans.
-    expect(within(stack).getAllByRole("term")).toHaveLength(15);
-    expect(within(stack).getAllByRole("definition")).toHaveLength(15);
+      within(card("team")).getByRole("button", { name: "Current plan" }),
+    ).toBeDisabled();
+    expect(within(card("solo")).queryByRole("button")).toBeNull();
+    fireEvent.click(
+      within(card("business")).getByRole("button", {
+        name: "Upgrade to Business",
+      }),
+    );
+    await waitFor(() =>
+      expect(posts.some((c) => c.path.endsWith("/billing/portal"))).toBe(true),
+    );
+    expect(posts.some((c) => c.path.endsWith("/billing/checkout"))).toBe(false);
   });
 
-  it("marks the current plan and no other", async () => {
-    mountHosted("/settings/plan", { billing: TEAM });
-    const stack = await screen.findByTestId("compare-stacked");
-    const current = stack.querySelectorAll('[aria-current="true"]');
-    expect(current).toHaveLength(1);
-    expect(current[0]).toHaveTextContent("Team");
+  it("with Yearly on, an upgrade sends only the tier: the card showed the monthly price it charges", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", { billing: TRIAL });
+    await screen.findByTestId("plan-card-team");
+    expect(screen.getByRole("button", { name: "Yearly" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(card("team")).toHaveTextContent("$10 per creator a month");
+    fireEvent.click(
+      within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
+    );
+    await waitFor(() =>
+      expect(
+        posts.find((c) => c.path.endsWith("/billing/checkout"))?.body,
+      ).toEqual({ tier: "team" }),
+    );
   });
 
-  it("the table shows only from sm up", async () => {
+  it("a Business trial offers both upgrades and marks Business as the trial", async () => {
+    mountHosted("/settings/plan", { billing: { ...TEAM, tier: "trial" } });
+    await screen.findByTestId("plan-card-business");
+    expect(within(card("business")).getByText("Your trial")).toBeVisible();
+    expect(
+      within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
+    ).toBeEnabled();
+    expect(
+      within(card("business")).getByRole("button", {
+        name: "Upgrade to Business",
+      }),
+    ).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "Current plan" })).toBeNull();
+  });
+
+  it("groups the table and tints Team; the current plan's column is named for screen readers", async () => {
     mountHosted("/settings/plan", { billing: TEAM });
     const table = await screen.findByRole("table");
-    expect(table.closest('[data-testid="compare-table"]')?.className).toContain(
-      "hidden sm:block",
-    );
+    for (const g of ["Work with agents", "People", "Admin and security"])
+      expect(
+        within(table).getByRole("columnheader", { name: g }),
+      ).toBeVisible();
+    const head = within(table).getByRole("columnheader", {
+      name: /^Team\s*\(your plan\)$/,
+    });
+    expect(head.className).toContain("bg-[var(--oa-accent-soft)]");
+    expect(within(table).getAllByText("Included").length).toBeGreaterThan(0);
+  });
+
+  it("an operator-set plan shows the cards with no buttons", async () => {
+    mountHosted("/settings/plan", { billing: { ...TEAM, hasCustomer: false } });
+    await screen.findByTestId("plan-card-team");
+    for (const c of ["solo", "team", "business"])
+      expect(within(card(c)).queryByRole("button")).toBeNull();
   });
 });
