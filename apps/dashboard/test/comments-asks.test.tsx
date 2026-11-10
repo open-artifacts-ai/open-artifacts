@@ -652,7 +652,7 @@ describe("@mentions in the composer", () => {
     expect(
       within(menu).queryByRole("option", { name: /OA Product/ }),
     ).toBeNull();
-    expect(opt).toHaveTextContent("offline");
+    expect(opt.textContent).toBe("OA Design");
     fireEvent.mouseDown(opt);
     expect(box).toHaveValue("@OA Design ");
     fireEvent.change(box, { target: { value: "@OA Design why B?" } });
@@ -883,7 +883,7 @@ describe("the @ menu rows (per-session state, order, machine, selection)", () =>
     ).not.toMatch(/laptop/);
   });
 
-  it("an agent with no state (the bus could not be read) is a plain offline row, not dimmed as away", () => {
+  it("an agent with no state (the bus did not answer) is a plain row: no dot, empty state, not dimmed, sorted last", () => {
     open([
       { key: "u:1", name: "OA Unknown", online: false },
       {
@@ -897,8 +897,22 @@ describe("the @ menu rows (per-session state, order, machine, selection)", () =>
       { key: "u:3", name: "OA Theirs (Sam)", online: false, owner: "Sam" },
     ]);
     const unknown = screen.getByRole("option", { name: /OA Unknown/ });
-    expect(unknown.textContent).toMatch(/offline$/);
+    expect(unknown.textContent).toBe("OA Unknown");
+    expect(unknown.querySelector("span[aria-hidden]")).toBeNull();
     expect(unknown.querySelector("b")?.className).not.toMatch(/muted/);
+    expect(screen.getByRole("option", { name: /OA Theirs/ }).textContent).toBe(
+      "OA TheirsSam's",
+    );
+    expect(
+      matchAgents(
+        [
+          { key: "u:1", name: "A Unknown", online: false },
+          { key: "u:2", name: "B Away", online: false, state: "away" },
+          { key: "u:3", name: "C Online", online: true, state: "online" },
+        ],
+        "",
+      )?.map((a) => a.name),
+    ).toEqual(["C Online", "B Away", "A Unknown"]);
     expect(
       screen.getByRole("option", { name: /OA Mine/ }).querySelector("b")
         ?.className,
@@ -1079,7 +1093,7 @@ describe("@ picker details", () => {
     expect(removeMention("hi @Bob Smith go", "Bob Smith", both)).toBe("hi go");
   });
 
-  it("marks agents online or offline in text, not colour alone", async () => {
+  it("marks agents online or away in text; one with no state shows no dot or text", async () => {
     withAgents();
     mount(viewerPath(OWNED));
     const c = await col();
@@ -1095,8 +1109,8 @@ describe("@ picker details", () => {
       within(menu).getByRole("option", { name: /OA Product.*online/ }),
     ).toBeTruthy();
     expect(
-      within(menu).getByRole("option", { name: /OA Design.*offline/ }),
-    ).toBeTruthy();
+      within(menu).getByRole("option", { name: /OA Design/ }).textContent,
+    ).toBe("OA Design");
   });
 
   it("does not resend the answer already picked", async () => {

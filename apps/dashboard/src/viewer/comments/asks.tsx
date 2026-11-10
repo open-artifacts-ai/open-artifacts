@@ -509,11 +509,14 @@ export function MentionChips({
 const isOnline = (a: ArtifactAgent) =>
   a.state === "online" || (a.state === undefined && a.online);
 
-/** Online first, then away, each alphabetical (the order the bus list reads in). */
+const isUnknown = (a: ArtifactAgent) => a.state === undefined && !a.online;
+const rankOf = (a: ArtifactAgent) => (isOnline(a) ? 0 : isUnknown(a) ? 2 : 1);
+
+/** Online first, then away, then agents with no state (the bus did not answer); each alphabetical. */
 export function sortAgents(agents: readonly ArtifactAgent[]): ArtifactAgent[] {
   return [...agents].sort(
     (x, y) =>
-      Number(isOnline(y)) - Number(isOnline(x)) ||
+      rankOf(x) - rankOf(y) ||
       x.name.localeCompare(y.name, "en", { sensitivity: "base" }),
   );
 }
@@ -541,8 +544,8 @@ function ago(iso: string | null | undefined, now = Date.now()): string {
  * agent leads with its owner and shows the state alone: "online · Sam's".
  */
 function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
-  // No state at all: the server could not read the bus, so it claims neither online nor away.
-  if (a.state === undefined && !a.online && !a.owner) return "offline";
+  // No state at all: the bus did not answer, so nothing is claimed (an empty column; "Sam's" alone for another member's).
+  if (a.state === undefined && !a.online && !a.owner) return "";
   if (a.owner && a.state === undefined && !a.online) return `${a.owner}'s`;
   if (a.owner) return `${isOnline(a) ? "online" : "away"} \u00b7 ${a.owner}'s`;
   const head = isOnline(a)
@@ -600,10 +603,12 @@ export function MentionMenu({
               onPick(a);
             }}
           >
-            <span
-              aria-hidden="true"
-              className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
-            />
+            {!isUnknown(a) && (
+              <span
+                aria-hidden="true"
+                className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
+              />
+            )}
             <b
               className={`min-w-0 flex-1 truncate ${a.state === "away" ? MUTED : ""}`}
             >

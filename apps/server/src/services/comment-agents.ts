@@ -254,11 +254,13 @@ export async function agentRoster(
   return sortRoster(out).slice(0, ROSTER_MAX);
 }
 
-/** Online first, then away, each alphabetical. */
+const rank = (a: RosterAgent) => (a.online ? 0 : a.state === "away" ? 1 : 2);
+
+/** Online first, then away, then those with no state (the bus did not answer); each alphabetical. */
 function sortRoster(out: RosterAgent[]): RosterAgent[] {
   return out.sort(
     (x, y) =>
-      Number(y.online) - Number(x.online) ||
+      rank(x) - rank(y) ||
       x.name.localeCompare(y.name, "en", { sensitivity: "base" }),
   );
 }

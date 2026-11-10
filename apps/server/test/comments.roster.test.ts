@@ -473,6 +473,38 @@ describe("@ menu: per-session state, last active and machine", () => {
     expect(r.slice(0, 5).every((x) => x.online)).toBe(true);
   });
 
+  it("agents with no state sort after away ones", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    await machineFor(s.editor.userId);
+    await follow(E, s.editor.userId, { namespace: "ns-e", name: "Aaa" }, s.id);
+    const t = new Date().toISOString();
+    const ns = {
+      idFromName: (n: string) => n,
+      get: (n: string) => ({
+        snapshot: async () => {
+          if (n === `bus:${s.editor.userId}`) throw new Error("down");
+          return {
+            connected: [],
+            agents: [awayRow("ns-o", "Zed", t), agentRow("ns-o", "Mid")],
+          };
+        },
+      }),
+    };
+    const r = await agentRoster(
+      { ...E, BUS_HUB: ns } as unknown as Env,
+      s.id,
+      s.owner.userId,
+      true,
+      true,
+    );
+    expect(r.map((x) => [x.name.replace(/ \(.*/, ""), x.state])).toEqual([
+      ["Mid", "online"],
+      ["Zed", "away"],
+      ["Aaa", undefined],
+    ]);
+  });
+
   it("asks the hub for away sessions", async () => {
     const s = await setup();
     await machineFor(s.owner.userId);
