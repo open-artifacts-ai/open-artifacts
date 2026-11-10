@@ -92,6 +92,7 @@ const RPC_ALLOWLIST = [
   "listReach",
   "listRoleProposals",
   "listRoles",
+  "namesOf",
   "pendingProposalSources",
   "ping",
   "proposeLink",
