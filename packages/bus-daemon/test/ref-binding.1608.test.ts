@@ -1,6 +1,6 @@
 // #1608: a pi-like agent_ref belongs to the adapter that claimed it first,
 // across reconnects, until that adapter's process is gone.
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { REF_BOUND } from "../src/index.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
@@ -136,7 +136,7 @@ describe("binding expiry (#1956)", () => {
     const h = await harness(st);
     await h.adapter("A", { kind: "pi" });
     st.t = 1000 * HOUR;
-    await new Promise((r) => setTimeout(r, 50));
+    h.daemon.bindings.sweep();
     await expect(squat(h)).rejects.toThrow(REF_BOUND);
   });
 
@@ -152,15 +152,27 @@ describe("binding expiry (#1956)", () => {
     await expect(squat(h)).resolves.toBeDefined();
   });
 
-  it("sweeps a dead pid and an idle closed link on the tick", async () => {
+  it("sweeps dead and idle bindings with no hello, and keeps an open one", async () => {
     const st = { t: 0, alive: true };
     const h = await harness(st);
-    const a = await h.adapter("A", { kind: "pi" });
-    a.close();
+    await h.adapter("open", { kind: "pi" });
+    const idle = await h.adapter("idle", { kind: "pi" });
+    idle.close();
     await h.next("sessions", 2);
+    expect(h.daemon.bindings.count()).toBe(2);
+    st.t = 25 * HOUR;
+    h.daemon.bindings.sweep();
+    expect(h.daemon.bindings.count()).toBe(1);
+    const dead = await h.adapter("dead", { kind: "pi" });
+    dead.close();
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef("dead")?.live).toBe(false),
+    );
+    expect(h.daemon.bindings.count()).toBe(2);
     st.alive = false;
-    st.t = 2 * HOUR;
-    await new Promise((r) => setTimeout(r, 50));
-    await expect(squat(h)).resolves.toBeDefined();
+    st.t += 2 * 60_000;
+    h.daemon.bindings.sweep();
+    // The open link stays bound even with its pid gone.
+    expect(h.daemon.bindings.count()).toBe(1);
   });
 });

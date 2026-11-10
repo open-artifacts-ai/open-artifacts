@@ -274,6 +274,8 @@ export type Daemon = {
   stop: () => Promise<void>;
   hub: HubConnection;
   agents: AgentTable;
+  /** Test seam (#1956): the ref bindings held, and one sweep run now. */
+  bindings: { count: () => number; sweep: () => void };
 };
 
 export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
@@ -1937,6 +1939,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   return {
     hub,
     agents,
+    bindings: { count: () => bindings.size, sweep: sweepBindings },
     stop: async () => {
       clearInterval(socketWatch);
       clearInterval(watcher);
