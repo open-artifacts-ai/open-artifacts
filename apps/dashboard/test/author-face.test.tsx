@@ -1,11 +1,7 @@
-import type { CommentAuthor } from "@oa/shared";
+import { type CommentAuthor, PRESENCE_PALETTE_SIZE } from "@oa/shared";
 import { render } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
-import {
-  AuthorFace,
-  AuthorSub,
-  PRESENCE_COLORS,
-} from "../src/viewer/comments/AuthorFace";
+import { AuthorFace, AuthorSub } from "../src/viewer/comments/AuthorFace";
 
 const base = { me: false } as const;
 const linked: CommentAuthor = {
@@ -38,7 +34,7 @@ describe("#1822 author face", () => {
     const f = c.querySelector<HTMLElement>('[data-avatar="agent"]');
     expect(f?.dataset.linked).toBe("true");
     expect(f?.dataset.animal).toBe("duck");
-    expect(f?.style.backgroundColor).not.toBe("");
+    expect(f?.style.backgroundColor).toBe("var(--oa-presence-2)");
     expect(f?.className).toMatch(/rounded-(md|\[)/);
     expect(f?.className).not.toMatch(/rounded-full/);
     expect(c.textContent).toContain("Claude Code");
@@ -76,11 +72,10 @@ describe("#1822 author face", () => {
     expect(c.textContent).toContain("not linked");
   });
   it("a palette index past the end wraps", () => {
-    expect(PRESENCE_COLORS).toHaveLength(9);
     const c = face({ ...linked, animal: { id: "duck", color: 11 } });
     expect(
       c.querySelector<HTMLElement>('[data-avatar="agent"]')?.style
         .backgroundColor,
-    ).not.toBe("");
+    ).toBe(`var(--oa-presence-${11 % PRESENCE_PALETTE_SIZE})`);
   });
 });

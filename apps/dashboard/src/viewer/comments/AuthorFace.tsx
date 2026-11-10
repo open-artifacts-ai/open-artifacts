@@ -2,22 +2,6 @@ import { type CommentAuthor, PRESENCE_PALETTE_SIZE } from "@oa/shared";
 import { Bot } from "lucide-react";
 import { AnimalIcon } from "../presence/animals";
 
-/** The presence palette (#1822): nine fills that carry white glyphs in light and dark. */
-export const PRESENCE_COLORS = [
-  "#0e6e8c",
-  "#b04a14",
-  "#a3305f",
-  "#2456c4",
-  "#1f6f5a",
-  "#7a3f99",
-  "#8a5a00",
-  "#b3261e",
-  "#4d6b12",
-] as const;
-if (PRESENCE_COLORS.length !== PRESENCE_PALETTE_SIZE) {
-  throw new Error("PRESENCE_COLORS must match PRESENCE_PALETTE_SIZE");
-}
-
 /** Up to two initials of a display name. */
 export function initials(name: string): string {
   const w = name.trim().split(/\s+/).filter(Boolean);
@@ -51,7 +35,7 @@ export function AuthorFace({ a }: { a: CommentAuthor }) {
   }
   const animal = linkedFace(a);
   if (animal) {
-    const color = PRESENCE_COLORS[animal.color % PRESENCE_COLORS.length];
+    const color = `var(--oa-presence-${animal.color % PRESENCE_PALETTE_SIZE})`;
     return (
       <span
         aria-hidden="true"
