@@ -69,6 +69,7 @@ import {
   configPaths,
   inspectApprovals,
   inspectGlobal,
+  inspectRemotes,
 } from "./config-issues.ts";
 import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
 import { HubConnection, type HubOptions } from "./hub.ts";
@@ -79,7 +80,12 @@ import {
   liveClaudeFiles,
   liveClaudeSessions,
 } from "./liveness/claude.ts";
-import { type Namespace, resolveNamespace } from "./namespace.ts";
+import {
+  gitRecordRoot,
+  type Namespace,
+  resolveNamespace,
+} from "./namespace.ts";
+import { remotesFile } from "./namespaces.ts";
 import { Outbox } from "./outbox.ts";
 import {
   lstartEpoch,
@@ -395,6 +401,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const configFiles = (cwd?: string, pending = false) => {
     const g = inspectGlobal();
     const a = inspectApprovals();
+    const rm = inspectRemotes(remotesFile());
     let within: Set<string> | undefined;
     // An agent sees only its own folder chain: other projects' paths stay private.
     if (cwd !== undefined) {
@@ -403,10 +410,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       } catch {
         within = new Set(configPaths(cwd));
       }
+      // #1570: the held remote change sits at the repo's .git; the agent being held sees it.
+      const rr = gitRecordRoot(cwd);
+      if (rr) within.add(join(rr, ".git"));
     }
     return [
       ...configIssues.list(within, { pending }),
       ...(a ? [a] : []),
+      ...(rm ? [rm] : []),
       ...(g ? [g] : []),
     ];
   };
@@ -414,7 +425,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     (
       deps.resolveNamespace ??
       ((dir) =>
-        resolveNamespace(dir, { log, allowMissing, issues: configIssues }))
+        resolveNamespace(dir, {
+          log,
+          allowMissing,
+          issues: configIssues,
+          remotesFile: remotesFile(),
+        }))
     )(cwd);
 
   const cl = deps.claude ?? {};
@@ -911,6 +927,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           proposedName: old?.busName ?? s.name,
           busName: prev?.busName ?? old?.busName ?? s.name,
           namespace: ns.namespace,
+          namespaceSource: ns.source,
           global: ns.global,
           pid: s.pid,
           procStart: s.procStart,
@@ -1351,7 +1368,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                 machine: cfg.label,
                 state: "live" as const,
               }));
-          return { namespace, agents: rows };
+          const source = local[0]?.namespaceSource;
+          return {
+            namespace,
+            ...(source ? { source } : {}),
+            agents: rows,
+          };
         }),
       );
       const config_files = configFiles(
@@ -1582,6 +1604,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           proposedName: old?.busName ?? proposedName,
           busName: prev?.busName ?? old?.busName ?? proposedName,
           namespace: ns.namespace,
+          namespaceSource: ns.source,
           global: ns.global,
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
@@ -1811,6 +1834,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         proposedName: r.proposedName,
         busName: r.busName,
         namespace: ns.namespace,
+        namespaceSource: ns.source,
         global: ns.global,
         pid: r.pid,
         procStart: r.procStart,
