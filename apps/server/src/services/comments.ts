@@ -763,20 +763,6 @@ async function resolveExtras(
     if (!a) throw unknownKey(key);
     return a;
   };
-  // #1890: the bus identity of each agent named, from its OWNER's hub. The
-  // owner is the roster entry's userId (validated above), never client input.
-  // Memoised per key; a miss or a slow hub leaves the identity off.
-  const ids = new Map<string, Promise<StoredIdentity | null>>();
-  const identityOf = (a: RosterAgent): Promise<StoredIdentity | null> => {
-    let p = ids.get(a.key);
-    if (!p) {
-      p = agentIdentityOf(env, a.userId, a.address);
-      ids.set(a.key, p);
-    }
-    return p;
-  };
-  const stored = async (a: RosterAgent): Promise<StoredAgent> =>
-    storedAgent(a, await identityOf(a));
   const mentioned: RosterAgent[] = [];
   for (const key of new Set((x.mentions ?? []).map((m) => m.key)))
     mentioned.push(await agentOf(key));
@@ -789,7 +775,7 @@ async function resolveExtras(
       if (to.some((p) => p.key === key)) continue;
       const a = await find(key);
       if (a) {
-        to.push(await stored(a));
+        to.push(storedAgent(a));
         asked.push(a);
         continue;
       }
@@ -818,9 +804,9 @@ async function resolveExtras(
     extras: {
       ...(ask ? { ask } : {}),
       ...(mentioned.length
-        ? { mentions: await Promise.all(mentioned.map(stored)) }
+        ? { mentions: mentioned.map((m) => storedAgent(m)) }
         : {}),
-      ...(assigned ? { assign: await stored(assigned) } : {}),
+      ...(assigned ? { assign: storedAgent(assigned) } : {}),
     },
     agents: [...agents.values()],
     mentions: mentioned.map((m) => m.key),
@@ -958,6 +944,48 @@ async function deliver(
   }
 }
 
+/**
+ * #1890: `r` with the bus identity of each mentioned, assigned or asked agent,
+ * read from its OWNER's hub (the roster entry's userId, validated by
+ * resolveExtras, never client input). All lookups run in parallel, each bounded
+ * by LINK_LOOKUP_MS, so the whole costs about one bound. A miss, a slow or a
+ * failing hub leaves that party without an identity; this never throws. Run
+ * after the rate-limit charge where there is one before the write.
+ */
+async function withIdentities(env: Env, r: Resolved): Promise<Resolved> {
+  const x = r.extras;
+  if (!x || r.agents.length === 0) return r;
+  const byKey = new Map(r.agents.map((e) => [e.agent.key, e.agent]));
+  const keys = [...byKey.keys()];
+  const found = await Promise.all(
+    keys.map((k) => {
+      const a = byKey.get(k) as RosterAgent;
+      return agentIdentityOf(env, a.userId, a.address);
+    }),
+  );
+  const ids = new Map(keys.map((k, i) => [k, found[i]]));
+  const put = (p: StoredAgent): StoredAgent => {
+    const identity = ids.get(p.key);
+    return identity ? { ...p, identity } : p;
+  };
+  return {
+    ...r,
+    extras: {
+      ...x,
+      ...(x.mentions ? { mentions: x.mentions.map(put) } : {}),
+      ...(x.assign ? { assign: put(x.assign) } : {}),
+      ...(x.ask
+        ? {
+            ask: {
+              ...x.ask,
+              to: x.ask.to.map((p) => (p.kind === "agent" ? put(p) : p)),
+            },
+          }
+        : {}),
+    },
+  };
+}
+
 /** A new thread: `raw` is the anchor as posted, `body` the first comment. 201 Thread. */
 export async function addThread(
   env: Env,
@@ -968,7 +996,7 @@ export async function addThread(
   opts: ExtrasOpts = {},
 ): Promise<Thread> {
   const body = checkBody(raw.body);
-  const r = await resolveExtras(env, a.id, who, raw, opts);
+  const r0 = await resolveExtras(env, a.id, who, raw, opts);
   // The limit comes before any file is read, and a refused quote counts.
   let taken = false;
   const take = async () => {
@@ -977,6 +1005,8 @@ export async function addThread(
   };
   const { anchor, version } = await checkAnchor(env, a, raw.anchor, take);
   if (!taken) await take();
+  // After the rate-limit charge: a refused post costs no hub reads.
+  const r = await withIdentities(env, r0);
   const t = await call(() =>
     stub(env, a.id).commentsAdd({
       actor: actorOf(who),
@@ -1054,7 +1084,14 @@ export async function addReply(
         "toAsker cannot be combined with mentions, assign or ask",
       );
     r = await resolveToAsker(env, artifactId, threadId);
-  } else r = await resolveExtras(env, artifactId, who, extras, opts);
+  } else {
+    // The reply's rate-limit charge is inside the DO write, so the lookups
+    // come first here (parallel, bounded: about one LINK_LOOKUP_MS).
+    r = await withIdentities(
+      env,
+      await resolveExtras(env, artifactId, who, extras, opts),
+    );
+  }
   const c = await call(() =>
     stub(env, artifactId).commentsReply({
       threadId,

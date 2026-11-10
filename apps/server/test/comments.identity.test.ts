@@ -62,34 +62,41 @@ const signedIn = (u: U): CommentViewer => ({
 const GUEST: CommentViewer = { userId: null, short: "gst", guest: true };
 
 /** A bus env: every hub lists "Runner"; identityOf answers from `ident` and logs the hub asked. */
-function busEnv(ident: {
+type Ident = {
   current: { identityId: string; kind: string } | null;
-}) {
+  /** identityOf never answers. */
+  hang?: boolean;
+  /** identityOf throws. */
+  fail?: boolean;
+};
+function busEnv(ident: Ident, n = 1) {
   const asked: string[] = [];
   const ns = {
     idFromName: (n: string) => n,
     get: (hubName: string) => ({
       snapshot: async () => ({
         connected: [],
-        agents: [
-          {
-            id: newId(),
-            namespace: "ns-o",
-            name: "Runner",
-            kind: "claude",
-            machineId: "m",
-            machineLabel: "m",
-            global: false,
-            state: "live",
-            running: true,
-            since: null,
-            updatedAt: new Date().toISOString(),
-          },
-        ],
+        agents: Array.from({ length: n }, (_, i) => ({
+          id: newId(),
+          namespace: "ns-o",
+          name: i === 0 ? "Runner" : `Runner${i + 1}`,
+          kind: "claude",
+          machineId: "m",
+          machineLabel: "m",
+          global: false,
+          state: "live",
+          running: true,
+          since: null,
+          updatedAt: new Date().toISOString(),
+        })),
       }),
-      identityOf: async (n: string, name: string) => {
+      identityOf: async (ns: string, name: string) => {
         asked.push(hubName);
-        return n === "ns-o" && name === "Runner" ? ident.current : null;
+        if (ident.fail) throw new Error("hub down");
+        if (ident.hang) return new Promise<never>(() => {});
+        return ns === "ns-o" && name.startsWith("Runner")
+          ? ident.current
+          : null;
       },
     }),
   };
@@ -98,7 +105,7 @@ function busEnv(ident: {
 
 const IDENT = { identityId: "id-run-0001", kind: "claude-code" };
 
-async function scene(ident: { current: typeof IDENT | null }) {
+async function scene(ident: Ident, n = 1) {
   resetNameClashCache();
   const owner = await mk("i-own", `Ona ${tag} ${++seq}`);
   const other = await mk("i-oth", `Bea ${tag} ${++seq}`);
@@ -117,9 +124,10 @@ async function scene(ident: { current: typeof IDENT | null }) {
   )
     .bind(newId(), owner.userId, newId(), Date.now(), Date.now())
     .run();
-  const { e2, asked } = busEnv(ident);
-  const key = (await agentRoster(e2, id, owner.userId, true, true))[0]
-    ?.key as string;
+  const { e2, asked } = busEnv(ident, n);
+  const roster = await agentRoster(e2, id, owner.userId, true, true);
+  const key = roster[0]?.key as string;
+  const keys = roster.map((r) => r.key);
   const post = (extra: object) =>
     addThread(
       e2,
@@ -131,7 +139,7 @@ async function scene(ident: { current: typeof IDENT | null }) {
     ) as Promise<Thread>;
   const list = async (v: CommentViewer) =>
     (await listComments(e2, id, "all", v)) as CommentList;
-  return { owner, other, id, key, asked, post, list };
+  return { owner, other, id, key, keys, asked, post, list };
 }
 
 const asks = (key: string) => ({
@@ -224,5 +232,46 @@ describe("party faces (#1890)", () => {
     });
     expect(c?.mentions?.[0]?.name).toBe(`${s.owner.member.name}'s agent`);
     expect(JSON.stringify(c)).not.toContain("Runner");
+  });
+});
+
+describe("identity lookups are bounded (#1890)", () => {
+  const legacy = (p: object | undefined) => {
+    expect(p).toBeDefined();
+    expect(p).not.toHaveProperty("linked");
+    expect(p).not.toHaveProperty("animal");
+  };
+  it("a slow hub: the comment posts fast with legacy party shapes", async () => {
+    const s = await scene({ current: IDENT, hang: true });
+    const t0 = Date.now();
+    await s.post({ mentions: [{ key: s.key }], ...asks(s.key) });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    const c = (await s.list(signedIn(s.other))).threads[0]?.comments[0];
+    legacy(c?.mentions?.[0]);
+    legacy(c?.ask?.to[0]);
+  });
+  it("a failing hub: the comment still posts", async () => {
+    const s = await scene({ current: IDENT, fail: true });
+    await s.post({ mentions: [{ key: s.key }], assign: { key: s.key } });
+    const c = (await s.list(signedIn(s.other))).threads[0]?.comments[0];
+    legacy(c?.mentions?.[0]);
+    legacy(c?.assigned);
+  });
+  it("ten ask targets on a slow hub cost about one bound, not ten", async () => {
+    const s = await scene({ current: IDENT, hang: true }, 10);
+    expect(s.keys).toHaveLength(10);
+    const t0 = Date.now();
+    await s.post({
+      ask: {
+        question: "ok?",
+        options: [
+          { id: "a", label: "A" },
+          { id: "b", label: "B" },
+        ],
+        to: s.keys.map((key) => ({ key })),
+      },
+    });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(s.asked).toHaveLength(10);
   });
 });
