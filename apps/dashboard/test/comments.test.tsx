@@ -1740,6 +1740,27 @@ describe("comments: capped members", () => {
     }
   });
 
+  it("a member or admin under a plan lock (cap plan) keeps the plan copy", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    const { errorCopy } = await import("../src/api/errorCopy");
+    const e = new ApiClientError("plan_read_only", "Read-only", 403, {
+      reason: "lapsed",
+    });
+    const { commentErrorCtx } = await import("../src/api/comments");
+    for (const role of ["member", "admin"]) {
+      const me = {
+        user: { role },
+        auth: { cap: "plan" },
+        instance: null,
+      } as never;
+      const ctx = commentErrorCtx(me);
+      expect(ctx.capped).toBe(false);
+      expect(commentError(e, true, ctx)).toBe(errorCopy(e, "", ctx));
+      expect(commentError(e, true, ctx)).toMatch(/lapsed|read-only/i);
+    }
+  });
+
   it("a capped member's read-only 404 still wins over the plan copy path", async () => {
     const { ApiClientError } = await import("../src/api/client");
     const { commentError } = await import("../src/api/comments");

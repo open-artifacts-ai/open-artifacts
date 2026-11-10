@@ -199,13 +199,20 @@ const isPlanRefusal = (code: string | null) =>
 const planOutsider = (ctx?: ErrorContext) => !ctx || ctx.capped === true;
 
 /** Who the caller is for the plan copy (owners read the action, members whom to ask). */
+export const commentErrorCtx = (me: Me | null | undefined): ErrorContext =>
+  me
+    ? {
+        ...billingContext(me),
+        // Only a guest or restricted account is an outsider; cap "plan" is a
+        // locked instance's member or admin, who keep the plan copy.
+        capped: me.auth?.cap === "guest" || me.auth?.cap === "restricted",
+      }
+    : { capped: true };
+
 export const useCommentErrorCtx = (): ErrorContext => {
   // Read the cached Me; a comment surface never fetches it just for error copy.
   const qc = useQueryClient();
-  const me = qc.getQueryData<Me>(qk.me);
-  return me
-    ? { ...billingContext(me), capped: me.auth?.cap != null }
-    : { capped: true };
+  return commentErrorCtx(qc.getQueryData<Me>(qk.me));
 };
 
 /** The copy for a failed comment call (Product's strings where the spec has them). */
