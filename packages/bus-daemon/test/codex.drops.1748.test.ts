@@ -190,9 +190,13 @@ describe("a dropped Codex thread comes back (#1748)", () => {
     await vi.waitFor(() =>
       expect(d.daemon.agents.byRef(THREAD)?.live).toBe(false),
     );
+    const ups = d.of("agent_up").length;
     w.state.holder = P;
     await vi.waitFor(() =>
       expect(d.daemon.agents.byRef(THREAD)?.live).toBe(true),
     );
+    // The hub learns of the revival from a fresh agent_up.
+    expect(d.of("agent_up").length).toBeGreaterThan(ups);
+    expect(d.of("agent_up").at(-1)).toMatchObject({ agent_ref: THREAD });
   });
 });
