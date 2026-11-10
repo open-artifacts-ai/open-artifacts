@@ -1016,7 +1016,11 @@ export async function addThread(
   const { anchor, version } = await checkAnchor(env, a, raw.anchor, take);
   if (!taken) await take();
   const page =
-    anchor.kind === "note" && r.agents.length === 0
+    // Members only (#1968): not a signed-out visitor, a guest or a guest-role member.
+    anchor.kind === "note" &&
+    r.agents.length === 0 &&
+    who.kind === "user" &&
+    viewer.guest !== true
       ? await pagePublisher(env, a, who)
       : null;
   if (page) {

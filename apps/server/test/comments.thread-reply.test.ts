@@ -590,6 +590,33 @@ describe("the publishing agent joins page-wide threads (#1968)", () => {
     }
   });
 
+  it("members only: an anonymous commenter or a guest-role member on a public page notifies nobody new", async () => {
+    const s = await setup({ visibility: "public" }, LINKED);
+    const anon = await api(app, R.comments(s.id), null, {
+      method: "POST",
+      body: { anchor: NOTE, body: "hi" },
+      headers: { "cf-connecting-ip": "198.51.100.31" },
+    });
+    expect(anon.status).toBe(201);
+    expect(bus.sent).toHaveLength(0);
+    // A guest-role member (the route sets viewer.guest from the role).
+    await addThread(
+      E,
+      { id: s.id, format: "html", currentVersion: 1 } as never,
+      { kind: "user", id: viewer.userId },
+      { userId: viewer.userId, short: null, guest: true },
+      { anchor: NOTE, body: "hi" },
+    );
+    expect(bus.sent).toHaveLength(0);
+  });
+
+  it("another member (not the agent's person) reaches it with the data tier", async () => {
+    const s = await setup({}, LINKED);
+    await post(s.id, editor, {});
+    expect(mentions()).toHaveLength(1);
+    expect(mentions()[0]?.notice.text).toContain(OTHERS_DATA);
+  });
+
   it("tiers: the publisher's own typed note is the your-user tier; another person's is data", async () => {
     const s = await setup({}, LINKED);
     await post(s.id, owner, {});
