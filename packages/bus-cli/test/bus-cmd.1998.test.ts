@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { describe, expect, it } from "vitest";
 import { busCmd, useBusCmd } from "../src/bus-cmd.ts";
-import { parse } from "../src/index.ts";
 import { main } from "../src/main.ts";
 import { installShim } from "../src/steps/path-shim.ts";
 import { fakeCtx } from "./fake.ts";
@@ -100,26 +99,24 @@ describe("printed commands (#1998)", () => {
     expect(ctx.copy.shimForeign("/x").join("\n")).toContain(BUS_CMD);
   });
 
-  it("parse prints the command it is given in usage errors", () => {
-    expect(() => parse(["leads", "nope"])).toThrow(`${BUS_CMD} leads check`);
-    expect(() => parse(["leads", "nope"], "oa-bus")).toThrow(
-      "usage: oa-bus leads check [name]",
-    );
-    expect(() => parse(["global"], "oa-bus")).toThrow(
-      "usage: oa-bus global <add|rm>",
-    );
-  });
-
-  it("main: a usage error and a command name oa-bus when ours is on PATH", async () => {
+  it("main: --habits names oa-bus when ours is on PATH; a usage error keeps npx", async () => {
     const w = world();
     install(w);
     const bad = ctxFor(w);
     expect(await main(["leads", "nope"], () => bad)).toBe(2);
-    expect(bad.all().join("\n")).toContain("Usage: oa-bus leads check [name]");
-    expect(bad.all().join("\n")).not.toContain("npx");
+    expect(bad.all().join("\n")).toContain(`Usage: ${BUS_CMD} leads check`);
     const h = ctxFor(w);
     expect(await main(["install", "--habits"], () => h)).toBe(1);
     expect(h.all().join("\n")).toContain("Run oa-bus install first.");
+  });
+
+  it("main: uninstall prints npx even when our shim is there beforehand", async () => {
+    const w = world();
+    install(w);
+    const u = ctxFor(w);
+    await main(["uninstall"], () => u);
+    expect(u.busCmd).toBe(BUS_CMD);
+    expect(u.all().join("\n")).not.toContain("Run oa-bus");
   });
 
   it("main: without our shim the same commands print npx", async () => {

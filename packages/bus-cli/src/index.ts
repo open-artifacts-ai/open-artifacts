@@ -64,12 +64,10 @@ const COMMANDS = new Set([
   "version",
 ]);
 const HARNESSES = ["claude", "opencode", "codex", "pi"];
-const globalUsage = (bus: string) =>
-  `usage: ${bus} global <add|rm> <dir>, or global list`;
-const linkUsage = (bus: string) =>
-  `usage: ${bus} link <dir> <dir>, ${bus} unlink <dir> <dir>, or link list`;
-const namespaceUsage = (bus: string) =>
-  `usage: ${bus} namespace approve [dir], namespace revoke <dir>, or namespace list`;
+const GLOBAL_USAGE = `usage: ${BUS_CMD} global <add|rm> <dir>, or global list`;
+const LINK_USAGE = `usage: ${BUS_CMD} link <dir> <dir>, ${BUS_CMD} unlink <dir> <dir>, or link list`;
+const LEADS_USAGE = `usage: ${BUS_CMD} leads check [name]`;
+const NAMESPACE_USAGE = `usage: ${BUS_CMD} namespace approve [dir], namespace revoke <dir>, or namespace list`;
 /** Flags every command takes. */
 const COMMON = new Set(["no-color", "version", "home"]);
 /** Each command's own flags. */
@@ -95,8 +93,7 @@ const FLAGS: Record<string, string[]> = {
 
 export { main } from "./main.ts";
 
-/** `bus` is the command the usage errors print (#1998). */
-export function parse(argv: string[], bus: string = BUS_CMD): Command {
+export function parse(argv: string[]): Command {
   // Flags may come before or after the subcommand: it is the first positional.
   const { values, positionals, tokens } = parseArgs({
     args: argv,
@@ -128,27 +125,25 @@ export function parse(argv: string[], bus: string = BUS_CMD): Command {
   const takes =
     cmd === "mcp" ? 1 : cmd === "global" ? (rest[0] === "list" ? 1 : 2) : 0;
   if (cmd === "mcp" && rest.length === 0)
-    throw new Error(`usage: ${bus} mcp <claude|opencode|codex|pi>`);
-  if (cmd === "global" && rest.length < takes)
-    throw new Error(globalUsage(bus));
+    throw new Error(`usage: ${BUS_CMD} mcp <claude|opencode|codex|pi>`);
+  if (cmd === "global" && rest.length < takes) throw new Error(GLOBAL_USAGE);
   if (cmd === "namespace") {
     const sub = rest[0];
     const max = sub === "list" ? 1 : sub === "approve" ? 2 : 2;
     const min = sub === "revoke" ? 2 : 1;
     if (!["approve", "revoke", "list"].includes(sub ?? "") || rest.length < min)
-      throw new Error(namespaceUsage(bus));
+      throw new Error(NAMESPACE_USAGE);
     if (rest[max] !== undefined)
       throw new Error(`unexpected argument: ${rest[max]}`);
   }
   if (cmd === "leads") {
-    if (rest[0] !== "check")
-      throw new Error(`usage: ${bus} leads check [name]`);
+    if (rest[0] !== "check") throw new Error(LEADS_USAGE);
     if (rest[2] !== undefined)
       throw new Error(`unexpected argument: ${rest[2]}`);
   }
   if (cmd === "link" || cmd === "unlink") {
     const n = cmd === "link" && rest[0] === "list" ? 1 : 2;
-    if (rest.length < n) throw new Error(linkUsage(bus));
+    if (rest.length < n) throw new Error(LINK_USAGE);
     if (rest[n] !== undefined)
       throw new Error(`unexpected argument: ${rest[n]}`);
   }
@@ -172,7 +167,7 @@ export function parse(argv: string[], bus: string = BUS_CMD): Command {
     return { cmd: "version", noColor, ...(home ? { home } : {}) };
   if (cmd === "mcp-proxy" && !values.instance)
     throw new Error(
-      `usage: ${bus} mcp-proxy --instance <url> [--for codex] [--token-file <path> | --token-env <name>]`,
+      `usage: ${BUS_CMD} mcp-proxy --instance <url> [--for codex] [--token-file <path> | --token-env <name>]`,
     );
   if (cmd === "mcp-proxy") {
     const f = values.for;
@@ -194,7 +189,7 @@ export function parse(argv: string[], bus: string = BUS_CMD): Command {
             ...(values["token-env"] ? { tokenEnv: values["token-env"] } : {}),
             ...(values.for ? { for: values.for as "opencode" | "codex" } : {}),
           }
-        : route(cmd, values, rest, bus);
+        : route(cmd, values, rest);
   return { ...parsed, noColor, ...(home ? { home } : {}) } as Command;
 }
 
@@ -213,12 +208,7 @@ type Values = {
   purge: boolean;
 };
 
-function route(
-  cmd: string,
-  values: Values,
-  positionals: string[],
-  bus: string,
-) {
+function route(cmd: string, values: Values, positionals: string[]) {
   switch (cmd) {
     case "login":
       return { cmd, hub: values.instance, noOpen: values["no-open"] };
@@ -227,7 +217,7 @@ function route(
     case "mcp": {
       const harness = positionals[0] ?? "";
       if (!HARNESSES.includes(harness))
-        throw new Error(`usage: ${bus} mcp <claude|opencode|codex|pi>`);
+        throw new Error(`usage: ${BUS_CMD} mcp <claude|opencode|codex|pi>`);
       return { cmd, harness: harness as Harness };
     }
     case "uninstall":
@@ -236,7 +226,7 @@ function route(
       const [sub, dir] = positionals;
       if (sub === "list") return { cmd, sub };
       if ((sub === "add" || sub === "rm") && dir) return { cmd, sub, dir };
-      throw new Error(globalUsage(bus));
+      throw new Error(GLOBAL_USAGE);
     }
     case "namespace": {
       const [sub, dir] = positionals;
@@ -244,7 +234,7 @@ function route(
       if (sub === "revoke" && dir) return { cmd, sub, dir };
       if (sub === "approve")
         return { cmd, sub, dir: dir ?? ".", yes: values.yes };
-      throw new Error(namespaceUsage(bus));
+      throw new Error(NAMESPACE_USAGE);
     }
     case "leads": {
       const name = positionals[1];
@@ -255,7 +245,7 @@ function route(
       if (cmd === "link" && positionals[0] === "list")
         return { cmd: "link", sub: "list" };
       const [a, b] = positionals;
-      if (!a || !b) throw new Error(linkUsage(bus));
+      if (!a || !b) throw new Error(LINK_USAGE);
       return {
         cmd: "link",
         sub: cmd === "link" ? "add" : "rm",

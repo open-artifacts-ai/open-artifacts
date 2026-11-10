@@ -28,25 +28,16 @@ export async function main(
     cmd = parse(argv);
   } catch (e) {
     const ctx = makeCtx(argv.includes("--no-color"));
-    useBusCmd(ctx);
-    // Parsed again with the printed command, so the usage line names it.
-    let err = e;
-    try {
-      parse(argv, ctx.busCmd);
-    } catch (again) {
-      err = again;
-    }
-    sayErr(
-      ctx,
-      ctx.copy.usage(err instanceof Error ? err.message : String(err)),
-    );
+    sayErr(ctx, ctx.copy.usage(e instanceof Error ? e.message : String(e)));
     return 2;
   }
   const ctx = makeCtx(cmd.noColor);
   if (cmd.home) ctx.home = resolve(cmd.home);
-  // An install prints npx until its shim step has run; every other command
-  // (and `install --check`, `--habits`) prints oa-bus when the shim is ours.
-  if (cmd.cmd !== "install" || cmd.check || cmd.habits) useBusCmd(ctx);
+  // An install prints npx until its shim step has run, and uninstall removes
+  // the shim, so it prints npx too. Every other command (and `install --check`,
+  // `--habits`) prints oa-bus when the shim is ours. Usage errors keep npx.
+  if (cmd.cmd === "install" ? cmd.check || cmd.habits : cmd.cmd !== "uninstall")
+    useBusCmd(ctx);
   try {
     return await dispatch(cmd, ctx);
   } catch (e) {
