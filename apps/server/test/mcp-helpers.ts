@@ -89,16 +89,25 @@ export async function connect(
 // close(); waiting on a ctx with no work left resolves at once.
 const contexts = new WeakMap<Client, ExecutionContext[]>();
 
-// One shared in-flight wait per ctx. waitOnExecutionContext takes the ctx's
-// promises out of its list, so a second concurrent wait on the same ctx would
-// find it empty and return before the first one's work is done.
-const inflight = new WeakMap<ExecutionContext, Promise<void>>();
-const waitCtx = (c: ExecutionContext): Promise<void> => {
-  const running = inflight.get(c);
-  if (running) return running;
-  const p = waitOnExecutionContext(c).finally(() => inflight.delete(c));
-  inflight.set(c, p);
-  return p;
+// One shared in-flight wait per ctx (waitOnExecutionContext takes the ctx's
+// promises out, so a second concurrent wait would return early). Only share a
+// wait that began after this settle did: an earlier one may have missed work
+// registered since.
+let seq = 0;
+const inflight = new WeakMap<
+  ExecutionContext,
+  { seq: number; p: Promise<void> }
+>();
+const waitCtx = (c: ExecutionContext, after: number): Promise<void> => {
+  const r = inflight.get(c);
+  if (r && r.seq > after) return r.p;
+  if (r) return r.p.then(() => waitCtx(c, after));
+  const e = { seq: ++seq, p: Promise.resolve() };
+  e.p = waitOnExecutionContext(c).finally(() => {
+    if (inflight.get(c) === e) inflight.delete(c);
+  });
+  inflight.set(c, e);
+  return e.p;
 };
 
 /**
@@ -107,8 +116,9 @@ const waitCtx = (c: ExecutionContext): Promise<void> => {
  * stream. Call after direct client calls; tool() does it for you.
  */
 export async function settle(client: Client): Promise<void> {
+  const me = seq;
   const list = contexts.get(client);
-  if (list) await Promise.all([...list].map(waitCtx));
+  if (list) await Promise.all([...list].map((c) => waitCtx(c, me)));
 }
 
 /** settle(client), then client.close(): nothing is left running at teardown. */
