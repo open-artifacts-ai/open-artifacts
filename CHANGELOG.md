@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.148.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.147.0...v0.148.0) (2026-11-10)
+
+
+### Features
+
+* **bus-cli:** install puts oa-bus on PATH ([#1626](https://github.com/open-artifacts-ai/open-artifacts/issues/1626)) ([#1995](https://github.com/open-artifacts-ai/open-artifacts/issues/1995)) ([2c4933d](https://github.com/open-artifacts-ai/open-artifacts/commit/2c4933dbfa9230fd89a1b1285fac823a9f21310d))
+* **bus:** oa-bus install also installs the Artifacts Teammate output style ([#1970](https://github.com/open-artifacts-ai/open-artifacts/issues/1970)) ([#1985](https://github.com/open-artifacts-ai/open-artifacts/issues/1985)) ([b9460fa](https://github.com/open-artifacts-ai/open-artifacts/commit/b9460fa468b38ac9d5643a60910ebcca1686bf14))
+* Claude Code plugin with the Artifacts Teammate output style ([#1970](https://github.com/open-artifacts-ai/open-artifacts/issues/1970)) ([#1991](https://github.com/open-artifacts-ai/open-artifacts/issues/1991)) ([6a32572](https://github.com/open-artifacts-ai/open-artifacts/commit/6a3257232c5c51fc3cbac9a7d2108df4ca881b9e))
+* **comments:** a mentioned agent shows its own face ([#1890](https://github.com/open-artifacts-ai/open-artifacts/issues/1890)) ([#1949](https://github.com/open-artifacts-ai/open-artifacts/issues/1949)) ([ee86b77](https://github.com/open-artifacts-ai/open-artifacts/commit/ee86b77f9d6b0355906496db0aa3bf7de3567bce))
+* **viewer:** people can resize the comments column ([#1986](https://github.com/open-artifacts-ai/open-artifacts/issues/1986)) ([#1987](https://github.com/open-artifacts-ai/open-artifacts/issues/1987)) ([7544ddf](https://github.com/open-artifacts-ai/open-artifacts/commit/7544ddf3051584b3b36a4bdc93c25fb597632ffe))
+
+
+### Bug Fixes
+
+* **bus:** a second proof for a live session doesn't unlink the first ([#1984](https://github.com/open-artifacts-ai/open-artifacts/issues/1984)) ([#1988](https://github.com/open-artifacts-ai/open-artifacts/issues/1988)) ([f05249b](https://github.com/open-artifacts-ai/open-artifacts/commit/f05249b90ce38a6fd601219890319df63b6f2346))
+* **dashboard:** jsdom tests run on Node 26 ([#1751](https://github.com/open-artifacts-ai/open-artifacts/issues/1751)) ([#1989](https://github.com/open-artifacts-ai/open-artifacts/issues/1989)) ([76ee60f](https://github.com/open-artifacts-ai/open-artifacts/commit/76ee60f61d80faf181549334f07b0c4f1df60348))
+
 ## [0.147.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.146.0...v0.147.0) (2026-11-10)
 
 
