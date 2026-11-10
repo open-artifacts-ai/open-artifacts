@@ -70,12 +70,15 @@ import {
 } from "./openclaw.ts";
 import {
   moveEntry,
+  OMP_ORIGIN_FILE,
   PI_ENTRY_FILE,
   PI_MIN_VERSION,
   type PiEntryIo,
   pendingEntry,
   restoreEntry,
 } from "./pi-proof.ts";
+
+export { OMP_ORIGIN_FILE };
 
 export type Exec = (
   cmd: string,
@@ -218,6 +221,7 @@ const paths = (deps: AdapterDeps) => {
       "mcp.json",
     ),
     piEntry: join(busDir, PI_ENTRY_FILE),
+    ompOrigin: join(busDir, OMP_ORIGIN_FILE),
     // OpenCode registers the folder that holds tui.js.
     opencodePlugin: join(busDir, "integrations/opencode", NAME),
     pi: join(
@@ -505,6 +509,25 @@ async function piEntry(deps: AdapterDeps, notes: string[]) {
   }
 }
 
+/**
+ * #1856: tells omp's extension which origin is the instance, so its fetch wrap
+ * adds the proof header to that origin's /mcp and nothing else. Never stops the install.
+ */
+function ompOrigin(deps: AdapterDeps, notes: string[]) {
+  if (deps.hub === undefined) return;
+  try {
+    writeAtomic(
+      paths(deps).ompOrigin,
+      `${JSON.stringify({ origin: new URL(deps.hub).origin })}\n`,
+      0o600,
+    );
+  } catch (e) {
+    notes.push(
+      `could not write ${paths(deps).ompOrigin}: ${e instanceof Error ? e.message : String(e)}. oh-my-pi will not show as its own session on pages; its tools still work.`,
+    );
+  }
+}
+
 const proofIo = (deps: AdapterDeps): ProofIo => ({
   file: paths(deps).claude,
   record: paths(deps).record,
@@ -646,8 +669,9 @@ const install: Record<Harness, Step> = {
     return "done";
   },
 
-  async omp(deps, _notes, done) {
+  async omp(deps, notes, done) {
     if (!hasOmp(deps)) return "absent";
+    ompOrigin(deps, notes);
     // Pi's step just wrote the one file both load.
     if (sharedFile(deps) && done.includes("pi")) return "done";
     writeAtomic(
@@ -789,6 +813,7 @@ const uninstall: Record<Harness, Step> = {
   },
 
   async omp(deps, _notes, done) {
+    rmSync(paths(deps).ompOrigin, { force: true });
     // Pi's step removed the one file both loaded, or kept it for the entry it could not put back.
     if (sharedFile(deps) && done.includes("pi")) return "done";
     if (sharedFile(deps) && existsSync(paths(deps).piEntry)) return "none";

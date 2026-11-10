@@ -10,6 +10,14 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
  */
 export const PI_ENTRY_FILE = "pi-mcp-entry.json";
 
+/**
+ * #1856: omp has no per-server header hook; its extension wraps fetch for the
+ * instance's /mcp only. Install writes the instance origin here (0600, in the
+ * bus home) as `{ "origin": "https://..." }`; the extension is the only reader.
+ * Keep the name in step with the asset.
+ */
+export const OMP_ORIGIN_FILE = "omp-mcp-origin.json";
+
 /** The first Pi with `pi.registerMcpServer()`, as far as it was read (1.5.0's docs and loader). */
 export const PI_MIN_VERSION = "1.5.0";
 
