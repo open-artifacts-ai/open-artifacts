@@ -672,6 +672,20 @@ export function copy(style: Style) {
     ],
     // Codex's checks, after its wiring line (C26e).
     codexWakes: (bin: string) => done(`Codex wakes with ${clip(bin, 20)}`),
+    codexSkill: (where: string) =>
+      done(`Codex skill installed in ${clip(where, 20)}`),
+    codexSkillTwice: (file: string, block: string) => [
+      warn("The Codex skill is installed twice, so it loads twice"),
+      next(
+        `It's in both ${clip(file, 30)} and ${clip(block, 20)}. Run ${BUS_CMD} install again to keep just one.`,
+      ),
+    ],
+    codexSkillSharedTwice: () => [
+      warn("The Codex skill is installed twice, so it loads twice"),
+      next(
+        "Codex shares its skills folder with pi and omp, so it also sees their copy.",
+      ),
+    ],
     codexNoWakeCheck: () => [
       warn("No codex binary found, so idle Codex threads are not woken"),
       next(`Install the Codex CLI, then run ${BUS_CMD} install again.`),
