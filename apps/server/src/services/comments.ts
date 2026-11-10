@@ -696,6 +696,55 @@ async function authorParticipant(
   ];
 }
 
+/**
+ * #1968: the agent that published the version a page-wide thread starts on, as
+ * a roster agent, or null. Only a linked one counts: the version carries the
+ * server-set identity (#1822) of the bus session that proved itself on the
+ * publisher's own hub, so the address is exact and never another member's.
+ * Null for a web publish, an unlinked agent, a publisher who can no longer
+ * read the artifact or hold a bus, and the author's own agent.
+ */
+async function pagePublisher(
+  env: Env,
+  a: Pick<ArtifactRow, "id" | "currentVersion">,
+  who: CommentWho,
+): Promise<RosterAgent | null> {
+  const row = await stmt(
+    env.DB,
+    "select agent_identity as identity, created_by as userId from versions where artifact_id = ? and version = ?",
+  )
+    .bind(a.id, a.currentVersion)
+    .first<{ identity: string | null; userId: string }>();
+  if (!row?.identity) return null;
+  let id: { identityId?: unknown; namespace?: unknown; name?: unknown };
+  try {
+    id = JSON.parse(row.identity);
+  } catch {
+    return null;
+  }
+  const address = BusAddressSchema.safeParse({
+    namespace: id.namespace,
+    name: id.name,
+  });
+  if (!address.success) return null;
+  if (who.kind === "user" && who.agent?.identity?.identityId === id.identityId)
+    return null;
+  const user = await getUser(env, row.userId);
+  if (
+    !user ||
+    !canConnect(user) ||
+    !(await accessLevel(env, callerOf(user), a.id))
+  )
+    return null;
+  return {
+    key: await agentKey(a.id, row.userId, address.data),
+    name: address.data.name,
+    online: false,
+    userId: row.userId,
+    address: address.data,
+  };
+}
+
 /** The key of a roster agent (comment-agents.ts agentKey). */
 const AGENT_KEY = /^agent:[0-9a-f]{32}$/;
 
@@ -966,8 +1015,18 @@ export async function addThread(
   };
   const { anchor, version } = await checkAnchor(env, a, raw.anchor, take);
   if (!taken) await take();
+  const page =
+    anchor.kind === "note" && r.agents.length === 0
+      ? await pagePublisher(env, a, who)
+      : null;
+  if (page) {
+    r.extras = { ...r.extras, mentions: [storedAgent(page)] };
+    r.agents.push({ agent: page, kind: "mention" });
+    r.mentions.push(page.key);
+  }
   const participants = [
     ...r.participants,
+    ...(page ? [{ ...participantOf(page), page: true as const }] : []),
     ...(await authorParticipant(a.id, who)),
   ];
   const t = await call(() =>
@@ -1049,6 +1108,8 @@ async function threadReply(
         threadId,
         at: c.createdAt,
         exclude: r.agents.map((x) => x.agent.key),
+        // A reply that @-mentions someone is for them (#1968).
+        skipPage: r.agents.length > 0,
       }),
     );
     if (due.length === 0) return;

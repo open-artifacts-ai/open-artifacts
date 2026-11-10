@@ -46,7 +46,7 @@ create table if not exists comment_asker_notices (
 );
 create table if not exists comment_participants (
   thread_id text not null, key text not null, name text not null, owner text not null,
-  namespace text not null, primary key (thread_id, key)
+  namespace text not null, page integer not null default 0, primary key (thread_id, key)
 );
 create table if not exists comment_reply_notices (
   thread_id text not null, key text not null, last_at text not null, prev_at text, n integer not null,
@@ -140,7 +140,11 @@ export type NewExtras = {
  * bus address); `namespace` and `name` are the bus address a notice goes to;
  * `owner` the member whose agent it is.
  */
-export type StoredParticipant = StoredAgent & { namespace: string };
+export type StoredParticipant = StoredAgent & {
+  namespace: string;
+  /** #1968: joined only because it published the page a page-wide thread is on; any other reason clears it. */
+  page?: true;
+};
 
 export type StoredThread = {
   id: string;
@@ -474,13 +478,15 @@ export function addParticipants(
 ): void {
   for (const p of ps)
     sql.exec(
-      `insert or ignore into comment_participants (thread_id, key, name, owner, namespace)
-       values (?, ?, ?, ?, ?)`,
+      `insert into comment_participants (thread_id, key, name, owner, namespace, page)
+       values (?, ?, ?, ?, ?, ?)
+       on conflict (thread_id, key) do update set page = 0 where excluded.page = 0`,
       threadId,
       p.key,
       p.name,
       p.owner,
       p.namespace,
+      p.page ? 1 : 0,
     );
 }
 
@@ -497,6 +503,8 @@ export function takeThreadReply(
   exclude: Set<string>,
   at: string,
   max: number,
+  /** The comment @-mentions someone: agents that joined only as the page's publisher are skipped (#1968). */
+  skipPage = false,
 ): StoredParticipant[] {
   if (threadStatus(sql, threadId) !== "open") return [];
   const total =
@@ -509,15 +517,15 @@ export function takeThreadReply(
   let room = max - total;
   const out: StoredParticipant[] = [];
   const rows = sql
-    .exec<StoredParticipant>(
-      `select key, name, owner, namespace from comment_participants
+    .exec<Omit<StoredParticipant, "page"> & { page: number }>(
+      `select key, name, owner, namespace, page from comment_participants
        where thread_id = ? order by key`,
       threadId,
     )
     .toArray();
   for (const r of rows) {
     if (room <= 0) break;
-    if (exclude.has(r.key)) continue;
+    if (exclude.has(r.key) || (skipPage && r.page === 1)) continue;
     sql.exec(
       `insert into comment_reply_notices (thread_id, key, last_at, prev_at, n) values (?, ?, ?, null, 1)
        on conflict (thread_id, key) do update set prev_at = last_at, last_at = excluded.last_at, n = n + 1`,

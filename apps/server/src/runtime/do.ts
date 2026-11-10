@@ -2194,6 +2194,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     threadId: string;
     at: string;
     exclude: string[];
+    skipPage?: boolean;
   }): StoredParticipant[] {
     this.ensureSchema();
     return this.ctx.storage.transactionSync(() =>
@@ -2203,6 +2204,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
         new Set(a.exclude),
         a.at,
         THREAD_REPLY_NOTICES_MAX,
+        a.skipPage === true,
       ),
     );
   }

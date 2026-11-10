@@ -13,6 +13,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
+import type { AgentAttr } from "../src/services/agent-usage.js";
 import { publish } from "../src/services/artifacts.js";
 import {
   type DeliveryOutcome,
@@ -20,7 +21,11 @@ import {
   type NoticeDelivery,
 } from "../src/services/bus-delivery.js";
 import { THREAD_REPLY_NOTICES_MAX } from "../src/services/comment-rules.js";
-import { addReply, type CommentWho } from "../src/services/comments.js";
+import {
+  addReply,
+  addThread,
+  type CommentWho,
+} from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
@@ -83,17 +88,20 @@ beforeAll(async () => {
 });
 
 /** Owner follows with Claude and Pi; the editor with Codex. */
-async function setup(extra: Record<string, unknown> = {}) {
+async function setup(
+  extra: Record<string, unknown> = {},
+  publisher: AgentAttr | null = null,
+) {
   const a = await publish(
     E,
     owner.member,
     {
       title: "doc",
       format: "html",
-      content: "<p>x</p>",
+      content: "<p>The quick brown fox</p>",
       ...extra,
     } as never,
-    null,
+    publisher,
     undefined,
     "create",
   );
@@ -484,5 +492,176 @@ describe("thread_reply notices (#1900)", () => {
           .toArray()[0]?.n,
     );
     expect(rows).toBe(0);
+  });
+});
+
+// #1968: the agent that published a page joins its page-wide threads.
+
+const LINKED: AgentAttr = {
+  name: "Claude",
+  version: null,
+  identity: {
+    identityId: "id-pub-secret-1",
+    namespace: "ns-owner",
+    name: "Claude",
+    kind: "claude-code",
+  },
+};
+const UNLINKED: AgentAttr = { name: "Claude", version: null };
+const NOTE = { kind: "note" };
+const TEXT = {
+  kind: "text",
+  exact: "quick brown",
+  prefix: "The ",
+  suffix: " fox",
+};
+const OTHERS_DATA = "Someone else wrote this comment, or an agent posted it.";
+const mentions = () =>
+  bus.sent.filter((x) => x.notice.coalesceKey.endsWith(":mention"));
+const toNames = () => bus.sent.map((x) => x.notice.to.name).sort();
+
+describe("the publishing agent joins page-wide threads (#1968)", () => {
+  it("a linked publish stores the identity; a web or unlinked publish leaves NULL; no payload carries it", async () => {
+    const linked = await setup({}, LINKED);
+    const web = await setup({}, null);
+    const unlinked = await setup({}, UNLINKED);
+    const col = async (id: string) =>
+      (
+        await E.DB.prepare(
+          "select agent_identity as i from versions where artifact_id = ?",
+        )
+          .bind(id)
+          .first<{ i: string | null }>()
+      )?.i;
+    expect(JSON.parse((await col(linked.id)) as string)).toEqual({
+      identityId: "id-pub-secret-1",
+      namespace: "ns-owner",
+      name: "Claude",
+      kind: "claude-code",
+    });
+    expect(await col(web.id)).toBeNull();
+    expect(await col(unlinked.id)).toBeNull();
+    await post(linked.id, editor, {});
+    for (const path of [
+      R.artifact(linked.id),
+      R.versions(linked.id),
+      R.comments(linked.id),
+      "/api/artifacts",
+    ]) {
+      const body = await (await api(app, path, owner.cookie)).text();
+      expect(body).not.toContain("id-pub-secret-1");
+      expect(body).not.toContain("agent_identity");
+      expect(body).not.toContain("agentIdentity");
+    }
+  });
+
+  it("a page note with no @ reaches the publisher like a mention; later person replies reach it as thread replies", async () => {
+    const s = await setup({}, LINKED);
+    const r = await post(s.id, viewer, {});
+    expect(r.status).toBe(201);
+    const t = (await r.json()) as Thread;
+    expect(toNames()).toEqual(["Claude"]);
+    expect(mentions()).toHaveLength(1);
+    expect(mentions()[0]?.userId).toBe(owner.userId);
+    expect(mentions()[0]?.notice.to).toEqual({
+      namespace: "ns-owner",
+      name: "Claude",
+    });
+    bus.clear();
+    await reply(s.id, t.id, viewer);
+    expect(names()).toEqual(["Claude"]);
+  });
+
+  it("text-anchored threads add nobody", async () => {
+    const s = await setup({}, LINKED);
+    const r = await post(s.id, viewer, { anchor: TEXT });
+    expect(r.status).toBe(201);
+    const t = (await r.json()) as Thread;
+    await reply(s.id, t.id, viewer);
+    expect(bus.sent).toHaveLength(0);
+  });
+
+  it("a web publish or an unlinked agent adds nobody", async () => {
+    for (const pub of [null, UNLINKED]) {
+      const s = await setup({}, pub);
+      const t = (await (await post(s.id, viewer, {})).json()) as Thread;
+      await reply(s.id, t.id, viewer);
+      expect(bus.sent).toHaveLength(0);
+    }
+  });
+
+  it("tiers: the publisher's own typed note is the your-user tier; another person's is data", async () => {
+    const s = await setup({}, LINKED);
+    await post(s.id, owner, {});
+    expect(mentions()[0]?.notice.text).toContain("Your user typed this");
+    bus.clear();
+    await post(s.id, viewer, {});
+    expect(mentions()[0]?.notice.text).toContain(OTHERS_DATA);
+    expect(mentions()[0]?.notice.text).not.toContain("Your user typed this");
+  });
+
+  it("a root that @-mentions another agent does not add the publisher", async () => {
+    const s = await setup({}, LINKED);
+    const t = (await (
+      await post(s.id, editor, { mentions: [{ key: s.pi }] })
+    ).json()) as Thread;
+    expect(toNames()).toEqual(["Pi"]);
+    bus.clear();
+    await reply(s.id, t.id, viewer);
+    expect(names()).toEqual(["Pi"]);
+  });
+
+  it("a root that mentions another member's agent does not add the publisher", async () => {
+    const s = await setup({}, LINKED);
+    // A mention of the editor's agent is "someone specifically" too.
+    await post(s.id, editor, { mentions: [{ key: s.codex }] });
+    expect(toNames()).toEqual(["Codex"]);
+  });
+
+  it("a root that @-mentions the publisher itself notifies it once", async () => {
+    const s = await setup({}, LINKED);
+    await post(s.id, editor, { mentions: [{ key: s.claude }] });
+    expect(toNames()).toEqual(["Claude"]);
+  });
+
+  it("a reply with an @ skips the publisher; one without reaches it", async () => {
+    const s = await setup({}, LINKED);
+    const t = (await (await post(s.id, viewer, {})).json()) as Thread;
+    bus.clear();
+    await reply(s.id, t.id, editor, { mentions: [{ key: s.pi }] });
+    expect(toNames()).toEqual(["Pi"]);
+    bus.clear();
+    await reply(s.id, t.id, viewer);
+    // Pi joined by the @ in the reply; the publisher is back in.
+    expect(names()).toEqual(["Claude", "Pi"]);
+  });
+
+  it("the publisher's access is re-checked: a publisher who cannot read the page hears nothing", async () => {
+    const s = await setup({}, LINKED);
+    const outsider = await mk("tr-outsider");
+    await E.DB.prepare(
+      "update versions set created_by = ? where artifact_id = ?",
+    )
+      .bind(outsider.userId, s.id)
+      .run();
+    await post(s.id, viewer, {});
+    expect(bus.sent).toHaveLength(0);
+  });
+
+  it("the publishing agent's own page note does not notify itself", async () => {
+    const s = await setup({}, LINKED);
+    await addThread(
+      E,
+      { id: s.id, format: "html", currentVersion: 1 } as never,
+      {
+        kind: "user",
+        id: owner.userId,
+        agent: { name: "Claude", version: null, identity: LINKED.identity },
+      },
+      viewerOf(owner),
+      { anchor: NOTE, body: "note from the agent" },
+      { moderator: true },
+    );
+    expect(bus.sent).toHaveLength(0);
   });
 });
