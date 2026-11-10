@@ -125,7 +125,9 @@ function codexChecks(
       out.warn(c.codexHomeMismatch(tilde(ctx, shell), tilde(ctx, service)));
   }
   const skill = codexSkillState({ home: ctx.userHome, env: ctx.env });
-  if (skill.file && skill.block)
+  if (skill.file && skill.block && skill.shared)
+    out.warn(c.codexSkillSharedTwice());
+  else if (skill.file && skill.block)
     out.warn(
       c.codexSkillTwice(tilde(ctx, skill.file), tilde(ctx, skill.block)),
     );

@@ -268,14 +268,25 @@ describe("review fixes (#1963)", () => {
     expect(readFileSync(agents(h2), "utf8")).toBe("a\r\n");
   });
 
-  it("L5: a failing AGENTS.md cleanup keeps the file in written and names AGENTS.md", async () => {
-    const h = mk();
-    mkdirSync(agents(h), { recursive: true });
-    const r = await installSkill(v76(h), origin, ["codex"]);
-    expect(r.written).toContain(file(h));
-    expect(r.notes.join(" ")).toContain(`Could not update ${agents(h)}`);
-    expect(existsSync(file(h))).toBe(true);
-  });
+  it.skipIf(process.getuid?.() === 0)(
+    "L5: a failing AGENTS.md cleanup keeps the file in written and names AGENTS.md",
+    async () => {
+      const h = mk();
+      withAgents(h, block);
+      mkdirSync(join(h, ".codex", "skills", "open-artifacts-oa-example"), {
+        recursive: true,
+      });
+      chmodSync(join(h, ".codex"), 0o500);
+      try {
+        const r = await installSkill(v76(h), origin, ["codex"]);
+        expect(r.written).toContain(file(h));
+        expect(r.notes.join(" ")).toContain(`Could not update ${agents(h)}`);
+        expect(existsSync(file(h))).toBe(true);
+      } finally {
+        chmodSync(join(h, ".codex"), 0o700);
+      }
+    },
+  );
 
   it("L6: the version comes from the configured Codex command", async () => {
     const dir = mk();
@@ -299,11 +310,68 @@ describe("review fixes (#1963)", () => {
   it("doctor state: file, block, or both", async () => {
     const h = mk();
     await installSkill(v76(h), origin, ["codex"]);
-    expect(codexSkillState({ home: h })).toEqual({ file: file(h) });
+    expect(codexSkillState({ home: h })).toEqual({
+      file: file(h),
+      shared: false,
+    });
     withAgents(h, block);
     expect(codexSkillState({ home: h })).toEqual({
       file: file(h),
       block: agents(h),
+      shared: false,
     });
+  });
+
+  it.skipIf(process.getuid?.() === 0)(
+    "H1: an unreadable AGENTS.md is never overwritten, in either mode",
+    async () => {
+      for (const codexVersion of ["0.76.0", "0.75.0", undefined]) {
+        const h = mk();
+        withAgents(h, "# private\n");
+        chmodSync(agents(h), 0o000);
+        try {
+          const r = await installSkill(
+            { home: h, codexVersion, fetchSkill },
+            origin,
+            ["codex"],
+          );
+          expect(r.notes.join(" ")).toContain(`Left ${agents(h)} alone`);
+          expect(existsSync(file(h))).toBe(false);
+          chmodSync(agents(h), 0o600);
+          expect(readFileSync(agents(h), "utf8")).toBe("# private\n");
+        } finally {
+          chmodSync(agents(h), 0o600);
+        }
+      }
+    },
+  );
+
+  it("L-a: a dangling skills link to ~/.agents/skills counts as shared", async () => {
+    const h = mk();
+    mkdirSync(join(h, ".codex"), { recursive: true });
+    symlinkSync(join(h, ".agents", "skills"), join(h, ".codex", "skills"));
+    const r = await installSkill(v76(h), origin, ["codex"]);
+    expect(existsSync(join(h, ".agents"))).toBe(false);
+    expect(readFileSync(agents(h), "utf8")).toContain(CODEX_BEGIN);
+    expect(r.notes.join(" ")).toContain("shares its skills folder");
+  });
+
+  it("L-b: state says when the folder is shared", async () => {
+    const h = mk();
+    mkdirSync(join(h, ".agents", "skills"), { recursive: true });
+    mkdirSync(join(h, ".codex"), { recursive: true });
+    symlinkSync(join(h, ".agents", "skills"), join(h, ".codex", "skills"));
+    expect(codexSkillState({ home: h }).shared).toBe(true);
+    expect(codexSkillState({ home: mk() }).shared).toBe(false);
+  });
+
+  it("L-c: marker lines with leading whitespace count as a broken block", async () => {
+    const h = mk();
+    const bad = `  ${CODEX_BEGIN}\nold\n${CODEX_END}\n`;
+    withAgents(h, bad);
+    const r = await installSkill(v76(h), origin, ["codex"]);
+    expect(readFileSync(agents(h), "utf8")).toBe(bad);
+    expect(existsSync(file(h))).toBe(false);
+    expect(r.notes.join(" ")).toContain("Fix or remove the block");
   });
 });
