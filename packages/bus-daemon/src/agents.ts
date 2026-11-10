@@ -26,6 +26,11 @@ export type AgentRecord = {
    * lists `mailbox`, until the hub answers.
    */
   replaces?: string;
+  /**
+   * #1822: the hash of the proof this session's `oa-bus mcp-proof` helper last
+   * sent. Memory only: a restarted daemon learns it again at the next connect.
+   */
+  linkHash?: string;
 };
 
 export class AgentTable {
