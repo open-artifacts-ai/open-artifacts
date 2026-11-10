@@ -353,3 +353,48 @@ describe("outsiders get no face fields (#1890)", () => {
     }
   });
 });
+
+describe("MCP list_comments for a capped client (#1890)", () => {
+  it("a restricted client gets no linked, product or animal", async () => {
+    const { createPat } = await import("../src/auth/pat.js");
+    const { connect, textOf, tool } = await import("./mcp-helpers.js");
+    const s = await scene({ current: IDENT });
+    await s.post({ mentions: [{ key: s.key }], ...asks(s.key) });
+    await E.DB.prepare(
+      "update artifacts set visibility = 'public' where id = ?",
+    )
+      .bind(s.id)
+      .run();
+    const { token } = await createPat(env, s.other.userId, "capped");
+    const client = await connect(token);
+    try {
+      const member = await tool(client, "list_comments", { id: s.id });
+      expect(member.isError, textOf(member)).toBeFalsy();
+      const has = (l: CommentList) =>
+        l.threads
+          .flatMap((t) => t.comments)
+          .flatMap((c) => [...(c.mentions ?? []), ...(c.ask?.to ?? [])]);
+      for (const p of has(member.structuredContent as CommentList))
+        expect(p.animal).toBeDefined();
+      // The cap lands after the connection: the next call is a capped viewer.
+      await E.DB.prepare("update users set restricted_manual = 1 where id = ?")
+        .bind(s.other.userId)
+        .run();
+      const capped = await tool(client, "list_comments", { id: s.id }).catch(
+        (e: unknown) => e,
+      );
+      if (capped instanceof Error || (capped as { isError?: boolean }).isError)
+        return; // refused outright: no face can leak
+      const parties = has(
+        (capped as { structuredContent: unknown })
+          .structuredContent as CommentList,
+      );
+      expect(parties.length).toBeGreaterThan(0);
+      for (const p of parties)
+        for (const k of ["linked", "product", "animal"])
+          expect(p).not.toHaveProperty(k);
+    } finally {
+      await client.close();
+    }
+  });
+});
