@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { lstatSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import { claudeSessionsDir } from "@oa/bus-adapter-claude-code";
@@ -8,6 +9,7 @@ import {
 } from "@oa/bus-adapter-opencode/version";
 import {
   ADAPTER_CAPS,
+  correctedDeliveredText,
   type DaemonFrame,
   excerptOf,
   fitName,
@@ -67,6 +69,7 @@ import {
   configPaths,
   inspectApprovals,
   inspectGlobal,
+  inspectRemotes,
 } from "./config-issues.ts";
 import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
 import { HubConnection, type HubOptions } from "./hub.ts";
@@ -77,7 +80,12 @@ import {
   liveClaudeFiles,
   liveClaudeSessions,
 } from "./liveness/claude.ts";
-import { type Namespace, resolveNamespace } from "./namespace.ts";
+import {
+  gitRecordRoot,
+  type Namespace,
+  resolveNamespace,
+} from "./namespace.ts";
+import { remotesFile } from "./namespaces.ts";
 import { Outbox } from "./outbox.ts";
 import {
   lstartEpoch,
@@ -158,6 +166,9 @@ const LATE_WINDOW_MS = 60 * 60_000;
  */
 const piLike = (kind: string) =>
   kind === "pi" || kind === "omp" || kind === "hermes" || kind === "openclaw";
+
+/** #1608: the fixed refusal for a second concurrent claim on a bound pi-like ref. */
+export const REF_BOUND = "agent_ref is bound to another live connection";
 
 export type DaemonDeps = {
   transports?: Partial<Record<AgentRecord["kind"], DeliverFn>>;
@@ -291,6 +302,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const conns = new Map<string, number>();
   /** Each Pi session's open extension connections, newest last: Pi receives on them. */
   const piLinks = new Map<string, Map<Hello, (f: DaemonFrame) => void>>();
+  /** #1608: who first claimed each pi-like ref; kept after its link closes, until its pid dies. */
+  const bindings = new Map<
+    string,
+    { token: string; pid: number; kind: string; start?: string }
+  >();
 
   /**
    * A /clear handover not yet announced: it waits for hello_ok (#1582), so the
@@ -385,6 +401,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const configFiles = (cwd?: string, pending = false) => {
     const g = inspectGlobal();
     const a = inspectApprovals();
+    const rm = inspectRemotes(remotesFile());
     let within: Set<string> | undefined;
     // An agent sees only its own folder chain: other projects' paths stay private.
     if (cwd !== undefined) {
@@ -393,10 +410,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       } catch {
         within = new Set(configPaths(cwd));
       }
+      // #1570: the held remote change sits at the repo's .git; the agent being held sees it.
+      const rr = gitRecordRoot(cwd);
+      if (rr) within.add(join(rr, ".git"));
     }
     return [
       ...configIssues.list(within, { pending }),
       ...(a ? [a] : []),
+      ...(rm ? [rm] : []),
       ...(g ? [g] : []),
     ];
   };
@@ -404,7 +425,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     (
       deps.resolveNamespace ??
       ((dir) =>
-        resolveNamespace(dir, { log, allowMissing, issues: configIssues }))
+        resolveNamespace(dir, {
+          log,
+          allowMissing,
+          issues: configIssues,
+          remotesFile: remotesFile(),
+        }))
     )(cwd);
 
   const cl = deps.claude ?? {};
@@ -412,18 +438,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const returnDir = cl.socketsDir ?? claudeReturnDir();
   // Before anything listens: a socket path that cannot work is a lasting failure.
   prepareSocketDir(listenPath, returnDir);
+  const startOfPid = cl.procStart ?? claudeProcStartOf;
   const running = cl.isRunning ?? isRunning;
   const claudeSessions = {
     dir: cl.sessionsDir ?? claudeSessionsDir(),
-    procStart: cachedProcStart(cl.procStart ?? claudeProcStartOf, running, {
-      ttlMs: cl.syncMs ?? 2000,
-    }),
+    procStart: cachedProcStart(cl.procStart ?? claudeProcStartOf, running),
     isRunning: running,
   };
   const oc = deps.opencode ?? {};
   const ocRunning = oc.isRunning ?? isRunning;
+  // OpenCode's file does not change when its pid is reused: keep the short TTL (few sessions).
   const ocStart = cachedProcStart(oc.procStart ?? procStartOf, ocRunning, {
     ttlMs: cl.syncMs ?? 2000,
+    jitter: 0,
   });
   const ocComm = oc.comm ?? commOf;
   const cx = deps.codex ?? {};
@@ -580,7 +607,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       stripTerminalControls(
         n.state === "lost"
           ? unconfirmedText(n.meta.to_name, n.meta.excerpt)
-          : receiptText(n, n.meta.to_name, undefined, n.meta.excerpt),
+          : n.state === "corrected"
+            ? correctedDeliveredText(n.meta.to_name, n.meta.excerpt)
+            : receiptText(n, n.meta.to_name, undefined, n.meta.excerpt),
       ),
       n.msgId,
     )
@@ -898,6 +927,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           proposedName: old?.busName ?? s.name,
           busName: prev?.busName ?? old?.busName ?? s.name,
           namespace: ns.namespace,
+          namespaceSource: ns.source,
           global: ns.global,
           pid: s.pid,
           procStart: s.procStart,
@@ -1338,7 +1368,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
                 machine: cfg.label,
                 state: "live" as const,
               }));
-          return { namespace, agents: rows };
+          const source = local[0]?.namespaceSource;
+          return {
+            namespace,
+            ...(source ? { source } : {}),
+            agents: rows,
+          };
         }),
       );
       const config_files = configFiles(
@@ -1429,6 +1464,42 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (!check.ok) return { error: check.reason };
         // Claude's MCP server is a new process per tool call; the session is the identity.
         const pid = check.pid ?? hello.pid;
+        // #1608: a pi-like ref belongs to the adapter that claimed it first, link
+        // after link, until the claimant's process is gone. A pid and its start
+        // time are no proof of who is speaking (any same-user process can send
+        // them), so the welcome issued a token that every later hello must echo.
+        let bindToken: string | undefined;
+        // A binding lapses when its claimant is gone or its pid now has another start time.
+        const claim = bindings.get(hello.agent_ref);
+        if (claim) {
+          const now = claim.start === undefined ? null : startOfPid(claim.pid);
+          if (
+            !running(claim.pid) ||
+            (now !== null && claim.start !== undefined && now !== claim.start)
+          )
+            bindings.delete(hello.agent_ref);
+        }
+        const held = bindings.get(hello.agent_ref);
+        // Every kind is checked: a claude-code or opencode hello cannot take a bound pi ref.
+        if (
+          held &&
+          (held.kind !== hello.kind ||
+            !piLike(hello.kind) ||
+            held.token !== hello.bind_token)
+        )
+          return { error: REF_BOUND };
+        if (piLike(hello.kind))
+          bindToken = held?.token ?? randomBytes(24).toString("base64url");
+        const bound = (): { bind_token?: string } => {
+          if (bindToken === undefined) return {};
+          bindings.set(hello.agent_ref, {
+            token: bindToken,
+            pid,
+            kind: hello.kind,
+            ...(startOfPid(pid) ? { start: startOfPid(pid) as string } : {}),
+          });
+          return { bind_token: bindToken };
+        };
         const prev = agents.byRef(hello.agent_ref);
         // A resumed session may beat the next sync tick: the files decide whose it is.
         if (prev?.live && prev.kind === "claude-code" && prev.pid !== pid) {
@@ -1479,6 +1550,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             namespace: prev.namespace,
             global: prev.global,
             ...capsFor(hello),
+            ...bound(),
           };
         }
         // Claude's session file names its cwd; other kinds state one.
@@ -1532,6 +1604,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           proposedName: old?.busName ?? proposedName,
           busName: prev?.busName ?? old?.busName ?? proposedName,
           namespace: ns.namespace,
+          namespaceSource: ns.source,
           global: ns.global,
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
@@ -1556,6 +1629,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           namespace: rec.namespace,
           global: rec.global,
           ...capsFor(hello),
+          ...bound(),
         };
       };
       // A connection gone during the wait admits nothing: no agent, no conns.
@@ -1760,6 +1834,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         proposedName: r.proposedName,
         busName: r.busName,
         namespace: ns.namespace,
+        namespaceSource: ns.source,
         global: ns.global,
         pid: r.pid,
         procStart: r.procStart,
@@ -1810,9 +1885,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
 
   const sync = () => {
-    // A rename held back (the hub's hour, the 3-a-minute window) goes when it
-    // can; Pi and omp have no session file to prompt it.
-    for (const rec of agents.all()) if (rec.live) flushRename(rec);
     for (const [what, fn] of [
       ["claude", syncClaude],
       ["opencode", syncOpenCode],
@@ -1826,6 +1898,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         );
       }
     }
+    // After the syncs, so a name held back goes as its latest value, not the
+    // one it had when the hold began. Pi and omp have no session file to
+    // prompt it.
+    for (const rec of agents.all()) if (rec.live) flushRename(rec);
   };
   restoreCodex();
   sync();

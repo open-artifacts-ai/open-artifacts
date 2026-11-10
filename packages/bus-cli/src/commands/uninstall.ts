@@ -8,7 +8,11 @@ import {
   tildeReason,
 } from "../context.ts";
 import { readMachine } from "../machine.ts";
-import { readAssets, uninstallAdapters } from "../steps/adapters.ts";
+import {
+  readAssets,
+  uninstallAdapters,
+  unshownNotes,
+} from "../steps/adapters.ts";
 import { removeHabits } from "../steps/habits.ts";
 import { hermesHome } from "../steps/hermes.ts";
 import { purge } from "../steps/purge.ts";
@@ -78,6 +82,7 @@ export async function uninstall(
     );
   if (r.openclawNoCli) say(ctx, c.openclawNoCli());
   if (r.openclawNix) say(ctx, c.openclawNix());
+  for (const n of unshownNotes(r.notes)) say(ctx, [n]);
   if (r.folderOnly.includes("opencode")) say(ctx, c.removedPluginFolder());
   if (r.removed.length + r.folderOnly.length === 0) say(ctx, c.noneWired());
   for (const s of r.skipped)

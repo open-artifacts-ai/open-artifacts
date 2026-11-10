@@ -563,8 +563,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
    * today's writes, and whether `collection`/`id` exists. Reads only.
    */
   capUsage(
-    collection: string,
-    id: string,
+    collection?: string,
+    id?: string,
   ): { docs: number; writesToday: number; exists: boolean } {
     const day = Math.floor(this.now() / DAY_MS);
     const r = this.sql
@@ -573,8 +573,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
            (select case when day = ? then writes else 0 end from totals where id = 1) as writes,
            exists (select 1 from docs where collection = ? and id = ?) as "exists"`,
         day,
-        dataName(collection, "collection"),
-        dataName(id, "id"),
+        collection === undefined ? "" : dataName(collection, "collection"),
+        id === undefined ? "" : dataName(id, "id"),
       )
       .one();
     return {

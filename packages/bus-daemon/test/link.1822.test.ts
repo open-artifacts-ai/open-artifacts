@@ -17,7 +17,7 @@ afterEach(async () => {
 const HASH = "a".repeat(64);
 const HASH2 = "b".repeat(64);
 
-async function start(caps: string[], start = () => "t0") {
+async function start(caps: string[], start = () => "t0", syncMs = 20) {
   const d = mkdtempSync(join(tmpdir(), "ob-link-"));
   writeFileSync(
     join(d, "4242.json"),
@@ -34,7 +34,7 @@ async function start(caps: string[], start = () => "t0") {
     claude: {
       sessionsDir: d,
       socketsDir: join(d, "r"),
-      syncMs: 20,
+      syncMs,
       procStart: start,
       isRunning: () => true,
     },
@@ -82,7 +82,12 @@ describe("link_proof to link_bind (#1822)", () => {
 
   it("a pid whose start time moved (a reused pid) binds nothing", async () => {
     let now = "t0";
-    const { h } = await start([BUS_CAPS.ids, BUS_CAPS.link], () => now);
+    // No sync tick between the move and the proof: the proof alone judges it.
+    const { h } = await start(
+      [BUS_CAPS.ids, BUS_CAPS.link],
+      () => now,
+      3_600_000,
+    );
     now = "t1";
     expect(await proof(h, 4242)).toBe(false);
     expect(h.of("link_bind")).toHaveLength(0);

@@ -922,7 +922,7 @@ describe("anonymous id", () => {
 
   it("stores a renewed 3-part token in place of the old one", async () => {
     vi.stubGlobal("localStorage", okStorage);
-    const RENEWED = `${"a".repeat(21)}A.t2k9z0.${"e".repeat(42)}A`;
+    const RENEWED = `${"a".repeat(21)}A.${Math.floor(Date.now() / 1000).toString(36)}.${"e".repeat(42)}A`;
     store.set(ANON_ID_KEY, TOKEN);
     fetchMock.mockImplementationOnce(async () => withToken(RENEWED));
     mkAnon(OPT_IN);

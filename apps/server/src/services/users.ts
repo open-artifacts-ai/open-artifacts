@@ -16,7 +16,7 @@ import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
-import { publicName } from "./agent-display.js";
+import { publicName, readsAsAgent } from "./agent-display.js";
 import { signInAuditByEmail } from "./audit.js";
 
 type UserRow = typeof users.$inferSelect;
@@ -36,6 +36,15 @@ export function effectiveName(u: NameFields): string {
 }
 
 /**
+ * effectiveName for anyone but the user themselves: a name that reads as an
+ * agent ("X's agent", set or from SSO, #1894) falls back to the email.
+ */
+export function shownEffectiveName(u: NameFields): string {
+  const n = effectiveName(u);
+  return readsAsAgent(n) ? u.email : n;
+}
+
+/**
  * A UserRef for `caller`: anonymous callers get no email, and so no email
  * fallback for the name either (null when the user has no real name). Their
  * name also passes publicName (#851's rule, #1107): a stored name or display
@@ -46,7 +55,7 @@ export function toUserRef(
   signedIn: boolean,
 ): UserRef {
   return signedIn
-    ? { id: u.id, email: u.email, name: effectiveName(u) }
+    ? { id: u.id, email: u.email, name: shownEffectiveName(u) }
     : {
         id: u.id,
         email: null,
@@ -64,7 +73,7 @@ export function toMember(
   return {
     id: r.id,
     email,
-    name: effectiveName({ ...r, email }),
+    name: shownEffectiveName({ ...r, email }),
     role: r.role as Role,
     lastSeenAt:
       r.lastSeenAt == null ? null : new Date(r.lastSeenAt).toISOString(),

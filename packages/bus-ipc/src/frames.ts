@@ -124,6 +124,12 @@ export const Hello = z.object({
     .optional(),
   /** What this adapter can decode (ADAPTER_CAPS); absent means none. */
   caps: z.array(z.string().max(32)).max(16).optional(),
+  /**
+   * #1608: the token the daemon's first welcome for this ref issued. A pi-like
+   * ref stays bound to its first claimant after the link closes; a later hello
+   * proves it is the same adapter by echoing this. Memory only, never logged.
+   */
+  bind_token: z.string().min(16).max(128).optional(),
   /** What the harness told the adapter, re-checked by the daemon. */
   attest: z
     .object({
@@ -340,9 +346,14 @@ export const ConfigFile = z.object({
 });
 export type ConfigFile = z.infer<typeof ConfigFile>;
 
+/** Where a namespace came from (#1570): an approved `.oa-bus.json`, the git remote, the git folder's name, or the cwd's. */
+export const NamespaceSource = z.enum(["config", "git", "dir", "cwd"]);
+
 export const AgentInfo = z.object({
   name: z.string(),
   namespace: z.string(),
+  /** `self` only (#1570). */
+  namespace_source: NamespaceSource.optional(),
   kind: KIND_TOKEN,
   /** `state === "live"`; kept for older adapters. */
   live: z.boolean(),
@@ -373,6 +384,8 @@ export const Welcome = z.object({
   global: z.boolean(),
   /** What this daemon accepts (ADAPTER_CAPS), only for an adapter that listed `rename` or `follow`. */
   caps: z.array(z.string().max(32)).max(16).optional(),
+  /** #1608: pi-like kinds only. Echo it in every later hello for this ref. */
+  bind_token: z.string().min(16).max(128).optional(),
 });
 export const Receipt = z.object({
   ...base,
@@ -503,6 +516,8 @@ export const StatusReply = z.object({
   namespaces: z.array(
     z.object({
       namespace: z.string(),
+      /** Where it came from (#1570); absent from older daemons. */
+      source: NamespaceSource.optional(),
       agents: z.array(
         z.object({
           name: z.string(),

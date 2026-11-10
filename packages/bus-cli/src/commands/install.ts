@@ -23,6 +23,7 @@ import {
   type Harness,
   installAdapters,
   readAssets,
+  unshownNotes,
 } from "../steps/adapters.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
@@ -196,6 +197,7 @@ async function harnessesStep(
   if (out.hermesRestart) say(ctx, c.hermesRestart());
   if (out.openclawRestart) say(ctx, c.openclawRestart());
   if (out.openclawNix) say(ctx, c.openclawNix());
+  for (const n of unshownNotes(out.notes)) say(ctx, [n]);
   for (const s of out.skipped)
     say(ctx, await skippedLines(ctx, s.harness, s.reason));
   if (out.installed.includes("opencode"))
@@ -328,6 +330,7 @@ export function rosterBlock(
   return {
     lines: [
       c.rosterHeader(ns.namespace, rows.length - queued, queued),
+      ...(ns.source ? [c.namespaceSource(ns.source)] : []),
       ...shown.flatMap((r) => {
         const says = c.rosterSays(r, now);
         return [c.rosterRow(r), ...(says ? [says] : [])];

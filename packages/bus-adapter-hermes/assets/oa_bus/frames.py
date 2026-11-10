@@ -170,6 +170,7 @@ def check_adapter_frame(frame):
             and all(_is_str(c, 0, 32) for c in v),
             "up to 16 short strings",
         )
+        _opt(frame, "bind_token", lambda v: _is_str(v, 16, 128), "16 to 128 chars")
         if "attest" in frame:
             a = frame["attest"]
             if not isinstance(a, dict):

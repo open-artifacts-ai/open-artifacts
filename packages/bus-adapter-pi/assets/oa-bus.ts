@@ -1,8 +1,8 @@
 // Open Artifacts bus extension for Pi and oh-my-pi. Installed by `oa-bus install`; managed file. Do not edit: reinstall overwrites it.
 // Standalone: Pi loads it from its extensions directory, so it imports node built-ins only.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -26,6 +26,8 @@ type Ctx = {
    * tool, clones) in this process. Its presence is how a session is known as omp.
    */
   agent?: { kind?: string };
+  /** omp only: the run mode ("tui" is the interactive terminal; ACP and RPC report "rpc"). */
+  mode?: string;
 };
 type ToolResult = {
   content: { type: "text"; text: string }[];
@@ -52,6 +54,9 @@ type Pi = {
     ): Promise<ToolResult>;
   }): void;
   on(event: string, handler: (event: unknown, ctx: Ctx) => unknown): void;
+  /** Pi only, and not every version: absent on omp and older Pi (#1856). */
+  registerMcpServer?(name: string, config: Json): void;
+  unregisterMcpServer?(name: string): void;
   sendMessage(
     message: {
       customType: string;
@@ -65,6 +70,17 @@ type Pi = {
     },
   ): void;
 };
+
+/** #1856: the header the instance's /mcp reads a session's link proof from (LINK_PROOF_HEADER). */
+const PROOF_HEADER = "X-OA-Agent-Proof-Token";
+/** The daemon gets this long to take a link_proof; an answer after it leaves the session unlinked. */
+const PROOF_MS = 2_000;
+/** A proof the daemon did not take is offered again at most this often. */
+const PROOF_RETRY_MS = 60_000;
+/** Written by `oa-bus install`: the instance's /mcp entry it moved out of Pi's mcp.json. */
+const ENTRY_FILE = "pi-mcp-entry.json";
+/** Written by `oa-bus install` for omp: `{ "origin": "<the instance origin>" }`. */
+const OMP_ORIGIN_FILE = "omp-mcp-origin.json";
 
 /** Above the daemon's 10 s hub wait plus its 5 s wait for delivered. */
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -933,9 +949,22 @@ type Link = {
   ack: (msgId: string) => void;
   /** #1635: tell the daemon the session's new name; false when this daemon does not take it. */
   rename: (name: string) => boolean;
+  /** #1856: this link's proof hash, to a daemon whose welcome listed `link`; true only when it bound it. */
+  prove: (hash: string) => Promise<boolean>;
   closed: () => boolean;
   close: () => void;
 };
+
+/**
+ * #1608: the daemon's binding token per ref, in memory only. A reconnect (and a
+ * /reload, which re-evaluates this module in the same process) echoes it.
+ */
+const bindTokens = (() => {
+  const g = globalThis as Record<symbol, unknown>;
+  const key = Symbol.for("oa-bus.bindTokens");
+  if (!(g[key] instanceof Map)) g[key] = new Map<string, string>();
+  return g[key] as Map<string, string>;
+})();
 
 function open(
   id: Identity,
@@ -1000,6 +1029,13 @@ function open(
         write({ type: "rename", id: `rename-${++seq}`, name });
         return true;
       },
+      prove: async (hash) => {
+        const caps = link.welcome.caps;
+        if (ended || !Array.isArray(caps) || !caps.includes("link"))
+          return false;
+        const r = await link.request({ type: "link_proof", hash }, PROOF_MS);
+        return r.type === "link_proofed" && r.bound === true;
+      },
       closed: () => ended,
       close: () => {
         ended = true;
@@ -1045,6 +1081,8 @@ function open(
           welcomed = true;
           clearTimeout(helloTimer);
           link.welcome = f;
+          if (typeof f.bind_token === "string")
+            bindTokens.set(id.ref, f.bind_token);
           resolve(link);
           continue;
         }
@@ -1084,7 +1122,9 @@ function open(
         // #1295: this asset decodes away rows and the new refusals.
         // #1525: and a config file that is pending approval.
         // #1635: and may send a rename.
-        caps: ["mailbox", "pending", "rename", "follow", "reach"],
+        // #1856: and may send a link_proof.
+        caps: ["mailbox", "pending", "rename", "follow", "reach", "link"],
+        bind_token: bindTokens.get(id.ref),
         attest: start ? { proc_start: start } : {},
       }),
     );
@@ -1168,6 +1208,237 @@ export default function oaBus(pi: Pi): void {
     link.ack(msgId);
   };
 
+  // --- #1856: the session proves which bus agent it is on the instance's /mcp.
+  // install moved the instance's entry out of Pi's mcp.json into ENTRY_FILE;
+  // this registers it for the session, with the proof header only while this
+  // session's own link is bound to it. The proof is random per link, lives in
+  // memory, and is never written, logged or sent anywhere but as its hash.
+  type Proof = {
+    link: Link;
+    value: string;
+    at: number;
+    busy: boolean;
+    taken: boolean;
+  };
+  let proof: Proof | undefined;
+  /** Whether the registered entry carries a proof header now. */
+  let headed = false;
+
+  const isRecord = (v: unknown): v is Json =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  /** The moved entry, or undefined when there is none or it is not one Pi would take. */
+  const entryOf = ():
+    | { name: string; config: Json; origin?: string }
+    | undefined => {
+    try {
+      const v: unknown = JSON.parse(
+        readFileSync(join(home(), ENTRY_FILE), "utf8"),
+      );
+      if (
+        isRecord(v) &&
+        typeof v.name === "string" &&
+        /^[A-Za-z0-9_-]+$/.test(v.name) &&
+        isRecord(v.config)
+      )
+        return {
+          name: v.name,
+          config: v.config,
+          ...(typeof v.origin === "string" ? { origin: v.origin } : {}),
+        };
+    } catch {}
+    return undefined;
+  };
+  /** Pi 1.5+ only, never omp: its own MCP client reads what is registered. */
+  const mcpHere = () =>
+    identity?.kind === "pi" && typeof pi.registerMcpServer === "function";
+  /**
+   * Whether the entry is on the origin install matched it on: only then does
+   * it ever get a proof, so the header cannot reach another server.
+   */
+  const onHub = (e: { config: Json; origin?: string }) => {
+    try {
+      return (
+        e.origin !== undefined &&
+        typeof e.config.url === "string" &&
+        new URL(e.config.url).origin === e.origin
+      );
+    } catch {
+      return false;
+    }
+  };
+  /**
+   * Registers the entry, plain or with `value` as the proof header. A proof
+   * header the user set is always dropped. Never throws.
+   */
+  const register = (value?: string) => {
+    if (!mcpHere()) return;
+    const entry = entryOf();
+    if (!entry) return;
+    const own = isRecord(entry.config.headers) ? entry.config.headers : {};
+    const headers: Json = {};
+    for (const [k, v] of Object.entries(own))
+      if (k.toLowerCase() !== PROOF_HEADER.toLowerCase()) headers[k] = v;
+    if (value !== undefined && onHub(entry)) headers[PROOF_HEADER] = value;
+    const config = { ...entry.config };
+    if (Object.keys(headers).length > 0) config.headers = headers;
+    else delete config.headers;
+    try {
+      pi.registerMcpServer?.(entry.name, config);
+      headed = headers[PROOF_HEADER] !== undefined;
+    } catch {}
+  };
+  // --- #1856 omp: omp reads its MCP servers from its own mcp.json and has no
+  // per-server header hook, so the extension wraps the global fetch its MCP
+  // client calls (HttpTransport in omp 18.17.0 calls `fetch(url, init)` each
+  // time). The wrap adds the proof header to a request whose origin and path
+  // are exactly the instance's /mcp, and to nothing else. omp shares one MCP
+  // manager across its subagents, so they show the parent's face, as intended.
+  // Only the interactive TUI is wrapped (ctx.mode "tui"): one session at a
+  // time. RPC and ACP (which reports "rpc") can host several sessions that
+  // share this one fetch, where the wrap cannot tell whose request it sees.
+  /** The proof the daemon bound for this session's link; undefined until then. */
+  let face: string | undefined;
+  /** A session switch has begun: no header until it is over or was cancelled. */
+  let held = false;
+  /** This extension instance's fetch wrap, while it is on. */
+  let ompWrap: { restore: () => void } | undefined;
+  const ompOrigin = (): string | undefined => {
+    try {
+      const v: unknown = JSON.parse(
+        readFileSync(join(home(), OMP_ORIGIN_FILE), "utf8"),
+      );
+      if (isRecord(v) && typeof v.origin === "string") {
+        const u = new URL(v.origin);
+        if (u.origin === v.origin && /^https?:$/.test(u.protocol))
+          return u.origin;
+      }
+    } catch {}
+    return undefined;
+  };
+  /** Whether `url` is exactly the instance's /mcp (a trailing slash and a query are the same endpoint). */
+  const isMcp = (url: URL, origin: string) =>
+    url.origin === origin && url.pathname.replace(/\/+$/, "") === "/mcp";
+  /** A body that can be sent a second time as it is. */
+  const replayable = (body: unknown) =>
+    body === undefined ||
+    body === null ||
+    typeof body === "string" ||
+    body instanceof URLSearchParams ||
+    body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(body);
+  const ompWrapOn = () => {
+    if (ompWrap) return;
+    const origin = ompOrigin();
+    const g = globalThis as { fetch?: typeof fetch };
+    const orig = g.fetch;
+    if (!origin || typeof orig !== "function") return;
+    let on = true;
+    /** The caller's headers without any proof header, plus `value` when there is one. */
+    const withProof = (init: RequestInit | undefined, value?: string) => {
+      const h = new Headers(init?.headers);
+      h.delete(PROOF_HEADER);
+      if (value !== undefined) h.set(PROOF_HEADER, value);
+      return h;
+    };
+    const wrapped = async (
+      input: Parameters<typeof fetch>[0],
+      init?: RequestInit,
+    ): Promise<Response> => {
+      let headers: Headers | undefined;
+      try {
+        if (on && (typeof input === "string" || input instanceof URL)) {
+          if (isMcp(new URL(String(input)), origin))
+            // A proof header the user set is never sent as it is.
+            headers = withProof(init, held ? undefined : face);
+        }
+      } catch {
+        headers = undefined;
+      }
+      if (!headers) return orig(input, init);
+      // The caller asked for no redirect handling of its own kind: nothing to hold back.
+      if (init?.redirect !== undefined && init.redirect !== "follow")
+        return orig(input, { ...init, headers });
+      // The proofed call never follows a redirect, so the header cannot leave /mcp.
+      const res = await orig(input, { ...init, headers, redirect: "manual" });
+      if (![301, 302, 303, 307, 308].includes(res.status)) return res;
+      if (!replayable(init?.body)) return res;
+      // A redirect: the caller's own request goes again through the native
+      // fetch, which strips Authorization across origins and applies the method rules.
+      await res.body?.cancel().catch(() => {});
+      return orig(input, { ...init, headers: withProof(init) });
+    };
+    g.fetch = wrapped as typeof fetch;
+    ompWrap = {
+      restore: () => {
+        on = false;
+        // Wrapped again on top by someone else: stay in the chain, inert.
+        if (g.fetch === (wrapped as typeof fetch)) g.fetch = orig;
+        ompWrap = undefined;
+      },
+    };
+  };
+  const offerProof = async (p: Proof) => {
+    if (p.busy) return;
+    p.busy = true;
+    p.at = Date.now();
+    try {
+      const hash = createHash("sha256").update(p.value).digest("hex");
+      const bound = await p.link.prove(hash);
+      // Only for the link that is still this session's, and only once bound.
+      if (bound && proof === p && !p.link.closed() && !stopped) {
+        p.taken = true;
+        register(p.value);
+        if (ompWrap) face = p.value;
+      }
+    } catch {
+    } finally {
+      p.busy = false;
+    }
+  };
+  /** A new proof for a new link; nothing for a daemon that did not list `link`. */
+  const proveLink = (l: Link) => {
+    proof = undefined;
+    const caps = l.welcome.caps;
+    const entry = entryOf();
+    if (!ompWrap && (!mcpHere() || !entry || !onHub(entry))) return;
+    if (!Array.isArray(caps) || !caps.includes("link")) return;
+    proof = {
+      link: l,
+      value: randomBytes(32).toString("base64url"),
+      at: Date.now(),
+      busy: false,
+      taken: false,
+    };
+    void offerProof(proof);
+  };
+  /**
+   * The session is over (a switch to another session, or shutdown): the header
+   * goes. A link that is only lost keeps its last header: changing it would
+   * make Pi reconnect the MCP server and kill calls in flight, and the instance
+   * already reads a proof as no link once the daemon closed that link and
+   * cleared its hash. The next bind replaces the header.
+   */
+  const dropHeader = () => {
+    proof = undefined;
+    face = undefined;
+    held = false;
+    if (headed) register();
+  };
+  /** A turn on a link the daemon did not take a proof for: offer it again, at most once a minute. */
+  const retryProof = () => {
+    const p = proof;
+    if (
+      !p ||
+      p.taken ||
+      p.busy ||
+      p.link !== current ||
+      p.link.closed() ||
+      Date.now() - p.at < PROOF_RETRY_MS
+    )
+      return;
+    void offerProof(p);
+  };
+
   const reconnect = (e?: unknown) => {
     if (stopped || retry || !identity) return;
     const refused = (e as { refused?: boolean } | undefined)?.refused === true;
@@ -1184,6 +1455,7 @@ export default function oaBus(pi: Pi): void {
     if (current?.ref === id.ref && !current.closed())
       return Promise.resolve(current);
     if (connecting?.ref === id.ref) return connecting.link;
+    if (current && current.ref !== id.ref) dropHeader();
     current?.close();
     current = undefined;
     const link = open(id, start, {
@@ -1207,6 +1479,7 @@ export default function oaBus(pi: Pi): void {
         }
         current = l;
         refusals = 0;
+        proveLink(l);
         // Renamed while this hello was in flight (#1635).
         if (
           identity.kind !== "omp" &&
@@ -1267,18 +1540,53 @@ export default function oaBus(pi: Pi): void {
   });
   // A turn start checks too (cheap when unchanged); omp is skipped in renamed().
   pi.on("turn_start", (_event, ctx) => {
-    if (!subagent(ctx)) renamed(ctx);
+    if (subagent(ctx)) return;
+    renamed(ctx);
+    if (
+      held &&
+      identity?.kind === "omp" &&
+      identityOf(ctx).ref === identity.ref
+    )
+      held = false;
+    retryProof();
   });
 
   pi.on("session_start", async (_event, ctx) => {
     if (subagent(ctx)) return;
     stopped = false;
+    // The entry works unlinked: no header until this session's link is bound.
+    identity = identityOf(ctx);
+    register();
+    if (identity.kind === "omp" && ctx.mode === "tui") ompWrapOn();
     // Pi is reachable while this link is open; a daemon that is down is retried.
     await ensure(identityOf(ctx)).catch(reconnect);
   });
+  // omp's /new, /resume and fork keep the process and emit only these two, no
+  // shutdown or start: a new session id gets a fresh link and a fresh proof.
+  const switched = (_event: unknown, ctx: Ctx) => {
+    if (subagent(ctx) || stopped || identity?.kind !== "omp") return;
+    const id = identityOf(ctx);
+    if (id.ref === identity.ref) {
+      held = false;
+      return;
+    }
+    dropHeader();
+    void ensure(id).catch(reconnect);
+  };
+  // The switch emits before_switch first, and can be cancelled there: hold the
+  // header back so a /mcp call inside newSession carries no old proof; a turn
+  // on the same session id gives it back.
+  pi.on("session_before_switch", (_event, ctx) => {
+    if (!subagent(ctx) && identity?.kind === "omp") held = true;
+  });
+  pi.on("session_switch", switched);
+  pi.on("session_branch", switched);
   pi.on("session_shutdown", (_event, ctx) => {
     if (subagent(ctx)) return;
     stopped = true;
+    identity = identity ?? identityOf(ctx);
+    dropHeader();
+    ompWrap?.restore();
     if (retry) clearTimeout(retry);
     retry = undefined;
     connecting = undefined;

@@ -498,6 +498,7 @@ describe("C5 hardening: session files", () => {
     const ps = vi.fn(() => start);
     const cached = cachedProcStart(ps, () => true, {
       ttlMs: 2000,
+      jitter: 0,
       now: () => t,
     });
     expect(cached(7, "a")).toBe("old");
@@ -519,7 +520,7 @@ describe("C5 hardening: session files", () => {
       procStart: cachedProcStart(
         () => start,
         () => true,
-        { ttlMs: 2000, now: () => t },
+        { ttlMs: 2000, jitter: 0, now: () => t },
       ),
       isRunning: () => true,
     };

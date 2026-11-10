@@ -310,6 +310,9 @@ export function routeLocal(
         agent: {
           name: agent.busName,
           namespace: agent.namespace,
+          ...(agent.namespaceSource
+            ? { namespace_source: agent.namespaceSource }
+            : {}),
           kind: agent.kind,
           live: agent.live,
           global: agent.global,

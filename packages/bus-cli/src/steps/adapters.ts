@@ -68,6 +68,25 @@ import {
   openclawPluginState,
   uninstallOpenclaw,
 } from "./openclaw.ts";
+import {
+  installEntry as installOcEntry,
+  type OcEntryIo,
+  OPENCODE_ENTRY_FILE,
+  proxyEntries,
+  proxyProgramMissing,
+  restoreEntry as restoreOcEntry,
+} from "./opencode-proof.ts";
+import {
+  moveEntry,
+  OMP_ORIGIN_FILE,
+  PI_ENTRY_FILE,
+  PI_MIN_VERSION,
+  type PiEntryIo,
+  pendingEntry,
+  restoreEntry,
+} from "./pi-proof.ts";
+
+export { OMP_ORIGIN_FILE };
 
 export type Exec = (
   cmd: string,
@@ -204,6 +223,15 @@ const paths = (deps: AdapterDeps) => {
     ],
     opencodeCli: join(opencode, "cli.json"),
     record: join(busDir, "install.json"),
+    // #1856: where install keeps the OpenCode entry it replaced with the proxy.
+    opencodeEntry: join(busDir, OPENCODE_ENTRY_FILE),
+    // #1856: Pi's own MCP config, and where install keeps the entry it moved.
+    piMcp: join(
+      agentDirEnv(deps.home, env) ?? join(deps.home, ".pi/agent"),
+      "mcp.json",
+    ),
+    piEntry: join(busDir, PI_ENTRY_FILE),
+    ompOrigin: join(busDir, OMP_ORIGIN_FILE),
     // OpenCode registers the folder that holds tui.js.
     opencodePlugin: join(busDir, "integrations/opencode", NAME),
     pi: join(
@@ -447,6 +475,83 @@ function claudeProof(deps: AdapterDeps, notes: string[]) {
   }
 }
 
+const ocEntryIo = (deps: AdapterDeps): OcEntryIo => ({
+  files: paths(deps).opencodeConfigs.filter(present),
+  moved: paths(deps).opencodeEntry,
+  read: readJsonc,
+  save: (file, before, next, ok) => {
+    target(file);
+    saveText(file, before, next, ok);
+  },
+  writeMoved: (data) => writeAtomic(paths(deps).opencodeEntry, data, 0o600),
+  home: deps.home,
+  busBin: deps.busBin,
+  ...(movedHome(deps) ? { busHome: movedHome(deps) as string } : {}),
+});
+
+const piEntryIo = (deps: AdapterDeps): PiEntryIo => ({
+  file: paths(deps).piMcp,
+  moved: paths(deps).piEntry,
+  write: writeAtomic,
+});
+
+/**
+ * #1856: the instance's /mcp entry leaves Pi's mcp.json, so the extension can
+ * register it with the session's proof (Pi lets an mcp.json entry beat a
+ * registered server). Only for a Pi that has `registerMcpServer`, so an older
+ * one keeps its entry. Never stops the install.
+ */
+async function piEntry(deps: AdapterDeps, notes: string[]) {
+  if (deps.hub === undefined) return;
+  try {
+    const io = piEntryIo(deps);
+    const name = pendingEntry(io, deps.hub);
+    if (name === undefined) return;
+    // omp may read this same folder, and has no registerMcpServer: it would lose its tools.
+    if (sharedFile(deps) && hasOmp(deps)) {
+      notes.push(
+        `left the ${name} entry in ${io.file} as it is: oh-my-pi reads the same file, and moving the entry would take its tools away. Pi won't show as its own session on pages.`,
+      );
+      return;
+    }
+    const r = await run(deps, "pi", ["--version"]);
+    const version = r.code === 0 ? r.stdout.trim().split(/\s+/)[0] : undefined;
+    if (
+      version === undefined ||
+      (compareVersions(version, PI_MIN_VERSION) ?? -1) < 0
+    ) {
+      notes.push(
+        `left the ${name} entry in ${io.file} as it is: Pi needs ${PI_MIN_VERSION} or later to show as its own session on pages. Its tools still work.`,
+      );
+      return;
+    }
+    moveEntry(io, deps.hub);
+  } catch (e) {
+    notes.push(
+      `could not set up the Open Artifacts entry in Pi's mcp.json: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+/**
+ * #1856: tells omp's extension which origin is the instance, so its fetch wrap
+ * adds the proof header to that origin's /mcp and nothing else. Never stops the install.
+ */
+function ompOrigin(deps: AdapterDeps, notes: string[]) {
+  if (deps.hub === undefined) return;
+  try {
+    writeAtomic(
+      paths(deps).ompOrigin,
+      `${JSON.stringify({ origin: new URL(deps.hub).origin })}\n`,
+      0o600,
+    );
+  } catch (e) {
+    notes.push(
+      `could not write ${paths(deps).ompOrigin}: ${e instanceof Error ? e.message : String(e)}. oh-my-pi will not show as its own session on pages; its tools still work.`,
+    );
+  }
+}
+
 const proofIo = (deps: AdapterDeps): ProofIo => ({
   file: paths(deps).claude,
   record: paths(deps).record,
@@ -573,22 +678,33 @@ const install: Record<Harness, Step> = {
       isDeepStrictEqual(servers(d)?.[NAME], server),
     );
     saveText(p.opencodeCli, cli, nextCli, (d) => listed(d, p.opencodePlugin));
+    // #1856: never stops the install; the entry just stays as it was.
+    if (deps.hub !== undefined)
+      try {
+        notes.push(...installOcEntry(ocEntryIo(deps), deps.hub).notes);
+      } catch (e) {
+        notes.push(
+          `could not set up the Open Artifacts entry in OpenCode's config: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
     await restartOpencode(deps, notes);
     return "done";
   },
 
-  async pi(deps) {
+  async pi(deps, notes) {
     if (!deps.which("pi")) return "absent";
     writeAtomic(
       paths(deps).pi,
       withHome(deps.assets.pi, movedHome(deps)),
       0o644,
     );
+    await piEntry(deps, notes);
     return "done";
   },
 
-  async omp(deps, _notes, done) {
+  async omp(deps, notes, done) {
     if (!hasOmp(deps)) return "absent";
+    ompOrigin(deps, notes);
     // Pi's step just wrote the one file both load.
     if (sharedFile(deps) && done.includes("pi")) return "done";
     writeAtomic(
@@ -671,6 +787,17 @@ const uninstall: Record<Harness, Step> = {
 
   async opencode(deps, notes) {
     const p = paths(deps);
+    // The entry goes back first: it is the user's, and works without the proxy.
+    let restored = false;
+    try {
+      restored = restoreOcEntry(ocEntryIo(deps));
+    } catch (e) {
+      // The moved file stays, so a second uninstall can put it back.
+      notes.push(
+        `Kept ${p.opencodeEntry}: could not put the Open Artifacts entry back in OpenCode's config (${e instanceof Error ? e.message : String(e)}). Fix that file, then run uninstall again.`,
+      );
+      throw new Error("kept the proxy, the entry is still moved");
+    }
     const record = readRecord(p.record);
     // Drop what install created once it is empty again, deepest first.
     const prune = (file: string, text: string) =>
@@ -704,22 +831,36 @@ const uninstall: Record<Harness, Step> = {
     writeRecord(p.record, record, left);
     const hadPlugin = existsSync(p.opencodePlugin);
     rmSync(p.opencodePlugin, { recursive: true, force: true });
-    if (!saved.some(Boolean) && !hadPlugin) return "none";
+    if (!saved.some(Boolean) && !hadPlugin && !restored) return "none";
     if (deps.which("opencode")) await restartOpencode(deps, notes);
     // No config named Open Artifacts bus any more: only our plugin folder was left.
-    return saved.some(Boolean) ? "done" : "folder";
+    return saved.some(Boolean) || restored ? "done" : "folder";
   },
 
-  async pi(deps) {
+  async pi(deps, notes) {
+    // The entry goes back first: it is the user's, and works without the extension.
+    const io = piEntryIo(deps);
+    let restored = false;
+    try {
+      restored = restoreEntry(io);
+    } catch (e) {
+      // The extension and the moved file stay, so Pi keeps its Open Artifacts tools.
+      notes.push(
+        `Kept the Pi extension and ${io.moved}: could not put the Open Artifacts entry back in ${io.file} (${e instanceof Error ? e.message : String(e)}). Fix that file, then run uninstall again.`,
+      );
+      throw new Error("kept the extension, the entry is still moved");
+    }
     const path = paths(deps).pi;
-    if (!existsSync(path)) return "none";
+    if (!existsSync(path)) return restored ? "done" : "none";
     rmSync(path, { force: true });
     return "done";
   },
 
   async omp(deps, _notes, done) {
-    // Pi's step removed the one file both loaded.
+    rmSync(paths(deps).ompOrigin, { force: true });
+    // Pi's step removed the one file both loaded, or kept it for the entry it could not put back.
     if (sharedFile(deps) && done.includes("pi")) return "done";
+    if (sharedFile(deps) && existsSync(paths(deps).piEntry)) return "none";
     const path = paths(deps).omp;
     if (!existsSync(path)) return "none";
     rmSync(path, { force: true });
@@ -777,6 +918,19 @@ async function each(
   return { done, folder, absent, skipped };
 }
 
+/** Notes the commands do not already show with their own line (a flag of the result). */
+export const unshownNotes = (notes: string[]) =>
+  notes.filter(
+    (n) =>
+      n !== CODEX_NO_BIN &&
+      n !== HERMES_NO_CLI &&
+      n !== OPENCLAW_NO_CLI &&
+      n !== OPENCLAW_NIX &&
+      // The service line says it, and the removal is already in "Removed from".
+      !n.startsWith(RESTART_FAILED) &&
+      !n.startsWith("removed oa_bus from "),
+  );
+
 /** Registers Open Artifacts bus with every harness on PATH; a broken one is skipped, never clobbered. */
 export async function installAdapters(
   deps: AdapterDeps,
@@ -820,6 +974,24 @@ export async function uninstallAdapters(
     openclawNoCli: notes.includes(OPENCLAW_NO_CLI),
     openclawNix: notes.includes(OPENCLAW_NIX),
   };
+}
+
+/**
+ * Read-only (#1856): a proxy entry in OpenCode's config whose program is gone,
+ * so the user's Open Artifacts tools in OpenCode would not start.
+ */
+export function opencodeProxyProblem(
+  deps: Pick<AdapterDeps, "home" | "env" | "which"> & { busHome?: string },
+): { name: string; missing: string } | undefined {
+  const p = paths(deps as AdapterDeps);
+  for (const f of p.opencodeConfigs.filter(present))
+    try {
+      for (const { name, entry } of proxyEntries(readFileSync(f, "utf8"))) {
+        const missing = proxyProgramMissing(entry, undefined, deps.which);
+        if (missing !== undefined) return { name, missing };
+      }
+    } catch {}
+  return undefined;
 }
 
 export type AdapterState = "configured" | "missing" | "absent";

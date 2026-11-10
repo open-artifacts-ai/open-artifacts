@@ -194,7 +194,7 @@ async function anonLimit(
  * (403 capability_denied: access is already proven), then the caller's actor:
  * - storage: signed-in only (401), actor "u:{id}" (the storage owner).
  * - data writes: signed-in "u:{id}"; anonymous only with dataWriters
- *   "viewers", after RL_ANON "ip:{key}" (429; 503 if unbound outside dev),
+ *   "viewers", after the install-wide ceiling RL_ANON_WRITES "ip:{key}" (RL_ANON if unbound; 429; 503 if neither outside dev),
  *   as "ip:{key}|{short}" (ipKey: IPv4, or the IPv6 /64). A write refused by
  *   dataWriters "editors" is 403 data_editors_only, signed in or not (#681).
  * - subscribe: signed-in "u:{id}"; anonymous "ip:{key}" after RL_ANON
@@ -310,14 +310,15 @@ async function gate(
     await anonLimit(c, `anonid:ip:${key}`, "requests");
     return { artifactId, actor: "", anon: await anonId(), authzAt };
   }
-  // RL_ANON (30 per IP across the instance) would cap ANON_WRITES_PER_MIN at
-  // 30; RL_ANON_WRITES (not yet in setup's template), bound with a matching limit,
-  // which then replaces RL_ANON for writes. Unbound: RL_ANON, as before.
-  // HOSTED=1 only tightens: RL_ANON still applies there.
-  const writes = c.env.RL_ANON_WRITES;
-  if (!writes || c.env.HOSTED === "1")
-    await anonLimit(c, `ip:${key}`, "writes");
-  if (writes) await anonLimit(c, `ip:${key}`, "writes", writes);
+  // Two limits, and a write must pass both (#687). The normal budget is per
+  // (artifact, IP) at ANON_WRITES_PER_MIN (default 30), counted in the
+  // artifact's DO (countWrite), so one page's visitors never starve another's.
+  // The abuse bound here is install-wide per IP (IPv4, or the IPv6 /64): the
+  // RL_ANON_WRITES binding, 4x the default budget (120/min), shared by every
+  // artifact. Unbound (an install whose wrangler config predates it), RL_ANON's
+  // 30/min stands in, as before.
+  const rlWrites = c.env.RL_ANON_WRITES ?? c.env.RL_ANON;
+  await anonLimit(c, `ip:${key}`, "writes", rlWrites);
   const anon = await anonId();
   return { artifactId, actor: `ip:${key}|${anon.short}`, anon, authzAt };
 }
@@ -356,11 +357,19 @@ const jsonText = (text: string) =>
 const stub = (c: C, g: Gate) => runtimeStub(c.env, g.artifactId);
 
 /** Hosted billing's free-tier data caps (billing/caps.ts), before a write. */
-const freeDataCap = (c: C, g: Gate, col: string, id: string, adds: boolean) =>
+const freeDataCap = (
+  c: C,
+  g: Gate,
+  col: string | undefined,
+  id: string | undefined,
+  adds: boolean,
+  lowTrust = !g.creator,
+) =>
   requireFreeData(
     c.env,
     () => runtimeCall(() => stub(c, g).capUsage(col, id)),
     adds,
+    lowTrust,
   );
 
 export function mountRuntime(app: AppType): void {
@@ -492,6 +501,7 @@ export function mountRuntime(app: AppType): void {
       // data.reset is owner or manager: always a creator (CREATOR).
       creator: who.user.id,
     };
+    await freeDataCap(c, g, undefined, undefined, false);
     const out = await runtimeCall(() =>
       stub(c, g).replaceRaw(toBuffer(body), g.actor),
     );
@@ -592,6 +602,8 @@ export function mountRuntime(app: AppType): void {
   app.put(KEY, async (c) => {
     const g = await gate(c, "storage.set", "storage");
     const key = storageKeyOf(c);
+    // Storage needs a signed-in user, and a Solo install has only its owner: never the 80% bound.
+    await freeDataCap(c, g, undefined, undefined, false, false);
     const body = await rawBody(c);
     return jsonText(
       await runtimeCall(() => stub(c, g).storageSetRaw(g.actor, key, body)),
@@ -601,6 +613,7 @@ export function mountRuntime(app: AppType): void {
   app.delete(KEY, async (c) => {
     const g = await gate(c, "storage.delete", "storage");
     const key = storageKeyOf(c);
+    await freeDataCap(c, g, undefined, undefined, false, false);
     await runtimeCall(() => stub(c, g).storageDelete(g.actor, key));
     return c.body(null, 204);
   });

@@ -48,6 +48,7 @@ export const TUNABLES: Record<string, Tunable> = {
   FREE_STORAGE_BYTES: { check: int(1) },
   FREE_DATA_DOCS: { check: int(1) },
   FREE_DATA_DAILY_WRITES: { check: int(1) },
+  FREE_DATA_DAILY_WRITES_TOTAL: { check: int(1) },
 };
 
 /** The canonical form of a valid value: EMBED_ORIGINS gets lowercase hosts, no :443, no duplicates. */

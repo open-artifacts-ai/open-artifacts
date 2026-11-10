@@ -40,6 +40,7 @@ const PLAN_LIMIT_NOUN: Record<string, string> = {
   storage_bytes: "storage",
   data_docs: "live-data documents per artifact",
   data_daily_writes: "live-data writes per day",
+  data_daily_writes_total: "live-data writes per day across all artifacts",
 };
 
 /**
