@@ -14,6 +14,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -315,8 +316,10 @@ const codexBroken = (text: string) => {
   const lines = text.split("\n");
   for (let i = 0; i < lines.length; i++) {
     const t = lines[i]?.replace(/\r$/, "") ?? "";
-    if (t !== CODEX_BEGIN && t.startsWith("<!-- BEGIN Open Artifacts skill"))
+    const bare = t.trim();
+    if (t !== CODEX_BEGIN && bare.startsWith("<!-- BEGIN Open Artifacts skill"))
       return true;
+    if (t !== CODEX_END && bare === CODEX_END) return true;
     if (t === CODEX_BEGIN) {
       const end = lineIndex(lines, CODEX_END, i + 1);
       if (end === -1) return true;
@@ -334,10 +337,26 @@ const realOrResolved = (p: string) => {
   }
 };
 
+/** Where a folder really is, and where a (possibly dangling) link in its place points. */
+const placesOf = (p: string): string[] => {
+  const out = [realOrResolved(p)];
+  try {
+    if (lstatSync(p).isSymbolicLink())
+      out.push(realOrResolved(resolve(dirname(p), readlinkSync(p))));
+  } catch {
+    // Not a link, or not there.
+  }
+  return out;
+};
+
 /** Is Codex's skills folder the one pi and omp read? Then a file there is theirs too. */
-const sharesAgentsSkills = (deps: Pick<SkillDeps, "home" | "env">): boolean =>
-  realOrResolved(dirname(dirname(codexSkillFile(deps, "x")))) ===
-  realOrResolved(skillDir(deps, "pi"));
+export const codexSkillsShared = (
+  deps: Pick<SkillDeps, "home" | "env">,
+): boolean => {
+  const mine = placesOf(dirname(dirname(codexSkillFile(deps, "x"))));
+  const theirs = placesOf(skillDir(deps, "pi"));
+  return mine.some((m) => theirs.includes(m));
+};
 
 const ourSkillFile = (path: string, folder: string): boolean => {
   try {
@@ -361,26 +380,30 @@ const installCodex = (
 ) => {
   const agentsPath = skillDir(deps, "codex");
   const filePath = codexSkillFile(deps, folder);
-  let before: string | undefined;
+  let before: string;
   try {
     before = existsSync(targetOf(agentsPath))
       ? readFileSync(targetOf(agentsPath), "utf8")
       : "";
-  } catch {
-    // Unreadable now; the write or cleanup below reports it.
+  } catch (e) {
+    // Never write over what we could not read.
+    notes.push(
+      `Left ${agentsPath} alone: could not read it (${e instanceof Error ? e.message : String(e)}).`,
+    );
+    return;
   }
   const ourFile = ourSkillFile(filePath, folder);
   let asFile =
     codexHasSkills(deps.codexVersion) ||
     (deps.codexVersion === undefined && ourFile);
-  const shared = sharesAgentsSkills(deps);
+  const shared = codexSkillsShared(deps);
   if (asFile && shared) {
     asFile = false;
     notes.push(
-      `Kept the Codex skill in ${agentsPath}: Codex's skills folder is the one pi and omp use, and their file would be overwritten.`,
+      `Kept the Codex skill in ${agentsPath}: Codex shares its skills folder with pi and omp, and writing there would overwrite their skill.`,
     );
   }
-  if (before !== undefined && codexBroken(before)) {
+  if (codexBroken(before)) {
     notes.push(
       `Left ${agentsPath} alone: its Open Artifacts block has no END marker. Fix or remove the block, then rerun the install.`,
     );
@@ -423,7 +446,7 @@ const installCodex = (
   }
   const writing = targetOf(agentsPath);
   try {
-    writeAtomic(writing, withCodexBlock(before ?? "", text));
+    writeAtomic(writing, withCodexBlock(before, text));
   } catch (e) {
     notes.push(
       `Could not write ${writing}: ${e instanceof Error ? e.message : String(e)}`,
@@ -592,8 +615,10 @@ export const uninstallSkill = (
 /** Codex's copies of our skill: our file, and our AGENTS.md block. Both is a double load. */
 export const codexSkillState = (
   deps: Pick<SkillDeps, "home" | "env">,
-): { file?: string; block?: string } => {
-  const out: { file?: string; block?: string } = {};
+): { file?: string; block?: string; shared: boolean } => {
+  const out: { file?: string; block?: string; shared: boolean } = {
+    shared: codexSkillsShared(deps),
+  };
   try {
     const dir = join(dirname(skillDir(deps, "codex")), "skills");
     for (const entry of readdirSync(dir)) {

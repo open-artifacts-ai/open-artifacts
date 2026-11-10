@@ -677,7 +677,13 @@ export function copy(style: Style) {
     codexSkillTwice: (file: string, block: string) => [
       warn("The Codex skill is installed twice, so it loads twice"),
       next(
-        `Run ${BUS_CMD} install again to keep one: ${clip(file, 30)} or the block in ${clip(block, 20)}.`,
+        `It's in both ${clip(file, 30)} and ${clip(block, 20)}. Run ${BUS_CMD} install again to keep just one.`,
+      ),
+    ],
+    codexSkillSharedTwice: () => [
+      warn("The Codex skill is installed twice, so it loads twice"),
+      next(
+        "Codex shares its skills folder with pi and omp, so it also sees their copy.",
       ),
     ],
     codexNoWakeCheck: () => [
