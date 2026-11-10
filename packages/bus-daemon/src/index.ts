@@ -1781,10 +1781,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       const a = agents.byRef(thread);
       if (!a) continue;
       a.live = !live;
-      changed = true;
+      if (!live) {
+        // Back: the hub only learns of a revival from an agent_up, and mail waits.
+        announceUp(a);
+        tellOwed(a.ref);
+      } else changed = true;
       log(`codex thread ${thread} ${live ? "not live" : "live again"}`);
     }
     if (changed) announceSessions();
+    // persistCodex keeps only live threads: a restart during a drop still needs a hello.
     persistCodex();
   };
 
