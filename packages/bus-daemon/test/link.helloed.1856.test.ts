@@ -45,7 +45,7 @@ describe("helloed link_proof (#1856)", () => {
     expect(b.welcome.caps ?? []).not.toContain(ADAPTER_CAPS.link);
   });
 
-  it("binds the hash to the connection's own agent, and a new one replaces it", async () => {
+  it("binds the hash to the connection's own agent, and a new one is added (#1984)", async () => {
     const h = await start();
     const a = await h.adapter("A", listed);
     await h.adapter("B", listed);
