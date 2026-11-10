@@ -2,6 +2,7 @@ import { Button } from "@oa/ui/shadcn";
 import { MessageSquare, X } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { TXT } from "../ui";
+import { ActionRowOutlet, ActionRowProvider } from "./actionRow";
 import { CommentsBody } from "./CommentsBody";
 import { useCommentsApi } from "./useComments";
 
@@ -96,7 +97,7 @@ export function CommentsColumn({ textFormat }: { textFormat: boolean }) {
   return (
     <aside
       aria-label="Comments"
-      className="flex w-[340px] flex-none flex-col overflow-y-auto border-0 border-l border-l-[var(--oa-border)] bg-card"
+      className="flex w-[340px] min-[960px]:w-[var(--oa-comments-w)] flex-none flex-col overflow-y-auto border-0 border-l border-l-[var(--oa-border)] bg-card"
     >
       <CommentsBody textFormat={textFormat} />
     </aside>
@@ -108,11 +109,14 @@ export function CommentsDialog({
   textFormat,
   onClose,
   pinCard = null,
+  pinReplies = false,
 }: {
   textFormat: boolean;
   onClose: () => void;
   /** The pin whose card is being read: keep the sheet short so its pin stays in view (#1657). */
   pinCard?: string | null;
+  /** The open pin has replies: the short sheet takes the half height (#1783). */
+  pinReplies?: boolean;
 }) {
   const ref = useRef<HTMLElement>(null);
   const [full, setFull] = useState(false);
@@ -123,6 +127,10 @@ export function CommentsDialog({
     if (pinCard) setFull(false);
   }, [pinCard]);
   const height = full ? "full" : pinCard ? "pin" : "half";
+  // #1711: only the phone sheet's short height floats the row; the wide
+  // overlay keeps it in the card, like the column and the panel.
+  const onPhone = useSyncExternalStore(phone.subscribe, phone.get, () => false);
+  const floating = onPhone && height === "pin";
   const drag = useRef<number | null>(null);
   const dragged = useRef(false);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
@@ -144,7 +152,8 @@ export function CommentsDialog({
         role="dialog"
         aria-label="Comments"
         data-sheet-height={height}
-        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
+        data-pin-replies={height === "pin" && pinReplies ? "" : undefined}
+        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] max-[600px]:data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
         onFocusCapture={(e) => {
           // The phone keyboard would cover a half-height sheet.
           const t = e.target as HTMLElement;
@@ -198,9 +207,19 @@ export function CommentsDialog({
             <X aria-hidden="true" />
           </Button>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-          <CommentsBody textFormat={textFormat} />
-        </div>
+        <ActionRowProvider>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            <CommentsBody
+              textFormat={textFormat}
+              grow={!floating}
+              short={floating}
+            />
+            {/* #1711: in the short pin sheet the active card's action row
+                floats here, at the bottom of the sheet, for a long thread
+                too, and clear of a phone's home indicator. */}
+            {floating && <ActionRowOutlet />}
+          </div>
+        </ActionRowProvider>
       </section>
     </>
   );

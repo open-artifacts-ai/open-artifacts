@@ -16,6 +16,16 @@ export type Command = (
   | { cmd: "login"; hub?: string; noOpen: boolean }
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
+  | { cmd: "mcp-proof"; tokenFile?: string }
+  | {
+      cmd: "mcp-proxy";
+      hub: string;
+      tokenFile?: string;
+      /** The environment variable that holds the token (Codex passes it by name). */
+      tokenEnv?: string;
+      /** Which harness runs the proxy; OpenCode when absent. */
+      for?: "opencode" | "codex";
+    }
   | { cmd: "status" }
   | { cmd: "logs" }
   | { cmd: "doctor" }
@@ -27,6 +37,7 @@ export type Command = (
   | { cmd: "namespace"; sub: "list" }
   | { cmd: "link"; sub: "add" | "rm"; dirs: [string, string] }
   | { cmd: "link"; sub: "list" }
+  | { cmd: "leads"; sub: "check"; name?: string }
   | { cmd: "version" }
 ) & {
   noColor: boolean;
@@ -39,6 +50,8 @@ const COMMANDS = new Set([
   "login",
   "daemon",
   "mcp",
+  "mcp-proof",
+  "mcp-proxy",
   "status",
   "logs",
   "doctor",
@@ -47,11 +60,13 @@ const COMMANDS = new Set([
   "namespace",
   "link",
   "unlink",
+  "leads",
   "version",
 ]);
 const HARNESSES = ["claude", "opencode", "codex", "pi"];
 const GLOBAL_USAGE = `usage: ${BUS_CMD} global <add|rm> <dir>, or global list`;
 const LINK_USAGE = `usage: ${BUS_CMD} link <dir> <dir>, ${BUS_CMD} unlink <dir> <dir>, or link list`;
+const LEADS_USAGE = `usage: ${BUS_CMD} leads check [name]`;
 const NAMESPACE_USAGE = `usage: ${BUS_CMD} namespace approve [dir], namespace revoke <dir>, or namespace list`;
 /** Flags every command takes. */
 const COMMON = new Set(["no-color", "version", "home"]);
@@ -71,6 +86,8 @@ const FLAGS: Record<string, string[]> = {
   login: ["instance", "no-open"],
   daemon: ["instance"],
   uninstall: ["purge"],
+  "mcp-proof": ["token-file"],
+  "mcp-proxy": ["instance", "token-file", "token-env", "for"],
   namespace: ["yes"],
 };
 
@@ -85,6 +102,9 @@ export function parse(argv: string[]): Command {
     options: {
       instance: { type: "string" },
       home: { type: "string" },
+      "token-file": { type: "string" },
+      "token-env": { type: "string" },
+      for: { type: "string" },
       "no-open": { type: "boolean", default: false },
       yes: { type: "boolean", short: "y", default: false },
       check: { type: "boolean", default: false },
@@ -101,6 +121,7 @@ export function parse(argv: string[]): Command {
   const [head, ...rest] = positionals;
   const cmd = head ?? "install";
   if (!COMMANDS.has(cmd)) throw new Error(`unknown command: ${cmd}`);
+  const tokenFile = values["token-file"];
   const takes =
     cmd === "mcp" ? 1 : cmd === "global" ? (rest[0] === "list" ? 1 : 2) : 0;
   if (cmd === "mcp" && rest.length === 0)
@@ -115,6 +136,11 @@ export function parse(argv: string[]): Command {
     if (rest[max] !== undefined)
       throw new Error(`unexpected argument: ${rest[max]}`);
   }
+  if (cmd === "leads") {
+    if (rest[0] !== "check") throw new Error(LEADS_USAGE);
+    if (rest[2] !== undefined)
+      throw new Error(`unexpected argument: ${rest[2]}`);
+  }
   if (cmd === "link" || cmd === "unlink") {
     const n = cmd === "link" && rest[0] === "list" ? 1 : 2;
     if (rest.length < n) throw new Error(LINK_USAGE);
@@ -122,7 +148,7 @@ export function parse(argv: string[]): Command {
       throw new Error(`unexpected argument: ${rest[n]}`);
   }
   const extra =
-    cmd === "namespace" || cmd === "link" || cmd === "unlink"
+    cmd === "namespace" || cmd === "link" || cmd === "unlink" || cmd === "leads"
       ? undefined
       : rest[takes];
   if (extra !== undefined) throw new Error(`unexpected argument: ${extra}`);
@@ -139,13 +165,38 @@ export function parse(argv: string[]): Command {
   const home = values.home;
   if (values.version)
     return { cmd: "version", noColor, ...(home ? { home } : {}) };
-  const parsed = route(cmd, values, rest);
+  if (cmd === "mcp-proxy" && !values.instance)
+    throw new Error(
+      `usage: ${BUS_CMD} mcp-proxy --instance <url> [--for codex] [--token-file <path> | --token-env <name>]`,
+    );
+  if (cmd === "mcp-proxy") {
+    const f = values.for;
+    if (f !== undefined && f !== "opencode" && f !== "codex")
+      throw new Error("--for takes opencode or codex");
+    if (values["token-env"] !== undefined && f !== "codex")
+      throw new Error("--token-env needs --for codex");
+    if (values["token-env"] !== undefined && tokenFile)
+      throw new Error("give --token-file or --token-env, not both");
+  }
+  const parsed =
+    cmd === "mcp-proof"
+      ? { cmd, ...(tokenFile ? { tokenFile } : {}) }
+      : cmd === "mcp-proxy"
+        ? {
+            cmd,
+            hub: values.instance as string,
+            ...(tokenFile ? { tokenFile } : {}),
+            ...(values["token-env"] ? { tokenEnv: values["token-env"] } : {}),
+            ...(values.for ? { for: values.for as "opencode" | "codex" } : {}),
+          }
+        : route(cmd, values, rest);
   return { ...parsed, noColor, ...(home ? { home } : {}) } as Command;
 }
 
 type Values = {
   instance?: string;
   home?: string;
+  "token-file"?: string;
   "no-open": boolean;
   yes: boolean;
   check: boolean;
@@ -184,6 +235,10 @@ function route(cmd: string, values: Values, positionals: string[]) {
       if (sub === "approve")
         return { cmd, sub, dir: dir ?? ".", yes: values.yes };
       throw new Error(NAMESPACE_USAGE);
+    }
+    case "leads": {
+      const name = positionals[1];
+      return { cmd, sub: "check" as const, ...(name ? { name } : {}) };
     }
     case "link":
     case "unlink": {

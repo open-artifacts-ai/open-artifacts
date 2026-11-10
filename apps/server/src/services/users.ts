@@ -16,7 +16,7 @@ import { getDb } from "../db/client.js";
 import { shares, users } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
-import { publicName } from "./agent-display.js";
+import { publicName, readsAsAgent } from "./agent-display.js";
 import { signInAuditByEmail } from "./audit.js";
 
 type UserRow = typeof users.$inferSelect;
@@ -36,6 +36,15 @@ export function effectiveName(u: NameFields): string {
 }
 
 /**
+ * effectiveName for anyone but the user themselves: a name that reads as an
+ * agent ("X's agent", set or from SSO, #1894) falls back to the email.
+ */
+export function shownEffectiveName(u: NameFields): string {
+  const n = effectiveName(u);
+  return readsAsAgent(n) ? u.email : n;
+}
+
+/**
  * A UserRef for `caller`: anonymous callers get no email, and so no email
  * fallback for the name either (null when the user has no real name). Their
  * name also passes publicName (#851's rule, #1107): a stored name or display
@@ -46,7 +55,7 @@ export function toUserRef(
   signedIn: boolean,
 ): UserRef {
   return signedIn
-    ? { id: u.id, email: u.email, name: effectiveName(u) }
+    ? { id: u.id, email: u.email, name: shownEffectiveName(u) }
     : {
         id: u.id,
         email: null,
@@ -64,7 +73,7 @@ export function toMember(
   return {
     id: r.id,
     email,
-    name: effectiveName({ ...r, email }),
+    name: shownEffectiveName({ ...r, email }),
     role: r.role as Role,
     lastSeenAt:
       r.lastSeenAt == null ? null : new Date(r.lastSeenAt).toISOString(),
@@ -403,14 +412,17 @@ export type Profile = {
   displayName: string | null;
   suggestedName: string | null;
   needsDisplayName: boolean;
+  /** Email me about comments (#1467); on unless turned off. */
+  commentEmail: boolean;
 };
 
-function toProfile(r: NameFields): Profile {
+function toProfile(r: NameFields & { commentEmail: number }): Profile {
   const suggestedName = idpName(r.name, r.email);
   return {
     displayName: r.displayName,
     suggestedName,
     needsDisplayName: !r.displayName && !suggestedName,
+    commentEmail: r.commentEmail !== 0,
   };
 }
 
@@ -422,6 +434,7 @@ export async function getProfile(env: Env, id: string): Promise<Profile> {
         email: users.email,
         name: users.name,
         displayName: users.displayName,
+        commentEmail: users.commentEmail,
       })
       .from(users)
       .where(eq(users.id, id))
@@ -431,15 +444,25 @@ export async function getProfile(env: Env, id: string): Promise<Profile> {
   return toProfile(row);
 }
 
-/** Sets the user's chosen name (validated by MePatchSchema); sign-in never changes it. */
+/**
+ * Sets the user's chosen name and/or comment-email flag (validated by
+ * MePatchSchema, at least one); sign-in never changes the name.
+ */
 export async function setDisplayName(
   env: Env,
   id: string,
-  displayName: string,
+  patch: { displayName?: string; commentEmail?: boolean },
 ): Promise<{ member: Member; profile: Profile }> {
   const [row] = await getDb(env)
     .update(users)
-    .set({ displayName })
+    .set({
+      ...(patch.displayName !== undefined
+        ? { displayName: patch.displayName }
+        : {}),
+      ...(patch.commentEmail !== undefined
+        ? { commentEmail: patch.commentEmail ? 1 : 0 }
+        : {}),
+    })
     .where(eq(users.id, id))
     .returning();
   if (!row) throw new Error("user not found");

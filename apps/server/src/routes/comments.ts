@@ -9,8 +9,20 @@ import {
 import type { Context } from "hono";
 import { z } from "zod";
 import type { ArtifactRow } from "../auth/authz.js";
-import { authorize, caller, canCtx } from "../auth/authz.js";
-import { can, type PolicyAction } from "../auth/policy.js";
+import {
+  authorize,
+  caller,
+  callerOf,
+  canCtx,
+  capOfCaller,
+  interactiveSession,
+} from "../auth/authz.js";
+import {
+  can,
+  capsReads,
+  isGuestRole,
+  type PolicyAction,
+} from "../auth/policy.js";
 import { readCapped } from "../http/body.js";
 import { isEmbedRequest } from "../http/embed.js";
 import { ApiError } from "../http/errors.js";
@@ -67,11 +79,11 @@ async function jsonOf(c: Context<AppEnv>): Promise<unknown> {
   }
 }
 
-/** REST attribution: the PAT label when authenticated by token. */
+/** REST attribution: a token is an agent, named by its label (a blank one reads "Agent"). */
 const agentOf = (c: Context<AppEnv>): AgentAttr | null =>
-  c.var.tokenId && c.var.tokenLabel
+  c.var.tokenId
     ? {
-        name: c.var.tokenLabel,
+        name: c.var.tokenLabel ?? "",
         version: null,
         via: { kind: "token", id: c.var.tokenId },
       }
@@ -106,24 +118,37 @@ async function identity(
   const user = c.var.user;
   if (user)
     return {
-      who: { kind: "user", id: user.id, agent: agentOf(c) },
-      viewer: { userId: user.id, short: null, moderator },
+      who: {
+        kind: "user",
+        id: user.id,
+        agent: agentOf(c),
+        // From the credential kind: a browser session only (#1797). Never
+        // from the body, nor from a missing agent (a PAT may carry no label).
+        typed: interactiveSession(c),
+      },
+      viewer: {
+        userId: user.id,
+        short: null,
+        moderator,
+        guest: isGuestRole(user.role),
+        capped: capsReads(capOfCaller(callerOf(user))),
+      },
       issued: null,
     };
   const token = c.req.header(ANON_ID_HEADER);
   if (!mint) {
-    // Reads, edits, deletes and status changes: who the token says, an
-    // expired one included; never a new token.
+    // Reads, edits, deletes and status changes: who a current token says; an
+    // expired or v1 one says nobody. Never a new token.
     const short = await readAnonId(c.env, artifactId, token);
     return {
       who: null,
-      viewer: { userId: null, short, moderator },
+      viewer: { userId: null, short, moderator, guest: true },
       issued: null,
     };
   }
   const anon = await resolveAnonId(c.env, artifactId, token, true);
   if (!anon) throw new Error("anonId not minted");
-  const viewer = { userId: null, short: anon.short, moderator };
+  const viewer = { userId: null, short: anon.short, moderator, guest: true };
   // The per-IP key the DO limits by (10 a minute): an IPv6 address by its /64.
   const key = ipKey(c.req.header("cf-connecting-ip") ?? "");
   if (!key)
@@ -206,6 +231,12 @@ export function mountComments(app: AppType): void {
     const raw = ReplyBodySchema.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
     const moderator = modOf(cw, level, artifact);
+    // toAsker stands alone (400), before the owner-and-editor check on mentions.
+    if (raw.data.toAsker && (raw.data.mentions?.length ?? 0) > 0)
+      throw new ApiError(
+        "bad_request",
+        "toAsker cannot be combined with mentions",
+      );
     mayTarget(raw.data, moderator);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
     if (!who) throw new ApiError("unauthorized", "Sign in to comment");
@@ -213,7 +244,7 @@ export function mountComments(app: AppType): void {
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }
         : who;
-    const { mentions, assign } = raw.data;
+    const { mentions, toAsker } = raw.data;
     const out = await addReply(
       c.env,
       id,
@@ -221,7 +252,7 @@ export function mountComments(app: AppType): void {
       w,
       viewer,
       raw.data.body,
-      { mentions, assign },
+      { mentions, toAsker },
       {
         moderator,
         after: { version: artifact.currentVersion, ctx: execCtx(c) },
@@ -323,12 +354,19 @@ export function mountComments(app: AppType): void {
     return c.json(out);
   });
 
-  // The agents that can be mentioned or assigned: for the owner and editors,
+  // The agents that can be mentioned: for the owner and editors,
   // who may; everyone else sees none (they are other people's agents).
   app.get(AGENTS, async (c) => {
     const { id, who: cw, level, artifact } = await open(c, "comments.read");
     if (!modOf(cw, level, artifact)) return c.json([]);
-    return c.json(await artifactAgents(c.env, id, c.var.user?.id ?? null));
+    return c.json(
+      await artifactAgents(
+        c.env,
+        id,
+        c.var.user?.id ?? null,
+        c.var.user ? isGuestRole(c.var.user.role) : true,
+      ),
+    );
   });
 
   app.delete(COMMENT, async (c) => {
@@ -359,16 +397,10 @@ const execCtx = (
   }
 };
 
-/** 403 forbidden for mentions or an assignment from anyone but the owner and editors. */
-function mayTarget(
-  b: { mentions?: unknown[]; assign?: unknown },
-  moderator: boolean,
-): void {
-  if (((b.mentions?.length ?? 0) > 0 || b.assign !== undefined) && !moderator)
-    throw new ApiError(
-      "forbidden",
-      "Only the owner and editors can mention or assign",
-    );
+/** 403 forbidden for mentions from anyone but the owner and editors. */
+function mayTarget(b: { mentions?: unknown[] }, moderator: boolean): void {
+  if ((b.mentions?.length ?? 0) > 0 && !moderator)
+    throw new ApiError("forbidden", "Only the owner and editors can mention");
 }
 
 /** Whether the caller's level may delete anyone's comment. */

@@ -1,3 +1,4 @@
+import type { SelectionAnchor } from "@oa/shared";
 import {
   type Anchor,
   type BlockHint,
@@ -104,6 +105,16 @@ export function createComments(
   let mode: Mode = "off";
   /** Disposed: nothing may paint or send again (#1473 review). */
   let ended = false;
+  /**
+   * The quote a comment is being written about (#1834), kept painted. No
+   * version: it is a paint hint, not a record (the resolver ignores it).
+   */
+  let draftText: SelectionAnchor | undefined;
+  let draftCache: {
+    text: SelectionAnchor;
+    ver: number;
+    range: Range | null;
+  } | null = null;
   let threads: Thread[] = [];
   let ghost: { x: number; y: number; page?: number } | undefined;
   /** Text index of the body, rebuilt when the text version or the body changes. */
@@ -237,6 +248,21 @@ export function createComments(
     return slots;
   }
 
+  /** The draft quote's range, resolved once per text version. */
+  function draftRange(): Range | null {
+    if (!draftText) return null;
+    if (draftCache?.text === draftText && draftCache.ver === textVer)
+      return draftCache.range;
+    const idx = getIndex();
+    const res = createTextResolver(idx.text)(draftText as TextAnchor);
+    const range =
+      res.state === "exact" || res.state === "partial"
+        ? rangeFromIndex(idx, res.start, res.end)
+        : null;
+    draftCache = { text: draftText, ver: textVer, range };
+    return range;
+  }
+
   const clearPaint = () => {
     painted = [];
     const reg = highlights();
@@ -263,8 +289,14 @@ export function createComments(
     }
     const reg = highlights();
     if (reg && typeof Highlight !== "undefined") {
+      // #1834: the quote being written about takes the active thread's colour,
+      // so choosing Comment highlights it and posting changes nothing.
+      const draft = draftRange();
       reg.set("oa-comment", new Highlight(...normal));
-      reg.set("oa-comment-active", new Highlight(...active));
+      reg.set(
+        "oa-comment-active",
+        new Highlight(...active, ...(draft ? [draft] : [])),
+      );
     }
   }
 
@@ -381,6 +413,9 @@ export function createComments(
     clearTimeout(selTimer);
     selTimer = setTimeout(reportSelection, SELECTION_MS);
   };
+  // Also when the document grew or shrank (an image loaded, content arrived
+  // above): re-measure the pins and re-place the button. showButton only
+  // shows one for a live selection in select mode, as before.
   const onResize = () => schedule(true, true);
   const onScroll = () => schedule(true, false);
 
@@ -454,13 +489,14 @@ export function createComments(
 
   /** Centered under the end of the selection, kept inside the viewport. */
   function place(rect: DOMRect) {
-    if (!btn) return;
+    const s = selection();
+    if (!btn || !s) return;
     const vw = document.documentElement.clientWidth || innerWidth;
     const w = btn.offsetWidth;
-    const x = Math.max(
-      BTN_MARGIN,
-      Math.min(rect.right - w / 2, vw - w - BTN_MARGIN),
-    );
+    const end = nodeAtIndex(getIndex(), s.end - 1)?.parentElement;
+    const edge =
+      end && getComputedStyle(end).direction === "rtl" ? rect.left : rect.right;
+    const x = Math.max(BTN_MARGIN, Math.min(edge - w / 2, vw - w - BTN_MARGIN));
     btn.style.left = `${x + scrollX}px`;
     btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
   }
@@ -472,8 +508,9 @@ export function createComments(
    * shadow root with `:host{all:initial}` and a system-ui font), so what is
    * placed again is the button, from a fresh rect. Later batches and a lazy
    * `@font-face` fire `loadingdone` too, which is why the listener is on the
-   * font set rather than a one-shot `ready`. Other late reflows (images,
-   * layout shift) still need a ResizeObserver: not this fix.
+   * font set rather than a one-shot `ready`. Other late reflows (an image
+   * that loads, content inserted above) change the document's size: a
+   * ResizeObserver on <html> re-measures then.
    */
   function onFontsLoaded() {
     if (mode !== "select" || !btn?.isConnected) return;
@@ -628,13 +665,24 @@ export function createComments(
   // ---- shell messages ----
   const off = bridge.on((m) => {
     if (m.type === "comments.mode") {
+      const was = mode;
       mode = m.mode;
       if (mode !== "select") {
         kept = null;
         clearTimeout(selTimer);
         reportSelection();
+      } else if (was !== "select") {
+        // A selection made before the shell's mode arrived (a fast reader,
+        // or a test) is reported on entering select, not on its next change.
+        // A repeated select is a no-op, so a stale quote's timer isn't reset.
+        clearTimeout(selTimer);
+        reportSelection();
       }
       if (mode === "off") {
+        // No mode, no draft: a quote left behind would paint on the next set
+        // (#1850 review).
+        draftText = undefined;
+        draftCache = null;
         hideButton();
         clearPaint();
         lastReport = "";
@@ -645,6 +693,8 @@ export function createComments(
     } else if (m.type === "comments.set") {
       threads = m.threads;
       ghost = m.ghost;
+      draftText = m.draft;
+      draftCache = null;
       slots = null;
       report(true);
     } else if (m.type === "comments.comment") {
@@ -713,6 +763,13 @@ export function createComments(
     subtree: true,
     characterData: true,
   });
+  // <html>, as for mutations: a replaced body stays observed. Our overlay is
+  // absolutely placed, so moving the button never resizes the document.
+  const sizer =
+    typeof ResizeObserver === "undefined"
+      ? undefined
+      : new ResizeObserver(onResize);
+  sizer?.observe(document.documentElement);
   document.addEventListener("selectionchange", onSelectionChange);
   document.addEventListener("click", onClick, true);
   document.addEventListener("keydown", onKey, true);
@@ -726,6 +783,7 @@ export function createComments(
     off();
     fonts?.removeEventListener?.("loadingdone", onFontsLoaded);
     observer?.disconnect();
+    sizer?.disconnect();
     document.removeEventListener("selectionchange", onSelectionChange);
     document.removeEventListener("click", onClick, true);
     document.removeEventListener("keydown", onKey, true);

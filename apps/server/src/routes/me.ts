@@ -55,7 +55,11 @@ async function toMe(
   const s = toSettings(kv);
   const appUrl = appOrigin(c.env);
   const me: Me = {
-    user,
+    // The user's own name stays raw to them (#1894); others see a fallback.
+    user: {
+      ...user,
+      name: profile.displayName || profile.suggestedName || user.email,
+    },
     instance: {
       name: s.name,
       defaultVisibility: s.defaultVisibility,
@@ -123,6 +127,9 @@ async function toMe(
                 : null,
           }
         : {}),
+      ...(details && plan.hasCustomer !== undefined
+        ? { hasCustomer: plan.hasCustomer }
+        : {}),
       graceUntil:
         details && plan.graceUntil !== null
           ? new Date(plan.graceUntil).toISOString()
@@ -182,12 +189,8 @@ export function mountMe(app: AppType): void {
   // Session (CSRF-guarded by csrf() in createApp) or PAT; guests included.
   app.patch(R.me, async (c) => {
     const user = requireUser(c);
-    const { displayName } = await jsonBody(c, MePatchSchema);
-    const { member, profile } = await setDisplayName(
-      c.env,
-      user.id,
-      displayName,
-    );
+    const patch = await jsonBody(c, MePatchSchema);
+    const { member, profile } = await setDisplayName(c.env, user.id, patch);
     return c.json(await toMe(c, member, profile));
   });
 

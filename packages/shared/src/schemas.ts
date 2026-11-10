@@ -377,8 +377,8 @@ export const ListQuerySchema = z
     cursor: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(100).default(25),
     includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
-    /** #1535: needs_answer = open asks addressed to the caller; waiting_on_agents = work assigned to an agent and not done. */
-    filter: z.enum(["needs_answer", "waiting_on_agents"]).optional(),
+    /** #1535: needs_answer = open asks addressed to the caller. */
+    filter: z.enum(["needs_answer"]).optional(),
     /**
      * Artifacts with any version from this connection (AgentViaSchema). Only
      * the caller's own grant or token matches; any other is an empty page.
@@ -688,6 +688,8 @@ export const MeSchema = z.object({
   suggestedName: z.string().nullable(),
   /** No chosen name and no usable IdP name: ask the user for one. */
   needsDisplayName: z.boolean(),
+  /** Email me about comments (#1467); on unless turned off (PATCH R.me, or the unsubscribe link in a comment email). Optional: older servers omit it (on). */
+  commentEmail: z.boolean().optional(),
   /** Hosted M1: how this request authenticated. */
   auth: MeAuthSchema.optional(),
   /** Hosted M1: the caller's personal space id (equals user.id). */
@@ -720,6 +722,21 @@ const isUnsafeNameChar = (cp: number) =>
   (cp >= 0x2060 && cp <= 0x2069) ||
   cp === 0xfeff;
 
+/** Default-ignorable and filler code points: invisible, so they only disguise a name (#1822). */
+export const NAME_FILLERS =
+  /[\p{Default_Ignorable_Code_Point}\u115F\u1160\u3164\uFFA0]/u;
+
+/** A name that ends in "'s agent" (any apostrophe, case, trailing punctuation): it would read as someone's agent. The server also folds lookalike letters on read. */
+export const namesAnAgent = (s: string): boolean =>
+  /['\u2018\u2019\u02bc\u2032\u00b4`]\s*s\s*agent$/u.test(
+    s
+      .normalize("NFKC")
+      .normalize("NFD")
+      .replace(/\p{M}/gu, "")
+      .toLowerCase()
+      .replace(/[\p{P}\p{S}\s]+$/u, ""),
+  );
+
 /** A user-chosen display name: trimmed, 1–80 characters, no control/bidi/zero-width characters. */
 export const DisplayNameSchema = z
   .string()
@@ -729,9 +746,19 @@ export const DisplayNameSchema = z
   .refine(
     (s) => ![...s].some((ch) => isUnsafeNameChar(ch.codePointAt(0) ?? 0)),
     "Name contains invalid characters",
-  );
+  )
+  .refine((s) => !NAME_FILLERS.test(s), "Name contains invalid characters")
+  .refine((s) => !namesAnAgent(s), "Name must not read as an agent");
 
-export const MePatchSchema = z.strictObject({ displayName: DisplayNameSchema });
+export const MePatchSchema = z
+  .strictObject({
+    displayName: DisplayNameSchema.optional(),
+    commentEmail: z.boolean().optional(),
+  })
+  .refine(
+    (p) => p.displayName !== undefined || p.commentEmail !== undefined,
+    "Send displayName or commentEmail",
+  );
 export type MePatch = z.infer<typeof MePatchSchema>;
 
 export const TokenSchema = z.object({
@@ -876,10 +903,15 @@ export const BusAgentSchema = z.strictObject({
 });
 export type BusAgent = z.infer<typeof BusAgentSchema>;
 
-/** GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then []. */
+/**
+ * GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then [].
+ * `droppedNotices` (#1317): notices for the caller's own bus that found no
+ * agent today (UTC), 0 when none (or from an older server).
+ */
 export const BusAgentsSchema = z.strictObject({
   agents: z.array(BusAgentSchema).max(1000),
   live: z.boolean(),
+  droppedNotices: z.number().int().min(0).default(0),
 });
 export type BusAgents = z.infer<typeof BusAgentsSchema>;
 
@@ -904,6 +936,22 @@ export const SettingsSchema = z.object({
   spaceManagerMappings: z.boolean().optional(),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
+
+/** GET/PUT R.onboarding: the first-run checklist's install-wide state. */
+export const OnboardingSchema = z.strictObject({
+  dismissed: z.boolean(),
+  completed: z.boolean(),
+  /** The caller owns at least one artifact not in the trash (#1832; absent on older servers). */
+  hasArtifacts: z.boolean().optional(),
+});
+export type Onboarding = z.infer<typeof OnboardingSchema>;
+
+/** PUT R.onboarding: a flag only turns on (true), never off. */
+export const OnboardingPatchSchema = z.strictObject({
+  dismissed: z.literal(true).optional(),
+  completed: z.literal(true).optional(),
+});
+export type OnboardingPatch = z.infer<typeof OnboardingPatchSchema>;
 
 export const SettingsPatchSchema = SettingsSchema.partial().strict();
 export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;

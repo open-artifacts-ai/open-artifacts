@@ -20,8 +20,47 @@ import type { ArtifactSummary } from "../schemas.js";
 
 /** The agents the mock lists for every artifact (R.artifactAgents). */
 export const MOCK_AGENTS: ArtifactAgent[] = [
-  { key: "agent:claude-code", name: "Claude Code", online: true },
-  { key: "agent:codex", name: "Codex", online: false },
+  {
+    key: "agent:claude-code",
+    name: "Claude Code",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: "laptop",
+  },
+  {
+    key: "agent:manager-2",
+    name: "OA Manager-2",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: "laptop",
+  },
+  {
+    key: "agent:codex",
+    name: "Codex",
+    online: false,
+    state: "away",
+    lastActiveAt: new Date(Date.now() - 2 * 3600_000).toISOString(),
+    machine: "laptop",
+  },
+  {
+    key: "agent:sam-bot",
+    name: "OA Manager (Sam)",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: null,
+    owner: "Sam",
+  },
+  {
+    key: "agent:manager",
+    name: "OA Manager",
+    online: false,
+    state: "away",
+    lastActiveAt: new Date(Date.now() - 19 * 3600_000).toISOString(),
+    machine: "workstation",
+  },
 ];
 
 type Deps = {
@@ -35,6 +74,8 @@ type Deps = {
   contentHash?: (id: string, version: number) => string | null | undefined;
   /** Also seed an open ask addressed to the caller on "Landing page" (default off: list responses stay byte-identical to the fixtures). */
   seedAsk?: boolean;
+  /** Also seed a thread with a linked agent, an unlinked agent of the same name and a person (#1822). */
+  seedAgents?: boolean;
 };
 
 const iso = () => new Date().toISOString();
@@ -51,12 +92,11 @@ export function createCommentMock({
   rateLimit,
   contentHash,
   seedAsk,
+  seedAgents,
 }: Deps): {
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
   asksForYou: (id: string) => number;
-  /** Work assigned to an agent and not done. */
-  waitingOnAgents: (id: string) => boolean;
 } {
   const threads = new Map<string, CommentThread[]>();
   const mine = (): CommentAuthor => ({
@@ -82,6 +122,7 @@ export function createCommentMock({
     author: by,
     createdAt: iso(),
     editedAt: null,
+    typed: by.kind === "user",
     can: { edit: by.me, delete: by.me || moderator },
   });
   const moderates = (id: string) => {
@@ -138,6 +179,35 @@ export function createCommentMock({
           },
         ]
       : [];
+    const faces: CommentThread[] = [];
+    if (seedAgents) {
+      const agent = (linked: boolean): CommentAuthor => ({
+        kind: "agent",
+        // An unlinked agent is named by its product (server rule).
+        name: linked ? "OA Product" : "Claude Code",
+        for: "Leo Urbina",
+        linked,
+        ...(linked
+          ? { product: "Claude Code", animal: { id: "fox", color: 2 } }
+          : {}),
+        me: false,
+      });
+      const f = [
+        comment("Can the pricing section be shorter?", other, m),
+        comment("Shortened to three sentences.", agent(true)),
+        comment("Also fixed the footer typo.", agent(false)),
+      ];
+      faces.push({
+        id: newId(),
+        anchor: { kind: "note" },
+        version: 1,
+        status: "open",
+        resolvedBy: null,
+        resolvedAt: null,
+        createdAt: f[0]?.createdAt ?? iso(),
+        comments: f,
+      });
+    }
     return [
       {
         id: newId(),
@@ -166,6 +236,7 @@ export function createCommentMock({
         comments: [c],
       },
       ...asked,
+      ...faces,
     ];
   };
   const list = (id: string) => {
@@ -213,37 +284,27 @@ export function createCommentMock({
     k === me.user.id
       ? mine()
       : agentOf(k)
-        ? { kind: "user", id: k, name: agentOf(k)?.name ?? k, me: false }
+        ? { kind: "agent", id: k, name: agentOf(k)?.name ?? k, me: false }
         : { ...other, id: k };
   /**
-   * Ask, mentions and assign from a parsed body onto a new comment. mentions
-   * and assign are owner and editors only: a Response is the 403.
+   * Ask and mentions from a parsed body onto a new comment. mentions
+   * are owner and editors only: a Response is the 403.
    */
   const decorate = (
     c: Comment,
     j: {
       mentions?: { key: string }[];
-      assign?: { key: string };
     },
     id: string,
   ): Response | null => {
-    if ((j.mentions || j.assign) && !moderates(id))
-      return err(
-        "forbidden",
-        "Only the owner and editors can mention or assign",
-      );
+    if (j.mentions && !moderates(id))
+      return err("forbidden", "Only the owner and editors can mention");
     if (j.mentions)
       c.mentions = j.mentions.map((m) => ({
         key: m.key,
         name: agentOf(m.key)?.name ?? m.key,
         delivery: agentOf(m.key)?.online === false ? "queued" : "delivered",
       }));
-    if (j.assign)
-      c.assigned = {
-        key: j.assign.key,
-        name: agentOf(j.assign.key)?.name ?? j.assign.key,
-        state: agentOf(j.assign.key)?.online === false ? "queued" : "delivered",
-      };
     return null;
   };
   const closeAsks = (t: CommentThread) => {
@@ -276,7 +337,13 @@ export function createCommentMock({
       );
       if (!j.success || !c.ask.options.some((o) => o.id === j.data.optionId))
         return err("bad_request", "Unknown option");
-      c.ask.answer = { optionId: j.data.optionId, by: mine(), at: iso() };
+      c.ask.answer = {
+        optionId: j.data.optionId,
+        by: mine(),
+        at: iso(),
+        typed: true,
+        yes: c.author.me,
+      };
       emit(String(params.id), open(String(params.id)));
       return HttpResponse.json(c);
     }),
@@ -403,7 +470,5 @@ export function createCommentMock({
             (c) => c.ask && !c.ask.answer && c.ask.to.some((a) => a.me),
           ),
       ).length,
-    waitingOnAgents: (id) =>
-      comments(id).some((c) => c.assigned && c.assigned.state !== "done"),
   };
 }

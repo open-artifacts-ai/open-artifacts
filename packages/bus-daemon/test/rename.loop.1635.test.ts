@@ -32,16 +32,24 @@ const write = (
     }),
   );
 
-async function start() {
+async function start(
+  log?: (msg: string) => void,
+  onTick: () => void = () => {},
+) {
   const d = mkdtempSync(join(tmpdir(), "ob-rename-loop-"));
   write(d, 4242, "s-a", "OA Contributions");
   const h = await daemonHarness({
+    ...(log ? { log } : {}),
     claude: {
       sessionsDir: d,
       socketsDir: join(d, "r"),
       syncMs: 20,
       procStart: (pid: number) => `t${pid}`,
-      isRunning: () => true,
+      // Asked once per live file on every sync tick: the tick signal.
+      isRunning: () => {
+        onTick();
+        return true;
+      },
     },
   });
   h.toDaemon({
@@ -90,27 +98,40 @@ describe("a session's unchanged name never loops renames (#1635)", () => {
 
   it("after rate_limited to a rename, no further frames for that ref within the hour", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    const { h, d } = await start();
-    const names = ["A1", "A2", "A3", "A4", "A5", "A6"];
-    for (const n of names) {
-      write(d, 4242, "s-a", n);
-      await settle(100);
-      const last = h.of("rename").at(-1);
-      if (last?.proposed_name === n)
-        h.toDaemon({
-          v: 1,
-          id: last.id as string,
-          type: "error",
-          code: "rate_limited",
-          message: "Too many renames",
-        });
-    }
-    await settle(100);
+    const logs: string[] = [];
+    let ticks = 0;
+    const { h, d } = await start(
+      (m) => logs.push(m),
+      () => ticks++,
+    );
+    const ticksAfter = (n: number) => {
+      const goal = ticks + n;
+      return vi.waitFor(() => expect(ticks).toBeGreaterThanOrEqual(goal));
+    };
+    write(d, 4242, "s-a", "A1");
+    const first = await h.next("rename");
+    expect(first.proposed_name).toBe("A1");
+    h.toDaemon({
+      v: 1,
+      id: first.id as string,
+      type: "error",
+      code: "rate_limited",
+      message: "Too many renames",
+    });
+    // The daemon logs once it has booked the hold: only then do changes follow.
+    await vi.waitFor(() =>
+      expect(logs.some((m) => m.includes("rate_limited"))).toBe(true),
+    );
+    for (const n of ["A2", "A3", "A4", "A5", "A6"]) write(d, 4242, "s-a", n);
+    // Ticks that read the new names run while the hold stands.
+    await ticksAfter(5);
     expect(h.of("rename")).toHaveLength(1);
     // An hour on, the latest name held back goes, with no new change.
     vi.setSystemTime(Date.now() + 61 * 60_000);
     await vi.waitFor(() => expect(h.of("rename")).toHaveLength(2));
     expect(h.of("rename")[1]?.proposed_name).toBe("A6");
+    await ticksAfter(5);
+    expect(h.of("rename")).toHaveLength(2);
   });
 
   it("a suffixed bus name from the hub never repeats a rename across ticks or reconnects", async () => {
@@ -155,6 +176,24 @@ describe("a session's unchanged name never loops renames (#1635)", () => {
       });
       await settle();
     }
+    expect(h.of("rename")).toHaveLength(1);
+  });
+
+  it("a name with refused characters is sent raw once; the hub's cleaned answer is no change (#1480)", async () => {
+    const { h, d } = await start();
+    write(d, 4242, "s-a", "OA Owner (2)");
+    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(1));
+    expect(h.of("rename")[0]?.proposed_name).toBe("OA Owner (2)");
+    h.toDaemon({
+      v: 1,
+      id: h.of("rename")[0]?.id as string,
+      type: "renamed",
+      agent_ref: "s-a",
+      bus_name: "OA Owner 2",
+    });
+    await settle();
+    write(d, 4242, "s-a", "OA Owner (2)");
+    await settle();
     expect(h.of("rename")).toHaveLength(1);
   });
 

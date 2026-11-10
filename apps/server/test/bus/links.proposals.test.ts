@@ -187,6 +187,57 @@ describe("link proposals (#1567)", () => {
     d.close();
   });
 
+  it("if the hub applies the link but the call then fails, the card says it could not confirm, as JSON, never nothing changed", async () => {
+    const { userId, cookie, d, machineToken } = await withBus();
+    const p = await proposed(
+      await propose(machineToken, { action: "link", a: ns("ua"), b: ns("ub") }),
+    );
+    const csrf = csrfOf(await (await get(p.secret, { cookie })).text());
+    // A hub that applies the decision and then times out on the caller.
+    const real = env.BUS_HUB as NonNullable<typeof env.BUS_HUB>;
+    const flaky = {
+      idFromName: (n: string) => real.idFromName(n),
+      get: (id: DurableObjectId) => {
+        const stub = real.get(id) as unknown as Record<string, unknown>;
+        return new Proxy(stub, {
+          get: (_t, k) =>
+            k === "decideLinkProposal"
+              ? async (...a: unknown[]) => {
+                  await (stub[k] as (...x: unknown[]) => unknown)(...a);
+                  throw new Error("bus hub timed out");
+                }
+              : (...a: unknown[]) =>
+                  (stub[k as string] as (...x: unknown[]) => unknown)(...a),
+        });
+      },
+    };
+    const e = Object.create(env, { BUS_HUB: { value: flaky } });
+    // Raw, as the page's script gets it: the harness's `post` unwraps JSON.
+    const r = await browser.postJson(
+      e,
+      BASE,
+      { cookie },
+      {
+        secret: p.secret,
+        csrf,
+        decision: "confirm",
+      },
+    );
+    expect(r.status).toBe(500);
+    expect(r.headers.get("content-type")).toContain("application/json");
+    const { html: card, keep } = (await r.json()) as {
+      html: string;
+      keep: boolean;
+    };
+    // The link stays usable, so a reload says "Already decided".
+    expect(keep).toBe(true);
+    expect(card).toContain("We could not confirm this finished");
+    expect(card).not.toContain("Nothing changed");
+    // The link did apply.
+    expect(await links(userId)).toHaveLength(1);
+    d.close();
+  });
+
   it("rejecting changes nothing and ends the link", async () => {
     const { userId, cookie, d, machineToken } = await withBus();
     const p = await proposed(

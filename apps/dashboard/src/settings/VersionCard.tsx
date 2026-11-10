@@ -1,7 +1,10 @@
 import type { InstanceUpdate } from "@oa/shared";
-import { Badge } from "@oa/ui/shadcn";
+import { Badge, Button } from "@oa/ui/shadcn";
+import { useEffect, useState } from "react";
+import { toast } from "../layout/toast";
 import {
   BreakingNote,
+  COPIED,
   shouldNudge,
   UPGRADE_GUIDE,
   UpgradeActions,
@@ -18,9 +21,66 @@ const DD = "m-0 flex min-w-0 flex-wrap items-center gap-x-[var(--oa-space-2)]";
 const MONO = "font-mono text-[length:var(--oa-text-sm)]";
 const MUTED = "m-0 text-[length:var(--oa-text-sm)] text-[var(--oa-text-muted)]";
 
-/** Settings → Instance: running vs latest release and, when newer, the upgrade prompt. */
-export function VersionCard({ update }: { update: InstanceUpdate }) {
-  const nudge = shouldNudge(update);
+/** The always-on path: shown when there is no nudge. Copy reuses upgradePrompt(). */
+function UpgradeLine() {
+  const host = location.origin;
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(false), 2000);
+    return () => clearTimeout(t);
+  }, [copied]);
+  const copy = () => {
+    const failed = () =>
+      toast({
+        title: "Couldn't copy",
+        description: "Select the prompt and copy it yourself.",
+        tone: "danger",
+      });
+    if (!navigator.clipboard) return failed();
+    navigator.clipboard.writeText(upgradePrompt()).then(() => {
+      setCopied(true);
+    }, failed);
+  };
+  return (
+    <div className="flex flex-wrap items-center gap-x-[var(--oa-space-3)] gap-y-[var(--oa-space-2)]">
+      <p id="oa-upgrade-line" className={MUTED}>
+        To upgrade, tell your agent: Follow{" "}
+        <a
+          className={`${MONO} text-[var(--oa-accent-fg)] underline underline-offset-2`}
+          href={`${host}/upgrade.md`}
+          target="_blank"
+          rel="noopener"
+        >
+          {host}/upgrade.md
+          <span className="sr-only"> (opens in new tab)</span>
+        </a>
+      </p>
+      <Button
+        variant="outline"
+        size="sm"
+        className="text-[length:var(--oa-text-sm)]"
+        aria-describedby="oa-upgrade-line"
+        onClick={copy}
+      >
+        {copied ? "Copied" : "Copy prompt"}
+      </Button>
+      <span role="status" aria-live="polite" className="sr-only">
+        {copied ? COPIED : ""}
+      </span>
+    </div>
+  );
+}
+
+/** Settings → Instance: running vs latest release, the upgrade prompt when newer, else an always-on upgrade line. */
+export function VersionCard({ update }: { update: InstanceUpdate | null }) {
+  if (!update)
+    return (
+      <SettingsCard id="oa-version" title="Version">
+        <UpgradeLine />
+      </SettingsCard>
+    );
+  const nudge: boolean = shouldNudge(update);
   return (
     <SettingsCard id="oa-version" title="Version">
       <dl className={KV}>
@@ -87,6 +147,7 @@ export function VersionCard({ update }: { update: InstanceUpdate }) {
           <UpgradeActions update={update} describedBy="oa-upgrade-help" />
         </div>
       )}
+      {!nudge && !update.custom && <UpgradeLine />}
     </SettingsCard>
   );
 }

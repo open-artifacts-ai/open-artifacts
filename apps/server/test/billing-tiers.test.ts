@@ -473,6 +473,198 @@ describe("free-tier caps: config, off until set", () => {
     expect((await put(e, id, "z")).status).toBe(200);
   });
 
+  it("FREE_DATA_DAILY_WRITES_TOTAL: counts writes across artifacts, refuses past it, restarts on a new UTC day", async () => {
+    await cachePlan(FREE, mid);
+    await env.DB.prepare("delete from data_writes_total").run();
+    const count = async () =>
+      (
+        await env.DB.prepare("select n from data_writes_total").first<{
+          n: number;
+        }>()
+      )?.n ?? null;
+    const e = { ...H, FREE_DATA_DAILY_WRITES_TOTAL: "3" } as Env;
+    const a = ((await (await publish(e)).json()) as { id: string }).id;
+    const b2 = ((await (await publish(e)).json()) as { id: string }).id;
+    expect((await put(e, a, "x")).status).toBe(200);
+    expect((await put(e, b2, "x")).status).toBe(200);
+    expect((await put(e, a, "y")).status).toBe(200);
+    const over = await put(e, b2, "y");
+    expect(over.status).toBe(403);
+    expect(await errOf(over)).toMatchObject({
+      code: "plan_limit",
+      details: { tier: "solo", limit: "data_daily_writes_total", max: 3 },
+    });
+    expect(await count()).toBe(3);
+    // Another UTC day: the count restarts.
+    vi.setSystemTime(mid + DAY);
+    try {
+      expect((await put(e, b2, "y")).status).toBe(200);
+      expect(await count()).toBe(1);
+    } finally {
+      vi.setSystemTime(mid);
+    }
+    // A paid tier: never capped, never counted.
+    await env.DB.prepare("delete from data_writes_total").run();
+    await cachePlan(row({ tier: "team", version: 2 }), mid);
+    for (const d of ["a", "b", "c", "d"])
+      expect((await put(e, a, d)).status).toBe(200);
+    expect(await count()).toBeNull();
+  });
+
+  it("FREE_DATA_DAILY_WRITES_TOTAL: off or invalid counts nothing; a write the per-artifact cap refuses is not counted", async () => {
+    await cachePlan(FREE, mid);
+    await env.DB.prepare("delete from data_writes_total").run();
+    const n = async () =>
+      (
+        await env.DB.prepare(
+          "select coalesce(sum(n), 0) as n from data_writes_total",
+        ).first<{ n: number }>()
+      )?.n;
+    const id = ((await (await publish(H)).json()) as { id: string }).id;
+    for (const v of [undefined, "", "0", "-1", "abc"])
+      expect(
+        (await put({ ...H, FREE_DATA_DAILY_WRITES_TOTAL: v } as Env, id, "a"))
+          .status,
+      ).toBe(200);
+    expect(await n()).toBe(0);
+    const e = {
+      ...H,
+      FREE_DATA_DOCS: "1",
+      FREE_DATA_DAILY_WRITES_TOTAL: "10",
+    } as Env;
+    const id2 = ((await (await publish(e)).json()) as { id: string }).id;
+    expect((await put(e, id2, "a")).status).toBe(200);
+    expect((await put(e, id2, "b")).status).toBe(403);
+    expect(await n()).toBe(1);
+  });
+
+  describe("FREE_DATA_DAILY_WRITES_TOTAL: every write path, and the 80% bound for viewers", () => {
+    const pubArt = async (e: Env) =>
+      (
+        (await (
+          await send(props, R.artifacts, owner.cookie, {
+            method: "POST",
+            e,
+            body: {
+              title: "t",
+              format: "html",
+              content: "<p>x</p>",
+              capabilities: { db: true, viewer: false, storage: true },
+              visibility: "public",
+              dataWriters: "viewers",
+              allowAnonymousWrites: true,
+            },
+          })
+        ).json()) as { id: string }
+      ).id;
+    const total = async () =>
+      (
+        await env.DB.prepare(
+          "select coalesce(sum(n), 0) as n from data_writes_total",
+        ).first<{ n: number }>()
+      )?.n;
+    let ipSeq = 0;
+    const doc = (e: Env, id: string, cookie: string | null, d: string) =>
+      send(props, R.dataDoc(id, "c", d), cookie, {
+        method: "PUT",
+        raw: '{"v":1}',
+        e,
+        headers: cookie ? {} : { "cf-connecting-ip": `198.18.0.${++ipSeq}` },
+      });
+    const store = (e: Env, id: string, cookie: string, method: string) =>
+      send(props, R.storageKey(id, "k"), cookie, {
+        method,
+        raw: method === "PUT" ? '{"value":1}' : undefined,
+        e,
+      });
+    beforeEach(async () => {
+      await cachePlan(FREE, mid);
+      await env.DB.prepare("delete from data_writes_total").run();
+    });
+
+    it("storage set and delete count against the install-wide and per-artifact caps", async () => {
+      const e = {
+        ...H,
+        FREE_DATA_DAILY_WRITES_TOTAL: "100",
+        FREE_DATA_DAILY_WRITES: "3",
+      } as Env;
+      const id = await pubArt(e);
+      expect((await store(e, id, owner.cookie, "PUT")).status).toBe(200);
+      expect((await store(e, id, owner.cookie, "DELETE")).status).toBe(204);
+      expect(await total()).toBe(2);
+      expect((await store(e, id, owner.cookie, "PUT")).status).toBe(200);
+      expect(await total()).toBe(3);
+      // The per-artifact cap (3 today) refuses the next one, and it is not counted.
+      const over = await store(e, id, owner.cookie, "PUT");
+      expect(await errOf(over)).toMatchObject({
+        code: "plan_limit",
+        details: { limit: "data_daily_writes", max: 3 },
+      });
+      expect(await total()).toBe(3);
+    });
+
+    it("the owner's reset counts", async () => {
+      const e = { ...H, FREE_DATA_DAILY_WRITES_TOTAL: "100" } as Env;
+      const id = await pubArt(e);
+      const reset = await send(props, R.dataReset(id), owner.cookie, {
+        method: "PUT",
+        body: { collections: {} },
+        e,
+      });
+      expect(reset.status).toBe(200);
+      expect(await total()).toBe(1);
+    });
+
+    it("the bound for anonymous writers, and storage and reset at the full cap", async () => {
+      const e = { ...H, FREE_DATA_DAILY_WRITES_TOTAL: "5" } as Env;
+      const id = await pubArt(e);
+      for (let i = 0; i < 4; i++)
+        expect((await doc(e, id, owner.cookie, `d${i}`)).status).toBe(200);
+      // An anonymous writer is at its bound (floor(5 * 0.8) = 4): refused.
+      expect(await errOf(await doc(e, id, null, "anon"))).toMatchObject({
+        details: { limit: "data_daily_writes_total", max: 4 },
+      });
+      // The owner's storage write is the fifth.
+      expect((await store(e, id, owner.cookie, "PUT")).status).toBe(200);
+      expect(
+        await errOf(await store(e, id, owner.cookie, "PUT")),
+      ).toMatchObject({
+        details: { limit: "data_daily_writes_total", max: 5 },
+      });
+      // The reset is refused at the full cap too (and counts: see below).
+      const reset = await send(props, R.dataReset(id), owner.cookie, {
+        method: "PUT",
+        body: { collections: {} },
+        e,
+      });
+      expect(await errOf(reset)).toMatchObject({
+        details: { limit: "data_daily_writes_total", max: 5 },
+      });
+    });
+
+    it("anonymous writers are refused at 80%; the owner may write up to 100%", async () => {
+      const e = { ...H, FREE_DATA_DAILY_WRITES_TOTAL: "10" } as Env;
+      const id = await pubArt(e);
+      for (let i = 0; i < 8; i++)
+        expect((await doc(e, id, null, `a${i}`)).status).toBe(200);
+      // 8 of 10: anonymous writers are done.
+      const r = await doc(e, id, null, "late");
+      expect(r.status).toBe(403);
+      expect(await errOf(r)).toMatchObject({
+        code: "plan_limit",
+        details: { tier: "solo", limit: "data_daily_writes_total", max: 8 },
+      });
+      expect(await total()).toBe(8);
+      // The owner still writes the last two, then is refused at the full cap.
+      expect((await doc(e, id, owner.cookie, "o1")).status).toBe(200);
+      expect((await doc(e, id, owner.cookie, "o2")).status).toBe(200);
+      expect(await errOf(await doc(e, id, owner.cookie, "o3"))).toMatchObject({
+        details: { limit: "data_daily_writes_total", max: 10 },
+      });
+      expect(await total()).toBe(10);
+    });
+  });
+
   it("set: stored bytes refuse an upload past the cap, and publishing once it is reached", async () => {
     await cachePlan(FREE, mid);
     const id = ((await (await publish(H)).json()) as { id: string }).id;

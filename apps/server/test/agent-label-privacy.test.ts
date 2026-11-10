@@ -19,6 +19,13 @@ import { connect, tool } from "./mcp-helpers.js";
 const app = createApp();
 const tag = newId().slice(0, 6).toLowerCase();
 const LABEL = `label-9q2x private ${tag}`;
+/**
+ * What the label must never leak. It carries a space on purpose: ids are base58
+ * (`[1-9A-HJ-NP-Za-km-z]`, no 0, O, I or l), so a random id can never contain
+ * this marker and a negative check on it cannot flake. "9q2x" alone could: a
+ * random space id may start with those four characters.
+ */
+const LEAK = "9q2x private";
 const WORD = `zebrafy${tag}`;
 
 type U = {
@@ -164,13 +171,13 @@ describe("a PAT publish: REST", () => {
       expect(r.search.items.find((i) => i.id === pubId)?.lastAgent).toEqual(
         want,
       );
-      expect(JSON.stringify(r)).not.toContain("9q2x");
+      expect(JSON.stringify(r)).not.toContain(LEAK);
     }
   });
 
   it("anonymous readers of the public link never get the label", async () => {
     const r = await restReads(pubId, null);
-    expect(JSON.stringify(r)).not.toContain("9q2x");
+    expect(JSON.stringify(r)).not.toContain(LEAK);
     expect((r.versions as { agent: { name: string } }[])[0]?.agent.name).toBe(
       "Olive Owner's agent",
     );
@@ -218,7 +225,7 @@ describe("a PAT publish: REST", () => {
       };
       expect(ids(r.list)).toEqual([]);
       expect(ids(r.search)).toEqual([]);
-      expect(JSON.stringify(r)).not.toContain("9q2x");
+      expect(JSON.stringify(r)).not.toContain(LEAK);
     }
     const c = await connect(other.pat);
     const results = [
@@ -233,7 +240,7 @@ describe("a PAT publish: REST", () => {
       expect(r.isError).toBeFalsy();
       expect((r.structuredContent as { items: unknown[] }).items).toEqual([]);
     }
-    expect(JSON.stringify(results)).not.toContain("9q2x");
+    expect(JSON.stringify(results)).not.toContain(LEAK);
   });
 
   it("agentVia over MCP (#589): the owner's own token narrows list and search", async () => {
@@ -265,7 +272,7 @@ describe("a PAT publish: REST", () => {
     expect(ids(list)).toEqual([pubId]);
     expect(ids(search)).toEqual([pubId]);
     // The owner's own view: the label, unmasked.
-    expect(JSON.stringify(list)).toContain("9q2x");
+    expect(JSON.stringify(list)).toContain(LEAK);
   });
 
   it('an owner with no real name: "A member\'s agent", and no email in it', async () => {
@@ -275,9 +282,9 @@ describe("a PAT publish: REST", () => {
     };
     expect(r.artifact.lastAgent.name).toBe("A member's agent");
     expect(r.versions[0]?.agent.name).toBe("A member's agent");
-    expect(JSON.stringify(r)).not.toContain("9q2x");
+    expect(JSON.stringify(r)).not.toContain(LEAK);
     const anon = await restReads(namelessId, null);
-    expect(JSON.stringify(anon)).not.toContain("9q2x");
+    expect(JSON.stringify(anon)).not.toContain(LEAK);
     expect(JSON.stringify(anon)).not.toContain(nameless.email);
   });
 
@@ -296,7 +303,7 @@ describe("a PAT publish: REST", () => {
       artifact: { lastAgent: unknown };
       versions: { agent: unknown }[];
     };
-    expect(JSON.stringify(r)).not.toContain("9q2x");
+    expect(JSON.stringify(r)).not.toContain(LEAK);
     const want = { name: "Olive Owner's agent", version: "1.0", masked: true };
     expect(r.artifact.lastAgent).toEqual(want);
     expect(r.versions[0]?.agent).toEqual(want);
@@ -322,7 +329,7 @@ describe("a PAT publish: MCP from another user's agent", () => {
       await tool(client, "search_artifacts", { q: WORD }),
     ];
     for (const r of results) expect(r.isError).toBeFalsy();
-    expect(JSON.stringify(results)).not.toContain("9q2x");
+    expect(JSON.stringify(results)).not.toContain(LEAK);
     const got = results[0]?.structuredContent as {
       artifact: { lastAgent: unknown };
       version: { agent: unknown };
@@ -340,7 +347,7 @@ describe("a PAT publish: MCP from another user's agent", () => {
   it("the owner's own agent still sees the label", async () => {
     const c = await connect(owner.pat);
     const r = await tool(c, "list_versions", { id: pubId });
-    expect(JSON.stringify(r)).toContain("9q2x");
+    expect(JSON.stringify(r)).toContain(LEAK);
     await c.close();
   });
 });
@@ -425,6 +432,6 @@ describe("trash", () => {
       version: null,
       masked: true,
     });
-    expect(JSON.stringify(page)).not.toContain("9q2x");
+    expect(JSON.stringify(page)).not.toContain(LEAK);
   });
 });

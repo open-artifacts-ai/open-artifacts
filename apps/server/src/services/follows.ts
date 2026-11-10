@@ -426,6 +426,22 @@ const droppedStmt = (env: Env, userId: string, n: number, now: number) =>
 const utcDay = (now: number) => new Date(now).toISOString().slice(0, 10);
 const utcHour = (now: number) => new Date(now).toISOString().slice(0, 13);
 
+/**
+ * How many notices for `userId`'s bus were dropped today (UTC), for the
+ * Agents page (#1317). One D1 read, never a hub call; 0 when none, or when
+ * the counter row is from an earlier day.
+ */
+export async function droppedToday(
+  env: Env,
+  userId: string,
+  now = Date.now(),
+): Promise<number> {
+  const r = await stmt(env.DB, "select n, day from counters where key = ?")
+    .bind(`notice:dropped:${userId}`)
+    .first<{ n: number; day: string }>();
+  return r && r.day === utcDay(now) ? r.n : 0;
+}
+
 /** Counts one dropped notice for the recipient's bus (per UTC day) and logs ids only. */
 async function dropped(
   env: Env,
@@ -500,7 +516,7 @@ export async function notifyCommented(
   version: number,
   authorId: string | null,
   now = Date.now(),
-  /** Addresses (`namespace` + NUL + `name`) already told of this comment (a mention, an ask or an assignment). */
+  /** Addresses (`namespace` + NUL + `name`) already told of this comment (a mention or an ask). */
   skip: ReadonlySet<string> = new Set(),
 ): Promise<void> {
   // A guest's comment is not announced.

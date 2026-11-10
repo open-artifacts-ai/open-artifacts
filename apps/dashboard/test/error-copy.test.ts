@@ -121,27 +121,29 @@ it.each([
   [
     "solo_unpaid",
     "Publishing is paused until this instance's Solo plan is paid. Ask your instance owner.",
-    "Your Solo plan is paused. Keep publishing for $1/month or $12/year.",
+    "Your Solo plan is paused. Keep publishing for $1/month or $10/year.",
   ],
+  // Design, Self-serve screens v6, decision 3: one line per reason. The member
+  // lines for lapsed and payment_failed end with what still works (#1844).
   [
     "lapsed",
-    "This instance is read-only until billing is sorted out. Ask your instance owner.",
-    "This instance is read-only until billing is sorted out. Update billing to fix it. Reading and sharing still work. Nothing has been deleted.",
+    "The plan has lapsed, so this instance is read-only. Ask an owner to fix billing. Reading and sharing still work. Nothing has been deleted.",
+    "Your plan has lapsed. This instance is read-only. Manage billing to restart it.",
   ],
   [
     "payment_failed",
-    "This instance is read-only until billing is sorted out. Ask your instance owner.",
-    "This instance is read-only until billing is sorted out. Update billing to fix it. Reading and sharing still work. Nothing has been deleted.",
+    "A payment failed, so this instance is read-only. Ask an owner to update the card. Reading and sharing still work. Nothing has been deleted.",
+    "Payment failed and the grace period has ended. This instance is read-only. Manage billing to update your card.",
   ],
   [
     "suspended",
-    "This instance is suspended. Ask your instance owner.",
-    "This instance is suspended. Email support. Reading still works. Nothing has been deleted.",
+    "This instance is suspended. Reading and sharing still work. Nothing has been deleted. Ask an owner to contact support.",
+    "This instance is suspended. Reading and sharing still work. Nothing has been deleted. Contact support to restore it.",
   ],
   [
     "billing_unreachable",
-    "Team features are read-only while we restore billing. Reading and sharing still work. Nothing has been deleted.",
-    "Team features are read-only while we restore billing. Reading and sharing still work. Nothing has been deleted.",
+    "Editing is paused while we fix a problem on our side. Nothing is wrong with your account. Reading and sharing still work. Nothing has been deleted.",
+    "We can't reach our billing system, so editing is paused. This is on our side and nothing is wrong with your account. We're working on it.",
   ],
   [
     undefined,
@@ -167,12 +169,34 @@ it("plan_required before a trial ever ran offers the trial", () => {
   );
 });
 
+it("plan_required names what was refused, not always Spaces (#1838)", () => {
+  const e = planErr("plan_required", reason("solo"));
+  // An invite: the caller says so (the refusal itself carries no feature).
+  expect(errorCopy(e, "x", { owner: true, refused: "invite" })).toBe(
+    "Inviting people is a team feature. Choose a plan to continue.",
+  );
+  expect(errorCopy(e, "x", { refused: "invite" })).toBe(
+    "Inviting people is a team feature. This instance is on Solo. Ask an owner to choose a plan.",
+  );
+  // Never the trial offer on an invite: the first invite is what starts it.
+  expect(
+    errorCopy(e, "x", { owner: true, trialNeverRan: true, refused: "invite" }),
+  ).not.toMatch(/Spaces|Invite someone/);
+  // Spaces, and a caller that doesn't say, keep the Spaces copy.
+  expect(errorCopy(e, "x", { owner: true, refused: "spaces" })).toBe(
+    "Spaces are a team feature. Choose a plan to continue.",
+  );
+  expect(errorCopy(e, "x", { owner: true })).toBe(
+    "Spaces are a team feature. Choose a plan to continue.",
+  );
+});
+
 it("errorContext gives admins the owner wording and the trial state", () => {
   const me = (role: string, trialEndsAt: string | null) =>
     ({
       user: { role },
       auth: null,
-      instance: { billing: { tier: "solo", trialEndsAt } },
+      instance: { billing: { tier: "solo", status: "active", trialEndsAt } },
     }) as never;
   expect(billingContext(me("admin", null))).toEqual({
     owner: true,
@@ -183,6 +207,63 @@ it("errorContext gives admins the owner wording and the trial state", () => {
     trialNeverRan: false,
   });
   expect(billingContext(me("member", null)).owner).toBe(false);
+});
+
+it("billingContext follows the banner: an admin with the plan cap is an owner (L3)", () => {
+  const me = (role: string, cap: string | null) =>
+    ({
+      user: { role },
+      auth: { method: "google", readOnly: !!cap, cap, expiresAt: null },
+      instance: {
+        billing: { tier: "solo", status: "active", trialEndsAt: null },
+      },
+    }) as never;
+  expect(billingContext(me("admin", "plan")).owner).toBe(true);
+  expect(billingContext(me("owner", null)).owner).toBe(true);
+  expect(billingContext(me("member", "plan")).owner).toBe(false);
+  // The toast then reads as the banner does: an action, not "ask an owner".
+  expect(
+    errorCopy(planErr("plan_read_only", reason("lapsed")), "x", {
+      ...billingContext(me("admin", "plan")),
+    }),
+  ).toBe(
+    "Your plan has lapsed. This instance is read-only. Manage billing to restart it.",
+  );
+});
+
+it("a capped admin is an owner but is never offered the trial (cap rule)", () => {
+  const me = (role: string, cap: string | null) =>
+    ({
+      user: { role },
+      auth: { method: "google", readOnly: !!cap, cap, expiresAt: null },
+      instance: {
+        billing: { tier: "solo", status: "active", trialEndsAt: null },
+      },
+    }) as never;
+  expect(billingContext(me("admin", "plan"))).toEqual({ owner: true });
+  expect(billingContext(me("admin", null))).toEqual({
+    owner: true,
+    trialNeverRan: true,
+  });
+  expect(billingContext(me("owner", null)).trialNeverRan).toBe(true);
+  // So a capped admin's refusal doesn't say "Invite someone".
+  expect(
+    errorCopy(planErr("plan_required", reason("solo")), "x", {
+      ...billingContext(me("admin", "plan")),
+    }),
+  ).toBe("Spaces are a team feature. Choose a plan to continue.");
+});
+
+it("trialNeverRan needs an active plan: past_due, lapsed and suspended Solos aren't offered the trial", () => {
+  const me = (status: string) =>
+    ({
+      user: { role: "owner" },
+      auth: null,
+      instance: { billing: { tier: "solo", status, trialEndsAt: null } },
+    }) as never;
+  expect(billingContext(me("active")).trialNeverRan).toBe(true);
+  for (const status of ["past_due", "lapsed", "suspended"])
+    expect(billingContext(me(status)).trialNeverRan).toBe(false);
 });
 
 it("plan_required", () => {
@@ -199,6 +280,7 @@ it.each([
   ["storage_bytes", "storage"],
   ["data_docs", "live-data documents per artifact"],
   ["data_daily_writes", "live-data writes per day"],
+  ["data_daily_writes_total", "live-data writes per day across all artifacts"],
   ["something_new", "something_new"],
 ])("plan_limit names %s", (limit, noun) => {
   const e = planErr("plan_limit", { tier: "solo", limit, max: 50 });
@@ -220,6 +302,14 @@ it("billing_unavailable", () => {
   expect(
     errorCopy(new ApiClientError("billing_unavailable", "s", 503), "x"),
   ).toBe("Billing isn't reachable right now. Try again in a minute.");
+});
+
+it("no_billing_customer", () => {
+  expect(
+    errorCopy(new ApiClientError("no_billing_customer", "s", 409), "x"),
+  ).toBe(
+    "Open Artifacts set up this plan for you, so there's nothing to pay or manage here.",
+  );
 });
 
 it("space_forbidden under the plan cap says the instance is read-only", () => {

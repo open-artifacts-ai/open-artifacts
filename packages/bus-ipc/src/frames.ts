@@ -5,8 +5,10 @@ import {
   BusNameSchema,
   IsoTimeSchema,
   KindTokenSchema,
+  LinkProofHashSchema,
   MachineLabelSchema,
   MsgIdSchema,
+  REACH_PROPOSAL_MAX,
   ReceiptReasonSchema,
   RefusalReasonSchema,
   StatusLabelSchema,
@@ -82,7 +84,24 @@ export const ADAPTER_CAPS = {
    * daemon without it answers them with a plain "update" error instead.
    */
   follow: "follow",
+  /**
+   * `reach` (#1346): the adapter may send `propose_reach`. The daemon lists
+   * `reach` in `welcome.caps` only for an adapter that listed it. The adapter
+   * tool is offered either way: a daemon without it answers with a plain
+   * "update" error. The request goes to the hub over HTTP, so there is no
+   * hub cap: a hub without the route answers 404.
+   */
+  reach: "reach",
+  /**
+   * `link` (#1856): the adapter may send a hello'd `link_proof` (its root's
+   * proof hash, no pid) and decodes `link_proofed`. The daemon lists `link` in
+   * `welcome.caps` only for an adapter that listed it, and an adapter sends
+   * the frame only to a daemon whose welcome listed it.
+   */
+  link: "link",
 } as const;
+
+export { REACH_PROPOSAL_MAX };
 
 export const Hello = z.object({
   ...base,
@@ -105,6 +124,12 @@ export const Hello = z.object({
     .optional(),
   /** What this adapter can decode (ADAPTER_CAPS); absent means none. */
   caps: z.array(z.string().max(32)).max(16).optional(),
+  /**
+   * #1608: the token the daemon's first welcome for this ref issued. A pi-like
+   * ref stays bound to its first claimant after the link closes; a later hello
+   * proves it is the same adapter by echoing this. Memory only, never logged.
+   */
+  bind_token: z.string().min(16).max(128).optional(),
   /** What the harness told the adapter, re-checked by the daemon. */
   attest: z
     .object({
@@ -238,6 +263,17 @@ export const Following = z.object({
   type: z.literal("following"),
 });
 /**
+ * Ask that the role this agent holds reach more namespaces (#1346). The agent
+ * is the connection's attested one: the frame names no session, role or
+ * address. Answered by `reach_proposed`, or `error`.
+ */
+export const ProposeReach = z.object({
+  ...base,
+  ...optIn,
+  type: z.literal("propose_reach"),
+  namespaces: z.array(WireNamespaceSchema).min(1).max(REACH_PROPOSAL_MAX),
+});
+/**
  * A local CLI asking the daemon how it is (`oa-bus status`, `install`). No
  * hello: the socket is the user's own (0600). `cwd` picks the namespace.
  */
@@ -251,6 +287,35 @@ export const StatusRequest = z.object({
 });
 export type StatusRequest = z.infer<typeof StatusRequest>;
 
+/**
+ * `oa-bus mcp-proof` telling the daemon a Claude process's proof hash (#1822).
+ * No hello, like `status`: the socket is the user's own (0600). `pid` is the
+ * Claude process the helper found; the daemon binds the hash only to a live
+ * Claude record it attested for that pid.
+ */
+export const LinkProofRequest = z.object({
+  ...base,
+  type: z.literal("link_proof"),
+  pid: z.number().int().positive(),
+  hash: LinkProofHashSchema,
+});
+export type LinkProofRequest = z.infer<typeof LinkProofRequest>;
+
+/**
+ * A harness adapter telling the daemon its root's proof hash on its own
+ * hello'd link (#1856, `ADAPTER_CAPS.link`). It names no agent and no pid: the
+ * daemon binds the hash to the agent this connection's hello attested, so a
+ * link cannot speak for any other. Strict, so a frame that tries is refused.
+ */
+export const AdapterLinkProof = z
+  .object({
+    ...base,
+    type: z.literal("link_proof"),
+    hash: LinkProofHashSchema,
+  })
+  .strict();
+export type AdapterLinkProof = z.infer<typeof AdapterLinkProof>;
+
 export const AdapterFrame = z.discriminatedUnion("type", [
   Hello,
   Send,
@@ -263,6 +328,8 @@ export const AdapterFrame = z.discriminatedUnion("type", [
   Follow,
   Unfollow,
   Following,
+  ProposeReach,
+  AdapterLinkProof,
 ]);
 export type AdapterFrame = z.infer<typeof AdapterFrame>;
 
@@ -279,9 +346,14 @@ export const ConfigFile = z.object({
 });
 export type ConfigFile = z.infer<typeof ConfigFile>;
 
+/** Where a namespace came from (#1570): an approved `.oa-bus.json`, the git remote, the git folder's name, or the cwd's. */
+export const NamespaceSource = z.enum(["config", "git", "dir", "cwd"]);
+
 export const AgentInfo = z.object({
   name: z.string(),
   namespace: z.string(),
+  /** `self` only (#1570). */
+  namespace_source: NamespaceSource.optional(),
   kind: KIND_TOKEN,
   /** `state === "live"`; kept for older adapters. */
   live: z.boolean(),
@@ -312,6 +384,8 @@ export const Welcome = z.object({
   global: z.boolean(),
   /** What this daemon accepts (ADAPTER_CAPS), only for an adapter that listed `rename` or `follow`. */
   caps: z.array(z.string().max(32)).max(16).optional(),
+  /** #1608: pi-like kinds only. Echo it in every later hello for this ref. */
+  bind_token: z.string().min(16).max(128).optional(),
 });
 export const Receipt = z.object({
   ...base,
@@ -375,6 +449,14 @@ export const Follows = z.object({
   follows: z.array(FollowEntry),
   ...late,
 });
+/** The reply to `propose_reach`: the one-time link for the member, and when it expires. */
+export const ReachProposed = z.object({
+  ...base,
+  type: z.literal("reach_proposed"),
+  confirm_url: z.string(),
+  expires_at: z.string(),
+  ...late,
+});
 export const Body = z.object({
   ...base,
   type: z.literal("body"),
@@ -426,12 +508,16 @@ export const StatusReply = z.object({
   hub_since: z.number().optional(),
   /** The hub's `server_version` from its last `hello_ok`. Absent before one, and from older daemons. */
   hub_version: z.string().optional(),
+  /** This daemon takes `link_proof` (#1822). Older daemons omit it. */
+  link: z.boolean().optional(),
   /** The namespace `cwd` resolves to, when the request named one. */
   namespace: z.string().optional(),
   /** One roster per namespace: this machine's sessions', or only `cwd`'s. */
   namespaces: z.array(
     z.object({
       namespace: z.string(),
+      /** Where it came from (#1570); absent from older daemons. */
+      source: NamespaceSource.optional(),
       agents: z.array(
         z.object({
           name: z.string(),
@@ -464,7 +550,15 @@ export const StatusReply = z.object({
 });
 export type StatusReply = z.infer<typeof StatusReply>;
 
+/** The reply to `link_proof` (either form): whether a live record took the hash. */
+export const LinkProofed = z.object({
+  ...base,
+  type: z.literal("link_proofed"),
+  bound: z.boolean(),
+});
+
 export const DaemonFrame = z.discriminatedUnion("type", [
+  LinkProofed,
   Welcome,
   Receipt,
   Roster,
@@ -478,5 +572,6 @@ export const DaemonFrame = z.discriminatedUnion("type", [
   Followed,
   Unfollowed,
   Follows,
+  ReachProposed,
 ]);
 export type DaemonFrame = z.infer<typeof DaemonFrame>;

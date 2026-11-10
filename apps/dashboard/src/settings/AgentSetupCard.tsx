@@ -51,7 +51,12 @@ export function useNoAgentsPage() {
 
 /** The card's body: one line, the prompt in a read-only field (wrapped,
     so it doesn't truncate on phones), and a Copy button. */
-export function AgentSetupBody() {
+export function AgentSetupBody({
+  intro = "Paste this into any AI agent. It connects itself and asks you to approve it in your browser.",
+}: {
+  /** The line above the prompt; the first-run checklist words it its own way. */
+  intro?: string;
+} = {}) {
   const id = useId();
   const text = setupPrompt();
   const [copied, setCopied] = useState(false);
@@ -75,10 +80,7 @@ export function AgentSetupBody() {
   };
   return (
     <div className="grid min-w-0 gap-[var(--oa-space-2)] text-left">
-      <p className={`m-0 ${muted}`}>
-        Paste this into any AI agent. It connects itself and asks you to approve
-        it in your browser.
-      </p>
+      <p className={`m-0 ${muted}`}>{intro}</p>
       <Textarea
         id={id}
         readOnly

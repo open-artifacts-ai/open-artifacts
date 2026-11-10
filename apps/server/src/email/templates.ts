@@ -10,7 +10,7 @@ import {
 } from "@oa/shared";
 import type { SignInProvider } from "../auth/config.js";
 import { escapeHtml } from "../mcp/template.js";
-import { effectiveName } from "../services/users.js";
+import { shownEffectiveName } from "../services/users.js";
 import {
   INVITE_HTML,
   INVITE_TXT,
@@ -18,7 +18,13 @@ import {
   SHARE_TXT,
 } from "./email-templates.js";
 
-export type EmailContent = { subject: string; text: string; html: string };
+export type EmailContent = {
+  subject: string;
+  text: string;
+  html: string;
+  /** Extra message headers (comment emails: List-Unsubscribe, RFC 8058). */
+  headers?: Record<string, string>;
+};
 
 // C0/C1 controls (incl. CR/LF/TAB), line/paragraph separators, bidi controls,
 // zero-width characters and BOM.
@@ -38,7 +44,7 @@ export function oneLine(s: string, max: number): string {
  * never the bare email local part; else the full email address.
  */
 export function senderName(m: { name: string | null; email: string }): string {
-  return effectiveName({
+  return shownEffectiveName({
     displayName: null,
     name: m.name ?? "",
     email: m.email,

@@ -6,6 +6,7 @@ import {
   socketDirProblem,
 } from "@oa/bus-adapter-claude-code";
 import {
+  ADAPTER_CAPS,
   CLIENT_VERSION,
   connectDaemon,
   type DaemonClient,
@@ -51,6 +52,8 @@ export function realConnect(
   env: Record<string, string | undefined> = process.env,
 ): Connect {
   const start = procStart();
+  /** #1608: the daemon's binding token per ref, in memory only; a reconnect echoes it. */
+  const tokens = new Map<string, string>();
   return async (root) => {
     const home = resolve(env.OA_BUS_HOME || join(homedir(), ".oa-bus"));
     const problem = socketDirProblem(home);
@@ -65,17 +68,21 @@ export function realConnect(
       pid: process.pid,
       cwd: root.cwd,
       proposed_name: root.proposedName,
-      caps: ["mailbox", "pending", "follow"],
+      caps: ["mailbox", "pending", "follow", ADAPTER_CAPS.link],
+      ...(tokens.has(root.ref) ? { bind_token: tokens.get(root.ref) } : {}),
       attest: start ? { proc_start: start } : {},
     };
     try {
-      return await connectDaemon({
+      const client = await connectDaemon({
         path: daemonSocketPath(home),
         hello,
         onError: () => {},
         // An `openclaw agent --local` run must exit when its turn ends.
         unref: true,
       });
+      if (client.welcome.bind_token !== undefined)
+        tokens.set(root.ref, client.welcome.bind_token);
+      return client;
     } catch (e) {
       const refused = typeof e === "object" && e !== null && "frame" in e;
       throw new LinkError(e instanceof Error ? e.message : String(e), refused);

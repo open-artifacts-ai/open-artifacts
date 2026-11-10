@@ -533,3 +533,131 @@ describe("C17 review fixes", () => {
     expect(s.lateSince(0)).toEqual([]);
   });
 });
+
+describe("Receipts: a delivered after an expiry (#1760)", () => {
+  const send = (id: string) => ({
+    v: 1 as const,
+    id,
+    type: "send" as const,
+    from_ref: "s1",
+    to_name: "peer",
+    body: "hi",
+  });
+  const start = (file?: string) => {
+    const store = new SentStore(file);
+    const r = new Receipts(store);
+    r.sending(send("f1"), "ns", false);
+    r.receipt({ id: "f1", msg_id: ID, state: "pending" });
+    return { store, r };
+  };
+
+  it("expired, told, then delivered: ends delivered with one correction, no duplicates", () => {
+    const { store, r } = start();
+    r.update({ msg_id: ID, state: "expired" });
+    r.told(ID);
+    expect(r.owed("s1")).toEqual([]);
+    const n = r.update({ msg_id: ID, state: "delivered" });
+    expect(n).toMatchObject({ msgId: ID, state: "corrected" });
+    expect(store.isDelivered(ID)).toBe(true);
+    r.told(ID, true);
+    expect(store.isDelivered(ID)).toBe(true);
+    expect(r.update({ msg_id: ID, state: "delivered" })).toBeUndefined();
+    expect(r.update({ msg_id: ID, state: "expired" })).toBeUndefined();
+    expect(r.owed("s1")).toEqual([]);
+  });
+
+  it("expired and not yet told, then delivered: no notice is owed and no correction is sent", () => {
+    const { store, r } = start();
+    r.update({ msg_id: ID, state: "expired" });
+    expect(r.update({ msg_id: ID, state: "delivered" })).toBeUndefined();
+    expect(store.isDelivered(ID)).toBe(true);
+    expect(r.owed("s1")).toEqual([]);
+  });
+
+  it("a correction still works after a daemon restart", () => {
+    const f = file();
+    const { store, r } = start(f);
+    r.update({ msg_id: ID, state: "expired" });
+    r.told(ID);
+    store.flush();
+    const r2 = new Receipts(new SentStore(f));
+    expect(r2.update({ msg_id: ID, state: "delivered" })).toMatchObject({
+      state: "corrected",
+    });
+  });
+
+  it("#1951: a correction is owed until told: an away sender gets it on return, once", () => {
+    const { r } = start();
+    r.update({ msg_id: ID, state: "expired" });
+    r.told(ID);
+    const n = r.update({ msg_id: ID, state: "delivered" });
+    expect(n).toMatchObject({ state: "corrected" });
+    // The sender is away: nothing told. It returns and is owed the correction.
+    expect(r.owed("s1")).toMatchObject([{ msgId: ID, state: "corrected" }]);
+    expect(r.notice(ID)).toMatchObject({ state: "corrected" });
+    r.told(ID, true);
+    expect(r.owed("s1")).toEqual([]);
+    expect(r.notice(ID)).toBeUndefined();
+  });
+
+  it("#1951: an owed correction survives a restart, and is told once", () => {
+    const f = file();
+    const { store, r } = start(f);
+    r.update({ msg_id: ID, state: "expired" });
+    r.told(ID);
+    r.update({ msg_id: ID, state: "delivered" });
+    store.flush();
+    const store2 = new SentStore(f);
+    const r2 = new Receipts(store2);
+    expect(r2.owed("s1")).toMatchObject([{ msgId: ID, state: "corrected" }]);
+    r2.told(ID, true);
+    store2.flush();
+    expect(new Receipts(new SentStore(f)).owed("s1")).toEqual([]);
+  });
+
+  it("#1951 race: delivered while the Expired notice is in flight queues the correction after it", () => {
+    const { store, r } = start();
+    r.update({ msg_id: ID, state: "expired" });
+    // The Expired notice is being injected (inFlight): delivered lands now.
+    const n = r.update({ msg_id: ID, state: "delivered" }, true);
+    expect(n).toMatchObject({ state: "corrected" });
+    expect(store.isDelivered(ID)).toBe(true);
+    // The Expired injection finishes: that does not settle the correction.
+    r.told(ID);
+    expect(r.owed("s1")).toMatchObject([{ msgId: ID, state: "corrected" }]);
+    // The correction goes next and settles it: exactly one of each.
+    r.told(ID, true);
+    expect(r.owed("s1")).toEqual([]);
+  });
+
+  it("#1951: the in-flight Expired notice failing drops the correction, since the agent saw nothing", () => {
+    const { store, r } = start();
+    r.update({ msg_id: ID, state: "expired" });
+    r.update({ msg_id: ID, state: "delivered" }, true);
+    r.notTold(ID);
+    expect(r.owed("s1")).toEqual([]);
+    expect(r.notice(ID)).toBeUndefined();
+    expect(store.isDelivered(ID)).toBe(true);
+  });
+
+  it("delivered then expired is unchanged: stays delivered, no notice", () => {
+    const { store, r } = start();
+    r.update({ msg_id: ID, state: "delivered" });
+    expect(r.update({ msg_id: ID, state: "expired" })).toBeUndefined();
+    expect(store.isDelivered(ID)).toBe(true);
+    expect(r.owed("s1")).toEqual([]);
+  });
+
+  it("any other final stays final: recipient_closed and refused are not corrected", () => {
+    for (const final of [
+      { state: "expired" as const, reason: "recipient_closed" as const },
+      { state: "refused" as const, reason: "closed" as const },
+    ]) {
+      const { store, r } = start();
+      r.update({ msg_id: ID, ...final });
+      r.told(ID);
+      expect(r.update({ msg_id: ID, state: "delivered" })).toBeUndefined();
+      expect(store.isDelivered(ID)).toBe(false);
+    }
+  });
+});

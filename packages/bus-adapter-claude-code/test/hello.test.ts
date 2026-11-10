@@ -24,6 +24,7 @@ describe("the Claude session's hello", () => {
       "mailbox",
       "pending",
       "follow",
+      "reach",
     ]);
   });
 

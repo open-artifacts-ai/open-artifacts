@@ -296,6 +296,17 @@ describe("the role is the key", () => {
     w.close();
   });
 
+  it("a role renamed in case keeps its grants listed under the new name and applying", async () => {
+    const w = await world();
+    const hub = await hubOf();
+    await holds(w.x, "LEAD", w.hn);
+    const mine = (await hub.listReach()).filter((g) => g.roleNamespace === w.x);
+    expect(mine.length).toBeGreaterThan(0);
+    expect(mine.every((g) => g.roleName === "LEAD")).toBe(true);
+    expect((await send(w.dh, "h", w.bn)).state).toBe("pending");
+    w.close();
+  });
+
   it("a removed role takes its grants with it", async () => {
     const w = await world();
     const hub = await hubOf();
@@ -358,6 +369,18 @@ describe("the reply path by every name", () => {
     expect(r.state).not.toBe("refused");
     // The peer is not reachable the same way.
     expect((await send(w.db, "b", w.pn, w.x)).state).toBe("refused");
+    w.close();
+  });
+
+  it("#1349: answers the role's own name while its holder is away, only if the role reaches the sender", async () => {
+    const w = await world();
+    await holds(w.x, "other", w.pn);
+    w.dh.send({ v: 1, id: `d${++seq}`, type: "agent_down", agent_ref: "h" });
+    await waitUntilAway(w);
+    const r = await send(w.db, "b", "lead", w.x);
+    expect(r).toMatchObject({ state: "pending", queued: "away" });
+    // A role with no reach to Y stays refused, its holder live or away.
+    expect((await send(w.db, "b", "other", w.x)).state).toBe("refused");
     w.close();
   });
 

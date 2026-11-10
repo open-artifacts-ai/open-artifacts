@@ -14,14 +14,31 @@ let memory: string | null = null;
 export const isAnonToken = (v: unknown): v is string =>
   typeof v === "string" && TOKEN_RE.test(v);
 
+/** Mirrors the server's ANON_TOKEN_MAX_AGE_S. */
+const MAX_AGE_S = 30 * 24 * 60 * 60;
+
+/** True for a v2 token whose iat is past the server's max age. */
+const isExpired = (t: string): boolean => {
+  const parts = t.split(".");
+  if (parts.length !== 3) return false;
+  const n = Number.parseInt(parts[1] ?? "", 36);
+  return Number.isFinite(n) && Date.now() / 1000 - n > MAX_AGE_S;
+};
+
+/**
+ * The held token, or null when none or when it has expired: an expired token
+ * counts as missing so a minting write goes through withMintLock and two
+ * concurrent writes don't get two different fresh ids.
+ */
 export function loadAnonToken(): string | null {
+  let t: string | null = memory;
   try {
     const v = localStorage.getItem(ANON_ID_KEY);
-    if (isAnonToken(v)) return v;
+    if (isAnonToken(v)) t = v;
   } catch {
     // Storage blocked: fall back to memory.
   }
-  return memory;
+  return t && !isExpired(t) ? t : null;
 }
 
 export function saveAnonToken(token: string): void {

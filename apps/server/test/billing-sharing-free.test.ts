@@ -30,7 +30,8 @@ const html = { format: "html", content: "<p>x</p>" };
 const base = { trialEndsAt: 1, graceUntil: null, version: 1 };
 const LOCKS: Record<string, BillingRow> = {
   "free (solo)": { ...base, tier: "solo", status: "active" },
-  trial_ended: { ...base, tier: "trial", status: "active" },
+  // No end date: counts as ended (a passed date is Solo, #1756).
+  trial_ended: { ...base, trialEndsAt: null, tier: "trial", status: "active" },
   lapsed: { ...base, tier: "team", status: "lapsed" },
   payment_failed: {
     ...base,

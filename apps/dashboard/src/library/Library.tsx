@@ -30,6 +30,7 @@ import { AppLink } from "./AppLink";
 import { ArtifactCard } from "./ArtifactCard";
 import { ArtifactRow } from "./ArtifactRow";
 import { Filters } from "./Filters";
+import { GetStarted } from "./GetStarted";
 import { LibraryIcon } from "./icons";
 import { ALERT, BAR, Empty, GRID, H1, LIST, PAGE } from "./ui";
 import { uniqueItems, useSentinel } from "./useInfinite";
@@ -153,9 +154,11 @@ export function Library({ scope }: { scope: Scope }) {
     agentVia?: string;
     space?: string;
     view?: View;
-    filter?: "needs_answer" | "waiting_on_agents";
+    filter?: string;
   };
-  // The root route passes unvalidated params through: only a well-formed via.
+  // The root route passes unvalidated params through: a stale filter value is none.
+  const filter = s.filter === "needs_answer" ? s.filter : undefined;
+  // And only a well-formed via.
   const agentVia = AgentViaSchema.safeParse(s.agentVia).success
     ? s.agentVia
     : undefined;
@@ -174,7 +177,7 @@ export function Library({ scope }: { scope: Scope }) {
     agent,
     agentVia,
     space: space?.id,
-    filter: s.filter,
+    filter,
   });
   // A space-scoped 404: the caller's role in it is gone (or the space is), and
   // /me is stale. Refetch /me so it leaves the sidebar; the notice outlives the
@@ -232,7 +235,7 @@ export function Library({ scope }: { scope: Scope }) {
   const frozen = useFrozen();
   const sentinel = useSentinel(q);
 
-  const filtered = Boolean(s.format || agent || agentVia || s.filter);
+  const filtered = Boolean(s.format || agent || agentVia || filter);
   const canPublishHere =
     personal || myRole === "editor" || myRole === "manager";
   const uploadSpace = useUploadSpace(space?.id);
@@ -279,11 +282,18 @@ export function Library({ scope }: { scope: Scope }) {
 
   const results = (
     <>
+      {!filtered && !space && scope === "all" && !showRevoked && (
+        // Your own artifacts only: ones shared with you aren't your first.
+        <GetStarted
+          hasArtifacts={items.some((a) => a.owner.id === meId)}
+          loaded={q.isSuccess}
+        />
+      )}
       <Filters
         format={s.format}
         agent={agent}
         agents={agents}
-        waiting={s.filter}
+        waiting={filter}
         onWaiting={(filter) => set({ filter })}
         via={agentVia === undefined ? undefined : { label: viaName ?? "" }}
         view={view}
@@ -338,13 +348,11 @@ export function Library({ scope }: { scope: Scope }) {
         <Empty
           icon={<LibraryIcon />}
           title={
-            s.filter === "needs_answer"
+            filter === "needs_answer"
               ? "No asks need your answer."
-              : s.filter === "waiting_on_agents"
-                ? "No asks waiting on agents."
-                : filtered
-                  ? "No artifacts match these filters"
-                  : emptyTitle
+              : filtered
+                ? "No artifacts match these filters"
+                : emptyTitle
           }
           description={
             filtered ? (

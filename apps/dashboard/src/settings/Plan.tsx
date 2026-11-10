@@ -21,7 +21,7 @@ import {
   TableRow,
 } from "@oa/ui/shadcn";
 import { useMutation } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
 import { useRedirect } from "../auth/redirect";
@@ -29,6 +29,7 @@ import { useMe } from "../auth/useMe";
 import { Notice } from "../layout/Notice";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { formatDate } from "./date";
 import { INSET, muted, SettingsCard, STACK } from "./ui";
 
 type Buy = Pick<BillingCheckoutInput, "tier" | "interval">;
@@ -42,8 +43,8 @@ const NAME: Record<BillingTier, string> = {
   business: "Business",
 };
 const PRICE: Record<BillingTier, string> = {
-  free: "$1 a month or $12 a year",
-  solo: "$1 a month or $12 a year",
+  free: "$1 a month or $10 a year",
+  solo: "$1 a month or $10 a year",
   trial: "Free for 14 days",
   team: "$10 per creator per month",
   business: "$25 per creator per month",
@@ -60,7 +61,7 @@ const CMP: { row: string; cells: Record<Column, string> }[] = [
   {
     row: "Price",
     cells: {
-      solo: "$1 a month or $12 a year, per instance",
+      solo: "$1 a month or $10 a year, per instance",
       team: "$10 per creator",
       business: "$25 per creator",
     },
@@ -84,15 +85,7 @@ const CMP: { row: string; cells: Record<Column, string> }[] = [
   },
 ];
 
-const date = (iso: string | null) =>
-  iso
-    ? new Date(iso).toLocaleDateString("en", {
-        year: "numeric",
-        month: "short",
-        day: "numeric",
-        timeZone: "UTC",
-      })
-    : null;
+const date = formatDate;
 
 type Status = {
   label: string;
@@ -148,10 +141,11 @@ export const planStatus = (
     };
   if (solo && b.soloTrialEndsAt && Date.parse(b.soloTrialEndsAt) > Date.now())
     return {
-      pill: { label: "Trial", tone: "info" },
+      // Not "Trial": that is the Business trial's word.
+      pill: { label: "Free month", tone: "info" },
       note: {
         tone: "info",
-        text: `Your free month ends ${date(b.soloTrialEndsAt)}. Then $1/month or $12/year.`,
+        text: `Your free month ends ${date(b.soloTrialEndsAt)}. Then $1/month or $10/year.`,
       },
     };
   return { pill: { label: "Active", tone: "ok" } };
@@ -205,6 +199,44 @@ function ScrollFade({ children }: { children: ReactNode }) {
   );
 }
 
+const NAMES: Record<Column, string> = {
+  solo: "Solo",
+  team: "Team",
+  business: "Business",
+};
+
+/** The comparison on a phone: a block per plan, every row in full. */
+function Stacked({ column }: { column: Column }) {
+  return (
+    <div
+      data-testid="compare-stacked"
+      className="grid gap-[var(--oa-space-3)] sm:hidden"
+    >
+      {(["solo", "team", "business"] as const).map((c) => (
+        <section
+          key={c}
+          aria-current={c === column ? "true" : undefined}
+          className={`rounded-[var(--oa-radius-md)] border border-[var(--oa-border)] p-[var(--oa-space-3)] ${
+            c === column ? "bg-[var(--oa-accent-soft)]" : ""
+          }`}
+        >
+          <h3 className="m-0 text-[length:var(--oa-text-base)] font-semibold">
+            {NAMES[c]}
+          </h3>
+          <dl className="m-0 mt-[var(--oa-space-2)] grid grid-cols-[minmax(0,auto)_minmax(0,1fr)] gap-x-[var(--oa-space-3)] gap-y-[var(--oa-space-1)]">
+            {CMP.map((r) => (
+              <Fragment key={r.row}>
+                <dt className={muted}>{r.row}</dt>
+                <dd className="m-0">{r.cells[c]}</dd>
+              </Fragment>
+            ))}
+          </dl>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 export function Plan() {
   useDocumentTitle("Plan and billing");
   const state = useMe();
@@ -241,6 +273,11 @@ export function Plan() {
   // canceled subscription.
   const lapsedPaid = paid && billing.status === "lapsed";
   const busy = go.isPending;
+  // The portal needs a Stripe customer. A provisioned or comped plan has
+  // none (hasCustomer false): no Manage billing, since billing would refuse.
+  // Absent means billing's answer predates the field: keep the button.
+  const portal = (paid && !lapsedPaid) || billing.status === "past_due";
+  const operatorPlan = portal && billing.hasCustomer === false;
   return (
     <div className={STACK}>
       <SettingsCard id="plan-card" title="Plan and billing">
@@ -260,7 +297,7 @@ export function Plan() {
               <dd className="m-0">{billing.creatorsThisMonth}</dd>
             </>
           )}
-          {!ended && (
+          {!ended && !operatorPlan && (
             <>
               <dt className={muted}>Price</dt>
               <dd className="m-0">{PRICE[billing.tier]}</dd>
@@ -268,7 +305,12 @@ export function Plan() {
           )}
         </dl>
         <div className="flex flex-wrap items-center gap-[var(--oa-space-2)]">
-          {(paid && !lapsedPaid) || billing.status === "past_due" ? (
+          {operatorPlan ? (
+            <span className={muted}>
+              Open Artifacts set up this plan for you, so there&apos;s nothing
+              to pay or manage here.
+            </span>
+          ) : portal ? (
             <Button disabled={busy} onClick={() => go.mutate("portal")}>
               Manage billing
             </Button>
@@ -304,7 +346,7 @@ export function Plan() {
                       go.mutate({ tier: "solo", interval: "year" })
                     }
                   >
-                    Pay $12/year
+                    Pay $10/year
                   </Button>
                 </>
               )}
@@ -324,7 +366,7 @@ export function Plan() {
               </Button>
             </>
           )}
-          {paid && !lapsedPaid && (
+          {paid && !lapsedPaid && !operatorPlan && (
             <span className={muted}>
               Invoices and card are in the billing portal.
             </span>
@@ -335,41 +377,50 @@ export function Plan() {
         aria-label="Compare plans"
         className={`relative min-w-0 ${INSET} px-0`}
       >
-        <ScrollFade>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead />
-                {(["solo", "team", "business"] as const).map((c) => (
-                  <TableHead
-                    key={c}
-                    aria-current={c === column ? "true" : undefined}
-                    className={c === column ? "bg-[var(--oa-accent-soft)]" : ""}
-                  >
-                    {c === "solo" ? "Solo" : c === "team" ? "Team" : "Business"}
-                  </TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {CMP.map((r) => (
-                <TableRow key={r.row}>
-                  <TableHead scope="row">{r.row}</TableHead>
+        <div data-testid="compare-table" className="hidden sm:block">
+          <ScrollFade>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead />
                   {(["solo", "team", "business"] as const).map((c) => (
-                    <TableCell
+                    <TableHead
                       key={c}
+                      aria-current={c === column ? "true" : undefined}
                       className={
                         c === column ? "bg-[var(--oa-accent-soft)]" : ""
                       }
                     >
-                      {r.cells[c]}
-                    </TableCell>
+                      {c === "solo"
+                        ? "Solo"
+                        : c === "team"
+                          ? "Team"
+                          : "Business"}
+                    </TableHead>
                   ))}
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </ScrollFade>
+              </TableHeader>
+              <TableBody>
+                {CMP.map((r) => (
+                  <TableRow key={r.row}>
+                    <TableHead scope="row">{r.row}</TableHead>
+                    {(["solo", "team", "business"] as const).map((c) => (
+                      <TableCell
+                        key={c}
+                        className={
+                          c === column ? "bg-[var(--oa-accent-soft)]" : ""
+                        }
+                      >
+                        {r.cells[c]}
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </ScrollFade>
+        </div>
+        <Stacked column={column} />
         <p className={`mt-[var(--oa-space-2)] ${muted}`}>
           Team and Business bill per creator: people who publish or edit live
           data in a month. Viewers are free.

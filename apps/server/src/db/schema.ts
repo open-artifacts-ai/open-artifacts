@@ -89,6 +89,11 @@ export const users = sqliteTable(
      * with no name. Never cleared: an erased row is never restored.
      */
     erasedAt: integer("erased_at"),
+    /**
+     * 0 after the person turned off comment emails (#1467), in the dashboard
+     * or by the unsubscribe link in one. New rows default to on.
+     */
+    commentEmail: integer("comment_email").notNull().default(1),
   },
   () => [check("users_role_check", inList("role", RoleSchema.options))],
 );
@@ -408,6 +413,10 @@ export const versions = sqliteTable(
     // `t:<tokenId>` (NULL: a session, or written before 0012; `r:`: a private
     // label scrubbed when its publisher's row was deleted, SCRUBBED_VIA).
     agentVia: text("agent_via"),
+    // #1968: JSON {identityId, namespace, name, kind} of the bus session the
+    // publishing request proved (#1822), set by the server only. NULL: a web
+    // publish, an unlinked agent, or a row from before 0031. Never in an API payload.
+    agentIdentity: text("agent_identity"),
     createdBy: text("created_by")
       .notNull()
       .references(() => users.id),
@@ -448,6 +457,35 @@ export const shares = sqliteTable(
     primaryKey({ columns: [t.artifactId, t.email] }),
     index("shares_email_idx").on(t.email),
     check("shares_role_check", inList("role", ShareRoleSchema.options)),
+  ],
+);
+
+/**
+ * The open asks of every artifact, for the library (#1623): `asksForYou` and
+ * the needs_answer filter. The artifact's Durable Object stays the source of
+ * truth; the comments service writes this table after each DO write, and a
+ * comments list read repairs it (reconcileAsks). One row per ask and person:
+ * `addressee` is the asked user, or the member whose agent was asked.
+ * `open` is 0 once the ask is answered or its thread resolved.
+ */
+export const artifactAsks = sqliteTable(
+  "artifact_asks",
+  {
+    artifactId: text("artifact_id")
+      .notNull()
+      .references(() => artifacts.id, { onDelete: "cascade" }),
+    threadId: text("thread_id").notNull(),
+    commentId: text("comment_id").notNull(),
+    addressee: text("addressee").notNull(),
+    open: integer("open").notNull(),
+    answered: integer("answered").notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.artifactId, t.commentId, t.addressee] }),
+    index("artifact_asks_thread_idx").on(t.artifactId, t.threadId),
+    index("artifact_asks_open_idx")
+      .on(t.addressee, t.artifactId)
+      .where(sql`${t.open} = 1`),
   ],
 );
 
@@ -711,3 +749,14 @@ export const shareNoticeAgents = sqliteTable(
   },
   (t) => [primaryKey({ columns: [t.userId, t.namespace, t.agentName] })],
 );
+
+/**
+ * FREE_DATA_DAILY_WRITES_TOTAL (billing/caps.ts): the install's live-data
+ * writes in one UTC day. A single row (`id` 1); `day` is the UTC day number
+ * (ms / 86_400_000) its `n` counts, and a write on a later day restarts n.
+ */
+export const dataWritesTotal = sqliteTable("data_writes_total", {
+  id: integer("id").primaryKey(),
+  day: integer("day").notNull(),
+  n: integer("n").notNull(),
+});

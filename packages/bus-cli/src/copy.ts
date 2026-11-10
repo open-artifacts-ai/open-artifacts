@@ -17,7 +17,8 @@ export type HarnessName =
   | "pi"
   | "omp"
   | "codex"
-  | "hermes";
+  | "hermes"
+  | "openclaw";
 export const HARNESS_LABEL: Record<HarnessName, string> = {
   claude: "Claude Code",
   opencode: "OpenCode",
@@ -25,6 +26,7 @@ export const HARNESS_LABEL: Record<HarnessName, string> = {
   omp: "oh-my-pi",
   codex: "Codex",
   hermes: "Hermes",
+  openclaw: "OpenClaw",
 };
 /** The dashboard's labels for AGENT_KINDS. */
 export const KIND_LABEL: Record<AgentKind, string> = {
@@ -48,6 +50,15 @@ export type RosterAgent = StatusFields & {
   machine: string;
   state: "live" | "queued";
 };
+
+const sourceText = (source: "config" | "git" | "dir" | "cwd") =>
+  source === "config"
+    ? "an approved .oa-bus.json"
+    : source === "git"
+      ? "the git remote"
+      : source === "dir"
+        ? "the git folder's name"
+        : "the folder's name";
 
 const len = (s: string) => [...s].length;
 
@@ -230,7 +241,9 @@ export function copy(style: Style) {
         )}`,
       ),
     noHarness: () => [
-      warn("No Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes found"),
+      warn(
+        "No Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw found",
+      ),
       next(`Install one, then run ${BUS_CMD} again.`),
     ],
     restarted: () => done("Restarted the OpenCode service to load the plugin"),
@@ -258,6 +271,31 @@ export function copy(style: Style) {
       next(
         `Run hermes plugins disable oa-bus, or remove oa-bus from plugins.enabled in ${config}.`,
       ),
+    ],
+    // After the configured line, when the OpenClaw plugin was installed and enabled.
+    openclawRestart: () => [
+      next("Run openclaw gateway restart to load the plugin."),
+    ],
+    // After the configured line, when OpenClaw is in Nix mode: plugin commands are off there.
+    openclawNix: () => [
+      warn("OpenClaw is in Nix mode, so oa-bus didn't change it."),
+      next("Add the oa-bus plugin through your Nix setup instead."),
+    ],
+    // After uninstall removed the OpenClaw plugin folder with no openclaw binary to uninstall it.
+    openclawNoCli: () => [
+      warn(
+        "Removed the oa-bus plugin files, but OpenClaw isn't on PATH, so its config may still enable oa-bus.",
+      ),
+      next(
+        "Once openclaw is on PATH again, run openclaw plugins uninstall oa-bus.",
+      ),
+    ],
+    // Doctor, and status when the plugin is installed. Static: nothing in OpenClaw's config is read.
+    openclawDmNote: () => [
+      "OpenClaw: by default (dmScope), everyone who sends it a direct message",
+      "shares one session, and that session is one bus address. If people other",
+      "than you can message it, set a per-peer dmScope and keep dmPolicy on",
+      "pairing or an allowlist.",
     ],
     opencodeNotRunning: () =>
       done("OpenCode service not running; it loads the plugin when it starts"),
@@ -349,6 +387,9 @@ export function copy(style: Style) {
       const lead = `${n} agent${n === 1 ? "" : "s"} in namespace `;
       return `${lead}${p("accent", clip(namespace, len(lead) + 2 + len(meta)))}  ${p("muted", meta)}`;
     },
+    /** #1570: where a namespace came from, under its header. */
+    namespaceSource: (source: "config" | "git" | "dir" | "cwd") =>
+      p("muted", `  namespace from ${sourceText(source)}`),
     rosterRow: (a: RosterAgent) =>
       `  ${cell(a.name, 20, more)}${cell(kindLabel(a.kind), 13, more)}${cell(a.machine, 22, more)}${
         a.state === "live"
@@ -374,8 +415,8 @@ export function copy(style: Style) {
       const lead = "No agents in namespace ";
       return [
         `${lead}${p("accent", clip(namespace, len(lead) + 5))} yet.`,
-        "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex or Hermes in this folder.",
-        "It joins.",
+        "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw",
+        "in this folder. It joins.",
       ];
     },
     // 7. status: messages delivered after send_message stopped waiting.
@@ -577,6 +618,11 @@ export function copy(style: Style) {
       next(p("muted", clip(`It ${why}.`, 3))),
       next(`Remove it, then run ${BUS_CMD} global add <dir> again.`),
     ],
+    /** doctor (#1570): the folder's namespace and where it comes from. */
+    namespaceIs: (
+      namespace: string,
+      source: "config" | "git" | "dir" | "cwd",
+    ) => `Namespace ${namespace} (from ${sourceText(source)})`,
     /** A refused or noted config file (#1527): the reason, then the exact fix. Paths arrive already shortened. */
     configFile: (f: {
       file: string;
@@ -626,6 +672,77 @@ export function copy(style: Style) {
     ],
     // Codex's checks, after its wiring line (C26e).
     codexWakes: (bin: string) => done(`Codex wakes with ${clip(bin, 20)}`),
+    // The Claude Code output style (#1970): turned on, or added beside the person's own choice.
+    // Product's sentence, wrapped to the 80 columns every transcript line keeps.
+    outputStyleOn: (where: string) => [
+      done("Turned on the Artifacts Teammate output style"),
+      next(`(${clip(where, 5)}).`),
+      next("Restart Claude Code sessions to use it."),
+    ],
+    // `style` is undefined when the choice is not a style name (null, a number, "default").
+    outputStyleKept: (style?: string) =>
+      done(
+        `Added the Artifacts Teammate output style. You're on ${style ?? "the default style"}; switch with /output-style.`,
+      ),
+    outputStyleDoctor: (where: string, on: boolean) =>
+      done(
+        `Artifacts Teammate output style installed in ${where} (${on ? "on" : "installed, not selected"})`,
+      ),
+    // #1626: the `oa-bus` shim on PATH.
+    shimInstalled: (where: string) =>
+      done(`Installed the oa-bus command: ${clip(where, 30)}`),
+    shimNotOnPath: (dir: string, hint: string) => [
+      warn(
+        `${clip(dir, 30)} is not on your PATH, so \`oa-bus\` won't run yet.`,
+      ),
+      next(`To fix it, add this line to your shell profile: ${hint}`),
+    ],
+    shimForeign: (where: string) => [
+      warn(`Left ${clip(where, 30)} alone: it isn't from Open Artifacts.`),
+      next(
+        `Typing \`oa-bus\` runs that file, not this install. Remove it, or use \`${BUS_CMD}\`.`,
+      ),
+    ],
+    shimOtherHome: (where: string, home: string) => [
+      warn(
+        `Left ${clip(where, 30)} alone: it belongs to the install in ${clip(home, 30)}.`,
+      ),
+      next(
+        `Typing \`oa-bus\` runs that install, not this one. Use \`${BUS_CMD}\` for this one.`,
+      ),
+    ],
+    shimRemoved: (where: string) =>
+      done(`Removed the oa-bus command: ${clip(where, 30)}`),
+    shimDoctorOk: (where: string) =>
+      done(`oa-bus on your PATH runs this install (${clip(where, 30)})`),
+    shimDoctorOffPath: (where: string, hint: string) => [
+      warn(`oa-bus is not on your PATH (the command is in ${clip(where, 30)})`),
+      next(`To fix it, add this line to your shell profile: ${hint}`),
+    ],
+    shimDoctorOther: (where: string) => [
+      warn(`oa-bus on your PATH is not this install's (${clip(where, 30)})`),
+      next(
+        `Remove it, or put this install's first. Re-run ${BUS_CMD} install to refresh ours.`,
+      ),
+    ],
+    shimDoctorMissing: () => [
+      warn("oa-bus is not on your PATH"),
+      next(`Run ${BUS_CMD} install to add it.`),
+    ],
+    codexSkill: (where: string) =>
+      done(`Codex skill installed in ${clip(where, 20)}`),
+    codexSkillTwice: (file: string, block: string) => [
+      warn("The Codex skill is installed twice, so it loads twice"),
+      next(
+        `It's in both ${clip(file, 30)} and ${clip(block, 20)}. Run ${BUS_CMD} install again to keep just one.`,
+      ),
+    ],
+    codexSkillSharedTwice: () => [
+      warn("The Codex skill is installed twice, so it loads twice"),
+      next(
+        "Codex shares its skills folder with pi and omp, so it also sees their copy.",
+      ),
+    ],
     codexNoWakeCheck: () => [
       warn("No codex binary found, so idle Codex threads are not woken"),
       next(`Install the Codex CLI, then run ${BUS_CMD} install again.`),
@@ -661,6 +778,24 @@ export function copy(style: Style) {
         next(`Run opencode upgrade, then ${BUS_CMD} install again.`),
       ];
     },
+    // doctor: OpenCode's Open Artifacts entry runs oa-bus, and oa-bus is gone (#1856).
+    opencodeProxyMissing: (name: string, program: string) => [
+      fail(
+        `OpenCode's ${name} entry runs ${clip(program, 60)}, which is missing.`,
+      ),
+      next(
+        `Run ${BUS_CMD} install again, or ${BUS_CMD} uninstall to put your own entry back.`,
+      ),
+    ],
+    // doctor: Codex's Open Artifacts entry runs oa-bus, and oa-bus is gone (#1856).
+    codexProxyMissing: (name: string, program: string) => [
+      fail(
+        `Codex's ${name} entry runs ${clip(program, 60)}, which is missing.`,
+      ),
+      next(
+        `Run ${BUS_CMD} install again, or ${BUS_CMD} uninstall to put your own entry back.`,
+      ),
+    ],
     opencodeUnknown: () => [
       warn("OpenCode version unknown"),
       next(
@@ -745,6 +880,37 @@ export function copy(style: Style) {
       ...dirs.map((d) => `  ${clip(d, 2)}`),
     ],
 
+    // 13. lead templates (#1328). DRAFT: not in the transcript yet.
+    leadsNoHub: () => [
+      fail("This machine has no instance to check briefs against."),
+      next(`Run ${BUS_CMD} install first.`),
+    ],
+    leadsFolderUnusable: (dir: string, why: string) => [
+      fail(`${clip(dir, 40)} can't be used: ${why}.`),
+    ],
+    leadsNone: (dir: string) => [
+      "No lead templates.",
+      p("muted", clip(`Put <name>.json files in ${dir}.`, 3)),
+    ],
+    leadsNoSuch: (name: string, dir: string) => [
+      fail(`No template named ${clip(name, 30)} in ${clip(dir, 40)}.`),
+    ],
+    leadsOk: (t: {
+      name: string;
+      harness: string;
+      role: string;
+      cap: string;
+      hash: string;
+    }) =>
+      done(
+        `${clip(t.name, 40)}  ${t.harness}, role ${clip(t.role, 30)}, cap ${t.cap}`,
+        t.hash.slice(0, 12),
+      ),
+    leadsRefused: (name: string, why: string) =>
+      fail(`${clip(name, 24)}: ${clip(why, 30)}`),
+    leadsSummary: (ok: number, refused: number) =>
+      `${ok} usable, ${refused} refused. Nothing was started or changed.`,
+
     // 12. namespace approvals (#1525)
     nsUnusable: (path: string, why: string) => [
       warn(`${clip(path, 45)} can't be used, so no namespace is approved.`),
@@ -766,6 +932,11 @@ export function copy(style: Style) {
     ],
     nsAsk: (dir: string, namespace: string) => [
       `${dir} sets its namespace to ${namespace}.`,
+      "Agents started there join it and can message everyone in it.",
+    ],
+    /** #1570: a git remote now derives another namespace than the folder first got. */
+    nsAskRemote: (dir: string, namespace: string, recorded: string) => [
+      `${dir} first got the namespace ${recorded}; its git remote now gives ${namespace}.`,
       "Agents started there join it and can message everyone in it.",
     ],
     nsPrompt: () => "Approve it? [y/N] ",

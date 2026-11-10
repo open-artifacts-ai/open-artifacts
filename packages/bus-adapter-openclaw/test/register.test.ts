@@ -39,6 +39,7 @@ describe("register", () => {
     expect(Object.keys(a.hooks).sort()).toEqual([
       "before_message_write",
       "before_prompt_build",
+      "before_tool_call",
       "model_call_ended",
       "model_call_started",
     ]);
@@ -54,6 +55,14 @@ describe("register", () => {
       "oabus_unfollow",
       "oabus_following",
     ]);
+  });
+
+  it("does not offer propose_reach (#1346): no reach cap here, and the manifest does not name it", () => {
+    expect(TOOL_NAMES).not.toContain("oabus_propose_reach");
+    const manifest = JSON.parse(
+      readFileSync(new URL("../openclaw.plugin.json", import.meta.url), "utf8"),
+    );
+    expect(manifest.contracts.tools).not.toContain("oabus_propose_reach");
   });
 
   it("declares every tool in the manifest: OpenClaw drops the whole registration otherwise", () => {

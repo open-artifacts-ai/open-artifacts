@@ -774,8 +774,8 @@ export function allocateVersion(
     db
       .prepare(
         `insert into versions (artifact_id, version, entry, manifest, language, message,
-           agent_name, agent_version, agent_via, created_by, created_at, format)
-         select id, current_version, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? from artifacts
+           agent_name, agent_version, agent_via, agent_identity, created_by, created_at, format)
+         select id, current_version, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? from artifacts
          where id = ? and deleted_at is null${after}${guard}`,
       )
       .bind(
@@ -786,6 +786,14 @@ export function allocateVersion(
         a.agent?.name ?? null,
         a.agent?.version ?? null,
         via ? viaKey(via) : null,
+        a.agent?.identity
+          ? JSON.stringify({
+              identityId: a.agent.identity.identityId,
+              namespace: a.agent.identity.namespace,
+              name: a.agent.identity.name,
+              kind: a.agent.identity.kind,
+            })
+          : null,
         a.userId,
         a.now,
         a.format,
@@ -1193,6 +1201,13 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
       sql`${artifacts.ownerId} = (select u.id from users u where u.email = ${e})`,
     );
   }
+  // #1623: open asks addressed to the caller, from the asks index. The row's
+  // artifact is already in the access filter above, so an ask on one the
+  // caller can't list is never counted or matched.
+  const me = caller.kind === "user" ? caller.user.id : "";
+  // A deleted artifact (includeDeleted) has no asks for anyone to answer, and one with comments off hides them.
+  const asksOf = sql`select 1 from artifact_asks k where k.artifact_id = ${artifacts.id} and k.addressee = ${me} and k.open = 1 and ${artifacts.deletedAt} is null and ${artifacts.comments} = 1`;
+  if (q.filter === "needs_answer") conds.push(sql`exists (${asksOf})`);
   if (q.updatedSince !== undefined) {
     const t = ISO_DATE.test(q.updatedSince) ? Date.parse(q.updatedSince) : NaN;
     if (Number.isNaN(t)) throw bad("Invalid updatedSince", "updatedSince");
@@ -1214,6 +1229,7 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
       ownerDisplayName: users.displayName,
       level: levelSql(caller, { allowDeleted: q.includeDeleted }),
       lastPub: lastPublisherSql,
+      asksForYou: sql<number>`(select count(*) from artifact_asks k where k.artifact_id = ${artifacts.id} and k.addressee = ${me} and k.open = 1 and ${artifacts.deletedAt} is null and ${artifacts.comments} = 1)`,
       // The joined space, for `space` and `can` (withSpace).
       space: spaceCols(caller, decorates(env, caller)),
     })
@@ -1272,6 +1288,7 @@ export async function list(
       level,
     );
     out.lastAgent = shownLastAgent(r.lastPub, caller);
+    if (r.asksForYou > 0) out.asksForYou = r.asksForYou;
     items.push(decorate(env, caller, out, level, r.a.spaceId, r.space));
   }
   return {

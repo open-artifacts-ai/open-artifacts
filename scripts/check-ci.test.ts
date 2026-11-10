@@ -184,6 +184,29 @@ describe("ci.yml", () => {
     expect(step.run).toContain("command -v shellcheck");
     expect(step.run).toContain(".github/workflows/*.yml");
   });
+  it("the actionlint download retries transient and connection errors", () => {
+    // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+    const step = w.jobs.lint.steps.find((s: any) =>
+      (s.run ?? "").includes("actionlint"),
+    );
+    const curl = /curl [^\n]*\\\n[^\n]*/.exec(step.run)?.[0] ?? "";
+    expect(curl).toMatch(/--retry 5 /);
+    expect(curl).toContain("--retry-all-errors");
+    // -f stays: an HTTP error that outlasts the retries still fails the step.
+    expect(curl).toMatch(/ -[a-zA-Z]*f/);
+  });
+  it("public-only runs on the merge queue, not on pull requests, and needs nothing from it", () => {
+    const job = w.jobs["public-only"];
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(job.if).toBe("${{ github.event_name != 'pull_request' }}");
+    // Nothing waits on it: a skipped job must not hold an aggregate.
+    for (const [name, j] of Object.entries<{ needs?: string | string[] }>(
+      w.jobs,
+    ))
+      expect([j.needs ?? []].flat(), `${name} needs`).not.toContain(
+        "public-only",
+      );
+  });
   it("e2e shards run both Playwright suites locally, in the pinned Playwright image", () => {
     const job = w.jobs["e2e-shard"];
     // Pull requests run two shards (free plan, 20 concurrent jobs; #965);
@@ -503,6 +526,18 @@ describe("deploy-staging.yml", () => {
     );
     expect([w.jobs.smoke.needs].flat()).toContain("deploy");
   });
+  it("runs the MCP happy-path suite last among the smoke checks (#1736)", () => {
+    const steps = w.jobs.smoke.steps as Step[];
+    const h = steps.findIndex((s) =>
+      (s.run ?? "").includes("test:e2e:happy-path"),
+    );
+    expect(h).toBeGreaterThan(idx("smoke", "@oa/server smoke"));
+    expect(h).toBeLessThan(idx("smoke", "staging-analytics-token.sh outcome"));
+    expect(steps[h]["timeout-minutes"]).toBeGreaterThan(0);
+    expect(steps[h].run).toContain("umask 077");
+    expect(steps[h].run).toContain("OA_STAGING_PAT_FILE");
+    expect(steps[h].run).not.toContain("echo");
+  });
   it("deploy steps run build -> migrate -> deploy in order", () => {
     const b = idx("deploy", "pnpm build");
     const m = idx("deploy", "d1 migrations apply open-artifacts-staging");
@@ -737,7 +772,7 @@ describe("release-please", () => {
     // nothing uses GITHUB_TOKEN, so it gets none.
     expect(w.jobs["release-please"].permissions).toEqual({});
     expect(read(".github/workflows/release-please.yml")).toMatch(
-      /googleapis\/release-please-action@v\d+/,
+      /googleapis\/release-please-action@[0-9a-f]{40} # v\d+/,
     );
   });
   it("deploys the tag", () => {
@@ -768,7 +803,7 @@ describe("release-please", () => {
     const steps = wf("release-please.yml").jobs["release-please"].steps;
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     const app = steps.find((s: any) =>
-      /^actions\/create-github-app-token@v\d+$/.test(s.uses ?? ""),
+      /^actions\/create-github-app-token@[0-9a-f]{40}$/.test(s.uses ?? ""),
     );
     expect(app?.id).toBe("app");
     expect(app.with).toEqual({
@@ -792,64 +827,6 @@ describe("release-please", () => {
       wf("release-please.yml").jobs["release-please"].steps;
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     const kind = () => rpSteps().find((s: any) => s.id === "kind");
-    const SHA = "a".repeat(40);
-    const OTHER = "b".repeat(40);
-    // A gh that answers the three reads from env; any other call exits 2.
-    const GH_STUB = `#!/usr/bin/env bash
-echo "$*" >> "$STUB_LOG"
-[ "$1" = api ] || exit 2
-path=$2; q=
-if [ "$#" -eq 4 ] && [ "$3" = -q ]; then q=$4; elif [ "$#" -ne 2 ]; then exit 2; fi
-case "$path" in
-  "repos/o/r/issues?state=closed&labels=autorelease:%20pending&per_page=100")
-    [ -z "\${STUB_FAIL:-}" ] || [ "$STUB_FAIL" != issues ] || exit 1; body=$STUB_ISSUES ;;
-  repos/o/r/pulls/*)
-    [ "\${STUB_FAIL:-}" != pull ] || exit 1
-    body=$(jq -n --arg s "$STUB_MERGE" '{merge_commit_sha: $s}') ;;
-  "repos/o/r/compare/$SHA...$STUB_MERGE")
-    [ "\${STUB_FAIL:-}" != compare ] || exit 1
-    body=$(jq -n --arg s "$STUB_COMPARE" '{status: $s}') ;;
-  *) exit 3 ;;
-esac
-if [ -n "$q" ]; then jq -r "$q" <<< "$body"; else printf '%s\\n' "$body"; fi
-`;
-    const pr = (number: number, merged = true) => ({
-      number,
-      pull_request: { merged_at: merged ? "2026-11-03T00:00:00Z" : null },
-    });
-    const runKind = (stub: {
-      issues?: readonly unknown[];
-      merge?: string;
-      compare?: string;
-      fail?: "issues" | "pull" | "compare";
-    }) => {
-      const dir = mkdtempSync(join(tmpdir(), "rp-kind-"));
-      const out = join(dir, "out");
-      writeFileSync(out, "");
-      writeFileSync(join(dir, "gh"), GH_STUB, { mode: 0o755 });
-      const r = spawnSync("bash", ["-c", kind().run], {
-        encoding: "utf8",
-        env: {
-          PATH: `${dir}:${process.env.PATH}`,
-          GITHUB_OUTPUT: out,
-          GH_TOKEN: "t",
-          REPO: "o/r",
-          SHA,
-          STUB_LOG: join(dir, "log"),
-          STUB_ISSUES: JSON.stringify(stub.issues ?? []),
-          STUB_MERGE: stub.merge ?? "",
-          STUB_COMPARE: stub.compare ?? "",
-          STUB_FAIL: stub.fail ?? "",
-        },
-      });
-      return {
-        code: r.status,
-        output: readFileSync(out, "utf8"),
-        log: r.stdout + r.stderr,
-      };
-    };
-    const NO_OWN_RUN = `release commit ${OTHER} (#1256) has no own run: see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud`;
-
     it("skip-github-release is wired to the kind step, which runs before the action", () => {
       const steps = rpSteps();
       // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
@@ -877,99 +854,48 @@ if [ -n "$q" ]; then jq -r "$q" <<< "$body"; else printf '%s\\n' "$body"; fi
         SHA: "${{ github.sha }}",
       });
       expect(k.run).not.toContain("${{");
-      // Reads only: no method override, no fields.
-      expect(k.run).not.toMatch(
-        /gh api[^\n]*(\s-X|--method|\s-f|\s-F|--field|--input)/,
+      // Reads only: the script never passes gh a method override or fields.
+      const src = read("scripts/ci/release-kind.ts");
+      expect(src).toContain('"api"');
+      expect(src).not.toMatch(
+        /["'](-X|--method|-f|-F|--field|--input|--raw-field)["']/,
       );
     });
-    it("the pending release PR merged as this commit gives true", () => {
-      expect(runKind({ issues: [pr(1256)], merge: SHA })).toMatchObject({
-        code: 0,
-        output: "is_release=true\n",
-      });
-    });
-    it("no merged pending release PR gives false (the PR step runs)", () => {
-      for (const issues of [[], [pr(1250, false)]])
-        expect(runKind({ issues })).toMatchObject({
-          code: 0,
-          output: "is_release=false\n",
-        });
-    });
-    it("a pending release PR merged after this commit gives false: its own run is queued", () => {
-      expect(
-        runKind({ issues: [pr(1256)], merge: OTHER, compare: "ahead" }),
-      ).toMatchObject({ code: 0, output: "is_release=false\n" });
-    });
-    it("a pending release PR merged before this commit (batched or cancelled) fails loudly", () => {
-      for (const compare of ["behind", "diverged", ""]) {
-        const r = runKind({ issues: [pr(1256)], merge: OTHER, compare });
-        expect(r.code, compare).toBe(1);
-        expect(r.output).toBe("");
-        expect(r.log).toContain(`::error::${NO_OWN_RUN}`);
-      }
-    });
-    it("a full page of pending-labelled items fails: a later page could hold another", () => {
-      const closed = (k: number) =>
-        Array.from({ length: k }, (_, i) => pr(1000 + i, false));
-      const full = runKind({ issues: [pr(1256), ...closed(99)], merge: SHA });
-      expect(full.code).toBe(1);
-      expect(full.output).toBe("");
-      expect(full.log).toContain(
-        "::error::pending-label list is full (100); can't decide: see docs/ops/hosted.md, Release recovery, in open-artifacts-cloud\n",
+    it("the kind step runs the tested script on this run's own sha, after checking it out", () => {
+      const steps = rpSteps();
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const k = steps.findIndex((s: any) => s.id === "kind");
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const checkout = steps.findIndex((s: any) =>
+        String(s.uses ?? "").startsWith("actions/checkout@"),
       );
-      expect(
-        runKind({ issues: [pr(1256), ...closed(98)], merge: SHA }),
-      ).toMatchObject({ code: 0, output: "is_release=true\n" });
-    });
-    it("two merged pending release PRs fail", () => {
-      const r = runKind({ issues: [pr(1256), pr(1260)], merge: SHA });
-      expect(r.code).toBe(1);
-      expect(r.output).toBe("");
-      expect(r.log).toContain(
-        "more than one merged release PR is pending (1256 1260)",
+      expect(checkout).toBeGreaterThan(-1);
+      expect(checkout).toBeLessThan(k);
+      expect(steps[checkout].with.ref).toBe(
+        // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+        "${{ github.sha }}",
       );
+      expect(steps[checkout].with["persist-credentials"]).toBe(false);
+      expect(kind().run).toContain(
+        'scripts/ci/release-kind.ts --repo "$REPO" --sha "$SHA" >> "$GITHUB_OUTPUT"',
+      );
+      // The behaviour (stale list, look-alike, newer, two pending) is tested in
+      // scripts/ci/release-kind.test.ts; this only proves the step calls it.
+      expect(existsSync(join(root, "scripts/ci/release-kind.ts"))).toBe(true);
     });
-    it("any gh error or bad answer fails closed", () => {
-      for (const [stub, error] of [
-        [{ fail: "issues" as const }, "could not list pending release PRs"],
-        [
-          { issues: [pr(1256)], merge: SHA, fail: "pull" as const },
-          "could not read #1256",
-        ],
-        [
-          { issues: [pr(1256)], merge: OTHER, fail: "compare" as const },
-          `could not compare ${SHA} with ${OTHER}`,
-        ],
-        [
-          { issues: [pr(1256)], merge: "null" },
-          "could not read #1256's merge commit",
-        ],
-        [
-          { issues: [pr(1256)], merge: "" },
-          "could not read #1256's merge commit",
-        ],
-      ] as const) {
-        const r = runKind(stub);
-        expect(r.code, JSON.stringify(stub)).toBe(1);
-        expect(r.output).toBe("");
-        expect(r.log).toContain(`::error::${error}\n`);
-      }
-      const dir = mkdtempSync(join(tmpdir(), "rp-kind-"));
-      const out = join(dir, "out");
-      writeFileSync(out, "");
-      writeFileSync(join(dir, "gh"), "#!/usr/bin/env bash\necho not-json\n", {
-        mode: 0o755,
-      });
-      const r = spawnSync("bash", ["-c", kind().run], {
-        env: {
-          PATH: `${dir}:${process.env.PATH}`,
-          GITHUB_OUTPUT: out,
-          REPO: "o/r",
-          SHA,
-        },
-      });
-      expect(r.status).toBe(1);
-      expect(readFileSync(out, "utf8")).toBe("");
+    it("a release commit that ends with no release fails the run instead of going green", () => {
+      const steps = rpSteps();
+      // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+      const rp = steps.findIndex((s: any) => s.id === "rp");
+      const after = steps[rp + 1];
+      expect(after).toBeDefined();
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(after.if).toContain("steps.kind.outputs.is_release == 'true'");
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+      expect(after.if).toContain("steps.rp.outputs.release_created != 'true'");
+      expect(after.run).toContain("::error::");
+      expect(after.run).toContain("gh run rerun");
+      expect(after.run).toMatch(/exit 1/);
     });
   });
   it("has no dispatch workaround for the release PR", () => {
@@ -2024,5 +1950,347 @@ describe("W9b: public workflows keep the retired hosted writes retired", () => {
           ["status", "publish-release", "publish-floor"],
           `${f}: ${cmd}`,
         ).toContain(cmd ?? "(argv)");
+  });
+});
+
+// #1782: a failed release run keeps a `blocker` issue open.
+describe("release-alert.yml", () => {
+  const w = wf("release-alert.yml");
+  const raw = read(".github/workflows/release-alert.yml");
+  // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
+  const steps: any[] = w.jobs.report.steps;
+  const step = steps[0];
+
+  it("watches release-please on main, completed runs only", () => {
+    expect(triggers(w)).toEqual(["workflow_run"]);
+    expect(w.on.workflow_run.workflows).toEqual(["release-please"]);
+    expect(w.on.workflow_run.types).toEqual(["completed"]);
+    expect(w.on.workflow_run.branches).toEqual(["main"]);
+  });
+  it("grants nothing at the top, only actions: read and issues: write to its one job", () => {
+    expect(w.permissions).toEqual({});
+    expect(Object.keys(w.jobs)).toEqual(["report"]);
+    expect(w.jobs.report.permissions).toEqual({
+      actions: "read",
+      issues: "write",
+    });
+  });
+  it("has no checkout, install or secret but the default token", () => {
+    expect(steps).toHaveLength(1);
+    expect(JSON.stringify(steps)).not.toMatch(/uses|checkout/);
+    // biome-ignore lint/suspicious/noTemplateCurlyInString: literal workflow expression
+    expect(step.env.GH_TOKEN).toBe("${{ github.token }}");
+    expect(raw).not.toMatch(/secrets\./);
+  });
+  it("never interpolates an expression into the script", () => {
+    expect(step.run).not.toContain("${{");
+    for (const k of ["EVENT", "CONCLUSION", "RUN", "SHA", "JOBS_URL"])
+      expect(step.env[k]).toMatch(/^\$\{\{ github\.event\.workflow_run\./);
+  });
+  it("serializes completions without cancelling a running one", () => {
+    expect(w.concurrency).toEqual({
+      group: "release-alert",
+      "cancel-in-progress": false,
+    });
+  });
+  it("fails on any error", () => {
+    expect(step.run).toMatch(/^set -euo pipefail$/m);
+  });
+
+  // `gh issue list` prints the open issues; `gh api` prints the run's jobs.
+  const GH = `#!/usr/bin/env bash
+echo "$*" >> "$STUB_LOG"
+case "$1 $2" in
+  "issue list") [ "$STUB_FAIL" != list ] || exit 1; printf '%s' "$STUB_ISSUES" ;;
+  "api "*) [ "$STUB_FAIL" != jobs ] || exit 1; printf '%s' "$STUB_JOBS"; echo "$2" > "$STUB_LOG.api" ;;
+esac
+`;
+  const TITLE = "release-please failed";
+  const SHA = "a".repeat(40);
+  const OTHER = "b".repeat(40);
+  const issue = (number: number, title = TITLE) => ({ number, title });
+  // The real shape of a run where only release-please failed (run
+  // 42557712423): it is red and every job after it is skipped. With a
+  // downstream list, release-please passed and those jobs ended as given.
+  const DOWNSTREAM = ["deploy-landing", "deploy-prod", "publish-npm"];
+  const jobs = (...down: [string, string][]) => ({
+    jobs: [
+      {
+        name: "release-please",
+        conclusion: down.length ? "success" : "failure",
+      },
+      ...DOWNSTREAM.filter((n) => !down.some(([d]) => d === n)).map((name) => ({
+        name,
+        conclusion: "skipped",
+      })),
+      ...down.map(([name, conclusion]) => ({ name, conclusion })),
+    ],
+  });
+  const alert = (
+    conclusion: string,
+    opts: {
+      issues?: unknown[];
+      jobs?: unknown;
+      event?: string;
+      sha?: string;
+      fail?: "list" | "jobs";
+    } = {},
+  ) => {
+    const dir = mkdtempSync(join(tmpdir(), "ra-"));
+    writeFileSync(join(dir, "gh"), GH, { mode: 0o755 });
+    const r = spawnSync("bash", ["-c", step.run], {
+      encoding: "utf8",
+      env: {
+        PATH: `${dir}:${process.env.PATH}`,
+        STUB_LOG: join(dir, "log"),
+        STUB_ISSUES: JSON.stringify(opts.issues ?? []),
+        STUB_JOBS: JSON.stringify(opts.jobs ?? jobs()),
+        STUB_FAIL: opts.fail ?? "",
+        GH_TOKEN: "t",
+        REPO: "o/r",
+        TITLE: step.env.TITLE,
+        EVENT: opts.event ?? "push",
+        CONCLUSION: conclusion,
+        RUN: "https://github.com/o/r/actions/runs/1",
+        SHA: opts.sha ?? SHA,
+        JOBS_URL: "https://api.github.com/repos/o/r/actions/runs/1/jobs",
+      },
+    });
+    let calls: string[] = [];
+    try {
+      calls = readFileSync(join(dir, "log"), "utf8").trim().split("\n");
+    } catch {}
+    const writes = calls.filter(
+      (c) => !c.startsWith("issue list") && !c.startsWith("api "),
+    );
+    return {
+      code: r.status,
+      calls,
+      writes,
+      out: r.stdout + r.stderr,
+    };
+  };
+
+  it("uses the fixed title", () => {
+    expect(step.env.TITLE).toBe(TITLE);
+  });
+  it("lists open blocker issues with the exact arguments, once", () => {
+    const r = alert("success");
+    expect(r.calls.filter((c) => c.startsWith("issue list"))).toEqual([
+      "issue list --repo o/r --state open --label blocker --limit 100 --json number,title",
+    ]);
+  });
+  it("reads the failed run's jobs from the event's jobs URL", () => {
+    const r = alert("failure");
+    expect(r.calls).toContain("api repos/o/r/actions/runs/1/jobs?per_page=100");
+  });
+  it.each(["failure", "timed_out", "startup_failure"])(
+    "%s with only release-please red and no open issue opens the plain one",
+    (c) => {
+      const r = alert(c, { jobs: jobs() });
+      expect(r.code).toBe(0);
+      expect(r.writes).toHaveLength(1);
+      expect(r.writes[0]).toMatch(
+        /^issue create --repo o\/r --title release-please failed --label blocker --body .*actions\/runs\/1 .*a{40}.* /,
+      );
+      expect(r.writes[0]).toContain(c);
+    },
+  );
+  it("failure with an open issue comments on the first match, opens no second", () => {
+    const r = alert("failure", {
+      issues: [issue(8, "something else"), issue(7), issue(9)],
+    });
+    expect(r.writes).toHaveLength(1);
+    expect(r.writes[0]).toMatch(/^issue comment 7 --repo o\/r --body /);
+    expect(r.writes[0]).toContain("actions/runs/1");
+  });
+  it("another issue's title does not count as the open one", () => {
+    const r = alert("failure", { issues: [issue(8, "something else")] });
+    expect(r.writes[0]).toMatch(/^issue create /);
+  });
+  it("a failed downstream job gets its own issue titled with the full sha", () => {
+    const r = alert("failure", {
+      jobs: jobs(["deploy-prod", "failure"]),
+      issues: [issue(7)],
+    });
+    expect(r.writes).toHaveLength(1);
+    expect(r.writes[0]).toMatch(
+      new RegExp(
+        `^issue create --repo o/r --title release-please failed at ${SHA} --label blocker --body .*deploy-prod.*close it if a newer release replaced it`,
+      ),
+    );
+  });
+  it.each(["timed_out", "cancelled"])(
+    "a downstream job that ended %s also gets the issue for the sha",
+    (conclusion) => {
+      const r = alert("failure", { jobs: jobs(["deploy-prod", conclusion]) });
+      expect(r.writes).toHaveLength(1);
+      expect(r.writes[0]).toContain(`--title release-please failed at ${SHA} `);
+      expect(r.writes[0]).toContain("deploy-prod");
+    },
+  );
+  it("skipped downstream jobs do not count: release-please alone is the plain issue", () => {
+    const r = alert("failure", { jobs: jobs() });
+    expect(r.writes[0]).toContain("--title release-please failed --label");
+    expect(r.writes[0]).not.toContain(" at ");
+  });
+  it("a downstream failure again comments on that sha's issue", () => {
+    const t = `${TITLE} at ${SHA}`;
+    const r = alert("failure", {
+      jobs: jobs(["publish-npm", "failure"]),
+      issues: [issue(7), issue(12, t)],
+    });
+    expect(r.writes).toHaveLength(1);
+    expect(r.writes[0]).toMatch(/^issue comment 12 /);
+  });
+  it("success closes the plain issue, naming the run", () => {
+    const r = alert("success", { issues: [issue(7)] });
+    expect(r.writes).toHaveLength(1);
+    expect(r.writes[0]).toMatch(
+      /^issue close 7 --repo o\/r --comment Green again: .*actions\/runs\/1/,
+    );
+  });
+  it("success closes the plain issue and the issue for its own sha", () => {
+    const r = alert("success", {
+      issues: [issue(7), issue(12, `${TITLE} at ${SHA}`)],
+    });
+    expect(r.writes.map((c) => c.split(" ").slice(0, 3).join(" "))).toEqual([
+      "issue close 7",
+      "issue close 12",
+    ]);
+  });
+  it("a green run of another sha does not close a downstream failure's issue", () => {
+    const r = alert("success", {
+      sha: OTHER,
+      issues: [issue(12, `${TITLE} at ${SHA}`)],
+    });
+    expect(r.writes).toEqual([]);
+  });
+  it("success with no open issue does nothing", () => {
+    const r = alert("success");
+    expect(r.code).toBe(0);
+    expect(r.writes).toEqual([]);
+  });
+  it.each(["cancelled", "skipped", "neutral", ""])(
+    "%j is neither red nor green: nothing changes, and it says so",
+    (c) => {
+      const r = alert(c, { issues: [issue(7)] });
+      expect(r.code).toBe(0);
+      expect(r.writes).toEqual([]);
+      expect(r.out).toContain("nothing changed");
+    },
+  );
+  it.each(["workflow_dispatch", "schedule", ""])(
+    "a %j run counts as nothing, red or green",
+    (event) => {
+      for (const c of ["failure", "success"]) {
+        const r = alert(c, { event, issues: [issue(7)] });
+        expect(r.code).toBe(0);
+        expect(r.calls).toEqual([]);
+        expect(r.out).toContain("not counted");
+      }
+    },
+  );
+  it("a failed issue list fails the job and creates nothing", () => {
+    for (const c of ["failure", "success"]) {
+      const r = alert(c, { fail: "list", issues: [issue(7)] });
+      expect(r.code).not.toBe(0);
+      expect(r.writes).toEqual([]);
+      expect(r.out).toContain("could not list");
+    }
+  });
+  it("a failed jobs read fails the job and creates nothing, never guessing", () => {
+    const r = alert("failure", { fail: "jobs" });
+    expect(r.code).not.toBe(0);
+    expect(r.writes).toEqual([]);
+    expect(r.out).toContain("could not read the jobs");
+  });
+});
+
+describe("workflow supply chain (#472)", () => {
+  const dir = ".github/workflows";
+  const files = readdirSync(join(root, dir)).filter((f) => f.endsWith(".yml"));
+  type Step = {
+    uses?: string;
+    with?: Record<string, unknown>;
+    name?: string;
+    run?: string;
+  };
+  const steps = (): { where: string; step: Step; rest: Step[] }[] =>
+    files.flatMap((f) =>
+      Object.entries(wf(f).jobs as Record<string, { steps?: Step[] }>).flatMap(
+        ([job, j]) =>
+          (j.steps ?? []).map((step, i, all) => ({
+            where: `${f}:${job}`,
+            step,
+            rest: all.slice(i + 1),
+          })),
+      ),
+    );
+
+  // A rule that scans nothing passes forever; prove the scan sees the repo.
+  it("the scan sees the workflows and their actions", () => {
+    expect(files.length).toBeGreaterThan(10);
+    expect(steps().filter((s) => s.step.uses).length).toBeGreaterThan(50);
+  });
+
+  const unpinned = (uses: string | undefined) =>
+    uses !== undefined &&
+    !uses.startsWith("./") &&
+    !/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(uses);
+
+  it("every action is pinned by a full commit SHA", () => {
+    const bad = steps()
+      .filter((s) => unpinned(s.step.uses))
+      .map((s) => `${s.where}: ${s.step.uses}`);
+    expect(bad).toEqual([]);
+  });
+
+  it("every pinned action carries a version comment", () => {
+    const bad = files.flatMap((f) =>
+      read(`${dir}/${f}`)
+        .split("\n")
+        .filter((l) => /uses: *\S+@[0-9a-f]{40}/.test(l))
+        .filter((l) => !/@[0-9a-f]{40} +# +v\d/.test(l))
+        .map((l) => `${f}: ${l.trim()}`),
+    );
+    expect(bad).toEqual([]);
+  });
+
+  it("the pin rule rejects tags, branches, short SHAs and passes a full SHA", () => {
+    const sha = "a".repeat(40);
+    expect(unpinned("actions/checkout@v4")).toBe(true);
+    expect(unpinned("actions/checkout@main")).toBe(true);
+    expect(unpinned(`actions/checkout@${"a".repeat(7)}`)).toBe(true);
+    expect(unpinned("actions/checkout")).toBe(true);
+    expect(unpinned(`actions/checkout@${sha}`)).toBe(false);
+    expect(unpinned(`actions/cache/restore@${sha}`)).toBe(false);
+    expect(unpinned("./.github/actions/x")).toBe(false);
+  });
+
+  // No job pushes today, so no checkout keeps its token. A job that must push
+  // gets its checkout listed here with the reason.
+  const mayPersist: Record<string, string> = {};
+
+  it("every checkout drops its credentials", () => {
+    const bad = steps()
+      .filter((s) => s.step.uses?.startsWith("actions/checkout@"))
+      .filter((s) => s.step.with?.["persist-credentials"] !== false)
+      .filter((s) => !(s.where in mayPersist))
+      .map((s) => s.where);
+    expect(bad).toEqual([]);
+  });
+
+  it("no job that persists credentials is unexplained", () => {
+    for (const [where, why] of Object.entries(mayPersist))
+      expect(why.length, where).toBeGreaterThan(10);
+  });
+
+  it("no job pushes with the checkout's token", () => {
+    const bad = steps()
+      .filter((s) => /\bgit +(push|commit|tag)\b/.test(s.step.run ?? ""))
+      .map((s) => s.where)
+      .filter((w) => !(w in mayPersist));
+    expect(bad).toEqual([]);
   });
 });

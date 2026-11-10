@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pnpm install --frozen-lockfile)",
+      "Bash(pnpm exec playwright test *)",
+      "Bash(pnpm -s typecheck)",
+      "Bash(pnpm -s lint)",
+      "Bash(gh pr ready *)",
+      "Bash(gh pr comment *)",
+      "Bash(gh pr review *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh run view *)",
+      "Bash(gh run list *)",
+      "Bash(gh issue view *)",
+      "Bash(gh issue list *)"
+    ],
+    "deny": [
+      "Bash(oa-bus namespace approve:*)",
+      "Bash(npx @open-artifacts/bus namespace approve:*)",
+      "Bash(gh pr review *--repo*)",
+      "Bash(gh pr review *-R*)",
+      "Bash(gh pr review *://*)",
+      "Bash(gh pr comment *--repo*)",
+      "Bash(gh pr comment *-R*)",
+      "Bash(gh pr comment *://*)"
+    ]
+  }
+}

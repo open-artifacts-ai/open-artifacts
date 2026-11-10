@@ -10,6 +10,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -121,6 +122,18 @@ export function sweepStaging(
   }
 }
 
+/**
+ * Hermes's platform default home (hermes_constants.py
+ * _platform_default_hermes_home): %LOCALAPPDATA%\hermes on Windows, falling
+ * back to <home>\AppData\Local\hermes when it is unset or blank; ~/.hermes
+ * everywhere else. HERMES_DATA_DIR_SUFFIX is not mirrored.
+ */
+const nativeHome = (home: string, env: Env, platform: NodeJS.Platform) => {
+  if (platform !== "win32") return join(home, ".hermes");
+  const local = env.LOCALAPPDATA?.trim();
+  return join(local || join(home, "AppData", "Local"), "hermes");
+};
+
 const tilded = (home: string, v: string) =>
   v === "~" ? home : resolve(v.startsWith("~/") ? join(home, v.slice(2)) : v);
 
@@ -132,14 +145,18 @@ const tilded = (home: string, v: string) =>
  * profile that exists, selects `<root>/profiles/<name>`. A supervised s6 child
  * ignores active_profile. Only that one file is read (a profile name).
  */
-export function hermesHome(home: string, env: Env): string {
-  const native = join(home, ".hermes");
+export function hermesHome(
+  home: string,
+  env: Env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const native = nativeHome(home, env, platform);
   const v = env.HERMES_HOME?.trim();
   const given = v ? tilded(home, v) : undefined;
   if (given !== undefined && basename(dirname(given)) === "profiles")
     return given;
   const base = given ?? native;
-  const root = hermesRoot(home, env);
+  const root = hermesRoot(home, env, platform);
   if (env.HERMES_S6_SUPERVISED_CHILD) return base;
   try {
     const name = readFileSync(join(root, "active_profile"), "utf8")
@@ -158,8 +175,12 @@ export function hermesHome(home: string, env: Env): string {
  * rules as hermesHome: a HERMES_HOME inside `profiles/` has its grandparent
  * as root; one under ~/.hermes means ~/.hermes; any other is its own root.
  */
-export function hermesRoot(home: string, env: Env): string {
-  const native = join(home, ".hermes");
+export function hermesRoot(
+  home: string,
+  env: Env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const native = nativeHome(home, env, platform);
   const v = env.HERMES_HOME?.trim();
   const given = v ? tilded(home, v) : undefined;
   if (given === undefined) return native;
@@ -171,29 +192,94 @@ export function hermesRoot(home: string, env: Env): string {
   return given;
 }
 
+/** What reading `<root>/profiles` did: the profile names, and a note when the user should hear of it. */
+export function hermesProfilesScan(
+  home: string,
+  env: Env,
+  platform: NodeJS.Platform = process.platform,
+): { names: string[]; note?: string; incomplete: boolean } {
+  const path = join(hermesRoot(home, env, platform), "profiles");
+  // An lstat that fails reads as "not a link"; readdirSync's error decides the note.
+  let isLink = false;
+  try {
+    isLink = lstatSync(path).isSymbolicLink();
+  } catch {}
+  const target = () => {
+    try {
+      return realpathSync(path);
+    } catch {
+      try {
+        return resolve(dirname(path), readlinkSync(path));
+      } catch {
+        return "somewhere else";
+      }
+    }
+  };
+  try {
+    const names = readdirSync(path).sort();
+    return {
+      names,
+      incomplete: false,
+      note: isLink
+        ? `The Hermes profiles folder ${path} is a symlink to ${target()}. Its profiles were checked too.`
+        : undefined,
+    };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "error";
+    if (code === "ENOENT")
+      return {
+        names: [],
+        incomplete: false,
+        note: isLink
+          ? `The Hermes profiles folder ${path} is a symlink to ${target()}, which doesn't exist, so there were no profiles to check.`
+          : undefined,
+      };
+    if (code === "ENOTDIR")
+      return {
+        names: [],
+        incomplete: false,
+        note: `The Hermes profiles folder ${path} isn't a folder, so there were no profiles to check.`,
+      };
+    return {
+      names: [],
+      incomplete: true,
+      note: `Couldn't read the Hermes profiles folder ${path} (${code}), so habits may still be on in a profile there.`,
+    };
+  }
+}
+
 /**
  * Every plugin folder of this Hermes: the root's own, each profile's, and the
  * active one, which a HERMES_HOME under ~/.hermes keeps outside both.
  */
-export function hermesPluginDirs(home: string, env: Env): string[] {
-  const root = hermesRoot(home, env);
+export function hermesPluginDirs(
+  home: string,
+  env: Env,
+  platform: NodeJS.Platform = process.platform,
+): string[] {
+  const root = hermesRoot(home, env, platform);
   const out = [join(root, "plugins", HERMES_PLUGIN_NAME)];
-  try {
-    for (const name of readdirSync(join(root, "profiles")).sort())
-      out.push(join(root, "profiles", name, "plugins", HERMES_PLUGIN_NAME));
-  } catch {}
-  const active = hermesPluginDir(home, env);
+  for (const name of hermesProfilesScan(home, env, platform).names)
+    out.push(join(root, "profiles", name, "plugins", HERMES_PLUGIN_NAME));
+  const active = hermesPluginDir(home, env, platform);
   if (!out.includes(active)) out.push(active);
   return out;
 }
 
 /** The env Hermes's CLI runs with, so it and our files agree on the home. */
-export const hermesEnv = (home: string, env: Env) => ({
-  HERMES_HOME: hermesHome(home, env),
+export const hermesEnv = (
+  home: string,
+  env: Env,
+  platform: NodeJS.Platform = process.platform,
+) => ({
+  HERMES_HOME: hermesHome(home, env, platform),
 });
 
-export const hermesPluginDir = (home: string, env: Env) =>
-  join(hermesHome(home, env), "plugins", HERMES_PLUGIN_NAME);
+export const hermesPluginDir = (
+  home: string,
+  env: Env,
+  platform: NodeJS.Platform = process.platform,
+) => join(hermesHome(home, env, platform), "plugins", HERMES_PLUGIN_NAME);
 
 const kind = (path: string): "dir" | "file" | "link" | undefined => {
   try {

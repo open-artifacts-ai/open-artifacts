@@ -14,10 +14,26 @@ export const COMMENT_BODY_MAX = 2000;
 export const COMMENT_GUEST_NAME_MAX = 50;
 
 export const CommentAuthorSchema = z.object({
-  kind: z.enum(["user", "guest"]),
+  /**
+   * `agent` (#1789): written over MCP or with a token, never a person. The
+   * server sets it; no client input can.
+   */
+  kind: z.enum(["user", "guest", "agent"]),
+  /** A user's id; for an agent, the member it acts for (in an ask's `to`, the agent's roster key). */
   id: z.string().optional(),
+  /** An agent's own name (never the person's), a guest's name, or a user's name. */
   name: z.string(),
-  /** An agent acting for the person, e.g. "via Claude Code". */
+  /** An agent only: the person it acts for, by public name (never an email). */
+  for: z.string().optional(),
+  /** An agent only: a bus-linked agent (#1822). False for a connection the server cannot tell apart. */
+  linked: z.boolean().optional(),
+  /** A linked agent only: its product (for example "Claude Code"), from the bus, never client input. */
+  product: z.string().optional(),
+  /** A linked agent only: its face, from its identity. `color` is a presence palette index. */
+  animal: z
+    .object({ id: z.string(), color: z.number().int().min(0) })
+    .optional(),
+  /** @deprecated Old "via <label>"; the server no longer sets it (`kind: "agent"` carries the name). */
   agent: z.string().optional(),
   me: z.boolean(),
 });
@@ -80,7 +96,19 @@ export const CommentAskSchema = z
     recommended: askRecommended,
     to: z.array(CommentAuthorSchema),
     answer: z
-      .object({ optionId: key, by: CommentAuthorSchema, at: z.string() })
+      .object({
+        optionId: key,
+        by: CommentAuthorSchema,
+        at: z.string(),
+        /** #1797: picked in the web app (a browser session), never with a token. Only such an answer is a person's yes. */
+        typed: z.boolean(),
+        /**
+         * #1797: your user's yes, computed for the caller by the server: typed,
+         * picked by the caller's own person, on an ask the caller's own person
+         * wrote (as themselves or through an agent). Never set by a client.
+         */
+        yes: z.boolean(),
+      })
       .optional(),
     closed: z.boolean(),
   })
@@ -93,19 +121,23 @@ export const MentionDeliverySchema = z.enum([
   "seen",
   "gone",
 ]);
+/** #1890: a mentioned or asked agent's identity fields, as an author's (CommentAuthorSchema). Absent: unknown. */
+const partyFace = {
+  linked: z.boolean().optional(),
+  product: z.string().optional(),
+  animal: z
+    .object({ id: z.string(), color: z.number().int().min(0) })
+    .optional(),
+};
 export const CommentMentionSchema = z.object({
   key,
   name: z.string(),
+  ...partyFace,
+  /** The person the agent acts for, set by the server (#1822). */
+  for: z.string().optional(),
   delivery: MentionDeliverySchema,
 });
 export type CommentMention = z.infer<typeof CommentMentionSchema>;
-
-export const CommentAssignedSchema = z.object({
-  key,
-  name: z.string(),
-  state: z.enum(["delivered", "queued", "seen", "done"]),
-});
-export type CommentAssigned = z.infer<typeof CommentAssignedSchema>;
 
 export const CommentSchema = z.object({
   id: z.string(),
@@ -113,10 +145,15 @@ export const CommentSchema = z.object({
   author: CommentAuthorSchema,
   createdAt: z.string(),
   editedAt: z.string().nullable(),
+  /**
+   * #1797: typed by a person in the web app (a browser session, no token, no
+   * MCP). Set by the server from the credential; no client input can. Old
+   * comments read false.
+   */
+  typed: z.boolean(),
   can: z.object({ edit: z.boolean(), delete: z.boolean() }),
   ask: CommentAskSchema.optional(),
   mentions: z.array(CommentMentionSchema).optional(),
-  assigned: CommentAssignedSchema.optional(),
 });
 export type Comment = z.infer<typeof CommentSchema>;
 
@@ -177,10 +214,9 @@ export const AskInputSchema = z
   .refine(recommendedIsAnOption, recommendedMsg);
 export type AskInput = z.infer<typeof AskInputSchema>;
 
-/** Shared by NewThreadBody and ReplyBody (no ask: MCP-only in v1). mentions and assign: owner and editors only (403 forbidden). */
+/** Shared by NewThreadBody and ReplyBody (no ask: MCP-only in v1). mentions: owner and editors only (403 forbidden). */
 const extras = {
   mentions: z.array(KeyRefSchema).max(MENTIONS_MAX).optional(),
-  assign: KeyRefSchema.optional(),
 };
 
 /** POST R.comments body. */
@@ -197,6 +233,13 @@ export const ReplyBodySchema = z.object({
   body: commentBody,
   guestName,
   ...extras,
+  /**
+   * Address the reply to the thread root's ask author (#1614): anyone who may
+   * reply, viewers included. 400 not_an_ask when the root has no ask or its
+   * author is not an agent; 400 with mentions or assign. Its agents get a
+   * fixed notice; `mentions` on the returned comment says who and how it went.
+   */
+  toAsker: z.boolean().optional(),
 });
 export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 
@@ -208,7 +251,16 @@ export type AnswerBody = z.infer<typeof AnswerBodySchema>;
 export const ArtifactAgentSchema = z.object({
   key,
   name: z.string(),
+  /** `state === "online"`; kept for readers that predate `state`. */
   online: z.boolean(),
+  /** The session itself: online (live now) or away (listed on the bus, not live). Ended sessions are not listed. */
+  state: z.enum(["online", "away"]).optional(),
+  /** When an away session was last active (ISO); the viewer's own agents only, null otherwise. */
+  lastActiveAt: z.string().nullable().optional(),
+  /** The machine's short name, for the viewer's own agents only; null otherwise. */
+  machine: z.string().nullable().optional(),
+  /** The owner's public name for another member's agent; null for the viewer's own. */
+  owner: z.string().nullable().optional(),
 });
 export type ArtifactAgent = z.infer<typeof ArtifactAgentSchema>;
 

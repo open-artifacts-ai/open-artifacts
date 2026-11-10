@@ -137,7 +137,7 @@ describe("comment tools over MCP", () => {
     expect(t.anchor).toEqual({ kind: "note" });
     expect(t.comments[0]).toMatchObject({
       body: "Is this right?",
-      author: { kind: "user", me: true },
+      author: { kind: "agent", me: true },
     });
 
     const reply = sc<{ comment: Comment }>(

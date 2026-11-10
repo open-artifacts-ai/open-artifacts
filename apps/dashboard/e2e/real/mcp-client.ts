@@ -38,10 +38,12 @@ export type CallResult = {
 export async function mcpWithToken(
   token: string,
   name = "e2e-agent",
+  mcpUrl = MCP_URL,
 ): Promise<Agent> {
   const client = new Client({ name, version: "1.0.0" });
-  const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
+  const transport = new StreamableHTTPClientTransport(new URL(mcpUrl), {
     requestInit: {
+      redirect: "error",
       headers: { authorization: `Bearer ${token}` },
     },
   });

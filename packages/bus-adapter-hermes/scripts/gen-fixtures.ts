@@ -12,6 +12,7 @@ type Set = { valid: Sample[]; invalid: Sample[] };
 
 const REF = "0d1c5a52-4f6c-4d0e-9a53-3f7e8d2b9a11";
 const MSG = "mmmmmmmmmmmmmmm1";
+const HASH = "0123456789abcdef".repeat(4);
 const b = { v: 1, id: "1" };
 const agent = {
   name: "pi-agent",
@@ -35,7 +36,7 @@ const adapter: Set = {
         pid: 4242,
         cwd: "/home/u/proj",
         proposed_name: "hermes-proj",
-        caps: ["mailbox", "pending", "follow"],
+        caps: ["mailbox", "pending", "follow", "link"],
         attest: { proc_start: "Fri Nov  6 21:00:00 2026" },
       },
     },
@@ -79,8 +80,29 @@ const adapter: Set = {
     },
     { name: "unfollow", frame: { ...b, type: "unfollow", artifact: "abc" } },
     { name: "following", frame: { ...b, type: "following" } },
+    {
+      name: "link_proof (#1856: a hash, no pid)",
+      frame: { ...b, type: "link_proof", hash: HASH },
+    },
   ],
   invalid: [
+    {
+      name: "link_proof that names a pid",
+      frame: { ...b, type: "link_proof", hash: HASH, pid: 4242 },
+    },
+    {
+      name: "link_proof that names an agent",
+      frame: { ...b, type: "link_proof", hash: HASH, agent_ref: "other" },
+    },
+    { name: "link_proof with no hash", frame: { ...b, type: "link_proof" } },
+    {
+      name: "link_proof with a hash in capitals",
+      frame: { ...b, type: "link_proof", hash: HASH.toUpperCase() },
+    },
+    {
+      name: "link_proof with a short hash",
+      frame: { ...b, type: "link_proof", hash: "abc123" },
+    },
     {
       name: "unknown kind",
       frame: { ...b, type: "hello", kind: "emacs", agent_ref: "s", pid: 1 },
@@ -286,6 +308,10 @@ const daemon: Set = {
     },
     { name: "unfollowed", frame: { ...b, type: "unfollowed", removed: true } },
     {
+      name: "link_proofed",
+      frame: { ...b, type: "link_proofed", bound: true },
+    },
+    {
       name: "follows",
       frame: {
         ...b,
@@ -301,6 +327,14 @@ const daemon: Set = {
     },
   ],
   invalid: [
+    {
+      name: "link_proofed with no bound",
+      frame: { ...b, type: "link_proofed" },
+    },
+    {
+      name: "link_proofed with a string bound",
+      frame: { ...b, type: "link_proofed", bound: "yes" },
+    },
     {
       name: "deliver with both body and notice",
       frame: {

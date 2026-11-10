@@ -21,15 +21,37 @@ export const MAX_EMAILS_PER_USER_PER_DAY = 20;
 export const MAX_EMAILS_PER_DAY = 100;
 const EMAIL_DAILY_CAP_MAX = 100_000;
 
-export function emailDailyCap(env: Pick<Env, "EMAIL_DAILY_CAP">): number {
-  const v = env.EMAIL_DAILY_CAP;
+function dailyCapOf(v: string | undefined): number {
   if (!v || !/^[1-9]\d*$/.test(v)) return MAX_EMAILS_PER_DAY;
   const n = Number(v);
   return n <= EMAIL_DAILY_CAP_MAX ? n : MAX_EMAILS_PER_DAY;
 }
+
+export function emailDailyCap(env: Pick<Env, "EMAIL_DAILY_CAP">): number {
+  return dailyCapOf(env.EMAIL_DAILY_CAP);
+}
+
+/** Comment notice emails per UTC day, instance-wide: COMMENT_EMAIL_DAILY_CAP when set and valid, else what EMAIL_DAILY_CAP gives. Its own bucket (#1467). */
+export function commentEmailDailyCap(
+  env: Pick<Env, "COMMENT_EMAIL_DAILY_CAP" | "EMAIL_DAILY_CAP">,
+): number {
+  const v = env.COMMENT_EMAIL_DAILY_CAP;
+  return v && /^[1-9]\d*$/.test(v) && Number(v) <= EMAIL_DAILY_CAP_MAX
+    ? Number(v)
+    : emailDailyCap(env);
+}
+
 /** Emails one recipient address may receive per UTC day, instance-wide. */
 export const MAX_EMAILS_PER_RECIPIENT_PER_DAY = 5;
+/**
+ * Comment notice emails (#1467) per recipient address per UTC day: their own
+ * bucket, apart from invites/shares and from sign-in codes (auth/codes.ts),
+ * so a busy thread can't use up either budget.
+ */
+export const MAX_COMMENT_EMAILS_PER_RECIPIENT_PER_DAY = 20;
 const ALL_KEY = "email:*";
+/** The instance-wide bucket of comment emails: invites, shares and codes never count in it, nor it in theirs. */
+const COMMENT_ALL_KEY = "email:c:*";
 
 // One plain addr-spec: no quotes, commas, semicolons, angle brackets, comments
 // or whitespace, so the binding can never read `to` as a list or display name.
@@ -135,7 +157,13 @@ export function fromName(instance: string | null | undefined): string {
     : encodeWords(phrase);
 }
 
-export type EmailKind = "invite" | "share" | "code" | "space" | "directory";
+export type EmailKind =
+  | "invite"
+  | "share"
+  | "code"
+  | "space"
+  | "directory"
+  | "comment";
 const ERROR_CODE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 class EmailTimeout extends Error {}
@@ -238,6 +266,8 @@ export async function sendEmail(
      * no caller forgets it. `undefined` reads settings here (bounded).
      */
     instance: string | null | undefined;
+    /** Set to `{ limited: true }` when a daily cap refused the send (the caller may count what it left out). */
+    outcome?: { limited?: boolean };
   },
 ): Promise<boolean> {
   const now = opts.now ?? Date.now();
@@ -257,15 +287,25 @@ export async function sendEmail(
       const day = utcDay(now);
       const toKey = await sha256Hex(to.toLowerCase());
       caps = [
-        [ALL_KEY, emailDailyCap(env), day],
-        [`email:to:${toKey}`, MAX_EMAILS_PER_RECIPIENT_PER_DAY, day],
+        opts.kind === "comment"
+          ? [COMMENT_ALL_KEY, commentEmailDailyCap(env), day]
+          : [ALL_KEY, emailDailyCap(env), day],
       ];
+      if (opts.kind === "comment")
+        caps.push([
+          `email:c:to:${toKey}`,
+          MAX_COMMENT_EMAILS_PER_RECIPIENT_PER_DAY,
+          day,
+        ]);
+      else
+        caps.push([`email:to:${toKey}`, MAX_EMAILS_PER_RECIPIENT_PER_DAY, day]);
       if (userId)
         caps.push([`email:${userId}`, MAX_EMAILS_PER_USER_PER_DAY, day]);
       if (opts.artifactId)
         caps.push([`email:a:${opts.artifactId}:${toKey}`, 1, day]);
     }
     if ((await takeAll(env, caps)) !== -1) {
+      if (opts.outcome) opts.outcome.limited = true;
       logFailed(opts.kind, "rate_limited");
       return false;
     }

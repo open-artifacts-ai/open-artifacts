@@ -21,6 +21,7 @@ import {
   vi,
 } from "vitest";
 import { ACTIONS, ACTIONS_PLAIN } from "../src/viewer/comments/CommentsBody";
+import { fullPath } from "../src/viewer/paths";
 import {
   calls,
   events,
@@ -102,13 +103,14 @@ const oneThread = {
       author: { kind: "guest", name: "Guest", me: false },
       createdAt: "2026-11-05T10:00:00Z",
       editedAt: null,
+      typed: false,
       can: { edit: false, delete: false },
     },
   ],
 };
 
 /** A viewport: matchMedia answers the two breakpoints the comments layout uses. */
-const viewport = (width: number, coarse = false) => {
+const viewport = (width: number, coarse = false, reduced = false) => {
   const eval_ = (q: string) =>
     q === "(min-width: 960px)"
       ? width >= 960
@@ -118,7 +120,9 @@ const viewport = (width: number, coarse = false) => {
           ? width < 600
           : q === "(pointer: coarse)"
             ? coarse
-            : false;
+            : q === "(prefers-reduced-motion: reduce)"
+              ? reduced
+              : false;
   vi.spyOn(window, "matchMedia").mockImplementation(
     (q: string) =>
       ({
@@ -193,6 +197,26 @@ describe("comments: layouts", () => {
     ).toBeInTheDocument();
   });
 
+  it("an empty list in the side panel still shows its empty state and grows (#1711)", async () => {
+    // CommentsBody is `flex-none` only in the phone sheet's short height; the
+    // panel keeps the growing list (its scroll area is a block, so the class is
+    // inert there either way) and its empty state.
+    viewport(800);
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    const tab = await screen.findByRole("tab", { name: "Comments" });
+    expect(tab).toHaveAttribute("data-state", "active");
+    const empty = await screen.findByText(/No comments yet/);
+    const body = empty.closest("div.flex") as HTMLElement;
+    expect(body.className).toContain("flex-1");
+    expect(body.className).not.toContain("flex-none");
+  });
+
   it("is a bottom sheet on phones", async () => {
     viewport(400);
     mount(viewerPath(OWNED));
@@ -256,6 +280,397 @@ describe("comments: layouts", () => {
     expect(sheet).toHaveAttribute("data-sheet-height", "full");
     await act(async () => opts.at(-1)?.onCommentOpen("p1"));
     expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+  });
+
+  describe("a pin with replies in the short sheet (#1783)", () => {
+    const threadOf = (id: string, n: number) => ({
+      ...oneThread,
+      id,
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+      comments: Array.from({ length: n }, (_, i) => ({
+        ...oneThread.comments[0],
+        id: `${id}-c${i}`,
+        body: `${id} comment ${i}`,
+      })),
+    });
+    // jsdom measures nothing: the floating row's outlet is 56px once shown.
+    let outletH = 56;
+    const realH = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "offsetHeight",
+    );
+    beforeEach(() => {
+      outletH = 56;
+      Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+        configurable: true,
+        get() {
+          return (this as HTMLElement).hasAttribute("data-oa-action-outlet")
+            ? outletH
+            : 0;
+        },
+      });
+    });
+    afterEach(() => {
+      if (realH)
+        Object.defineProperty(HTMLElement.prototype, "offsetHeight", realH);
+      else
+        delete (HTMLElement.prototype as { offsetHeight?: number })
+          .offsetHeight;
+    });
+    const open = async (reduced = false) => {
+      viewport(400, false, reduced);
+      server.use(
+        http.get(`*${R.comments(OWNED)}`, () =>
+          HttpResponse.json({
+            threads: [threadOf("p0", 1), threadOf("p1", 2), threadOf("p3", 4)],
+            open: 3,
+            truncated: false,
+          }),
+        ),
+      );
+      mount(viewerPath(OWNED));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Comments, 3 open" }),
+      );
+      return screen.findByRole("dialog", { name: "Comments" });
+    };
+    it("a pin with replies takes the half height; one without keeps the pin height", async () => {
+      const sheet = await open();
+      await act(async () => opts.at(-1)?.onCommentOpen("p0"));
+      expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+      expect(sheet).not.toHaveAttribute("data-pin-replies");
+      expect(sheet.className).toContain(
+        "data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh]",
+      );
+      await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+      expect(sheet).toHaveAttribute("data-pin-replies");
+    });
+    it("opening a 3-reply pin scrolls its last reply to the end, above the row, smoothly", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      await open();
+      await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+      await waitFor(() =>
+        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "smooth" }),
+      );
+      const el = spy.mock.contexts.at(-1) as HTMLElement;
+      expect(el.getAttribute("data-comment")).toBe("p3-c3");
+      expect(el.style.scrollMarginBottom).toBe("56px");
+    });
+    it("the margin uses the row's height once the outlet shows, even after the first frame", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      let fire: () => void = () => {};
+      const OriginalRO = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        constructor(cb: () => void) {
+          fire = cb;
+        }
+        observe() {}
+        disconnect() {}
+        unobserve() {}
+      } as unknown as typeof ResizeObserver;
+      try {
+        outletH = 0; // hidden at the first frame
+        await open();
+        await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+        await new Promise((r) => setTimeout(r, 50));
+        expect(spy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ block: "end" }),
+        );
+        outletH = 56; // the composer claims it
+        act(() => fire());
+        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "smooth" });
+        const el = spy.mock.contexts.at(-1) as HTMLElement;
+        expect(el.style.scrollMarginBottom).toBe("56px");
+      } finally {
+        globalThis.ResizeObserver = OriginalRO;
+      }
+    });
+    it("focusing the reply box after the first measure doesn't scroll again", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      let fire: () => void = () => {};
+      let disconnected = false;
+      const OriginalRO = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        constructor(cb: () => void) {
+          fire = cb;
+        }
+        observe() {}
+        disconnect() {
+          disconnected = true;
+        }
+        unobserve() {}
+      } as unknown as typeof ResizeObserver;
+      try {
+        await open();
+        await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+        await waitFor(() =>
+          expect(spy).toHaveBeenCalledWith({
+            block: "end",
+            behavior: "smooth",
+          }),
+        );
+        expect(disconnected).toBe(true);
+        const calls = spy.mock.calls.length;
+        outletH = 0; // the sheet grew for typing: the outlet is gone
+        act(() => fire());
+        expect(spy.mock.calls.length).toBe(calls);
+      } finally {
+        globalThis.ResizeObserver = OriginalRO;
+      }
+    });
+    it("no outlet (the wide overlay at pin height): no last-reply scroll", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      viewport(800);
+      server.use(
+        http.get(`*${R.comments(OWNED)}`, () =>
+          HttpResponse.json({
+            threads: [threadOf("p3", 4)],
+            open: 1,
+            truncated: false,
+          }),
+        ),
+      );
+      mount(fullPath(OWNED));
+      fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+      const overlay = await screen.findByRole("dialog", { name: "Comments" });
+      expect(overlay).toHaveAttribute("data-sheet-height", "half");
+      await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+      expect(overlay).toHaveAttribute("data-sheet-height", "pin");
+      await new Promise((r) => setTimeout(r, 50));
+      expect(overlay.querySelector("[data-oa-action-outlet]")).toBeNull();
+      expect(spy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ block: "end" }),
+      );
+    });
+    it("a single reply gets no extra scroll", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      await open();
+      await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(spy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ block: "end" }),
+      );
+    });
+    it("reduced motion: the scroll is not smooth", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      await open(true);
+      await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+      await waitFor(() =>
+        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "auto" }),
+      );
+    });
+  });
+
+  it("the short pin sheet floats the open card's action row in the sheet, clear of the home indicator (#1711)", async () => {
+    viewport(400);
+    const posts = calls("POST");
+    const pin = (id: string, y: number) => ({
+      ...oneThread,
+      id,
+      anchor: { kind: "pin", version: 1, x: 0.5, y, contentHash: null },
+    });
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({
+          threads: [pin("p1", 0.4), pin("p2", 0.7)],
+          open: 2,
+          truncated: false,
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 2 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    // No card is open yet, so nothing floats and the sheet has no outlet.
+    expect(sheet.querySelector("[data-oa-action-outlet]")).toBeNull();
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    // The outlet is a direct child of the sheet's scroller, stuck to its
+    // bottom edge: the row stays in view for a long thread scrolled to its top.
+    const outlet = await waitFor(() => {
+      const el = sheet.querySelector("[data-oa-action-outlet]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(outlet.parentElement?.className).toContain("overflow-y-auto");
+    expect(outlet.className).toContain("sticky");
+    expect(outlet.className).toContain("bottom-0");
+    // The list keeps its content height (`flex-none`: no shrink, and no zero
+    // basis either): when a card is scrolled into view, a compressed body would
+    // carry the row up to the sheet's top instead.
+    const body = outlet.previousElementSibling as HTMLElement;
+    expect(body.className).toContain("flex-none");
+    expect(body.className).not.toContain("flex-1");
+    // A short list still leaves the row at the sheet's bottom edge.
+    expect(outlet.className).toContain("mt-auto");
+    // And it clears a phone's home indicator.
+    expect(outlet.className).toContain("safe-area-inset-bottom");
+    // The row moved out of the card, and still acts for it.
+    const row = await within(outlet).findByRole("button", { name: "Reply" });
+    expect(row.closest("[data-oa-actions]")).not.toBeNull();
+    const card = sheet.querySelector('[data-thread="p1"]') as HTMLElement;
+    expect(card.contains(row)).toBe(false);
+    // Scrolled: the card is scrolled into view (its own autoscroll), and the
+    // row is still the outlet's, not carried back into the card.
+    const scroller = outlet.parentElement as HTMLElement;
+    Object.defineProperty(scroller, "scrollTop", {
+      value: 240,
+      configurable: true,
+      writable: true,
+    });
+    fireEvent.scroll(scroller);
+    await wait(30);
+    expect(card.contains(row)).toBe(false);
+    expect(outlet.contains(row)).toBe(true);
+    fireEvent.change(within(card).getByRole("textbox", { name: "Reply" }), {
+      target: { value: "Floats" },
+    });
+    fireEvent.click(within(outlet).getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.body).toEqual({ body: "Floats" });
+    // A sheet the reader expands keeps the row in the card, where the reader
+    // can see the box it belongs to.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(sheet.querySelector("[data-oa-action-outlet]")).toBeNull();
+    expect(
+      within(card as HTMLElement).getByRole("button", { name: "Reply" }),
+    ).toBeInTheDocument();
+  });
+
+  it("typing in the pin sheet's reply box expands the sheet and puts the row back in the card (#1711)", async () => {
+    // #1657's expand gives the phone keyboard its room; the card's own composer
+    // then holds the row, right under the box the reader is typing in.
+    viewport(400);
+    const pin = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [pin], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    const outlet = await waitFor(() => {
+      const el = sheet.querySelector("[data-oa-action-outlet]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    const card = sheet.querySelector('[data-thread="p1"]') as HTMLElement;
+    fireEvent.focus(within(card).getByRole("textbox", { name: "Reply" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    // No outlet in a sheet the reader can see the whole card in.
+    expect(sheet.querySelector("[data-oa-action-outlet]")).toBeNull();
+    expect(outlet.isConnected).toBe(false);
+    const row = within(card).getByRole("button", { name: "Reply" });
+    expect(row.closest("[data-oa-actions]")).not.toBeNull();
+    fireEvent.change(within(card).getByRole("textbox", { name: "Reply" }), {
+      target: { value: "Typed" },
+    });
+  });
+
+  it("the wide overlay never floats the row, even with a pin card open (#1711)", async () => {
+    viewport(1280);
+    const pin = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [pin], open: 1, truncated: false }),
+      ),
+    );
+    mount(fullPath(OWNED));
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    const overlay = await screen.findByRole("dialog", { name: "Comments" });
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(overlay.querySelector("[data-oa-action-outlet]")).toBeNull();
+    const card = overlay.querySelector('[data-thread="p1"]') as HTMLElement;
+    const row = await within(card).findByRole("button", { name: "Reply" });
+    expect(row.closest("[data-oa-actions]")).not.toBeNull();
+  });
+
+  it("the short pin sheet drops the whole-page box, so the pinned card is the only thing there (#1783)", async () => {
+    // The short height exists to read one pinned card (#1657). The whole-page
+    // box above the list filled it and left the open card below the fold: the
+    // reader saw an action row with no card above it.
+    viewport(390);
+    const [c1] = oneThread.comments;
+    const pin = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+      comments: [
+        { ...c1, id: "c1", body: "Which pin is this?" },
+        { ...c1, id: "c2", body: "The one on the button." },
+      ],
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [pin], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    const wholePage = () =>
+      within(sheet).queryByRole("textbox", {
+        name: "Comment on the whole page",
+      });
+    // jsdom loads no CSS, so `hidden` is a class here, not a display: none.
+    const wrapper = () =>
+      wholePage()?.closest("div.hidden, div.contents") as HTMLElement | null;
+    // Half height: the box is part of the list. A draft is typed into it.
+    const box = wholePage();
+    expect(box).not.toBeNull();
+    expect(wrapper()?.className).toContain("contents");
+    fireEvent.change(box as HTMLElement, {
+      target: { value: "Whole page: the hero is too loud" },
+    });
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    // Short: the box is hidden (not unmounted: the draft has to survive a pin
+    // tap), and the pinned card with its reply is there, so the reader is not
+    // left with only an action row.
+    expect(wrapper()?.className).toContain("hidden");
+    expect(within(sheet).getByText("Which pin is this?")).toBeInTheDocument();
+    expect(
+      within(sheet).getByText("The one on the button."),
+    ).toBeInTheDocument();
+    expect(
+      within(sheet).getByRole("button", { name: "Reply" }),
+    ).toBeInTheDocument();
+    // A taller sheet brings the box back with the draft still in it.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(wholePage()).toHaveValue("Whole page: the hero is too loud");
+    expect(wrapper()?.className).toContain("contents");
+    // The other way a sheet grows: typing a reply (#1657). Same result, and the
+    // whole-page draft is still there.
+    fireEvent.click(screen.getByRole("button", { name: "Shrink comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    fireEvent.focus(within(sheet).getByRole("textbox", { name: "Reply" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(wrapper()?.className).toContain("contents");
+    expect(wholePage()).toHaveValue("Whole page: the hero is too loud");
   });
 
   it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {
@@ -1055,7 +1470,7 @@ describe("comments: guests and Retry-After", () => {
   beforeEach(async () => {
     (await import("../src/viewer/anonId")).resetAnonMemory();
   });
-  const TOKEN = `${"A".repeat(22)}.k1.${"B".repeat(43)}`;
+  const TOKEN = `${"A".repeat(22)}.${Math.floor(Date.now() / 1000).toString(36)}.${"B".repeat(43)}`;
   const guestMocks = () => {
     const seenTokens: (string | null)[] = [];
     server.use(
@@ -1417,6 +1832,7 @@ describe("comments: review round 1", () => {
         author: { kind: "user", name: "Sam", me: false },
         createdAt: "2026-11-05T10:00:00Z",
         editedAt: null,
+        typed: false,
         can: { edit: false, delete: false },
       },
     ],
@@ -1451,18 +1867,13 @@ describe("comments: review round 1", () => {
     ).toBeInTheDocument();
   });
 
-  it("#1529: relative times carry the full date, the agent reads 'via', and the column count follows the version", async () => {
-    const t = (id: string, v: number, agent?: string) => ({
+  it("#1529/#1789: relative times carry the full date, an agent author reads as the agent, and the column count follows the version", async () => {
+    const t = (id: string, v: number, author: object) => ({
       ...threadAt(id, "text", v, `body ${id}`),
       comments: [
         {
           ...threadAt(id, "text", v, `body ${id}`).comments[0],
-          author: {
-            kind: "user",
-            name: "Sam",
-            me: false,
-            ...(agent ? { agent } : {}),
-          },
+          author,
         },
       ],
     });
@@ -1470,11 +1881,17 @@ describe("comments: review round 1", () => {
       http.get("*/api/v1/artifacts/:id/comments", () =>
         HttpResponse.json({
           threads: [
-            t("a", 1, "Claude Code"),
-            t("b", 1, "via Cursor"),
-            t("c", 2),
+            t("a", 1, {
+              kind: "agent",
+              name: "Claude Code",
+              for: "Sam",
+              me: false,
+            }),
+            t("b", 1, { kind: "agent", name: "Cursor", me: false }),
+            t("c", 1, { kind: "user", name: "Sam", me: false }),
+            t("d", 2, { kind: "user", name: "Sam", me: false }),
           ],
-          open: 3,
+          open: 4,
           truncated: false,
         }),
       ),
@@ -1482,33 +1899,42 @@ describe("comments: review round 1", () => {
     mount(viewerPath(OWNED, 1));
     const c = await col();
     await within(c).findByText("body a");
-    expect(within(c).getByText("via Claude Code")).toBeInTheDocument();
-    expect(within(c).getByText("via Cursor")).toBeInTheDocument();
-    expect(within(c).queryByText("via via Cursor")).toBeNull();
-    // Two threads were made on version 1; the artifact has three. The toolbar badge follows the column.
-    expect(within(c).getByText("2 open")).toBeInTheDocument();
+    const rowOf = (id: string) =>
+      within(c).getByText(`body ${id}`).closest("[data-thread]") as HTMLElement;
+    // Agent: bot icon (not initials), name, "agent" tag, muted "for <person>"; no "via".
+    const row = rowOf("a");
+    expect(row.querySelector('[data-avatar="agent"] svg')).not.toBeNull();
+    expect(row.querySelector("[data-avatar]")?.textContent).toBe("");
+    expect(within(row).getByText("Claude Code")).toBeInTheDocument();
+    expect(within(row).getByText("agent")).toBeInTheDocument();
+    const forEl = within(row).getByText("not linked · for Sam");
+    expect(forEl.className).toMatch(/text-muted-foreground/);
+    expect(within(c).queryByText(/^via /)).toBeNull();
+    // No "for" without a person.
+    expect(within(rowOf("b")).queryByText(/^for /)).toBeNull();
+    expect(within(rowOf("b")).getByText("agent")).toBeInTheDocument();
+    // A user is unchanged: initials avatar, no tag.
+    const user = rowOf("c");
+    expect(user.querySelector("[data-avatar]")?.textContent).toBe("SA");
+    expect(user.querySelector("[data-agent-tag]")).toBeNull();
+    // Three threads were made on version 1; the artifact has four. The toolbar badge follows the column.
+    expect(within(c).getByText("3 open")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /Comments, 2 open/ }),
+      screen.getByRole("button", { name: /Comments, 3 open/ }),
     ).toBeInTheDocument();
-    const row = within(c)
-      .getByText("body a")
-      .closest("[data-thread]") as HTMLElement;
     const when = row.querySelector("span[title]") as HTMLElement;
     expect(when.getAttribute("title")).toMatch(/^November 5(, 2026)? at \d/);
     expect(when.textContent).not.toBe(when.getAttribute("title"));
-    // The author line never wraps: the name and "via" truncate, the time stays put (jsdom has no layout).
+    // The author line never wraps: the name truncates, the time stays put (jsdom has no layout).
     const line = when.parentElement as HTMLElement;
     expect(line.className).not.toMatch(/flex-wrap/);
     expect(when.className).toMatch(/whitespace-nowrap/);
     expect(when.className).toMatch(/shrink-0/);
     expect(line.querySelector("b")?.className).toMatch(/truncate/);
-    // "via <agent>" sits on the name's line, small and muted.
-    const via = within(c).getByText("via Claude Code");
-    expect(line.contains(via)).toBe(true);
-    expect(via.className).toMatch(/text-muted-foreground/);
-    expect(via.className).toMatch(/truncate/);
-    // An initials avatar leads the name.
-    expect(row.querySelector("[data-avatar]")).not.toBeNull();
+    expect(forEl.className).toMatch(/truncate/);
+    // #1789 (Design): "for <person>" is its own line under the name row.
+    expect(line.contains(forEl)).toBe(false);
+    expect(line.parentElement?.contains(forEl)).toBe(true);
   });
 
   const art = (over: object) =>
@@ -1689,6 +2115,86 @@ describe("comments: capped members", () => {
     expect(commentError(e, false)).toBe("That comment is gone.");
   });
 
+  it("a comment refused by the plan cap reads the plan copy, not the generic one", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    const { errorCopy } = await import("../src/api/errorCopy");
+    const solo = new ApiClientError("plan_required", "Plan required", 403);
+    const ro = new ApiClientError("plan_read_only", "Read-only", 403, {
+      reason: "lapsed",
+    });
+    for (const owner of [true, false]) {
+      for (const e of [solo, ro]) {
+        const copy = commentError(e, false, { owner });
+        expect(copy).toBe(errorCopy(e, "", { owner }));
+        expect(copy).not.toBe("Couldn't post your comment. Try again.");
+      }
+    }
+    expect(commentError(solo, false, { owner: false })).toMatch(/Solo/);
+    expect(commentError(ro, false, { owner: true })).toMatch(/lapsed/);
+  });
+
+  it("an anonymous, guest or restricted viewer gets no billing detail on a plan refusal", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError, answerError } = await import("../src/api/comments");
+    const generic = "Your account can only view, so you can't comment.";
+    const ro = new ApiClientError("plan_read_only", "Read-only", 403, {
+      reason: "payment_failed",
+    });
+    const solo = new ApiClientError("plan_required", "Plan required", 403);
+    for (const e of [ro, solo]) {
+      expect(commentError(e, false)).toBe(generic);
+      expect(commentError(e, true, { capped: true, cap: "plan" })).toBe(
+        generic,
+      );
+      expect(commentError(e, true, { capped: true, cap: "guest" })).toBe(
+        generic,
+      );
+      expect(answerError(e)).not.toMatch(/card|Solo|owner/i);
+    }
+  });
+
+  it("a missing Me plus a plan refusal gives the generic capped copy", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError, commentErrorCtx } = await import(
+      "../src/api/comments"
+    );
+    const e = new ApiClientError("plan_required", "Plan required", 403);
+    expect(commentError(e, false, commentErrorCtx(undefined))).toBe(
+      "Your account can only view, so you can't comment.",
+    );
+  });
+
+  it("a member or admin under a plan lock (cap plan) keeps the plan copy", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    const { errorCopy } = await import("../src/api/errorCopy");
+    const e = new ApiClientError("plan_read_only", "Read-only", 403, {
+      reason: "lapsed",
+    });
+    const { commentErrorCtx } = await import("../src/api/comments");
+    for (const role of ["member", "admin"]) {
+      const me = {
+        user: { role },
+        auth: { cap: "plan" },
+        instance: null,
+      } as never;
+      const ctx = commentErrorCtx(me);
+      expect(ctx.capped).toBe(false);
+      expect(commentError(e, true, ctx)).toBe(errorCopy(e, "", ctx));
+      expect(commentError(e, true, ctx)).toMatch(/lapsed|read-only/i);
+    }
+  });
+
+  it("a capped member's read-only 404 still wins over the plan copy path", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    const e = new ApiClientError("space_forbidden", "No", 403);
+    expect(commentError(e, true, { owner: true })).toBe(
+      "Your account can only view, so you can't comment.",
+    );
+  });
+
   it("an uncapped 404 still says the comment is gone", async () => {
     capped(null);
     refused();
@@ -1697,6 +2203,78 @@ describe("comments: capped members", () => {
     expect(
       await within(c).findByText("That comment is gone."),
     ).toBeInTheDocument();
+  });
+});
+
+describe("comments: the quote stays highlighted while writing (#1834)", () => {
+  const quote = (exact: string) => ({
+    kind: "text" as const,
+    exact,
+    prefix: "",
+    suffix: "",
+  });
+  /** The third argument of the last comments.set: the draft quote. */
+  const sentQuote = () =>
+    setComments.mock.calls.at(-1)?.[2] as { exact: string } | undefined;
+
+  it("sends the quote while the composer is open, and drops it on cancel", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    await screen.findByRole("textbox", { name: "Add a comment" });
+    expect(sentQuote()).toMatchObject({ exact: "Landing" });
+    fireEvent.click(within(c).getByRole("button", { name: "Cancel" }));
+    await wait(30);
+    expect(sentQuote()).toBeUndefined();
+  });
+
+  it("keeps it until the posted thread arrives, then the thread paints itself", async () => {
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    fireEvent.change(box, { target: { value: "Tighten this" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // The draft is closed, but the quote is still sent: no frame without a
+    // highlight while the list refetches.
+    const afterPost = setComments.mock.calls
+      .slice(-3)
+      .map((call) => call[2] as { exact: string } | undefined)
+      .filter(Boolean);
+    expect(afterPost.length).toBeGreaterThan(0);
+    // Once the list carries the new thread, the held quote goes.
+    await waitFor(() => expect(sentQuote()).toBeUndefined());
+    const lastThreads = setComments.mock.calls.at(-1)?.[0] as {
+      id: string;
+    }[];
+    expect(lastThreads.some((t) => t.id)).toBe(true);
+  });
+  it("drops the held quote when the list never carries it (#1850)", async () => {
+    // A server that normalises the quote, or a refetch that misses the thread:
+    // the draft highlight must not stay on for good.
+    const posts = calls("POST");
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    fireEvent.change(box, { target: { value: "Tighten this" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // Held for a moment (the list is still empty)...
+    expect(sentQuote()).toMatchObject({ exact: "Landing" });
+    // ...and gone once the hold expires.
+    await wait(1700);
+    expect(sentQuote()).toBeUndefined();
   });
 });
 

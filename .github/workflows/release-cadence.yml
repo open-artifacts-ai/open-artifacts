@@ -25,10 +25,10 @@ jobs:
       checks: read
       statuses: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
       # Read-only: does arming need to touch the release PR at all?
@@ -42,7 +42,7 @@ jobs:
       # merging with GITHUB_TOKEN would trigger no workflows on the merge commit.
       - id: app
         if: ${{ steps.plan.outputs.write == 'true' }}
-        uses: actions/create-github-app-token@v2
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
         with:
           app-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}

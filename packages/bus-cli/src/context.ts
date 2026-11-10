@@ -370,6 +370,6 @@ export const configFileLines = (
       file: plain(tilde(ctx, f.file)),
       fix: plain(f.fix),
       // The namespace is resolved when a session starts.
-      restart: f.file.endsWith("/.oa-bus.json"),
+      restart: f.file.endsWith("/.oa-bus.json") || f.file.endsWith("/.git"),
     }),
   );
