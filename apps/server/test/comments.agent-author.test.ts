@@ -152,7 +152,7 @@ describe("comment author kind (#1789)", () => {
         actor: {
           kind: "user",
           ref: owner.userId,
-          agent: { name: "Old Bot", via: "g:old" },
+          agent: { name: "Claude Code", via: "g:old" },
         },
         rate: "u:old",
         anchor: NOTE as never,
@@ -173,7 +173,7 @@ describe("comment author kind (#1789)", () => {
         t.comments[0]?.author,
       ]),
     );
-    expect(by.old).toMatchObject({ kind: "agent", name: "Old Bot" });
+    expect(by.old).toMatchObject({ kind: "agent", name: "Claude Code" });
     expect(by.older).toMatchObject({ kind: "user" });
   });
 

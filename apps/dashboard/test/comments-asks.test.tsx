@@ -177,6 +177,17 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("asks on the comments column", () => {
+  it("links a URL in the question", async () => {
+    serveThreads(() => [
+      askThread({}, { question: "Which of https://a.com/x?" }),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const a = await within(c).findByRole("link", { name: "https://a.com/x" });
+    expect(a.getAttribute("href")).toBe("https://a.com/x");
+    expect(a.getAttribute("target")).toBe("_blank");
+    expect(a.getAttribute("rel")).toBe("noopener noreferrer");
+  });
   it("shows the question, options, recommendation and why, and answers with the option id", async () => {
     let answered: unknown = null;
     serveThreads(() => [
