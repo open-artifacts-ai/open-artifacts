@@ -451,16 +451,16 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
     const toOther = m.sent.find((x) => x.to === s.other.email) as Sent;
     const toOwner = m.sent.find((x) => x.to === s.owner.email) as Sent;
     expect(toOther.subject).toMatch(/asked you a question on Doc$/);
-    expect(toOther.text).toContain("Pick an answer on the page:");
+    expect(toOther.text).toContain("Pick an answer on the artifact:");
     expect(toOther.text).toContain(
       "You're getting this because the question is for you.",
     );
     expect(toOwner.subject).toMatch(/commented on Doc$/);
     expect(toOwner.text).toContain(
-      "You're getting this because you own this page.",
+      "You're getting this because you own this artifact.",
     );
     expect(toOther.text).toContain(
-      "New replies in this thread for the next 15 minutes stay on the page, with no email.",
+      "New replies in this thread for the next 15 minutes stay on the artifact, with no email.",
     );
     expect(toOther.text).toContain("Change this in Settings: ");
     // The comment's links are not clickable; ours are.
@@ -544,7 +544,7 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
     await E.DB.prepare("delete from counters where key = ?").bind(key).run();
     await thread(m.e, s.id, person(s.editor), s.editor);
     expect((m.sent[0] as Sent).text).toContain(
-      "2 more comments weren't emailed. They're all on the page.",
+      "2 more comments weren't emailed. They're all on the artifact.",
     );
     await thread(m.e, s.id, person(s.editor), s.editor);
     expect((m.sent[1] as Sent).text).not.toContain("more comment");
@@ -564,7 +564,7 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
     await E.DB.prepare("delete from counters where key = ?").bind(key).run();
     await thread(m.e, s.id, person(s.editor), s.editor);
     expect((m.sent[0] as Sent).text).toContain(
-      "1 more comment wasn't emailed. It's on the page.",
+      "1 more comment wasn't emailed. It's on the artifact.",
     );
   });
 
