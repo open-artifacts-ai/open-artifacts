@@ -147,9 +147,9 @@ describe("pi rename through the daemon (#1635)", () => {
     expect(OldWelcome.safeParse(welcome).success).toBe(true);
   });
 
-  it("a second link with a new name renames a pi session but never an omp one", async () => {
+  it("a second concurrent link with a new name renames nothing, pi or omp (#1608)", async () => {
     for (const [kind, want] of [
-      ["pi", 1],
+      ["pi", 0],
       ["omp", 0],
     ] as const) {
       const { h, mk } = await up(["rename"], "first", kind);
@@ -194,7 +194,7 @@ describe("pi rename through the daemon (#1635)", () => {
     expect(h.of("rename")).toHaveLength(0);
   });
 
-  it("a second link for the same live session with a new name sends a rename frame", async () => {
+  it("a second concurrent link for a live session is refused and sends no rename frame (#1608)", async () => {
     const { h, mk } = await up(["rename"]);
     // The first link stays open, so the record is live when the second hello arrives.
     const { connect } = await import("node:net");
@@ -204,11 +204,8 @@ describe("pi rename through the daemon (#1635)", () => {
     s2.write(
       `${JSON.stringify({ ...mk({ kind: "pi", agent_ref: "P1", proposed_name: "renamed-offline" }), caps: ["rename"] })}\n`,
     );
-    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(1));
-    expect(h.of("rename")[0]).toMatchObject({
-      agent_ref: "P1",
-      proposed_name: "renamed-offline",
-    });
+    await settle();
+    expect(h.of("rename")).toHaveLength(0);
     expect(h.of("agent_up")).toHaveLength(1);
   });
 

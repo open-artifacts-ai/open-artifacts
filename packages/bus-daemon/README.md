@@ -34,3 +34,15 @@ reachable by name. See `packages/shared/CONTRACT.md`, Version-gating.
   upgrade (CONTRACT §GET /hub). A `403` (a WAF or a proxy) or any other
   refusal is retried with backoff. The revoked marker names the refused token
   by its sha256, so a newer token `login` saved since is never blocked by it.
+
+## Ref binding (#1608)
+
+For pi, omp, hermes and openclaw the daemon binds each `agent_ref` to the first
+connection that claimed it, until that connection closes. A second concurrent
+hello for the same ref is refused with `agent_ref is bound to another live
+connection`, whatever pid it claims. A reconnect after the link closes works as before.
+
+Known gap: the daemon does not check the peer's pid against the socket
+(SO_PEERCRED / LOCAL_PEERPID). Node exposes neither without a native addon, so a
+same-user process can still claim a ref that has no live link by sending a live
+harness pid. The socket is 0600, so this stays inside one user's trust boundary.

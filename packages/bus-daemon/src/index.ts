@@ -159,6 +159,9 @@ const LATE_WINDOW_MS = 60 * 60_000;
 const piLike = (kind: string) =>
   kind === "pi" || kind === "omp" || kind === "hermes" || kind === "openclaw";
 
+/** #1608: the fixed refusal for a second concurrent claim on a bound pi-like ref. */
+export const REF_BOUND = "agent_ref is bound to another live connection";
+
 export type DaemonDeps = {
   transports?: Partial<Record<AgentRecord["kind"], DeliverFn>>;
   /** Per-harness notices to a sending session; OpenCode and Pi add theirs here. */
@@ -1429,6 +1432,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (!check.ok) return { error: check.reason };
         // Claude's MCP server is a new process per tool call; the session is the identity.
         const pid = check.pid ?? hello.pid;
+        // #1608: a pi-like ref belongs to the first link that claimed it until that
+        // link closes. A pid and its start time are no proof of who is speaking:
+        // any same-user process can send them, so a second concurrent claim is refused.
+        if (piLike(hello.kind) && (piLinks.get(hello.agent_ref)?.size ?? 0) > 0)
+          return { error: REF_BOUND };
         const prev = agents.byRef(hello.agent_ref);
         // A resumed session may beat the next sync tick: the files decide whose it is.
         if (prev?.live && prev.kind === "claude-code" && prev.pid !== pid) {
