@@ -4,17 +4,25 @@
 // Worker exception (Cloudflare 1101). These two helpers make it a logged,
 // answered 500 and keep the bus link optional.
 
+import { LINK_PROOF_HEADER } from "@oa/bus-protocol";
 import type { Env } from "../env.js";
-import { errorJson } from "../http/errors.js";
+import { ApiError, errorJson, toErrorResponse } from "../http/errors.js";
 import { logError, redact } from "../log.js";
 import { linkRequest } from "../services/bus.js";
 
 /** The same body the API gives for an unexpected error, so a client knows to retry. */
 const INTERNAL = () => errorJson(500, "internal", "Internal error");
 
+/** The stack frames only: the first lines repeat the message, which the log caps and redacts on its own. */
+const frames = (stack: string) =>
+  stack
+    .split("\n")
+    .filter((l) => /^\s*at\s/.test(l))
+    .join("\n");
+
 /**
  * Runs the /mcp entry; a throw is logged (`mcp_entry_failed`: the error's
- * name, redacted message and stack, the method; never the token, a link
+ * name, redacted message, the stack frames, the method; never the token, a link
  * proof or the body) and answered with the API's internal-error JSON.
  */
 export async function guardMcpEntry(
@@ -28,10 +36,11 @@ export async function guardMcpEntry(
       method: req.method,
       stack:
         e instanceof Error && e.stack
-          ? redact(e.stack).slice(0, 1500)
+          ? redact(frames(e.stack)).slice(0, 1500)
           : undefined,
     });
-    return INTERNAL();
+    // A deliberate refusal keeps its own status and code.
+    return e instanceof ApiError ? toErrorResponse(e) : INTERNAL();
   }
 }
 
@@ -51,11 +60,23 @@ export async function linkOrUnlinked(
     return await linkRequest(env, userId, req);
   } catch (e) {
     logError("mcp_link_failed", e);
+    // Never forward the proof header, whatever the method.
+    const headers = new Headers(req.headers);
+    headers.delete(LINK_PROOF_HEADER);
+    if (req.method !== "POST") return { req: new Request(req, { headers }) };
+    // Keep content-type and accept so the handler refuses the body properly
+    // (not a vague 406/415).
+    const kept = new Headers();
+    for (const h of ["content-type", "accept"]) {
+      const v = headers.get(h);
+      if (v !== null) kept.set(h, v);
+    }
     return {
-      req:
-        req.method === "POST"
-          ? new Request(req.url, { method: req.method, body: "{" })
-          : req,
+      req: new Request(req.url, {
+        method: req.method,
+        headers: kept,
+        body: "{",
+      }),
     };
   }
 }

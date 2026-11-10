@@ -1,7 +1,10 @@
 import { env } from "cloudflare:workers";
+import { LINK_PROOF_HEADER } from "@oa/bus-protocol";
 import { newId } from "@oa/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPat } from "../src/auth/pat.js";
+import { ApiError } from "../src/http/errors.js";
+import { linkOrUnlinked } from "../src/mcp/entry.js";
 import * as serverModule from "../src/mcp/server.js";
 import * as busModule from "../src/services/bus.js";
 import { login } from "./helpers.js";
@@ -109,8 +112,96 @@ for (const [name, auth] of entries)
       );
       const ev = l.events().find((e) => e.evt === "mcp_entry_failed");
       expect(ev).toMatchObject({ evt: "mcp_entry_failed", method: "POST" });
-      expect(String(ev?.stack ?? "")).toContain("transport boom");
+      // Frames only: the message (already logged, capped, redacted) isn't repeated.
+      expect(String(ev?.stack ?? "")).not.toContain("transport boom");
+      expect(String(ev?.stack ?? "")).toMatch(/\bat\b/);
       expect(l.text()).not.toContain(a.slice(7));
       expect(l.text()).not.toContain(TOKEN_TEXT);
     });
   });
+
+describe("/mcp entry errors: link failure and thrown refusals", () => {
+  const failing = () =>
+    vi.spyOn(busModule, "linkRequest").mockImplementation(() => {
+      throw new Error("link boom");
+    });
+
+  it("a GET on link failure goes downstream without the proof header", async () => {
+    failing();
+    logs();
+    const r = await linkOrUnlinked(
+      env,
+      "u",
+      new Request(MCP_URL, {
+        method: "GET",
+        headers: {
+          [LINK_PROOF_HEADER]: "proof-value",
+          accept: "text/event-stream",
+        },
+      }),
+    );
+    expect(r.req.method).toBe("GET");
+    expect(r.req.headers.get(LINK_PROOF_HEADER)).toBeNull();
+    expect(r.req.headers.get("accept")).toBe("text/event-stream");
+  });
+
+  it("a refused POST keeps content-type and accept and drops the proof header and body", async () => {
+    failing();
+    logs();
+    const r = await linkOrUnlinked(
+      env,
+      "u",
+      new Request(MCP_URL, {
+        method: "POST",
+        headers: {
+          [LINK_PROOF_HEADER]: "proof-value",
+          "content-type": "application/json",
+          accept: "application/json, text/event-stream",
+          authorization: "Bearer x",
+        },
+        body: JSON.stringify({ secret: "proof-value" }),
+      }),
+    );
+    expect(r.req.headers.get(LINK_PROOF_HEADER)).toBeNull();
+    expect(r.req.headers.get("content-type")).toBe("application/json");
+    expect(r.req.headers.get("accept")).toBe(
+      "application/json, text/event-stream",
+    );
+    expect(await r.req.text()).toBe("{");
+  });
+
+  it("a refused POST gets the handler's normal parse refusal, not 406/415", async () => {
+    const a = `Bearer ${(await createPat(env, (await login(`ee-ref-${tag}@x.com`)).userId, "ee")).token}`;
+    logs();
+    failing();
+    const r = await listTools(a);
+    expect([400, 200]).toContain(r.status);
+    expect(r.status).not.toBe(406);
+    expect(r.status).not.toBe(415);
+    expect(r.status).not.toBe(500);
+  });
+
+  it("a thrown ApiError keeps its own status and code", async () => {
+    const a = `Bearer ${(await createPat(env, (await login(`ee-api-${tag}@x.com`)).userId, "ee")).token}`;
+    logs();
+    vi.spyOn(serverModule, "mcpHandler").mockImplementation(() => {
+      throw new ApiError("forbidden", "nope");
+    });
+    const r = await listTools(a);
+    expect(r.status).toBe(403);
+    expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
+      "forbidden",
+    );
+  });
+
+  it("the logged stack has no message text past the 300-char cap", async () => {
+    const a = `Bearer ${(await createPat(env, (await login(`ee-cap-${tag}@x.com`)).userId, "ee")).token}`;
+    const l = logs();
+    const long = `${"word ".repeat(80)}TAILMARKER`;
+    vi.spyOn(serverModule, "mcpHandler").mockImplementation(() => {
+      throw new Error(long);
+    });
+    await listTools(a);
+    expect(l.text()).not.toContain("TAILMARKER");
+  });
+});
