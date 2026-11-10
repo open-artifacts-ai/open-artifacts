@@ -4,6 +4,7 @@
 // can deliver to. Delivery goes through bus-delivery.ts only, with a fixed
 // template: nothing a person or an agent wrote is in a notice.
 
+import { LIMITS } from "@oa/bus-protocol";
 import {
   type ArtifactAgent,
   type BusAddress,
@@ -55,7 +56,10 @@ export async function agentKey(
 /** Most of the viewer's own running agents the roster adds (the hub lists at most a few dozen). */
 export const OWN_AGENTS_MAX = 50;
 /** Most agents a roster returns in all: every follow the fan-out reads plus the viewer's own. */
-export const ROSTER_MAX = FANOUT_MAX + OWN_AGENTS_MAX;
+export const ROSTER_MAX = Math.min(
+  FANOUT_MAX + OWN_AGENTS_MAX,
+  LIMITS.maxRosterAgents,
+);
 
 /** What the hub says of one session: its state, when it was last active and where it runs. */
 type Session = Pick<
@@ -82,14 +86,20 @@ const shortMachine = (label: string): string | null =>
  * One session as the menu shows it. Online only while the session itself is
  * live (open on a connected machine). An open session on a machine that is
  * not connected, and a closed one the bus still lists, are away.
+ *
+ * Only the viewer's OWN agents show when they were last active and where they
+ * run (the first DNS label of the machine's label, never a tailnet or domain).
+ * Another member's agent shows its state alone: a machine label there is a
+ * hostname the member never chose (labels are client-supplied and not
+ * editable), so none is shown.
  */
-function sessionOf(a: BusAgent): Session {
+function sessionOf(a: BusAgent, own: boolean): Session {
   const online = a.state === "live";
   return {
     state: online ? "online" : "away",
     online,
-    lastActiveAt: a.since ?? a.updatedAt,
-    machine: shortMachine(a.machineLabel),
+    lastActiveAt: own ? (a.since ?? a.updatedAt) : null,
+    machine: own ? shortMachine(a.machineLabel) : null,
   };
 }
 
@@ -166,8 +176,8 @@ export async function viewerRosterAgents(
   return out;
 }
 
-const sessionFor = (a: BusAgent | undefined): Session =>
-  a ? sessionOf(a) : UNKNOWN;
+const sessionFor = (a: BusAgent | undefined, own = true): Session =>
+  a ? sessionOf(a, own) : UNKNOWN;
 
 /**
  * The agents that can be mentioned on `artifactId` and reached now: the ones
@@ -223,21 +233,26 @@ export async function agentRoster(
       const view = await busView(env, userId, { away: true });
       if (view.live) sessions = sessionsOf(view.agents);
     }
-    const owner = userId === viewerId ? "" : ` (${shownName(user)})`;
+    const mine = userId === viewerId;
+    const owner = mine ? "" : ` (${shownName(user)})`;
     for (const address of addresses) {
       const a = sessions?.get(addrKey(address));
       if (sessions && !a) continue;
-      if (out.length >= ROSTER_MAX) return sortRoster(out);
       out.push({
         key: await agentKey(artifactId, userId, address),
         name: `${a?.name ?? address.name}${owner}`,
-        ...sessionFor(a),
+        ...sessionFor(a, mine),
+        owner: mine ? null : shownName(user),
         userId,
         address,
       });
     }
   }
-  return sortRoster(out);
+  // Online first, then trim: the cap never costs an online agent its place.
+  // The bound: at most FANOUT_MAX follow rows (across at most ROSTER_MEMBERS
+  // members, one hub read each) plus the viewer's OWN_AGENTS_MAX, which is
+  // below the hub's maxRosterAgents; away rows count like any other.
+  return sortRoster(out).slice(0, ROSTER_MAX);
 }
 
 /** Online first, then away, each alphabetical. */

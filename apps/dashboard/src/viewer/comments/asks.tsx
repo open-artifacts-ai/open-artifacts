@@ -535,13 +535,19 @@ function ago(iso: string | null | undefined, now = Date.now()): string {
   return `${Math.floor(m / 1440)}d`;
 }
 
-/** "online", "away 19h", and the machine after a dot when the name stem repeats. */
+/**
+ * "online" or "away 19h" for the viewer's own agent, with the machine after a
+ * dot when the name stem repeats among their own agents. Another member's
+ * agent leads with its owner and shows the state alone: "Sam's · online".
+ */
 function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
+  if (a.owner) return `${a.owner}'s \u00b7 ${isOnline(a) ? "online" : "away"}`;
   const head = isOnline(a)
     ? "online"
     : ["away", ago(a.lastActiveAt)].filter(Boolean).join(" ");
   const stem = stemOf(a.name);
-  const repeats = all.filter((o) => stemOf(o.name) === stem).length > 1;
+  const repeats =
+    all.filter((o) => !o.owner && stemOf(o.name) === stem).length > 1;
   return repeats && a.machine ? `${head} \u00b7 ${a.machine}` : head;
 }
 

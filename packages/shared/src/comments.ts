@@ -255,10 +255,12 @@ export const ArtifactAgentSchema = z.object({
   online: z.boolean(),
   /** The session itself: online (live now) or away (listed on the bus, not live). Ended sessions are not listed. */
   state: z.enum(["online", "away"]).optional(),
-  /** When an away session was last active (ISO); null when unknown. */
+  /** When an away session was last active (ISO); the viewer's own agents only, null otherwise. */
   lastActiveAt: z.string().nullable().optional(),
-  /** The machine's short label; null when unknown. */
+  /** The machine's short name, for the viewer's own agents only; null otherwise. */
   machine: z.string().nullable().optional(),
+  /** The owner's public name for another member's agent; null for the viewer's own. */
+  owner: z.string().nullable().optional(),
 });
 export type ArtifactAgent = z.infer<typeof ArtifactAgentSchema>;
 

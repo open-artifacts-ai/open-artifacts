@@ -848,6 +848,43 @@ describe("the @ menu rows (per-session state, order, machine, selection)", () =>
     ).not.toMatch(/laptop/);
   });
 
+  it("another member's agent leads with its owner, shows state only, and no machine", () => {
+    const theirs: ArtifactAgent[] = [
+      {
+        key: "t:1",
+        name: "OA Manager (Sam)",
+        online: true,
+        state: "online",
+        owner: "Sam",
+        machine: null,
+        lastActiveAt: null,
+      },
+      {
+        key: "t:2",
+        name: "OA Manager-2 (Sam)",
+        online: false,
+        state: "away",
+        owner: "Sam",
+        machine: null,
+        lastActiveAt: null,
+      },
+      ...MENU,
+    ];
+    open(matchAgents(theirs, "oa") ?? []);
+    expect(
+      screen.getByRole("option", {
+        name: /OA Manager \(Sam\).*Sam's · online$/,
+      }),
+    ).toBeInTheDocument();
+    const away = screen.getByRole("option", { name: /OA Manager-2 \(Sam\)/ });
+    expect(away.textContent).toMatch(/Sam's · away$/);
+    expect(away.textContent).not.toMatch(/\d+[mhd]|laptop|workstation/);
+    // A stem repeating only against someone else's agent adds no machine.
+    expect(
+      screen.getByRole("option", { name: /OA Comments/ }).textContent,
+    ).not.toMatch(/laptop/);
+  });
+
   it("the selected row has the accent bar and soft fill; hover does not", () => {
     open(matchAgents(MENU, "oa") ?? [], 1);
     const rows = screen.getAllByRole("option");

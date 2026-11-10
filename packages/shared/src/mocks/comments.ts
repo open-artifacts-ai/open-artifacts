@@ -45,6 +45,15 @@ export const MOCK_AGENTS: ArtifactAgent[] = [
     machine: "laptop",
   },
   {
+    key: "agent:sam-bot",
+    name: "OA Manager (Sam)",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: null,
+    owner: "Sam",
+  },
+  {
     key: "agent:manager",
     name: "OA Manager",
     online: false,

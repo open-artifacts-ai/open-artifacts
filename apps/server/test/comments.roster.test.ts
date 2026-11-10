@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { LIMITS } from "@oa/bus-protocol";
 import {
   type BusNotice,
   type Member,
@@ -19,9 +20,14 @@ import {
 import {
   agentRoster,
   commentNoticeText,
+  ROSTER_MAX,
   viewerRosterAgents,
 } from "../src/services/comment-agents.js";
-import { addThread, type CommentWho } from "../src/services/comments.js";
+import {
+  addThread,
+  artifactAgents,
+  type CommentWho,
+} from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { getUser } from "../src/services/users.js";
 import { api, fetchAndWait, login } from "./helpers.js";
@@ -353,6 +359,80 @@ describe("@ menu: per-session state, last active and machine", () => {
       ["Beta", "away"],
     ]);
     expect(new Set(r.map((x) => x.key)).size).toBe(r.length);
+  });
+
+  it("another member's agent shows its owner and state only: no machine, no last active", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    await machineFor(s.editor.userId);
+    await follow(
+      E,
+      s.editor.userId,
+      { namespace: "ns-e", name: "Theirs" },
+      s.id,
+    );
+    await follow(E, s.editor.userId, { namespace: "ns-e", name: "Idle" }, s.id);
+    const t = new Date().toISOString();
+    const h = hubs({
+      [s.owner.userId]: [
+        { ...agentRow("ns-o", "Mine"), machineLabel: "box.tail.ts.net" },
+      ],
+      [s.editor.userId]: [
+        { ...agentRow("ns-e", "Theirs"), machineLabel: "their-mac.local" },
+        awayRow("ns-e", "Idle", t, "their-mac.local"),
+      ],
+    });
+    const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
+    const mine = r.find((x) => x.name === "Mine");
+    expect([mine?.machine, mine?.owner]).toEqual(["box", null]);
+    expect(mine?.lastActiveAt).toEqual(expect.any(String));
+    const theirs = r.filter((x) => x.userId === s.editor.userId);
+    expect(theirs.map((x) => [x.state, x.machine, x.lastActiveAt])).toEqual([
+      ["online", null, null],
+      ["away", null, null],
+    ]);
+    for (const x of theirs) {
+      expect(x.owner).toEqual(expect.any(String));
+      expect(x.owner).not.toContain("@");
+    }
+  });
+
+  it("a guest or signed-out viewer gets no machine and no last active", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    const t = new Date().toISOString();
+    const h = hubs({
+      [s.owner.userId]: [
+        agentRow("ns-o", "Mine"),
+        awayRow("ns-o", "Gone", t, "ws"),
+      ],
+    });
+    const full = await artifactAgents(h.env, s.id, s.owner.userId, false);
+    expect(full.some((x) => x.machine && x.lastActiveAt)).toBe(true);
+    for (const masked of [
+      await artifactAgents(h.env, s.id, s.owner.userId, true),
+      await artifactAgents(h.env, s.id, null),
+    ])
+      for (const x of masked) {
+        expect(x.machine).toBeNull();
+        expect(x.lastActiveAt).toBeNull();
+      }
+  });
+
+  it("the roster is bounded by the hub's roster cap and keeps online first when trimming", async () => {
+    expect(ROSTER_MAX).toBeLessThanOrEqual(LIMITS.maxRosterAgents);
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    const t = new Date().toISOString();
+    const rows = [
+      ...Array.from({ length: 60 }, (_, i) => awayRow("ns-o", `Away${i}`, t)),
+      ...Array.from({ length: 5 }, (_, i) => agentRow("ns-o", `Up${i}`)),
+    ];
+    const h = hubs({ [s.owner.userId]: rows });
+    const r = await agentRoster(h.env, s.id, s.owner.userId, true, true);
+    expect(r.length).toBe(50);
+    expect(r.filter((x) => x.online).length).toBe(5);
+    expect(r.slice(0, 5).every((x) => x.online)).toBe(true);
   });
 
   it("asks the hub for away sessions", async () => {

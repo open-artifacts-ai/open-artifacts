@@ -2286,7 +2286,8 @@ function agentList(
       Date.now(),
       cap,
     );
-    rows = [...rows, ...away];
+    // Open agents first, then away, together at most `cap` (away rows count).
+    rows = [...rows, ...away].slice(0, cap);
   }
   const online = new Map<string, boolean>();
   const dtos = rows.map((r) => {

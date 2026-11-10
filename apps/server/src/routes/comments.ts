@@ -354,7 +354,14 @@ export function mountComments(app: AppType): void {
   app.get(AGENTS, async (c) => {
     const { id, who: cw, level, artifact } = await open(c, "comments.read");
     if (!modOf(cw, level, artifact)) return c.json([]);
-    return c.json(await artifactAgents(c.env, id, c.var.user?.id ?? null));
+    return c.json(
+      await artifactAgents(
+        c.env,
+        id,
+        c.var.user?.id ?? null,
+        c.var.user ? isGuestRole(c.var.user.role) : true,
+      ),
+    );
   });
 
   app.delete(COMMENT, async (c) => {
