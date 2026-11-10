@@ -234,7 +234,7 @@ export function register(
                     ? [
                         `Last checked: v${a.lastCheckedCurrentVersion} at ${new Date(a.lastCheckedAt).toISOString()}`,
                       ]
-                    : ["Current version not checked."]),
+                    : []),
                   a.url,
                 ].join("\n"),
               )

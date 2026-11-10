@@ -116,6 +116,25 @@ describe("tool middleware", () => {
     expect((await h.command()).text).toContain("published v3");
   });
 
+  it("a row shows 'Last checked' only after a successful get_artifact", async () => {
+    const h = host();
+    await h.publish();
+    expect((await h.command()).text).not.toMatch(/not checked|Last checked/);
+    await h.call(
+      "tool.call",
+      { tool: "mcp__custom_alias__get_artifact", id },
+      {
+        structuredContent: {
+          artifact: { id, currentVersion: 4 },
+          version: { version: 4 },
+        },
+      },
+    );
+    expect((await h.command()).text).toMatch(
+      /Last checked: v4 at \d{4}-\d\d-\d\dT/,
+    );
+  });
+
   it("an edits-only publish shows the receipt's title in the command", async () => {
     const h = host();
     await h.call(
@@ -391,7 +410,9 @@ it("does not update last checked from a nested receipt inside artifact data", as
       },
     },
   );
-  expect((await h.command()).text).toContain("Current version not checked.");
+  const text = (await h.command()).text;
+  expect(text).not.toContain("not checked");
+  expect(text).not.toContain("Last checked");
 });
 
 describe("native presentation contract", () => {
