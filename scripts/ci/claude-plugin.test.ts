@@ -27,7 +27,7 @@ describe("Claude Code plugin (#1970)", () => {
     expect(m.name).toBe("open-artifacts");
     expect(m.name).toMatch(/^[a-z0-9]+(-[a-z0-9]+)*$/);
     expect(m.author.name).toBeTruthy();
-    expect(m.description).toMatch(/does not yet add/);
+    expect(m.description).toMatch(/later version/);
     for (const k of [
       "mcpServers",
       "skills",
@@ -51,15 +51,11 @@ describe("Claude Code plugin (#1970)", () => {
     expect(e.source).not.toContain("..");
   });
 
-  it("keeps the manifest version in step with the release manifest", () => {
+  it("has no version, so release-please never rewrites the manifest", () => {
+    expect(
+      json(`${PLUGIN}/.claude-plugin/plugin.json`).version,
+    ).toBeUndefined();
     const cfg = json("release-please-config.json").packages["."];
-    expect(cfg["extra-files"]).toContainEqual({
-      type: "json",
-      path: `${PLUGIN}/.claude-plugin/plugin.json`,
-      jsonpath: "$.version",
-    });
-    expect(json(`${PLUGIN}/.claude-plugin/plugin.json`).version).toBe(
-      json(".release-please-manifest.json")["."],
-    );
+    expect(cfg["extra-files"]).toBeUndefined();
   });
 });
