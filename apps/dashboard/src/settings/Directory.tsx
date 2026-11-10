@@ -50,7 +50,7 @@ import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
-import { directoryModeOf } from "../layout/SyncBanner";
+import { shownDirectoryMode } from "../layout/SyncBanner";
 import { useDocumentTitle, useInstanceName } from "../layout/useDocumentTitle";
 import { AppLink } from "../library/AppLink";
 import { relativeTime } from "../library/time";
@@ -1139,7 +1139,8 @@ const isReauth = (e: unknown) =>
 /** #2009: directory sync off (Solo, or Team that never synced) has no page; an old link lands on Connections. */
 export function Directory() {
   const state = useMe();
-  const off = state.status === "authed" && directoryModeOf(state.me) === "off";
+  const off =
+    state.status === "authed" && shownDirectoryMode(state.me) === "off";
   const navigate = useNavigate();
   useEffect(() => {
     if (off) void navigate({ to: "/settings/connections", replace: true });

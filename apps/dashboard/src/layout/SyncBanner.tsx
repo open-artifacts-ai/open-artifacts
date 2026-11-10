@@ -99,7 +99,10 @@ export function SyncBanner({
   const admin = role === "owner" || role === "admin";
   // Only a running sync (google) can break; frozen and off never show it (#2009).
   const state =
-    d?.banner && admin && directoryModeOf(me) === "google" && d.state !== "ok"
+    d?.banner &&
+    admin &&
+    shownDirectoryMode(me) === "google" &&
+    d.state !== "ok"
       ? d.state
       : null;
   const stage = state && stageOf(state, d?.unhealthySince ?? null);
@@ -172,7 +175,7 @@ export function SyncBanner({
  * have no directory (off); a Team that never synced has none either; the
  * rest follows the server's mode (Team frozen, trial and Business google). Self-host (no billing block) follows the server's mode.
  */
-export function directoryModeOf(me: Me | null): DirectoryMode {
+export function shownDirectoryMode(me: Me | null): DirectoryMode {
   const mode = me?.instance.directory?.mode ?? "off";
   const tier = me?.instance.billing?.tier;
   if (tier === "solo" || tier === "free") return "off";
@@ -193,7 +196,7 @@ export function syncDot(me: Me | null): Stage | null {
   const role = me?.user.role;
   if (!d || (role !== "owner" && role !== "admin")) return null;
   // Only a running sync asks for attention: off (Solo, Team) and frozen don't (#2009).
-  if (directoryModeOf(me) !== "google") return null;
+  if (shownDirectoryMode(me) !== "google") return null;
   if (d.state && d.state !== "ok") return stageOf(d.state, d.unhealthySince);
   return d.heldSweeps > 0 ? "warning" : null;
 }
