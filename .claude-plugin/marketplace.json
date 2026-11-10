@@ -9,7 +9,7 @@
     {
       "name": "open-artifacts",
       "source": "./plugins/open-artifacts",
-      "description": "The Artifacts Teammate output style. It does not yet add the Open Artifacts MCP server or skill."
+      "description": "The Artifacts Teammate output style. The Open Artifacts tools and skill come in a later version."
     }
   ]
 }
