@@ -14,6 +14,7 @@ import { createApp } from "../src/app.js";
 import {
   ANON_TOKEN_MAX_AGE_S,
   issueAnonToken,
+  readAnonId,
   resolveAnonId,
 } from "../src/runtime/anon-id.js";
 import {
@@ -395,7 +396,7 @@ describe("anonId token expiry", () => {
     expect(await byOf(await write(id, "a", t))).toBe(`anon:${r.short}`);
   });
 
-  it("an expired token is re-minted with the same id and short id", async () => {
+  it("an expired token is never re-issued: a minting write gets a fresh id", async () => {
     const id = await optIn();
     const bid = freshId();
     const fresh = await issueAnonToken(env, bid, nowS);
@@ -406,10 +407,13 @@ describe("anonId token expiry", () => {
     const renewed = w.headers.get(ANON_ID_HEADER);
     expect(renewed).toMatch(TOKEN_RE);
     expect(renewed).not.toBe(old);
-    expect(idOf(renewed)).toBe(bid);
-    expect(await byOf(w)).toBe(`anon:${short}`);
-    // The renewed token is accepted without another re-mint.
-    expect(await shortOn(id, renewed)).toEqual({ short, issued: null });
+    expect(idOf(renewed)).not.toBe(bid);
+    expect(await byOf(w)).not.toBe(`anon:${short}`);
+    // The new token is accepted without another mint.
+    expect((await shortOn(id, renewed)).issued).toBeNull();
+    // readAnonId names nobody for the expired token, somebody for a current one.
+    expect(await readAnonId(env, id, old, nowS * 1000)).toBeNull();
+    expect(await readAnonId(env, id, fresh, nowS * 1000)).toBe(short);
     // Exactly at the limit is still valid.
     const edge = await resolveAnonId(
       env,
@@ -418,25 +422,52 @@ describe("anonId token expiry", () => {
       true,
       nowS * 1000,
     );
-    expect(edge).toEqual({ short, issued: null });
+    expect(edge?.short).toBe(short);
+    // Past half its life a minting write renews the token for the same id.
+    expect(idOf(edge?.issued)).toBe(bid);
   });
 
-  it("a v1 token is upgraded to v2 with the same id and short id", async () => {
+  it("sliding renewal: a write at age MAX-1 keeps the id, a young token is untouched", async () => {
+    const id = await optIn();
+    const bid = freshId();
+    const short = (await shortOn(id, await issueAnonToken(env, bid, nowS)))
+      .short;
+    const aged = await issueAnonToken(
+      env,
+      bid,
+      nowS - ANON_TOKEN_MAX_AGE_S + 1,
+    );
+    const w = await write(id, "a", aged);
+    expect(w.status).toBe(200);
+    const renewed = w.headers.get(ANON_ID_HEADER);
+    expect(renewed).toMatch(TOKEN_RE);
+    expect(idOf(renewed)).toBe(bid);
+    expect(renewed).not.toBe(aged);
+    expect(await byOf(w)).toBe(`anon:${short}`);
+    // The renewed token is current: it no longer renews.
+    expect(
+      (await write(id, "b", renewed)).headers.get(ANON_ID_HEADER),
+    ).toBeNull();
+    // Younger than half the life: no new token. Reads never renew.
+    const young = await issueAnonToken(env, bid, nowS - 10 * DAY);
+    expect(
+      (await write(id, "c", young)).headers.get(ANON_ID_HEADER),
+    ).toBeNull();
+    expect((await shortOn(id, aged)).issued).toBeNull();
+  });
+
+  it("a v1 token is never upgraded: a fresh id is minted and it names no author", async () => {
     const id = await optIn();
     const bid = freshId();
     const v1 = await v1Token(bid);
+    const old = (await shortOn(id, await issueAnonToken(env, bid, nowS))).short;
     const first = await shortOn(id, v1);
-    const up = first.issued;
-    expect(up).toMatch(TOKEN_RE);
-    expect(idOf(up)).toBe(bid);
-    expect(first.short).toBe(
-      (await shortOn(id, await issueAnonToken(env, bid, nowS))).short,
-    );
-    expect(await shortOn(id, up)).toEqual({
-      short: first.short,
-      issued: null,
-    });
-    // A forged v1 token gets a new id.
+    expect(first.issued).toMatch(TOKEN_RE);
+    expect(idOf(first.issued)).not.toBe(bid);
+    expect(first.short).not.toBe(old);
+    expect(await readAnonId(env, id, v1)).toBeNull();
+    expect(await resolveAnonId(env, id, v1, false)).toBeNull();
+    // A forged v1 token gets a new id too.
     const w = await write(id, "f", `${freshId()}.${v1.split(".")[1]}`);
     expect(idOf(w.headers.get(ANON_ID_HEADER))).not.toBe(bid);
   });
