@@ -21,6 +21,7 @@ import {
   vi,
 } from "vitest";
 import { ACTIONS, ACTIONS_PLAIN } from "../src/viewer/comments/CommentsBody";
+import { fullPath } from "../src/viewer/paths";
 import {
   calls,
   events,
@@ -194,6 +195,26 @@ describe("comments: layouts", () => {
     ).toBeInTheDocument();
   });
 
+  it("an empty list in the side panel still shows its empty state and grows (#1711)", async () => {
+    // CommentsBody is `flex-none` only in the phone sheet's short height; the
+    // panel keeps the growing list (its scroll area is a block, so the class is
+    // inert there either way) and its empty state.
+    viewport(800);
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    const tab = await screen.findByRole("tab", { name: "Comments" });
+    expect(tab).toHaveAttribute("data-state", "active");
+    const empty = await screen.findByText(/No comments yet/);
+    const body = empty.closest("div.flex") as HTMLElement;
+    expect(body.className).toContain("flex-1");
+    expect(body.className).not.toContain("flex-none");
+  });
+
   it("is a bottom sheet on phones", async () => {
     viewport(400);
     mount(viewerPath(OWNED));
@@ -257,6 +278,145 @@ describe("comments: layouts", () => {
     expect(sheet).toHaveAttribute("data-sheet-height", "full");
     await act(async () => opts.at(-1)?.onCommentOpen("p1"));
     expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+  });
+
+  it("the short pin sheet floats the open card's action row in the sheet, clear of the home indicator (#1711)", async () => {
+    viewport(400);
+    const posts = calls("POST");
+    const pin = (id: string, y: number) => ({
+      ...oneThread,
+      id,
+      anchor: { kind: "pin", version: 1, x: 0.5, y, contentHash: null },
+    });
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({
+          threads: [pin("p1", 0.4), pin("p2", 0.7)],
+          open: 2,
+          truncated: false,
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 2 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    // No card is open yet, so nothing floats and the sheet has no outlet.
+    expect(sheet.querySelector("[data-oa-action-outlet]")).toBeNull();
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    // The outlet is a direct child of the sheet's scroller, stuck to its
+    // bottom edge: the row stays in view for a long thread scrolled to its top.
+    const outlet = await waitFor(() => {
+      const el = sheet.querySelector("[data-oa-action-outlet]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(outlet.parentElement?.className).toContain("overflow-y-auto");
+    expect(outlet.className).toContain("sticky");
+    expect(outlet.className).toContain("bottom-0");
+    // The list keeps its content height (`flex-none`: no shrink, and no zero
+    // basis either): when a card is scrolled into view, a compressed body would
+    // carry the row up to the sheet's top instead.
+    const body = outlet.previousElementSibling as HTMLElement;
+    expect(body.className).toContain("flex-none");
+    expect(body.className).not.toContain("flex-1");
+    // A short list still leaves the row at the sheet's bottom edge.
+    expect(outlet.className).toContain("mt-auto");
+    // And it clears a phone's home indicator.
+    expect(outlet.className).toContain("safe-area-inset-bottom");
+    // The row moved out of the card, and still acts for it.
+    const row = await within(outlet).findByRole("button", { name: "Reply" });
+    expect(row.closest("[data-oa-actions]")).not.toBeNull();
+    const card = sheet.querySelector('[data-thread="p1"]') as HTMLElement;
+    expect(card.contains(row)).toBe(false);
+    // Scrolled: the card is scrolled into view (its own autoscroll), and the
+    // row is still the outlet's, not carried back into the card.
+    const scroller = outlet.parentElement as HTMLElement;
+    Object.defineProperty(scroller, "scrollTop", {
+      value: 240,
+      configurable: true,
+      writable: true,
+    });
+    fireEvent.scroll(scroller);
+    await wait(30);
+    expect(card.contains(row)).toBe(false);
+    expect(outlet.contains(row)).toBe(true);
+    fireEvent.change(within(card).getByRole("textbox", { name: "Reply" }), {
+      target: { value: "Floats" },
+    });
+    fireEvent.click(within(outlet).getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.body).toEqual({ body: "Floats" });
+    // A sheet the reader expands keeps the row in the card, where the reader
+    // can see the box it belongs to.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(sheet.querySelector("[data-oa-action-outlet]")).toBeNull();
+    expect(
+      within(card as HTMLElement).getByRole("button", { name: "Reply" }),
+    ).toBeInTheDocument();
+  });
+
+  it("typing in the pin sheet's reply box expands the sheet and puts the row back in the card (#1711)", async () => {
+    // #1657's expand gives the phone keyboard its room; the card's own composer
+    // then holds the row, right under the box the reader is typing in.
+    viewport(400);
+    const pin = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [pin], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    const outlet = await waitFor(() => {
+      const el = sheet.querySelector("[data-oa-action-outlet]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    const card = sheet.querySelector('[data-thread="p1"]') as HTMLElement;
+    fireEvent.focus(within(card).getByRole("textbox", { name: "Reply" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    // No outlet in a sheet the reader can see the whole card in.
+    expect(sheet.querySelector("[data-oa-action-outlet]")).toBeNull();
+    expect(outlet.isConnected).toBe(false);
+    const row = within(card).getByRole("button", { name: "Reply" });
+    expect(row.closest("[data-oa-actions]")).not.toBeNull();
+    fireEvent.change(within(card).getByRole("textbox", { name: "Reply" }), {
+      target: { value: "Typed" },
+    });
+  });
+
+  it("the wide overlay never floats the row, even with a pin card open (#1711)", async () => {
+    viewport(1280);
+    const pin = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [pin], open: 1, truncated: false }),
+      ),
+    );
+    mount(fullPath(OWNED));
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    const overlay = await screen.findByRole("dialog", { name: "Comments" });
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(overlay.querySelector("[data-oa-action-outlet]")).toBeNull();
+    const card = overlay.querySelector('[data-thread="p1"]') as HTMLElement;
+    const row = await within(card).findByRole("button", { name: "Reply" });
+    expect(row.closest("[data-oa-actions]")).not.toBeNull();
   });
 
   it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {

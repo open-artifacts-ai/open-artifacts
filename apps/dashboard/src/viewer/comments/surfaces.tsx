@@ -2,6 +2,7 @@ import { Button } from "@oa/ui/shadcn";
 import { MessageSquare, X } from "lucide-react";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { TXT } from "../ui";
+import { ActionRowOutlet, ActionRowProvider } from "./actionRow";
 import { CommentsBody } from "./CommentsBody";
 import { useCommentsApi } from "./useComments";
 
@@ -123,6 +124,10 @@ export function CommentsDialog({
     if (pinCard) setFull(false);
   }, [pinCard]);
   const height = full ? "full" : pinCard ? "pin" : "half";
+  // #1711: only the phone sheet's short height floats the row; the wide
+  // overlay keeps it in the card, like the column and the panel.
+  const onPhone = useSyncExternalStore(phone.subscribe, phone.get, () => false);
+  const floating = onPhone && height === "pin";
   const drag = useRef<number | null>(null);
   const dragged = useRef(false);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
@@ -198,9 +203,15 @@ export function CommentsDialog({
             <X aria-hidden="true" />
           </Button>
         </div>
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-          <CommentsBody textFormat={textFormat} />
-        </div>
+        <ActionRowProvider>
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+            <CommentsBody textFormat={textFormat} grow={!floating} />
+            {/* #1711: in the short pin sheet the active card's action row
+                floats here, at the bottom of the sheet, for a long thread
+                too, and clear of a phone's home indicator. */}
+            {floating && <ActionRowOutlet />}
+          </div>
+        </ActionRowProvider>
       </section>
     </>
   );
