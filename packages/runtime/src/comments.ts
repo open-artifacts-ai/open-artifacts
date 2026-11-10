@@ -23,7 +23,8 @@ import {
 // anchors it built from the page's own text, ids, states and pixel offsets.
 // Nothing here adds a node to the page tree except one overlay host under
 // <html> (its UI sits in a shadow root), and highlights use the CSS Custom
-// Highlight API with an adopted stylesheet. This is tidiness, not a security
+// Highlight API with an adopted stylesheet (an inline <style> would be blocked
+// by a page's `style-src 'self'`). This is tidiness, not a security
 // boundary: the page's own script shares this window, so it can see every
 // message, reach the overlay and forge every message the frame sends. The
 // shell must treat them all as hints.
@@ -102,6 +103,8 @@ export function createComments(
     "html";
   const hasPins = format === "image" || format === "pdf";
   let mode: Mode = "off";
+  /** Disposed: nothing may paint or send again (#1473 review). */
+  let ended = false;
   /**
    * The quote a comment is being written about (#1834), kept painted. No
    * version: it is a paint hint, not a record (the resolver ignores it).
@@ -155,18 +158,37 @@ export function createComments(
     return layer;
   };
 
+  /**
+   * The page's highlight rules: an adopted sheet, never an inline `<style>`.
+   * An artifact page can ship a CSP that blocks inline styles
+   * (`style-src 'self'`), and constructable sheets are not subject to it
+   * (#1473 review). A page that rewrites `document.adoptedStyleSheets` takes
+   * ours with it, so it is adopted again by anything that can notice: a paint,
+   * a page mutation, a click or a selection change.
+   */
   let sheet: CSSStyleSheet | undefined;
-  const highlights = (): Registry | undefined => {
-    if (typeof CSS === "undefined" || !("highlights" in CSS)) return undefined;
-    if (!sheet && typeof CSSStyleSheet !== "undefined") {
+  const adoptSheet = () => {
+    if (typeof CSSStyleSheet === "undefined") return;
+    if (!sheet) {
       try {
         sheet = new CSSStyleSheet();
         sheet.replaceSync(PAGE_CSS);
-        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
       } catch {
-        sheet = undefined;
+        return;
       }
     }
+    // Never rebuilt after a failed adoption: the sheet is created once.
+    if (document.adoptedStyleSheets.includes(sheet)) return;
+    try {
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    } catch {
+      // No setter (older engines, jsdom): nothing to adopt into.
+    }
+  };
+
+  const highlights = (): Registry | undefined => {
+    if (typeof CSS === "undefined" || !("highlights" in CSS)) return undefined;
+    adoptSheet();
     return (CSS as unknown as { highlights: Registry }).highlights;
   };
 
@@ -385,6 +407,7 @@ export function createComments(
     });
   };
   const onSelectionChange = () => {
+    adoptSheet();
     schedule(false, true);
     if (mode !== "select") return;
     clearTimeout(selTimer);
@@ -568,6 +591,7 @@ export function createComments(
   // ---- clicks on the page: pin placement and highlight hits ----
   function onClick(e: MouseEvent) {
     if (mode === "off" || e.composedPath()[0] === host) return;
+    adoptSheet();
     if (mode === "pin") {
       if (!hasPins) return;
       const target = e.target instanceof Element ? e.target : null;
@@ -592,6 +616,18 @@ export function createComments(
     }
     const sel = getSelection();
     if (sel && sel.rangeCount > 0 && !sel.isCollapsed) return;
+    // #1473: a link or a control under the pointer does its own thing; opening
+    // the thread too would both navigate and cover the page.
+    // `composedPath()[0]`, not `target`: inside a shadow root the target is the
+    // host, and a link in there would not be seen (#1473 review).
+    const inner = e.composedPath()[0];
+    const hit = inner instanceof Element ? inner : null;
+    if (
+      hit?.closest(
+        "a[href], button, input, select, textarea, label, [role='button'], [role='link']",
+      )
+    )
+      return;
     let best: { id: string; size: number } | undefined;
     for (const p of painted) {
       for (const r of Array.from(p.range.getClientRects())) {
@@ -700,6 +736,9 @@ export function createComments(
     );
   };
   const onMutation = (records: MutationRecord[]) => {
+    // A page that rewrote `adoptedStyleSheets` may not repaint anything: the
+    // observer is the first thing to notice (#1473 review).
+    adoptSheet();
     if (records.every(ours)) return;
     textVer++;
     const now = Date.now();
@@ -755,6 +794,7 @@ export function createComments(
     clearTimeout(selTimer);
     clearTimeout(keptTimer);
     if (raf) cancelAnimationFrame(raf);
+    ended = true;
     const reg = highlights();
     reg?.delete("oa-comment");
     reg?.delete("oa-comment-active");
@@ -764,6 +804,10 @@ export function createComments(
       );
     host?.remove();
   };
-  signal?.addEventListener("abort", dispose);
-  return { flush: () => report(false), dispose };
+  // #1473: a signal that was already aborted never fires `abort`, so the host,
+  // the listener and the stylesheet would stay behind.
+  if (signal?.aborted) dispose();
+  else signal?.addEventListener("abort", dispose);
+  // `flush` after dispose would paint again and put the host back.
+  return { flush: () => (ended ? undefined : report(false)), dispose };
 }
