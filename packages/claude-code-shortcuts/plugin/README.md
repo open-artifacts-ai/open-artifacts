@@ -33,6 +33,8 @@ JSON
 
 Replace both example values with your existing connection. The host saves these non-secret options in **user** settings; project `settings.json` and `settings.local.json` are not sources for plugin options. Restart the session or reload its plugin after configuring it. The same existing project MCP connection is used. Do not pass CLI `--plugin-dir` or isolation flags to `claude --desktop`; that launcher does not accept them.
 
+In Claude Desktop, the band shows in a Code session started in Desktop, with the plugin loaded from the project's .claude/skills folder. It doesn't show in a terminal session opened through Remote Control: the plugin runs in the terminal, and Desktop only mirrors the transcript.
+
 Respect organization policy and the host's trust prompts. A policy that withholds a mod or command is not bypassed by this integration. The plugin does not depend on `classic.SessionStart`.
 
 ## Session and version behavior
@@ -40,6 +42,7 @@ Respect organization policy and the host's trust prompts. A policy that withhold
 - References belong to the actual current session ID and configured instance. A new session or `/clear` starts empty. Resuming the same session, or reloading its plugin, reads that session's references again. Switching sessions during a publish never attributes the result to the new session.
 - Ten distinct artifacts are retained per session/instance, ordered by successful publication. Repeated publishes update the reference. The band shows at most three, within its available rows; `/oa-artifacts` shows the full stored list. Existing band content is retained, and the plugin does not request keyboard focus.
 - **Published v3** means a successful content publish in this session returned v3. It is not a claim that v3 is still the service's current version. A successful `get_artifact` through the configured connection may update **Last checked: v4 at …** separately. There is no polling or automatic read. Settings-only `publish_artifact` calls create no version and do not add shortcuts.
+- Deleting an artifact (a successful `delete_artifact`) takes it off the band. Undeleting it in the same session (`undelete_artifact`) puts it back. Only a call that succeeds counts.
 - Failed/denied publishes, malformed receipts and foreign/signed URLs are ignored. Store or drawing failures do not repeat or change the tool call. Links are limited to the configured origin's ordinary `/a/<id>` URLs, so the viewer still enforces its own sign-in and sharing rules.
 
 The host's per-plugin store contains only IDs, titles, viewer URLs, versions and observation times. It contains no artifact bodies or credentials. These are local presentation references, not permissions, unread-comment counts or editing presence. A store error may leave an older reference visible; use a real service read before relying on its current version. Multiple processes concurrently writing the *same session* are not an atomic distributed history; the plugin serializes writes within one loaded host.

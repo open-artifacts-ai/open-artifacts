@@ -110,7 +110,7 @@ const oneThread = {
 };
 
 /** A viewport: matchMedia answers the two breakpoints the comments layout uses. */
-const viewport = (width: number, coarse = false) => {
+const viewport = (width: number, coarse = false, reduced = false) => {
   const eval_ = (q: string) =>
     q === "(min-width: 960px)"
       ? width >= 960
@@ -120,7 +120,9 @@ const viewport = (width: number, coarse = false) => {
           ? width < 600
           : q === "(pointer: coarse)"
             ? coarse
-            : false;
+            : q === "(prefers-reduced-motion: reduce)"
+              ? reduced
+              : false;
   vi.spyOn(window, "matchMedia").mockImplementation(
     (q: string) =>
       ({
@@ -280,6 +282,191 @@ describe("comments: layouts", () => {
     expect(sheet).toHaveAttribute("data-sheet-height", "pin");
   });
 
+  describe("a pin with replies in the short sheet (#1783)", () => {
+    const threadOf = (id: string, n: number) => ({
+      ...oneThread,
+      id,
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+      comments: Array.from({ length: n }, (_, i) => ({
+        ...oneThread.comments[0],
+        id: `${id}-c${i}`,
+        body: `${id} comment ${i}`,
+      })),
+    });
+    // jsdom measures nothing: the floating row's outlet is 56px once shown.
+    let outletH = 56;
+    const realH = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "offsetHeight",
+    );
+    beforeEach(() => {
+      outletH = 56;
+      Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+        configurable: true,
+        get() {
+          return (this as HTMLElement).hasAttribute("data-oa-action-outlet")
+            ? outletH
+            : 0;
+        },
+      });
+    });
+    afterEach(() => {
+      if (realH)
+        Object.defineProperty(HTMLElement.prototype, "offsetHeight", realH);
+      else
+        delete (HTMLElement.prototype as { offsetHeight?: number })
+          .offsetHeight;
+    });
+    const open = async (reduced = false) => {
+      viewport(400, false, reduced);
+      server.use(
+        http.get(`*${R.comments(OWNED)}`, () =>
+          HttpResponse.json({
+            threads: [threadOf("p0", 1), threadOf("p1", 2), threadOf("p3", 4)],
+            open: 3,
+            truncated: false,
+          }),
+        ),
+      );
+      mount(viewerPath(OWNED));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Comments, 3 open" }),
+      );
+      return screen.findByRole("dialog", { name: "Comments" });
+    };
+    it("a pin with replies takes the half height; one without keeps the pin height", async () => {
+      const sheet = await open();
+      await act(async () => opts.at(-1)?.onCommentOpen("p0"));
+      expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+      expect(sheet).not.toHaveAttribute("data-pin-replies");
+      expect(sheet.className).toContain(
+        "data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh]",
+      );
+      await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+      expect(sheet).toHaveAttribute("data-pin-replies");
+    });
+    it("opening a 3-reply pin scrolls its last reply to the end, above the row, smoothly", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      await open();
+      await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+      await waitFor(() =>
+        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "smooth" }),
+      );
+      const el = spy.mock.contexts.at(-1) as HTMLElement;
+      expect(el.getAttribute("data-comment")).toBe("p3-c3");
+      expect(el.style.scrollMarginBottom).toBe("56px");
+    });
+    it("the margin uses the row's height once the outlet shows, even after the first frame", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      let fire: () => void = () => {};
+      const OriginalRO = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        constructor(cb: () => void) {
+          fire = cb;
+        }
+        observe() {}
+        disconnect() {}
+        unobserve() {}
+      } as unknown as typeof ResizeObserver;
+      try {
+        outletH = 0; // hidden at the first frame
+        await open();
+        await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+        await new Promise((r) => setTimeout(r, 50));
+        expect(spy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ block: "end" }),
+        );
+        outletH = 56; // the composer claims it
+        act(() => fire());
+        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "smooth" });
+        const el = spy.mock.contexts.at(-1) as HTMLElement;
+        expect(el.style.scrollMarginBottom).toBe("56px");
+      } finally {
+        globalThis.ResizeObserver = OriginalRO;
+      }
+    });
+    it("focusing the reply box after the first measure doesn't scroll again", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      let fire: () => void = () => {};
+      let disconnected = false;
+      const OriginalRO = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        constructor(cb: () => void) {
+          fire = cb;
+        }
+        observe() {}
+        disconnect() {
+          disconnected = true;
+        }
+        unobserve() {}
+      } as unknown as typeof ResizeObserver;
+      try {
+        await open();
+        await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+        await waitFor(() =>
+          expect(spy).toHaveBeenCalledWith({
+            block: "end",
+            behavior: "smooth",
+          }),
+        );
+        expect(disconnected).toBe(true);
+        const calls = spy.mock.calls.length;
+        outletH = 0; // the sheet grew for typing: the outlet is gone
+        act(() => fire());
+        expect(spy.mock.calls.length).toBe(calls);
+      } finally {
+        globalThis.ResizeObserver = OriginalRO;
+      }
+    });
+    it("no outlet (the wide overlay at pin height): no last-reply scroll", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      viewport(800);
+      server.use(
+        http.get(`*${R.comments(OWNED)}`, () =>
+          HttpResponse.json({
+            threads: [threadOf("p3", 4)],
+            open: 1,
+            truncated: false,
+          }),
+        ),
+      );
+      mount(fullPath(OWNED));
+      fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+      const overlay = await screen.findByRole("dialog", { name: "Comments" });
+      expect(overlay).toHaveAttribute("data-sheet-height", "half");
+      await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+      expect(overlay).toHaveAttribute("data-sheet-height", "pin");
+      await new Promise((r) => setTimeout(r, 50));
+      expect(overlay.querySelector("[data-oa-action-outlet]")).toBeNull();
+      expect(spy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ block: "end" }),
+      );
+    });
+    it("a single reply gets no extra scroll", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      await open();
+      await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(spy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ block: "end" }),
+      );
+    });
+    it("reduced motion: the scroll is not smooth", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      await open(true);
+      await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+      await waitFor(() =>
+        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "auto" }),
+      );
+    });
+  });
+
   it("the short pin sheet floats the open card's action row in the sheet, clear of the home indicator (#1711)", async () => {
     viewport(400);
     const posts = calls("POST");
@@ -417,6 +604,73 @@ describe("comments: layouts", () => {
     const card = overlay.querySelector('[data-thread="p1"]') as HTMLElement;
     const row = await within(card).findByRole("button", { name: "Reply" });
     expect(row.closest("[data-oa-actions]")).not.toBeNull();
+  });
+
+  it("the short pin sheet drops the whole-page box, so the pinned card is the only thing there (#1783)", async () => {
+    // The short height exists to read one pinned card (#1657). The whole-page
+    // box above the list filled it and left the open card below the fold: the
+    // reader saw an action row with no card above it.
+    viewport(390);
+    const [c1] = oneThread.comments;
+    const pin = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+      comments: [
+        { ...c1, id: "c1", body: "Which pin is this?" },
+        { ...c1, id: "c2", body: "The one on the button." },
+      ],
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [pin], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    const wholePage = () =>
+      within(sheet).queryByRole("textbox", {
+        name: "Comment on the whole page",
+      });
+    // jsdom loads no CSS, so `hidden` is a class here, not a display: none.
+    const wrapper = () =>
+      wholePage()?.closest("div.hidden, div.contents") as HTMLElement | null;
+    // Half height: the box is part of the list. A draft is typed into it.
+    const box = wholePage();
+    expect(box).not.toBeNull();
+    expect(wrapper()?.className).toContain("contents");
+    fireEvent.change(box as HTMLElement, {
+      target: { value: "Whole page: the hero is too loud" },
+    });
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    // Short: the box is hidden (not unmounted: the draft has to survive a pin
+    // tap), and the pinned card with its reply is there, so the reader is not
+    // left with only an action row.
+    expect(wrapper()?.className).toContain("hidden");
+    expect(within(sheet).getByText("Which pin is this?")).toBeInTheDocument();
+    expect(
+      within(sheet).getByText("The one on the button."),
+    ).toBeInTheDocument();
+    expect(
+      within(sheet).getByRole("button", { name: "Reply" }),
+    ).toBeInTheDocument();
+    // A taller sheet brings the box back with the draft still in it.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(wholePage()).toHaveValue("Whole page: the hero is too loud");
+    expect(wrapper()?.className).toContain("contents");
+    // The other way a sheet grows: typing a reply (#1657). Same result, and the
+    // whole-page draft is still there.
+    fireEvent.click(screen.getByRole("button", { name: "Shrink comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    fireEvent.focus(within(sheet).getByRole("textbox", { name: "Reply" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(wrapper()?.className).toContain("contents");
+    expect(wholePage()).toHaveValue("Whole page: the hero is too loud");
   });
 
   it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {

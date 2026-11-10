@@ -8,6 +8,12 @@ import { toast } from "./toast";
 
 export const v = (version: string) => `v${version}`;
 
+/** Whether this viewer is an owner or admin of a self-hosted install: who may see the Version card. */
+export function isSelfHostAdmin(me: Me | null | undefined) {
+  const role = me?.user.role;
+  return (role === "owner" || role === "admin") && !me?.instance.hosted;
+}
+
 /** The update for owners and admins, else null (members, guests, no check yet). */
 export function instanceUpdate(me: Me | null | undefined) {
   const role = me?.user.role;

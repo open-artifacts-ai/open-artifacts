@@ -6250,9 +6250,22 @@ export class BusHub extends DurableObject<Env> {
   #acceptNotice(n: BusNotice): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
-    const lname = n.to.name.toLowerCase();
-    const agent = liveVisibleIn(sql, n.to.namespace, lname);
-    const key = [n.to.namespace, lname, n.coalesceKey] as const;
+    // #1752: a follow row still at an address the agent has since left (the
+    // re-key is best effort, and a notice can be in flight) reaches it by its
+    // live former name, as mail does. The notice is then kept at the current
+    // address, so the flush paths find it.
+    const sent = n.to.name.toLowerCase();
+    const former =
+      liveVisibleIn(sql, n.to.namespace, sent) === null
+        ? liveFormer(sql, sent, now, { ns: n.to.namespace }, 2)
+        : [];
+    const byFormer = former.length === 1 ? former[0] : undefined;
+    const lname = byFormer ? byFormer.name.toLowerCase() : sent;
+    const to = byFormer
+      ? { namespace: byFormer.namespace, name: byFormer.name }
+      : n.to;
+    const agent = byFormer ?? liveVisibleIn(sql, to.namespace, lname);
+    const key = [to.namespace, lname, n.coalesceKey] as const;
     // No live session at the address: nothing is kept (and a waiting notice
     // for it is stale, so it goes too).
     if (!agent) {
@@ -6289,7 +6302,7 @@ export class BusHub extends DurableObject<Env> {
     // offline-like (1), never "too old" (2).
     const parked = notBefore > now ? 0 : live && !socket ? 2 : 1;
     if (parked === 2) {
-      const reason = this.#oldHeldOver(n.to.namespace, lname, n.coalesceKey);
+      const reason = this.#oldHeldOver(to.namespace, lname, n.coalesceKey);
       if (reason) {
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",

@@ -32,7 +32,7 @@ import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { api, errOf, login } from "./helpers.js";
 
-// #1535: asks, mentions and assignments, server side.
+// #1535: asks and mentions, server side.
 
 const app = createApp();
 const E = env as unknown as Env;
@@ -47,7 +47,7 @@ class FakeBus implements NoticeDelivery {
   stall: ((n: BusNotice) => boolean) | null = null;
   async deliver(_e: Env, userId: string, notice: BusNotice) {
     // The follower notice of a new comment (#682, after the response) is not
-    // what these tests are about: they count mentions, asks and assignments.
+    // what these tests are about: they count mentions and asks.
     if (notice.kind === "commented") return "delivered" as const;
     this.sent.push({ userId, notice });
     await this.during?.();
@@ -211,7 +211,7 @@ describe("GET agents", () => {
   });
 });
 
-describe("mentions and assignments", () => {
+describe("mentions", () => {
   it("delivers a mention and records the state; the notice carries no text of the comment", async () => {
     const s = await setup();
     const r = await post(s.id, editor, {
@@ -270,29 +270,51 @@ describe("mentions and assignments", () => {
     expect(bus.sent).toHaveLength(2);
   });
 
-  it("assigns on a reply, and resolving the thread marks it done", async () => {
+  // `assign` was dropped (#1792). The bodies are not strict (like every other
+  // unknown field), so it is stripped: the POST succeeds and nothing is sent.
+  it("an assign in a thread or reply body is ignored: no notice, no assignment", async () => {
     const s = await setup();
-    const t = (await (await post(s.id, owner, {})).json()) as Thread;
-    const r = await reply(s.id, t.id, editor, { assign: { key: s.claude } });
+    const r = await post(s.id, owner, { assign: { key: s.claude } });
     expect(r.status).toBe(201);
-    const c = (await r.json()) as Comment;
-    expect(c.assigned).toEqual({
-      key: s.claude,
-      name: "Claude",
-      state: "delivered",
-    });
-    bus.outcome = "dropped";
+    const t = (await r.json()) as Thread;
+    expect(t.comments[0]).not.toHaveProperty("assigned");
     const r2 = await reply(s.id, t.id, editor, { assign: { key: s.codex } });
-    expect(((await r2.json()) as Comment).assigned?.state).toBe("queued");
+    expect(r2.status).toBe(201);
+    expect((await r2.json()) as Comment).not.toHaveProperty("assigned");
+    expect(bus.sent).toHaveLength(0);
+    // Not even a viewer is refused for it: it is no longer a thing to refuse.
+    expect(
+      (await post(s.id, viewer, { assign: { key: s.claude } })).status,
+    ).toBe(201);
+  });
+
+  it("an assignment stored before #1792 still reads, with no assignment shown", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, owner, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    const cid = (t.comments[0] as Comment).id;
+    await runInDurableObject(
+      runtimeStub(E, s.id) as unknown as DurableObjectStub<ArtifactRuntime>,
+      (_i, state) => {
+        state.storage.sql.exec(
+          "insert into comment_targets (comment_id, thread_id, kind, key, name, state) values (?, ?, 'assign', ?, 'Codex', 'queued')",
+          cid,
+          t.id,
+          s.codex,
+        );
+      },
+    );
     await api(app, R.commentThread(s.id, t.id), owner.cookie, {
       method: "PATCH",
       body: { status: "resolved" },
     });
-    const l = (await (
-      await api(app, R.comments(s.id), owner.cookie)
-    ).json()) as CommentList;
-    const done = l.threads[0]?.comments.filter((x) => x.assigned) ?? [];
-    expect(done.map((x) => x.assigned?.state)).toEqual(["done", "done"]);
+    const r = await api(app, R.comments(s.id), owner.cookie);
+    expect(r.status).toBe(200);
+    const c = ((await r.json()) as CommentList).threads[0]
+      ?.comments[0] as Comment;
+    expect(c).not.toHaveProperty("assigned");
+    expect(c.mentions?.map((m) => m.key)).toEqual([s.claude]);
   });
 
   it("is for the owner and editors: a viewer is 403 and nothing is written or sent", async () => {
@@ -300,8 +322,6 @@ describe("mentions and assignments", () => {
     const r = await post(s.id, viewer, { mentions: [{ key: s.claude }] });
     expect(r.status).toBe(403);
     expect((await errOf(r)).code).toBe("forbidden");
-    const r2 = await post(s.id, viewer, { assign: { key: s.claude } });
-    expect(r2.status).toBe(403);
     const t = (await (await post(s.id, viewer, {})).json()) as Thread;
     expect(
       (await reply(s.id, t.id, viewer, { mentions: [{ key: s.claude }] }))
@@ -326,7 +346,6 @@ describe("mentions and assignments", () => {
     for (const body of [
       { mentions: [{ key: "agent:nope" }] },
       { mentions: [{ key: viewer.userId }] },
-      { assign: { key: "agent:nope" } },
     ])
       expect((await post(s.id, owner, body)).status).toBe(400);
     const many = Array.from({ length: 11 }, (_, i) => ({ key: `k${i}` }));
@@ -582,18 +601,14 @@ describe("asks", () => {
     expect(l.threads[0]?.comments[0]?.ask?.answer).toBeUndefined();
   });
 
-  it("mention and assign of the same agent send one notice, of the assign kind", async () => {
+  it("a mention sends one notice, of the mention kind", async () => {
     const s = await setup();
-    const r = await post(s.id, owner, {
-      mentions: [{ key: s.claude }],
-      assign: { key: s.claude },
-    });
+    const r = await post(s.id, owner, { mentions: [{ key: s.claude }] });
     expect(r.status).toBe(201);
     expect(bus.sent).toHaveLength(1);
-    expect(bus.sent[0]?.notice.text).toContain("work was assigned");
+    expect(bus.sent[0]?.notice.text).toContain("your user mentioned you");
     const c = ((await r.json()) as Thread).comments[0] as Comment;
     expect(c.mentions?.[0]?.delivery).toBe("delivered");
-    expect(c.assigned?.state).toBe("delivered");
   });
 
   it("a comment deleted while its notices go out still answers 201, with one notice", async () => {
@@ -617,10 +632,7 @@ describe("asks", () => {
 
   it("a signed-out reader sees mentions without owner or address", async () => {
     const s = await setup({ visibility: "public" });
-    await post(s.id, owner, {
-      mentions: [{ key: s.claude }],
-      assign: { key: s.codex },
-    });
+    await post(s.id, owner, { mentions: [{ key: s.claude }] });
     const r = await api(app, R.comments(s.id), null, {
       headers: { "cf-connecting-ip": "198.51.100.9" },
     });
@@ -628,7 +640,7 @@ describe("asks", () => {
     const c = ((await r.json()) as CommentList).threads[0]
       ?.comments[0] as Comment;
     // #1822: a signed-out reader sees no bus name, only the owner's agent.
-    const text = JSON.stringify([c.mentions, c.assigned]);
+    const text = JSON.stringify(c.mentions);
     expect(text).not.toContain("Claude");
     expect(Object.keys(c.mentions?.[0] ?? {}).sort()).toEqual([
       "delivery",

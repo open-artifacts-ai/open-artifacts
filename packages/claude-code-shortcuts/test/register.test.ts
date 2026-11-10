@@ -3,11 +3,12 @@ import { register } from "../plugin/hooks/register.ts";
 
 const origin = "https://instance.example.com";
 const id = "Ab3dEfGhJk4mNpQr";
-const result = (version = 3, artifactId = id) => ({
+const result = (version = 3, artifactId = id, title?: string) => ({
   result: JSON.stringify({
     id: artifactId,
     version,
     url: `${origin}/a/${artifactId}`,
+    ...(title === undefined ? {} : { title }),
   }),
 });
 type Hook = NonNullable<Parameters<Parameters<typeof register>[0]>[2]>;
@@ -113,6 +114,156 @@ describe("tool middleware", () => {
     expect(stored).not.toContain("not stored");
     expect(stored).not.toContain("credentials");
     expect((await h.command()).text).toContain("published v3");
+  });
+
+  it("a row shows 'Last checked' only after a successful get_artifact", async () => {
+    const h = host();
+    await h.publish();
+    expect((await h.command()).text).not.toMatch(/not checked|Last checked/);
+    await h.call(
+      "tool.call",
+      { tool: "mcp__custom_alias__get_artifact", id },
+      {
+        structuredContent: {
+          artifact: { id, currentVersion: 4 },
+          version: { version: 4 },
+        },
+      },
+    );
+    expect((await h.command()).text).toMatch(
+      /Last checked: v4 at \d{4}-\d\d-\d\dT/,
+    );
+  });
+
+  it("an edits-only publish shows the receipt's title in the command", async () => {
+    const h = host();
+    await h.call(
+      "tool.call",
+      {
+        tool: "mcp__custom_alias__publish_artifact",
+        id,
+        edits: [{ old: "a", new: "b" }],
+      },
+      result(4, id, "Stored by server"),
+    );
+    expect((await h.command()).text).toContain("Stored by server");
+    expect((await h.command()).text).not.toContain(`Artifact ${id}`);
+  });
+
+  it("the input title wins over the receipt's", async () => {
+    const h = host();
+    await h.publish(result(3, id, "Receipt title"));
+    const text = (await h.command()).text;
+    expect(text).toContain("Synthetic title");
+    expect(text).not.toContain("Receipt title");
+  });
+
+  it("an old server without a title in the receipt still falls back to the id", async () => {
+    const h = host();
+    await h.call(
+      "tool.call",
+      {
+        tool: "mcp__custom_alias__publish_artifact",
+        id,
+        edits: [{ old: "a", new: "b" }],
+      },
+      result(),
+    );
+    expect((await h.command()).text).toContain(`Artifact ${id}`);
+  });
+
+  it("a settings-only rename updates an existing row's title and adds no row or version", async () => {
+    const h = host();
+    await h.publish();
+    h.api.ui.invalidate.mockClear();
+    await h.call(
+      "tool.call",
+      { tool: "mcp__custom_alias__publish_artifact", id, title: "Renamed" },
+      result(3, id, "Renamed"),
+    );
+    expect(h.api.ui.invalidate).toHaveBeenCalledWith("ui.render");
+    const text = (await h.command()).text;
+    expect(text).toContain("Renamed · published v3");
+    expect(text).not.toContain("Synthetic title");
+    const other = host();
+    await other.call(
+      "tool.call",
+      { tool: "mcp__custom_alias__publish_artifact", id, title: "Renamed" },
+      result(3, id, "Renamed"),
+    );
+    expect(other.data.size).toBe(0);
+  });
+
+  it("a publish landing for an id drops its kept deleted copy", async () => {
+    const h = host();
+    await h.publish();
+    await h.call(
+      "tool.call",
+      { tool: "mcp__custom_alias__delete_artifact", id },
+      { structuredContent: { id, deleted: true } },
+    );
+    await h.publish(result(4, id, "Fresh"), { title: "Fresh" });
+    await h.call(
+      "tool.call",
+      { tool: "mcp__custom_alias__undelete_artifact", id },
+      { structuredContent: { id, title: "Fresh" } },
+    );
+    const text = (await h.command()).text;
+    expect(text).toContain("Fresh · published v4");
+    expect(text).not.toContain("Synthetic title");
+  });
+
+  describe("delete_artifact and undelete_artifact (#2016)", () => {
+    const tool = (name: string, extra: Record<string, unknown> = {}) => ({
+      tool: `mcp__custom_alias__${name}`,
+      id,
+      ...extra,
+    });
+    const deleted = { structuredContent: { id, deleted: true } };
+    const restored = { structuredContent: { id, title: "Synthetic title" } };
+
+    it("a successful delete drops the row from the command and the band; undelete restores it", async () => {
+      const h = host();
+      await h.publish();
+      await h.call("tool.call", tool("delete_artifact"), deleted);
+      expect((await h.command()).text).toContain("No artifact");
+      const { value } = await h.draw();
+      expect(JSON.stringify(value)).not.toContain("Synthetic title");
+      await h.call("tool.call", tool("undelete_artifact"), restored);
+      expect((await h.command()).text).toContain("Synthetic title");
+      expect((await h.command()).text).toContain("published v3");
+    });
+
+    it("an error result or the input alone changes nothing", async () => {
+      const h = host();
+      await h.publish();
+      for (const out of [
+        { isError: true, structuredContent: deleted.structuredContent },
+        { deny: "no" },
+        { result: "not_found" },
+      ])
+        await h.call("tool.call", tool("delete_artifact"), out);
+      expect((await h.command()).text).toContain("Synthetic title");
+      await h.call("tool.call", tool("delete_artifact"), deleted);
+      await h.call("tool.call", tool("undelete_artifact"), {
+        isError: true,
+        structuredContent: restored.structuredContent,
+      });
+      expect((await h.command()).text).toContain("No artifact");
+    });
+
+    it("ignores other namespaces and undeletes of artifacts it never held", async () => {
+      const h = host();
+      await h.publish();
+      await h.call(
+        "tool.call",
+        { tool: "mcp__unrelated__delete_artifact", id },
+        deleted,
+      );
+      expect((await h.command()).text).toContain("Synthetic title");
+      await h.call("tool.call", tool("undelete_artifact"), restored);
+      expect(h.data.size).toBe(1);
+    });
   });
 
   it.each([
@@ -300,7 +451,9 @@ it("does not update last checked from a nested receipt inside artifact data", as
       },
     },
   );
-  expect((await h.command()).text).toContain("Current version not checked.");
+  const text = (await h.command()).text;
+  expect(text).not.toContain("not checked");
+  expect(text).not.toContain("Last checked");
 });
 
 describe("native presentation contract", () => {

@@ -382,7 +382,7 @@ describe("comments mock", () => {
   });
 });
 
-describe("asks, mentions and assign (#1535)", () => {
+describe("asks and mentions (#1535)", () => {
   const viewerArt = fixtures.artifacts.find(
     (a) => a.title === "Onboarding guide",
   );
@@ -505,34 +505,32 @@ describe("asks, mentions and assign (#1535)", () => {
     ).toBeUndefined();
   });
 
-  it("mentions and assign shapes", () => {
+  it("mentions shape; assign is stripped, not stored", () => {
     expect(
       ReplyBodySchema.safeParse({
         body: "x",
         mentions: [{ key: "agent:codex" }],
-        assign: { key: "agent:codex" },
       }).success,
     ).toBe(true);
+    // The other fields are not strict: an unknown `assign` is dropped by parsing.
+    expect(
+      ReplyBodySchema.parse({
+        body: "x",
+        assign: { key: "agent:codex" },
+      }),
+    ).toEqual({ body: "x" });
     expect(
       ReplyBodySchema.safeParse({ body: "x", mentions: [{ key: "a b" }] })
         .success,
     ).toBe(false);
-    expect(
-      ReplyBodySchema.safeParse({ body: "x", assign: { key: "" } }).success,
-    ).toBe(false);
-    expect(
-      CommentSchema.parse({
-        ...comment,
-        mentions: [{ key: "k", name: "N", delivery: "gone" }],
-        assigned: { key: "k", name: "N", state: "done" },
-      }).assigned?.state,
-    ).toBe("done");
-    expect(
-      CommentSchema.safeParse({
-        ...comment,
-        assigned: { key: "k", name: "N", state: "gone" },
-      }).success,
-    ).toBe(false);
+    // An old comment that still carries `assigned` reads, with it gone.
+    const old = CommentSchema.parse({
+      ...comment,
+      mentions: [{ key: "k", name: "N", delivery: "gone" }],
+      assigned: { key: "k", name: "N", state: "done" },
+    });
+    expect(old.mentions).toHaveLength(1);
+    expect(old).not.toHaveProperty("assigned");
   });
 
   it("the list query accepts filter and summaries carry asksForYou", async () => {
@@ -546,10 +544,9 @@ describe("asks, mentions and assign (#1535)", () => {
     ).json();
     expect(need.items.map((a: { id: string }) => a.id)).toEqual([art.id]);
     expect(ArtifactSummarySchema.parse(need.items[0]).asksForYou).toBe(1);
-    const waiting = await (
-      await send("GET", `${O}${R.artifacts}?filter=waiting_on_agents`)
-    ).json();
-    expect(waiting.items).toEqual([]);
+    expect(
+      (await send("GET", `${O}${R.artifacts}?filter=waiting_on_agents`)).status,
+    ).toBe(400);
     expect((await send("GET", `${O}${R.artifacts}?filter=x`)).status).toBe(400);
   });
 
@@ -620,7 +617,7 @@ describe("asks, mentions and assign (#1535)", () => {
     ).toBe(404);
   });
 
-  it("mentions and assign: delivery and state by agent presence; waiting_on_agents", async () => {
+  it("mentions: delivery by agent presence; an assign in the body is ignored", async () => {
     use();
     const r = await send("POST", base, {
       anchor: { kind: "note" },
@@ -634,24 +631,13 @@ describe("asks, mentions and assign (#1535)", () => {
       { key: "agent:claude-code", name: "Claude Code", delivery: "delivered" },
       { key: "agent:codex", name: "Codex", delivery: "queued" },
     ]);
-    expect(c?.assigned).toEqual({
-      key: "agent:codex",
-      name: "Codex",
-      state: "queued",
-    });
-    const w = await (
-      await send("GET", `${O}${R.artifacts}?filter=waiting_on_agents`)
-    ).json();
-    expect(w.items.map((a: { id: string }) => a.id)).toEqual([art.id]);
+    expect(c).not.toHaveProperty("assigned");
   });
 
-  it("403 forbidden for mentions or assign from a non owner or editor", async () => {
+  it("403 forbidden for mentions from a non owner or editor", async () => {
     use();
     const url = `${O}${R.comments(viewerArt.id)}`;
-    for (const extra of [
-      { mentions: [{ key: "agent:codex" }] },
-      { assign: { key: "agent:codex" } },
-    ]) {
+    for (const extra of [{ mentions: [{ key: "agent:codex" }] }]) {
       const r = await send("POST", url, {
         anchor: { kind: "note" },
         body: "x",

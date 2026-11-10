@@ -2,11 +2,16 @@ import { describe, expect, it } from "vitest";
 import {
   applyPublish,
   checked,
+  deletion,
+  dropRow,
   LIMIT,
   originOf,
   published,
+  reinstate,
   restore,
+  retitle,
   titleOf,
+  undeletion,
 } from "../plugin/hooks/model.ts";
 
 const origin = "https://oa-artifacts.example.com";
@@ -308,5 +313,134 @@ describe("real MCP read payloads", () => {
         origin,
       ),
     ).toBeNull();
+  });
+});
+
+describe("receipt title (#2015)", () => {
+  const withTitle = (title: unknown) => ({
+    structuredContent: { ...receipt, title },
+  });
+
+  it("reads a string title from the receipt and treats a missing or non-string one as absent", () => {
+    expect(published(withTitle("Stored title"), origin)?.title).toBe(
+      "Stored title",
+    );
+    expect(published({ structuredContent: receipt }, origin)?.title).toBe(
+      undefined,
+    );
+    for (const bad of [null, 7, {}, ["x"]])
+      expect(published(withTitle(bad), origin)?.title).toBeUndefined();
+  });
+
+  it("an edits-only publish (no input title) shows the receipt's title", () => {
+    const r = published(withTitle("Stored title"), origin);
+    if (!r) throw new Error("receipt");
+    expect(applyPublish([], r, undefined, 1)[0]?.title).toBe("Stored title");
+  });
+
+  it("the input title wins over the receipt's, which wins over the previous row", () => {
+    const r = published(withTitle("Receipt title"), origin);
+    if (!r) throw new Error("receipt");
+    expect(applyPublish([], r, "Input title", 1)[0]?.title).toBe("Input title");
+    const [old] = applyPublish([], receipt, "Old row", 1);
+    if (!old) throw new Error("row");
+    expect(applyPublish([old], r, undefined, 2)[0]?.title).toBe(
+      "Receipt title",
+    );
+  });
+
+  it("cleans the receipt title and falls back as before without one", () => {
+    const r = published(withTitle("  A‮  b\n"), origin);
+    if (!r) throw new Error("receipt");
+    expect(applyPublish([], r, undefined, 1)[0]?.title).toBe("A b");
+    const blank = published(withTitle("\n\t "), origin);
+    if (!blank) throw new Error("receipt");
+    expect(applyPublish([], blank, undefined, 1)[0]?.title).toBe(
+      `Artifact ${receipt.id}`,
+    );
+    expect(applyPublish([], receipt, undefined, 1)[0]?.title).toBe(
+      `Artifact ${receipt.id}`,
+    );
+    const [old] = applyPublish([], receipt, "Old row", 1);
+    if (!old) throw new Error("row");
+    expect(applyPublish([old], receipt, undefined, 2)[0]?.title).toBe(
+      "Old row",
+    );
+  });
+});
+
+describe("delete and undelete (#2016)", () => {
+  it("reads a delete receipt only from a successful result with deleted: true", () => {
+    const ok = { structuredContent: { id: receipt.id, deleted: true } };
+    expect(deletion(ok)).toEqual({ id: receipt.id });
+    expect(deletion({ result: JSON.stringify(ok.structuredContent) })).toEqual({
+      id: receipt.id,
+    });
+    for (const bad of [
+      { isError: true, structuredContent: ok.structuredContent },
+      { deny: "no" },
+      { structuredContent: { id: receipt.id } },
+      { structuredContent: { id: receipt.id, deleted: false } },
+      { structuredContent: { id: "bad id!", deleted: true } },
+      { result: "not_found" },
+    ])
+      expect(deletion(bad)).toBeNull();
+  });
+
+  it("reads an undelete receipt only from a successful summary with an id and title", () => {
+    const ok = { structuredContent: { id: receipt.id, title: "T" } };
+    expect(undeletion(ok)).toEqual({ id: receipt.id });
+    for (const bad of [
+      { isError: true, structuredContent: ok.structuredContent },
+      { structuredContent: { id: receipt.id } },
+      { structuredContent: { id: receipt.id, deleted: true } },
+      { result: "not_found" },
+    ])
+      expect(undeletion(bad)).toBeNull();
+  });
+
+  it("moves a row to the deleted list and back, keeping its data and order", () => {
+    let rows = applyPublish([], receipt, "Keep me", 1);
+    rows = applyPublish(
+      rows,
+      {
+        ...receipt,
+        id: "Zz3dEfGhJk4mNpQr",
+        url: `${origin}/a/Zz3dEfGhJk4mNpQr`,
+      },
+      "Newer",
+      2,
+    );
+    const gone = dropRow(rows, [], receipt.id);
+    expect(gone?.rows.map((a) => a.title)).toEqual(["Newer"]);
+    expect(gone?.deleted.map((a) => a.title)).toEqual(["Keep me"]);
+    expect(
+      dropRow(gone?.rows ?? [], gone?.deleted ?? [], receipt.id),
+    ).toBeNull();
+    const back = reinstate(gone?.rows ?? [], gone?.deleted ?? [], receipt.id);
+    expect(back?.rows.map((a) => a.title)).toEqual(["Newer", "Keep me"]);
+    expect(back?.deleted).toEqual([]);
+    expect(reinstate(rows, [], receipt.id)).toBeNull();
+  });
+});
+
+describe("review lows on delete and rename (#2016)", () => {
+  it("reinstate keeps a current row and drops the stale kept copy", () => {
+    const [stale] = applyPublish([], receipt, "Stale", 1);
+    const current = applyPublish([], { ...receipt, version: 5 }, "Current", 9);
+    if (!stale) throw new Error("row");
+    const back = reinstate(current, [stale], receipt.id);
+    expect(back?.rows).toBe(current);
+    expect(back?.rows[0]?.title).toBe("Current");
+    expect(back?.deleted).toEqual([]);
+  });
+
+  it("retitle changes only the title of an existing row", () => {
+    const rows = applyPublish([], receipt, "Old", 1);
+    const next = retitle(rows, receipt.id, "New");
+    expect(next[0]).toEqual({ ...rows[0], title: "New" });
+    expect(retitle(rows, receipt.id, "Old")).toBe(rows);
+    expect(retitle(rows, receipt.id, "  ")).toBe(rows);
+    expect(retitle(rows, "Other3dEfGhJk4mN", "New")).toBe(rows);
   });
 });

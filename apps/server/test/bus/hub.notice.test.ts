@@ -1024,3 +1024,54 @@ describe("old-daemon notices: counted expiry and their own share (#1828)", () =>
     expect(await waiting(s.userId)).toBe(0);
   });
 });
+
+describe("a notice to a renamed agent's former address (#1752)", () => {
+  async function renamed() {
+    const m = await member();
+    const mach = await machine("Laptop", m.userId);
+    const d = await daemon(mach.token);
+    d.send({
+      ...plainHello(id("h")),
+      caps: [BUS_CAPS.follow, "rename"],
+    } as never);
+    await waitFor(d, "hello_ok");
+    const namespace = ns("notice");
+    const ref = id("ref");
+    d.send(up(id("u"), ref, uniq("old"), namespace));
+    const old = (await waitFor(d, "agent_ok")).bus_name;
+    const t = base();
+    clocked.add(m.userId);
+    await setClock(m.userId, t);
+    const fresh = uniq("new");
+    d.send({
+      v: 1,
+      id: id("r"),
+      type: "rename",
+      agent_ref: ref,
+      proposed_name: fresh,
+    } as never);
+    const r = await waitFor(d, "renamed");
+    expect(r.bus_name).toBe(fresh);
+    return { d, ref, userId: m.userId, namespace, old, fresh, t };
+  }
+
+  it("still reaches the agent by its former name", async () => {
+    const s = await renamed();
+    const stub = await hubOf(s.userId);
+    const n = note({ namespace: s.namespace, name: s.old });
+    expect(await stub.deliverNotice(n)).toBe("delivered");
+    const f = await waitFor(s.d, "deliver");
+    expect(f.from_name).toBe(NOTICE_SENDER);
+    expect(f.body).toBe(n.text);
+    expect(await waiting(s.userId)).toBe(0);
+  });
+
+  it("is dropped once the former name's grace has ended", async () => {
+    const s = await renamed();
+    await setClock(s.userId, s.t + 10 * 24 * 3_600_000);
+    const stub = await hubOf(s.userId);
+    expect(
+      await stub.deliverNotice(note({ namespace: s.namespace, name: s.old })),
+    ).toBe("dropped");
+  });
+});

@@ -1,5 +1,6 @@
 // Settings > Plan and billing (#953, Design's Screens A, option 1A): one plan
-// card with its status and the two billing buttons, then a compact comparison.
+// card with its status and the two billing buttons, then the plan cards and
+// comparison with a Monthly/Yearly toggle (#2007, PlanCompare.tsx).
 // Owners and admins only, and they reach it even while the plan locks the
 // instance. The card shows only what Me.instance.billing carries: no invoice
 // or card data (that is the Stripe portal).
@@ -10,18 +11,8 @@ import {
   type PlanView,
   R,
 } from "@oa/shared";
-import {
-  Badge,
-  Button,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@oa/ui/shadcn";
+import { Badge, Button } from "@oa/ui/shadcn";
 import { useMutation } from "@tanstack/react-query";
-import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
 import { useRedirect } from "../auth/redirect";
@@ -30,10 +21,10 @@ import { Notice } from "../layout/Notice";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { formatDate } from "./date";
-import { INSET, muted, SettingsCard, STACK } from "./ui";
+import { type Column, PlanCompare } from "./PlanCompare";
+import { muted, SettingsCard, STACK } from "./ui";
 
 type Buy = Pick<BillingCheckoutInput, "tier" | "interval">;
-type Column = "solo" | "team" | "business";
 
 const NAME: Record<BillingTier, string> = {
   free: "Solo",
@@ -57,34 +48,6 @@ const COLUMN: Record<BillingTier, Column> = {
   team: "team",
   business: "business",
 };
-const CMP: { row: string; cells: Record<Column, string> }[] = [
-  {
-    row: "Price",
-    cells: {
-      solo: "$1 a month or $10 a year, per instance",
-      team: "$10 per creator",
-      business: "$25 per creator",
-    },
-  },
-  {
-    row: "People",
-    cells: {
-      solo: "You and your agents",
-      team: "Invite people",
-      business: "Invite people",
-    },
-  },
-  {
-    row: "Share with anyone",
-    cells: { solo: "Yes", team: "Yes", business: "Yes" },
-  },
-  { row: "Spaces", cells: { solo: "No", team: "Yes", business: "Yes" } },
-  {
-    row: "Directory sync",
-    cells: { solo: "No", team: "No", business: "Yes" },
-  },
-];
-
 const date = formatDate;
 
 type Status = {
@@ -157,85 +120,6 @@ const PILL: Record<Status["tone"], string> = {
   bad: "bg-[var(--oa-danger-soft)] text-[var(--oa-danger)]",
   info: "bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)]",
 };
-
-/**
- * Wraps a shadcn Table: a right-edge fade shows only while the table's scroll
- * box overflows and isn't scrolled to the end, so it says "more this way" and
- * never dims the last column once it is in view.
- */
-function ScrollFade({ children }: { children: ReactNode }) {
-  const box = useRef<HTMLDivElement>(null);
-  const [more, setMore] = useState(false);
-  useEffect(() => {
-    const el = box.current?.querySelector<HTMLElement>(
-      '[data-slot="table-container"]',
-    );
-    if (!el) return;
-    const update = () =>
-      setMore(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
-    update();
-    el.addEventListener("scroll", update, { passive: true });
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
-    // A content-width change (a font swap) resizes the table, not the box.
-    const t = el.querySelector("table");
-    if (t) ro.observe(t);
-    return () => {
-      el.removeEventListener("scroll", update);
-      ro.disconnect();
-    };
-  }, []);
-  return (
-    <div ref={box} className="relative">
-      {children}
-      {more && (
-        <div
-          aria-hidden="true"
-          data-testid="table-fade"
-          className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-[var(--oa-bg)] to-transparent"
-        />
-      )}
-    </div>
-  );
-}
-
-const NAMES: Record<Column, string> = {
-  solo: "Solo",
-  team: "Team",
-  business: "Business",
-};
-
-/** The comparison on a phone: a block per plan, every row in full. */
-function Stacked({ column }: { column: Column }) {
-  return (
-    <div
-      data-testid="compare-stacked"
-      className="grid gap-[var(--oa-space-3)] sm:hidden"
-    >
-      {(["solo", "team", "business"] as const).map((c) => (
-        <section
-          key={c}
-          aria-current={c === column ? "true" : undefined}
-          className={`rounded-[var(--oa-radius-md)] border border-[var(--oa-border)] p-[var(--oa-space-3)] ${
-            c === column ? "bg-[var(--oa-accent-soft)]" : ""
-          }`}
-        >
-          <h3 className="m-0 text-[length:var(--oa-text-base)] font-semibold">
-            {NAMES[c]}
-          </h3>
-          <dl className="m-0 mt-[var(--oa-space-2)] grid grid-cols-[minmax(0,auto)_minmax(0,1fr)] gap-x-[var(--oa-space-3)] gap-y-[var(--oa-space-1)]">
-            {CMP.map((r) => (
-              <Fragment key={r.row}>
-                <dt className={muted}>{r.row}</dt>
-                <dd className="m-0">{r.cells[c]}</dd>
-              </Fragment>
-            ))}
-          </dl>
-        </section>
-      ))}
-    </div>
-  );
-}
 
 export function Plan() {
   useDocumentTitle("Plan and billing");
@@ -350,20 +234,6 @@ export function Plan() {
                   </Button>
                 </>
               )}
-              <Button
-                variant={solo ? "outline" : "default"}
-                disabled={busy}
-                onClick={() => go.mutate({ tier: "business" })}
-              >
-                Upgrade to Business
-              </Button>
-              <Button
-                variant="outline"
-                disabled={busy}
-                onClick={() => go.mutate({ tier: "team" })}
-              >
-                Upgrade to Team
-              </Button>
             </>
           )}
           {paid && !lapsedPaid && !operatorPlan && (
@@ -373,59 +243,19 @@ export function Plan() {
           )}
         </div>
       </SettingsCard>
-      <section
-        aria-label="Compare plans"
-        className={`relative min-w-0 ${INSET} px-0`}
-      >
-        <div data-testid="compare-table" className="hidden sm:block">
-          <ScrollFade>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead />
-                  {(["solo", "team", "business"] as const).map((c) => (
-                    <TableHead
-                      key={c}
-                      aria-current={c === column ? "true" : undefined}
-                      className={
-                        c === column ? "bg-[var(--oa-accent-soft)]" : ""
-                      }
-                    >
-                      {c === "solo"
-                        ? "Solo"
-                        : c === "team"
-                          ? "Team"
-                          : "Business"}
-                    </TableHead>
-                  ))}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {CMP.map((r) => (
-                  <TableRow key={r.row}>
-                    <TableHead scope="row">{r.row}</TableHead>
-                    {(["solo", "team", "business"] as const).map((c) => (
-                      <TableCell
-                        key={c}
-                        className={
-                          c === column ? "bg-[var(--oa-accent-soft)]" : ""
-                        }
-                      >
-                        {r.cells[c]}
-                      </TableCell>
-                    ))}
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </ScrollFade>
-        </div>
-        <Stacked column={column} />
-        <p className={`mt-[var(--oa-space-2)] ${muted}`}>
-          Team and Business bill per creator: people who publish or edit live
-          data in a month. Viewers are free.
-        </p>
-      </section>
+      <PlanCompare
+        column={column}
+        trial={billing.tier === "trial"}
+        busy={busy}
+        upgrade={
+          operatorPlan || lapsedPaid
+            ? undefined
+            : // A paid plan changes in the billing portal, never a second checkout.
+              portal
+              ? () => go.mutate("portal")
+              : (tier) => go.mutate({ tier })
+        }
+      />
     </div>
   );
 }

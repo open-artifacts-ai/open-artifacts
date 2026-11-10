@@ -1,4 +1,4 @@
-// Agents in comments (#1535): who can be mentioned, assigned or asked on an
+// Agents in comments (#1535): who can be mentioned or asked on an
 // artifact, and how a comment reaches them. The roster is the agents that
 // follow the artifact (services/follows.ts): those are the addresses the bus
 // can deliver to. Delivery goes through bus-delivery.ts only, with a fixed
@@ -277,17 +277,11 @@ export const storedAgent = (
   ...(identity ? { identity } : {}),
 });
 
-export type CommentNoticeKind =
-  | "ask"
-  | "mention"
-  | "assign"
-  | "asker"
-  | "thread_reply";
+export type CommentNoticeKind = "ask" | "mention" | "asker" | "thread_reply";
 
 const WHAT: Record<CommentNoticeKind, string> = {
   ask: "there is a question for you on an artifact",
   mention: "you were mentioned in a comment on an artifact",
-  assign: "work was assigned to you in a comment on an artifact",
   asker: "someone replied to a question you asked on an artifact",
   thread_reply: "someone replied in a comment thread you're in",
 };
@@ -301,7 +295,7 @@ const WHAT_TEXT: Record<CommentTextKind, string> = {
 };
 
 /** What the "your user" tier says it is, per kind (#1797). */
-const WHAT_YOURS: Record<Exclude<CommentTextKind, "assign">, string> = {
+const WHAT_YOURS: Record<CommentTextKind, string> = {
   ask: "asked you a question",
   mention: "mentioned you in a comment on an artifact",
   answered: "answered your question",
@@ -337,13 +331,11 @@ export function commentNoticeText(
       : [];
   return [
     `Open Artifacts: ${
-      fromYourUser && kind !== "assign"
-        ? `your user ${WHAT_YOURS[kind]}`
-        : WHAT_TEXT[kind]
+      fromYourUser ? `your user ${WHAT_YOURS[kind]}` : WHAT_TEXT[kind]
     } (version ${version}).`,
     url,
     ...idLine,
-    fromYourUser && kind !== "assign"
+    fromYourUser
       ? kind === "answered"
         ? ANSWERED_YOURS_TAIL
         : YOUR_USER_TAIL

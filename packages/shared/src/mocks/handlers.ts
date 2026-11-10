@@ -779,10 +779,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           .filter((a) => !inSpace || matches(a, withScope(q, "all")))
           .filter(
             (a) =>
-              p.data.filter === undefined ||
-              (p.data.filter === "needs_answer"
-                ? commentMock.asksForYou(a.id) > 0
-                : commentMock.waitingOnAgents(a.id)),
+              p.data.filter === undefined || commentMock.asksForYou(a.id) > 0,
           )
           .map((a) => {
             const asksForYou = commentMock.asksForYou(a.id);

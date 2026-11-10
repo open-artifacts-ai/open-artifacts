@@ -179,17 +179,19 @@ test("Move: the manager moves a personal artifact into the space; the viewer can
   await expect(v.getByRole("button", { name: "Move" })).toHaveCount(0);
 });
 
-test("Directory: an admin sees it isn't connected, and that only the owner can connect", async ({
+// #2009: with directory sync off there is no Directory page or tab; the
+// not-connected header and the admin's "only the owner" copy are covered by
+// test/directory.test.tsx on a Business install that hasn't connected yet.
+test("Directory: with sync off, an admin lands on Connections and sees no Directory tab", async ({
   browser,
 }) => {
   const { admin } = await world(browser);
   const page = admin.page;
   await page.goto("/settings/directory");
-  await expect(page.getByText("Not connected")).toBeVisible();
+  await page.waitForURL(/\/settings\/connections$/);
   await expect(
-    page.getByText(/Only the owner.* can connect Google Workspace\./),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Connect Google Workspace" }),
+    page
+      .getByRole("navigation", { name: "Settings sections" })
+      .getByRole("link", { name: /^Directory/ }),
   ).toHaveCount(0);
 });

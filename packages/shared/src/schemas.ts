@@ -275,6 +275,8 @@ export const PublishResultSchema = z.object({
   id: z.string(),
   version: z.number().int(),
   url: z.string().url(),
+  /** The artifact's current title after the call (#2015); absent on restore_version. */
+  title: z.string().optional(),
   /** Set when the artifact ends up public, declares db and lets viewers write data (#681). */
   warning: z.string().optional(),
 });
@@ -377,8 +379,8 @@ export const ListQuerySchema = z
     cursor: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(100).default(25),
     includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
-    /** #1535: needs_answer = open asks addressed to the caller; waiting_on_agents = work assigned to an agent and not done. */
-    filter: z.enum(["needs_answer", "waiting_on_agents"]).optional(),
+    /** #1535: needs_answer = open asks addressed to the caller. */
+    filter: z.enum(["needs_answer"]).optional(),
     /**
      * Artifacts with any version from this connection (AgentViaSchema). Only
      * the caller's own grant or token matches; any other is an empty page.

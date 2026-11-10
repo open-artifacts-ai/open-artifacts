@@ -13,7 +13,7 @@ import { useState } from "react";
 import { useSettings, useUpdateSettings } from "../api/queries";
 import { useMe } from "../auth/useMe";
 import { Notice } from "../layout/Notice";
-import { instanceUpdate } from "../layout/update";
+import { instanceUpdate, isSelfHostAdmin } from "../layout/update";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import {
   CARD,
@@ -57,7 +57,7 @@ export function Instance() {
           </ul>
         </Notice>
       )}
-      {latest && <VersionCard update={latest} />}
+      {isSelfHostAdmin(me) && <VersionCard update={latest} />}
       <InstanceSettings />
     </div>
   );
