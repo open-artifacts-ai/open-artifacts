@@ -76,11 +76,13 @@ const OVERLAY_CSS = `
 .pin.flip-y{margin:0;border-radius:3px 15px 15px 15px}
 .pin.flip-x{margin:-30px 0 0 -30px;border-radius:15px 15px 3px 15px}
 .pin.flip-x.flip-y{margin:0 0 0 -30px;border-radius:15px 3px 15px 15px}
-.pin.on{box-shadow:0 0 0 2px #fff,0 0 0 4.5px #e0a000,0 3px 8px rgba(0,0,0,.3)}
+.pin.on{z-index:1;box-shadow:0 0 0 2px #fff,0 0 0 4.5px #e0a000,0 3px 8px rgba(0,0,0,.3)}
 /* Placing: a translucent accent bubble with a dashed edge. */
 .pin.ghost{background:#1f5fbf55;border:2px dashed #1f5fbf;box-sizing:border-box;box-shadow:none;pointer-events:none}
 /* A pin whose page changed: a dashed outline outside the ring, not a colour alone, plus a title. */
 .pin.changed{outline:2px dashed #8a5a00;outline-offset:4px}
+/* Open and changed: the dashed outline sits past the 4.5px amber ring, so both read. */
+.pin.changed.on{outline-offset:6.5px}
 `;
 const PAGE_CSS =
   "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}";

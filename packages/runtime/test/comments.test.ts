@@ -1095,6 +1095,23 @@ describe("pins", () => {
       Reflect.deleteProperty(document.documentElement, "clientWidth");
     });
 
+    it("the open pin stacks above the others, and open+changed keeps both marks visible", async () => {
+      await pinAt({ active: true, changed: true });
+      expect(rule(".pin.on")).toContain("z-index:1");
+      expect(rule(".pin")).not.toContain("z-index");
+      // The amber ring ends at 4.5px; the dashed outline starts past it.
+      const ring = Number.parseFloat(
+        /0 0 0 4\.5px #e0a000/.test(rule(".pin.on")) ? "4.5" : "0",
+      );
+      const offset = Number.parseFloat(
+        /outline-offset:([\d.]+)px/.exec(rule(".pin.changed.on"))?.[1] ?? "0",
+      );
+      expect(ring).toBe(4.5);
+      expect(offset).toBeGreaterThan(ring);
+      const pin = roots.at(-1)?.querySelector<HTMLElement>(".pin");
+      expect(pin?.className).toBe("pin on changed");
+    });
+
     it("carries the pin number, never a name or initial", async () => {
       const pin = await pinAt();
       expect(pin.textContent).toBe("7");
