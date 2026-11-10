@@ -239,10 +239,14 @@ class RetryOnLaterTurns(OverASocket):
 class FakeProofBus:
     """What the middleware asks of the Bus: the root's proof, or none."""
 
-    def __init__(self, proof="p" * 43, raises=False):
+    def __init__(self, proof="p" * 43, raises=False, free=False):
         self.proof = proof
+        self.free = free
         self.raises = raises
         self.asked = []
+
+    def wiring_free(self):
+        return self.free
 
     def proof_for(self, session_id):
         self.asked.append(session_id)
@@ -423,6 +427,81 @@ class WireInjection(unittest.TestCase):
         self.assertEqual(first.asked, ["root-1"])
         self.assertEqual(second.asked, [])
 
+    def test_a_new_bus_takes_over_when_the_holder_has_no_open_link(self):
+        # A plugin reload: the old Bus holds the wiring but no link is open.
+        ok, registry, handlers, first, _ = installed(bus=FakeProofBus(free=True))
+        second = FakeProofBus(proof="n" * 43)
+        self.assertTrue(proof_mod.install(second, ("open-artifacts",), registry=registry, handlers=handlers))
+        registry.dispatch("mcp__open_artifacts__get_artifact", {}, session_id="root-1")
+        self.assertEqual(handlers.wire[0][2], {ARG: "n" * 43})
+        self.assertEqual(first.asked, [])
+        self.assertEqual(len(registry.above), 1)  # wrapped once, not stacked
+
+    def test_a_new_bus_never_takes_over_while_the_holder_has_an_open_link(self):
+        _, registry, handlers, first, _ = installed(bus=FakeProofBus(free=False))
+        second = FakeProofBus(proof="n" * 43)
+        self.assertFalse(proof_mod.install(second, ("open-artifacts",), registry=registry, handlers=handlers))
+        registry.dispatch("mcp__open_artifacts__get_artifact", {}, session_id="root-1")
+        self.assertEqual(handlers.wire[0][2], {ARG: "p" * 43})
+        self.assertEqual(second.asked, [])
+
+    def test_a_holder_that_cannot_say_is_treated_as_in_use(self):
+        class Mute:
+            def proof_for(self, session_id):
+                return "p" * 43
+
+        class Raises(Mute):
+            def wiring_free(self):
+                raise RuntimeError("boom")
+
+        for holder in (Mute(), Raises()):
+            with self.subTest(type(holder).__name__):
+                _, registry, handlers, *_ = installed(bus=holder)
+                self.assertFalse(proof_mod.install(FakeProofBus(), ("open-artifacts",), registry=registry, handlers=handlers))
+
+    def test_a_changed_dispatch_signature_is_not_wrapped(self):
+        class Dispatch:
+            def __init__(self, fn):
+                self.dispatch = fn
+
+        variants = {
+            "no args": lambda name, **kw: None,
+            "renamed": lambda tool, params, **kw: None,
+            "no session_id room": lambda name, args: None,
+            "keyword only": lambda *, name, args, **kw: None,
+        }
+        for label, fn in variants.items():
+            with self.subTest(label):
+                registry = Dispatch(fn)
+                handlers = FakeHandlers()
+                wire = handlers._call_tool_racing_stdio_death
+                self.assertFalse(proof_mod.install(FakeProofBus(), ("open-artifacts",), registry=registry, handlers=handlers))
+                self.assertIs(registry.dispatch, fn)
+                self.assertEqual(handlers._call_tool_racing_stdio_death, wire)
+
+    def test_a_changed_wire_signature_is_not_wrapped(self):
+        class Handlers:
+            pass
+
+        async def moved(server, tool_name, server_name, args, progress_callback=None):
+            pass
+
+        async def short(server, server_name, tool_name):
+            pass
+
+        async def renamed(server, server_name, tool_name, arguments, progress_callback=None):
+            pass
+
+        for label, fn in {"moved": moved, "short": short, "renamed": renamed}.items():
+            with self.subTest(label):
+                handlers = Handlers()
+                handlers._call_tool_racing_stdio_death = fn
+                registry = FakeRegistry(FakeHandlers(), SERVED)
+                before = registry.dispatch.__func__
+                self.assertFalse(proof_mod.install(FakeProofBus(), ("open-artifacts",), registry=registry, handlers=handlers))
+                self.assertIs(handlers._call_tool_racing_stdio_death, fn)
+                self.assertIs(registry.dispatch.__func__, before)
+
     def test_a_hermes_without_the_functions_stays_unlinked_and_untouched(self):
         registry = FakeRegistry(FakeHandlers(), SERVED)
         before = registry.dispatch.__func__
@@ -485,6 +564,15 @@ class ProofForABus(unittest.TestCase):
         for sid in ("kid", "nobody", "", None):
             with self.subTest(sid):
                 self.assertIsNone(self.bus.proof_for(sid))
+
+    def test_wiring_is_free_with_no_open_link_or_after_shutdown(self):
+        self.assertFalse(self.bus.wiring_free())  # a root holds an open link
+        self.link.closed = True
+        self.assertTrue(self.bus.wiring_free())
+        self.link.closed = False
+        self.assertFalse(self.bus.wiring_free())
+        self.bus.close_all()
+        self.assertTrue(self.bus.wiring_free())
 
     def test_none_when_the_link_is_closed_and_nothing_is_opened(self):
         # The dispatch path is a read: it never opens a link, so a session whose root has no

@@ -16,8 +16,9 @@ identity; the wire function looks the identity up. Its `server_name` is the raw
 server name Hermes was configured with, so the match is exact: `open-artifacts`
 and `open_artifacts` make the same registry prefix but are different names here.
 
-One process, several profiles: only the first Bus to install is wired in (see `install`); a
-second profile stays unlinked, with no second link and no overwritten hash. The dispatch path is a
+One process, several profiles: the first Bus to install is wired in (see `install`); a second
+profile stays unlinked, with no second link and no overwritten hash, unless the first holds no open
+link or is shut down (a plugin reload), when the new Bus takes over. The dispatch path is a
 read: it never opens a link.
 
 Every piece fails to unlinked: a missing function leaves both untouched, an error
@@ -26,6 +27,7 @@ finding the proof sends the call as it was, a call that did not come through
 """
 
 import functools
+import inspect
 
 # The reserved argument the instance's /mcp reads and removes.
 ARG = "_oa_agent_proof"
@@ -95,6 +97,49 @@ def _dispatch_wrapper(original, cfg):
     return wrapped
 
 
+def _positional(fn):
+    """The names of fn's parameters that can be passed by position, in order; None when unreadable."""
+    try:
+        params = inspect.signature(fn).parameters.values()
+    except (TypeError, ValueError):
+        return None
+    return [p for p in params if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+
+
+def _dispatch_fits(fn):
+    """dispatch(name, args, ..., **kwargs): the wrapper reads `name` and `args` by position and
+    `session_id` from the keywords, so it must be able to take them."""
+    try:
+        pos = _positional(fn)
+        if pos is None or [p.name for p in pos[:2]] != ["name", "args"]:
+            return False
+        params = inspect.signature(fn).parameters
+        return "session_id" in params and params["session_id"].kind != inspect.Parameter.POSITIONAL_ONLY or any(
+            p.kind is p.VAR_KEYWORD for p in params.values()
+        )
+    except Exception:
+        return False
+
+
+def _wire_fits(fn):
+    """(server, server_name, tool_name, args, ...): the wrapper reads server_name and args by
+    position 1 and 3, or by keyword."""
+    try:
+        pos = _positional(fn)
+        return pos is not None and len(pos) >= 4 and pos[1].name == "server_name" and pos[3].name == "args"
+    except Exception:
+        return False
+
+
+def _holder_is_free(cfg):
+    """True when the Bus holding the wiring has no open link or is shut down. Anything it cannot
+    say counts as in use."""
+    try:
+        return cfg["bus"].wiring_free() is True
+    except Exception:
+        return False
+
+
 def install(bus, names, registry=None, handlers=None):
     """Wraps the two Hermes functions, once per process. True when `bus` is the one in charge of them.
 
@@ -114,7 +159,16 @@ def install(bus, names, registry=None, handlers=None):
             return False
         cfg = getattr(dispatch, _CFG, None) or getattr(wire, _CFG, None)
         if cfg is not None:
-            return cfg["bus"] is bus
+            if cfg["bus"] is bus:
+                return True
+            # A plugin reload makes a new Bus: it takes the wiring over once the holder has no open
+            # link. Never while one is open: that is another profile, which stays unlinked.
+            if not _holder_is_free(cfg):
+                return False
+            cfg["bus"], cfg["names"] = bus, tuple(names)
+            return True
+        if not (_dispatch_fits(dispatch) and _wire_fits(wire)):
+            return False
         cfg = {"bus": bus, "names": tuple(names)}
         registry.dispatch = _dispatch_wrapper(dispatch, cfg)
         handlers._call_tool_racing_stdio_death = _wire_wrapper(wire, cfg)
