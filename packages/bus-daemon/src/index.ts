@@ -33,7 +33,7 @@ import {
   type SendFrame,
   WireNamespaceSchema,
 } from "@oa/bus-protocol";
-import { type AgentRecord, AgentTable } from "./agents.ts";
+import { type AgentRecord, AgentTable, withLinkHash } from "./agents.ts";
 import {
   type Attest,
   attest,
@@ -411,14 +411,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    * a failure (`not_registered`, a dropped link) is left to the next of those.
    */
   const sendLink = (rec: AgentRecord) => {
-    if (!hubLink || !rec.live || rec.linkHash === undefined) return;
-    hub.send({
-      v: 1,
-      id: frameId(),
-      type: "link_bind",
-      agent_ref: rec.ref,
-      hash: rec.linkHash,
-    });
+    if (!hubLink || !rec.live) return;
+    // Oldest first, so the newest ends as the hub's newest.
+    for (const hash of rec.linkHashes ?? [])
+      hub.send({
+        v: 1,
+        id: frameId(),
+        type: "link_bind",
+        agent_ref: rec.ref,
+        hash,
+      });
   };
   /** Never a loop: one retry after a long wait; a reconnect replays it sooner. */
   const markLimited = (ref: string, message: string) => {
@@ -917,7 +919,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       const p = pendingProofs.get(rec.pid);
       if (!p || p.procStart !== rec.procStart) continue;
       pendingProofs.delete(rec.pid);
-      rec.linkHash = p.hash;
+      rec.linkHashes = withLinkHash(rec.linkHashes, p.hash);
       sendLink(rec);
     }
   };
@@ -993,7 +995,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           pid: s.pid,
           procStart: s.procStart,
           // The same process keeps its proof across /clear; agent_ok rebinds it.
-          ...(old?.linkHash !== undefined ? { linkHash: old.linkHash } : {}),
+          ...(old?.linkHashes !== undefined
+            ? { linkHashes: old.linkHashes }
+            : {}),
           sessionName: s.name,
           cwd: s.cwd,
           live: true,
@@ -1357,7 +1361,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       }
       if (rec && rec.procStart !== undefined) {
         if (rec.procStart !== start) return { bound: false };
-        rec.linkHash = req.hash;
+        rec.linkHashes = withLinkHash(rec.linkHashes, req.hash);
         sendLink(rec);
         return { bound: true };
       }
@@ -1666,8 +1670,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ...(mine ? { procStart: mine.procStart } : {}),
           ...(mine ? { sessionName: mine.name } : {}),
           // Claude's MCP server reconnects per tool call: the proof stays.
-          ...((prev?.linkHash ?? old?.linkHash) !== undefined
-            ? { linkHash: (prev?.linkHash ?? old?.linkHash) as string }
+          ...((prev?.linkHashes ?? old?.linkHashes) !== undefined
+            ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
             : {}),
           ...(codexName !== undefined ? { sessionName: codexName } : {}),
           cwd,
@@ -1747,7 +1751,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           if (!hubLink || !hubLinkArg) return false;
           const rec = agents.byRef(ref);
           if (!rec?.live) return false;
-          rec.linkHash = hash;
+          rec.linkHashes = withLinkHash(rec.linkHashes, hash);
           sendLink(rec);
           return true;
         },

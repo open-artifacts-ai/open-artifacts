@@ -45,7 +45,7 @@ describe("helloed link_proof (#1856)", () => {
     expect(b.welcome.caps ?? []).not.toContain(ADAPTER_CAPS.link);
   });
 
-  it("binds the hash to the connection's own agent, and a new one replaces it", async () => {
+  it("binds the hash to the connection's own agent, and a new one is added (#1984)", async () => {
     const h = await start();
     const a = await h.adapter("A", listed);
     await h.adapter("B", listed);
@@ -54,8 +54,9 @@ describe("helloed link_proof (#1856)", () => {
     const bind = await h.next("link_bind");
     expect(bind).toMatchObject({ agent_ref: "A", hash: HASH });
     await a.request({ type: "link_proof", hash: HASH2 } as never);
-    await h.next("link_bind", 2);
+    await h.next("link_bind", 3);
     expect(h.of("link_bind").map((f) => [f.agent_ref, f.hash])).toEqual([
+      ["A", HASH],
       ["A", HASH],
       ["A", HASH2],
     ]);

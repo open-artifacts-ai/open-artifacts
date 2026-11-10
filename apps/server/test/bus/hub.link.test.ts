@@ -135,16 +135,61 @@ describe("link_bind (#1822)", () => {
     expect(await lookup(s.m.userId, hashOf("d"))).toBeNull();
   });
 
-  it("a new bind replaces the old hash and keeps the identity", async () => {
+  it("a second bind ADDS a proof: both resolve to the session, one identity (#1984)", async () => {
     const s = await scene();
     await reg(s.d, "r1", "Lead", s.ns);
     await bind(s.d, "r1", hashOf("1"));
     const first = await lookup(s.m.userId, hashOf("1"));
     await bind(s.d, "r1", hashOf("2"));
+    const old = await lookup(s.m.userId, hashOf("1"));
+    const fresh = await lookup(s.m.userId, hashOf("2"));
+    expect(old).toEqual(first);
+    expect(fresh?.identityId).toBe(first?.identityId);
+    expect(fresh?.name).toBe(first?.name);
+  });
+
+  it("a fifth bind evicts the oldest proof (#1984)", async () => {
+    const s = await scene();
+    await reg(s.d, "r1", "Lead", s.ns);
+    for (const c of ["1", "2", "3", "4", "5"]) await bind(s.d, "r1", hashOf(c));
     expect(await lookup(s.m.userId, hashOf("1"))).toBeNull();
-    expect((await lookup(s.m.userId, hashOf("2")))?.identityId).toBe(
-      first?.identityId,
-    );
+    for (const c of ["2", "3", "4", "5"])
+      expect(await lookup(s.m.userId, hashOf(c))).not.toBeNull();
+    // Re-binding a held proof refreshes it, so it outlives a newer one.
+    await bind(s.d, "r1", hashOf("2"));
+    await bind(s.d, "r1", hashOf("6"));
+    expect(await lookup(s.m.userId, hashOf("3"))).toBeNull();
+    expect(await lookup(s.m.userId, hashOf("2"))).not.toBeNull();
+  });
+
+  it("another session's proof never matches this session (#1984)", async () => {
+    const s = await scene();
+    await reg(s.d, "r1", "Lead", s.ns);
+    await reg(s.d, "r2", "Other", s.ns);
+    await bind(s.d, "r1", hashOf("1"));
+    await bind(s.d, "r1", hashOf("2"));
+    await bind(s.d, "r2", hashOf("3"));
+    const a = await lookup(s.m.userId, hashOf("1"));
+    const b = await lookup(s.m.userId, hashOf("3"));
+    expect((await lookup(s.m.userId, hashOf("2")))?.name).toBe(a?.name);
+    expect(a?.name).not.toBe(b?.name);
+    expect(a?.identityId).not.toBe(b?.identityId);
+  });
+
+  it("closing the session unlinks every proof, and a reopened ref does not revive them (#1984)", async () => {
+    const s = await scene();
+    await reg(s.d, "r1", "Lead", s.ns);
+    await bind(s.d, "r1", hashOf("1"));
+    await bind(s.d, "r1", hashOf("2"));
+    await close(s.d, s.m.userId, "r1");
+    expect(await lookup(s.m.userId, hashOf("1"))).toBeNull();
+    expect(await lookup(s.m.userId, hashOf("2"))).toBeNull();
+    await reg(s.d, "r1", "Lead", s.ns);
+    expect(await lookup(s.m.userId, hashOf("1"))).toBeNull();
+    expect(await lookup(s.m.userId, hashOf("2"))).toBeNull();
+    expect(
+      await rows(s.m.userId, "select count(*) as n from agent_proofs"),
+    ).toEqual([{ n: 0 }]);
   });
 
   it("closing the session clears the hash", async () => {
