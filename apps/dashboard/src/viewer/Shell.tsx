@@ -253,6 +253,9 @@ function Viewer({
   const pinCard =
     cmt.threads.find((t) => t.id === cmt.active && t.anchor.kind === "pin")
       ?.id ?? null;
+  // #1783: a pin with replies needs the half height to show one.
+  const pinReplies =
+    (cmt.threads.find((t) => t.id === pinCard)?.comments.length ?? 0) > 1;
   // A sheet or overlay would cover the page: leave it while placing a pin.
   useEffect(() => {
     if (cmt.mode === "pin") setDialogOpen(false);
@@ -688,6 +691,7 @@ function Viewer({
           <CommentsDialog
             textFormat={textFormat}
             pinCard={pinCard}
+            pinReplies={pinReplies}
             onClose={() => setDialogOpen(false)}
           />
         )}

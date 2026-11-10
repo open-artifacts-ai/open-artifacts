@@ -722,10 +722,37 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   useEffect(() => {
     if (!isActive) return;
     el.current?.scrollIntoView?.({ block: "nearest" });
+    // #1783: in the short pin sheet a thread with 2+ replies shows its last
+    // reply just above the floating action row, not the card's top.
+    const card = el.current;
+    const last =
+      t.comments.length > 2 ? t.comments[t.comments.length - 1] : null;
+    let frame = 0;
+    if (card && last && card.closest('[data-sheet-height="pin"]')) {
+      frame = requestAnimationFrame(() => {
+        const reply = card.querySelector<HTMLElement>(
+          `[data-comment="${last.id}"]`,
+        );
+        if (!reply) return;
+        const row = card
+          .closest("[data-sheet-height]")
+          ?.querySelector<HTMLElement>("[data-oa-action-outlet]");
+        // The row's own height, which already includes the safe-area inset.
+        reply.style.scrollMarginBottom = `${row?.offsetHeight ?? 0}px`;
+        const reduce =
+          window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ===
+          true;
+        reply.scrollIntoView?.({
+          block: "end",
+          behavior: reduce ? "auto" : "smooth",
+        });
+      });
+    }
     if (revealedHere && revealTick > api.revealDone.current) {
       api.revealDone.current = revealTick;
       el.current?.focus({ preventScroll: true });
     }
+    return () => cancelAnimationFrame(frame);
   }, [isActive, revealTick]);
   // Leaving the thread drops the question mode.
   useEffect(() => {

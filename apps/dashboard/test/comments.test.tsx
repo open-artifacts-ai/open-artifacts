@@ -110,7 +110,7 @@ const oneThread = {
 };
 
 /** A viewport: matchMedia answers the two breakpoints the comments layout uses. */
-const viewport = (width: number, coarse = false) => {
+const viewport = (width: number, coarse = false, reduced = false) => {
   const eval_ = (q: string) =>
     q === "(min-width: 960px)"
       ? width >= 960
@@ -120,7 +120,9 @@ const viewport = (width: number, coarse = false) => {
           ? width < 600
           : q === "(pointer: coarse)"
             ? coarse
-            : false;
+            : q === "(prefers-reduced-motion: reduce)"
+              ? reduced
+              : false;
   vi.spyOn(window, "matchMedia").mockImplementation(
     (q: string) =>
       ({
@@ -278,6 +280,78 @@ describe("comments: layouts", () => {
     expect(sheet).toHaveAttribute("data-sheet-height", "full");
     await act(async () => opts.at(-1)?.onCommentOpen("p1"));
     expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+  });
+
+  describe("a pin with replies in the short sheet (#1783)", () => {
+    const threadOf = (id: string, n: number) => ({
+      ...oneThread,
+      id,
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+      comments: Array.from({ length: n }, (_, i) => ({
+        ...oneThread.comments[0],
+        id: `${id}-c${i}`,
+        body: `${id} comment ${i}`,
+      })),
+    });
+    const open = async (reduced = false) => {
+      viewport(400, false, reduced);
+      server.use(
+        http.get(`*${R.comments(OWNED)}`, () =>
+          HttpResponse.json({
+            threads: [threadOf("p0", 1), threadOf("p1", 2), threadOf("p3", 4)],
+            open: 3,
+            truncated: false,
+          }),
+        ),
+      );
+      mount(viewerPath(OWNED));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Comments, 3 open" }),
+      );
+      return screen.findByRole("dialog", { name: "Comments" });
+    };
+    it("a pin with replies takes the half height; one without keeps the pin height", async () => {
+      const sheet = await open();
+      await act(async () => opts.at(-1)?.onCommentOpen("p0"));
+      expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+      expect(sheet).not.toHaveAttribute("data-pin-replies");
+      expect(sheet.className).toContain(
+        "data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh]",
+      );
+      await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+      expect(sheet).toHaveAttribute("data-pin-replies");
+    });
+    it("opening a 3-reply pin scrolls its last reply to the end, above the row, smoothly", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      await open();
+      await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+      await waitFor(() =>
+        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "smooth" }),
+      );
+      const el = spy.mock.contexts.at(-1) as HTMLElement;
+      expect(el.getAttribute("data-comment")).toBe("p3-c3");
+      expect(el.style.scrollMarginBottom).toBe("0px");
+    });
+    it("a single reply gets no extra scroll", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      await open();
+      await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(spy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ block: "end" }),
+      );
+    });
+    it("reduced motion: the scroll is not smooth", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      await open(true);
+      await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+      await waitFor(() =>
+        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "auto" }),
+      );
+    });
   });
 
   it("the short pin sheet floats the open card's action row in the sheet, clear of the home indicator (#1711)", async () => {
