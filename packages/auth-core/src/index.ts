@@ -51,3 +51,11 @@ export {
   verifyGoogleIdTokenAnyDomain,
 } from "./google.js";
 export { ipKey, ipKeyOf } from "./ip.js";
+export {
+  SILENT_TICKET_MAX_LEN,
+  SILENT_TICKET_TTL_MS,
+  type SilentFlow,
+  signSilentTicket,
+  silentTranscript,
+  verifySilentTicket,
+} from "./silent-ticket.js";

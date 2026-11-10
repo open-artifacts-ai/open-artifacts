@@ -76,7 +76,18 @@ export const s256 = async (v: string) =>
  * ("<domain>." + payload), so a state minted for one purpose never verifies
  * for another; the sign-in broker passes none (its P2 format, unchanged).
  */
-export type BrokerState = { i: string; s: string; h: string; exp: number };
+export type BrokerState = {
+  i: string;
+  s: string;
+  h: string;
+  exp: number;
+  /**
+   * Silent sign-in (#2026): the Google sub the signed silent ticket expects.
+   * Present only on a silent flow; redeem then relays no token whose sub
+   * differs. It lives in the MACed state, so the broker stays stateless.
+   */
+  u?: string;
+};
 
 const macInput = (domain: string | undefined, p: string) =>
   domain ? `${domain}.${p}` : p;
@@ -132,6 +143,7 @@ export async function verifyState(
       typeof st.h !== "string"
     )
       return null;
+    if (st.u !== undefined && typeof st.u !== "string") return null;
     return typeof st.exp === "number" ? st : null;
   } catch {
     return null;

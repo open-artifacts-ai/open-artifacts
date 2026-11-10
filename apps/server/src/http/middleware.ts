@@ -94,6 +94,8 @@ export const COOP_EXEMPT: ReadonlySet<string> = new Set([
 export const NO_REFERRER: ReadonlySet<string> = new Set([
   AUTH.callback,
   AUTH.callbackGoogle,
+  // The silent sign-in ticket (#2026) can ride this URL: never a Referer.
+  AUTH.loginGoogle,
   R.directoryCallback,
   // The confirm pages (#1372, #1567) hold their link's secret in the URL
   // fragment (#1426), which a Referer never carries; no referrer anyway.

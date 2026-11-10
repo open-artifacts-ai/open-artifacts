@@ -78,6 +78,8 @@ type OidcState = {
   p?: ProviderId;
   /** A forced re-authentication was asked for (break-glass, P3 T18). */
   ra?: true;
+  /** A silent sign-in (prompt=none, #2026) was attempted for this state. */
+  sl?: true;
 };
 
 type StateKeys = { key: string; legacy: string | null };
@@ -183,11 +185,14 @@ export async function buildAuthorizeRedirect(
     cookieHeader?: string | null;
     /** Ask the provider to re-authenticate (P3 T18 break-glass). */
     reauth?: boolean;
+    /** A silent-sign-in ticket to pass to the broker (#2026); never with reauth. */
+    silent?: string;
   } = {},
 ): Promise<{ location: string; stateCookie: string; evict: string[] }> {
   const keys = await stateKeys(env);
   const retry = opts.retry === true;
   const reauth = opts.reauth === true;
+  const silent = !reauth && opts.silent ? opts.silent : undefined;
   const st: OidcState = {
     state: `${retry ? RETRY_MARK : ""}${randomB64(32)}`,
     nonce: randomB64(32),
@@ -197,6 +202,7 @@ export async function buildAuthorizeRedirect(
     ...(retry ? { retry: true } : {}),
     p: provider.id,
     ...(reauth ? { ra: true as const } : {}),
+    ...(silent ? { sl: true as const } : {}),
   };
   const name = await stateCookieName(env, st.state);
   const sign = async () => {
@@ -221,6 +227,7 @@ export async function buildAuthorizeRedirect(
       nonce: st.nonce,
       challenge: await s256(st.verifier),
       ...(reauth ? { reauth } : {}),
+      ...(silent ? { silent } : {}),
     }),
     stateCookie,
     evict: await evictions(env, keys, opts.cookieHeader),
@@ -271,6 +278,25 @@ export class OidcRedeemError extends ApiError {
     super("unauthorized", "Login failed");
   }
 }
+
+/**
+ * A silent attempt (#2026) came back asking for interaction. The state was
+ * valid and is consumed; the route retries ONCE with the picker (a fresh
+ * state and PKCE, no silent ticket, so it can never loop).
+ */
+export class OidcSilentFallback extends Error {
+  constructor(public next: string) {
+    super("silent sign-in needs interaction");
+  }
+}
+
+/** Provider errors that mean "silent sign-in can't proceed without the user". */
+const SILENT_RETRY_ERRORS = new Set([
+  "login_required",
+  "interaction_required",
+  "consent_required",
+  "account_selection_required",
+]);
 
 /** ApiError("unauthorized") that remembers its (already logged) stage. */
 class OidcFailure extends ApiError {
@@ -381,7 +407,9 @@ export async function handleCallback(
   env: Env,
   provider: OidcProvider,
   req: Request,
-): Promise<VerifiedIdentity & { next: string; reauth: boolean }> {
+): Promise<
+  VerifiedIdentity & { next: string; reauth: boolean; silent: boolean }
+> {
   const keys = await stateKeys(env);
   const q = new URL(req.url).searchParams;
   const state = q.get("state") ?? "";
@@ -411,6 +439,9 @@ export async function handleCallback(
     // "expired": the hosted sign-in broker's own state ran out while the
     // user sat on Google (a late return), which is a took-too-long, not a
     // failure.
+    const err = q.get("error");
+    if (st.sl === true && err !== null && SILENT_RETRY_ERRORS.has(err))
+      throw new OidcSilentFallback(next);
     if (q.has("error"))
       return fail(q.get("error") === "expired" ? "expired" : "idp_error", {
         error: tag(q.get("error")),
@@ -423,7 +454,7 @@ export async function handleCallback(
       nonce: st.nonce,
       bstate: q.get("bstate") ?? undefined,
     });
-    return { ...id, next, reauth: st.ra === true };
+    return { ...id, next, reauth: st.ra === true, silent: st.sl === true };
   } catch (e) {
     if (e instanceof ApiError)
       throw new OidcRedeemError(
