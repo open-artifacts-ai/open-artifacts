@@ -175,11 +175,13 @@ describe("tool middleware", () => {
   it("a settings-only rename updates an existing row's title and adds no row or version", async () => {
     const h = host();
     await h.publish();
+    h.api.ui.invalidate.mockClear();
     await h.call(
       "tool.call",
       { tool: "mcp__custom_alias__publish_artifact", id, title: "Renamed" },
       result(3, id, "Renamed"),
     );
+    expect(h.api.ui.invalidate).toHaveBeenCalledWith("ui.render");
     const text = (await h.command()).text;
     expect(text).toContain("Renamed · published v3");
     expect(text).not.toContain("Synthetic title");

@@ -172,6 +172,7 @@ export function register(
             await save($, session, origin, writes, (rows) =>
               retitle(rows, receipt.id, titleOf(e.title) || receipt.title),
             );
+            $.ui.invalidate("ui.render");
             return result;
           }
           const now = await $.clock.now();
