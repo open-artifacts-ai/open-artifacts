@@ -42,11 +42,7 @@ const faces = (l: CommentList) => {
   for (const t of l.threads)
     for (const c of t.comments) {
       out.push(c.author as never);
-      for (const p of [
-        ...(c.mentions ?? []),
-        ...(c.assigned ? [c.assigned] : []),
-        ...(c.ask?.to ?? []),
-      ])
+      for (const p of [...(c.mentions ?? []), ...(c.ask?.to ?? [])])
         out.push(p as never);
     }
   return out;
@@ -116,7 +112,7 @@ beforeAll(async () => {
     ?.key as string;
   const art = { id, format: "html", currentVersion: 1 } as never;
   const viewer = { userId: owner.userId, short: null, moderator: true };
-  // A thread with a linked mention, assignment and ask target ...
+  // A thread with a linked mention and ask target ...
   await addThread(
     e2,
     art,
@@ -126,7 +122,6 @@ beforeAll(async () => {
       anchor: { kind: "note" },
       body: "hi @Runner",
       mentions: [{ key }],
-      assign: { key },
       ask: {
         question: "ok?",
         options: [
@@ -171,8 +166,8 @@ describe("outsiders get no face fields (REST)", () => {
   ])("%s: authors and every party are stripped", async (_n, who) => {
     const l = await rest(who());
     const all = faces(l);
-    // The agent's own comment, a mention, the assignee and the ask target.
-    expect(all.length).toBeGreaterThanOrEqual(4);
+    // The agent's own comment, a mention and the ask target.
+    expect(all.length).toBeGreaterThanOrEqual(3);
     for (const a of all) for (const k of FACE) expect(a).not.toHaveProperty(k);
     expect(JSON.stringify(l)).not.toContain("animal");
     // The masked name stays as it is today: guests and signed-out visitors
@@ -180,11 +175,11 @@ describe("outsiders get no face fields (REST)", () => {
     if (_n !== "restricted") expect(JSON.stringify(l)).not.toContain("Runner");
   });
 
-  it("a member keeps the face on authors, mention, assignee and ask.to", async () => {
+  it("a member keeps the face on authors, mention and ask.to", async () => {
     const all = faces(await rest(memberV)).filter(
       (a) => a.kind !== "user" && a.kind !== "guest",
     );
-    expect(all.length).toBeGreaterThanOrEqual(4);
+    expect(all.length).toBeGreaterThanOrEqual(3);
     for (const a of all) {
       expect(a.linked).toBe(true);
       expect(a.animal).toBeDefined();
@@ -211,7 +206,7 @@ describe("MCP list_comments", () => {
     const all = faces(r.structuredContent as CommentList).filter(
       (a) => a.kind !== "user" && a.kind !== "guest",
     );
-    expect(all.length).toBeGreaterThanOrEqual(4);
+    expect(all.length).toBeGreaterThanOrEqual(3);
     for (const a of all) expect(a.animal).toBeDefined();
   });
 
@@ -242,7 +237,7 @@ describe("MCP list_comments", () => {
     const r = capped as Awaited<ReturnType<typeof tool>>;
     expect(r.isError, textOf(r)).toBeFalsy();
     const all = faces(r.structuredContent as CommentList);
-    expect(all.length).toBeGreaterThanOrEqual(4);
+    expect(all.length).toBeGreaterThanOrEqual(3);
     for (const a of all) for (const k of FACE) expect(a).not.toHaveProperty(k);
   });
 });
