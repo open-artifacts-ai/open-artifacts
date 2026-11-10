@@ -182,7 +182,7 @@ describe("reply toAsker (#1614)", () => {
     for (const leak of [hostile, "Use the wide", "Which layout", viewer.email])
       expect(all).not.toContain(leak);
     expect(c.mentions).toEqual([
-      { key: s.claude, name: "Claude", delivery: "delivered" },
+      { key: s.claude, name: "Claude", for: "Member", delivery: "delivered" },
     ]);
     expect(c.mentions?.some((m) => m.key === s.codex)).toBe(false);
   });

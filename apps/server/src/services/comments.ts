@@ -26,9 +26,13 @@ import {
 } from "../runtime/comments-store.js";
 import { runtimeCall, runtimeStub } from "../runtime/do.js";
 import {
-  agentFor,
-  isPrivateAgent,
-  ownersAgent,
+  agentFace,
+  agentOwnedBy,
+  type FaceViewer,
+  forLine,
+  type NameClashes,
+  nameClashes,
+  plainAgentName,
   shownName,
 } from "./agent-display.js";
 import { type AgentAttr, viaKey } from "./agent-usage.js";
@@ -99,7 +103,14 @@ export type CommentViewer = {
   short: string | null;
   /** The viewer's level may delete anyone's comment (owner, manager, editor). */
   moderator?: boolean;
+  /** Signed out, or a guest-role member: sees "<person>'s agent", never a bus name (#1822). */
+  guest?: boolean;
 };
+
+const faceViewer = (v: CommentViewer): FaceViewer => ({
+  userId: v.userId,
+  guest: v.guest === true || v.userId === null,
+});
 
 const rateKeyOf = (w: CommentWho): string =>
   w.kind === "user" ? `u:${w.id}` : w.rate;
@@ -115,6 +126,16 @@ const actorOf = (w: CommentWho): StoredActor =>
               agent: {
                 name: w.agent.name,
                 via: w.agent.via ? viaKey(w.agent.via) : null,
+                // Only the server sets this, from a proof it checked (#1822).
+                ...(w.agent.identity
+                  ? {
+                      identity: {
+                        identityId: w.agent.identity.identityId,
+                        name: w.agent.identity.name,
+                        kind: w.agent.identity.kind,
+                      },
+                    }
+                  : {}),
               },
             }
           : {}),
@@ -258,10 +279,13 @@ async function usersById(
   return out;
 }
 
+/** What a view reads from: the users it names and who shares a name (#1822), once per call. */
+type Ctx = { users: Map<string, UserLite>; clash: NameClashes };
+
 const authorView = (
   a: StoredActor,
   viewer: CommentViewer,
-  users: Map<string, UserLite>,
+  { users, clash }: Ctx,
 ): CommentAuthor => {
   if (a.kind === "guest")
     return {
@@ -270,34 +294,64 @@ const authorView = (
       me: viewer.short !== null && viewer.short === a.ref,
     };
   const u = users.get(a.ref);
-  const me = viewer.userId !== null && viewer.userId === a.ref;
-  const person = u ? shownName(u) : "Member";
   // A stored comment with an agent (written over MCP or with a token, or
   // before #1789) reads as the agent at read time; no row is migrated.
-  if (a.agent) {
-    // A private token label shows only to its owner; everyone else sees
-    // "<owner>'s agent" (a grant's client name is public).
-    const name =
-      !isPrivateAgent(a.agent.via) || viewer.userId === a.ref
-        ? a.agent.name
-        : u
-          ? ownersAgent(u)
-          : agentFor(
-              { name: a.agent.name, version: null },
-              a.agent.via,
-              { id: a.ref, name: null, email: "" },
-              viewer.userId,
-            ).name;
-    return {
-      kind: "agent",
-      id: a.ref,
-      name: name.trim() === "" ? "Agent" : name,
-      for: person,
-      me,
-    };
-  }
-  return { kind: "user", id: a.ref, name: person, me };
+  if (a.agent)
+    return agentFace(
+      { ref: a.ref, agent: a.agent },
+      faceViewer(viewer),
+      u,
+      clash,
+    );
+  const me = viewer.userId !== null && viewer.userId === a.ref;
+  return { kind: "user", id: a.ref, name: u ? shownName(u) : "Member", me };
 };
+
+/** Per isolate: the name map and when it was built; stale up to CLASH_TTL_MS is fine. */
+const CLASH_TTL_MS = 60_000;
+let clashCache: { at: number; map: NameClashes } | null = null;
+/** For tests: forget the cached name map. */
+export const resetNameClashCache = (): void => {
+  clashCache = null;
+};
+
+/** Every member's name, removed ones too (their names stay reserved), cached. */
+async function allClashes(env: Env): Promise<NameClashes> {
+  if (clashCache && Date.now() - clashCache.at < CLASH_TTL_MS)
+    return clashCache.map;
+  const { results } = await env.DB.prepare(
+    "select id, email, name, display_name as displayName from users",
+  ).all<{
+    id: string;
+    email: string;
+    name: string;
+    displayName: string | null;
+  }>();
+  const map = nameClashes(
+    results.map((r) => ({ id: r.id, email: r.email, name: effectiveName(r) })),
+  );
+  clashCache = { at: Date.now(), map };
+  return map;
+}
+
+/** Whether a comment shows an agent by name (then `for` needs the clash check). */
+const hasAgent = (c: StoredComment): boolean =>
+  !!c.author.agent ||
+  !!c.mentions?.length ||
+  !!c.ask?.answer?.by.agent ||
+  !!c.ask?.to.some((p) => p.kind === "agent");
+
+async function ctxFor(
+  env: Env,
+  ids: Set<string>,
+  agents: boolean,
+): Promise<Ctx> {
+  const [users, clash] = await Promise.all([
+    usersById(env, ids),
+    agents ? allClashes(env) : Promise.resolve(new Map() as NameClashes),
+  ]);
+  return { users, clash };
+}
 
 async function threadViews(
   env: Env,
@@ -309,7 +363,11 @@ async function threadViews(
     if (t.resolvedBy?.kind === "user") ids.add(t.resolvedBy.ref);
     for (const c of t.comments) userIds(c, ids);
   }
-  const users = await usersById(env, ids);
+  const users = await ctxFor(
+    env,
+    ids,
+    threads.some((t) => t.comments.some(hasAgent) || t.resolvedBy?.agent),
+  );
   return threads.map((t) => ({
     id: t.id,
     anchor: t.anchor,
@@ -325,8 +383,9 @@ async function threadViews(
 /** The users a comment shows by name: its author and, on an ask, who was asked and who answered. */
 function userIds(c: StoredComment, into: Set<string>): void {
   if (c.author.kind === "user") into.add(c.author.ref);
+  for (const m of c.mentions ?? []) if (m.owner) into.add(m.owner);
   if (!c.ask) return;
-  for (const p of c.ask.to) if (p.kind === "user") into.add(p.key);
+  for (const p of c.ask.to) into.add(p.kind === "user" ? p.key : p.owner);
   if (c.ask.answer?.by.kind === "user") into.add(c.ask.answer.by.ref);
 }
 
@@ -334,16 +393,45 @@ function userIds(c: StoredComment, into: Set<string>): void {
 const partyView = (
   p: StoredParty,
   viewer: CommentViewer,
-  users: Map<string, UserLite>,
+  users: Ctx,
 ): CommentAuthor =>
   p.kind === "user"
     ? authorView({ kind: "user", ref: p.key }, viewer, users)
     : {
         kind: "agent",
         id: p.key,
-        name: p.name,
+        name: agentName(p.name, users.users.get(p.owner), viewer, users.clash),
+        for: forLine(users.users.get(p.owner), faceViewer(viewer), users.clash),
         me: viewer.userId !== null && viewer.userId === p.owner,
       };
+
+/** A roster agent's bus name; a guest sees "<owner>'s agent" instead (#1822). */
+const agentName = (
+  bus: string,
+  owner: UserLite | undefined,
+  viewer: CommentViewer,
+  clash: NameClashes,
+): string =>
+  faceViewer(viewer).guest && !(viewer.userId && viewer.userId === owner?.id)
+    ? agentOwnedBy(owner, clash)
+    : plainAgentName(bus);
+
+const escRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** A body with each "@<stored name>" of a mention swapped for the name shown (one pass). */
+const maskBody = (body: string, pairs: [string, string][]): string => {
+  const changed = pairs.filter(([from, to]) => from !== to);
+  if (changed.length === 0) return body;
+  const to = new Map(changed.map(([f, t]) => [`@${f}`, `@${t}`]));
+  const re = new RegExp(
+    [...to.keys()]
+      .sort((x, y) => y.length - x.length)
+      .map(escRe)
+      .join("|"),
+    "gu",
+  );
+  return body.replace(re, (m) => to.get(m) ?? m);
+};
 
 /** A stored actor a person typed in the web app (#1797); an agent row or an old row is not. */
 const isTyped = (a: StoredActor): boolean =>
@@ -352,12 +440,26 @@ const isTyped = (a: StoredActor): boolean =>
 const commentOf = (
   c: StoredComment,
   viewer: CommentViewer,
-  users: Map<string, UserLite>,
+  users: Ctx,
 ): Comment => {
   const author = authorView(c.author, viewer, users);
+  const shown = (c.mentions ?? []).map((m) =>
+    agentName(
+      m.name,
+      m.owner ? users.users.get(m.owner) : undefined,
+      viewer,
+      users.clash,
+    ),
+  );
   return {
     id: c.id,
-    body: c.body,
+    body: maskBody(
+      c.body,
+      (c.mentions ?? []).map((m, i): [string, string] => [
+        m.name,
+        shown[i] ?? m.name,
+      ]),
+    ),
     author,
     createdAt: c.createdAt,
     editedAt: c.editedAt,
@@ -392,9 +494,18 @@ const commentOf = (
       : {}),
     ...(c.mentions?.length
       ? {
-          mentions: c.mentions.map((m) => ({
+          mentions: c.mentions.map((m, i) => ({
             key: m.key,
-            name: m.name,
+            name: shown[i] ?? m.name,
+            ...(m.owner
+              ? {
+                  for: forLine(
+                    users.users.get(m.owner),
+                    faceViewer(viewer),
+                    users.clash,
+                  ),
+                }
+              : {}),
             delivery: m.state as "delivered" | "queued" | "seen" | "gone",
           })),
         }
@@ -409,7 +520,7 @@ async function commentView(
 ): Promise<Comment> {
   const ids = new Set<string>();
   userIds(c, ids);
-  return commentOf(c, viewer, await usersById(env, ids));
+  return commentOf(c, viewer, await ctxFor(env, ids, hasAgent(c)));
 }
 
 // -------------------------------------------------------------------- reads

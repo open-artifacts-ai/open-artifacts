@@ -25,6 +25,14 @@ export const CommentAuthorSchema = z.object({
   name: z.string(),
   /** An agent only: the person it acts for, by public name (never an email). */
   for: z.string().optional(),
+  /** An agent only: a bus-linked agent (#1822). False for a connection the server cannot tell apart. */
+  linked: z.boolean().optional(),
+  /** A linked agent only: its product (for example "Claude Code"), from the bus, never client input. */
+  product: z.string().optional(),
+  /** A linked agent only: its face, from its identity. `color` is a presence palette index. */
+  animal: z
+    .object({ id: z.string(), color: z.number().int().min(0) })
+    .optional(),
   /** @deprecated Old "via <label>"; the server no longer sets it (`kind: "agent"` carries the name). */
   agent: z.string().optional(),
   me: z.boolean(),
@@ -116,6 +124,8 @@ export const MentionDeliverySchema = z.enum([
 export const CommentMentionSchema = z.object({
   key,
   name: z.string(),
+  /** The person the agent acts for, set by the server (#1822). */
+  for: z.string().optional(),
   delivery: MentionDeliverySchema,
 });
 export type CommentMention = z.infer<typeof CommentMentionSchema>;

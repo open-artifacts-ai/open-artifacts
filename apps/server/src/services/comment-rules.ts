@@ -1,4 +1,5 @@
 import { stripNameControls } from "@oa/shared";
+import { readsAsAgent } from "./agent-display.js";
 
 // Server-side rules for comments (#682) that the wire contract (@oa/shared
 // comments.ts) leaves to the implementation.
@@ -26,5 +27,6 @@ export function cleanGuestName(raw: string | undefined): string {
     .slice(0, 50)
     .join("")
     .trim();
-  return cut === "" ? "Guest" : cut;
+  // #1822: a guest never reads as someone's agent, in any casing or apostrophe.
+  return cut === "" || readsAsAgent(cut) ? "Guest" : cut;
 }

@@ -221,7 +221,7 @@ describe("mentions", () => {
     expect(r.status).toBe(201);
     const t = (await r.json()) as Thread;
     expect(t.comments[0]?.mentions).toEqual([
-      { key: s.claude, name: "Claude", delivery: "delivered" },
+      { key: s.claude, name: "Claude", for: "Member", delivery: "delivered" },
     ]);
     expect(bus.sent).toHaveLength(1);
     const n = bus.sent[0] as (typeof bus.sent)[number];
@@ -639,11 +639,12 @@ describe("asks", () => {
     expect(r.status).toBe(200);
     const c = ((await r.json()) as CommentList).threads[0]
       ?.comments[0] as Comment;
-    // The author is the existing public shape; the targets add nothing.
+    // #1822: a signed-out reader sees no bus name, only the owner's agent.
     const text = JSON.stringify(c.mentions);
-    expect(text).toContain("Claude");
+    expect(text).not.toContain("Claude");
     expect(Object.keys(c.mentions?.[0] ?? {}).sort()).toEqual([
       "delivery",
+      "for",
       "key",
       "name",
     ]);
