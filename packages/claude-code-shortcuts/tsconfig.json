@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "allowImportingTsExtensions": true, "types": ["node"] },
+  "include": ["plugin/hooks/**/*.ts", "test/**/*.ts", "vitest.config.ts"]
+}
