@@ -6,6 +6,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { connectDaemon, type DaemonClient } from "@oa/bus-ipc";
+import { connectOutcome, noSessionMessage } from "./connect.ts";
 import {
   ancestorChain,
   busHome,
@@ -15,7 +16,6 @@ import {
   hasClaudeAncestor,
   sessionHello,
 } from "./session.ts";
-import { connectOutcome, noSessionMessage } from "./connect.ts";
 import { daemonSocketPath, socketDirProblem } from "./socket-path.ts";
 import { callTool, TOOLS } from "./tools.ts";
 

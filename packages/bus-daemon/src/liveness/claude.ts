@@ -2,8 +2,8 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import {
   notASession,
-  peerTokenFor,
   ProcStartUnknownError,
+  peerTokenFor,
 } from "@oa/bus-adapter-claude-code";
 import { AgentRefSchema } from "@oa/bus-protocol";
 
