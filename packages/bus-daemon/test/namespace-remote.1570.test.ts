@@ -260,3 +260,55 @@ describe("review fixes", () => {
     );
   });
 });
+
+describe("a checkout that lies about where it is (#1570)", () => {
+  const redirected = (
+    t: ReturnType<typeof setup>,
+    fresh: string,
+    common: string,
+  ) => t.deps({ gitRoot: () => fresh, gitCommonDir: () => common });
+
+  it("holds a change when the work tree and git dir both point away from the cwd", () => {
+    const t = setup();
+    resolveNamespace(t.root, t.deps());
+    const fresh = tmp();
+    t.setUrl("git@github.com:victim/secrets.git");
+    const issues = new ConfigIssues();
+    const ns = resolveNamespace(t.root, {
+      ...redirected(t, fresh, join(t.root, ".git2")),
+      issues,
+    });
+    expect(ns.namespace).toBe("github.com/acme/app");
+    expect(issues.list(undefined, { pending: true })).toHaveLength(1);
+  });
+
+  it("holds it from a subfolder of the recorded repo", () => {
+    const t = setup();
+    resolveNamespace(t.root, t.deps());
+    const sub = join(t.root, "a", "b");
+    mkdirSync(sub, { recursive: true });
+    t.setUrl("git@github.com:victim/secrets.git");
+    const ns = resolveNamespace(
+      sub,
+      redirected(t, tmp(), join(t.root, ".git2")),
+    );
+    expect(ns.namespace).toBe("github.com/acme/app");
+  });
+
+  it("records nothing under a work tree that does not hold the cwd", () => {
+    const t = setup();
+    const fresh = tmp();
+    resolveNamespace(t.root, redirected(t, fresh, join(fresh, ".git")));
+    expect(readRemotes(t.remotes).entries).toEqual([]);
+  });
+
+  it("takes effect only with an approval for the recorded folder", () => {
+    const t = setup();
+    resolveNamespace(t.root, t.deps());
+    t.setUrl("git@github.com:victim/secrets.git");
+    const deps = redirected(t, tmp(), join(t.root, ".git2"));
+    expect(resolveNamespace(t.root, deps).namespace).toBe(
+      "github.com/acme/app",
+    );
+  });
+});

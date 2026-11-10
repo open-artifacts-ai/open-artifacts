@@ -1,6 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import {
   BUS_CMD,
   type BusConfig,
@@ -171,10 +178,16 @@ function pinRemote(
     );
     return derived;
   }
-  const priors = roots.flatMap((r) => {
-    const e = list.entries.find((x) => sameDir(x.dir, r));
-    return e ? [e] : [];
-  });
+  // Also the recorded folders that hold the real cwd: git output cannot hide
+  // a checkout from the record of a folder it sits in.
+  let realCwd = cwd;
+  try {
+    realCwd = realpathSync(cwd);
+  } catch {}
+  const priors = list.entries.filter(
+    (e) => roots.some((r) => sameDir(e.dir, r)) || contains(e.dir, realCwd),
+  );
+  const odd = oddGit(rootPath, cwd, deps);
   // A prior under either key that disagrees holds the change: the checkout
   // controls its git common dir, so that key alone is not enough.
   const prior = priors.find((e) => e.namespace !== derived) ?? priors[0];
@@ -197,7 +210,7 @@ function pinRemote(
     }
   };
   const missing = (namespace: string) =>
-    roots
+    (odd ? [] : roots)
       .filter((r) => !priors.some((e) => sameDir(e.dir, r)))
       .map((dir) => ({ dir, namespace }));
   if (!prior) {
@@ -260,6 +273,49 @@ function recordRoots(root: string, cwd: string, deps: NamespaceDeps): string[] {
     return key === real ? [real] : [key, real];
   } catch {
     return [real];
+  }
+}
+
+function contains(dir: string, path: string): boolean {
+  let d = dir;
+  try {
+    d = realpathSync(dir);
+  } catch {}
+  const rel = relative(d, path);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * True when git's answers cannot be trusted to place the checkout: the top
+ * level does not hold the cwd, or the common dir is neither the top level's
+ * own .git nor a .git that lists the top level as a linked worktree.
+ */
+function oddGit(root: string, cwd: string, deps: NamespaceDeps): boolean {
+  let common: string | null = null;
+  if (deps.gitCommonDir) common = deps.gitCommonDir(cwd);
+  else if (!deps.gitRoot) common = gitCommonDir(cwd);
+  try {
+    const top = realpathSync(root);
+    if (!contains(top, realpathSync(cwd))) return true;
+    if (!common) return false;
+    let c: string;
+    try {
+      c = realpathSync(resolve(cwd, common));
+    } catch {
+      return false;
+    }
+    if (c === join(top, ".git")) return false;
+    if (basename(c) !== ".git") return true;
+    const wt = join(c, "worktrees");
+    for (const n of readdirSync(wt)) {
+      try {
+        const g = readFileSync(join(wt, n, "gitdir"), "utf8").trim();
+        if (realpathSync(g) === join(top, ".git")) return false;
+      } catch {}
+    }
+    return true;
+  } catch {
+    return true;
   }
 }
 
