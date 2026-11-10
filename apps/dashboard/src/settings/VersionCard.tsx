@@ -44,7 +44,7 @@ function UpgradeLine() {
   };
   return (
     <div className="flex flex-wrap items-center gap-x-[var(--oa-space-3)] gap-y-[var(--oa-space-2)]">
-      <p className={MUTED}>
+      <p id="oa-upgrade-line" className={MUTED}>
         To upgrade, tell your agent: Follow{" "}
         <a
           className={`${MONO} text-[var(--oa-accent-fg)] underline underline-offset-2`}
@@ -60,6 +60,7 @@ function UpgradeLine() {
         variant="outline"
         size="sm"
         className="text-[length:var(--oa-text-sm)]"
+        aria-describedby="oa-upgrade-line"
         onClick={copy}
       >
         {copied ? "Copied" : "Copy prompt"}

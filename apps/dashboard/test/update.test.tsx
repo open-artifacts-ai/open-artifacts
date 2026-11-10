@@ -164,7 +164,11 @@ describe("Settings → Instance Version card", () => {
     expect(link).toHaveAttribute("href", `${location.origin}/upgrade.md`);
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener");
-    fireEvent.click(within(c).getByRole("button", { name: "Copy prompt" }));
+    const btn = within(c).getByRole("button", { name: "Copy prompt" });
+    expect(btn).toHaveAccessibleDescription(
+      /To upgrade, tell your agent: Follow/,
+    );
+    fireEvent.click(btn);
     await waitFor(() => expect(write).toHaveBeenCalledWith(PROMPT));
     expect(await screen.findByText(COPIED)).toBeInTheDocument();
   });
