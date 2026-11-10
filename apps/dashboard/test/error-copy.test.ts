@@ -280,6 +280,7 @@ it.each([
   ["storage_bytes", "storage"],
   ["data_docs", "live-data documents per artifact"],
   ["data_daily_writes", "live-data writes per day"],
+  ["data_daily_writes_total", "live-data writes per day across all artifacts"],
   ["something_new", "something_new"],
 ])("plan_limit names %s", (limit, noun) => {
   const e = planErr("plan_limit", { tier: "solo", limit, max: 50 });

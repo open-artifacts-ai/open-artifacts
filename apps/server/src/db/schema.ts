@@ -740,3 +740,14 @@ export const shareNoticeAgents = sqliteTable(
   },
   (t) => [primaryKey({ columns: [t.userId, t.namespace, t.agentName] })],
 );
+
+/**
+ * FREE_DATA_DAILY_WRITES_TOTAL (billing/caps.ts): the install's live-data
+ * writes in one UTC day. A single row (`id` 1); `day` is the UTC day number
+ * (ms / 86_400_000) its `n` counts, and a write on a later day restarts n.
+ */
+export const dataWritesTotal = sqliteTable("data_writes_total", {
+  id: integer("id").primaryKey(),
+  day: integer("day").notNull(),
+  n: integer("n").notNull(),
+});

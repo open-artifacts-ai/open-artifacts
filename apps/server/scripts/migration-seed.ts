@@ -45,6 +45,7 @@ export const SHAPE = {
   reserved_artifacts: 1_000,
   uploads: 100_000,
   artifact_asks: 3_000, // asks are rare: about one live artifact in a hundred
+  data_writes_total: 1, // the install-wide write counter: one row
   tokens: 30_000,
   agent_grants: 50_000,
   bus_machines: 20_000,
@@ -458,6 +459,15 @@ export const RULES: Record<string, Rule> = {
         received_at: c.rand() < 0.97 ? c.time() : null,
       };
     },
+  },
+  // FREE_DATA_DAILY_WRITES_TOTAL: the install's single counter row.
+  data_writes_total: {
+    rows: (c) => c.count("data_writes_total"),
+    row: (i, c) => ({
+      id: i + 1,
+      day: Math.floor(Date.now() / 86_400_000),
+      n: c.int(5_000),
+    }),
   },
   // #1623: the open-asks index. An ask names one or two people; most are
   // still open.
