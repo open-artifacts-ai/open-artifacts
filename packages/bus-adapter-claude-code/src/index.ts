@@ -15,8 +15,8 @@ export {
   noSessionMessage,
 } from "./connect.ts";
 export {
-  Forwarder,
   type ForwardDeps,
+  Forwarder,
   LINK_MS,
   mcpUrl,
   PROOF_MS,
