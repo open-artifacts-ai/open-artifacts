@@ -1067,6 +1067,144 @@ describe("pins", () => {
     expect(last("comment.open")).toMatchObject({ id: "p1" });
   });
 
+  describe("the bubble (#682)", () => {
+    const css = () => roots.at(-1)?.querySelector("style")?.textContent ?? "";
+    const rule = (sel: string) => {
+      const m = new RegExp(`${sel.replace(/\./g, "\\.")}\\{([^}]*)\\}`).exec(
+        css(),
+      );
+      return m?.[1] ?? "";
+    };
+    const pinAt = async (extra: object = {}) => {
+      await start("select");
+      await send({
+        type: "comments.set",
+        threads: [
+          {
+            id: "p1",
+            n: 7,
+            ...extra,
+            anchor: {
+              kind: "pin",
+              version: 1,
+              x: 0.5,
+              y: 0.25,
+              contentHash: "h",
+            },
+          },
+        ],
+      });
+      return roots.at(-1)?.querySelector<HTMLElement>(".pin") as HTMLElement;
+    };
+
+    it("its tail point is the anchor: left/top are x,y and the margin lifts the bubble by its own height", async () => {
+      const pin = await pinAt();
+      // The stored point, as before (the image box is 240x140 at 0,0 here).
+      expect(pin.style.left).toBe("120px");
+      expect(pin.style.top).toBe("35px");
+      const r = rule(".pin");
+      expect(r).toContain("width:30px");
+      expect(r).toContain("height:30px");
+      // Bottom-left corner on the point: nothing moves it sideways, and the
+      // top margin is exactly minus the height.
+      expect(r).toContain("margin:-30px 0 0 0");
+      expect(r).toContain("border-radius:15px 15px 15px 3px");
+    });
+
+    it("near the top or right edge it flips, and the sharp corner stays exactly on x,y", async () => {
+      // The image box is 200x100 at 20,10 in this DOM; make the page 230px wide.
+      Object.defineProperty(document.documentElement, "clientWidth", {
+        configurable: true,
+        value: 230,
+      });
+      const cases = [
+        // [x, y (fractions), classes, the sharp corner: 0 tl, 1 tr, 2 br, 3 bl]
+        [0.3, 0.5, "pin", 3],
+        [0.3, 0.1, "pin flip-y", 0],
+        [0.95, 0.5, "pin flip-x", 2],
+        [0.95, 0.1, "pin flip-y flip-x", 1],
+      ] as const;
+      for (const [fx, fy, cls, corner] of cases) {
+        await start("select");
+        await send({
+          type: "comments.set",
+          threads: [
+            {
+              id: "p1",
+              n: 1,
+              anchor: {
+                kind: "pin",
+                version: 1,
+                x: fx,
+                y: fy,
+                contentHash: "h",
+              },
+            },
+          ],
+        });
+        const pin = roots.at(-1)?.querySelector<HTMLElement>(".pin");
+        expect(pin?.className).toBe(cls);
+        // The both-edges rule is written .flip-x.flip-y.
+        const sel = (cls.includes("flip-y flip-x") ? "pin flip-x flip-y" : cls)
+          .split(" ")
+          .join(".");
+        const r = rule(`.${sel}`);
+        const margin = /margin:([^;]*)/.exec(r)?.[1]?.split(/\s+/) ?? [];
+        const [mt, , , ml] = (
+          margin.length === 1 ? Array(4).fill(margin[0]) : margin
+        ).map((v) => Number.parseFloat(v));
+        const radii = /border-radius:([^;]*)/.exec(r)?.[1]?.split(/\s+/) ?? [];
+        expect(radii.findIndex((v) => v === "3px")).toBe(corner);
+        const left = Number.parseFloat(pin?.style.left ?? "");
+        const top = Number.parseFloat(pin?.style.top ?? "");
+        // The corner's offset in the 30px box: tl 0,0; tr 30,0; br 30,30; bl 0,30.
+        const cx = corner === 1 || corner === 2 ? 30 : 0;
+        const cy = corner === 2 || corner === 3 ? 30 : 0;
+        expect(left + (ml ?? 0) + cx).toBeCloseTo(20 + fx * 200, 5);
+        expect(top + (mt ?? 0) + cy).toBeCloseTo(10 + fy * 100, 5);
+      }
+      Reflect.deleteProperty(document.documentElement, "clientWidth");
+    });
+
+    it("the open pin stacks above the others, and open+changed keeps both marks visible", async () => {
+      await pinAt({ active: true, changed: true });
+      expect(rule(".pin.on")).toContain("z-index:1");
+      expect(rule(".pin")).not.toContain("z-index");
+      // The amber ring ends at 4.5px; the dashed outline starts past it.
+      const ring = Number.parseFloat(
+        /0 0 0 4\.5px #e0a000/.test(rule(".pin.on")) ? "4.5" : "0",
+      );
+      const offset = Number.parseFloat(
+        /outline-offset:([\d.]+)px/.exec(rule(".pin.changed.on"))?.[1] ?? "0",
+      );
+      expect(ring).toBe(4.5);
+      expect(offset).toBeGreaterThan(ring);
+      const pin = roots.at(-1)?.querySelector<HTMLElement>(".pin");
+      expect(pin?.className).toBe("pin on changed");
+    });
+
+    it("carries the pin number, never a name or initial", async () => {
+      const pin = await pinAt();
+      expect(pin.textContent).toBe("7");
+    });
+
+    it("has a white ring and a soft shadow; open adds a 2.5px amber ring", async () => {
+      const pin = await pinAt({ active: true });
+      expect(pin.className).toBe("pin on");
+      expect(rule(".pin")).toContain("0 0 0 2px #fff");
+      expect(rule(".pin")).toContain("rgba(0,0,0,.3)");
+      expect(rule(".pin.on")).toContain("0 0 0 2px #fff,0 0 0 4.5px #e0a000");
+    });
+
+    it("placing is a translucent accent bubble; changed is a dashed outline", async () => {
+      const pin = await pinAt({ changed: true });
+      expect(pin.className).toBe("pin changed");
+      expect(rule(".pin.ghost")).toContain("background:#1f5fbf55");
+      expect(rule(".pin.ghost")).toContain("dashed");
+      expect(rule(".pin.changed")).toContain("outline:2px dashed #8a5a00");
+    });
+  });
+
   it("draws a dimmed, unnumbered ghost pin for the one being composed, and clears it", async () => {
     await start("select");
     await send({
