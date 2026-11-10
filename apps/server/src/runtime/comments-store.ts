@@ -44,6 +44,14 @@ create index if not exists comment_targets_thread on comment_targets (thread_id)
 create table if not exists comment_asker_notices (
   thread_id text primary key, last_at text not null, prev_at text, n integer not null
 );
+create table if not exists comment_participants (
+  thread_id text not null, key text not null, name text not null, owner text not null,
+  namespace text not null, page integer not null default 0, primary key (thread_id, key)
+);
+create table if not exists comment_reply_notices (
+  thread_id text not null, key text not null, last_at text not null, prev_at text, n integer not null,
+  primary key (thread_id, key)
+);
 create table if not exists comment_limits (
   id integer primary key check (id = 1), day integer not null, n integer not null
 );
@@ -121,6 +129,18 @@ export type NewExtras = {
   mentions?: StoredAgent[];
   /** A reply addressed to the ask's author (#1614): stored as a mention of its agents, under its own kind so the notice can be bounded. */
   asker?: StoredAgent[];
+};
+
+/**
+ * #1900: an agent that joined a thread (mentioned, asked, or
+ * commented as a verified identity). `key` is the roster key (artifact, member,
+ * bus address); `namespace` and `name` are the bus address a notice goes to;
+ * `owner` the member whose agent it is.
+ */
+export type StoredParticipant = StoredAgent & {
+  namespace: string;
+  /** #1968: joined only because it published the page a page-wide thread is on; any other reason clears it. */
+  page?: true;
 };
 
 export type StoredThread = {
@@ -439,6 +459,98 @@ export function refundAsker(
     threadId,
     at,
   );
+}
+
+/** Records the agents that joined a thread (#1900); one already there stays as it was. */
+export function addParticipants(
+  sql: SqlStorage,
+  threadId: string,
+  ps: StoredParticipant[],
+): void {
+  for (const p of ps)
+    sql.exec(
+      `insert into comment_participants (thread_id, key, name, owner, namespace, page)
+       values (?, ?, ?, ?, ?, ?)
+       on conflict (thread_id, key) do update set page = 0 where excluded.page = 0`,
+      threadId,
+      p.key,
+      p.name,
+      p.owner,
+      p.namespace,
+      p.page ? 1 : 0,
+    );
+}
+
+/**
+ * The participants a person's reply tells (#1900), minus `exclude` (agents the
+ * same comment already reached), and records one notice for each at `at`. The
+ * thread stops at `max` notices in all; replies that arrive while an agent's
+ * notice is unread are not dropped: the hub replaces the waiting notice. The bound lives in its own rows: deleting a reply never
+ * gives it back. A resolved thread tells nobody. Returns the agents told.
+ */
+export function takeThreadReply(
+  sql: SqlStorage,
+  threadId: string,
+  exclude: Set<string>,
+  at: string,
+  max: number,
+  /** The comment @-mentions someone: agents that joined only as the page's publisher are skipped (#1968). */
+  skipPage = false,
+): StoredParticipant[] {
+  if (threadStatus(sql, threadId) !== "open") return [];
+  const total =
+    sql
+      .exec<{ n: number | null }>(
+        "select sum(n) as n from comment_reply_notices where thread_id = ?",
+        threadId,
+      )
+      .toArray()[0]?.n ?? 0;
+  let room = max - total;
+  const out: StoredParticipant[] = [];
+  const rows = sql
+    .exec<Omit<StoredParticipant, "page"> & { page: number }>(
+      `select key, name, owner, namespace, page from comment_participants
+       where thread_id = ? order by key`,
+      threadId,
+    )
+    .toArray();
+  for (const r of rows) {
+    if (room <= 0) break;
+    if (exclude.has(r.key) || (skipPage && r.page === 1)) continue;
+    sql.exec(
+      `insert into comment_reply_notices (thread_id, key, last_at, prev_at, n) values (?, ?, ?, null, 1)
+       on conflict (thread_id, key) do update set prev_at = last_at, last_at = excluded.last_at, n = n + 1`,
+      threadId,
+      r.key,
+      at,
+    );
+    room--;
+    out.push({
+      kind: "agent",
+      key: r.key,
+      name: r.name,
+      owner: r.owner,
+      namespace: r.namespace,
+    });
+  }
+  return out;
+}
+
+/** Gives back the notices spent at `at` for `keys` (only while still the last). */
+export function refundThreadReply(
+  sql: SqlStorage,
+  threadId: string,
+  keys: string[],
+  at: string,
+): void {
+  for (const key of keys)
+    sql.exec(
+      `update comment_reply_notices set last_at = coalesce(prev_at, '0'), prev_at = null, n = n - 1
+       where thread_id = ? and key = ? and last_at = ? and n > 0`,
+      threadId,
+      key,
+      at,
+    );
 }
 
 /** Sets one mention's state. */

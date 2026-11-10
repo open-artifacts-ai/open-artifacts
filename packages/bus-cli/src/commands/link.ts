@@ -4,6 +4,7 @@ import {
   canonicalPath,
   globalFile,
   namespacesFile,
+  remotesFile,
   resolveNamespace,
   shq,
 } from "@oa/bus-daemon";
@@ -22,6 +23,8 @@ function side(ctx: Ctx, dir: string): Side | undefined {
     const ns = resolveNamespace(real, {
       globalFile: globalFile(ctx.home),
       namespacesFile: namespacesFile(ctx.home),
+      remotesFile: remotesFile(ctx.home),
+      recordRemote: false,
     });
     return { dir: real, namespace: ns.namespace };
   } catch {

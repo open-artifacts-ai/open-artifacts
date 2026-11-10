@@ -5,6 +5,7 @@ import {
   configure,
   fireEvent,
   getConfig,
+  render,
   screen,
   waitFor,
   within,
@@ -22,6 +23,8 @@ import {
 } from "vitest";
 import {
   actor,
+  MentionMenu,
+  matchAgents,
   mentionedKeys,
   mentionQuery,
   nextAskFor,
@@ -177,6 +180,17 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("asks on the comments column", () => {
+  it("links a URL in the question", async () => {
+    serveThreads(() => [
+      askThread({}, { question: "Which of https://a.com/x?" }),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const a = await within(c).findByRole("link", { name: "https://a.com/x" });
+    expect(a.getAttribute("href")).toBe("https://a.com/x");
+    expect(a.getAttribute("target")).toBe("_blank");
+    expect(a.getAttribute("rel")).toBe("noopener noreferrer");
+  });
   it("shows the question, options, recommendation and why, and answers with the option id", async () => {
     let answered: unknown = null;
     serveThreads(() => [
@@ -638,7 +652,7 @@ describe("@mentions in the composer", () => {
     expect(
       within(menu).queryByRole("option", { name: /OA Product/ }),
     ).toBeNull();
-    expect(opt).toHaveTextContent("offline");
+    expect(opt.textContent).toBe("OA Design");
     fireEvent.mouseDown(opt);
     expect(box).toHaveValue("@OA Design ");
     fireEvent.change(box, { target: { value: "@OA Design why B?" } });
@@ -737,6 +751,191 @@ const noteBox = async () => {
   fireEvent.change(box, { target: { value: "" } });
   return { c, box };
 };
+
+describe("the @ menu rows (per-session state, order, machine, selection)", () => {
+  const hoursAgo = (h: number) =>
+    new Date(Date.now() - h * 3600_000).toISOString();
+  const MENU: ArtifactAgent[] = [
+    {
+      key: "a:away-b",
+      name: "OA Backend",
+      online: false,
+      state: "away",
+      lastActiveAt: hoursAgo(19),
+      machine: "workstation",
+    },
+    {
+      key: "a:mgr",
+      name: "OA Manager",
+      online: false,
+      state: "away",
+      lastActiveAt: hoursAgo(19),
+      machine: "workstation",
+    },
+    {
+      key: "a:mgr2",
+      name: "OA Manager-2",
+      online: true,
+      state: "online",
+      lastActiveAt: hoursAgo(0),
+      machine: "laptop",
+    },
+    {
+      key: "a:com",
+      name: "OA Comments",
+      online: true,
+      state: "online",
+      lastActiveAt: hoursAgo(0),
+      machine: "laptop",
+    },
+  ];
+
+  it("lists online before away, each alphabetical, and filters both", () => {
+    expect(matchAgents(MENU, "oa")?.map((a) => a.name)).toEqual([
+      "OA Comments",
+      "OA Manager-2",
+      "OA Backend",
+      "OA Manager",
+    ]);
+    expect(matchAgents(MENU, "manager")?.map((a) => a.name)).toEqual([
+      "OA Manager-2",
+      "OA Manager",
+    ]);
+  });
+
+  const open = (agents: ArtifactAgent[], active = 0) =>
+    render(
+      <MentionMenu
+        id="m"
+        matches={agents}
+        all={agents}
+        active={active}
+        onPick={() => {}}
+      />,
+    );
+
+  it("away reads 'away 19h' with a hollow dot, online reads 'online'", () => {
+    open(matchAgents(MENU, "oa") ?? []);
+    expect(
+      screen.getByRole("option", { name: /OA Backend.*away 19h/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /OA Comments.*online(?! ·)/ }),
+    ).toBeInTheDocument();
+    const dots = screen
+      .getAllByRole("option")
+      .map((o) => o.querySelector("span[aria-hidden]")?.className ?? "");
+    expect(dots[0]).toMatch(/bg-\[var\(--oa-success-fg/);
+    expect(dots[2]).toMatch(/border/);
+    expect(dots[2]).not.toMatch(/bg-\[var/);
+  });
+
+  it("adds the machine only on rows whose name stem repeats", () => {
+    open(matchAgents(MENU, "oa") ?? []);
+    expect(
+      screen.getByRole("option", { name: /OA Manager-2.*online · laptop/ }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", {
+        name: /OA Manager(?!-).*away 19h · workstation/,
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /OA Backend/ }).textContent,
+    ).not.toMatch(/workstation/);
+    expect(
+      screen.getByRole("option", { name: /OA Comments/ }).textContent,
+    ).not.toMatch(/laptop/);
+  });
+
+  it("another member's agent leads with its owner, shows state only, and no machine", () => {
+    const theirs: ArtifactAgent[] = [
+      {
+        key: "t:1",
+        name: "OA Manager (Sam)",
+        online: true,
+        state: "online",
+        owner: "Sam",
+        machine: null,
+        lastActiveAt: null,
+      },
+      {
+        key: "t:2",
+        name: "OA Manager-2 (Sam)",
+        online: false,
+        state: "away",
+        owner: "Sam",
+        machine: null,
+        lastActiveAt: null,
+      },
+      ...MENU,
+    ];
+    open(matchAgents(theirs, "oa") ?? []);
+    const row = screen.getByRole("option", { name: /online · Sam's$/ });
+    // The owner shows once, in the status: the row's name is the bare agent name.
+    expect(row.querySelector("b")?.textContent).toBe("OA Manager");
+    const away = screen.getByRole("option", { name: /away · Sam's$/ });
+    expect(away.querySelector("b")?.textContent).toBe("OA Manager-2");
+    expect(away.textContent).not.toMatch(/\d+[mhd]|laptop|workstation/);
+    // A stem repeating only against someone else's agent adds no machine.
+    expect(
+      screen.getByRole("option", { name: /OA Comments/ }).textContent,
+    ).not.toMatch(/laptop/);
+  });
+
+  it("an agent with no state (the bus did not answer) is a plain row: no dot, empty state, not dimmed, sorted last", () => {
+    open([
+      { key: "u:1", name: "OA Unknown", online: false },
+      {
+        key: "u:2",
+        name: "OA Mine",
+        online: false,
+        state: "away",
+        machine: "laptop",
+        lastActiveAt: hoursAgo(3),
+      },
+      { key: "u:3", name: "OA Theirs (Sam)", online: false, owner: "Sam" },
+    ]);
+    const unknown = screen.getByRole("option", { name: /OA Unknown/ });
+    expect(unknown.textContent).toBe("OA Unknown");
+    expect(unknown.querySelector("span[aria-hidden]")).toBeNull();
+    expect(unknown.querySelector("b")?.className).not.toMatch(/muted/);
+    expect(screen.getByRole("option", { name: /OA Theirs/ }).textContent).toBe(
+      "OA TheirsSam's",
+    );
+    expect(
+      matchAgents(
+        [
+          { key: "u:1", name: "A Unknown", online: false },
+          { key: "u:2", name: "B Away", online: false, state: "away" },
+          { key: "u:3", name: "C Online", online: true, state: "online" },
+        ],
+        "",
+      )?.map((a) => a.name),
+    ).toEqual(["C Online", "B Away", "A Unknown"]);
+    expect(
+      screen.getByRole("option", { name: /OA Mine/ }).querySelector("b")
+        ?.className,
+    ).toMatch(/muted/);
+    expect(
+      screen.getByRole("option", { name: /OA Theirs/ }).textContent,
+    ).not.toMatch(/away|online/);
+  });
+
+  it("the selected row has the accent bar and soft fill; hover does not", () => {
+    open(matchAgents(MENU, "oa") ?? [], 1);
+    const rows = screen.getAllByRole("option");
+    expect(rows[1]?.getAttribute("aria-selected")).toBe("true");
+    for (const r of rows) {
+      expect(r.className).toContain("border-l-[3px]");
+      expect(r.className).toContain("border-transparent");
+      expect(r.className).toContain("aria-selected:border-[var(--oa-accent)]");
+      expect(r.className).toContain("aria-selected:bg-[var(--oa-accent-soft)]");
+      expect(r.className).toContain("hover:bg-muted");
+      expect(r.className).not.toContain("aria-selected:bg-muted");
+    }
+  });
+});
 
 describe("@ picker details", () => {
   it("closes after a pick and stays closed for the rest of the sentence", async () => {
@@ -894,7 +1093,7 @@ describe("@ picker details", () => {
     expect(removeMention("hi @Bob Smith go", "Bob Smith", both)).toBe("hi go");
   });
 
-  it("marks agents online or offline in text, not colour alone", async () => {
+  it("marks agents online or away in text; one with no state shows no dot or text", async () => {
     withAgents();
     mount(viewerPath(OWNED));
     const c = await col();
@@ -910,8 +1109,8 @@ describe("@ picker details", () => {
       within(menu).getByRole("option", { name: /OA Product.*online/ }),
     ).toBeTruthy();
     expect(
-      within(menu).getByRole("option", { name: /OA Design.*offline/ }),
-    ).toBeTruthy();
+      within(menu).getByRole("option", { name: /OA Design/ }).textContent,
+    ).toBe("OA Design");
   });
 
   it("does not resend the answer already picked", async () => {

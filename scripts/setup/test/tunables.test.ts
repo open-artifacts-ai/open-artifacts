@@ -39,6 +39,7 @@ describe("validators", () => {
       "EMBED_ALLOW_SAME_SITE",
       "EMBED_ORIGINS",
       "FREE_DATA_DAILY_WRITES",
+      "FREE_DATA_DAILY_WRITES_TOTAL",
       "FREE_DATA_DOCS",
       "FREE_STORAGE_BYTES",
       "PUBLIC_HOME",
@@ -110,6 +111,7 @@ describe("validators", () => {
       "FREE_STORAGE_BYTES",
       "FREE_DATA_DOCS",
       "FREE_DATA_DAILY_WRITES",
+      "FREE_DATA_DAILY_WRITES_TOTAL",
     ]) {
       for (const ok of ["1", String(2 ** 53 - 1)])
         expect(err(n, ok), `${n}=${ok}`).toBeUndefined();

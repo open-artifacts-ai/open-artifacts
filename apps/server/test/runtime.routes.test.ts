@@ -72,7 +72,7 @@ const uniqueIp = () =>
   `198.51.${Math.floor(Math.random() * 256)}.${(++ipSeq % 254) + 1}`;
 type Limiter = { limit(o: { key: string }): Promise<{ success: boolean }> };
 
-/** Anonymous request from `ip` (none when null), with an optional RL_ANON stub. */
+/** Anonymous request from `ip` (none when null), with an optional RL_ANON / RL_ANON_WRITES stub. */
 function anon(
   path: string,
   init: { method?: string; body?: unknown } = {},
@@ -88,7 +88,7 @@ function anon(
       headers,
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
     }),
-    rl ? { ...env, RL_ANON: rl } : env,
+    rl ? { ...env, RL_ANON: rl, RL_ANON_WRITES: rl } : env,
     ctx,
   );
 }
@@ -823,7 +823,12 @@ describe("fix round 1", () => {
         headers: { "cf-connecting-ip": "203.0.113.1" },
         body: "1",
       }),
-      { ...env, RL_ANON: undefined, ENVIRONMENT: "production" } as never,
+      {
+        ...env,
+        RL_ANON: undefined,
+        RL_ANON_WRITES: undefined,
+        ENVIRONMENT: "production",
+      } as never,
       ctx,
     );
     expect(w.status).toBe(503); // anonymous writes allowed (viewers): the unbound limiter refuses

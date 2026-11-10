@@ -10,7 +10,7 @@ import {
 } from "@oa/shared";
 import type { SignInProvider } from "../auth/config.js";
 import { escapeHtml } from "../mcp/template.js";
-import { effectiveName } from "../services/users.js";
+import { shownEffectiveName } from "../services/users.js";
 import {
   INVITE_HTML,
   INVITE_TXT,
@@ -38,7 +38,7 @@ export function oneLine(s: string, max: number): string {
  * never the bare email local part; else the full email address.
  */
 export function senderName(m: { name: string | null; email: string }): string {
-  return effectiveName({
+  return shownEffectiveName({
     displayName: null,
     name: m.name ?? "",
     email: m.email,

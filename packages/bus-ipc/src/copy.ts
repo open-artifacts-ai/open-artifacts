@@ -243,6 +243,17 @@ export function unconfirmedText(to: string, excerpt?: string): string {
 }
 
 /**
+ * The correction to an Expired notice the sender already saw (#1760): the
+ * recipient took the message after all. The Expired shape and wrap.
+ */
+export function correctedDeliveredText(to: string, excerpt?: string): string {
+  const head = (v: string) => `✓  Delivered after all: your message to ${v}`;
+  const tail = "reached it. Ignore the earlier Expired notice.";
+  if (!excerpt) return fitLine((v) => `${head(v)} ${tail}`, to);
+  return fitLine((v) => quoted(head(v), `"${excerpt}"`, tail), to);
+}
+
+/**
  * A message the hub delivered after send_message stopped waiting, as the
  * sender's next tool result reads it: the Expired shape and wrap.
  */
@@ -344,9 +355,14 @@ export const oversizedText = (size: number, msgId: string): string =>
 
 /**
  * A name as the hub takes it: at most `max` UTF-16 units, never ending in
- * half a surrogate pair, and any lone surrogate replaced with U+FFFD.
+ * half a surrogate pair, and any lone surrogate replaced with U+FFFD. A
+ * /fork title's U+2442 mark survives the cut (#1916): the parent part is
+ * trimmed instead, so the hub still sees a fork and names it "<parent> fork".
  */
 export function fitName(name: string, max: number): string {
+  const mark = name.indexOf("\u2442");
+  if (name.length > max && mark >= max - 1 && max >= 3)
+    return `${fitName(name.slice(0, mark), max - 2)} \u2442`;
   let cut = name.slice(0, max);
   const last = cut.charCodeAt(cut.length - 1);
   if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);

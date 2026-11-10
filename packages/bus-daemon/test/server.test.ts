@@ -378,15 +378,11 @@ describe("runDaemon local server", () => {
     expect(h.of("sessions").at(-1)).toMatchObject({ open: ["A"], closed: [] });
   });
 
-  it("marks a pi agent closed when its last connection goes", async () => {
+  it("marks a pi agent closed when its connection goes", async () => {
     const h = await daemonHarness();
     const a1 = await h.adapter("A", { kind: "pi" });
-    const a2 = await h.adapter("A", { kind: "pi" });
     const before = h.of("sessions").length;
     a1.close();
-    await new Promise((r) => setTimeout(r, 50));
-    expect(h.of("sessions").length).toBe(before);
-    a2.close();
     expect(await h.next("sessions", before + 1)).toMatchObject({
       open: [],
       closed: ["A"],

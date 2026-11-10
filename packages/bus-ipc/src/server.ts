@@ -31,6 +31,8 @@ export type HelloResult = {
   global: boolean;
   /** ADAPTER_CAPS this daemon accepts; sent only to an adapter that listed `rename`. */
   caps?: string[];
+  /** #1608: a pi-like ref's binding token, issued in the welcome. */
+  bind_token?: string;
 };
 export type ServeOptions = {
   path: string;

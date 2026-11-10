@@ -40,6 +40,7 @@ const PLAN_LIMIT_NOUN: Record<string, string> = {
   storage_bytes: "storage",
   data_docs: "live-data documents per artifact",
   data_daily_writes: "live-data writes per day",
+  data_daily_writes_total: "live-data writes per day across all artifacts",
 };
 
 /**
@@ -55,7 +56,7 @@ export const readOnlyCopy = (reason: unknown, owner: boolean): string => {
     case "solo_unpaid":
       // The view-only lock: publishing is paused.
       return owner
-        ? "Your Solo plan is paused. Keep publishing for $1/month or $12/year."
+        ? "Your Solo plan is paused. Keep publishing for $1/month or $10/year."
         : `Publishing is paused until this instance's Solo plan is paid. ${ASK}.`;
     // Design, Self-serve screens v6, decision 3: one line per reason. The
     // owner's line names the action (the banner's button); a member's says
@@ -117,6 +118,8 @@ const planCopy = (
     }
     case "billing_unavailable":
       return "Billing isn't reachable right now. Try again in a minute.";
+    case "no_billing_customer":
+      return "Open Artifacts set up this plan for you, so there's nothing to pay or manage here.";
   }
 };
 

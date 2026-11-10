@@ -99,7 +99,7 @@ describe("opencode presence", () => {
     const ocStart = cachedProcStart(
       () => start,
       () => true,
-      { ttlMs: 2000, now: () => t },
+      { ttlMs: 2000, jitter: 0, now: () => t },
     );
     const open = () =>
       openSessions(d, {

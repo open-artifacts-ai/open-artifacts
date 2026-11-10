@@ -28,11 +28,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
       - id: key
@@ -40,7 +40,7 @@ jobs:
           key="$(node --experimental-strip-types --no-warnings apps/server/scripts/migration-timing.ts --key)"
           echo "key=$key" >> "$GITHUB_OUTPUT"
       - id: restore
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/oa-migration-seed
           key: ${{ steps.key.outputs.key }}
@@ -48,7 +48,7 @@ jobs:
       - if: ${{ steps.restore.outputs.cache-hit != 'true' }}
         run: node --experimental-strip-types --no-warnings apps/server/scripts/migration-timing.ts --seed-only --seed-file "$HOME/.cache/oa-migration-seed/seed.sqlite"
       - if: ${{ steps.restore.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/oa-migration-seed
           key: ${{ steps.key.outputs.key }}

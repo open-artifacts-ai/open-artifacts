@@ -9,7 +9,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./version": "./src/version.ts",
-    "./main": "./src/main.ts"
+    "./main": "./src/main.ts",
+    "./proxy": "./src/proxy-main.ts"
   },
   "scripts": {
     "test": "vitest run",

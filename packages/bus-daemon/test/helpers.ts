@@ -137,9 +137,22 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
   });
   stops.push(daemon.stop);
   await vi.waitFor(() => expect(daemon.hub.open).toBe(true));
+  /** #1608: a pi-like adapter echoes the binding token its first welcome issued; pass `bind_token: undefined` to be a stranger. */
+  const tokens = new Map<string, string>();
   const adapter = (agent_ref: string, over: Partial<Hello> = {}) =>
-    connectDaemon({ path, hello: hello({ agent_ref, ...over }) }).then((c) => {
+    connectDaemon({
+      path,
+      hello: hello({
+        agent_ref,
+        ...("bind_token" in over || !tokens.has(agent_ref)
+          ? {}
+          : { bind_token: tokens.get(agent_ref) }),
+        ...over,
+      }),
+    }).then((c) => {
       clients.push(c);
+      if (c.welcome.bind_token !== undefined)
+        tokens.set(agent_ref, c.welcome.bind_token);
       return c;
     });
   const of = <T extends DaemonToHub["type"]>(type: T) =>

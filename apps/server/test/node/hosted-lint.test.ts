@@ -28,8 +28,6 @@ const READS: Record<string, string> = {
     "fail closed: every /bus route is 404 on hosted until #1299",
   "services/notices.ts: meNotices":
     "tightens: no guest share notice on hosted (guests there were always capped)",
-  "runtime/routes.ts: gate":
-    "tightens: RL_ANON still applies to anonymous data writes when RL_ANON_WRITES is bound (review item 38)",
   "auth/sign-in.ts: authProviders":
     "reports: AuthProviders.hosted (review item 36c)",
   "cron.ts: run":

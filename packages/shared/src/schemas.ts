@@ -931,6 +931,8 @@ export type Settings = z.infer<typeof SettingsSchema>;
 export const OnboardingSchema = z.strictObject({
   dismissed: z.boolean(),
   completed: z.boolean(),
+  /** The caller owns at least one artifact not in the trash (#1832; absent on older servers). */
+  hasArtifacts: z.boolean().optional(),
 });
 export type Onboarding = z.infer<typeof OnboardingSchema>;
 

@@ -408,6 +408,10 @@ export const versions = sqliteTable(
     // `t:<tokenId>` (NULL: a session, or written before 0012; `r:`: a private
     // label scrubbed when its publisher's row was deleted, SCRUBBED_VIA).
     agentVia: text("agent_via"),
+    // #1968: JSON {identityId, namespace, name, kind} of the bus session the
+    // publishing request proved (#1822), set by the server only. NULL: a web
+    // publish, an unlinked agent, or a row from before 0031. Never in an API payload.
+    agentIdentity: text("agent_identity"),
     createdBy: text("created_by")
       .notNull()
       .references(() => users.id),
@@ -740,3 +744,14 @@ export const shareNoticeAgents = sqliteTable(
   },
   (t) => [primaryKey({ columns: [t.userId, t.namespace, t.agentName] })],
 );
+
+/**
+ * FREE_DATA_DAILY_WRITES_TOTAL (billing/caps.ts): the install's live-data
+ * writes in one UTC day. A single row (`id` 1); `day` is the UTC day number
+ * (ms / 86_400_000) its `n` counts, and a write on a later day restarts n.
+ */
+export const dataWritesTotal = sqliteTable("data_writes_total", {
+  id: integer("id").primaryKey(),
+  day: integer("day").notNull(),
+  n: integer("n").notNull(),
+});

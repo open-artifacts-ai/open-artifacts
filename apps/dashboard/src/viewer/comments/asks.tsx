@@ -7,9 +7,14 @@ import type {
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useEffect, useId, useState } from "react";
-import { answerError, useAnswerAsk } from "../../api/comments";
+import {
+  answerError,
+  useAnswerAsk,
+  useCommentErrorCtx,
+} from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
+import { linkify } from "./linkify";
 
 const MUTED = "text-muted-foreground";
 
@@ -116,6 +121,7 @@ export function AskBlock({
   const ask = c.ask;
   const answer = useAnswerAsk(artifactId);
   const [err, setErr] = useState<unknown>(null);
+  const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
   const qid = useId();
@@ -183,7 +189,7 @@ export function AskBlock({
           {/* The card's own header already names the asker and the time. */}
           <p className={`${TXT} ${MUTED}`}>Ask</p>
           <p id={qid} className={`${TXT} font-semibold break-words`}>
-            {ask.question}
+            {linked(ask.question, 0)}
           </p>
           <ul
             aria-labelledby={qid}
@@ -276,7 +282,7 @@ export function AskBlock({
           )}
           {err != null && (
             <p role="alert" className={`${TXT} text-destructive`}>
-              {answerError(err)}
+              {answerError(err, errCtx)}
             </p>
           )}
           <div className="flex gap-2">
@@ -324,7 +330,7 @@ export function matchAgents(
     )
   )
     return null;
-  return agents.filter((a) => a.name.toLowerCase().includes(q));
+  return sortAgents(agents.filter((a) => a.name.toLowerCase().includes(q)));
 }
 
 const esc = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -399,7 +405,7 @@ export function MentionedText({
   body: string;
   mentions?: readonly { key: string; name: string }[];
 }) {
-  if (!mentions?.length) return <>{body}</>;
+  if (!mentions?.length) return <>{linked(body, 0)}</>;
   const names = [...new Set(mentions.map((m) => m.name))]
     .sort((x, y) => y.length - x.length)
     .map(esc);
@@ -409,7 +415,7 @@ export function MentionedText({
   for (const m of body.matchAll(re)) {
     const at = m.index + (m[1]?.length ?? 0);
     const end = at + 1 + (m[2]?.length ?? 0);
-    if (at > last) out.push(body.slice(last, at));
+    if (at > last) out.push(...linked(body.slice(last, at), last));
     out.push(
       <span
         key={at}
@@ -421,9 +427,31 @@ export function MentionedText({
     );
     last = end;
   }
-  if (last === 0) return <>{body}</>;
-  if (last < body.length) out.push(body.slice(last));
+  if (last === 0) return <>{linked(body, 0)}</>;
+  if (last < body.length) out.push(...linked(body.slice(last), last));
   return <>{out}</>;
+}
+
+/** Plain text with its http(s) URLs as links that open in a new tab. */
+function linked(text: string, base: number): React.ReactNode[] {
+  let at = base;
+  return linkify(text).map((p) => {
+    const key = at;
+    at += p.text.length;
+    return p.url ? (
+      <a
+        key={key}
+        href={p.text}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="break-all underline"
+      >
+        {p.text}
+      </a>
+    ) : (
+      p.text
+    );
+  });
 }
 
 /** Who gets notified: the mentioned agents. */
@@ -478,14 +506,74 @@ export function MentionChips({
   );
 }
 
+const isOnline = (a: ArtifactAgent) =>
+  a.state === "online" || (a.state === undefined && a.online);
+
+const isUnknown = (a: ArtifactAgent) => a.state === undefined && !a.online;
+const rankOf = (a: ArtifactAgent) => (isOnline(a) ? 0 : isUnknown(a) ? 2 : 1);
+
+/** Online first, then away, then agents with no state (the bus did not answer); each alphabetical. */
+export function sortAgents(agents: readonly ArtifactAgent[]): ArtifactAgent[] {
+  return [...agents].sort(
+    (x, y) =>
+      rankOf(x) - rankOf(y) ||
+      x.name.localeCompare(y.name, "en", { sensitivity: "base" }),
+  );
+}
+
+/** "OA Manager-2" and "OA Manager (Sam)" both have the stem "oa manager". */
+const stemOf = (name: string) =>
+  name
+    .replace(/ \([^)]*\)$/, "")
+    .replace(/-\d+$/, "")
+    .toLowerCase();
+
+/** "19h", "5m", "3d": how long ago an away session was last active. */
+function ago(iso: string | null | undefined, now = Date.now()): string {
+  const t = iso ? Date.parse(iso) : Number.NaN;
+  if (Number.isNaN(t)) return "";
+  const m = Math.max(0, Math.round((now - t) / 60_000));
+  if (m < 60) return `${m}m`;
+  if (m < 48 * 60) return `${Math.floor(m / 60)}h`;
+  return `${Math.floor(m / 1440)}d`;
+}
+
+/**
+ * "online" or "away 19h" for the viewer's own agent, with the machine after a
+ * dot when the name stem repeats among their own agents. Another member's
+ * agent leads with its owner and shows the state alone: "online · Sam's".
+ */
+function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
+  // No state at all: the bus did not answer, so nothing is claimed (an empty column; "Sam's" alone for another member's).
+  if (a.state === undefined && !a.online && !a.owner) return "";
+  if (a.owner && a.state === undefined && !a.online) return `${a.owner}'s`;
+  if (a.owner) return `${isOnline(a) ? "online" : "away"} \u00b7 ${a.owner}'s`;
+  const head = isOnline(a)
+    ? "online"
+    : ["away", ago(a.lastActiveAt)].filter(Boolean).join(" ");
+  const stem = stemOf(a.name);
+  const repeats =
+    all.filter((o) => !o.owner && stemOf(o.name) === stem).length > 1;
+  return repeats && a.machine ? `${head} \u00b7 ${a.machine}` : head;
+}
+
+/** The row's name: the bare agent name when the status line already names the owner ("Sam's"). */
+const rowName = (a: ArtifactAgent) =>
+  a.owner && a.name.endsWith(` (${a.owner})`)
+    ? a.name.slice(0, -` (${a.owner})`.length)
+    : a.name;
+
 export function MentionMenu({
   id,
   matches,
+  all = matches,
   active,
   onPick,
 }: {
   id: string;
   matches: readonly ArtifactAgent[];
+  /** Every agent on the menu's roster: a machine shows on rows whose name stem repeats among these. */
+  all?: readonly ArtifactAgent[];
   active: number;
   onPick: (a: ArtifactAgent) => void;
 }) {
@@ -508,19 +596,25 @@ export function MentionMenu({
             role="option"
             tabIndex={-1}
             aria-selected={i === active}
-            className={`flex w-full cursor-pointer items-center gap-2 px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:bg-muted`}
+            className={`flex w-full cursor-pointer items-center gap-2 border-l-[3px] border-transparent px-2 py-1 text-left ${TXT} hover:bg-muted aria-selected:border-[var(--oa-accent)] aria-selected:bg-[var(--oa-accent-soft)]`}
             // Picked on mouse down so the textarea keeps focus; the keys are on the textarea.
             onMouseDown={(e) => {
               e.preventDefault();
               onPick(a);
             }}
           >
-            <span
-              aria-hidden="true"
-              className={`size-2 shrink-0 rounded-full ${a.online ? "bg-[var(--oa-success-fg,#157a3a)]" : "bg-muted-foreground/50"}`}
-            />
-            <b className="min-w-0 flex-1 truncate">{a.name}</b>
-            <span className={MUTED}>{a.online ? "online" : "offline"}</span>
+            {!isUnknown(a) && (
+              <span
+                aria-hidden="true"
+                className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
+              />
+            )}
+            <b
+              className={`min-w-0 flex-1 truncate ${a.state === "away" ? MUTED : ""}`}
+            >
+              {rowName(a)}
+            </b>
+            <span className={MUTED}>{stateText(a, all)}</span>
           </div>
         ))
       )}

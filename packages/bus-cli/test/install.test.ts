@@ -372,7 +372,8 @@ describe("install: daemon confirmation", () => {
       "[[danger]]×[[/danger]]  The daemon did not start within 10 seconds.",
       "   Run npx @open-artifacts/bus doctor to see why.",
     ]);
-    expect(ctx.out().at(-1)).toMatch(/OpenCode service/);
+    // The harness lines (the output style's too) come before the daemon step.
+    expect(ctx.out().some((l) => /OpenCode service/.test(l))).toBe(true);
   });
 });
 
@@ -836,5 +837,103 @@ describe("roster machine column", () => {
     });
     expect(lines[1]).toContain("desktop");
     expect(lines[2]).not.toContain("desktop");
+  });
+});
+
+describe("install and uninstall: the Pi entry notes (#1856)", () => {
+  const withPi = (version: string) =>
+    allHarnesses({
+      which: (c: string) => c === "pi",
+      exec: vi.fn(async (cmd: string, args: string[]) =>
+        cmd === "pi" && args[0] === "--version"
+          ? { code: 0, stdout: `${version}\n`, stderr: "" }
+          : { code: 0, stdout: "", stderr: "" },
+      ),
+    });
+  const mcpFile = (ctx: Fake) => join(ctx.userHome, ".pi/agent/mcp.json");
+  const seed = (ctx: Fake) => {
+    mkdirSync(join(ctx.userHome, ".pi/agent"), { recursive: true });
+    writeFileSync(
+      mcpFile(ctx),
+      JSON.stringify({
+        mcpServers: { "open-artifacts": { type: "http", url: `${HUB}/mcp` } },
+      }),
+    );
+  };
+
+  it("install prints a note the adapter step made", async () => {
+    const ctx = fakeCtx({ fetch: hub([approved]), ...withPi("1.4.0") });
+    seed(ctx);
+    await install({ label: LABEL, hub: HUB }, ctx);
+    expect(ctx.out().join("\n")).toContain(
+      `left the open-artifacts entry in ${mcpFile(ctx)} as it is: Pi needs 1.5.0 or later to show as its own session on pages. Its tools still work.`,
+    );
+  });
+
+  it("install does not repeat a note another line already shows", async () => {
+    const ctx = fakeCtx({
+      fetch: hub([approved]),
+      ...allHarnesses({ which: (c: string) => ["claude", "pi"].includes(c) }),
+    });
+    await install({ label: LABEL, hub: HUB }, ctx);
+    expect(ctx.out().join("\n")).not.toMatch(/no codex binary|Nix mode/);
+  });
+
+  it("uninstall that cannot put the entry back keeps the extension and the moved file, and says why", async () => {
+    const ctx = fakeCtx({ fetch: hub([approved]), ...withPi("1.5.0") });
+    seed(ctx);
+    await install({ label: LABEL, hub: HUB }, ctx);
+    const ext = join(ctx.userHome, ".pi/agent/extensions/oa-bus.ts");
+    const moved = join(ctx.home, "pi-mcp-entry.json");
+    expect(existsSync(ext)).toBe(true);
+    expect(existsSync(moved)).toBe(true);
+    writeFileSync(mcpFile(ctx), "{ broken");
+    await uninstall({ purge: false }, ctx);
+    expect(existsSync(ext)).toBe(true);
+    expect(existsSync(moved)).toBe(true);
+    expect(ctx.out().join("\n")).toContain(mcpFile(ctx));
+  });
+});
+
+describe("install: the Claude Code output style (#1970)", () => {
+  it("writes it, says how to turn it on, and uninstall removes it", async () => {
+    const ctx = fakeCtx({
+      fetch: hub([{ status: "pending" }, approved]),
+      ...allHarnesses(),
+    });
+    expect(await run(ctx)).toBe(0);
+    const path = join(
+      ctx.userHome,
+      ".claude/output-styles/artifacts-teammate.md",
+    );
+    expect(readFileSync(path, "utf8")).toContain("name: Artifacts Teammate");
+    const out = ctx.out().join("\n");
+    expect(out).toContain(
+      "Turned on the Artifacts Teammate output style\n   (~/.claude/output-styles/artifacts-teammate.md).\n   Restart Claude Code sessions to use it.",
+    );
+    const settings = join(ctx.userHome, ".claude/settings.json");
+    expect(JSON.parse(readFileSync(settings, "utf8"))).toEqual({
+      outputStyle: "Artifacts Teammate",
+    });
+    expect(await uninstall({ purge: false }, ctx)).toBe(0);
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(settings)).toBe(false);
+  });
+
+  it("keeps the person's own style and says so", async () => {
+    const ctx = fakeCtx({
+      fetch: hub([{ status: "pending" }, approved]),
+      ...allHarnesses(),
+    });
+    const settings = join(ctx.userHome, ".claude/settings.json");
+    mkdirSync(join(ctx.userHome, ".claude"), { recursive: true });
+    writeFileSync(settings, '{"outputStyle":"Explanatory"}\n');
+    expect(await run(ctx)).toBe(0);
+    expect(ctx.out()).toContain(
+      "[[success]]✓[[/success]]  Added the Artifacts Teammate output style. You're on Explanatory; switch with /output-style.",
+    );
+    expect(readFileSync(settings, "utf8")).toBe(
+      '{"outputStyle":"Explanatory"}\n',
+    );
   });
 });

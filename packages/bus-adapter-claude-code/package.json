@@ -9,7 +9,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./main": "./src/main.ts",
-    "./codex": "./src/codex-main.ts"
+    "./codex": "./src/codex-main.ts",
+    "./codex-proxy": "./src/codex-proxy-main.ts"
   },
   "scripts": {
     "test": "vitest run",

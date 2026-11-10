@@ -39,7 +39,7 @@ export type AttestDeps = {
  * `pid` is the session's process when it is not the adapter (Claude's MCP server).
  */
 export type Attest =
-  | { ok: true; cwd?: string; pid?: number }
+  | { ok: true; cwd?: string; pid?: number; linkOnly?: true }
   | { ok: false; reason: string };
 
 let defaultCodex: CodexAttestor | undefined;
@@ -134,6 +134,8 @@ export function commOf(pid: number): string | null {
     return (
       execFileSync(systemTool("ps"), ["-o", "comm=", "-p", String(pid)], {
         encoding: "utf8",
+        // A timeout reads as null, which ocServiceGone treats as unknown, not gone.
+        timeout: 1500,
         stdio: ["ignore", "pipe", "ignore"],
       }).trim() || null
     );

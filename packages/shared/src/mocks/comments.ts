@@ -20,8 +20,47 @@ import type { ArtifactSummary } from "../schemas.js";
 
 /** The agents the mock lists for every artifact (R.artifactAgents). */
 export const MOCK_AGENTS: ArtifactAgent[] = [
-  { key: "agent:claude-code", name: "Claude Code", online: true },
-  { key: "agent:codex", name: "Codex", online: false },
+  {
+    key: "agent:claude-code",
+    name: "Claude Code",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: "laptop",
+  },
+  {
+    key: "agent:manager-2",
+    name: "OA Manager-2",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: "laptop",
+  },
+  {
+    key: "agent:codex",
+    name: "Codex",
+    online: false,
+    state: "away",
+    lastActiveAt: new Date(Date.now() - 2 * 3600_000).toISOString(),
+    machine: "laptop",
+  },
+  {
+    key: "agent:sam-bot",
+    name: "OA Manager (Sam)",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: null,
+    owner: "Sam",
+  },
+  {
+    key: "agent:manager",
+    name: "OA Manager",
+    online: false,
+    state: "away",
+    lastActiveAt: new Date(Date.now() - 19 * 3600_000).toISOString(),
+    machine: "workstation",
+  },
 ];
 
 type Deps = {
@@ -35,6 +74,8 @@ type Deps = {
   contentHash?: (id: string, version: number) => string | null | undefined;
   /** Also seed an open ask addressed to the caller on "Landing page" (default off: list responses stay byte-identical to the fixtures). */
   seedAsk?: boolean;
+  /** Also seed a thread with a linked agent, an unlinked agent of the same name and a person (#1822). */
+  seedAgents?: boolean;
 };
 
 const iso = () => new Date().toISOString();
@@ -51,6 +92,7 @@ export function createCommentMock({
   rateLimit,
   contentHash,
   seedAsk,
+  seedAgents,
 }: Deps): {
   handlers: HttpHandler[];
   /** Open asks addressed to the caller on this artifact. */
@@ -137,6 +179,35 @@ export function createCommentMock({
           },
         ]
       : [];
+    const faces: CommentThread[] = [];
+    if (seedAgents) {
+      const agent = (linked: boolean): CommentAuthor => ({
+        kind: "agent",
+        // An unlinked agent is named by its product (server rule).
+        name: linked ? "OA Product" : "Claude Code",
+        for: "Leo Urbina",
+        linked,
+        ...(linked
+          ? { product: "Claude Code", animal: { id: "fox", color: 2 } }
+          : {}),
+        me: false,
+      });
+      const f = [
+        comment("Can the pricing section be shorter?", other, m),
+        comment("Shortened to three sentences.", agent(true)),
+        comment("Also fixed the footer typo.", agent(false)),
+      ];
+      faces.push({
+        id: newId(),
+        anchor: { kind: "note" },
+        version: 1,
+        status: "open",
+        resolvedBy: null,
+        resolvedAt: null,
+        createdAt: f[0]?.createdAt ?? iso(),
+        comments: f,
+      });
+    }
     return [
       {
         id: newId(),
@@ -165,6 +236,7 @@ export function createCommentMock({
         comments: [c],
       },
       ...asked,
+      ...faces,
     ];
   };
   const list = (id: string) => {

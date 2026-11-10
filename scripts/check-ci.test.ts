@@ -526,6 +526,18 @@ describe("deploy-staging.yml", () => {
     );
     expect([w.jobs.smoke.needs].flat()).toContain("deploy");
   });
+  it("runs the MCP happy-path suite last among the smoke checks (#1736)", () => {
+    const steps = w.jobs.smoke.steps as Step[];
+    const h = steps.findIndex((s) =>
+      (s.run ?? "").includes("test:e2e:happy-path"),
+    );
+    expect(h).toBeGreaterThan(idx("smoke", "@oa/server smoke"));
+    expect(h).toBeLessThan(idx("smoke", "staging-analytics-token.sh outcome"));
+    expect(steps[h]["timeout-minutes"]).toBeGreaterThan(0);
+    expect(steps[h].run).toContain("umask 077");
+    expect(steps[h].run).toContain("OA_STAGING_PAT_FILE");
+    expect(steps[h].run).not.toContain("echo");
+  });
   it("deploy steps run build -> migrate -> deploy in order", () => {
     const b = idx("deploy", "pnpm build");
     const m = idx("deploy", "d1 migrations apply open-artifacts-staging");
@@ -760,7 +772,7 @@ describe("release-please", () => {
     // nothing uses GITHUB_TOKEN, so it gets none.
     expect(w.jobs["release-please"].permissions).toEqual({});
     expect(read(".github/workflows/release-please.yml")).toMatch(
-      /googleapis\/release-please-action@v\d+/,
+      /googleapis\/release-please-action@[0-9a-f]{40} # v\d+/,
     );
   });
   it("deploys the tag", () => {
@@ -791,7 +803,7 @@ describe("release-please", () => {
     const steps = wf("release-please.yml").jobs["release-please"].steps;
     // biome-ignore lint/suspicious/noExplicitAny: untyped YAML
     const app = steps.find((s: any) =>
-      /^actions\/create-github-app-token@v\d+$/.test(s.uses ?? ""),
+      /^actions\/create-github-app-token@[0-9a-f]{40}$/.test(s.uses ?? ""),
     );
     expect(app?.id).toBe("app");
     expect(app.with).toEqual({
@@ -2192,5 +2204,93 @@ esac
     expect(r.code).not.toBe(0);
     expect(r.writes).toEqual([]);
     expect(r.out).toContain("could not read the jobs");
+  });
+});
+
+describe("workflow supply chain (#472)", () => {
+  const dir = ".github/workflows";
+  const files = readdirSync(join(root, dir)).filter((f) => f.endsWith(".yml"));
+  type Step = {
+    uses?: string;
+    with?: Record<string, unknown>;
+    name?: string;
+    run?: string;
+  };
+  const steps = (): { where: string; step: Step; rest: Step[] }[] =>
+    files.flatMap((f) =>
+      Object.entries(wf(f).jobs as Record<string, { steps?: Step[] }>).flatMap(
+        ([job, j]) =>
+          (j.steps ?? []).map((step, i, all) => ({
+            where: `${f}:${job}`,
+            step,
+            rest: all.slice(i + 1),
+          })),
+      ),
+    );
+
+  // A rule that scans nothing passes forever; prove the scan sees the repo.
+  it("the scan sees the workflows and their actions", () => {
+    expect(files.length).toBeGreaterThan(10);
+    expect(steps().filter((s) => s.step.uses).length).toBeGreaterThan(50);
+  });
+
+  const unpinned = (uses: string | undefined) =>
+    uses !== undefined &&
+    !uses.startsWith("./") &&
+    !/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(uses);
+
+  it("every action is pinned by a full commit SHA", () => {
+    const bad = steps()
+      .filter((s) => unpinned(s.step.uses))
+      .map((s) => `${s.where}: ${s.step.uses}`);
+    expect(bad).toEqual([]);
+  });
+
+  it("every pinned action carries a version comment", () => {
+    const bad = files.flatMap((f) =>
+      read(`${dir}/${f}`)
+        .split("\n")
+        .filter((l) => /uses: *\S+@[0-9a-f]{40}/.test(l))
+        .filter((l) => !/@[0-9a-f]{40} +# +v\d/.test(l))
+        .map((l) => `${f}: ${l.trim()}`),
+    );
+    expect(bad).toEqual([]);
+  });
+
+  it("the pin rule rejects tags, branches, short SHAs and passes a full SHA", () => {
+    const sha = "a".repeat(40);
+    expect(unpinned("actions/checkout@v4")).toBe(true);
+    expect(unpinned("actions/checkout@main")).toBe(true);
+    expect(unpinned(`actions/checkout@${"a".repeat(7)}`)).toBe(true);
+    expect(unpinned("actions/checkout")).toBe(true);
+    expect(unpinned(`actions/checkout@${sha}`)).toBe(false);
+    expect(unpinned(`actions/cache/restore@${sha}`)).toBe(false);
+    expect(unpinned("./.github/actions/x")).toBe(false);
+  });
+
+  // No job pushes today, so no checkout keeps its token. A job that must push
+  // gets its checkout listed here with the reason.
+  const mayPersist: Record<string, string> = {};
+
+  it("every checkout drops its credentials", () => {
+    const bad = steps()
+      .filter((s) => s.step.uses?.startsWith("actions/checkout@"))
+      .filter((s) => s.step.with?.["persist-credentials"] !== false)
+      .filter((s) => !(s.where in mayPersist))
+      .map((s) => s.where);
+    expect(bad).toEqual([]);
+  });
+
+  it("no job that persists credentials is unexplained", () => {
+    for (const [where, why] of Object.entries(mayPersist))
+      expect(why.length, where).toBeGreaterThan(10);
+  });
+
+  it("no job pushes with the checkout's token", () => {
+    const bad = steps()
+      .filter((s) => /\bgit +(push|commit|tag)\b/.test(s.step.run ?? ""))
+      .map((s) => s.where)
+      .filter((w) => !(w in mayPersist));
+    expect(bad).toEqual([]);
   });
 });

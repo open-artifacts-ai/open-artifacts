@@ -5,6 +5,7 @@ import {
   opencodeVersion,
   supportsPromptId,
 } from "@oa/bus-adapter-opencode";
+import { codexBinFile } from "@oa/bus-daemon";
 import { BUS_CMD, type StatusReply } from "@oa/bus-ipc";
 import {
   askDaemon,
@@ -23,9 +24,15 @@ import {
   type Harness,
   installAdapters,
   readAssets,
+  unshownNotes,
 } from "../steps/adapters.ts";
+import { readCodexVersion } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
+import {
+  installOutputStyle,
+  outputStyleSource,
+} from "../steps/output-style.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
 import {
@@ -196,6 +203,7 @@ async function harnessesStep(
   if (out.hermesRestart) say(ctx, c.hermesRestart());
   if (out.openclawRestart) say(ctx, c.openclawRestart());
   if (out.openclawNix) say(ctx, c.openclawNix());
+  for (const n of unshownNotes(out.notes)) say(ctx, [n]);
   for (const s of out.skipped)
     say(ctx, await skippedLines(ctx, s.harness, s.reason));
   if (out.installed.includes("opencode"))
@@ -204,10 +212,19 @@ async function harnessesStep(
   // The skill goes next to the tools, fetched from the instance, never vendored.
   // A fetch failure does not stop later steps: it is recorded and the run exits
   // non-zero at the end, after the daemon (or whatever follows) has had its turn.
+  const codexVersion = out.installed.includes("codex")
+    ? await readCodexVersion({
+        configFile: codexBinFile(ctx.home),
+        exec: ctx.exec,
+        path: ctx.env.PATH,
+        app: ctx.codexApp,
+      })
+    : undefined;
   const skill = await installSkill(
     {
       home: ctx.userHome,
       env: ctx.env,
+      codexVersion,
       fetchSkill: (url) => fetchSkillText(ctx.fetch, url),
     },
     hub ? originOf(hub) : machineOrigin(ctx),
@@ -215,6 +232,27 @@ async function harnessesStep(
   );
   for (const n of skill.notes) say(ctx, [n]);
   if (skill.failedUrl) skillFailure.set(ctx, skill.failedUrl);
+  // The Claude Code output style: written, and turned on only when the person has no style chosen.
+  try {
+    const style = installOutputStyle(
+      {
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        text: outputStyleSource(),
+      },
+      out.installed,
+    );
+    for (const n of style.notes) say(ctx, [n]);
+    if (style.settings === "set" && style.written[0])
+      say(ctx, c.outputStyleOn(tilde(ctx, style.written[0])));
+    else if (style.settings === "kept" && style.first)
+      say(ctx, c.outputStyleKept(style.kept));
+  } catch (e) {
+    say(ctx, [
+      `Could not write the output style: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
   // Written quietly: the harnesses line above is the user-visible outcome, and
   // a run that writes nothing has nothing to say.
   return true;
@@ -328,6 +366,7 @@ export function rosterBlock(
   return {
     lines: [
       c.rosterHeader(ns.namespace, rows.length - queued, queued),
+      ...(ns.source ? [c.namespaceSource(ns.source)] : []),
       ...shown.flatMap((r) => {
         const says = c.rosterSays(r, now);
         return [c.rosterRow(r), ...(says ? [says] : [])];

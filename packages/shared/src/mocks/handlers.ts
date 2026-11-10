@@ -111,6 +111,8 @@ export type MockOptions = {
   commentsRateLimit?: number;
   /** Seed an open ask for the caller on "Landing page" (#1535). */
   commentAsks?: boolean;
+  /** #1822: the "Landing page" artifact carries agent-authored comments. */
+  commentAgents?: boolean;
   /**
    * The R.events mock (createArtifactEvents()): hello reports the store's
    * currentVersion; publish/restore emit `version`, delete and
@@ -615,6 +617,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     emit: (id, open) => opts.events?.emitComments(id, open),
     rateLimit: opts.commentsRateLimit,
     seedAsk: opts.commentAsks,
+    seedAgents: opts.commentAgents,
     contentHash: (id, v) =>
       versions[id]?.find((x) => x.version === v)?.contentHash,
   });

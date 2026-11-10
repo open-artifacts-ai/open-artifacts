@@ -465,6 +465,16 @@ function sendFrame(ws: WebSocket, frame: ServerFrame): void {
   }
 }
 
+/** #1752: like sendFrame, but false when the socket refused the frame (closing or closed), so a notice is not counted delivered. */
+function trySendFrame(ws: WebSocket, frame: ServerFrame): boolean {
+  try {
+    ws.send(encodeFrame(frame));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function sendError(
   ws: WebSocket,
   id: string | undefined,
@@ -824,23 +834,46 @@ function machineChange(sql: SqlStorage, machineId: string): RosterChange {
   };
 }
 
+/** #1984: most proofs a live session holds; a newer bind evicts the oldest. */
+export const PROOFS_PER_SESSION = 4;
+
 /**
- * #1822: stores the hash of `agentId`'s proof, replacing any earlier one, and
- * mints the agent's identity_id at its first bind. Another row holding the
- * same hash loses it, so a hash names one session.
+ * #1822: adds the hash of `agentId`'s proof to the session's proofs (at most
+ * PROOFS_PER_SESSION: the oldest goes) and mints the agent's identity_id at
+ * its first bind. Another row holding the same hash loses it, so a hash names
+ * one session. `agents.proof_hash` mirrors the newest proof.
  */
 function bindProof(sql: SqlStorage, agentId: string, hash: string): void {
-  sql.exec(
-    "update agents set proof_hash = null where proof_hash = ? and id != ?",
+  const lost = all<{ agent_id: string }>(
+    sql,
+    "delete from agent_proofs where hash = ? and agent_id != ? returning agent_id",
     hash,
     agentId,
   );
   sql.exec(
-    "update agents set proof_hash = ?, identity_id = coalesce(identity_id, ?) where id = ?",
+    `insert into agent_proofs (hash, agent_id, seq)
+     values (?, ?, (select coalesce(max(seq), 0) + 1 from agent_proofs))
+     on conflict (hash) do update set agent_id = excluded.agent_id, seq = excluded.seq`,
     hash,
+    agentId,
+  );
+  sql.exec(
+    `delete from agent_proofs where agent_id = ? and hash not in
+       (select hash from agent_proofs where agent_id = ? order by seq desc limit ?)`,
+    agentId,
+    agentId,
+    PROOFS_PER_SESSION,
+  );
+  sql.exec(
+    "update agents set identity_id = coalesce(identity_id, ?) where id = ?",
     randomHex(32),
     agentId,
   );
+  for (const id of [agentId, ...lost.map((r) => r.agent_id)])
+    sql.exec(
+      "update agents set proof_hash = (select hash from agent_proofs where agent_id = agents.id order by seq desc limit 1) where id = ?",
+      id,
+    );
 }
 
 /** The open agent `ref` on this machine, or null: the from_ref identity check. */
@@ -1345,6 +1378,7 @@ function takeAwayName(
       "update agents set identity_id = null, proof_hash = null where id = ?",
       fromId,
     );
+    sql.exec("delete from agent_proofs where agent_id = ?", fromId);
   }
   const have = one<{ n: number; b: number }>(
     sql,
@@ -2234,7 +2268,11 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
  * namespace: that namespace on agents_live_ns_lname plus the globals on
  * agents_global_name, merged here (as roster() does).
  */
-function agentList(ctx: DurableObjectState, namespace?: string): BusAgent[] {
+function agentList(
+  ctx: DurableObjectState,
+  namespace?: string,
+  withAway = false,
+): BusAgent[] {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
   const from = "from agents a join machines m on m.id = a.machine_id";
@@ -2267,10 +2305,24 @@ function agentList(ctx: DurableObjectState, namespace?: string): BusAgent[] {
       .sort(byNamespaceName)
       .slice(0, cap);
   }
-  // TODO(#1295 part C): list away agents here (agentDto already gives them
-  // state "away", running=false and `since`) once the dashboard renders them.
-  // Until then Roster.tsx would show them as Queued and ShareNotices would
-  // offer them as targets, so only open agents are listed.
+  // #1295 part C: away agents (closed, name still reserved) are listed only on
+  // request (the @ menu); Roster.tsx and ShareNotices would show them as Queued
+  // or offer them as targets, so every other reader gets open agents only.
+  if (withAway) {
+    const away = all<AgentWithMachine>(
+      sql,
+      `select ${AGENT_DTO_COLS} ${from} where a.org_id = ? and a.live = 0 and m.revoked_at is null
+         and a.id in (select f.agent_id from former_names f
+           where f.org_id = ? and f.kind = 'away' and f.expires_at > ?)
+       order by a.namespace, lower(a.name), a.name limit ?`,
+      OWNER_ORG_ID,
+      OWNER_ORG_ID,
+      Date.now(),
+      cap,
+    );
+    // Open agents first, then away, together at most `cap` (away rows count).
+    rows = [...rows, ...away].slice(0, cap);
+  }
   const online = new Map<string, boolean>();
   const dtos = rows.map((r) => {
     let on = online.get(r.machineId);
@@ -3068,18 +3120,20 @@ function settle(
   const r = one<{ fromAgent: string; size: number }>(
     sql,
     `select r.from_agent as fromAgent, r.size from receipts r join agents a on a.id = r.to_agent
-     where r.id = ? and r.org_id = ? and r.state = 'pending' and a.machine_id = ?
+     where r.id = ? and r.org_id = ? and a.machine_id = ?
+       and (r.state = 'pending' or (? = 'delivered' and r.state = 'expired' and r.reason = 'lost_body'))
        and r.rowid > a.session_start_rowid`,
     msgId,
     OWNER_ORG_ID,
     machineId,
+    outcome,
   );
   if (!r) return null;
   // R7 (accepted): an ack after expires_at but before the sweep counts as
   // delivered; the harness really did take it.
   if (outcome === "delivered")
     sql.exec(
-      "update receipts set state = 'delivered', acked_at = ?, final_at = ? where id = ? and state = 'pending'",
+      "update receipts set state = 'delivered', reason = null, notified_at = null, acked_at = ?, final_at = ? where id = ? and (state = 'pending' or (state = 'expired' and reason = 'lost_body'))",
       now,
       now,
       msgId,
@@ -3293,10 +3347,22 @@ function senderRef(f: ClientFrame): string | null {
 
 /** #1317: waiting server notices a hub keeps; a notice over it is dropped (a replace of a waiting one is not). */
 export const NOTICES_MAX = 500;
+/**
+ * #1828: rows held for a LIVE daemon too old to read a notice (parked = 2)
+ * have their own caps, per address and hub-wide, and do not count toward
+ * NOTICES_MAX; a new notice over either is dropped. Offline-machine rows
+ * (parked = 1) count toward NOTICES_MAX as before, with no per-address cap.
+ */
+export const NOTICES_OLD_PER_ADDRESS = 20;
+export const NOTICES_OLD_MAX = 500;
+/** #1828: ids named in one notice_expired log line. */
+const NOTICE_LOG_IDS = 20;
 /** #1317: how long an offline machine's notice waits (the v1 rule). */
 export const NOTICE_HOLD_MS = HOUR_MS;
-/** #1317: notices one agent_up sends, so a reconnect stays one bounded step. */
-const NOTICE_FLUSH_BATCH = 100;
+/** #1317: notices one agent_up (or one alarm step) sends, so a reconnect never injects a pile of turns at once (#1752). */
+const NOTICE_FLUSH_BATCH = 10;
+/** #1752: the wait between two steps of a backlog of notices to one live agent. */
+const NOTICE_PACE_MS = 2000;
 
 type NoticeRow = {
   toNs: string;
@@ -3512,7 +3578,9 @@ export class BusHub extends DurableObject<Env> {
    * The dashboard's one read (services/bus.ts busView): the machines with a
    * live socket now, and the open agents of unrevoked machines (agentList).
    */
-  async snapshot(): Promise<{ connected: string[]; agents: BusAgent[] }> {
+  async snapshot(opts?: {
+    away?: boolean;
+  }): Promise<{ connected: string[]; agents: BusAgent[] }> {
     const connected = all<StoredMachine>(
       this.ctx.storage.sql,
       `select ${MACHINE_COLS} from machines where org_id = ? and revoked_at is null`,
@@ -3520,7 +3588,10 @@ export class BusHub extends DurableObject<Env> {
     )
       .filter((m) => machineOnline(this.ctx, m.id))
       .map((m) => m.id);
-    return { connected, agents: agentList(this.ctx) };
+    return {
+      connected,
+      agents: agentList(this.ctx, undefined, opts?.away === true),
+    };
   }
 
   // ------------------------------------------------------------------- roles
@@ -3709,7 +3780,7 @@ export class BusHub extends DurableObject<Env> {
     if (!LinkProofHashSchema.safeParse(hash).success) return null;
     return one<AgentIdentity>(
       this.ctx.storage.sql,
-      "select identity_id as identityId, namespace, name, kind from agents where proof_hash = ? and live = 1 and identity_id is not null and org_id = ?",
+      "select a.identity_id as identityId, a.namespace, a.name, a.kind from agent_proofs p join agents a on a.id = p.agent_id where p.hash = ? and a.live = 1 and a.identity_id is not null and a.org_id = ?",
       hash,
       OWNER_ORG_ID,
     );
@@ -5552,12 +5623,15 @@ export class BusHub extends DurableObject<Env> {
   /**
    * pending -> expired, once: the guarded update is the only transition, so a
    * receipt is never expired (or the sender told) twice, and an expired one
-   * never becomes delivered (settle also requires pending).
+   * never becomes delivered (settle also requires pending), except that a
+   * `lost_body` expiry (the hub lost a body it had already pushed) is settled
+   * delivered by the recipient's own late ack (#1760). `lost_body` is stored
+   * only: the wire carries a reasonless expiry, as before.
    */
   #expire(
     msgId: string,
     fromAgent: string,
-    reason?: "recipient_closed" | "revoked",
+    reason?: "recipient_closed" | "revoked" | "lost_body",
   ): void {
     const sql = this.ctx.storage.sql;
     const hit = all(
@@ -6039,7 +6113,7 @@ export class BusHub extends DurableObject<Env> {
           ?.body ??
         null;
       if (body === null) {
-        this.#expire(r.id, r.fromAgent);
+        this.#expire(r.id, r.fromAgent, "lost_body");
         return;
       }
       this.#arm(r.expiresAt);
@@ -6127,6 +6201,32 @@ export class BusHub extends DurableObject<Env> {
 
   // ----------------------------------------------------------------- notices
 
+  /** #1828: why one more old-daemon-held row (not counting its own key) does not fit, or null. */
+  #oldHeldOver(ns: string, lname: string, ckey: string): string | null {
+    const sql = this.ctx.storage.sql;
+    const notSelf = "not (to_ns = ? and to_lname = ? and ckey = ?)";
+    const atAddress =
+      one<{ n: number }>(
+        sql,
+        `select count(*) as n from notices where parked = 2 and to_ns = ? and to_lname = ? and ${notSelf}`,
+        ns,
+        lname,
+        ns,
+        lname,
+        ckey,
+      )?.n ?? 0;
+    if (atAddress >= NOTICES_OLD_PER_ADDRESS) return "old_daemon_address_cap";
+    const all2 =
+      one<{ n: number }>(
+        sql,
+        `select count(*) as n from notices where parked = 2 and ${notSelf}`,
+        ns,
+        lname,
+        ckey,
+      )?.n ?? 0;
+    return all2 >= NOTICES_OLD_MAX ? "old_daemon_cap" : null;
+  }
+
   #acceptNotice(n: BusNotice): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
@@ -6147,12 +6247,15 @@ export class BusHub extends DurableObject<Env> {
     const socket = live && noticeGated(live) ? live : null;
     const notBefore = n.notBefore ?? now;
     if (socket && notBefore <= now) {
-      sql.exec(
-        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-        ...key,
-      );
-      sendFrame(socket, noticeFrame(agent, n.text));
-      return "delivered";
+      // A socket that refuses the frame (#1752) leaves the notice held
+      // (parked) for the next agent_up, never stored as delivered.
+      if (trySendFrame(socket, noticeFrame(agent, n.text))) {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          ...key,
+        );
+        return "delivered";
+      }
     }
     const exists =
       one<{ x: number }>(
@@ -6160,17 +6263,33 @@ export class BusHub extends DurableObject<Env> {
         "select 1 as x from notices where to_ns = ? and to_lname = ? and ckey = ?",
         ...key,
       ) !== null;
-    if (!exists) {
+    // Due with no usable socket: parked until the machine's agent_up (1), or
+    // held for a live daemon too old to read it (2, own caps).
+    // A socket that can read notices but refused the frame (#1752) is
+    // offline-like (1), never "too old" (2).
+    const parked = notBefore > now ? 0 : live && !socket ? 2 : 1;
+    if (parked === 2) {
+      const reason = this.#oldHeldOver(n.to.namespace, lname, n.coalesceKey);
+      if (reason) {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          ...key,
+        );
+        logEvent("notice_dropped", { reason });
+        return "dropped";
+      }
+    } else if (!exists) {
       const held =
-        one<{ n: number }>(sql, "select count(*) as n from notices")?.n ?? 0;
+        one<{ n: number }>(
+          sql,
+          "select count(*) as n from notices where parked < 2",
+        )?.n ?? 0;
       if (held >= NOTICES_MAX) {
         logEvent("notice_dropped", { reason: "cap" });
         return "dropped";
       }
     }
     const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
-    // Due with no live socket: parked until the machine's agent_up.
-    const parked = notBefore <= now ? 1 : 0;
     sql.exec(
       `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked)
        values (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -6181,7 +6300,7 @@ export class BusHub extends DurableObject<Env> {
       expiresAt,
       parked,
     );
-    this.#arm(parked === 1 ? expiresAt : notBefore);
+    this.#arm(parked > 0 ? expiresAt : notBefore);
     this.#arm(expiresAt);
     return "held";
   }
@@ -6210,24 +6329,24 @@ export class BusHub extends DurableObject<Env> {
     for (const r of rows) {
       // The address resolves to this agent now, or the notice is not its.
       if (liveVisibleIn(sql, r.toNs, r.toLname)?.id !== agent.id) continue;
+      if (!trySendFrame(ws, noticeFrame(agent, r.text))) break;
       sql.exec(
         "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
         r.toNs,
         r.toLname,
         r.ckey,
       );
-      sendFrame(ws, noticeFrame(agent, r.text));
     }
     // A full batch: more may wait. Hand the rest to the alarm (it sends in
     // bounded steps to this live socket) instead of leaving them parked.
     if (rows.length >= NOTICE_FLUSH_BATCH) {
       sql.exec(
-        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked = 1",
+        "update notices set parked = 0 where to_lname = ? and (to_ns = ? or ?) and parked > 0",
         agent.name.toLowerCase(),
         agent.namespace,
         agent.global === 1 ? 1 : 0,
       );
-      this.#arm(now + 1);
+      this.#arm(now + NOTICE_PACE_MS);
     }
   }
 
@@ -6239,36 +6358,74 @@ export class BusHub extends DurableObject<Env> {
    */
   #sweepNotices(now: number): boolean {
     const sql = this.ctx.storage.sql;
-    const gone = purge(
+    // #1828: an expired notice was never delivered: count it (ids and counts only).
+    const expired = all<{ rid: number; id: string; parked: number }>(
       sql,
-      "delete from notices where rowid in (select rowid from notices where expires_at <= ? limit ?) returning rowid",
+      "select rowid as rid, id, parked from notices where expires_at <= ? limit ?",
       now,
+      BATCH,
     );
+    for (const r of expired)
+      sql.exec("delete from notices where rowid = ?", r.rid);
+    if (expired.length > 0)
+      logEvent("notice_expired", {
+        count: expired.length,
+        parked: expired.filter((r) => r.parked > 0).length,
+        ids: expired
+          .slice(0, NOTICE_LOG_IDS)
+          .map((r) => r.id)
+          .join(","),
+      });
+    const gone = expired.length >= BATCH;
     const due = all<NoticeRow>(
       sql,
       `select ${NOTICE_COLS} from notices where parked = 0 and not_before <= ? order by not_before limit ?`,
       now,
       BATCH,
     );
+    // Parking and dropping are cheap; only sends are paced (#1752).
+    let sent = 0;
+    let paced = false;
     for (const r of due) {
+      if (sent >= NOTICE_FLUSH_BATCH) {
+        paced = true;
+        break;
+      }
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
       const live = agent && liveSocket(this.ctx, agent.machineId);
       const socket = live && noticeGated(live) ? live : null;
-      if (agent && socket) {
+      if (agent && socket && trySendFrame(socket, noticeFrame(agent, r.text))) {
+        sent++;
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
           r.toNs,
           r.toLname,
           r.ckey,
         );
-        sendFrame(socket, noticeFrame(agent, r.text));
       } else if (agent) {
-        sql.exec(
-          "update notices set parked = 1 where to_ns = ? and to_lname = ? and ckey = ?",
-          r.toNs,
-          r.toLname,
-          r.ckey,
-        );
+        // A live socket that cannot read it: old-daemon share; none: offline.
+        // A capable socket that refused the frame (#1752) is offline-like (1).
+        const tooOld = live && !socket;
+        const reason = tooOld
+          ? this.#oldHeldOver(r.toNs, r.toLname, r.ckey)
+          : null;
+        if (reason) {
+          sql.exec(
+            "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+            r.toNs,
+            r.toLname,
+            r.ckey,
+          );
+          logEvent("notice_dropped", { reason });
+        } else {
+          sql.exec(
+            "update notices set parked = ? where to_ns = ? and to_lname = ? and ckey = ?",
+            tooOld ? 2 : 1,
+            r.toNs,
+            r.toLname,
+            r.ckey,
+          );
+        }
       } else {
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
@@ -6278,7 +6435,9 @@ export class BusHub extends DurableObject<Env> {
         );
       }
     }
-    return gone || due.length >= BATCH;
+    // A full step: the rest go out a pace later (#1752), not at once.
+    if (paced) this.#arm(now + NOTICE_PACE_MS);
+    return gone || (!paced && due.length >= BATCH);
   }
 
   // ------------------------------------------------------------------- alarm
@@ -6327,9 +6486,9 @@ export class BusHub extends DurableObject<Env> {
 
     // 2. Lost bodies: held_at set, no mail row and not in memory means the
     // body died with an eviction. Expired, never delivered.
-    const lost = all<{ id: string; fromAgent: string }>(
+    const lost = all<{ id: string; fromAgent: string; expiresAt: number }>(
       sql,
-      `select id, from_agent as fromAgent from receipts
+      `select id, from_agent as fromAgent, expires_at as expiresAt from receipts
        where state = 'pending' and held_at is not null and held_at <= ?
          and not exists (select 1 from mail where mail.id = receipts.id)
        order by held_at limit ?`,
@@ -6337,8 +6496,14 @@ export class BusHub extends DurableObject<Env> {
       BATCH,
     );
     if (lost.length >= BATCH) more = true;
+    // Past its TTL it expires as TTL (final), so a late ack cannot flip it (#1951).
     for (const r of lost)
-      if (!this.#held.has(r.id)) this.#expire(r.id, r.fromAgent);
+      if (!this.#held.has(r.id))
+        this.#expire(
+          r.id,
+          r.fromAgent,
+          r.expiresAt <= now ? undefined : "lost_body",
+        );
 
     // 2a. open-bus #422: machines offline past OFFLINE_REAP_MS have their
     // agents closed (before the close drain, which takes their leftover mail).

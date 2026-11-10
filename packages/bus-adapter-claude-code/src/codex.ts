@@ -113,6 +113,13 @@ export function codexHello(
   call: CodexCall,
   pid: number,
   ppid: number,
+  /** The capabilities this connection lists; the adapter's four when omitted. */
+  caps: string[] = [
+    ADAPTER_CAPS.mailbox,
+    ADAPTER_CAPS.pending,
+    ADAPTER_CAPS.follow,
+    ADAPTER_CAPS.reach,
+  ],
 ): Hello | undefined {
   const hello = Hello.safeParse({
     v: 1,
@@ -124,12 +131,7 @@ export function codexHello(
     pid,
     ...(call.cwd ? { cwd: call.cwd } : {}),
     proposed_name: "codex",
-    caps: [
-      ADAPTER_CAPS.mailbox,
-      ADAPTER_CAPS.pending,
-      ADAPTER_CAPS.follow,
-      ADAPTER_CAPS.reach,
-    ],
+    caps,
     codex: {
       thread_id: call.threadId,
       call_id: call.callId,
