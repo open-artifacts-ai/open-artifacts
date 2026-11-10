@@ -26,6 +26,8 @@ type Ctx = {
    * tool, clones) in this process. Its presence is how a session is known as omp.
    */
   agent?: { kind?: string };
+  /** omp only: the run mode ("tui" is the interactive terminal; ACP and RPC report "rpc"). */
+  mode?: string;
 };
 type ToolResult = {
   content: { type: "text"; text: string }[];
@@ -79,10 +81,6 @@ const PROOF_RETRY_MS = 60_000;
 const ENTRY_FILE = "pi-mcp-entry.json";
 /** Written by `oa-bus install` for omp: `{ "origin": "<the instance origin>" }`. */
 const OMP_ORIGIN_FILE = "omp-mcp-origin.json";
-/** How many redirects the wrapped fetch follows itself, as omp's own client does. */
-const MAX_REDIRECTS = 5;
-/** Process-wide: the omp sessions of this process that have the fetch wrap on (one extension instance each). */
-const OMP_LIVE = Symbol.for("open-artifacts.bus.omp-live-sessions");
 
 /** Above the daemon's 10 s hub wait plus its 5 s wait for delivered. */
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -1281,17 +1279,13 @@ export default function oaBus(pi: Pi): void {
   // time). The wrap adds the proof header to a request whose origin and path
   // are exactly the instance's /mcp, and to nothing else. omp shares one MCP
   // manager across its subagents, so they show the parent's face, as intended.
-  // One omp process can serve several sessions (ACP): the wrap cannot tell
-  // whose request it sees, so with more than one live session it sends nothing.
+  // Only the interactive TUI is wrapped (ctx.mode "tui"): one session at a
+  // time. RPC and ACP (which reports "rpc") can host several sessions that
+  // share this one fetch, where the wrap cannot tell whose request it sees.
   /** The proof the daemon bound for this session's link; undefined until then. */
   let face: string | undefined;
   /** This extension instance's fetch wrap, while it is on. */
   let ompWrap: { restore: () => void } | undefined;
-  const live = (): Set<object> => {
-    const g = globalThis as Record<symbol, unknown>;
-    if (!(g[OMP_LIVE] instanceof Set)) g[OMP_LIVE] = new Set<object>();
-    return g[OMP_LIVE] as Set<object>;
-  };
   const ompOrigin = (): string | undefined => {
     try {
       const v: unknown = JSON.parse(
@@ -1308,14 +1302,22 @@ export default function oaBus(pi: Pi): void {
   /** Whether `url` is exactly the instance's /mcp (a trailing slash and a query are the same endpoint). */
   const isMcp = (url: URL, origin: string) =>
     url.origin === origin && url.pathname.replace(/\/+$/, "") === "/mcp";
+  /** A body that can be sent a second time as it is. */
+  const replayable = (body: unknown) =>
+    body === undefined ||
+    body === null ||
+    typeof body === "string" ||
+    body instanceof URLSearchParams ||
+    body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(body);
   const ompWrapOn = () => {
     if (ompWrap) return;
     const origin = ompOrigin();
     const g = globalThis as { fetch?: typeof fetch };
     const orig = g.fetch;
     if (!origin || typeof orig !== "function") return;
-    const token = {};
     let on = true;
+    /** The caller's headers without any proof header, plus `value` when there is one. */
     const withProof = (init: RequestInit | undefined, value?: string) => {
       const h = new Headers(init?.headers);
       h.delete(PROOF_HEADER);
@@ -1326,68 +1328,33 @@ export default function oaBus(pi: Pi): void {
       input: Parameters<typeof fetch>[0],
       init?: RequestInit,
     ): Promise<Response> => {
-      let url: URL | undefined;
       let headers: Headers | undefined;
       try {
         if (on && (typeof input === "string" || input instanceof URL)) {
-          const u = new URL(String(input));
-          if (isMcp(u, origin)) {
-            url = u;
+          if (isMcp(new URL(String(input)), origin))
             // A proof header the user set is never sent as it is.
-            headers = withProof(
-              init,
-              live().size === 1 && live().has(token) ? face : undefined,
-            );
-          }
+            headers = withProof(init, face);
         }
       } catch {
-        url = undefined;
+        headers = undefined;
       }
-      if (!url || !headers) return orig(input, init);
-      // The redirects are followed here, so the header can never leave the endpoint.
-      const follow = init?.redirect === undefined || init.redirect === "follow";
-      let cur = url;
-      let curInit: RequestInit = {
-        ...init,
-        headers,
-        ...(follow ? { redirect: "manual" as const } : {}),
-      };
-      for (let hop = 0; ; hop++) {
-        const res = await orig(cur.href, curInit);
-        const loc = res.headers.get("location");
-        if (!follow || ![301, 302, 303, 307, 308].includes(res.status) || !loc)
-          return res;
-        if (hop >= MAX_REDIRECTS) throw new Error("Too many redirects");
-        await res.body?.cancel();
-        cur = new URL(loc, cur);
-        const same = res.status === 307 || res.status === 308;
-        const next: RequestInit = { ...curInit };
-        if (!same && init?.method && init.method !== "GET") {
-          next.method = "GET";
-          delete next.body;
-        }
-        if (isMcp(cur, origin)) {
-          curInit = {
-            ...next,
-            headers: withProof(init, headers.get(PROOF_HEADER) ?? undefined),
-          };
-        } else {
-          // Off the endpoint: the caller's own headers only, and the rest is fetch's to follow.
-          const own = withProof(init);
-          return orig(cur.href, {
-            ...next,
-            headers: own,
-            redirect: init?.redirect ?? "follow",
-          });
-        }
-      }
+      if (!headers) return orig(input, init);
+      // The caller asked for no redirect handling of its own kind: nothing to hold back.
+      if (init?.redirect !== undefined && init.redirect !== "follow")
+        return orig(input, { ...init, headers });
+      // The proofed call never follows a redirect, so the header cannot leave /mcp.
+      const res = await orig(input, { ...init, headers, redirect: "manual" });
+      if (![301, 302, 303, 307, 308].includes(res.status)) return res;
+      if (!replayable(init?.body)) return res;
+      // A redirect: the caller's own request goes again through the native
+      // fetch, which strips Authorization across origins and applies the method rules.
+      await res.body?.cancel().catch(() => {});
+      return orig(input, { ...init, headers: withProof(init) });
     };
     g.fetch = wrapped as typeof fetch;
-    live().add(token);
     ompWrap = {
       restore: () => {
         on = false;
-        live().delete(token);
         // Wrapped again on top by someone else: stay in the chain, inert.
         if (g.fetch === (wrapped as typeof fetch)) g.fetch = orig;
         ompWrap = undefined;
@@ -1567,10 +1534,21 @@ export default function oaBus(pi: Pi): void {
     // The entry works unlinked: no header until this session's link is bound.
     identity = identityOf(ctx);
     register();
-    if (identity.kind === "omp") ompWrapOn();
+    if (identity.kind === "omp" && ctx.mode === "tui") ompWrapOn();
     // Pi is reachable while this link is open; a daemon that is down is retried.
     await ensure(identityOf(ctx)).catch(reconnect);
   });
+  // omp's /new, /resume and fork keep the process and emit only these two, no
+  // shutdown or start: a new session id gets a fresh link and a fresh proof.
+  const switched = (_event: unknown, ctx: Ctx) => {
+    if (subagent(ctx) || stopped || identity?.kind !== "omp") return;
+    const id = identityOf(ctx);
+    if (id.ref === identity.ref) return;
+    dropHeader();
+    void ensure(id).catch(reconnect);
+  };
+  pi.on("session_switch", switched);
+  pi.on("session_branch", switched);
   pi.on("session_shutdown", (_event, ctx) => {
     if (subagent(ctx)) return;
     stopped = true;
