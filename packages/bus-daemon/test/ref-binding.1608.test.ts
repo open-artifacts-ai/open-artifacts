@@ -84,3 +84,34 @@ it("frees the ref once the claimant's process is gone", async () => {
     h.adapter("A", { kind: "pi", bind_token: undefined }),
   ).resolves.toBeDefined();
 });
+
+it.each(["claude-code", "opencode"] as const)(
+  "refuses a %s hello on a bound pi ref",
+  async (kind) => {
+    const h = await daemonHarness();
+    const a = await h.adapter("A", { kind: "pi" });
+    a.close();
+    await h.next("sessions", 2);
+    await expect(h.adapter("A", { kind })).rejects.toThrow(REF_BOUND);
+    await expect(
+      h.adapter("A", { kind: "pi", bind_token: a.welcome.bind_token }),
+    ).resolves.toBeDefined();
+  },
+);
+
+it("frees the ref when the claimant's pid is reused by another process", async () => {
+  let start = "Mon Nov  9 10:00:00 2026";
+  const h = await daemonHarness({
+    claude: { isRunning: () => true, procStart: () => start },
+  });
+  const a = await h.adapter("A", { kind: "pi" });
+  a.close();
+  await h.next("sessions", 2);
+  await expect(
+    h.adapter("A", { kind: "pi", bind_token: undefined }),
+  ).rejects.toThrow(REF_BOUND);
+  start = "Tue Nov 10 09:00:00 2026";
+  await expect(
+    h.adapter("A", { kind: "pi", bind_token: undefined }),
+  ).resolves.toBeDefined();
+});

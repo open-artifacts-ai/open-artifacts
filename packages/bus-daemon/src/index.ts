@@ -298,7 +298,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** #1608: who first claimed each pi-like ref; kept after its link closes, until its pid dies. */
   const bindings = new Map<
     string,
-    { token: string; pid: number; kind: string }
+    { token: string; pid: number; kind: string; start?: string }
   >();
 
   /**
@@ -421,6 +421,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const returnDir = cl.socketsDir ?? claudeReturnDir();
   // Before anything listens: a socket path that cannot work is a lasting failure.
   prepareSocketDir(listenPath, returnDir);
+  const startOfPid = cl.procStart ?? claudeProcStartOf;
   const running = cl.isRunning ?? isRunning;
   const claudeSessions = {
     dir: cl.sessionsDir ?? claudeSessionsDir(),
@@ -1443,23 +1444,34 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         // time are no proof of who is speaking (any same-user process can send
         // them), so the welcome issued a token that every later hello must echo.
         let bindToken: string | undefined;
-        if (piLike(hello.kind)) {
-          const claim = bindings.get(hello.agent_ref);
-          if (claim && !running(claim.pid)) bindings.delete(hello.agent_ref);
-          const held = bindings.get(hello.agent_ref);
+        // A binding lapses when its claimant is gone or its pid now has another start time.
+        const claim = bindings.get(hello.agent_ref);
+        if (claim) {
+          const now = claim.start === undefined ? null : startOfPid(claim.pid);
           if (
-            held &&
-            (held.kind !== hello.kind || held.token !== hello.bind_token)
+            !running(claim.pid) ||
+            (now !== null && claim.start !== undefined && now !== claim.start)
           )
-            return { error: REF_BOUND };
-          bindToken = held?.token ?? randomBytes(24).toString("base64url");
+            bindings.delete(hello.agent_ref);
         }
+        const held = bindings.get(hello.agent_ref);
+        // Every kind is checked: a claude-code or opencode hello cannot take a bound pi ref.
+        if (
+          held &&
+          (held.kind !== hello.kind ||
+            !piLike(hello.kind) ||
+            held.token !== hello.bind_token)
+        )
+          return { error: REF_BOUND };
+        if (piLike(hello.kind))
+          bindToken = held?.token ?? randomBytes(24).toString("base64url");
         const bound = (): { bind_token?: string } => {
           if (bindToken === undefined) return {};
           bindings.set(hello.agent_ref, {
             token: bindToken,
             pid,
             kind: hello.kind,
+            ...(startOfPid(pid) ? { start: startOfPid(pid) as string } : {}),
           });
           return { bind_token: bindToken };
         };
