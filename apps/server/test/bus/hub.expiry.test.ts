@@ -404,6 +404,29 @@ describe("reconnect flush", () => {
     close(t);
   });
 
+  it("#1951: a lost body past its 7-day TTL expires as TTL, and a late ack does not flip it", async () => {
+    const { s, t, receiver, close } = await setup();
+    const r = await sendAndReceipt(s, send("s1", "sref", receiver, "old"));
+    await waitFor(t, "deliver");
+    await evictHeld();
+    await setClock(Date.now() + TTL + 5000);
+    await runAlarm();
+    expect(await waitFor(s, "receipt_update")).toMatchObject({
+      msg_id: r.msg_id,
+      state: "expired",
+    });
+    expect(await receiptRow(r.msg_id)).toMatchObject({
+      state: "expired",
+      reason: null,
+    });
+    t.send(ack("a1", r.msg_id));
+    await barrier(t);
+    await barrier(s);
+    expect(await receiptRow(r.msg_id)).toMatchObject({ state: "expired" });
+    expect(updates(s, r.msg_id)).toHaveLength(1);
+    close(t);
+  });
+
   it("#1760: a 7-day TTL expiry is final: a late ack does not flip it", async () => {
     const { s, t, tm, n, receiver, close } = await setup();
     await offline(t);
