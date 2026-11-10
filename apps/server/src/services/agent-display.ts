@@ -338,6 +338,35 @@ export function agentFace(
   };
 }
 
+/**
+ * The face of a named bus agent whose identity was stored when it was
+ * mentioned or asked (#1890): the same agentFace as an author, so
+ * linked, product and animal agree. `owner` is its stored owner's id.
+ */
+export const partyIdentityFace = (
+  p: {
+    name: string;
+    owner: string;
+    identity: { identityId: string; kind: string };
+  },
+  v: FaceViewer,
+  owner: Member | undefined,
+  c: NameClashes,
+): CommentAuthor =>
+  agentFace(
+    {
+      ref: p.owner,
+      agent: {
+        name: p.name,
+        via: null,
+        identity: { ...p.identity, name: p.name },
+      },
+    },
+    v,
+    owner,
+    c,
+  );
+
 type StoredActorAgent = {
   name: string;
   via: string | null;

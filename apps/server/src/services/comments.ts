@@ -23,7 +23,9 @@ import {
   bodyOk,
   type NewExtras,
   type StoredActor,
+  type StoredAgent,
   type StoredComment,
+  type StoredIdentity,
   type StoredParticipant,
   type StoredParty,
   type StoredThread,
@@ -36,6 +38,7 @@ import {
   forLine,
   type NameClashes,
   nameClashes,
+  partyIdentityFace,
   plainAgentName,
   shownName,
 } from "./agent-display.js";
@@ -48,6 +51,7 @@ import {
   indexStatus,
   reconcileAsks,
 } from "./asks.js";
+import { agentIdentityOf } from "./bus.js";
 import {
   agentKey,
   agentRoster,
@@ -413,12 +417,39 @@ const partyView = (
   p.kind === "user"
     ? authorView({ kind: "user", ref: p.key }, viewer, users)
     : {
+        // A stored identity adds linked, product and animal (#1890); a party
+        // without one keeps this shape, with no `linked`.
+        ...identityFace(p, viewer, users),
         kind: "agent",
         id: p.key,
         name: agentName(p.name, users.users.get(p.owner), viewer, users.clash),
         for: forLine(users.users.get(p.owner), faceViewer(viewer), users.clash),
         me: viewer.userId !== null && viewer.userId === p.owner,
       };
+
+/** The identity fields of a named agent, from its stored identity; none without one. */
+const identityFace = (
+  p: {
+    name: string;
+    owner?: string;
+    identity?: StoredIdentity;
+  },
+  viewer: CommentViewer,
+  users: Ctx,
+): Pick<CommentAuthor, "linked" | "product" | "animal"> => {
+  if (!p.identity || !p.owner) return {};
+  const f = partyIdentityFace(
+    { name: p.name, owner: p.owner, identity: p.identity },
+    faceViewer(viewer),
+    users.users.get(p.owner),
+    users.clash,
+  );
+  return {
+    linked: f.linked,
+    ...(f.product ? { product: f.product } : {}),
+    ...(f.animal ? { animal: f.animal } : {}),
+  };
+};
 
 /** A roster agent's bus name; a guest sees "<owner>'s agent" instead (#1822). */
 const agentName = (
@@ -555,6 +586,7 @@ const commentOf = (
                   ),
                 }
               : {}),
+            ...identityFace(m, viewer, users),
             delivery: m.state as "delivered" | "queued" | "seen" | "gone",
           })),
         }
@@ -840,7 +872,9 @@ async function resolveExtras(
     follow: [...new Map(toFollow.map((x) => [x.key, x])).values()],
     extras: {
       ...(ask ? { ask } : {}),
-      ...(mentioned.length ? { mentions: mentioned.map(storedAgent) } : {}),
+      ...(mentioned.length
+        ? { mentions: mentioned.map((m) => storedAgent(m)) }
+        : {}),
     },
     agents: [...agents.values()],
     mentions: mentioned.map((m) => m.key),
@@ -953,6 +987,47 @@ async function deliver(
   }
 }
 
+/**
+ * #1890: `r` with the bus identity of each mentioned or asked agent,
+ * read from its OWNER's hub (the roster entry's userId, validated by
+ * resolveExtras, never client input). All lookups run in parallel, each bounded
+ * by LINK_LOOKUP_MS, so the whole costs about one bound. A miss, a slow or a
+ * failing hub leaves that party without an identity; this never throws. Run
+ * after the rate-limit charge where there is one before the write.
+ */
+async function withIdentities(env: Env, r: Resolved): Promise<Resolved> {
+  const x = r.extras;
+  if (!x || r.agents.length === 0) return r;
+  const byKey = new Map(r.agents.map((e) => [e.agent.key, e.agent]));
+  const keys = [...byKey.keys()];
+  const found = await Promise.all(
+    keys.map((k) => {
+      const a = byKey.get(k) as RosterAgent;
+      return agentIdentityOf(env, a.userId, a.address);
+    }),
+  );
+  const ids = new Map(keys.map((k, i) => [k, found[i]]));
+  const put = (p: StoredAgent): StoredAgent => {
+    const identity = ids.get(p.key);
+    return identity ? { ...p, identity } : p;
+  };
+  return {
+    ...r,
+    extras: {
+      ...x,
+      ...(x.mentions ? { mentions: x.mentions.map(put) } : {}),
+      ...(x.ask
+        ? {
+            ask: {
+              ...x.ask,
+              to: x.ask.to.map((p) => (p.kind === "agent" ? put(p) : p)),
+            },
+          }
+        : {}),
+    },
+  };
+}
+
 /** A new thread: `raw` is the anchor as posted, `body` the first comment. 201 Thread. */
 export async function addThread(
   env: Env,
@@ -963,7 +1038,7 @@ export async function addThread(
   opts: ExtrasOpts = {},
 ): Promise<Thread> {
   const body = checkBody(raw.body);
-  const r = await resolveExtras(env, a.id, who, raw, opts);
+  const r0 = await resolveExtras(env, a.id, who, raw, opts);
   // The limit comes before any file is read, and a refused quote counts.
   let taken = false;
   const take = async () => {
@@ -975,16 +1050,19 @@ export async function addThread(
   const page =
     // Members only (#1968): not a signed-out visitor, a guest or a guest-role member.
     anchor.kind === "note" &&
-    r.agents.length === 0 &&
+    r0.agents.length === 0 &&
     who.kind === "user" &&
     !outsider(viewer)
       ? await pagePublisher(env, a, who)
       : null;
   if (page) {
-    r.extras = { ...r.extras, mentions: [storedAgent(page)] };
-    r.agents.push({ agent: page, kind: "mention" });
-    r.mentions.push(page.key);
+    r0.extras = { ...r0.extras, mentions: [storedAgent(page)] };
+    r0.agents.push({ agent: page, kind: "mention" });
+    r0.mentions.push(page.key);
   }
+  // After the rate-limit charge, and after the page mention is added: a
+  // refused post costs no hub reads, and the page's agent gets its identity too.
+  const r = await withIdentities(env, r0);
   const participants = [
     ...r.participants,
     ...(page ? [{ ...participantOf(page), page: true as const }] : []),
@@ -1035,7 +1113,7 @@ async function resolveToAsker(
     );
   const to = await askerRoster(env, artifactId, root.author.ref);
   return {
-    extras: to.length ? { asker: to.map(storedAgent) } : undefined,
+    extras: to.length ? { asker: to.map((a) => storedAgent(a)) } : undefined,
     agents: to.map((agent) => ({ agent, kind: "asker" as const })),
     follow: [],
     mentions: to.map((a) => a.key),
@@ -1165,7 +1243,14 @@ export async function addReply(
         "toAsker cannot be combined with mentions or ask",
       );
     r = await resolveToAsker(env, artifactId, threadId);
-  } else r = await resolveExtras(env, artifactId, who, extras, opts);
+  } else {
+    // The reply's rate-limit charge is inside the DO write, so the lookups
+    // come first here (parallel, bounded: about one LINK_LOOKUP_MS).
+    r = await withIdentities(
+      env,
+      await resolveExtras(env, artifactId, who, extras, opts),
+    );
+  }
   const participants = [
     ...r.participants,
     ...(await authorParticipant(artifactId, who)),
