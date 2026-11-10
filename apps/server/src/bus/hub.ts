@@ -3786,6 +3786,26 @@ export class BusHub extends DurableObject<Env> {
     );
   }
 
+  /**
+   * #1890: the identity of the agent at (namespace, name) in this member's own
+   * hub, live or away, or null. Returns ONLY the opaque identity id and the
+   * kind, nothing else from the hub. A live row wins, then the latest one.
+   * Worker only.
+   */
+  async identityOf(
+    namespace: string,
+    name: string,
+  ): Promise<{ identityId: string; kind: string } | null> {
+    if (typeof namespace !== "string" || typeof name !== "string") return null;
+    return one<{ identityId: string; kind: string }>(
+      this.ctx.storage.sql,
+      "select identity_id as identityId, kind from agents where org_id = ? and namespace = ? and name = ? and identity_id is not null order by live desc, updated_at desc, rowid desc limit 1",
+      OWNER_ORG_ID,
+      namespace,
+      name,
+    );
+  }
+
   /** #1299: answers true. Reads no member data and arms no alarm (the constructor still creates the schema); the hosted canary's liveness probe. */
   ping(): true {
     return true;
