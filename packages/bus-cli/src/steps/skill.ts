@@ -21,7 +21,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { compareVersions } from "@oa/bus-adapter-opencode";
 import { harnessSkills } from "@oa/shared/harness-skills";
 import type { Harness } from "./adapters.ts";
@@ -66,23 +66,38 @@ export const codexHasSkills = (version: string | undefined): boolean =>
   version !== undefined &&
   (compareVersions(version, CODEX_SKILLS_MIN_VERSION) ?? -1) >= 0;
 
+const blankLine = (l: string | undefined) => l?.replace(/\r$/, "") === "";
+
 /**
- * `text` without our block, everything else byte for byte; undefined when
- * there is no (complete) block. The blank line the install put before an
- * appended block goes with it.
+ * `text` without any of our blocks, everything else byte for byte; undefined
+ * when there is none. The blank line the install put before an appended block
+ * goes with it, only when the block ends the file or a blank line follows it.
  */
 export const withoutCodexBlock = (text: string): string | undefined => {
-  const lines = text.split("\n");
-  const start = lineIndex(lines, CODEX_BEGIN);
-  if (start === -1) return undefined;
-  const end = lineIndex(lines, CODEX_END, start + 1);
-  if (end === -1) return undefined;
-  let from = start;
-  if (from > 0 && lines[from - 1]?.replace(/\r$/, "") === "") from--;
-  return [...lines.slice(0, from), ...lines.slice(end + 1)].join("\n");
+  let lines = text.split("\n");
+  let removed = false;
+  for (;;) {
+    const start = lineIndex(lines, CODEX_BEGIN);
+    if (start === -1) break;
+    const end = lineIndex(lines, CODEX_END, start + 1);
+    if (end === -1) break;
+    const before = lines.slice(0, start);
+    let after = lines.slice(end + 1);
+    if (
+      before.length > 0 &&
+      blankLine(before[before.length - 1]) &&
+      (after.length === 0 || blankLine(after[0]))
+    )
+      before.pop();
+    // A block that ended the file leaves the line before it newline-terminated.
+    if (after.length === 0 && before.length > 0) after = [""];
+    lines = [...before, ...after];
+    removed = true;
+  }
+  return removed ? lines.join("\n") : undefined;
 };
 
-/** Removes our block from AGENTS.md at `agentsPath`; a file left empty is removed. */
+/** Removes our blocks from AGENTS.md at `agentsPath`; the file itself always stays. */
 const dropCodexBlock = (agentsPath: string, notes: string[]): boolean => {
   if (brokenLink(agentsPath) || !existsSync(agentsPath)) return false;
   const text = readFileSync(agentsPath, "utf8");
@@ -94,8 +109,8 @@ const dropCodexBlock = (agentsPath: string, notes: string[]): boolean => {
   }
   const next = withoutCodexBlock(text);
   if (next === undefined) return false;
-  if (next.trim()) writeAtomic(targetOf(agentsPath), next);
-  else rmSync(targetOf(agentsPath), { force: true });
+  // Never deleted, even when empty: the file (or the link's target) is the user's.
+  writeAtomic(targetOf(agentsPath), next);
   return true;
 };
 
@@ -295,11 +310,142 @@ export const withCodexBlock = (existing: string, text: string): string => {
   );
 };
 
-/** BEGIN without END: leave the file alone and say so. */
+/** A block we cannot edit safely: a BEGIN with no END, or an edited BEGIN line. */
 const codexBroken = (text: string) => {
   const lines = text.split("\n");
-  const start = lineIndex(lines, CODEX_BEGIN);
-  return start !== -1 && lineIndex(lines, CODEX_END, start + 1) === -1;
+  for (let i = 0; i < lines.length; i++) {
+    const t = lines[i]?.replace(/\r$/, "") ?? "";
+    if (t !== CODEX_BEGIN && t.startsWith("<!-- BEGIN Open Artifacts skill"))
+      return true;
+    if (t === CODEX_BEGIN) {
+      const end = lineIndex(lines, CODEX_END, i + 1);
+      if (end === -1) return true;
+      i = end;
+    }
+  }
+  return false;
+};
+
+const realOrResolved = (p: string) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+};
+
+/** Is Codex's skills folder the one pi and omp read? Then a file there is theirs too. */
+const sharesAgentsSkills = (deps: Pick<SkillDeps, "home" | "env">): boolean =>
+  realOrResolved(dirname(dirname(codexSkillFile(deps, "x")))) ===
+  realOrResolved(skillDir(deps, "pi"));
+
+const ourSkillFile = (path: string, folder: string): boolean => {
+  try {
+    return isOurs(readFileSync(path, "utf8"), folder);
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Codex's copy: a file under its skills folder when it can load one (0.76+, or
+ * our file is already there and the version cannot be read), else the marked
+ * block in AGENTS.md. One copy only, so the skill never loads twice.
+ */
+const installCodex = (
+  deps: SkillDeps,
+  folder: string,
+  text: string,
+  written: string[],
+  notes: string[],
+) => {
+  const agentsPath = skillDir(deps, "codex");
+  const filePath = codexSkillFile(deps, folder);
+  let before: string | undefined;
+  try {
+    before = existsSync(targetOf(agentsPath))
+      ? readFileSync(targetOf(agentsPath), "utf8")
+      : "";
+  } catch {
+    // Unreadable now; the write or cleanup below reports it.
+  }
+  const ourFile = ourSkillFile(filePath, folder);
+  let asFile =
+    codexHasSkills(deps.codexVersion) ||
+    (deps.codexVersion === undefined && ourFile);
+  const shared = sharesAgentsSkills(deps);
+  if (asFile && shared) {
+    asFile = false;
+    notes.push(
+      `Kept the Codex skill in ${agentsPath}: Codex's skills folder is the one pi and omp use, and their file would be overwritten.`,
+    );
+  }
+  if (before !== undefined && codexBroken(before)) {
+    notes.push(
+      `Left ${agentsPath} alone: its Open Artifacts block has no END marker. Fix or remove the block, then rerun the install.`,
+    );
+    return;
+  }
+  if (asFile) {
+    if (brokenLink(filePath)) {
+      notes.push(`Left ${filePath} alone: it is a broken symlink.`);
+      return;
+    }
+    const writing = targetOf(filePath);
+    try {
+      if (existsSync(writing) && !ourSkillFile(writing, folder)) {
+        notes.push(
+          `Left ${writing} alone: it has no Open Artifacts marker, so it is not ours to replace.`,
+        );
+        return;
+      }
+      writeAtomic(writing, withMarker(text));
+    } catch (e) {
+      notes.push(
+        `Could not write ${writing}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+      return;
+    }
+    written.push(filePath);
+    // Moved to a file: our old block goes, the user's other text stays.
+    try {
+      dropCodexBlock(agentsPath, notes);
+    } catch (e) {
+      notes.push(
+        `Could not update ${agentsPath}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+    return;
+  }
+  if (brokenLink(agentsPath)) {
+    notes.push(`Left ${agentsPath} alone: it is a broken symlink.`);
+    return;
+  }
+  const writing = targetOf(agentsPath);
+  try {
+    writeAtomic(writing, withCodexBlock(before ?? "", text));
+  } catch (e) {
+    notes.push(
+      `Could not write ${writing}: ${e instanceof Error ? e.message : String(e)}`,
+    );
+    return;
+  }
+  written.push(agentsPath);
+  // Back to the block (an older Codex): our file goes, so only one copy loads.
+  if (ourFile && !shared) {
+    try {
+      rmSync(targetOf(filePath), { force: true });
+      try {
+        rmdirSync(dirname(filePath));
+      } catch {
+        // Another file in there: leave the folder.
+      }
+    } catch (e) {
+      notes.push(
+        `Could not remove ${filePath}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
 };
 
 /**
@@ -335,44 +481,25 @@ export async function installSkill(
         notes,
         failedUrl: url,
       };
+    if (h === "codex") {
+      installCodex(deps, folder, text, written, notes);
+      continue;
+    }
     const base = skillDir(deps, h);
-    // Codex 0.76+ reads skill folders: it gets a file, not the AGENTS.md block.
-    const asFile = h === "codex" && codexHasSkills(deps.codexVersion);
-    const agentsPath = base;
-    const path = asFile
-      ? codexSkillFile(deps, folder)
-      : harnessSkills[h].agentsMd
-        ? base
-        : join(base, folder, "SKILL.md");
+    const path = join(base, folder, "SKILL.md");
     if (brokenLink(path)) {
       notes.push(`Left ${path} alone: it is a broken symlink.`);
       continue;
     }
     const writing = targetOf(path);
     try {
-      if (harnessSkills[h].agentsMd && !asFile) {
-        const before = existsSync(writing) ? readFileSync(writing, "utf8") : "";
-        if (codexBroken(before)) {
-          notes.push(
-            `Left ${writing} alone: its Open Artifacts block has no END marker. Fix or remove the block, then rerun the install.`,
-          );
-          continue;
-        }
-        writeAtomic(writing, withCodexBlock(before, text));
-      } else {
-        if (
-          existsSync(writing) &&
-          !isOurs(readFileSync(writing, "utf8"), folder)
-        ) {
-          notes.push(
-            `Left ${writing} alone: it has no Open Artifacts marker, so it is not ours to replace.`,
-          );
-          continue;
-        }
-        writeAtomic(writing, withMarker(text));
-        // Moved to a file: our old block goes, the user's other text stays.
-        if (asFile) dropCodexBlock(agentsPath, notes);
+      if (existsSync(writing) && !ourSkillFile(writing, folder)) {
+        notes.push(
+          `Left ${writing} alone: it has no Open Artifacts marker, so it is not ours to replace.`,
+        );
+        continue;
       }
+      writeAtomic(writing, withMarker(text));
       written.push(path);
     } catch (e) {
       notes.push(
@@ -462,25 +589,29 @@ export const uninstallSkill = (
   return { written, notes };
 };
 
-/** Where Codex's copy of our skill is: our file, else our AGENTS.md block, else undefined. */
-export const codexSkillWhere = (
+/** Codex's copies of our skill: our file, and our AGENTS.md block. Both is a double load. */
+export const codexSkillState = (
   deps: Pick<SkillDeps, "home" | "env">,
-): string | undefined => {
+): { file?: string; block?: string } => {
+  const out: { file?: string; block?: string } = {};
   try {
     const dir = join(dirname(skillDir(deps, "codex")), "skills");
     for (const entry of readdirSync(dir)) {
       const file = join(dir, entry, "SKILL.md");
-      if (isOurs(readFileSync(file, "utf8"), entry)) return file;
+      if (ourSkillFile(file, entry)) {
+        out.file = file;
+        break;
+      }
     }
   } catch {
-    // No skills folder: look at AGENTS.md.
+    // No skills folder.
   }
   try {
     const agents = skillDir(deps, "codex");
     if (withoutCodexBlock(readFileSync(agents, "utf8")) !== undefined)
-      return agents;
+      out.block = agents;
   } catch {
     // No AGENTS.md.
   }
-  return undefined;
+  return out;
 };
