@@ -864,7 +864,11 @@ describe("the bus is off: unbound, or hosted (until #1299)", () => {
       unbound,
     );
     expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ agents: [], live: false });
+    expect(await r.json()).toEqual({
+      agents: [],
+      live: false,
+      droppedNotices: 0,
+    });
   });
 });
 
@@ -969,12 +973,75 @@ describe("dashboard REST", () => {
     expect((await api(app, R.busAgents, bob.cookie)).status).toBe(200);
   });
 
+  it("GET agents carries the caller's own dropped-notice count for today (#1317)", async () => {
+    const me = await member();
+    const other = await member();
+    const setCount = (userId: string, n: number, day: string) =>
+      e.DB.prepare(
+        "insert into counters (key, n, day) values (?, ?, ?) on conflict (key) do update set n = excluded.n, day = excluded.day",
+      )
+        .bind(`notice:dropped:${userId}`, n, day)
+        .run();
+    const today = new Date().toISOString().slice(0, 10);
+    const read = async (cookie: string) =>
+      (
+        (await (await api(app, R.busAgents, cookie)).json()) as {
+          droppedNotices: number;
+        }
+      ).droppedNotices;
+    // Default: none dropped.
+    expect(await read(me.cookie)).toBe(0);
+    await setCount(me.userId, 3, today);
+    await setCount(other.userId, 9, today);
+    expect(await read(me.cookie)).toBe(3);
+    // Only the caller's own: another member's count never shows.
+    expect(await read(other.cookie)).toBe(9);
+    const third = await member();
+    expect(await read(third.cookie)).toBe(0);
+    // A count from an earlier day is not today's.
+    await setCount(me.userId, 5, "2020-01-01");
+    expect(await read(me.cookie)).toBe(0);
+  });
+
+  it("a D1 failure reading the dropped count never fails the agents list (#1317)", async () => {
+    const me = await member();
+    const db = new Proxy(e.DB, {
+      get(t, k) {
+        if (k === "prepare")
+          return (sql: string) => {
+            if (sql.includes("from counters where key"))
+              throw new Error("d1 down");
+            return t.prepare(sql);
+          };
+        const v = Reflect.get(t, k) as unknown;
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const r = await fetchAndWait(
+      app,
+      new Request(`http://app.localhost${R.busAgents}`, {
+        headers: { cookie: me.cookie },
+      }),
+      { ...env, DB: db },
+    );
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({
+      agents: [],
+      live: true,
+      droppedNotices: 0,
+    });
+  });
+
   it("GET agents for a member whose machines never connected: no agents, live (the hub's state is known)", async () => {
     const fay = await member();
     await machine("never", fay.userId);
     const r = await api(app, R.busAgents, fay.cookie);
     expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ agents: [], live: true });
+    expect(await r.json()).toEqual({
+      agents: [],
+      live: true,
+      droppedNotices: 0,
+    });
   });
 
   it("no BusHub is created for a member without a machine that connected", async () => {
@@ -986,7 +1053,11 @@ describe("dashboard REST", () => {
     const agents = await api(app, R.busAgents, dave.cookie);
     // Live (#1300 review M1): no machine ever connected, so none can be
     // connected and nothing is unknown, though no hub was read.
-    expect(await agents.json()).toEqual({ agents: [], live: true });
+    expect(await agents.json()).toEqual({
+      agents: [],
+      live: true,
+      droppedNotices: 0,
+    });
     // Looking inside builds the DO (schema), so the check is that the routes
     // never reached it: no machines mirror row, no revokedAt.
     const { runInDurableObject } = await import("cloudflare:test");

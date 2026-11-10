@@ -881,10 +881,15 @@ export const BusAgentSchema = z.strictObject({
 });
 export type BusAgent = z.infer<typeof BusAgentSchema>;
 
-/** GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then []. */
+/**
+ * GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then [].
+ * `droppedNotices` (#1317): notices for the caller's own bus that found no
+ * agent today (UTC), 0 when none (or from an older server).
+ */
 export const BusAgentsSchema = z.strictObject({
   agents: z.array(BusAgentSchema).max(1000),
   live: z.boolean(),
+  droppedNotices: z.number().int().min(0).default(0),
 });
 export type BusAgents = z.infer<typeof BusAgentsSchema>;
 

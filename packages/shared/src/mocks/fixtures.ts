@@ -138,6 +138,8 @@ export const fixtures: {
   busMachines: BusMachine[];
   /** #1293: open agents on busMachines (served with `bus: true`). */
   busAgents: BusAgent[];
+  /** #1317: notices dropped today for the caller's bus (served with `bus: true`). */
+  busDroppedNotices: number;
   /** #1293: role addresses (served with `bus: true`): one held, one vacant. */
   busRoles: BusRole[];
   /** #1567: namespace links (served with `bus: true`): one, between two repos. */
@@ -292,6 +294,7 @@ export const fixtures: {
       connected: false,
     },
   ],
+  busDroppedNotices: 2,
   busAgents: [
     {
       id: "BaA1nPqRsTu4vWxY",

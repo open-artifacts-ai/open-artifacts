@@ -3,6 +3,7 @@ export {
   connectDaemon,
   type DaemonClient,
   DaemonSilentError,
+  daemonLinkProof,
   daemonStatus,
   HelloRefused,
 } from "./client.ts";

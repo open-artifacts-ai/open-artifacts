@@ -13,6 +13,7 @@ import {
   AdapterFrame,
   type DaemonFrame,
   type Hello,
+  LinkProofRequest,
   MAX_BODY_BYTES,
   type StatusReply,
   StatusRequest,
@@ -60,6 +61,8 @@ export type ServeOptions = {
    * request on it is refused.
    */
   oneRequest?: (hello: Hello) => boolean;
+  /** Answers a `link_proof` request, which needs no hello; without it the frame is refused. */
+  onLinkProof?: (req: LinkProofRequest) => { bound: boolean };
   /** Answers a `status` request; without it, status needs a hello like anything else. */
   onStatus?: (
     req: StatusRequest,
@@ -206,6 +209,21 @@ function handle(sock: Socket, opts: ServeOptions) {
           );
         if (!helloed) return;
         continue;
+      }
+      const proof =
+        !hello && opts.onLinkProof
+          ? LinkProofRequest.safeParse(raw)
+          : undefined;
+      if (proof?.success && opts.onLinkProof) {
+        answered = true;
+        sock.pause();
+        let bound = false;
+        try {
+          bound = opts.onLinkProof(proof.data).bound;
+        } catch {}
+        send({ type: "link_proofed", id: proof.data.id, bound });
+        sock.end();
+        return;
       }
       const parsed = AdapterFrame.safeParse(raw);
       if (!parsed.success) {
