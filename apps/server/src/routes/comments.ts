@@ -9,7 +9,12 @@ import {
 import type { Context } from "hono";
 import { z } from "zod";
 import type { ArtifactRow } from "../auth/authz.js";
-import { authorize, caller, canCtx } from "../auth/authz.js";
+import {
+  authorize,
+  caller,
+  canCtx,
+  interactiveSession,
+} from "../auth/authz.js";
 import { can, type PolicyAction } from "../auth/policy.js";
 import { readCapped } from "../http/body.js";
 import { isEmbedRequest } from "../http/embed.js";
@@ -106,7 +111,14 @@ async function identity(
   const user = c.var.user;
   if (user)
     return {
-      who: { kind: "user", id: user.id, agent: agentOf(c) },
+      who: {
+        kind: "user",
+        id: user.id,
+        agent: agentOf(c),
+        // From the credential kind: a browser session only (#1797). Never
+        // from the body, nor from a missing agent (a PAT may carry no label).
+        typed: interactiveSession(c),
+      },
       viewer: { userId: user.id, short: null, moderator },
       issued: null,
     };
@@ -206,6 +218,12 @@ export function mountComments(app: AppType): void {
     const raw = ReplyBodySchema.safeParse(await jsonOf(c));
     if (!raw.success) return bad(raw.error.issues);
     const moderator = modOf(cw, level, artifact);
+    // toAsker stands alone (400), before the owner-and-editor check on mentions.
+    if (raw.data.toAsker && (raw.data.mentions?.length ?? 0) > 0)
+      throw new ApiError(
+        "bad_request",
+        "toAsker cannot be combined with mentions",
+      );
     mayTarget(raw.data, moderator);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
     if (!who) throw new ApiError("unauthorized", "Sign in to comment");
@@ -213,7 +231,7 @@ export function mountComments(app: AppType): void {
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }
         : who;
-    const { mentions } = raw.data;
+    const { mentions, toAsker } = raw.data;
     const out = await addReply(
       c.env,
       id,
@@ -221,7 +239,7 @@ export function mountComments(app: AppType): void {
       w,
       viewer,
       raw.data.body,
-      { mentions },
+      { mentions, toAsker },
       {
         moderator,
         after: { version: artifact.currentVersion, ctx: execCtx(c) },

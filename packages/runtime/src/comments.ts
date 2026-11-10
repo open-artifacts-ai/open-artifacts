@@ -463,13 +463,14 @@ export function createComments(
 
   /** Centered under the end of the selection, kept inside the viewport. */
   function place(rect: DOMRect) {
-    if (!btn) return;
+    const s = selection();
+    if (!btn || !s) return;
     const vw = document.documentElement.clientWidth || innerWidth;
     const w = btn.offsetWidth;
-    const x = Math.max(
-      BTN_MARGIN,
-      Math.min(rect.right - w / 2, vw - w - BTN_MARGIN),
-    );
+    const end = nodeAtIndex(getIndex(), s.end - 1)?.parentElement;
+    const edge =
+      end && getComputedStyle(end).direction === "rtl" ? rect.left : rect.right;
+    const x = Math.max(BTN_MARGIN, Math.min(edge - w / 2, vw - w - BTN_MARGIN));
     btn.style.left = `${x + scrollX}px`;
     btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
   }
@@ -624,9 +625,16 @@ export function createComments(
   // ---- shell messages ----
   const off = bridge.on((m) => {
     if (m.type === "comments.mode") {
+      const was = mode;
       mode = m.mode;
       if (mode !== "select") {
         kept = null;
+        clearTimeout(selTimer);
+        reportSelection();
+      } else if (was !== "select") {
+        // A selection made before the shell's mode arrived (a fast reader,
+        // or a test) is reported on entering select, not on its next change.
+        // A repeated select is a no-op, so a stale quote's timer isn't reset.
         clearTimeout(selTimer);
         reportSelection();
       }

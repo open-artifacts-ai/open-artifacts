@@ -606,7 +606,7 @@ describe("asks", () => {
     const r = await post(s.id, owner, { mentions: [{ key: s.claude }] });
     expect(r.status).toBe(201);
     expect(bus.sent).toHaveLength(1);
-    expect(bus.sent[0]?.notice.text).toContain("you were mentioned");
+    expect(bus.sent[0]?.notice.text).toContain("your user mentioned you");
     const c = ((await r.json()) as Thread).comments[0] as Comment;
     expect(c.mentions?.[0]?.delivery).toBe("delivered");
   });

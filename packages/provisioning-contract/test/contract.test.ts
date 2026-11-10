@@ -357,9 +357,16 @@ describe("shapes", () => {
     ).toBeTruthy();
   });
 
-  it("AuthSchema: google needs a domain", () => {
+  it("AuthSchema: google with no domains is owner and invites only", () => {
     expect(
       AuthSchema.safeParse({ providers: ["google"], domains: [] }).success,
+    ).toBe(true);
+    expect(
+      AuthSchema.safeParse({
+        providers: ["google"],
+        domains: [],
+        domainCodes: true,
+      }).success,
     ).toBe(false);
     expect(
       AuthSchema.safeParse({ providers: ["email"], domains: [] }).success,

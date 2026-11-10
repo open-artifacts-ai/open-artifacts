@@ -54,6 +54,7 @@ const comment = {
   author,
   createdAt: "2026-11-05T10:00:00Z",
   editedAt: null,
+  typed: true,
   can: { edit: true, delete: false },
 };
 
@@ -108,6 +109,7 @@ describe("comment schemas", () => {
       "invalid_anchor",
       "invalid_body",
       "anchor_not_in_version",
+      "not_an_ask",
       "comments_off",
       "forbidden",
     ])

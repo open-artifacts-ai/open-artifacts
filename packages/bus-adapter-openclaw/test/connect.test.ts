@@ -70,7 +70,7 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
     pid: process.pid,
     cwd: "/work/space",
     proposed_name: "openclaw-main",
-    caps: ["mailbox", "pending", "follow"],
+    caps: ["mailbox", "pending", "follow", "link"],
   });
   expect(hellos[0]?.agent_ref).toMatch(/^oa-[0-9a-f]{40}$/);
   expect(hellos[0]?.attest.proc_start).toBeTruthy();

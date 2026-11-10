@@ -93,6 +93,7 @@ export const useReply = (id: string, guest = false) =>
         body: v.body,
         ...(v.guestName ? { guestName: v.guestName } : {}),
         ...(v.mentions?.length ? { mentions: v.mentions } : {}),
+        ...(v.toAsker ? { toAsker: true } : {}),
       },
       CommentSchema,
       undefined,
@@ -204,7 +205,7 @@ export function commentError(e: unknown, capped = false): string {
     case "invalid_body":
       return `A comment needs 1 to ${COMMENT_BODY_MAX.toLocaleString("en")} characters.`;
     case "anchor_not_in_version":
-      return "That text isn't in this version.";
+      return "That version of the page is gone.";
     case "comments_off":
       return "Comments are off for this page.";
     case "forbidden":
@@ -213,6 +214,8 @@ export function commentError(e: unknown, capped = false): string {
       return "That comment is gone.";
     case "conflict":
       return "This thread has too many replies. Start a new comment instead.";
+    case "not_an_ask":
+      return "That ask is no longer open to questions. Reply instead.";
     case "bad_request":
       return "That comment couldn't be found.";
     case "unauthorized":

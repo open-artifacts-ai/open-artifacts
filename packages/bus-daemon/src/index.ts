@@ -40,6 +40,11 @@ import {
   procStartOf,
 } from "./attest.ts";
 import {
+  type CodexAgent,
+  readCodexAgents,
+  writeCodexAgents,
+} from "./codex-agents.ts";
+import {
   type CodexAttestDeps,
   codexAttestor,
   codexHome,
@@ -79,6 +84,7 @@ import {
   opencodePresenceDir,
   openSessions,
 } from "./presence/opencode.ts";
+import { proposeReach } from "./reach.ts";
 import { Resends } from "./resend.ts";
 import { type AgentCap, capOf, Pending, routeLocal } from "./routes.ts";
 import {
@@ -141,6 +147,9 @@ const RENAME_WINDOW_MS = 60_000;
 const RENAME_WINDOW_MAX = 3;
 /** A registration the hub rate-limited is retried this late, or on the next reconnect. */
 const LIMITED_RETRY_MS = 5 * 60_000;
+/** #1822: how long and how many proofs wait for a record that does not exist yet. */
+const PENDING_PROOF_MS = 60_000;
+const PENDING_PROOF_MAX = 64;
 /** How far back `oa-bus status` lists late deliveries. */
 const LATE_WINDOW_MS = 60 * 60_000;
 /**
@@ -193,6 +202,10 @@ export type DaemonDeps = {
   resendTimer?: Timer;
   resendNow?: () => number;
   hub?: Partial<Pick<HubOptions, "backoffMs" | "pingMs" | "stableMs" | "pace">>;
+  /** The HTTP client for the reach proposal (#1346); tests bring a fake one. */
+  fetch?: typeof fetch;
+  /** How long the hub gets to answer a reach proposal; default REACH_TIMEOUT_MS. */
+  reachTimeoutMs?: number;
   claude?: {
     sessionsDir?: string;
     socketsDir?: string;
@@ -232,6 +245,8 @@ export type DaemonDeps = {
     wakes?: CodexTransportOptions["wakes"];
     /** msg_ids `codex queue` took; default ~/.oa-bus/codex-queued.json. */
     queuedFile?: string;
+    /** Live Codex threads kept across a restart (#1748); default ~/.oa-bus/codex-agents.json. */
+    agentsFile?: string;
   };
   pi?: {
     /** How long the extension has to hand a message to Pi and ack it. */
@@ -330,6 +345,21 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     });
     if (sent) rec.sentName = rec.proposedName;
     return sent;
+  };
+  /**
+   * #1822: binds the record's proof hash on the hub, for a hub that said it
+   * takes `link_bind`. Sent when the hash arrives and after each (re)register;
+   * a failure (`not_registered`, a dropped link) is left to the next of those.
+   */
+  const sendLink = (rec: AgentRecord) => {
+    if (!hubLink || !rec.live || rec.linkHash === undefined) return;
+    hub.send({
+      v: 1,
+      id: frameId(),
+      type: "link_bind",
+      agent_ref: rec.ref,
+      hash: rec.linkHash,
+    });
   };
   /** Never a loop: one retry after a long wait; a reconnect replays it sooner. */
   const markLimited = (ref: string, message: string) => {
@@ -777,6 +807,31 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     } else renameIds.delete(id);
   };
   /**
+   * #1822: a proof can arrive before the daemon has a record for its pid (the
+   * helper runs once, at /mcp connect, while the session file may still be
+   * unwritten). The latest hash per pid and start time waits here, briefly and
+   * bounded; a live record with that pid and start time takes it.
+   */
+  const pendingProofs = new Map<
+    number,
+    { procStart: string; hash: string; at: number }
+  >();
+  const claimProofs = () => {
+    if (pendingProofs.size === 0) return;
+    const now = Date.now();
+    for (const [pid, p] of pendingProofs)
+      if (now - p.at > PENDING_PROOF_MS) pendingProofs.delete(pid);
+    for (const rec of agents.all()) {
+      if (rec.kind !== "claude-code" || !rec.live || rec.pid === undefined)
+        continue;
+      const p = pendingProofs.get(rec.pid);
+      if (!p || p.procStart !== rec.procStart) continue;
+      pendingProofs.delete(rec.pid);
+      rec.linkHash = p.hash;
+      sendLink(rec);
+    }
+  };
+  /**
    * A Codex `/rename` (#1748): the thread's name in Codex's session index
    * changed. The same rules as Pi: one frame per change, a thread with no name
    * stays as it was. Reads the index only while a Codex thread is live.
@@ -846,6 +901,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           global: ns.global,
           pid: s.pid,
           procStart: s.procStart,
+          // The same process keeps its proof across /clear; agent_ok rebinds it.
+          ...(old?.linkHash !== undefined ? { linkHash: old.linkHash } : {}),
           sessionName: s.name,
           cwd: s.cwd,
           live: true,
@@ -855,6 +912,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       void claude.revive(s.ref);
       tellOwed(s.ref);
     }
+    claimProofs();
     let closed = false;
     for (const a of agents.all()) {
       if (a.kind !== "claude-code" || !a.live || liveRefs.has(a.ref)) continue;
@@ -915,6 +973,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubMailbox = false;
   /** The hub's last hello_ok listed BUS_CAPS.follow: follow frames may go (#1317). */
   let hubFollow = false;
+  /** The hub's last hello_ok listed BUS_CAPS.link: link_bind may go (#1822). */
+  let hubLink = false;
+  /** The hub's last hello_ok listed BUS_CAPS.linkArg: its /mcp strips the proof argument (#1856). */
+  let hubLinkArg = false;
   /** This link has had its hello_ok (reset when the link drops). */
   let hubHelloed = false;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
@@ -941,6 +1003,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             // Answered: the hub knows the new ref, the handover is done.
             delete agent.replaces;
             flushRename(agent);
+            // The hub forgot the hash with the last link: say it again.
+            sendLink(agent);
           }
           // Registered on this link: its sends lost to the last one go again.
           resends.up(frame.agent_ref);
@@ -1038,6 +1102,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         case "follows":
           pending.settle(frame);
           return;
+        case "link_bound":
+          return;
         case "body":
           // A fetched body is a peer's text, like a delivered one.
           pending.settle({ ...frame, body: stripTerminalControls(frame.body) });
@@ -1049,6 +1115,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
           hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
+          hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
+          hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
           hubHelloed = true;
           // Handovers that waited for this: announce them now (#1582).
           for (const rec of agents.all())
@@ -1109,6 +1177,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // A replay before the next hello_ok must not carry `replaces`.
       hubMailbox = false;
       hubFollow = false;
+      hubLink = false;
+      hubLinkArg = false;
       hubHelloed = false;
       statusRelay.dropped();
       receipts.release();
@@ -1176,6 +1246,45 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // A codex hello proves one call id, so it buys one request: `hello.pid`
     // is a claim (no peer credentials), and a won race must not become a session.
     oneRequest: (h) => h.kind === "codex",
+    // #1822: `oa-bus mcp-proof` names the Claude process it runs under. The pid
+    // in the request is the caller's claim, not attested (no peer credentials):
+    // any process of this OS user can bind. The owner accepted that. What the
+    // daemon checks is that a live Claude record it attested has that very pid
+    // and start time; an unknown pid binds nothing.
+    onLinkProof: (req) => {
+      const start = (cl.procStart ?? claudeProcStartOf)(req.pid);
+      if (start === null || start === undefined) return { bound: false };
+      const find = () =>
+        agents
+          .all()
+          .find((a) => a.kind === "claude-code" && a.live && a.pid === req.pid);
+      let rec = find();
+      // The helper can beat the session file: look now, not at the next tick.
+      if (!rec || rec.procStart === undefined) {
+        syncClaude();
+        rec = find();
+      }
+      if (rec && rec.procStart !== undefined) {
+        if (rec.procStart !== start) return { bound: false };
+        rec.linkHash = req.hash;
+        sendLink(rec);
+        return { bound: true };
+      }
+      // Still no record: hold it for the one that may appear (same pid and
+      // start time only). Bounded, and a proof nobody claims expires.
+      pendingProofs.delete(req.pid);
+      pendingProofs.set(req.pid, {
+        procStart: start,
+        hash: req.hash,
+        at: Date.now(),
+      });
+      while (pendingProofs.size > PENDING_PROOF_MAX) {
+        const oldest = pendingProofs.keys().next().value;
+        if (oldest === undefined) break;
+        pendingProofs.delete(oldest);
+      }
+      return { bound: true };
+    },
     // `oa-bus status` and install's "Daemon running": one roster per namespace
     // this machine's open sessions are in (or only the cwd's).
     onStatus: async (req) => {
@@ -1247,6 +1356,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         ...(hub.open || !hubEver || hubDroppedAt === undefined
           ? {}
           : { hub_since: hubDroppedAt }),
+        link: true,
         ...(hubVersion === undefined ? {} : { hub_version: hubVersion }),
         ...(only === undefined ? {} : { namespace: only }),
         namespaces,
@@ -1282,6 +1392,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           ...(h.caps?.includes(ADAPTER_CAPS.follow)
             ? [ADAPTER_CAPS.follow]
             : []),
+          // #1346: the proposal goes to the hub over HTTP; no hub cap.
+          ...(h.caps?.includes(ADAPTER_CAPS.reach) ? [ADAPTER_CAPS.reach] : []),
+          // #1856: a link_proof on this connection binds only its own agent.
+          ...(h.caps?.includes(ADAPTER_CAPS.link) ? [ADAPTER_CAPS.link] : []),
         ];
         return listed.length > 0 ? { caps: listed } : {};
       };
@@ -1422,13 +1536,19 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           pid,
           ...(mine ? { procStart: mine.procStart } : {}),
           ...(mine ? { sessionName: mine.name } : {}),
+          // Claude's MCP server reconnects per tool call: the proof stays.
+          ...((prev?.linkHash ?? old?.linkHash) !== undefined
+            ? { linkHash: (prev?.linkHash ?? old?.linkHash) as string }
+            : {}),
           ...(codexName !== undefined ? { sessionName: codexName } : {}),
           cwd,
           live: true,
         });
         if (rec.kind === "opencode") ocServiceStart.set(rec.ref, ocStart(pid));
+        if (rec.kind === "codex") persistCodex();
         if (rec.kind === "claude-code") void claude.revive(rec.ref);
         conns.set(rec.ref, (conns.get(rec.ref) ?? 0) + 1);
+        claimProofs();
         announceUp(rec);
         if (!piLike(hello.kind)) tellOwed(rec.ref);
         return {
@@ -1451,7 +1571,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // shown; they count as shown once that reply is written.
       const answer = (f: DaemonFrame): boolean => {
         const late =
-          frame.type !== "ack" && frame.late
+          frame.type !== "ack" && frame.type !== "link_proof" && frame.late
             ? sent.lateFor(hello.agent_ref)
             : [];
         if (!late.length) return reply(f);
@@ -1471,8 +1591,28 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           limited.has(ref) ? (caps.get(ref) ?? "machine") : undefined,
         version,
         configFiles,
+        proposeReach: (ref, namespaces) =>
+          proposeReach({
+            hub: cfg.hub,
+            token: cfg.machine_token,
+            nativeRef: ref,
+            namespaces,
+            fetch: deps.fetch,
+            timeoutMs: deps.reachTimeoutMs,
+            log,
+          }),
         followSupport: () =>
           !hub.open || !hubHelloed ? "down" : hubFollow ? "ok" : "old_hub",
+        linked: (ref, hash) => {
+          // The adapter then adds the argument to its calls: only for a hub
+          // whose /mcp strips it (an older one fails a strict tool schema).
+          if (!hubLink || !hubLinkArg) return false;
+          const rec = agents.byRef(ref);
+          if (!rec?.live) return false;
+          rec.linkHash = hash;
+          sendLink(rec);
+          return true;
+        },
         renamed: (ref, name) => {
           const rec = agents.byRef(ref);
           if (rec) renameFromAdapter(rec, name);
@@ -1557,6 +1697,81 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   }, deps.socketCheckMs ?? 60_000);
   socketWatch.unref();
 
+  /** #1748: each live attested Codex thread, kept so a restart can take it back. */
+  const codexAgentsFile = cx.agentsFile ?? join(home(), "codex-agents.json");
+  let codexSaved: string | undefined;
+  const persistCodex = () => {
+    const rows: CodexAgent[] = [];
+    for (const a of agents.all()) {
+      if (a.kind !== "codex" || !a.live) continue;
+      const procStart = codexCheck.startOf(a.pid);
+      if (procStart === undefined) continue;
+      rows.push({
+        ref: a.ref,
+        pid: a.pid,
+        procStart,
+        proposedName: a.proposedName,
+        ...(a.sentName !== undefined ? { sentName: a.sentName } : {}),
+        busName: a.busName,
+      });
+    }
+    const text = JSON.stringify(rows);
+    // Never touches the home until a thread has been attested.
+    if (codexSaved === undefined ? rows.length === 0 : text === codexSaved)
+      return;
+    try {
+      writeCodexAgents(codexAgentsFile, rows);
+      codexSaved = text;
+    } catch (e) {
+      log(
+        `could not save the live Codex threads: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  };
+  /**
+   * #1748: a restarted daemon takes back the Codex threads it had attested,
+   * each only if its process is still the one pinned and still holds the
+   * thread's lock. The next `agent_up` (hub open) announces them by name.
+   */
+  const restoreCodex = () => {
+    if (deps.attest) return;
+    for (const r of readCodexAgents(codexAgentsFile)) {
+      if (agents.byRef(r.ref)) continue;
+      let proven: { cwd: string } | undefined;
+      try {
+        proven = codexCheck.restore({
+          thread: r.ref,
+          pid: r.pid,
+          start: r.procStart,
+        });
+      } catch {}
+      if (!proven) continue;
+      // Scope comes from the proven cwd and today's config, as at a hello.
+      let ns: Namespace;
+      try {
+        ns = resolveNs(proven.cwd, true);
+      } catch {
+        continue;
+      }
+      if (!WireNamespaceSchema.safeParse(ns.namespace).success) continue;
+      agents.up({
+        ref: r.ref,
+        kind: "codex",
+        proposedName: r.proposedName,
+        busName: r.busName,
+        namespace: ns.namespace,
+        global: ns.global,
+        pid: r.pid,
+        procStart: r.procStart,
+        cwd: proven.cwd,
+        live: true,
+        ...(r.sentName !== undefined ? { sentName: r.sentName } : {}),
+      });
+      seenAt.set(r.ref, ++seenSeq);
+      if (debug) log(`restored codex thread ${r.ref.slice(0, 8)} pid ${r.pid}`);
+    }
+  };
+
   /**
    * A Codex thread is live while its process is the one pinned at its first
    * call (lstart, every sync) and still holds the thread's lock (lsof, every
@@ -1565,22 +1780,33 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    */
   const syncCodex = () => {
     renameCodexThreads();
-    const live = agents
-      .all()
-      .filter((a) => a.kind === "codex" && a.live)
-      .map((a) => ({ thread: a.ref, pid: a.pid }));
+    // Not-live threads join only on a relock tick: a thread that dropped its
+    // lock keeps its proof, and comes back when the same process holds it again.
     codexTicks = (codexTicks + 1) % relockEvery;
+    const relockTick = codexTicks === 0;
+    const all = agents
+      .all()
+      .filter((a) => a.kind === "codex" && (a.live || relockTick))
+      .map((a) => ({ thread: a.ref, pid: a.pid, live: a.live }));
     // Stubbed attestation leaves no proofs to sweep.
-    if (!live.length || deps.attest) return;
-    const still = codexCheck.sweep(live, codexTicks === 0);
-    let closed = false;
-    for (const { thread } of live) {
-      if (still.has(thread)) continue;
+    if (!all.length || deps.attest) return persistCodex();
+    const still = codexCheck.sweep(all, relockTick);
+    let changed = false;
+    for (const { thread, live } of all) {
+      if (still.has(thread) === live) continue;
       const a = agents.byRef(thread);
-      if (a) a.live = false;
-      closed = true;
+      if (!a) continue;
+      a.live = !live;
+      if (!live) {
+        // Back: the hub only learns of a revival from an agent_up, and mail waits.
+        announceUp(a);
+        tellOwed(a.ref);
+      } else changed = true;
+      log(`codex thread ${thread} ${live ? "not live" : "live again"}`);
     }
-    if (closed) announceSessions();
+    if (changed) announceSessions();
+    // persistCodex keeps only live threads: a restart during a drop still needs a hello.
+    persistCodex();
   };
 
   const sync = () => {
@@ -1601,6 +1827,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       }
     }
   };
+  restoreCodex();
   sync();
   const watcher = setInterval(sync, cl.syncMs ?? 2000);
   watcher.unref();

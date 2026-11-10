@@ -76,6 +76,7 @@ describe("the published oa-bus package", () => {
         "link.py",
         "plugin.py",
         "plugin.yaml",
+        "proof.py",
         "roots.py",
         "sockpath.py",
         "tools.py",

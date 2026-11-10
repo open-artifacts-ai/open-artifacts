@@ -212,6 +212,16 @@ describe("selection state for the shell (#1732)", () => {
     expect(sels()).toHaveLength(2);
   });
 
+  it("reports a selection made before the shell's mode, once select arrives", async () => {
+    await start();
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    expect(sels()).toHaveLength(0);
+    await send({ type: "comments.mode", mode: "select" });
+    expect(last("comment.selection")).toMatchObject({ has: true, bottom: 120 });
+    expect(sels()).toHaveLength(1);
+  });
+
   it("posts nothing in view or pin mode", async () => {
     await start("view");
     select(textOf("a"), 4, textOf("a"), 9);
@@ -390,6 +400,35 @@ describe("selection button", () => {
       { ...rect, right: vw + 50 },
     ] as unknown as DOMRectList);
     select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
+  });
+
+  it("centers under the RTL selection end, including nested direction and viewport clamps", async () => {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+    // happy-dom does not map dir attributes to computed direction.
+    document.body.innerHTML =
+      '<p dir="ltr"><span id="rtl" style="direction:rtl">שלום עולם</span></p>';
+    const text = textOf("rtl");
+    await start("select");
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, left: 200, right: 300 },
+    ] as unknown as DOMRectList);
+    select(text, 0, text, 4);
+    expect(button()?.style.left).toBe("150px");
+    expect(button()?.style.top).toBe("126px");
+    expect(getSelection()?.toString()).toBe("שלום");
+
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, left: 10, right: 110 },
+    ] as unknown as DOMRectList);
+    select(text, 0, text, 3);
+    expect(button()?.style.left).toBe("4px");
+
+    const vw = document.documentElement.clientWidth || innerWidth;
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, left: vw + 50, right: vw + 150 },
+    ] as unknown as DOMRectList);
+    select(text, 0, text, 4);
     expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
   });
 

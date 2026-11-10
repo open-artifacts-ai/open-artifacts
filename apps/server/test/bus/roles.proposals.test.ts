@@ -299,7 +299,12 @@ describe("role proposals over MCP (#1372)", () => {
     }
     expect(r.status).toBe(500);
     expect(r.headers.get("content-type")).toContain("application/json");
-    const { html: card } = (await r.json()) as { html: string };
+    const { html: card, keep } = (await r.json()) as {
+      html: string;
+      keep: boolean;
+    };
+    // The link stays usable, so a reload says "Already decided".
+    expect(keep).toBe(true);
     expect(card).toContain("We could not confirm this finished");
     expect(card).not.toContain("Nothing changed");
     // The role did apply.

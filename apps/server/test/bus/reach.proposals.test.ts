@@ -8,6 +8,7 @@
 
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
+import { BUS_ROUTES, REACH_PROPOSAL_MAX } from "@oa/bus-protocol";
 import {
   BUS_REACH_MAX,
   BUS_REACH_PER_ROLE,
@@ -218,6 +219,11 @@ const auditRows = async (uid: string) =>
   ).results;
 
 describe("reach proposals (#1346)", () => {
+  it("the daemon's route and namespace limit are the server's", () => {
+    expect(BUS_ROUTES.reachProposals).toBe(R.busReachProposals);
+    expect(REACH_PROPOSAL_MAX).toBe(BUS_REACH_PER_ROLE);
+  });
+
   it("a machine token proposes and grants nothing; the member confirms once in a browser; the grant is audited", async () => {
     const b = await withBus();
     const { home, agent } = await holder(b);
@@ -963,7 +969,12 @@ describe("reach proposals (#1346)", () => {
     // The page's script renders only JSON ({ html }): raw HTML would show
     // "Nothing changed" in a browser, which is false here.
     expect(r.headers.get("content-type")).toContain("application/json");
-    const { html: card } = (await r.json()) as { html: string };
+    const { html: card, keep } = (await r.json()) as {
+      html: string;
+      keep: boolean;
+    };
+    // The link stays usable, so a reload says "Already decided".
+    expect(keep).toBe(true);
     expect(card).toContain("We could not confirm this finished");
     expect(card).not.toContain("Nothing changed");
     expect(await grants(b.userId)).toHaveLength(1);

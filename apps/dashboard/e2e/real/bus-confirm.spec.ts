@@ -7,6 +7,7 @@ import {
   freshSignInUrl,
   openAgent,
   proposeLink,
+  proposeReach,
   proposeRole,
 } from "./bus-confirm";
 import { APP, expect, freshEmail, loginAs, test, uniq } from "./fixtures";
@@ -24,6 +25,12 @@ const KINDS = [
     heading: /Link .* and .*\?/,
     done: "Linked",
   },
+  {
+    kind: "reach",
+    base: "/bus/reach/confirm",
+    heading: /Let .* reach other projects\?/,
+    done: "Reach updated",
+  },
 ] as const;
 
 for (const k of KINDS) {
@@ -37,9 +44,21 @@ for (const k of KINDS) {
     const machine = await approveMachine(page);
     const ns = `e2e.local/${uniq()}`;
     const agent = await openAgent(machine, ns);
+    const target = `e2e.local/${uniq()}`;
     let url: string;
     if (k.kind === "roles") {
       url = await proposeRole(page, ns, agent.name, "e2e-lead");
+    } else if (k.kind === "reach") {
+      // A reach proposal needs a role the agent holds: make one first, the
+      // way the member would, then ask as the daemon does (#1346).
+      const roleUrl = await proposeRole(page, ns, agent.name, "e2e-lead");
+      await page.goto(freshSignInUrl(email, "/"));
+      await page.goto(roleUrl);
+      await page.getByRole("button", { name: "Confirm", exact: true }).click();
+      await expect(
+        page.getByRole("heading", { name: "Role updated" }),
+      ).toBeVisible();
+      url = await proposeReach(machine, agent.ref, [target]);
     } else {
       url = await proposeLink(machine, ns, `e2e.local/${uniq()}`);
     }
@@ -95,7 +114,9 @@ for (const k of KINDS) {
     const listed = await page.request.get(`${APP}/api/v1/bus/${k.kind}`);
     const body = await listed.text();
     expect(listed.ok(), body).toBe(true);
-    expect(body).toContain(k.kind === "roles" ? "e2e-lead" : ns);
+    expect(body).toContain(
+      k.kind === "roles" ? "e2e-lead" : k.kind === "reach" ? target : ns,
+    );
 
     // The same link again is refused, and an unknown one is a 404; neither
     // leaves a secret in the tab.

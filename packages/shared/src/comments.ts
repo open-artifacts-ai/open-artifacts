@@ -88,7 +88,19 @@ export const CommentAskSchema = z
     recommended: askRecommended,
     to: z.array(CommentAuthorSchema),
     answer: z
-      .object({ optionId: key, by: CommentAuthorSchema, at: z.string() })
+      .object({
+        optionId: key,
+        by: CommentAuthorSchema,
+        at: z.string(),
+        /** #1797: picked in the web app (a browser session), never with a token. Only such an answer is a person's yes. */
+        typed: z.boolean(),
+        /**
+         * #1797: your user's yes, computed for the caller by the server: typed,
+         * picked by the caller's own person, on an ask the caller's own person
+         * wrote (as themselves or through an agent). Never set by a client.
+         */
+        yes: z.boolean(),
+      })
       .optional(),
     closed: z.boolean(),
   })
@@ -114,6 +126,12 @@ export const CommentSchema = z.object({
   author: CommentAuthorSchema,
   createdAt: z.string(),
   editedAt: z.string().nullable(),
+  /**
+   * #1797: typed by a person in the web app (a browser session, no token, no
+   * MCP). Set by the server from the credential; no client input can. Old
+   * comments read false.
+   */
+  typed: z.boolean(),
   can: z.object({ edit: z.boolean(), delete: z.boolean() }),
   ask: CommentAskSchema.optional(),
   mentions: z.array(CommentMentionSchema).optional(),
@@ -196,6 +214,13 @@ export const ReplyBodySchema = z.object({
   body: commentBody,
   guestName,
   ...extras,
+  /**
+   * Address the reply to the thread root's ask author (#1614): anyone who may
+   * reply, viewers included. 400 not_an_ask when the root has no ask or its
+   * author is not an agent; 400 with mentions or assign. Its agents get a
+   * fixed notice; `mentions` on the returned comment says who and how it went.
+   */
+  toAsker: z.boolean().optional(),
 });
 export type ReplyBody = z.infer<typeof ReplyBodySchema>;
 

@@ -46,7 +46,7 @@ type Frame = Record<string, unknown>;
 export async function openAgent(
   token: string,
   namespace: string,
-): Promise<{ name: string; close: () => void }> {
+): Promise<{ name: string; ref: string; close: () => void }> {
   const ws = new (
     WebSocket as unknown as new (
       url: string,
@@ -108,7 +108,7 @@ export async function openAgent(
     }),
   );
   const ok = await next("agent_ok");
-  return { name: String(ok.bus_name), close: () => ws.close() };
+  return { name: String(ok.bus_name), ref: "r1", close: () => ws.close() };
 }
 
 /** `bus_role_propose` over MCP as the signed-in member's PAT; returns the confirm URL. */
@@ -146,6 +146,25 @@ export async function proposeLink(
       "content-type": "application/json",
     },
     body: JSON.stringify({ action: "link", a, b }),
+  });
+  const text = await res.text();
+  expect(res.status, text).toBe(200);
+  return (JSON.parse(text) as { confirmUrl: string }).confirmUrl;
+}
+
+/** What the daemon posts with the machine token for `propose_reach`; returns the confirm URL. */
+export async function proposeReach(
+  machineToken: string,
+  nativeRef: string,
+  namespaces: string[],
+): Promise<string> {
+  const res = await fetch(`${APP}/api/v1/bus/reach/proposals`, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${machineToken}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ nativeRef, namespaces }),
   });
   const text = await res.text();
   expect(res.status, text).toBe(200);

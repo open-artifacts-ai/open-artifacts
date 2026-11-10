@@ -195,10 +195,17 @@ const approveDecide = async (who: U) => {
 };
 
 /** POST /bus/roles/confirm or /bus/links/confirm as the card's script does (a fresh sign-in). */
-async function confirmPost(path: string, scope: string, who: U) {
+async function confirmPost(
+  path: string,
+  scope: string,
+  who: U,
+  badCsrf = false,
+) {
   const secret = "A".repeat(43);
   const cookie = await fresh(who.userId);
-  const csrf = await formCsrf(H, scope, who.userId, await sha256Hex(secret));
+  const csrf = badCsrf
+    ? "expired"
+    : await formCsrf(H, scope, who.userId, await sha256Hex(secret));
   const text = JSON.stringify({ secret, csrf, decision: "confirm" });
   return fetchAndWait(
     app,
@@ -329,7 +336,11 @@ describe.each(Object.entries(LOCKS))(
       for (const post of [confirmRole, confirmLink, confirmReach]) {
         const r = await post(member);
         expect(r.status, await r.clone().text()).toBe(403);
-        expect(await r.text()).toMatch(PLAN_TEXT);
+        // A card the page shows as it is, keeping the link's secret.
+        expect(r.headers.get("content-type")).toContain("application/json");
+        const card = (await r.json()) as { html: string; keep: boolean };
+        expect(card.html).toMatch(PLAN_TEXT);
+        expect(card.keep).toBe(true);
       }
     });
 
@@ -613,6 +624,21 @@ describe("who the gate leaves alone", () => {
     expect((await saveShareNotices(owner)).headers.get("location")).toBe(
       "/bus?done=saved",
     );
+  });
+
+  it("an expired form token is a card that keeps the secret, with the real reason, on every flow", async () => {
+    for (const [path, scope] of [
+      ["/bus/roles/confirm", ROLE_CONFIRM_SCOPE],
+      ["/bus/links/confirm", "bus-link-confirm"],
+      ["/bus/reach/confirm", "bus-reach-confirm"],
+    ] as const) {
+      const r = await confirmPost(path, scope, owner, true);
+      expect(r.status, path).toBe(403);
+      expect(r.headers.get("content-type"), path).toContain("application/json");
+      const card = (await r.json()) as { html: string; keep: boolean };
+      expect(card.html, path).toContain("This page expired");
+      expect(card.keep, path).toBe(true);
+    }
   });
 
   it("an uncapped member (a paid plan) is not plan-refused either", async () => {

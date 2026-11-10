@@ -33,8 +33,11 @@ export function decodeEntities(s: string): string {
   return s.includes("&") ? decodeHTML(s) : s;
 }
 
-/** Elements whose text is never visible. */
-const HIDDEN = "script, style, template, noscript, title";
+/** Elements whose text is never visible (iframe, noembed and noframes fallback text is not shown either). */
+const HIDDEN =
+  "script, style, template, noscript, title, iframe, noembed, noframes";
+/** Raw text a browser shows as written: no character references are decoded (#1738). */
+const RAW = "xmp, plaintext";
 /** Elements that break a line: a space on both sides, so words don't fuse. */
 const BLOCKS =
   "p, div, li, ul, ol, dl, dt, dd, h1, h2, h3, h4, h5, h6, br, hr, tr, td, th, table, section, article, header, footer, nav, aside, main, blockquote, pre, figure, figcaption, form, fieldset, address";
@@ -54,9 +57,11 @@ function onEnd(e: Element, fn: () => void): boolean {
 }
 
 /**
- * The visible text of an html document: script, style, template, noscript and
- * title skipped, entities decoded, blocks separated by a space. Not
- * normalised: pass it through normalizeText.
+ * The visible text of an html document: script, style, template, noscript,
+ * title, iframe, noembed and noframes skipped, entities decoded except in xmp
+ * and plaintext, blocks separated by a space. Not normalised: pass it through
+ * normalizeText. A CDATA section in svg or math is still decoded: the
+ * rewriter hands its text over like any other (#1738).
  */
 export async function visibleText(
   html: ReadableStream<Uint8Array> | string,
@@ -64,6 +69,7 @@ export async function visibleText(
   const parts: string[] = [];
   let size = 0;
   let hidden = 0;
+  let raw = 0;
   let node = "";
   const push = (s: string) => {
     if (size >= MAX_VISIBLE_CHARS) return;
@@ -76,6 +82,13 @@ export async function visibleText(
         hidden++;
         // A void or self-closed element has no end tag: onEndTag throws.
         if (!onEnd(e, () => void hidden--)) hidden--;
+      },
+    })
+    .on(RAW, {
+      element(e) {
+        raw++;
+        // plaintext never ends: everything after it stays raw.
+        if (!onEnd(e, () => void raw--)) raw--;
       },
     })
     .on(BLOCKS, {
@@ -91,7 +104,7 @@ export async function visibleText(
         if (hidden === 0 && size + node.length < MAX_VISIBLE_CHARS)
           node += t.text;
         if (!t.lastInTextNode) return;
-        if (node !== "") push(decodeEntities(node));
+        if (node !== "") push(raw ? node : decodeEntities(node));
         node = "";
       },
     });

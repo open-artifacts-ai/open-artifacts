@@ -10,7 +10,7 @@ import {
 } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
-import { Check, FileText, Quote as QuoteIcon } from "lucide-react";
+import { Bot, Check, FileText, Quote as QuoteIcon } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import {
@@ -28,6 +28,7 @@ import { TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
 import {
   AskBlock,
+  actor,
   asksForMe,
   Delivery,
   type Extras,
@@ -464,42 +465,58 @@ function Who({
   at: string;
   edited: boolean;
 }) {
-  const via = a.agent
-    ? a.agent.startsWith("via ")
-      ? a.agent
-      : `via ${a.agent}`
-    : null;
+  const isAgent = a.kind === "agent";
   return (
     <div className="flex min-w-0 items-start gap-2">
-      <span
-        aria-hidden="true"
-        data-avatar=""
-        className={`flex size-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[length:var(--oa-text-xs)] font-medium text-foreground`}
-      >
-        {initials(a.name)}
-      </span>
-      <p
-        className={`m-0 flex min-w-0 items-baseline gap-x-1 self-center ${TXT}`}
-      >
-        <b className="min-w-0 truncate" title={a.name}>
-          {a.name}
-        </b>
-        {via && (
+      {isAgent ? (
+        <span
+          aria-hidden="true"
+          data-avatar="agent"
+          className="flex size-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-foreground"
+        >
+          <Bot className="size-3.5" />
+        </span>
+      ) : (
+        <span
+          aria-hidden="true"
+          data-avatar=""
+          className={`flex size-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[length:var(--oa-text-xs)] font-medium text-foreground`}
+        >
+          {initials(a.name)}
+        </span>
+      )}
+      <div className="flex min-w-0 flex-col self-center">
+        <p className={`m-0 flex min-w-0 items-baseline gap-x-1 ${TXT}`}>
+          <b className="min-w-0 truncate" title={a.name}>
+            {a.name}
+          </b>
+          {isAgent && (
+            <span
+              data-agent-tag=""
+              className="shrink-0 rounded-full border border-primary/30 bg-primary/10 px-1.5 text-[length:var(--oa-text-xs)] text-foreground"
+            >
+              agent
+            </span>
+          )}
           <span
-            data-via=""
+            className={`${MUTED} shrink-0 whitespace-nowrap`}
+            title={exactDate(at)}
+          >
+            {versionDate(at)}
+            {edited && " · edited"}
+          </span>
+        </p>
+        {/* #1789 (Design): "for <person>" on its own muted line, so the agent's
+          name keeps the row in a narrow column. */}
+        {isAgent && a.for && (
+          <span
+            data-for=""
             className={`${MUTED} min-w-0 truncate text-[length:var(--oa-text-xs)]`}
           >
-            {via}
+            for {a.for}
           </span>
         )}
-        <span
-          className={`${MUTED} shrink-0 whitespace-nowrap`}
-          title={exactDate(at)}
-        >
-          {versionDate(at)}
-          {edited && " · edited"}
-        </span>
-      </p>
+      </div>
     </div>
   );
 }
@@ -509,11 +526,14 @@ function CommentRow({
   thread,
   c,
   root,
+  askQuestion,
 }: {
   api: CommentsApi;
   thread: CommentThread;
   c: CommentT;
   root: boolean;
+  /** Open a question to the agent that asked (#1794). */
+  askQuestion?: () => void;
 }) {
   const nextAsk = nextAskFor(api, thread.id);
   const edit = useEditComment(api.artifactId, api.guest);
@@ -586,6 +606,7 @@ function CommentRow({
           c={c}
           next={nextAsk ? () => api.reveal(nextAsk) : undefined}
           reply={api.canComment ? () => api.select(thread.id, true) : undefined}
+          askQuestion={askQuestion}
         />
       ) : (
         <p className={`whitespace-pre-wrap break-words ${TXT}`}>
@@ -700,6 +721,9 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
 function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const isActive = api.active === t.id;
   const reply = useReply(api.artifactId, api.guest);
+  // The agent a question goes to, kept while the box is open so a pick
+  // elsewhere doesn't swap the draft away (the server then says why).
+  const [asking, setAsking] = useState<string | null>(null);
   const status = useSetThreadStatus(api.artifactId, api.guest);
   const [statusErr, setStatusErr] = useState<unknown>(null);
   const el = useRef<HTMLLIElement>(null);
@@ -721,7 +745,20 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       el.current?.focus({ preventScroll: true });
     }
   }, [isActive, revealTick]);
+  // Leaving the thread drops the question mode.
+  useEffect(() => {
+    if (!isActive) setAsking(null);
+  }, [isActive]);
   if (!first) return null;
+  // "Ask a question" (#1794): an open, unanswered ask from an agent, to someone who may reply.
+  const asker =
+    first.ask &&
+    first.author.kind === "agent" &&
+    !first.ask.answer &&
+    !first.ask.closed &&
+    api.canComment
+      ? first.author.name
+      : null;
   const toggle = () => {
     setStatusErr(null);
     status.mutate(
@@ -773,12 +810,26 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             className={`flex items-center gap-1 ${TXT} text-green-700 dark:text-green-400`}
           >
             <Check aria-hidden="true" className="size-3.5 shrink-0" />
-            Resolved by {t.resolvedBy?.name ?? "someone"}
+            Resolved by{" "}
+            {t.resolvedBy ? actor(t.resolvedBy, t.resolvedBy.name) : "someone"}
             {t.resolvedAt ? ` · ${versionDate(t.resolvedAt)}` : ""}
           </p>
         )}
         <ul className="m-0 flex list-none flex-col gap-3 p-0">
-          <CommentRow api={api} thread={t} c={first} root />
+          <CommentRow
+            api={api}
+            thread={t}
+            c={first}
+            root
+            askQuestion={
+              asker && !asking
+                ? () => {
+                    setAsking(asker);
+                    api.select(t.id, true);
+                  }
+                : undefined
+            }
+          />
           {shown.map((c) => (
             <CommentRow key={c.id} api={api} thread={t} c={c} root={false} />
           ))}
@@ -798,7 +849,34 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             {commentError(statusErr, api.capped)}
           </p>
         )}
-        {api.canComment && isActive ? (
+        {asking && isActive ? (
+          <>
+            {api.guest && <GuestName api={api} />}
+            <Composer
+              key="ask"
+              label="Question"
+              placeholder={`Ask ${asking} a question`}
+              submit="Send"
+              autoFocus
+              buttonsRight
+              onCancel={() => setAsking(null)}
+              lead={
+                <span className={`${TXT} ${MUTED}`} data-to-asker="">
+                  To {asking}, the agent that asked
+                </span>
+              }
+              onSubmit={async (body) => {
+                await reply.mutateAsync({
+                  thread: t.id,
+                  body,
+                  toAsker: true,
+                  ...(api.guest ? { guestName: api.guestName.trim() } : {}),
+                });
+                setAsking(null);
+              }}
+            />
+          </>
+        ) : api.canComment && isActive ? (
           <>
             {api.guest && <GuestName api={api} />}
             <Composer

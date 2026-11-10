@@ -876,10 +876,15 @@ export const BusAgentSchema = z.strictObject({
 });
 export type BusAgent = z.infer<typeof BusAgentSchema>;
 
-/** GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then []. */
+/**
+ * GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then [].
+ * `droppedNotices` (#1317): notices for the caller's own bus that found no
+ * agent today (UTC), 0 when none (or from an older server).
+ */
 export const BusAgentsSchema = z.strictObject({
   agents: z.array(BusAgentSchema).max(1000),
   live: z.boolean(),
+  droppedNotices: z.number().int().min(0).default(0),
 });
 export type BusAgents = z.infer<typeof BusAgentsSchema>;
 
@@ -904,6 +909,20 @@ export const SettingsSchema = z.object({
   spaceManagerMappings: z.boolean().optional(),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
+
+/** GET/PUT R.onboarding: the first-run checklist's install-wide state. */
+export const OnboardingSchema = z.strictObject({
+  dismissed: z.boolean(),
+  completed: z.boolean(),
+});
+export type Onboarding = z.infer<typeof OnboardingSchema>;
+
+/** PUT R.onboarding: a flag only turns on (true), never off. */
+export const OnboardingPatchSchema = z.strictObject({
+  dismissed: z.literal(true).optional(),
+  completed: z.literal(true).optional(),
+});
+export type OnboardingPatch = z.infer<typeof OnboardingPatchSchema>;
 
 export const SettingsPatchSchema = SettingsSchema.partial().strict();
 export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;

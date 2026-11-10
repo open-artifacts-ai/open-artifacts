@@ -382,6 +382,14 @@ export const R = {
    * uncapped org owner only. Anyone else, and an unknown notice, 404.
    */
   noticeDismiss: (notice: NoticeId) => `/api/v1/notices/${seg(notice)}/dismiss`,
+  /**
+   * GET -> Onboarding; PUT OnboardingPatch -> Onboarding: the first-run
+   * "Get started" checklist's install-wide state, kept on the server. Both
+   * only for the uncapped org owner (anyone else 404). PUT { dismissed: true }
+   * hides the checklist for good; { completed: true } records that every step
+   * was done. Idempotent; neither can be undone through the API.
+   */
+  onboarding: "/api/v1/onboarding",
   /** GET ?cursor&limit -> Page<AuditEvent> (org owner, admin). */
   audit: "/api/v1/audit",
   /**

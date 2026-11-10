@@ -42,6 +42,7 @@ import {
 } from "./asks.js";
 import {
   agentRoster,
+  askerRoster,
   type CommentNoticeKind,
   type DeliveryState,
   notifyAgent,
@@ -72,7 +73,17 @@ import { effectiveName, getUser } from "./users.js";
 
 /** Who is acting: a signed-in person (maybe through an agent) or a signed-out guest. */
 export type CommentWho =
-  | { kind: "user"; id: string; agent?: AgentAttr | null }
+  | {
+      kind: "user";
+      id: string;
+      agent?: AgentAttr | null;
+      /**
+       * #1797: the request authenticated with a browser session (never a PAT,
+       * a grant or MCP). The route sets it from the credential kind, never
+       * from the body or from a missing agent.
+       */
+      typed?: boolean;
+    }
   | {
       kind: "guest";
       /** The per-artifact anonymous id (anon-id.ts short). */
@@ -98,6 +109,7 @@ const actorOf = (w: CommentWho): StoredActor =>
     ? {
         kind: "user",
         ref: w.id,
+        ...(w.typed === true && !w.agent ? { typed: true as const } : {}),
         ...(w.agent
           ? {
               agent: {
@@ -333,6 +345,10 @@ const partyView = (
         me: viewer.userId !== null && viewer.userId === p.owner,
       };
 
+/** A stored actor a person typed in the web app (#1797); an agent row or an old row is not. */
+const isTyped = (a: StoredActor): boolean =>
+  a.kind === "user" && a.typed === true && !a.agent;
+
 const commentOf = (
   c: StoredComment,
   viewer: CommentViewer,
@@ -345,6 +361,7 @@ const commentOf = (
     author,
     createdAt: c.createdAt,
     editedAt: c.editedAt,
+    typed: isTyped(c.author),
     can: { edit: author.me, delete: author.me || viewer.moderator === true },
     ...(c.ask
       ? {
@@ -359,6 +376,13 @@ const commentOf = (
                     optionId: c.ask.answer.optionId,
                     by: authorView(c.ask.answer.by, viewer, users),
                     at: c.ask.answer.at,
+                    typed: isTyped(c.ask.answer.by),
+                    yes:
+                      viewer.userId !== null &&
+                      isTyped(c.ask.answer.by) &&
+                      c.ask.answer.by.ref === viewer.userId &&
+                      c.author.kind === "user" &&
+                      c.author.ref === viewer.userId,
                   },
                 }
               : {}),
@@ -446,6 +470,8 @@ const announce = (
 export type CommentExtras = {
   mentions?: KeyRef[];
   ask?: AskInput;
+  /** A reply addressed to the thread root's ask author (#1614): see addReply. Alone: no mentions or ask. */
+  toAsker?: boolean;
 };
 
 /** Who may mention and ask. `moderator`: the owner or an editor. */
@@ -462,6 +488,8 @@ type Resolved = {
   /** The agents to make follow: mentioned, resolved from the viewer's own running agents. */
   follow: RosterAgent[];
   mentions: string[];
+  /** What the stored mention rows are: plain mentions, or the agents a reply to the asker reached (#1614). */
+  mentionKind: "mention" | "asker";
 };
 
 /** The key of a roster agent (comment-agents.ts agentKey). */
@@ -488,6 +516,7 @@ async function resolveExtras(
     agents: [],
     follow: [],
     mentions: [],
+    mentionKind: "mention",
   };
   const wantsTargets = (x.mentions?.length ?? 0) > 0;
   if (!wantsTargets && !x.ask) return none;
@@ -574,6 +603,7 @@ async function resolveExtras(
     },
     agents: [...agents.values()],
     mentions: mentioned.map((m) => m.key),
+    mentionKind: "mention",
   };
 }
 
@@ -633,7 +663,17 @@ async function deliver(
       Promise.all(
         r.agents.map(({ agent, kind }) =>
           Promise.race([
-            notifyAgent(env, a.id, version, threadId, c.id, kind, agent),
+            notifyAgent(
+              env,
+              a.id,
+              version,
+              threadId,
+              c.id,
+              kind,
+              agent,
+              // Only a comment a person typed, to an agent of that same person.
+              isTyped(c.author) && c.author.ref === agent.userId,
+            ),
             late,
           ]),
         ),
@@ -647,6 +687,7 @@ async function deliver(
     clearTimeout(timer);
   }
   const states = r.mentions.map((key) => ({
+    kind: r.mentionKind,
     key,
     state: stateOf(outcome.get(key) ?? "dropped"),
   }));
@@ -710,6 +751,37 @@ export async function addThread(
   return (await threadViews(env, [t], viewer))[0] as Thread;
 }
 
+/**
+ * A reply to the thread root's ask author (#1614). 400 not_an_ask unless the
+ * root carries an ask and its author is an agent (a person's ask has no agent
+ * to tell). The only addressee is that author's agents: the same target as
+ * ask_answered (askerRoster: the agents that follow the artifact and belong to
+ * the author's member; an MCP asker has no bus address until the open
+ * publisher/asker user decision is made, so the member is the only link).
+ * It can reach no other agent. The notice is fixed text with the ids.
+ */
+async function resolveToAsker(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+): Promise<Resolved> {
+  const t = await call(() => stub(env, artifactId).commentsGet(threadId));
+  const root = t.comments[0];
+  if (!root?.ask || root.author.kind !== "user" || !root.author.agent)
+    throw new ApiError(
+      "not_an_ask",
+      "This thread has no question from an agent to reply to",
+    );
+  const to = await askerRoster(env, artifactId, root.author.ref);
+  return {
+    extras: to.length ? { asker: to.map(storedAgent) } : undefined,
+    agents: to.map((agent) => ({ agent, kind: "asker" as const })),
+    follow: [],
+    mentions: to.map((a) => a.key),
+    mentionKind: "asker",
+  };
+}
+
 /** A reply. It does not reopen the thread. */
 export async function addReply(
   env: Env,
@@ -722,7 +794,15 @@ export async function addReply(
   opts: ExtrasOpts = {},
 ): Promise<Comment> {
   const text = checkBody(body);
-  const r = await resolveExtras(env, artifactId, who, extras, opts);
+  let r: Resolved;
+  if (extras.toAsker) {
+    if ((extras.mentions?.length ?? 0) > 0 || extras.ask !== undefined)
+      throw new ApiError(
+        "bad_request",
+        "toAsker cannot be combined with mentions or ask",
+      );
+    r = await resolveToAsker(env, artifactId, threadId);
+  } else r = await resolveExtras(env, artifactId, who, extras, opts);
   const c = await call(() =>
     stub(env, artifactId).commentsReply({
       threadId,
@@ -732,6 +812,11 @@ export async function addReply(
       ...(r.extras ? { extras: r.extras } : {}),
     }),
   );
+  // The thread's bound (one notice per window, a cap in all) left the reply
+  // without its mention rows: nobody is told, and the usual follower notice
+  // (its own limits) is the only one.
+  if (extras.toAsker && !c.mentions?.length)
+    r = { ...r, agents: [], mentions: [] };
   if (c.ask) await indexAsk(env, artifactId, threadId, c.id, c.ask.to);
   if (r.agents.length === 0) {
     await announce(env, artifactId, who, opts.after, r);
@@ -745,6 +830,16 @@ export async function addReply(
     .first<{ v: number }>();
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
   const sent = await deliver(env, a, threadId, c, r);
+  // The bound is spent when a notice goes out or is held; a reply whose agents
+  // all read "gone" (no session, or a stalled hub) gives it back (#1614).
+  if (
+    extras.toAsker &&
+    sent.mentions?.length &&
+    sent.mentions.every((m) => m.state === "gone")
+  )
+    await call(() =>
+      stub(env, artifactId).commentsAskerRefund({ threadId, at: c.createdAt }),
+    ).catch(() => undefined);
   await announce(env, artifactId, who, opts.after, r);
   return commentView(env, sent, viewer);
 }
@@ -788,6 +883,10 @@ export async function answerAsk(
         threadId,
         commentId,
         c.author.ref,
+        // Only an answer the asker picked themselves in the web app.
+        c.ask?.answer !== undefined &&
+          isTyped(c.ask.answer.by) &&
+          c.ask.answer.by.ref === c.author.ref,
       ),
     );
   return commentView(env, c, viewer);
@@ -843,6 +942,7 @@ export async function editComment(
       commentId,
       by: { kind: a.kind, ref: a.ref },
       body: text,
+      typed: a.kind === "user" && a.typed === true,
       rate: rateKeyOf(who),
     }),
   );

@@ -72,6 +72,7 @@ import {
   MemberPatchSchema,
   MePatchSchema,
   OAuthClientPatchSchema,
+  OnboardingPatchSchema,
   PublishInputSchema,
   resolveDataWriters,
   SettingsPatchSchema,
@@ -342,6 +343,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
   const tokens = f.tokens;
   const clients = f.oauthClients;
   let shareNoticeAgents: BusAddress[] = [];
+  // R.onboarding: install-wide, the owner only (anyone else 404).
+  const onboarding = { dismissed: false, completed: false };
   if (opts.bus) {
     me.canConnect = true;
     me.busOn = true;
@@ -579,7 +582,7 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       // Signed-URL uploads carry no session; public artifact reads are anonymous-OK.
       const needsAuth = mutating
         ? !/^\/uploads\/[^/]+$/.test(path)
-        : /^\/(me|members|tokens|oauth-clients|settings|usage|artifacts|search|bus\/(share-notices|machines|agents|roles|links))\/?$/.test(
+        : /^\/(me|members|tokens|oauth-clients|settings|onboarding|usage|artifacts|search|bus\/(share-notices|machines|agents|roles|links))\/?$/.test(
             path,
           );
       // Runtime routes (data/storage) check access first, as on the server:
@@ -667,7 +670,11 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     }),
     // `live: false` while the bus is off. (The server's canConnect 404 isn't mocked.)
     http.get(`*${R.busAgents}`, () =>
-      HttpResponse.json({ agents: busAgents, live: opts.bus === true }),
+      HttpResponse.json({
+        agents: busAgents,
+        live: opts.bus === true,
+        droppedNotices: opts.bus ? f.busDroppedNotices : 0,
+      }),
     ),
     // #1296: role addresses, ordered by namespace then name.
     http.get(`*${R.busRoles}`, () =>
@@ -1271,6 +1278,16 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
       if (r.error) return r.error;
       Object.assign(me.instance, r.data);
       return HttpResponse.json(settings());
+    }),
+    http.get("*/api/v1/onboarding", () =>
+      me.user.role === "owner" ? HttpResponse.json(onboarding) : notFound(),
+    ),
+    http.put("*/api/v1/onboarding", async ({ request }) => {
+      if (me.user.role !== "owner") return notFound();
+      const r = await body(request, OnboardingPatchSchema);
+      if (r.error) return r.error;
+      Object.assign(onboarding, r.data);
+      return HttpResponse.json(onboarding);
     }),
     http.get("*/api/v1/usage", () =>
       HttpResponse.json({

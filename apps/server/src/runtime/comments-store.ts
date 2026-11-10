@@ -41,6 +41,9 @@ create table if not exists comment_targets (
   primary key (comment_id, kind, key)
 );
 create index if not exists comment_targets_thread on comment_targets (thread_id);
+create table if not exists comment_asker_notices (
+  thread_id text primary key, last_at text not null, prev_at text, n integer not null
+);
 create table if not exists comment_limits (
   id integer primary key check (id = 1), day integer not null, n integer not null
 );
@@ -58,6 +61,12 @@ export type StoredActor = {
   ref: string;
   name?: string;
   agent?: { name: string; via: string | null };
+  /**
+   * #1797: written from a browser session (a person typing in the web app),
+   * set by the route from the credential kind. Absent on older rows: not typed.
+   * Only a user can carry it.
+   */
+  typed?: true;
 };
 
 /**
@@ -99,6 +108,8 @@ export type StoredAgent = Extract<StoredParty, { kind: "agent" }>;
 export type NewExtras = {
   ask?: Omit<StoredAsk, "answer" | "closed">;
   mentions?: StoredAgent[];
+  /** A reply addressed to the ask's author (#1614): stored as a mention of its agents, under its own kind so the notice can be bounded. */
+  asker?: StoredAgent[];
 };
 
 export type StoredThread = {
@@ -312,7 +323,7 @@ function attachExtras(
   for (const r of sql.exec<TargetRow>(
     `select g.comment_id, g.key, g.name, g.state
      from comment_targets g
-     where g.kind = 'mention' and g.thread_id in (select value from json_each(?)) order by g.rowid`,
+     where g.kind in ('mention', 'asker') and g.thread_id in (select value from json_each(?)) order by g.rowid`,
     ids,
   )) {
     const c = byId.get(r.comment_id);
@@ -352,28 +363,81 @@ export function insertExtras(
       x.ask.recommended ? JSON.stringify(x.ask.recommended) : null,
       JSON.stringify(x.ask.to),
     );
-  for (const m of x.mentions ?? [])
+  const put = (kind: "mention" | "asker", p: StoredAgent) =>
     sql.exec(
       `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state)
-       values (?, ?, 'mention', ?, ?, 'queued')`,
+       values (?, ?, ?, ?, ?, 'queued')`,
       commentId,
       threadId,
-      m.key,
-      m.name,
+      kind,
+      p.key,
+      p.name,
     );
+  for (const m of x.mentions ?? []) put("mention", m);
+  for (const m of x.asker ?? []) put("asker", m);
+}
+
+/**
+ * The bound on notices to an ask's author's agents (#1614), kept per thread
+ * in its own row: deleting a reply never gives it back. `due`: none within
+ * `sinceIso` and fewer than `max` in all. `spendAsker` records one notice at
+ * `at` (the reply's time), keeping the earlier time so a refund can restore it.
+ */
+export function askerNoticeDue(
+  sql: SqlStorage,
+  threadId: string,
+  sinceIso: string,
+  max: number,
+): boolean {
+  const r = sql
+    .exec<{ last_at: string; n: number }>(
+      "select last_at, n from comment_asker_notices where thread_id = ?",
+      threadId,
+    )
+    .toArray()[0];
+  return !r || (r.last_at < sinceIso && r.n < max);
+}
+
+export function spendAsker(
+  sql: SqlStorage,
+  threadId: string,
+  at: string,
+): void {
+  sql.exec(
+    `insert into comment_asker_notices (thread_id, last_at, prev_at, n) values (?, ?, null, 1)
+     on conflict (thread_id) do update set prev_at = last_at, last_at = excluded.last_at, n = n + 1`,
+    threadId,
+    at,
+  );
+}
+
+/** Gives back the notice spent at `at` (only while it is still the last one). */
+export function refundAsker(
+  sql: SqlStorage,
+  threadId: string,
+  at: string,
+): void {
+  sql.exec(
+    `update comment_asker_notices set last_at = coalesce(prev_at, '0'), prev_at = null, n = n - 1
+     where thread_id = ? and last_at = ? and n > 0`,
+    threadId,
+    at,
+  );
 }
 
 /** Sets one mention's state. */
 export function setTargetState(
   sql: SqlStorage,
   commentId: string,
+  kind: "mention" | "asker",
   key: string,
   state: string,
 ): void {
   sql.exec(
-    "update comment_targets set state = ? where comment_id = ? and kind = 'mention' and key = ?",
+    "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ?",
     state,
     commentId,
+    kind,
     key,
   );
 }

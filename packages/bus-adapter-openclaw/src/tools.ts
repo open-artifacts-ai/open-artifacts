@@ -4,8 +4,16 @@ import type { Bus } from "./bus.ts";
 import { LinkError } from "./link.ts";
 import { refusal } from "./roots.ts";
 
+/**
+ * Tools of the shared set this adapter does not offer yet: it lists no `reach`
+ * cap in its hello, so a call would only fail, and its manifest does not name
+ * it (a tool missing from the manifest drops the whole registration).
+ */
+const NOT_YET = new Set(["propose_reach"]);
+const OFFERED = TOOLS.filter((t) => !NOT_YET.has(t.name));
+
 /** The bus tools, named as Pi and Hermes name them (#1448): the MCP tools behind an `oabus_` prefix. */
-export const TOOL_NAMES = TOOLS.map((t) => `oabus_${t.name}`);
+export const TOOL_NAMES = OFFERED.map((t) => `oabus_${t.name}`);
 
 const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
 
@@ -29,7 +37,7 @@ export function toolsFor(bus: Bus, ctx: ToolContext): AgentTool[] {
   );
   if (!r.ok) return [];
   const root = r.root;
-  return TOOLS.map((t) => ({
+  return OFFERED.map((t) => ({
     name: `oabus_${t.name}`,
     label: `oabus_${t.name}`,
     description: t.description,

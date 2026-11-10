@@ -16,6 +16,7 @@ export type Command = (
   | { cmd: "login"; hub?: string; noOpen: boolean }
   | { cmd: "daemon"; hub?: string; home?: string }
   | { cmd: "mcp"; harness: Harness }
+  | { cmd: "mcp-proof"; tokenFile?: string }
   | { cmd: "status" }
   | { cmd: "logs" }
   | { cmd: "doctor" }
@@ -40,6 +41,7 @@ const COMMANDS = new Set([
   "login",
   "daemon",
   "mcp",
+  "mcp-proof",
   "status",
   "logs",
   "doctor",
@@ -74,6 +76,7 @@ const FLAGS: Record<string, string[]> = {
   login: ["instance", "no-open"],
   daemon: ["instance"],
   uninstall: ["purge"],
+  "mcp-proof": ["token-file"],
   namespace: ["yes"],
 };
 
@@ -88,6 +91,7 @@ export function parse(argv: string[]): Command {
     options: {
       instance: { type: "string" },
       home: { type: "string" },
+      "token-file": { type: "string" },
       "no-open": { type: "boolean", default: false },
       yes: { type: "boolean", short: "y", default: false },
       check: { type: "boolean", default: false },
@@ -104,6 +108,7 @@ export function parse(argv: string[]): Command {
   const [head, ...rest] = positionals;
   const cmd = head ?? "install";
   if (!COMMANDS.has(cmd)) throw new Error(`unknown command: ${cmd}`);
+  const tokenFile = values["token-file"];
   const takes =
     cmd === "mcp" ? 1 : cmd === "global" ? (rest[0] === "list" ? 1 : 2) : 0;
   if (cmd === "mcp" && rest.length === 0)
@@ -147,13 +152,17 @@ export function parse(argv: string[]): Command {
   const home = values.home;
   if (values.version)
     return { cmd: "version", noColor, ...(home ? { home } : {}) };
-  const parsed = route(cmd, values, rest);
+  const parsed =
+    cmd === "mcp-proof"
+      ? { cmd, ...(tokenFile ? { tokenFile } : {}) }
+      : route(cmd, values, rest);
   return { ...parsed, noColor, ...(home ? { home } : {}) } as Command;
 }
 
 type Values = {
   instance?: string;
   home?: string;
+  "token-file"?: string;
   "no-open": boolean;
   yes: boolean;
   check: boolean;

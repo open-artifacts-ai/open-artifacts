@@ -21,6 +21,7 @@ import {
   vi,
 } from "vitest";
 import {
+  actor,
   mentionedKeys,
   mentionQuery,
   nextAskFor,
@@ -140,6 +141,7 @@ const askThread = (over: object = {}, askOver: object = {}) => ({
       },
       createdAt: "2026-11-05T10:00:00Z",
       editedAt: null,
+      typed: false,
       can: { edit: false, delete: false },
       ask: {
         question: "Which layout?",
@@ -186,6 +188,8 @@ describe("asks on the comments column", () => {
                 optionId: "a",
                 by: { kind: "user", id: "me", name: "Me", me: true },
                 at: "2026-11-05T11:00:00Z",
+                typed: true,
+                yes: true,
               },
             }
           : {},
@@ -287,6 +291,8 @@ describe("asks on the comments column", () => {
             optionId: "yes",
             by: { kind: "user", id: "me", name: "Me", me: true },
             at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: true,
           },
         },
       ),
@@ -309,6 +315,8 @@ describe("asks on the comments column", () => {
             optionId: "b",
             by: { kind: "user", id: "me", name: "Me", me: true },
             at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: true,
           },
         },
       ),
@@ -328,6 +336,8 @@ describe("asks on the comments column", () => {
             optionId: "b",
             by: { kind: "user", id: "me", name: "Me", me: true },
             at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: true,
           },
         },
       ),
@@ -353,6 +363,8 @@ describe("asks on the comments column", () => {
             optionId: picked,
             by: { kind: "user", id: "me", name: "Me", me: true },
             at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: true,
           },
         },
       ),
@@ -394,6 +406,8 @@ describe("asks on the comments column", () => {
                 optionId: "a",
                 by: { kind: "user", id: "me", name: "Me", me: true },
                 at: "2026-11-05T11:00:00Z",
+                typed: true,
+                yes: true,
               },
             }
           : {},
@@ -477,6 +491,8 @@ describe("asks on the comments column", () => {
             optionId: "b",
             by: { kind: "user", id: "me", name: "Me", me: true },
             at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: true,
           },
         },
       ),
@@ -907,6 +923,8 @@ describe("@ picker details", () => {
             optionId: "a",
             by: { kind: "user", id: "me", name: "Me", me: true },
             at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: true,
           },
         },
       ),
@@ -1202,6 +1220,16 @@ describe("round 3 copy", () => {
   });
 });
 
+describe("actor (#1789)", () => {
+  it("never says you for the owner's agent, and tags agents", () => {
+    expect(actor({ kind: "agent", name: "Cursor", me: true }, "You")).toBe(
+      "Cursor (agent)",
+    );
+    expect(actor({ kind: "user", name: "Leo", me: true }, "You")).toBe("You");
+    expect(actor({ kind: "user", name: "Ada", me: false }, "You")).toBe("Ada");
+  });
+});
+
 describe("removeMention", () => {
   it("keeps the line break before a removed mention", () => {
     expect(removeMention("hi\n@Bob there", "Bob")).toBe("hi\n there");
@@ -1221,6 +1249,8 @@ describe("asks for you in the toolbar and header (#1614)", () => {
               optionId: "a",
               by: { kind: "user", id: "me", name: "Me", me: true },
               at: "2026-11-05T11:00:00Z",
+              typed: true,
+              yes: true,
             },
           }
         : {},
@@ -1425,5 +1455,184 @@ describe("nextAskFor", () => {
     const api = mkApi([th("a", false)], [th("o")]);
     expect(nextAskFor(api, "a")).toBe("o");
     expect(nextAskFor(api, null)).toBe("o");
+  });
+});
+
+describe("Ask a question (#1794)", () => {
+  const agentAsk = (askOver: object = {}) => {
+    const t = askThread({}, askOver);
+    (t.comments[0] as { author: unknown }).author = {
+      kind: "agent",
+      id: "agent:p",
+      name: "OA Product",
+      for: "Leo",
+      me: false,
+    };
+    return t;
+  };
+
+  it("sends a reply to the agent that asked, with toAsker", async () => {
+    const t = agentAsk();
+    serveThreads(() => [t]);
+    let sent: unknown = null;
+    server.use(
+      http.post(
+        "*/api/v1/artifacts/:id/comments/:tid/replies",
+        async ({ request }) => {
+          sent = await request.json();
+          return HttpResponse.json({
+            id: "c-q",
+            body: "What breaks with A?",
+            author: { kind: "user", id: "me", name: "Me", me: true },
+            createdAt: "2026-11-05T11:00:00Z",
+            editedAt: null,
+            typed: true,
+            can: { edit: true, delete: true },
+            mentions: [
+              { key: "agent:p", name: "OA Product", delivery: "delivered" },
+            ],
+          });
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Ask a question" }),
+    );
+    expect(
+      await within(c).findByText("To OA Product, the agent that asked"),
+    ).toBeInTheDocument();
+    const box = within(c).getByRole("textbox", { name: "Question" });
+    await waitFor(() => expect(box).toHaveFocus());
+    fireEvent.change(box, { target: { value: "What breaks with A?" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(sent).toEqual({ body: "What breaks with A?", toAsker: true }),
+    );
+    await waitFor(() =>
+      expect(
+        within(c).queryByRole("textbox", { name: "Question" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      within(c).getByRole("textbox", { name: "Reply" }),
+    ).toBeInTheDocument();
+  });
+
+  it("Cancel goes back to the plain reply box", async () => {
+    serveThreads(() => [agentAsk()]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Ask a question" }),
+    );
+    fireEvent.click(await within(c).findByRole("button", { name: "Cancel" }));
+    expect(
+      await within(c).findByRole("textbox", { name: "Reply" }),
+    ).toBeInTheDocument();
+    expect(
+      within(c).queryByText("To OA Product, the agent that asked"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("keeps the draft when the ask is answered meanwhile, and says why it can't send", async () => {
+    let t = agentAsk();
+    serveThreads(() => [t]);
+    server.use(
+      http.post("*/api/v1/artifacts/:id/comments/:tid/replies", () =>
+        HttpResponse.json(
+          { error: { code: "not_an_ask", message: "x" } },
+          { status: 400 },
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Ask a question" }),
+    );
+    const box = await within(c).findByRole("textbox", { name: "Question" });
+    fireEvent.change(box, { target: { value: "Why B?" } });
+    t = agentAsk({ closed: true });
+    await act(async () => {
+      events.emitComments(OWNED, 2);
+    });
+    await waitFor(() =>
+      expect(
+        within(c).queryByRole("button", { name: "Ask a question" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(within(c).getByRole("textbox", { name: "Question" })).toHaveValue(
+      "Why B?",
+    );
+    fireEvent.click(within(c).getByRole("button", { name: "Send" }));
+    expect(
+      await within(c).findByText(
+        "That ask is no longer open to questions. Reply instead.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("leaving the thread drops the question box", async () => {
+    const other = askThread({ id: "t-2" }, {});
+    (other.comments[0] as { id: string }).id = "c-2";
+    delete (other.comments[0] as { ask?: unknown }).ask;
+    (other.comments[0] as { body: string }).body = "Other thread";
+    serveThreads(() => [agentAsk(), other]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: "Ask a question" }),
+    );
+    await within(c).findByRole("textbox", { name: "Question" });
+    const second = document.querySelector("[data-thread='t-2']") as HTMLElement;
+    fireEvent.click(within(second).getAllByRole("button")[0]!);
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-thread='t-2'][data-active]"),
+      ).toBeTruthy(),
+    );
+    const first = document.querySelector(
+      "[data-thread='t-ask']",
+    ) as HTMLElement;
+    fireEvent.click(within(first).getAllByRole("button")[0]!);
+    await waitFor(() =>
+      expect(
+        document.querySelector("[data-thread='t-ask'][data-active]"),
+      ).toBeTruthy(),
+    );
+    expect(
+      within(c).queryByRole("textbox", { name: "Question" }),
+    ).not.toBeInTheDocument();
+    expect(
+      within(first).getByRole("textbox", { name: "Reply" }),
+    ).toBeInTheDocument();
+  });
+
+  it("is not offered once picked, when closed, or when a person asked", async () => {
+    const picked = agentAsk({
+      answer: {
+        optionId: "a",
+        by: { kind: "user", id: "me", name: "Me", me: true },
+        at: "2026-11-05T11:00:00Z",
+        typed: true,
+        yes: true,
+      },
+    });
+    picked.id = "t-1";
+    const closed = agentAsk({ closed: true });
+    closed.id = "t-2";
+    (closed.comments[0] as { id: string }).id = "c-2";
+    const person = askThread({ id: "t-3" });
+    (person.comments[0] as { id: string }).id = "c-3";
+    serveThreads(() => [picked, closed, person]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText("Which layout?");
+    await wait(50);
+    expect(
+      within(c).queryByRole("button", { name: "Ask a question" }),
+    ).not.toBeInTheDocument();
   });
 });
