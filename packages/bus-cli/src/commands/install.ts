@@ -484,7 +484,9 @@ function reportShim(ctx: Ctx): void {
       say(ctx, ctx.copy.shimInstalled(tilde(ctx, r.path)));
       if (!r.onPath && r.hint)
         say(ctx, ctx.copy.shimNotOnPath(tilde(ctx, dirname(r.path)), r.hint));
-    } else if (r.kind === "foreign")
+    } else if (r.kind === "other-home")
+      say(ctx, ctx.copy.shimOtherHome(tilde(ctx, r.path), tilde(ctx, r.home)));
+    else if (r.kind === "foreign")
       say(ctx, ctx.copy.shimForeign(tilde(ctx, r.path)));
   } catch (e) {
     say(ctx, [

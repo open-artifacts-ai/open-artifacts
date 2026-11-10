@@ -316,7 +316,7 @@ export async function doctor(ctx: Ctx): Promise<number> {
     if (h === "openclaw") say(ctx, c.openclawDmNote());
   }
 
-  // #1626: only once install has put a CLI in the bus home.
+  // #1626: skipped when the service has no recorded argv (nothing installed to point at).
   if (ctx.service.argv?.().length === 2) {
     const sh = shimState({
       userHome: ctx.userHome,

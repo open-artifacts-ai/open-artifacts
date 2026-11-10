@@ -197,6 +197,75 @@ describe("oa-bus on PATH (#1626)", () => {
   });
 });
 
+describe("review fixes (#1626)", () => {
+  it("state skips npx's node_modules/.bin, which holds the package's own oa-bus", () => {
+    const w = world();
+    const env0 = { PATH: `${w.local}:/usr/bin` };
+    installShim({ ...w, env: env0 });
+    const npx = join(tmp(), "_npx", "abc", "node_modules", ".bin");
+    mkdirSync(npx, { recursive: true });
+    writeFileSync(join(npx, "oa-bus"), "#!/bin/sh\n", { mode: 0o755 });
+    expect(
+      shimState({ ...w, env: { PATH: `${npx}:${w.local}:/usr/bin` } }),
+    ).toMatchObject({ kind: "ours", path: join(w.local, "oa-bus") });
+    // Only the npx entry: nothing real on PATH.
+    expect(shimState({ ...w, env: { PATH: `${npx}:/usr/bin` } })).toMatchObject(
+      { kind: "off-path" },
+    );
+  });
+
+  it("install never replaces our shim that names another bus home", () => {
+    const w = world();
+    const env = { PATH: `${w.local}:/usr/bin` };
+    installShim({ ...w, env });
+    const x = world({ busHome: join(tmp(), "x") });
+    const r = installShim({ ...x, userHome: w.userHome, env });
+    expect(r).toMatchObject({
+      kind: "other-home",
+      path: join(w.local, "oa-bus"),
+    });
+    expect(readFileSync(join(w.local, "oa-bus"), "utf8")).not.toContain("/x/");
+    // Uninstalling /x leaves the default home's shim alone.
+    expect(removeShim({ ...x, userHome: w.userHome })).toBeUndefined();
+    expect(existsSync(join(w.local, "oa-bus"))).toBe(true);
+  });
+
+  it("macOS: install refreshes our shim in the other candidate dir; uninstall removes both", () => {
+    const w = world({ platform: "darwin" });
+    installShim({ ...w, env: { PATH: `${w.bin}:/usr/bin` } });
+    expect(existsSync(join(w.bin, "oa-bus"))).toBe(true);
+    const moved = [w.argv[0] as string, "/new/index.js"];
+    installShim({
+      ...w,
+      argv: moved,
+      env: { PATH: `${w.local}:${w.bin}:/usr/bin` },
+    });
+    for (const d of [w.local, w.bin])
+      expect(readFileSync(join(d, "oa-bus"), "utf8")).toContain(
+        "/new/index.js",
+      );
+    expect(removeShim(w)).toBeDefined();
+    expect(existsSync(join(w.local, "oa-bus"))).toBe(false);
+    expect(existsSync(join(w.bin, "oa-bus"))).toBe(false);
+  });
+
+  it("a stale predictable tmp file is replaced, and the shim is executable", () => {
+    const w = world();
+    mkdirSync(w.local, { recursive: true });
+    const stale = join(w.local, `oa-bus.${process.pid}.tmp`);
+    writeFileSync(stale, "evil", { mode: 0o666 });
+    installShim({ ...w, env: { PATH: `${w.local}:/usr/bin` } });
+    expect(existsSync(stale)).toBe(false);
+    expect(lstatSync(join(w.local, "oa-bus")).mode & 0o777).toBe(0o755);
+    // A symlink planted at the tmp name is not written through.
+    const target = join(tmp(), "victim");
+    writeFileSync(target, "keep");
+    symlinkSync(target, stale);
+    installShim({ ...w, env: { PATH: `${w.local}:/usr/bin` } });
+    expect(readFileSync(target, "utf8")).toBe("keep");
+  });
+});
+
 describe("the commands (#1626)", () => {
   const withService = (w: ReturnType<typeof world>) => ({
     ...({} as object),
@@ -276,7 +345,7 @@ describe("the commands (#1626)", () => {
     chmodSync(file, 0o600);
     ctx.status = (async () => status()) as never;
     await install({ noOpen: true }, ctx);
-    expect(ctx.all().join("\n")).toContain("oa-bus command installed");
+    expect(ctx.all().join("\n")).toContain("Installed the oa-bus command");
     expect(existsSync(join(w.local, "oa-bus"))).toBe(true);
     const un = fakeCtx({
       userHome: w.userHome,

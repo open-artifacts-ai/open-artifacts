@@ -11,6 +11,7 @@
 
 import {
   accessSync,
+  chmodSync,
   constants,
   lstatSync,
   mkdirSync,
@@ -20,7 +21,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
 
 export const SHIM_MARKER = "# oa-bus shim: written by oa-bus install";
 const HOME_PREFIX = "# oa-bus home: ";
@@ -104,9 +105,33 @@ function ownerOf(file: string, busHome: string): Owner | undefined {
 export type ShimResult =
   | { kind: "installed"; path: string; onPath: boolean; hint?: string }
   | { kind: "foreign"; path: string }
+  /** Ours, but it names another bus home: left as it is. */
+  | { kind: "other-home"; path: string; home: string }
   | { kind: "skipped" };
 
-/** Writes (or refreshes) our shim; never replaces a file that is not ours. */
+const sameHome = (owner: Owner | undefined, busHome: string) =>
+  owner?.ours === true &&
+  (owner.home === undefined || owner.home === resolve(busHome));
+
+/** `exclusive` create: a stale or planted tmp name is unlinked first, so the mode is ours. */
+function writeShim(path: string, text: string): void {
+  const tmp = `${path}.${process.pid}.tmp`;
+  rmSync(tmp, { force: true });
+  try {
+    writeFileSync(tmp, text, { mode: 0o755, flag: "wx" });
+    chmodSync(tmp, 0o755);
+    renameSync(tmp, path);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
+}
+
+/**
+ * Writes (or refreshes) our shim; never replaces a file that is not ours, nor
+ * our shim of another bus home. Our shim for this home in any other candidate
+ * dir is refreshed too, so none keeps a stale argv.
+ */
 export function installShim(o: ShimOpts & { argv: string[] }): ShimResult {
   if (isWindows(o.platform)) return { kind: "skipped" };
   const onPath = new Set(pathDirs(o.env.PATH));
@@ -115,14 +140,15 @@ export function installShim(o: ShimOpts & { argv: string[] }): ShimResult {
   const path = join(dir, NAME);
   const owner = ownerOf(path, o.busHome);
   if (owner && !owner.ours) return { kind: "foreign", path };
+  if (owner?.ours && !sameHome(owner, o.busHome))
+    return { kind: "other-home", path, home: owner.home as string };
   mkdirSync(dir, { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  try {
-    writeFileSync(tmp, shimText(o), { mode: 0o755 });
-    renameSync(tmp, path);
-  } catch (e) {
-    rmSync(tmp, { force: true });
-    throw e;
+  const text = shimText(o);
+  writeShim(path, text);
+  for (const d of list) {
+    const other = join(d, NAME);
+    if (d !== dir && sameHome(ownerOf(other, o.busHome), o.busHome))
+      writeShim(other, text);
   }
   const on = onPath.has(dir);
   return {
@@ -168,7 +194,12 @@ const executable = (f: string) => {
 /** Read-only, for doctor: what `oa-bus` resolves to, and whether that is this install. undefined on Windows. */
 export function shimState(o: ShimOpts): ShimState | undefined {
   if (isWindows(o.platform)) return undefined;
-  for (const dir of pathDirs(o.env.PATH)) {
+  // npx puts its cache's node_modules/.bin first, holding the package's own
+  // oa-bus: that is not the command a person types.
+  const dirs = pathDirs(o.env.PATH).filter(
+    (d) => !d.endsWith(`${sep}node_modules${sep}.bin`),
+  );
+  for (const dir of dirs) {
     const file = join(dir, NAME);
     if (!executable(file)) continue;
     const owner = ownerOf(file, o.busHome);

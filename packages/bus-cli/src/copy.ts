@@ -690,17 +690,25 @@ export function copy(style: Style) {
       ),
     // #1626: the `oa-bus` shim on PATH.
     shimInstalled: (where: string) =>
-      done(`oa-bus command installed in ${clip(where, 30)}`),
+      done(`Installed the oa-bus command: ${clip(where, 30)}`),
     shimNotOnPath: (dir: string, hint: string) => [
       warn(
         `${clip(dir, 30)} is not on your PATH, so \`oa-bus\` won't run yet.`,
       ),
-      next(`Add it: ${hint}`),
+      next(`To fix it, add this line to your shell profile: ${hint}`),
     ],
     shimForeign: (where: string) => [
-      warn(`Left ${clip(where, 30)} alone: it is not ours.`),
+      warn(`Left ${clip(where, 30)} alone: it isn't from Open Artifacts.`),
       next(
-        `\`oa-bus\` runs that one. Remove it, or use ${BUS_CMD}, to run this install.`,
+        `Typing \`oa-bus\` runs that file, not this install. Remove it, or use \`${BUS_CMD}\`.`,
+      ),
+    ],
+    shimOtherHome: (where: string, home: string) => [
+      warn(
+        `Left ${clip(where, 30)} alone: it belongs to the install in ${clip(home, 30)}.`,
+      ),
+      next(
+        `Typing \`oa-bus\` runs that install, not this one. Use \`${BUS_CMD}\` for this one.`,
       ),
     ],
     shimRemoved: (where: string) =>
