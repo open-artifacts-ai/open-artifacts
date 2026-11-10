@@ -1716,8 +1716,28 @@ describe("comments: capped members", () => {
         expect(copy).not.toBe("Couldn't post your comment. Try again.");
       }
     }
-    expect(commentError(solo, false)).toMatch(/Solo/);
+    expect(commentError(solo, false, { owner: false })).toMatch(/Solo/);
     expect(commentError(ro, false, { owner: true })).toMatch(/lapsed/);
+  });
+
+  it("an anonymous, guest or restricted viewer gets no billing detail on a plan refusal", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError, answerError } = await import("../src/api/comments");
+    const generic = "Your account can only view, so you can't comment.";
+    const ro = new ApiClientError("plan_read_only", "Read-only", 403, {
+      reason: "payment_failed",
+    });
+    const solo = new ApiClientError("plan_required", "Plan required", 403);
+    for (const e of [ro, solo]) {
+      expect(commentError(e, false)).toBe(generic);
+      expect(commentError(e, true, { capped: true, cap: "plan" })).toBe(
+        generic,
+      );
+      expect(commentError(e, true, { capped: true, cap: "guest" })).toBe(
+        generic,
+      );
+      expect(answerError(e)).not.toMatch(/card|Solo|owner/i);
+    }
   });
 
   it("a capped member's read-only 404 still wins over the plan copy path", async () => {
