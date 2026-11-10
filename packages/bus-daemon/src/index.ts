@@ -67,6 +67,7 @@ import {
   configPaths,
   inspectApprovals,
   inspectGlobal,
+  inspectRemotes,
 } from "./config-issues.ts";
 import { createDeliver, type DeliverFn, type NotifyFn } from "./deliver.ts";
 import { HubConnection, type HubOptions } from "./hub.ts";
@@ -77,7 +78,11 @@ import {
   liveClaudeFiles,
   liveClaudeSessions,
 } from "./liveness/claude.ts";
-import { type Namespace, resolveNamespace } from "./namespace.ts";
+import {
+  gitRecordRoot,
+  type Namespace,
+  resolveNamespace,
+} from "./namespace.ts";
 import { remotesFile } from "./namespaces.ts";
 import { Outbox } from "./outbox.ts";
 import {
@@ -386,6 +391,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const configFiles = (cwd?: string, pending = false) => {
     const g = inspectGlobal();
     const a = inspectApprovals();
+    const rm = inspectRemotes(remotesFile());
     let within: Set<string> | undefined;
     // An agent sees only its own folder chain: other projects' paths stay private.
     if (cwd !== undefined) {
@@ -394,10 +400,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       } catch {
         within = new Set(configPaths(cwd));
       }
+      // #1570: the held remote change sits at the repo's .git; the agent being held sees it.
+      const rr = gitRecordRoot(cwd);
+      if (rr) within.add(join(rr, ".git"));
     }
     return [
       ...configIssues.list(within, { pending }),
       ...(a ? [a] : []),
+      ...(rm ? [rm] : []),
       ...(g ? [g] : []),
     ];
   };

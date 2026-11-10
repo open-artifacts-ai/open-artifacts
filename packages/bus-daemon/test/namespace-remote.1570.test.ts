@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { ConfigIssues } from "../src/config-issues.ts";
+import { ConfigIssues, inspectRemotes } from "../src/config-issues.ts";
 import { remoteChange, resolveNamespace } from "../src/namespace.ts";
 import { readRemotes } from "../src/namespaces.ts";
 import { approvals } from "./approvals.ts";
@@ -160,11 +160,13 @@ describe("a changed git remote", () => {
 });
 
 describe("a folder without a git remote", () => {
-  it("is not pinned", () => {
+  it("is recorded as its folder name", () => {
     const t = setup();
     const ns = resolveNamespace(t.root, t.deps({ gitRemote: () => null }));
     expect(ns.source).toBe("dir");
-    expect(readRemotes(t.remotes).entries).toEqual([]);
+    expect(readRemotes(t.remotes).entries).toEqual([
+      { dir: t.root, namespace: "repo" },
+    ]);
   });
 });
 
@@ -173,3 +175,69 @@ function writeConfig(dir: string, namespace: string) {
     mode: 0o600,
   });
 }
+
+describe("review fixes", () => {
+  it("records a folder first used with no origin, then holds it when origin appears", () => {
+    const t = setup();
+    const none = t.deps({ gitRemote: () => null });
+    expect(resolveNamespace(t.root, none).source).toBe("dir");
+    expect(readRemotes(t.remotes).entries).toHaveLength(1);
+    const issues = new ConfigIssues();
+    const ns = resolveNamespace(t.root, t.deps({ issues }));
+    expect(ns.namespace).toBe("repo");
+    expect(issues.list(undefined, { pending: true })).toHaveLength(1);
+  });
+
+  it("shares one record across worktrees of the repo", () => {
+    const t = setup();
+    const wt = join(tmp(), "wt");
+    mkdirSync(wt);
+    const common = join(t.root, ".git");
+    mkdirSync(common);
+    const d = (root: string, extra: object = {}) =>
+      t.deps({ gitRoot: () => root, gitCommonDir: () => common, ...extra });
+    resolveNamespace(t.root, d(t.root));
+    t.setUrl("git@github.com:evil/x.git");
+    const issues = new ConfigIssues();
+    expect(resolveNamespace(wt, d(wt, { issues })).namespace).toBe(
+      "github.com/acme/app",
+    );
+    expect(readRemotes(t.remotes).entries).toHaveLength(1);
+    expect(issues.list(undefined, { pending: true })).toHaveLength(1);
+  });
+
+  it("does not leave a pending entry when an approved .oa-bus.json decides the namespace", () => {
+    const t = setup();
+    resolveNamespace(t.root, t.deps());
+    t.setUrl("git@github.com:evil/x.git");
+    writeConfig(t.root, "team/x");
+    const issues = new ConfigIssues();
+    const ok = approvals([t.root, "team/x"]);
+    expect(
+      resolveNamespace(t.root, t.deps({ issues, namespacesFile: ok }))
+        .namespace,
+    ).toBe("team/x");
+    expect(issues.list(undefined, { pending: true })).toEqual([]);
+  });
+
+  it("drops entries of deleted checkouts when it writes", () => {
+    const t = setup();
+    const gone = join(tmp(), "gone");
+    writeFileSync(
+      t.remotes,
+      JSON.stringify({ recorded: [{ dir: gone, namespace: "old/ns" }] }),
+      { mode: 0o600 },
+    );
+    resolveNamespace(t.root, t.deps());
+    expect(readRemotes(t.remotes).entries.map((e) => e.dir)).toEqual([t.root]);
+  });
+
+  it("shows an unusable record as a config issue", () => {
+    const t = setup();
+    writeFileSync(t.remotes, "{", { mode: 0o600 });
+    expect(inspectRemotes(t.remotes)).toMatchObject({ state: "refused" });
+    expect(resolveNamespace(t.root, t.deps()).namespace).toBe(
+      "github.com/acme/app",
+    );
+  });
+});

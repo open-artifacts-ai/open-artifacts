@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import {
   BUS_CMD,
@@ -35,6 +35,8 @@ export type Namespace = {
 export type NamespaceDeps = {
   gitRemote?: (dir: string) => string | null;
   gitRoot?: (dir: string) => string | null;
+  /** The shared git dir (`git rev-parse --git-common-dir`); worktrees of one repo share it. */
+  gitCommonDir?: (dir: string) => string | null;
   log?: (msg: string) => void;
   /** Owner a config file must have; defaults to this process's uid. */
   uid?: number;
@@ -108,9 +110,16 @@ export function resolveNamespace(
   });
   const source =
     remoteUrl && normalizeRemote(remoteUrl) ? "git" : root ? "dir" : "cwd";
-  // #1570: the remote is the repo's own say; a change from the first one needs the user's approval.
-  if (source === "git" && root && deps.remotesFile && !missing)
-    derived = pinRemote(root, derived, deps);
+  // #1570: the first namespace a repo gets is recorded whatever its source (a folder with no
+  // origin yet included); a later one that differs needs the user's approval. A namespace the
+  // user approved for a .oa-bus.json wins anyway, so it leaves the pin quiet.
+  if (root && deps.remotesFile && !missing) {
+    const cfgWins =
+      Boolean(cfg.namespace && nsFile) &&
+      cfg.namespace !== derived &&
+      approved(nsFile as string, cfg.namespace as string, deps);
+    derived = pinRemote(root, cwd, derived, deps, cfgWins);
+  }
   const fallback: Namespace = { namespace: derived, global, source };
   if (!cfg.namespace || !nsFile) return fallback;
   // The same as the derived namespace: nothing to approve.
@@ -144,18 +153,18 @@ export function resolveNamespace(
  */
 function pinRemote(
   rootPath: string,
+  cwd: string,
   derived: string,
   deps: NamespaceDeps,
+  quiet: boolean,
 ): string {
   const uid = deps.uid ?? process.getuid?.();
   const recordFile = deps.remotesFile ?? remotesFile();
-  let root = rootPath;
-  try {
-    root = realpathSync(rootPath);
-  } catch {}
+  const root = recordRoot(rootPath, cwd, deps);
   const marker = join(root, ".git");
   const list = readRemotes(recordFile);
   if (list.error) {
+    // Kept visible as a config issue in doctor and status (inspectRemotes).
     once(
       deps,
       `remotes:${recordFile}:${list.error}`,
@@ -167,7 +176,11 @@ function pinRemote(
   const write = (entries: typeof list.entries) => {
     if (deps.recordRemote === false) return;
     try {
-      writeRemotes(entries, dirname(recordFile));
+      // A deleted checkout's entry must not hold a later one at that path.
+      writeRemotes(
+        entries.filter((e) => e === prior || existsSync(e.dir)),
+        dirname(recordFile),
+      );
     } catch (e) {
       once(
         deps,
@@ -181,6 +194,10 @@ function pinRemote(
     return derived;
   }
   if (prior.namespace === derived) {
+    deps.issues?.setPending(marker, uid, undefined);
+    return derived;
+  }
+  if (quiet) {
     deps.issues?.setPending(marker, uid, undefined);
     return derived;
   }
@@ -208,6 +225,37 @@ function pinRemote(
 }
 
 /**
+ * The folder a repo's record is keyed by: the work tree that holds the shared
+ * git dir, so every worktree of one repo shares one record (a new worktree
+ * cannot start a fresh one). Falls back to the checkout's own root.
+ */
+function recordRoot(root: string, cwd: string, deps: NamespaceDeps): string {
+  let common: string | null = null;
+  if (deps.gitCommonDir) common = deps.gitCommonDir(cwd);
+  else if (!deps.gitRoot) common = gitCommonDir(cwd);
+  let real = root;
+  try {
+    real = realpathSync(root);
+  } catch {}
+  if (!common) return real;
+  try {
+    const c = realpathSync(resolve(cwd, common));
+    return basename(c) === ".git" ? dirname(c) : c;
+  } catch {
+    return real;
+  }
+}
+
+/** The record key of the repo `dir` is in; undefined outside git. For `self`. */
+export function gitRecordRoot(
+  dir: string,
+  deps: Pick<NamespaceDeps, "gitRoot" | "gitCommonDir"> = {},
+): string | undefined {
+  const root = (deps.gitRoot ?? gitRoot)(dir);
+  return root ? recordRoot(root, dir, deps) : undefined;
+}
+
+/**
  * The git remote change of the folder `dir` is in that waits for approval
  * (#1570): the repo root, the namespace its remote now gives and the one it
  * first got. Reads only; nothing is recorded.
@@ -216,7 +264,7 @@ export function remoteChange(
   dir: string,
   deps: Pick<
     NamespaceDeps,
-    "remotesFile" | "namespacesFile" | "gitRemote" | "gitRoot"
+    "remotesFile" | "namespacesFile" | "gitRemote" | "gitRoot" | "gitCommonDir"
   >,
 ): { root: string; namespace: string; recorded: string } | undefined {
   const issues = new ConfigIssues();
@@ -342,3 +390,5 @@ const git = (cwd: string, args: string[]): string | null => {
 };
 const gitRemote = (cwd: string) => git(cwd, ["remote", "get-url", "origin"]);
 const gitRoot = (cwd: string) => git(cwd, ["rev-parse", "--show-toplevel"]);
+const gitCommonDir = (cwd: string) =>
+  git(cwd, ["rev-parse", "--git-common-dir"]);

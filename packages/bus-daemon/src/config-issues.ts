@@ -4,7 +4,13 @@ import type { ConfigFile } from "@oa/bus-ipc";
 import { BusConfigSchema, CONFIG_FILE } from "@oa/bus-protocol";
 import { globalFile, readGlobalDirs } from "./global.ts";
 import { resolveNamespace } from "./namespace.ts";
-import { isApproved, namespacesFile, readApprovals } from "./namespaces.ts";
+import {
+  isApproved,
+  namespacesFile,
+  readApprovals,
+  readRemotes,
+  remotesFile,
+} from "./namespaces.ts";
 import { type GroupCheck, type OwnFile, readOwnFile } from "./own-file.ts";
 
 export type { ConfigFile };
@@ -153,6 +159,21 @@ export function inspectApprovals(
   };
 }
 
+/** The remotes record (#1570), read as the daemon reads it; unusable, no remote is pinned. */
+export function inspectRemotes(file = remotesFile()): ConfigFile | undefined {
+  const { error } = readRemotes(file);
+  if (error === undefined) return undefined;
+  return {
+    file,
+    state: "refused",
+    reason: error,
+    fix:
+      error === "is not valid JSON"
+        ? `remove it (rm ${shq(file)}), each repo then gets its namespace recorded afresh on next use`
+        : fixFor(file, error),
+  };
+}
+
 /**
  * The `.oa-bus.json` files that were refused or noted, kept by path. A
  * namespace read records what it saw; `list` re-reads each, so a fixed file
@@ -234,6 +255,7 @@ export function scanConfigFiles(
     group?: GroupCheck;
     gitRemote?: (dir: string) => string | null;
     gitRoot?: (dir: string) => string | null;
+    gitCommonDir?: (dir: string) => string | null;
   } = {},
 ): ConfigFile[] {
   const uid = opts.uid ?? process.getuid?.();
@@ -260,6 +282,7 @@ export function scanConfigFiles(
         : {}),
       ...(opts.gitRemote ? { gitRemote: opts.gitRemote } : {}),
       ...(opts.gitRoot ? { gitRoot: opts.gitRoot } : {}),
+      ...(opts.gitCommonDir ? { gitCommonDir: opts.gitCommonDir } : {}),
     });
   } catch {}
   out.push(
@@ -269,6 +292,8 @@ export function scanConfigFiles(
   );
   const a = inspectApprovals(opts.namespacesFile);
   if (a) out.push(a);
+  const r = opts.remotesFile ? inspectRemotes(opts.remotesFile) : undefined;
+  if (r) out.push(r);
   const g = inspectGlobal(opts.globalFile);
   if (g) out.push(g);
   return out;
