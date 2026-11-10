@@ -18,7 +18,13 @@ import {
   SHARE_TXT,
 } from "./email-templates.js";
 
-export type EmailContent = { subject: string; text: string; html: string };
+export type EmailContent = {
+  subject: string;
+  text: string;
+  html: string;
+  /** Extra message headers (comment emails: List-Unsubscribe, RFC 8058). */
+  headers?: Record<string, string>;
+};
 
 // C0/C1 controls (incl. CR/LF/TAB), line/paragraph separators, bidi controls,
 // zero-width characters and BOM.

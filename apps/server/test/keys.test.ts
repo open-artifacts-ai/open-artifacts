@@ -44,6 +44,7 @@ describe("deriveKey", () => {
       "oa:login-codes",
       "oa:code-email",
       "oa:audit-cursor",
+      "oa:comment-unsub",
       "oa:directory-state",
       "oa:content-url",
       "oa:upload",

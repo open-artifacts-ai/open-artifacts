@@ -412,14 +412,17 @@ export type Profile = {
   displayName: string | null;
   suggestedName: string | null;
   needsDisplayName: boolean;
+  /** Email me about comments (#1467); on unless turned off. */
+  commentEmail: boolean;
 };
 
-function toProfile(r: NameFields): Profile {
+function toProfile(r: NameFields & { commentEmail: number }): Profile {
   const suggestedName = idpName(r.name, r.email);
   return {
     displayName: r.displayName,
     suggestedName,
     needsDisplayName: !r.displayName && !suggestedName,
+    commentEmail: r.commentEmail !== 0,
   };
 }
 
@@ -431,6 +434,7 @@ export async function getProfile(env: Env, id: string): Promise<Profile> {
         email: users.email,
         name: users.name,
         displayName: users.displayName,
+        commentEmail: users.commentEmail,
       })
       .from(users)
       .where(eq(users.id, id))
@@ -440,15 +444,25 @@ export async function getProfile(env: Env, id: string): Promise<Profile> {
   return toProfile(row);
 }
 
-/** Sets the user's chosen name (validated by MePatchSchema); sign-in never changes it. */
+/**
+ * Sets the user's chosen name and/or comment-email flag (validated by
+ * MePatchSchema, at least one); sign-in never changes the name.
+ */
 export async function setDisplayName(
   env: Env,
   id: string,
-  displayName: string,
+  patch: { displayName?: string; commentEmail?: boolean },
 ): Promise<{ member: Member; profile: Profile }> {
   const [row] = await getDb(env)
     .update(users)
-    .set({ displayName })
+    .set({
+      ...(patch.displayName !== undefined
+        ? { displayName: patch.displayName }
+        : {}),
+      ...(patch.commentEmail !== undefined
+        ? { commentEmail: patch.commentEmail ? 1 : 0 }
+        : {}),
+    })
     .where(eq(users.id, id))
     .returning();
   if (!row) throw new Error("user not found");

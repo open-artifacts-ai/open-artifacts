@@ -15,6 +15,7 @@ import { mountAudit } from "./audit.js";
 import { mountAuth } from "./auth.js";
 import { mountBilling } from "./billing.js";
 import { mountCodes } from "./codes.js";
+import { mountCommentUnsub } from "./comment-unsub.js";
 import { mountComments } from "./comments.js";
 import { mountDirectory } from "./directory.js";
 import { mountMe } from "./me.js";
@@ -37,6 +38,7 @@ export type AppType = Hono<AppEnv>;
 export function mountRoutes(app: AppType): void {
   mountAuth(app);
   mountCodes(app);
+  mountCommentUnsub(app);
   mountMe(app);
   mountShareNotices(app);
   mountMembers(app);

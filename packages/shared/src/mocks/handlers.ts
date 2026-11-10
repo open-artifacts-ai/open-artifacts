@@ -629,9 +629,13 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     http.patch("*/api/v1/me", async ({ request }) => {
       const r = await body(request, MePatchSchema);
       if (r.error) return r.error;
-      me.displayName = r.data.displayName;
-      me.needsDisplayName = false;
-      me.user.name = r.data.displayName;
+      if (r.data.displayName !== undefined) {
+        me.displayName = r.data.displayName;
+        me.needsDisplayName = false;
+        me.user.name = r.data.displayName;
+      }
+      if (r.data.commentEmail !== undefined)
+        me.commentEmail = r.data.commentEmail;
       return HttpResponse.json(me);
     }),
     // #1292: the caller's share-notice picks; none by default.

@@ -69,6 +69,7 @@ import {
   versionEntryHash,
   versionFormat,
 } from "./comment-anchor.js";
+import { emailCommentRecipients } from "./comment-email.js";
 import { type CommentStatus, cleanGuestName } from "./comment-rules.js";
 import {
   addressKey,
@@ -680,6 +681,22 @@ const announce = (
       )
     : undefined;
 
+/** Emails the people a new thread or reply concerns (#1467), after the response; never throws. */
+const emailPeople = (
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  comment: StoredComment | undefined,
+  reply: boolean,
+  after: Announce | undefined,
+) =>
+  after && comment
+    ? inBackground(
+        after.ctx,
+        emailCommentRecipients(env, { artifactId, threadId, comment, reply }),
+      )
+    : undefined;
+
 /** What a comment may carry besides its body (#1535). `ask` is for the MCP tool: no REST body takes it. */
 export type CommentExtras = {
   mentions?: KeyRef[];
@@ -1143,6 +1160,7 @@ export async function addThread(
     t.comments[0] = sent;
   }
   await announce(env, a.id, who, opts.after, r);
+  await emailPeople(env, a.id, t.id, root, false, opts.after);
   return (await threadViews(env, [t], viewer))[0] as Thread;
 }
 
@@ -1343,6 +1361,7 @@ export async function addReply(
   await threadReply(env, a, threadId, c, r, viewer);
   if (r.agents.length === 0) {
     await announce(env, artifactId, who, opts.after, r);
+    await emailPeople(env, artifactId, threadId, c, true, opts.after);
     return commentView(env, c, viewer);
   }
   const sent = await deliver(env, a, threadId, c, r);
@@ -1357,6 +1376,7 @@ export async function addReply(
       stub(env, artifactId).commentsAskerRefund({ threadId, at: c.createdAt }),
     ).catch(() => undefined);
   await announce(env, artifactId, who, opts.after, r);
+  await emailPeople(env, artifactId, threadId, sent, true, opts.after);
   return commentView(env, sent, viewer);
 }
 
