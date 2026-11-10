@@ -197,7 +197,7 @@ export function installEntry(io: OcEntryIo, origin: string): Outcome {
         mcpUrl(origin);
       } catch {
         notes.push(
-          `left the ${name} entry in ${file} as it is: oa-bus only passes on https addresses, or http on this machine. Its tools still work, but OpenCode won't show as its own session on pages.`,
+          `left the ${name} entry in ${file} as it is: oa-bus only passes on https addresses, or http to localhost. Its tools still work, but OpenCode won't show as its own session on pages.`,
         );
         continue;
       }
