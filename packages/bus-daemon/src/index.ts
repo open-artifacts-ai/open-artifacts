@@ -284,6 +284,8 @@ export type DaemonDeps = {
     wakeAnswerMs?: number;
     /** #2029: the shortest gap between two wakes of one thread; default 1 h. */
     wakeAgainMs?: number;
+    /** #2029: the shortest gap between wake checks (lsof, ps, rollout reads); default 5 min. */
+    wakeCheckMs?: number;
   };
   pi?: {
     /** How long the extension has to hand a message to Pi and ack it. */
@@ -1096,6 +1098,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubHelloed = false;
   /** The hub's version from its last hello_ok: status says when it is newer (C26h). */
   let hubVersion: string | undefined;
+  /** The hub's last hello_ok listed BUS_CAPS.waiting: away roster rows carry `waiting` (#2029). */
+  let hubWaiting = false;
   const hub = new HubConnection({
     url: `${cfg.hub.replace(/^http/, "ws").replace(/\/+$/, "")}${BUS_ROUTES.connect}`,
     token: cfg.machine_token,
@@ -1230,6 +1234,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubIds = frame.caps?.includes(BUS_CAPS.ids) ?? false;
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
           hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
+          hubWaiting = frame.caps?.includes(BUS_CAPS.waiting) ?? false;
           hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
           hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
           hubHelloed = true;
@@ -1991,6 +1996,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const wakeLogged = new Set<string>();
   const wakeAsked = new Map<string, number>();
   let waking = false;
+  let wakeCheckedAt: number | undefined;
   /** Wakes sent and not yet answered by the thread's own call, and the mail count at each. */
   const wakeSent = new Map<
     string,
@@ -2019,7 +2025,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       const rows = [...awayRows.values()].filter(
         (r) => now - r.lastLive <= AWAY_IDLE_MS && !agents.byRef(r.ref)?.live,
       );
+      // Pruned for threads no longer away, or live.
+      const away = new Set(rows.map((r) => r.ref));
+      for (const [k, w] of wakeSent) if (!away.has(w.ref)) wakeSent.delete(k);
+      for (const m of [wakeAsked, wakeWaiting])
+        for (const k of m.keys())
+          if (!away.has(k.split(":")[1] ?? "")) m.delete(k);
       if (!rows.length) return;
+      // The checks cost an lsof, a ps and rollout reads: not on every tick.
+      if (
+        wakeCheckedAt !== undefined &&
+        now - wakeCheckedAt < (cx.wakeCheckMs ?? 300_000)
+      )
+        return;
+      wakeCheckedAt = now;
       const held = codexCheck.holders(rows.map((r) => r.ref));
       if (!held) return;
       const once = (key: string, msg: string) => {
@@ -2051,6 +2070,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           once(key, `${who} skipped: no live agent to ask the hub`);
           continue;
         }
+        if (!hubWaiting) {
+          once(key, `${who} skipped: the hub does not report waiting mail`);
+          continue;
+        }
         const last = wakeAsked.get(key);
         if (last !== undefined && now - last < (cx.wakeAskMs ?? 300_000))
           continue;
@@ -2064,14 +2087,22 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           (a) =>
             a.state === "away" &&
             a.name === r.name &&
-            a.namespace === r.namespace,
+            a.namespace === r.namespace &&
+            (a.machine_label === undefined || a.machine_label === cfg.label),
         );
         if (!row?.waiting) {
           once(key, `${who} skipped: no mail waiting`);
           continue;
         }
-        if (n > 1 && row.waiting <= (wakeWaiting.get(key) ?? Infinity)) {
-          once(key + n, `${who} skipped: no new mail since the last wake`);
+        if (
+          n > 1 &&
+          row.waiting === wakeWaiting.get(key) &&
+          row.waiting < 100
+        ) {
+          once(
+            key + n,
+            `${who} skipped: the mail count has not changed since the last wake`,
+          );
           continue;
         }
         if (!(await codex.canWake(h.pid))) {

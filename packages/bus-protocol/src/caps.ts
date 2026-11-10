@@ -79,6 +79,13 @@ export const BUS_CAPS = {
    * only when the hub listed both `link` and this.
    */
   linkArg: "link_arg",
+  /**
+   * Waiting mail (#2029): the client decodes roster `waiting` on `away` rows.
+   * The hub sends it only to a socket whose hello listed it (with `mailbox`),
+   * and lists it in `hello_ok.caps`: a strict decoder without it would refuse
+   * the whole roster.
+   */
+  waiting: "waiting",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

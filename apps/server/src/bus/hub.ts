@@ -338,6 +338,7 @@ const HUB_CAPS = [
   BUS_CAPS.follow,
   BUS_CAPS.link,
   BUS_CAPS.linkArg,
+  BUS_CAPS.waiting,
 ];
 
 /**
@@ -377,6 +378,15 @@ const FOLLOW_TIMEOUT_MS = 5_000;
  * `agent_up` handover go only to a socket whose hello listed it. Fails
  * closed, like renameGated.
  */
+const waitingGated = (ws: WebSocket | null): boolean => {
+  const caps = ws ? attachmentOf(ws)?.caps : undefined;
+  return (
+    Array.isArray(caps) &&
+    hasCap({ caps }, BUS_CAPS.mailbox) &&
+    hasCap({ caps }, BUS_CAPS.waiting)
+  );
+};
+
 const mailboxGated = (ws: WebSocket | null): boolean => {
   const caps = ws ? attachmentOf(ws)?.caps : undefined;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.mailbox);
@@ -2028,6 +2038,7 @@ function roster(
   withAway = false,
   withLinks = false,
   withReach = false,
+  withWaiting = false,
 ): ServerFrame {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
@@ -2131,15 +2142,18 @@ function roster(
         JSON.stringify(ids),
       ))
         if (r.t !== null) awaySince.set(r.id, r.t);
-    for (const id of ids) {
-      const n = one<{ n: number }>(
+    if (withWaiting && ids.length > 0)
+      for (const r of all<{ id: string; n: number }>(
         sql,
-        "select count(*) as n from (select 1 from receipts indexed by receipts_to where to_agent = ? and state = 'pending' limit ?)",
-        id,
+        `select to_agent as id, count(*) as n from (
+           select to_agent, row_number() over (partition by to_agent order by rowid) as rn
+             from receipts indexed by receipts_to
+            where to_agent in (select value from json_each(?)) and state = 'pending'
+         ) where rn <= ? group by to_agent`,
+        JSON.stringify(ids),
         WAITING_CAP,
-      );
-      if (n && n.n > 0) waiting.set(id, n.n);
-    }
+      ))
+        waiting.set(r.id, r.n);
   }
   const online = new Map<string, boolean>();
   const stateOf = (machineId: string): "live" | "queued" => {
@@ -4673,7 +4687,8 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.links) ||
           hasCap(f, BUS_CAPS.reach) ||
           hasCap(f, BUS_CAPS.follow) ||
-          hasCap(f, BUS_CAPS.link)
+          hasCap(f, BUS_CAPS.link) ||
+          hasCap(f, BUS_CAPS.waiting)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -4783,6 +4798,7 @@ export class BusHub extends DurableObject<Env> {
               mailboxGated(ws),
               linksGated(ws),
               reachGated(ws),
+              waitingGated(ws),
             ),
           );
         return;

@@ -118,6 +118,7 @@ function world() {
     retryMs: 0,
     relockEvery: 1,
     wakeAskMs: 0,
+    wakeCheckMs: 0,
     resolveBin: () => ({ path: bin, from: "path" as const }),
     run: execCodex(5_000),
     wakes: async () => true,
@@ -142,7 +143,11 @@ const codexHello = (
 
 type H = Awaited<ReturnType<typeof daemonHarness>>;
 /** Answers each `list` with a roster naming `my-codex` away, `waiting` mails (or none). */
-function answerLists(h: H, waiting: () => number | undefined) {
+function answerLists(
+  h: H,
+  waiting: () => number | undefined,
+  extra: object[] = [],
+) {
   const done = new Set<string>();
   h.toDaemon({
     id: "w",
@@ -150,6 +155,7 @@ function answerLists(h: H, waiting: () => number | undefined) {
     machine_id: "1".repeat(16),
     machine_label: "laptop",
     server_version: "1",
+    caps: ["ids", "mailbox", "waiting"],
   });
   const t = setInterval(() => {
     for (const f of h.of("list")) {
@@ -167,8 +173,10 @@ function answerLists(h: H, waiting: () => number | undefined) {
             global: false,
             state: "away",
             since: new Date().toISOString(),
+            machine_label: "laptop",
             ...(w === undefined ? {} : { waiting: w }),
           },
+          ...extra,
         ],
       });
     }
@@ -385,6 +393,46 @@ describe("waking an away Codex thread (#2029)", () => {
     await new Promise((r) => setTimeout(r, 300));
     expect(w3.runs()).toHaveLength(1);
     stopC();
+  });
+
+  it("re-wakes when the count changes either way, or sits at the cap; not when unchanged", async () => {
+    const w = world();
+    const seq = [5, 5, 3, 3, 3];
+    let i = 0;
+    const { two } = await restarted(w, { wakeAgainMs: 0 });
+    const stop = answerLists(two, () => seq[Math.min(i++, seq.length - 1)]);
+    await vi.waitFor(() => expect(w.runs()).toHaveLength(2));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(w.runs()).toHaveLength(2);
+    stop();
+    await stopAll();
+    const w2 = world();
+    const c = await restarted(w2, { wakeAgainMs: 0 });
+    const stop2 = answerLists(c.two, () => 100);
+    await vi.waitFor(() => expect(w2.runs()).toHaveLength(3));
+    await new Promise((r) => setTimeout(r, 300));
+    expect(w2.runs()).toHaveLength(3);
+    stop2();
+  });
+
+  it("ignores an away row of another machine, and does not ask a hub that cannot count", async () => {
+    const w = world();
+    const { two } = await restarted(w);
+    // Our row has no mail; another machine's row of the same name has some.
+    const stop = answerLists(two, () => undefined, [
+      {
+        bus_name: "my-codex",
+        kind: "codex",
+        namespace: "ns",
+        global: false,
+        state: "away",
+        machine_label: "elsewhere",
+        waiting: 9,
+      },
+    ]);
+    await new Promise((r) => setTimeout(r, 400));
+    expect(w.runs()).toHaveLength(0);
+    stop();
   });
 
   it("spends the wake before codex queue runs, so a timeout or crash cannot wake twice", async () => {
