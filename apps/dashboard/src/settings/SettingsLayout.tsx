@@ -35,6 +35,11 @@ const TABS: {
     label: "Profile",
     roles: ["owner", "admin", "member"],
   },
+  {
+    to: "/settings/notifications",
+    label: "Notifications",
+    roles: ["owner", "admin", "member"],
+  },
   { to: "/settings/members", label: "Members", roles: ["owner", "admin"] },
   {
     to: "/settings/spaces",
