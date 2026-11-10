@@ -337,6 +337,34 @@ describe("omp session proof on /mcp (#1856)", () => {
     expect(new Set(d.proofs().map((f) => f.hash)).size).toBe(3);
   });
 
+  it("holds the header back from session_before_switch on, so a call inside newSession carries no old proof", async () => {
+    const d = await daemon(["link"]);
+    const s = await bind(d);
+    await s.emit("session_before_switch", ctx("omp-sess-1"));
+    await call(MCP, { headers: OWN });
+    expect(headerOf(seen.at(-1) as Seen)).toBeNull();
+    await s.emit("session_switch", ctx("omp-sess-2"));
+    await call(MCP, { headers: OWN });
+    expect(headerOf(seen.at(-1) as Seen)).toBeNull();
+    await vi.waitFor(async () => {
+      await call(MCP, { headers: OWN });
+      expect(headerOf(seen.at(-1) as Seen)).not.toBeNull();
+    });
+  });
+
+  it("a cancelled switch gives the header back at the next turn", async () => {
+    const d = await daemon(["link"]);
+    const s = await bind(d);
+    const before = headerOf(seen.at(-1) as Seen);
+    await s.emit("session_before_switch", ctx("omp-sess-1"));
+    await call(MCP, { headers: OWN });
+    expect(headerOf(seen.at(-1) as Seen)).toBeNull();
+    await s.emit("turn_start", ctx("omp-sess-1"));
+    await call(MCP, { headers: OWN });
+    expect(headerOf(seen.at(-1) as Seen)).toBe(before);
+    expect(d.proofs()).toHaveLength(1);
+  });
+
   it("a switch to the same session id changes nothing", async () => {
     const d = await daemon(["link"]);
     const s = await bind(d);
