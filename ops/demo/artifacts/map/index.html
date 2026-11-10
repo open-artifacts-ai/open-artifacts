@@ -53,11 +53,11 @@
   .person.nomap { cursor: default; }
   .note { color: var(--muted); font-size: 12px; }
   .pin { position: relative; }
-  .pin img { width: 34px; height: 34px; border-radius: 50%; border: 2px solid var(--accent); background: var(--panel);
-    box-shadow: 0 2px 6px rgba(0,0,0,.25); display: block; }
+  .pin i { width: 34px; height: 34px; border-radius: 50%; border: 2px solid var(--accent); background: var(--panel) center / cover no-repeat;
+    box-shadow: 0 2px 6px rgba(0,0,0,.25); display: block; box-sizing: border-box; }
   .pin em { position: absolute; top: -6px; right: -8px; min-width: 18px; height: 18px; border-radius: 9px; padding: 0 5px;
     background: var(--accent); color: #fff; font: 600 11px/18px system-ui, sans-serif; text-align: center; font-style: normal; }
-  .pin.new img { animation: pop 1.4s ease-out 3; }
+  .pin.new i { animation: pop 1.4s ease-out 3; }
   @keyframes pop { 0% { transform: scale(1); } 30% { transform: scale(1.35); } 100% { transform: scale(1); } }
   .leaflet-popup-content-wrapper, .leaflet-popup-tip { background: var(--panel); color: var(--ink); }
   .leaflet-popup-content { margin: 10px 12px; }
@@ -111,14 +111,9 @@ const people = new Map();      // login -> record
 let starLogins = new Set(SEED.map((p) => p.login)); // current stargazers: seed, then meta and the events feed
 let starCount = SEED.length;
 const fresh = new Set();
-let coll = null, metaColl = null, rateResetAt = 0, nextAt = 0, busy = false, offline = false;
+let coll = null, rateResetAt = 0, nextAt = 0, busy = false, offline = false;
 let liveStars = null;
-function adoptMeta(d) {
-  if (!d || !Array.isArray(d.logins)) return;
-  if (!starLogins) starLogins = new Set(SEED.map((p) => p.login));
-  for (const l of d.logins.slice(0, 5000)) if (typeof l === "string" && LOGIN_RE.test(l)) starLogins.add(l);
-  starCount = starLogins.size;
-}
+
 
 for (const p of SEED) people.set(p.login, p);
 
@@ -126,6 +121,8 @@ const LOGIN_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const AVATAR = "https://avatars.githubusercontent.com/";
 const str = (v, n) => (typeof v === "string" && v.length <= n ? v : null);
 const coord = (v, lim) => (typeof v === "number" && Number.isFinite(v) && Math.abs(v) <= lim ? v : null);
+/* An ISO time no later than now, so a doc can't date itself into the future and dodge rechecks. */
+const iso = (v) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/.test(v) && Date.parse(v) <= Date.now() + 60_000 ? v : null);
 /* Live data is writable by any visitor, so a doc is only shown when it looks like a GitHub profile. */
 function clean(d) {
   if (!d || typeof d !== "object" || typeof d.login !== "string" || !LOGIN_RE.test(d.login)) return null;
@@ -133,11 +130,12 @@ function clean(d) {
   const lat = coord(d.lat, 90), lon = coord(d.lon, 180);
   return { login: d.login, name: str(d.name, 100), avatar: d.avatar, location: str(d.location, 100),
     lat: lat !== null && lon !== null ? lat : null, lon: lat !== null && lon !== null ? lon : null,
-    place: str(d.place, 200), country: str(d.country, 80), starredAt: str(d.starredAt, 40), checkedAt: str(d.checkedAt, 40) };
+    place: str(d.place, 200), country: str(d.country, 80), starredAt: iso(d.starredAt), checkedAt: iso(d.checkedAt) };
 }
 function adopt(raw) {
   const doc = clean(raw);
   if (!doc) return;
+  starLogins.add(doc.login); starCount = starLogins.size;
   const cur = people.get(doc.login);
   if (!cur || (doc.checkedAt || "") >= (cur.checkedAt || "")) people.set(doc.login, doc);
 }
@@ -145,7 +143,7 @@ function adopt(raw) {
 // ---------- map ----------
 const map = L.map("map", { worldCopyJump: true, zoomControl: true }).setView([30, 0], 2);
 L.tileLayer("https://tile.openstreetmap.de/{z}/{x}/{y}.png", {
-  maxZoom: 18,
+  maxZoom: 18, crossOrigin: "anonymous",
   attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors',
 }).addTo(map);
 function setTheme(t) { document.documentElement.dataset.theme = t; }
@@ -183,7 +181,7 @@ function render() {
     const isNew = g.some((x) => fresh.has(x.login));
     const icon = L.divIcon({
       className: "", iconSize: [34, 34], iconAnchor: [17, 17], popupAnchor: [0, -18],
-      html: `<div class="pin${isNew ? " new" : ""}"><img src="${esc(p.avatar)}&s=68" alt="">${g.length > 1 ? `<em>${g.length}</em>` : ""}</div>`,
+      html: `<div class="pin${isNew ? " new" : ""}"><i style="background-image:url('${esc(p.avatar)}&s=68')"></i>${g.length > 1 ? `<em>${g.length}</em>` : ""}</div>`,
     });
     const html = `<div class="pop"><h3>${esc(p.place ? p.place.split(",").slice(0, 2).join(",") : p.location)}</h3>` +
       g.map((x) => `<a href="https://github.com/${esc(x.login)}" target="_blank" rel="noopener"><img src="${esc(x.avatar)}&s=44" alt=""><span><b>${esc(x.name || x.login)}</b><br><small>@${esc(x.login)}</small></span></a>`).join("") + "</div>";
@@ -271,8 +269,22 @@ async function geocode(loc) {
   } catch { return { lat: null, lon: null, place: null, country: null }; }
 }
 
+/* One profile; a failure other than the rate limit skips it instead of stopping the poll. */
+async function tryLookup(login, starredAt) {
+  try { return await lookup(login, starredAt); }
+  catch (err) { if (err.message === "rate") throw err; console.warn("lookup failed", login, err); return null; }
+}
+
 async function lookup(login, starredAt) {
-  const { body: u } = await gh("users/" + login);
+  let u;
+  try { ({ body: u } = await gh("users/" + login)); }
+  catch (err) {
+    if (err.message !== "http 404") throw err;
+    // No such account (deleted, or a made-up doc): drop it everywhere.
+    people.delete(login); starLogins.delete(login); starCount = starLogins.size;
+    if (coll) { try { await coll.delete(login); } catch {} }
+    return null;
+  }
   const prev = people.get(login);
   const loc = (u.location || "").trim() || null;
   let geo = { lat: null, lon: null, place: null, country: null };
@@ -292,20 +304,15 @@ async function poll() {
     liveStars = body.stargazers_count;
     // New stars: GitHub's public events feed (the stargazer list itself needs sign-in).
     const { body: events } = await gh(`repos/${REPO}/events?per_page=100`);
-    let added = false;
     for (const e of events.filter((x) => x.type === "WatchEvent").reverse()) {
       const login = e.actor.login;
-      if (starLogins && !starLogins.has(login)) { starLogins.add(login); starCount = starLogins.size; added = true; }
-      if (!people.has(login)) { await lookup(login, e.created_at); fresh.add(login); render(); }
-    }
-    if (added && metaColl) {
-      try { await metaColl.set("repo", { logins: [...starLogins], stars: starLogins.size, checkedAt: new Date().toISOString() }); }
-      catch (err) { console.warn("meta save failed", err); }
+      if (!starLogins.has(login)) { starLogins.add(login); starCount = starLogins.size; }
+      if (!people.has(login)) { if (await tryLookup(login, e.created_at)) fresh.add(login); render(); }
     }
     // Moved locations: recheck the stalest profile.
     const stale = [...people.values()].filter((p) => (!starLogins || starLogins.has(p.login)) && Date.now() - new Date(p.checkedAt || 0) > STALE_MS)
       .sort((a, b) => (a.checkedAt || "").localeCompare(b.checkedAt || "")).slice(0, RECHECK_PER_POLL);
-    for (const p of stale) await lookup(p.login, p.starredAt);
+    for (const p of stale) await tryLookup(p.login, p.starredAt);
     lastChecked = new Date();
   } catch (e) {
     statusMsg = e.message === "rate"
@@ -323,13 +330,12 @@ setInterval(() => { if (!document.hidden && Date.now() >= nextAt) poll(); }, 150
 
 // ---------- shared cache ----------
 async function loadShared() {
-  try { const m = await metaColl.get("repo"); adoptMeta(m && (m.data || m)); } catch {}
-  let cursor;
+  let cursor, pages = 0;
   do {
     const r = await coll.list({ cursor, limit: 100 });
     for (const d of r.items) adopt(d.data);
     cursor = r.nextCursor || null;
-  } while (cursor);
+  } while (cursor && ++pages < 20);
 }
 
 (async () => {
@@ -340,13 +346,11 @@ async function loadShared() {
       setTheme(openArtifacts.theme || "light");
       openArtifacts.onTheme && openArtifacts.onTheme(setTheme);
       coll = openArtifacts.db.collection("people");
-      metaColl = openArtifacts.db.collection("meta");
-      metaColl.subscribe((ev) => { for (const d of ev.docs || []) if (d.id === "repo") adoptMeta(d.data); render(); });
       await loadShared();
       render();
       coll.subscribe(async (ev) => {
         if (ev.offline) { offline = true; status(); return; }
-        if (ev.resync) { offline = false; await loadShared(); }
+        if (ev.resync) { offline = false; try { await loadShared(); } catch (err) { console.warn(err); } }
         for (const d of ev.docs || []) { const c = clean(d.data); if (c && !people.has(c.login)) fresh.add(c.login); adopt(d.data); }
         render();
       });
