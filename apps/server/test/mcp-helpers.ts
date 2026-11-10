@@ -96,7 +96,14 @@ const contexts = new WeakMap<Client, ExecutionContext[]>();
 export async function settle(client: Client): Promise<void> {
   const pending = contexts.get(client);
   while (pending?.length) {
-    await waitOnExecutionContext(pending.shift() as ExecutionContext);
+    // Remove a ctx only after its wait finished, so a concurrent settle()
+    // on the same client still sees it and waits too.
+    const batch = [...pending];
+    await Promise.all(batch.map((c) => waitOnExecutionContext(c)));
+    for (const c of batch) {
+      const i = pending.indexOf(c);
+      if (i >= 0) pending.splice(i, 1);
+    }
   }
 }
 

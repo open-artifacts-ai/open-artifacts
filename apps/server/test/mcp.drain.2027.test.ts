@@ -40,3 +40,26 @@ it("tool() returns only after the publish's index_enqueue log is out", async () 
 it("settle() on a client with nothing pending returns", async () => {
   await settle(client);
 });
+
+it("two concurrent tool() calls on one client each see their own logs", async () => {
+  const logs = vi.spyOn(console, "log").mockImplementation(() => {});
+  try {
+    const rs = await Promise.all(
+      ["A", "B"].map((n) =>
+        tool(client, "publish_artifact", {
+          title: `Concurrent ${n}`,
+          format: "markdown",
+          content: `# ${n}\n`,
+        }),
+      ),
+    );
+    for (const r of rs) expect(r.isError).toBeFalsy();
+    expect(
+      logs.mock.calls.filter(([l]) =>
+        String(l).includes('"evt":"index_enqueue"'),
+      ),
+    ).toHaveLength(2);
+  } finally {
+    logs.mockRestore();
+  }
+});
