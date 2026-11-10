@@ -51,7 +51,7 @@ import {
   indexStatus,
   reconcileAsks,
 } from "./asks.js";
-import { agentIdentityOf } from "./bus.js";
+import { agentIdentityOf, agentNamesOf } from "./bus.js";
 import {
   agentKey,
   agentRoster,
@@ -300,13 +300,26 @@ async function usersById(
 }
 
 /** What a view reads from: the users it names and who shares a name (#1822), once per call. */
-type Ctx = { users: Map<string, UserLite>; clash: NameClashes };
+type Ctx = {
+  users: Map<string, UserLite>;
+  clash: NameClashes;
+  /** #1889: identity id to the agent's current bus name, from its owner's hub; a miss keeps the stored name. */
+  names: Map<string, string>;
+};
+
+/** A party's name today: its linked agent's current bus name, else the one stored with it. */
+const currentName = (
+  p: { name: string; identity?: { identityId: string } },
+  { names }: Ctx,
+): string =>
+  p.identity ? (names.get(p.identity.identityId) ?? p.name) : p.name;
 
 const authorView = (
   a: StoredActor,
   viewer: CommentViewer,
-  { users, clash }: Ctx,
+  ctx: Ctx,
 ): CommentAuthor => {
+  const { users, clash } = ctx;
   if (a.kind === "guest")
     return {
       kind: "guest",
@@ -315,10 +328,24 @@ const authorView = (
     };
   const u = users.get(a.ref);
   // A stored comment with an agent (written over MCP or with a token, or
-  // before #1789) reads as the agent at read time; no row is migrated.
+  // before #1789) reads as the agent at read time; no row is migrated. A
+  // linked one shows its current name (#1889), renamed before any masking.
   if (a.agent)
     return agentFace(
-      { ref: a.ref, agent: a.agent },
+      {
+        ref: a.ref,
+        agent: a.agent.identity
+          ? {
+              ...a.agent,
+              identity: {
+                ...a.agent.identity,
+                name:
+                  ctx.names.get(a.agent.identity.identityId) ??
+                  a.agent.identity.name,
+              },
+            }
+          : a.agent,
+      },
       faceViewer(viewer),
       u,
       clash,
@@ -365,12 +392,56 @@ async function ctxFor(
   env: Env,
   ids: Set<string>,
   agents: boolean,
+  shown: { comments: StoredComment[]; actors?: (StoredActor | null)[] } = {
+    comments: [],
+  },
 ): Promise<Ctx> {
-  const [users, clash] = await Promise.all([
+  const [users, clash, names] = await Promise.all([
     usersById(env, ids),
     agents ? allClashes(env) : Promise.resolve(new Map() as NameClashes),
+    agents
+      ? currentNames(env, shown)
+      : Promise.resolve(new Map<string, string>()),
   ]);
-  return { users, clash };
+  return { users, clash, names };
+}
+
+/**
+ * #1889: the current bus names of the linked agents a view shows (authors,
+ * mentions, ask addressees, answerers), one hub read per owner, in parallel,
+ * each bounded (LINK_LOOKUP_MS). Only an owner's own hub is asked for that
+ * owner's identity ids. A miss, a timeout or a failure leaves the stored name.
+ */
+async function currentNames(
+  env: Env,
+  s: { comments: StoredComment[]; actors?: (StoredActor | null)[] },
+): Promise<Map<string, string>> {
+  const byOwner = new Map<string, Set<string>>();
+  const add = (owner: string | undefined, id: string | undefined) => {
+    if (!owner || !id) return;
+    const set = byOwner.get(owner) ?? new Set<string>();
+    set.add(id);
+    byOwner.set(owner, set);
+  };
+  const actor = (a: StoredActor | null | undefined) => {
+    if (a?.kind === "user") add(a.ref, a.agent?.identity?.identityId);
+  };
+  for (const a of s.actors ?? []) actor(a);
+  for (const c of s.comments) {
+    actor(c.author);
+    actor(c.ask?.answer?.by);
+    for (const m of c.mentions ?? []) add(m.owner, m.identity?.identityId);
+    for (const p of c.ask?.to ?? [])
+      if (p.kind === "agent") add(p.owner, p.identity?.identityId);
+  }
+  const out = new Map<string, string>();
+  await Promise.all(
+    [...byOwner].map(async ([owner, ids]) => {
+      for (const [id, name] of await agentNamesOf(env, owner, [...ids]))
+        out.set(id, name);
+    }),
+  );
+  return out;
 }
 
 async function threadViews(
@@ -387,6 +458,10 @@ async function threadViews(
     env,
     ids,
     threads.some((t) => t.comments.some(hasAgent) || t.resolvedBy?.agent),
+    {
+      comments: threads.flatMap((t) => t.comments),
+      actors: threads.map((t) => t.resolvedBy),
+    },
   );
   return threads.map((t) => ({
     id: t.id,
@@ -420,10 +495,15 @@ const partyView = (
     : {
         // A stored identity adds linked, product and animal (#1890); a party
         // without one keeps this shape, with no `linked`.
-        ...identityFace(p, viewer, users),
+        ...identityFace({ ...p, name: currentName(p, users) }, viewer, users),
         kind: "agent",
         id: p.key,
-        name: agentName(p.name, users.users.get(p.owner), viewer, users.clash),
+        name: agentName(
+          currentName(p, users),
+          users.users.get(p.owner),
+          viewer,
+          users.clash,
+        ),
         for: forLine(users.users.get(p.owner), faceViewer(viewer), users.clash),
         me: viewer.userId !== null && viewer.userId === p.owner,
       };
@@ -502,7 +582,7 @@ const commentOf = (
   const author = authorView(c.author, viewer, users);
   const shown = (c.mentions ?? []).map((m) =>
     agentName(
-      m.name,
+      currentName(m, users),
       m.owner ? users.users.get(m.owner) : undefined,
       viewer,
       users.clash,
@@ -513,7 +593,12 @@ const commentOf = (
       ? [
           [
             p.name,
-            agentName(p.name, users.users.get(p.owner), viewer, users.clash),
+            agentName(
+              currentName(p, users),
+              users.users.get(p.owner),
+              viewer,
+              users.clash,
+            ),
           ],
         ]
       : [],
@@ -587,7 +672,11 @@ const commentOf = (
                   ),
                 }
               : {}),
-            ...identityFace(m, viewer, users),
+            ...identityFace(
+              { ...m, name: currentName(m, users) },
+              viewer,
+              users,
+            ),
             delivery: m.state as "delivered" | "queued" | "seen" | "gone",
           })),
         }
@@ -602,7 +691,11 @@ async function commentView(
 ): Promise<Comment> {
   const ids = new Set<string>();
   userIds(c, ids);
-  return commentOf(c, viewer, await ctxFor(env, ids, hasAgent(c)));
+  return commentOf(
+    c,
+    viewer,
+    await ctxFor(env, ids, hasAgent(c), { comments: [c] }),
+  );
 }
 
 // -------------------------------------------------------------------- reads

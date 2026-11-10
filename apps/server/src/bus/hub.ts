@@ -51,7 +51,7 @@ import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError, logInfo } from "../log.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
-import type { AgentIdentity } from "../services/agent-usage.js";
+import { type AgentIdentity, NAMES_OF_MAX } from "../services/agent-usage.js";
 import {
   type BusCloseKind,
   busCloseKind,
@@ -3804,6 +3804,40 @@ export class BusHub extends DurableObject<Env> {
       namespace,
       name,
     );
+  }
+
+  /**
+   * #1889: the current bus name of each agent identity in `identityIds`, from
+   * this member's own hub only (an id of another member's agent is not here,
+   * so it returns nothing). Returns ONLY `{identityId, name}`: no namespace,
+   * kind, machine or state. A live row wins, then the latest one. At most
+   * NAMES_OF_MAX ids are read. Worker only.
+   */
+  async namesOf(
+    identityIds: string[],
+  ): Promise<{ identityId: string; name: string }[]> {
+    if (!Array.isArray(identityIds)) return [];
+    const ids = [
+      ...new Set(identityIds.filter((x) => typeof x === "string" && x !== "")),
+    ].slice(0, NAMES_OF_MAX);
+    if (ids.length === 0) return [];
+    const rows = this.ctx.storage.sql
+      .exec<{ identityId: string; name: string }>(
+        `select identity_id as identityId, name from agents
+         where org_id = ? and identity_id in (${ids.map(() => "?").join(",")})
+         order by live desc, updated_at desc, rowid desc`,
+        OWNER_ORG_ID,
+        ...ids,
+      )
+      .toArray();
+    const seen = new Set<string>();
+    const out: { identityId: string; name: string }[] = [];
+    for (const r of rows) {
+      if (seen.has(r.identityId)) continue;
+      seen.add(r.identityId);
+      out.push({ identityId: r.identityId, name: r.name });
+    }
+    return out;
   }
 
   /** #1299: answers true. Reads no member data and arms no alarm (the constructor still creates the schema); the hosted canary's liveness probe. */

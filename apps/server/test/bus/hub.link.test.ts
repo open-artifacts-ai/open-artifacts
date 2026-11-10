@@ -558,3 +558,31 @@ describe("the proof ends with the session (#1822)", () => {
     expect(await lookup(s.m.userId, hashOf("c"))).toBeNull();
   });
 });
+
+async function namesOf(userId: string, ids: string[]) {
+  return runInDurableObject(await hubOf(userId), (i: BusHub) => i.namesOf(ids));
+}
+
+describe("namesOf (#1889)", () => {
+  it("returns only identityId and the current name, live or away", async () => {
+    const s = await scene();
+    const name = await reg(s.d, "r1", "Lead", s.ns);
+    await bind(s.d, "r1", hashOf("a"));
+    const id = (await identityOf(s.m.userId, s.ns, name))?.identityId as string;
+    const got = await namesOf(s.m.userId, [id, "nope"]);
+    expect(got).toEqual([{ identityId: id, name }]);
+    expect(Object.keys(got[0] ?? {}).sort()).toEqual(["identityId", "name"]);
+    await close(s.d, s.m.userId, "r1");
+    expect(await namesOf(s.m.userId, [id])).toEqual([{ identityId: id, name }]);
+  });
+  it("never resolves another member's identity, and ignores junk input", async () => {
+    const a = await scene();
+    const name = await reg(a.d, "r1", "Lead", a.ns);
+    await bind(a.d, "r1", hashOf("a"));
+    const id = (await identityOf(a.m.userId, a.ns, name))?.identityId as string;
+    const b = await member();
+    expect(await namesOf(b.userId, [id])).toEqual([]);
+    expect(await namesOf(a.m.userId, [])).toEqual([]);
+    expect(await namesOf(a.m.userId, [42 as never, ""])).toEqual([]);
+  });
+});
