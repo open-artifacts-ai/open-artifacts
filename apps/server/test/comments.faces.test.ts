@@ -185,8 +185,8 @@ describe("agent faces (#1822)", () => {
       ["Claude Code Pro", `${nm}'s agent`],
     ] as const) {
       expect(await shown(given, signedIn(other))).toBe(want);
-      // The owner sees the same: a client name is not their private note.
-      expect(await shown(given, signedIn(owner))).toBe(want);
+      // The owner sees their own client's raw name.
+      expect(await shown(given, signedIn(owner))).toBe(given);
     }
     // A token's label stays the owner's private note.
     const id = await pub(owner);

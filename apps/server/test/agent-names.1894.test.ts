@@ -59,7 +59,7 @@ describe("person names that read as an agent (#1894)", () => {
 
 describe("unlinked grants in lastAgent and version history (#1894)", () => {
   it("a known product shows in canonical casing, anything else is the person's agent", () => {
-    for (const v of [null, "someone", PUB.id]) {
+    for (const v of [null, "someone"]) {
       expect(grant("Claude Code", v)).toBe("Claude Code");
       expect(grant("claude code", v)).toBe("Claude Code");
       expect(grant("OA Product", v)).toBe("Leo Urbina's agent");
@@ -68,6 +68,9 @@ describe("unlinked grants in lastAgent and version history (#1894)", () => {
       expect(grant("Clаude Code", v)).toBe("Leo Urbina's agent");
       expect(grant("Claude​Code", v)).toBe("Leo Urbina's agent");
     }
+  });
+  it("the grant's owner sees the raw client name in their own views", () => {
+    expect(grant("OA Product", PUB.id)).toBe("OA Product");
   });
   it("a token label stays private, scrubbed rows stay masked", () => {
     const a = { name: "My label", version: null };

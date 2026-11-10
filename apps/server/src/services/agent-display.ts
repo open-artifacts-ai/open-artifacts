@@ -91,13 +91,14 @@ export function agentFor(
   viewerId: string | null,
 ): AgentRef {
   if (via === SCRUBBED_VIA) return { ...agent, masked: true };
+  // The owner of the grant sees its raw client name in their own views.
+  if (viewerId === publisher.id) return agent;
   if (!isPrivateAgent(via))
     return {
       name: knownProduct(agent.name) ?? ownersAgent(publisher),
       version: agent.version,
       ...(knownProduct(agent.name) ? {} : { masked: true }),
     };
-  if (viewerId === publisher.id) return agent;
   return { name: ownersAgent(publisher), version: agent.version, masked: true };
 }
 
@@ -312,16 +313,16 @@ export function agentFace(
   }
   // An unlinked grant's client name is self-asserted: shown only when it is
   // exactly a known product, else "<person>'s agent" (a bus name never).
-  // The same for the owner: a client name is not their private note.
+  // The owner sees the raw client name in their own views (#1894).
   const grantName = (): string => {
     return (
       knownProduct(a.name) ?? (owner ? agentOwnedBy(owner, c) : MEMBERS_AGENT)
     );
   };
-  const name = !isPrivateAgent(a.via)
-    ? grantName()
-    : me
-      ? plainAgentName(a.name)
+  const name = me
+    ? plainAgentName(a.name)
+    : !isPrivateAgent(a.via)
+      ? grantName()
       : owner
         ? agentOwnedBy(owner, c)
         : agentFor(
