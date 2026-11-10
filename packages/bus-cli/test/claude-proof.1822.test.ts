@@ -8,7 +8,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BUS_CMD } from "@oa/bus-protocol";
 import { describe, expect, it, vi } from "vitest";
-import { mcpProof, type ProofDeps } from "../src/commands/mcp-proof.ts";
+import {
+  findClaude,
+  mcpProof,
+  parsePs,
+  type ProofDeps,
+} from "../src/commands/mcp-proof.ts";
 import { status as statusCmd } from "../src/commands/status.ts";
 import { parse } from "../src/index.ts";
 import {
@@ -261,5 +266,36 @@ describe("oa-bus status, Claude entry", () => {
     expect(await line(mine, false, true)).toEqual([
       "Claude Code: update the daemon so this entry can show as this session on pages.",
     ]);
+  });
+});
+
+describe("parsePs on macOS (#1822)", () => {
+  const V = "/Users/x/.local/share/claude/versions/2.1.318";
+  it("keeps the versions path so it counts as Claude", () => {
+    const p = parsePs(`85840 ${V}`);
+    expect(p).toEqual({ ppid: 85840, name: V });
+    expect(findClaude(5, () => p)).toBe(5);
+  });
+  it("walks from a shell to the versions process, not the app parent", () => {
+    const t: Record<number, { ppid: number; name: string }> = {
+      3: { ppid: 2, name: "sh" },
+      2: parsePs(`1000 ${V}`) as { ppid: number; name: string },
+      1000: parsePs("1 /Applications/ClaudeCode.app/Contents/MacOS/claude") as {
+        ppid: number;
+        name: string;
+      },
+    };
+    expect(findClaude(3, (n) => t[n] ?? null)).toBe(2);
+  });
+  it("accepts the ClaudeCode.app binary and plain claude", () => {
+    expect(
+      parsePs("1 /Applications/ClaudeCode.app/Contents/MacOS/claude")?.name,
+    ).toBe("claude");
+    expect(parsePs("1 claude")?.name).toBe("claude");
+  });
+  it("does not treat claude bg-pty-host as Claude", () => {
+    const p = parsePs("1 claude bg-pty-host");
+    expect(p?.name).toBe("claude bg-pty-host");
+    expect(findClaude(5, () => p)).toBeUndefined();
   });
 });
