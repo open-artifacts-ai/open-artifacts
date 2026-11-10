@@ -29,6 +29,13 @@ describe("ratelimit bindings", () => {
       expect(by.RL_ANON?.simple).toEqual({ limit: 30, period: 60 });
       expect(by.RL_ANON_WRITES?.simple).toEqual({ limit: 120, period: 60 });
       expect(by.RL_AUTH?.simple).toEqual({ limit: 20, period: 60 });
+      // Hosted provisioning assigns namespaces by position: keep the order.
+      expect(rl.map((r) => r.name)).toEqual([
+        "RL_ANON",
+        "RL_AUTH",
+        "RL_DIRECTORY",
+        "RL_ANON_WRITES",
+      ]);
       const ids = rl.map((r) => r.namespace_id);
       expect(new Set(ids).size).toBe(ids.length);
       // Hosted installs get their own ids from 1,000,000 up; literals stay below.

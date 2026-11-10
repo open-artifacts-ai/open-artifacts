@@ -57,7 +57,8 @@ export interface Env {
    * ANON_WRITES_PER_MIN (120 per minute, wrangler `ratelimits`). The normal
    * budget is per (artifact, IP), counted in the artifact's DO; a write must
    * pass both (#687). Unbound (a wrangler config from before it), RL_ANON's
-   * 30 stands in. Raise this binding's limit with ANON_WRITES_PER_MIN.
+   * 30 stands in. The 120 is this binding's fixed limit, set in wrangler
+   * `ratelimits`; ANON_WRITES_PER_MIN does not change it.
    */
   RL_ANON_WRITES?: RateLimit;
   /** Sign-in code limiter, keyed `${installKey}:${ip}`; unbound in the test pool. */

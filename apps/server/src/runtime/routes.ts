@@ -317,12 +317,8 @@ async function gate(
   // RL_ANON_WRITES binding, 4x the default budget (120/min), shared by every
   // artifact. Unbound (an install whose wrangler config predates it), RL_ANON's
   // 30/min stands in, as before.
-  await anonLimit(
-    c,
-    `ip:${key}`,
-    "writes",
-    c.env.RL_ANON_WRITES ?? c.env.RL_ANON,
-  );
+  const rlWrites = c.env.RL_ANON_WRITES ?? c.env.RL_ANON;
+  await anonLimit(c, `ip:${key}`, "writes", rlWrites);
   const anon = await anonId();
   return { artifactId, actor: `ip:${key}|${anon.short}`, anon, authzAt };
 }
