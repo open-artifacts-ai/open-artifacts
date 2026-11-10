@@ -8,6 +8,7 @@ import {
   verifyUnsubToken,
 } from "../src/email/comment-email.js";
 import {
+  commentEmailDailyCap,
   MAX_COMMENT_EMAILS_PER_RECIPIENT_PER_DAY,
   MAX_EMAILS_PER_RECIPIENT_PER_DAY,
   sendEmail,
@@ -587,6 +588,27 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
     }
   });
 
+  it("lookalike dots and @, underscored labels; a leading @name stays", async () => {
+    const s = await setup();
+    const m = mailer();
+    await thread(
+      m.e,
+      s.id,
+      person(s.editor),
+      s.editor,
+      "@OA Product see evil\u3002com and evil\uFF0Eio and evil\uFF61org, my_site.example/x, a\uFF20b.co",
+    );
+    const mail = m.sent[0] as Sent;
+    for (const part of [mail.text, mail.html]) {
+      expect(part).toContain("@OA Product");
+      expect(part).toContain("evil[.]com");
+      expect(part).toContain("evil[.]io");
+      expect(part).toContain("evil[.]org");
+      expect(part).toContain("my_site[.]example/x");
+      expect(part).toContain("a[at]b[.]co");
+    }
+  });
+
   it("a guest-role account is never emailed", async () => {
     const s = await setup();
     const g = await login(
@@ -653,6 +675,23 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
 });
 
 describe("comment emails have their own instance-wide bucket", () => {
+  it("its cap defaults to EMAIL_DAILY_CAP, unless COMMENT_EMAIL_DAILY_CAP is set", () => {
+    expect(commentEmailDailyCap({ EMAIL_DAILY_CAP: "7" })).toBe(7);
+    expect(commentEmailDailyCap({})).toBe(100);
+    expect(
+      commentEmailDailyCap({
+        EMAIL_DAILY_CAP: "7",
+        COMMENT_EMAIL_DAILY_CAP: "3",
+      }),
+    ).toBe(3);
+    expect(
+      commentEmailDailyCap({
+        EMAIL_DAILY_CAP: "7",
+        COMMENT_EMAIL_DAILY_CAP: "x",
+      }),
+    ).toBe(7);
+  });
+
   it("a full comment bucket stops comment mail only; invites and shares still send", async () => {
     const m = mailer();
     const e = { ...m.e, COMMENT_EMAIL_DAILY_CAP: "2" } as Env;

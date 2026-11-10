@@ -176,7 +176,7 @@ export interface Env {
   TEST_DOMAIN?: string;
   /** Invite and share emails per UTC day, instance-wide (1..100000, default 100); set per install by Platform. */
   EMAIL_DAILY_CAP?: string;
-  /** Comment notice emails per UTC day, instance-wide (1..100000, default 100); a bucket apart from EMAIL_DAILY_CAP (#1467). */
+  /** Comment notice emails per UTC day, instance-wide (1..100000, default EMAIL_DAILY_CAP's value); a bucket apart from it (#1467). */
   COMMENT_EMAIL_DAILY_CAP?: string;
   /** "1" on hosted installs (Me.instance.hosted). */
   HOSTED?: string;

@@ -31,12 +31,16 @@ export function emailDailyCap(env: Pick<Env, "EMAIL_DAILY_CAP">): number {
   return dailyCapOf(env.EMAIL_DAILY_CAP);
 }
 
-/** Comment notice emails per UTC day, instance-wide: COMMENT_EMAIL_DAILY_CAP, else the same default. Its own bucket (#1467). */
+/** Comment notice emails per UTC day, instance-wide: COMMENT_EMAIL_DAILY_CAP when set and valid, else what EMAIL_DAILY_CAP gives. Its own bucket (#1467). */
 export function commentEmailDailyCap(
-  env: Pick<Env, "COMMENT_EMAIL_DAILY_CAP">,
+  env: Pick<Env, "COMMENT_EMAIL_DAILY_CAP" | "EMAIL_DAILY_CAP">,
 ): number {
-  return dailyCapOf(env.COMMENT_EMAIL_DAILY_CAP);
+  const v = env.COMMENT_EMAIL_DAILY_CAP;
+  return v && /^[1-9]\d*$/.test(v) && Number(v) <= EMAIL_DAILY_CAP_MAX
+    ? Number(v)
+    : emailDailyCap(env);
 }
+
 /** Emails one recipient address may receive per UTC day, instance-wide. */
 export const MAX_EMAILS_PER_RECIPIENT_PER_DAY = 5;
 /**

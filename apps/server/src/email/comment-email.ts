@@ -98,14 +98,18 @@ export const TITLE_MAX = 60;
 export function excerptOf(body: string): string {
   return (
     oneLine(body, EXCERPT_MAX)
-      // Email addresses first: "@" becomes "[at]".
-      .replace(/@/g, "[at]")
+      // Fullwidth and ideographic lookalikes of "." and "@" first.
+      .replace(/[\u3002\uFF0E\uFF61]/g, ".")
+      .replace(/\uFF20/g, "@")
+      // An address (an "@" between two non-space runs): "@" becomes "[at]".
+      // A leading "@name" is left alone.
+      .replace(/(?<=\S)@(?=\S)/g, "[at]")
       // A scheme: "https://x" becomes "https[:]//x".
       .replace(/\b([a-z][a-z0-9+.-]*):\/\//gi, "$1[:]//")
       // A bare domain: a word-ish token whose last label looks like a TLD
       // ("paypal.com.evil.io/login", "b.co"); "e.g." and "1.5" stay.
       .replace(
-        /\b(?=[a-z0-9-]*[a-z])[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,24}\b/gi,
+        /\b(?=[a-z0-9_-]*[a-z])[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.[a-z]{2,24}\b/gi,
         (m) => m.replace(/\./g, "[.]"),
       )
   );
