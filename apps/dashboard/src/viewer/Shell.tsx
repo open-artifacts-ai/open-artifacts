@@ -3,6 +3,7 @@ import { Button } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { MessageSquare } from "lucide-react";
 import {
+  type CSSProperties,
   type ReactNode,
   type SyntheticEvent,
   useCallback,
@@ -35,6 +36,7 @@ import {
   CommentsProvider,
   useCommentsController,
 } from "./comments/useComments";
+import { CommentsResizer, useCommentsWidth } from "./commentsWidth";
 import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
 import { FullScreenEscape } from "./FullScreenEscape";
 import { frameLoad, SANDBOX, safeContentUrl } from "./frame";
@@ -263,6 +265,7 @@ function Viewer({
   // The panel's Comments tab: offered only where comments are on and the list
   // isn't a dialog; a link to it elsewhere falls back to Versions.
   const commentsTab = commentsOn && surface !== "dialog";
+  const commentsW = useCommentsWidth();
   const tab: PanelTab = !authed
     ? "comments"
     : requestedTab === "comments" && !commentsTab
@@ -569,7 +572,10 @@ function Viewer({
       : undefined;
   return (
     <CommentsProvider value={cmt}>
-      <div className="oa-viewer">
+      <div
+        className="oa-viewer"
+        style={{ "--oa-comments-w": `${commentsW.width}px` } as CSSProperties}
+      >
         {!chromeless && (
           <>
             <Crumbs title={artifact.title} />
@@ -651,6 +657,10 @@ function Viewer({
                 allow="clipboard-write"
               />
             </div>
+          )}
+          {((commentsOn && surface === "column" && columnShown && !panelOpen) ||
+            (panelOpen && (authed || commentsTab) && !chromeless)) && (
+            <CommentsResizer />
           )}
           {commentsOn && surface === "column" && columnShown && !panelOpen && (
             <CommentsColumn textFormat={textFormat} />

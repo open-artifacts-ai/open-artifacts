@@ -621,3 +621,46 @@ a.oa-lpill-gone {
   --oa-presence-7: #a3305f;
   --oa-presence-8: #b04a14;
 }
+
+/* #1986: the comments column's drag handle; invisible until hover or focus. */
+.oa-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: calc(var(--oa-comments-w) - 5px);
+  z-index: 11;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.oa-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.oa-resizer:hover::after,
+.oa-resizer:focus-visible::after,
+.oa-vbody[data-resizing] .oa-resizer::after {
+  background: var(--oa-accent);
+}
+.oa-resizer:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--oa-accent);
+  border-radius: 3px;
+}
+.oa-vbody[data-resizing] {
+  user-select: none;
+}
+.oa-vbody[data-resizing] .oa-vframe {
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oa-resizer::after {
+    transition: none;
+  }
+}
