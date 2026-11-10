@@ -78,7 +78,7 @@ On a public artifact that lets viewers change its data, each anonymous browser g
 - Each artifact sees a different id for the same browser, so ids can't be matched across artifacts.
 - It is not a person or an account, so don't treat it as proof of who someone is.
 - It is signed by the server: no one can forge someone else's id, but anyone can reset their own.
-- It expires after 30 days, but a write after the first 15 days renews it with the same id, so a guest who keeps using the page keeps their id. An expired (or legacy) token is never renewed: the browser's next write gets a new id, and it can no longer edit or delete comments it wrote under the old one (they stay visible with their display name). This is how a leaked token stops working.
+- It expires after a fixed period, but a write after about half of that period renews it with the same id, so a guest who keeps using the page keeps their id. An expired (or legacy) token is never renewed: the browser's next write gets a new id, and it can no longer edit or delete comments it wrote under the old one (they stay visible with their display name). This is how a leaked token stops working.
 - It is only issued on artifacts with `dataWriters: "viewers"`. Signed-in viewers never get one.
 
 An `anonId` is a label, not a permission. Any anonymous viewer can still overwrite or delete any document, so use it to show who did what (for example, a seat claimed by `anonId`) and expect conflicts.
