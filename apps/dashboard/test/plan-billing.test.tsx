@@ -665,6 +665,25 @@ describe("plan cards and comparison (#2007)", () => {
     expect(posts.some((c) => c.path.endsWith("/billing/checkout"))).toBe(false);
   });
 
+  it("with Yearly on, an upgrade sends only the tier: the card showed the monthly price it charges", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", { billing: TRIAL });
+    await screen.findByTestId("plan-card-team");
+    expect(screen.getByRole("button", { name: "Yearly" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(card("team")).toHaveTextContent("$10 per creator a month");
+    fireEvent.click(
+      within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
+    );
+    await waitFor(() =>
+      expect(
+        posts.find((c) => c.path.endsWith("/billing/checkout"))?.body,
+      ).toEqual({ tier: "team" }),
+    );
+  });
+
   it("a Business trial offers both upgrades and marks Business as the trial", async () => {
     mountHosted("/settings/plan", { billing: { ...TEAM, tier: "trial" } });
     await screen.findByTestId("plan-card-business");
