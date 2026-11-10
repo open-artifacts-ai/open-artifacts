@@ -34,7 +34,7 @@ for (const width of WIDTHS) {
       await expect(table).toBeHidden();
       // Every price in full: nothing clips inside its box.
       for (const price of [
-        "$1 a month or $12 a year, per instance",
+        "$1 a month or $10 a year, per instance",
         "$10 per creator",
         "$25 per creator",
       ]) {
