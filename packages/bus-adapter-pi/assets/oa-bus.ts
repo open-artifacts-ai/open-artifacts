@@ -1203,11 +1203,15 @@ export default function oaBus(pi: Pi): void {
     taken: boolean;
   };
   let proof: Proof | undefined;
+  /** Whether the registered entry carries a proof header now. */
+  let headed = false;
 
   const isRecord = (v: unknown): v is Json =>
     typeof v === "object" && v !== null && !Array.isArray(v);
   /** The moved entry, or undefined when there is none or it is not one Pi would take. */
-  const entryOf = (): { name: string; config: Json } | undefined => {
+  const entryOf = ():
+    | { name: string; config: Json; origin?: string }
+    | undefined => {
     try {
       const v: unknown = JSON.parse(
         readFileSync(join(home(), ENTRY_FILE), "utf8"),
@@ -1218,28 +1222,51 @@ export default function oaBus(pi: Pi): void {
         /^[A-Za-z0-9_-]+$/.test(v.name) &&
         isRecord(v.config)
       )
-        return { name: v.name, config: v.config };
+        return {
+          name: v.name,
+          config: v.config,
+          ...(typeof v.origin === "string" ? { origin: v.origin } : {}),
+        };
     } catch {}
     return undefined;
   };
   /** Pi 1.5+ only, never omp: its own MCP client reads what is registered. */
   const mcpHere = () =>
     identity?.kind === "pi" && typeof pi.registerMcpServer === "function";
-  /** Registers the entry, plain or with `value` as the proof header. Never throws. */
+  /**
+   * Whether the entry is on the origin install matched it on: only then does
+   * it ever get a proof, so the header cannot reach another server.
+   */
+  const onHub = (e: { config: Json; origin?: string }) => {
+    try {
+      return (
+        e.origin !== undefined &&
+        typeof e.config.url === "string" &&
+        new URL(e.config.url).origin === e.origin
+      );
+    } catch {
+      return false;
+    }
+  };
+  /**
+   * Registers the entry, plain or with `value` as the proof header. A proof
+   * header the user set is always dropped. Never throws.
+   */
   const register = (value?: string) => {
     if (!mcpHere()) return;
     const entry = entryOf();
     if (!entry) return;
-    let config = entry.config;
-    if (value !== undefined) {
-      const headers: Json = {};
-      const own = isRecord(config.headers) ? config.headers : {};
-      for (const [k, v] of Object.entries(own))
-        if (k.toLowerCase() !== PROOF_HEADER.toLowerCase()) headers[k] = v;
-      config = { ...config, headers: { ...headers, [PROOF_HEADER]: value } };
-    }
+    const own = isRecord(entry.config.headers) ? entry.config.headers : {};
+    const headers: Json = {};
+    for (const [k, v] of Object.entries(own))
+      if (k.toLowerCase() !== PROOF_HEADER.toLowerCase()) headers[k] = v;
+    if (value !== undefined && onHub(entry)) headers[PROOF_HEADER] = value;
+    const config = { ...entry.config };
+    if (Object.keys(headers).length > 0) config.headers = headers;
+    else delete config.headers;
     try {
       pi.registerMcpServer?.(entry.name, config);
+      headed = headers[PROOF_HEADER] !== undefined;
     } catch {}
   };
   const offerProof = async (p: Proof) => {
@@ -1263,7 +1290,8 @@ export default function oaBus(pi: Pi): void {
   const proveLink = (l: Link) => {
     proof = undefined;
     const caps = l.welcome.caps;
-    if (!mcpHere() || !entryOf()) return;
+    const entry = entryOf();
+    if (!mcpHere() || !entry || !onHub(entry)) return;
     if (!Array.isArray(caps) || !caps.includes("link")) return;
     proof = {
       link: l,
@@ -1274,11 +1302,16 @@ export default function oaBus(pi: Pi): void {
     };
     void offerProof(proof);
   };
-  /** The link is gone: the header goes with it. */
-  const dropProof = () => {
-    const p = proof;
+  /**
+   * The session is over (a switch to another session, or shutdown): the header
+   * goes. A link that is only lost keeps its last header: changing it would
+   * make Pi reconnect the MCP server and kill calls in flight, and the instance
+   * already reads a proof as no link once the daemon closed that link and
+   * cleared its hash. The next bind replaces the header.
+   */
+  const dropHeader = () => {
     proof = undefined;
-    if (p?.taken) register();
+    if (headed) register();
   };
   /** A turn on a link the daemon did not take a proof for: offer it again, at most once a minute. */
   const retryProof = () => {
@@ -1311,7 +1344,7 @@ export default function oaBus(pi: Pi): void {
     if (current?.ref === id.ref && !current.closed())
       return Promise.resolve(current);
     if (connecting?.ref === id.ref) return connecting.link;
-    dropProof();
+    if (current && current.ref !== id.ref) dropHeader();
     current?.close();
     current = undefined;
     const link = open(id, start, {
@@ -1325,10 +1358,7 @@ export default function oaBus(pi: Pi): void {
           );
         } catch {}
       },
-      lost: () => {
-        if (proof?.link.closed()) dropProof();
-        reconnect();
-      },
+      lost: () => reconnect(),
     }).then(
       (l) => {
         if (connecting?.link === link) connecting = undefined;
@@ -1417,7 +1447,7 @@ export default function oaBus(pi: Pi): void {
     if (subagent(ctx)) return;
     stopped = true;
     identity = identity ?? identityOf(ctx);
-    dropProof();
+    dropHeader();
     if (retry) clearTimeout(retry);
     retry = undefined;
     connecting = undefined;

@@ -67,6 +67,8 @@ async function daemon(caps: string[] | undefined, answer: Answer = bound) {
 
 const ENTRY = {
   name: "open-artifacts",
+  // The hub origin install matched the entry on: the header goes only to it.
+  origin: "https://oa.example.com",
   config: {
     type: "http",
     url: "https://oa.example.com/mcp",
@@ -229,20 +231,15 @@ describe("pi session proof on /mcp (#1856)", () => {
     expect(p.regs[0].config).toEqual(ENTRY.config);
   });
 
-  it("a reconnect takes the header off, then gives a new proof", async () => {
+  it("a link loss keeps the last header (no Pi reconnect), and the next bind replaces it", async () => {
     writeEntry();
     const d = await daemon(["link"]);
     const p = pi();
     await p.emit("session_start");
     await vi.waitFor(() => expect(p.regs.some(proofOf)).toBe(true));
     const first = p.regs.map(proofOf).find(Boolean) as string;
-    const before = p.regs.length;
     d.drop();
-    await vi.waitFor(
-      () => expect(p.regs.slice(before).map(proofOf)).toContain(undefined),
-      { timeout: 2000 },
-    );
-    // The link is back after the retry delay (3 s): wait for its proof.
+    // The link comes back after the retry delay (3 s) with a new proof.
     await vi.waitFor(
       () => expect(p.regs.map(proofOf).filter(Boolean).length).toBe(2),
       { timeout: 8000 },
@@ -253,11 +250,9 @@ describe("pi session proof on /mcp (#1856)", () => {
       sha(first),
       sha(second),
     ]);
-    // Between the two, the header was off.
+    // Never a plain registration in between: that would reconnect the MCP server.
     const seq = p.regs.map((r) => proofOf(r) ?? "-");
-    expect(seq.indexOf("-", seq.indexOf(first))).toBeLessThan(
-      seq.indexOf(second),
-    );
+    expect(seq.slice(seq.indexOf(first))).toEqual([first, second]);
   }, 15_000);
 
   it("two sessions in one process get different proofs, each hashed to its own link", async () => {
@@ -342,6 +337,54 @@ describe("pi session proof on /mcp (#1856)", () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(omp.regs).toHaveLength(0);
     expect(d.proofFrames()).toHaveLength(0);
+  });
+
+  it("strips a proof header the user set, in the plain and the proven registration", async () => {
+    writeEntry({
+      ...ENTRY,
+      config: {
+        ...ENTRY.config,
+        headers: {
+          Authorization: "Bearer x",
+          "x-oa-agent-proof-token": "someone-elses",
+        },
+      },
+    });
+    await daemon(["link"]);
+    const p = pi();
+    await p.emit("session_start");
+    await vi.waitFor(() => expect(p.regs.some(proofOf)).toBe(true));
+    for (const r of p.regs) {
+      const h = r.config.headers as Record<string, string>;
+      expect(Object.keys(h).filter((k) => /proof/i.test(k))).toEqual(
+        proofOf(r) ? [LINK_PROOF_HEADER] : [],
+      );
+      expect(JSON.stringify(h)).not.toContain("someone-elses");
+      expect(h.Authorization).toBe("Bearer x");
+    }
+  });
+
+  it("an entry that is not on the hub's origin is registered plain and sends no proof", async () => {
+    for (const bad of [
+      { ...ENTRY, config: { ...ENTRY.config, url: "https://evil.test/mcp" } },
+      { name: ENTRY.name, config: ENTRY.config },
+      { ...ENTRY, config: { ...ENTRY.config, url: "not a url" } },
+    ]) {
+      writeEntry(bad);
+      const d = await daemon(["link"]);
+      const p = pi();
+      await p.emit("session_start");
+      await vi.waitFor(() => expect(d.frames).toHaveLength(1));
+      await vi.waitFor(() => expect(p.regs.length).toBeGreaterThan(0));
+      await new Promise((r) => setTimeout(r, 100));
+      expect(d.proofFrames()).toHaveLength(0);
+      for (const r of p.regs) expect(proofOf(r)).toBeUndefined();
+      await p.emit("session_shutdown");
+      sockets.splice(0).forEach((x) => void x.destroy());
+      await Promise.all(
+        servers.splice(0).map((x) => new Promise((r) => x.close(r))),
+      );
+    }
   });
 
   it("an entry file it cannot use leaves Pi as it was", async () => {

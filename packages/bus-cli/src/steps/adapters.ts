@@ -479,6 +479,13 @@ async function piEntry(deps: AdapterDeps, notes: string[]) {
     const io = piEntryIo(deps);
     const name = pendingEntry(io, deps.hub);
     if (name === undefined) return;
+    // omp may read this same folder, and has no registerMcpServer: it would lose its tools.
+    if (sharedFile(deps) && hasOmp(deps)) {
+      notes.push(
+        `left the ${name} entry in ${io.file} as it is: Pi and oh-my-pi share this folder, so this Pi cannot show as a session on pages`,
+      );
+      return;
+    }
     const r = await run(deps, "pi", ["--version"]);
     const version = r.code === 0 ? r.stdout.trim().split(/\s+/)[0] : undefined;
     if (
@@ -764,13 +771,16 @@ const uninstall: Record<Harness, Step> = {
 
   async pi(deps, notes) {
     // The entry goes back first: it is the user's, and works without the extension.
+    const io = piEntryIo(deps);
     let restored = false;
     try {
-      restored = restoreEntry(piEntryIo(deps));
+      restored = restoreEntry(io);
     } catch (e) {
+      // The extension and the moved file stay, so Pi keeps its Open Artifacts tools.
       notes.push(
-        `could not put the Open Artifacts entry back in Pi's mcp.json: ${e instanceof Error ? e.message : String(e)}`,
+        `Kept the Pi extension and ${io.moved}: could not put the Open Artifacts entry back in ${io.file} (${e instanceof Error ? e.message : String(e)}). Fix that file, then run uninstall again.`,
       );
+      throw new Error("kept the extension, the entry is still moved");
     }
     const path = paths(deps).pi;
     if (!existsSync(path)) return restored ? "done" : "none";
@@ -779,8 +789,9 @@ const uninstall: Record<Harness, Step> = {
   },
 
   async omp(deps, _notes, done) {
-    // Pi's step removed the one file both loaded.
+    // Pi's step removed the one file both loaded, or kept it for the entry it could not put back.
     if (sharedFile(deps) && done.includes("pi")) return "done";
+    if (sharedFile(deps) && existsSync(paths(deps).piEntry)) return "none";
     const path = paths(deps).omp;
     if (!existsSync(path)) return "none";
     rmSync(path, { force: true });
@@ -837,6 +848,19 @@ async function each(
   }
   return { done, folder, absent, skipped };
 }
+
+/** Notes the commands do not already show with their own line (a flag of the result). */
+export const unshownNotes = (notes: string[]) =>
+  notes.filter(
+    (n) =>
+      n !== CODEX_NO_BIN &&
+      n !== HERMES_NO_CLI &&
+      n !== OPENCLAW_NO_CLI &&
+      n !== OPENCLAW_NIX &&
+      // The service line says it, and the removal is already in "Removed from".
+      !n.startsWith(RESTART_FAILED) &&
+      !n.startsWith("removed oa_bus from "),
+  );
 
 /** Registers Open Artifacts bus with every harness on PATH; a broken one is skipped, never clobbered. */
 export async function installAdapters(

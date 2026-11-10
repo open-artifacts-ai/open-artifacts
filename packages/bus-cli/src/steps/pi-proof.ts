@@ -75,7 +75,7 @@ function findEntry(servers: Rec, origin: string): string | undefined {
   return undefined;
 }
 
-type Moved = { name: string; index: number; config: Rec };
+type Moved = { name: string; index: number; origin?: string; config: Rec };
 function readMoved(path: string): Moved | undefined {
   try {
     const v: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -85,34 +85,45 @@ function readMoved(path: string): Moved | undefined {
       typeof v.index === "number" &&
       isRecord(v.config)
     )
-      return { name: v.name, index: v.index, config: v.config };
+      return {
+        name: v.name,
+        index: v.index,
+        ...(typeof v.origin === "string" ? { origin: v.origin } : {}),
+        config: v.config,
+      };
   } catch {}
   return undefined;
 }
 
 /**
  * The name of the entry install would move, or undefined when there is none
- * (or one was already moved). Throws for an mcp.json that cannot be read.
+ * Throws for an mcp.json that cannot be read. An entry in mcp.json is always
+ * pending, even with a file already moved: mcp.json wins (the user put it
+ * back, or a crash left both).
  */
 export function pendingEntry(
   io: PiEntryIo,
   origin: string,
 ): string | undefined {
   const c = readConfig(io.file);
-  if (!c || readMoved(io.moved)) return undefined;
+  if (!c) return undefined;
   return findEntry(c.servers, origin);
 }
 
-/** Moves the instance's entry out of Pi's mcp.json. The file it goes to is written first, so nothing is lost. */
+/**
+ * Moves the instance's entry out of Pi's mcp.json, replacing a file moved
+ * earlier. The file it goes to is written first, so nothing is lost.
+ */
 export function moveEntry(io: PiEntryIo, origin: string): boolean {
   const c = readConfig(io.file);
-  if (!c || readMoved(io.moved)) return false;
+  if (!c) return false;
   const name = findEntry(c.servers, origin);
   if (name === undefined) return false;
   const keys = Object.keys(c.servers);
   const moved: Moved = {
     name,
     index: keys.indexOf(name),
+    origin,
     config: c.servers[name] as Rec,
   };
   io.write(io.moved, `${JSON.stringify(moved, null, 2)}\n`, 0o600);

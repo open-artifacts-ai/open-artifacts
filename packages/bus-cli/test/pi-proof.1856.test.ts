@@ -198,6 +198,65 @@ describe("oa-bus install and uninstall, Pi mcp.json entry (#1856)", () => {
     expect(s.read()).toBe(original);
   });
 
+  it("records the hub's origin with the entry, for the extension to check", async () => {
+    const s = setup(doc({ "open-artifacts": OAUTH }));
+    await installAdapters(s.deps);
+    expect(JSON.parse(readFileSync(s.moved, "utf8")).origin).toBe(HUB);
+  });
+
+  it("an entry back in mcp.json wins: it replaces the moved one and leaves mcp.json again", async () => {
+    const s = setup(doc({ "open-artifacts": OAUTH }));
+    await installAdapters(s.deps);
+    // The user re-adds it (or a crash left both): same address, new settings.
+    writeFileSync(s.file, doc({ a: OTHER, mine: TOKEN }));
+    await installAdapters(s.deps);
+    expect(names(s.read())).toEqual(["a"]);
+    const m = JSON.parse(readFileSync(s.moved, "utf8"));
+    expect(m).toMatchObject({ name: "mine", index: 1, config: TOKEN });
+    await uninstallAdapters(s.deps);
+    expect(names(s.read())).toEqual(["a", "mine"]);
+  });
+
+  it("a crash between the two steps (both exist) is finished by the next install", async () => {
+    const s = setup(doc({ "open-artifacts": OAUTH }));
+    mkdirSync(join(s.h, ".oa-bus"), { recursive: true });
+    writeFileSync(
+      s.moved,
+      JSON.stringify({ name: "open-artifacts", index: 0, config: OAUTH }),
+    );
+    await installAdapters(s.deps);
+    expect(names(s.read())).toEqual([]);
+    expect(JSON.parse(readFileSync(s.moved, "utf8")).origin).toBe(HUB);
+  });
+
+  it("with oh-my-pi in the same folder, it leaves the entry and says so", async () => {
+    const d = mkdtempSync(join(tmpdir(), "ob-pi1856-shared-"));
+    const original = doc({ "open-artifacts": OAUTH });
+    const s = setup(undefined, { dir: d, env: { PI_CODING_AGENT_DIR: d } });
+    writeFileSync(join(d, "mcp.json"), original);
+    const deps = { ...s.deps, which: (c: string) => c === "pi" || c === "omp" };
+    const r = await installAdapters(deps);
+    expect(readFileSync(join(d, "mcp.json"), "utf8")).toBe(original);
+    expect(() => statSync(s.moved)).toThrow();
+    expect(r.notes.join("\n")).toMatch(/share this folder/);
+  });
+
+  it("uninstall that cannot put the entry back keeps the extension (also for oh-my-pi) and the moved file", async () => {
+    const d = mkdtempSync(join(tmpdir(), "ob-pi1856-keep-"));
+    const s = setup(undefined, { dir: d, env: { PI_CODING_AGENT_DIR: d } });
+    writeFileSync(join(d, "mcp.json"), doc({ "open-artifacts": OAUTH }));
+    // Only Pi at install; oh-my-pi is there at uninstall.
+    await installAdapters(s.deps);
+    writeFileSync(join(d, "mcp.json"), "{ broken");
+    const deps = { ...s.deps, which: (c: string) => c === "pi" || c === "omp" };
+    const r = await uninstallAdapters(deps);
+    expect(r.skipped.map((k) => k.harness)).toEqual(["pi"]);
+    expect(r.removed).not.toContain("omp");
+    expect(statSync(join(d, "extensions/oa-bus.ts")).isFile()).toBe(true);
+    expect(statSync(s.moved).isFile()).toBe(true);
+    expect(r.notes.join("\n")).toContain(join(d, "mcp.json"));
+  });
+
   it("the extension reads the file install writes", () => {
     const asset = readFileSync(
       join(__dirname, "../../bus-adapter-pi/assets/oa-bus.ts"),
