@@ -1,4 +1,5 @@
-// #1608: a pi-like agent_ref belongs to the first link that claimed it.
+// #1608: a pi-like agent_ref belongs to the adapter that claimed it first,
+// across reconnects, until that adapter's process is gone.
 import { afterEach, describe, expect, it } from "vitest";
 import { REF_BOUND } from "../src/index.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
@@ -8,18 +9,45 @@ afterEach(stopAll);
 describe.each(["pi", "omp", "hermes", "openclaw"] as const)(
   "ref binding for %s",
   (kind) => {
-    it("refuses a second concurrent claim with the fixed code", async () => {
+    it("issues a token and refuses a second claim without it", async () => {
       const h = await daemonHarness();
-      await h.adapter("A", { kind });
+      const a = await h.adapter("A", { kind });
+      expect(typeof a.welcome.bind_token).toBe("string");
       await expect(h.adapter("A", { kind })).rejects.toThrow(REF_BOUND);
     });
 
-    it("lets the ref reconnect once the first link closed", async () => {
+    it("refuses a wrong token", async () => {
+      const h = await daemonHarness();
+      await h.adapter("A", { kind });
+      await expect(
+        h.adapter("A", { kind, bind_token: "x".repeat(32) }),
+      ).rejects.toThrow(REF_BOUND);
+    });
+
+    it("lets the first claimant reconnect after its link closed", async () => {
+      const h = await daemonHarness();
+      const a = await h.adapter("A", { kind });
+      const bind_token = a.welcome.bind_token;
+      a.close();
+      await h.next("sessions", 2);
+      const b = await h.adapter("A", { kind, bind_token });
+      expect(b.welcome.bind_token).toBe(bind_token);
+    });
+
+    it("refuses a squatter on a closed link: no token, same pid", async () => {
       const h = await daemonHarness();
       const a = await h.adapter("A", { kind });
       a.close();
       await h.next("sessions", 2);
-      await expect(h.adapter("A", { kind })).resolves.toBeDefined();
+      await expect(h.adapter("A", { kind })).rejects.toThrow(REF_BOUND);
+    });
+
+    it("lets the token holder replace a link that is still half-open", async () => {
+      const h = await daemonHarness();
+      const a = await h.adapter("A", { kind });
+      await expect(
+        h.adapter("A", { kind, bind_token: a.welcome.bind_token }),
+      ).resolves.toBeDefined();
     });
 
     it("leaves other refs alone", async () => {
@@ -33,5 +61,16 @@ describe.each(["pi", "omp", "hermes", "openclaw"] as const)(
 it("refuses a different kind claiming a bound ref", async () => {
   const h = await daemonHarness();
   await h.adapter("A", { kind: "pi" });
-  await expect(h.adapter("A", { kind: "omp" })).rejects.toThrow();
+  await expect(h.adapter("A", { kind: "omp" })).rejects.toThrow(REF_BOUND);
+});
+
+it("frees the ref once the claimant's process is gone", async () => {
+  let alive = true;
+  const h = await daemonHarness({ claude: { isRunning: () => alive } });
+  const a = await h.adapter("A", { kind: "pi" });
+  a.close();
+  await h.next("sessions", 2);
+  await expect(h.adapter("A", { kind: "pi" })).rejects.toThrow(REF_BOUND);
+  alive = false;
+  await expect(h.adapter("A", { kind: "pi" })).resolves.toBeDefined();
 });

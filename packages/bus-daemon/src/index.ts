@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { lstatSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join } from "node:path";
 import { claudeSessionsDir } from "@oa/bus-adapter-claude-code";
@@ -294,6 +295,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const conns = new Map<string, number>();
   /** Each Pi session's open extension connections, newest last: Pi receives on them. */
   const piLinks = new Map<string, Map<Hello, (f: DaemonFrame) => void>>();
+  /** #1608: who first claimed each pi-like ref; kept after its link closes, until its pid dies. */
+  const bindings = new Map<
+    string,
+    { token: string; pid: number; kind: string }
+  >();
 
   /**
    * A /clear handover not yet announced: it waits for hello_ok (#1582), so the
@@ -1432,11 +1438,31 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (!check.ok) return { error: check.reason };
         // Claude's MCP server is a new process per tool call; the session is the identity.
         const pid = check.pid ?? hello.pid;
-        // #1608: a pi-like ref belongs to the first link that claimed it until that
-        // link closes. A pid and its start time are no proof of who is speaking:
-        // any same-user process can send them, so a second concurrent claim is refused.
-        if (piLike(hello.kind) && (piLinks.get(hello.agent_ref)?.size ?? 0) > 0)
-          return { error: REF_BOUND };
+        // #1608: a pi-like ref belongs to the adapter that claimed it first, link
+        // after link, until the claimant's process is gone. A pid and its start
+        // time are no proof of who is speaking (any same-user process can send
+        // them), so the welcome issued a token that every later hello must echo.
+        let bindToken: string | undefined;
+        if (piLike(hello.kind)) {
+          const claim = bindings.get(hello.agent_ref);
+          if (claim && !running(claim.pid)) bindings.delete(hello.agent_ref);
+          const held = bindings.get(hello.agent_ref);
+          if (
+            held &&
+            (held.kind !== hello.kind || held.token !== hello.bind_token)
+          )
+            return { error: REF_BOUND };
+          bindToken = held?.token ?? randomBytes(24).toString("base64url");
+        }
+        const bound = (): { bind_token?: string } => {
+          if (bindToken === undefined) return {};
+          bindings.set(hello.agent_ref, {
+            token: bindToken,
+            pid,
+            kind: hello.kind,
+          });
+          return { bind_token: bindToken };
+        };
         const prev = agents.byRef(hello.agent_ref);
         // A resumed session may beat the next sync tick: the files decide whose it is.
         if (prev?.live && prev.kind === "claude-code" && prev.pid !== pid) {
@@ -1487,6 +1513,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             namespace: prev.namespace,
             global: prev.global,
             ...capsFor(hello),
+            ...bound(),
           };
         }
         // Claude's session file names its cwd; other kinds state one.
@@ -1564,6 +1591,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           namespace: rec.namespace,
           global: rec.global,
           ...capsFor(hello),
+          ...bound(),
         };
       };
       // A connection gone during the wait admits nothing: no agent, no conns.

@@ -37,12 +37,19 @@ reachable by name. See `packages/shared/CONTRACT.md`, Version-gating.
 
 ## Ref binding (#1608)
 
-For pi, omp, hermes and openclaw the daemon binds each `agent_ref` to the first
-connection that claimed it, until that connection closes. A second concurrent
-hello for the same ref is refused with `agent_ref is bound to another live
-connection`, whatever pid it claims. A reconnect after the link closes works as before.
+For pi, omp, hermes and openclaw the daemon binds each `agent_ref` to the
+first adapter that claimed it. The first welcome carries a random `bind_token`,
+which the adapter keeps in memory and echoes as `bind_token` in every later
+hello for that ref (a reconnect, a pi `/reload`). The daemon keeps the token
+after the link closes, so a squatter that connects while the real link is down
+is refused with `agent_ref is bound to another live connection`, whatever pid
+it claims. A hello that echoes the token may replace a link that is still
+half-open. The binding lapses when the claimant's pid is gone (a daemon restart
+also forgets it, and the next claimant wins).
 
-Known gap: the daemon does not check the peer's pid against the socket
-(SO_PEERCRED / LOCAL_PEERPID). Node exposes neither without a native addon, so a
-same-user process can still claim a ref that has no live link by sending a live
-harness pid. The socket is 0600, so this stays inside one user's trust boundary.
+Known gaps: the first claimant wins, so a same-user process that claims a ref
+before the real agent ever connects holds it. The daemon does not check the
+peer's pid against the socket (SO_PEERCRED / LOCAL_PEERPID); Node exposes
+neither without a native addon. The socket is 0600, so both stay inside one
+user's trust boundary. An adapter older than this change sends no token and is
+refused on reconnect while the binding holds (pre-launch: upgrade it).

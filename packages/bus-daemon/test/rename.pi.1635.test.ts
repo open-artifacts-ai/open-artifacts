@@ -143,22 +143,27 @@ describe("pi rename through the daemon (#1635)", () => {
       global: z.boolean(),
     });
     const c = await up(["mailbox"]);
-    const welcome = c.lines.find((l) => l.type === "welcome");
+    // #1608 added `bind_token` to a pi-like welcome; everything else is unchanged.
+    const { bind_token, ...welcome } = c.lines.find(
+      (l) => l.type === "welcome",
+    ) as Record<string, unknown>;
+    expect(typeof bind_token).toBe("string");
     expect(OldWelcome.safeParse(welcome).success).toBe(true);
   });
 
-  it("a second concurrent link with a new name renames nothing, pi or omp (#1608)", async () => {
+  it("a second link echoing the token renames a pi session but never an omp one", async () => {
     for (const [kind, want] of [
-      ["pi", 0],
+      ["pi", 1],
       ["omp", 0],
     ] as const) {
-      const { h, mk } = await up(["rename"], "first", kind);
+      const { h, mk, lines } = await up(["rename"], "first", kind);
+      const bind_token = lines.find((l) => l.type === "welcome")?.bind_token;
       const { connect } = await import("node:net");
       const s2 = connect(h.socketPath);
       s2.on("error", () => {});
       socks.push(s2);
       s2.write(
-        `${JSON.stringify({ ...mk({ kind, agent_ref: "P1", proposed_name: "auto-title" }), caps: ["rename"] })}\n`,
+        `${JSON.stringify({ ...mk({ kind, agent_ref: "P1", proposed_name: "auto-title" }), bind_token, caps: ["rename"] })}\n`,
       );
       await settle();
       expect(h.of("rename"), kind).toHaveLength(want);
@@ -194,19 +199,43 @@ describe("pi rename through the daemon (#1635)", () => {
     expect(h.of("rename")).toHaveLength(0);
   });
 
-  it("a second concurrent link for a live session is refused and sends no rename frame (#1608)", async () => {
-    const { h, mk } = await up(["rename"]);
+  it("a second link for the same live session with a new name sends a rename frame", async () => {
+    const { h, mk, lines } = await up(["rename"]);
+    const bind_token = lines.find((l) => l.type === "welcome")?.bind_token;
     // The first link stays open, so the record is live when the second hello arrives.
     const { connect } = await import("node:net");
     const s2 = connect(h.socketPath);
     s2.on("error", () => {});
     socks.push(s2);
     s2.write(
-      `${JSON.stringify({ ...mk({ kind: "pi", agent_ref: "P1", proposed_name: "renamed-offline" }), caps: ["rename"] })}\n`,
+      `${JSON.stringify({ ...mk({ kind: "pi", agent_ref: "P1", proposed_name: "renamed-offline" }), bind_token, caps: ["rename"] })}\n`,
     );
-    await settle();
-    expect(h.of("rename")).toHaveLength(0);
+    await vi.waitFor(() => expect(h.of("rename")).toHaveLength(1));
+    expect(h.of("rename")[0]).toMatchObject({
+      agent_ref: "P1",
+      proposed_name: "renamed-offline",
+    });
     expect(h.of("agent_up")).toHaveLength(1);
+  });
+
+  it("a reconnect after the link closed, with the token and a new name, renames", async () => {
+    const { h, mk, lines, sock } = await up(["rename"]);
+    const bind_token = lines.find((l) => l.type === "welcome")?.bind_token;
+    sock.destroy();
+    await vi.waitFor(() => expect(h.of("sessions").length).toBeGreaterThan(0));
+    const { connect } = await import("node:net");
+    const s2 = connect(h.socketPath);
+    s2.on("error", () => {});
+    socks.push(s2);
+    s2.write(
+      `${JSON.stringify({ ...mk({ kind: "pi", agent_ref: "P1", proposed_name: "renamed-down" }), bind_token, caps: ["rename"] })}\n`,
+    );
+    await vi.waitFor(() => {
+      const names = [...h.of("rename"), ...h.of("agent_up")].map(
+        (f) => f.proposed_name,
+      );
+      expect(names).toContain("renamed-down");
+    });
   });
 
   it("a pi name held by the 3-a-minute window goes after it, from the watcher (#1635)", async () => {
