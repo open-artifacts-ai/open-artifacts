@@ -143,20 +143,19 @@ Pass them as \`${SECRET_ENV_VARS.access}="$(cat ${ACCESS})"\` and \`${SECRET_ENV
 
 ## 5. Get the release
 
-If you are in the install directory (where you first ran setup), first check the origin URL for credentials. Never print the URL, \`git remote -v\` or git config: a token in it would go into this session.
+If you are in the install directory (where you first ran setup), first check the origin URL for credentials. Never print the remote URL or the git settings: a token in it would go into this session.
 
 \`\`\`sh
-git remote get-url origin | grep -qE '://[^/@]+@' && echo "origin has credentials"
+if git remote get-url origin | grep -qE '^https?://[^/]*@'; then echo "origin has credentials"; fi
 \`\`\`
 
-If it prints that line, stop and tell the user: "Your git remote has a login in its URL. Move it to a credential helper so it is not stored there." Give them these commands, and do not show or repeat the URL (on Linux, use \`cache\` or \`store\` instead of \`osxkeychain\`):
+If it prints that line, tell the user: "Your git remote has a login in its URL, so anything that prints the remote shows it. Run this command to take it out (the repository is public, so fetching needs no login), then revoke that token where you made it."
 
 \`\`\`sh
-git remote set-url origin "$(git remote get-url origin | sed -E 's#://[^/@]+@#://#')"
-git config --global credential.helper osxkeychain
+git remote set-url origin "$(git remote get-url origin | sed -E 's#^(https?://)[^/]*@#\\1#')"
 \`\`\`
 
-If you must show the remote, redact it: \`git remote get-url origin | sed -E 's#://[^/@]+@#://***@#'\`. Then fetch the tag:
+Go on once they say it's done. To show the remote without the login: \`git remote get-url origin | sed -E 's#^(https?://)[^/]*@#\\1***@#'\`. Then fetch the tag:
 
 \`\`\`sh
 git fetch --depth 1 origin tag v<latest>

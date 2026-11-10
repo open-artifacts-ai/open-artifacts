@@ -9,18 +9,19 @@ Upgrades keep all your artifacts, versions, shares, and live-page data. Database
 ## Steps
 
 1. **Go to the existing install:** `cd` into the directory setup cloned into (by default `~/open-artifacts`). If it's gone, for example on a new machine or in CI, clone the latest release as in [setup](/docs/setup/) and continue from step 4. Without its saved state, add the install's `--name` (and `--account-id` if the login has several accounts); setup reads the hosts and owner email from the deployed Worker. It also re-verifies Access, so you may need the Access token again if the Cloudflare login can't read Access; save it as in [setup](/docs/setup/).
-2. **Check the git remote for credentials.** Never print the remote URL, `git remote -v` or git config: a token in the URL would be exposed. This prints a line only if the URL has a login in it:
+2. **Check the git remote for credentials.** Never print the remote URL or the git settings: a token in the URL would be exposed. This prints a line only if the URL has a login in it:
 
    ```sh
-   git remote get-url origin | grep -qE '://[^/@]+@' && echo "origin has credentials"
+   if git remote get-url origin | grep -qE '^https?://[^/]*@'; then echo "origin has credentials"; fi
    ```
 
-   If it does, move the login to a credential helper first (on Linux use `cache` or `store` instead of `osxkeychain`), and never show the value. To show the remote, redact it: `git remote get-url origin | sed -E 's#://[^/@]+@#://***@#'`.
+   If it prints that line, take the login out of the URL before you go on. The repository is public, so fetching needs no login. Then revoke that token where you made it, since it was stored in plain text.
 
    ```sh
-   git remote set-url origin "$(git remote get-url origin | sed -E 's#://[^/@]+@#://#')"
-   git config --global credential.helper osxkeychain
+   git remote set-url origin "$(git remote get-url origin | sed -E 's#^(https?://)[^/]*@#\1#')"
    ```
+
+   To show the remote without the login: `git remote get-url origin | sed -E 's#^(https?://)[^/]*@#\1***@#'`.
 3. **Check out the latest release.** This is the latest stable GitHub release; pre-releases are skipped. Release tags look like `vX.Y.Z`:
 
    ```sh

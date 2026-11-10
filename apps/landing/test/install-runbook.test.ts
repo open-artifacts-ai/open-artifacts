@@ -44,16 +44,48 @@ describe("install runbook (#11-#14, #17)", () => {
   });
 });
 
-describe("upgrade guide git remote (#1923)", () => {
-  it("never prints a remote or git config raw; every get-url is redacted or rewritten", () => {
-    expect(upgrade).not.toMatch(
-      /git\s+remote\s+(show)|git\s+config\s+(--get|-l|--list)|remote\.origin/,
+/** Lines of `text` that print a git remote or config raw (#1923). */
+const remoteLeaks = (text: string) =>
+  text
+    .replace(/\\\r?\n\s*/g, " ")
+    .split("\n")
+    .filter(
+      (l) =>
+        /git\b[^\n]*?\bremote\s+(-\w*v|--verbose|show)\b/.test(l) ||
+        /ls-remote|\.git\/config|remote\.origin/.test(l) ||
+        /git\b[^\n]*?\bconfig\b/.test(l) ||
+        (/remote\s+get-url/.test(l) &&
+          !/get-url\s+\S+\s*\|\s*(sed -E|grep -qE) /.test(l)),
     );
-    for (const line of upgrade.split("\n")) {
-      if (/git\s+remote\s+-v/.test(line)) expect(line).toMatch(/never|Never/);
-      if (/remote get-url/.test(line))
-        expect(line).toMatch(/\| (sed -E|grep -qE) |set-url/);
-    }
-    expect(upgrade).toContain("credential.helper");
+
+const LEAKS = [
+  "git remote -v",
+  "git remote --verbose",
+  "git remote show origin",
+  "git -C . remote -v",
+  "git remote get-url origin",
+  "git ls-remote origin",
+  "cat .git/config",
+  "git config --get remote.origin.url",
+  "git config -l",
+  "git config --list --local",
+  "git config --local --list",
+  "git remote get-url origin \\\n  | cat",
+  "git remote -v",
+];
+const SAFE = [
+  "git remote get-url origin | sed -E 's#^(https?://)[^/]*@#\\1***@#'",
+  "if git remote get-url origin | grep -qE '^https?://[^/]*@'; then echo x; fi",
+];
+
+describe("upgrade guide git remote (#1923)", () => {
+  it("never prints a remote or git config raw", () => {
+    expect(remoteLeaks(upgrade), remoteLeaks(upgrade).join("|")).toEqual([]);
+    expect(upgrade).not.toContain("credential.helper");
+    expect(upgrade).toContain("grep -qE '^https?://[^/]*@'");
+  });
+  it("the guard fails on each bypass and passes the redacted forms", () => {
+    for (const l of LEAKS) expect(remoteLeaks(l), l).not.toEqual([]);
+    for (const l of SAFE) expect(remoteLeaks(l), l).toEqual([]);
   });
 });
