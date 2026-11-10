@@ -14,7 +14,11 @@ import type { Hello } from "@oa/bus-ipc";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Proc } from "../src/codex-attest.ts";
 import { readCodexAway, writeCodexAway } from "../src/codex-away.ts";
-import { CODEX_WAKE_TEXT, execCodex } from "../src/transports/codex.ts";
+import {
+  CODEX_WAKE_TEXT,
+  execCodex,
+  hostWakes,
+} from "../src/transports/codex.ts";
 import { daemonHarness, hello, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
@@ -461,6 +465,42 @@ describe("waking an away Codex thread (#2029)", () => {
     });
     await new Promise((r) => setTimeout(r, 200));
     expect(w.runs()).toHaveLength(1);
+    stop();
+  });
+
+  it("a managed app-server daemon (ppid 1, outlives the TUI) holds the lock: it is woken, and its own call is attested", async () => {
+    const w = world();
+    // codex app-server --listen unix:// --managed-daemon is P2.
+    const argsOf = (pid: number) =>
+      pid === P2
+        ? ["app-server", "--listen", "unix://", "--managed-daemon"]
+        : ["exec", "x"];
+    const wakesLog: number[] = [];
+    const { two } = await restarted(w, {
+      wakes: async (pid: number) => {
+        wakesLog.push(pid);
+        return hostWakes(argsOf(pid));
+      },
+    });
+    const stop = answerLists(two, () => 2);
+    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    expect(wakesLog).toContain(P2);
+    // The daemon is the lock holder and the adapter's parent.
+    await two.adapter(
+      THREAD,
+      codexHello(THREAD, A3, {
+        codex: {
+          thread_id: THREAD,
+          call_id: "call_1",
+          ppid: P2,
+          thread_source: "user",
+        },
+      }),
+    );
+    expect(two.daemon.agents.byRef(THREAD)).toMatchObject({
+      live: true,
+      pid: P2,
+    });
     stop();
   });
 
