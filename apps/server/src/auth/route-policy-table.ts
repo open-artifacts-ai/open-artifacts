@@ -336,6 +336,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // #1346: role reach grants; writes also need a cookie session (the handler).
   "GET /api/v1/bus/reach": { org: "mcp.connect" },
   "PUT /api/v1/bus/reach": { org: "mcp.connect" },
+  "PUT /api/v1/bus/reach/set": { org: "mcp.connect" },
+  "GET /api/v1/bus/reach/namespaces": { org: "mcp.connect" },
   "DELETE /api/v1/bus/reach/:id": { org: "mcp.connect" },
   // #1372: the role proposal confirm page (bus/role-confirm.ts). The handler
   // takes only an interactive cookie session of the hub's own member (a

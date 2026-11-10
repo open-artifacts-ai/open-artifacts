@@ -15,9 +15,19 @@ import {
 import { describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
+import { addReach } from "../../src/bus/reach.js";
 import { api, errOf, fetchAndWait } from "../helpers.js";
 import { limiter } from "../mcp-helpers.js";
-import { daemon, e, hubOf, machine, member, ns } from "./helpers.js";
+import {
+  daemon,
+  e,
+  hubOf,
+  machine,
+  member,
+  ns,
+  up,
+  waitFor,
+} from "./helpers.js";
 
 const app = createApp();
 
@@ -64,9 +74,14 @@ describe("reach REST (#1346)", () => {
     });
     expect(Object.keys(reach).sort()).toEqual([
       "createdAt",
+      "grantedAt",
+      "grantedBy",
       "id",
+      "known",
+      "mode",
       "namespace",
       "role",
+      "roleId",
     ]);
     const again = await putReach(who.cookie, grant(home, "Lead", b));
     expect(((await again.json()) as { reach: BusReach }).reach).toEqual(reach);
@@ -166,6 +181,196 @@ describe("reach REST (#1346)", () => {
     expect((await errOf(full)).details).toEqual({ reason: "reach_limit" });
     expect((await hub.listReach()).length).toBe(BUS_REACH_MAX);
     d.close();
+  });
+
+  it("the DTO carries the role id, known, mode and who granted it and when; a deleted role reads unknown", async () => {
+    const [home, a, b] = [ns("rh"), ns("ra"), ns("rb")];
+    const { who, d, m } = await withBus();
+    const role = (await (await putRole(who.cookie, home, "Lead")).json()) as {
+      role: { id: string };
+    };
+    const mine = (await (
+      await putReach(who.cookie, grant(home, "lead", a))
+    ).json()) as { reach: BusReach };
+    expect(mine.reach).toMatchObject({
+      roleId: role.role.id,
+      known: true,
+      mode: "reach",
+      grantedBy: "member",
+    });
+    expect(Date.parse(mine.reach.grantedAt)).toBe(
+      Date.parse(mine.reach.createdAt),
+    );
+    // A confirmed agent proposal is recorded by the hub, never by a claim.
+    const hub = await hubOf(who.userId);
+    await runInDurableObject(hub, (_i, state) => {
+      const r = addReach(
+        state.storage.sql,
+        "owner",
+        home,
+        "lead",
+        b,
+        Date.now(),
+        newId,
+        BUS_REACH_MAX,
+        BUS_REACH_PER_ROLE,
+        m.id,
+      );
+      expect(r.ok).toBe(true);
+    });
+    const list = (await (await api(app, R.busReach, who.cookie)).json()) as {
+      reach: BusReach[];
+    };
+    expect(list.reach.map((g) => [g.namespace, g.grantedBy])).toEqual(
+      [
+        [a, "member"],
+        [b, "request"],
+      ].sort(),
+    );
+    await api(app, `${R.busRoles}/${role.role.id}`, who.cookie, {
+      method: "DELETE",
+    });
+    const gone = (await (await api(app, R.busReach, who.cookie)).json()) as {
+      reach: BusReach[];
+    };
+    for (const g of gone.reach)
+      expect(g).toMatchObject({ roleId: null, known: false });
+    d.close();
+  });
+
+  const setReach = (auth: string | null, body: unknown) =>
+    api(app, R.busReachSet, auth, { method: "PUT", body });
+  const setBody = (home: string, name: string, namespaces: string[]) => ({
+    role: { namespace: home, name },
+    namespaces,
+  });
+
+  it("set replaces the role's reach set in one call, keeping kept grants and others' grants", async () => {
+    const [home, a, b, c, oh] = [
+      ns("rh"),
+      ns("ra"),
+      ns("rb"),
+      ns("rc"),
+      ns("o"),
+    ];
+    const { who, d } = await withBus();
+    await putRole(who.cookie, home, "lead");
+    await putRole(who.cookie, oh, "other");
+    const kept = (await (
+      await putReach(who.cookie, grant(home, "lead", a))
+    ).json()) as { reach: BusReach };
+    await putReach(who.cookie, grant(home, "lead", b));
+    const other = await putReach(who.cookie, grant(oh, "other", c));
+    const o = ((await other.json()) as { reach: BusReach }).reach;
+    const r = await setReach(who.cookie, setBody(home, "Lead", [a, c, c]));
+    expect(r.status).toBe(200);
+    const { reach } = (await r.json()) as { reach: BusReach[] };
+    expect(reach.map((g) => g.namespace)).toEqual([a, c].sort());
+    expect(reach.find((g) => g.namespace === a)?.id).toBe(kept.reach.id);
+    const all = (await (await api(app, R.busReach, who.cookie)).json()) as {
+      reach: BusReach[];
+    };
+    expect(all.reach.map((g) => g.id)).toContain(o.id);
+    expect(all.reach).toHaveLength(3);
+    const none = await setReach(who.cookie, setBody(home, "lead", []));
+    expect(((await none.json()) as { reach: BusReach[] }).reach).toEqual([]);
+    expect(
+      (
+        (await (await api(app, R.busReach, who.cookie)).json()) as {
+          reach: BusReach[];
+        }
+      ).reach.map((g) => g.id),
+    ).toEqual([o.id]);
+    d.close();
+  });
+
+  it("set is all or nothing: an invalid target, an unknown role or a cap changes nothing", async () => {
+    const [home, a, b] = [ns("rh"), ns("ra"), ns("rb")];
+    const { who, d } = await withBus();
+    await putRole(who.cookie, home, "lead");
+    await putReach(who.cookie, grant(home, "lead", a));
+    const hub = await hubOf(who.userId);
+    const before = await hub.listReach();
+    for (const bad of [
+      setBody(home, "lead", [b, home]),
+      setBody(home, "lead", [b, "Not Canonical"]),
+      { ...setBody(home, "lead", [b]), extra: 1 },
+      setBody(
+        home,
+        "lead",
+        Array.from({ length: BUS_REACH_PER_ROLE + 1 }, (_, i) => ns(`t${i}`)),
+      ),
+    ])
+      expect((await setReach(who.cookie, bad)).status).toBe(400);
+    const ghost = await setReach(who.cookie, setBody(home, "ghost", [b]));
+    expect(ghost.status).toBe(409);
+    expect((await errOf(ghost)).details).toEqual({ reason: "role_unknown" });
+    // The member's total cap: fill the hub, then a set that adds two and drops none.
+    await runInDurableObject(hub, (_i, state) => {
+      const have = state.storage.sql
+        .exec<{ n: number }>("select count(*) as n from reach_grants")
+        .one().n;
+      for (let i = have; i < BUS_REACH_MAX; i++)
+        state.storage.sql.exec(
+          `insert into reach_grants (id, org_id, role_ns, role_name, lname, mode, target_ns, created_at)
+           select ?, org_id, 'fill/ns', ?, ?, 'reach', ?, 1 from reach_grants limit 1`,
+          newId(),
+          `f${i}`,
+          `f${i}`,
+          `fill/t${i}`,
+        );
+    });
+    const full = await setReach(who.cookie, setBody(home, "lead", [a, b]));
+    expect(full.status).toBe(409);
+    expect((await errOf(full)).details).toEqual({ reason: "reach_limit" });
+    const now = await hub.listReach();
+    expect(now.filter((g) => g.roleNamespace === home)).toEqual(
+      before.filter((g) => g.roleNamespace === home),
+    );
+    expect(now).toHaveLength(BUS_REACH_MAX);
+    // A swap that nets zero still fits at the cap.
+    expect(
+      (await setReach(who.cookie, setBody(home, "lead", [b]))).status,
+    ).toBe(200);
+    d.close();
+  });
+
+  it("set takes the same auth as PUT: a PAT, a machine token, anonymous and a guest get nothing", async () => {
+    const [home, a] = [ns("rh"), ns("ra")];
+    const { who, d, m } = await withBus();
+    await putRole(who.cookie, home, "lead");
+    const { token } = await createPat(e, who.userId, "agent");
+    for (const t of [token, m.token, null])
+      expect([401, 404]).toContain(
+        (await setReach(t, setBody(home, "lead", [a]))).status,
+      );
+    expect(
+      (await setReach(who.cookie, setBody(home, "lead", [a]))).status,
+    ).toBe(200);
+    expect((await (await hubOf(who.userId)).listReach()).length).toBe(1);
+    d.close();
+  });
+
+  it("lists the namespaces the member's machines have used, sorted, only this member's", async () => {
+    const [x, y] = [ns("zz"), ns("aa")];
+    const one = await withBus();
+    const two = await withBus();
+    one.d.send(up("u1", "ref-a", "alpha", x));
+    await waitFor(one.d, "agent_ok");
+    one.d.send(up("u2", "ref-b", "beta", y));
+    await waitFor(one.d, "agent_ok");
+    const r = await api(app, R.busReachNamespaces, one.who.cookie);
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ namespaces: [y, x].sort(), live: true });
+    expect(
+      await (await api(app, R.busReachNamespaces, two.who.cookie)).json(),
+    ).toEqual({
+      namespaces: [],
+      live: true,
+    });
+    expect((await api(app, R.busReachNamespaces, null)).status).toBe(401);
+    one.d.close();
+    two.d.close();
   });
 
   it("DELETE takes an id of at most 64 id characters", async () => {

@@ -148,6 +148,16 @@ export type BusHubRpc = {
     roleName: string,
     target: string,
   ): Promise<PutReachResult>;
+  /** #1346: replaces a role's reach set in one transaction; see bus/reach.ts setReach. */
+  setReach(
+    roleNamespace: string,
+    roleName: string,
+    targets: string[],
+  ): Promise<
+    { ok: true; grants: ReachGrant[] } | Exclude<PutReachResult, { ok: true }>
+  >;
+  /** #1346: the namespaces the member's machines have used. */
+  usedNamespaces(): Promise<string[]>;
   /** #1346: removes a reach grant; false when unknown. */
   deleteReach(id: string): Promise<boolean>;
   /** #1346: records a reach proposal from a machine's agent under its link's hash; grants nothing. */
@@ -840,6 +850,11 @@ const toBusReach = (g: ReachGrant): BusReach => ({
   role: { namespace: g.roleNamespace, name: g.roleName },
   namespace: g.namespace,
   createdAt: new Date(g.createdAt).toISOString(),
+  roleId: g.roleId,
+  known: g.known,
+  mode: g.mode,
+  grantedBy: g.grantedBy,
+  grantedAt: new Date(g.createdAt).toISOString(),
 });
 
 /** A hub call for a reach write: ApiError internal when it fails or times out (retrying is safe). */
@@ -900,6 +915,47 @@ export async function putBusReach(
       field: r.field,
     });
   throw refuse(r.reason);
+}
+
+/** #1346: replaces the role's whole reach set, all or nothing. Errors as putBusReach. */
+export async function setBusReach(
+  env: Env,
+  userId: string,
+  roleNamespace: string,
+  roleName: string,
+  targets: string[],
+): Promise<BusReach[]> {
+  const refuse = (reason: ReachRefusal) =>
+    new ApiError("conflict", REACH_REFUSALS[reason], { reason });
+  if (!busOn(env)) throw new ApiError("not_found", "Not found");
+  if (!(await hasConnectedMachine(env, userId))) throw refuse("no_bus");
+  const hub = busHub(env, userId);
+  if (!hub) throw refuse("no_bus");
+  const r = await reachCall(hub.setReach(roleNamespace, roleName, targets));
+  if (r.ok) return r.grants.map(toBusReach);
+  if (r.reason === "invalid")
+    throw new ApiError("bad_request", `Invalid ${r.field}`, {
+      field: r.field,
+    });
+  throw refuse(r.reason);
+}
+
+/** #1346: the namespaces the member's machines have used, or [] with live false. */
+export async function listBusReachNamespaces(
+  env: Env,
+  userId: string,
+): Promise<{ namespaces: string[]; live: boolean }> {
+  const none = { namespaces: [], live: false };
+  if (!busOn(env) || !(await hasConnectedMachine(env, userId))) return none;
+  const hub = busHub(env, userId);
+  if (!hub) return none;
+  try {
+    const ns = await within(hub.usedNamespaces(), BUS_HUB_TIMEOUT_MS);
+    return ns === null ? none : { namespaces: ns, live: true };
+  } catch (e) {
+    logError("bus_reach_namespaces_failed", e);
+    return none;
+  }
 }
 
 /** #1346: removes the member's reach grant `id`. Idempotent: unknown is fine. */

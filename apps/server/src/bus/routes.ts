@@ -21,6 +21,7 @@ import {
   BusLinkPutSchema,
   BusReachProposeSchema,
   BusReachPutSchema,
+  BusReachSetSchema,
   BusRolePutSchema,
   type Member,
   R,
@@ -53,6 +54,7 @@ import {
   listBusLinks,
   listBusMachines,
   listBusReach,
+  listBusReachNamespaces,
   listBusRoles,
   MAX_ACTIVE_MACHINES,
   proposeBusLink,
@@ -61,6 +63,7 @@ import {
   putBusReach,
   putBusRole,
   revokeBusMachine,
+  setBusReach,
 } from "../services/bus.js";
 import { droppedToday } from "../services/follows.js";
 import { getSettings } from "../services/members.js";
@@ -851,6 +854,29 @@ export function mountBus(app: AppType): void {
         body.role.namespace,
         body.role.name,
         body.namespace,
+      ),
+    });
+  });
+  app.get(R.busReachNamespaces, async (c) => {
+    const user = requireUser(c);
+    if (!canConnect(user)) throw notFound();
+    return c.json(await listBusReachNamespaces(c.env, user.id));
+  });
+  app.put(R.busReachSet, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    busConfigCap(user);
+    const body = await jsonBody(c, BusReachSetSchema);
+    if (!BusNameSchema.safeParse(body.role.name).success)
+      throw new ApiError("bad_request", "Invalid role", { field: "name" });
+    return c.json({
+      reach: await setBusReach(
+        c.env,
+        user.id,
+        body.role.namespace,
+        body.role.name,
+        body.namespaces,
       ),
     });
   });

@@ -156,6 +156,16 @@ export const BusReachSchema = z.strictObject({
   }),
   namespace: BusAddressSchema.shape.namespace,
   createdAt: z.string(),
+  /** The role's id, or null when the role is gone (`known` false). */
+  roleId: z.string().nullable(),
+  /** The role still exists. */
+  known: z.boolean(),
+  /** reach: the role may message there and be replied to; listed: findable only. */
+  mode: z.enum(["reach", "listed"]),
+  /** Who granted it, set by the hub: the member's own add, or a confirmed agent proposal (`request`). Never a peer's claim. */
+  grantedBy: z.enum(["member", "request"]),
+  /** When it was granted (ISO); the same instant as createdAt. */
+  grantedAt: z.string(),
 });
 export type BusReach = z.infer<typeof BusReachSchema>;
 
@@ -175,6 +185,23 @@ export const BusReachPutSchema = z.strictObject({
   namespace: BusAddressSchema.shape.namespace,
 });
 export type BusReachPut = z.infer<typeof BusReachPutSchema>;
+
+/** PUT R.busReachSet: replace the namespaces the role reaches, in one transaction (all or nothing). An empty list removes all its reach. */
+export const BusReachSetSchema = z.strictObject({
+  role: z.strictObject({
+    namespace: BusAddressSchema.shape.namespace,
+    name: BusAddressSchema.shape.name,
+  }),
+  namespaces: z.array(BusAddressSchema.shape.namespace).max(BUS_REACH_PER_ROLE),
+});
+export type BusReachSet = z.infer<typeof BusReachSetSchema>;
+
+/** GET R.busReachNamespaces: the namespaces the member's machines have used, sorted, for the grant picker. */
+export const BusReachNamespacesSchema = z.strictObject({
+  namespaces: z.array(BusAddressSchema.shape.namespace).max(1000),
+  live: z.boolean(),
+});
+export type BusReachNamespaces = z.infer<typeof BusReachNamespacesSchema>;
 
 /** How long a link proposal's confirm link works (#1567): one hour. */
 export const BUS_LINK_PROPOSAL_TTL_MS = 60 * 60_000;

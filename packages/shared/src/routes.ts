@@ -150,6 +150,10 @@ export const R = {
   busReachGrant: (id: string) => `/api/v1/bus/reach/${seg(id)}`,
   /** POST (a bus machine token only) -> { confirmUrl, expiresAt }: an agent asks that its role reach namespaces (#1346). Grants nothing until the member confirms the URL in a browser. 409 details.reason: no_role, ambiguous, rate_limited, proposal_limit, no_bus. */
   busReachProposals: "/api/v1/bus/reach/proposals",
+  /** PUT BusReachSet -> `{ reach: BusReach[] }`: replaces the role's whole reach set in one transaction (all or nothing; same rules, errors, cookie-only auth and plan cap as PUT R.busReach). */
+  busReachSet: "/api/v1/bus/reach/set",
+  /** GET -> BusReachNamespaces: the namespaces the member's machines have used, for the grant picker. Same auth as GET R.busReach. */
+  busReachNamespaces: "/api/v1/bus/reach/namespaces",
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
   /**

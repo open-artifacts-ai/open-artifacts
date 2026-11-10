@@ -15,6 +15,10 @@ export type ReachGrant = {
   roleName: string;
   namespace: string;
   createdAt: number;
+  roleId: string | null;
+  known: boolean;
+  mode: "reach" | "listed";
+  grantedBy: "member" | "request";
 };
 
 export type PutReachResult =
@@ -31,9 +35,14 @@ const all = <T extends Row>(
 
 // The role's name is read from roles (a case rename updates it there, not on
 // the grant); the grant's own copy is only the fallback.
+const grants = (sql: SqlStorage, q: string, ...b: SqlStorageValue[]) =>
+  all<Omit<ReachGrant, "known"> & { known: number }>(sql, q, ...b).map(
+    (g): ReachGrant => ({ ...g, known: g.known === 1 }),
+  );
+
 const GRANT_FROM = `reach_grants g left join roles r on r.org_id = g.org_id and r.namespace = g.role_ns and r.lname = g.lname`;
 const GRANT_COLS =
-  "g.id as id, g.role_ns as roleNamespace, coalesce(r.name, g.role_name) as roleName, g.target_ns as namespace, g.created_at as createdAt";
+  "g.id as id, g.role_ns as roleNamespace, coalesce(r.name, g.role_name) as roleName, g.target_ns as namespace, g.created_at as createdAt, r.id as roleId, (r.id is not null) as known, g.mode as mode, g.granted_by as grantedBy";
 
 /** True when the hub has any grant: every lookup below returns at once when not. */
 const anyReach = (sql: SqlStorage, orgId: string): boolean =>
@@ -124,7 +133,7 @@ export function listReach(
   orgId: string,
   max = BUS_REACH_MAX,
 ): ReachGrant[] {
-  return all<ReachGrant>(
+  return grants(
     sql,
     `select ${GRANT_COLS} from ${GRANT_FROM} where g.org_id = ? and g.mode = 'reach'
       order by g.role_ns, g.lname, g.target_ns limit ?`,
@@ -185,7 +194,7 @@ export function addReach(
   )[0];
   if (!role) return { ok: false, reason: "role_unknown" };
   const read = () =>
-    all<ReachGrant>(
+    grants(
       sql,
       `select ${GRANT_COLS} from ${GRANT_FROM}
         where g.org_id = ? and g.role_ns = ? and g.lname = ? and g.mode = 'reach' and g.target_ns = ?`,
@@ -228,7 +237,7 @@ export function removeReach(
   orgId: string,
   id: string,
 ): ReachGrant | null {
-  const row = all<ReachGrant>(
+  const row = grants(
     sql,
     `select ${GRANT_COLS} from ${GRANT_FROM} where g.org_id = ? and g.mode = 'reach' and g.id = ?`,
     orgId,
@@ -237,4 +246,104 @@ export function removeReach(
   if (!row) return null;
   sql.exec("delete from reach_grants where org_id = ? and id = ?", orgId, id);
   return row;
+}
+
+/**
+ * Replaces the set of namespaces role (`roleNs`, `roleName`) reaches with
+ * `targets`, all or nothing: every target and both caps are checked before
+ * anything is written, and the writes run in `tx`. Grants kept keep their row
+ * (and so their provenance and time); new ones are the member's own. Same
+ * refusals as addReach; a duplicate target counts once.
+ */
+export function setReach(
+  sql: SqlStorage,
+  orgId: string,
+  roleNs: string,
+  roleName: string,
+  targets: string[],
+  now: number,
+  newId: () => string,
+  tx: <T>(fn: () => T) => T,
+  max = BUS_REACH_MAX,
+  perRole = BUS_REACH_PER_ROLE,
+):
+  | { ok: true; grants: ReachGrant[]; changed: boolean }
+  | Exclude<PutReachResult, { ok: true }> {
+  if (!WireNamespaceSchema.safeParse(roleNs).success)
+    return { ok: false, reason: "invalid", field: "namespace" };
+  const want = [...new Set(targets)].sort();
+  for (const t of want)
+    if (!WireNamespaceSchema.safeParse(t).success || t === roleNs)
+      return { ok: false, reason: "invalid", field: "target" };
+  const lname = roleName.toLowerCase();
+  const role = all<{ name: string }>(
+    sql,
+    "select name from roles where org_id = ? and namespace = ? and lname = ?",
+    orgId,
+    roleNs,
+    lname,
+  )[0];
+  if (!role) return { ok: false, reason: "role_unknown" };
+  const have = reachOfRole(sql, orgId, roleNs, lname, max);
+  const keep = new Set(want);
+  const add = want.filter((t) => !have.includes(t));
+  const drop = have.filter((t) => !keep.has(t));
+  if (want.length > perRole) return { ok: false, reason: "reach_limit" };
+  const total =
+    all<{ n: number }>(
+      sql,
+      "select count(*) as n from reach_grants where org_id = ?",
+      orgId,
+    )[0]?.n ?? 0;
+  if (total - drop.length + add.length > max)
+    return { ok: false, reason: "reach_limit" };
+  tx(() => {
+    for (const t of drop)
+      sql.exec(
+        "delete from reach_grants where org_id = ? and role_ns = ? and lname = ? and mode = 'reach' and target_ns = ?",
+        orgId,
+        roleNs,
+        lname,
+        t,
+      );
+    for (const t of add)
+      sql.exec(
+        `insert into reach_grants (id, org_id, role_ns, role_name, lname, mode, target_ns, created_at, granted_by, machine_id)
+         values (?, ?, ?, ?, ?, 'reach', ?, ?, 'member', null)`,
+        newId(),
+        orgId,
+        roleNs,
+        role.name,
+        lname,
+        t,
+        now,
+      );
+  });
+  return {
+    ok: true,
+    changed: add.length + drop.length > 0,
+    grants: grants(
+      sql,
+      `select ${GRANT_COLS} from ${GRANT_FROM}
+        where g.org_id = ? and g.role_ns = ? and g.lname = ? and g.mode = 'reach'
+        order by g.target_ns`,
+      orgId,
+      roleNs,
+      lname,
+    ),
+  };
+}
+
+/** Every namespace any agent of the hub ever ran in (live or not), sorted, at most `max`. */
+export function usedNamespaces(
+  sql: SqlStorage,
+  orgId: string,
+  max = 1000,
+): string[] {
+  return all<{ ns: string }>(
+    sql,
+    "select distinct namespace as ns from agents where org_id = ? order by ns limit ?",
+    orgId,
+    max,
+  ).map((r) => r.ns);
 }

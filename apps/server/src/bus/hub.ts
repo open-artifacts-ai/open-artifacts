@@ -95,6 +95,8 @@ import {
   type ReachGrant,
   reachNamespaces,
   removeReach,
+  setReach,
+  usedNamespaces,
 } from "./reach.js";
 import {
   decideReachProposal,
@@ -3670,6 +3672,43 @@ export class BusHub extends DurableObject<Env> {
       });
     logEvent("reach_set", r.ok ? { ok: 1 } : { reason: r.reason });
     return r;
+  }
+
+  /**
+   * #1346: replaces the namespaces role (`roleNamespace`, `roleName`) reaches
+   * with `targets` in one transaction (all or nothing). Live at once for the
+   * namespaces gained or lost. Worker only.
+   */
+  async setReach(
+    roleNamespace: string,
+    roleName: string,
+    targets: string[],
+  ): Promise<
+    { ok: true; grants: ReachGrant[] } | Exclude<PutReachResult, { ok: true }>
+  > {
+    const r = setReach(
+      this.ctx.storage.sql,
+      OWNER_ORG_ID,
+      roleNamespace,
+      roleName,
+      targets,
+      this.#now(),
+      newId,
+      (fn) => this.ctx.storage.transactionSync(fn),
+    );
+    if (r.ok && r.changed)
+      notifyRoster(this.ctx, {
+        namespaces: [roleNamespace],
+        global: false,
+        reachOnly: true,
+      });
+    logEvent("reach_set", r.ok ? { ok: 1 } : { reason: r.reason });
+    return r.ok ? { ok: true, grants: r.grants } : r;
+  }
+
+  /** #1346: the namespaces this member's machines have used, for the grant picker. Worker only. */
+  async usedNamespaces(): Promise<string[]> {
+    return usedNamespaces(this.ctx.storage.sql, OWNER_ORG_ID);
   }
 
   /** #1346: removes grant `id`; false when unknown. Live at once. Worker only. */
