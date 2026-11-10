@@ -377,6 +377,7 @@ describe("the unsubscribe token", () => {
     expect(g.status).toBe(200);
     const gt = await g.text();
     expect(gt).toContain("Turn off comment emails");
+    expect(gt).toContain("Stop comment emails from ");
     expect(gt).toContain("<button");
     expect(await flag(u.userId)).toBe(1);
     const p0 = await hit("POST", COMMENT_UNSUB_PATH, `t=${t}`);
@@ -462,8 +463,8 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
     );
     expect(toOther.text).toContain("Change this in Settings: ");
     // The comment's links are not clickable; ours are.
-    expect(toOther.text).toContain("https[:]//evil.example/x");
-    expect(toOther.text).toContain("www[.]evil.example");
+    expect(toOther.text).toContain("https[:]//evil[.]example/x");
+    expect(toOther.text).toContain("www[.]evil[.]example");
     expect(toOther.html).not.toContain("https://evil");
     void stored;
   });
@@ -564,5 +565,134 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
     expect((m.sent[0] as Sent).text).toContain(
       "1 more comment wasn't emailed. It's on the page.",
     );
+  });
+
+  it("bare domains and addresses are broken in text and HTML; ordinary text is not", async () => {
+    const s = await setup();
+    const m = mailer();
+    await thread(
+      m.e,
+      s.id,
+      person(s.editor),
+      s.editor,
+      "go to paypal.com.evil.io/login or mail a@b.co, e.g. 1.5 times",
+    );
+    const mail = m.sent[0] as Sent;
+    for (const part of [mail.text, mail.html]) {
+      expect(part).toContain("paypal[.]com[.]evil[.]io/login");
+      expect(part).toContain("a[at]b[.]co");
+      expect(part).toContain("e.g. 1.5 times");
+      expect(part).not.toContain("paypal.com");
+      expect(part).not.toContain("a@b.co");
+    }
+  });
+
+  it("a guest-role account is never emailed", async () => {
+    const s = await setup();
+    const g = await login(
+      `guest-${tag}-${newId().slice(0, 4).toLowerCase()}@x.com`,
+      "guest",
+    );
+    await api(app, R.shares(s.id), s.owner.cookie, {
+      method: "PUT",
+      body: { email: (await getUser(E, g.userId))?.email, role: "editor" },
+    });
+    const gm = (await getUser(E, g.userId)) as Member;
+    const t = await thread(E, s.id, person(s.editor), s.editor);
+    await reply(
+      E,
+      s.id,
+      t.id,
+      { kind: "user", id: g.userId },
+      {
+        ...g,
+        member: gm,
+        email: gm.email,
+      },
+    );
+    const m = mailer();
+    await reply(m.e, s.id, t.id, person(s.owner), s.owner);
+    expect(m.sent.map((x) => x.to)).toEqual([s.editor.email]);
+  });
+
+  it("a guest author shows as '{name} (guest)'", async () => {
+    const s = await setup();
+    const m = mailer();
+    await addThread(
+      m.e,
+      art(s.id),
+      { kind: "guest", short: "g1", rate: "ip:1", name: "Pat" },
+      { userId: null, short: "g1", moderator: false },
+      { anchor: { kind: "note" }, body: "hi" },
+      { after: AFTER },
+    );
+    const mail = m.sent[0] as Sent;
+    expect(mail.subject).toBe("Pat (guest) commented on Doc");
+    expect(mail.text).toContain("Pat (guest) commented on Doc:");
+  });
+
+  it("the left-out count is put back when the send fails", async () => {
+    const s = await setup();
+    await E.DB.prepare(
+      "insert into counters (key, n, day) values (?, 3, '2026-01-01') on conflict (key) do update set n = 3",
+    )
+      .bind(`cleft:${s.owner.userId}`)
+      .run();
+    const bad = mailer(true);
+    await thread(bad.e, s.id, person(s.editor), s.editor);
+    const row = await E.DB.prepare("select n from counters where key = ?")
+      .bind(`cleft:${s.owner.userId}`)
+      .first<{ n: number }>();
+    expect(row?.n).toBe(3);
+    const ok = mailer();
+    await thread(ok.e, s.id, person(s.editor), s.editor);
+    expect((ok.sent[0] as Sent).text).toContain(
+      "3 more comments weren't emailed.",
+    );
+  });
+});
+
+describe("comment emails have their own instance-wide bucket", () => {
+  it("a full comment bucket stops comment mail only; invites and shares still send", async () => {
+    const m = mailer();
+    const e = { ...m.e, COMMENT_EMAIL_DAILY_CAP: "2" } as Env;
+    const render = () => ({ subject: "s", text: "t", html: "<p>t</p>" });
+    const to = (i: number) => `bucket-${i}-${tag}@x.com`;
+    expect(
+      await sendEmail(e, null, to(1), render, {
+        kind: "comment",
+        instance: "x",
+      }),
+    ).toBe(true);
+    expect(
+      await sendEmail(e, null, to(2), render, {
+        kind: "comment",
+        instance: "x",
+      }),
+    ).toBe(true);
+    expect(
+      await sendEmail(e, null, to(3), render, {
+        kind: "comment",
+        instance: "x",
+      }),
+    ).toBe(false);
+    expect(
+      await sendEmail(e, "u1", to(4), render, {
+        kind: "invite",
+        instance: "x",
+      }),
+    ).toBe(true);
+    expect(
+      await sendEmail(e, "u1", to(5), render, { kind: "share", instance: "x" }),
+    ).toBe(true);
+    // And invites do not use the comment bucket's slots.
+    const all = await E.DB.prepare(
+      "select n from counters where key = 'email:*'",
+    ).first<{ n: number }>();
+    const c = await E.DB.prepare(
+      "select n from counters where key = 'email:c:*'",
+    ).first<{ n: number }>();
+    expect(c?.n).toBe(2);
+    expect(all?.n).toBe(2);
   });
 });

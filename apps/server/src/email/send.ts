@@ -21,11 +21,21 @@ export const MAX_EMAILS_PER_USER_PER_DAY = 20;
 export const MAX_EMAILS_PER_DAY = 100;
 const EMAIL_DAILY_CAP_MAX = 100_000;
 
-export function emailDailyCap(env: Pick<Env, "EMAIL_DAILY_CAP">): number {
-  const v = env.EMAIL_DAILY_CAP;
+function dailyCapOf(v: string | undefined): number {
   if (!v || !/^[1-9]\d*$/.test(v)) return MAX_EMAILS_PER_DAY;
   const n = Number(v);
   return n <= EMAIL_DAILY_CAP_MAX ? n : MAX_EMAILS_PER_DAY;
+}
+
+export function emailDailyCap(env: Pick<Env, "EMAIL_DAILY_CAP">): number {
+  return dailyCapOf(env.EMAIL_DAILY_CAP);
+}
+
+/** Comment notice emails per UTC day, instance-wide: COMMENT_EMAIL_DAILY_CAP, else the same default. Its own bucket (#1467). */
+export function commentEmailDailyCap(
+  env: Pick<Env, "COMMENT_EMAIL_DAILY_CAP">,
+): number {
+  return dailyCapOf(env.COMMENT_EMAIL_DAILY_CAP);
 }
 /** Emails one recipient address may receive per UTC day, instance-wide. */
 export const MAX_EMAILS_PER_RECIPIENT_PER_DAY = 5;
@@ -36,6 +46,8 @@ export const MAX_EMAILS_PER_RECIPIENT_PER_DAY = 5;
  */
 export const MAX_COMMENT_EMAILS_PER_RECIPIENT_PER_DAY = 20;
 const ALL_KEY = "email:*";
+/** The instance-wide bucket of comment emails: invites, shares and codes never count in it, nor it in theirs. */
+const COMMENT_ALL_KEY = "email:c:*";
 
 // One plain addr-spec: no quotes, commas, semicolons, angle brackets, comments
 // or whitespace, so the binding can never read `to` as a list or display name.
@@ -270,7 +282,11 @@ export async function sendEmail(
     if (!caps) {
       const day = utcDay(now);
       const toKey = await sha256Hex(to.toLowerCase());
-      caps = [[ALL_KEY, emailDailyCap(env), day]];
+      caps = [
+        opts.kind === "comment"
+          ? [COMMENT_ALL_KEY, commentEmailDailyCap(env), day]
+          : [ALL_KEY, emailDailyCap(env), day],
+      ];
       if (opts.kind === "comment")
         caps.push([
           `email:c:to:${toKey}`,

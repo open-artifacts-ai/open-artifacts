@@ -89,7 +89,7 @@ async function recipients(
 /** A person's name, or "{agent} ({person}'s agent)". */
 async function authorName(env: Env, c: StoredComment): Promise<string> {
   const a = c.author;
-  if (a.kind === "guest") return a.name || "A guest";
+  if (a.kind === "guest") return `${oneLine(a.name || "A guest", 60)} (guest)`;
   const u = await getUser(env, a.ref);
   const person = u ? senderName(u) : "Someone";
   if (!a.agent) return person;
@@ -97,20 +97,21 @@ async function authorName(env: Env, c: StoredComment): Promise<string> {
   return `${oneLine(agent, 60)} (${person}'s agent)`;
 }
 
-const readLeftOut = async (env: Env, userId: string): Promise<number> =>
+/** Takes the person's left-out count (and clears it) atomically; 0 when none. */
+const takeLeftOut = async (env: Env, userId: string): Promise<number> =>
   (
-    await stmt(env.DB, "select n from counters where key = ?")
+    await stmt(env.DB, "delete from counters where key = ? returning n")
       .bind(leftOutKey(userId))
       .first<{ n: number }>()
   )?.n ?? 0;
 
-const addLeftOut = (env: Env, userId: string, now: number) =>
+const addLeftOut = (env: Env, userId: string, now: number, n = 1) =>
   stmt(
     env.DB,
-    `insert into counters (key, n, day) values (?1, 1, ?2)
-     on conflict (key) do update set n = n + 1, day = excluded.day`,
+    `insert into counters (key, n, day) values (?1, ?3, ?2)
+     on conflict (key) do update set n = n + excluded.n, day = excluded.day`,
   )
-    .bind(leftOutKey(userId), new Date(now).toISOString().slice(0, 10))
+    .bind(leftOutKey(userId), new Date(now).toISOString().slice(0, 10), n)
     .run();
 
 /** Returns how many emails went out. Never throws. */
@@ -136,7 +137,8 @@ export async function emailCommentRecipients(
     }[] = [];
     for (const [id, reason] of await recipients(env, j)) {
       const user = await getUser(env, id);
-      if (!user) continue;
+      // Members only: a guest-role account gets none.
+      if (!user || user.role === "guest") continue;
       const pref = await stmt(
         env.DB,
         "select comment_email as v from users where id = ?",
@@ -172,9 +174,11 @@ export async function emailCommentRecipients(
     for (const e of eligible) {
       if (!won.has(e.id)) continue;
       let ok = false;
+      let leftOut = 0;
       const outcome: { limited?: boolean } = {};
       try {
-        const leftOut = await readLeftOut(env, e.id);
+        // Taken just before sending, put back if the send fails.
+        leftOut = await takeLeftOut(env, e.id);
         const unsubUrl = `${origin}${COMMENT_UNSUB_PATH}?t=${encodeURIComponent(await signUnsubToken(env, e.id))}`;
         ok = await sendEmail(
           env,
@@ -193,14 +197,14 @@ export async function emailCommentRecipients(
             }),
           { kind: "comment", instance: settings.name, now, outcome },
         );
-        if (ok && leftOut > 0)
-          await stmt(env.DB, "delete from counters where key = ?")
-            .bind(leftOutKey(e.id))
-            .run();
-        // The daily cap refused it: count what was left out for the next email.
-        if (!ok && outcome.limited) await addLeftOut(env, e.id, now);
       } catch (err) {
         logError("comment_email_failed", err);
+      }
+      if (!ok) {
+        // Put the taken count back; a cap refusal also counts this comment.
+        const back = leftOut + (outcome.limited ? 1 : 0);
+        if (back > 0)
+          await addLeftOut(env, e.id, now, back).catch(() => undefined);
       }
       // The slot is spent only by a send that went out.
       if (ok) sent++;

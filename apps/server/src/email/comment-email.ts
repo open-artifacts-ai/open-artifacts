@@ -37,9 +37,7 @@ const COPY = {
   because: "You're getting this because {{reason}}.",
   stop: "Stop comment emails",
   settings: "Change this in Settings",
-  // copy: confirm page wording is the builder's; Product gave only the button
-  confirmTitle: "Turn off comment emails?",
-  confirmBody: "You'll stop getting emails about comments on {{instance}}.",
+  confirmTitle: "Stop comment emails from {{instance}}?",
   confirmButton: "Turn off comment emails",
   offTitle: "Comment emails are off.",
   offBody:
@@ -98,9 +96,19 @@ export const TITLE_MAX = 60;
  * broken), so only our own links are live.
  */
 export function excerptOf(body: string): string {
-  return oneLine(body, EXCERPT_MAX)
-    .replace(/\b([a-z][a-z0-9+.-]*):\/\//gi, "$1[:]//")
-    .replace(/\bwww\./gi, "www[.]");
+  return (
+    oneLine(body, EXCERPT_MAX)
+      // Email addresses first: "@" becomes "[at]".
+      .replace(/@/g, "[at]")
+      // A scheme: "https://x" becomes "https[:]//x".
+      .replace(/\b([a-z][a-z0-9+.-]*):\/\//gi, "$1[:]//")
+      // A bare domain: a word-ish token whose last label looks like a TLD
+      // ("paypal.com.evil.io/login", "b.co"); "e.g." and "1.5" stay.
+      .replace(
+        /\b(?=[a-z0-9-]*[a-z])[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,24}\b/gi,
+        (m) => m.replace(/\./g, "[.]"),
+      )
+  );
 }
 
 export function commentEmail(p: {

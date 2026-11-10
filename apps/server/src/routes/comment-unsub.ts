@@ -23,7 +23,7 @@ const HEADERS = {
 };
 
 const page = (title: string, body: string, form = "") =>
-  `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${escapeHtml(title)}</title><style>body{font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem}button{font:inherit;padding:.5rem 1rem}</style></head><body><h1>${escapeHtml(title)}</h1><p>${escapeHtml(body)}</p>${form}</body></html>`;
+  `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><title>${escapeHtml(title)}</title><style>body{font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:28rem;margin:4rem auto;padding:0 1rem}button{font:inherit;padding:.5rem 1rem}</style></head><body><h1>${escapeHtml(title)}</h1>${body ? `<p>${escapeHtml(body)}</p>` : ""}${form}</body></html>`;
 
 /** Turns the token's person's comment emails off (idempotent) and says so. */
 async function turnOff(c: Context<AppEnv>, t: string) {
@@ -62,8 +62,8 @@ export function mountCommentUnsub(app: AppType): void {
     const form = `<form method="post" action="${COMMENT_UNSUB_PATH}"><input type="hidden" name="t" value="${escapeHtml(t)}"><button type="submit">${escapeHtml(UNSUB_COPY.confirmButton)}</button></form>`;
     return c.html(
       page(
-        UNSUB_COPY.confirmTitle,
-        fill(UNSUB_COPY.confirmBody, { instance: oneLine(instance, 80) }),
+        fill(UNSUB_COPY.confirmTitle, { instance: oneLine(instance, 80) }),
+        "",
         form,
       ),
       200,
