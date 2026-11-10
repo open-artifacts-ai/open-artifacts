@@ -74,7 +74,8 @@ let reply: (s: Seen, n: number) => Response;
 const headerOf = (s: Seen) =>
   new Headers(s.init?.headers).get(LINK_PROOF_HEADER);
 
-const ctx = (id: string, kind = "main") => ({
+const ctx = (id: string, kind = "main", mode = "tui") => ({
+  mode,
   cwd: "/work/repo",
   sessionManager: { getSessionId: () => id, getSessionName: () => "My omp" },
   agent: { kind },
@@ -202,17 +203,22 @@ describe("omp session proof on /mcp (#1856)", () => {
     ]);
   });
 
-  it("never sends a header while two sessions are live in this process", async () => {
+  it("wraps only in the interactive TUI: not in RPC (which ACP reports), print, or an unknown mode", async () => {
+    const before = globalThis.fetch;
     const d = await daemon(["link"]);
-    await bind(d, omp("omp-a"));
-    const b = omp("omp-b");
-    await b.emit("session_start");
-    await call(MCP, { headers: OWN });
-    expect(headerOf(seen.at(-1) as Seen)).toBeNull();
-    // The other one ends: the one left may carry its face again.
-    await b.emit("session_shutdown");
-    await call(MCP, { headers: OWN });
-    expect(headerOf(seen.at(-1) as Seen)).not.toBeNull();
+    for (const mode of ["rpc", "rpc-ui", "acp", "print", "", undefined]) {
+      const s = omp("m-1");
+      await s.emit("session_start", { ...ctx("m-1"), mode });
+      expect(globalThis.fetch).toBe(before);
+      await s.emit("session_shutdown");
+    }
+    const s = omp("m-2");
+    await s.emit("session_start", {
+      ...ctx("m-2"),
+      mode: undefined,
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(d.proofs()).toHaveLength(0);
   });
 
   it("gives the header only to this instance's /mcp, and leaves other requests untouched", async () => {
@@ -308,14 +314,48 @@ describe("omp session proof on /mcp (#1856)", () => {
     ]);
   });
 
-  it("survives /new: the wrap, the header and the link stay, nothing is offered again", async () => {
+  it("/new, /resume and fork drop the old proof and a fresh link brings a new one", async () => {
+    const d = await daemon(["link"]);
+    const s = await bind(d);
+    const before = headerOf(seen.at(-1) as Seen) as string;
+    for (const [n, ev] of [
+      [2, "session_switch"],
+      [3, "session_branch"],
+    ] as const) {
+      await s.emit(ev, ctx(`omp-sess-${n}`));
+      await vi.waitFor(() => expect(d.proofs()).toHaveLength(n));
+      await vi.waitFor(async () => {
+        await call(MCP, { headers: OWN });
+        const now = headerOf(seen.at(-1) as Seen);
+        expect(now).not.toBeNull();
+        expect(now).not.toBe(before);
+        expect(d.proofs().at(-1)?.hash).toBe(sha(now as string));
+      });
+      // The old proof is gone for good.
+      expect(d.proofs()[0]?.hash).toBe(sha(before));
+    }
+    expect(new Set(d.proofs().map((f) => f.hash)).size).toBe(3);
+  });
+
+  it("a switch to the same session id changes nothing", async () => {
     const d = await daemon(["link"]);
     const s = await bind(d);
     const before = headerOf(seen.at(-1) as Seen);
-    await s.emit("session_switch", ctx("omp-sess-2"));
+    await s.emit("session_switch", ctx("omp-sess-1"));
     await call(MCP, { headers: OWN });
     expect(headerOf(seen.at(-1) as Seen)).toBe(before);
     expect(d.proofs()).toHaveLength(1);
+  });
+
+  it("the old proof never goes out between the switch and the new bind", async () => {
+    const d = await daemon(["link"], (n) =>
+      n === 0 ? { type: "link_proofed", bound: true } : undefined,
+    );
+    const s = await bind(d);
+    await s.emit("session_switch", ctx("omp-sess-2"));
+    await vi.waitFor(() => expect(d.proofs()).toHaveLength(2));
+    await call(MCP, { headers: OWN });
+    expect(headerOf(seen.at(-1) as Seen)).toBeNull();
   });
 
   it("takes the header away and puts fetch back at shutdown", async () => {
@@ -341,37 +381,60 @@ describe("omp session proof on /mcp (#1856)", () => {
     expect(headerOf(seen.at(-1) as Seen)).toBeNull();
   });
 
-  it("follows a redirect on the instance's /mcp with the header, and one off it without", async () => {
+  it("never follows a redirect itself: the proof stays on /mcp and Authorization never reaches another origin", async () => {
     const d = await daemon(["link"]);
     await bind(d);
     seen = [];
-    reply = (s, n) =>
+    reply = (_s, n) =>
       n === 0
         ? new Response(null, {
             status: 307,
-            headers: { location: `${MCP}/` },
+            headers: { location: "https://evil.test/collect" },
           })
-        : n === 1
-          ? new Response(null, {
-              status: 307,
-              headers: { location: "https://evil.test/collect" },
-            })
-          : new Response("{}", { status: 200 });
-    const r = await call(MCP, {
-      method: "POST",
-      body: "{}",
-      headers: OWN,
-    });
+        : new Response("{}", { status: 200 });
+    const r = await call(MCP, { method: "POST", body: "{}", headers: OWN });
     expect(r.status).toBe(200);
-    expect(seen.map((s) => s.url)).toEqual([
-      MCP,
-      `${MCP}/`,
-      "https://evil.test/collect",
-    ]);
+    // First the proofed call, held at the redirect.
+    expect(seen).toHaveLength(2);
+    expect(seen[0].url).toBe(MCP);
     expect((seen[0].init as RequestInit).redirect).toBe("manual");
     expect(headerOf(seen[0])).not.toBeNull();
-    expect(headerOf(seen[1])).toBe(headerOf(seen[0]));
-    expect(headerOf(seen[2])).toBeNull();
+    // Then the caller's own request through the native fetch: no proof, its own redirect handling.
+    expect(seen[1].url).toBe(MCP);
+    expect(headerOf(seen[1])).toBeNull();
+    expect((seen[1].init as RequestInit).redirect).toBeUndefined();
+    expect(new Headers(seen[1].init?.headers).get("authorization")).toBe(
+      "Bearer t",
+    );
+    expect(seen[1].init?.body).toBe("{}");
+    expect(seen.map((x) => x.url)).not.toContain("https://evil.test/collect");
+  });
+
+  it("returns the redirect as it is when the body cannot be sent twice", async () => {
+    const d = await daemon(["link"]);
+    await bind(d);
+    seen = [];
+    reply = () =>
+      new Response(null, { status: 307, headers: { location: `${MCP}/` } });
+    const body = new ReadableStream();
+    const r = await call(MCP, {
+      method: "POST",
+      body,
+      headers: OWN,
+      // biome-ignore lint/suspicious/noExplicitAny: Bun's duplex option
+      duplex: "half",
+    } as any);
+    expect(r.status).toBe(307);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("passes a caller's own redirect mode through", async () => {
+    const d = await daemon(["link"]);
+    await bind(d);
+    seen = [];
+    await call(MCP, { headers: OWN, redirect: "error" });
+    expect((seen[0].init as RequestInit).redirect).toBe("error");
+    expect(headerOf(seen[0])).not.toBeNull();
   });
 
   it("falls back to the plain call when the wrap itself fails", async () => {
