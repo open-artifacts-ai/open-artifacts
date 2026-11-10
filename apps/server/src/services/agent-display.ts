@@ -314,11 +314,9 @@ export function agentFace(
   // exactly a known product, else "<person>'s agent" (a bus name never).
   // The same for the owner: a client name is not their private note.
   const grantName = (): string => {
-    const given = (cleanName(a.name) ?? "").toLowerCase();
-    const product = Object.values(PRODUCTS).find(
-      (p) => p.toLowerCase() === given,
+    return (
+      knownProduct(a.name) ?? (owner ? agentOwnedBy(owner, c) : MEMBERS_AGENT)
     );
-    return product ?? (owner ? agentOwnedBy(owner, c) : MEMBERS_AGENT);
   };
   const name = !isPrivateAgent(a.via)
     ? grantName()
