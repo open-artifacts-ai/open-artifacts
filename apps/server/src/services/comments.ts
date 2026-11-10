@@ -470,17 +470,29 @@ const commentOf = (
         users.clash,
       )
     : "";
+  const asked = (c.ask?.to ?? []).flatMap((p): [string, string][] =>
+    p.kind === "agent"
+      ? [
+          [
+            p.name,
+            agentName(p.name, users.users.get(p.owner), viewer, users.clash),
+          ],
+        ]
+      : [],
+  );
+  const pairs: [string, string][] = [
+    ...(c.mentions ?? []).map((m, i): [string, string] => [
+      m.name,
+      shown[i] ?? m.name,
+    ]),
+    ...(c.assigned
+      ? [[c.assigned.name, assignedName] as [string, string]]
+      : []),
+    ...asked,
+  ];
   return {
     id: c.id,
-    body: maskBody(c.body, [
-      ...(c.mentions ?? []).map((m, i): [string, string] => [
-        m.name,
-        shown[i] ?? m.name,
-      ]),
-      ...(c.assigned
-        ? [[c.assigned.name, assignedName] as [string, string]]
-        : []),
-    ]),
+    body: maskBody(c.body, pairs),
     author,
     createdAt: c.createdAt,
     editedAt: c.editedAt,
@@ -489,9 +501,22 @@ const commentOf = (
     ...(c.ask
       ? {
           ask: {
-            question: c.ask.question,
-            options: c.ask.options,
-            ...(c.ask.recommended ? { recommended: c.ask.recommended } : {}),
+            question: maskBody(c.ask.question, pairs),
+            options: c.ask.options.map((o) => ({
+              ...o,
+              label: maskBody(o.label, pairs),
+              ...(o.detail !== undefined
+                ? { detail: maskBody(o.detail, pairs) }
+                : {}),
+            })),
+            ...(c.ask.recommended
+              ? {
+                  recommended: {
+                    ...c.ask.recommended,
+                    why: maskBody(c.ask.recommended.why, pairs),
+                  },
+                }
+              : {}),
             to: c.ask.to.map((p) => partyView(p, viewer, users)),
             ...(c.ask.answer
               ? {
