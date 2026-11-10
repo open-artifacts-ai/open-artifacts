@@ -50,6 +50,29 @@ const TOKENS: Record<string, HostedMockOptions> = {
       readOnly: false,
     },
   },
+  // Business with no Stripe customer (provisioned or comped), and with one.
+  "plan-no-customer": {
+    billing: {
+      tier: "business",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: false,
+      creatorsThisMonth: 4,
+      readOnly: false,
+    },
+  },
+  "plan-customer": {
+    billing: {
+      tier: "business",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      creatorsThisMonth: 4,
+      readOnly: false,
+    },
+  },
   "plan-team-lapsed": {
     billing: {
       tier: "team",

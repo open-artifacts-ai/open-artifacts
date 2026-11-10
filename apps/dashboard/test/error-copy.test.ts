@@ -121,7 +121,7 @@ it.each([
   [
     "solo_unpaid",
     "Publishing is paused until this instance's Solo plan is paid. Ask your instance owner.",
-    "Your Solo plan is paused. Keep publishing for $1/month or $12/year.",
+    "Your Solo plan is paused. Keep publishing for $1/month or $10/year.",
   ],
   // Design, Self-serve screens v6, decision 3: one line per reason. The member
   // lines for lapsed and payment_failed end with what still works (#1844).
@@ -302,6 +302,14 @@ it("billing_unavailable", () => {
   expect(
     errorCopy(new ApiClientError("billing_unavailable", "s", 503), "x"),
   ).toBe("Billing isn't reachable right now. Try again in a minute.");
+});
+
+it("no_billing_customer", () => {
+  expect(
+    errorCopy(new ApiClientError("no_billing_customer", "s", 409), "x"),
+  ).toBe(
+    "Open Artifacts set up this plan for you, so there's nothing to pay or manage here.",
+  );
 });
 
 it("space_forbidden under the plan cap says the instance is read-only", () => {

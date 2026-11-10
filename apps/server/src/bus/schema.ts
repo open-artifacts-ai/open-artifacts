@@ -343,7 +343,8 @@ create table if not exists meta (
 -- #1317: server notices waiting for their address (a notBefore not reached,
 -- or a machine offline). One row per (address, coalesce key); a newer notice
 -- replaces it. Written only by BusHub.deliverNotice; no frame reaches it.
--- parked: due, but the machine had no live socket (sent on its agent_up).
+-- parked: 1 = due, but the machine had no live socket (sent on its agent_up);
+-- 2 = due, held for a live daemon too old to read it (own caps, #1828).
 create table if not exists notices (
   to_ns text not null,
   to_lname text not null,

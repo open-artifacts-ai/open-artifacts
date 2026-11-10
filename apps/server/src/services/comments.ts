@@ -1,9 +1,11 @@
 import {
   type Anchor,
   type AnchorInput,
+  type ArtifactAgent,
   type AskInput,
   AskInputSchema,
   anchorInputSchema,
+  BusAddressSchema,
   type Comment,
   type CommentAuthor,
   type CommentList,
@@ -11,6 +13,7 @@ import {
   type KeyRef,
   type CommentThread as Thread,
 } from "@oa/shared";
+import { canConnect } from "../auth/agents.js";
 import { type ArtifactRow, accessLevel, callerOf } from "../auth/authz.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
@@ -23,6 +26,7 @@ import {
   type StoredAgent,
   type StoredComment,
   type StoredIdentity,
+  type StoredParticipant,
   type StoredParty,
   type StoredThread,
 } from "../runtime/comments-store.js";
@@ -49,6 +53,7 @@ import {
 } from "./asks.js";
 import { agentIdentityOf } from "./bus.js";
 import {
+  agentKey,
   agentRoster,
   askerRoster,
   type CommentNoticeKind,
@@ -109,7 +114,17 @@ export type CommentViewer = {
   moderator?: boolean;
   /** Signed out, or a guest-role member: sees "<person>'s agent", never a bus name (#1822). */
   guest?: boolean;
+  /**
+   * A guest or restricted cap (capsReads): not a full member for what reaches
+   * an agent without an @ (#1900, #1968). The billing "plan" cap does not set
+   * it. Signed-out visitors are `guest`.
+   */
+  capped?: boolean;
 };
+
+/** Anonymous, guest-role, or capped to guest or restricted: never wakes an agent without an @. */
+const outsider = (v: CommentViewer): boolean =>
+  v.guest === true || v.capped === true;
 
 const faceViewer = (v: CommentViewer): FaceViewer => ({
   userId: v.userId,
@@ -691,7 +706,88 @@ type Resolved = {
   /** What the stored mention rows are: plain mentions, or the agents a reply to the asker reached (#1614). */
   mentionKind: "mention" | "asker";
   assign: string | null;
+  /** #1900: the agents this comment names (mentioned, assigned, asked), who join the thread. */
+  participants: StoredParticipant[];
 };
+
+const participantOf = (a: RosterAgent): StoredParticipant => ({
+  ...storedAgent(a),
+  namespace: a.address.namespace,
+});
+
+/**
+ * #1900: an agent that comments joins the thread, but only one the server
+ * identified (#1822): that proof gives the exact bus address. An agent with no
+ * identity (a legacy token, an unlinked grant) cannot be told apart from the
+ * member's other agents, so it does not join by commenting.
+ */
+async function authorParticipant(
+  artifactId: string,
+  who: CommentWho,
+): Promise<StoredParticipant[]> {
+  const id = who.kind === "user" ? who.agent?.identity : undefined;
+  if (who.kind !== "user" || !id) return [];
+  const address = { namespace: id.namespace, name: id.name };
+  if (!BusAddressSchema.safeParse(address).success) return [];
+  return [
+    {
+      kind: "agent",
+      key: await agentKey(artifactId, who.id, address),
+      name: id.name,
+      owner: who.id,
+      namespace: id.namespace,
+    },
+  ];
+}
+
+/**
+ * #1968: the agent that published the version a page-wide thread starts on, as
+ * a roster agent, or null. Only a linked one counts: the version carries the
+ * server-set identity (#1822) of the bus session that proved itself on the
+ * publisher's own hub, so the address is exact and never another member's.
+ * Null for a web publish, an unlinked agent, a publisher who can no longer
+ * read the artifact or hold a bus, and the author's own agent.
+ */
+async function pagePublisher(
+  env: Env,
+  a: Pick<ArtifactRow, "id" | "currentVersion">,
+  who: CommentWho,
+): Promise<RosterAgent | null> {
+  const row = await stmt(
+    env.DB,
+    "select agent_identity as identity, created_by as userId from versions where artifact_id = ? and version = ?",
+  )
+    .bind(a.id, a.currentVersion)
+    .first<{ identity: string | null; userId: string }>();
+  if (!row?.identity) return null;
+  let id: { identityId?: unknown; namespace?: unknown; name?: unknown };
+  try {
+    id = JSON.parse(row.identity);
+  } catch {
+    return null;
+  }
+  const address = BusAddressSchema.safeParse({
+    namespace: id.namespace,
+    name: id.name,
+  });
+  if (!address.success) return null;
+  if (who.kind === "user" && who.agent?.identity?.identityId === id.identityId)
+    return null;
+  const user = await getUser(env, row.userId);
+  if (
+    !user ||
+    !canConnect(user) ||
+    !(await accessLevel(env, callerOf(user), a.id))
+  )
+    return null;
+  return {
+    key: await agentKey(a.id, row.userId, address.data),
+    name: address.data.name,
+    online: false,
+    userId: row.userId,
+    address: address.data,
+  };
+}
 
 /** The key of a roster agent (comment-agents.ts agentKey). */
 const AGENT_KEY = /^agent:[0-9a-f]{32}$/;
@@ -719,6 +815,7 @@ async function resolveExtras(
     mentions: [],
     mentionKind: "mention",
     assign: null,
+    participants: [],
   };
   const wantsTargets = (x.mentions?.length ?? 0) > 0 || x.assign !== undefined;
   if (!wantsTargets && !x.ask) return none;
@@ -812,6 +909,7 @@ async function resolveExtras(
     mentions: mentioned.map((m) => m.key),
     mentionKind: "mention",
     assign: assigned?.key ?? null,
+    participants: [...agents.values()].map((x) => participantOf(x.agent)),
   };
 }
 
@@ -1005,8 +1103,27 @@ export async function addThread(
   };
   const { anchor, version } = await checkAnchor(env, a, raw.anchor, take);
   if (!taken) await take();
-  // After the rate-limit charge: a refused post costs no hub reads.
+  const page =
+    // Members only (#1968): not a signed-out visitor, a guest or a guest-role member.
+    anchor.kind === "note" &&
+    r0.agents.length === 0 &&
+    who.kind === "user" &&
+    !outsider(viewer)
+      ? await pagePublisher(env, a, who)
+      : null;
+  if (page) {
+    r0.extras = { ...r0.extras, mentions: [storedAgent(page)] };
+    r0.agents.push({ agent: page, kind: "mention" });
+    r0.mentions.push(page.key);
+  }
+  // After the rate-limit charge, and after the page mention is added: a
+  // refused post costs no hub reads, and the page's agent gets its identity too.
   const r = await withIdentities(env, r0);
+  const participants = [
+    ...r.participants,
+    ...(page ? [{ ...participantOf(page), page: true as const }] : []),
+    ...(await authorParticipant(a.id, who)),
+  ];
   const t = await call(() =>
     stub(env, a.id).commentsAdd({
       actor: actorOf(who),
@@ -1016,6 +1133,7 @@ export async function addThread(
       version,
       body,
       ...(r.extras ? { extras: r.extras } : {}),
+      ...(participants.length ? { participants } : {}),
     }),
   );
   const root = t.comments[0];
@@ -1057,7 +1175,109 @@ async function resolveToAsker(
     mentions: to.map((a) => a.key),
     mentionKind: "asker",
     assign: null,
+    // The asker's agents are not named one by one: the asking agent joins by its own comment.
+    participants: [],
   };
+}
+
+/**
+ * #1900: a reply from a person (a signed-in member typing or calling without an
+ * agent, or a guest) tells the thread's participant agents, except the ones
+ * this same comment already reached (mention, assign, ask, reply to the
+ * asker). An agent's reply never does this. The bound (a cap per thread, none once resolved) is spent in the DO; an agent
+ * whose member lost access or cannot hold a bus is skipped and its spend given
+ * back. A notice goes only to the exact participant, never its member's other
+ * agents. Never throws.
+ */
+async function threadReply(
+  env: Env,
+  a: Pick<ArtifactRow, "id" | "currentVersion">,
+  threadId: string,
+  c: StoredComment,
+  r: Resolved,
+  viewer: CommentViewer,
+): Promise<void> {
+  // Members only (#1900, #1968): never an agent, a signed-out visitor, a guest
+  // or a guest-role member.
+  if (c.author.kind !== "user" || c.author.agent || outsider(viewer)) return;
+  try {
+    const due = await call(() =>
+      stub(env, a.id).commentsThreadReplyTake({
+        threadId,
+        at: c.createdAt,
+        exclude: r.agents.map((x) => x.agent.key),
+        // A reply that @-mentions someone is for them (#1968).
+        skipPage: r.agents.length > 0,
+      }),
+    );
+    if (due.length === 0) return;
+    const reached: RosterAgent[] = [];
+    const users = new Map<string, boolean>();
+    for (const p of due) {
+      let ok = users.get(p.owner);
+      if (ok === undefined) {
+        const user = await getUser(env, p.owner);
+        ok =
+          !!user &&
+          canConnect(user) &&
+          !!(await accessLevel(env, callerOf(user), a.id));
+        users.set(p.owner, ok);
+      }
+      if (ok)
+        reached.push({
+          key: p.key,
+          name: p.name,
+          online: false,
+          userId: p.owner,
+          address: { namespace: p.namespace, name: p.name },
+        });
+    }
+    const version = Math.max(1, a.currentVersion);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<DeliveryState>((res) => {
+      timer = setTimeout(() => res("dropped"), NOTICE_BUDGET_MS);
+    });
+    let outs: DeliveryState[];
+    try {
+      outs = await Promise.all(
+        reached.map((agent) =>
+          Promise.race([
+            notifyAgent(
+              env,
+              a.id,
+              version,
+              threadId,
+              c.id,
+              "thread_reply",
+              agent,
+              isTyped(c.author) && c.author.ref === agent.userId,
+            ),
+            late,
+          ]),
+        ),
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+    // Spent for a notice that went out or is held; given back for the rest.
+    const back = [
+      ...due.filter((p) => !reached.some((x) => x.key === p.key)),
+      ...reached.filter((_, i) => outs[i] === "dropped"),
+    ].map((p) => p.key);
+    if (back.length > 0)
+      await call(() =>
+        stub(env, a.id).commentsThreadReplyRefund({
+          threadId,
+          at: c.createdAt,
+          keys: back,
+        }),
+      ).catch(() => undefined);
+  } catch (e) {
+    logInfo("comment_thread_reply_failed", {
+      artifactId: a.id,
+      code: e instanceof ApiError ? e.code : "error",
+    });
+  }
 }
 
 /** A reply. It does not reopen the thread. */
@@ -1092,6 +1312,10 @@ export async function addReply(
       await resolveExtras(env, artifactId, who, extras, opts),
     );
   }
+  const participants = [
+    ...r.participants,
+    ...(await authorParticipant(artifactId, who)),
+  ];
   const c = await call(() =>
     stub(env, artifactId).commentsReply({
       threadId,
@@ -1099,6 +1323,7 @@ export async function addReply(
       rate: rateKeyOf(who),
       body: text,
       ...(r.extras ? { extras: r.extras } : {}),
+      ...(participants.length ? { participants } : {}),
     }),
   );
   // The thread's bound (one notice per window, a cap in all) left the reply
@@ -1107,10 +1332,6 @@ export async function addReply(
   if (extras.toAsker && !c.mentions?.length)
     r = { ...r, agents: [], mentions: [] };
   if (c.ask) await indexAsk(env, artifactId, threadId, c.id, c.ask.to);
-  if (r.agents.length === 0) {
-    await announce(env, artifactId, who, opts.after, r);
-    return commentView(env, c, viewer);
-  }
   const row = await stmt(
     env.DB,
     "select current_version as v from artifacts where id = ?",
@@ -1118,6 +1339,12 @@ export async function addReply(
     .bind(artifactId)
     .first<{ v: number }>();
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
+  // #1900: a person's reply also tells the thread's other agents, once each.
+  await threadReply(env, a, threadId, c, r, viewer);
+  if (r.agents.length === 0) {
+    await announce(env, artifactId, who, opts.after, r);
+    return commentView(env, c, viewer);
+  }
   const sent = await deliver(env, a, threadId, c, r);
   // The bound is spent when a notice goes out or is held; a reply whose agents
   // all read "gone" (no session, or a stalled hub) gives it back (#1614).
@@ -1181,14 +1408,28 @@ export async function answerAsk(
   return commentView(env, c, viewer);
 }
 
-/** The agents that can be mentioned, assigned or asked on the artifact. */
+/**
+ * The agents that can be mentioned, assigned or asked on the artifact. A
+ * guest or signed-out viewer gets no machine and no last-active time, only the
+ * state (a signed-out viewer never reaches here: the route lists none).
+ */
 export async function artifactAgents(
   env: Env,
   artifactId: string,
   viewerId: string | null,
-): Promise<{ key: string; name: string; online: boolean }[]> {
+  guest = false,
+): Promise<ArtifactAgent[]> {
+  const masked = guest || viewerId === null;
   return (await agentRoster(env, artifactId, viewerId, true, true)).map(
-    ({ key, name, online }) => ({ key, name, online }),
+    ({ key, name, online, state, lastActiveAt, machine, owner }) => ({
+      key,
+      name,
+      online,
+      state,
+      lastActiveAt: masked ? null : lastActiveAt,
+      machine: masked ? null : machine,
+      owner,
+    }),
   );
 }
 

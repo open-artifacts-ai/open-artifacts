@@ -243,6 +243,17 @@ export function unconfirmedText(to: string, excerpt?: string): string {
 }
 
 /**
+ * The correction to an Expired notice the sender already saw (#1760): the
+ * recipient took the message after all. The Expired shape and wrap.
+ */
+export function correctedDeliveredText(to: string, excerpt?: string): string {
+  const head = (v: string) => `✓  Delivered after all: your message to ${v}`;
+  const tail = "reached it. Ignore the earlier Expired notice.";
+  if (!excerpt) return fitLine((v) => `${head(v)} ${tail}`, to);
+  return fitLine((v) => quoted(head(v), `"${excerpt}"`, tail), to);
+}
+
+/**
  * A message the hub delivered after send_message stopped waiting, as the
  * sender's next tool result reads it: the Expired shape and wrap.
  */

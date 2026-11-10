@@ -86,7 +86,7 @@ describe("doctor", () => {
       { mode: 0o600 },
     );
     await doctor(ctx);
-    expect(ctx.all().join("\n")).not.toContain(".oa-bus.json");
+    expect(ctx.all().join("\n")).not.toContain("Fix:");
   });
 });
 

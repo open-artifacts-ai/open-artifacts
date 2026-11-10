@@ -68,7 +68,7 @@ export type CodexEntry = {
   env?: Record<string, string>;
 };
 
-type Doc = Record<string, unknown>;
+export type Doc = Record<string, unknown>;
 
 /** The config as text and parsed: missing is empty, invalid TOML throws. */
 export function readToml(path: string): { text: string; doc: Doc } {
@@ -88,7 +88,7 @@ export function readToml(path: string): { text: string; doc: Doc } {
 }
 
 /** Plain JSON values: smol-toml's tables have no prototype. */
-const plain = (v: unknown): unknown =>
+export const plain = (v: unknown): unknown =>
   v === undefined ? undefined : JSON.parse(JSON.stringify(v));
 
 const servers = (doc: Doc) => doc.mcp_servers as Doc | undefined;
@@ -188,7 +188,7 @@ export function sandboxRisk(
   return roots.some(covers) ? "writable-root" : undefined;
 }
 
-const str = (s: string) => JSON.stringify(s);
+export const str = (s: string) => JSON.stringify(s);
 const key = (k: string) => (/^[A-Za-z0-9_-]+$/.test(k) ? k : str(k));
 
 /** Our table as TOML lines. */
@@ -209,7 +209,9 @@ export function renderEntry(e: CodexEntry): string[] {
  * Each line's kind, outside strings: a table header (and its dotted name),
  * blank or comment, or other. A multi-line string's lines are "other".
  */
-function scan(lines: string[]): ("blank" | "other" | { header: string })[] {
+export function scan(
+  lines: string[],
+): ("blank" | "other" | { header: string })[] {
   let open: '"""' | "'''" | undefined;
   return lines.map((line) => {
     const startsInString = open !== undefined;
@@ -259,7 +261,7 @@ function scan(lines: string[]): ("blank" | "other" | { header: string })[] {
 }
 
 /** A header's dotted name as keys: `mcp_servers . "oa_bus"` is `["mcp_servers","oa_bus"]`. */
-function headerKeys(name: string): string[] {
+export function headerKeys(name: string): string[] {
   const out: string[] = [];
   const re = /\s*(?:"((?:[^"\\]|\\.)*)"|'([^']*)'|([A-Za-z0-9_-]+))\s*(\.|$)/y;
   while (re.lastIndex < name.length) {
@@ -335,7 +337,7 @@ const canonical = (v: unknown): unknown =>
       : v;
 
 /** Equal values, whatever order a table's keys were parsed in. */
-const same = (a: unknown, b: unknown) =>
+export const same = (a: unknown, b: unknown) =>
   JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 
 /**
@@ -358,9 +360,9 @@ function checked(path: string, before: Doc, next: string, want: unknown) {
 }
 
 /** One line: its text, and its own ending (`\n`, `\r\n`, or none at the end). */
-type Line = { text: string; eol: string };
+export type Line = { text: string; eol: string };
 
-function splitLines(text: string): Line[] {
+export function splitLines(text: string): Line[] {
   const out: Line[] = [];
   const re = /\r?\n/g;
   let last = 0;
@@ -372,7 +374,8 @@ function splitLines(text: string): Line[] {
   return out;
 }
 
-const joinLines = (lines: Line[]) => lines.map((l) => l.text + l.eol).join("");
+export const joinLines = (lines: Line[]) =>
+  lines.map((l) => l.text + l.eol).join("");
 
 /** The ending new lines get: the file's last one, else LF. */
 const eolOf = (lines: Line[]) =>
@@ -476,4 +479,28 @@ function remove(path: string, text: string, doc: Doc): string {
     );
   for (const at of all.reverse()) lines = cut(lines, at);
   return checked(path, doc, joinLines(lines), undefined);
+}
+
+/** `codex --version` of the binary the daemon would use; undefined when unreadable. */
+export async function readCodexVersion(o: {
+  /** The daemon's pin file (codexBinFile), tried before PATH and the app. */
+  configFile?: string;
+  exec: (
+    cmd: string,
+    args: string[],
+  ) => Promise<{ code: number; stdout: string }>;
+  path?: string;
+  app?: string;
+}): Promise<string | undefined> {
+  try {
+    const bin = findCodexBin({
+      configFile: o.configFile,
+      path: o.path,
+      app: o.app,
+    });
+    const r = await o.exec(bin ?? "codex", ["--version"]);
+    return /(\d+\.\d+\.\d+\S*)/.exec(r.code === 0 ? r.stdout : "")?.[1];
+  } catch {
+    return undefined;
+  }
 }

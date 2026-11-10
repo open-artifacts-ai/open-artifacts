@@ -6,7 +6,7 @@ import { z } from "zod";
 
 /**
  * The tier billing stores (oa-<p>-billing `tiers.tier`): solo is one person
- * and their agents ($1/month or $12/year after a 30-day no-card trial), trial
+ * and their agents ($1/month or $10/year after a 30-day no-card trial), trial
  * is everything in Business for 14 days from the first invite, team and
  * business are paid per creator. free is the pre-Solo value: hosted billing
  * that predates Solo still answers it, and it keeps today's rules (the solo
@@ -75,6 +75,12 @@ export const PlanViewSchema = z.object({
   soloTrialEndsAt: z.string().nullable().optional(),
   /** ISO; while past_due, the grace period's end. Owner and admins; null for others. */
   graceUntil: z.string().nullable(),
+  /**
+   * Whether billing has a Stripe customer for this instance (the portal needs
+   * one). Owner and admins only; absent for others and when billing's answer
+   * predates it (unknown: the dashboard keeps showing Manage billing).
+   */
+  hasCustomer: z.boolean().optional(),
   /** Distinct creators this UTC calendar month so far (CREATOR definition). Owner and admins only. */
   creatorsThisMonth: z.number().int().nonnegative().optional(),
   /**

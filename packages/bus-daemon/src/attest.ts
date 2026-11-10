@@ -39,7 +39,7 @@ export type AttestDeps = {
  * `pid` is the session's process when it is not the adapter (Claude's MCP server).
  */
 export type Attest =
-  | { ok: true; cwd?: string; pid?: number }
+  | { ok: true; cwd?: string; pid?: number; linkOnly?: true }
   | { ok: false; reason: string };
 
 let defaultCodex: CodexAttestor | undefined;

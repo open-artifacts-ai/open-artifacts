@@ -45,6 +45,10 @@ type Entry = SentMeta & {
   native?: true;
   outcome?: Outcome;
   delivered?: true;
+  /** An expiry the sender was told; kept so a later delivered (#1760) can correct it. */
+  expired?: true;
+  /** A delivered the sender is owed a "delivered after all" correction for, until told (#1951). */
+  correction?: true;
   late?: true;
   shown?: true;
 };
@@ -58,6 +62,8 @@ const metaOf = ({
   late: ____,
   shown: _____,
   native: ______,
+  expired: _______,
+  correction: ________,
   ...meta
 }: Entry): SentMeta => meta;
 
@@ -84,6 +90,8 @@ const valid = (id: string, e: unknown): e is Entry => {
     typeof r.at === "number" &&
     validOutcome(r.outcome) &&
     (r.delivered === undefined || r.delivered === true) &&
+    (r.expired === undefined || r.expired === true) &&
+    (r.correction === undefined || r.correction === true) &&
     (r.late === undefined || r.late === true) &&
     (r.shown === undefined || r.shown === true) &&
     (r.native === undefined || r.native === true)
@@ -214,12 +222,86 @@ export class SentStore {
     if (this.#all.delete(msgId)) this.#save();
   }
 
-  /** Settled entries whose sender is `ref`, oldest first. */
-  untold(ref: string): { msgId: string; meta: SentMeta; outcome: Outcome }[] {
+  /**
+   * The sender has been told `msgId`'s outcome. A reasonless expiry may be a
+   * lost body the recipient did take (#1760), so its entry stays, no longer
+   * owed, for a later delivered; a delivered record stays; anything else goes.
+   */
+  told(msgId: string, corrected = false): void {
+    const e = this.#all.get(msgId);
+    if (!e) return;
+    if (e.delivered) {
+      // Only the correction itself settles a correction; an Expired notice that
+      // finished first leaves it owed.
+      if (corrected && e.correction) {
+        const { correction: _, ...rest } = e;
+        this.#all.set(msgId, rest);
+        this.#save();
+      }
+      return;
+    }
+    if (e.outcome?.state === "expired" && e.outcome.reason === undefined) {
+      const { outcome: _, ...rest } = e;
+      this.#all.set(msgId, { ...rest, expired: true });
+      this.#save();
+      return;
+    }
+    this.delete(msgId);
+  }
+
+  /** Whether a delivered may still correct `msgId`: a reasonless expiry, told or not. */
+  correctable(msgId: string): boolean {
+    const e = this.#all.get(msgId);
+    return (
+      !!e &&
+      !e.delivered &&
+      (e.expired === true ||
+        (e.outcome?.state === "expired" && e.outcome.reason === undefined))
+    );
+  }
+
+  /**
+   * The recipient took a message reported expired: it ends delivered. True
+   * when the sender was told the expiry, or its notice is `inFlight` (it is
+   * owed a correction, stored until `told(msgId, true)`); an expiry never
+   * told is just dropped.
+   */
+  correct(msgId: string, inFlight = false): boolean {
+    const e = this.#all.get(msgId);
+    if (!e || !this.correctable(msgId)) return false;
+    const owed = e.expired === true || inFlight;
+    const { outcome: _, expired: __, ...rest } = e;
+    this.#all.delete(msgId);
+    this.#all.set(msgId, {
+      ...rest,
+      at: this.#now(),
+      delivered: true,
+      ...(owed ? { correction: true as const } : {}),
+    });
+    this.#save();
+    return owed;
+  }
+
+  /** The Expired notice never reached the agent, so the correction (which says to ignore it) is dropped. */
+  dropCorrection(msgId: string): void {
+    const e = this.#all.get(msgId);
+    if (!e?.correction) return;
+    const { correction: _, ...rest } = e;
+    this.#all.set(msgId, rest);
+    this.#save();
+  }
+
+  /** Whether `msgId` is owed a correction. */
+  correctionOwed(msgId: string): boolean {
+    return this.#all.get(msgId)?.correction === true;
+  }
+
+  /** Settled entries and owed corrections whose sender is `ref`, oldest first. */
+  untold(ref: string): { msgId: string; meta: SentMeta; outcome?: Outcome }[] {
     this.#prune();
-    const out: { msgId: string; meta: SentMeta; outcome: Outcome }[] = [];
+    const out: { msgId: string; meta: SentMeta; outcome?: Outcome }[] = [];
     for (const [msgId, e] of this.#all) {
-      if (e.from_ref !== ref || !e.outcome) continue;
+      if (e.from_ref !== ref || !(e.outcome || e.correction)) continue;
       out.push({ msgId, meta: metaOf(e), outcome: e.outcome });
     }
     return out;
@@ -242,7 +324,7 @@ export class SentStore {
     if (over <= 0) return;
     for (const [id, e] of this.#all) {
       if (over <= 0) return;
-      if (e.delivered) {
+      if ((e.delivered && !e.correction) || e.expired) {
         this.#all.delete(id);
         over--;
       }
@@ -285,6 +367,8 @@ export class SentStore {
         at,
         outcome,
         delivered,
+        expired,
+        correction,
         late,
         shown,
         native,
@@ -308,6 +392,8 @@ export class SentStore {
             }
           : {}),
         ...(delivered ? { delivered } : {}),
+        ...(expired && !delivered && !outcome ? { expired } : {}),
+        ...(delivered && correction ? { correction } : {}),
         ...(delivered && late ? { late } : {}),
         ...(delivered && late && shown ? { shown } : {}),
         ...(native ? { native } : {}),
@@ -347,7 +433,10 @@ export class SentStore {
   }
 }
 
-export type Notice = { msgId: string; meta: SentMeta } & Outcome;
+export type Notice = { msgId: string; meta: SentMeta } & (
+  | Outcome
+  | { state: "corrected"; reason?: undefined }
+);
 type Final = { msg_id: string; state: ReceiptState; reason?: ReceiptReason };
 
 /** How long a tool call's send waits past its receipt for delivered (or a refusal or expiry). */
@@ -462,14 +551,24 @@ export class Receipts {
     return { msgId: f.msg_id, meta: s.meta, ...outcome };
   }
 
-  update(f: Final): Notice | undefined {
-    if (f.state === "pending" || this.#finals.has(f.msg_id)) return undefined;
+  update(f: Final, inFlight = false): Notice | undefined {
+    if (f.state === "pending") return undefined;
+    // #1760: a delivered after a reasonless expiry (a lost body the recipient
+    // did take) is the one final that may follow another. Nothing else does.
+    const corrects =
+      f.state === "delivered" && this.store.correctable(f.msg_id);
+    if (this.#finals.has(f.msg_id) && !corrects) return undefined;
     const meta = this.store.get(f.msg_id);
     if (!meta) {
       this.#keepEarly(f);
       return undefined;
     }
     this.#final(f.msg_id);
+    if (corrects) {
+      return this.store.correct(f.msg_id, inFlight)
+        ? { msgId: f.msg_id, meta, state: "corrected" }
+        : undefined;
+    }
     // Nothing follows delivered.
     if (this.store.isDelivered(f.msg_id)) return undefined;
     if (f.state === "delivered") {
@@ -528,20 +627,31 @@ export class Receipts {
   /** The owed notice for `msgId`, if one is owed. */
   notice(msgId: string): Notice | undefined {
     const meta = this.store.get(msgId);
+    if (meta && this.store.correctionOwed(msgId))
+      return { msgId, meta, state: "corrected" };
     const outcome = this.store.outcome(msgId);
     return meta && outcome ? { msgId, meta, ...outcome } : undefined;
   }
 
+  /** Its notice failed to reach the sender: a correction to it is moot. */
+  notTold(msgId: string): void {
+    this.store.dropCorrection(msgId);
+  }
+
   /** The sender has been told: forget the message. */
-  told(msgId: string): void {
-    this.store.delete(msgId);
+  told(msgId: string, corrected = false): void {
+    this.store.told(msgId, corrected);
   }
 
   /** Notices still owed to `ref`, e.g. after a restart or while it was away. */
   owed(ref: string): Notice[] {
     return this.store
       .untold(ref)
-      .map(({ msgId, meta, outcome }) => ({ msgId, meta, ...outcome }));
+      .map(({ msgId, meta, outcome }) =>
+        outcome
+          ? { msgId, meta, ...outcome }
+          : { msgId, meta, state: "corrected" as const },
+      );
   }
 
   #final(msgId: string): void {

@@ -378,6 +378,7 @@ function Composer({
         <MentionMenu
           id={menuId}
           matches={matches}
+          all={agents}
           active={activeOpt}
           onPick={pick}
         />

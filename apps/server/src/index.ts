@@ -10,6 +10,7 @@ import { scheduled } from "./cron.js";
 import { withReadBudget, withRetries } from "./db/retry.js";
 import type { Env } from "./env.js";
 import { appHostOpts, withSecurityHeaders } from "./http/middleware.js";
+import { guardMcpEntry, linkOrUnlinked } from "./mcp/entry.js";
 import { serveAppHost } from "./mcp/oauth.js";
 import {
   capMcpBody,
@@ -18,7 +19,7 @@ import {
   mcpUnauthorized,
 } from "./mcp/server.js";
 import type { AgentAttr } from "./services/agent-usage.js";
-import { hubNoticeDelivery, linkRequest } from "./services/bus.js";
+import { hubNoticeDelivery } from "./services/bus.js";
 import { installDelivery } from "./services/bus-delivery.js";
 import { getUserWithEpoch } from "./services/users.js";
 
@@ -57,7 +58,16 @@ function isForeignHost(env: Env, hostname: string): boolean {
 const PAT_BEARER = /^\s*Bearer\s+(oa_pat_\S*)\s*$/i;
 
 /** /mcp with `Authorization: Bearer oa_pat_…`: the token's user, attributed to its label. */
-async function mcpWithPat(
+function mcpWithPat(
+  req: Request,
+  env: Env,
+  ctx: ExecutionContext,
+  token: string,
+): Promise<Response> {
+  return guardMcpEntry(req, () => mcpWithPatUnguarded(req, env, ctx, token));
+}
+
+async function mcpWithPatUnguarded(
   req: Request,
   env: Env,
   ctx: ExecutionContext,
@@ -73,7 +83,7 @@ async function mcpWithPat(
     return mcpUnauthorized(env, "Only members can connect agents");
   const capped = await capMcpBody(req, env);
   if (capped instanceof Response) return capped;
-  const link = await linkRequest(env, user.id, capped);
+  const link = await linkOrUnlinked(env, user.id, capped);
   const agent: AgentAttr = {
     name: pat.label,
     version: null,

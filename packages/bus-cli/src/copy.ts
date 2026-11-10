@@ -51,6 +51,15 @@ export type RosterAgent = StatusFields & {
   state: "live" | "queued";
 };
 
+const sourceText = (source: "config" | "git" | "dir" | "cwd") =>
+  source === "config"
+    ? "an approved .oa-bus.json"
+    : source === "git"
+      ? "the git remote"
+      : source === "dir"
+        ? "the git folder's name"
+        : "the folder's name";
+
 const len = (s: string) => [...s].length;
 
 /**
@@ -378,6 +387,9 @@ export function copy(style: Style) {
       const lead = `${n} agent${n === 1 ? "" : "s"} in namespace `;
       return `${lead}${p("accent", clip(namespace, len(lead) + 2 + len(meta)))}  ${p("muted", meta)}`;
     },
+    /** #1570: where a namespace came from, under its header. */
+    namespaceSource: (source: "config" | "git" | "dir" | "cwd") =>
+      p("muted", `  namespace from ${sourceText(source)}`),
     rosterRow: (a: RosterAgent) =>
       `  ${cell(a.name, 20, more)}${cell(kindLabel(a.kind), 13, more)}${cell(a.machine, 22, more)}${
         a.state === "live"
@@ -606,6 +618,11 @@ export function copy(style: Style) {
       next(p("muted", clip(`It ${why}.`, 3))),
       next(`Remove it, then run ${BUS_CMD} global add <dir> again.`),
     ],
+    /** doctor (#1570): the folder's namespace and where it comes from. */
+    namespaceIs: (
+      namespace: string,
+      source: "config" | "git" | "dir" | "cwd",
+    ) => `Namespace ${namespace} (from ${sourceText(source)})`,
     /** A refused or noted config file (#1527): the reason, then the exact fix. Paths arrive already shortened. */
     configFile: (f: {
       file: string;
@@ -655,6 +672,36 @@ export function copy(style: Style) {
     ],
     // Codex's checks, after its wiring line (C26e).
     codexWakes: (bin: string) => done(`Codex wakes with ${clip(bin, 20)}`),
+    // The Claude Code output style (#1970): turned on, or added beside the person's own choice.
+    // Product's sentence, wrapped to the 80 columns every transcript line keeps.
+    outputStyleOn: (where: string) => [
+      done("Turned on the Artifacts Teammate output style"),
+      next(`(${clip(where, 5)}).`),
+      next("Restart Claude Code sessions to use it."),
+    ],
+    // `style` is undefined when the choice is not a style name (null, a number, "default").
+    outputStyleKept: (style?: string) =>
+      done(
+        `Added the Artifacts Teammate output style. You're on ${style ?? "the default style"}; switch with /output-style.`,
+      ),
+    outputStyleDoctor: (where: string, on: boolean) =>
+      done(
+        `Artifacts Teammate output style installed in ${where} (${on ? "on" : "installed, not selected"})`,
+      ),
+    codexSkill: (where: string) =>
+      done(`Codex skill installed in ${clip(where, 20)}`),
+    codexSkillTwice: (file: string, block: string) => [
+      warn("The Codex skill is installed twice, so it loads twice"),
+      next(
+        `It's in both ${clip(file, 30)} and ${clip(block, 20)}. Run ${BUS_CMD} install again to keep just one.`,
+      ),
+    ],
+    codexSkillSharedTwice: () => [
+      warn("The Codex skill is installed twice, so it loads twice"),
+      next(
+        "Codex shares its skills folder with pi and omp, so it also sees their copy.",
+      ),
+    ],
     codexNoWakeCheck: () => [
       warn("No codex binary found, so idle Codex threads are not woken"),
       next(`Install the Codex CLI, then run ${BUS_CMD} install again.`),
@@ -690,6 +737,24 @@ export function copy(style: Style) {
         next(`Run opencode upgrade, then ${BUS_CMD} install again.`),
       ];
     },
+    // doctor: OpenCode's Open Artifacts entry runs oa-bus, and oa-bus is gone (#1856).
+    opencodeProxyMissing: (name: string, program: string) => [
+      fail(
+        `OpenCode's ${name} entry runs ${clip(program, 60)}, which is missing.`,
+      ),
+      next(
+        `Run ${BUS_CMD} install again, or ${BUS_CMD} uninstall to put your own entry back.`,
+      ),
+    ],
+    // doctor: Codex's Open Artifacts entry runs oa-bus, and oa-bus is gone (#1856).
+    codexProxyMissing: (name: string, program: string) => [
+      fail(
+        `Codex's ${name} entry runs ${clip(program, 60)}, which is missing.`,
+      ),
+      next(
+        `Run ${BUS_CMD} install again, or ${BUS_CMD} uninstall to put your own entry back.`,
+      ),
+    ],
     opencodeUnknown: () => [
       warn("OpenCode version unknown"),
       next(
@@ -826,6 +891,11 @@ export function copy(style: Style) {
     ],
     nsAsk: (dir: string, namespace: string) => [
       `${dir} sets its namespace to ${namespace}.`,
+      "Agents started there join it and can message everyone in it.",
+    ],
+    /** #1570: a git remote now derives another namespace than the folder first got. */
+    nsAskRemote: (dir: string, namespace: string, recorded: string) => [
+      `${dir} first got the namespace ${recorded}; its git remote now gives ${namespace}.`,
       "Agents started there join it and can message everyone in it.",
     ],
     nsPrompt: () => "Approve it? [y/N] ",
