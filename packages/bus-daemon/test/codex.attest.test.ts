@@ -632,7 +632,7 @@ describe("codex attestation (C26c)", () => {
   it("reads pid, ppid, start and comm in one ps, leaving out a gone pid", async () => {
     const gone = spawn("true");
     await new Promise((r) => gone.once("exit", r));
-    const rows = psRows([process.pid, gone.pid as number]);
+    const rows = psRows([process.pid, gone.pid as number]) as Map<number, Proc>;
     expect(rows.get(process.pid)).toMatchObject({ ppid: process.ppid });
     expect(rows.get(process.pid)?.start.split(" ")).toHaveLength(5);
     expect(rows.has(gone.pid as number)).toBe(false);
@@ -927,7 +927,7 @@ describe("codex attestation against real processes (C26c)", () => {
     try {
       for (const p of ["/usr/local/bin:/usr/bin:/bin", ""]) {
         process.env.PATH = p;
-        expect(psRows([pa.p]).get(pa.p)?.comm).toMatch(/codex$/);
+        expect(psRows([pa.p])?.get(pa.p)?.comm).toMatch(/codex$/);
         expect(holdingFiles([{ pid: pa.p, file: a.lock }])).toEqual([true]);
       }
     } finally {

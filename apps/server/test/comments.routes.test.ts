@@ -1106,6 +1106,32 @@ describe("review fixes (#682)", () => {
     expect((await miss()).status).toBe(429);
   });
 
+  it("the limit also covers a quote checked against the stored html: the 11th unfound quote is 429", async () => {
+    const id = await pub({ visibility: "public" });
+    await inDo(id, (i) => {
+      i.now = () => 1_800_000_000_000;
+    });
+    const ip = uniqueIp();
+    const miss = () =>
+      call(id, null, "", {
+        method: "POST",
+        ip,
+        body: {
+          anchor: {
+            kind: "text",
+            version: 1,
+            exact: "no such text",
+            prefix: "",
+            suffix: "",
+          },
+          body: "x",
+          guestName: "Guest",
+        },
+      });
+    for (let n = 0; n < 10; n++) expect((await miss()).status).toBe(201);
+    expect((await miss()).status).toBe(429);
+  });
+
   it("signed-in status changes count against 30 a minute; a no-op neither broadcasts nor changes", async () => {
     const id = await pub({ visibility: "team" });
     await inDo(id, (i) => {
