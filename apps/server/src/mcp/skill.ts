@@ -79,17 +79,21 @@ export const skillUrl = (env: SkillEnv): string | undefined =>
 /**
  * The per-harness line for `/skill.md?harness=`, or "" without a known
  * harness or with the bus off: the skill never teaches the bus when the hub is
- * off. Vendor-neutral on purpose (a neutral test fetches every variant), so it
- * names tool names and never a harness path or product (`#1456` step 3).
+ * off. Vendor-neutral on purpose (a neutral test fetches every variant): it
+ * names tool names, never a harness path or a vendor. The shared-folder copy
+ * names harnesses so an agent can pick its own tools (#1963).
  */
 export const harnessNote = (
   harness: Harness | undefined,
   on: boolean,
 ): string => {
   if (!harness || !on) return "";
-  const { busToolName } = harnessSkills[harness];
-  if (!busToolName)
-    return "This copy is for one harness: here the bus tools use their plain names, `list_agents` and `send_message`.\n\n";
+  const { busToolName, skillPath } = harnessSkills[harness];
+  // #1963: ~/.agents/skills (pi and omp's copy) is read by Codex 0.94+,
+  // OpenCode, OpenClaw and, when opted in, Hermes, so that copy names each
+  // harness's bus tools.
+  if (skillPath.startsWith("~/.agents/skills/"))
+    return "Several harnesses read this copy, and each names the bus tools differently: `oabus_list_agents` and `oabus_send_message` in pi, oh-my-pi, OpenClaw and Hermes; `mcp__oa_bus__list_agents` and `mcp__oa_bus__send_message` in Codex; `oa_bus_list_agents` and `oa_bus_send_message` in OpenCode. Use the names your harness shows.\n\n";
   return `This copy is for one harness: here \`${busToolName("list_agents")}\` is list_agents and \`${busToolName("send_message")}\` is send_message.\n\n`;
 };
 
