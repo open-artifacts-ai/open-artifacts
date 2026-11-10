@@ -355,6 +355,39 @@ describe("agent faces (#1822)", () => {
   });
 });
 
+describe("member names that read as an agent (#1822)", () => {
+  beforeEach(() => resetNameClashCache());
+
+  it("DisplayNameSchema refuses them, ordinary names pass", () => {
+    for (const bad of [
+      "Leo Urbina's agent",
+      "Leo\u2019s AGENT.",
+      "Leo\u02bcs  agent",
+    ])
+      expect(DisplayNameSchema.safeParse(bad).success).toBe(false);
+    for (const ok of ["Leo Urbina", "Agent Smith", "Agents R Us"])
+      expect(DisplayNameSchema.safeParse(ok).success).toBe(true);
+  });
+
+  it("a stored name 'X's agent' falls back to Member on a person comment and in a for line", async () => {
+    const odd = await mk("f-sso", `Leo Urbina${tag}'s agent`);
+    const other = await mk("f-oth");
+    const id = await pub(odd);
+    await post(id, odd, { kind: "user", id: odd.userId });
+    await post(id, odd, agentWho(odd, IDENT));
+    const list = await listComments(E, id, "all", signedIn(other));
+    const authors = list.threads.map((t) => t.comments[0]?.author);
+    const person = authors.find((a) => a?.kind !== "agent");
+    const agent = authors.find((a) => a?.kind === "agent");
+    expect(person?.name).toBe("Member");
+    expect(agent?.for).toBe("Member");
+    const fine = await mk("f-fine", newName());
+    const id2 = await pub(fine);
+    await post(id2, fine, { kind: "user", id: fine.userId });
+    expect((await first(id2, signedIn(other)))?.author.name).toBe(nm);
+  });
+});
+
 describe("guest names (#1822)", () => {
   it.each([
     "Leo's agent",

@@ -724,6 +724,17 @@ const isUnsafeNameChar = (cp: number) =>
 export const NAME_FILLERS =
   /[\p{Default_Ignorable_Code_Point}\u115F\u1160\u3164\uFFA0]/u;
 
+/** A name that ends in "'s agent" (any apostrophe, case, trailing punctuation): it would read as someone's agent. The server also folds lookalike letters on read. */
+export const namesAnAgent = (s: string): boolean =>
+  /['\u2018\u2019\u02bc\u2032\u00b4`]\s*s\s*agent$/u.test(
+    s
+      .normalize("NFKC")
+      .normalize("NFD")
+      .replace(/\p{M}/gu, "")
+      .toLowerCase()
+      .replace(/[\p{P}\p{S}\s]+$/u, ""),
+  );
+
 /** A user-chosen display name: trimmed, 1–80 characters, no control/bidi/zero-width characters. */
 export const DisplayNameSchema = z
   .string()
@@ -734,7 +745,8 @@ export const DisplayNameSchema = z
     (s) => ![...s].some((ch) => isUnsafeNameChar(ch.codePointAt(0) ?? 0)),
     "Name contains invalid characters",
   )
-  .refine((s) => !NAME_FILLERS.test(s), "Name contains invalid characters");
+  .refine((s) => !NAME_FILLERS.test(s), "Name contains invalid characters")
+  .refine((s) => !namesAnAgent(s), "Name must not read as an agent");
 
 export const MePatchSchema = z.strictObject({ displayName: DisplayNameSchema });
 export type MePatch = z.infer<typeof MePatchSchema>;

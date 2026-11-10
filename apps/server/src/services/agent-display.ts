@@ -28,7 +28,8 @@ export const cleanName = (s: string | null): string | null => {
 };
 
 /**
- * A member's name for other viewers: cleaned, or null when it is an email.
+ * A member's name for other viewers: cleaned, or null when it is an email
+ * or reads as an agent.
  * Member.name falls back to the email when the user has no real name
  * (effectiveName), and an email never goes out as a name. Checked before the
  * cut, or an email past NAME_MAX would no longer equal itself.
@@ -38,7 +39,9 @@ export const publicName = (u: { name: string | null }): string | null => {
   const whole = tidyName(u.name);
   // NFKC folds the full-width (U+FF20) and small (U+FE6B) at signs to "@";
   // only the check is normalized, the shown name is not.
-  return whole.normalize("NFKC").includes("@") ? null : cleanName(whole);
+  if (whole.normalize("NFKC").includes("@")) return null;
+  // #1822: a name that reads as an agent ("Leo's agent", set or from SSO) is not a person's.
+  return readsAsAgent(whole) ? null : cleanName(whole);
 };
 
 /** publicName, or "Member" when there is none. */
