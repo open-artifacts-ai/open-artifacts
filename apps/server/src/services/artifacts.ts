@@ -774,8 +774,8 @@ export function allocateVersion(
     db
       .prepare(
         `insert into versions (artifact_id, version, entry, manifest, language, message,
-           agent_name, agent_version, agent_via, created_by, created_at, format)
-         select id, current_version, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? from artifacts
+           agent_name, agent_version, agent_via, agent_identity, created_by, created_at, format)
+         select id, current_version, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? from artifacts
          where id = ? and deleted_at is null${after}${guard}`,
       )
       .bind(
@@ -786,6 +786,14 @@ export function allocateVersion(
         a.agent?.name ?? null,
         a.agent?.version ?? null,
         via ? viaKey(via) : null,
+        a.agent?.identity
+          ? JSON.stringify({
+              identityId: a.agent.identity.identityId,
+              namespace: a.agent.identity.namespace,
+              name: a.agent.identity.name,
+              kind: a.agent.identity.kind,
+            })
+          : null,
         a.userId,
         a.now,
         a.format,

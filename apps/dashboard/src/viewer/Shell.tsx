@@ -35,6 +35,7 @@ import {
   CommentsProvider,
   useCommentsController,
 } from "./comments/useComments";
+import { CommentsResizer, useCommentsWidthVar } from "./commentsWidth";
 import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
 import { FullScreenEscape } from "./FullScreenEscape";
 import { frameLoad, SANDBOX, safeContentUrl } from "./frame";
@@ -267,6 +268,9 @@ function Viewer({
   // The panel's Comments tab: offered only where comments are on and the list
   // isn't a dialog; a link to it elsewhere falls back to Versions.
   const commentsTab = commentsOn && surface !== "dialog";
+  // Not state: a drag would re-render the whole viewer on every pointermove.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useCommentsWidthVar(rootRef);
   const tab: PanelTab = !authed
     ? "comments"
     : requestedTab === "comments" && !commentsTab
@@ -601,7 +605,7 @@ function Viewer({
       : undefined;
   return (
     <CommentsProvider value={cmt}>
-      <div className="oa-viewer">
+      <div ref={rootRef} className="oa-viewer">
         {!chromeless && (
           <>
             <Crumbs title={artifact.title} />
@@ -683,6 +687,10 @@ function Viewer({
                 allow="clipboard-write"
               />
             </div>
+          )}
+          {((commentsOn && surface === "column" && columnShown && !panelOpen) ||
+            (panelOpen && (authed || commentsTab) && !chromeless)) && (
+            <CommentsResizer />
           )}
           {commentsOn && surface === "column" && columnShown && !panelOpen && (
             <CommentsColumn textFormat={textFormat} />

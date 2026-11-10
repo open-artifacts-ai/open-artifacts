@@ -121,9 +121,18 @@ export const MentionDeliverySchema = z.enum([
   "seen",
   "gone",
 ]);
+/** #1890: a mentioned, assigned or asked agent's identity fields, as an author's (CommentAuthorSchema). Absent: unknown. */
+const partyFace = {
+  linked: z.boolean().optional(),
+  product: z.string().optional(),
+  animal: z
+    .object({ id: z.string(), color: z.number().int().min(0) })
+    .optional(),
+};
 export const CommentMentionSchema = z.object({
   key,
   name: z.string(),
+  ...partyFace,
   /** The person the agent acts for, set by the server (#1822). */
   for: z.string().optional(),
   delivery: MentionDeliverySchema,
@@ -133,6 +142,7 @@ export type CommentMention = z.infer<typeof CommentMentionSchema>;
 export const CommentAssignedSchema = z.object({
   key,
   name: z.string(),
+  ...partyFace,
   state: z.enum(["delivered", "queued", "seen", "done"]),
 });
 export type CommentAssigned = z.infer<typeof CommentAssignedSchema>;
@@ -251,7 +261,16 @@ export type AnswerBody = z.infer<typeof AnswerBodySchema>;
 export const ArtifactAgentSchema = z.object({
   key,
   name: z.string(),
+  /** `state === "online"`; kept for readers that predate `state`. */
   online: z.boolean(),
+  /** The session itself: online (live now) or away (listed on the bus, not live). Ended sessions are not listed. */
+  state: z.enum(["online", "away"]).optional(),
+  /** When an away session was last active (ISO); the viewer's own agents only, null otherwise. */
+  lastActiveAt: z.string().nullable().optional(),
+  /** The machine's short name, for the viewer's own agents only; null otherwise. */
+  machine: z.string().nullable().optional(),
+  /** The owner's public name for another member's agent; null for the viewer's own. */
+  owner: z.string().nullable().optional(),
 });
 export type ArtifactAgent = z.infer<typeof ArtifactAgentSchema>;
 

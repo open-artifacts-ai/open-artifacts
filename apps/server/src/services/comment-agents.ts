@@ -4,10 +4,12 @@
 // can deliver to. Delivery goes through bus-delivery.ts only, with a fixed
 // template: nothing a person or an agent wrote is in a notice.
 
+import { LIMITS } from "@oa/bus-protocol";
 import {
   type ArtifactAgent,
   type BusAddress,
   BusAddressSchema,
+  type BusAgent,
   type BusNotice,
   isId,
   NOTICE_SENDER,
@@ -20,7 +22,7 @@ import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { appOrigin } from "../http/errors.js";
 import { logInfo } from "../log.js";
-import type { StoredAgent } from "../runtime/comments-store.js";
+import type { StoredAgent, StoredIdentity } from "../runtime/comments-store.js";
 import { shownName } from "./agent-display.js";
 import { busView } from "./bus.js";
 import { deliverNotice, newDeliveryScope } from "./bus-delivery.js";
@@ -54,23 +56,78 @@ export async function agentKey(
 /** Most of the viewer's own running agents the roster adds (the hub lists at most a few dozen). */
 export const OWN_AGENTS_MAX = 50;
 /** Most agents a roster returns in all: every follow the fan-out reads plus the viewer's own. */
-export const ROSTER_MAX = FANOUT_MAX + OWN_AGENTS_MAX;
+export const ROSTER_MAX = Math.min(
+  FANOUT_MAX + OWN_AGENTS_MAX,
+  LIMITS.maxRosterAgents,
+);
+
+/** What the hub says of one session: its state, when it was last active and where it runs. */
+type Session = Pick<
+  ArtifactAgent,
+  "state" | "online" | "lastActiveAt" | "machine"
+>;
+
+/** The hub's agents by address; an open session wins over an away one of the same address. */
+function sessionsOf(agents: readonly BusAgent[]): Map<string, BusAgent> {
+  const m = new Map<string, BusAgent>();
+  for (const a of agents) {
+    const k = addrKey(a);
+    const have = m.get(k);
+    if (!have || (!have.running && a.running)) m.set(k, a);
+  }
+  return m;
+}
+
+/** The short machine name: a host label loses its domain ("laptop.tail.ts.net" is "laptop"). */
+const shortMachine = (label: string): string | null =>
+  label.split(".")[0]?.trim() || null;
+
+/**
+ * One session as the menu shows it. Online only while the session itself is
+ * live (open on a connected machine). An open session on a machine that is
+ * not connected, and a closed one the bus still lists, are away.
+ *
+ * Only the viewer's OWN agents show when they were last active and where they
+ * run (the first DNS label of the machine's label, never a tailnet or domain).
+ * Another member's agent shows its state alone: a machine label there is a
+ * hostname the member never chose (labels are client-supplied and not
+ * editable), so none is shown.
+ */
+function sessionOf(a: BusAgent, own: boolean): Session {
+  const online = a.state === "live";
+  return {
+    state: online ? "online" : "away",
+    online,
+    lastActiveAt: own ? (a.since ?? a.updatedAt) : null,
+    machine: own ? shortMachine(a.machineLabel) : null,
+  };
+}
+
+/** An address the hub did not answer for (no read at POST time, or a slow or failing hub): not online, and no state is claimed. */
+const UNKNOWN: Session = {
+  online: false,
+  lastActiveAt: null,
+  machine: null,
+};
 
 type OwnAgents = {
-  /** The viewer's open agents that are running now, as bus addresses (bounded). */
+  /** The viewer's agents the bus lists (open first, then away), as bus addresses (bounded). */
   addresses: BusAddress[];
-  /** Addresses whose daemon is connected now (state "live"), from the same hub read: `online`. A running agent whose machine is away is "queued", not online. */
-  live: Set<string>;
+  /** The same hub read by address, for each agent's state. */
+  sessions: Map<string, BusAgent>;
+  /** Whether the hub's state is known (false: unreadable, nothing is dropped). */
+  known: boolean;
 };
 
 const addrKey = (a: BusAddress) => `${a.namespace}\n${a.name}`;
 
 /**
- * The viewer's own running agents (#1535: the @ menu lists the agents the
- * viewer runs, besides the ones that follow). One `busView` of the VIEWER
- * only, never another member's. A viewer who cannot hold a bus, cannot read
- * the artifact or has no machine that ever connected costs no hub read
- * (busView reads D1 alone then). Never throws on the hub side.
+ * The viewer's own agents on the bus (#1535: the @ menu lists the agents the
+ * viewer runs, besides the ones that follow), open ones first and then those
+ * away. One `busView` of the VIEWER only, never another member's. A viewer
+ * who cannot hold a bus, cannot read the artifact or has no machine that
+ * ever connected costs no hub read (busView reads D1 alone then). Never
+ * throws on the hub side.
  */
 export async function viewerAgents(
   env: Env,
@@ -80,16 +137,13 @@ export async function viewerAgents(
   const user = await getUser(env, viewerId);
   if (!user || !canConnect(user)) return null;
   if (!(await accessLevel(env, callerOf(user), artifactId))) return null;
-  const view = await busView(env, viewerId);
-  const running = new Set<string>();
-  const live = new Set<string>();
+  const view = await busView(env, viewerId, { away: true });
+  const sessions = sessionsOf(view.agents);
   const addresses: BusAddress[] = [];
-  for (const a of view.agents) {
-    if (a.state === "live") live.add(addrKey(a));
-    if (!a.running) continue;
-    const k = addrKey(a);
-    if (running.has(k)) continue;
-    running.add(k);
+  const ordered = [...sessions.values()].sort(
+    (x, y) => Number(y.running) - Number(x.running),
+  );
+  for (const a of ordered) {
     // An address the bus would refuse a follow for (a reserved name) is no mention target.
     const ok = BusAddressSchema.safeParse({
       namespace: a.namespace,
@@ -98,10 +152,10 @@ export async function viewerAgents(
     if (ok.success && addresses.length < OWN_AGENTS_MAX)
       addresses.push(ok.data);
   }
-  return { addresses, live };
+  return { addresses, sessions, known: view.read };
 }
 
-/** `viewerAgents` as roster entries (online: its daemon is connected), for a mention at POST time. */
+/** `viewerAgents` as roster entries (online: the session is live), for a mention at POST time. */
 export async function viewerRosterAgents(
   env: Env,
   artifactId: string,
@@ -114,12 +168,15 @@ export async function viewerRosterAgents(
     out.push({
       key: await agentKey(artifactId, viewerId, address),
       name: address.name,
-      online: own.live.has(addrKey(address)),
+      ...sessionFor(own.sessions.get(addrKey(address))),
       userId: viewerId,
       address,
     });
   return out;
 }
+
+const sessionFor = (a: BusAgent | undefined, own = true): Session =>
+  a ? sessionOf(a, own) : UNKNOWN;
 
 /**
  * The agents that can be mentioned on `artifactId` and reached now: the ones
@@ -166,44 +223,73 @@ export async function agentRoster(
     const user = await getUser(env, userId);
     if (!user || !canConnect(user)) continue;
     if (!(await accessLevel(env, callerOf(user), artifactId))) continue;
-    // `online` is a connected daemon (state "live"); the menu list itself
-    // keeps `running`: an agent whose machine is away is listed, offline.
-    let live = new Set<string>();
-    if (own && userId === viewerId) live = own.live;
+    // The menu shows the bus: each session's own state, and no address the
+    // bus no longer lists. Without a hub read (POST time) or with an
+    // unreadable hub nothing is known, so nothing is dropped and none is online.
+    let sessions: Map<string, BusAgent> | null = null;
+    if (own && userId === viewerId) sessions = own.known ? own.sessions : null;
     else if (online) {
-      const view = await busView(env, userId);
-      for (const a of view.agents) if (a.state === "live") live.add(addrKey(a));
+      const view = await busView(env, userId, { away: true });
+      if (view.read) sessions = sessionsOf(view.agents);
     }
-    const owner = userId === viewerId ? "" : ` (${shownName(user)})`;
+    const mine = userId === viewerId;
+    const owner = mine ? "" : ` (${shownName(user)})`;
     for (const address of addresses) {
-      if (out.length >= ROSTER_MAX) return out;
+      const a = sessions?.get(addrKey(address));
+      if (sessions && !a) continue;
       out.push({
         key: await agentKey(artifactId, userId, address),
-        name: `${address.name}${owner}`,
-        online: live.has(addrKey(address)),
+        name: `${a?.name ?? address.name}${owner}`,
+        ...sessionFor(a, mine),
+        owner: mine ? null : shownName(user),
         userId,
         address,
       });
     }
   }
-  return out;
+  // Online first, then trim: the cap never costs an online agent its place.
+  // The bound: at most FANOUT_MAX follow rows (across at most ROSTER_MEMBERS
+  // members, one hub read each) plus the viewer's OWN_AGENTS_MAX, which is
+  // below the hub's maxRosterAgents; away rows count like any other.
+  return sortRoster(out).slice(0, ROSTER_MAX);
+}
+
+const rank = (a: RosterAgent) => (a.online ? 0 : a.state === "away" ? 1 : 2);
+
+/** Online first, then away, then those with no state (the bus did not answer); each alphabetical. */
+function sortRoster(out: RosterAgent[]): RosterAgent[] {
+  return out.sort(
+    (x, y) =>
+      rank(x) - rank(y) ||
+      x.name.localeCompare(y.name, "en", { sensitivity: "base" }),
+  );
 }
 
 /** A roster agent as the comment store keeps it. */
-export const storedAgent = (a: RosterAgent): StoredAgent => ({
+export const storedAgent = (
+  a: RosterAgent,
+  identity?: StoredIdentity | null,
+): StoredAgent => ({
   kind: "agent",
   key: a.key,
   name: a.address.name,
   owner: a.userId,
+  ...(identity ? { identity } : {}),
 });
 
-export type CommentNoticeKind = "ask" | "mention" | "assign" | "asker";
+export type CommentNoticeKind =
+  | "ask"
+  | "mention"
+  | "assign"
+  | "asker"
+  | "thread_reply";
 
 const WHAT: Record<CommentNoticeKind, string> = {
   ask: "there is a question for you on an artifact",
   mention: "you were mentioned in a comment on an artifact",
   assign: "work was assigned to you in a comment on an artifact",
   asker: "someone replied to a question you asked on an artifact",
+  thread_reply: "someone replied in a comment thread you're in",
 };
 
 /** What a notice text can be about: a comment notice kind, or `answered` (an ask got its answer). */
@@ -220,6 +306,7 @@ const WHAT_YOURS: Record<Exclude<CommentTextKind, "assign">, string> = {
   mention: "mentioned you in a comment on an artifact",
   answered: "answered your question",
   asker: "replied to a question you asked on an artifact",
+  thread_reply: "replied in a comment thread you're in",
 };
 
 const YOUR_USER_TAIL =
@@ -299,7 +386,10 @@ export async function notifyAgent(
     coalesceKey:
       kind === "asker"
         ? `${artifactId}:${threadId}:asker`
-        : `${artifactId}:${commentId}:${kind}`,
+        : kind === "thread_reply"
+          ? // One waiting notice per agent per thread (#1900): replies while it is unread replace it, so it points at the latest comment.
+            `${artifactId}:${threadId}:thread_reply:${to.key}`
+          : `${artifactId}:${commentId}:${kind}`,
     threadId,
     commentId,
   };
@@ -413,7 +503,7 @@ export async function askerRoster(
     out.push({
       key: await agentKey(artifactId, askerId, address),
       name: address.name,
-      online: false,
+      ...UNKNOWN,
       userId: askerId,
       address,
     });

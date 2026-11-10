@@ -3,8 +3,8 @@
 // reason (ask, mention, reply, new thread). Best effort and out of band:
 // callers run it in the background and a failure only logs.
 import { viewerPath } from "@oa/shared";
-import { accessLevel, callerOf } from "../auth/authz.js";
-import { isGuestRole } from "../auth/policy.js";
+import { accessLevel, callerOf, capOfCaller } from "../auth/authz.js";
+import { capsReads, isGuestRole } from "../auth/policy.js";
 import { stmt } from "../db/stmt.js";
 import {
   COMMENT_UNSUB_PATH,
@@ -138,8 +138,14 @@ export async function emailCommentRecipients(
     }[] = [];
     for (const [id, reason] of await recipients(env, j)) {
       const user = await getUser(env, id);
-      // Members only: a guest-role account gets none.
-      if (!user || isGuestRole(user.role)) continue;
+      // Members only: a guest-role account gets none, nor a member whose
+      // reads are capped (restricted), even where a share still lets them read.
+      if (
+        !user ||
+        isGuestRole(user.role) ||
+        capsReads(capOfCaller(callerOf(user)))
+      )
+        continue;
       const pref = await stmt(
         env.DB,
         "select comment_email as v from users where id = ?",

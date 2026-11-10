@@ -1,10 +1,11 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { canonicalHome, daemonSocketPath } from "@oa/bus-adapter-claude-code";
 import {
   MIN_PROMPT_ID_VERSION,
   opencodeVersion,
   supportsPromptId,
 } from "@oa/bus-adapter-opencode";
+import { codexBinFile } from "@oa/bus-daemon";
 import { BUS_CMD, type StatusReply } from "@oa/bus-ipc";
 import {
   askDaemon,
@@ -25,8 +26,14 @@ import {
   readAssets,
   unshownNotes,
 } from "../steps/adapters.ts";
+import { readCodexVersion } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
+import {
+  installOutputStyle,
+  outputStyleSource,
+} from "../steps/output-style.ts";
+import { installShim } from "../steps/path-shim.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
 import {
@@ -206,10 +213,19 @@ async function harnessesStep(
   // The skill goes next to the tools, fetched from the instance, never vendored.
   // A fetch failure does not stop later steps: it is recorded and the run exits
   // non-zero at the end, after the daemon (or whatever follows) has had its turn.
+  const codexVersion = out.installed.includes("codex")
+    ? await readCodexVersion({
+        configFile: codexBinFile(ctx.home),
+        exec: ctx.exec,
+        path: ctx.env.PATH,
+        app: ctx.codexApp,
+      })
+    : undefined;
   const skill = await installSkill(
     {
       home: ctx.userHome,
       env: ctx.env,
+      codexVersion,
       fetchSkill: (url) => fetchSkillText(ctx.fetch, url),
     },
     hub ? originOf(hub) : machineOrigin(ctx),
@@ -217,6 +233,27 @@ async function harnessesStep(
   );
   for (const n of skill.notes) say(ctx, [n]);
   if (skill.failedUrl) skillFailure.set(ctx, skill.failedUrl);
+  // The Claude Code output style: written, and turned on only when the person has no style chosen.
+  try {
+    const style = installOutputStyle(
+      {
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        text: outputStyleSource(),
+      },
+      out.installed,
+    );
+    for (const n of style.notes) say(ctx, [n]);
+    if (style.settings === "set" && style.written[0])
+      say(ctx, c.outputStyleOn(tilde(ctx, style.written[0])));
+    else if (style.settings === "kept" && style.first)
+      say(ctx, c.outputStyleKept(style.kept));
+  } catch (e) {
+    say(ctx, [
+      `Could not write the output style: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
   // Written quietly: the harnesses line above is the user-visible outcome, and
   // a run that writes nothing has nothing to say.
   return true;
@@ -431,6 +468,33 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
   },
 ];
 
+/** #1626: `oa-bus` on PATH. Never fails the install: a note at most. */
+function reportShim(ctx: Ctx): void {
+  const argv = ctx.service.argv?.();
+  if (!argv || argv.length !== 2) return;
+  try {
+    const r = installShim({
+      userHome: ctx.userHome,
+      busHome: ctx.home,
+      platform: ctx.platform,
+      env: ctx.env,
+      argv,
+    });
+    if (r.kind === "installed") {
+      say(ctx, ctx.copy.shimInstalled(tilde(ctx, r.path)));
+      if (!r.onPath && r.hint)
+        say(ctx, ctx.copy.shimNotOnPath(tilde(ctx, dirname(r.path)), r.hint));
+    } else if (r.kind === "other-home")
+      say(ctx, ctx.copy.shimOtherHome(tilde(ctx, r.path), tilde(ctx, r.home)));
+    else if (r.kind === "foreign")
+      say(ctx, ctx.copy.shimForeign(tilde(ctx, r.path)));
+  } catch (e) {
+    say(ctx, [
+      `Could not add the oa-bus command: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
+}
+
 export async function install(
   opts: InstallOpts & { check?: boolean },
   realCtx: Ctx,
@@ -453,6 +517,7 @@ export async function install(
     path: join(ctx.home, "install.json"),
     now: ctx.now,
   });
+  if (ok) reportShim(ctx);
   const skillFailed = reportSkillFailure(ctx);
   // The always-on habits come last, once everything else is done: a person is
   // asked, an agent gets a question for its user. Nothing is written unasked.

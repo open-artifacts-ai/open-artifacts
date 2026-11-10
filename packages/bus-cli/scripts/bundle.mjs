@@ -83,6 +83,11 @@ execFileSync(
 cpSync(at("../bus-adapter-openclaw/dist"), at("assets/openclaw"), {
   recursive: true,
 });
+// The Claude Code output style, unchanged: the installer adds only its marker.
+cpSync(
+  at("output-style/artifacts-teammate.md"),
+  at("assets/output-styles/artifacts-teammate.md"),
+);
 cpSync(
   at("../bus-adapter-opencode/assets/opencode-tui/tui.js"),
   at("assets/opencode-tui/tui.js"),

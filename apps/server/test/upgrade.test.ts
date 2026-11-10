@@ -35,6 +35,40 @@ const upgrade = async (e: unknown = E({ WORKER_NAME: WORKER })) => {
   return r.text();
 };
 
+/** Lines of `text` that print a git remote or config raw (#1923). */
+const remoteLeaks = (text: string) =>
+  text
+    .replace(/\\\r?\n\s*/g, " ")
+    .split("\n")
+    .filter(
+      (l) =>
+        /git\b[^\n]*?\bremote\s+(-\w*v|--verbose|show)\b/.test(l) ||
+        /ls-remote|\.git\/config|remote\.origin/.test(l) ||
+        /git\b[^\n]*?\bconfig\b/.test(l) ||
+        (/remote\s+get-url/.test(l) &&
+          !/get-url\s+\S+\s*\|\s*(sed -E|grep -qE) /.test(l)),
+    );
+
+const LEAKS = [
+  "git remote -v",
+  "git remote --verbose",
+  "git remote show origin",
+  "git -C . remote -v",
+  "git remote get-url origin",
+  "git ls-remote origin",
+  "cat .git/config",
+  "git config --get remote.origin.url",
+  "git config -l",
+  "git config --list --local",
+  "git config --local --list",
+  "git remote get-url origin \\\n  | cat",
+  "git remote -v",
+];
+const SAFE = [
+  "git remote get-url origin | sed -E 's#^(https?://)[^/]*@#\\1***@#'",
+  "if git remote get-url origin | grep -qE '^https?://[^/]*@'; then echo x; fi",
+];
+
 function frontmatter(md: string) {
   const m = /^---\n([\s\S]*?)\n---\n/.exec(md);
   if (!m?.[1]) throw new Error("no frontmatter");
@@ -221,6 +255,22 @@ describe("upgrade.md content", () => {
     const md = await upgrade();
     expect(md).not.toContain("—");
     expect(md.replace(BANG_RULE, "")).not.toMatch(/\bClaude\b/);
+  });
+
+  it("never prints a git remote or git config raw (#1923)", async () => {
+    const e = E({ WORKER_NAME: WORKER });
+    const docs = [
+      await upgrade(e),
+      await (await get(`${APP}/skill.md`, {}, e)).text(),
+      await (await get(`${APP}/llms.txt`, {}, e)).text(),
+    ];
+    for (const md of docs) expect(remoteLeaks(md)).toEqual([]);
+    expect(docs[0]).toContain("grep -qE '^https?://[^/]*@'");
+  });
+
+  it("the remote guard fails on each bypass and passes the redacted forms", () => {
+    for (const l of LEAKS) expect(remoteLeaks(l), l).not.toEqual([]);
+    for (const l of SAFE) expect(remoteLeaks(l), l).toEqual([]);
   });
 
   it("the rollback trigger is rendered from ROLLBACK_STEPS", async () => {

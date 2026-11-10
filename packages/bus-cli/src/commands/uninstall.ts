@@ -15,6 +15,8 @@ import {
 } from "../steps/adapters.ts";
 import { removeHabits } from "../steps/habits.ts";
 import { hermesHome } from "../steps/hermes.ts";
+import { uninstallOutputStyle } from "../steps/output-style.ts";
+import { removeShim } from "../steps/path-shim.ts";
 import { purge } from "../steps/purge.ts";
 import { uninstallSkill } from "../steps/skill.ts";
 import { hostOf } from "./status.ts";
@@ -59,6 +61,19 @@ export async function uninstall(
       `Could not remove the skill files: ${e instanceof Error ? e.message : String(e)}`,
     ]);
   }
+  // The Claude Code output style: only our marked file, never the user's.
+  try {
+    const style = uninstallOutputStyle({
+      home: ctx.userHome,
+      busHome: ctx.home,
+      env: ctx.env,
+    });
+    for (const n of style.notes) say(ctx, [n]);
+  } catch (e) {
+    say(ctx, [
+      `Could not remove the output style: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
   // The always-on habits block goes too: only our marked block, nothing else.
   try {
     const habits = removeHabits({
@@ -70,6 +85,19 @@ export async function uninstall(
   } catch (e) {
     say(ctx, [
       `Could not remove the habits block: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
+  // The oa-bus command (#1626): only our shim, only for this bus home.
+  try {
+    const gone = removeShim({
+      userHome: ctx.userHome,
+      busHome: ctx.home,
+      platform: ctx.platform,
+    });
+    if (gone) say(ctx, c.shimRemoved(tilde(ctx, gone)));
+  } catch (e) {
+    say(ctx, [
+      `Could not remove the oa-bus command: ${e instanceof Error ? e.message : String(e)}`,
     ]);
   }
   // Quiet on success: the wiring lines above already say what was removed.

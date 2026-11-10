@@ -637,6 +637,18 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
     expect(m.sent.map((x) => x.to)).toEqual([s.editor.email]);
   });
 
+  for (const col of ["restricted_manual", "restricted_sync"])
+    it(`a restricted member (${col}) is never emailed, even with a share`, async () => {
+      const s = await setup();
+      const t = await thread(E, s.id, person(s.editor), s.editor);
+      await E.DB.prepare(`update users set ${col} = 1 where id = ?`)
+        .bind(s.editor.userId)
+        .run();
+      const m = mailer();
+      await reply(m.e, s.id, t.id, person(s.owner), s.owner);
+      expect(m.sent).toEqual([]);
+    });
+
   it("a guest author shows as '{name} (guest)'", async () => {
     const s = await setup();
     const m = mailer();

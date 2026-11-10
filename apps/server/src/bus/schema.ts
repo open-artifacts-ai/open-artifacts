@@ -433,6 +433,25 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   sql.exec(
     "create index if not exists agents_proof_hash on agents(proof_hash) where proof_hash is not null",
   );
+  // #1984: a live session holds several proofs (the last few binds), one row
+  // each. A proof names one session (hash is the key). They end with the
+  // session: the triggers drop them when the row closes (live = 0) or goes.
+  sql.exec(
+    "create table if not exists agent_proofs (hash text primary key, agent_id text not null, seq integer not null)",
+  );
+  sql.exec(
+    "create index if not exists agent_proofs_agent on agent_proofs(agent_id, seq)",
+  );
+  sql.exec(
+    "create trigger if not exists agent_proofs_close after update of live on agents when new.live = 0 begin delete from agent_proofs where agent_id = new.id; end",
+  );
+  sql.exec(
+    "create trigger if not exists agent_proofs_gone after delete on agents begin delete from agent_proofs where agent_id = old.id; end",
+  );
+  // Rows bound before this table: their one proof carries over.
+  sql.exec(
+    "insert or ignore into agent_proofs (hash, agent_id, seq) select proof_hash, id, 0 from agents where proof_hash is not null and live = 1",
+  );
   sql.exec(
     "create index if not exists agents_status_due on agents(status_due) where status_due is not null",
   );

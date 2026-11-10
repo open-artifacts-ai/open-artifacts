@@ -1,0 +1,13 @@
+{
+  "name": "open-artifacts",
+  "displayName": "Open Artifacts",
+  "description": "Adds the Artifacts Teammate output style to Claude Code: short replies, with plans, decisions and asks kept on Open Artifacts. The Open Artifacts tools and skill come in a later version.",
+  "author": {
+    "name": "Open Artifacts",
+    "url": "https://github.com/open-artifacts-ai"
+  },
+  "homepage": "https://github.com/open-artifacts-ai/open-artifacts",
+  "repository": "https://github.com/open-artifacts-ai/open-artifacts",
+  "license": "MIT",
+  "keywords": ["output-style", "open-artifacts"]
+}

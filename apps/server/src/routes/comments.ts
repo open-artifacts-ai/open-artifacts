@@ -12,10 +12,17 @@ import type { ArtifactRow } from "../auth/authz.js";
 import {
   authorize,
   caller,
+  callerOf,
   canCtx,
+  capOfCaller,
   interactiveSession,
 } from "../auth/authz.js";
-import { can, isGuestRole, type PolicyAction } from "../auth/policy.js";
+import {
+  can,
+  capsReads,
+  isGuestRole,
+  type PolicyAction,
+} from "../auth/policy.js";
 import { readCapped } from "../http/body.js";
 import { isEmbedRequest } from "../http/embed.js";
 import { ApiError } from "../http/errors.js";
@@ -124,6 +131,7 @@ async function identity(
         short: null,
         moderator,
         guest: isGuestRole(user.role),
+        capped: capsReads(capOfCaller(callerOf(user))),
       },
       issued: null,
     };
@@ -354,7 +362,14 @@ export function mountComments(app: AppType): void {
   app.get(AGENTS, async (c) => {
     const { id, who: cw, level, artifact } = await open(c, "comments.read");
     if (!modOf(cw, level, artifact)) return c.json([]);
-    return c.json(await artifactAgents(c.env, id, c.var.user?.id ?? null));
+    return c.json(
+      await artifactAgents(
+        c.env,
+        id,
+        c.var.user?.id ?? null,
+        c.var.user ? isGuestRole(c.var.user.role) : true,
+      ),
+    );
   });
 
   app.delete(COMMENT, async (c) => {

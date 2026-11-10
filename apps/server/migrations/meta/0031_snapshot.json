@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "bd620de8-b5c1-4736-be23-5f72a9ab75f6",
+  "id": "44857580-e482-427a-91e4-667f08879241",
   "prevId": "b234b25e-c912-4fcd-a147-9dbdbf3d0067",
   "tables": {
     "agent_grants": {
@@ -2091,14 +2091,6 @@
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
-        },
-        "comment_email": {
-          "name": "comment_email",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 1
         }
       },
       "indexes": {
@@ -2180,6 +2172,13 @@
         },
         "agent_via": {
           "name": "agent_via",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "agent_identity": {
+          "name": "agent_identity",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

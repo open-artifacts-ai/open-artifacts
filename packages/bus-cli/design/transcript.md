@@ -37,6 +37,9 @@ hub answers, the line is erased and replaced by:
 
 [[success]]✓[[/success]]  Configured Claude Code, OpenCode and Pi
 [[success]]✓[[/success]]  Restarted the OpenCode service to load the plugin
+[[success]]✓[[/success]]  Turned on the Artifacts Teammate output style
+   (~/.claude/output-styles/artifacts-teammate.md).
+   Restart Claude Code sessions to use it.
 [[success]]✓[[/success]]  Daemon running as a launchd service  [[muted]]pid 48213[[/muted]]
 
 5 agents in namespace [[accent]]github.com/open-artifacts-ai/oa-bus[[/accent]]  [[muted]]4 live · 1 queued[[/muted]]
@@ -52,6 +55,12 @@ hub answers, the line is erased and replaced by:
 ```
 
 Variants inside state 1:
+- The `Turned on the Artifacts Teammate output style` line prints when Claude Code
+  is configured and the install wrote `outputStyle` in its `settings.json` (only
+  when that key was absent). When the person already chose a style, the file is
+  still written and the line is
+  `[[success]]✓[[/success]]  Added the Artifacts Teammate output style. You're on Explanatory; switch with /output-style.`
+  (first write only). A `settings.json` that is a symlink or not valid JSON is left alone, with a note.
 - `✓  Daemon running` prints only after the CLI has confirmed the service is
   up: the daemon answers on `~/.oa-bus/daemon.sock` and reports its pid. It
   waits at most 10 s; if the daemon has not answered by then, the line is
@@ -214,6 +223,9 @@ oa-bus 0.1.0
 
 [[success]]✓[[/success]]  Configured Claude Code, OpenCode and Pi
 [[success]]✓[[/success]]  Restarted the OpenCode service to load the plugin
+[[success]]✓[[/success]]  Turned on the Artifacts Teammate output style
+   (~/.claude/output-styles/artifacts-teammate.md).
+   Restart Claude Code sessions to use it.
 [[success]]✓[[/success]]  Daemon running as a launchd service  [[muted]]pid 48213[[/muted]]
 
 5 agents in namespace [[accent]]github.com/open-artifacts-ai/oa-bus[[/accent]]  [[muted]]4 live · 1 queued[[/muted]]
@@ -724,6 +736,9 @@ run npx @open-artifacts/bus to reconnect it.
 ```
 
 - Linux reads `Stopped and removed the systemd user service`.
+- The Artifacts Teammate output style file goes too, only if it still carries
+  our marker, and `outputStyle` is removed from `settings.json` only if we set
+  it and the value is still ours. Nothing is printed for either.
 - The removed line lists only the harnesses that had the bus wired, as in
   state 1. None had it: `[[success]]✓[[/success]]  No harness had the bus wired`.
 - The OpenCode restart line prints only when OpenCode was wired. If its service

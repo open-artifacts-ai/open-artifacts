@@ -29,11 +29,23 @@ export type AgentRecord = {
    */
   replaces?: string;
   /**
-   * #1822: the hash of the proof this session's `oa-bus mcp-proof` helper last
-   * sent. Memory only: a restarted daemon learns it again at the next connect.
+   * #1822: the hashes of the proofs this session's `oa-bus mcp-proof` helper
+   * sent, oldest first, at most LINK_HASHES_MAX (#1984: a later run must not
+   * unlink the header an earlier one gave Claude). Memory only: a restarted
+   * daemon learns them again at the next connect.
    */
-  linkHash?: string;
+  linkHashes?: string[];
 };
+
+/** #1984: most proof hashes a session keeps; the hub holds the same number. */
+export const LINK_HASHES_MAX = 4;
+
+/** `list` with `hash` newest, a repeat moved to the end, at most LINK_HASHES_MAX. */
+export const withLinkHash = (
+  list: readonly string[] | undefined,
+  hash: string,
+): string[] =>
+  [...(list ?? []).filter((h) => h !== hash), hash].slice(-LINK_HASHES_MAX);
 
 export class AgentTable {
   #byRef = new Map<string, AgentRecord>();
