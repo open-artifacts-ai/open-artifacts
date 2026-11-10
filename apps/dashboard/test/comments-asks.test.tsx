@@ -1318,6 +1318,41 @@ describe("asks for you in the toolbar and header (#1614)", () => {
     await waitFor(() => expect(active()).toBe("r"));
   });
 
+  it("a thread link opens the side panel on Comments in one navigation", async () => {
+    serveThreads(() => [mk("a"), mk("b")]);
+    const router = mount(
+      `${viewerPath(OWNED)}?panel=open&tab=versions&thread=b`,
+    );
+    await waitFor(() => expect(active()).toBe("b"));
+    await waitFor(() => {
+      const q = router.state.location.searchStr;
+      expect(q).not.toContain("thread=");
+      expect(q).toContain("panel=open");
+      expect(q).toContain("tab=comments");
+    });
+  });
+
+  it("keeps a thread link while the list fails, and opens it once it loads", async () => {
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json(
+          { error: { code: "internal", message: "x" } },
+          { status: 500 },
+        ),
+      ),
+    );
+    const router = mount(`${viewerPath(OWNED)}?thread=b`);
+    await toolbar().catch(() => undefined);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(router.state.location.searchStr).toContain("thread=b");
+    serveThreads(() => [mk("a"), mk("b")]);
+    await act(() => lastClient.invalidateQueries());
+    await waitFor(() => expect(active()).toBe("b"));
+    await waitFor(() =>
+      expect(router.state.location.searchStr).not.toContain("thread="),
+    );
+  });
+
   it("drops a thread link to a thread that is gone", async () => {
     serveThreads(() => [mk("a")]);
     const router = mount(`${viewerPath(OWNED)}?thread=gone`);
