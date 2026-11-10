@@ -1090,6 +1090,24 @@ describe("a selection spanning several elements (#1708)", () => {
       first: "st ",
       last: "Second",
     },
+    {
+      name: "two ordered list items (#1721)",
+      html: "<ol><li id=x>First step</li><li id=y>Second step</li></ol>",
+      from: ["x", 6],
+      to: ["y", 6],
+      exact: "step Second",
+      first: "step",
+      last: "Second",
+    },
+    {
+      name: "out of a nested list into the next outer item (#1721)",
+      html: "<ul><li>Parent<ul><li id=x>Child one</li><li id=y>Child two</li></ul></li><li id=z>Next item</li></ul>",
+      from: ["y", 6],
+      to: ["z", 4],
+      exact: "two Next",
+      first: "two",
+      last: "Next",
+    },
   ];
   for (const c of cases) {
     it(`shows the button, saves one anchor and re-highlights both sides: ${c.name}`, async () => {
