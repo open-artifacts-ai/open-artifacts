@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   HABITS,
@@ -250,6 +251,18 @@ describe("delivery", () => {
 });
 
 describe("habits", () => {
+  it("matches bus-cli's HABITS_LINES", () => {
+    const src = readFileSync(
+      new URL("../../bus-cli/src/steps/habits.ts", import.meta.url),
+      "utf8",
+    );
+    const m = /export const HABITS_LINES = \[\n([\s\S]*?)\n\];/.exec(src);
+    expect(m).not.toBeNull();
+    // The array body is plain string literals: evaluate it, any quote style.
+    const lines = new Function(`return [${m?.[1] ?? ""}]`)() as string[];
+    expect(lines.length).toBeGreaterThan(5);
+    expect(HABITS).toBe(lines.join("\n"));
+  });
   it("come as appendSystemContext while a link is open, not before", async () => {
     const hub = new Hub();
     const bus = newBus(hub);
