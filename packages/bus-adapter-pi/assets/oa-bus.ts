@@ -77,6 +77,12 @@ const PROOF_MS = 2_000;
 const PROOF_RETRY_MS = 60_000;
 /** Written by `oa-bus install`: the instance's /mcp entry it moved out of Pi's mcp.json. */
 const ENTRY_FILE = "pi-mcp-entry.json";
+/** Written by `oa-bus install` for omp: `{ "origin": "<the instance origin>" }`. */
+const OMP_ORIGIN_FILE = "omp-mcp-origin.json";
+/** How many redirects the wrapped fetch follows itself, as omp's own client does. */
+const MAX_REDIRECTS = 5;
+/** Process-wide: the omp sessions of this process that have the fetch wrap on (one extension instance each). */
+const OMP_LIVE = Symbol.for("open-artifacts.bus.omp-live-sessions");
 
 /** Above the daemon's 10 s hub wait plus its 5 s wait for delivered. */
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -1269,6 +1275,125 @@ export default function oaBus(pi: Pi): void {
       headed = headers[PROOF_HEADER] !== undefined;
     } catch {}
   };
+  // --- #1856 omp: omp reads its MCP servers from its own mcp.json and has no
+  // per-server header hook, so the extension wraps the global fetch its MCP
+  // client calls (HttpTransport in omp 18.17.0 calls `fetch(url, init)` each
+  // time). The wrap adds the proof header to a request whose origin and path
+  // are exactly the instance's /mcp, and to nothing else. omp shares one MCP
+  // manager across its subagents, so they show the parent's face, as intended.
+  // One omp process can serve several sessions (ACP): the wrap cannot tell
+  // whose request it sees, so with more than one live session it sends nothing.
+  /** The proof the daemon bound for this session's link; undefined until then. */
+  let face: string | undefined;
+  /** This extension instance's fetch wrap, while it is on. */
+  let ompWrap: { restore: () => void } | undefined;
+  const live = (): Set<object> => {
+    const g = globalThis as Record<symbol, unknown>;
+    if (!(g[OMP_LIVE] instanceof Set)) g[OMP_LIVE] = new Set<object>();
+    return g[OMP_LIVE] as Set<object>;
+  };
+  const ompOrigin = (): string | undefined => {
+    try {
+      const v: unknown = JSON.parse(
+        readFileSync(join(home(), OMP_ORIGIN_FILE), "utf8"),
+      );
+      if (isRecord(v) && typeof v.origin === "string") {
+        const u = new URL(v.origin);
+        if (u.origin === v.origin && /^https?:$/.test(u.protocol))
+          return u.origin;
+      }
+    } catch {}
+    return undefined;
+  };
+  /** Whether `url` is exactly the instance's /mcp (a trailing slash and a query are the same endpoint). */
+  const isMcp = (url: URL, origin: string) =>
+    url.origin === origin && url.pathname.replace(/\/+$/, "") === "/mcp";
+  const ompWrapOn = () => {
+    if (ompWrap) return;
+    const origin = ompOrigin();
+    const g = globalThis as { fetch?: typeof fetch };
+    const orig = g.fetch;
+    if (!origin || typeof orig !== "function") return;
+    const token = {};
+    let on = true;
+    const withProof = (init: RequestInit | undefined, value?: string) => {
+      const h = new Headers(init?.headers);
+      h.delete(PROOF_HEADER);
+      if (value !== undefined) h.set(PROOF_HEADER, value);
+      return h;
+    };
+    const wrapped = async (
+      input: Parameters<typeof fetch>[0],
+      init?: RequestInit,
+    ): Promise<Response> => {
+      let url: URL | undefined;
+      let headers: Headers | undefined;
+      try {
+        if (on && (typeof input === "string" || input instanceof URL)) {
+          const u = new URL(String(input));
+          if (isMcp(u, origin)) {
+            url = u;
+            // A proof header the user set is never sent as it is.
+            headers = withProof(
+              init,
+              live().size === 1 && live().has(token) ? face : undefined,
+            );
+          }
+        }
+      } catch {
+        url = undefined;
+      }
+      if (!url || !headers) return orig(input, init);
+      // The redirects are followed here, so the header can never leave the endpoint.
+      const follow = init?.redirect === undefined || init.redirect === "follow";
+      let cur = url;
+      let curInit: RequestInit = {
+        ...init,
+        headers,
+        ...(follow ? { redirect: "manual" as const } : {}),
+      };
+      for (let hop = 0; ; hop++) {
+        const res = await orig(cur.href, curInit);
+        const loc = res.headers.get("location");
+        if (!follow || ![301, 302, 303, 307, 308].includes(res.status) || !loc)
+          return res;
+        if (hop >= MAX_REDIRECTS) throw new Error("Too many redirects");
+        await res.body?.cancel();
+        cur = new URL(loc, cur);
+        const same = res.status === 307 || res.status === 308;
+        const next: RequestInit = { ...curInit };
+        if (!same && init?.method && init.method !== "GET") {
+          next.method = "GET";
+          delete next.body;
+        }
+        if (isMcp(cur, origin)) {
+          curInit = {
+            ...next,
+            headers: withProof(init, headers.get(PROOF_HEADER) ?? undefined),
+          };
+        } else {
+          // Off the endpoint: the caller's own headers only, and the rest is fetch's to follow.
+          const own = withProof(init);
+          return orig(cur.href, {
+            ...next,
+            headers: own,
+            redirect: init?.redirect ?? "follow",
+          });
+        }
+      }
+    };
+    g.fetch = wrapped as typeof fetch;
+    live().add(token);
+    ompWrap = {
+      restore: () => {
+        on = false;
+        live().delete(token);
+        // Wrapped again on top by someone else: stay in the chain, inert.
+        if (g.fetch === (wrapped as typeof fetch)) g.fetch = orig;
+        ompWrap = undefined;
+      },
+    };
+  };
   const offerProof = async (p: Proof) => {
     if (p.busy) return;
     p.busy = true;
@@ -1280,6 +1405,7 @@ export default function oaBus(pi: Pi): void {
       if (bound && proof === p && !p.link.closed() && !stopped) {
         p.taken = true;
         register(p.value);
+        if (ompWrap) face = p.value;
       }
     } catch {
     } finally {
@@ -1291,7 +1417,7 @@ export default function oaBus(pi: Pi): void {
     proof = undefined;
     const caps = l.welcome.caps;
     const entry = entryOf();
-    if (!mcpHere() || !entry || !onHub(entry)) return;
+    if (!ompWrap && (!mcpHere() || !entry || !onHub(entry))) return;
     if (!Array.isArray(caps) || !caps.includes("link")) return;
     proof = {
       link: l,
@@ -1311,6 +1437,7 @@ export default function oaBus(pi: Pi): void {
    */
   const dropHeader = () => {
     proof = undefined;
+    face = undefined;
     if (headed) register();
   };
   /** A turn on a link the daemon did not take a proof for: offer it again, at most once a minute. */
@@ -1440,6 +1567,7 @@ export default function oaBus(pi: Pi): void {
     // The entry works unlinked: no header until this session's link is bound.
     identity = identityOf(ctx);
     register();
+    if (identity.kind === "omp") ompWrapOn();
     // Pi is reachable while this link is open; a daemon that is down is retried.
     await ensure(identityOf(ctx)).catch(reconnect);
   });
@@ -1448,6 +1576,7 @@ export default function oaBus(pi: Pi): void {
     stopped = true;
     identity = identity ?? identityOf(ctx);
     dropHeader();
+    ompWrap?.restore();
     if (retry) clearTimeout(retry);
     retry = undefined;
     connecting = undefined;
