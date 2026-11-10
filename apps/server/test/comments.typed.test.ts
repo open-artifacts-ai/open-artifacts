@@ -336,7 +336,7 @@ describe("notice tier", () => {
         "Open Artifacts: your user answered your question (version 1).",
         url(s.id),
         ids(t),
-        "Your user answered in the web app (checked by the server). It is their yes to your ask only when answer.yes is true; then act on it and do not ask again.",
+        "Your user answered in the web app (checked by the server). If you posted this ask, it is their yes only when answer.yes is true; then act on it and do not ask again.",
       ].join("\n"),
     );
   });
