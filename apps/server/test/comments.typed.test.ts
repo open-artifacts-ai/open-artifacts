@@ -336,7 +336,7 @@ describe("notice tier", () => {
         "Open Artifacts: your user answered your question (version 1).",
         url(s.id),
         ids(t),
-        YOURS,
+        "Your user picked this answer in the web app (checked by the server). It is their pick on your ask: act on it, and do not ask again.",
       ].join("\n"),
     );
   });
