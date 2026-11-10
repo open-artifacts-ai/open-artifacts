@@ -242,6 +242,17 @@ export function unconfirmedText(to: string, excerpt?: string): string {
   return fitLine((v) => `${quoted(head(v), `"${excerpt}"`, tail)}${fixed}`, to);
 }
 
+/** PLACEHOLDER (#1760): Product's final wording is pending. Said after an expiry notice that proved wrong. */
+export const CORRECTED_DELIVERED = "was delivered after all";
+
+/** The one-line correction to an expiry notice the sender already saw. */
+export function correctedDeliveredText(to: string): string {
+  return fitLine(
+    (v) => `✓  Correction: your message to ${v} ${CORRECTED_DELIVERED}.`,
+    to,
+  );
+}
+
 /**
  * A message the hub delivered after send_message stopped waiting, as the
  * sender's next tool result reads it: the Expired shape and wrap.

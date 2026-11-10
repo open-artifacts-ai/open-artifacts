@@ -8,8 +8,10 @@ export {
   HelloRefused,
 } from "./client.ts";
 export {
+  CORRECTED_DELIVERED,
   cleanStatusLabel,
   collapsedAwayLine,
+  correctedDeliveredText,
   deliveredText,
   displayKind,
   earlierStatusText,

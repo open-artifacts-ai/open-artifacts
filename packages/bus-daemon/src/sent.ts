@@ -45,6 +45,8 @@ type Entry = SentMeta & {
   native?: true;
   outcome?: Outcome;
   delivered?: true;
+  /** An expiry the sender was told; kept so a later delivered (#1760) can correct it. */
+  expired?: true;
   late?: true;
   shown?: true;
 };
@@ -58,6 +60,7 @@ const metaOf = ({
   late: ____,
   shown: _____,
   native: ______,
+  expired: _______,
   ...meta
 }: Entry): SentMeta => meta;
 
@@ -84,6 +87,7 @@ const valid = (id: string, e: unknown): e is Entry => {
     typeof r.at === "number" &&
     validOutcome(r.outcome) &&
     (r.delivered === undefined || r.delivered === true) &&
+    (r.expired === undefined || r.expired === true) &&
     (r.late === undefined || r.late === true) &&
     (r.shown === undefined || r.shown === true) &&
     (r.native === undefined || r.native === true)
@@ -214,6 +218,51 @@ export class SentStore {
     if (this.#all.delete(msgId)) this.#save();
   }
 
+  /**
+   * The sender has been told `msgId`'s outcome. A reasonless expiry may be a
+   * lost body the recipient did take (#1760), so its entry stays, no longer
+   * owed, for a later delivered; a delivered record stays; anything else goes.
+   */
+  told(msgId: string): void {
+    const e = this.#all.get(msgId);
+    if (!e) return;
+    if (e.delivered) return;
+    if (e.outcome?.state === "expired" && e.outcome.reason === undefined) {
+      const { outcome: _, ...rest } = e;
+      this.#all.set(msgId, { ...rest, expired: true });
+      this.#save();
+      return;
+    }
+    this.delete(msgId);
+  }
+
+  /** Whether a delivered may still correct `msgId`: a reasonless expiry, told or not. */
+  correctable(msgId: string): boolean {
+    const e = this.#all.get(msgId);
+    return (
+      !!e &&
+      !e.delivered &&
+      (e.expired === true ||
+        (e.outcome?.state === "expired" && e.outcome.reason === undefined))
+    );
+  }
+
+  /**
+   * The recipient took a message reported expired: it ends delivered. True
+   * when the sender had been told the expiry (it is owed a correction); an
+   * expiry never told is just dropped.
+   */
+  correct(msgId: string): boolean {
+    const e = this.#all.get(msgId);
+    if (!e || !this.correctable(msgId)) return false;
+    const wasTold = e.expired === true;
+    const { outcome: _, expired: __, ...rest } = e;
+    this.#all.delete(msgId);
+    this.#all.set(msgId, { ...rest, at: this.#now(), delivered: true });
+    this.#save();
+    return wasTold;
+  }
+
   /** Settled entries whose sender is `ref`, oldest first. */
   untold(ref: string): { msgId: string; meta: SentMeta; outcome: Outcome }[] {
     this.#prune();
@@ -242,7 +291,7 @@ export class SentStore {
     if (over <= 0) return;
     for (const [id, e] of this.#all) {
       if (over <= 0) return;
-      if (e.delivered) {
+      if (e.delivered || e.expired) {
         this.#all.delete(id);
         over--;
       }
@@ -285,6 +334,7 @@ export class SentStore {
         at,
         outcome,
         delivered,
+        expired,
         late,
         shown,
         native,
@@ -308,6 +358,7 @@ export class SentStore {
             }
           : {}),
         ...(delivered ? { delivered } : {}),
+        ...(expired && !delivered && !outcome ? { expired } : {}),
         ...(delivered && late ? { late } : {}),
         ...(delivered && late && shown ? { shown } : {}),
         ...(native ? { native } : {}),
@@ -347,7 +398,10 @@ export class SentStore {
   }
 }
 
-export type Notice = { msgId: string; meta: SentMeta } & Outcome;
+export type Notice = { msgId: string; meta: SentMeta } & (
+  | Outcome
+  | { state: "corrected"; reason?: undefined }
+);
 type Final = { msg_id: string; state: ReceiptState; reason?: ReceiptReason };
 
 /** How long a tool call's send waits past its receipt for delivered (or a refusal or expiry). */
@@ -463,13 +517,23 @@ export class Receipts {
   }
 
   update(f: Final): Notice | undefined {
-    if (f.state === "pending" || this.#finals.has(f.msg_id)) return undefined;
+    if (f.state === "pending") return undefined;
+    // #1760: a delivered after a reasonless expiry (a lost body the recipient
+    // did take) is the one final that may follow another. Nothing else does.
+    const corrects =
+      f.state === "delivered" && this.store.correctable(f.msg_id);
+    if (this.#finals.has(f.msg_id) && !corrects) return undefined;
     const meta = this.store.get(f.msg_id);
     if (!meta) {
       this.#keepEarly(f);
       return undefined;
     }
     this.#final(f.msg_id);
+    if (corrects) {
+      return this.store.correct(f.msg_id)
+        ? { msgId: f.msg_id, meta, state: "corrected" }
+        : undefined;
+    }
     // Nothing follows delivered.
     if (this.store.isDelivered(f.msg_id)) return undefined;
     if (f.state === "delivered") {
@@ -534,7 +598,7 @@ export class Receipts {
 
   /** The sender has been told: forget the message. */
   told(msgId: string): void {
-    this.store.delete(msgId);
+    this.store.told(msgId);
   }
 
   /** Notices still owed to `ref`, e.g. after a restart or while it was away. */

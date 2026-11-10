@@ -415,3 +415,12 @@ describe("rosterText (#1860)", () => {
     expect(text([])).toBe("No agents in your namespace and linked ones.");
   });
 });
+
+describe("correctedDeliveredText (#1760, placeholder wording)", () => {
+  it("is one short line naming the recipient", async () => {
+    const { correctedDeliveredText } = await import("../src/copy.ts");
+    expect(correctedDeliveredText("peer")).toBe(
+      "✓  Correction: your message to peer was delivered after all.",
+    );
+  });
+});
