@@ -61,12 +61,12 @@ export type CodexAttestDeps = {
   /** Codex's home; default `${CODEX_HOME:-~/.codex}` as the daemon sees it. */
   home?: string;
   /** One `ps -o pid=,ppid=,lstart=,comm=` for all of `pids`; a gone pid is absent. */
-  procs?: (pids: number[]) => Map<number, Proc>;
+  procs?: (pids: number[]) => Map<number, Proc> | undefined;
   /**
    * For each (pid, file), whether the pid holds the file: one `lsof` (macOS)
    * or one /proc/locks read (Linux) for all of them.
    */
-  holding?: (pairs: Hold[]) => boolean[];
+  holding?: (pairs: Hold[]) => boolean[] | undefined;
   /** Wait before reading an absent call once more; default 50 ms. */
   retryMs?: number;
   /** The wait itself; default a timer, so the daemon keeps serving. */
@@ -84,11 +84,15 @@ export type CodexAttestor = {
   attestNow: (hello: Hello) => CodexAttest;
   /**
    * The threads, of those given, whose process is still the one pinned and,
-   * with `relock`, still holds the thread's lock. A thread that fails loses
-   * its proof; a process that is gone or restarted is forgotten.
+   * with `relock`, still holds the thread's lock. A thread that misses the
+   * lock keeps its proof (Codex unloads idle threads and reloads them), so a
+   * later sweep with the same pid holding the lock again revives it; a process
+   * that is gone or restarted is forgotten. A check that could not run (ps or
+   * lsof timed out) is unknown: every thread given as live stays in the set.
+   * Threads with `live: false` join the set only on a relock that finds the lock held.
    */
   sweep: (
-    live: { thread: string; pid: number }[],
+    live: { thread: string; pid: number; live?: boolean }[],
     relock: boolean,
   ) => Set<string>;
   /** The start time pinned for a codex process, if it is pinned (#1748). */
@@ -197,6 +201,8 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
   const pinned = new Map<number, string>();
   /** Keyed by `${P}\0${start}\0${thread}`. */
   const proofs = new Map<string, Proof>();
+  /** Proofs whose thread missed its lock: kept for revival, but a hello must show the lock again. */
+  const lapsed = new Set<string>();
   /** Rebuilt on demand from a proof, so pruning one P's scan never strands another's proof. */
   const scans = new Map<string, Scan>();
   /**
@@ -232,7 +238,11 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
   /** P is gone or is another process now: nothing it proved stands. */
   const forget = (p: number) => {
     pinned.delete(p);
-    for (const k of proofs.keys()) if (k.startsWith(`${p}\0`)) proofs.delete(k);
+    for (const k of proofs.keys())
+      if (k.startsWith(`${p}\0`)) {
+        proofs.delete(k);
+        lapsed.delete(k);
+      }
     for (const [t, s] of scans) if (s.pid === p) scans.delete(t);
   };
 
@@ -247,7 +257,7 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     const thread = cx.thread_id;
     const p = cx.ppid;
     // 1. Parent: the claimed ppid is the adapter's real parent, and it is codex.
-    const rows = procs([hello.pid, p]);
+    const rows = procs([hello.pid, p]) ?? new Map<number, Proc>();
     const proc = rows.get(p);
     if (!proc || rows.get(hello.pid)?.ppid !== p)
       return no(CODEX_REFUSALS.notCodex);
@@ -260,10 +270,17 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     }
     const key = `${p}\0${proc.start}\0${thread}`;
     let proof = proofs.get(key);
+    if (proof && lapsed.has(key)) {
+      // Kept after a lock miss: the lock must be held again, as at a first hello.
+      const lock = lockOf(home, thread);
+      if (!plainFile(lock) || !holding([{ pid: p, file: lock }])?.[0])
+        return no(CODEX_REFUSALS.notLoaded);
+      lapsed.delete(key);
+    }
     if (!proof) {
       // 2. Lock: P has the thread loaded.
       const lock = lockOf(home, thread);
-      if (!plainFile(lock) || !holding([{ pid: p, file: lock }])[0])
+      if (!plainFile(lock) || !holding([{ pid: p, file: lock }])?.[0])
         return no(CODEX_REFUSALS.notLoaded);
       // 4. Not a subagent: the db decides; the rollout's session_meta when it can't.
       const row = threadRow(home, thread);
@@ -352,8 +369,16 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
       ? procs([...new Set(live.map((l) => l.pid))])
       : new Map<number, Proc>();
     const still = new Set<string>();
-    const recheck: { thread: string; key: string; hold: Hold }[] = [];
-    for (const { thread, pid } of live) {
+    // ps could not run: nothing is learned, so live stays live.
+    if (!rows) {
+      for (const l of live) if (l.live !== false) still.add(l.thread);
+      return still;
+    }
+    // Live threads whose process and proof stand: kept when lsof cannot run.
+    const alive = new Set<string>();
+    const recheck: { thread: string; key: string; hold: Hold; was: boolean }[] =
+      [];
+    for (const { thread, pid, live: was = true } of live) {
       const row = rows.get(pid);
       const start = pinned.get(pid);
       if (!row || start === undefined || row.start !== start) {
@@ -362,24 +387,29 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
       }
       const key = `${pid}\0${start}\0${thread}`;
       if (!proofs.has(key)) continue;
+      if (was) alive.add(thread);
       const file = lockOf(home, thread);
-      if (!relock) still.add(thread);
-      else if (plainFile(file))
-        recheck.push({ thread, key, hold: { pid, file } });
-      else proofs.delete(key);
+      if (!relock) {
+        if (was) still.add(thread);
+      } else if (plainFile(file))
+        recheck.push({ thread, key, hold: { pid, file }, was });
+      else lapsed.add(key);
     }
-    // One lsof (or /proc read) for every live thread's lock.
+    // One lsof (or /proc read) for every thread's lock.
     const held = recheck.length ? holding(recheck.map((r) => r.hold)) : [];
+    if (!held) return alive;
     recheck.forEach(({ thread, key }, i) => {
-      if (held[i]) still.add(thread);
-      else proofs.delete(key);
+      if (held[i]) {
+        still.add(thread);
+        lapsed.delete(key);
+      } else lapsed.add(key);
     });
     return still;
   };
 
   const restore: CodexAttestor["restore"] = ({ thread, pid, start }) => {
     const home = deps.home ?? codexHome();
-    const proc = procs([pid]).get(pid);
+    const proc = procs([pid])?.get(pid);
     if (!proc || basename(proc.comm) !== "codex" || proc.start !== start)
       return undefined;
     // Another thread of this process pinned a different start: never mixed.
@@ -404,6 +434,7 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     if (sweep([{ thread, pid }], true).has(thread)) return { cwd: meta.cwd };
     // Failed: drop this thread's proof; the pin goes unless another thread uses it.
     proofs.delete(`${pid}\0${start}\0${thread}`);
+    lapsed.delete(`${pid}\0${start}\0${thread}`);
     if (!had && ![...proofs.keys()].some((k) => k.startsWith(`${pid}\0`)))
       pinned.delete(pid);
     return undefined;
@@ -716,11 +747,17 @@ export function sessionMeta(
   }
 }
 
+/** A tool's normal "some target absent" exit: status 1, not killed or timed out. */
+const exitedOne = (e: unknown): boolean => {
+  const x = e as { status?: unknown; signal?: unknown; code?: unknown };
+  return x.status === 1 && !x.signal && x.code !== "ETIMEDOUT";
+};
+
 /**
  * `ps` once for every pid: `pid ppid lstart comm`, in UTC and the C locale.
  * lstart is five fields; comm is the rest (it may hold spaces).
  */
-export function psRows(pids: number[]): Map<number, Proc> {
+export function psRows(pids: number[]): Map<number, Proc> | undefined {
   const out = new Map<number, Proc>();
   if (!pids.length) return out;
   let text: string;
@@ -737,6 +774,8 @@ export function psRows(pids: number[]): Map<number, Proc> {
     );
   } catch (e) {
     // ps exits 1 when some pid is gone, and still prints the others.
+    // Any other failure (timeout, spawn error, signal) is unknown, not "gone".
+    if (!exitedOne(e)) return undefined;
     text = String((e as { stdout?: unknown }).stdout ?? "");
   }
   for (const row of text.split("\n")) {
@@ -758,7 +797,7 @@ export function psRows(pids: number[]): Map<number, Proc> {
  * Which (pid, file) pairs hold: one `lsof -F pn` over every file (macOS), or
  * one /proc/locks read (Linux). lsof names files by their real path.
  */
-export function holdingFiles(pairs: Hold[]): boolean[] {
+export function holdingFiles(pairs: Hold[]): boolean[] | undefined {
   if (!pairs.length) return [];
   if (process.platform === "linux") return holdingLinux(pairs);
   const real = (f: string) => {
@@ -779,6 +818,8 @@ export function holdingFiles(pairs: Hold[]): boolean[] {
     });
   } catch (e) {
     // lsof exits 1 when some file has no holder, and still lists the others.
+    // Any other failure (timeout, spawn error, signal) is unknown.
+    if (!exitedOne(e)) return undefined;
     out = String((e as { stdout?: unknown }).stdout ?? "");
   }
   const holders = new Map<string, Set<number>>();

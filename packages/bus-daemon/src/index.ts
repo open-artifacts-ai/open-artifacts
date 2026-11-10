@@ -1764,22 +1764,27 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    */
   const syncCodex = () => {
     renameCodexThreads();
-    const live = agents
-      .all()
-      .filter((a) => a.kind === "codex" && a.live)
-      .map((a) => ({ thread: a.ref, pid: a.pid }));
+    // Not-live threads join only on a relock tick: a thread that dropped its
+    // lock keeps its proof, and comes back when the same process holds it again.
     codexTicks = (codexTicks + 1) % relockEvery;
+    const relockTick = codexTicks === 0;
+    const all = agents
+      .all()
+      .filter((a) => a.kind === "codex" && (a.live || relockTick))
+      .map((a) => ({ thread: a.ref, pid: a.pid, live: a.live }));
     // Stubbed attestation leaves no proofs to sweep.
-    if (!live.length || deps.attest) return persistCodex();
-    const still = codexCheck.sweep(live, codexTicks === 0);
-    let closed = false;
-    for (const { thread } of live) {
-      if (still.has(thread)) continue;
+    if (!all.length || deps.attest) return persistCodex();
+    const still = codexCheck.sweep(all, relockTick);
+    let changed = false;
+    for (const { thread, live } of all) {
+      if (still.has(thread) === live) continue;
       const a = agents.byRef(thread);
-      if (a) a.live = false;
-      closed = true;
+      if (!a) continue;
+      a.live = !live;
+      changed = true;
+      log(`codex thread ${thread} ${live ? "not live" : "live again"}`);
     }
-    if (closed) announceSessions();
+    if (changed) announceSessions();
     persistCodex();
   };
 
