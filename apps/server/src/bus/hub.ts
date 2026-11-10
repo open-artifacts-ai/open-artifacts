@@ -2244,7 +2244,11 @@ const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.ki
  * namespace: that namespace on agents_live_ns_lname plus the globals on
  * agents_global_name, merged here (as roster() does).
  */
-function agentList(ctx: DurableObjectState, namespace?: string): BusAgent[] {
+function agentList(
+  ctx: DurableObjectState,
+  namespace?: string,
+  withAway = false,
+): BusAgent[] {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
   const from = "from agents a join machines m on m.id = a.machine_id";
@@ -2277,10 +2281,24 @@ function agentList(ctx: DurableObjectState, namespace?: string): BusAgent[] {
       .sort(byNamespaceName)
       .slice(0, cap);
   }
-  // TODO(#1295 part C): list away agents here (agentDto already gives them
-  // state "away", running=false and `since`) once the dashboard renders them.
-  // Until then Roster.tsx would show them as Queued and ShareNotices would
-  // offer them as targets, so only open agents are listed.
+  // #1295 part C: away agents (closed, name still reserved) are listed only on
+  // request (the @ menu); Roster.tsx and ShareNotices would show them as Queued
+  // or offer them as targets, so every other reader gets open agents only.
+  if (withAway) {
+    const away = all<AgentWithMachine>(
+      sql,
+      `select ${AGENT_DTO_COLS} ${from} where a.org_id = ? and a.live = 0 and m.revoked_at is null
+         and a.id in (select f.agent_id from former_names f
+           where f.org_id = ? and f.kind = 'away' and f.expires_at > ?)
+       order by a.namespace, lower(a.name), a.name limit ?`,
+      OWNER_ORG_ID,
+      OWNER_ORG_ID,
+      Date.now(),
+      cap,
+    );
+    // Open agents first, then away, together at most `cap` (away rows count).
+    rows = [...rows, ...away].slice(0, cap);
+  }
   const online = new Map<string, boolean>();
   const dtos = rows.map((r) => {
     let on = online.get(r.machineId);
@@ -3536,7 +3554,9 @@ export class BusHub extends DurableObject<Env> {
    * The dashboard's one read (services/bus.ts busView): the machines with a
    * live socket now, and the open agents of unrevoked machines (agentList).
    */
-  async snapshot(): Promise<{ connected: string[]; agents: BusAgent[] }> {
+  async snapshot(opts?: {
+    away?: boolean;
+  }): Promise<{ connected: string[]; agents: BusAgent[] }> {
     const connected = all<StoredMachine>(
       this.ctx.storage.sql,
       `select ${MACHINE_COLS} from machines where org_id = ? and revoked_at is null`,
@@ -3544,7 +3564,10 @@ export class BusHub extends DurableObject<Env> {
     )
       .filter((m) => machineOnline(this.ctx, m.id))
       .map((m) => m.id);
-    return { connected, agents: agentList(this.ctx) };
+    return {
+      connected,
+      agents: agentList(this.ctx, undefined, opts?.away === true),
+    };
   }
 
   // ------------------------------------------------------------------- roles

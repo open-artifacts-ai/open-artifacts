@@ -91,7 +91,7 @@ function doubles(
     busView: async (_e, uid) => {
       calls.busView.push(uid);
       if (o.readFails) throw new Error("D1 down");
-      return { machines: [], agents: [], live: true, ...o.view };
+      return { machines: [], agents: [], live: true, read: true, ...o.view };
     },
     busMachine: async (_e, uid, id) => {
       calls.machine.push([uid, id]);

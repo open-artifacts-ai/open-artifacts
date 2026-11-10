@@ -1,6 +1,7 @@
 import {
   type Anchor,
   type AnchorInput,
+  type ArtifactAgent,
   type AskInput,
   AskInputSchema,
   anchorInputSchema,
@@ -1095,14 +1096,28 @@ export async function answerAsk(
   return commentView(env, c, viewer);
 }
 
-/** The agents that can be mentioned, assigned or asked on the artifact. */
+/**
+ * The agents that can be mentioned, assigned or asked on the artifact. A
+ * guest or signed-out viewer gets no machine and no last-active time, only the
+ * state (a signed-out viewer never reaches here: the route lists none).
+ */
 export async function artifactAgents(
   env: Env,
   artifactId: string,
   viewerId: string | null,
-): Promise<{ key: string; name: string; online: boolean }[]> {
+  guest = false,
+): Promise<ArtifactAgent[]> {
+  const masked = guest || viewerId === null;
   return (await agentRoster(env, artifactId, viewerId, true, true)).map(
-    ({ key, name, online }) => ({ key, name, online }),
+    ({ key, name, online, state, lastActiveAt, machine, owner }) => ({
+      key,
+      name,
+      online,
+      state,
+      lastActiveAt: masked ? null : lastActiveAt,
+      machine: masked ? null : machine,
+      owner,
+    }),
   );
 }
 
