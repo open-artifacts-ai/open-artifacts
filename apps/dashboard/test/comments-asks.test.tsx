@@ -652,7 +652,7 @@ describe("@mentions in the composer", () => {
     expect(
       within(menu).queryByRole("option", { name: /OA Product/ }),
     ).toBeNull();
-    expect(opt).toHaveTextContent("away");
+    expect(opt).toHaveTextContent("offline");
     fireEvent.mouseDown(opt);
     expect(box).toHaveValue("@OA Design ");
     fireEvent.change(box, { target: { value: "@OA Design why B?" } });
@@ -883,6 +883,31 @@ describe("the @ menu rows (per-session state, order, machine, selection)", () =>
     ).not.toMatch(/laptop/);
   });
 
+  it("an agent with no state (the bus could not be read) is a plain offline row, not dimmed as away", () => {
+    open([
+      { key: "u:1", name: "OA Unknown", online: false },
+      {
+        key: "u:2",
+        name: "OA Mine",
+        online: false,
+        state: "away",
+        machine: "laptop",
+        lastActiveAt: hoursAgo(3),
+      },
+      { key: "u:3", name: "OA Theirs (Sam)", online: false, owner: "Sam" },
+    ]);
+    const unknown = screen.getByRole("option", { name: /OA Unknown/ });
+    expect(unknown.textContent).toMatch(/offline$/);
+    expect(unknown.querySelector("b")?.className).not.toMatch(/muted/);
+    expect(
+      screen.getByRole("option", { name: /OA Mine/ }).querySelector("b")
+        ?.className,
+    ).toMatch(/muted/);
+    expect(
+      screen.getByRole("option", { name: /OA Theirs/ }).textContent,
+    ).not.toMatch(/away|online/);
+  });
+
   it("the selected row has the accent bar and soft fill; hover does not", () => {
     open(matchAgents(MENU, "oa") ?? [], 1);
     const rows = screen.getAllByRole("option");
@@ -1054,7 +1079,7 @@ describe("@ picker details", () => {
     expect(removeMention("hi @Bob Smith go", "Bob Smith", both)).toBe("hi go");
   });
 
-  it("marks agents online or away in text, not colour alone", async () => {
+  it("marks agents online or offline in text, not colour alone", async () => {
     withAgents();
     mount(viewerPath(OWNED));
     const c = await col();
@@ -1070,7 +1095,7 @@ describe("@ picker details", () => {
       within(menu).getByRole("option", { name: /OA Product.*online/ }),
     ).toBeTruthy();
     expect(
-      within(menu).getByRole("option", { name: /OA Design.*away/ }),
+      within(menu).getByRole("option", { name: /OA Design.*offline/ }),
     ).toBeTruthy();
   });
 

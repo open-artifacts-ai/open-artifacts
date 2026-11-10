@@ -541,6 +541,9 @@ function ago(iso: string | null | undefined, now = Date.now()): string {
  * agent leads with its owner and shows the state alone: "online · Sam's".
  */
 function stateText(a: ArtifactAgent, all: readonly ArtifactAgent[]): string {
+  // No state at all: the server could not read the bus, so it claims neither online nor away.
+  if (a.state === undefined && !a.online && !a.owner) return "offline";
+  if (a.owner && a.state === undefined && !a.online) return `${a.owner}'s`;
   if (a.owner) return `${isOnline(a) ? "online" : "away"} \u00b7 ${a.owner}'s`;
   const head = isOnline(a)
     ? "online"
@@ -602,7 +605,7 @@ export function MentionMenu({
               className={`size-2 shrink-0 rounded-full ${isOnline(a) ? "bg-[var(--oa-success-fg,#157a3a)]" : "border-[1.5px] border-muted-foreground"}`}
             />
             <b
-              className={`min-w-0 flex-1 truncate ${isOnline(a) ? "" : MUTED}`}
+              className={`min-w-0 flex-1 truncate ${a.state === "away" ? MUTED : ""}`}
             >
               {rowName(a)}
             </b>

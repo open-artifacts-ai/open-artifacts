@@ -103,9 +103,8 @@ function sessionOf(a: BusAgent, own: boolean): Session {
   };
 }
 
-/** An address the hub was not asked about (POST time): no state is known. */
+/** An address the hub did not answer for (no read at POST time, or a slow or failing hub): not online, and no state is claimed. */
 const UNKNOWN: Session = {
-  state: "away",
   online: false,
   lastActiveAt: null,
   machine: null,
@@ -153,7 +152,7 @@ export async function viewerAgents(
     if (ok.success && addresses.length < OWN_AGENTS_MAX)
       addresses.push(ok.data);
   }
-  return { addresses, sessions, known: view.live };
+  return { addresses, sessions, known: view.read };
 }
 
 /** `viewerAgents` as roster entries (online: the session is live), for a mention at POST time. */
@@ -231,7 +230,7 @@ export async function agentRoster(
     if (own && userId === viewerId) sessions = own.known ? own.sessions : null;
     else if (online) {
       const view = await busView(env, userId, { away: true });
-      if (view.live) sessions = sessionsOf(view.agents);
+      if (view.read) sessions = sessionsOf(view.agents);
     }
     const mine = userId === viewerId;
     const owner = mine ? "" : ` (${shownName(user)})`;

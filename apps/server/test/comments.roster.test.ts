@@ -338,6 +338,44 @@ describe("@ menu: per-session state, last active and machine", () => {
     ]);
   });
 
+  it("a hub that fails, is slow or never answered keeps the follows, with no state claimed", async () => {
+    const s = await setup();
+    await machineFor(s.owner.userId);
+    await machineFor(s.editor.userId);
+    await follow(E, s.owner.userId, { namespace: "ns-o", name: "Mine" }, s.id);
+    await follow(
+      E,
+      s.editor.userId,
+      { namespace: "ns-e", name: "Theirs" },
+      s.id,
+    );
+    const broken = {
+      idFromName: (n: string) => n,
+      get: () => ({
+        snapshot: async () => {
+          throw new Error("hub down");
+        },
+      }),
+    };
+    const r = await agentRoster(
+      { ...E, BUS_HUB: broken } as unknown as Env,
+      s.id,
+      s.owner.userId,
+      true,
+      true,
+    );
+    expect(
+      r.map((x) => [x.name.replace(/ \(.*/, ""), x.online, x.state]).sort(),
+    ).toEqual([
+      ["Mine", false, undefined],
+      ["Theirs", false, undefined],
+    ]);
+    // A hub that answered without listing them does drop them.
+    const empty = hubs({});
+    const gone = await agentRoster(empty.env, s.id, s.owner.userId, true, true);
+    expect(gone).toEqual([]);
+  });
+
   it("online first, then away, each alphabetical; the same agent never twice", async () => {
     const s = await setup();
     await machineFor(s.owner.userId);

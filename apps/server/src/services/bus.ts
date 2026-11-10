@@ -302,6 +302,8 @@ export type BusView = {
    * (`connected` then null for it).
    */
   live: boolean;
+  /** The hub itself answered this read (so an agent it does not list is positively not there). */
+  read: boolean;
 };
 
 /**
@@ -334,6 +336,7 @@ export async function busView(
     machines,
     agents: snap?.agents ?? [],
     live: snap !== null || (busOn(env) && !mayBeLive),
+    read: snap !== null,
   };
 }
 
