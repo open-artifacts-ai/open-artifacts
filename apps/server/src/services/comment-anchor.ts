@@ -97,7 +97,9 @@ export async function visibleText(
         onEnd(e, () => push(" "));
       },
     })
-    .on("*", {
+    // Document text, not "*": a fragment page's top-level text sits in no
+    // element, and the rewriter adds no implied body (#1895).
+    .onDocument({
       text(t) {
         // A text node can arrive in pieces: decode it whole. Hidden text
         // (a huge script) and text past the cap are never buffered.
