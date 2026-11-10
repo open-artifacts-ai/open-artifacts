@@ -728,17 +728,22 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
     const last =
       t.comments.length > 2 ? t.comments[t.comments.length - 1] : null;
     let frame = 0;
-    if (card && last && card.closest('[data-sheet-height="pin"]')) {
-      frame = requestAnimationFrame(() => {
+    let watch: ResizeObserver | undefined;
+    // Only where the sheet owns a floating row (its outlet exists): the wide
+    // overlay at pin height has none and does not scroll.
+    const outlet = card
+      ?.closest('[data-sheet-height="pin"]')
+      ?.querySelector<HTMLElement>("[data-oa-action-outlet]");
+    if (card && last && outlet) {
+      const go = () => {
         const reply = card.querySelector<HTMLElement>(
           `[data-comment="${last.id}"]`,
         );
         if (!reply) return;
-        const row = card
-          .closest("[data-sheet-height]")
-          ?.querySelector<HTMLElement>("[data-oa-action-outlet]");
         // The row's own height, which already includes the safe-area inset.
-        reply.style.scrollMarginBottom = `${row?.offsetHeight ?? 0}px`;
+        // The composer claims the outlet after this effect, so the height
+        // changes from 0 once it shows: the observer re-measures and scrolls.
+        reply.style.scrollMarginBottom = `${outlet.offsetHeight}px`;
         const reduce =
           window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ===
           true;
@@ -746,13 +751,21 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
           block: "end",
           behavior: reduce ? "auto" : "smooth",
         });
-      });
+      };
+      frame = requestAnimationFrame(go);
+      if (typeof ResizeObserver !== "undefined") {
+        watch = new ResizeObserver(go);
+        watch.observe(outlet);
+      }
     }
     if (revealedHere && revealTick > api.revealDone.current) {
       api.revealDone.current = revealTick;
       el.current?.focus({ preventScroll: true });
     }
-    return () => cancelAnimationFrame(frame);
+    return () => {
+      cancelAnimationFrame(frame);
+      watch?.disconnect();
+    };
   }, [isActive, revealTick]);
   // Leaving the thread drops the question mode.
   useEffect(() => {

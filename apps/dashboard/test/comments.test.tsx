@@ -333,6 +333,63 @@ describe("comments: layouts", () => {
       expect(el.getAttribute("data-comment")).toBe("p3-c3");
       expect(el.style.scrollMarginBottom).toBe("0px");
     });
+    it("the margin uses the row's height once the outlet shows, even after the first frame", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      let fire: () => void = () => {};
+      const OriginalRO = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        constructor(cb: () => void) {
+          fire = cb;
+        }
+        observe() {}
+        disconnect() {}
+        unobserve() {}
+      } as unknown as typeof ResizeObserver;
+      try {
+        await open();
+        await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+        await waitFor(() => expect(spy).toHaveBeenCalled());
+        const outlet = document.querySelector<HTMLElement>(
+          "[data-oa-action-outlet]",
+        );
+        expect(outlet).not.toBeNull();
+        // The row appears after the first frame: 56px tall.
+        Object.defineProperty(outlet, "offsetHeight", { value: 56 });
+        const before = spy.mock.calls.length;
+        act(() => fire());
+        expect(spy.mock.calls.length).toBeGreaterThan(before);
+        const el = spy.mock.contexts.at(-1) as HTMLElement;
+        expect(el.style.scrollMarginBottom).toBe("56px");
+      } finally {
+        globalThis.ResizeObserver = OriginalRO;
+      }
+    });
+    it("no outlet (the wide overlay at pin height): no last-reply scroll", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      viewport(800);
+      server.use(
+        http.get(`*${R.comments(OWNED)}`, () =>
+          HttpResponse.json({
+            threads: [threadOf("p3", 4)],
+            open: 1,
+            truncated: false,
+          }),
+        ),
+      );
+      mount(fullPath(OWNED));
+      fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+      const overlay = await screen.findByRole("dialog", { name: "Comments" });
+      expect(overlay).toHaveAttribute("data-sheet-height", "half");
+      await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+      expect(overlay).toHaveAttribute("data-sheet-height", "pin");
+      await new Promise((r) => setTimeout(r, 50));
+      expect(overlay.querySelector("[data-oa-action-outlet]")).toBeNull();
+      expect(spy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ block: "end" }),
+      );
+    });
     it("a single reply gets no extra scroll", async () => {
       const spy = vi.fn();
       Element.prototype.scrollIntoView = spy;
