@@ -1104,8 +1104,12 @@ async function threadReply(
   threadId: string,
   c: StoredComment,
   r: Resolved,
+  viewer: CommentViewer,
 ): Promise<void> {
-  if (c.author.kind === "user" && c.author.agent) return;
+  // Members only (#1900, #1968): never an agent, a signed-out visitor, a guest
+  // or a guest-role member.
+  if (c.author.kind !== "user" || c.author.agent || viewer.guest === true)
+    return;
   try {
     const due = await call(() =>
       stub(env, a.id).commentsThreadReplyTake({
@@ -1239,7 +1243,7 @@ export async function addReply(
     .first<{ v: number }>();
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
   // #1900: a person's reply also tells the thread's other agents, once each.
-  await threadReply(env, a, threadId, c, r);
+  await threadReply(env, a, threadId, c, r, viewer);
   if (r.agents.length === 0) {
     await announce(env, artifactId, who, opts.after, r);
     return commentView(env, c, viewer);
