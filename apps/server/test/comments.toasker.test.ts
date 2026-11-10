@@ -250,15 +250,12 @@ describe("reply toAsker (#1614)", () => {
     expect(list.threads.every((x) => x.comments.length === 1)).toBe(true);
   });
 
-  it("400 when combined with mentions or assign, for a viewer and for the owner", async () => {
+  it("400 when combined with mentions, for a viewer and for the owner", async () => {
     const s = await setup();
     const t = await askBy(s.id, asAgent(owner), owner);
     bus.clear();
     for (const u of [viewer, owner])
-      for (const extra of [
-        { mentions: [{ key: s.codex }] },
-        { assign: { key: s.codex } },
-      ]) {
+      for (const extra of [{ mentions: [{ key: s.codex }] }]) {
         const res = await reply(s.id, t.id, u, { toAsker: true, ...extra });
         expect(res.status).toBe(400);
       }
@@ -319,12 +316,22 @@ describe("reply toAsker (#1614)", () => {
     expect(toAsker()).toHaveLength(ASKER_NOTICES_MAX);
   });
 
-  it("the service refuses mentions or assign with toAsker too", async () => {
+  it("the service refuses mentions or an ask with toAsker too", async () => {
     const s = await setup();
     const t = await askBy(s.id, asAgent(owner), owner);
     for (const extras of [
       { toAsker: true, mentions: [{ key: s.codex }] },
-      { toAsker: true, assign: { key: s.codex } },
+      {
+        toAsker: true,
+        ask: {
+          question: "q",
+          options: [
+            { id: "a", label: "A" },
+            { id: "b", label: "B" },
+          ],
+          to: [{ key: s.codex }],
+        },
+      },
     ])
       await expect(
         addReply(

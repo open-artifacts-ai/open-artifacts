@@ -232,13 +232,10 @@ export function mountComments(app: AppType): void {
     if (!raw.success) return bad(raw.error.issues);
     const moderator = modOf(cw, level, artifact);
     // toAsker stands alone (400), before the owner-and-editor check on mentions.
-    if (
-      raw.data.toAsker &&
-      ((raw.data.mentions?.length ?? 0) > 0 || raw.data.assign !== undefined)
-    )
+    if (raw.data.toAsker && (raw.data.mentions?.length ?? 0) > 0)
       throw new ApiError(
         "bad_request",
-        "toAsker cannot be combined with mentions or assign",
+        "toAsker cannot be combined with mentions",
       );
     mayTarget(raw.data, moderator);
     const { who, viewer, issued } = await identity(c, id, true, moderator);
@@ -247,7 +244,7 @@ export function mountComments(app: AppType): void {
       who.kind === "guest" && raw.data.guestName !== undefined
         ? { ...who, name: raw.data.guestName }
         : who;
-    const { mentions, assign, toAsker } = raw.data;
+    const { mentions, toAsker } = raw.data;
     const out = await addReply(
       c.env,
       id,
@@ -255,7 +252,7 @@ export function mountComments(app: AppType): void {
       w,
       viewer,
       raw.data.body,
-      { mentions, assign, toAsker },
+      { mentions, toAsker },
       {
         moderator,
         after: { version: artifact.currentVersion, ctx: execCtx(c) },
@@ -357,7 +354,7 @@ export function mountComments(app: AppType): void {
     return c.json(out);
   });
 
-  // The agents that can be mentioned or assigned: for the owner and editors,
+  // The agents that can be mentioned: for the owner and editors,
   // who may; everyone else sees none (they are other people's agents).
   app.get(AGENTS, async (c) => {
     const { id, who: cw, level, artifact } = await open(c, "comments.read");
@@ -400,16 +397,10 @@ const execCtx = (
   }
 };
 
-/** 403 forbidden for mentions or an assignment from anyone but the owner and editors. */
-function mayTarget(
-  b: { mentions?: unknown[]; assign?: unknown },
-  moderator: boolean,
-): void {
-  if (((b.mentions?.length ?? 0) > 0 || b.assign !== undefined) && !moderator)
-    throw new ApiError(
-      "forbidden",
-      "Only the owner and editors can mention or assign",
-    );
+/** 403 forbidden for mentions from anyone but the owner and editors. */
+function mayTarget(b: { mentions?: unknown[] }, moderator: boolean): void {
+  if ((b.mentions?.length ?? 0) > 0 && !moderator)
+    throw new ApiError("forbidden", "Only the owner and editors can mention");
 }
 
 /** Whether the caller's level may delete anyone's comment. */

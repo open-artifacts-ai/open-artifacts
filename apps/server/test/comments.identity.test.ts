@@ -25,7 +25,7 @@ import {
 import { getUser } from "../src/services/users.js";
 import { login } from "./helpers.js";
 
-// #1890: a mentioned, assigned or asked agent shows its own face, from the
+// #1890: a mentioned or asked agent shows its own face, from the
 // identity the server resolved at write time on the OWNER's hub.
 
 const E = env as unknown as Env;
@@ -154,11 +154,10 @@ const asks = (key: string) => ({
 });
 
 describe("party faces (#1890)", () => {
-  it("a linked agent's mention, assignment and ask target carry its face", async () => {
+  it("a linked agent's mention and ask target carry its face", async () => {
     const s = await scene({ current: IDENT });
     await s.post({
       mentions: [{ key: s.key }],
-      assign: { key: s.key },
       ...asks(s.key),
     });
     const face = faceOf(IDENT.identityId);
@@ -169,7 +168,6 @@ describe("party faces (#1890)", () => {
       animal: face,
       name: "Runner",
     });
-    expect(c?.assigned).toMatchObject({ linked: true, animal: face });
     expect(c?.ask?.to[0]).toMatchObject({
       kind: "agent",
       linked: true,
@@ -188,11 +186,10 @@ describe("party faces (#1890)", () => {
     const s = await scene({ current: null });
     await s.post({
       mentions: [{ key: s.key }],
-      assign: { key: s.key },
       ...asks(s.key),
     });
     const c = (await s.list(signedIn(s.other))).threads[0]?.comments[0];
-    for (const p of [c?.mentions?.[0], c?.assigned, c?.ask?.to[0]]) {
+    for (const p of [c?.mentions?.[0], c?.ask?.to[0]]) {
       expect(p).toBeDefined();
       expect(p).not.toHaveProperty("linked");
       expect(p).not.toHaveProperty("product");
@@ -252,10 +249,9 @@ describe("identity lookups are bounded (#1890)", () => {
   });
   it("a failing hub: the comment still posts", async () => {
     const s = await scene({ current: IDENT, fail: true });
-    await s.post({ mentions: [{ key: s.key }], assign: { key: s.key } });
+    await s.post({ mentions: [{ key: s.key }] });
     const c = (await s.list(signedIn(s.other))).threads[0]?.comments[0];
     legacy(c?.mentions?.[0]);
-    legacy(c?.assigned);
   });
   it("ten ask targets on a slow hub cost about one bound, not ten", async () => {
     const s = await scene({ current: IDENT, hang: true }, 10);
