@@ -323,8 +323,8 @@ it("not synced yet", async () => {
   expect(within(s).queryByRole("button", { name: "Sync now" })).toBeNull();
 });
 
-it("mode off: the owner connects through a full-page link", async () => {
-  mountHosted("/settings/directory", { directory: "off" });
+it("not connected yet (Business): the owner connects through a full-page link", async () => {
+  mountHosted("/settings/directory", { unbound: true });
   const s = await status();
   expect(within(s).getByRole("heading", { level: 2 })).toHaveTextContent(
     "Not connected",
@@ -351,8 +351,8 @@ it("mode off: the owner connects through a full-page link", async () => {
   expect(screen.queryByRole("region", { name: "Connection" })).toBeNull();
 });
 
-it("mode off: admins are told only the owner can connect", async () => {
-  mountHosted("/settings/directory", { directory: "off" }, asAdmin);
+it("not connected yet (Business): admins are told only the owner can connect", async () => {
+  mountHosted("/settings/directory", { unbound: true }, asAdmin);
   const s = await status();
   expect(s).toHaveTextContent(
     "Only the owner, Ada Lovelace, can connect Google Workspace.",
@@ -1228,4 +1228,110 @@ it("a 409 directory_sync_off on Snooze toasts the failure and reloads", async ()
   await snoozeSales();
   expect(await findVisibleToast("Couldn't snooze the change.")).toBeVisible();
   await waitFor(() => expect(reads).toBeGreaterThan(1));
+});
+
+// #2009: directory sync is Business-only.
+const tabs = async () =>
+  (
+    await within(
+      await screen.findByRole("navigation", { name: "Settings sections" }),
+    ).findAllByRole("link")
+  ).map((a) => a.textContent ?? "");
+
+it("off (Solo, or Team that never synced): no Directory tab, no dot, and its URL goes to Connections", async () => {
+  const router = mountHosted("/settings/directory", {
+    directory: "off",
+    unhealthy: true,
+  });
+  await waitFor(() =>
+    expect(router.state.location.pathname).toBe("/settings/connections"),
+  );
+  expect((await tabs()).some((t) => t.startsWith("Directory"))).toBe(false);
+  expect(screen.queryByRole("status", { name: "Sync status" })).toBeNull();
+  expect(screen.queryByRole("link", { name: /^Directory/ })).toBeNull();
+});
+
+it("frozen (Team after Business): the tab shows with no dot, read-only, with the way back to Business", async () => {
+  mountHosted("/settings/directory", { directory: "frozen", unhealthy: true });
+  const s = await status();
+  expect(within(s).getByRole("heading", { level: 2 })).toHaveTextContent(
+    "Frozen",
+  );
+  expect(s).toHaveTextContent("Google group sync is part of Business.");
+  expect(
+    within(s).getByRole("link", { name: "Upgrade to Business" }),
+  ).toHaveAttribute("href", "/settings/plan");
+  expect(within(s).queryByRole("button", { name: "Sync now" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Disconnect" })).toBeNull();
+  const t = await tabs();
+  expect(t).toContain("Directory");
+  // The mock's unhealthy sync would show the banner: not while frozen.
+  expect(screen.queryByRole("status", { name: "Directory sync" })).toBeNull();
+  expect(screen.queryByRole("alert", { name: "Directory sync" })).toBeNull();
+  // The tab's name carries no attention suffix: no dot.
+  expect(screen.getByRole("link", { name: /^Directory/ })).toHaveAccessibleName(
+    "Directory",
+  );
+});
+
+// #2009: hosted Solo reports the trial's features (directory mode google) so
+// paywalls can show them; the plan decides the tab.
+const plan = (tier: "solo" | "team" | "business") => ({
+  billing: {
+    tier,
+    status: "active",
+    trialEndsAt: null,
+    graceUntil: null,
+    creatorsThisMonth: 1,
+    readOnly: false,
+  },
+});
+
+it("Solo with the trial's sync_google: no Directory tab, no dot, no banner", async () => {
+  const router = mountHosted("/settings/directory", {
+    ...plan("solo"),
+    unhealthy: true,
+  } as never);
+  await waitFor(() =>
+    expect(router.state.location.pathname).toBe("/settings/connections"),
+  );
+  expect((await tabs()).some((t) => t.startsWith("Directory"))).toBe(false);
+  expect(screen.queryByRole("status", { name: "Directory sync" })).toBeNull();
+  expect(screen.queryByRole("alert", { name: "Directory sync" })).toBeNull();
+});
+
+it("Team: the Directory tab shows read-only with the way back to Business", async () => {
+  mountHosted("/settings/directory", {
+    ...plan("team"),
+    directory: "frozen",
+    unhealthy: true,
+  } as never);
+  const s = await status();
+  expect(s).toHaveTextContent("Google group sync is part of Business.");
+  expect(screen.getByRole("link", { name: /^Directory/ })).toHaveAccessibleName(
+    "Directory",
+  );
+});
+
+it("Business: the Directory tab and its dot are unchanged", async () => {
+  mountHosted("/settings/directory", {
+    ...plan("business"),
+    unhealthy: true,
+  } as never);
+  await status();
+  expect(
+    screen.getByRole("link", { name: /^Directory/ }),
+  ).not.toHaveAccessibleName("Directory");
+});
+
+it("Team that never synced: no Directory tab", async () => {
+  const router = mountHosted("/settings/directory", {
+    ...plan("team"),
+    directory: "frozen",
+    unbound: true,
+  } as never);
+  await waitFor(() =>
+    expect(router.state.location.pathname).toBe("/settings/connections"),
+  );
+  expect((await tabs()).some((t) => t.startsWith("Directory"))).toBe(false);
 });

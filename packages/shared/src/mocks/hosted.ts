@@ -119,6 +119,8 @@ export type HostedMockOptions = {
   tier?: Tier | null;
   /** Directory binding mode (default "google"). */
   directory?: DirectoryMode;
+  /** With directory "google": Business that hasn't connected Google Workspace yet (no binding, state never). */
+  unbound?: boolean;
   /** The failing state when unhealthy (default "backoff"). */
   unhealthyState?:
     | "backoff"
@@ -534,27 +536,27 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   const unhealthySince = o.unhealthy
     ? new Date(Date.now() - (o.stale ? 8 * 24 : 2) * 3600_000).toISOString()
     : null;
+  // Off has no binding; neither has Business before its first connect.
+  const unbound = directoryMode === "off" || o.unbound === true;
   const sync: SyncStatus = {
     mode: directoryMode,
-    binding:
-      directoryMode === "off"
-        ? null
-        : {
-            provider: "google",
-            customerId: "C01mock",
-            domain: MOCK_DOMAIN,
-            connectedBy: ada.email,
-            connectedAt: T0,
-          },
-    healthy: directoryMode === "off" ? null : !o.unhealthy,
-    state:
-      directoryMode === "off"
-        ? "never"
-        : o.unhealthy
-          ? (o.unhealthyState ?? "backoff")
-          : "ok",
+    binding: unbound
+      ? null
+      : {
+          provider: "google",
+          customerId: "C01mock",
+          domain: MOCK_DOMAIN,
+          connectedBy: ada.email,
+          connectedAt: T0,
+        },
+    healthy: unbound ? null : !o.unhealthy,
+    state: unbound
+      ? "never"
+      : o.unhealthy
+        ? (o.unhealthyState ?? "backoff")
+        : "ok",
     unhealthySince,
-    lastSuccessAt: directoryMode === "off" ? null : (unhealthySince ?? iso()),
+    lastSuccessAt: unbound ? null : (unhealthySince ?? iso()),
     lastError: o.unhealthy
       ? { at: iso(), message: "Google returned 503" }
       : null,
@@ -568,7 +570,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     pendingCustomerChange: null,
     liftsPaused: [],
     held:
-      directoryMode === "google"
+      directoryMode === "google" && !unbound
         ? [
             {
               ...G.sales,
