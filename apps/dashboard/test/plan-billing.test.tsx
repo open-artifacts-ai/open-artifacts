@@ -130,7 +130,7 @@ it("a paused Solo owner sees the paused prompt and no upload control", async () 
   const banner = within(await screen.findByTestId("plan-banner"));
   expect(
     banner.getByText(
-      "Your Solo plan is paused. Keep publishing for $1/month or $12/year.",
+      "Your Solo plan is paused. Keep publishing for $1/month or $10/year.",
     ),
   ).toBeVisible();
   expect(banner.getByRole("link", { name: "Plan and billing" })).toBeVisible();
@@ -184,7 +184,7 @@ it("Plan and billing: a Solo trial shows its end and the two upgrades", async ()
   expect(screen.queryByText("Trial")).toBeNull();
   expect(
     screen.getByText(
-      "Your free month ends Dec 1, 2026. Then $1/month or $12/year.",
+      "Your free month ends Dec 1, 2026. Then $1/month or $10/year.",
     ),
   ).toBeVisible();
   // Solo is a flat price per instance: no creator count.
@@ -243,18 +243,18 @@ it("Plan and billing: a paused Solo says so and offers the upgrades", async () =
   expect(await screen.findByText("Paused")).toBeVisible();
   expect(
     within(screen.getByTestId("plan-banner")).getByText(
-      "Your Solo plan is paused. Keep publishing for $1/month or $12/year.",
+      "Your Solo plan is paused. Keep publishing for $1/month or $10/year.",
     ),
   ).toBeVisible();
   expect(screen.getByRole("button", { name: "Pay $1/month" })).toBeVisible();
-  expect(screen.getByRole("button", { name: "Pay $12/year" })).toBeVisible();
+  expect(screen.getByRole("button", { name: "Pay $10/year" })).toBeVisible();
   expect(screen.getByRole("button", { name: "Upgrade to Team" })).toBeVisible();
 });
 
-it("Plan and billing: Pay $12/year starts Solo Checkout with the year interval", async () => {
+it("Plan and billing: Pay $10/year starts Solo Checkout with the year interval", async () => {
   const posts = calls("POST");
   mountHosted("/settings/plan", { billing: TRIAL });
-  fireEvent.click(await screen.findByRole("button", { name: "Pay $12/year" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Pay $10/year" }));
   await waitFor(() =>
     expect(lastRedirect).toHaveBeenCalledWith(
       "https://checkout.stripe.com/c/pay/cs_test_mock_checkout_solo_year",
@@ -340,7 +340,7 @@ it("Plan and billing: Pay $1/month is the primary button, the rest are outline",
   const cls = (n: string) =>
     screen.getByRole("button", { name: n }).getAttribute("data-variant");
   expect(month.getAttribute("data-variant")).toBe("default");
-  for (const n of ["Pay $12/year", "Upgrade to Business", "Upgrade to Team"])
+  for (const n of ["Pay $10/year", "Upgrade to Business", "Upgrade to Team"])
     expect(cls(n)).toBe("outline");
 });
 
@@ -550,7 +550,7 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
     // #1843: not "Trial", the Business trial's word.
     expect(r.pill.label).toBe("Free month");
     expect(r.note?.text).toBe(
-      "Your free month ends Dec 1, 2026. Then $1/month or $12/year.",
+      "Your free month ends Dec 1, 2026. Then $1/month or $10/year.",
     );
   });
 
@@ -605,9 +605,9 @@ describe("the comparison on a phone (#1837)", () => {
       expect(
         within(stack).getByRole("heading", { name: plan }),
       ).toBeInTheDocument();
-    // The Solo price in full, not "$1 a month or $12 a year, pe".
+    // The Solo price in full, not "$1 a month or $10 a year, pe".
     expect(
-      within(stack).getByText("$1 a month or $12 a year, per instance"),
+      within(stack).getByText("$1 a month or $10 a year, per instance"),
     ).toBeInTheDocument();
     expect(within(stack).getByText("$10 per creator")).toBeInTheDocument();
     expect(within(stack).getByText("$25 per creator")).toBeInTheDocument();

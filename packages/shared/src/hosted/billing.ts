@@ -6,7 +6,7 @@ import { z } from "zod";
 
 /**
  * The tier billing stores (oa-<p>-billing `tiers.tier`): solo is one person
- * and their agents ($1/month or $12/year after a 30-day no-card trial), trial
+ * and their agents ($1/month or $10/year after a 30-day no-card trial), trial
  * is everything in Business for 14 days from the first invite, team and
  * business are paid per creator. free is the pre-Solo value: hosted billing
  * that predates Solo still answers it, and it keeps today's rules (the solo
