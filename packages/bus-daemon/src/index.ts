@@ -425,15 +425,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const running = cl.isRunning ?? isRunning;
   const claudeSessions = {
     dir: cl.sessionsDir ?? claudeSessionsDir(),
-    procStart: cachedProcStart(cl.procStart ?? claudeProcStartOf, running, {
-      ttlMs: cl.syncMs ?? 2000,
-    }),
+    procStart: cachedProcStart(cl.procStart ?? claudeProcStartOf, running),
     isRunning: running,
   };
   const oc = deps.opencode ?? {};
   const ocRunning = oc.isRunning ?? isRunning;
+  // OpenCode's file does not change when its pid is reused: keep the short TTL (few sessions).
   const ocStart = cachedProcStart(oc.procStart ?? procStartOf, ocRunning, {
     ttlMs: cl.syncMs ?? 2000,
+    jitter: 0,
   });
   const ocComm = oc.comm ?? commOf;
   const cx = deps.codex ?? {};
@@ -1858,9 +1858,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
 
   const sync = () => {
-    // A rename held back (the hub's hour, the 3-a-minute window) goes when it
-    // can; Pi and omp have no session file to prompt it.
-    for (const rec of agents.all()) if (rec.live) flushRename(rec);
     for (const [what, fn] of [
       ["claude", syncClaude],
       ["opencode", syncOpenCode],
@@ -1874,6 +1871,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         );
       }
     }
+    // After the syncs, so a name held back goes as its latest value, not the
+    // one it had when the hold began. Pi and omp have no session file to
+    // prompt it.
+    for (const rec of agents.all()) if (rec.live) flushRename(rec);
   };
   restoreCodex();
   sync();

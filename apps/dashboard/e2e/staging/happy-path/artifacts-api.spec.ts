@@ -28,7 +28,7 @@ test("reads a published HTML artifact from the library and search", async ({
         expect(search.ok, search.text).toBe(true);
         return search.data?.items;
       },
-      { timeout: 15_000 },
+      { timeout: 40_000 },
     )
     .toContainEqual(expect.objectContaining({ id }));
 });

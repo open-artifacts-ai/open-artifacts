@@ -454,6 +454,8 @@ async function startMocks() {
       events,
       // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
       commentAsks: params.get("mock") === "asks",
+      // ?mock=agents (#1822): agent-authored comments, linked and not.
+      commentAgents: params.get("mock") === "agents",
       // ?mock=bus (#1293): the bus is on, with machines and agents.
       bus: params.get("mock") === "bus",
     }),

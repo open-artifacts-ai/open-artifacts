@@ -126,6 +126,7 @@ export interface Env {
   FREE_STORAGE_BYTES?: string;
   FREE_DATA_DOCS?: string;
   FREE_DATA_DAILY_WRITES?: string;
+  FREE_DATA_DAILY_WRITES_TOTAL?: string;
   // vars
   APP_HOST: string;
   CONTENT_HOST: string;

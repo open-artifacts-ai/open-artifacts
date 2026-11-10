@@ -1493,7 +1493,7 @@ describe("comments: review round 1", () => {
     expect(row.querySelector("[data-avatar]")?.textContent).toBe("");
     expect(within(row).getByText("Claude Code")).toBeInTheDocument();
     expect(within(row).getByText("agent")).toBeInTheDocument();
-    const forEl = within(row).getByText("for Sam");
+    const forEl = within(row).getByText("not linked · for Sam");
     expect(forEl.className).toMatch(/text-muted-foreground/);
     expect(within(c).queryByText(/^via /)).toBeNull();
     // No "for" without a person.

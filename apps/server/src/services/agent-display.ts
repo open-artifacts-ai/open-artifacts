@@ -294,8 +294,19 @@ export function agentFace(
       animal: faceOf(a.identity.identityId),
     };
   }
-  const name =
-    !isPrivateAgent(a.via) || me
+  // An unlinked grant's client name is self-asserted: shown only when it is
+  // exactly a known product, else "<person>'s agent" (a bus name never).
+  // The same for the owner: a client name is not their private note.
+  const grantName = (): string => {
+    const given = (cleanName(a.name) ?? "").toLowerCase();
+    const product = Object.values(PRODUCTS).find(
+      (p) => p.toLowerCase() === given,
+    );
+    return product ?? (owner ? agentOwnedBy(owner, c) : MEMBERS_AGENT);
+  };
+  const name = !isPrivateAgent(a.via)
+    ? grantName()
+    : me
       ? plainAgentName(a.name)
       : owner
         ? agentOwnedBy(owner, c)

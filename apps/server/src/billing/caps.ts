@@ -18,6 +18,17 @@ import { billingActive } from "./plan.js";
 //   pass).
 // - FREE_DATA_DAILY_WRITES: live-data writes per artifact per UTC day,
 //   below the instance's own DATA_DAILY_WRITES. Past it, 403 plan_limit.
+// - FREE_DATA_DAILY_WRITES_TOTAL: live-data writes per install per UTC day,
+//   across all artifacts (every write path: data, per-viewer storage and
+//   the owner's reset). One D1 row (data_writes_total), bumped by the
+//   write's own check, so no read or write happens while the cap is off.
+//   Past it, 403 plan_limit. Viewer-level and anonymous writes are refused
+//   once today's total reaches 80% of the cap (LOW_TRUST_SHARE), so they
+//   cannot use up the day and lock out the owner's editors and agents, who
+//   may write up to the full cap; max in the error is the bound that
+//   applied. The count happens last, so a write the per-artifact caps refuse
+//   is not counted, but a write refused after it (429, too_large, a bad
+//   body) still counts.
 // The checks run before the write (a soft cap: two concurrent writes at the
 // edge may both pass).
 
@@ -34,12 +45,16 @@ const positive = (raw: string | undefined): number | null => {
 export const freeCapsOf = (
   env: Pick<
     Env,
-    "FREE_STORAGE_BYTES" | "FREE_DATA_DOCS" | "FREE_DATA_DAILY_WRITES"
+    | "FREE_STORAGE_BYTES"
+    | "FREE_DATA_DOCS"
+    | "FREE_DATA_DAILY_WRITES"
+    | "FREE_DATA_DAILY_WRITES_TOTAL"
   >,
 ): FreeCaps => ({
   storage_bytes: positive(env.FREE_STORAGE_BYTES),
   data_docs: positive(env.FREE_DATA_DOCS),
   data_daily_writes: positive(env.FREE_DATA_DAILY_WRITES),
+  data_daily_writes_total: positive(env.FREE_DATA_DAILY_WRITES_TOTAL),
 });
 
 /** The caps that apply now: hosted, on the solo (or transition free) tier; else null. */
@@ -106,21 +121,62 @@ export type CapUsage = { docs: number; writesToday: number; exists: boolean };
  * FREE_DATA_DOCS and FREE_DATA_DAILY_WRITES for one data write. `usage`
  * reads the DO (only called when a cap is on). `adds`: the write may create
  * the doc (set, update); a delete never counts against the doc cap.
+ * `lowTrust`: a viewer-level or anonymous writer (no creator), held to 80%
+ * of FREE_DATA_DAILY_WRITES_TOTAL.
  */
 export async function requireFreeData(
   env: Env,
   usage: () => Promise<CapUsage>,
   adds: boolean,
+  lowTrust = false,
 ): Promise<void> {
   const caps = activeFreeCaps(env);
-  if (!caps || (caps.data_docs === null && caps.data_daily_writes === null))
-    return;
-  const u = await usage();
-  if (
-    caps.data_daily_writes !== null &&
-    u.writesToday >= caps.data_daily_writes
+  if (!caps) return;
+  if (caps.data_docs !== null || caps.data_daily_writes !== null) {
+    const u = await usage();
+    if (
+      caps.data_daily_writes !== null &&
+      u.writesToday >= caps.data_daily_writes
+    )
+      throw planLimitError("data_daily_writes", caps.data_daily_writes);
+    if (
+      adds &&
+      caps.data_docs !== null &&
+      !u.exists &&
+      u.docs >= caps.data_docs
+    )
+      throw planLimitError("data_docs", caps.data_docs);
+  }
+  // Last, so a write the per-artifact caps refuse is not counted here.
+  if (caps.data_daily_writes_total !== null)
+    await countTotalWrite(env, caps.data_daily_writes_total, lowTrust);
+}
+
+/** The share of the install-wide total viewer-level and anonymous writes may use. */
+const LOW_TRUST_SHARE = 0.8;
+
+/**
+ * FREE_DATA_DAILY_WRITES_TOTAL: counts one write against today's install-wide
+ * total, or refuses it at `max`. One atomic statement: the upsert bumps the
+ * row (restarting it on a new UTC day) only while under `max`, and returns
+ * nothing when it did not.
+ */
+async function countTotalWrite(
+  env: Env,
+  cap: number,
+  lowTrust: boolean,
+): Promise<void> {
+  const max = lowTrust ? Math.floor(cap * LOW_TRUST_SHARE) : cap;
+  if (max < 1) throw planLimitError("data_daily_writes_total", max || cap);
+  const day = Math.floor(Date.now() / 86_400_000);
+  const r = await env.DB.prepare(
+    `insert into data_writes_total (id, day, n) values (1, ?1, 1)
+     on conflict(id) do update set
+       n = case when day = ?1 then n + 1 else 1 end, day = ?1
+     where day <> ?1 or n < ?2
+     returning n`,
   )
-    throw planLimitError("data_daily_writes", caps.data_daily_writes);
-  if (adds && caps.data_docs !== null && !u.exists && u.docs >= caps.data_docs)
-    throw planLimitError("data_docs", caps.data_docs);
+    .bind(day, max)
+    .first<{ n: number }>();
+  if (!r) throw planLimitError("data_daily_writes_total", max);
 }

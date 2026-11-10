@@ -10,6 +10,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   rmdirSync,
@@ -191,6 +192,62 @@ export function hermesRoot(
   return given;
 }
 
+/** What reading `<root>/profiles` did: the profile names, and a note when the user should hear of it. */
+export function hermesProfilesScan(
+  home: string,
+  env: Env,
+  platform: NodeJS.Platform = process.platform,
+): { names: string[]; note?: string; incomplete: boolean } {
+  const path = join(hermesRoot(home, env, platform), "profiles");
+  // An lstat that fails reads as "not a link"; readdirSync's error decides the note.
+  let isLink = false;
+  try {
+    isLink = lstatSync(path).isSymbolicLink();
+  } catch {}
+  const target = () => {
+    try {
+      return realpathSync(path);
+    } catch {
+      try {
+        return resolve(dirname(path), readlinkSync(path));
+      } catch {
+        return "somewhere else";
+      }
+    }
+  };
+  try {
+    const names = readdirSync(path).sort();
+    return {
+      names,
+      incomplete: false,
+      note: isLink
+        ? `The Hermes profiles folder ${path} is a symlink to ${target()}. Its profiles were checked too.`
+        : undefined,
+    };
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? "error";
+    if (code === "ENOENT")
+      return {
+        names: [],
+        incomplete: false,
+        note: isLink
+          ? `The Hermes profiles folder ${path} is a symlink to ${target()}, which doesn't exist, so there were no profiles to check.`
+          : undefined,
+      };
+    if (code === "ENOTDIR")
+      return {
+        names: [],
+        incomplete: false,
+        note: `The Hermes profiles folder ${path} isn't a folder, so there were no profiles to check.`,
+      };
+    return {
+      names: [],
+      incomplete: true,
+      note: `Couldn't read the Hermes profiles folder ${path} (${code}), so habits may still be on in a profile there.`,
+    };
+  }
+}
+
 /**
  * Every plugin folder of this Hermes: the root's own, each profile's, and the
  * active one, which a HERMES_HOME under ~/.hermes keeps outside both.
@@ -202,10 +259,8 @@ export function hermesPluginDirs(
 ): string[] {
   const root = hermesRoot(home, env, platform);
   const out = [join(root, "plugins", HERMES_PLUGIN_NAME)];
-  try {
-    for (const name of readdirSync(join(root, "profiles")).sort())
-      out.push(join(root, "profiles", name, "plugins", HERMES_PLUGIN_NAME));
-  } catch {}
+  for (const name of hermesProfilesScan(home, env, platform).names)
+    out.push(join(root, "profiles", name, "plugins", HERMES_PLUGIN_NAME));
   const active = hermesPluginDir(home, env, platform);
   if (!out.includes(active)) out.push(active);
   return out;

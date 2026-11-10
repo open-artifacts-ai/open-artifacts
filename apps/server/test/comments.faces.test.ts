@@ -163,6 +163,40 @@ describe("agent faces (#1822)", () => {
     expect(c?.author.name).toBe(`${nm}'s agent`);
   });
 
+  it("an unlinked grant shows a known product name, else its person's agent", async () => {
+    const owner = await mk("f-own", newName());
+    const other = await mk("f-oth");
+    const grant = (name: string): CommentWho => ({
+      kind: "user",
+      id: owner.userId,
+      agent: { name, version: null, via: { kind: "grant", id: newId() } },
+    });
+    const shown = async (name: string, v: CommentViewer) => {
+      const id = await pub(owner);
+      await post(id, owner, grant(name));
+      return (await first(id, v))?.author.name;
+    };
+    for (const [given, want] of [
+      ["Claude Code", "Claude Code"],
+      ["claude code", "Claude Code"],
+      [" CODEX ", "Codex"],
+      ["OA Product", `${nm}'s agent`],
+      ["Claude Code 2", `${nm}'s agent`],
+      ["Claude Code Pro", `${nm}'s agent`],
+    ] as const) {
+      expect(await shown(given, signedIn(other))).toBe(want);
+      // The owner sees the same: a client name is not their private note.
+      expect(await shown(given, signedIn(owner))).toBe(want);
+    }
+    // A token's label stays the owner's private note.
+    const id = await pub(owner);
+    await post(id, owner, agentWho(owner));
+    expect((await first(id, signedIn(owner)))?.author.name).toBe("Release bot");
+    expect((await first(id, signedIn(other)))?.author.name).toBe(
+      `${nm}'s agent`,
+    );
+  });
+
   it("an old row (an agent with no identity, a mention with no owner) reads as unlinked, no for", async () => {
     const owner = await mk("f-own", newName());
     const id = await pub(owner);

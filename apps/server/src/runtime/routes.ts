@@ -356,11 +356,19 @@ const jsonText = (text: string) =>
 const stub = (c: C, g: Gate) => runtimeStub(c.env, g.artifactId);
 
 /** Hosted billing's free-tier data caps (billing/caps.ts), before a write. */
-const freeDataCap = (c: C, g: Gate, col: string, id: string, adds: boolean) =>
+const freeDataCap = (
+  c: C,
+  g: Gate,
+  col: string | undefined,
+  id: string | undefined,
+  adds: boolean,
+  lowTrust = !g.creator,
+) =>
   requireFreeData(
     c.env,
     () => runtimeCall(() => stub(c, g).capUsage(col, id)),
     adds,
+    lowTrust,
   );
 
 export function mountRuntime(app: AppType): void {
@@ -492,6 +500,7 @@ export function mountRuntime(app: AppType): void {
       // data.reset is owner or manager: always a creator (CREATOR).
       creator: who.user.id,
     };
+    await freeDataCap(c, g, undefined, undefined, false);
     const out = await runtimeCall(() =>
       stub(c, g).replaceRaw(toBuffer(body), g.actor),
     );
@@ -592,6 +601,8 @@ export function mountRuntime(app: AppType): void {
   app.put(KEY, async (c) => {
     const g = await gate(c, "storage.set", "storage");
     const key = storageKeyOf(c);
+    // Storage needs a signed-in user, and a Solo install has only its owner: never the 80% bound.
+    await freeDataCap(c, g, undefined, undefined, false, false);
     const body = await rawBody(c);
     return jsonText(
       await runtimeCall(() => stub(c, g).storageSetRaw(g.actor, key, body)),
@@ -601,6 +612,7 @@ export function mountRuntime(app: AppType): void {
   app.delete(KEY, async (c) => {
     const g = await gate(c, "storage.delete", "storage");
     const key = storageKeyOf(c);
+    await freeDataCap(c, g, undefined, undefined, false, false);
     await runtimeCall(() => stub(c, g).storageDelete(g.actor, key));
     return c.body(null, 204);
   });

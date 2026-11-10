@@ -526,6 +526,18 @@ describe("deploy-staging.yml", () => {
     );
     expect([w.jobs.smoke.needs].flat()).toContain("deploy");
   });
+  it("runs the MCP happy-path suite last among the smoke checks (#1736)", () => {
+    const steps = w.jobs.smoke.steps as Step[];
+    const h = steps.findIndex((s) =>
+      (s.run ?? "").includes("test:e2e:happy-path"),
+    );
+    expect(h).toBeGreaterThan(idx("smoke", "@oa/server smoke"));
+    expect(h).toBeLessThan(idx("smoke", "staging-analytics-token.sh outcome"));
+    expect(steps[h]["timeout-minutes"]).toBeGreaterThan(0);
+    expect(steps[h].run).toContain("umask 077");
+    expect(steps[h].run).toContain("OA_STAGING_PAT_FILE");
+    expect(steps[h].run).not.toContain("echo");
+  });
   it("deploy steps run build -> migrate -> deploy in order", () => {
     const b = idx("deploy", "pnpm build");
     const m = idx("deploy", "d1 migrations apply open-artifacts-staging");

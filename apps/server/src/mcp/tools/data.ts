@@ -36,7 +36,14 @@ const freeDataCap = (
   col: string,
   id: string,
   adds: boolean,
-) => requireFreeData(env, () => runtimeCall(() => s.capUsage(col, id)), adds);
+  creator: boolean,
+) =>
+  requireFreeData(
+    env,
+    () => runtimeCall(() => s.capUsage(col, id)),
+    adds,
+    !creator,
+  );
 
 /** store(), and whether a write counts its caller as a creator (editor level or above). */
 async function storeOf(
@@ -121,7 +128,7 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
     (i) =>
       guard(async () => {
         const { s, creator } = await storeOf(t, i.id, "data.write");
-        await freeDataCap(t.env, s, i.collection, i.docId, true);
+        await freeDataCap(t.env, s, i.collection, i.docId, true, creator);
         const doc = await runtimeCall(() =>
           s.set(i.collection, i.docId, i.data, actor),
         );
@@ -136,7 +143,7 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
     (i) =>
       guard(async () => {
         const { s, creator } = await storeOf(t, i.id, "data.write");
-        await freeDataCap(t.env, s, i.collection, i.docId, true);
+        await freeDataCap(t.env, s, i.collection, i.docId, true, creator);
         const doc = await runtimeCall(() =>
           s.update(i.collection, i.docId, i.patch, actor),
         );
@@ -151,7 +158,7 @@ export function registerDataTools(server: McpServer, t: ToolEnv): void {
     (i) =>
       guard(async () => {
         const { s, creator } = await storeOf(t, i.id, "data.write");
-        await freeDataCap(t.env, s, i.collection, i.docId, false);
+        await freeDataCap(t.env, s, i.collection, i.docId, false, creator);
         await runtimeCall(() => s.delete(i.collection, i.docId, actor));
         await counted(creator);
         return ok(`Deleted "${i.docId}" from ${where(i.id, i.collection)}`, {
