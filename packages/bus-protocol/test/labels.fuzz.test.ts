@@ -82,7 +82,8 @@ describe("newMachineLabel targeted", () => {
       for (let j = 0; j < n; j++) h += parts[rnd() % parts.length];
       check(h);
     }
-  });
+    // Fixed timeout: ~0.2 s locally, but CI runners are slower and shared.
+  }, 30_000);
   it("idempotent", () => {
     for (const h of ["a😀b", " x ", "é", "　a　"])
       expect(newMachineLabel(newMachineLabel(h))).toBe(newMachineLabel(h));
