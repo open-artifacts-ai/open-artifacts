@@ -419,19 +419,29 @@ const agentName = (
 
 const escRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** A body with each "@<stored name>" of a mention swapped for the name shown (one pass). */
-const maskBody = (body: string, pairs: [string, string][]): string => {
+/**
+ * A body with each "@<stored name>" of a mention or assignment swapped for the
+ * name shown (one pass), whatever the case. An "@" inside a word, an email or
+ * a URL is not a mention, and a longer name wins over its prefix. A name
+ * with more letters after it is masked too, so no bus name stays visible.
+ */
+export const maskBody = (body: string, pairs: [string, string][]): string => {
   const changed = pairs.filter(([from, to]) => from !== to);
   if (changed.length === 0) return body;
-  const to = new Map(changed.map(([f, t]) => [`@${f}`, `@${t}`]));
   const re = new RegExp(
-    [...to.keys()]
+    `(?<![\\p{L}\\p{N}_.+\\-/])(?:${changed
+      .map(([f]) => `@${escRe(f)}`)
       .sort((x, y) => y.length - x.length)
-      .map(escRe)
-      .join("|"),
-    "gu",
+      .join("|")})`,
+    "giu",
   );
-  return body.replace(re, (m) => to.get(m) ?? m);
+  const exact = new Map(changed.map(([f, t]) => [`@${f}`.toLowerCase(), t]));
+  return body.replace(re, (m) => {
+    const t =
+      exact.get(m.toLowerCase()) ??
+      changed.find(([f]) => new RegExp(`^@${escRe(f)}$`, "iu").test(m))?.[1];
+    return t === undefined ? m : `@${t}`;
+  });
 };
 
 /** A stored actor a person typed in the web app (#1797); an agent row or an old row is not. */
@@ -452,15 +462,25 @@ const commentOf = (
       users.clash,
     ),
   );
+  const assignedName = c.assigned
+    ? agentName(
+        c.assigned.name,
+        c.assigned.owner ? users.users.get(c.assigned.owner) : undefined,
+        viewer,
+        users.clash,
+      )
+    : "";
   return {
     id: c.id,
-    body: maskBody(
-      c.body,
-      (c.mentions ?? []).map((m, i): [string, string] => [
+    body: maskBody(c.body, [
+      ...(c.mentions ?? []).map((m, i): [string, string] => [
         m.name,
         shown[i] ?? m.name,
       ]),
-    ),
+      ...(c.assigned
+        ? [[c.assigned.name, assignedName] as [string, string]]
+        : []),
+    ]),
     author,
     createdAt: c.createdAt,
     editedAt: c.editedAt,
@@ -515,12 +535,7 @@ const commentOf = (
       ? {
           assigned: {
             key: c.assigned.key,
-            name: agentName(
-              c.assigned.name,
-              c.assigned.owner ? users.users.get(c.assigned.owner) : undefined,
-              viewer,
-              users.clash,
-            ),
+            name: assignedName,
             state: c.assigned.state as "delivered" | "queued" | "seen" | "done",
           },
         }
