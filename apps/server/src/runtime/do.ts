@@ -38,6 +38,8 @@ import {
   ASKER_NOTICES_MAX,
   COMMENTS_MAX_REPLIES,
   type CommentStatus,
+  THREAD_REPLY_NOTICES_MAX,
+  THREAD_REPLY_WINDOW_MS,
 } from "../services/comment-rules.js";
 import { indexVersionOrThrow } from "../services/search.js";
 import {
@@ -47,6 +49,7 @@ import {
   type ThumbResult,
 } from "../services/thumbs.js";
 import {
+  addParticipants,
   askerNoticeDue,
   askRow,
   bodyOk,
@@ -61,15 +64,18 @@ import {
   type NewExtras,
   openCount,
   refundAsker,
+  refundThreadReply,
   replyCount,
   rootId,
   type StoredActor,
   type StoredComment,
   type StoredList,
+  type StoredParticipant,
   type StoredThread,
   setAnswer,
   setTargetState,
   spendAsker,
+  takeThreadReply,
   threadExists,
   threadStatus,
   touchThread,
@@ -2044,12 +2050,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
     body: string;
     /** #1535: the ask, mentions and assignment, already resolved by the service. */
     extras?: NewExtras;
+    /** #1900: the agents this comment brings into the thread. */
+    participants?: StoredParticipant[];
   }): StoredThread {
     this.checkBody(a.body);
     this.ensureSchema();
     const out = this.ctx.storage.transactionSync(() => {
       if (!a.counted) this.countComment(a.rate);
-      return insertThread(this.sql, this.iso(), a);
+      const t = insertThread(this.sql, this.iso(), a);
+      if (a.participants) addParticipants(this.sql, t.id, a.participants);
+      return t;
     });
     this.broadcastComments();
     return out;
@@ -2062,6 +2072,8 @@ export class ArtifactRuntime extends DurableObject<Env> {
     rate: string;
     body: string;
     extras?: NewExtras;
+    /** #1900: the agents this comment brings into the thread. */
+    participants?: StoredParticipant[];
   }): StoredComment {
     this.checkBody(a.body);
     this.ensureSchema();
@@ -2093,6 +2105,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
       else if (extras?.asker) spendAsker(this.sql, a.threadId, now);
       const c = insertComment(this.sql, now, a.threadId, a.actor, a.body);
       if (extras) insertExtras(this.sql, a.threadId, c.id, extras);
+      if (a.participants) addParticipants(this.sql, a.threadId, a.participants);
       touchThread(this.sql, a.threadId, now);
       return getComment(this.sql, a.threadId, c.id) as StoredComment;
     });
@@ -2170,6 +2183,41 @@ export class ArtifactRuntime extends DurableObject<Env> {
     this.ensureSchema();
     this.ctx.storage.transactionSync(() =>
       refundAsker(this.sql, a.threadId, a.at),
+    );
+  }
+
+  /**
+   * #1900: the participant agents a person's reply (stored at `at`) tells, with
+   * the bound spent: none in a resolved thread, `exclude` (already reached by
+   * the same comment) skipped, one per agent per window, a cap per thread.
+   */
+  commentsThreadReplyTake(a: {
+    threadId: string;
+    at: string;
+    exclude: string[];
+  }): StoredParticipant[] {
+    this.ensureSchema();
+    return this.ctx.storage.transactionSync(() =>
+      takeThreadReply(
+        this.sql,
+        a.threadId,
+        new Set(a.exclude),
+        a.at,
+        new Date(this.now() - THREAD_REPLY_WINDOW_MS).toISOString(),
+        THREAD_REPLY_NOTICES_MAX,
+      ),
+    );
+  }
+
+  /** Gives back the thread-reply notices spent at `at` for `keys` when delivery found no session. */
+  commentsThreadReplyRefund(a: {
+    threadId: string;
+    at: string;
+    keys: string[];
+  }): void {
+    this.ensureSchema();
+    this.ctx.storage.transactionSync(() =>
+      refundThreadReply(this.sql, a.threadId, a.keys, a.at),
     );
   }
 
@@ -2297,6 +2345,14 @@ export class ArtifactRuntime extends DurableObject<Env> {
           "delete from comment_asker_notices where thread_id = ?",
           a.threadId,
         );
+        this.sql.exec(
+          "delete from comment_participants where thread_id = ?",
+          a.threadId,
+        );
+        this.sql.exec(
+          "delete from comment_reply_notices where thread_id = ?",
+          a.threadId,
+        );
         this.sql.exec("delete from comment_threads where id = ?", a.threadId);
       } else {
         this.sql.exec("delete from comments where id = ?", a.commentId);
@@ -2355,6 +2411,8 @@ type RpcMethods =
   | "commentsAnswer"
   | "commentsTargetStates"
   | "commentsAskerRefund"
+  | "commentsThreadReplyTake"
+  | "commentsThreadReplyRefund"
   | "commentsStatus"
   | "commentsEdit"
   | "commentsDelete"
