@@ -76,6 +76,14 @@ const allHarnesses = (over: Partial<Ctx> = {}) => ({
   ...over,
 });
 
+/** The output style's first-write note (#1970) has its own tests (output-style.1970.test.ts); the transcripts predate it. */
+const withoutStyleNote = (lines: string[]) =>
+  lines.filter(
+    (l) =>
+      !l.includes("Artifacts Teammate output style") &&
+      !l.includes("/output-style"),
+  );
+
 /** The habits question for the agent's user closes a no-TTY install; it has its own tests (habits.test.ts). */
 const withoutHabitsQuestion = (lines: string[]) => {
   const at = lines.indexOf(
@@ -96,7 +104,7 @@ describe("install: transcript state 1, first run", () => {
     expect(await run(ctx)).toBe(0);
     const [first, after] = transcript("## 1. First run, browser opens");
     const waiting = (first as string[]).length - 1;
-    expect(withoutHabitsQuestion(ctx.out())).toEqual([
+    expect(withoutHabitsQuestion(withoutStyleNote(ctx.out()))).toEqual([
       ...(first as string[]).slice(0, waiting),
       "Waiting for approval (up to 10 minutes)…",
       ...(after as string[]),
@@ -372,7 +380,7 @@ describe("install: daemon confirmation", () => {
       "[[danger]]×[[/danger]]  The daemon did not start within 10 seconds.",
       "   Run npx @open-artifacts/bus doctor to see why.",
     ]);
-    expect(ctx.out().at(-1)).toMatch(/OpenCode service/);
+    expect(withoutStyleNote(ctx.out()).at(-1)).toMatch(/OpenCode service/);
   });
 });
 
@@ -474,7 +482,9 @@ describe("install: transcript states 2 to 6", () => {
     );
     expect(await run(ctx)).toBe(0);
     const [block] = transcript("## 5. Already registered");
-    expect(ctx.out().slice(0, 8)).toEqual((block as string[]).slice(0, 8));
+    expect(withoutStyleNote(ctx.out()).slice(0, 8)).toEqual(
+      (block as string[]).slice(0, 8),
+    );
     // Nothing is fetched from the hub here; the only call is the skill file the
     // installer writes for the harnesses it already configured.
     for (const call of vi.mocked(ctx.fetch).mock.calls)
@@ -891,5 +901,25 @@ describe("install and uninstall: the Pi entry notes (#1856)", () => {
     expect(existsSync(ext)).toBe(true);
     expect(existsSync(moved)).toBe(true);
     expect(ctx.out().join("\n")).toContain(mcpFile(ctx));
+  });
+});
+
+describe("install: the Claude Code output style (#1970)", () => {
+  it("writes it, says how to turn it on, and uninstall removes it", async () => {
+    const ctx = fakeCtx({
+      fetch: hub([{ status: "pending" }, approved]),
+      ...allHarnesses(),
+    });
+    expect(await run(ctx)).toBe(0);
+    const path = join(
+      ctx.userHome,
+      ".claude/output-styles/artifacts-teammate.md",
+    );
+    expect(readFileSync(path, "utf8")).toContain("name: Artifacts Teammate");
+    const out = ctx.out().join("\n");
+    expect(out).toContain("Added the Artifacts Teammate output style");
+    expect(out).toContain("run /output-style and pick it");
+    expect(await uninstall({ purge: false }, ctx)).toBe(0);
+    expect(existsSync(path)).toBe(false);
   });
 });
