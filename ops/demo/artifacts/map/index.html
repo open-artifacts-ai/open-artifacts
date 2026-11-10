@@ -137,7 +137,7 @@ function adopt(raw) {
   const doc = clean(raw);
   if (!doc) return;
   // A saved profile is a stargazer: the events feed only reaches back about an hour, so saved
-  // docs are what keeps older stars. Only signed-in viewers may write them.
+  // docs are what keeps older stars. Only editors' windows can save them (writes are editors-only).
   starLogins.add(doc.login); starCount = starLogins.size;
   const cur = people.get(doc.login);
   if (!cur || (doc.checkedAt || "") >= (cur.checkedAt || "")) people.set(doc.login, doc);
