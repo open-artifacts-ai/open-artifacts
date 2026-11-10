@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { canonicalHome, daemonSocketPath } from "@oa/bus-adapter-claude-code";
 import {
   MIN_PROMPT_ID_VERSION,
@@ -33,6 +33,7 @@ import {
   installOutputStyle,
   outputStyleSource,
 } from "../steps/output-style.ts";
+import { installShim } from "../steps/path-shim.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
 import {
@@ -467,6 +468,33 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
   },
 ];
 
+/** #1626: `oa-bus` on PATH. Never fails the install: a note at most. */
+function reportShim(ctx: Ctx): void {
+  const argv = ctx.service.argv?.();
+  if (!argv || argv.length !== 2) return;
+  try {
+    const r = installShim({
+      userHome: ctx.userHome,
+      busHome: ctx.home,
+      platform: ctx.platform,
+      env: ctx.env,
+      argv,
+    });
+    if (r.kind === "installed") {
+      say(ctx, ctx.copy.shimInstalled(tilde(ctx, r.path)));
+      if (!r.onPath && r.hint)
+        say(ctx, ctx.copy.shimNotOnPath(tilde(ctx, dirname(r.path)), r.hint));
+    } else if (r.kind === "other-home")
+      say(ctx, ctx.copy.shimOtherHome(tilde(ctx, r.path), tilde(ctx, r.home)));
+    else if (r.kind === "foreign")
+      say(ctx, ctx.copy.shimForeign(tilde(ctx, r.path)));
+  } catch (e) {
+    say(ctx, [
+      `Could not add the oa-bus command: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
+}
+
 export async function install(
   opts: InstallOpts & { check?: boolean },
   realCtx: Ctx,
@@ -489,6 +517,7 @@ export async function install(
     path: join(ctx.home, "install.json"),
     now: ctx.now,
   });
+  if (ok) reportShim(ctx);
   const skillFailed = reportSkillFailure(ctx);
   // The always-on habits come last, once everything else is done: a person is
   // asked, an agent gets a question for its user. Nothing is written unasked.

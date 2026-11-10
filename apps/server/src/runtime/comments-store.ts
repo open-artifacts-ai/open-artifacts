@@ -37,7 +37,7 @@ create table if not exists comment_asks (
 create index if not exists comment_asks_thread on comment_asks (thread_id);
 create table if not exists comment_targets (
   comment_id text not null, thread_id text not null, kind text not null,
-  key text not null, name text not null, state text not null, owner text,
+  key text not null, name text not null, state text not null, owner text, identity text,
   primary key (comment_id, kind, key)
 );
 create index if not exists comment_targets_thread on comment_targets (thread_id);
@@ -90,7 +90,16 @@ export type StoredActor = {
  */
 export type StoredParty =
   | { kind: "user"; key: string }
-  | { kind: "agent"; key: string; name: string; owner: string };
+  | {
+      kind: "agent";
+      key: string;
+      name: string;
+      owner: string;
+      identity?: StoredIdentity;
+    };
+
+/** #1890: the bus identity of a named agent, resolved at write time from the owner's hub. Never a name: names can be reclaimed. */
+export type StoredIdentity = { identityId: string; kind: string };
 
 export type MentionState = "delivered" | "queued" | "seen" | "gone";
 export type AssignState = "delivered" | "queued" | "seen" | "done";
@@ -111,6 +120,7 @@ export type StoredTarget = {
   name: string;
   state: string;
   owner?: string;
+  identity?: StoredIdentity;
 };
 
 export type StoredComment = {
@@ -140,7 +150,7 @@ export type NewExtras = {
  * bus address); `namespace` and `name` are the bus address a notice goes to;
  * `owner` the member whose agent it is.
  */
-export type StoredParticipant = StoredAgent & {
+export type StoredParticipant = Omit<StoredAgent, "identity"> & {
   namespace: string;
   /** #1968: joined only because it published the page a page-wide thread is on; any other reason clears it. */
   page?: true;
@@ -318,6 +328,7 @@ type TargetRow = {
   name: string;
   state: string;
   owner: string | null;
+  identity: string | null;
   status: string;
 };
 
@@ -358,7 +369,7 @@ function attachExtras(
     if (c) c.ask = askOf(r);
   }
   for (const r of sql.exec<TargetRow>(
-    `select g.comment_id, g.kind, g.key, g.name, g.state, g.owner, t.status
+    `select g.comment_id, g.kind, g.key, g.name, g.state, g.owner, g.identity, t.status
      from comment_targets g join comment_threads t on t.id = g.thread_id
      where g.thread_id in (select value from json_each(?)) order by g.rowid`,
     ids,
@@ -372,6 +383,9 @@ function attachExtras(
       name: r.name,
       state: done ? "done" : r.state,
       ...(r.owner ? { owner: r.owner } : {}),
+      ...(r.identity
+        ? { identity: JSON.parse(r.identity) as StoredIdentity }
+        : {}),
     };
     if (r.kind === "assign") c.assigned = t;
     else c.mentions = [...(c.mentions ?? []), t];
@@ -408,14 +422,15 @@ export function insertExtras(
     );
   const put = (kind: "mention" | "assign" | "asker", p: StoredAgent) =>
     sql.exec(
-      `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state, owner)
-       values (?, ?, ?, ?, ?, 'queued', ?)`,
+      `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state, owner, identity)
+       values (?, ?, ?, ?, ?, 'queued', ?, ?)`,
       commentId,
       threadId,
       kind,
       p.key,
       p.name,
       p.owner,
+      p.identity ? JSON.stringify(p.identity) : null,
     );
   for (const m of x.mentions ?? []) put("mention", m);
   if (x.assign) put("assign", x.assign);

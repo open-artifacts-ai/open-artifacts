@@ -100,6 +100,35 @@ describe("link_arg cap (#1856)", () => {
   });
 });
 
+async function identityOf(userId: string, namespace: string, name: string) {
+  return runInDurableObject(await hubOf(userId), (i: BusHub) =>
+    i.identityOf(namespace, name),
+  );
+}
+
+describe("identityOf (#1890)", () => {
+  it("returns only the identity id and kind, for a live or an away agent", async () => {
+    const s = await scene();
+    const name = await reg(s.d, "r1", "Lead", s.ns);
+    expect(await identityOf(s.m.userId, s.ns, name)).toBeNull();
+    await bind(s.d, "r1", hashOf("a"));
+    const live = await identityOf(s.m.userId, s.ns, name);
+    expect(Object.keys(live ?? {}).sort()).toEqual(["identityId", "kind"]);
+    expect(live?.kind).toBe("opencode");
+    await close(s.d, s.m.userId, "r1");
+    expect(await identityOf(s.m.userId, s.ns, name)).toEqual(live);
+    expect(await identityOf(s.m.userId, s.ns, "nobody")).toBeNull();
+    expect(await identityOf(s.m.userId, "other-ns", name)).toBeNull();
+  });
+  it("never resolves another member's agent", async () => {
+    const a = await scene();
+    const name = await reg(a.d, "r1", "Lead", a.ns);
+    await bind(a.d, "r1", hashOf("a"));
+    const b = await member();
+    expect(await identityOf(b.userId, a.ns, name)).toBeNull();
+  });
+});
+
 /** Binds hashOf("1".."4") to `ref`; returns them. */
 async function bindMany(
   s: { d: Daemon; m: { userId: string } },

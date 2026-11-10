@@ -545,6 +545,16 @@ export class ArtifactRuntime extends DurableObject<Env> {
           .some((c) => c.name === "owner")
       )
         sql.exec("alter table comment_targets add column owner text");
+      // #1890: comment_targets.identity, the bus identity resolved at write time.
+      if (
+        !sql
+          .exec<{ name: string }>(
+            "select name from pragma_table_info('comment_targets')",
+          )
+          .toArray()
+          .some((c) => c.name === "identity")
+      )
+        sql.exec("alter table comment_targets add column identity text");
       if (legacy)
         sql.exec(`insert or ignore into totals (id, bytes, day, writes, cols)
           select 1, coalesce((select v from meta where k = 'bytes'), 0), 0, 0,
