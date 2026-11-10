@@ -297,7 +297,13 @@ describe("short quotes need context (M1)", () => {
 });
 
 describe("no context at all (#1739)", () => {
-  const bare = (exact: string) => ({ exact, prefix: "", suffix: "" });
+  const bare = (exact: string) => ({
+    kind: "text" as const,
+    version: 1,
+    exact,
+    prefix: "",
+    suffix: "",
+  });
   it("an unfound quote is orphan, not collapsed at the start", () => {
     expect(
       resolveTextAnchor("Some page text here.", bare("not on the page at all")),
@@ -316,7 +322,7 @@ describe("no context at all (#1739)", () => {
     });
   });
   it("an empty prefix with a suffix sent still means the document start", () => {
-    const a = { exact: "gone words", prefix: "", suffix: " and the rest" };
+    const a = { ...bare("gone words"), suffix: " and the rest" };
     expect(resolveTextAnchor("all of it rewritten", a)).toEqual({
       state: "collapsed",
       at: 0,
