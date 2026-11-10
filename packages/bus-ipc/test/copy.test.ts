@@ -416,11 +416,14 @@ describe("rosterText (#1860)", () => {
   });
 });
 
-describe("correctedDeliveredText (#1760, placeholder wording)", () => {
-  it("is one short line naming the recipient", async () => {
+describe("correctedDeliveredText (#1760)", () => {
+  it("reads Product's wording, with and without an excerpt", async () => {
     const { correctedDeliveredText } = await import("../src/copy.ts");
     expect(correctedDeliveredText("peer")).toBe(
-      "✓  Correction: your message to peer was delivered after all.",
+      "✓  Delivered after all: your message to peer reached it. Ignore the earlier Expired notice.",
+    );
+    expect(correctedDeliveredText("peer", "hi")).toBe(
+      '✓  Delivered after all: your message to peer, "hi",\n   reached it. Ignore the earlier Expired notice.',
     );
   });
 });

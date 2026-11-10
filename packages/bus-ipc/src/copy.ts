@@ -242,15 +242,15 @@ export function unconfirmedText(to: string, excerpt?: string): string {
   return fitLine((v) => `${quoted(head(v), `"${excerpt}"`, tail)}${fixed}`, to);
 }
 
-/** PLACEHOLDER (#1760): Product's final wording is pending. Said after an expiry notice that proved wrong. */
-export const CORRECTED_DELIVERED = "was delivered after all";
-
-/** The one-line correction to an expiry notice the sender already saw. */
-export function correctedDeliveredText(to: string): string {
-  return fitLine(
-    (v) => `✓  Correction: your message to ${v} ${CORRECTED_DELIVERED}.`,
-    to,
-  );
+/**
+ * The correction to an Expired notice the sender already saw (#1760): the
+ * recipient took the message after all. The Expired shape and wrap.
+ */
+export function correctedDeliveredText(to: string, excerpt?: string): string {
+  const head = (v: string) => `✓  Delivered after all: your message to ${v}`;
+  const tail = "reached it. Ignore the earlier Expired notice.";
+  if (!excerpt) return fitLine((v) => `${head(v)} ${tail}`, to);
+  return fitLine((v) => quoted(head(v), `"${excerpt}"`, tail), to);
 }
 
 /**

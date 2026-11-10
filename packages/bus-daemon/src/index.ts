@@ -582,7 +582,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         n.state === "lost"
           ? unconfirmedText(n.meta.to_name, n.meta.excerpt)
           : n.state === "corrected"
-            ? correctedDeliveredText(n.meta.to_name)
+            ? correctedDeliveredText(n.meta.to_name, n.meta.excerpt)
             : receiptText(n, n.meta.to_name, undefined, n.meta.excerpt),
       ),
       n.msgId,
