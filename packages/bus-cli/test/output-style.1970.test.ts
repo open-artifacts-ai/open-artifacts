@@ -272,12 +272,12 @@ describe("turning the style on in settings.json", () => {
     expect(recordOf(h)).toMatchObject({
       set: true,
       value: NAME,
-      absentBefore: true,
+      before: { state: "absent" },
     });
   });
 
   it("keeps an existing choice, whatever it is", () => {
-    for (const v of ['"Explanatory"', '"default"', "null", "7"]) {
+    for (const v of ['"Explanatory"', '"default"', "7", "true", "[]"]) {
       const h = home();
       const before = `{"outputStyle": ${v}}\n`;
       put(settingsOf(h), before);
@@ -346,7 +346,7 @@ describe("turning the style on in settings.json", () => {
     expect(r.settings).toBeUndefined();
     expect(recordOf(h)).toMatchObject({
       set: true,
-      absentBefore: true,
+      before: { state: "absent" },
       createdFile: true,
     });
     uninstallOutputStyle(withBus(h));
@@ -467,7 +467,7 @@ describe("review fixes (#1985)", () => {
   });
 
   it("does not say 'null' for a kept value that is not a style name", () => {
-    for (const v of ["null", "7", '""', '"default"']) {
+    for (const v of ["7", '"default"', "false"]) {
       const h = home();
       put(settingsOf(h), `{"outputStyle": ${v}}`);
       const r = installOutputStyle(withBus(h), ["claude"]);
@@ -491,6 +491,97 @@ describe("review fixes (#1985)", () => {
     expect(readFileSync(join(h, "elsewhere.json"), "utf8")).toContain(
       "outputStyle",
     );
+    expect(existsSync(settingsOf(h))).toBe(false);
+  });
+});
+
+describe("null and empty outputStyle count as unset", () => {
+  it("turns ours on over null, an empty string and blanks, and uninstall restores them exactly", () => {
+    for (const v of ["null", '""', '"  "']) {
+      const h = home();
+      const before = `{\n  "a": 1,\n  "outputStyle": ${v},\n  "b": 2\n}\n`;
+      put(settingsOf(h), before);
+      const r = installOutputStyle(withBus(h), ["claude"]);
+      expect(r.settings).toBe("set");
+      expect(JSON.parse(readFileSync(settingsOf(h), "utf8")).outputStyle).toBe(
+        NAME,
+      );
+      uninstallOutputStyle(withBus(h));
+      expect(readFileSync(settingsOf(h), "utf8")).toBe(before);
+      expect(recordOf(h)).toBeUndefined();
+    }
+  });
+
+  it("restores only while the value is still ours", () => {
+    const h = home();
+    put(settingsOf(h), '{"outputStyle":null}\n');
+    installOutputStyle(withBus(h), ["claude"]);
+    put(settingsOf(h), '{"outputStyle":"Learning"}\n');
+    uninstallOutputStyle(withBus(h));
+    expect(readFileSync(settingsOf(h), "utf8")).toBe(
+      '{"outputStyle":"Learning"}\n',
+    );
+  });
+
+  it("does not set it again over a null the person put back", () => {
+    const h = home();
+    put(settingsOf(h), '{"outputStyle":null}\n');
+    installOutputStyle(withBus(h), ["claude"]);
+    put(settingsOf(h), '{"outputStyle":null}\n');
+    const r = installOutputStyle(withBus(h), ["claude"]);
+    expect(r.settings).toBeUndefined();
+    expect(readFileSync(settingsOf(h), "utf8")).toBe('{"outputStyle":null}\n');
+  });
+
+  it("keeps an explicit default, and says nothing of a name", () => {
+    const h = home();
+    put(settingsOf(h), '{"outputStyle":"default"}\n');
+    const r = installOutputStyle(withBus(h), ["claude"]);
+    expect(r.settings).toBe("kept");
+    expect(r.kept).toBeUndefined();
+    expect(readFileSync(settingsOf(h), "utf8")).toBe(
+      '{"outputStyle":"default"}\n',
+    );
+  });
+});
+
+describe("the key goes only after our file is gone", () => {
+  const withOurKey = (h: string) =>
+    put(settingsOf(h), `{"a":1,"outputStyle":"${NAME}"}\n`);
+
+  it("keeps outputStyle when the style file is the user's own", () => {
+    const h = home();
+    put(file(h), "my own style\n");
+    withOurKey(h);
+    uninstallOutputStyle(withBus(h));
+    expect(readFileSync(settingsOf(h), "utf8")).toContain(
+      `"outputStyle":"${NAME}"`,
+    );
+    expect(readFileSync(file(h), "utf8")).toBe("my own style\n");
+  });
+
+  it("keeps outputStyle when the style file is a symlink", () => {
+    const h = home();
+    put(join(h, "real.md"), "x");
+    mkdirSync(join(h, ".claude/output-styles"), { recursive: true });
+    symlinkSync(join(h, "real.md"), file(h));
+    withOurKey(h);
+    uninstallOutputStyle(withBus(h));
+    expect(readFileSync(settingsOf(h), "utf8")).toContain("outputStyle");
+  });
+
+  it("drops it when our file is already gone", () => {
+    const h = home();
+    withOurKey(h);
+    uninstallOutputStyle(withBus(h));
+    expect(readFileSync(settingsOf(h), "utf8")).not.toContain("outputStyle");
+  });
+
+  it("drops it after removing our file", () => {
+    const h = home();
+    installOutputStyle(withBus(h), ["claude"]);
+    uninstallOutputStyle(withBus(h));
+    expect(existsSync(file(h))).toBe(false);
     expect(existsSync(settingsOf(h))).toBe(false);
   });
 });

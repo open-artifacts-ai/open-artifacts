@@ -1,7 +1,7 @@
 // The "Artifacts Teammate" Claude Code output style (#1970), written to
 // <claude config dir>/output-styles/artifacts-teammate.md next to the Claude
 // skill, and turned on by setting `outputStyle` in settings.json, but only when
-// that key is absent: a person's own choice is never replaced. What we did is
+// that key is unset (absent, null or empty): a person's own choice is never replaced. What we did is
 // recorded in install.json, and uninstall undoes exactly that, only while the
 // value is still the one we set.
 //
@@ -53,7 +53,11 @@ export const claudeSettingsFile = (w: Where) =>
 type StyleRecord = {
   set?: boolean;
   value?: string;
-  absentBefore?: boolean;
+  /** The key before we set it: absent, null, or the exact empty string. */
+  before?:
+    | { state: "absent" }
+    | { state: "null" }
+    | { state: "empty"; value: string };
   createdFile?: boolean;
   file?: string;
 };
@@ -164,14 +168,17 @@ function turnOn(deps: Where, out: OutputStyleResult) {
     );
     return;
   }
-  if (cur.style !== undefined) {
-    // Our own earlier choice, or the person's: either way nothing to change.
+  // Missing, null and an empty string are no choice. Anything else is the person's.
+  const unset =
+    cur.style === undefined ||
+    cur.style === null ||
+    (typeof cur.style === "string" && cur.style.trim() === "");
+  if (!unset) {
     if (cur.style !== OUTPUT_STYLE_NAME) {
       out.settings = "kept";
-      // Only a real style name is worth saying; null, a number or "default" is the default style.
+      // Only a real style name is worth saying; "default" or a non-string is the default style.
       if (
         typeof cur.style === "string" &&
-        cur.style !== "" &&
         cur.style.toLowerCase() !== "default"
       )
         out.kept = cur.style;
@@ -184,7 +191,12 @@ function turnOn(deps: Where, out: OutputStyleResult) {
     writeRecord(busHome, {
       set: true,
       value: OUTPUT_STYLE_NAME,
-      absentBefore: true,
+      before:
+        cur.style === undefined
+          ? { state: "absent" }
+          : cur.style === null
+            ? { state: "null" }
+            : { state: "empty", value: String(cur.style) },
       createdFile: cur.text === undefined,
       file: path,
     });
@@ -258,7 +270,14 @@ function turnOff(deps: Where, out: OutputStyleResult) {
   try {
     const cur = readSettings(path);
     if (cur.ok && cur.text !== undefined && cur.style === OUTPUT_STYLE_NAME) {
-      const next = removeJsoncValue(cur.text, ["outputStyle"]);
+      // Back to exactly what was there: the key absent, null, or the empty string.
+      const was = rec?.set ? rec.before : undefined;
+      const next =
+        was?.state === "null"
+          ? setJsoncValue(cur.text, ["outputStyle"], null)
+          : was?.state === "empty"
+            ? setJsoncValue(cur.text, ["outputStyle"], was.value)
+            : removeJsoncValue(cur.text, ["outputStyle"]);
       // A file we created goes again only while it is byte for byte what we wrote.
       if (rec?.set && rec.createdFile && cur.text === createdText())
         rmSync(path);
@@ -275,32 +294,35 @@ function turnOff(deps: Where, out: OutputStyleResult) {
 /** Removes our marked file (and the folder only if then empty), and undoes what we set. */
 export function uninstallOutputStyle(deps: Where): OutputStyleResult {
   const out: OutputStyleResult = { written: [], notes: [] };
-  turnOff(deps, out);
   const dir = styleDir(deps);
   const path = outputStyleFile(deps);
+  // The setting is undone only once our file is gone: never while a style of
+  // that name still exists (a user's own file, a symlink).
+  let gone = false;
   try {
     if (isLink(dir) || isLink(path)) {
       out.notes.push(
         `Left ${isLink(dir) ? dir : path} alone: it is a symlink, so the output style was not removed there.`,
       );
-      return out;
-    }
-    if (!exists(path)) return out;
-    if (!isOurs(readFileSync(path, "utf8"))) {
+    } else if (!exists(path)) {
+      gone = true;
+    } else if (!isOurs(readFileSync(path, "utf8"))) {
       out.notes.push(
         `Left ${path} alone: it has no Open Artifacts marker, so it is not ours to replace.`,
       );
-      return out;
+    } else {
+      rmSync(path);
+      out.written.push(path);
+      gone = true;
+      // Never recursive: the folder goes only when nothing else is in it.
+      if (readdirSync(dir).length === 0) rmdirSync(dir);
     }
-    rmSync(path);
-    out.written.push(path);
-    // Never recursive: the folder goes only when nothing else is in it.
-    if (readdirSync(dir).length === 0) rmdirSync(dir);
   } catch (e) {
     out.notes.push(
       `Left ${path} alone: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
+  if (gone) turnOff(deps, out);
   return out;
 }
 
