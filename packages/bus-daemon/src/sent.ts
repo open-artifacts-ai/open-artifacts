@@ -47,6 +47,8 @@ type Entry = SentMeta & {
   delivered?: true;
   /** An expiry the sender was told; kept so a later delivered (#1760) can correct it. */
   expired?: true;
+  /** A delivered the sender is owed a "delivered after all" correction for, until told (#1951). */
+  correction?: true;
   late?: true;
   shown?: true;
 };
@@ -61,6 +63,7 @@ const metaOf = ({
   shown: _____,
   native: ______,
   expired: _______,
+  correction: ________,
   ...meta
 }: Entry): SentMeta => meta;
 
@@ -88,6 +91,7 @@ const valid = (id: string, e: unknown): e is Entry => {
     validOutcome(r.outcome) &&
     (r.delivered === undefined || r.delivered === true) &&
     (r.expired === undefined || r.expired === true) &&
+    (r.correction === undefined || r.correction === true) &&
     (r.late === undefined || r.late === true) &&
     (r.shown === undefined || r.shown === true) &&
     (r.native === undefined || r.native === true)
@@ -223,10 +227,19 @@ export class SentStore {
    * lost body the recipient did take (#1760), so its entry stays, no longer
    * owed, for a later delivered; a delivered record stays; anything else goes.
    */
-  told(msgId: string): void {
+  told(msgId: string, corrected = false): void {
     const e = this.#all.get(msgId);
     if (!e) return;
-    if (e.delivered) return;
+    if (e.delivered) {
+      // Only the correction itself settles a correction; an Expired notice that
+      // finished first leaves it owed.
+      if (corrected && e.correction) {
+        const { correction: _, ...rest } = e;
+        this.#all.set(msgId, rest);
+        this.#save();
+      }
+      return;
+    }
     if (e.outcome?.state === "expired" && e.outcome.reason === undefined) {
       const { outcome: _, ...rest } = e;
       this.#all.set(msgId, { ...rest, expired: true });
@@ -249,26 +262,37 @@ export class SentStore {
 
   /**
    * The recipient took a message reported expired: it ends delivered. True
-   * when the sender had been told the expiry (it is owed a correction); an
-   * expiry never told is just dropped.
+   * when the sender was told the expiry, or its notice is `inFlight` (it is
+   * owed a correction, stored until `told(msgId, true)`); an expiry never
+   * told is just dropped.
    */
-  correct(msgId: string): boolean {
+  correct(msgId: string, inFlight = false): boolean {
     const e = this.#all.get(msgId);
     if (!e || !this.correctable(msgId)) return false;
-    const wasTold = e.expired === true;
+    const owed = e.expired === true || inFlight;
     const { outcome: _, expired: __, ...rest } = e;
     this.#all.delete(msgId);
-    this.#all.set(msgId, { ...rest, at: this.#now(), delivered: true });
+    this.#all.set(msgId, {
+      ...rest,
+      at: this.#now(),
+      delivered: true,
+      ...(owed ? { correction: true as const } : {}),
+    });
     this.#save();
-    return wasTold;
+    return owed;
   }
 
-  /** Settled entries whose sender is `ref`, oldest first. */
-  untold(ref: string): { msgId: string; meta: SentMeta; outcome: Outcome }[] {
+  /** Whether `msgId` is owed a correction. */
+  correctionOwed(msgId: string): boolean {
+    return this.#all.get(msgId)?.correction === true;
+  }
+
+  /** Settled entries and owed corrections whose sender is `ref`, oldest first. */
+  untold(ref: string): { msgId: string; meta: SentMeta; outcome?: Outcome }[] {
     this.#prune();
-    const out: { msgId: string; meta: SentMeta; outcome: Outcome }[] = [];
+    const out: { msgId: string; meta: SentMeta; outcome?: Outcome }[] = [];
     for (const [msgId, e] of this.#all) {
-      if (e.from_ref !== ref || !e.outcome) continue;
+      if (e.from_ref !== ref || !(e.outcome || e.correction)) continue;
       out.push({ msgId, meta: metaOf(e), outcome: e.outcome });
     }
     return out;
@@ -291,7 +315,7 @@ export class SentStore {
     if (over <= 0) return;
     for (const [id, e] of this.#all) {
       if (over <= 0) return;
-      if (e.delivered || e.expired) {
+      if ((e.delivered && !e.correction) || e.expired) {
         this.#all.delete(id);
         over--;
       }
@@ -335,6 +359,7 @@ export class SentStore {
         outcome,
         delivered,
         expired,
+        correction,
         late,
         shown,
         native,
@@ -359,6 +384,7 @@ export class SentStore {
           : {}),
         ...(delivered ? { delivered } : {}),
         ...(expired && !delivered && !outcome ? { expired } : {}),
+        ...(delivered && correction ? { correction } : {}),
         ...(delivered && late ? { late } : {}),
         ...(delivered && late && shown ? { shown } : {}),
         ...(native ? { native } : {}),
@@ -516,7 +542,7 @@ export class Receipts {
     return { msgId: f.msg_id, meta: s.meta, ...outcome };
   }
 
-  update(f: Final): Notice | undefined {
+  update(f: Final, inFlight = false): Notice | undefined {
     if (f.state === "pending") return undefined;
     // #1760: a delivered after a reasonless expiry (a lost body the recipient
     // did take) is the one final that may follow another. Nothing else does.
@@ -530,7 +556,7 @@ export class Receipts {
     }
     this.#final(f.msg_id);
     if (corrects) {
-      return this.store.correct(f.msg_id)
+      return this.store.correct(f.msg_id, inFlight)
         ? { msgId: f.msg_id, meta, state: "corrected" }
         : undefined;
     }
@@ -592,20 +618,26 @@ export class Receipts {
   /** The owed notice for `msgId`, if one is owed. */
   notice(msgId: string): Notice | undefined {
     const meta = this.store.get(msgId);
+    if (meta && this.store.correctionOwed(msgId))
+      return { msgId, meta, state: "corrected" };
     const outcome = this.store.outcome(msgId);
     return meta && outcome ? { msgId, meta, ...outcome } : undefined;
   }
 
   /** The sender has been told: forget the message. */
-  told(msgId: string): void {
-    this.store.told(msgId);
+  told(msgId: string, corrected = false): void {
+    this.store.told(msgId, corrected);
   }
 
   /** Notices still owed to `ref`, e.g. after a restart or while it was away. */
   owed(ref: string): Notice[] {
     return this.store
       .untold(ref)
-      .map(({ msgId, meta, outcome }) => ({ msgId, meta, ...outcome }));
+      .map(({ msgId, meta, outcome }) =>
+        outcome
+          ? { msgId, meta, ...outcome }
+          : { msgId, meta, state: "corrected" as const },
+      );
   }
 
   #final(msgId: string): void {

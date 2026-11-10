@@ -6332,9 +6332,9 @@ export class BusHub extends DurableObject<Env> {
 
     // 2. Lost bodies: held_at set, no mail row and not in memory means the
     // body died with an eviction. Expired, never delivered.
-    const lost = all<{ id: string; fromAgent: string }>(
+    const lost = all<{ id: string; fromAgent: string; expiresAt: number }>(
       sql,
-      `select id, from_agent as fromAgent from receipts
+      `select id, from_agent as fromAgent, expires_at as expiresAt from receipts
        where state = 'pending' and held_at is not null and held_at <= ?
          and not exists (select 1 from mail where mail.id = receipts.id)
        order by held_at limit ?`,
@@ -6342,8 +6342,14 @@ export class BusHub extends DurableObject<Env> {
       BATCH,
     );
     if (lost.length >= BATCH) more = true;
+    // Past its TTL it expires as TTL (final), so a late ack cannot flip it (#1951).
     for (const r of lost)
-      if (!this.#held.has(r.id)) this.#expire(r.id, r.fromAgent, "lost_body");
+      if (!this.#held.has(r.id))
+        this.#expire(
+          r.id,
+          r.fromAgent,
+          r.expiresAt <= now ? undefined : "lost_body",
+        );
 
     // 2a. open-bus #422: machines offline past OFFLINE_REAP_MS have their
     // agents closed (before the close drain, which takes their leftover mail).
