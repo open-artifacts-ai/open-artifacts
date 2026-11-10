@@ -486,9 +486,9 @@ export function addParticipants(
 
 /**
  * The participants a person's reply tells (#1900), minus `exclude` (agents the
- * same comment already reached), and records one notice for each at `at`. An
- * agent is due when it has none within `sinceIso`; the thread stops at `max`
- * notices in all. The bound lives in its own rows: deleting a reply never
+ * same comment already reached), and records one notice for each at `at`. The
+ * thread stops at `max` notices in all; replies that arrive while an agent's
+ * notice is unread are not dropped: the hub replaces the waiting notice. The bound lives in its own rows: deleting a reply never
  * gives it back. A resolved thread tells nobody. Returns the agents told.
  */
 export function takeThreadReply(
@@ -496,7 +496,6 @@ export function takeThreadReply(
   threadId: string,
   exclude: Set<string>,
   at: string,
-  sinceIso: string,
   max: number,
 ): StoredParticipant[] {
   if (threadStatus(sql, threadId) !== "open") return [];
@@ -510,18 +509,15 @@ export function takeThreadReply(
   let room = max - total;
   const out: StoredParticipant[] = [];
   const rows = sql
-    .exec<StoredParticipant & { last_at: string | null }>(
-      `select p.key, p.name, p.owner, p.namespace, r.last_at
-       from comment_participants p
-       left join comment_reply_notices r on r.thread_id = p.thread_id and r.key = p.key
-       where p.thread_id = ? order by p.key`,
+    .exec<StoredParticipant>(
+      `select key, name, owner, namespace from comment_participants
+       where thread_id = ? order by key`,
       threadId,
     )
     .toArray();
   for (const r of rows) {
     if (room <= 0) break;
-    if (exclude.has(r.key) || (r.last_at !== null && r.last_at >= sinceIso))
-      continue;
+    if (exclude.has(r.key)) continue;
     sql.exec(
       `insert into comment_reply_notices (thread_id, key, last_at, prev_at, n) values (?, ?, ?, null, 1)
        on conflict (thread_id, key) do update set prev_at = last_at, last_at = excluded.last_at, n = n + 1`,

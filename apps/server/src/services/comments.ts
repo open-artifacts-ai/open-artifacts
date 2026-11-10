@@ -990,8 +990,7 @@ async function resolveToAsker(
  * #1900: a reply from a person (a signed-in member typing or calling without an
  * agent, or a guest) tells the thread's participant agents, except the ones
  * this same comment already reached (mention, assign, ask, reply to the
- * asker). An agent's reply never does this. The bound (one per agent per
- * window, a cap per thread, none once resolved) is spent in the DO; an agent
+ * asker). An agent's reply never does this. The bound (a cap per thread, none once resolved) is spent in the DO; an agent
  * whose member lost access or cannot hold a bus is skipped and its spend given
  * back. A notice goes only to the exact participant, never its member's other
  * agents. Never throws.

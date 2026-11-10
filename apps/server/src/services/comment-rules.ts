@@ -11,8 +11,7 @@ export const COMMENTS_MAX_REPLIES = 200;
 /** #1614: a reply to an ask's author notifies its agents at most once per thread per window, and this many times per thread in all. */
 export const ASKER_NOTICE_WINDOW_MS = 60_000;
 export const ASKER_NOTICES_MAX = 20;
-/** #1900: a person's reply tells each participant agent of the thread at most once per window, and the thread this many times in all. */
-export const THREAD_REPLY_WINDOW_MS = 60_000;
+/** #1900: a person's reply tells participant agents; a thread does so this many times in all (replies while a notice is unread replace it). */
 export const THREAD_REPLY_NOTICES_MAX = 20;
 /** GET: most comments across all the threads returned. */
 export const COMMENTS_MAX_TOTAL = 5000;

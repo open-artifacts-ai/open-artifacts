@@ -39,7 +39,6 @@ import {
   COMMENTS_MAX_REPLIES,
   type CommentStatus,
   THREAD_REPLY_NOTICES_MAX,
-  THREAD_REPLY_WINDOW_MS,
 } from "../services/comment-rules.js";
 import { indexVersionOrThrow } from "../services/search.js";
 import {
@@ -2189,7 +2188,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
   /**
    * #1900: the participant agents a person's reply (stored at `at`) tells, with
    * the bound spent: none in a resolved thread, `exclude` (already reached by
-   * the same comment) skipped, one per agent per window, a cap per thread.
+   * the same comment) skipped, a cap per thread.
    */
   commentsThreadReplyTake(a: {
     threadId: string;
@@ -2203,7 +2202,6 @@ export class ArtifactRuntime extends DurableObject<Env> {
         a.threadId,
         new Set(a.exclude),
         a.at,
-        new Date(this.now() - THREAD_REPLY_WINDOW_MS).toISOString(),
         THREAD_REPLY_NOTICES_MAX,
       ),
     );
