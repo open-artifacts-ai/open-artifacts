@@ -195,8 +195,8 @@ const wait = (s: number) =>
 const isPlanRefusal = (code: string | null) =>
   code === "plan_required" || code === "plan_read_only";
 
-/** A guest or restricted account: billing details never reach them. A signed-out viewer never gets a plan code on a comment write (the server answers 401). */
-const planOutsider = (ctx?: ErrorContext) => ctx?.capped === true;
+/** No Me (anonymous) or a capped account: billing details never reach them. */
+const planOutsider = (ctx?: ErrorContext) => !ctx || ctx.capped === true;
 
 /** Who the caller is for the plan copy (owners read the action, members whom to ask). */
 export const commentErrorCtx = (me: Me | null | undefined): ErrorContext =>
@@ -207,7 +207,7 @@ export const commentErrorCtx = (me: Me | null | undefined): ErrorContext =>
         // locked instance's member or admin, who keep the plan copy.
         capped: me.auth?.cap === "guest" || me.auth?.cap === "restricted",
       }
-    : {};
+    : { capped: true };
 
 export const useCommentErrorCtx = (): ErrorContext => {
   // Read the cached Me; a comment surface never fetches it just for error copy.
