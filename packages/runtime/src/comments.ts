@@ -390,6 +390,9 @@ export function createComments(
     clearTimeout(selTimer);
     selTimer = setTimeout(reportSelection, SELECTION_MS);
   };
+  // Also when the document grew or shrank (an image loaded, content arrived
+  // above): re-measure the pins and re-place the button. showButton only
+  // shows one for a live selection in select mode, as before.
   const onResize = () => schedule(true, true);
   const onScroll = () => schedule(true, false);
 
@@ -482,8 +485,9 @@ export function createComments(
    * shadow root with `:host{all:initial}` and a system-ui font), so what is
    * placed again is the button, from a fresh rect. Later batches and a lazy
    * `@font-face` fire `loadingdone` too, which is why the listener is on the
-   * font set rather than a one-shot `ready`. Other late reflows (images,
-   * layout shift) still need a ResizeObserver: not this fix.
+   * font set rather than a one-shot `ready`. Other late reflows (an image
+   * that loads, content inserted above) change the document's size: a
+   * ResizeObserver on <html> re-measures then.
    */
   function onFontsLoaded() {
     if (mode !== "select" || !btn?.isConnected) return;
@@ -720,6 +724,13 @@ export function createComments(
     subtree: true,
     characterData: true,
   });
+  // <html>, as for mutations: a replaced body stays observed. Our overlay is
+  // absolutely placed, so moving the button never resizes the document.
+  const sizer =
+    typeof ResizeObserver === "undefined"
+      ? undefined
+      : new ResizeObserver(onResize);
+  sizer?.observe(document.documentElement);
   document.addEventListener("selectionchange", onSelectionChange);
   document.addEventListener("click", onClick, true);
   document.addEventListener("keydown", onKey, true);
@@ -733,6 +744,7 @@ export function createComments(
     off();
     fonts?.removeEventListener?.("loadingdone", onFontsLoaded);
     observer?.disconnect();
+    sizer?.disconnect();
     document.removeEventListener("selectionchange", onSelectionChange);
     document.removeEventListener("click", onClick, true);
     document.removeEventListener("keydown", onKey, true);
