@@ -406,15 +406,21 @@ describe("skill.md drift", () => {
       const md = await (await get(`${APP}/skill.md?harness=${h}`)).text();
       expect(md).toContain(`\`${tool}\` is send_message`);
     }
-    // #1963: pi and omp's copy sits in a folder Codex and OpenCode read too,
-    // so it names every harness's bus tools, not just the plain ones.
+    // #1963: pi and omp's copy sits in ~/.agents/skills, which Codex, OpenCode,
+    // OpenClaw and (opted in) Hermes read too, so it names every harness's bus
+    // tools. pi and omp's own tools carry the oabus_ prefix (#1448).
+    const shared: string[] = [];
     for (const h of ["pi", "omp"] as const) {
       const md = await (await get(`${APP}/skill.md?harness=${h}`)).text();
       expect(md).toContain(
-        "Several harnesses read this copy, and each names the bus tools differently: `list_agents` and `send_message` in pi and oh-my-pi, `mcp__oa_bus__list_agents` and `mcp__oa_bus__send_message` in Codex, `oa_bus_list_agents` and `oa_bus_send_message` in OpenCode. Use the names your harness shows.",
+        "Several harnesses read this copy, and each names the bus tools differently: `oabus_list_agents` and `oabus_send_message` in pi, oh-my-pi, OpenClaw and Hermes, `mcp__oa_bus__list_agents` and `mcp__oa_bus__send_message` in Codex, `oa_bus_list_agents` and `oa_bus_send_message` in OpenCode. Use the names your harness shows.",
       );
       expect(md).not.toContain("This copy is for one harness");
+      shared.push(md);
     }
+    // pi and omp write the same file: apart from their own refetch URL, the
+    // renders must be identical.
+    expect(shared[1]?.replace("harness=omp", "harness=pi")).toBe(shared[0]);
 
     // An unknown harness is the plain skill, byte for byte.
     const bogus = await (await get(`${APP}/skill.md?harness=bogus`)).text();

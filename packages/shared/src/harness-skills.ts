@@ -42,11 +42,14 @@ export const harnessSkills: Record<Harness, HarnessSkill> = {
     skillPath: "~/.config/opencode/skills/open-artifacts/SKILL.md",
     busToolName: (tool) => `oa_bus_${tool}`,
   },
+  // The extension's tools carry an `oabus_` prefix (packages/bus-adapter-pi/assets/oa-bus.ts, #1448).
   pi: {
     skillPath: "~/.agents/skills/open-artifacts/SKILL.md",
+    busToolName: (tool) => `oabus_${tool}`,
   },
   omp: {
     skillPath: "~/.agents/skills/open-artifacts/SKILL.md",
+    busToolName: (tool) => `oabus_${tool}`,
   },
   // The plugin's tools carry an `oabus_` prefix (packages/bus-adapter-hermes/assets/oa_bus/tools.py).
   // The path is under HERMES_HOME when that is set; the installer resolves it.
