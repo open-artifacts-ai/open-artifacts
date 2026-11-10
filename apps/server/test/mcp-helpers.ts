@@ -1,3 +1,7 @@
+import {
+  createExecutionContext,
+  waitOnExecutionContext,
+} from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   Client,
@@ -56,15 +60,40 @@ export async function connect(
   );
   const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
     requestInit: { headers: { authorization: `Bearer ${token}` } },
-    fetch: (url, init) =>
-      callWorker(
-        new Request(String(url), init as RequestInit),
-        opts.env,
-        opts.props,
-      ),
+    fetch: async (url, init) => {
+      // The MCP response streams (SSE) and can return before the tool has
+      // run, so its waitUntil work is registered after the response exists.
+      // Keep the ctx and wait on it in settle(), once the tool call is done.
+      const ctx = createExecutionContext();
+      if (opts.props)
+        Object.defineProperty(ctx, "props", { value: opts.props });
+      contexts.get(client)?.push(ctx);
+      return worker.fetch(
+        new Request(String(url), init as RequestInit) as never,
+        (opts.env ?? E()) as never,
+        ctx as never,
+      );
+    },
   });
+  contexts.set(client, []);
   await client.connect(transport);
+  await settle(client);
   return client;
+}
+
+// Per client: the ExecutionContexts of its requests not yet waited on.
+const contexts = new WeakMap<Client, ExecutionContext[]>();
+
+/**
+ * Awaits every waitUntil the client's requests started (including work those
+ * start). Never waits on a response body, so it cannot hang on an unread
+ * stream. Call after direct client calls; tool() does it for you.
+ */
+export async function settle(client: Client): Promise<void> {
+  const pending = contexts.get(client);
+  while (pending?.length) {
+    await waitOnExecutionContext(pending.shift() as ExecutionContext);
+  }
 }
 
 export type ToolResult = {
@@ -78,10 +107,12 @@ export async function tool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
-  return (await client.callTool({
+  const r = (await client.callTool({
     name,
     arguments: args,
   })) as unknown as ToolResult;
+  await settle(client);
+  return r;
 }
 
 export const textOf = (r: ToolResult) =>
