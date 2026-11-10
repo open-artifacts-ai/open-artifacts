@@ -171,6 +171,7 @@ describe("installAdapters", () => {
       "omp",
       "codex",
       "hermes",
+      "openclaw",
     ]);
     expect(calls).toEqual([]);
     expect(existsSync(join(h, ".config"))).toBe(false);

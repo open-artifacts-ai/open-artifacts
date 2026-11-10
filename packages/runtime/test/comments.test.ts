@@ -46,6 +46,29 @@ const frames = () => {
 const button = () =>
   roots.at(-1)?.querySelector<HTMLButtonElement>(".btn") ?? null;
 
+/**
+ * jsdom has no FontFaceSet: a double that records `loadingdone` listeners, so a
+ * test can finish a font batch the way the browser does (#1648).
+ */
+function fonts() {
+  const listeners = new Set<() => void>();
+  Object.defineProperty(document, "fonts", {
+    value: {
+      status: "loading",
+      addEventListener: (_t: string, h: () => void) => listeners.add(h),
+      removeEventListener: (_t: string, h: () => void) => listeners.delete(h),
+    },
+    configurable: true,
+  });
+  return {
+    /** A finished batch: the browser fires `loadingdone` on the font set. */
+    done() {
+      for (const h of [...listeners]) h();
+    },
+    listening: () => listeners.size,
+  };
+}
+
 function select(node: Node, a: number, node2: Node = node, b: number = a) {
   const r = document.createRange();
   r.setStart(node, a);
@@ -101,6 +124,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   ctl.abort();
+  Reflect.deleteProperty(document, "fonts");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   roots.length = 0;
@@ -186,6 +210,16 @@ describe("selection state for the shell (#1732)", () => {
     await wait100();
     expect(last("comment.selection")).toMatchObject({ has: false });
     expect(sels()).toHaveLength(2);
+  });
+
+  it("reports a selection made before the shell's mode, once select arrives", async () => {
+    await start();
+    select(textOf("a"), 4, textOf("a"), 9);
+    await wait100();
+    expect(sels()).toHaveLength(0);
+    await send({ type: "comments.mode", mode: "select" });
+    expect(last("comment.selection")).toMatchObject({ has: true, bottom: 120 });
+    expect(sels()).toHaveLength(1);
   });
 
   it("posts nothing in view or pin mode", async () => {
@@ -304,6 +338,97 @@ describe("selection button", () => {
     expect(button()).toBeNull();
   });
 
+  it("places the button again when a webfont reflows the page (#1648)", async () => {
+    // The button's own width is fixed (closed shadow root, system-ui), so the
+    // swap cannot change it; what moves is the selection's rect, as the page
+    // reflows. The first rect puts the button at 30px, the second at 90px.
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+    const f = fonts();
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()?.style.left).toBe("30px");
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, right: 140, bottom: 200 },
+    ] as unknown as DOMRectList);
+    f.done();
+    expect(button()?.style.left).toBe("90px");
+    expect(button()?.style.top).toBe("206px");
+  });
+
+  it("leaves the button alone when it is gone by the time the fonts finish (#1648)", async () => {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+    const f = fonts();
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    await send({ type: "comments.mode", mode: "off" });
+    expect(button()).toBeNull();
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, right: 140, bottom: 200 },
+    ] as unknown as DOMRectList);
+    f.done();
+    expect(button()).toBeNull();
+  });
+
+  it("listens for font batches once and stops on dispose (#1648)", async () => {
+    const f = fonts();
+    createRuntime({ loadSchemas: async () => schemas, signal: ctl.signal });
+    await flush();
+    expect(f.listening()).toBe(1);
+    ctl.abort();
+    expect(f.listening()).toBe(0);
+  });
+
+  describe("late reflows (ResizeObserver)", () => {
+    let sizes: { cb: () => void; on: Element[]; off: boolean }[] = [];
+    beforeEach(() => {
+      sizes = [];
+      vi.stubGlobal(
+        "ResizeObserver",
+        class {
+          s: { cb: () => void; on: Element[]; off: boolean };
+          constructor(cb: () => void) {
+            this.s = { cb, on: [], off: false };
+            sizes.push(this.s);
+          }
+          observe(el: Element) {
+            this.s.on.push(el);
+          }
+          disconnect() {
+            this.s.off = true;
+          }
+        },
+      );
+    });
+    const reflow = () => {
+      for (const s of sizes) if (!s.off) s.cb();
+      frames();
+    };
+
+    it("places the button again when an image load reflows the page", async () => {
+      vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(
+        100,
+      );
+      await start("select");
+      select(textOf("a"), 4, textOf("a"), 9);
+      expect(button()?.style.left).toBe("30px");
+      vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+        { ...rect, right: 140, bottom: 200 },
+      ] as unknown as DOMRectList);
+      reflow();
+      expect(button()?.style.left).toBe("90px");
+      expect(button()?.style.top).toBe("206px");
+    });
+
+    it("observes <html> once and disconnects on dispose", async () => {
+      createRuntime({ loadSchemas: async () => schemas, signal: ctl.signal });
+      await flush();
+      const live = sizes.filter((s) => s.on.includes(document.documentElement));
+      expect(live).toHaveLength(1);
+      ctl.abort();
+      expect(live[0]?.off).toBe(true);
+    });
+  });
+
   it("has a bubble icon, is centered under the selection end, and clamps to the viewport", async () => {
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
     await start("select");
@@ -326,6 +451,35 @@ describe("selection button", () => {
       { ...rect, right: vw + 50 },
     ] as unknown as DOMRectList);
     select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
+  });
+
+  it("centers under the RTL selection end, including nested direction and viewport clamps", async () => {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+    // happy-dom does not map dir attributes to computed direction.
+    document.body.innerHTML =
+      '<p dir="ltr"><span id="rtl" style="direction:rtl">שלום עולם</span></p>';
+    const text = textOf("rtl");
+    await start("select");
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, left: 200, right: 300 },
+    ] as unknown as DOMRectList);
+    select(text, 0, text, 4);
+    expect(button()?.style.left).toBe("150px");
+    expect(button()?.style.top).toBe("126px");
+    expect(getSelection()?.toString()).toBe("שלום");
+
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, left: 10, right: 110 },
+    ] as unknown as DOMRectList);
+    select(text, 0, text, 3);
+    expect(button()?.style.left).toBe("4px");
+
+    const vw = document.documentElement.clientWidth || innerWidth;
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, left: vw + 50, right: vw + 150 },
+    ] as unknown as DOMRectList);
+    select(text, 0, text, 4);
     expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
   });
 
@@ -477,6 +631,58 @@ describe("highlights and positions", () => {
     await flush();
     expect(n()).toBe(3);
     vi.useRealTimers();
+  });
+
+  it("paints the quote being written about, and drops it when the draft closes (#1834)", async () => {
+    await start("select");
+    const quote = {
+      kind: "text" as const,
+      exact: "quick brown",
+      prefix: "The ",
+      suffix: " fox",
+    };
+    await send({ type: "comments.set", threads: [], draft: quote });
+    const active = () =>
+      highlights.get("oa-comment-active") as { ranges: Range[] };
+    expect(active().ranges).toHaveLength(1);
+    expect(active().ranges[0]?.toString()).toBe("quick brown");
+    // Nothing posted: no thread highlight, so clicking it opens nothing.
+    expect(highlights.get("oa-comment")).toMatchObject({ ranges: [] });
+    // The composer closed without posting: gone.
+    await send({ type: "comments.set", threads: [] });
+    expect(active().ranges).toHaveLength(0);
+    // And it re-resolves after the page changes under it.
+    await send({ type: "comments.set", threads: [], draft: quote });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    textOf("a").data = `Intro. ${textOf("a").data}`;
+    await vi.advanceTimersByTimeAsync(200);
+    await flush();
+    frames();
+    await flush();
+    vi.useRealTimers();
+    expect(active().ranges[0]?.toString()).toBe("quick brown");
+  });
+
+  it("forgets the draft quote when comments go off (#1850)", async () => {
+    await start("select");
+    await send({
+      type: "comments.set",
+      threads: [],
+      draft: {
+        kind: "text",
+        exact: "quick brown",
+        prefix: "The ",
+        suffix: " fox",
+      },
+    });
+    const active = () =>
+      highlights.get("oa-comment-active") as { ranges: Range[] };
+    expect(active().ranges).toHaveLength(1);
+    await send({ type: "comments.mode", mode: "off" });
+    await send({ type: "comments.mode", mode: "select" });
+    // A later set carries no draft: nothing painted from the old one.
+    await send({ type: "comments.set", threads: [] });
+    expect(active().ranges).toHaveLength(0);
   });
 
   it("clicking a highlight sends only the thread id", async () => {
@@ -686,6 +892,47 @@ describe("pins", () => {
     );
   });
 
+  it("leaves Esc to the page when an IME, a field or a modal owns it (#1698)", async () => {
+    await start("pin");
+    const count = () =>
+      msgs().filter((m) => m.type === "comment.escape").length;
+    const before = count();
+    // A composing key.
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "Escape",
+        bubbles: true,
+        isComposing: true,
+      }),
+    );
+    // A text field.
+    const field = document.createElement("textarea");
+    document.body.append(field);
+    field.focus();
+    field.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    // A plain element inside an open modal dialog.
+    const modal = document.createElement("div");
+    modal.setAttribute("aria-modal", "true");
+    const inside = document.createElement("button");
+    modal.append(inside);
+    document.body.append(modal);
+    inside.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await flush();
+    expect(count()).toBe(before);
+    // Outside all three, pin mode's Esc still reaches the shell.
+    document.body.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "Escape", bubbles: true }),
+    );
+    await flush();
+    expect(count()).toBe(before + 1);
+    field.remove();
+    modal.remove();
+  });
+
   it("does nothing in select mode, and pins are drawn in the overlay with their number", async () => {
     await start("select");
     document
@@ -893,6 +1140,24 @@ describe("a selection spanning several elements (#1708)", () => {
       exact: "st item Second",
       first: "st ",
       last: "Second",
+    },
+    {
+      name: "two ordered list items (#1721)",
+      html: "<ol><li id=x>First step</li><li id=y>Second step</li></ol>",
+      from: ["x", 6],
+      to: ["y", 6],
+      exact: "step Second",
+      first: "step",
+      last: "Second",
+    },
+    {
+      name: "out of a nested list into the next outer item (#1721)",
+      html: "<ul><li>Parent<ul><li id=x>Child one</li><li id=y>Child two</li></ul></li><li id=z>Next item</li></ul>",
+      from: ["y", 6],
+      to: ["z", 4],
+      exact: "two Next",
+      first: "two",
+      last: "Next",
     },
   ];
   for (const c of cases) {

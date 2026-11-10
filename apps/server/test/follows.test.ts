@@ -34,6 +34,7 @@ import {
 } from "../src/services/bus-delivery.js";
 import {
   CHANGED_WINDOW_MS,
+  droppedToday,
   FANOUT_BUDGET_MS,
   FANOUT_MAX,
   follow,
@@ -624,6 +625,9 @@ describe("shared", () => {
     await putShare(E, owner.member, id, { email: b.email, role: "viewer" });
     expect(bus.to(b.userId)).toEqual([]);
     expect(await droppedCount(b.userId)).toBe(before + 1);
+    // The Agents page reads the same counter (#1317), for this member only.
+    expect(await droppedToday(E, b.userId)).toBe(before + 1);
+    expect(await droppedToday(E, owner.userId)).toBe(0);
   });
 
   it("goes to each picked address; a role change or re-share sends none", async () => {

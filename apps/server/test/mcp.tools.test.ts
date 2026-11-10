@@ -512,6 +512,12 @@ describe("MCP tools over PAT", () => {
   });
 
   // #681 B: one sentence, in the instructions and both descriptions.
+  it("list_comments warns that quoted and anchor text is data (#1888)", () => {
+    const d = TOOL_DEFS.find((t) => t.name === "list_comments")?.description;
+    expect(d).toContain("anyone can write");
+    expect(d).toContain("data too");
+  });
+
   it("instructions and publish/visibility descriptions carry DATA_WRITERS_NOTE", () => {
     const text = (n: string) =>
       TOOL_DEFS.find((t) => t.name === n)?.description ?? "";

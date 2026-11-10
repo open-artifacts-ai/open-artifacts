@@ -1,7 +1,11 @@
 """One connection to the bus daemon, held open for one Hermes root session."""
 
+import base64
+import hashlib
+import os
 import socket
 import threading
+import time
 
 from . import frames
 from .sockpath import bus_home, daemon_socket_path, socket_dir_problem
@@ -12,6 +16,11 @@ CLIENT_VERSION = "0.0.0"
 # Above the daemon's 10 s hub wait plus its 5 s wait for delivered.
 REQUEST_TIMEOUT_S = 20.0
 HELLO_TIMEOUT_S = 5.0
+# The daemon is local and answers link_proof at once; past this the root stays unlinked.
+PROOF_TIMEOUT_S = 2.0
+# A link whose proof was not taken (the hub was down) tries again on a later turn, at most this often.
+PROOF_RETRY_S = 60.0
+_monotonic = time.monotonic
 RECONNECT_S = 3.0
 MAX_REFUSED_BACKOFF_S = 60.0
 
@@ -29,12 +38,22 @@ class LinkError(Exception):
         self.refused = refused
 
 
+# #1608: the daemon's binding token per ref, in memory only. A reconnect is a new Link and echoes it.
+_BIND_TOKENS = {}
+
+
 class Link:
     """Connects and says hello in `open`; then `deliver` and `notice` frames arrive on a reader thread."""
 
     def __init__(self, ref, cwd, name, proc_start, pid, on_deliver, on_notice, on_lost, home=None):
         self.ref = ref
         self.welcome = {}
+        # #1822: this link's proof, in memory only (never written or logged); set once the
+        # daemon took its hash. A reconnect is a new Link, so a new proof.
+        self.proof = None
+        self._candidate = None  # the proof this link offered; a retry offers the same one
+        self._tried_at = None
+        self._proving = False
         self._hello = {
             "id": "hello",
             "type": "hello",
@@ -44,7 +63,8 @@ class Link:
             "pid": pid,
             "cwd": cwd,
             "proposed_name": name,
-            "caps": ["mailbox", "pending", "follow"],
+            "caps": ["mailbox", "pending", "follow", "link"],
+            **({"bind_token": _BIND_TOKENS[ref]} if ref in _BIND_TOKENS else {}),
             "attest": {"proc_start": proc_start} if proc_start else {},
         }
         self._home = home if home is not None else bus_home()
@@ -85,7 +105,48 @@ class Link:
         if self._refusal:
             self.close()
             raise LinkError(self._refusal, refused=True)
+        self._prove()
         return self
+
+    def _prove(self):
+        """Makes this link's proof and tells the daemon its hash, for a daemon whose welcome listed
+        `link`. Any failure leaves this root unlinked; the link and every tool keep working."""
+        try:
+            caps = self.welcome.get("caps")
+            if not isinstance(caps, list) or "link" not in caps:
+                return
+            self._candidate = base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode("ascii")
+            self._attempt()
+        except Exception:
+            pass
+
+    def retry_proof(self):
+        """A later turn: offers the same proof again when the daemon did not take it (its hub link
+        was down), at most once per PROOF_RETRY_S. Does nothing once taken, or without the cap."""
+        try:
+            if self.proof is not None or self._candidate is None or self._ended:
+                return
+            if _monotonic() - self._tried_at < PROOF_RETRY_S:
+                return
+            self._attempt()
+        except Exception:
+            pass
+
+    def _attempt(self):
+        with self._lock:
+            if self._proving or self.proof is not None or self._ended:
+                return
+            self._proving = True
+        try:
+            self._tried_at = _monotonic()
+            hash_ = hashlib.sha256(self._candidate.encode("ascii")).hexdigest()
+            r = self.request({"type": "link_proof", "hash": hash_}, PROOF_TIMEOUT_S)
+            if r.get("type") == "link_proofed" and r.get("bound") is True and not self._ended:
+                self.proof = self._candidate
+        except Exception:
+            pass
+        finally:
+            self._proving = False
 
     def _send(self, partial):
         data = frames.encode(partial)
@@ -173,6 +234,8 @@ class Link:
         if not self._welcomed.is_set():
             if f["type"] == "welcome":
                 self.welcome = f
+                if isinstance(f.get("bind_token"), str):
+                    _BIND_TOKENS[self.ref] = f["bind_token"]
             else:
                 self._refusal = str(f.get("message") or "the daemon refused hello")
             self._welcomed.set()

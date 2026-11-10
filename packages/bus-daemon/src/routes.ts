@@ -4,6 +4,7 @@ import {
   type AgentInfo,
   type ConfigFile,
   type DaemonFrame,
+  FOLLOW_DAEMON_BAD_FRAME,
   type Hello,
   type Unframed,
 } from "@oa/bus-ipc";
@@ -17,6 +18,7 @@ import {
 import type { z } from "zod";
 import type { AgentTable } from "./agents.ts";
 import type { HubConnection } from "./hub.ts";
+import { REACH_COPY, type ReachResult } from "./reach.ts";
 import type { Timer } from "./sent.ts";
 import { STATUS_COPY } from "./status.ts";
 
@@ -207,6 +209,17 @@ export type RouteCtx = {
    * Without it, refused as `down`.
    */
   followSupport?: () => "ok" | "old_hub" | "down";
+  /**
+   * Asks the hub, over HTTP with the machine's token, that `ref`'s role reach
+   * `namespaces` (#1346). `ref` is always the attested connection's, never
+   * from a frame. Without it, refused as `hub_unavailable`.
+   */
+  proposeReach?: (ref: string, namespaces: string[]) => Promise<ReachResult>;
+  /**
+   * link_proof (#1856): the proof hash of the agent `ref`, taken from its own
+   * hello'd connection. True when a live record took it.
+   */
+  linked?: (ref: string, hash: string) => boolean;
   /** rename (#1635): the session's new name, from an adapter that listed the cap. */
   renamed?: (ref: string, name: string) => void;
   /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
@@ -297,6 +310,9 @@ export function routeLocal(
         agent: {
           name: agent.busName,
           namespace: agent.namespace,
+          ...(agent.namespaceSource
+            ? { namespace_source: agent.namespaceSource }
+            : {}),
           kind: agent.kind,
           live: agent.live,
           global: agent.global,
@@ -338,6 +354,16 @@ export function routeLocal(
         };
       ctx.renamed(ref, frame.name);
       return undefined;
+    case "link_proof":
+      // Bound to the connection's own agent: the frame names none. An adapter
+      // that did not list the cap was never told to send one.
+      if (!hello.caps?.includes(ADAPTER_CAPS.link) || !ctx.linked)
+        return {
+          type: "error",
+          code: "bad_frame",
+          message: "link_proof is not supported on this connection",
+        };
+      return { type: "link_proofed", bound: ctx.linked(ref, frame.hash) };
     case "set_status": {
       const cap = ctx.limited?.(ref);
       if (cap)
@@ -360,7 +386,7 @@ export function routeLocal(
         return {
           type: "error",
           code: "bad_frame",
-          message: "follow is not supported on this connection",
+          message: FOLLOW_DAEMON_BAD_FRAME.noCap,
         };
       const cap = ctx.limited?.(ref);
       if (cap)
@@ -386,7 +412,7 @@ export function routeLocal(
         return {
           type: "error",
           code: "bad_frame",
-          message: "the frame is not valid on the hub wire",
+          message: FOLLOW_DAEMON_BAD_FRAME.wire,
         };
       const id = ctx.pending.open(frame.id, reply);
       if (ctx.hub.send(build(id))) return undefined;
@@ -396,6 +422,45 @@ export function routeLocal(
         code: "hub_unavailable",
         message: FOLLOW_COPY.down,
       };
+    }
+    case "propose_reach": {
+      // An adapter that did not list the cap was never told it could.
+      if (!hello.caps?.includes(ADAPTER_CAPS.reach))
+        return {
+          type: "error",
+          code: "bad_frame",
+          message: "reach is not supported on this connection",
+        };
+      const cap = ctx.limited?.(ref);
+      if (cap)
+        return { type: "error", code: "rate_limited", message: CAP_COPY[cap] };
+      if (!ctx.proposeReach)
+        return {
+          type: "error",
+          code: "hub_unavailable",
+          message: REACH_COPY.down,
+        };
+      const answer = (f: Unframed) =>
+        reply({ ...f, v: 1, id: frame.id } as DaemonFrame);
+      ctx.proposeReach(ref, frame.namespaces).then(
+        (r) =>
+          answer(
+            r.ok
+              ? {
+                  type: "reach_proposed",
+                  confirm_url: r.confirmUrl,
+                  expires_at: r.expiresAt,
+                }
+              : { type: "error", code: r.code, message: r.message },
+          ),
+        () =>
+          answer({
+            type: "error",
+            code: "hub_unavailable",
+            message: REACH_COPY.down,
+          }),
+      );
+      return undefined;
     }
     case "list":
     case "send":

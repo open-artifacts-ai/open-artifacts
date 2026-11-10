@@ -211,6 +211,20 @@ function removeAt(text: string, path: JSONPath): string {
     .reduce((out, [a, b]) => splice(out, a, b), text);
 }
 
+/** Sets the value at `path` (members created as needed), keeping the rest of the text byte for byte. */
+export function setJsoncValue(
+  text: string,
+  path: JSONPath,
+  value: unknown,
+): string {
+  return verified(insert(text, path, value), path, value);
+}
+
+/** Removes the member at `path`: the inverse of `setJsoncValue` for a member it added. */
+export function removeJsoncValue(text: string, path: JSONPath): string {
+  return verified(removeAt(text, path), path, undefined);
+}
+
 /** The value at `path`, or undefined; the text must parse. */
 export function jsoncValue(text: string, path: JSONPath): unknown {
   let v: unknown = parseJsonc(text, "config");

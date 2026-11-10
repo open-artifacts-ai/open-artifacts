@@ -148,6 +148,8 @@ export const R = {
   busReach: "/api/v1/bus/reach",
   /** DELETE -> 204: removes one reach grant (idempotent: unknown is 204 too). Same rules as PUT R.busReach, but open under a plan cap. */
   busReachGrant: (id: string) => `/api/v1/bus/reach/${seg(id)}`,
+  /** POST (a bus machine token only) -> { confirmUrl, expiresAt }: an agent asks that its role reach namespaces (#1346). Grants nothing until the member confirms the URL in a browser. 409 details.reason: no_role, ambiguous, rate_limited, proposal_limit, no_bus. */
+  busReachProposals: "/api/v1/bus/reach/proposals",
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
   /**
@@ -380,6 +382,14 @@ export const R = {
    * uncapped org owner only. Anyone else, and an unknown notice, 404.
    */
   noticeDismiss: (notice: NoticeId) => `/api/v1/notices/${seg(notice)}/dismiss`,
+  /**
+   * GET -> Onboarding; PUT OnboardingPatch -> Onboarding: the first-run
+   * "Get started" checklist's install-wide state, kept on the server. Both
+   * only for the uncapped org owner (anyone else 404). PUT { dismissed: true }
+   * hides the checklist for good; { completed: true } records that every step
+   * was done. Idempotent; neither can be undone through the API.
+   */
+  onboarding: "/api/v1/onboarding",
   /** GET ?cursor&limit -> Page<AuditEvent> (org owner, admin). */
   audit: "/api/v1/audit",
   /**

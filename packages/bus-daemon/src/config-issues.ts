@@ -4,7 +4,13 @@ import type { ConfigFile } from "@oa/bus-ipc";
 import { BusConfigSchema, CONFIG_FILE } from "@oa/bus-protocol";
 import { globalFile, readGlobalDirs } from "./global.ts";
 import { resolveNamespace } from "./namespace.ts";
-import { isApproved, namespacesFile, readApprovals } from "./namespaces.ts";
+import {
+  isApproved,
+  namespacesFile,
+  readApprovals,
+  readRemotes,
+  remotesFile,
+} from "./namespaces.ts";
 import { type GroupCheck, type OwnFile, readOwnFile } from "./own-file.ts";
 
 export type { ConfigFile };
@@ -64,6 +70,10 @@ export type PendingNamespace = {
   namespace: string;
   /** The approvals file consulted; default `<OA_BUS_HOME>/namespaces.json`. */
   approvals?: string | undefined;
+  /** #1570: set for a git remote that changed; replaces the `.oa-bus.json` wording. */
+  reason?: string;
+  /** #1570: the namespace the folder first got; with `reason`, `file` is its `.git`. */
+  recorded?: string;
 };
 
 /** The exact step that approves `dir`'s namespace. */
@@ -74,12 +84,16 @@ export const approveCommand = (dir: string): string =>
 export const pendingIssue = (p: PendingNamespace): ConfigFile => ({
   file: p.file,
   state: "pending",
-  reason: `sets namespace "${p.namespace}", which you have not approved`,
+  reason:
+    p.reason ?? `sets namespace "${p.namespace}", which you have not approved`,
   fix: approveCommand(p.dir),
 });
 
 /** Whether `p` still waits: the file still asks for it and no approval covers it. */
 function stillPending(p: PendingNamespace, uid: number | undefined): boolean {
+  // A git remote change has no file to re-read: it waits until approved or cleared by the next resolve.
+  if (p.recorded !== undefined)
+    return !isApproved(p.dir, p.namespace, readApprovals(p.approvals).entries);
   const own = readOwnFile(p.file, uid, { allowGroupWrite: true });
   if (own.state !== "ok") return false;
   try {
@@ -145,6 +159,21 @@ export function inspectApprovals(
   };
 }
 
+/** The remotes record (#1570), read as the daemon reads it; unusable, no remote is pinned. */
+export function inspectRemotes(file = remotesFile()): ConfigFile | undefined {
+  const { error } = readRemotes(file);
+  if (error === undefined) return undefined;
+  return {
+    file,
+    state: "refused",
+    reason: error,
+    fix:
+      error === "is not valid JSON"
+        ? `remove it (rm ${shq(file)}), each repo then gets its namespace recorded afresh on next use`
+        : fixFor(file, error),
+  };
+}
+
 /**
  * The `.oa-bus.json` files that were refused or noted, kept by path. A
  * namespace read records what it saw; `list` re-reads each, so a fixed file
@@ -182,6 +211,13 @@ export class ConfigIssues {
     else this.#pending.delete(file);
   }
 
+  /** The git remote changes waiting for approval (#1570). */
+  remoteChanges(): PendingNamespace[] {
+    return [...this.#pending.values()]
+      .map((e) => e.p)
+      .filter((p) => p.recorded !== undefined);
+  }
+
   /** Every tracked file, re-read now; `within` keeps only those at these paths. */
   list(
     within?: ReadonlySet<string>,
@@ -215,9 +251,11 @@ export function scanConfigFiles(
     uid?: number;
     globalFile?: string;
     namespacesFile?: string;
+    remotesFile?: string;
     group?: GroupCheck;
     gitRemote?: (dir: string) => string | null;
     gitRoot?: (dir: string) => string | null;
+    gitCommonDir?: (dir: string) => string | null;
   } = {},
 ): ConfigFile[] {
   const uid = opts.uid ?? process.getuid?.();
@@ -239,8 +277,12 @@ export function scanConfigFiles(
       ...(opts.uid === undefined ? {} : { uid: opts.uid }),
       ...(opts.group ? { group: opts.group } : {}),
       ...(opts.namespacesFile ? { namespacesFile: opts.namespacesFile } : {}),
+      ...(opts.remotesFile
+        ? { remotesFile: opts.remotesFile, recordRemote: false }
+        : {}),
       ...(opts.gitRemote ? { gitRemote: opts.gitRemote } : {}),
       ...(opts.gitRoot ? { gitRoot: opts.gitRoot } : {}),
+      ...(opts.gitCommonDir ? { gitCommonDir: opts.gitCommonDir } : {}),
     });
   } catch {}
   out.push(
@@ -250,6 +292,8 @@ export function scanConfigFiles(
   );
   const a = inspectApprovals(opts.namespacesFile);
   if (a) out.push(a);
+  const r = opts.remotesFile ? inspectRemotes(opts.remotesFile) : undefined;
+  if (r) out.push(r);
   const g = inspectGlobal(opts.globalFile);
   if (g) out.push(g);
   return out;

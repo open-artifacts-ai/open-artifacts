@@ -15,6 +15,7 @@ import {
   CLIENT_FRAMES,
   type ClientFrame,
   LIMITS,
+  MAILBOX_PENDING_CAP,
   MAILBOX_RETAIN_MS,
   MsgIdSchema,
   ReceiptStateSchema,
@@ -23,7 +24,7 @@ import {
 import type { BusRole } from "@oa/shared";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { BusHub } from "../../src/bus/hub.js";
+import { BusHub, OWNER_ORG_ID } from "../../src/bus/hub.js";
 import {
   type Daemon,
   daemon,
@@ -688,6 +689,158 @@ describe("a vacant role (#1296)", () => {
       reason: "unknown_agent",
     });
     expect(await reg(d, "x", "lead", n)).toBe("lead");
+    d.close();
+  });
+});
+
+describe("a role whose holder is away (#1349)", () => {
+  const MB = [...NEW, BUS_CAPS.mailbox];
+
+  /** `lead` held by an agent that then closed (away), a sender beside it. */
+  async function awayWorld(caps: string[] = MB) {
+    const uid = await owner();
+    const t0 = Date.now() + 10 * GRACE;
+    await setClock(uid, t0);
+    const d = await at(uid, caps);
+    const n = ns("ro");
+    const alice = await reg(d, "a", uniq("alice"), n);
+    await reg(d, "s", uniq("sender"), n);
+    await setRole(uid, n, "lead", await agentId(uid, alice));
+    d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+    // agent_down has no reply: a list round-trip orders it.
+    d.send({ v: 1, id: id("l"), type: "list", from_ref: "s" });
+    await waitFor(d, "roster");
+    return { uid, t0, d, n, alice };
+  }
+
+  it("queues with queued away and since; the holder's reopen delivers it", async () => {
+    const { t0, d, n, alice } = await awayWorld();
+    const r = await send(d, "s", "lead");
+    expect(r).toMatchObject({
+      state: "pending",
+      to_name: alice,
+      queued: "away",
+      since: new Date(t0).toISOString(),
+    });
+    // The same session back: its mail arrives.
+    expect(await reg(d, "a", alice, n)).toBe(alice);
+    expect((await delivered(d, r.msg_id)).to_ref).toBe("a");
+    d.close();
+  });
+
+  it("a newcomer that reclaims the away name takes the queued mail and the plain role (#1816)", async () => {
+    const { d, n, alice } = await awayWorld();
+    const r = await send(d, "s", "lead");
+    expect(r.queued).toBe("away");
+    expect(await reg(d, "x", alice, n)).toBe(alice);
+    expect((await delivered(d, r.msg_id)).to_ref).toBe("x");
+    // A plain role follows the name: the next message reaches the newcomer.
+    const r2 = await send(d, "s", "lead");
+    expect(r2).toMatchObject({ state: "pending", to_name: alice });
+    expect((await delivered(d, r2.msg_id)).to_ref).toBe("x");
+    d.close();
+  });
+
+  it("a role with reach is not taken over by the newcomer: role_vacant after (#1816)", async () => {
+    const { uid, d, n, alice } = await awayWorld();
+    expect((await (await hubOf(uid)).putReach(n, "lead", ns("rt"))).ok).toBe(
+      true,
+    );
+    const r = await send(d, "s", "lead");
+    expect(r.queued).toBe("away");
+    expect(await reg(d, "x", alice, n)).toBe(alice);
+    expect((await delivered(d, r.msg_id)).to_ref).toBe("x");
+    expect(await send(d, "s", "lead")).toMatchObject({
+      state: "refused",
+      reason: "role_vacant",
+    });
+    d.close();
+  });
+
+  it("the away reservation ending leaves it vacant", async () => {
+    const { uid, t0, d } = await awayWorld();
+    await setClock(uid, t0 + MAILBOX_RETAIN_MS + 1);
+    expect(await send(d, "s", "lead")).toMatchObject({
+      state: "refused",
+      reason: "role_vacant",
+    });
+    d.close();
+  });
+
+  it("a full mailbox: mailbox_full to a mailbox socket", async () => {
+    const { uid, t0, d, n, alice } = await awayWorld();
+    await inHub(uid, (_, s) => {
+      const aid = s.storage.sql
+        .exec<{ id: string }>("select id from agents where name = ?", alice)
+        .one().id;
+      for (let k = 0; k < MAILBOX_PENDING_CAP; k++)
+        s.storage.sql.exec(
+          `insert into receipts (id, org_id, namespace, to_agent, to_name, from_agent, from_name, state, reason, size, created_at, expires_at, acked_at, held_at)
+           values (?, ?, ?, ?, ?, 'x', 'x', 'pending', null, 1, ?, ?, null, null)`,
+          `fill${k}`,
+          OWNER_ORG_ID,
+          n,
+          aid,
+          alice,
+          t0,
+          t0 + MAILBOX_RETAIN_MS,
+        );
+    });
+    expect(await send(d, "s", "lead")).toMatchObject({
+      state: "refused",
+      reason: "mailbox_full",
+    });
+    d.close();
+  });
+
+  it("an old client (no mailbox cap) keeps today's refusal", async () => {
+    const { d } = await awayWorld(NEW);
+    expect(await send(d, "s", "lead")).toMatchObject({
+      state: "refused",
+      reason: "role_vacant",
+    });
+    d.close();
+    const { d: o } = await awayWorld([]);
+    expect(await send(o, "s", "lead")).toMatchObject({
+      state: "refused",
+      reason: "unknown_agent",
+    });
+    o.close();
+  });
+
+  it("a vacated role is still refused to a mailbox socket", async () => {
+    const { uid, d, n } = await awayWorld();
+    await setRole(uid, n, "lead", null);
+    expect(await send(d, "s", "lead")).toMatchObject({
+      state: "refused",
+      reason: "role_vacant",
+    });
+    d.close();
+  });
+
+  it("across namespaces: a non-global sender with a to_namespace still gets other_namespace", async () => {
+    const { d, n } = await awayWorld();
+    const m = ns("other");
+    await reg(d, "z", uniq("zed"), m);
+    expect(await send(d, "z", "lead", n)).toMatchObject({
+      state: "refused",
+      reason: "other_namespace",
+    });
+    d.close();
+  });
+
+  it("a global sender reaches the away holder's role as it reaches a live one", async () => {
+    const { d, n, alice } = await awayWorld();
+    await reg(d, "g", uniq("globe"), ns("gl"), true);
+    expect(await send(d, "g", "lead", n)).toMatchObject({
+      state: "pending",
+      to_name: alice,
+      queued: "away",
+    });
+    expect(await send(d, "g", "lead")).toMatchObject({
+      state: "pending",
+      queued: "away",
+    });
     d.close();
   });
 });

@@ -73,12 +73,59 @@ export function isApproved(
 
 /** Replaces the approvals: 0600, written to a new file then renamed, never through a symlink. */
 export function writeApprovals(entries: readonly Approval[], h = home()): void {
+  writePrivate(h, "namespaces.json", { approved: entries });
+}
+
+/**
+ * The namespace each git folder first derived from its remote (#1570),
+ * `<OA_BUS_HOME>/remotes.json`: `{"recorded": [{"dir": "/real/root", "namespace": "name"}]}`.
+ * A later remote that derives another namespace counts only once the user
+ * approves it (the #1525 approval), so a repo cannot re-point its agents by
+ * changing `origin`.
+ */
+export const remotesFile = (h = home()): string => join(h, "remotes.json");
+
+/** The recorded namespaces; none (with `error`) when the file is unusable, as the approvals. */
+export function readRemotes(file = remotesFile()): Approvals {
+  const own = readOwnFile(file);
+  if (own.state === "none") return { entries: [] };
+  if (own.state === "unsafe") return { entries: [], error: own.why };
+  try {
+    const raw = JSON.parse(own.text) as { recorded?: unknown } | null;
+    const list = raw?.recorded;
+    if (
+      raw &&
+      !Array.isArray(raw) &&
+      Array.isArray(list) &&
+      list.every(
+        (e) =>
+          e &&
+          typeof e === "object" &&
+          typeof e.dir === "string" &&
+          isAbsolute(e.dir) &&
+          typeof e.namespace === "string" &&
+          e.namespace !== "",
+      )
+    )
+      return {
+        entries: list.map((e) => ({ dir: e.dir, namespace: e.namespace })),
+      };
+  } catch {}
+  return { entries: [], error: "is not valid JSON" };
+}
+
+/** Replaces the recorded namespaces, written as the approvals are. */
+export function writeRemotes(entries: readonly Approval[], h = home()): void {
+  writePrivate(h, "remotes.json", { recorded: entries });
+}
+
+function writePrivate(h: string, name: string, body: object): void {
   mkdirSync(h, { recursive: true, mode: 0o700 });
   chmodSync(h, 0o700);
-  const tmp = join(h, `.namespaces.json.${randomBytes(8).toString("hex")}.tmp`);
+  const tmp = join(h, `.${name}.${randomBytes(8).toString("hex")}.tmp`);
   const fd = openSync(tmp, "wx", 0o600);
   try {
-    writeSync(fd, `${JSON.stringify({ approved: entries }, null, 2)}\n`);
+    writeSync(fd, `${JSON.stringify(body, null, 2)}\n`);
   } catch (e) {
     closeSync(fd);
     unlinkSync(tmp);
@@ -87,7 +134,7 @@ export function writeApprovals(entries: readonly Approval[], h = home()): void {
   closeSync(fd);
   try {
     chmodSync(tmp, 0o600);
-    renameSync(tmp, namespacesFile(h));
+    renameSync(tmp, join(h, name));
   } catch (e) {
     unlinkSync(tmp);
     throw e;

@@ -720,6 +720,21 @@ const isUnsafeNameChar = (cp: number) =>
   (cp >= 0x2060 && cp <= 0x2069) ||
   cp === 0xfeff;
 
+/** Default-ignorable and filler code points: invisible, so they only disguise a name (#1822). */
+export const NAME_FILLERS =
+  /[\p{Default_Ignorable_Code_Point}\u115F\u1160\u3164\uFFA0]/u;
+
+/** A name that ends in "'s agent" (any apostrophe, case, trailing punctuation): it would read as someone's agent. The server also folds lookalike letters on read. */
+export const namesAnAgent = (s: string): boolean =>
+  /['\u2018\u2019\u02bc\u2032\u00b4`]\s*s\s*agent$/u.test(
+    s
+      .normalize("NFKC")
+      .normalize("NFD")
+      .replace(/\p{M}/gu, "")
+      .toLowerCase()
+      .replace(/[\p{P}\p{S}\s]+$/u, ""),
+  );
+
 /** A user-chosen display name: trimmed, 1–80 characters, no control/bidi/zero-width characters. */
 export const DisplayNameSchema = z
   .string()
@@ -729,7 +744,9 @@ export const DisplayNameSchema = z
   .refine(
     (s) => ![...s].some((ch) => isUnsafeNameChar(ch.codePointAt(0) ?? 0)),
     "Name contains invalid characters",
-  );
+  )
+  .refine((s) => !NAME_FILLERS.test(s), "Name contains invalid characters")
+  .refine((s) => !namesAnAgent(s), "Name must not read as an agent");
 
 export const MePatchSchema = z.strictObject({ displayName: DisplayNameSchema });
 export type MePatch = z.infer<typeof MePatchSchema>;
@@ -876,10 +893,15 @@ export const BusAgentSchema = z.strictObject({
 });
 export type BusAgent = z.infer<typeof BusAgentSchema>;
 
-/** GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then []. */
+/**
+ * GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then [].
+ * `droppedNotices` (#1317): notices for the caller's own bus that found no
+ * agent today (UTC), 0 when none (or from an older server).
+ */
 export const BusAgentsSchema = z.strictObject({
   agents: z.array(BusAgentSchema).max(1000),
   live: z.boolean(),
+  droppedNotices: z.number().int().min(0).default(0),
 });
 export type BusAgents = z.infer<typeof BusAgentsSchema>;
 
@@ -904,6 +926,22 @@ export const SettingsSchema = z.object({
   spaceManagerMappings: z.boolean().optional(),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
+
+/** GET/PUT R.onboarding: the first-run checklist's install-wide state. */
+export const OnboardingSchema = z.strictObject({
+  dismissed: z.boolean(),
+  completed: z.boolean(),
+  /** The caller owns at least one artifact not in the trash (#1832; absent on older servers). */
+  hasArtifacts: z.boolean().optional(),
+});
+export type Onboarding = z.infer<typeof OnboardingSchema>;
+
+/** PUT R.onboarding: a flag only turns on (true), never off. */
+export const OnboardingPatchSchema = z.strictObject({
+  dismissed: z.literal(true).optional(),
+  completed: z.literal(true).optional(),
+});
+export type OnboardingPatch = z.infer<typeof OnboardingPatchSchema>;
 
 export const SettingsPatchSchema = SettingsSchema.partial().strict();
 export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;

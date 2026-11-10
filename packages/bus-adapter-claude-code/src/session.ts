@@ -156,17 +156,30 @@ export function hasClaudeAncestor(
 export const NOT_UNDER_CLAUDE =
   "This MCP server is for Claude Code; use this harness's own bus tools.";
 
+/** `ps` did not answer in time (a loaded machine): the process may well be alive. Not "gone". */
+export class ProcStartUnknownError extends Error {
+  constructor(pid: number) {
+    super(`ps for pid ${pid} timed out`);
+  }
+}
+
+/** Bound on one `ps`, so a loaded machine cannot stall a caller for seconds. */
+export const PS_TIMEOUT_MS = 1500;
+
 const ps = (field: string, pid: number): string | null => {
   try {
     return (
       execFileSync(systemTool("ps"), ["-o", `${field}=`, "-p", String(pid)], {
         encoding: "utf8",
+        timeout: PS_TIMEOUT_MS,
         stdio: ["ignore", "pipe", "ignore"],
         // Claude writes procStart as `TZ=UTC LC_ALL=C ps -o lstart=`.
         env: { ...process.env, TZ: "UTC", LC_ALL: "C" },
       }).trim() || null
     );
-  } catch {
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ETIMEDOUT")
+      throw new ProcStartUnknownError(pid);
     return null;
   }
 };
@@ -176,7 +189,12 @@ export function ancestorChain(pid: number): number[] {
   let cur = pid;
   for (let i = 0; i < 12 && cur > 1; i += 1) {
     out.push(cur);
-    const ppid = Number(ps("ppid", cur));
+    let ppid: number;
+    try {
+      ppid = Number(ps("ppid", cur));
+    } catch {
+      break; // ps timed out: a shorter chain, not a thrown call
+    }
     if (!ppid || ppid === cur) break;
     cur = ppid;
   }
@@ -239,7 +257,12 @@ export function sessionHello(
     pid,
     cwd,
     proposed_name: fitName(session.name, 64) || undefined,
-    caps: [ADAPTER_CAPS.mailbox, ADAPTER_CAPS.pending, ADAPTER_CAPS.follow],
+    caps: [
+      ADAPTER_CAPS.mailbox,
+      ADAPTER_CAPS.pending,
+      ADAPTER_CAPS.follow,
+      ADAPTER_CAPS.reach,
+    ],
     attest: {
       session_id: session.sessionId,
       socket_path: session.socketPath ?? undefined,

@@ -29,7 +29,7 @@ async function daemon(caps: string[] | undefined, welcomeDelayMs = 0) {
         buf = buf.slice(i + 1);
         mine.push(f);
         if (f.type === "hello") {
-          const welcome = `${JSON.stringify({ v: 1, id: f.id, type: "welcome", agent_ref: f.agent_ref, bus_name: "x", namespace: "ns", global: false, ...(caps ? { caps } : {}) })}\n`;
+          const welcome = `${JSON.stringify({ v: 1, id: f.id, type: "welcome", agent_ref: f.agent_ref, bus_name: "x", namespace: "ns", global: false, bind_token: "bind-token-0123456789abcdef", ...(caps ? { caps } : {}) })}\n`;
           if (welcomeDelayMs)
             setTimeout(() => sock.write(welcome), welcomeDelayMs);
           else sock.write(welcome);
@@ -202,6 +202,22 @@ describe("pi rename (#1635)", () => {
     );
     expect(Date.now() - t0).toBeLessThanOrEqual(10_000);
     expect(d.frames[1][0].proposed_name).toBe("After Rename");
+  });
+
+  it("a reconnect echoes the binding token the first welcome issued (#1608)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    const d = await daemon(["rename"]);
+    await pi();
+    await vi.waitFor(() => expect(d.frames[0]?.length).toBeGreaterThan(0));
+    d.drop();
+    await vi.waitFor(
+      async () => {
+        await vi.advanceTimersByTimeAsync(500);
+        expect(d.frames[1]?.length).toBeGreaterThan(0);
+      },
+      { timeout: 5_000, interval: 5 },
+    );
+    expect(d.frames[1][0].bind_token).toBe("bind-token-0123456789abcdef");
   });
 
   it("a rename while the hello is in flight is sent once the link is welcomed", async () => {

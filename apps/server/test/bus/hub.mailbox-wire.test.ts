@@ -460,6 +460,21 @@ describe("mailbox wire (#1295 PR B)", () => {
     snd.close();
   });
 
+  it("the snapshot lists an away agent (state away, running false, since) only when asked", async () => {
+    const { rcv, snd, ref, name } = await trio(MB);
+    await close(rcv, ref);
+    const asked = await (await hubOf()).snapshot({ away: true });
+    expect(asked.agents.find((a) => a.name === name)).toMatchObject({
+      state: "away",
+      running: false,
+      since: expect.any(String),
+    });
+    const plain = await (await hubOf()).snapshot();
+    expect(plain.agents.find((a) => a.name === name)).toBeUndefined();
+    rcv.close();
+    snd.close();
+  });
+
   it("/clear while the old session is live: its acked notice bodies are gone, its pending mail still arrives", async () => {
     const { rcv, snd, n, ref, name } = await trio(MB);
     const big = "z".repeat(40_000);

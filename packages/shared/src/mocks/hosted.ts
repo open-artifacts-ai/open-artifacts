@@ -96,7 +96,11 @@ import type {
   Share,
   ShareRecipient,
 } from "../schemas.js";
-import { MemberInviteSchema, SettingsPatchSchema } from "../schemas.js";
+import {
+  MemberInviteSchema,
+  OnboardingPatchSchema,
+  SettingsPatchSchema,
+} from "../schemas.js";
 
 /** The code the mock accepts (any address). */
 export const HOSTED_MOCK_CODE = "24681357";
@@ -362,6 +366,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   const sharesDismissed = new Set<string>();
   /** guest_summary dismissed for the install. */
   let summaryDismissed = false;
+  // R.onboarding: install-wide, the uncapped owner only (anyone else 404).
+  const onboarding = { dismissed: false, completed: false };
   if (o.actAs === "admin") me.user.role = "admin";
   /**
    * Departed members' and guests' personal artifacts, counts only (admins
@@ -1454,6 +1460,9 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       if (o.selfHosted || c.isAnon(request) || !isAdmin()) return notFound();
       if (o.billingDown)
         return err("billing_unavailable", "Billing is unavailable");
+      // The server's answer when billing has no Stripe customer.
+      if (billing.hasCustomer === false)
+        return err("no_billing_customer", "No billing account");
       return billingUrl("portal");
     }),
     http.post("*/api/v1/billing/usage", ({ request }) => {
@@ -2253,6 +2262,24 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
           s.id,
         );
         return noContent();
+      }),
+    ),
+    http.get(
+      "*/api/v1/onboarding",
+      authed(() =>
+        me.user.role === "owner" && cap() === null
+          ? HttpResponse.json(onboarding)
+          : notFound(),
+      ),
+    ),
+    http.put(
+      "*/api/v1/onboarding",
+      authed(async ({ request }) => {
+        if (me.user.role !== "owner" || cap() !== null) return notFound();
+        const r = await c.body(request, OnboardingPatchSchema);
+        if (r.error) return r.error;
+        Object.assign(onboarding, r.data);
+        return HttpResponse.json(onboarding);
       }),
     ),
     // -- settings (hosted adds spaceManagerMappings; settings.manage = org owner, admin)

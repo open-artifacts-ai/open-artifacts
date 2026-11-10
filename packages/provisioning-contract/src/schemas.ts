@@ -64,11 +64,6 @@ export const AuthSchema = z
         "Code sign-in for anyone at auth.domains: sets EMAIL_CODE_DOMAIN=on. Needs email in auth.providers, no google, at least one domain, and ownerEmail's domain in auth.domains. Turnstile is checked; that the env can send email is not checked.",
       ),
   })
-  // checkGoogleBroker, until #865.
-  .refine(
-    (a) => !a.providers.includes("google") || a.domains.length > 0,
-    "google needs at least one domain",
-  )
   // The server's rule (auth/config.ts domainCodes), so a create can't ask for
   // what it would silently leave off.
   .refine(

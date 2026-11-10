@@ -301,10 +301,37 @@ create table if not exists reach_grants (
   mode text not null default 'reach' check (mode = 'reach'),
   target_ns text not null,
   created_at integer not null,
+  granted_by text not null default 'member',
+  machine_id text,
   unique (org_id, role_ns, lname, mode, target_ns)
 );
 create index if not exists reach_grants_target on reach_grants(org_id, mode, target_ns);
 create index if not exists reach_grants_role on reach_grants(org_id, role_ns, lname);
+
+-- #1346 reach proposals: a reach a machine's agent proposed for the role it
+-- holds (bus/reach-proposals.ts), decided once on its one-time confirm link.
+-- Only the secret's sha256 is kept. The role and its holder are bound as
+-- the member saw them (names then: a rename or a re-point since refuses the
+-- confirm as changed). namespaces: a JSON array. A new table:
+-- create-if-not-exists adds it; wipe() deletes it.
+create table if not exists reach_proposals (
+  id text primary key,
+  org_id text not null,
+  token_hash text not null unique,
+  role_id text not null,
+  role_ns text not null,
+  role_name text not null,
+  agent_id text not null,
+  agent_name text not null,
+  namespaces text not null,
+  machine_id text not null,
+  created_at integer not null,
+  expires_at integer not null,
+  status text not null default 'pending',
+  reason text,
+  decided_at integer
+);
+create index if not exists reach_proposals_machine on reach_proposals(org_id, machine_id, created_at);
 
 create table if not exists meta (
   org_id text not null,
@@ -316,7 +343,8 @@ create table if not exists meta (
 -- #1317: server notices waiting for their address (a notBefore not reached,
 -- or a machine offline). One row per (address, coalesce key); a newer notice
 -- replaces it. Written only by BusHub.deliverNotice; no frame reaches it.
--- parked: due, but the machine had no live socket (sent on its agent_up).
+-- parked: 1 = due, but the machine had no live socket (sent on its agent_up);
+-- 2 = due, held for a live daemon too old to read it (own caps, #1828).
 create table if not exists notices (
   to_ns text not null,
   to_lname text not null,
@@ -396,6 +424,34 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   ] as const)
     if (!agentCols.has(col))
       sql.exec(`alter table agents add column ${col} ${type}`);
+  // #1822: the session link. identity_id is opaque and random, minted at the
+  // first accepted link_bind; proof_hash is the sha256 of the session's
+  // current proof, null unless the session is live and bound.
+  for (const col of ["identity_id", "proof_hash"] as const)
+    if (!agentCols.has(col))
+      sql.exec(`alter table agents add column ${col} text`);
+  sql.exec(
+    "create index if not exists agents_proof_hash on agents(proof_hash) where proof_hash is not null",
+  );
+  // #1984: a live session holds several proofs (the last few binds), one row
+  // each. A proof names one session (hash is the key). They end with the
+  // session: the triggers drop them when the row closes (live = 0) or goes.
+  sql.exec(
+    "create table if not exists agent_proofs (hash text primary key, agent_id text not null, seq integer not null)",
+  );
+  sql.exec(
+    "create index if not exists agent_proofs_agent on agent_proofs(agent_id, seq)",
+  );
+  sql.exec(
+    "create trigger if not exists agent_proofs_close after update of live on agents when new.live = 0 begin delete from agent_proofs where agent_id = new.id; end",
+  );
+  sql.exec(
+    "create trigger if not exists agent_proofs_gone after delete on agents begin delete from agent_proofs where agent_id = old.id; end",
+  );
+  // Rows bound before this table: their one proof carries over.
+  sql.exec(
+    "insert or ignore into agent_proofs (hash, agent_id, seq) select proof_hash, id, 0 from agents where proof_hash is not null and live = 1",
+  );
   sql.exec(
     "create index if not exists agents_status_due on agents(status_due) where status_due is not null",
   );
@@ -506,6 +562,23 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   );
   if (!proposalCols.has("credential"))
     sql.exec("alter table role_proposals add column credential text");
+  // #1346: who a reach grant came from (member: a direct add; request: a
+  // confirmed agent proposal) and the proposing machine. Add-only: grants
+  // from before are the member's own adds.
+  const reachCols = new Set(
+    sql
+      .exec<{ name: string }>(
+        "select name from pragma_table_info('reach_grants')",
+      )
+      .toArray()
+      .map((r) => r.name),
+  );
+  if (!reachCols.has("granted_by"))
+    sql.exec(
+      "alter table reach_grants add column granted_by text not null default 'member'",
+    );
+  if (!reachCols.has("machine_id"))
+    sql.exec("alter table reach_grants add column machine_id text");
   // OpenBus #451: the scope a former name was left in. Backfilled from its
   // agent: before #451 a move or close dropped the rows, so every row is in
   // its agent's current scope.

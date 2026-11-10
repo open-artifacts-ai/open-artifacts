@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { authorize, canCtx } from "../../auth/authz.js";
-import { can } from "../../auth/policy.js";
+import { can, isGuestRole } from "../../auth/policy.js";
 import { ApiError } from "../../http/errors.js";
 import {
   addReply,
@@ -49,6 +49,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
     const viewer: CommentViewer = {
       userId: t.user.id,
       short: null,
+      guest: isGuestRole(t.user.role),
       moderator: can(level, "comments.moderate", canCtx(caller, artifact)),
     };
     const who: CommentWho = {

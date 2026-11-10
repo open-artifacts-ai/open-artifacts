@@ -1625,6 +1625,11 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     // An empty patch: settings.manage, then nothing to change.
     real: { req: () => ({ path: "", body: {} }), allow: ok(200) },
   },
+  // An empty patch: the owner rule, then nothing to write.
+  "PUT /api/v1/onboarding": {
+    refuse: invalid(),
+    real: { req: () => ({ path: "", body: {} }), allow: ok(200) },
+  },
   "POST /api/v1/spaces": {
     refuse: invalid(),
     real: {
@@ -2057,6 +2062,8 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["DELETE /api/v1/members/:id/restricted", org("restricted.member")],
   ["GET /api/v1/settings", org("settings.read"), [200]],
   ["PATCH /api/v1/settings", org("settings.manage")],
+  ["GET /api/v1/onboarding", org("onboarding.manage"), [200]],
+  ["PUT /api/v1/onboarding", org("onboarding.manage")],
   ["GET /api/v1/spaces", U, [200]],
   ["POST /api/v1/spaces", org("space.create")],
   ["GET /api/v1/spaces/:id", { user: true, space: "member" }, [200]],
@@ -2239,6 +2246,14 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /bus/links/confirm/:token",
   "POST /bus/links/confirm/view",
   "POST /bus/links/confirm",
+  // #1346: an agent's reach proposal (a machine token, checked by the
+  // handler) and its confirm page (the same rules); covered by
+  // bus/reach.proposals.test.ts.
+  "POST /api/v1/bus/reach/proposals",
+  "GET /bus/reach/confirm",
+  "GET /bus/reach/confirm/:token",
+  "POST /bus/reach/confirm/view",
+  "POST /bus/reach/confirm",
   "GET /a/:id",
   "GET /a/:id/full",
   "GET /a/:id/v/:v",

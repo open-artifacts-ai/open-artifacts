@@ -1,6 +1,10 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { notASession, peerTokenFor } from "@oa/bus-adapter-claude-code";
+import {
+  notASession,
+  ProcStartUnknownError,
+  peerTokenFor,
+} from "@oa/bus-adapter-claude-code";
 import { AgentRefSchema } from "@oa/bus-protocol";
 
 export type LiveClaude = {
@@ -35,9 +39,7 @@ function sessionFiles(dir: string): SessionFile[] {
   for (const fn of names) {
     if (!/^\d+\.json$/.test(fn)) continue;
     let rec: Record<string, unknown>;
-    let mtime: number;
     try {
-      mtime = statSync(join(dir, fn)).mtimeMs;
       rec = JSON.parse(readFileSync(join(dir, fn), "utf8"));
     } catch {
       continue;
@@ -58,7 +60,8 @@ function sessionFiles(dir: string): SessionFile[] {
           : "",
       cwd: typeof rec.cwd === "string" ? rec.cwd : "",
       procStart: rec.procStart,
-      stamp: `${rec.procStart}\u0000${mtime}`,
+      // Not the mtime: live sessions rewrite their file every 15-60 s. A reused pid writes a new procStart.
+      stamp: rec.procStart,
     });
   }
   return out;
@@ -124,32 +127,52 @@ export function claudeTarget(
   return peerToken ? { socketPath: s.socketPath, peerToken } : null;
 }
 
+/** A live pid's start time never changes, so a long TTL is safe. */
+export const PROC_START_TTL_MS = 60_000;
+
 /**
- * At most one `ps` per pid per sync interval. A stopped pid, a session file
- * rewritten (new stamp) or an entry `ttlMs` old asks again, so a pid killed
- * and reused between two ticks, its file untouched, is not masked.
+ * At most one `ps` per pid per `ttlMs` (60 s by default). A stopped pid
+ * (`running()` is false) or a session file rewritten (new stamp) asks again at
+ * once. A pid killed and reused with its file untouched is caught by
+ * `running()` only until the reuse, so it can go unnoticed for up to `ttlMs`.
+ * A `ps` that times out is "unknown", not "gone": the last known start stays.
  */
 export function cachedProcStart(
   procStart: (pid: number) => string | null,
   running: (pid: number) => boolean,
-  opts: { ttlMs?: number; now?: () => number } = {},
+  opts: { ttlMs?: number; jitter?: number; now?: () => number } = {},
 ): (pid: number, stamp?: string) => string | null {
-  const ttl = opts.ttlMs ?? 2000;
+  const ttl = opts.ttlMs ?? PROC_START_TTL_MS;
   const now = opts.now ?? Date.now;
   const cache = new Map<
     number,
     { start: string; stamp?: string; at: number }
   >();
+  const lastKnown = new Map<number, string>();
   return (pid, stamp) => {
     if (!running(pid)) {
       cache.delete(pid);
+      lastKnown.delete(pid);
       return null;
     }
     const hit = cache.get(pid);
-    if (hit && hit.stamp === stamp && now() - hit.at < ttl) return hit.start;
-    const start = procStart(pid);
-    if (start === null) cache.delete(pid);
-    else cache.set(pid, { start, stamp, at: now() });
+    // Spread by pid so entries made on one tick do not all expire on the same later tick.
+    const life = ttl + (pid % 16) * ((ttl * (opts.jitter ?? 0.5)) / 16);
+    if (hit && hit.stamp === stamp && now() - hit.at < life) return hit.start;
+    let start: string | null;
+    try {
+      start = procStart(pid);
+    } catch (e) {
+      if (e instanceof ProcStartUnknownError) return lastKnown.get(pid) ?? null;
+      throw e;
+    }
+    if (start === null) {
+      cache.delete(pid);
+      lastKnown.delete(pid);
+    } else {
+      cache.set(pid, { start, stamp, at: now() });
+      lastKnown.set(pid, start);
+    }
     return start;
   };
 }

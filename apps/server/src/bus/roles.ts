@@ -2,7 +2,9 @@
 // that points at one agent by its stable id, so it follows a rename. The only
 // rerouting on the bus (design Decision 3): a send to a role resolves at send
 // time to its holder; the system never guesses one. Only the member sets a
-// role (BusHub.putRole, from the dashboard's REST); no frame does.
+// role (BusHub.putRole, from the dashboard's REST); no frame does. One
+// exception, by the user's decision (#1816): a session that reclaims an away
+// holder's name (#1742) takes that holder's roles, except a role with reach.
 //
 // Adapted from OpenBus v0.63.0 apps/server/src/hub/roles.ts, without the
 // agent card's `role` claim or the one-role-per-agent rule. A close does not
@@ -275,12 +277,20 @@ export function deleteRole(
   );
 }
 
-/** Role `lname` in `ns` resolved: its holder, or role_vacant. */
+/**
+ * Role `lname` in `ns` resolved: its live holder, or role_vacant. With
+ * `awayAt` (#1349, a mailbox-capable sender; the time) a holder that is away
+ * resolves too, so the send queues in its mailbox: closed (not live), its
+ * `away` reservation unexpired (a newcomer's reclaim, #1742, releases it: a
+ * plain role moves to the newcomer, a role with reach is then vacant), its machine not revoked, and still in the role's
+ * namespace or global. A vacated role, or a holder that moved, stays vacant.
+ */
 function holderOf(
   sql: SqlStorage,
   orgId: string,
   ns: string,
   lname: string,
+  awayAt?: number,
 ): RoleResolution {
   const agent = one<AgentRow>(
     sql,
@@ -292,9 +302,24 @@ function holderOf(
     lname,
     ns,
   );
-  return agent
-    ? { ok: true, agent, viaRole: true }
-    : { ok: false, reason: "role_vacant" };
+  if (agent) return { ok: true, agent, viaRole: true };
+  if (awayAt !== undefined) {
+    const away = one<AgentRow>(
+      sql,
+      `select ${AGENT_COLS} from agents where id =
+         (select r.agent_id from roles r where r.org_id = ? and r.namespace = ? and r.lname = ?)
+         and live = 0 and (namespace = ? or global = 1)
+         and exists (select 1 from former_names f where f.agent_id = agents.id and f.kind = 'away' and f.expires_at > ?)
+         and not exists (select 1 from machines m where m.id = agents.machine_id and m.revoked_at is not null)`,
+      orgId,
+      ns,
+      lname,
+      ns,
+      awayAt,
+    );
+    if (away) return { ok: true, agent: away, viaRole: true };
+  }
+  return { ok: false, reason: "role_vacant" };
 }
 
 const roleIn = (sql: SqlStorage, orgId: string, ns: string, lname: string) =>
@@ -316,8 +341,11 @@ export function resolveRoleIn(
   orgId: string,
   ns: string,
   lname: string,
+  awayAt?: number,
 ): RoleResolution | null {
-  return roleIn(sql, orgId, ns, lname) ? holderOf(sql, orgId, ns, lname) : null;
+  return roleIn(sql, orgId, ns, lname)
+    ? holderOf(sql, orgId, ns, lname, awayAt)
+    : null;
 }
 
 /**
@@ -332,6 +360,7 @@ export function resolveRoleAnywhere(
   orgId: string,
   lname: string,
   elsewhere: (ns: string) => boolean,
+  awayAt?: number,
 ): RoleResolution | null {
   const hits = all<{ namespace: string }>(
     sql,
@@ -343,5 +372,5 @@ export function resolveRoleAnywhere(
   if (hit === undefined) return null;
   if (hits.length > 1 || elsewhere(hit.namespace))
     return { ok: false, reason: "ambiguous" };
-  return holderOf(sql, orgId, hit.namespace, lname);
+  return holderOf(sql, orgId, hit.namespace, lname, awayAt);
 }

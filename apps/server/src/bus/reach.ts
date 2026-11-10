@@ -3,9 +3,9 @@
 // it. A grant is one `reach_grants` row per (role, target namespace). The
 // holder is read from `roles` (follows a re-point, vacant gives none), and
 // reach is never transitive: it opens the holder's own view only, never the
-// target's view of the holder's other agents. Only the member writes one
-// (BusHub.putReach); no frame and no MCP tool does. Hub core only in this PR:
-// nothing but tests writes rows yet.
+// target's view of the holder's other agents. Only the member writes one:
+// directly (BusHub.putReach) or by confirming an agent's proposal on its
+// one-time link (bus/reach-proposals.ts); no frame and no MCP tool does.
 import { WireNamespaceSchema } from "@oa/bus-protocol";
 import { BUS_REACH_MAX, BUS_REACH_PER_ROLE } from "@oa/shared";
 
@@ -29,8 +29,11 @@ const all = <T extends Row>(
   ...b: SqlStorageValue[]
 ): T[] => sql.exec<T>(q, ...b).toArray();
 
+// The role's name is read from roles (a case rename updates it there, not on
+// the grant); the grant's own copy is only the fallback.
+const GRANT_FROM = `reach_grants g left join roles r on r.org_id = g.org_id and r.namespace = g.role_ns and r.lname = g.lname`;
 const GRANT_COLS =
-  "id, role_ns as roleNamespace, role_name as roleName, target_ns as namespace, created_at as createdAt";
+  "g.id as id, g.role_ns as roleNamespace, coalesce(r.name, g.role_name) as roleName, g.target_ns as namespace, g.created_at as createdAt";
 
 /** True when the hub has any grant: every lookup below returns at once when not. */
 const anyReach = (sql: SqlStorage, orgId: string): boolean =>
@@ -123,8 +126,8 @@ export function listReach(
 ): ReachGrant[] {
   return all<ReachGrant>(
     sql,
-    `select ${GRANT_COLS} from reach_grants where org_id = ? and mode = 'reach'
-      order by role_ns, lname, target_ns limit ?`,
+    `select ${GRANT_COLS} from ${GRANT_FROM} where g.org_id = ? and g.mode = 'reach'
+      order by g.role_ns, g.lname, g.target_ns limit ?`,
     orgId,
     max,
   );
@@ -165,6 +168,8 @@ export function addReach(
   newId: () => string,
   max = BUS_REACH_MAX,
   perRole = BUS_REACH_PER_ROLE,
+  /** Set when a confirmed agent proposal (not the member's own add) grants it: the proposing machine. */
+  viaMachine: string | null = null,
 ): PutReachResult {
   if (!WireNamespaceSchema.safeParse(roleNs).success)
     return { ok: false, reason: "invalid", field: "namespace" };
@@ -182,8 +187,8 @@ export function addReach(
   const read = () =>
     all<ReachGrant>(
       sql,
-      `select ${GRANT_COLS} from reach_grants
-        where org_id = ? and role_ns = ? and lname = ? and mode = 'reach' and target_ns = ?`,
+      `select ${GRANT_COLS} from ${GRANT_FROM}
+        where g.org_id = ? and g.role_ns = ? and g.lname = ? and g.mode = 'reach' and g.target_ns = ?`,
       orgId,
       roleNs,
       lname,
@@ -200,8 +205,8 @@ export function addReach(
   if (reachOfRole(sql, orgId, roleNs, lname, perRole).length >= perRole)
     return { ok: false, reason: "reach_limit" };
   sql.exec(
-    `insert into reach_grants (id, org_id, role_ns, role_name, lname, mode, target_ns, created_at)
-     values (?, ?, ?, ?, ?, 'reach', ?, ?)`,
+    `insert into reach_grants (id, org_id, role_ns, role_name, lname, mode, target_ns, created_at, granted_by, machine_id)
+     values (?, ?, ?, ?, ?, 'reach', ?, ?, ?, ?)`,
     newId(),
     orgId,
     roleNs,
@@ -209,6 +214,8 @@ export function addReach(
     lname,
     target,
     now,
+    viaMachine === null ? "member" : "request",
+    viaMachine,
   );
   const grant = read();
   if (!grant) throw new Error("reach grant not stored");
@@ -223,7 +230,7 @@ export function removeReach(
 ): ReachGrant | null {
   const row = all<ReachGrant>(
     sql,
-    `select ${GRANT_COLS} from reach_grants where org_id = ? and mode = 'reach' and id = ?`,
+    `select ${GRANT_COLS} from ${GRANT_FROM} where g.org_id = ? and g.mode = 'reach' and g.id = ?`,
     orgId,
     id,
   )[0];

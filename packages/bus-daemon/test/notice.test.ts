@@ -257,4 +257,72 @@ describe("receipt_update notices", () => {
       vi.useRealTimers();
     }
   });
+  describe("#1951: a delivered while the Expired notice is in flight", () => {
+    const run = async (ok: boolean) => {
+      let finish!: (v: boolean) => void;
+      const notify = vi.fn<NotifyFn>(
+        () =>
+          new Promise<boolean>((r) => {
+            finish = r;
+          }),
+      );
+      const h = await daemonHarness({
+        notifiers: { "claude-code": notify },
+        sentFile: sentFile(),
+      });
+      await sentPending(h);
+      h.toDaemon({
+        id: "u1",
+        type: "receipt_update",
+        msg_id: ID,
+        state: "expired",
+      });
+      await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(1));
+      h.toDaemon({
+        id: "u2",
+        type: "receipt_update",
+        msg_id: ID,
+        state: "delivered",
+      });
+      // A round trip behind the delivered: the daemon has handled it.
+      const a = await h.adapter("B", { kind: "claude-code" });
+      const reply = a.request({ type: "send", to: "peer", body: "x" });
+      const sent = await h.next("send", 2);
+      h.toDaemon({
+        id: sent.id,
+        type: "receipt",
+        msg_id: "mmmmmmmmmmmmmmm2",
+        state: "pending",
+      });
+      await reply;
+      expect(notify).toHaveBeenCalledTimes(1);
+      finish(ok);
+      return { h, notify };
+    };
+
+    it("injects Expired, then the correction, exactly twice", async () => {
+      const { notify } = await run(true);
+      await vi.waitFor(() => expect(notify).toHaveBeenCalledTimes(2));
+      expect(notify.mock.calls[0][1]).toContain("Expired");
+      expect(notify.mock.calls[1][1]).not.toContain("×  Expired");
+      expect(notify.mock.calls[1][2]).toBe(ID);
+    });
+
+    it("drops the correction when the Expired injection fails: one injection, nothing owed", async () => {
+      const { h, notify } = await run(false);
+      // Behind the failure: a later round trip on the same ordered channel.
+      const a = await h.adapter("C", { kind: "claude-code" });
+      const reply = a.request({ type: "send", to: "peer", body: "y" });
+      const sent = await h.next("send", 3);
+      h.toDaemon({
+        id: sent.id,
+        type: "receipt",
+        msg_id: "mmmmmmmmmmmmmmm3",
+        state: "pending",
+      });
+      await reply;
+      expect(notify).toHaveBeenCalledTimes(1);
+      expect(notify.mock.calls[0][1]).toContain("Expired");
+    });
+  });
 });

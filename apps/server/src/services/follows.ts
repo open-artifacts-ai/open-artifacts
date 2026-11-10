@@ -156,8 +156,15 @@ export function artifactIdOf(env: Env, ref: string): string | null {
   }
   if (u.origin !== appOrigin(env)) return null;
   const m = /^\/a\/([^/]+)(?:\/v\/\d+)?\/?$/.exec(u.pathname);
-  const id = m?.[1] ? decodeURIComponent(m[1]) : null;
-  return id && isId(id) ? id : null;
+  if (!m?.[1]) return null;
+  let id: string;
+  try {
+    id = decodeURIComponent(m[1]);
+  } catch {
+    // Bad percent-encoding is no artifact link (#1766): not_found, not internal.
+    return null;
+  }
+  return isId(id) ? id : null;
 }
 
 function address(a: BusAddress): BusAddress {
@@ -262,6 +269,69 @@ export async function following(
   }));
 }
 
+/**
+ * #1766: a session's address changed (a rename, a namespace move), so its
+ * follows move with it. One batch: copy every row from `from` to `to`, keeping
+ * one row (and the earlier `followed_at`) where `to` already follows the
+ * artifact, then delete the `from` rows. A case-only change moves too (the
+ * address is stored as given). Same address: nothing.
+ */
+export async function moveFollows(
+  env: Env,
+  userId: string,
+  from: BusAddress,
+  to: BusAddress,
+): Promise<void> {
+  if (from.namespace === to.namespace && from.name === to.name) return;
+  await env.DB.batch([
+    stmt(
+      env.DB,
+      `insert into follows (user_id, artifact_id, namespace, agent_name, created_at, last_notice_at)
+       select user_id, artifact_id, ?4, ?5, created_at, last_notice_at from follows
+       where user_id = ?1 and namespace = ?2 and agent_name = ?3
+       on conflict do update set created_at = min(follows.created_at, excluded.created_at)`,
+    ).bind(userId, from.namespace, from.name, to.namespace, to.name),
+    stmt(
+      env.DB,
+      "delete from follows where user_id = ?1 and namespace = ?2 and agent_name = ?3",
+    ).bind(userId, from.namespace, from.name),
+  ]);
+}
+
+/** An address as a case-folded set key (bus names compare without case). */
+export const knownKey = (a: BusAddress) =>
+  `${a.namespace}\0${a.name.toLowerCase()}`;
+
+/**
+ * #1766: deletes the member's follows at addresses `known` does not hold (the
+ * hub passes every live, away or reserved address, as knownKey), so rows of
+ * renamed-away or long-closed sessions stop counting against the cap. Returns
+ * how many rows went.
+ */
+export async function pruneDeadFollows(
+  env: Env,
+  userId: string,
+  known: ReadonlySet<string>,
+): Promise<number> {
+  const { results } = await stmt(
+    env.DB,
+    "select distinct namespace, agent_name as name from follows where user_id = ?",
+  )
+    .bind(userId)
+    .all<BusAddress>();
+  const dead = results.filter((r) => !known.has(knownKey(r)));
+  if (dead.length === 0) return 0;
+  const out = await env.DB.batch(
+    dead.map((a) =>
+      stmt(
+        env.DB,
+        "delete from follows where user_id = ?1 and namespace = ?2 and agent_name = ?3",
+      ).bind(userId, a.namespace, a.name),
+    ),
+  );
+  return out.reduce((n, r) => n + (r.meta.changes ?? 0), 0);
+}
+
 /** For the soft-delete batch: deleting an artifact deletes its follows. */
 export const deleteFollowsStmt = (env: Env, artifactId: string) =>
   stmt(env.DB, "delete from follows where artifact_id = ?").bind(artifactId);
@@ -355,6 +425,22 @@ const droppedStmt = (env: Env, userId: string, n: number, now: number) =>
   stmt(env.DB, DROPPED).bind(`notice:dropped:${userId}`, utcDay(now), n);
 const utcDay = (now: number) => new Date(now).toISOString().slice(0, 10);
 const utcHour = (now: number) => new Date(now).toISOString().slice(0, 13);
+
+/**
+ * How many notices for `userId`'s bus were dropped today (UTC), for the
+ * Agents page (#1317). One D1 read, never a hub call; 0 when none, or when
+ * the counter row is from an earlier day.
+ */
+export async function droppedToday(
+  env: Env,
+  userId: string,
+  now = Date.now(),
+): Promise<number> {
+  const r = await stmt(env.DB, "select n, day from counters where key = ?")
+    .bind(`notice:dropped:${userId}`)
+    .first<{ n: number; day: string }>();
+  return r && r.day === utcDay(now) ? r.n : 0;
+}
 
 /** Counts one dropped notice for the recipient's bus (per UTC day) and logs ids only. */
 async function dropped(

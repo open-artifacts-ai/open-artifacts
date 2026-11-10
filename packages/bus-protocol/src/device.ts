@@ -35,7 +35,19 @@ export const BUS_ROUTES = {
    * `rate_limited`, `proposal_limit`, `no_bus`.
    */
   linkProposals: "/api/v1/bus/links/proposals",
+  /**
+   * `POST`, `Authorization: Bearer oa_machine_...` (#1346): the daemon asks,
+   * for the agent whose session is `nativeRef`, that its role reach more
+   * namespaces: `{ nativeRef, namespaces }` -> `{ confirmUrl, expiresAt }`.
+   * Nothing changes until the member opens `confirmUrl`. 409
+   * `error.details.reason`: `no_role`, `ambiguous`, `rate_limited`,
+   * `proposal_limit`, `no_bus`.
+   */
+  reachProposals: "/api/v1/bus/reach/proposals",
 } as const;
+
+/** Most namespaces one reach proposal names; equals BUS_REACH_PER_ROLE in @oa/shared (a server test pins the two). */
+export const REACH_PROPOSAL_MAX = 10;
 
 export const DeviceCodeRequestSchema = z.strictObject({
   machine_label: MachineLabelSchema.optional(),

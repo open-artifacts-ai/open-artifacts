@@ -70,7 +70,7 @@ it("says hello to a daemon as an openclaw kind, with the root's identity, and ta
     pid: process.pid,
     cwd: "/work/space",
     proposed_name: "openclaw-main",
-    caps: ["mailbox", "pending", "follow"],
+    caps: ["mailbox", "pending", "follow", "link"],
   });
   expect(hellos[0]?.agent_ref).toMatch(/^oa-[0-9a-f]{40}$/);
   expect(hellos[0]?.attest.proc_start).toBeTruthy();
@@ -133,3 +133,30 @@ it("does not keep its host process alive once the turn is over", async () => {
   expect(child.out.trim()).toBe("link-open");
   expect(child.status).toBe(0);
 }, 15000);
+
+it("echoes the binding token the daemon issued when it reconnects (#1608)", async () => {
+  const home = mkdtempSync(join(tmpdir(), "ocb-"));
+  cleanup.push(() => rmSync(home, { recursive: true, force: true }));
+  mkdirSync(home, { recursive: true, mode: 0o700 });
+  const hellos: Hello[] = [];
+  const server = await serveDaemon({
+    path: daemonSocketPath(home),
+    onHello: (h) => {
+      hellos.push(h);
+      return {
+        bus_name: "openclaw-1",
+        namespace: "ns",
+        global: false,
+        bind_token: "bind-token-0123456789abcdef",
+      };
+    },
+    onFrame: () => undefined,
+  });
+  cleanup.push(() => server.close());
+  const connect = realConnect({ OA_BUS_HOME: home });
+  const root = { ref: "oa-1", cwd: "/w", proposedName: "x" } as never;
+  (await connect(root)).close();
+  (await connect(root)).close();
+  expect(hellos[0]?.bind_token).toBeUndefined();
+  expect(hellos[1]?.bind_token).toBe("bind-token-0123456789abcdef");
+});
