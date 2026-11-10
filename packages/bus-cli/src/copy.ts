@@ -717,7 +717,7 @@ export function copy(style: Style) {
       done(`oa-bus on your PATH runs this install (${clip(where, 30)})`),
     shimDoctorOffPath: (where: string, hint: string) => [
       warn(`oa-bus is not on your PATH (the command is in ${clip(where, 30)})`),
-      next(`Add it: ${hint}`),
+      next(`To fix it, add this line to your shell profile: ${hint}`),
     ],
     shimDoctorOther: (where: string) => [
       warn(`oa-bus on your PATH is not this install's (${clip(where, 30)})`),

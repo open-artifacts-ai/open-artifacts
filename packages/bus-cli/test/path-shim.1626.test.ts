@@ -301,7 +301,7 @@ describe("the commands (#1626)", () => {
     });
     await doctor(ctx);
     expect(ctx.all().join("\n")).toContain(
-      'export PATH="$HOME/.local/bin:$PATH"',
+      'To fix it, add this line to your shell profile: export PATH="$HOME/.local/bin:$PATH"',
     );
   });
 
