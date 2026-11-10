@@ -62,6 +62,11 @@ describe("visible text", () => {
       await text("<p>a &le;</p><plaintext>x &le; <b>y</b></plaintext>"),
     ).toBe("a ≤ x &le; <b>y</b></plaintext>");
   });
+  it("keeps a fragment page's top-level text (#1895)", async () => {
+    expect(await text("Hello <b>x</b> world &le;")).toBe("Hello x world ≤");
+    expect(await text("<xmp>a</xmp>T &le;")).toBe("aT ≤");
+    expect(await text("<script>s()</script>tail")).toBe("tail");
+  });
   it("skips iframe, noembed and noframes fallback text", async () => {
     expect(
       await text(
