@@ -76,6 +76,19 @@ jobs:
       - name: auth login redirects to Access
         run: bash scripts/ci/staging-smoke.sh login https://staging.open-artifacts.com
       - run: pnpm --filter @oa/server smoke
+      # #1736: the MCP happy-path suite (MCP-only, no browser). It runs last of
+      # the checks, so the hosted prod gate (smoke green at or after a tag)
+      # covers it. The PAT goes to a 0600 file, never echoed; the sharing
+      # recipient PAT stays unset, so that spec skips. Zero retries.
+      - run: pnpm --filter @oa/shared build
+      - name: MCP happy path
+        timeout-minutes: 8
+        run: |
+          umask 077
+          pat_file="$RUNNER_TEMP/staging-owner.pat"
+          printf '%s' "$STAGING_OWNER_PAT" > "$pat_file"
+          export OA_STAGING_PAT_FILE="$pat_file"
+          pnpm --filter @oa/dashboard test:e2e:happy-path
       - name: ANALYTICS_TOKEN put outcome (fails the run if the deploy job's put failed)
         env:
           ANALYTICS_OUTCOME: ${{ needs.deploy.outputs.analytics }}

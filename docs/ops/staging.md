@@ -32,7 +32,7 @@ Put the new ids into `wrangler.staging.jsonc`, then deploy once.
 
 ## Deploy
 
-`deploy-staging.yml` on push to `main`: build, migrate, deploy, smoke. Manual:
+`deploy-staging.yml` on push to `main`: build, migrate, deploy, smoke (healthz, robots, login redirect, `pnpm --filter @oa/server smoke`, then the MCP happy-path suite, which gates prod). Manual:
 `pnpm --filter @oa/server exec wrangler deploy -c wrangler.staging.jsonc --env staging --var "OWNER_EMAIL:$OA_OWNER_EMAIL"`.
 The address isn't committed, so without `--var` the deploy removes `OWNER_EMAIL`.
 
