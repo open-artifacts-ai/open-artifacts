@@ -11,8 +11,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   findClaude,
   mcpProof,
-  parsePs,
   type ProofDeps,
+  parsePs,
 } from "../src/commands/mcp-proof.ts";
 import { status as statusCmd } from "../src/commands/status.ts";
 import { parse } from "../src/index.ts";
