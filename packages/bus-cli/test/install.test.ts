@@ -838,3 +838,58 @@ describe("roster machine column", () => {
     expect(lines[2]).not.toContain("desktop");
   });
 });
+
+describe("install and uninstall: the Pi entry notes (#1856)", () => {
+  const withPi = (version: string) =>
+    allHarnesses({
+      which: (c: string) => c === "pi",
+      exec: vi.fn(async (cmd: string, args: string[]) =>
+        cmd === "pi" && args[0] === "--version"
+          ? { code: 0, stdout: `${version}\n`, stderr: "" }
+          : { code: 0, stdout: "", stderr: "" },
+      ),
+    });
+  const mcpFile = (ctx: Fake) => join(ctx.userHome, ".pi/agent/mcp.json");
+  const seed = (ctx: Fake) => {
+    mkdirSync(join(ctx.userHome, ".pi/agent"), { recursive: true });
+    writeFileSync(
+      mcpFile(ctx),
+      JSON.stringify({
+        mcpServers: { "open-artifacts": { type: "http", url: `${HUB}/mcp` } },
+      }),
+    );
+  };
+
+  it("install prints a note the adapter step made", async () => {
+    const ctx = fakeCtx({ fetch: hub([approved]), ...withPi("1.4.0") });
+    seed(ctx);
+    await install({ label: LABEL, hub: HUB }, ctx);
+    expect(ctx.out().join("\n")).toContain(
+      `left the open-artifacts entry in ${mcpFile(ctx)} as it is: Pi needs 1.5.0 or later to show as its own session on pages. Its tools still work.`,
+    );
+  });
+
+  it("install does not repeat a note another line already shows", async () => {
+    const ctx = fakeCtx({
+      fetch: hub([approved]),
+      ...allHarnesses({ which: (c: string) => ["claude", "pi"].includes(c) }),
+    });
+    await install({ label: LABEL, hub: HUB }, ctx);
+    expect(ctx.out().join("\n")).not.toMatch(/no codex binary|Nix mode/);
+  });
+
+  it("uninstall that cannot put the entry back keeps the extension and the moved file, and says why", async () => {
+    const ctx = fakeCtx({ fetch: hub([approved]), ...withPi("1.5.0") });
+    seed(ctx);
+    await install({ label: LABEL, hub: HUB }, ctx);
+    const ext = join(ctx.userHome, ".pi/agent/extensions/oa-bus.ts");
+    const moved = join(ctx.home, "pi-mcp-entry.json");
+    expect(existsSync(ext)).toBe(true);
+    expect(existsSync(moved)).toBe(true);
+    writeFileSync(mcpFile(ctx), "{ broken");
+    await uninstall({ purge: false }, ctx);
+    expect(existsSync(ext)).toBe(true);
+    expect(existsSync(moved)).toBe(true);
+    expect(ctx.out().join("\n")).toContain(mcpFile(ctx));
+  });
+});
