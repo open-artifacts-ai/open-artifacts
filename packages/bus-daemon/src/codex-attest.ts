@@ -16,6 +16,12 @@ import { type Hello, SPAWNED_SOURCES, systemTool } from "@oa/bus-ipc";
 import { lstartEpoch } from "./presence/opencode.ts";
 
 /**
+ * The tool namespace Codex gives our MCP entry: `mcp__<entry name>`, so the
+ * installer must write exactly `[mcp_servers.oa_bus]`.
+ */
+export const CODEX_TOOL_NAMESPACE = "mcp__oa_bus";
+
+/**
  * Refusal reasons for a codex hello (Design-approved copy). The adapter shows
  * each as "Open Artifacts bus did not accept this thread: <reason>".
  */
@@ -23,20 +29,13 @@ export const CODEX_REFUSALS = {
   notCodex: "it is not running under Codex.",
   restarted: "Codex restarted. Call the tool again.",
   notLoaded: "Codex does not have this thread loaded.",
-  callNotFound:
-    "this call is not an open Open Artifacts bus call in the thread. Call the tool again.",
+  callNotFound: `this call is not an open Open Artifacts bus call in the thread. Call the tool again by its literal name, ${CODEX_TOOL_NAMESPACE}__<tool>, not through a lookup.`,
   subagent:
     "only the main Codex thread can use Open Artifacts bus, not a subagent.",
   /** DRAFT (C27), pending Design. */
   oneExec:
     "this exec already made an Open Artifacts bus call. Make each Open Artifacts bus call in its own exec.",
 } as const;
-
-/**
- * The tool namespace Codex gives our MCP entry: `mcp__<entry name>`, so the
- * installer must write exactly `[mcp_servers.oa_bus]`.
- */
-export const CODEX_TOOL_NAMESPACE = "mcp__oa_bus";
 
 /**
  * #1856: where install keeps the instance entry it swapped for the Codex

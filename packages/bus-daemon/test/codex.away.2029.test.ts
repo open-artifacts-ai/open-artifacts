@@ -27,6 +27,7 @@ const P = 100;
 const P2 = 101;
 const A1 = 200;
 const A2 = 201;
+const A3 = 202;
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 const line = (type: string, payload: object) =>
   `${JSON.stringify({ timestamp: new Date().toISOString(), type, payload })}\n`;
@@ -78,6 +79,8 @@ function world() {
         if (pid === P2 && state.alive.has(P2))
           return [[P2, { ppid: 1, start: START2, comm: state.comm2 }]];
         if (pid === A1) return [[A1, { ppid: P, start: START, comm: "node" }]];
+        if (pid === A3)
+          return [[A3, { ppid: P2, start: START2, comm: "node" }]];
         if (pid === A2) return [[A2, { ppid: P, start: START, comm: "node" }]];
         return [];
       }),
@@ -393,6 +396,72 @@ describe("waking an away Codex thread (#2029)", () => {
     await new Promise((r) => setTimeout(r, 300));
     expect(w3.runs()).toHaveLength(1);
     stopC();
+  });
+
+  it("the wake text names the tool by its literal name", () => {
+    expect(CODEX_WAKE_TEXT).toBe(
+      "Open Artifacts bus: messages are waiting for this thread. Call the tool mcp__oa_bus__self once, by that literal name (do not look it up from a tool list), to receive them.",
+    );
+  });
+
+  it("a refused lookup does not stop the thread's own retry by literal name; only further wakes stop", async () => {
+    const w = world();
+    const { two } = await restarted(w);
+    const stop = answerLists(two, () => 2);
+    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    // The woken turn looks the tool up dynamically: refused, call not found.
+    await expect(
+      two.adapter(
+        THREAD,
+        codexHello(THREAD, A3, {
+          codex: {
+            thread_id: THREAD,
+            call_id: "call_lookup",
+            ppid: P2,
+            thread_source: "user",
+          },
+        }),
+      ),
+    ).rejects.toThrow(/literal name/);
+    expect(two.daemon.agents.byRef(THREAD)).toBeUndefined();
+    // Then it calls mcp__oa_bus__self by name: admitted by today's rules.
+    writeFileSync(
+      join(
+        w.home,
+        "sessions",
+        "2026",
+        "10",
+        "29",
+        `rollout-2026-10-29T02-11-43-${THREAD}.jsonl`,
+      ),
+      rollout(THREAD, "call_1") +
+        line("response_item", {
+          type: "function_call",
+          id: "fc2",
+          name: "self",
+          namespace: "mcp__oa_bus",
+          arguments: "{}",
+          call_id: "call_2",
+        }),
+    );
+    await two.adapter(
+      THREAD,
+      codexHello(THREAD, A3, {
+        codex: {
+          thread_id: THREAD,
+          call_id: "call_2",
+          ppid: P2,
+          thread_source: "user",
+        },
+      }),
+    );
+    expect(two.daemon.agents.byRef(THREAD)).toMatchObject({
+      live: true,
+      pid: P2,
+    });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(w.runs()).toHaveLength(1);
+    stop();
   });
 
   it("re-wakes when the count changes either way, or sits at the cap; not when unchanged", async () => {

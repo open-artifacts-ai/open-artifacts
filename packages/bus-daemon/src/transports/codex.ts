@@ -10,6 +10,7 @@ import {
   systemTool,
 } from "@oa/bus-ipc";
 import type { AgentRecord } from "../agents.ts";
+import { CODEX_TOOL_NAMESPACE } from "../codex-attest.ts";
 import type { DeliverOutcome, Mail } from "../deliver.ts";
 
 /** How long `codex queue` may run; it writes one sqlite row. */
@@ -427,5 +428,4 @@ export const codexHostWakes = async (pid: number): Promise<boolean> => {
 };
 
 /** #2029: the one text a bus wake queues into a thread; nothing is added to it. */
-export const CODEX_WAKE_TEXT =
-  "Open Artifacts bus: messages are waiting for this thread. Call the oa_bus self tool once to receive them.";
+export const CODEX_WAKE_TEXT = `Open Artifacts bus: messages are waiting for this thread. Call the tool ${CODEX_TOOL_NAMESPACE}__self once, by that literal name (do not look it up from a tool list), to receive them.`;
