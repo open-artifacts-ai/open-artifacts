@@ -136,6 +136,9 @@ function clean(d) {
 function adopt(raw) {
   const doc = clean(raw);
   if (!doc) return;
+  // A saved profile is a stargazer: the events feed only reaches back about an hour, so saved
+  // docs are what keeps older stars. Only signed-in viewers may write them.
+  starLogins.add(doc.login); starCount = starLogins.size;
   const cur = people.get(doc.login);
   if (!cur || (doc.checkedAt || "") >= (cur.checkedAt || "")) people.set(doc.login, doc);
 }
@@ -271,6 +274,7 @@ async function geocode(loc) {
 
 /* Logins GitHub answered 404 for this session: never looked up again. */
 const gone = new Set();
+let firstPoll = true;
 
 /* One profile; a failure other than the rate limit skips it instead of stopping the poll. */
 async function tryLookup(login, starredAt) {
@@ -306,7 +310,14 @@ async function poll() {
     const { body } = await gh(`repos/${REPO}`);
     liveStars = body.stargazers_count;
     // New stars: GitHub's public events feed (the stargazer list itself needs sign-in).
-    const { body: events } = await gh(`repos/${REPO}/events?per_page=100`);
+    // The feed keeps the last 300 events: read all of it once per window, then the newest page.
+    const events = [];
+    for (let page = 1; page <= (firstPoll ? 3 : 1); page++) {
+      const { body: batch } = await gh(`repos/${REPO}/events?per_page=100&page=${page}`);
+      events.push(...batch);
+      if (batch.length < 100) break;
+    }
+    firstPoll = false;
     for (const e of events.filter((x) => x.type === "WatchEvent").reverse()) {
       const login = e.actor.login;
       if (gone.has(login) || !LOGIN_RE.test(login)) continue;

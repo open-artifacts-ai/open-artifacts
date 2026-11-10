@@ -1,7 +1,7 @@
 {
   "title": "Open Artifacts stargazers",
   "visibility": "public",
-  "allowAnonymousWrites": true,
+  "allowAnonymousWrites": false,
   "capabilities": {
     "db": true
   },
