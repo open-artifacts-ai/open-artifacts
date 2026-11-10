@@ -258,9 +258,8 @@ describe("habits", () => {
     );
     const m = /export const HABITS_LINES = \[\n([\s\S]*?)\n\];/.exec(src);
     expect(m).not.toBeNull();
-    const lines = [
-      ...(m?.[1] ?? "").matchAll(/^\s*"((?:[^"\\]|\\.)*)",$/gm),
-    ].map((x) => JSON.parse(`"${x[1]}"`) as string);
+    // The array body is plain string literals: evaluate it, any quote style.
+    const lines = new Function(`return [${m?.[1] ?? ""}]`)() as string[];
     expect(lines.length).toBeGreaterThan(5);
     expect(HABITS).toBe(lines.join("\n"));
   });
