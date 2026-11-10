@@ -29,8 +29,11 @@ const all = <T extends Row>(
   ...b: SqlStorageValue[]
 ): T[] => sql.exec<T>(q, ...b).toArray();
 
+// The role's name is read from roles (a case rename updates it there, not on
+// the grant); the grant's own copy is only the fallback.
+const GRANT_FROM = `reach_grants g left join roles r on r.org_id = g.org_id and r.namespace = g.role_ns and r.lname = g.lname`;
 const GRANT_COLS =
-  "id, role_ns as roleNamespace, role_name as roleName, target_ns as namespace, created_at as createdAt";
+  "g.id as id, g.role_ns as roleNamespace, coalesce(r.name, g.role_name) as roleName, g.target_ns as namespace, g.created_at as createdAt";
 
 /** True when the hub has any grant: every lookup below returns at once when not. */
 const anyReach = (sql: SqlStorage, orgId: string): boolean =>
@@ -123,8 +126,8 @@ export function listReach(
 ): ReachGrant[] {
   return all<ReachGrant>(
     sql,
-    `select ${GRANT_COLS} from reach_grants where org_id = ? and mode = 'reach'
-      order by role_ns, lname, target_ns limit ?`,
+    `select ${GRANT_COLS} from ${GRANT_FROM} where g.org_id = ? and g.mode = 'reach'
+      order by g.role_ns, g.lname, g.target_ns limit ?`,
     orgId,
     max,
   );
@@ -184,8 +187,8 @@ export function addReach(
   const read = () =>
     all<ReachGrant>(
       sql,
-      `select ${GRANT_COLS} from reach_grants
-        where org_id = ? and role_ns = ? and lname = ? and mode = 'reach' and target_ns = ?`,
+      `select ${GRANT_COLS} from ${GRANT_FROM}
+        where g.org_id = ? and g.role_ns = ? and g.lname = ? and g.mode = 'reach' and g.target_ns = ?`,
       orgId,
       roleNs,
       lname,
@@ -227,7 +230,7 @@ export function removeReach(
 ): ReachGrant | null {
   const row = all<ReachGrant>(
     sql,
-    `select ${GRANT_COLS} from reach_grants where org_id = ? and mode = 'reach' and id = ?`,
+    `select ${GRANT_COLS} from ${GRANT_FROM} where g.org_id = ? and g.mode = 'reach' and g.id = ?`,
     orgId,
     id,
   )[0];

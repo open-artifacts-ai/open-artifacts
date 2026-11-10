@@ -55,7 +55,11 @@ async function toMe(
   const s = toSettings(kv);
   const appUrl = appOrigin(c.env);
   const me: Me = {
-    user,
+    // The user's own name stays raw to them (#1894); others see a fallback.
+    user: {
+      ...user,
+      name: profile.displayName || profile.suggestedName || user.email,
+    },
     instance: {
       name: s.name,
       defaultVisibility: s.defaultVisibility,

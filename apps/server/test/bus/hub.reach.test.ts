@@ -296,6 +296,17 @@ describe("the role is the key", () => {
     w.close();
   });
 
+  it("a role renamed in case keeps its grants listed under the new name and applying", async () => {
+    const w = await world();
+    const hub = await hubOf();
+    await holds(w.x, "LEAD", w.hn);
+    const mine = (await hub.listReach()).filter((g) => g.roleNamespace === w.x);
+    expect(mine.length).toBeGreaterThan(0);
+    expect(mine.every((g) => g.roleName === "LEAD")).toBe(true);
+    expect((await send(w.dh, "h", w.bn)).state).toBe("pending");
+    w.close();
+  });
+
   it("a removed role takes its grants with it", async () => {
     const w = await world();
     const hub = await hubOf();
