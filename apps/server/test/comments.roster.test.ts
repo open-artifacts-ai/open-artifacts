@@ -629,6 +629,55 @@ describe("route and hub reads", () => {
     expect(await e.json()).toEqual([]);
   });
 
+  it("a guest given edit rights does not pass modOf: the route lists nothing, so no machine or last active; a member editor with the same share does see the roster", async () => {
+    const s = await setup();
+    const guest = await mk("r-guest-editor");
+    await E.DB.prepare("update users set role = 'guest' where id = ?")
+      .bind(guest.userId)
+      .run();
+    const sh = await api(app, R.shares(s.id), s.owner.cookie, {
+      method: "PUT",
+      body: { email: guest.email, role: "editor" },
+    });
+    expect(sh.status).toBe(200);
+    await machineFor(s.owner.userId);
+    await follow(E, s.owner.userId, { namespace: "ns-o", name: "Mine" }, s.id);
+    const h = hubs({
+      [s.owner.userId]: [
+        { ...agentRow("ns-o", "Mine"), machineLabel: "box.tail.ts.net" },
+      ],
+    });
+    const r = await fetchAndWait(
+      app,
+      new Request(`http://app.localhost${R.artifactAgents(s.id)}`, {
+        headers: { cookie: guest.cookie, "x-oa-request": "1" },
+      }),
+      h.env,
+    );
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual([]);
+    // The same share for a member editor does list the owner's agent (state only: no machine, no last active).
+    await E.DB.prepare("update users set role = 'member' where id = ?")
+      .bind(guest.userId)
+      .run();
+    const m = await fetchAndWait(
+      app,
+      new Request(`http://app.localhost${R.artifactAgents(s.id)}`, {
+        headers: { cookie: guest.cookie, "x-oa-request": "1" },
+      }),
+      h.env,
+    );
+    const list = (await m.json()) as {
+      machine?: string | null;
+      lastActiveAt?: string | null;
+    }[];
+    expect(list.length).toBeGreaterThan(0);
+    for (const x of list) {
+      expect(x.machine ?? null).toBeNull();
+      expect(x.lastActiveAt ?? null).toBeNull();
+    }
+  });
+
   it("a mention of a follower does no hub read", async () => {
     const s = await setup();
     await machineFor(s.owner.userId);
