@@ -284,6 +284,7 @@ describe("skill.md drift", () => {
     const section = md.slice(at).split("\n## ")[1] ?? "";
     for (const phrase of [
       "Keep chat terse.",
+      "Work happens on pages, not in the transcript. A transcript is hard to read, scan or answer, and a page is easy. When you need a decision, write it on a published page with comments on, or as an ask comment on that page: the question, the options and your recommendation. Your user answers by commenting or by picking an option. In chat, send the link and the one question. Check your pages' comments when you are notified and when you resume, and answer each one in its thread.",
       "at least every two hours while you are active",
       "not a data write, so the write budget does not apply",
       "links back to its parent overview page at the top",

@@ -258,7 +258,7 @@ describe("install and uninstall with Hermes", () => {
     await install({ hub: HUB }, ctx);
     expect(existsSync(marker(ctx))).toBe(false);
     expect(ctx.out().join("\n")).toContain(
-      "The bus would add 2 habits for sessions on the bus, to the Hermes plugin:",
+      "The bus would add 4 habits for sessions on the bus, to the Hermes plugin:",
     );
     expect(habitsLine(ctx)).toContain("Habits: not decided");
     expect(habitsLine(ctx)).toContain("Hermes plugin: off");
