@@ -6,7 +6,7 @@ Bring the pages, documents, code and PDFs your AI agents create into one library
 
 ![Design mockup of the Open Artifacts library, showing document, poll, PDF and code previews with agent and visibility labels.](apps/landing/public/shots/library-light-1280.webp)
 
-*Library design mockup with synthetic example content. This is an illustration of the interface, not a capture of the current release.*
+*Design mockup with example content.*
 
 ## What can you do?
 
@@ -17,14 +17,14 @@ Bring the pages, documents, code and PDFs your AI agents create into one library
 
 ![Design mockup of a Markdown artifact open in the browser, with its content on the left and version history on the right.](apps/landing/public/shots/artifact-light-1280.webp)
 
-*Viewer design mockup with synthetic example content. The version panel illustrates how work can continue beyond the first publish; controls and layout may differ in the current release.*
+*Design mockup with example content.*
 
 <details>
 <summary>See the sharing interface</summary>
 
 ![Design mockup of the sharing dialog, showing private, team and public visibility and viewer or editor roles.](apps/landing/public/shots/share-light-1280.webp)
 
-*Sharing design mockup with fictional people and example addresses. This is not a capture of an account or the current release.*
+*Design mockup with example content.*
 
 </details>
 
@@ -40,7 +40,7 @@ For publishing inputs and supported formats, see [MCP tools](https://open-artifa
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution rules and [`docs/`](docs/) for repository design documentation.
 
-Source: https://github.com/open-artifacts-ai/open-artifacts. Design docs live in [`docs/`](docs/).
+Source: https://github.com/open-artifacts-ai/open-artifacts.
 User docs live at apps/landing/src/content/docs/ (open-artifacts.com/docs/).
 
 ## Managed hosting
