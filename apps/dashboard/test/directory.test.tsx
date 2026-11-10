@@ -1323,3 +1323,15 @@ it("Business: the Directory tab and its dot are unchanged", async () => {
     screen.getByRole("link", { name: /^Directory/ }),
   ).not.toHaveAccessibleName("Directory");
 });
+
+it("Team that never synced: no Directory tab", async () => {
+  const router = mountHosted("/settings/directory", {
+    ...plan("team"),
+    directory: "frozen",
+    unbound: true,
+  } as never);
+  await waitFor(() =>
+    expect(router.state.location.pathname).toBe("/settings/connections"),
+  );
+  expect((await tabs()).some((t) => t.startsWith("Directory"))).toBe(false);
+});

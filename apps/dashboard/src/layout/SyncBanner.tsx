@@ -176,7 +176,12 @@ export function directoryModeOf(me: Me | null): DirectoryMode {
   const mode = me?.instance.directory?.mode ?? "off";
   const tier = me?.instance.billing?.tier;
   if (tier === "solo" || tier === "free") return "off";
-  if (tier === "team" && mode === "google") return "frozen";
+  // Team keeps what an earlier Business sync left (frozen); a Team that never
+  // synced has nothing to show (owners and admins see state "never").
+  if (tier === "team")
+    return mode === "off" || me?.instance.directory?.state === "never"
+      ? "off"
+      : "frozen";
   return mode;
 }
 
