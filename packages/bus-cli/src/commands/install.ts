@@ -29,6 +29,10 @@ import {
 import { readCodexVersion } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
+import {
+  installOutputStyle,
+  outputStyleSource,
+} from "../steps/output-style.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
 import {
@@ -228,6 +232,27 @@ async function harnessesStep(
   );
   for (const n of skill.notes) say(ctx, [n]);
   if (skill.failedUrl) skillFailure.set(ctx, skill.failedUrl);
+  // The Claude Code output style: written, and turned on only when the person has no style chosen.
+  try {
+    const style = installOutputStyle(
+      {
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        text: outputStyleSource(),
+      },
+      out.installed,
+    );
+    for (const n of style.notes) say(ctx, [n]);
+    if (style.settings === "set" && style.written[0])
+      say(ctx, c.outputStyleOn(tilde(ctx, style.written[0])));
+    else if (style.settings === "kept" && style.first)
+      say(ctx, c.outputStyleKept(style.kept));
+  } catch (e) {
+    say(ctx, [
+      `Could not write the output style: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
   // Written quietly: the harnesses line above is the user-visible outcome, and
   // a run that writes nothing has nothing to say.
   return true;

@@ -42,6 +42,7 @@ import {
 } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
+import { outputStyleState } from "../steps/output-style.ts";
 import { MIN_NODE } from "../steps/service.ts";
 import { codexSkillState } from "../steps/skill.ts";
 import { habitsLine } from "./habits.ts";
@@ -289,6 +290,8 @@ export async function doctor(ctx: Ctx): Promise<number> {
       const isolates = claudeIsolates(settings);
       if (isolates === false) pass(c.claudeAccepts());
       if (isolates === true) warn(c.claudeIsolates(tilde(ctx, settings)));
+      const style = outputStyleState({ home: ctx.userHome, env: ctx.env });
+      if (style) pass(c.outputStyleDoctor(tilde(ctx, style.path), style.on));
     }
     if (h === "opencode") {
       const gone = opencodeProxyProblem({

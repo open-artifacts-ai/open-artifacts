@@ -86,9 +86,24 @@ describe("the published oa-bus package", () => {
         (f) => `package/assets/openclaw/${f}`,
       ),
       "package/assets/opencode-tui/tui.js",
+      "package/assets/output-styles/artifacts-teammate.md",
       "package/dist/index.js",
       "package/package.json",
     ]);
+  });
+
+  it("ships the output style byte for byte as the source file", () => {
+    expect(
+      readFileSync(
+        join(
+          dirname(dirname(entry)),
+          "assets/output-styles/artifacts-teammate.md",
+        ),
+        "utf8",
+      ),
+    ).toBe(
+      readFileSync(join(root, "output-style/artifacts-teammate.md"), "utf8"),
+    );
   });
 
   it("stamps the Pi extension's IPC marker with the package version", () => {
