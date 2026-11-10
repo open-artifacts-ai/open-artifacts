@@ -29,7 +29,13 @@ export const CODEX_REFUSALS = {
   notCodex: "it is not running under Codex.",
   restarted: "Codex restarted. Call the tool again.",
   notLoaded: "Codex does not have this thread loaded.",
-  callNotFound: `this call is not an open Open Artifacts bus call in the thread. Call the tool again by its literal name, ${CODEX_TOOL_NAMESPACE}__<tool>, not through a lookup.`,
+  callNotFound:
+    "this call is not an open Open Artifacts bus call in the thread. Call the tool again.",
+  /**
+   * DRAFT, pending Design: an open code-mode exec in this turn that did not name an
+   * Open Artifacts bus tool literally (a lookup such as `tools[name]`).
+   */
+  dynamicLookup: `Call the bus tool by its literal name, e.g. tools.${CODEX_TOOL_NAMESPACE}__self(), not through a lookup.`,
   subagent:
     "only the main Codex thread can use Open Artifacts bus, not a subagent.",
   /** DRAFT (C27), pending Design. */
@@ -188,6 +194,8 @@ type Seen = {
    * (`_meta.itemId`), closed the same ways.
    */
   execs: Map<string, OpenExec>;
+  /** #2029: open `exec` calls that name no bus tool literally (a dynamic lookup), kept to tell the agent why. */
+  lookups: Map<string, OpenExec>;
   /**
    * The last `task_started` turn: the thread's latest. Codex 0.165 rollouts
    * show no nested turns, so an earlier one never becomes latest again.
@@ -200,6 +208,7 @@ type Seen = {
 const seen = (): Seen => ({
   open: new Map(),
   execs: new Map(),
+  lookups: new Map(),
   latest: undefined,
   done: new Set(),
 });
@@ -388,6 +397,23 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
         !sc.done.has(cx.call_id)
       );
     };
+    const lookupOpen = (sc: Scan) => {
+      if (!item || !cx.turn_id || !EXEC_CALL.test(cx.call_id)) return false;
+      const e = sc.lookups.get(item);
+      return (
+        e !== undefined &&
+        e.at >= since &&
+        e.turn === cx.turn_id &&
+        sc.latest === e.turn &&
+        !sc.done.has(cx.call_id)
+      );
+    };
+    const missing = (sc: Scan) =>
+      no(
+        lookupOpen(sc)
+          ? CODEX_REFUSALS.dynamicLookup
+          : CODEX_REFUSALS.callNotFound,
+      );
     const itemUsed = () =>
       item !== undefined && (usedItems.get(thread)?.has(item) ?? false);
     const ok: CodexAttest = { ok: true, cwd: proof.cwd, pid: p };
@@ -407,7 +433,7 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     // One hello per exec: a second Open Artifacts bus call in it is told to use its own.
     if (itemUsed()) return no(CODEX_REFUSALS.oneExec);
     if (execOpen(scan)) return admitExec();
-    if (!retry || retryMs <= 0) return no(CODEX_REFUSALS.callNotFound);
+    if (!retry || retryMs <= 0) return missing(scan);
     // The live capture saw the call flushed before the MCP request; one short
     // wait covers a slower disk. Spent now: each call id gets one wait.
     spend(thread, cx.call_id);
@@ -416,7 +442,7 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
       advance(sc, ns);
       if (isOpen(sc)) return okFor(sc);
       if (itemUsed()) return no(CODEX_REFUSALS.oneExec);
-      return execOpen(sc) ? admitExec() : no(CODEX_REFUSALS.callNotFound);
+      return execOpen(sc) ? admitExec() : missing(sc);
     });
   };
 
@@ -659,7 +685,7 @@ function visitLine(
 ): void {
   if (!/call|task_complete|turn_aborted|task_started|item_completed/.test(text))
     return;
-  const { open, execs } = st;
+  const { open, execs, lookups } = st;
   let line: Record<string, unknown> | undefined;
   try {
     line = record(JSON.parse(text));
@@ -677,9 +703,10 @@ function visitLine(
     for (const [id, c] of open)
       if (turn === undefined || c.turn === undefined || c.turn === turn)
         open.delete(id);
-    for (const [id, c] of execs)
-      if (turn === undefined || c.turn === undefined || c.turn === turn)
-        execs.delete(id);
+    for (const m of [execs, lookups])
+      for (const [id, c] of m)
+        if (turn === undefined || c.turn === undefined || c.turn === turn)
+          m.delete(id);
     return;
   }
   if (p.type === "item_completed") {
@@ -703,14 +730,17 @@ function visitLine(
       p.name === "exec" &&
       p.namespace === undefined &&
       typeof p.id === "string" &&
-      typeof p.input === "string" &&
-      (p.input as string).includes(`${CODEX_TOOL_NAMESPACE}__`)
-    )
-      execs.set(p.id, {
+      typeof p.input === "string"
+    ) {
+      const entry = {
         call: p.call_id,
         at: Date.parse(String(line.timestamp)),
         turn: typeof turn === "string" ? turn : undefined,
-      });
+      };
+      if ((p.input as string).includes(`${CODEX_TOOL_NAMESPACE}__`))
+        execs.set(p.id, entry);
+      else lookups.set(p.id, entry);
+    }
     return;
   }
   if (line?.type === "response_item" && p.type === "function_call") {
@@ -737,7 +767,8 @@ function visitLine(
   }
   if (p.type.endsWith("_output") || p.type.endsWith("_end")) {
     open.delete(p.call_id);
-    for (const [id, e] of execs) if (e.call === p.call_id) execs.delete(id);
+    for (const m of [execs, lookups])
+      for (const [id, e] of m) if (e.call === p.call_id) m.delete(id);
   }
 }
 

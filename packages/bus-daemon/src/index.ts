@@ -2129,6 +2129,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           CODEX_WAKE_TEXT,
         );
         wakeWaiting.set(key, row.waiting);
+        // A refusal (or a timeout) ends the wakes for this start: spend the rest.
+        if (res === "failed" || res === "maybe")
+          try {
+            for (let m = n + 1; m <= WAKES_MAX; m++) woken.add(`${key}#${m}`);
+          } catch {}
         if (res === "sent")
           wakeSent.set(key, { ref: r.ref, at: now, logged: false });
         log(

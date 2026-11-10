@@ -192,7 +192,11 @@ function answerLists(
 }
 
 /** Daemon 1 admits both threads, then stops; the app restarts: P2 holds THREAD, P holds ASKER. */
-async function restarted(w: ReturnType<typeof world>, extra = {}) {
+async function restarted(
+  w: ReturnType<typeof world>,
+  extra = {},
+  deps: Record<string, unknown> = {},
+) {
   const one = await daemonHarness({ attest: undefined, codex: w.codex });
   await one.adapter(THREAD, codexHello(THREAD, A1));
   await one.adapter(ASKER, codexHello(ASKER, A2));
@@ -205,6 +209,7 @@ async function restarted(w: ReturnType<typeof world>, extra = {}) {
     codex: { ...w.codex, ...extra },
     claude: { syncMs: 20 },
     log: (m: string) => logs.push(m),
+    ...deps,
   });
   return { two, logs };
 }
@@ -408,19 +413,44 @@ describe("waking an away Codex thread (#2029)", () => {
     );
   });
 
-  it("a refused lookup does not stop the thread's own retry by literal name; only further wakes stop", async () => {
+  it("a refused dynamic lookup does not stop the thread's own retry by literal name", async () => {
     const w = world();
     const { two } = await restarted(w);
     const stop = answerLists(two, () => 2);
     await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
-    // The woken turn looks the tool up dynamically: refused, call not found.
+    const EXEC = "exec-0b5c2a8e-3f1d-4c6a-9e2b-7d4f1a3c5e6b";
+    const file = join(
+      w.home,
+      "sessions",
+      "2026",
+      "10",
+      "29",
+      `rollout-2026-10-29T02-11-43-${THREAD}.jsonl`,
+    );
+    // The woken turn looks the tool up dynamically in a code-mode exec.
+    writeFileSync(
+      file,
+      rollout(THREAD, "call_1") +
+        line("event_msg", { type: "task_started", turn_id: "turn-1" }) +
+        line("response_item", {
+          type: "custom_tool_call",
+          id: "ctc_lookup",
+          status: "completed",
+          call_id: EXEC,
+          name: "exec",
+          input: "await tools[name]({});",
+          internal_chat_message_metadata_passthrough: { turn_id: "turn-1" },
+        }),
+    );
     await expect(
       two.adapter(
         THREAD,
         codexHello(THREAD, A3, {
           codex: {
             thread_id: THREAD,
-            call_id: "call_lookup",
+            call_id: EXEC,
+            item_id: "ctc_lookup",
+            turn_id: "turn-1",
             ppid: P2,
             thread_source: "user",
           },
@@ -430,14 +460,7 @@ describe("waking an away Codex thread (#2029)", () => {
     expect(two.daemon.agents.byRef(THREAD)).toBeUndefined();
     // Then it calls mcp__oa_bus__self by name: admitted by today's rules.
     writeFileSync(
-      join(
-        w.home,
-        "sessions",
-        "2026",
-        "10",
-        "29",
-        `rollout-2026-10-29T02-11-43-${THREAD}.jsonl`,
-      ),
+      file,
       rollout(THREAD, "call_1") +
         line("response_item", {
           type: "function_call",
@@ -463,8 +486,41 @@ describe("waking an away Codex thread (#2029)", () => {
       live: true,
       pid: P2,
     });
-    await new Promise((r) => setTimeout(r, 200));
+    // One wake was spent; nothing else was.
+    const spent = readFileSync(w.files.wokenFile, "utf8");
+    expect(spent).toContain("#1");
+    expect(spent).not.toContain("#2");
+    stop();
+  });
+
+  it("a refused `codex queue` ends the wakes for this start, whatever the mail count does after an hour", async () => {
+    const w = world();
+    writeFileSync(w.exit, "1");
+    let t = Date.now();
+    let count = 2;
+    const { two } = await restarted(
+      w,
+      { wakeAgainMs: 3_600_000 },
+      {
+        bindingNow: () => t,
+      },
+    );
+    const stop = answerLists(two, () => count);
+    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    // All three wake slots are spent by the refusal.
+    await vi.waitFor(() => {
+      const spent = readFileSync(w.files.wokenFile, "utf8");
+      for (const n of [1, 2, 3]) expect(spent).toContain(`#${n}`);
+    });
+    // Two hours on, new mail: a sync runs (the asker's hour row is rewritten) and nothing wakes.
+    const before = readFileSync(w.files.awayFile, "utf8");
+    t += 2 * 3_600_000;
+    count = 7;
+    await vi.waitFor(() =>
+      expect(readFileSync(w.files.awayFile, "utf8")).not.toBe(before),
+    );
     expect(w.runs()).toHaveLength(1);
+    expect(two.of("list")).toHaveLength(1);
     stop();
   });
 
