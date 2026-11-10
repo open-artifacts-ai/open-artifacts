@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.147.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.146.0...v0.147.0) (2026-11-10)
+
+
+### Features
+
+* **bus-cli:** Codex 0.76+ gets the skill as a file, not an AGENTS.md block ([#1963](https://github.com/open-artifacts-ai/open-artifacts/issues/1963)) ([#1974](https://github.com/open-artifacts-ai/open-artifacts/issues/1974)) ([a5f8ca5](https://github.com/open-artifacts-ai/open-artifacts/commit/a5f8ca5972990638a93179e9bedb7ca8ecb573f6))
+* **comments:** an agent in a thread hears later replies ([#1900](https://github.com/open-artifacts-ai/open-artifacts/issues/1900)) ([#1907](https://github.com/open-artifacts-ai/open-artifacts/issues/1907)) ([82d16c3](https://github.com/open-artifacts-ai/open-artifacts/commit/82d16c3c23091703059a1544665ea63740e07d62))
+
+
+### Bug Fixes
+
+* **billing:** a plan with no Stripe customer has no portal, and says so ([#1969](https://github.com/open-artifacts-ai/open-artifacts/issues/1969)) ([90c4f20](https://github.com/open-artifacts-ai/open-artifacts/commit/90c4f20eebe717ee83b84fdb568886860e6340a4))
+* **bus:** the "Delivered after all" correction survives an away sender and a restart, and follows its Expired notice ([#1951](https://github.com/open-artifacts-ai/open-artifacts/issues/1951)) ([#1957](https://github.com/open-artifacts-ai/open-artifacts/issues/1957)) ([c7816ec](https://github.com/open-artifacts-ai/open-artifacts/commit/c7816ecf727791eac200d05fa2ecc6ae588d53ee))
+* **bus:** the daemon sweeps lapsed ref bindings; a closed binding lapses after 24 h idle ([#1956](https://github.com/open-artifacts-ai/open-artifacts/issues/1956)) ([#1966](https://github.com/open-artifacts-ai/open-artifacts/issues/1966)) ([0c7971c](https://github.com/open-artifacts-ai/open-artifacts/commit/0c7971c6684f07c2531b09ae950a6cb35d1d12a0))
+* **comments:** the @ menu shows a session online only while it is live ([#1960](https://github.com/open-artifacts-ai/open-artifacts/issues/1960)) ([384cf3c](https://github.com/open-artifacts-ai/open-artifacts/commit/384cf3cf1bf902048438fc3d1fd55a1e89e0013d))
+* **docs:** the upgrade guide never prints a git remote's credentials ([#1923](https://github.com/open-artifacts-ai/open-artifacts/issues/1923)) ([#1976](https://github.com/open-artifacts-ai/open-artifacts/issues/1976)) ([f7eec93](https://github.com/open-artifacts-ai/open-artifacts/commit/f7eec931279a9579a6c0001a9d575a43697e0244))
+* **mcp:** an error at the /mcp entry is logged and answered, not an uncaught 1101 ([#1973](https://github.com/open-artifacts-ai/open-artifacts/issues/1973)) ([8aa1856](https://github.com/open-artifacts-ai/open-artifacts/commit/8aa18561b29f7a22ee4fcdc20dc84ffbddb6dad8))
+* **skill:** the copy pi, omp, Codex and OpenCode share names each one's bus tools ([#1963](https://github.com/open-artifacts-ai/open-artifacts/issues/1963)) ([#1980](https://github.com/open-artifacts-ai/open-artifacts/issues/1980)) ([5698fac](https://github.com/open-artifacts-ai/open-artifacts/commit/5698fac714fdce69f5777cf59477dbb60c9362b7))
+
 ## [0.146.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.145.0...v0.146.0) (2026-11-10)
 
 
