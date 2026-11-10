@@ -89,6 +89,11 @@ export const users = sqliteTable(
      * with no name. Never cleared: an erased row is never restored.
      */
     erasedAt: integer("erased_at"),
+    /**
+     * 0 after the person turned off comment emails (#1467), in the dashboard
+     * or by the unsubscribe link in one. New rows default to on.
+     */
+    commentEmail: integer("comment_email").notNull().default(1),
   },
   () => [check("users_role_check", inList("role", RoleSchema.options))],
 );

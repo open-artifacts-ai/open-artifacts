@@ -688,6 +688,8 @@ export const MeSchema = z.object({
   suggestedName: z.string().nullable(),
   /** No chosen name and no usable IdP name: ask the user for one. */
   needsDisplayName: z.boolean(),
+  /** Email me about comments (#1467); on unless turned off (PATCH R.me, or the unsubscribe link in a comment email). Optional: older servers omit it (on). */
+  commentEmail: z.boolean().optional(),
   /** Hosted M1: how this request authenticated. */
   auth: MeAuthSchema.optional(),
   /** Hosted M1: the caller's personal space id (equals user.id). */
@@ -748,7 +750,15 @@ export const DisplayNameSchema = z
   .refine((s) => !NAME_FILLERS.test(s), "Name contains invalid characters")
   .refine((s) => !namesAnAgent(s), "Name must not read as an agent");
 
-export const MePatchSchema = z.strictObject({ displayName: DisplayNameSchema });
+export const MePatchSchema = z
+  .strictObject({
+    displayName: DisplayNameSchema.optional(),
+    commentEmail: z.boolean().optional(),
+  })
+  .refine(
+    (p) => p.displayName !== undefined || p.commentEmail !== undefined,
+    "Send displayName or commentEmail",
+  );
 export type MePatch = z.infer<typeof MePatchSchema>;
 
 export const TokenSchema = z.object({

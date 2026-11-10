@@ -1,0 +1,1 @@
+ALTER TABLE `users` ADD `comment_email` integer DEFAULT 1 NOT NULL;
