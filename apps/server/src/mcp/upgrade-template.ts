@@ -143,7 +143,20 @@ Pass them as \`${SECRET_ENV_VARS.access}="$(cat ${ACCESS})"\` and \`${SECRET_ENV
 
 ## 5. Get the release
 
-If you are in the install directory (where you first ran setup), fetch the tag:
+If you are in the install directory (where you first ran setup), first check the origin URL for credentials. Never print the URL, \`git remote -v\` or git config: a token in it would go into this session.
+
+\`\`\`sh
+git remote get-url origin | grep -qE '://[^/@]+@' && echo "origin has credentials"
+\`\`\`
+
+If it prints that line, stop and tell the user: "Your git remote has a login in its URL. Move it to a credential helper so it is not stored there." Give them these commands, and do not show or repeat the URL (on Linux, use \`cache\` or \`store\` instead of \`osxkeychain\`):
+
+\`\`\`sh
+git remote set-url origin "$(git remote get-url origin | sed -E 's#://[^/@]+@#://#')"
+git config --global credential.helper osxkeychain
+\`\`\`
+
+If you must show the remote, redact it: \`git remote get-url origin | sed -E 's#://[^/@]+@#://***@#'\`. Then fetch the tag:
 
 \`\`\`sh
 git fetch --depth 1 origin tag v<latest>

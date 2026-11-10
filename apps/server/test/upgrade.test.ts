@@ -223,6 +223,28 @@ describe("upgrade.md content", () => {
     expect(md.replace(BANG_RULE, "")).not.toMatch(/\bClaude\b/);
   });
 
+  it("never prints a git remote or git config raw (#1923)", async () => {
+    const e = E({ WORKER_NAME: WORKER });
+    const docs = [
+      await upgrade(e),
+      await (await get(`${APP}/skill.md`, {}, e)).text(),
+      await (await get(`${APP}/llms.txt`, {}, e)).text(),
+    ];
+    const raw =
+      /git\s+remote\s+(-v|show)|remote\.origin|git\s+config\s+(--get|-l|--list)|git\s+config\s+(--\w+\s+)?[\w.]+\s*$/;
+    const redacted = /remote get-url \w+ \| (sed -E|grep -qE) /;
+    for (const md of docs)
+      for (const line of md.split("\n")) {
+        if (raw.test(line) && !/Never print/.test(line))
+          throw new Error(`prints git config raw: ${line}`);
+        if (/remote get-url/.test(line) && !redacted.test(line)) {
+          // Only inside the credential-helper fix, where the value is rewritten, never shown.
+          expect(line).toMatch(/set-url/);
+        }
+      }
+    expect(docs[0]).toContain("grep -qE '://[^/@]+@'");
+  });
+
   it("the rollback trigger is rendered from ROLLBACK_STEPS", async () => {
     const md = await upgrade();
     expect([...ROLLBACK_STEPS]).toEqual(["healthcheck", "selftest"]);

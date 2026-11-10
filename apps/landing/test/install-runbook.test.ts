@@ -43,3 +43,17 @@ describe("install runbook (#11-#14, #17)", () => {
     expect(setup + upgrade).not.toContain("—");
   });
 });
+
+describe("upgrade guide git remote (#1923)", () => {
+  it("never prints a remote or git config raw; every get-url is redacted or rewritten", () => {
+    expect(upgrade).not.toMatch(
+      /git\s+remote\s+(show)|git\s+config\s+(--get|-l|--list)|remote\.origin/,
+    );
+    for (const line of upgrade.split("\n")) {
+      if (/git\s+remote\s+-v/.test(line)) expect(line).toMatch(/never|Never/);
+      if (/remote get-url/.test(line))
+        expect(line).toMatch(/\| (sed -E|grep -qE) |set-url/);
+    }
+    expect(upgrade).toContain("credential.helper");
+  });
+});
