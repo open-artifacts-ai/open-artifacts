@@ -6213,7 +6213,9 @@ export class BusHub extends DurableObject<Env> {
       ) !== null;
     // Due with no usable socket: parked until the machine's agent_up (1), or
     // held for a live daemon too old to read it (2, own caps).
-    const parked = notBefore > now ? 0 : live ? 2 : 1;
+    // A socket that can read notices but refused the frame (#1752) is
+    // offline-like (1), never "too old" (2).
+    const parked = notBefore > now ? 0 : live && !socket ? 2 : 1;
     if (parked === 2) {
       const reason = this.#oldHeldOver(n.to.namespace, lname, n.coalesceKey);
       if (reason) {
@@ -6327,13 +6329,21 @@ export class BusHub extends DurableObject<Env> {
       sql,
       `select ${NOTICE_COLS} from notices where parked = 0 and not_before <= ? order by not_before limit ?`,
       now,
-      NOTICE_FLUSH_BATCH,
+      BATCH,
     );
+    // Parking and dropping are cheap; only sends are paced (#1752).
+    let sent = 0;
+    let paced = false;
     for (const r of due) {
+      if (sent >= NOTICE_FLUSH_BATCH) {
+        paced = true;
+        break;
+      }
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
       const live = agent && liveSocket(this.ctx, agent.machineId);
       const socket = live && noticeGated(live) ? live : null;
       if (agent && socket && trySendFrame(socket, noticeFrame(agent, r.text))) {
+        sent++;
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
           r.toNs,
@@ -6342,7 +6352,9 @@ export class BusHub extends DurableObject<Env> {
         );
       } else if (agent) {
         // A live socket that cannot read it: old-daemon share; none: offline.
-        const reason = live
+        // A capable socket that refused the frame (#1752) is offline-like (1).
+        const tooOld = live && !socket;
+        const reason = tooOld
           ? this.#oldHeldOver(r.toNs, r.toLname, r.ckey)
           : null;
         if (reason) {
@@ -6356,7 +6368,7 @@ export class BusHub extends DurableObject<Env> {
         } else {
           sql.exec(
             "update notices set parked = ? where to_ns = ? and to_lname = ? and ckey = ?",
-            live ? 2 : 1,
+            tooOld ? 2 : 1,
             r.toNs,
             r.toLname,
             r.ckey,
@@ -6372,8 +6384,8 @@ export class BusHub extends DurableObject<Env> {
       }
     }
     // A full step: the rest go out a pace later (#1752), not at once.
-    if (due.length >= NOTICE_FLUSH_BATCH) this.#arm(now + NOTICE_PACE_MS);
-    return gone;
+    if (paced) this.#arm(now + NOTICE_PACE_MS);
+    return gone || (!paced && due.length >= BATCH);
   }
 
   // ------------------------------------------------------------------- alarm

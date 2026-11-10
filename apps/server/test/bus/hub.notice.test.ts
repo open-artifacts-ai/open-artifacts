@@ -537,7 +537,7 @@ const breakSockets = (userId: string) =>
         throw new Error("closed");
       };
   });
-const parkedOf = (userId: string) =>
+const parkedValues = (userId: string) =>
   inHub(userId, (_, st) =>
     st.storage.sql
       .exec("select parked from notices order by rowid")
@@ -562,7 +562,7 @@ describe("a socket that refuses the frame (#1752)", () => {
     expect(await stub.deliverNotice(n)).toBe("held");
     expect(await waiting(s.userId)).toBe(1);
     // Parked as 1 (offline-like: sent on the next agent_up), not a cap-less daemon's state.
-    expect(await parkedOf(s.userId)).toEqual([1]);
+    expect(await parkedValues(s.userId)).toEqual([1]);
 
     await goOffline(s.d, s.machineId, s.userId);
     const d2 = await daemon(s.token);
@@ -584,12 +584,12 @@ describe("a socket that refuses the frame (#1752)", () => {
       { notBefore: t + 1000 },
     );
     expect(await stub.deliverNotice(n)).toBe("held");
-    expect(await parkedOf(s.userId)).toEqual([0]);
+    expect(await parkedValues(s.userId)).toEqual([0]);
     await breakSockets(s.userId);
     await setClock(s.userId, t + 1000);
     await runAlarm(s.userId);
     expect(await waiting(s.userId)).toBe(1);
-    expect(await parkedOf(s.userId)).toEqual([1]);
+    expect(await parkedValues(s.userId)).toEqual([1]);
 
     await goOffline(s.d, s.machineId, s.userId);
     const d2 = await daemon(s.token);
@@ -633,7 +633,7 @@ describe("a socket that refuses the frame (#1752)", () => {
       { timeout: 10_000 },
     );
     expect(await waiting(s.userId)).toBe(1);
-    expect(await parkedOf(s.userId)).toEqual([1]);
+    expect(await parkedValues(s.userId)).toEqual([1]);
   });
 });
 
