@@ -12,10 +12,12 @@ import { b64urlDecode, b64urlEncode } from "../util/crypto.js";
  * SESSION_SECRET resets every anonId. The token is never logged.
  *
  * A token older than ANON_TOKEN_MAX_AGE_S, or a legacy v1 token ("<id>.<sig>",
- * sig over "anon:" + id with k1 = info "oa/anon-id/v1"), is accepted once and
- * re-minted with the SAME id, so a browser's labels never change; the expiry
- * bounds how long a leaked token works. An iat more than ANON_TOKEN_SKEW_S in
- * the future is rejected (a fresh id is minted).
+ * sig over "anon:" + id with k1 = info "oa/anon-id/v1"), is dead: it is never
+ * re-issued for the same id (a minting write gets a fresh id) and it names no
+ * author (readAnonId is null), so expiry ends a leaked token. The browser
+ * loses authorship of its old comments; they stay visible under their display
+ * name. An iat more than ANON_TOKEN_SKEW_S in the future is rejected the same
+ * way.
  *
  * The public id is per artifact, so one browser can't be linked across
  * artifacts: short = base64url(HMAC-SHA256(k1, "short:" + artifactId + ":" + id))
@@ -125,10 +127,9 @@ export async function issueAnonToken(
 }
 
 /**
- * Verifies `token` and returns this artifact's short id for it. A v1 or
- * expired token is re-minted with the same id (only if `mint`). When it is
- * missing, malformed, forged or from the future: mints a fresh id if `mint`,
- * else null.
+ * Verifies `token` and returns this artifact's short id for it. When it is
+ * missing, malformed, forged, from the future, v1 or expired: mints a fresh id
+ * if `mint` (never the id the dead token carried), else null.
  */
 export async function resolveAnonId(
   env: Pick<Env, "SESSION_SECRET">,
@@ -144,7 +145,7 @@ export async function resolveAnonId(
   if (ok && !ok.renew)
     return { short: await shortOf(keys.v1, artifactId, ok.id), issued: null };
   if (!mint) return null;
-  const id = ok?.id ?? b64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
+  const id = b64urlEncode(crypto.getRandomValues(new Uint8Array(16)));
   return {
     short: await shortOf(keys.v1, artifactId, id),
     issued: await issueAnonToken(env, id, nowS),
@@ -153,9 +154,9 @@ export async function resolveAnonId(
 
 /**
  * The per-artifact id a held token carries, for reading who someone is (me,
- * edit and delete their own): any token whose signature verifies, including
- * an expired one or a v1 one that resolveAnonId would renew. It never mints
- * or issues anything, and a malformed, forged or future-dated token is null.
+ * edit and delete their own): only a current v2 token. An expired, v1,
+ * malformed, forged or future-dated token is null. It never mints or issues
+ * anything.
  */
 export async function readAnonId(
   env: Pick<Env, "SESSION_SECRET">,
@@ -166,5 +167,5 @@ export async function readAnonId(
   if (!token) return null;
   const keys = await anonKeys(env);
   const ok = await verifyToken(keys, token, Math.floor(now / 1000));
-  return ok ? shortOf(keys.v1, artifactId, ok.id) : null;
+  return ok && !ok.renew ? shortOf(keys.v1, artifactId, ok.id) : null;
 }
