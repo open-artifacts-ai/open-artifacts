@@ -80,6 +80,7 @@ jobs:
       # the checks, so the hosted prod gate (smoke green at or after a tag)
       # covers it. The PAT goes to a 0600 file, never echoed; the sharing
       # recipient PAT stays unset, so that spec skips. Zero retries.
+      - run: pnpm --filter @oa/shared build
       - name: MCP happy path
         timeout-minutes: 8
         run: |
