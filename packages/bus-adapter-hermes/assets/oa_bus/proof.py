@@ -17,8 +17,8 @@ server name Hermes was configured with, so the match is exact: `open-artifacts`
 and `open_artifacts` make the same registry prefix but are different names here.
 
 One process, several profiles: the first Bus to install is wired in (see `install`); a second
-profile stays unlinked, with no second link and no overwritten hash, unless the first holds no open
-link or is shut down (a plugin reload), when the new Bus takes over. The dispatch path is a
+profile stays unlinked, with no second link and no overwritten hash, unless the first is shut
+down (a plugin reload), when the new Bus takes over. The dispatch path is a
 read: it never opens a link.
 
 Every piece fails to unlinked: a missing function leaves both untouched, an error
@@ -132,7 +132,7 @@ def _wire_fits(fn):
 
 
 def _holder_is_free(cfg):
-    """True when the Bus holding the wiring has no open link or is shut down. Anything it cannot
+    """True when the Bus holding the wiring is shut down. Anything it cannot
     say counts as in use."""
     try:
         return cfg["bus"].wiring_free() is True
@@ -161,8 +161,8 @@ def install(bus, names, registry=None, handlers=None):
         if cfg is not None:
             if cfg["bus"] is bus:
                 return True
-            # A plugin reload makes a new Bus: it takes the wiring over once the holder has no open
-            # link. Never while one is open: that is another profile, which stays unlinked.
+            # A plugin reload makes a new Bus: it takes the wiring over once the holder is shut down.
+            # Never while it runs, even with no link open: that is another profile, which stays unlinked.
             if not _holder_is_free(cfg):
                 return False
             cfg["bus"], cfg["names"] = bus, tuple(names)

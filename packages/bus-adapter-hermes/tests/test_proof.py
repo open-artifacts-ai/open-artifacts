@@ -427,8 +427,8 @@ class WireInjection(unittest.TestCase):
         self.assertEqual(first.asked, ["root-1"])
         self.assertEqual(second.asked, [])
 
-    def test_a_new_bus_takes_over_when_the_holder_has_no_open_link(self):
-        # A plugin reload: the old Bus holds the wiring but no link is open.
+    def test_a_new_bus_takes_over_when_the_holder_is_shut_down(self):
+        # A plugin reload: the old Bus was shut down.
         ok, registry, handlers, first, _ = installed(bus=FakeProofBus(free=True))
         second = FakeProofBus(proof="n" * 43)
         self.assertTrue(proof_mod.install(second, ("open-artifacts",), registry=registry, handlers=handlers))
@@ -531,6 +531,25 @@ class Plugin(unittest.TestCase):
         ctx.hooks["pre_llm_call"][0](session_id="s", platform="cli")
         self.assertEqual(calls, [(bus, ("open-artifacts",))])
 
+    def test_a_reload_shuts_the_old_bus_through_on_unload(self):
+        ctx = support.FakeCtx()
+        unloads = []
+        ctx.on_unload = unloads.append
+        roots = Roots(lambda s: s)
+        bus = Bus(roots, spawn=support.inline_spawn, start="t", habits_marker=support.habits_marker())
+        register(ctx, roots=roots, bus=bus, proof_servers=("open-artifacts",), install=lambda b, n: True)
+        self.assertEqual(unloads, [bus.close_all])
+        self.assertFalse(bus.wiring_free())
+        unloads[0]()
+        self.assertTrue(bus.wiring_free())
+
+    def test_a_hermes_without_on_unload_registers_as_before(self):
+        ctx = support.FakeCtx()  # no on_unload
+        roots = Roots(lambda s: s)
+        bus = Bus(roots, spawn=support.inline_spawn, start="t", habits_marker=support.habits_marker())
+        register(ctx, roots=roots, bus=bus, proof_servers=("open-artifacts",), install=lambda b, n: True)
+        self.assertIn("pre_llm_call", ctx.hooks)
+
     def test_an_install_that_raises_never_breaks_the_turn(self):
         ctx = support.FakeCtx()
         roots = Roots(lambda s: s)
@@ -565,11 +584,9 @@ class ProofForABus(unittest.TestCase):
             with self.subTest(sid):
                 self.assertIsNone(self.bus.proof_for(sid))
 
-    def test_wiring_is_free_with_no_open_link_or_after_shutdown(self):
+    def test_wiring_is_free_only_after_shutdown(self):
         self.assertFalse(self.bus.wiring_free())  # a root holds an open link
-        self.link.closed = True
-        self.assertTrue(self.bus.wiring_free())
-        self.link.closed = False
+        self.link.closed = True  # a reconnect gap: still the holder
         self.assertFalse(self.bus.wiring_free())
         self.bus.close_all()
         self.assertTrue(self.bus.wiring_free())

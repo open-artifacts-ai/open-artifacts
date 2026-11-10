@@ -316,13 +316,10 @@ class Bus:
             link.close()
 
     def wiring_free(self):
-        """True when this Bus is shut down or holds no open link: another Bus may then take over the
-        proof wiring (a plugin reload). Never true while a link is open (another profile's)."""
-        if self._down:
-            return True
-        with self._lock:
-            roots = list(self._by_root.values())
-        return not any(r.link is not None and not r.link.closed for r in roots)
+        """True only when this Bus is shut down (close_all): another Bus may then take over the proof
+        wiring (a plugin reload). Never while it is running, even in a reconnect gap with no open
+        link: another profile's Bus must not take it for good."""
+        return self._down
 
     def close_all(self):
         self._down = True
