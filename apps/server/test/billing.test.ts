@@ -1709,6 +1709,43 @@ describe("Me.instance.billing and the billing routes", () => {
     );
   });
 
+  it("hasCustomer follows the same-version, later-read rule", async () => {
+    const t = Date.now();
+    await cache({ tier: "business", version: 20, hasCustomer: false }, t);
+    expect((await getMe(owner.cookie)).instance.billing?.hasCustomer).toBe(
+      false,
+    );
+    // The same version read later applies: a customer appeared.
+    await cache({ tier: "business", version: 20, hasCustomer: true }, t + 1000);
+    expect((await getMe(owner.cookie)).instance.billing?.hasCustomer).toBe(
+      true,
+    );
+    // The same version read earlier never flips it back.
+    await cache(
+      { tier: "business", version: 20, hasCustomer: false },
+      t - 1000,
+    );
+    expect((await getMe(owner.cookie)).instance.billing?.hasCustomer).toBe(
+      true,
+    );
+  });
+
+  it("hasCustomer reaches an admin, also under the plan cap; never a member", async () => {
+    const admin = await login(`hc-admin-${tag}@a.com`, "admin");
+    await cache({
+      tier: "team",
+      status: "lapsed",
+      version: 30,
+      hasCustomer: false,
+    });
+    const me = await getMe(admin.cookie);
+    expect(me.auth).toMatchObject({ cap: "plan" });
+    expect(me.instance.billing?.hasCustomer).toBe(false);
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "hasCustomer",
+    );
+  });
+
   it("portal: billing's 409 no_customer is 409 no_billing_customer; other 409s and failures stay 503", async () => {
     await cache({ tier: "business", version: 2 });
     const orig = gate.fetch;
@@ -1728,6 +1765,18 @@ describe("Me.instance.billing and the billing routes", () => {
       gate.fetch = async () =>
         Response.json({ error: "no_customer" }, { status: 500 });
       expect((await portal()).status).toBe(503);
+      // Only a 409 from /portal: a 400, or /checkout's 409, stays 503.
+      gate.fetch = async () =>
+        Response.json({ error: "no_customer" }, { status: 400 });
+      expect((await portal()).status).toBe(503);
+      gate.fetch = async () =>
+        Response.json({ error: "no_customer" }, { status: 409 });
+      const c = await send(R.billingCheckout, owner.cookie, {
+        method: "POST",
+        body: { tier: "team" },
+      });
+      expect(c.status).toBe(503);
+      expect((await errOf(c)).code).toBe("billing_unavailable");
     } finally {
       gate.fetch = orig;
     }

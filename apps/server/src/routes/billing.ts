@@ -19,6 +19,7 @@ import {
   BillingUnavailableError,
   billingCall,
   CHECKOUT_PATH,
+  NO_CUSTOMER_CODE,
   PORTAL_PATH,
 } from "../billing/transport.js";
 import { jsonBody } from "../http/body.js";
@@ -93,7 +94,12 @@ async function stripeUrl(
   } catch (e) {
     // A plan with no Stripe customer (provisioned or comped) has no portal:
     // a fixed 409 the dashboard can explain, not "unreachable".
-    if (e instanceof BillingUnavailableError && e.code === "no_customer")
+    if (
+      path === PORTAL_PATH &&
+      e instanceof BillingUnavailableError &&
+      e.why === "http_409" &&
+      e.code === NO_CUSTOMER_CODE
+    )
       throw new ApiError(
         "no_billing_customer",
         "This plan has no billing account, so there is no portal to open",
