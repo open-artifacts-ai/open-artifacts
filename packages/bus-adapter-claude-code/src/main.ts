@@ -64,7 +64,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
   const out = await connect();
   if (out.kind !== "ok") {
-    const text = noSessionMessage(out.kind, underClaude());
+    const text = noSessionMessage(out, underClaude());
     return { content: [{ type: "text", text }], isError: true };
   }
   const client = out.client;

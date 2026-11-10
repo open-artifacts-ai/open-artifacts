@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   notASession,
@@ -39,9 +39,7 @@ function sessionFiles(dir: string): SessionFile[] {
   for (const fn of names) {
     if (!/^\d+\.json$/.test(fn)) continue;
     let rec: Record<string, unknown>;
-    let mtime: number;
     try {
-      mtime = statSync(join(dir, fn)).mtimeMs;
       rec = JSON.parse(readFileSync(join(dir, fn), "utf8"));
     } catch {
       continue;
@@ -62,7 +60,8 @@ function sessionFiles(dir: string): SessionFile[] {
           : "",
       cwd: typeof rec.cwd === "string" ? rec.cwd : "",
       procStart: rec.procStart,
-      stamp: `${rec.procStart}\u0000${mtime}`,
+      // Not the mtime: live sessions rewrite their file every 15-60 s. A reused pid writes a new procStart.
+      stamp: rec.procStart,
     });
   }
   return out;
@@ -141,7 +140,7 @@ export const PROC_START_TTL_MS = 60_000;
 export function cachedProcStart(
   procStart: (pid: number) => string | null,
   running: (pid: number) => boolean,
-  opts: { ttlMs?: number; now?: () => number } = {},
+  opts: { ttlMs?: number; jitter?: number; now?: () => number } = {},
 ): (pid: number, stamp?: string) => string | null {
   const ttl = opts.ttlMs ?? PROC_START_TTL_MS;
   const now = opts.now ?? Date.now;
@@ -157,7 +156,9 @@ export function cachedProcStart(
       return null;
     }
     const hit = cache.get(pid);
-    if (hit && hit.stamp === stamp && now() - hit.at < ttl) return hit.start;
+    // Spread by pid so entries made on one tick do not all expire on the same later tick.
+    const life = ttl + (pid % 16) * ((ttl * (opts.jitter ?? 0.5)) / 16);
+    if (hit && hit.stamp === stamp && now() - hit.at < life) return hit.start;
     let start: string | null;
     try {
       start = procStart(pid);

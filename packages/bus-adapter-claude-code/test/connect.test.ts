@@ -1,3 +1,4 @@
+import { HelloRefused } from "@oa/bus-ipc";
 import { describe, expect, it } from "vitest";
 import {
   BUSY_MESSAGE,
@@ -55,10 +56,39 @@ describe("connectOutcome", () => {
   });
 });
 
+const failing = (e: unknown) =>
+  deps({
+    connect: async () => {
+      throw e;
+    },
+  });
+const coded = (code: string) =>
+  Object.assign(new Error(code), { code }) as Error;
+
+describe("connect failure kinds", () => {
+  it("ECONNREFUSED and ENOENT are no-socket", async () => {
+    for (const c of ["ECONNREFUSED", "ENOENT"])
+      expect((await connectOutcome(failing(coded(c)))).kind).toBe("no-socket");
+  });
+  it("ETIMEDOUT and ECONNRESET are busy", async () => {
+    for (const c of ["ETIMEDOUT", "ECONNRESET"])
+      expect((await connectOutcome(failing(coded(c)))).kind).toBe("busy");
+  });
+  it("a hello refusal carries the daemon's reason", async () => {
+    const out = await connectOutcome(
+      failing(new HelloRefused({ type: "error", message: "nope" } as never)),
+    );
+    expect(out).toEqual({ kind: "refused", reason: "nope" });
+    expect(noSessionMessage(out as never, true)).toContain("nope");
+  });
+});
+
 describe("noSessionMessage", () => {
   it("names the real cause for busy, the install hint otherwise", () => {
-    expect(noSessionMessage("busy", true)).toBe(BUSY_MESSAGE);
-    expect(noSessionMessage("no-socket", true)).toContain("install");
-    expect(noSessionMessage("no-session", false)).toContain("Claude Code");
+    expect(noSessionMessage({ kind: "busy" }, true)).toBe(BUSY_MESSAGE);
+    expect(noSessionMessage({ kind: "no-socket" }, true)).toContain("install");
+    expect(noSessionMessage({ kind: "no-session" }, false)).toContain(
+      "Claude Code",
+    );
   });
 });

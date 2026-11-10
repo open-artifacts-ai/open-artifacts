@@ -134,6 +134,8 @@ export function commOf(pid: number): string | null {
     return (
       execFileSync(systemTool("ps"), ["-o", "comm=", "-p", String(pid)], {
         encoding: "utf8",
+        // A timeout reads as null, which ocServiceGone treats as unknown, not gone.
+        timeout: 1500,
         stdio: ["ignore", "pipe", "ignore"],
       }).trim() || null
     );

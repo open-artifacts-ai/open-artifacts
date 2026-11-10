@@ -1,4 +1,4 @@
-import { BUS_CMD } from "@oa/bus-ipc";
+import { BUS_CMD, HelloRefused } from "@oa/bus-ipc";
 import { type ClaudeSession, NOT_UNDER_CLAUDE } from "./session.ts";
 
 export const BUSY_MESSAGE =
@@ -10,8 +10,10 @@ export type ConnectOutcome<C> =
   | { kind: "no-session" }
   /** A session, but no daemon socket: the install hint applies. */
   | { kind: "no-socket" }
-  /** A session and a socket, but the connect or hello failed or timed out. */
-  | { kind: "busy" };
+  /** A session and a socket, but the connect or hello timed out or was reset. */
+  | { kind: "busy" }
+  /** The daemon answered hello with a refusal: its reason is the message. */
+  | { kind: "refused"; reason: string };
 
 export type ConnectDeps<C> = {
   findSession: () => ClaudeSession | null;
@@ -28,23 +30,32 @@ export async function connectOutcome<C>(
     session = deps.findSession();
     if (!session || deps.socketDirProblem()) return { kind: "no-session" };
   } catch {
-    // ps did not answer in time: a loaded machine, not a missing install.
+    // ps did not answer in time (ProcStartUnknownError): a loaded machine, not a missing install.
     return { kind: "busy" };
   }
   if (!deps.socketExists()) return { kind: "no-socket" };
   try {
     return { kind: "ok", client: await deps.connect(session) };
-  } catch {
+  } catch (e) {
+    if (e instanceof HelloRefused)
+      return { kind: "refused", reason: e.reason ?? e.message };
+    const code = (e as NodeJS.ErrnoException)?.code;
+    // Nothing is listening: the daemon is not running (or not installed).
+    if (code === "ECONNREFUSED" || code === "ENOENT")
+      return { kind: "no-socket" };
+    // A timeout, a reset, a dropped connection: a daemon that exists but is not answering.
     return { kind: "busy" };
   }
 }
 
 /** The text for a failed connect; `underClaude` decides whether an install would help. */
 export function noSessionMessage(
-  kind: "no-session" | "no-socket" | "busy",
+  out: Exclude<ConnectOutcome<unknown>, { kind: "ok" }>,
   underClaude: boolean,
 ): string {
-  if (kind === "busy") return BUSY_MESSAGE;
+  if (out.kind === "busy") return BUSY_MESSAGE;
+  if (out.kind === "refused")
+    return `oa-bus: the bus daemon refused: ${out.reason}`;
   return underClaude
     ? `oa-bus: no Claude session or daemon found. Run \`${BUS_CMD} install\`.`
     : NOT_UNDER_CLAUDE;
