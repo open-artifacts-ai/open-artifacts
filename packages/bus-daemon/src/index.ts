@@ -142,6 +142,10 @@ export * from "./transports/opencode.ts";
 export * from "./transports/pi.ts";
 
 const NOTICE_RETRY_MS = 30_000;
+/** #1956: a ref binding whose link has been closed this long lapses, even if its pid lives. */
+export const BINDING_IDLE_MS = 24 * 60 * 60_000;
+/** #1956: how often the bindings map is swept; the sync tick runs more often than needed. */
+const BINDING_SWEEP_MS = 60_000;
 /** The hub caps renames per hour; a refused one holds that agent's renames this long. */
 const RENAME_HOLD_MS = 60 * 60_000;
 /** At most this many rename frames per ref in this window. */
@@ -206,6 +210,8 @@ export type DaemonDeps = {
   /** The clock for resends; tests bring a fake one. */
   resendTimer?: Timer;
   resendNow?: () => number;
+  /** The clock for binding idle expiry and sweeps (#1956); tests bring a fake one. */
+  bindingNow?: () => number;
   hub?: Partial<Pick<HubOptions, "backoffMs" | "pingMs" | "stableMs" | "pace">>;
   /** The HTTP client for the reach proposal (#1346); tests bring a fake one. */
   fetch?: typeof fetch;
@@ -299,8 +305,40 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** #1608: who first claimed each pi-like ref; kept after its link closes, until its pid dies. */
   const bindings = new Map<
     string,
-    { token: string; pid: number; kind: string; start?: string }
+    {
+      token: string;
+      pid: number;
+      kind: string;
+      start?: string;
+      /** When the last link closed; unset while a link is open. */
+      closedAt?: number;
+    }
   >();
+  const bindingNow = deps.bindingNow ?? Date.now;
+  /** Claimant gone, pid reused, or no link for BINDING_IDLE_MS. An open link never lapses. */
+  const bindingLapsed = (
+    ref: string,
+    claim: { pid: number; start?: string; closedAt?: number },
+  ): boolean => {
+    if (conns.has(ref)) return false;
+    if (
+      claim.closedAt !== undefined &&
+      bindingNow() - claim.closedAt >= BINDING_IDLE_MS
+    )
+      return true;
+    if (!running(claim.pid)) return true;
+    const now = claim.start === undefined ? null : startOfPid(claim.pid);
+    return now !== null && claim.start !== undefined && now !== claim.start;
+  };
+  let bindingSweptAt = 0;
+  /** Cheap: pid liveness is kill(pid, 0), start times come from the cache. Runs on the sync tick, rate limited. */
+  const sweepBindings = () => {
+    const t = bindingNow();
+    if (t - bindingSweptAt < BINDING_SWEEP_MS) return;
+    bindingSweptAt = t;
+    for (const [ref, claim] of bindings)
+      if (bindingLapsed(ref, claim)) bindings.delete(ref);
+  };
 
   /**
    * A /clear handover not yet announced: it waits for hello_ok (#1582), so the
@@ -1447,16 +1485,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         // time are no proof of who is speaking (any same-user process can send
         // them), so the welcome issued a token that every later hello must echo.
         let bindToken: string | undefined;
-        // A binding lapses when its claimant is gone or its pid now has another start time.
+        // A binding lapses when its claimant is gone, its pid has another start time, or it sat closed too long.
         const claim = bindings.get(hello.agent_ref);
-        if (claim) {
-          const now = claim.start === undefined ? null : startOfPid(claim.pid);
-          if (
-            !running(claim.pid) ||
-            (now !== null && claim.start !== undefined && now !== claim.start)
-          )
-            bindings.delete(hello.agent_ref);
-        }
+        if (claim && bindingLapsed(hello.agent_ref, claim))
+          bindings.delete(hello.agent_ref);
         const held = bindings.get(hello.agent_ref);
         // Every kind is checked: a claude-code or opencode hello cannot take a bound pi ref.
         if (
@@ -1728,6 +1760,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // Only pi lives as long as its connection. Claude's MCP server connects
       // per tool call (its liveness is the session files); OpenCode's is presence.
       if (!piLike(hello.kind)) return;
+      const bound = bindings.get(hello.agent_ref);
+      if (bound) bound.closedAt = bindingNow();
       const rec = agents.byRef(hello.agent_ref);
       if (!rec) return;
       rec.live = false;
@@ -1878,6 +1912,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // one it had when the hold began. Pi and omp have no session file to
     // prompt it.
     for (const rec of agents.all()) if (rec.live) flushRename(rec);
+    sweepBindings();
   };
   restoreCodex();
   sync();

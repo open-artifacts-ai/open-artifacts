@@ -115,3 +115,52 @@ it("frees the ref when the claimant's pid is reused by another process", async (
     h.adapter("A", { kind: "pi", bind_token: undefined }),
   ).resolves.toBeDefined();
 });
+
+// #1956: bindings lapse after BINDING_IDLE_MS closed, and the map is swept.
+describe("binding expiry (#1956)", () => {
+  const HOUR = 60 * 60_000;
+  const harness = (state: { t: number; alive: boolean }) =>
+    daemonHarness({
+      bindingNow: () => state.t,
+      claude: {
+        isRunning: () => state.alive,
+        procStart: () => null,
+        syncMs: 10,
+      },
+    });
+  const squat = (h: Awaited<ReturnType<typeof daemonHarness>>) =>
+    h.adapter("A", { kind: "pi", bind_token: undefined });
+
+  it("never lapses while the link is open", async () => {
+    const st = { t: 0, alive: true };
+    const h = await harness(st);
+    await h.adapter("A", { kind: "pi" });
+    st.t = 1000 * HOUR;
+    await new Promise((r) => setTimeout(r, 50));
+    await expect(squat(h)).rejects.toThrow(REF_BOUND);
+  });
+
+  it("lapses a long-lived pid's closed binding after the idle window", async () => {
+    const st = { t: 0, alive: true };
+    const h = await harness(st);
+    const a = await h.adapter("A", { kind: "pi" });
+    a.close();
+    await h.next("sessions", 2);
+    st.t = 23 * HOUR;
+    await expect(squat(h)).rejects.toThrow(REF_BOUND);
+    st.t = 25 * HOUR;
+    await expect(squat(h)).resolves.toBeDefined();
+  });
+
+  it("sweeps a dead pid and an idle closed link on the tick", async () => {
+    const st = { t: 0, alive: true };
+    const h = await harness(st);
+    const a = await h.adapter("A", { kind: "pi" });
+    a.close();
+    await h.next("sessions", 2);
+    st.alive = false;
+    st.t = 2 * HOUR;
+    await new Promise((r) => setTimeout(r, 50));
+    await expect(squat(h)).resolves.toBeDefined();
+  });
+});
