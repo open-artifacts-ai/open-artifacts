@@ -368,14 +368,20 @@ describe("the unsubscribe token", () => {
         .first<{ v: number }>()
     )?.v;
 
-  it("GET and POST both turn off that one person's flag, again and again, and say so", async () => {
+  it("GET changes nothing and shows a button; POST turns it off, again and again", async () => {
     const u = await mk("unsub");
     const w = await mk("unsub2");
     const v = await mk("bystander");
     const t = encodeURIComponent(await signUnsubToken(E, u.userId));
     const g = await hit("GET", `${COMMENT_UNSUB_PATH}?t=${t}`);
     expect(g.status).toBe(200);
-    expect(await g.text()).toContain("Comment emails are off.");
+    const gt = await g.text();
+    expect(gt).toContain("Turn off comment emails");
+    expect(gt).toContain("<button");
+    expect(await flag(u.userId)).toBe(1);
+    const p0 = await hit("POST", COMMENT_UNSUB_PATH, `t=${t}`);
+    expect(p0.status).toBe(200);
+    expect(await p0.text()).toContain("Comment emails are off.");
     expect(await flag(u.userId)).toBe(0);
     // One-click: the token rides the URL, the body is the RFC 8058 line.
     const tw = encodeURIComponent(await signUnsubToken(E, w.userId));
@@ -386,8 +392,7 @@ describe("the unsubscribe token", () => {
     );
     expect(p1.status).toBe(200);
     expect(await flag(w.userId)).toBe(0);
-    const p2 = await hit("POST", COMMENT_UNSUB_PATH, `t=${t}`);
-    expect(p2.status).toBe(200);
+    expect((await hit("POST", COMMENT_UNSUB_PATH, `t=${t}`)).status).toBe(200);
     expect(await flag(u.userId)).toBe(0);
     expect(await flag(v.userId)).toBe(1);
   });
@@ -537,9 +542,27 @@ describe("Product's spec: reasons, copy, off pages, left-out count", () => {
     await E.DB.prepare("delete from counters where key = ?").bind(key).run();
     await thread(m.e, s.id, person(s.editor), s.editor);
     expect((m.sent[0] as Sent).text).toContain(
-      "2 more comments today weren't emailed. They're all on the page.",
+      "2 more comments weren't emailed. They're all on the page.",
     );
     await thread(m.e, s.id, person(s.editor), s.editor);
-    expect((m.sent[1] as Sent).text).not.toContain("more comments today");
+    expect((m.sent[1] as Sent).text).not.toContain("more comment");
+  });
+
+  it("one left-out comment reads in the singular", async () => {
+    const s = await setup();
+    const day = new Date().toISOString().slice(0, 10);
+    const key = `email:c:to:${await sha256Hex(s.owner.email.toLowerCase())}`;
+    await E.DB.prepare(
+      "insert into counters (key, n, day) values (?, ?, ?) on conflict (key) do update set n = excluded.n, day = excluded.day",
+    )
+      .bind(key, MAX_COMMENT_EMAILS_PER_RECIPIENT_PER_DAY, day)
+      .run();
+    const m = mailer();
+    await thread(m.e, s.id, person(s.editor), s.editor);
+    await E.DB.prepare("delete from counters where key = ?").bind(key).run();
+    await thread(m.e, s.id, person(s.editor), s.editor);
+    expect((m.sent[0] as Sent).text).toContain(
+      "1 more comment wasn't emailed. It's on the page.",
+    );
   });
 });

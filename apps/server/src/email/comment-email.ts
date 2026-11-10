@@ -29,14 +29,18 @@ const COPY = {
     mention: "you were mentioned",
     ask: "the question is for you",
   },
-  leftOut:
-    "{{k}} more comments today weren't emailed. They're all on the page.",
+  leftOut: "{{k}} more comments weren't emailed. They're all on the page.",
+  leftOutOne: "1 more comment wasn't emailed. It's on the page.",
   open: "Open the comment",
   window:
     "New replies in this thread for the next 15 minutes stay on the page, with no email.",
   because: "You're getting this because {{reason}}.",
   stop: "Stop comment emails",
   settings: "Change this in Settings",
+  // copy: confirm page wording is the builder's; Product gave only the button
+  confirmTitle: "Turn off comment emails?",
+  confirmBody: "You'll stop getting emails about comments on {{instance}}.",
+  confirmButton: "Turn off comment emails",
   offTitle: "Comment emails are off.",
   offBody:
     "You won't get emails about comments on {{instance}}. Turn them back on in Settings.",
@@ -119,7 +123,11 @@ export function commentEmail(p: {
   const opening = fill(COPY.opening[p.reason], values);
   const because = fill(COPY.because, { reason: COPY.reason[p.reason] });
   const left =
-    p.leftOut > 0 ? fill(COPY.leftOut, { k: String(p.leftOut) }) : null;
+    p.leftOut === 1
+      ? COPY.leftOutOne
+      : p.leftOut > 1
+        ? fill(COPY.leftOut, { k: String(p.leftOut) })
+        : null;
   const text = [
     opening,
     `"${p.excerpt}"`,
