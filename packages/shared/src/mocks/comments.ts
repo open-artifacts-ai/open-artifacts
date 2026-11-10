@@ -146,7 +146,8 @@ export function createCommentMock({
     if (seedAgents) {
       const agent = (linked: boolean): CommentAuthor => ({
         kind: "agent",
-        name: "OA Product",
+        // An unlinked agent is named by its product (server rule).
+        name: linked ? "OA Product" : "Claude Code",
         for: "Leo Urbina",
         linked,
         ...(linked

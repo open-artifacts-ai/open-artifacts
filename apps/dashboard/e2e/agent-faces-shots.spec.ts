@@ -1,5 +1,5 @@
-// #1822: the comments panel (mock=agents) with a linked agent, an unlinked agent of the same
-// name and a person, at 1280 and 390, light and dark.
+// #1822: the comments panel (mock=agents) with a person, a linked agent
+// ("OA Product", fox) and an unlinked agent ("Claude Code", outline), at 1280 and 390, light and dark.
 import { mkdirSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 

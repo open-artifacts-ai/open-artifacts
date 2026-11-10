@@ -78,4 +78,17 @@ describe("#1822 author face", () => {
         .backgroundColor,
     ).toBe(`var(--oa-presence-${11 % PRESENCE_PALETTE_SIZE})`);
   });
+  it("a negative palette index stays in range", () => {
+    const c = face({ ...linked, animal: { id: "duck", color: -1 } });
+    expect(
+      c.querySelector<HTMLElement>('[data-avatar="agent"]')?.style
+        .backgroundColor,
+    ).toBe(`var(--oa-presence-${PRESENCE_PALETTE_SIZE - 1})`);
+  });
+  it("a linked agent is announced as linked, even with no product", () => {
+    const c = face({ ...linked, product: undefined });
+    expect(c.querySelector(".sr-only")?.textContent).toBe("linked, ");
+    expect(c.textContent).toContain("for Leo Urbina");
+    expect(face(unlinked).querySelector(".sr-only")).toBeNull();
+  });
 });

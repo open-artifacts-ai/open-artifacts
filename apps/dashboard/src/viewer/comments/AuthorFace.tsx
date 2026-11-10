@@ -35,7 +35,8 @@ export function AuthorFace({ a }: { a: CommentAuthor }) {
   }
   const animal = linkedFace(a);
   if (animal) {
-    const color = `var(--oa-presence-${animal.color % PRESENCE_PALETTE_SIZE})`;
+    const n = PRESENCE_PALETTE_SIZE;
+    const color = `var(--oa-presence-${((animal.color % n) + n) % n})`;
     return (
       <span
         aria-hidden="true"
@@ -64,7 +65,8 @@ export function AuthorFace({ a }: { a: CommentAuthor }) {
 /** The agent's second line: "Claude Code · for Leo", or "not linked · for Leo". */
 export function AuthorSub({ a }: { a: CommentAuthor }) {
   if (a.kind !== "agent") return null;
-  const lead = linkedFace(a) ? a.product : "not linked";
+  const isLinked = linkedFace(a) !== null;
+  const lead = isLinked ? a.product : "not linked";
   const text = [lead, a.for ? `for ${a.for}` : ""].filter(Boolean).join(" · ");
   if (!text) return null;
   return (
@@ -72,6 +74,7 @@ export function AuthorSub({ a }: { a: CommentAuthor }) {
       data-for=""
       className="min-w-0 truncate text-[length:var(--oa-text-xs)] text-muted-foreground"
     >
+      {isLinked && <span className="sr-only">linked, </span>}
       {text}
     </span>
   );
