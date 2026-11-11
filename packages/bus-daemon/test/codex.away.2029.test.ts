@@ -39,7 +39,9 @@ const A1 = 200;
 const A2 = 201;
 const A3 = 202;
 /** Positive waits under a loaded full-package run. */
-const LOADED = { timeout: 8000 };
+const LOADED = { timeout: 15_000, interval: 10 };
+/** vi.waitFor with a timeout that survives a full-package run (a fake codex is a node process: >1 s when loaded). */
+const waitFor: typeof vi.waitFor = (fn, o) => vi.waitFor(fn, o ?? LOADED);
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 const line = (type: string, payload: object) =>
   `${JSON.stringify({ timestamp: new Date().toISOString(), type, payload })}\n`;
@@ -227,7 +229,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const w = world();
     const one = await daemonHarness({ attest: undefined, codex: w.codex });
     await one.adapter(THREAD, codexHello(THREAD, A1));
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(readCodexAway(w.files.awayFile, Date.now())).toMatchObject([
         { ref: THREAD, name: "my-codex", namespace: "ns" },
       ]),
@@ -239,7 +241,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const w = world();
     const { two, logs } = await restarted(w);
     const stop = answerLists(two, () => 3);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await waitFor(() => expect(w.runs()).toHaveLength(1));
     expect(JSON.parse(w.runs()[0] as string)).toEqual([
       "queue",
       `--thread=${THREAD}`,
@@ -269,7 +271,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const w = world();
     const { two } = await restarted(w);
     const stop = answerLists(two, () => 1);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await waitFor(() => expect(w.runs()).toHaveLength(1));
     stop();
     await stopAll();
     w.state.alive.delete(P2);
@@ -295,7 +297,7 @@ describe("waking an away Codex thread (#2029)", () => {
       claude: { syncMs: 20 },
     });
     const stop3 = answerLists(three, () => 1);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(2));
+    await waitFor(() => expect(w.runs()).toHaveLength(2));
     stop3();
   });
 
@@ -304,7 +306,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const { two, logs } = await restarted(w);
     const stop = answerLists(two, () => undefined);
 
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(logs.some((l) => /skipped: no mail waiting/.test(l))).toBe(true),
     );
     await new Promise((r) => setTimeout(r, 150));
@@ -317,7 +319,7 @@ describe("waking an away Codex thread (#2029)", () => {
     writeFileSync(w.exit, "1");
     const { two, logs } = await restarted(w);
     const stop = answerLists(two, () => 2);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await waitFor(() => expect(w.runs()).toHaveLength(1));
     await new Promise((r) => setTimeout(r, 300));
     expect(w.runs()).toHaveLength(1);
     expect(logs.some((l) => /codex wake .* failed/.test(l))).toBe(true);
@@ -337,7 +339,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const w2 = world();
     const { two: t2, logs } = await restarted(w2, { wakes: async () => false });
     const stop2 = answerLists(t2, () => 2);
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(logs.some((l) => /does not wake/.test(l))).toBe(true),
     );
     expect(w2.runs()).toHaveLength(0);
@@ -372,8 +374,8 @@ describe("waking an away Codex thread (#2029)", () => {
     const w = world();
     const { two, logs } = await restarted(w, { wakeAnswerMs: 0 });
     const stop = answerLists(two, () => 2);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
-    await vi.waitFor(() =>
+    await waitFor(() => expect(w.runs()).toHaveLength(1));
+    await waitFor(() =>
       expect(logs.some((l) => /wake_unanswered/.test(l))).toBe(true),
     );
     // The sender still sees held: no ack, and the thread is not admitted.
@@ -388,7 +390,7 @@ describe("waking an away Codex thread (#2029)", () => {
     // Same mail count: never again.
     const a = await restarted(w, { wakeAgainMs: 0 });
     const stopA = answerLists(a.two, () => 2);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await waitFor(() => expect(w.runs()).toHaveLength(1));
     await new Promise((r) => setTimeout(r, 300));
     expect(w.runs()).toHaveLength(1);
     stopA();
@@ -398,7 +400,7 @@ describe("waking an away Codex thread (#2029)", () => {
     let waiting = 1;
     const b = await restarted(w2, { wakeAgainMs: 0 });
     const stopB = answerLists(b.two, () => waiting++);
-    await vi.waitFor(() => expect(w2.runs()).toHaveLength(3));
+    await waitFor(() => expect(w2.runs()).toHaveLength(3));
     await new Promise((r) => setTimeout(r, 300));
     expect(w2.runs()).toHaveLength(3);
     stopB();
@@ -409,7 +411,7 @@ describe("waking an away Codex thread (#2029)", () => {
     let n3 = 1;
     const c = await restarted(w3);
     const stopC = answerLists(c.two, () => n3++);
-    await vi.waitFor(() => expect(w3.runs()).toHaveLength(1));
+    await waitFor(() => expect(w3.runs()).toHaveLength(1));
     await new Promise((r) => setTimeout(r, 300));
     expect(w3.runs()).toHaveLength(1);
     stopC();
@@ -425,7 +427,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const w = world();
     const { two } = await restarted(w);
     const stop = answerLists(two, () => 2);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await waitFor(() => expect(w.runs()).toHaveLength(1));
     const EXEC = "exec-0b5c2a8e-3f1d-4c6a-9e2b-7d4f1a3c5e6b";
     const file = join(
       w.home,
@@ -514,9 +516,9 @@ describe("waking an away Codex thread (#2029)", () => {
       },
     );
     const stop = answerLists(two, () => count);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await waitFor(() => expect(w.runs()).toHaveLength(1));
     // All three wake slots are spent by the refusal.
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const spent = readFileSync(w.files.wokenFile, "utf8");
       for (const n of [1, 2, 3]) expect(spent).toContain(`#${n}`);
     });
@@ -524,7 +526,7 @@ describe("waking an away Codex thread (#2029)", () => {
     const before = readFileSync(w.files.awayFile, "utf8");
     t += 2 * 3_600_000;
     count = 7;
-    await vi.waitFor(() =>
+    await waitFor(() =>
       expect(readFileSync(w.files.awayFile, "utf8")).not.toBe(before),
     );
     expect(w.runs()).toHaveLength(1);
@@ -547,7 +549,7 @@ describe("waking an away Codex thread (#2029)", () => {
       },
     });
     const stop = answerLists(two, () => 2);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await waitFor(() => expect(w.runs()).toHaveLength(1));
     expect(wakesLog).toContain(P2);
     // The daemon is the lock holder and the adapter's parent.
     await two.adapter(
@@ -574,25 +576,22 @@ describe("waking an away Codex thread (#2029)", () => {
     let i = 0;
     const { two } = await restarted(w, { wakeAgainMs: 0 });
     const stop = answerLists(two, () => seq[Math.min(i++, seq.length - 1)]);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(2), LOADED);
+    await waitFor(() => expect(w.runs()).toHaveLength(2));
     // Signal, not a sleep: two more asks have been answered with the same count.
-    await vi.waitFor(
-      () => expect(i).toBeGreaterThanOrEqual(seq.length + 2),
-      LOADED,
-    );
+    await waitFor(() => expect(i).toBeGreaterThanOrEqual(seq.length + 2));
     expect(w.runs()).toHaveLength(2);
     stop();
     await stopAll();
     const w2 = world();
     const c = await restarted(w2, { wakeAgainMs: 0 });
     const stop2 = answerLists(c.two, () => 100);
-    await vi.waitFor(() => expect(w2.runs()).toHaveLength(3), LOADED);
+    await waitFor(() => expect(w2.runs()).toHaveLength(3));
     // All three slots are spent and recorded; a fourth does not exist.
-    await vi.waitFor(() => {
+    await waitFor(() => {
       const spent = readFileSync(w2.files.wokenFile, "utf8");
       for (const n of [1, 2, 3]) expect(spent).toContain(`#${n}`);
       expect(spent).not.toContain("#4");
-    }, LOADED);
+    });
     expect(w2.runs()).toHaveLength(3);
     stop2();
   });
@@ -626,7 +625,7 @@ describe("waking an away Codex thread (#2029)", () => {
     };
     const { two } = await restarted(w, { run });
     const stop = answerLists(two, () => 2);
-    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    await waitFor(() => expect(seen).toHaveLength(1));
     expect(seen).toEqual([true]);
     await new Promise((r) => setTimeout(r, 300));
     expect(seen).toHaveLength(1);
@@ -662,7 +661,7 @@ describe("waking an away Codex thread (#2029)", () => {
     w.state.locks.set(OTHER, [P2]);
     const { two } = await restarted(w);
     const stop = answerLists(two, () => 2);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await waitFor(() => expect(w.runs()).toHaveLength(1));
     await new Promise((r) => setTimeout(r, 200));
     expect(w.runs().map((r) => JSON.parse(r)[1])).toEqual([
       `--thread=${THREAD}`,
@@ -782,7 +781,7 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
     const stop = answerQueries(two, (refs) =>
       refs.includes(THREAD) ? { [THREAD]: 3 } : ({} as Record<string, number>),
     );
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await waitFor(() => expect(w.runs()).toHaveLength(1));
     expect(two.of("list")).toHaveLength(0);
     for (const q of two.of("waiting_query"))
       expect(q.agent_refs).toEqual([THREAD]);
@@ -861,7 +860,7 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
         });
       }
     }, 5);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    await waitFor(() => expect(w.runs()).toHaveLength(1));
     expect(two.of("waiting_query")).toHaveLength(0);
     expect(two.of("list").every((f) => f.from_ref === NEAR)).toBe(true);
     clearInterval(t);

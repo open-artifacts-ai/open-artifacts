@@ -169,7 +169,11 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       (f): f is Extract<DaemonToHub, { type: T }> => f.type === type,
     );
   const next = async <T extends DaemonToHub["type"]>(type: T, n = 1) => {
-    await vi.waitFor(() => expect(of(type).length).toBeGreaterThanOrEqual(n));
+    // A signal, so the timeout costs nothing when it passes; a fake codex is a node process, >1 s under a full-package run.
+    await vi.waitFor(() => expect(of(type).length).toBeGreaterThanOrEqual(n), {
+      timeout: 15_000,
+      interval: 10,
+    });
     return of(type)[n - 1] as Extract<DaemonToHub, { type: T }>;
   };
   const toDaemon = (f: object) =>
