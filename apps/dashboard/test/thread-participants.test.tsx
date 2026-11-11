@@ -12,6 +12,12 @@ import { ThreadParticipants } from "../src/viewer/comments/threadParticipants";
 // #2174: who is in a thread, at its top.
 
 const mutate = vi.fn();
+class RO {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+vi.stubGlobal("ResizeObserver", RO);
 vi.mock("../src/api/comments", () => ({
   useThreadAgent: () => ({ mutate, isPending: false }),
   useCommentErrorCtx: () => ({}),
@@ -175,6 +181,25 @@ describe("ThreadParticipants", () => {
     fireEvent.focus(trigger());
     expect(list()?.textContent).toContain("OA Bus");
     expect(screen.queryByRole("button", { name: /Stop notifying/ })).toBeNull();
+  });
+
+  it("a view-only agent shows whose it is, with the reason on focus", async () => {
+    render(
+      <ThreadParticipants t={thread([agent("OA Bus", false)])} api={api()} />,
+    );
+    fireEvent.focus(trigger());
+    const who = document.querySelector("[data-view-only]") as HTMLElement;
+    expect(who.textContent).toBe("Sam's agent");
+    fireEvent.focus(who);
+    expect((await screen.findByRole("tooltip")).textContent).toBe(
+      "Only Sam Rivera, whose agent it is, or the artifact's owner can remove it.",
+    );
+  });
+
+  it("more than three shows +N", () => {
+    const many = ["A", "B", "C"].map((n) => agent(n, true));
+    render(<ThreadParticipants t={thread(many)} api={api()} />);
+    expect(count()).toBe("+2");
   });
 
   it("a guest sees people only, no agents", () => {

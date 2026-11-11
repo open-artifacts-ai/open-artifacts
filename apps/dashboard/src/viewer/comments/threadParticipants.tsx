@@ -2,7 +2,7 @@ import type { CommentAuthor, CommentThread, ThreadAgent } from "@oa/shared";
 import { useEffect, useId, useRef, useState } from "react";
 import { TXT } from "../ui";
 import { AuthorFace, initials, PartyFace } from "./AuthorFace";
-import { RemovalNotices, useAgentRemoval } from "./threadAgents";
+import { RemovalNotices, Tip, useAgentRemoval } from "./threadAgents";
 import type { CommentsApi } from "./useComments";
 
 const MUTED = "text-muted-foreground";
@@ -26,7 +26,7 @@ const Person = ({ a }: { a: CommentAuthor }) => (
   <span
     aria-hidden="true"
     data-avatar=""
-    className="flex size-5 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[9px] font-medium text-foreground"
+    className="flex size-5 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[9px] ring-2 ring-background font-medium text-foreground"
   >
     {initials(a.name)}
   </span>
@@ -76,7 +76,11 @@ export function ThreadParticipants({
 
   const faces: React.ReactNode[] = [
     ...people.map((p) => <Person key={`p-${p.id ?? p.name}`} a={p} />),
-    ...[...live, ...off].map((a) => <PartyFace key={a.key} p={a} />),
+    ...[...live, ...off].map((a) => (
+      <span key={a.key} className="rounded-md ring-2 ring-background">
+        <PartyFace p={a} medium />
+      </span>
+    )),
   ].slice(0, SHOWN);
   const names = [
     `${people.length} ${people.length === 1 ? "person" : "people"}`,
@@ -144,16 +148,18 @@ export function ThreadParticipants({
           setOpen((o) => (mouse.current ? true : !o));
         }}
       >
-        <span aria-hidden="true" className="flex items-center gap-0.5">
+        <span aria-hidden="true" className="flex items-center -space-x-1.5">
           {faces}
         </span>
-        <span data-participants-count="">{n}</span>
+        <span data-participants-count="">
+          {n > SHOWN ? `+${n - SHOWN}` : n}
+        </span>
       </button>
       {open && (
         <div
           id={id}
           data-participants-list=""
-          className="absolute top-[calc(100%+6px)] right-0 z-20 flex w-max max-w-[min(20rem,calc(100vw-4rem))] min-w-56 flex-col gap-1 rounded-lg border border-border bg-popover p-2.5 text-popover-foreground shadow-md"
+          className="absolute top-[calc(100%+6px)] right-0 z-20 flex w-max max-w-[calc(100vw-3.75rem)] min-w-[min(20.6rem,calc(100vw-3.75rem))] flex-col gap-1 rounded-lg border border-border bg-popover p-2.5 text-popover-foreground shadow-md"
         >
           {people.length > 0 && (
             <>
@@ -186,6 +192,21 @@ export function ThreadParticipants({
                   <span className={`ml-auto whitespace-nowrap ${MUTED}`}>
                     Gets replies
                   </span>
+                  {!a.canRemove && (
+                    <Tip
+                      text={`Only ${a.for ?? "the person"}, whose agent it is, or the artifact's owner can remove it.`}
+                    >
+                      <button
+                        type="button"
+                        data-view-only=""
+                        className="cursor-help whitespace-nowrap rounded-full border border-border px-1.5 text-[length:var(--oa-text-xs)] text-muted-foreground"
+                      >
+                        {a.for
+                          ? `${a.for.split(" ")[0]}'s agent`
+                          : "Another agent"}
+                      </button>
+                    </Tip>
+                  )}
                   {a.canRemove && (
                     <button
                       type="button"

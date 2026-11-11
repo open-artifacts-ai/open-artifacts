@@ -25,7 +25,7 @@ const CHIP =
 const chipPad = (a: ThreadAgent) => (a.canRemove ? "pr-0.5" : "pr-2.5");
 
 /** A tooltip on hover and focus (Radix wires aria-describedby). */
-function Tip({
+export function Tip({
   text,
   children,
   open,
