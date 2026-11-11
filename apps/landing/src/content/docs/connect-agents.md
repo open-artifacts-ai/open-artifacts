@@ -60,7 +60,7 @@ In `opencode.json`:
 }
 ```
 
-Then run `opencode mcp auth open-artifacts` and sign in. The server goes under `mcp.<name>`, as shown.
+Then run `opencode mcp auth open-artifacts` and sign in.
 
 ## Without OAuth
 
