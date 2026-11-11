@@ -139,7 +139,7 @@ function RoleSelect({
 /** Design's notice where a person is added or restored and the trial starts (#1836). */
 function TrialNotice({ endsOn }: { endsOn: string }) {
   return (
-    <Notice tone="info" title="This starts your 30-day trial of Business.">
+    <Notice tone="info" title="This starts your 30-day Team trial.">
       Trial ends {endsOn}.
     </Notice>
   );
@@ -171,7 +171,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   const spaces = hasFeature(me, "spaces");
   const invite = useInviteMember();
   const domains = useSignInDomains();
-  // #1836: the first invite starts the Business trial; the dialog says so.
+  // #1836: the first invite starts the Team trial; the dialog says so.
   // Decided when the dialog opens, so the date doesn't move under the owner.
   const [trial] = useState(() =>
     trialWouldStart(me) ? { endsOn: trialEndsOn() } : null,
@@ -376,10 +376,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
         )}
         <RoleSelect label="Role" value={role} onChange={setRole} />
         {trial && (
-          <Notice
-            tone="info"
-            title="This starts your 30-day trial of Business."
-          >
+          <Notice tone="info" title="This starts your 30-day Team trial.">
             Trial ends {trial.endsOn}.
           </Notice>
         )}

@@ -1,0 +1,15 @@
+[
+  {
+    "id": "open-artifacts-shortcuts@open-artifacts",
+    "version": "0.1.0",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/home/u/.claude/plugins/cache/open-artifacts/open-artifacts-shortcuts/0.1.0",
+    "readFromFolder": "/home/u/code/oa-wt-2095/packages/claude-code-shortcuts/plugin",
+    "folderVersion": "0.1.0",
+    "installedAt": "2026-11-11T15:35:56.194Z",
+    "lastUpdated": "2026-11-11T15:35:56.194Z",
+    "projectEnabled": false,
+    "hasUserConfig": true
+  }
+]
