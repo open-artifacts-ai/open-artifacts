@@ -47,6 +47,7 @@ import {
 import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
+import { promisify } from "node:util";
 
 export const AGENT_CLIS = [
   "claude",
@@ -224,35 +225,47 @@ const req = createRequire(import.meta.url);
 const target = req("node:child_process") as typeof cpTypes & {
   [GUARDED]?: boolean;
 };
-if (!target[GUARDED]) {
-  target[GUARDED] = true;
-  const fileFns = ["spawn", "spawnSync", "execFile", "execFileSync"] as const;
-  for (const fn of fileFns) {
-    const orig = target[fn] as (...a: unknown[]) => unknown;
-    (target as unknown as Record<string, unknown>)[fn] = function (
+type Fn = (...a: unknown[]) => unknown;
+/** Wrap `orig` so `inspect` runs first; the result and `this` pass through
+ * untouched. promisify.custom (execFile, exec) is wrapped too, or
+ * util.promisify would fall back to a generic version that drops the
+ * `child` on the returned promise and changes timeout behavior. */
+function guarded(orig: Fn, inspect: (a: unknown[]) => void): Fn {
+  const wrapper = function (this: unknown, ...a: unknown[]) {
+    inspect(a);
+    return orig.apply(this, a);
+  };
+  const custom = (orig as unknown as Record<symbol, Fn | undefined>)[
+    promisify.custom
+  ];
+  if (custom)
+    (wrapper as unknown as Record<symbol, Fn>)[promisify.custom] = function (
       this: unknown,
       ...a: unknown[]
     ) {
+      inspect(a);
+      return custom.apply(this, a);
+    };
+  return wrapper;
+}
+
+if (!target[GUARDED]) {
+  target[GUARDED] = true;
+  const t = target as unknown as Record<string, Fn>;
+  for (const fn of ["spawn", "spawnSync", "execFile", "execFileSync"])
+    t[fn] = guarded(t[fn] as Fn, (a) => {
       const opts = optsOf(a.slice(1));
       const file = String(a[0]);
       const args = Array.isArray(a[1]) ? (a[1] as string[]) : [];
       scanWords([file, ...args], cwdOf(opts));
       if (opts.shell) checkShellString(file, opts.env, cwdOf(opts));
       else check(file, args, opts.env, cwdOf(opts));
-      return orig.apply(this, a);
-    };
-  }
-  for (const fn of ["exec", "execSync"] as const) {
-    const orig = target[fn] as (...a: unknown[]) => unknown;
-    (target as unknown as Record<string, unknown>)[fn] = function (
-      this: unknown,
-      ...a: unknown[]
-    ) {
+    });
+  for (const fn of ["exec", "execSync"])
+    t[fn] = guarded(t[fn] as Fn, (a) => {
       const opts = optsOf(a.slice(1));
       scanWords([String(a[0])], cwdOf(opts));
       checkShellString(String(a[0]), opts.env, cwdOf(opts));
-      return orig.apply(this, a);
-    };
-  }
+    });
   syncBuiltinESMExports();
 }

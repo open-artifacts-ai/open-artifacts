@@ -4,6 +4,7 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -11,9 +12,11 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { AGENT_CLIS, BLOCK_EXIT, STUB_DIR } from "./agent-cli-guard";
 
+const pi_ = () => "/usr/bin/pi";
 const MSG = (n: string) => `real ${n} blocked by the test guard (#2168)`;
 
 describe("agent CLI guard (#2168)", () => {
@@ -98,6 +101,35 @@ describe("agent CLI guard (#2168)", () => {
       expect(() => cp.execSync(`echo hi; ${pi} x`)).toThrow(blocked);
     });
   });
+
+  it("keeps the exact makeExec call shape: promisify(execFile) with a timeout and a child holding stdout", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ob-guard-shape-"));
+    const sh = join(dir, "opencode");
+    writeFileSync(sh, "#!/bin/sh\nsleep 30\necho 9.9.9\n");
+    chmodSync(sh, 0o755);
+    const t0 = Date.now();
+    const p = promisify(cp.execFile)(sh, ["--version"], {
+      maxBuffer: 1 << 20,
+      timeout: 500,
+      killSignal: "SIGKILL",
+    });
+    expect(p.child?.stdin).toBeDefined(); // the child rides on the promise
+    await expect(p).rejects.toMatchObject({ killed: true });
+    expect(Date.now() - t0).toBeLessThan(5000);
+    // callback form returns the ChildProcess; sync forms return their result
+    const child = cp.execFile("echo", ["x"], () => {});
+    expect(child.stdin).toBeDefined();
+    expect(cp.spawnSync("echo", ["x"], { encoding: "utf8" }).stdout).toBe(
+      "x\n",
+    );
+    expect(cp.execFileSync("echo", ["y"], { encoding: "utf8" })).toBe("y\n");
+    expect(cp.execSync("echo z", { encoding: "utf8" })).toBe("z\n");
+    expect(cp.spawn("echo", ["x"]).pid).toBeGreaterThan(0);
+    // and the promisified forms still refuse a real binary
+    await expect(async () => promisify(cp.execFile)(pi_(), [])).rejects.toThrow(
+      /blocked by the test guard/,
+    );
+  }, 15_000);
 
   it("leaves other commands and fakes in a temp dir alone", () => {
     expect(cp.spawnSync("echo", ["hi"], { encoding: "utf8" }).stdout).toBe(
