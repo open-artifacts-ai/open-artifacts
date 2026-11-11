@@ -1038,6 +1038,17 @@ describe("space mappings", () => {
     }
   });
 
+  it("DELETE of a space mapping is a removal: allowed while frozen; off → 409 directory_sync_off", async () => {
+    const s = await createSpace({}, OFF);
+    const g = await group([]);
+    expect((await putMap(GOOGLE, admin, s.id, g, "viewer")).status).toBe(200);
+    expect((await delMap(FROZEN, admin, s.id, g)).status).toBe(204);
+    expect((await putMap(GOOGLE, admin, s.id, g, "viewer")).status).toBe(200);
+    expect(await code(await delMap(OFF, admin, s.id, g))).toBe(
+      "directory_sync_off",
+    );
+  });
+
   it("space manager maps a group as viewer → 200, audited mapping.set; its members get the role", async () => {
     const { s, mgr } = await staffed();
     const m = await mk("gm");
@@ -1356,6 +1367,18 @@ describe("Every-space mappings", () => {
     expect(await revokedAt(m.userId)).not.toBeNull();
     const rows = await audits("mapping.remove", g);
     expect(JSON.parse(rows[0]?.detail ?? "{}")).toEqual({ scope: "org" });
+  });
+
+  it("frozen: DELETE of an org mapping is allowed (an Every space mapping no longer refreshes); off still 409", async () => {
+    const g = await group([]);
+    const r = await call(FROZEN, R.orgMapping(g), admin.cookie, {
+      method: "DELETE",
+    });
+    expect(await code(r)).toBe("not_found");
+    const off = await call(OFF, R.orgMapping(g), admin.cookie, {
+      method: "DELETE",
+    });
+    expect(await code(off)).toBe("directory_sync_off");
   });
 
   it("sync off → 409; a space manager → 404", async () => {

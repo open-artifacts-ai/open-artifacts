@@ -1,7 +1,7 @@
 import type { DirectoryMode, Member } from "@oa/shared";
 import { brokerTransportKind } from "../auth/broker-transport.js";
 import { scopedPlan } from "../billing/features.js";
-import { billingActive } from "../billing/plan.js";
+import { billingActive, directoryPlanError } from "../billing/plan.js";
 import { directoryClient } from "../directory/client.js";
 import { directorySignIn, SignInRefused } from "../directory/signin.js";
 import { readBinding } from "../directory/store.js";
@@ -122,7 +122,16 @@ export async function feedSync(env: Env): Promise<FeedOutcome> {
   const ns = env.DIRECTORY_SYNC;
   const client = directoryClient(env);
   const mode = syncModeFor(env);
-  if (!ns || !client || mode === "off") return "off";
+  if (ns && mode === "off") {
+    // A plan with no directory at all (Solo or free, e.g. Business to Solo):
+    // tell a DO that has synced before to go off, or its alarm keeps the
+    // last handed mode. Sets only the mode and pause keys; the binding and
+    // synced rows stay.
+    if (billingActive(env) && (await readBinding(env)).binding)
+      await ns.get(ns.idFromName(SYNC_DO_NAME)).wantsToken("off", false);
+    return "off";
+  }
+  if (!ns || !client) return "off";
   if (client.kind !== "broker") return "self";
   const kind = brokerTransportKind(env, "directory");
   // Hosted without the capability: nothing can feed the DO from here (its
@@ -189,6 +198,19 @@ export function syncPausedFor(env: Env): boolean {
   return (
     billingActive(env) && directoryMode(env) !== "off" && !!scopedPlan()?.lock
   );
+}
+
+/**
+ * Hosted billing: reading or creating directory sync is a Business feature.
+ * Any other plan (Team and the Team trial are frozen, Solo has none) is
+ * refused 403 plan_required. Removals (disconnect, cancel a pending connect,
+ * cancel a snooze) never call this. Self-host (billing off) is never refused.
+ * Nothing is deleted: the binding and synced rows stay for a return to
+ * Business.
+ */
+export function requireDirectoryPlan(env: Env): void {
+  if (!billingActive(env) || directoryMode(env) === "google") return;
+  throw directoryPlanError(scopedPlan()?.tier);
 }
 
 /** The one DirectorySync per install. */
