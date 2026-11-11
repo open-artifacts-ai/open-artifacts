@@ -839,6 +839,121 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     expect(f.runs()).toHaveLength(0);
   });
 
+  it("a taken item whose record cannot be saved is not acked; it is once the write works", async () => {
+    const f = fakeCodex();
+    const dir = tmp("ob-cxp-");
+    const takenFile = join(dir, "p.json");
+    const one = transport({ path: f.bin, from: "path" }, { takenFile });
+    await one.t.deliver(agent(), mail("hi"));
+    writeRollout(one.home, [userItem(codexText(agent(), mail("hi")))]);
+    const onTaken = vi.fn();
+    const w = new TakenWatch({ home: one.home, file: takenFile, onTaken });
+    chmodSync(dir, 0o500);
+    try {
+      w.check();
+      expect(onTaken).not.toHaveBeenCalled();
+      expect(w.state("mmmmmmmmmmmmmmm1")).toBe("queued");
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+    w.check();
+    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+  });
+
+  it("two concurrent delivers of one id run `codex queue` once", async () => {
+    const f = fakeCodex({ sleepMs: 300 });
+    const { t } = transport({ path: f.bin, from: "path" });
+    const both = await Promise.all([
+      t.deliver(agent(), mail("hi")),
+      t.deliver(agent(), mail("hi")),
+    ]);
+    expect(both).toEqual([QUEUED, QUEUED]);
+    expect(f.runs()).toHaveLength(1);
+  });
+
+  it("a restart resumes from the persisted scannedTo, not from the start", async () => {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const one = transport({ path: f.bin, from: "path" }, { takenFile });
+    await one.t.deliver(agent(), mail("hi"));
+    const pad = JSON.stringify({
+      type: "event_msg",
+      payload: { pad: "x".repeat(20_000) },
+    });
+    writeRollout(
+      one.home,
+      Array.from({ length: 30 }, () => pad),
+    );
+    const mk = () =>
+      new TakenWatch({
+        home: one.home,
+        file: takenFile,
+        onTaken: vi.fn(),
+        scanBudget: 100_000,
+      });
+    const scanned = () =>
+      JSON.parse(readFileSync(takenFile, "utf8")).mmmmmmmmmmmmmmm1
+        .scannedTo as number;
+    const w1 = mk();
+    w1.check();
+    w1.check();
+    const after2 = scanned();
+    expect(after2).toBeGreaterThan(100_000);
+    mk().check();
+    expect(scanned()).toBeGreaterThan(after2);
+  });
+
+  it("reconcile: a pass that did not reach the end stays pending (no early re-queue), and a long line is stepped over by the effective budget", async () => {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const home = tmp("ob-cxh-");
+    const crashed = new TakenWatch({
+      home,
+      file: takenFile,
+      onTaken: vi.fn(),
+      scanBudget: 50_000,
+    });
+    expect(crashed.attempt("mmmmmmmmmmmmmmm1", THREAD, "head")).toBe(true);
+    // One line far longer than the budget, no newline within it.
+    writeRollout(home, [JSON.stringify({ pad: "x".repeat(400_000) })]);
+    expect(crashed.reconcile("mmmmmmmmmmmmmmm1")).toBe("pending");
+    for (let i = 0; i < 12; i++) crashed.reconcile("mmmmmmmmmmmmmmm1");
+    expect(crashed.reconcile("mmmmmmmmmmmmmmm1")).toBe("missing");
+    const t = transport({ path: f.bin, from: "path" }, { takenFile, home });
+    await expect(t.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+  });
+
+  it("reconcile finds the item but cannot save `taken`: pending, not acked, taken once it saves", () => {
+    const dir = tmp("ob-cxp-");
+    const home = tmp("ob-cxh-");
+    const w = new TakenWatch({
+      home,
+      file: join(dir, "p.json"),
+      onTaken: vi.fn(),
+    });
+    expect(w.attempt("mmmmmmmmmmmmmmm1", THREAD, "[oa-bus] head")).toBe(true);
+    writeRollout(home, [userItem("[oa-bus] head\n\nbody")]);
+    chmodSync(dir, 0o500);
+    try {
+      expect(w.reconcile("mmmmmmmmmmmmmmm1")).toBe("pending");
+      expect(w.state("mmmmmmmmmmmmmmm1")).toBe("attempt");
+    } finally {
+      chmodSync(dir, 0o700);
+    }
+    expect(w.reconcile("mmmmmmmmmmmmmmm1")).toBe("taken");
+  });
+
+  it("a legacy codex-queued.json beside the record file is removed", () => {
+    const dir = tmp("ob-cxp-");
+    writeFileSync(join(dir, "codex-queued.json"), "{}");
+    new TakenWatch({
+      home: tmp("ob-cxh-"),
+      file: join(dir, "p.json"),
+      onTaken: vi.fn(),
+    });
+    expect(existsSync(join(dir, "codex-queued.json"))).toBe(false);
+  });
+
   it("only a taken record acks: a missing or unreadable record never does", async () => {
     const f = fakeCodex();
     const takenFile = join(tmp("ob-cxp-"), "p.json");

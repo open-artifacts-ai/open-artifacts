@@ -6,8 +6,10 @@ import {
   readFileSync,
   readSync,
   renameSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
+import { dirname, join } from "node:path";
 import { MAILBOX_RETAIN_MS } from "@oa/bus-protocol";
 import { globRollout, readLines, threadRow } from "./codex-attest.ts";
 
@@ -43,6 +45,8 @@ export type TakenRecord = {
   scannedTo?: number;
   ino?: number;
   sig?: string;
+  /** The last pass stepped over a line longer than the budget: the next read starts mid-line, so it skips to the next newline. */
+  skip?: true;
 };
 
 export type TakenOptions = {
@@ -125,6 +129,8 @@ export class TakenWatch {
   constructor(private readonly opts: TakenOptions) {
     this.#now = opts.now ?? Date.now;
     for (const [id, r] of Object.entries(this.#load())) this.#recs.set(id, r);
+    // The queue marker file of an earlier build: one record file now (pre-launch, no migration).
+    rmSync(join(dirname(opts.file), "codex-queued.json"), { force: true });
   }
 
   /** The record's state, or none. */
@@ -211,19 +217,38 @@ export class TakenWatch {
 
   /**
    * An interrupted attempt (a restart found it): whether the rollout, from
-   * before the spawn to its end, holds the item. True marks it taken. False
-   * means unknown (Codex's own queue store is not readable here): the caller
-   * re-queues once, and a possible duplicate beats a silent loss.
+   * before the spawn, holds the item.
+   * - "taken": found, and the `taken` record is saved (only that acks).
+   * - "pending": not found yet but the scan did not reach the end of the
+   *   rollout within one pass's budget (the tick finishes it), or the `taken`
+   *   write failed. Stay queued; never re-queue early, never ack.
+   * - "missing": the scan reached the end without the item. Codex's own queue
+   *   store is not readable here, so the caller re-queues. "Once" is per
+   *   interrupted attempt: N crashes in the spawn window can leave N copies,
+   *   which beats a silent loss.
    */
-  reconcile(id: string): boolean {
+  reconcile(id: string): "taken" | "pending" | "missing" {
     const r = this.#recs.get(id);
-    if (!r || r.state !== "attempt" || r.head === undefined) return false;
+    if (!r || r.state !== "attempt" || r.head === undefined) return "missing";
     const found: string[] = [];
-    this.#scan(id, r, found, Number.POSITIVE_INFINITY);
-    if (!found.length) return false;
-    r.state = "taken";
+    const before = { scannedTo: r.scannedTo, skip: r.skip };
+    const atEof = this.#scan(
+      id,
+      r,
+      found,
+      this.opts.scanBudget ?? TAKEN_SCAN_BUDGET,
+    );
+    if (found.length) {
+      r.state = "taken";
+      if (this.#save()) return "taken";
+      r.state = "attempt";
+      r.scannedTo = before.scannedTo;
+      if (before.skip) r.skip = true;
+      else r.skip = undefined;
+      return "pending";
+    }
     this.#save();
-    return true;
+    return atEof ? "missing" : "pending";
   }
 
   /** Reads each watched record's new rollout lines; acks what a turn took. */
@@ -232,7 +257,10 @@ export class TakenWatch {
     const now = this.#now();
     let changed = false;
     const taken: string[] = [];
-    const was = new Map<string, number | undefined>();
+    const was = new Map<
+      string,
+      { state: TakenRecord["state"]; scannedTo?: number; skip?: true }
+    >();
     for (const [id, r] of this.#recs) {
       const ttl = r.ttlMs ?? this.opts.ttlMs ?? MAILBOX_RETAIN_MS;
       if (
@@ -258,23 +286,29 @@ export class TakenWatch {
       ) {
         const found: string[] = [];
         const before = r.scannedTo;
+        const beforeSkip = r.skip;
         this.#scan(id, r, found, this.opts.scanBudget ?? TAKEN_SCAN_BUDGET);
         if (found.length) {
-          was.set(id, before);
+          was.set(id, {
+            state: r.state,
+            scannedTo: before,
+            ...(beforeSkip ? { skip: true as const } : {}),
+          });
           r.state = "taken";
           taken.push(id);
           changed = true;
         } else if (r.scannedTo !== before) changed = true;
       }
     }
-    // Read back before it is reported: only a saved `taken` acks.
+    // Only a saved `taken` acks: if the write fails, nothing is reported and the next pass reads again.
     if (changed && !this.#save()) {
       for (const id of taken) {
         const r = this.#recs.get(id);
-        if (r) {
-          // Read again next pass, from where it was.
-          r.state = "queued";
-          r.scannedTo = was.get(id);
+        const w = was.get(id);
+        if (r && w) {
+          r.state = w.state;
+          r.scannedTo = w.scannedTo;
+          r.skip = w.skip;
         }
       }
       return;
@@ -298,17 +332,18 @@ export class TakenWatch {
   }
 
   /** Scans forward from `scannedTo`, at most `budget` bytes; pushes `id` into `found` on a match. */
-  #scan(id: string, r: TakenRecord, found: string[], budget: number): void {
+  /** Whether the pass reached the end of the rollout (or there is none to read). */
+  #scan(id: string, r: TakenRecord, found: string[], budget: number): boolean {
     if (!r.rollout) {
       r.rollout = this.#rollout(r.thread);
-      if (!r.rollout) return;
+      if (!r.rollout) return true;
     }
     let fd: number;
     try {
       fd = openSync(r.rollout, "r");
     } catch {
       r.rollout = undefined; // moved: found again next time
-      return;
+      return true;
     }
     try {
       const stat = fstatSync(fd);
@@ -319,8 +354,10 @@ export class TakenWatch {
         r.ino !== undefined &&
         (r.ino !== stat.ino ||
           (r.sig !== undefined && sig !== undefined && !samePrefix(r.sig, sig)))
-      )
+      ) {
         r.scannedTo = 0;
+        r.skip = undefined;
+      }
       r.ino = stat.ino;
       // A file that was shorter than 512 bytes grows into a longer prefix.
       if (
@@ -331,7 +368,9 @@ export class TakenWatch {
       let from = r.scannedTo ?? r.startOffset ?? 0;
       if (from > size) from = 0; // truncated
       const limit = Math.min(size, from + budget);
-      let done = readLines(fd, from, limit, false, (line) => {
+      const skipFirst = r.skip === true;
+      r.skip = undefined;
+      let done = readLines(fd, from, limit, skipFirst, (line) => {
         for (const text of userTexts(line))
           if (r.head !== undefined && startsWithHead(text, r.head)) {
             found.push(id);
@@ -340,9 +379,12 @@ export class TakenWatch {
         return false;
       });
       // One line longer than the budget has no end to stop at: step over it.
-      if (done === from && limit < size && limit - from >= TAKEN_SCAN_BUDGET)
+      if (done === from && limit < size && limit - from >= budget) {
         done = limit;
+        r.skip = true;
+      }
       r.scannedTo = done;
+      return limit >= size;
     } finally {
       closeSync(fd);
     }
@@ -378,6 +420,7 @@ export class TakenWatch {
             ...(typeof p.scannedTo === "number"
               ? { scannedTo: p.scannedTo }
               : {}),
+            ...(p.skip === true ? { skip: true as const } : {}),
             ...(typeof p.ino === "number" ? { ino: p.ino } : {}),
             ...(typeof p.sig === "string" ? { sig: p.sig } : {}),
           };

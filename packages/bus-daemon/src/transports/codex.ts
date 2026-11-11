@@ -397,8 +397,12 @@ export class CodexTransport {
     if (this.#flight.has(id)) return { ok: false, taken: "maybe" };
     const head = text.split("\n", 1)[0] ?? "";
     // An interrupted attempt: the rollout may hold the item already.
-    if (st === "attempt" && watch && this.opts.taken.reconcile(id))
-      return { ok: true, how: "taken" };
+    if (st === "attempt" && watch) {
+      const rc = this.opts.taken.reconcile(id);
+      if (rc === "taken") return { ok: true, how: "taken" };
+      // Not found yet, or not reached the rollout's end: the tick finishes the scan.
+      if (rc === "pending") return { ok: false, taken: "maybe" };
+    }
     this.#bin ??= this.opts.resolve();
     const bin = this.#bin;
     if (!bin) {
