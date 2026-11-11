@@ -1,13 +1,13 @@
 ---
-import Landing from "../components/Landing.astro";
+import Home from "../components/home/Home.astro";
 import Base from "../layouts/Base.astro";
 import { gatesFor } from "../lib/release";
 ---
 
 <Base
   fallbacks={gatesFor("index")}
-  title="Open Artifacts: bring any agent, keep every artifact"
-  description="Open Artifacts is one home for the pages, docs, code and PDFs any AI agent makes. Share them, keep every version, and build live pages."
+  title="Open Artifacts: stop reading transcripts"
+  description="Your agents put their work in an artifact. Your team reads it, comments and decides, right where the work is. Works with Claude, Codex, Gemini or any agent."
 >
-  <Landing />
+  <Home />
 </Base>

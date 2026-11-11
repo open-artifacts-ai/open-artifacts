@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { heroActions, SELF_HOST_HREF } from "../src/lib/hero";
+import { heroActions, SELF_HOST_HREF, signupHref } from "../src/lib/hero";
 
 // #421: hosted sign-up leads once its URL is set; until then, self-host does.
 describe("heroActions", () => {
@@ -21,5 +21,15 @@ describe("heroActions", () => {
       },
       { label: "Self-host it", href: SELF_HOST_HREF, primary: false },
     ]);
+  });
+});
+
+describe("signupHref", () => {
+  it("uses the hosted sign-up URL, else the pricing table", () => {
+    expect(signupHref(" https://app.example.com/sign-up ")).toBe(
+      "https://app.example.com/sign-up",
+    );
+    expect(signupHref(undefined)).toBe("#pricing");
+    expect(signupHref("  ")).toBe("#pricing");
   });
 });

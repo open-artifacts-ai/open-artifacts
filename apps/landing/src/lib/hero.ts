@@ -13,3 +13,8 @@ export function heroActions(signupUrl: string | undefined): HeroAction[] {
     { label: "Self-host it", href: SELF_HOST_HREF, primary: false },
   ];
 }
+
+/** Where "Start free for 30 days" goes: hosted sign-up, else the pricing table. */
+export function signupHref(signupUrl: string | undefined): string {
+  return signupUrl?.trim() || "#pricing";
+}
