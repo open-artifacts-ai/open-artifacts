@@ -245,6 +245,9 @@ describe("installAdapters", () => {
     const a = setup(["opencode"]);
     a.deps.env = { OPENCODE_SESSION_ID: "ses_1" };
     expect((await installAdapters(a.deps)).opencodeRestartByUser).toBe(true);
+    const t = setup(["opencode"]);
+    t.deps.env = { OPENCODE_TERMINAL: "1" };
+    expect((await installAdapters(t.deps)).opencodeRestartByUser).toBe(true);
     const b = setup(["opencode"]);
     b.deps.env = { OPENCODE_PID: "1" };
     const out = await installAdapters(b.deps);

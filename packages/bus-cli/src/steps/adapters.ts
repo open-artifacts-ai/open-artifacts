@@ -656,11 +656,15 @@ const OC_RESTARTED = "opencode service restarted";
 const OC_MANUAL = "opencode restart left to the user: running inside OpenCode";
 
 /**
- * True when this ran from a shell an OpenCode session started. Only OpenCode's
- * tool shells carry OPENCODE=1 and OPENCODE_SESSION_ID, not its own process.
+ * True when this ran from a shell OpenCode started: its tool shells carry
+ * OPENCODE=1 and OPENCODE_SESSION_ID, its own terminal OPENCODE_TERMINAL=1. Not its own process.
  */
 const insideOpencode = (deps: Pick<AdapterDeps, "env">) =>
-  Boolean(deps.env?.OPENCODE === "1" || deps.env?.OPENCODE_SESSION_ID);
+  Boolean(
+    deps.env?.OPENCODE ||
+      deps.env?.OPENCODE_TERMINAL ||
+      deps.env?.OPENCODE_SESSION_ID,
+  );
 
 /**
  * A restart drops running OpenCode sessions, so it runs only when the config or
