@@ -4,6 +4,9 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["test/**/*.test.ts"],
-    setupFiles: ["../bus-ipc/test-setup/home-sentinel.ts"],
+    setupFiles: [
+      "../bus-ipc/test-setup/home-sentinel.ts",
+      "../../scripts/test/agent-cli-guard.ts",
+    ],
   },
 });

@@ -69,7 +69,7 @@ export const PlanViewSchema = z.object({
   trialEndsAt: z.string().nullable(),
   /**
    * ISO; the Solo trial's end. Separate from trialEndsAt, which is the
-   * Business trial's only. Owner and admins; null for others; absent when
+   * Team trial's only. Owner and admins; null for others; absent when
    * billing's answer predates it.
    */
   soloTrialEndsAt: z.string().nullable().optional(),
