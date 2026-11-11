@@ -1087,7 +1087,7 @@ function NewThread({ api }: { api: CommentsApi }) {
               {" "}
               <button
                 type="button"
-                className="-my-1.5 min-h-6 cursor-pointer border-0 bg-transparent px-0 py-1.5 underline max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5"
+                className="cursor-pointer border-0 bg-transparent p-0 underline"
                 onClick={() =>
                   void create
                     .mutateAsync({
@@ -1222,7 +1222,7 @@ export function CommentsBody({
             <button
               type="button"
               aria-pressed={api.showResolved}
-              className={`cursor-pointer border-0 bg-transparent p-0 underline underline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] ${MUTED}`}
+              className={`-my-1.5 min-h-6 cursor-pointer border-0 bg-transparent px-0 py-1.5 underline max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5 underline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] ${MUTED}`}
               onClick={() => api.setShowResolved(!api.showResolved)}
             >
               {api.showResolved
