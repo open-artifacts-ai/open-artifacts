@@ -64,13 +64,13 @@ const nodes: Record<string, NodeSpec> = {
 // always innermost.
 const ALLOWED_HREF =
   // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it rejects
-  /^(?:https?|mailto):[^\s\u0000-\u001f\u007f-\u009f<>"`]*$/i;
+  /^(?:https?|mailto):[^\s\u0000-\u001f\u007f-\u009f<>"`\\]*$/i;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it rejects
 const CONTROL_OR_QUOTE = /[\u0000-\u001f\u007f-\u009f"]/;
 
 /**
  * Only http:, https: and mailto: links are allowed (scheme is
- * case-insensitive), with no whitespace, control characters or < > " `.
+ * case-insensitive), with no whitespace, control characters or backslash, < > " `.
  */
 export function isAllowedHref(href: unknown): href is string {
   return typeof href === "string" && ALLOWED_HREF.test(href);

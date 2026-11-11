@@ -306,6 +306,21 @@ describe("hostile link attributes", () => {
       ).toThrow();
     });
   }
+  it("refuses a trailing backslash in an href", () => {
+    expect(isAllowedHref("https://a\\")).toBe(false);
+    expect(() =>
+      docSchema.marks.link.create({ href: "https://a\\" }),
+    ).toThrow();
+  });
+
+  it("round-trips a Markdown href with a backslash", () => {
+    const r = markdownToDoc("[click](<https://a\\>)\n");
+    const out = docToMarkdown(r.doc);
+    const again = markdownToDoc(out);
+    expect(again.changes).toEqual([]);
+    expect(docToMarkdown(again.doc)).toBe(out);
+  });
+
   it("keeps a link with a quote in its title as plain text", () => {
     const r = markdownToDoc('[x](https://a "t\\"q")\n');
     expect(r.changes.map((c) => c.kind)).toEqual(["link"]);

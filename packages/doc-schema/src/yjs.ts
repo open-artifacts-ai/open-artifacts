@@ -132,33 +132,60 @@ function sorted(value: unknown): unknown {
 // A structural form of a Y tree: elements with attributes, text deltas with
 // embeds and formats. Two trees with the same form hold the same content.
 function canonical(fragment: Y.XmlFragment): string {
-  const walk = (node: unknown): unknown => {
-    if (node instanceof Y.XmlText) {
-      const delta = (
-        node.toDelta() as { attributes?: Record<string, unknown> }[]
-      ).map((d) =>
-        d.attributes
-          ? {
-              ...d,
-              attributes: Object.fromEntries(
-                Object.entries(d.attributes).map(([k, v]) => [
-                  k,
-                  stripTiptap(v, true),
-                ]),
-              ),
-            }
-          : d,
-      );
-      return { text: sorted(delta) };
+  type Run = { insert: unknown; attributes?: Record<string, unknown> };
+  const attrsOf = (d: Run) =>
+    d.attributes
+      ? sorted(
+          Object.fromEntries(
+            Object.entries(d.attributes).map(([k, v]) => [
+              k,
+              stripTiptap(v, true),
+            ]),
+          ),
+        )
+      : undefined;
+  // Consecutive Y.XmlText siblings read as one run of text (an empty one as
+  // nothing), and adjacent inserts with equal formats are one insert.
+  const children = (list: unknown[]): unknown[] => {
+    const out: unknown[] = [];
+    let runs: { insert: unknown; attributes?: unknown }[] = [];
+    const flush = () => {
+      if (runs.length > 0) out.push({ text: runs });
+      runs = [];
+    };
+    for (const node of list) {
+      if (node instanceof Y.XmlText) {
+        for (const d of node.toDelta() as Run[]) {
+          const attributes = attrsOf(d);
+          const last = runs[runs.length - 1];
+          if (
+            last &&
+            typeof last.insert === "string" &&
+            typeof d.insert === "string" &&
+            JSON.stringify(last.attributes) === JSON.stringify(attributes)
+          ) {
+            last.insert += d.insert;
+          } else {
+            runs.push({ insert: d.insert, attributes });
+          }
+        }
+      } else {
+        flush();
+        out.push(walk(node));
+      }
     }
+    flush();
+    return out;
+  };
+  const walk = (node: unknown): unknown => {
     if (node instanceof Y.XmlElement) {
       return {
         name: node.nodeName,
         attrs: sorted(stripTiptap(node.getAttributes())),
-        children: node.toArray().map(walk),
+        children: children(node.toArray()),
       };
     }
     return { other: String(node) };
   };
-  return JSON.stringify(fragment.toArray().map(walk));
+  return JSON.stringify(sorted(children(fragment.toArray())));
 }

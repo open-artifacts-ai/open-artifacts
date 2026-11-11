@@ -129,3 +129,72 @@ describe("yXmlFragmentToDoc refuses silent loss", () => {
     }
   });
 });
+
+describe("yXmlFragmentToDoc reads legal Yjs shapes", () => {
+  function sync(a: Y.Doc, b: Y.Doc) {
+    Y.applyUpdate(b, Y.encodeStateAsUpdate(a));
+    Y.applyUpdate(a, Y.encodeStateAsUpdate(b));
+  }
+
+  it("adjacent Y.XmlText from two clients", () => {
+    const a = new Y.Doc();
+    const p = new Y.XmlElement("paragraph");
+    docFragment(a).insert(0, [p]);
+    const b = new Y.Doc();
+    Y.applyUpdate(b, Y.encodeStateAsUpdate(a));
+    const ta = new Y.XmlText();
+    (docFragment(a).get(0) as Y.XmlElement).insert(0, [ta]);
+    ta.insert(0, "A");
+    const tb = new Y.XmlText();
+    (docFragment(b).get(0) as Y.XmlElement).insert(0, [tb]);
+    tb.insert(0, "B");
+    sync(a, b);
+    expect((docFragment(a).get(0) as Y.XmlElement).length).toBe(2);
+    for (const d of [a, b]) {
+      const before = bytes(d);
+      expect(["AB", "BA"]).toContain(
+        yXmlFragmentToDoc(docFragment(d)).textContent,
+      );
+      expect(bytes(d)).toEqual(before);
+    }
+    expect(yXmlFragmentToDoc(docFragment(a)).textContent).toBe(
+      yXmlFragmentToDoc(docFragment(b)).textContent,
+    );
+  });
+
+  it("an empty Y.XmlText after concurrent deletes", () => {
+    const a = new Y.Doc();
+    const p = new Y.XmlElement("paragraph");
+    docFragment(a).insert(0, [p]);
+    const t = new Y.XmlText();
+    p.insert(0, [t]);
+    t.insert(0, "ab");
+    const b = new Y.Doc();
+    Y.applyUpdate(b, Y.encodeStateAsUpdate(a));
+    t.delete(0, 1);
+    ((docFragment(b).get(0) as Y.XmlElement).get(0) as Y.XmlText).delete(1, 1);
+    sync(a, b);
+    const before = bytes(a);
+    const doc = yXmlFragmentToDoc(docFragment(a));
+    expect(doc.textContent).toBe("");
+    expect(doc.childCount).toBe(1);
+    expect(bytes(a)).toEqual(before);
+  });
+
+  it("an emptied Y.XmlText", () => {
+    const { ydoc, frag } = (() => {
+      const ydoc = new Y.Doc();
+      const frag = docFragment(ydoc);
+      const p = new Y.XmlElement("paragraph");
+      frag.insert(0, [p]);
+      const x = new Y.XmlText();
+      p.insert(0, [x]);
+      x.insert(0, "hi");
+      x.delete(0, 2);
+      return { ydoc, frag };
+    })();
+    const before = bytes(ydoc);
+    expect(yXmlFragmentToDoc(frag).textContent).toBe("");
+    expect(bytes(ydoc)).toEqual(before);
+  });
+});
