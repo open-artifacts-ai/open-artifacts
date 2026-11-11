@@ -1,3 +1,4 @@
+import { candidateName, droppedRefusedChars } from "@oa/bus-protocol";
 import { describe, expect, it } from "vitest";
 import { connectDaemon } from "../src/client.ts";
 import {
@@ -120,6 +121,19 @@ describe("neutralizeBody: any leading space or invisible char", () => {
 });
 
 describe("fitName", () => {
+  it("keeps a fork mark past the cut, so the hub names a long-parent fork (#1916)", () => {
+    for (const n of [60, 63, 64, 100]) {
+      const title = `${"p".repeat(n)} \u2442 do the thing`;
+      const sent = fitName(title, 64);
+      expect(sent.length).toBeLessThanOrEqual(64);
+      expect(sent.includes("\u2442")).toBe(true);
+      const name = candidateName(sent);
+      expect(name.endsWith(" fork")).toBe(true);
+      expect(name).toBe(candidateName(title));
+      expect(droppedRefusedChars(sent)).toBe(true); // no reclaim of the parent
+    }
+    expect(fitName("short \u2442 x", 64)).toBe("short \u2442 x");
+  });
   it("cuts to the limit without splitting a surrogate pair", () => {
     expect(fitName(`${"a".repeat(63)}😀`, 64)).toBe("a".repeat(63));
     expect(fitName("ab😀", 4)).toBe("ab😀");

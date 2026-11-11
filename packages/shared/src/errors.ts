@@ -54,12 +54,19 @@ export const ERROR_CODES = [
   "plan_read_only",
   "plan_limit",
   "billing_unavailable",
+  "no_billing_customer",
   // Comments (#682).
   "invalid_anchor",
   "invalid_body",
+  "not_an_ask",
   "anchor_not_in_version",
   "comments_off",
   "forbidden",
+  // Publish with expectedVersion or edits (#1216, #1540).
+  "version_conflict",
+  "edit_failed",
+  // Bus machine revoke (#1453).
+  "revoke_not_closed",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -146,7 +153,7 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   query_too_large: 400,
   /** A bus follow() past FOLLOW_LIMIT follows for one member (#1292): unfollow first. */
   follow_limit: 409,
-  /** A team feature on a free (solo) instance whose trial was already used: an invite, a share to someone else, a shared space; details PlanRefusalDetails. */
+  /** A team feature on a free (solo) instance whose trial was already used: an invite, a shared space (sharing an artifact is free on every plan); details PlanRefusalDetails. */
   plan_required: 403,
   /** A write refused because team features are read-only (trial ended, lapsed, payment failed past grace, suspended, or billing unreachable past 7 days); details PlanRefusalDetails. Nothing was deleted. */
   plan_read_only: 403,
@@ -154,12 +161,22 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   plan_limit: 403,
   /** R.billingCheckout / R.billingPortal / R.billingUsage while billing can't be reached. */
   billing_unavailable: 503,
+  /** R.billingPortal on a plan with no Stripe customer (provisioned or comped): there is no portal to open. */
+  no_billing_customer: 409,
   /** Comments (#682). */
   invalid_anchor: 400,
   invalid_body: 400,
+  /** POST R.commentReplies with toAsker where the thread's root has no ask, or its author is not an agent (#1614). */
+  not_an_ask: 400,
   anchor_not_in_version: 422,
   comments_off: 403,
   forbidden: 403,
+  /** Publish with an expectedVersion that is no longer current, or an edits publish whose base version was replaced first (#1216, #1540); details { currentVersion }. Nothing is published. */
+  version_conflict: 409,
+  /** Publish with edits where an edit's `old` is not found or found more than once; details { index, reason: "not_found" | "ambiguous", count }. Nothing is published. */
+  edit_failed: 400,
+  /** DELETE R.busMachine(id) where the revoke landed but the hub could not close the machine's open connection (#1453): the machine is revoked and cannot reconnect; retrying closes the connection. */
+  revoke_not_closed: 503,
 };
 
 /**

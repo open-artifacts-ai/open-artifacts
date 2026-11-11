@@ -4,7 +4,7 @@ import { type ReactNode, useEffect } from "react";
 import { useMe } from "../auth/useMe";
 import { useMachinesAccess } from "../bus/access";
 import { ATTENTION, AttentionDot } from "../layout/AttentionDot";
-import { SyncDot, syncDot } from "../layout/SyncBanner";
+import { SyncDot, shownDirectoryMode, syncDot } from "../layout/SyncBanner";
 import { AppLink } from "../library/AppLink";
 import { useNoAgentsPage } from "./AgentSetupCard";
 import { useDeparted } from "./departed";
@@ -12,7 +12,7 @@ import { canAdminSpaces } from "./spaces/access";
 import { MEASURE } from "./ui";
 
 /** Route links styled as shadcn's line tabs: the hairline is an inset
-    shadow and the underline sits on it, so the scrolling strip clips
+    shadow and the underline sits on it, so a wrapping second row clips
     neither; the focus ring is inset for the same reason. */
 const TAB =
   "relative inline-flex h-[34px] flex-none items-center rounded-sm px-[var(--oa-space-3)] text-[length:var(--oa-text-sm)] font-medium whitespace-nowrap text-muted-foreground transition-colors after:absolute after:inset-x-0 after:bottom-0 after:h-[2px] after:bg-foreground after:opacity-0 hover:text-foreground focus-visible:outline-2 focus-visible:outline-solid focus-visible:outline-offset-[-2px] focus-visible:outline-ring aria-[current=page]:text-foreground aria-[current=page]:after:opacity-100";
@@ -23,6 +23,8 @@ const TABS: {
   roles: Role[];
   /** Only where the instance reports a directory (hosted, or self-host with Workspace connected). */
   directory?: true;
+  /** Hosted only: the instance reports a billing plan. */
+  plan?: true;
   /** Hosted spaces admin: org admins, and members who manage a space. */
   spaces?: true;
   /** #1293: canUseBus, or revoke-only with a machine left (#1447). */
@@ -31,6 +33,11 @@ const TABS: {
   {
     to: "/settings/profile",
     label: "Profile",
+    roles: ["owner", "admin", "member"],
+  },
+  {
+    to: "/settings/notifications",
+    label: "Notifications",
     roles: ["owner", "admin", "member"],
   },
   { to: "/settings/members", label: "Members", roles: ["owner", "admin"] },
@@ -58,6 +65,12 @@ const TABS: {
     bus: true,
   },
   { to: "/settings/instance", label: "Instance", roles: ["owner", "admin"] },
+  {
+    to: "/settings/plan",
+    label: "Plan and billing",
+    roles: ["owner", "admin"],
+    plan: true,
+  },
 ];
 
 export function SettingsLayout() {
@@ -83,16 +96,18 @@ export function SettingsLayout() {
         Settings
       </h1>
       <nav
-        // On phones the row scrolls: the right edge fades so it reads as more to see,
-        // and the end padding lets the last tab scroll clear of the fade.
-        className="mt-[var(--oa-space-3)] mb-[var(--oa-space-5)] flex gap-[var(--oa-space-1)] overflow-x-auto shadow-[inset_0_-1px_0_var(--color-border)] [scrollbar-width:none] max-[600px]:pr-[24px] max-[600px]:[mask-image:linear-gradient(to_right,#000_calc(100%-24px),transparent)]"
+        // On phones the row wraps onto a second row instead of scrolling, so
+        // the last section is in view rather than clipped (#1453).
+        className="mt-[var(--oa-space-3)] mb-[var(--oa-space-5)] flex flex-wrap gap-x-[var(--oa-space-1)] gap-y-0 shadow-[inset_0_-1px_0_var(--color-border)]"
         aria-label="Settings sections"
       >
         {TABS.filter(
           (t) =>
             role &&
             t.roles.includes(role) &&
-            (!t.directory || directory) &&
+            // #2009: no tab while directory sync is off (Solo, or Team that never synced).
+            (!t.directory || (directory && shownDirectoryMode(me) !== "off")) &&
+            (!t.plan || me?.instance.billing) &&
             (!t.spaces || canAdminSpaces(me)) &&
             (!t.bus || machines === "full" || machines === "revoke") &&
             (t.to !== "/settings/connections" || !noAgents),

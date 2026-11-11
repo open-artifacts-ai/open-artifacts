@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StatusReply } from "@oa/bus-ipc";
+import { BUS_CMD } from "@oa/bus-protocol";
 import { vi } from "vitest";
 import { type Ctx, noService } from "../src/context.ts";
 import { copy } from "../src/copy.ts";
@@ -73,7 +74,17 @@ export function fakeCtx(over: Partial<Ctx> = {}, tty = false): Fake {
   const clock = { t: 1_000_000 };
   const style = over.style ?? TAGS;
   const ctx: Ctx = {
-    fetch: vi.fn(async () => {
+    fetch: vi.fn(async (url: string | URL | Request) => {
+      // The installer writes the skill from the instance; a fake instance
+      // serves it, and every other URL is still "no network in tests".
+      if (String(url).includes("/skill.md"))
+        return new Response(
+          "---\nname: open-artifacts-oa-test\n---\n\n# skill\n",
+          {
+            status: 200,
+            headers: { "content-type": "text/markdown" },
+          },
+        );
       throw new Error("no network in tests");
     }) as unknown as typeof fetch,
     openBrowser: vi.fn(async () => true),
@@ -108,6 +119,7 @@ export function fakeCtx(over: Partial<Ctx> = {}, tty = false): Fake {
     version: "0.1.0",
     style,
     copy: copy(style),
+    busCmd: BUS_CMD,
     platform: "darwin arm64",
     nodeVersion: "v24.0.0",
     ...over,

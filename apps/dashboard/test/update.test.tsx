@@ -1,11 +1,17 @@
 // "Update available" (Design's A + B): admins see it, members and a null update don't.
 import { type InstanceUpdate, R } from "@oa/shared";
 import { createHandlers, fixtures } from "@oa/shared/mocks";
-import { act, fireEvent, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { COPIED, upgradePrompt } from "../src/layout/update";
-import { installHarness, mount, server, wait } from "./harness";
+import { installHarness, mount, mountHosted, server, wait } from "./harness";
 
 installHarness();
 
@@ -70,12 +76,12 @@ describe("Settings → Instance Version card", () => {
     expect(up).toHaveAccessibleDescription(
       /Upgrade copies this prompt\. Paste it into any AI agent/,
     );
-    const status = screen.getByRole("status");
+    const status = within(c).getByRole("status");
     expect(status).toBeEmptyDOMElement();
     fireEvent.click(up);
     await waitFor(() => expect(write).toHaveBeenCalledWith(PROMPT));
     expect(await screen.findByText(COPIED)).toBeInTheDocument();
-    const notes = screen.getByRole("link", { name: /Release notes/ });
+    const notes = within(c).getByRole("link", { name: /Release notes/ });
     expect(notes).toHaveAttribute("href", NEWER.notesUrl);
     expect(notes).toHaveAttribute("target", "_blank");
     expect(notes).toHaveTextContent("(opens in new tab)");
@@ -85,12 +91,12 @@ describe("Settings → Instance Version card", () => {
     serve(NEWER);
     clipboard();
     mount("/settings/instance");
-    await card();
+    const c = await card();
     vi.useFakeTimers({ shouldAdvanceTime: true });
     fireEvent.click(screen.getByRole("button", { name: "Upgrade" }));
     expect(await screen.findByText(COPIED)).toBeInTheDocument();
     await act(() => vi.advanceTimersByTimeAsync(4100));
-    expect(screen.getByRole("status")).toBeEmptyDOMElement();
+    expect(within(c).getByRole("status")).toBeEmptyDOMElement();
   });
 
   it("up to date: Running, You're on the latest version, Checked; no prompt", async () => {
@@ -124,6 +130,8 @@ describe("Settings → Instance Version card", () => {
     );
     expect(screen.queryByRole("button", { name: "Upgrade" })).toBeNull();
     expect(c).not.toHaveTextContent("Update available");
+    expect(c).not.toHaveTextContent("To upgrade, tell your agent");
+    expect(screen.queryByRole("button", { name: "Copy prompt" })).toBeNull();
   });
 
   it("breaking: the warning line, Upgrade still enabled", async () => {
@@ -144,10 +152,49 @@ describe("Settings → Instance Version card", () => {
     );
   });
 
-  it("null update: no Version card", async () => {
+  const LINE = "To upgrade, tell your agent: Follow";
+
+  it("self-host admin, no update: the always-on line, link opens a new tab, Copy copies the prompt", async () => {
     serve(null);
+    const write = clipboard();
     mount("/settings/instance");
+    const c = await card();
+    expect(c).toHaveTextContent(LINE);
+    const link = within(c).getByRole("link", { name: /upgrade\.md/ });
+    expect(link).toHaveAttribute("href", `${location.origin}/upgrade.md`);
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", "noopener");
+    const btn = within(c).getByRole("button", { name: "Copy prompt" });
+    expect(btn).toHaveAccessibleDescription(
+      /To upgrade, tell your agent: Follow/,
+    );
+    fireEvent.click(btn);
+    await waitFor(() => expect(write).toHaveBeenCalledWith(PROMPT));
+    expect(await screen.findByText(COPIED)).toBeInTheDocument();
+  });
+
+  it("up to date: the line shows under the versions", async () => {
+    serve({ ...NEWER, current: "0.15.0", updateAvailable: false });
+    mount("/settings/instance");
+    expect(await card()).toHaveTextContent(LINE);
+  });
+
+  it("with an update: no extra line", async () => {
+    serve(NEWER, "admin");
+    mount("/settings/instance");
+    expect(await card()).not.toHaveTextContent(LINE);
+  });
+
+  it("hosted: no Version card", async () => {
+    mountHosted("/settings/instance");
     await screen.findByLabelText("Instance name");
+    expect(screen.queryByRole("region", { name: "Version" })).toBeNull();
+  });
+
+  it("a non-admin on the Instance page: no Version card", async () => {
+    serve(null, "member");
+    mount("/settings/instance");
+    await wait(100);
     expect(screen.queryByRole("region", { name: "Version" })).toBeNull();
   });
 

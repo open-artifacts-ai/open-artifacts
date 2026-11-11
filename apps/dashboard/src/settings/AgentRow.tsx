@@ -1,6 +1,7 @@
 // A connected agent (Design ecAopo8RUyk2Xomu, contract #559): rows like
 // Members. The name and version are the agent's own claims (tagged), where it
 // runs and where it was approved are ours; nothing says "verified".
+
 import type { OAuthClient } from "@oa/shared";
 import { avatarHue } from "@oa/ui";
 import {
@@ -14,6 +15,7 @@ import {
 } from "@oa/ui/shadcn";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { useLabelOAuthClient } from "../api/queries";
+import { useFrozen } from "../auth/permissions";
 import { initials } from "../layout/UserAvatar";
 import { AppLink } from "../library/AppLink";
 import { relativeTime } from "../library/time";
@@ -91,6 +93,7 @@ export function AgentRow({
   canLabel: boolean;
   onRevoke: () => void;
 }) {
+  const frozen = useFrozen();
   const label = useLabelOAuthClient();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -264,6 +267,7 @@ export function AgentRow({
             variant="link"
             size="sm"
             className="h-auto px-0 text-[length:var(--oa-text-sm)] underline underline-offset-3"
+            disabled={frozen}
             onClick={edit}
           >
             Add label
@@ -295,7 +299,9 @@ export function AgentRow({
             className="text-[length:var(--oa-text-sm)]"
           >
             {canLabel && c.label && (
-              <DropdownMenuItem onSelect={edit}>Rename label</DropdownMenuItem>
+              <DropdownMenuItem disabled={frozen} onSelect={edit}>
+                Rename label
+              </DropdownMenuItem>
             )}
             {versions > 0 && (
               <DropdownMenuItem asChild>
@@ -310,7 +316,11 @@ export function AgentRow({
             {((canLabel && c.label) || versions > 0) && (
               <DropdownMenuSeparator />
             )}
-            <DropdownMenuItem variant="destructive" onSelect={onRevoke}>
+            <DropdownMenuItem
+              variant="destructive"
+              // Never locked: a capped caller may revoke (CAPPED_ALLOWED).
+              onSelect={onRevoke}
+            >
               Revoke…
             </DropdownMenuItem>
           </DropdownMenuContent>

@@ -17,6 +17,8 @@ const KEY_OWNERS = {
   "oa:login-codes": "session",
   "oa:code-email": "session",
   "oa:audit-cursor": "session",
+  // #1467 the unsubscribe link in comment emails.
+  "oa:comment-unsub": "session",
   // P3 directory connect: the state cookie binding a consent to its browser.
   "oa:directory-state": "session",
   // From CONTENT_SIGNING_KEY instead (contentKey below), so a content token

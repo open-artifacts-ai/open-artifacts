@@ -1,5 +1,6 @@
 import { connect, type Socket } from "node:net";
 import {
+  ADAPTER_CAPS,
   CLIENT_VERSION,
   DaemonFrame,
   type Hello,
@@ -11,7 +12,17 @@ export type DaemonClient = {
   welcome: Extract<DaemonFrame, { type: "welcome" }>;
   state: "open" | "closed";
   request: (frame: {
-    type: "list" | "self" | "send" | "fetch" | "set_status";
+    type:
+      | "list"
+      | "self"
+      | "send"
+      | "fetch"
+      | "set_status"
+      | "follow"
+      | "unfollow"
+      | "following"
+      | "propose_reach"
+      | "link_proof";
     id?: string;
     to?: string;
     /** send: the target's namespace (`to_namespace` on the hub wire). */
@@ -23,6 +34,12 @@ export type DaemonClient = {
     label?: string;
     /** self: also the agent's status, from its hub roster row. */
     row?: true;
+    /** follow, unfollow: an artifact id or link. */
+    artifact?: string;
+    /** propose_reach: the namespaces the agent's role should reach. */
+    namespaces?: string[];
+    /** link_proof: the sha256 hex of this root's proof (needs the welcome's `link` cap). */
+    hash?: string;
     /** A tool call: the reply carries this agent's late-delivery notices. */
     late?: true;
   }) => Promise<DaemonFrame>;
@@ -55,8 +72,16 @@ export async function connectDaemon(opts: {
   requestTimeoutMs?: number;
   /** Receives errors thrown by the onDeliver callback; defaults to console.error. */
   onError?: (e: unknown) => void;
+  /**
+   * Do not keep the process alive for this connection while it is idle. For
+   * an adapter that lives inside a host it must not hold open, such as a
+   * one-shot CLI run. The socket is ref'd only while a request is waiting for
+   * its answer, so the host cannot exit with a reply owed.
+   */
+  unref?: boolean;
 }): Promise<DaemonClient> {
   const sock: Socket = connect(opts.path);
+  if (opts.unref) sock.unref();
   await new Promise<void>((resolve, reject) => {
     sock.once("connect", resolve);
     sock.once("error", reject);
@@ -85,10 +110,17 @@ export async function connectDaemon(opts: {
     }
   };
 
+  /** With `unref`: hold the process only while a request is pending. */
+  const holdWhilePending = () => {
+    if (!opts.unref || sock.destroyed) return;
+    if (pending.size > 0) sock.ref();
+    else sock.unref();
+  };
   const failAll = (err: Error) => {
     state = "closed";
     for (const w of [...pending.values(), ...waiters.splice(0)]) w.reject(err);
     pending.clear();
+    holdWhilePending();
   };
 
   sock.on("data", (chunk) => {
@@ -113,6 +145,7 @@ export async function connectDaemon(opts: {
         const waiter = pending.get(frame.id);
         if (waiter) {
           pending.delete(frame.id);
+          holdWhilePending();
           waiter.resolve(frame);
           continue;
         }
@@ -154,12 +187,14 @@ export async function connectDaemon(opts: {
         const ms = opts.requestTimeoutMs ?? 20_000;
         const timer = setTimeout(() => {
           // A late answer for this id is then dropped as unmatched.
-          if (pending.delete(id))
+          if (pending.delete(id)) {
+            holdWhilePending();
             reject(
               new Error(
                 `daemon request ${partial.type} timed out after ${ms} ms`,
               ),
             );
+          }
         }, ms);
         timer.unref?.();
         const done =
@@ -169,6 +204,7 @@ export async function connectDaemon(opts: {
             f(...a);
           };
         pending.set(id, { resolve: done(resolve), reject: done(reject) });
+        holdWhilePending();
         sock.write(`${JSON.stringify({ v: 1, ...partial, id })}\n`);
       });
     },
@@ -243,7 +279,7 @@ export function daemonStatus(opts: {
     );
     sock.once("connect", () =>
       sock.write(
-        `${JSON.stringify({ v: 1, id: "status", type: "status", client_version: CLIENT_VERSION, ...(opts.cwd ? { cwd: opts.cwd } : {}) })}\n`,
+        `${JSON.stringify({ v: 1, id: "status", type: "status", client_version: CLIENT_VERSION, caps: [ADAPTER_CAPS.pending], ...(opts.cwd ? { cwd: opts.cwd } : {}) })}\n`,
       ),
     );
     sock.on("data", (chunk) => {
@@ -264,6 +300,53 @@ export function daemonStatus(opts: {
             new DaemonSilentError(e instanceof Error ? e.message : String(e)),
           ),
         );
+      }
+    });
+  });
+}
+
+/**
+ * Tells the daemon `hash` is the proof of the Claude process `pid` (#1822).
+ * True when a live Claude record took it. Rejects when the daemon is down,
+ * silent, or too old to know the frame; the caller fails open.
+ */
+export function daemonLinkProof(opts: {
+  path: string;
+  pid: number;
+  hash: string;
+  timeoutMs?: number;
+}): Promise<boolean> {
+  return new Promise((resolve, reject) => {
+    const sock = connect(opts.path);
+    const decoder = new LineDecoder();
+    const done = (f: () => void) => {
+      clearTimeout(timer);
+      sock.destroy();
+      f();
+    };
+    const timer = setTimeout(
+      () => done(() => reject(new Error("daemon did not answer link_proof"))),
+      opts.timeoutMs ?? 2000,
+    );
+    sock.once("error", (e) => done(() => reject(e)));
+    sock.once("close", () =>
+      done(() => reject(new Error("daemon connection closed"))),
+    );
+    sock.once("connect", () =>
+      sock.write(
+        `${JSON.stringify({ v: 1, id: "link", type: "link_proof", pid: opts.pid, hash: opts.hash })}\n`,
+      ),
+    );
+    sock.on("data", (chunk) => {
+      try {
+        for (const raw of decoder.push(chunk)) {
+          const f = DaemonFrame.parse(raw);
+          if (f.type === "link_proofed") return done(() => resolve(f.bound));
+          if (f.type === "error")
+            return done(() => reject(new Error(f.message)));
+        }
+      } catch (e) {
+        done(() => reject(e instanceof Error ? e : new Error(String(e))));
       }
     });
   });

@@ -48,6 +48,7 @@ describe("claude liveness", () => {
         pid: 4242,
         socketPath: "/tmp/cc-socks/4242.sock",
         cwd: "/repo",
+        procStart: "t0",
       },
     ]);
   });

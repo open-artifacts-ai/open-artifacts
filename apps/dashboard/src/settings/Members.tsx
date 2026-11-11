@@ -1,4 +1,5 @@
 import {
+  type Me,
   type Member,
   MemberInviteSchema,
   MemberRemovedDetailsSchema,
@@ -22,7 +23,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
 import { hasFeature, InviteUnreachableDetailsSchema } from "../api/contract";
-import { errorCopy } from "../api/errorCopy";
+import { billingContext, errorCopy } from "../api/errorCopy";
 import {
   useInviteMember,
   useMembers,
@@ -32,7 +33,9 @@ import {
   useRestoreMember,
   useSetRestricted,
 } from "../api/queries";
+import { trialEndsOn, trialWouldStart } from "../api/trial";
 import { emailEnabled } from "../auth/emailEnabled";
+import { useFrozen } from "../auth/permissions";
 import {
   inviteRefusedCopy,
   inviteUncertainCopy,
@@ -44,6 +47,7 @@ import { CopyLink } from "../layout/CopyLink";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
+import { PLAN_PAGE } from "../layout/PlanBanner";
 import {
   isReleased,
   personFirst,
@@ -53,6 +57,7 @@ import {
 import { toast } from "../layout/toast";
 import { UserAvatar } from "../layout/UserAvatar";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
+import { AppLink } from "../library/AppLink";
 import { relativeTime } from "../library/time";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { clearDenied, denyMember, useDenied } from "./denied";
@@ -65,7 +70,7 @@ import {
 import { EraseDialog } from "./EraseDialog";
 import { restrictionReason } from "./restriction";
 import { TransferDialog } from "./Transfer";
-import { errorText, muted, SettingsCard, STACK } from "./ui";
+import { errorText, muted, ReadOnlyNote, SettingsCard, STACK } from "./ui";
 
 type Assignable = "admin" | "member";
 /** Owner is never offered, to anyone. */
@@ -95,7 +100,9 @@ function RoleSelect({
   value,
   placeholder,
   onChange,
+  disabled,
 }: {
+  disabled?: boolean;
   label: string;
   value: Assignable | undefined;
   placeholder?: string;
@@ -104,6 +111,7 @@ function RoleSelect({
   return (
     <Select
       value={value ?? ""}
+      disabled={disabled}
       onValueChange={(v) => onChange(v as Assignable)}
     >
       <SelectTrigger
@@ -128,6 +136,34 @@ function RoleSelect({
   );
 }
 
+/** Design's notice where a person is added or restored and the trial starts (#1836). */
+function TrialNotice({ endsOn }: { endsOn: string }) {
+  return (
+    <Notice tone="info" title="This starts your 14-day trial of Business.">
+      Trial ends {endsOn}.
+    </Notice>
+  );
+}
+
+/**
+ * "Choose a plan" in `text`, as a link to Plan and billing. Only the owner
+ * wording of a plan refusal has those words (a member's says "choose a plan"
+ * in lower case, as plain text).
+ */
+function withPlanLink(text: string) {
+  const at = text.indexOf("Choose a plan");
+  if (at < 0) return text;
+  return (
+    <>
+      {text.slice(0, at)}
+      <AppLink href={PLAN_PAGE} className="underline">
+        Choose a plan
+      </AppLink>
+      {text.slice(at + "Choose a plan".length)}
+    </>
+  );
+}
+
 function InviteDialog({ onClose }: { onClose: () => void }) {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
@@ -135,6 +171,11 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   const spaces = hasFeature(me, "spaces");
   const invite = useInviteMember();
   const domains = useSignInDomains();
+  // #1836: the first invite starts the Business trial; the dialog says so.
+  // Decided when the dialog opens, so the date doesn't move under the owner.
+  const [trial] = useState(() =>
+    trialWouldStart(me) ? { endsOn: trialEndsOn() } : null,
+  );
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<Assignable>("member");
   const [error, setError] = useState<string | null>(null);
@@ -144,6 +185,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
     email: string;
   } | null>(null);
   const restore = useRestoreMember();
+  const busy = invite.isPending || restore.isPending;
   const [added, setAdded] = useState<{
     email: string;
     emailed: boolean;
@@ -201,7 +243,12 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
             refused?.success
               ? inviteRefusedCopy(refused.data.reason, parsed, domains)
               : e instanceof ApiClientError
-                ? e.message
+                ? e.code.startsWith("plan_") || e.code === "billing_unavailable"
+                  ? errorCopy(e, e.message, {
+                      ...billingContext(me),
+                      refused: "invite",
+                    })
+                  : e.message
                 : "Couldn't add.",
           );
         },
@@ -245,7 +292,9 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
   }
   return (
     <Modal
-      onClose={onClose}
+      // Closing mid-request would drop a refusal nobody sees (the invite's,
+      // or the Restore inside this dialog's).
+      onClose={busy ? () => {} : onClose}
       title="Add a member"
       description={
         sends
@@ -254,11 +303,11 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
       }
       footer={
         <>
-          <Button variant="ghost" onClick={onClose}>
+          <Button variant="ghost" disabled={busy} onClick={onClose}>
             Cancel
           </Button>
           <Button disabled={invite.isPending} onClick={submit}>
-            Add member
+            {trial ? "Add member and start trial" : "Add member"}
           </Button>
         </>
       }
@@ -311,7 +360,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
                   },
                   onError: (e) => {
                     setRemoved(null);
-                    setError(restoreRefusal(e, removed.email));
+                    setError(restoreRefusal(e, removed.email, undefined, me));
                   },
                 })
               }
@@ -322,10 +371,18 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
         )}
         {error && (
           <p id="oa-invite-error" role="alert" className={errorText}>
-            {error}
+            {withPlanLink(error)}
           </p>
         )}
         <RoleSelect label="Role" value={role} onChange={setRole} />
+        {trial && (
+          <Notice
+            tone="info"
+            title="This starts your 14-day trial of Business."
+          >
+            Trial ends {trial.endsOn}.
+          </Notice>
+        )}
       </form>
     </Modal>
   );
@@ -376,7 +433,10 @@ function Row({
   you,
   spaces,
   owner,
+  frozen,
 }: {
+  /** The plan locked the instance (cap "plan"): reads stay, every write control is off. */
+  frozen: boolean;
   m: Member;
   you: boolean;
   /** The spaces feature: only the copy names spaces (parity 1 ungates the rest). */
@@ -385,7 +445,7 @@ function Row({
   owner: boolean;
 }) {
   const denyAdmin = (id: string) => denyMember(id, ADMIN_ONLY);
-  const patch = usePatchMember(denyAdmin);
+  const patch = usePatchMember(denyAdmin, denyMember);
   const [confirm, setConfirm] = useState(false);
   const [moving, setMoving] = useState(false);
   const [restricting, setRestricting] = useState(false);
@@ -447,6 +507,7 @@ function Row({
           label={`Role for ${label}`}
           value={m.role === "admin" || m.role === "member" ? m.role : undefined}
           placeholder="Guest"
+          disabled={frozen}
           onChange={(role) => {
             clearDenied(m.id);
             patch.mutate({ id: m.id, role });
@@ -478,6 +539,7 @@ function Row({
               variant="ghost"
               size="sm"
               className="justify-self-end"
+              disabled={frozen}
               aria-label={`More for ${label}`}
             >
               <svg
@@ -661,6 +723,8 @@ export function Members() {
     state.status === "authed" &&
     state.me.user.role === "owner" &&
     state.me.auth?.cap == null;
+  // The plan locked the instance: this page still lists, nothing here writes.
+  const frozen = useFrozen();
   // Spaces only change copy here: restriction and the More menu are on every install (parity 1).
   const spaces = state.status === "authed" && hasFeature(state.me, "spaces");
   const departed = useDeparted(state.status === "authed" ? state.me : null);
@@ -684,6 +748,7 @@ export function Members() {
   }, [departed.retrying, departed.failed, nobodyLeft]);
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       {(departed.people.length > 0 || departed.failed) && (
         <DepartedCard
           people={departed.people}
@@ -693,7 +758,11 @@ export function Members() {
           retrying={departed.retrying}
           meId={me?.id ?? null}
           spaces={spaces}
-          capped={state.status === "authed" && state.me.auth?.cap != null}
+          capped={
+            state.status === "authed" &&
+            state.me.auth?.cap != null &&
+            state.me.auth.cap !== "plan"
+          }
         />
       )}
       <SettingsCard
@@ -716,6 +785,7 @@ export function Members() {
             <Button
               size="sm"
               className="text-[length:var(--oa-text-sm)]"
+              disabled={frozen}
               onClick={() => setInviting(true)}
             >
               Add member
@@ -758,6 +828,7 @@ export function Members() {
                     you={m.id === me?.id}
                     spaces={spaces}
                     owner={owner}
+                    frozen={frozen}
                   />
                 ))}
               </ul>
@@ -861,7 +932,7 @@ function RemovedRow({
       {refusal && <p className={`m-0 basis-full ${muted}`}>{refusal}</p>}
       {problem && (
         <p role="alert" className={`m-0 basis-full ${errorText}`}>
-          {problem}
+          {withPlanLink(problem)}
         </p>
       )}
       {!refusal && (
@@ -895,6 +966,7 @@ export const restoreRefusal = (
   e: unknown,
   first: string,
   atStart: string = first,
+  me?: Me | null,
 ) => {
   const code = e instanceof ApiClientError ? e.code : "";
   if (code === "directory_managed")
@@ -906,7 +978,11 @@ export const restoreRefusal = (
   if (code === "conflict") return ADDRESS_RELEASED;
   if (code === "member_erased")
     return `${atStart}'s account was erased, so it can't be restored. If they need access again, invite them.`;
-  return errorCopy(e, `Couldn't restore ${first}. Try again.`);
+  // A plan refusal of a restore is the same as of an invite: it adds a person.
+  return errorCopy(e, `Couldn't restore ${first}. Try again.`, {
+    ...billingContext(me),
+    refused: "invite",
+  });
 };
 
 /** Departed people who still have personal artifacts (counts only, never titles). */
@@ -929,7 +1005,10 @@ function DepartedCard({
   /** Who "Transfer all to me" moves them to. */
   meId: string | null;
   spaces: boolean;
-  /** A restricted (capped) caller can't receive artifacts: no "to me". */
+  /**
+   * A restricted (capped) caller can't receive artifacts: no "to me". The
+   * plan cap isn't one (a billing state): its Transfer shows, locked.
+   */
   capped: boolean;
 }) {
   return (
@@ -986,6 +1065,9 @@ function DepartedRow({
   const [open, setOpen] = useState<{ pick: string | null } | null>(null);
   const [restoring, setRestoring] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  // The plan locked the instance: transfers are refused (a team route), so
+  // every entry point is off. Restore stays.
+  const frozen = useFrozen();
   const label = personName(m);
   const n = summary.live;
   return (
@@ -1016,6 +1098,7 @@ function DepartedRow({
             size="sm"
             variant="outline"
             className="text-[length:var(--oa-text-sm)]"
+            disabled={frozen}
             onClick={() => setOpen({ pick: toMe })}
           >
             Transfer all to me…
@@ -1026,6 +1109,7 @@ function DepartedRow({
             variant="outline"
             className="text-[length:var(--oa-text-sm)]"
             aria-label={`Transfer ${label}'s artifacts`}
+            disabled={frozen}
             onClick={() => setOpen({ pick: null })}
           >
             Transfer
@@ -1051,7 +1135,10 @@ function DepartedRow({
             align="end"
             className="text-[length:var(--oa-text-sm)]"
           >
-            <DropdownMenuItem onSelect={() => setOpen({ pick: null })}>
+            <DropdownMenuItem
+              disabled={frozen}
+              onSelect={() => setOpen({ pick: null })}
+            >
               Transfer to someone else…
             </DropdownMenuItem>
             {m.status === "removed" && !isReleased(m) && (
@@ -1064,7 +1151,7 @@ function DepartedRow({
       </div>
       {problem && (
         <p role="alert" className={`col-span-full m-0 ${errorText}`}>
-          {problem}
+          {withPlanLink(problem)}
         </p>
       )}
       {open && (
@@ -1101,22 +1188,28 @@ function RestoreDialog({
   const spaces = state.status === "authed" && hasFeature(state.me, "spaces");
   const label = personName(m);
   const first = personFirst(m);
+  // Restoring adds a person, so on a Solo whose trial never ran it starts it.
+  const trial =
+    open && trialWouldStart(state.status === "authed" ? state.me : null);
   return (
     <ConfirmDialog
       open={open}
       onClose={onClose}
       title={`Restore ${label}?`}
       body={
-        <p>
-          {/* Manager's ruling: a guest stays a guest; anyone else comes back a member. */}
-          {first} comes back{" "}
-          {m.role === "guest" ? "as a guest" : "as a member (no admin role)"},
-          with any manual restriction kept, and gets back the{" "}
-          {spaces && "personal "}artifacts you haven't transferred. Their old
-          tokens and agent connections stay off, so they sign in again.
-        </p>
+        <>
+          <p>
+            {/* Manager's ruling: a guest stays a guest; anyone else comes back a member. */}
+            {first} comes back{" "}
+            {m.role === "guest" ? "as a guest" : "as a member (no admin role)"},
+            with any manual restriction kept, and gets back the{" "}
+            {spaces && "personal "}artifacts you haven't transferred. Their old
+            tokens and agent connections stay off, so they sign in again.
+          </p>
+          {trial && <TrialNotice endsOn={trialEndsOn()} />}
+        </>
       }
-      confirm="Restore"
+      confirm={trial ? "Restore and start trial" : "Restore"}
       onConfirm={() =>
         restore.mutate(m.id, {
           onSuccess: () =>
@@ -1125,7 +1218,14 @@ function RestoreDialog({
               tone: "success",
             }),
           onError: (e) =>
-            onRefused(restoreRefusal(e, first, personFirstAtStart(m))),
+            onRefused(
+              restoreRefusal(
+                e,
+                first,
+                personFirstAtStart(m),
+                state.status === "authed" ? state.me : null,
+              ),
+            ),
         })
       }
     />

@@ -1,6 +1,8 @@
 // Bundles the CLI and everything it imports into dist/index.js, and copies the
 // adapters' assets to assets/, where `new URL("../assets/…", import.meta.url)`
 // finds them from dist/ just as it does from each adapter's src/.
+
+import { execFileSync } from "node:child_process";
 import {
   chmodSync,
   cpSync,
@@ -45,6 +47,11 @@ await build({
       "const require = __obCreateRequire(import.meta.url);",
     ].join("\n"),
   },
+  // The shared leaf is bundled from source: a clean checkout has no
+  // packages/shared/dist, and the release job only runs `pnpm install`.
+  alias: {
+    "@oa/shared/harness-skills": at("../shared/src/harness-skills.ts"),
+  },
   define: { __OA_BUS_VERSION__: JSON.stringify(version) },
   // ws's optional native add-ons: required in a try, absent is fine.
   external: ["bufferutil", "utf-8-validate"],
@@ -61,6 +68,31 @@ writeFileSync(
     readFileSync(at("../bus-adapter-pi/assets/oa-bus.ts"), "utf8"),
     version,
   ),
+);
+// The Hermes plugin folder: package files only, no bytecode caches.
+cpSync(at("../bus-adapter-hermes/assets/oa_bus"), at("assets/oa_bus"), {
+  recursive: true,
+  filter: (src) => !src.includes("__pycache__") && !src.endsWith(".pyc"),
+});
+// The OpenClaw plugin folder: built from its adapter, stamped with the same
+// version, straight into our own assets/openclaw. It never touches the adapter's
+// dist/, which the adapter's own build (run in parallel by `pnpm -r build`) owns.
+execFileSync(
+  process.execPath,
+  [at("../bus-adapter-openclaw/scripts/build.mjs")],
+  {
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      OA_BUS_CLI_VERSION: version,
+      OA_BUS_OPENCLAW_OUT: at("assets/openclaw"),
+    },
+  },
+);
+// The Claude Code output style, unchanged: the installer adds only its marker.
+cpSync(
+  at("output-style/artifacts-teammate.md"),
+  at("assets/output-styles/artifacts-teammate.md"),
 );
 cpSync(
   at("../bus-adapter-opencode/assets/opencode-tui/tui.js"),

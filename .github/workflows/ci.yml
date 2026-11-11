@@ -16,9 +16,11 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -34,7 +36,7 @@ jobs:
           set -euo pipefail
           command -v shellcheck
           tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -fsSL -o "$RUNNER_TEMP/$tarball" \
+          curl -fsSL --retry 5 --retry-all-errors -o "$RUNNER_TEMP/$tarball" \
             "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/$tarball"
           echo "$ACTIONLINT_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
           mkdir "$RUNNER_TEMP/actionlint"
@@ -45,10 +47,11 @@ jobs:
   typecheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
       # Fast path for release-please PRs: decided inside each job (a skipped or
@@ -72,9 +75,9 @@ jobs:
         if: ${{ steps.ro.outputs.release_only == 'true' }}
         run: |
           echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         with:
           node-version-file: .nvmrc
@@ -95,10 +98,11 @@ jobs:
       matrix:
         shard: [server, rest, cpu]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
       # Fast path for release-please PRs: decided inside each job (a skipped or
@@ -122,9 +126,9 @@ jobs:
         if: ${{ steps.ro.outputs.release_only == 'true' }}
         run: |
           echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         with:
           node-version-file: .nvmrc
@@ -150,6 +154,31 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           TEST_SHARD: ${{ matrix.shard }}
         run: bash scripts/ci/test-affected.sh
+      # #1602: the Hermes plugin is Python, standard library only. Run in the
+      # rest shard when bus-ipc or the plugin changed; the path filter is decided
+      # here, never by a workflow `paths:` filter or a job `if:`, and any error in
+      # the diff means run.
+      - id: hermes
+        name: Did bus-ipc or the Hermes plugin change?
+        if: ${{ matrix.shard == 'rest' && steps.ro.outputs.release_only != 'true' }}
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          run=true
+          if [ "$EVENT" != workflow_dispatch ] && [ -n "${BASE_SHA:-}" ] \
+            && files="$(git diff --name-only "$BASE_SHA"...HEAD)" \
+            && ! grep -qE '^(packages/bus-ipc/|packages/bus-adapter-hermes/|\.github/workflows/ci\.yml$)' <<< "$files"; then
+            run=false
+          fi
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.hermes.outputs.run == 'true' }}
+        with:
+          python-version: "3.11"
+      - name: Hermes plugin tests
+        if: ${{ steps.ro.outputs.release_only != 'true' && steps.hermes.outputs.run == 'true' }}
+        run: python3 -m unittest discover -s packages/bus-adapter-hermes/tests
   # The required check (its name is branch protection's). Always runs, and
   # passes only when every shard passed: a skipped, cancelled or failed shard
   # fails it.
@@ -170,10 +199,11 @@ jobs:
   authz-matrix:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
       - id: ro
@@ -193,9 +223,9 @@ jobs:
         if: ${{ steps.ro.outputs.release_only == 'true' }}
         run: |
           echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         with:
           node-version-file: .nvmrc
@@ -207,10 +237,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
       # Fast path for release-please PRs: decided inside each job (a skipped or
@@ -234,9 +265,9 @@ jobs:
         if: ${{ steps.ro.outputs.release_only == 'true' }}
         run: |
           echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         with:
           node-version-file: .nvmrc
@@ -251,11 +282,11 @@ jobs:
   no-test-hooks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
       # Fast path for release-please PRs: decided inside each job (a skipped or
@@ -280,9 +311,9 @@ jobs:
         run: |
           echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
           exit 0
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         with:
           node-version-file: .nvmrc
@@ -292,7 +323,7 @@ jobs:
       - name: Build the release bundle (buildBundle, dry run)
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         run: |
-          pnpm --filter @oa/provision build
+          pnpm --filter @oa/auth-core --filter @oa/bundle build
           pnpm --filter @oa/server run gen
           mkdir -p apps/server/dist-assets
           node --experimental-strip-types scripts/ci/build-release-bundle.ts "$RUNNER_TEMP/release-bundle"
@@ -302,13 +333,6 @@ jobs:
       - name: No red-line fake IdP in the release bundle
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         run: pnpm check-no-fake-idp "$RUNNER_TEMP/release-bundle"
-      # T3b N5: the real-build pin (the variants' bundles differ; release holds
-      # no hook route). Required here, so it never skips.
-      - name: Real-build pin test
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-        env:
-          OA_REQUIRE_REAL_BUILD: "1"
-        run: pnpm --filter @oa/provision exec vitest run test/release-t3b.test.ts -t "real build"
       # P3 T17 (#602): builds the release and redline bundles itself and checks
       # the test-hook seeding is absent from release. OA_REQUIRE_REAL_BUILD
       # makes a missing build fail, never skip.
@@ -344,10 +368,11 @@ jobs:
     # two does about twice the work (25 allowed).
     timeout-minutes: ${{ github.event_name == 'pull_request' && 25 || 15 }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
       # Fast path for release-please PRs: decided inside each job (a skipped or
@@ -371,9 +396,9 @@ jobs:
         if: ${{ steps.ro.outputs.release_only == 'true' }}
         run: |
           echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: ${{ steps.ro.outputs.release_only != 'true' }}
         with:
           node-version-file: .nvmrc
@@ -397,7 +422,7 @@ jobs:
         run: bash scripts/ci/e2e.sh real
       # One spec on its own server: whole, in exactly one shard per event
       # (shard 3 of four in the queue, the lightest real share; shard 2 of two
-      # on a pull request, since shard 1 carries ui, landing and provisioning).
+      # on a pull request, since shard 1 carries ui and landing).
       - name: Real-server suite with spaces on (local wrangler dev)
         if: ${{ !cancelled() && matrix.shard == (github.event_name == 'pull_request' && 2 || 3) && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh spaces
@@ -408,90 +433,24 @@ jobs:
       - name: Landing real-browser checks (no horizontal overflow)
         if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
         run: bash scripts/ci/e2e.sh landing
-      # Design v7 9A.3.2 step 3: the Strict admin cookie survives a cross-site
-      # arrival at /oauth/authorize (its own Miniflare, about a minute).
-      - name: Provisioning consent checks (cross-site, Strict cookie)
-        if: ${{ !cancelled() && matrix.shard == 1 && steps.ro.outputs.release_only != 'true' && steps.install.outcome == 'success' }}
-        run: bash scripts/ci/e2e.sh provisioning
       - if: ${{ !cancelled() && steps.ro.outputs.release_only != 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: blob-report-${{ matrix.shard }}
           path: apps/dashboard/blob-report
           if-no-files-found: ignore
           retention-days: 3
       - if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: test-results-${{ matrix.shard }}
           path: apps/dashboard/test-results
           if-no-files-found: ignore
           retention-days: 14
-  # @oa/admin's Playwright tests (MSW mocks, no server, no secrets). One runner.
-  # Counted by the `e2e` check below. The image tag must match @oa/admin's
-  # @playwright/test; the digest pins the exact image (same as e2e-shard).
-  e2e-admin:
-    runs-on: ubuntu-latest
-    container:
-      image: mcr.microsoft.com/playwright:v1.64.1-noble@sha256:47b510dd9230bf0b9bfc9b20102241e577ea7a99334ab4c3ca19f19770e9b8ea
-      options: --ipc=host
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-      # Fast path for release-only PRs, as in e2e-shard (decided inside the job:
-      # a skipped job would count as failing the `e2e` aggregate).
-      - id: ro
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
-        run: |
-          rel=false
-          if [ -n "${BASE_SHA:-}" ] && [ -n "${HEAD_SHA:-}" ] \
-            && git show "$BASE_SHA:scripts/ci/release-only.ts" > "$RUNNER_TEMP/release-only.ts" 2> /dev/null \
-            && out=$(node --experimental-strip-types --no-warnings "$RUNNER_TEMP/release-only.ts" "$BASE_SHA" "$HEAD_SHA" 2> /dev/null) \
-            && [ "$out" = "release-only" ]; then
-            rel=true
-          fi
-          echo "release_only=$rel" >> "$GITHUB_OUTPUT"
-      - name: release-only change
-        if: ${{ steps.ro.outputs.release_only == 'true' }}
-        run: |
-          echo "release-only change: skipped (the base commit is on main, which only the merge queue can update)"
-      - uses: pnpm/action-setup@v4
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - uses: actions/setup-node@v4
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile --filter @oa/admin...
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - name: Playwright matches the image
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-        run: |
-          v="$(node -p "require('./apps/admin/node_modules/@playwright/test/package.json').version")"
-          if [ "$v" != "1.64.1" ]; then
-            echo "@playwright/test is $v but the CI image is 1.64.1; bump the e2e-admin image in ci.yml" >&2
-            exit 1
-          fi
-      - run: pnpm --filter @oa/admin test:e2e
-        if: ${{ steps.ro.outputs.release_only != 'true' }}
-      - if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: admin-test-results
-          path: apps/admin/test-results
-          if-no-files-found: ignore
-          retention-days: 14
   # The required check (its name is branch protection's). Always runs, and passes
-  # only when every shard and the admin job passed: a skipped, cancelled or failed shard fails it.
+  # only when every shard passed: a skipped, cancelled or failed shard fails it.
   e2e:
-    needs: [e2e-shard, e2e-admin]
+    needs: [e2e-shard]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -499,15 +458,15 @@ jobs:
       - name: Every shard passed
         env:
           SHARDS: ${{ needs.e2e-shard.result }}
-          ADMIN: ${{ needs.e2e-admin.result }}
         run: |
           echo "e2e-shard: $SHARDS"
-          echo "e2e-admin: $ADMIN"
-          [ "$SHARDS" = success ] && [ "$ADMIN" = success ]
+          [ "$SHARDS" = success ]
       # The merged html report, also when a shard failed (that's when it's read).
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
         if: ${{ !cancelled() }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: ${{ !cancelled() }}
         id: blobs
         continue-on-error: true
@@ -521,9 +480,9 @@ jobs:
           if [ -n "$(find apps/dashboard/blob-report -name '*.zip' 2> /dev/null)" ]; then
             echo "blobs=true" >> "$GITHUB_OUTPUT"
           fi
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
         with:
           node-version-file: .nvmrc
@@ -534,7 +493,7 @@ jobs:
         if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
         run: bash scripts/ci/e2e.sh merge
       - if: ${{ !cancelled() && steps.any.outputs.blobs == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: playwright-report
           path: apps/dashboard/playwright-report
@@ -551,7 +510,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -571,7 +530,7 @@ jobs:
           if [ "$run" = false ]; then
             echo "no migration or seeder change: nothing to time"
           fi
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         if: ${{ steps.changed.outputs.run == 'true' }}
         with:
           node-version-file: .nvmrc
@@ -584,7 +543,7 @@ jobs:
       # copy comes from migration-seed.yml.
       - id: restore
         if: ${{ steps.changed.outputs.run == 'true' }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/oa-migration-seed
           key: ${{ steps.key.outputs.key }}
@@ -600,7 +559,7 @@ jobs:
             echo "save=true" >> "$GITHUB_OUTPUT"
           fi
       - if: ${{ !cancelled() && steps.seeded.outputs.save == 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/oa-migration-seed
           key: ${{ steps.key.outputs.key }}
@@ -609,8 +568,9 @@ jobs:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
           fetch-depth: 0
       - id: changed
         env:
@@ -622,9 +582,9 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.changed.outputs.run == 'true'
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
       - if: steps.changed.outputs.run == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -639,25 +599,21 @@ jobs:
           RELEASE_PLEASE="$RUNNER_TEMP/rp/node_modules/.bin/release-please" bash scripts/ci/release-dry-run.sh
   # #1056 untangle D: the public code installs, builds, typechecks and tests
   # with every private path (scripts/ci/private-paths.txt) removed.
-  # Advisory for now: it becomes required (drop continue-on-error, add it to
-  # the ruleset) once untangle A (bundle builder), B (@oa/shared/mocks) and C
-  # (the @oa/shared/provisioning contract) have merged.
+  # Not a required check, and nothing needs it. It runs on the merge queue and
+  # on dispatch, not on pull requests. It does not block a merge: a red run is
+  # a signal to fix, not a gate. A PR that brings back a listed private path is
+  # still refused at the next cloud pin bump.
   public-only:
+    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
-    continue-on-error: true
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      # Advisory: the breaks show as a warning and the check stays green, since
-      # release-cadence and other "all checks green" readers count a failed
-      # check even with continue-on-error. Back to a plain failing run when it
-      # becomes required.
-      - run: |
-          bash scripts/ci/public-only.sh || echo "::warning title=public-only (advisory)::public code doesn't yet build alone without the private paths; see this job's log (#1056)"
+      - run: bash scripts/ci/public-only.sh

@@ -10,9 +10,10 @@ import {
 } from "./contract";
 
 /** `GET AUTH.providers`; an older server's 404 reads as Access mode. */
-export const useAuthProviders = () =>
+export const useAuthProviders = (enabled = true) =>
   useQuery({
     queryKey: ["auth-providers"],
+    enabled,
     retry: false,
     queryFn: async ({ signal }) => {
       try {

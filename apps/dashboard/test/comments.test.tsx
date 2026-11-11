@@ -2,13 +2,26 @@ import { ANON_ID_HEADER, R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import {
   act,
+  configure,
   fireEvent,
+  getConfig,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
+import { ACTIONS, ACTIONS_PLAIN } from "../src/viewer/comments/CommentsBody";
+import { fullPath } from "../src/viewer/paths";
 import {
   calls,
   events,
@@ -18,6 +31,7 @@ import {
   server,
   wait,
 } from "./harness";
+import { FIRST_LOAD_MS } from "./timeouts";
 
 type Opts = {
   iframe: HTMLIFrameElement;
@@ -27,11 +41,13 @@ type Opts = {
   onCommentSelect: (a: unknown) => void;
   onCommentPositions: (p: unknown[]) => void;
   onCommentOpen: (id: string) => void;
+  onCommentSelection: (has: boolean, bottom: number) => void;
 };
 const opts: Opts[] = [];
 const setMode = vi.fn();
 const setComments = vi.fn();
 const focus = vi.fn();
+const commentOnSelection = vi.fn();
 // Like the real bridge, the mock loads the frame (Shell ignores earlier loads).
 vi.mock("../src/viewer/bridge", async () => {
   const { loadArtifactFrame } = await import("../src/viewer/frame");
@@ -48,12 +64,22 @@ vi.mock("../src/viewer/bridge", async () => {
         setCommentsMode: setMode,
         setComments,
         focusComment: focus,
+        commentOnSelection,
       };
     },
   };
 });
 
 installHarness();
+
+// Most waits here follow a write: the PATCH or POST, then the list refetch it
+// invalidates (a second round trip through MSW), then the render. Each hop is
+// CPU-bound and slows about 30x on a loaded runner (#1004), which can pass
+// setup.ts's 5 s asyncUtilTimeout. Stay under the test timeout so a wait that
+// never resolves still reports its own failure.
+const defaultAsyncTimeout = getConfig().asyncUtilTimeout;
+beforeAll(() => configure({ asyncUtilTimeout: FIRST_LOAD_MS }));
+afterAll(() => configure({ asyncUtilTimeout: defaultAsyncTimeout }));
 
 const OWNED = (
   fixtures.artifacts.find((a) => a.title === "Landing page") as { id: string }
@@ -77,19 +103,26 @@ const oneThread = {
       author: { kind: "guest", name: "Guest", me: false },
       createdAt: "2026-11-05T10:00:00Z",
       editedAt: null,
+      typed: false,
       can: { edit: false, delete: false },
     },
   ],
 };
 
 /** A viewport: matchMedia answers the two breakpoints the comments layout uses. */
-const viewport = (width: number) => {
+const viewport = (width: number, coarse = false, reduced = false) => {
   const eval_ = (q: string) =>
     q === "(min-width: 960px)"
       ? width >= 960
       : q === "(max-width: 600px)"
         ? width <= 600
-        : false;
+        : q === "(max-width: 599.98px)"
+          ? width < 600
+          : q === "(pointer: coarse)"
+            ? coarse
+            : q === "(prefers-reduced-motion: reduce)"
+              ? reduced
+              : false;
   vi.spyOn(window, "matchMedia").mockImplementation(
     (q: string) =>
       ({
@@ -106,7 +139,13 @@ const hello = () =>
     await waitFor(() => expect(opts.length).toBeGreaterThan(0));
     opts.at(-1)?.onHello();
   });
-const col = () => screen.findByRole("complementary", { name: "Comments" });
+/** The column starts closed (#1731): open it with the Comments button. */
+const col = async () => {
+  const b = await screen.findByRole("button", { name: /^Comments/ });
+  if (!screen.queryByRole("complementary", { name: "Comments" }))
+    fireEvent.click(b);
+  return screen.findByRole("complementary", { name: "Comments" });
+};
 const threadIds = () =>
   [...document.querySelectorAll("[data-thread]")].map((e) =>
     e.getAttribute("data-thread"),
@@ -117,6 +156,7 @@ beforeEach(() => {
   setMode.mockClear();
   setComments.mockClear();
   focus.mockClear();
+  commentOnSelection.mockClear();
   viewport(1280);
 });
 afterEach(() => vi.restoreAllMocks());
@@ -157,6 +197,26 @@ describe("comments: layouts", () => {
     ).toBeInTheDocument();
   });
 
+  it("an empty list in the side panel still shows its empty state and grows (#1711)", async () => {
+    // CommentsBody is `flex-none` only in the phone sheet's short height; the
+    // panel keeps the growing list (its scroll area is a block, so the class is
+    // inert there either way) and its empty state.
+    viewport(800);
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    const tab = await screen.findByRole("tab", { name: "Comments" });
+    expect(tab).toHaveAttribute("data-state", "active");
+    const empty = await screen.findByText(/No comments yet/);
+    const body = empty.closest("div.flex") as HTMLElement;
+    expect(body.className).toContain("flex-1");
+    expect(body.className).not.toContain("flex-none");
+  });
+
   it("is a bottom sheet on phones", async () => {
     viewport(400);
     mount(viewerPath(OWNED));
@@ -168,6 +228,482 @@ describe("comments: layouts", () => {
       await within(sheet).findByText("Can we tighten this headline?"),
     ).toBeInTheDocument();
     fireEvent.keyDown(sheet, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+
+  it("focusing a composer in the half-height phone sheet expands it", async () => {
+    viewport(400);
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    const box = await within(sheet).findAllByRole("textbox");
+    fireEvent.focus(box[0] as HTMLElement);
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+  });
+
+  it("a phone sheet shrinks further while a pin card is open, so its pin stays in view (#1657)", async () => {
+    viewport(400);
+    const pin = (id: string, y: number) => ({
+      ...oneThread,
+      id,
+      anchor: { kind: "pin", version: 1, x: 0.5, y, contentHash: null },
+    });
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({
+          threads: [pin("p1", 0.4), pin("p2", 0.7)],
+          open: 2,
+          truncated: false,
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 2 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    // The frame opens the pin's card: the sheet gives the image back.
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    // The handle still wins: a reader who wants the list gets the full sheet.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    // Opening a card from full shrinks it again, and moving pin to pin too
+    // (the effect keys on the pin, not on "a pin is open").
+    await act(async () => opts.at(-1)?.onCommentOpen("p2"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+  });
+
+  describe("a pin with replies in the short sheet (#1783)", () => {
+    const threadOf = (id: string, n: number) => ({
+      ...oneThread,
+      id,
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+      comments: Array.from({ length: n }, (_, i) => ({
+        ...oneThread.comments[0],
+        id: `${id}-c${i}`,
+        body: `${id} comment ${i}`,
+      })),
+    });
+    // jsdom measures nothing: the floating row's outlet is 56px once shown.
+    let outletH = 56;
+    const realH = Object.getOwnPropertyDescriptor(
+      HTMLElement.prototype,
+      "offsetHeight",
+    );
+    beforeEach(() => {
+      outletH = 56;
+      Object.defineProperty(HTMLElement.prototype, "offsetHeight", {
+        configurable: true,
+        get() {
+          return (this as HTMLElement).hasAttribute("data-oa-action-outlet")
+            ? outletH
+            : 0;
+        },
+      });
+    });
+    afterEach(() => {
+      if (realH)
+        Object.defineProperty(HTMLElement.prototype, "offsetHeight", realH);
+      else
+        delete (HTMLElement.prototype as { offsetHeight?: number })
+          .offsetHeight;
+    });
+    const open = async (reduced = false) => {
+      viewport(400, false, reduced);
+      server.use(
+        http.get(`*${R.comments(OWNED)}`, () =>
+          HttpResponse.json({
+            threads: [threadOf("p0", 1), threadOf("p1", 2), threadOf("p3", 4)],
+            open: 3,
+            truncated: false,
+          }),
+        ),
+      );
+      mount(viewerPath(OWNED));
+      fireEvent.click(
+        await screen.findByRole("button", { name: "Comments, 3 open" }),
+      );
+      return screen.findByRole("dialog", { name: "Comments" });
+    };
+    it("a pin with replies takes the half height; one without keeps the pin height", async () => {
+      const sheet = await open();
+      await act(async () => opts.at(-1)?.onCommentOpen("p0"));
+      expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+      expect(sheet).not.toHaveAttribute("data-pin-replies");
+      expect(sheet.className).toContain(
+        "data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh]",
+      );
+      await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+      expect(sheet).toHaveAttribute("data-pin-replies");
+    });
+    it("opening a 3-reply pin scrolls its last reply to the end, above the row, smoothly", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      await open();
+      await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+      await waitFor(() =>
+        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "smooth" }),
+      );
+      const el = spy.mock.contexts.at(-1) as HTMLElement;
+      expect(el.getAttribute("data-comment")).toBe("p3-c3");
+      expect(el.style.scrollMarginBottom).toBe("56px");
+    });
+    it("the margin uses the row's height once the outlet shows, even after the first frame", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      let fire: () => void = () => {};
+      const OriginalRO = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        constructor(cb: () => void) {
+          fire = cb;
+        }
+        observe() {}
+        disconnect() {}
+        unobserve() {}
+      } as unknown as typeof ResizeObserver;
+      try {
+        outletH = 0; // hidden at the first frame
+        await open();
+        await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+        await new Promise((r) => setTimeout(r, 50));
+        expect(spy).not.toHaveBeenCalledWith(
+          expect.objectContaining({ block: "end" }),
+        );
+        outletH = 56; // the composer claims it
+        act(() => fire());
+        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "smooth" });
+        const el = spy.mock.contexts.at(-1) as HTMLElement;
+        expect(el.style.scrollMarginBottom).toBe("56px");
+      } finally {
+        globalThis.ResizeObserver = OriginalRO;
+      }
+    });
+    it("focusing the reply box after the first measure doesn't scroll again", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      let fire: () => void = () => {};
+      let disconnected = false;
+      const OriginalRO = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        constructor(cb: () => void) {
+          fire = cb;
+        }
+        observe() {}
+        disconnect() {
+          disconnected = true;
+        }
+        unobserve() {}
+      } as unknown as typeof ResizeObserver;
+      try {
+        await open();
+        await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+        await waitFor(() =>
+          expect(spy).toHaveBeenCalledWith({
+            block: "end",
+            behavior: "smooth",
+          }),
+        );
+        expect(disconnected).toBe(true);
+        const calls = spy.mock.calls.length;
+        outletH = 0; // the sheet grew for typing: the outlet is gone
+        act(() => fire());
+        expect(spy.mock.calls.length).toBe(calls);
+      } finally {
+        globalThis.ResizeObserver = OriginalRO;
+      }
+    });
+    it("no outlet (the wide overlay at pin height): no last-reply scroll", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      viewport(800);
+      server.use(
+        http.get(`*${R.comments(OWNED)}`, () =>
+          HttpResponse.json({
+            threads: [threadOf("p3", 4)],
+            open: 1,
+            truncated: false,
+          }),
+        ),
+      );
+      mount(fullPath(OWNED));
+      fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+      const overlay = await screen.findByRole("dialog", { name: "Comments" });
+      expect(overlay).toHaveAttribute("data-sheet-height", "half");
+      await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+      expect(overlay).toHaveAttribute("data-sheet-height", "pin");
+      await new Promise((r) => setTimeout(r, 50));
+      expect(overlay.querySelector("[data-oa-action-outlet]")).toBeNull();
+      expect(spy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ block: "end" }),
+      );
+    });
+    it("a single reply gets no extra scroll", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      await open();
+      await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+      await new Promise((r) => setTimeout(r, 50));
+      expect(spy).not.toHaveBeenCalledWith(
+        expect.objectContaining({ block: "end" }),
+      );
+    });
+    it("reduced motion: the scroll is not smooth", async () => {
+      const spy = vi.fn();
+      Element.prototype.scrollIntoView = spy;
+      await open(true);
+      await act(async () => opts.at(-1)?.onCommentOpen("p3"));
+      await waitFor(() =>
+        expect(spy).toHaveBeenCalledWith({ block: "end", behavior: "auto" }),
+      );
+    });
+  });
+
+  it("the short pin sheet floats the open card's action row in the sheet, clear of the home indicator (#1711)", async () => {
+    viewport(400);
+    const posts = calls("POST");
+    const pin = (id: string, y: number) => ({
+      ...oneThread,
+      id,
+      anchor: { kind: "pin", version: 1, x: 0.5, y, contentHash: null },
+    });
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({
+          threads: [pin("p1", 0.4), pin("p2", 0.7)],
+          open: 2,
+          truncated: false,
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 2 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    // No card is open yet, so nothing floats and the sheet has no outlet.
+    expect(sheet.querySelector("[data-oa-action-outlet]")).toBeNull();
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    // The outlet is a direct child of the sheet's scroller, stuck to its
+    // bottom edge: the row stays in view for a long thread scrolled to its top.
+    const outlet = await waitFor(() => {
+      const el = sheet.querySelector("[data-oa-action-outlet]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    expect(outlet.parentElement?.className).toContain("overflow-y-auto");
+    expect(outlet.className).toContain("sticky");
+    expect(outlet.className).toContain("bottom-0");
+    // The list keeps its content height (`flex-none`: no shrink, and no zero
+    // basis either): when a card is scrolled into view, a compressed body would
+    // carry the row up to the sheet's top instead.
+    const body = outlet.previousElementSibling as HTMLElement;
+    expect(body.className).toContain("flex-none");
+    expect(body.className).not.toContain("flex-1");
+    // A short list still leaves the row at the sheet's bottom edge.
+    expect(outlet.className).toContain("mt-auto");
+    // And it clears a phone's home indicator.
+    expect(outlet.className).toContain("safe-area-inset-bottom");
+    // The row moved out of the card, and still acts for it.
+    const row = await within(outlet).findByRole("button", { name: "Reply" });
+    expect(row.closest("[data-oa-actions]")).not.toBeNull();
+    const card = sheet.querySelector('[data-thread="p1"]') as HTMLElement;
+    expect(card.contains(row)).toBe(false);
+    // Scrolled: the card is scrolled into view (its own autoscroll), and the
+    // row is still the outlet's, not carried back into the card.
+    const scroller = outlet.parentElement as HTMLElement;
+    Object.defineProperty(scroller, "scrollTop", {
+      value: 240,
+      configurable: true,
+      writable: true,
+    });
+    fireEvent.scroll(scroller);
+    await wait(30);
+    expect(card.contains(row)).toBe(false);
+    expect(outlet.contains(row)).toBe(true);
+    fireEvent.change(within(card).getByRole("textbox", { name: "Reply" }), {
+      target: { value: "Floats" },
+    });
+    fireEvent.click(within(outlet).getByRole("button", { name: "Reply" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.body).toEqual({ body: "Floats" });
+    // A sheet the reader expands keeps the row in the card, where the reader
+    // can see the box it belongs to.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(sheet.querySelector("[data-oa-action-outlet]")).toBeNull();
+    expect(
+      within(card as HTMLElement).getByRole("button", { name: "Reply" }),
+    ).toBeInTheDocument();
+  });
+
+  it("typing in the pin sheet's reply box expands the sheet and puts the row back in the card (#1711)", async () => {
+    // #1657's expand gives the phone keyboard its room; the card's own composer
+    // then holds the row, right under the box the reader is typing in.
+    viewport(400);
+    const pin = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [pin], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    const outlet = await waitFor(() => {
+      const el = sheet.querySelector("[data-oa-action-outlet]");
+      expect(el).not.toBeNull();
+      return el as HTMLElement;
+    });
+    const card = sheet.querySelector('[data-thread="p1"]') as HTMLElement;
+    fireEvent.focus(within(card).getByRole("textbox", { name: "Reply" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    // No outlet in a sheet the reader can see the whole card in.
+    expect(sheet.querySelector("[data-oa-action-outlet]")).toBeNull();
+    expect(outlet.isConnected).toBe(false);
+    const row = within(card).getByRole("button", { name: "Reply" });
+    expect(row.closest("[data-oa-actions]")).not.toBeNull();
+    fireEvent.change(within(card).getByRole("textbox", { name: "Reply" }), {
+      target: { value: "Typed" },
+    });
+  });
+
+  it("the wide overlay never floats the row, even with a pin card open (#1711)", async () => {
+    viewport(1280);
+    const pin = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [pin], open: 1, truncated: false }),
+      ),
+    );
+    mount(fullPath(OWNED));
+    fireEvent.click(await screen.findByRole("button", { name: /^Comments/ }));
+    const overlay = await screen.findByRole("dialog", { name: "Comments" });
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(overlay.querySelector("[data-oa-action-outlet]")).toBeNull();
+    const card = overlay.querySelector('[data-thread="p1"]') as HTMLElement;
+    const row = await within(card).findByRole("button", { name: "Reply" });
+    expect(row.closest("[data-oa-actions]")).not.toBeNull();
+  });
+
+  it("the short pin sheet drops the whole-page box, so the pinned card is the only thing there (#1783)", async () => {
+    // The short height exists to read one pinned card (#1657). The whole-page
+    // box above the list filled it and left the open card below the fold: the
+    // reader saw an action row with no card above it.
+    viewport(390);
+    const [c1] = oneThread.comments;
+    const pin = {
+      ...oneThread,
+      id: "p1",
+      anchor: { kind: "pin", version: 1, x: 0.5, y: 0.4, contentHash: null },
+      comments: [
+        { ...c1, id: "c1", body: "Which pin is this?" },
+        { ...c1, id: "c2", body: "The one on the button." },
+      ],
+    };
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [pin], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    const wholePage = () =>
+      within(sheet).queryByRole("textbox", {
+        name: "Comment on the whole page",
+      });
+    // jsdom loads no CSS, so `hidden` is a class here, not a display: none.
+    const wrapper = () =>
+      wholePage()?.closest("div.hidden, div.contents") as HTMLElement | null;
+    // Half height: the box is part of the list. A draft is typed into it.
+    const box = wholePage();
+    expect(box).not.toBeNull();
+    expect(wrapper()?.className).toContain("contents");
+    fireEvent.change(box as HTMLElement, {
+      target: { value: "Whole page: the hero is too loud" },
+    });
+    await act(async () => opts.at(-1)?.onCommentOpen("p1"));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    // Short: the box is hidden (not unmounted: the draft has to survive a pin
+    // tap), and the pinned card with its reply is there, so the reader is not
+    // left with only an action row.
+    expect(wrapper()?.className).toContain("hidden");
+    expect(within(sheet).getByText("Which pin is this?")).toBeInTheDocument();
+    expect(
+      within(sheet).getByText("The one on the button."),
+    ).toBeInTheDocument();
+    expect(
+      within(sheet).getByRole("button", { name: "Reply" }),
+    ).toBeInTheDocument();
+    // A taller sheet brings the box back with the draft still in it.
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(wholePage()).toHaveValue("Whole page: the hero is too loud");
+    expect(wrapper()?.className).toContain("contents");
+    // The other way a sheet grows: typing a reply (#1657). Same result, and the
+    // whole-page draft is still there.
+    fireEvent.click(screen.getByRole("button", { name: "Shrink comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "pin");
+    fireEvent.focus(within(sheet).getByRole("textbox", { name: "Reply" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    expect(wrapper()?.className).toContain("contents");
+    expect(wholePage()).toHaveValue("Whole page: the hero is too loud");
+  });
+
+  it("the phone sheet has a handle that toggles two heights and a backdrop that closes it", async () => {
+    viewport(400);
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    fireEvent.click(screen.getByRole("button", { name: "Expand comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    fireEvent.click(screen.getByRole("button", { name: "Shrink comments" }));
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    // Dragging the handle up goes to full height; the click that follows does not undo it.
+    const handle = screen.getByRole("button", { name: "Expand comments" });
+    fireEvent.pointerDown(handle, { clientY: 300 });
+    fireEvent.pointerUp(handle, { clientY: 200 });
+    fireEvent.click(handle);
+    expect(sheet).toHaveAttribute("data-sheet-height", "full");
+    // A tap after a finished drag still toggles (the flag is reset on pointerdown).
+    fireEvent.pointerDown(handle, { clientY: 100 });
+    fireEvent.pointerUp(handle, { clientY: 100 });
+    fireEvent.click(handle);
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    // A cancelled pointer clears the drag: the up that follows is ignored.
+    fireEvent.pointerDown(handle, { clientY: 300 });
+    fireEvent.pointerCancel(handle);
+    fireEvent.pointerUp(handle, { clientY: 100 });
+    expect(sheet).toHaveAttribute("data-sheet-height", "half");
+    const backdrop = document.querySelector("[data-sheet-backdrop]");
+    expect(backdrop).not.toBeNull();
+    fireEvent.click(backdrop as Element);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -338,6 +874,23 @@ describe("comments: actions", () => {
     const c = await col();
     // Two comments: collapsed to a count until the card is selected.
     fireEvent.click(await within(c).findByRole("button", { name: "1 reply" }));
+    // #1657: in the phone sheet's short height the action row stays on screen.
+    const actions = within(c)
+      .getByRole("button", { name: "Reply" })
+      .closest("[data-oa-actions]") as HTMLElement;
+    expect(actions).not.toBeNull();
+    expect(actions.className).toContain(
+      "group-data-[sheet-height=pin]/sheet:sticky",
+    );
+    // Floating over scrolling text needs an opaque surface, never an inherited
+    // one: a card's own, and the sheet's in the note composer (#1696).
+    expect(actions.className).toContain(
+      "group-data-[sheet-height=pin]/sheet:bg-background",
+    );
+    expect(ACTIONS).not.toContain("bg-inherit");
+    expect(ACTIONS_PLAIN).toContain(
+      "group-data-[sheet-height=pin]/sheet:bg-card",
+    );
     expect(
       await within(c).findByText("Agreed, shorter is better."),
     ).toBeInTheDocument();
@@ -365,9 +918,10 @@ describe("comments: actions", () => {
     const card = (await within(c).findByText("Looks good overall.")).closest(
       "[data-thread]",
     ) as HTMLElement;
-    expect(
-      within(card).getByText(/Resolved by Sam Rivera/),
-    ).toBeInTheDocument();
+    const line = within(card).getByText(/Resolved by Sam Rivera/);
+    expect(line).toBeInTheDocument();
+    expect(line.className).toMatch(/text-green-/);
+    expect(line.querySelector("svg")).not.toBeNull();
     fireEvent.click(within(card).getByRole("button", { name: "Reopen" }));
     await waitFor(() => expect(patches[0]?.body).toEqual({ status: "open" }));
     expect(await within(c).findByText("2 open")).toBeInTheDocument();
@@ -435,6 +989,106 @@ describe("comments: actions", () => {
     expect(
       within(root).getByText("Delete this thread? Its replies go too."),
     ).toBeInTheDocument();
+  });
+
+  it("P2: opening the column fetches no agents; focusing a composer fetches once", async () => {
+    const agentCalls: string[] = [];
+    server.use(
+      http.get(`*${R.artifactAgents(OWNED)}`, ({ request }) => {
+        agentCalls.push(request.url);
+        return HttpResponse.json(
+          { error: { code: "not_found", message: "no" } },
+          { status: 404 },
+        );
+      }),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = await within(c).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    await wait(50);
+    expect(agentCalls).toHaveLength(0);
+    fireEvent.focus(box);
+    await waitFor(() => expect(agentCalls).toHaveLength(1));
+    // A 404 is final: more typing or focus asks again for nothing, and no picker shows.
+    fireEvent.blur(box);
+    fireEvent.focus(box);
+    fireEvent.change(box, { target: { value: "hello @" } });
+    fireEvent.change(box, { target: { value: "hello @O" } });
+    await wait(50);
+    expect(agentCalls).toHaveLength(1);
+    expect(within(c).queryByRole("listbox")).toBeNull();
+  });
+
+  it("P2: the column opens on its own with no threads, and an explicit close sticks", async () => {
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(
+      await within(c).findByRole("textbox", {
+        name: "Comment on the whole page",
+      }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Comments" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+  });
+
+  it("P2: narrower than 960px the column stays closed until there is something to show", async () => {
+    viewport(800);
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: "Comments" });
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).toBeNull();
+  });
+
+  it("P2: below 960px Comments is the first tab of the side panel", async () => {
+    viewport(800);
+    mount(`${viewerPath(OWNED)}?panel=open&tab=comments`);
+    const tabs = await screen.findAllByRole("tab");
+    expect(tabs.map((t) => t.textContent)).toEqual([
+      "Comments",
+      "Versions",
+      "Share",
+      "Details",
+    ]);
+  });
+
+  it("P2: the new-comment row has Cancel, then the accent Comment, at the right", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "hello",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    const row = screen.getByRole("button", { name: "Comment" })
+      .parentElement as HTMLElement;
+    const names = [...row.querySelectorAll("button")].map((b) => b.textContent);
+    expect(names).toEqual(["Cancel", "Comment"]);
+    expect(row.className).toContain("ml-auto");
+    expect(screen.getByRole("button", { name: "Comment" }).className).toContain(
+      "--oa-accent",
+    );
+    expect(box).toBeInTheDocument();
   });
 
   it("the Comments setting in Share turns comments off", async () => {
@@ -526,6 +1180,58 @@ describe("comments: errors", () => {
         body: "about this",
       }),
     );
+  });
+
+  it("starts closed on a wide screen even with open threads (#1731)", async () => {
+    mount(viewerPath(OWNED));
+    const btn = await screen.findByRole("button", { name: "Comments, 1 open" });
+    await hello();
+    await wait(100);
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).toBeNull();
+    expect(btn).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(btn);
+    expect(
+      await screen.findByRole("complementary", { name: "Comments" }),
+    ).toBeInTheDocument();
+  });
+
+  it("a selection in the page opens the closed column on a draft (#1731)", async () => {
+    mount(viewerPath(OWNED));
+    await screen.findByRole("button", { name: "Comments, 1 open" });
+    await hello();
+    expect(
+      screen.queryByRole("complementary", { name: "Comments" }),
+    ).toBeNull();
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "headline",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    const c = await screen.findByRole("complementary", { name: "Comments" });
+    expect(
+      within(c).getByRole("textbox", { name: "Add a comment" }),
+    ).toBeInTheDocument();
+  });
+
+  it("a list that fails to load opens the column on its own (#1731)", async () => {
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json(
+          { error: { code: "internal", message: "x" } },
+          { status: 500 },
+        ),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await screen.findByRole("complementary", { name: "Comments" });
+    expect(
+      await within(c).findByText("Couldn't load comments."),
+    ).toBeInTheDocument();
   });
 
   it("a list that fails to load offers Retry", async () => {
@@ -632,8 +1338,15 @@ describe("comments: live and signed out", () => {
       ),
     );
     mount(viewerPath(PUBLIC));
-    fireEvent.click(await screen.findByRole("button", { name: "Comments" }));
     const c = await col();
+    // The whole-page box: Sign in at the left of the row, back to this page.
+    fireEvent.focus(
+      within(c).getByRole("textbox", { name: "Comment on the whole page" }),
+    );
+    // (jsdom's window.location is "/", not the memory router's path.)
+    expect(
+      within(c).getByRole("link", { name: "Sign in" }).getAttribute("href"),
+    ).toMatch(/^\/sign-in\?next=%2F/);
     fireEvent.change(within(c).getByRole("textbox", { name: "Your name" }), {
       target: { value: "Pat" },
     });
@@ -757,7 +1470,7 @@ describe("comments: guests and Retry-After", () => {
   beforeEach(async () => {
     (await import("../src/viewer/anonId")).resetAnonMemory();
   });
-  const TOKEN = `${"A".repeat(22)}.k1.${"B".repeat(43)}`;
+  const TOKEN = `${"A".repeat(22)}.${Math.floor(Date.now() / 1000).toString(36)}.${"B".repeat(43)}`;
   const guestMocks = () => {
     const seenTokens: (string | null)[] = [];
     server.use(
@@ -798,7 +1511,6 @@ describe("comments: guests and Retry-After", () => {
       }),
     );
     mount(viewerPath(PUBLIC));
-    fireEvent.click(await screen.findByRole("button", { name: "Comments" }));
     const c = await col();
     await waitFor(() => expect(seenTokens.length).toBeGreaterThan(0));
     // The read sent no token and minted none.
@@ -977,6 +1689,29 @@ describe("comments: review round 1", () => {
     expect(view()).toBeNull();
   });
 
+  it("P2: an explicit column close survives a live version swap", async () => {
+    mount(viewerPath(OWNED));
+    await col();
+    await hello();
+    fireEvent.click(screen.getByRole("button", { name: /^Comments/ }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("complementary", { name: "Comments" }),
+      ).toBeNull(),
+    );
+    await bump(OWNED, 97);
+    await waitFor(() =>
+      expect(document.querySelectorAll("iframe").length).toBeGreaterThan(1),
+    );
+    // Hidden layers included: the preloaded one must not open its own column.
+    expect(
+      screen.queryAllByRole("complementary", {
+        name: "Comments",
+        hidden: true,
+      }),
+    ).toHaveLength(0);
+  });
+
   it("B1: a typed reply and an open delete confirm hold a swap too", async () => {
     mount(viewerPath(OWNED));
     const c = await col();
@@ -1097,6 +1832,7 @@ describe("comments: review round 1", () => {
         author: { kind: "user", name: "Sam", me: false },
         createdAt: "2026-11-05T10:00:00Z",
         editedAt: null,
+        typed: false,
         can: { edit: false, delete: false },
       },
     ],
@@ -1129,6 +1865,76 @@ describe("comments: review round 1", () => {
     expect(
       await within(c).findByText("You're commenting on version 1."),
     ).toBeInTheDocument();
+  });
+
+  it("#1529/#1789: relative times carry the full date, an agent author reads as the agent, and the column count follows the version", async () => {
+    const t = (id: string, v: number, author: object) => ({
+      ...threadAt(id, "text", v, `body ${id}`),
+      comments: [
+        {
+          ...threadAt(id, "text", v, `body ${id}`).comments[0],
+          author,
+        },
+      ],
+    });
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json({
+          threads: [
+            t("a", 1, {
+              kind: "agent",
+              name: "Claude Code",
+              for: "Sam",
+              me: false,
+            }),
+            t("b", 1, { kind: "agent", name: "Cursor", me: false }),
+            t("c", 1, { kind: "user", name: "Sam", me: false }),
+            t("d", 2, { kind: "user", name: "Sam", me: false }),
+          ],
+          open: 4,
+          truncated: false,
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED, 1));
+    const c = await col();
+    await within(c).findByText("body a");
+    const rowOf = (id: string) =>
+      within(c).getByText(`body ${id}`).closest("[data-thread]") as HTMLElement;
+    // Agent: bot icon (not initials), name, "agent" tag, muted "for <person>"; no "via".
+    const row = rowOf("a");
+    expect(row.querySelector('[data-avatar="agent"] svg')).not.toBeNull();
+    expect(row.querySelector("[data-avatar]")?.textContent).toBe("");
+    expect(within(row).getByText("Claude Code")).toBeInTheDocument();
+    expect(within(row).getByText("agent")).toBeInTheDocument();
+    const forEl = within(row).getByText("not linked · for Sam");
+    expect(forEl.className).toMatch(/text-muted-foreground/);
+    expect(within(c).queryByText(/^via /)).toBeNull();
+    // No "for" without a person.
+    expect(within(rowOf("b")).queryByText(/^for /)).toBeNull();
+    expect(within(rowOf("b")).getByText("agent")).toBeInTheDocument();
+    // A user is unchanged: initials avatar, no tag.
+    const user = rowOf("c");
+    expect(user.querySelector("[data-avatar]")?.textContent).toBe("SA");
+    expect(user.querySelector("[data-agent-tag]")).toBeNull();
+    // Three threads were made on version 1; the artifact has four. The toolbar badge follows the column.
+    expect(within(c).getByText("3 open")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /Comments, 3 open/ }),
+    ).toBeInTheDocument();
+    const when = row.querySelector("span[title]") as HTMLElement;
+    expect(when.getAttribute("title")).toMatch(/^November 5(, 2026)? at \d/);
+    expect(when.textContent).not.toBe(when.getAttribute("title"));
+    // The author line never wraps: the name truncates, the time stays put (jsdom has no layout).
+    const line = when.parentElement as HTMLElement;
+    expect(line.className).not.toMatch(/flex-wrap/);
+    expect(when.className).toMatch(/whitespace-nowrap/);
+    expect(when.className).toMatch(/shrink-0/);
+    expect(line.querySelector("b")?.className).toMatch(/truncate/);
+    expect(forEl.className).toMatch(/truncate/);
+    // #1789 (Design): "for <person>" is its own line under the name row.
+    expect(line.contains(forEl)).toBe(false);
+    expect(line.parentElement?.contains(forEl)).toBe(true);
   });
 
   const art = (over: object) =>
@@ -1213,6 +2019,22 @@ describe("comments: review round 1", () => {
     await act(async () => opts.at(-1)?.onCommentSelect(sel("nope")));
     expect(screen.queryByRole("textbox", { name: "Add a comment" })).toBeNull();
   });
+
+  it("#1491: a viewer who can't comment puts the frame in view mode, and gets the plain empty state", async () => {
+    cannot();
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    await hello();
+    await waitFor(() => expect(setMode).toHaveBeenLastCalledWith("view"));
+    expect(setMode).not.toHaveBeenCalledWith("select");
+    const c = await col();
+    expect(await within(c).findByText("No comments yet.")).toBeInTheDocument();
+    expect(within(c).queryByText(/Select text to add one/)).toBeNull();
+  });
 });
 
 describe("comments: capped members", () => {
@@ -1293,6 +2115,86 @@ describe("comments: capped members", () => {
     expect(commentError(e, false)).toBe("That comment is gone.");
   });
 
+  it("a comment refused by the plan cap reads the plan copy, not the generic one", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    const { errorCopy } = await import("../src/api/errorCopy");
+    const solo = new ApiClientError("plan_required", "Plan required", 403);
+    const ro = new ApiClientError("plan_read_only", "Read-only", 403, {
+      reason: "lapsed",
+    });
+    for (const owner of [true, false]) {
+      for (const e of [solo, ro]) {
+        const copy = commentError(e, false, { owner });
+        expect(copy).toBe(errorCopy(e, "", { owner }));
+        expect(copy).not.toBe("Couldn't post your comment. Try again.");
+      }
+    }
+    expect(commentError(solo, false, { owner: false })).toMatch(/Solo/);
+    expect(commentError(ro, false, { owner: true })).toMatch(/lapsed/);
+  });
+
+  it("an anonymous, guest or restricted viewer gets no billing detail on a plan refusal", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError, answerError } = await import("../src/api/comments");
+    const generic = "Your account can only view, so you can't comment.";
+    const ro = new ApiClientError("plan_read_only", "Read-only", 403, {
+      reason: "payment_failed",
+    });
+    const solo = new ApiClientError("plan_required", "Plan required", 403);
+    for (const e of [ro, solo]) {
+      expect(commentError(e, false)).toBe(generic);
+      expect(commentError(e, true, { capped: true, cap: "plan" })).toBe(
+        generic,
+      );
+      expect(commentError(e, true, { capped: true, cap: "guest" })).toBe(
+        generic,
+      );
+      expect(answerError(e)).not.toMatch(/card|Solo|owner/i);
+    }
+  });
+
+  it("a missing Me plus a plan refusal gives the generic capped copy", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError, commentErrorCtx } = await import(
+      "../src/api/comments"
+    );
+    const e = new ApiClientError("plan_required", "Plan required", 403);
+    expect(commentError(e, false, commentErrorCtx(undefined))).toBe(
+      "Your account can only view, so you can't comment.",
+    );
+  });
+
+  it("a member or admin under a plan lock (cap plan) keeps the plan copy", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    const { errorCopy } = await import("../src/api/errorCopy");
+    const e = new ApiClientError("plan_read_only", "Read-only", 403, {
+      reason: "lapsed",
+    });
+    const { commentErrorCtx } = await import("../src/api/comments");
+    for (const role of ["member", "admin"]) {
+      const me = {
+        user: { role },
+        auth: { cap: "plan" },
+        instance: null,
+      } as never;
+      const ctx = commentErrorCtx(me);
+      expect(ctx.capped).toBe(false);
+      expect(commentError(e, true, ctx)).toBe(errorCopy(e, "", ctx));
+      expect(commentError(e, true, ctx)).toMatch(/lapsed|read-only/i);
+    }
+  });
+
+  it("a capped member's read-only 404 still wins over the plan copy path", async () => {
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    const e = new ApiClientError("space_forbidden", "No", 403);
+    expect(commentError(e, true, { owner: true })).toBe(
+      "Your account can only view, so you can't comment.",
+    );
+  });
+
   it("an uncapped 404 still says the comment is gone", async () => {
     capped(null);
     refused();
@@ -1301,6 +2203,78 @@ describe("comments: capped members", () => {
     expect(
       await within(c).findByText("That comment is gone."),
     ).toBeInTheDocument();
+  });
+});
+
+describe("comments: the quote stays highlighted while writing (#1834)", () => {
+  const quote = (exact: string) => ({
+    kind: "text" as const,
+    exact,
+    prefix: "",
+    suffix: "",
+  });
+  /** The third argument of the last comments.set: the draft quote. */
+  const sentQuote = () =>
+    setComments.mock.calls.at(-1)?.[2] as { exact: string } | undefined;
+
+  it("sends the quote while the composer is open, and drops it on cancel", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    await screen.findByRole("textbox", { name: "Add a comment" });
+    expect(sentQuote()).toMatchObject({ exact: "Landing" });
+    fireEvent.click(within(c).getByRole("button", { name: "Cancel" }));
+    await wait(30);
+    expect(sentQuote()).toBeUndefined();
+  });
+
+  it("keeps it until the posted thread arrives, then the thread paints itself", async () => {
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    fireEvent.change(box, { target: { value: "Tighten this" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // The draft is closed, but the quote is still sent: no frame without a
+    // highlight while the list refetches.
+    const afterPost = setComments.mock.calls
+      .slice(-3)
+      .map((call) => call[2] as { exact: string } | undefined)
+      .filter(Boolean);
+    expect(afterPost.length).toBeGreaterThan(0);
+    // Once the list carries the new thread, the held quote goes.
+    await waitFor(() => expect(sentQuote()).toBeUndefined());
+    const lastThreads = setComments.mock.calls.at(-1)?.[0] as {
+      id: string;
+    }[];
+    expect(lastThreads.some((t) => t.id)).toBe(true);
+  });
+  it("drops the held quote when the list never carries it (#1850)", async () => {
+    // A server that normalises the quote, or a refetch that misses the thread:
+    // the draft highlight must not stay on for good.
+    const posts = calls("POST");
+    server.use(
+      http.get(`*${R.comments(OWNED)}`, () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    fireEvent.change(box, { target: { value: "Tighten this" } });
+    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    await waitFor(() => expect(posts).toHaveLength(1));
+    // Held for a moment (the list is still empty)...
+    expect(sentQuote()).toMatchObject({ exact: "Landing" });
+    // ...and gone once the hold expires.
+    await wait(1700);
+    expect(sentQuote()).toBeUndefined();
   });
 });
 
@@ -1457,5 +2431,185 @@ describe("comments: unavailable is not forever", () => {
       screen.queryByRole("complementary", { name: "Side panel" }),
     ).toBeNull();
     expect(document.querySelector("aside[aria-label='Side panel']")).toBeNull();
+  });
+});
+
+describe("initials", () => {
+  it("keeps emoji and CJK characters whole", async () => {
+    const { initials } = await import("../src/viewer/comments/CommentsBody");
+    expect(initials("😀 Robot")).toBe("😀R");
+    expect(initials("😀")).toBe("😀");
+    expect(initials("山田 太郎")).toBe("山太");
+    expect(initials("Sam Rivera")).toBe("SR");
+    expect(initials("cursor")).toBe("CU");
+  });
+});
+
+describe("comment on selection (#1732)", () => {
+  const select = (has: boolean) =>
+    act(async () => opts.at(-1)?.onCommentSelection(has, 100));
+  // The shell's bar is the fixed one; at 600px and up the header button has the same name.
+  const bar = () =>
+    screen
+      .queryAllByRole("button", { name: "Comment on selection" })
+      .find((b) => b.parentElement?.className.includes("fixed")) ?? null;
+
+  it("touch: a full-width bar appears with the selection, announces once, and hides when it clears", async () => {
+    viewport(400, true);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: /^Comments/ });
+    expect(bar()).toBeNull();
+    await select(true);
+    expect(bar()).toBeInTheDocument();
+    expect(bar()?.parentElement?.className).toContain("fixed");
+    expect(bar()?.parentElement?.className).toContain("safe-area-inset-bottom");
+    expect(
+      screen.getByText("Comment on selection available"),
+    ).toBeInTheDocument();
+    await select(false);
+    expect(bar()).toBeNull();
+    expect(screen.queryByText("Comment on selection available")).toBeNull();
+  });
+
+  it("touch: one tap sends the command, hides the bar, and the quote opens the composer", async () => {
+    viewport(400, true);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: /^Comments/ });
+    await select(true);
+    fireEvent.click(bar() as HTMLElement);
+    expect(commentOnSelection).toHaveBeenCalledTimes(1);
+    expect(bar()).toBeNull();
+    // The frame answers with its usual comment.select.
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "the quote",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    expect(within(sheet).getByText("the quote")).toBeInTheDocument();
+    expect(
+      within(sheet).getByRole("textbox", { name: "Add a comment" }),
+    ).toBeInTheDocument();
+  });
+
+  it("fine pointer: no bar", async () => {
+    viewport(1280, false);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: /^Comments/ });
+    await select(true);
+    expect(bar()).toBeNull();
+  });
+
+  it("header button: accent, 'Comment' below 600px, 'Comment on selection' from 600px, no badge, reverts", async () => {
+    viewport(400, true);
+    mount(viewerPath(OWNED));
+    await hello();
+    const btn = await screen.findByRole("button", { name: "Comments, 1 open" });
+    await select(true);
+    const phone = screen.getByRole("button", { name: "Comment" });
+    expect(phone).toHaveTextContent(/^Comment\s*$/);
+    fireEvent.click(phone);
+    expect(commentOnSelection).toHaveBeenCalledTimes(1);
+    await select(true);
+    await select(false);
+    expect(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    ).toBe(btn);
+  });
+
+  it("header button at 800px reads 'Comment on selection', also with a fine pointer", async () => {
+    viewport(800, false);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: "Comments, 1 open" });
+    await select(true);
+    const b = screen.getByRole("button", { name: "Comment on selection" });
+    expect(b).toHaveTextContent("Comment on selection");
+    expect(b).not.toHaveTextContent("1");
+  });
+
+  it("no bar over the open side panel (review of #1757)", async () => {
+    viewport(800, true);
+    mount(`${viewerPath(OWNED)}?panel=open&tab=versions`);
+    await hello();
+    await screen.findByRole("button", { name: /^Comment/ });
+    await select(true);
+    expect(bar()).toBeNull();
+  });
+
+  it("the header still opens the list when the frame has nothing to quote (review of #1757)", async () => {
+    viewport(1280, false);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: "Comments, 1 open" });
+    // Page code claims a selection; the frame then has nothing to send.
+    await select(true);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Comment on selection" }),
+    );
+    expect(commentOnSelection).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByRole("complementary", { name: "Comments" }),
+    ).toBeInTheDocument();
+  });
+
+  it("announces the bar at most once in a while, however often the page flips it (review of #1757)", async () => {
+    viewport(400, true);
+    mount(viewerPath(OWNED));
+    await hello();
+    await screen.findByRole("button", { name: /^Comments/ });
+    await select(true);
+    expect(
+      screen.getByText("Comment on selection available"),
+    ).toBeInTheDocument();
+    await select(false);
+    await select(true);
+    expect(bar()).toBeInTheDocument();
+    expect(screen.queryByText("Comment on selection available")).toBeNull();
+  });
+
+  it("view-only readers get no bar and no button change", async () => {
+    viewport(400, true);
+    server.use(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json(
+          { error: { code: "unauthorized", message: "no" } },
+          { status: 401 },
+        ),
+      ),
+      http.get(`*${R.artifact(PUBLIC)}`, () =>
+        HttpResponse.json({
+          ...fixtures.artifacts.find((a) => a.id === PUBLIC),
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: false,
+            comment: false,
+          },
+          visibility: "public",
+        }),
+      ),
+      http.get(`*${R.comments(PUBLIC)}`, () =>
+        HttpResponse.json({ threads: [oneThread], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(PUBLIC));
+    await screen.findByRole("button", { name: /^Comments/ });
+    await hello();
+    await select(true);
+    expect(bar()).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Comment on selection" }),
+    ).toBeNull();
   });
 });

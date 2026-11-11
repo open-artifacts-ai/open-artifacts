@@ -84,7 +84,7 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 | `InstanceSignInSchema` | `{ mode: access \| direct, providers: (access \| google \| email)[] }` |
 | `AuthMethodSchema` | `access \| google \| code \| pat \| oauth \| dev \| test` |
 | `MeAuthSchema` | `{ method, readOnly, cap, expiresAt }` |
-| `ArtifactCanSchema`, `ARTIFACT_ACTIONS`, `ArtifactAction` | `{ edit, share, setVisibility, delete, transfer, move, dataWrite }`. P3's internal superset is `PolicyAction`, so the names don't clash |
+| `ArtifactCanSchema`, `ARTIFACT_ACTIONS`, `ArtifactAction` | `{ edit, share, setVisibility, delete, transfer, move, dataWrite, comment? }`. P3's internal superset is `PolicyAction`, so the names don't clash |
 | `artifactCan(level, { personal, cap })` | The P3 action table as one function (server and mocks). `dataWrite` is false for guests and restricted members; ordinary viewers keep it (the artifact still needs the `db`/`storage` capability) |
 
 ## Presence (both tiers)
@@ -96,6 +96,7 @@ Who else has an artifact open, as faces. Module: `viewer-presence.ts`.
 - **Anonymous id.** Session cookie `oa_pid` on the app origin, matching `PRESENCE_ID_RE`; the server treats it as opaque and ignores any other value.
 - **Ping.** A client opening `R.events` with `?ping=1` sends the text `ping` every `PRESENCE_PING_MS` (30 s); the server answers `pong` without waking. Such a socket with no ping for `PRESENCE_STALE_MS` (60 s) is swept (every `PRESENCE_SWEEP_MS`); a closed socket's face lingers `PRESENCE_GRACE_MS`. Sockets without `?ping=1` are never swept for silence. `ping` is the only client message allowed; any other closes with 1008.
 - **Agents.** Present for `AGENT_PRESENT_MS` (120 s) after a touch, "editing" while a write is that recent.
+- **Animals.** `ANIMALS` is 55 ids (13 `lucide: true`, 42 drawn). Compared with the first draft: removed beaver, camel, capybara, eagle, gecko, hippo, kangaroo, llama, moose, wolf, zebra (Design: unreadable at 16px); added bat, chicken, hamster, lizard, seahorse, starfish, toucan (presence is unshipped, so no compat).
 
 ## CHANGED existing shapes (all fields optional, appended last)
 
@@ -108,6 +109,7 @@ Who else has an artifact open, as faces. Module: `viewer-presence.ts`.
 | `Me` | `auth?: MeAuth` (every sign-in mode, parity 1), `personalSpaceId?` (= user.id), `spaces?: MySpace[]` (shared, by name, ≤ 200; both with spaces on), `notices?: MeNotices` (Access-only installs only; see Guest share notices) |
 | `Settings` (so `SettingsPatch`) | `spaceManagerMappings?: boolean` (hosted; default true, absent self-hosted). PATCH needs `settings.manage` (org owner, admin); audited `settings.space_manager_mappings` |
 | `Space` | `can?: SpaceCan` (`{ manageMappings }`) |
+| `VersionInfo.contentHash` | SHA-256 (hex) of the version's entry file, or `null` (unknown) when no digest is recorded (an upload on a free instance, which cannot hash large files in 10 ms CPU, or a version published before digests). A pin's `contentHash` is likewise `null` when unknown, never a guess. Pin anchors on images and pdf carry the same hash: the server stamps `contentHash` itself from the version's entry bytes when a thread is created and overwrites any value the client sent (#1490) |
 | `AgentRef` (so `ArtifactSummary.lastAgent`, `VersionInfo.agent`) | `masked?: true`. A token (PAT) label is its owner's private note: every viewer but the token's owner (the version's `createdBy`) gets `name` "<owner name>'s agent" (the owner's real name, never an email), or "A member's agent" with no real name, with `masked: true`. A version whose label was overwritten when its publisher's row was deleted (hard removal, before parity 1; `agent_via` `r:`) stays "A member's agent" for every viewer, with `masked: true`: its `createdBy` is no longer the publisher. Removal no longer overwrites labels: the row and `createdBy` stay, so the rule above applies. A grant's client name is never masked; a version with no recorded via (before migration 0012) always is. No list filter matches a masked name, so the library offers no chip for it. Also on R.events: a non-owner's `version` frame has `by.name` "<owner name>'s agent" (no `masked` there) |
 | `ListQuery`, `SearchQuery` (so MCP `list_artifacts`, `search_artifacts`) | `agentVia?: AgentVia` = `g:<grantId>` or `t:<tokenId>` (`^[gt]:[A-Za-z0-9_-]{1,64}$`; else 400) (#589): artifacts with any version published through that connection (`versions.agent_via`). Honored only when the grant (`agent_grants.user_id`) or token (`tokens.user_id`) is the caller's; anyone else's, or an unknown id, is an empty page, never 403 or 404, so ids can't be probed. Combines with every other filter. `agent` (the self-reported name, shared across connections) is unchanged. The dashboard's Settings › Connections "View published versions" link sends it; the library's Agent filter then shows the connection's own label (else its client name), to its owner only. Known v1 limit (tracked in #852): with few or no matches the filter walks the caller's visible candidate set, like `agent` and `format`. A revoked grant filters to nothing once its usage row (`agent_grants`) is gone; a revoked token keeps its row and still filters |
 | `ShareResult` (PUT shares, MCP share_artifact) | `recipient?: ShareRecipient` = `{ canSignIn: false, reason: "needs_invite" \| "outside_domains" \| "no_sign_in_method" }`: the share applied, but the recipient can't sign in yet. `needs_invite`: in a verified domain on an invite-only install (hosted, or AUTH_DOMAIN_JOIN=invite): an admin must invite them as a member. Absent when they can sign in (or only Google might admit them). The share email says they need an invite instead of promising a sign-in |
@@ -121,8 +123,13 @@ Who else has an artifact open, as faces. Module: `viewer-presence.ts`.
 | `ArtifactEvent.hello` | `you?: PresenceKey`: the caller's own presence key (16 chars of `[A-Za-z0-9_-]`), so a client drops its own face |
 | `ArtifactEventSchema` | `presence` frame, appended after `gone`: `{ type: "presence", viewers, total }` (see Presence, both tiers) |
 | `GetArtifactInput`, `ArtifactData*Input` (MCP get_artifact and the six data tools) | `activity?: string` (at most 80 chars): what the agent says it is doing, shown on its presence card |
-| `AuditActionSchema` | `bus.role.proposed`, `bus.role.confirmed`, `bus.role.refused`, `bus.role.expired` (#1372, self-host bus only: an AI agent proposed a role change over MCP, the member confirmed or refused it on its link, or the link ran out). Target `user` (the member whose bus it is); `detail { proposalId, action }` plus `roleId`, `agentId`, `priorAgentId` when set and `why` on a refusal (`rejected`, `changed`, `name_taken`, `agent_not_open`, `role_limit`, `used`, `expired`). Ids and enums only; never the role name, namespace or link. Actor: the member (proposed: their PAT or OAuth grant; confirmed and refused: their browser session), or `system` for an expiry |
+| `AuditActionSchema` | `bus.role.proposed`, `bus.role.confirmed`, `bus.role.refused`, `bus.role.expired` (#1372, self-host bus only: an AI agent proposed a role change over MCP, the member confirmed or refused it on its link, or the link ran out). Target `user` (the member whose bus it is); `detail { proposalId, action }` plus `roleId`, `agentId`, `priorAgentId` when set and `why` on a refusal (`rejected`, `changed`, `name_taken`, `agent_not_open`, `role_limit`, `used`, `expired`) or on an expiry caused by revoking the PAT or OAuth grant that proposed (`credential_revoked`, #1403). Ids and enums only; never the role name, namespace or link. Actor: the member (proposed: their PAT or OAuth grant; confirmed and refused: their browser session), or `system` for an expiry |
+| `AuditActionSchema` | `bus.reach.proposed`, `bus.reach.confirmed`, `bus.reach.refused`, `bus.reach.expired` (#1346, self-host bus only: a machine's agent proposed that the role it holds reach other namespaces, the member confirmed or refused it on its link, or the link ran out or its machine was revoked). Target `user`; `detail { proposalId, roleId, agentId, machineId }` plus `why` on a refusal (`rejected`, `changed`, `reach_limit`, `used`, `expired`) or on an expiry caused by revoking the proposing machine (`machine_revoked`). Ids and enums only; never the role name, a namespace or the link. Actor: the member's browser session for confirmed and refused, `system` for an expiry, the member for proposed (the machine token's owner) |
 | `ERROR_CODES` / `STATUS_FOR` | the codes below |
+
+## Comments (#682, `comments.ts`)
+
+`ArtifactSummary.comments` (boolean, default true; `PATCH`/publish `comments`, owner and managers) and `can.comment` (false when off, and for capped callers). Routes: `R.comments`, `R.commentThread`, `R.commentReplies`, `R.comment`. Comments live in the artifact's runtime store, never in page data. R.events sockets get `{ "type": "comments", "open": n }` on any change (not in `ArtifactEventSchema`; clients ignore unknown types). Embed requests get 403 `forbidden`.
 
 ## Guest share notices (`hosted/core.ts`, parity 2)
 
@@ -234,6 +241,7 @@ line, never twice. A non-null `cap` still limits access to viewer.
 | `GET R.artifacts` | `ListQuery` | `scope` adds `space` (needs `spaceId`) and `spaces`; `mine` = personal space; `spaceId` narrows any scope (another user's personal space: 400 `space_personal`; unknown, or a shared space where the caller has no role: 404, never an empty page) |
 | `GET R.search` | `SearchQuery` | optional `spaceId`, as the list's |
 | `POST R.artifacts` | `PublishInput` (`spaceId?`) | `spaceId` on create only (existing id: 400 `use_move`); default personal space; unknown, another user's personal space, or a shared space the caller can't see: 404; seen but not allowed: 403 `space_forbidden` (also any create by a capped caller); `visibility: "public"` where the space's publicLinks is off: 403 `public_links_off` (echoing it on an already public artifact passes). A visibility change is compare-and-set: a concurrent change or move is 409 `conflict` |
+| `POST R.versions(id)` | `PublishInput` (`expectedVersion?`, `edits?`) | `expectedVersion`: refused with 409 `version_conflict` unless it is the current version (compare-and-set in the version allocation, so of two concurrent publishes with the same value one wins). `edits` (1 to 64 `{old, new}`, with the id, not with content, files, entry, format or language): applied in order to the current version's entry file (html, markdown or code; a pdf or image: 400), other files reused unchanged; a miss or double match: 400 `edit_failed`; always checks the version it read. A settings-only MCP publish with `expectedVersion`: 400 `bad_request` (no version to guard) |
 | `PATCH R.artifact(id)` | `ArtifactPatch` | `visibility: "public"` where publicLinks is off: 403 `public_links_off` |
 | `POST R.moveArtifact(id)` | `MoveArtifactInput {spaceId}` → `ArtifactSummary` | manager/owner on the artifact (else 404); shared target only (the caller's own personal space: 400 `space_personal`; anyone else's: 404); editor+ in target (else 403 `space_forbidden`). A public artifact moved into a space with publicLinks off becomes `team` in the same batch and its anonymous sockets close (the toggle itself never rewrites or revokes); the returned summary shows `visibility: "team"`. Compare-and-set on the space and visibility read: a concurrent change is 409 `conflict`. Audited `artifact.move` |
 | `POST R.transferArtifact(id)` | `TransferArtifactInput {userId}` → `ArtifactSummary` | `level === "owner"` only, personal (else 404; a manager can't); successor active, non-guest, non-restricted (400 `invalid_successor`); former owner keeps an editor share; audited `artifact.transfer` |
@@ -241,6 +249,7 @@ line, never twice. A non-null `cap` still limits access to viewer.
 | `PATCH R.member(id)` | `MemberPatch` → `Member` | uncapped org owner, admin (else 404; a capped admin, e.g. a code session outside the verified domains, is 404 on every members route). An org owner or admin target needs the uncapped owner: an admin gets 403 `owner_only` (#475). The owner on themselves stays 400. Enforced in the write: a target promoted to admin mid-request is 403 `owner_only`, nothing changes or is audited |
 | `POST R.members` | `MemberInvite` → 201 `MemberInviteResult` | an address whose member was removed: 409 `member_removed` with details `MemberRemovedDetails { userId }` (offer `R.memberRestore(userId)`); a lapsed guest's address (removed when their last share went): 409 `guest_lapsed` (no Restore: a new share brings them back); a member directory sync removed while Google sync is on and a Workspace is connected: 409 `directory_managed` (no Restore: they come back when their Workspace account is restored); nothing is created. Any other existing row: 409 `conflict` |
 | `DELETE R.member(id)` | 204 | uncapped org owner, admin (else 404); every install (parity 1): status `removed`, the row stays (authorship, identities, the audit target and personal artifacts too; no hard delete). PATs and agent connections are revoked, sessions end, live sockets close. The removed row refuses every sign-in (Access, Google, email and domain codes) even while shares to the address remain; only a lapsed guest is revived, by a new share (suspension and removal share this rule). On a member directory sync removed, while Google sync is on and a Workspace is connected, it's a 204 that changes nothing, audited `user.sync_managed`. An org owner or admin target needs the uncapped owner: an admin gets 403 `owner_only` (#475). The owner on themselves stays 400. Enforced in the write, as PATCH |
+| `DELETE R.busMachine(id)` | 204; idempotent, also on an already revoked machine of the caller's | the caller's own machine (the uncapped or capped member whose bus it is), any role but guest and only with the bus on: another member's or an unknown id is 404. The row is revoked in D1 first, so its token is refused at once, then its sockets close on their BusHub; if that close fails, 503 `revoke_not_closed` and the machine stays revoked, so a retry is safe (#1291, #1453) |
 | `POST R.memberRestore(id)` | (no body) → 200 `Member` | uncapped org owner, admin (else 404), every install (parity 1). An org owner or admin target needs the uncapped owner: an admin gets 403 `owner_only` (#475). A removed member or admin comes back `active` with role `member` (never `admin`), a removed guest as `guest`, the manual restriction kept and the group restriction recomputed for the role they come back with; sessions minted before end, and their old PATs and agent connections stay revoked (they sign in again). Their space roles come back with them: a removal leaves them in place (accepted). A directory deletion is different: it drops their memberships and their address. Personal artifacts not yet transferred come back with them; transfers aren't undone. 404 unknown; 409 `member_active` (not removed); 409 `directory_managed` (directory sync removed them, Google sync is on and a Workspace is connected; stored on the row, so it holds after audit retention sweeps the removal's audit row; with nothing connected nothing syncs, so an admin can restore them); 409 `conflict` (a directory deletion released their address: invite them instead); 409 `guest_lapsed` (a lapsed guest: a new share brings them back). Audited `user.status` (`detail { status: "active" }`, reason `admin_restore`). **Sync revive**: a member directory sync removed comes back by themselves when Google lists the same directory user (same id, never a new account reusing the address: that one gets a new row) active again, under the same rules, their address restored, the group restriction recomputed; audited `user.status` by `sync` (`detail { status: "active" }`, reason `sync_revive`). Only a directory removal is revived, never an admin's; an erased person: 409 `member_erased` (invite them instead) |
 | `POST R.memberErase(id)` | (no body) → 204 | uncapped org owner, admin, from an interactive cookie session only (Access, Google or an email code): a PAT or any bearer token is 404 (#1204). An org owner or admin target needs the uncapped owner: an admin gets 403 `owner_only`. Only a removed person with nothing left in their personal space: 409 `member_active` (not removed, so never the caller; the owner; or the row at `OWNER_EMAIL`), 409 `member_owns_artifacts` with `MemberOwnsArtifactsDetails { live, deleted }` (transfer first, trash included). 404 unknown. One guarded batch, every statement re-checking the rules: the address becomes `removed+<id>@invalid`, the name `""`, display name and last seen null, the personal space name `""`, the sync, lapsed, relink and manual restriction flags 0; PATs, agent connection rows, shares to their address, space roles, frozen edits, directory group rows, reserved artifact ids and non-Google identities are deleted, and sessions end. Kept: the row id (authorship), role and dates, the Google identity (so that Google account is blocked on Google sign-in and on sync until an admin resets the Google link with `DELETE R.memberIdentity(id, "google")`, the same caller rules as any reset; then its next Google sign-in or sync makes a new, empty person, and the erased row stays erased with no relink flag; a new Google id at the address is a new person), shares they created, audit rows. Idempotent: an erased row is 204 again with no second audit row. Audited `user.erased` (no detail). Erased rows leave `GET R.members?status=removed`. After erase the address is free: an invite or any email-keyed sign-in the install admits makes a new, empty person; a share created to the address later belongs to whoever holds it next |
 | `GET R.memberTransfer(id)` | → `TransferSummary {live, deleted}` | counts only; org owner, admin, on every install (spaces off too); the source rules below (403 `owner_only`, 409 `member_active`) |
@@ -305,6 +314,9 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `space_not_empty` | 409 | delete a space that still holds artifacts (trash counts) |
 | `public_links_off` | 403 | make an artifact public in a space whose publicLinks is off |
 | `use_move` | 400 | `spaceId` on publish to an existing artifact |
+| `version_conflict` | 409 | publish with `expectedVersion` (or `edits`, which takes the version it read) when the artifact's current version differs; details `{ currentVersion }`; nothing is published (#1216, #1540) |
+| `edit_failed` | 400 | publish with `edits` where an `old` is not found or found more than once in the text at its step; details `{ index, reason: "not_found" \| "ambiguous", count }`; nothing is published (#1540) |
+| `revoke_not_closed` | 503 | `DELETE R.busMachine(id)` where the revoke landed in D1 but the bus hub could not close the machine's open connection: the machine is already revoked and cannot reconnect, and a repeat closes the connection (#1453). Nothing else answers it |
 | `invalid_successor` | 400 | transfer target isn't an active, non-guest, non-restricted member |
 | `member_active` | 409 | member transfer on an active non-guest member |
 | `directory_sync_off` | 409 | mapping or restricted-group change while sync is off or frozen (also Sync now) |
@@ -327,6 +339,12 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `managed_by_org_mapping` | 409 | `DELETE R.spaceMember` on a member whose only role here is an Every space group's, or a `PUT R.spaceMember` below that role (sync live or frozen). Details `ManagedByOrgMappingDetails { userId, everyRole }`. Message: "This role comes from an Every space group. Change it in Settings › Spaces › Every space." |
 | `member_synced` | 409 | `DELETE R.spaceMember` on a synced-only row while sync is live. UI copy: "This person comes from a Google group. Remove them from the group in Google, or change their role here." |
 | `unsupported_format` | 400 | publish (`R.artifacts`, `R.versions`, MCP `publish_artifact`) with no `format` whose entry name implies none (`inferFormat` returns `image` for `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, and `code` only for known text: the `LANGUAGES` keys, `PLAIN_TEXT_EXTENSIONS`, Makefile, Dockerfile; else null) and whose bytes aren't UTF-8 text. When the name implies none but the bytes are text (a `LICENSE`, `.gitignore`), the publish goes ahead as `code`, language `"text"`. Details `{ path, reason: "no_viewer" }`; message `UNSUPPORTED_FORMAT_MESSAGE`. A HEIC/HEIF entry (named `.heic`/`.heif`, or an ISO BMFF `ftyp` at byte 4 with brand `heic`, `heix`, `hevc`, `heim`, `heis`, `mif1` or `msf1`) is refused whatever the `format`: details `{ path, reason: "heic" }`, message `HEIC_MESSAGE`. Nothing is written or consumed |
+| `invalid_anchor` | 400 | `POST R.comments` with an anchor that fails its schema (or a pin `contentHash` outside `[A-Za-z0-9_-]{1,128}`); details: the issues (#682) |
+| `invalid_body` | 400 | a comment body empty after trim, or over 2,000 characters (#682) |
+| `not_an_ask` | 400 | `POST R.commentReplies` with `toAsker` where the thread's root has no ask, or the ask's author is not an agent (#1614) |
+| `anchor_not_in_version` | 422 | a version that does not exist, or an html version with no entry file (#682); a quote the html does not show is accepted with its prefix and suffix kept from the live page, at most 32 characters each side; no block hint (#1735) |
+| `comments_off` | 403 | any comments route on an artifact whose `comments` setting is off (#682) |
+| `forbidden` | 403 | a comment route the caller may open but not take: editing another's comment, deleting without being the author or an editor, any comments route from an embed (#682) |
 | `binary_entry` | 400 | the entry's content doesn't fit its format (`sniff.ts` `checkEntry`, first 8 KB): for `code`, `markdown` and `html` the bytes decide: UTF-8 text (no NUL, valid UTF-8) passes whatever its first bytes or declared upload type. Bytes that fail are refused with reason `binary` (a known signature), else `content_type` (an upload declared `image/*` other than svg, `audio/*` or `video/*`; `application/octet-stream` claims nothing), else `not_text`. A `pdf` must start with `%PDF` (`not_pdf`). An `image` must carry its extension's signature (JPEG `FF D8 FF`, PNG, `GIF87a`/`GIF89a`, WebP `RIFF....WEBP`; else `not_image`, also for an entry with no image extension), an `.svg` must be UTF-8 text with an `<svg>` root (`not_svg`), and an upload's declared type must be the extension's (`content_type`; `application/octet-stream` claims nothing). An `image` publish with more than one file is 400 `bad_request` `{ path: "files", reason: "image_single_file" }`. Details `{ path, reason }`. An uploaded entry costs one R2 range read. Nothing is written or consumed |
 
 ## Self-serve billing (`hosted/billing.ts`, post-M1)
@@ -351,9 +369,9 @@ Which tier applies (in this order):
    trial allowed) until the first good read, never unenforced.
 
 Features (`Me.instance.features` and every check) follow that tier at read
-time through `TIER_FEATURES` (the trial and free report Business's; hosted
+time through `TIER_FEATURES` (the trial, solo and free report Business's; hosted
 adds `usage_off`), not the provisioned `FEATURES`. `Me.instance.tier` is the
-same tier (null for free). Business to Team swaps `sync_google` for
+same tier (null for solo and free). Business to Team swaps `sync_google` for
 `sync_frozen`: the binding and synced rows stay, sync stops. Every kick,
 feed and RPC hands DirectorySync the effective directory mode (frozen while
 locked too), so its alarm calls nothing and fails nothing (no
@@ -361,29 +379,40 @@ locked too), so its alarm calls nothing and fails nothing (no
 `sync_google` back. No transition deletes anything.
 
 `Me.instance.billing` (`PlanView`; not `plan`, which is the Workers plan):
-`{ tier, status, trialEndsAt, graceUntil, creatorsThisMonth?, readOnly, reason? }`.
-`tier` free | trial | team | business; `status` active | past_due | lapsed |
+`{ tier, status, trialEndsAt, soloTrialEndsAt?, graceUntil, hasCustomer?, creatorsThisMonth?, readOnly, reason? }`.
+`tier` solo | free | trial | team | business (free is the pre-Solo value: hosted billing that predates Solo still answers it, with today's rules, and the hosted half moves billing to answer solo); `status` active | past_due | lapsed |
 suspended. Everyone gets `tier`, `readOnly`, `reason`. `status`,
-`trialEndsAt`, `graceUntil` (ISO) and `creatorsThisMonth` go to the org
-owner and admins only, the plan cap included; everyone else gets null and no
-count.
+`trialEndsAt`, `soloTrialEndsAt`, `graceUntil` (ISO) and `creatorsThisMonth`
+go to the org owner and admins only, the plan cap included; everyone else gets
+null and no count. `trialEndsAt` is the Business trial's alone (a Solo row
+with one is a used Business trial); `soloTrialEndsAt` is the Solo 30-day
+trial's end, optional, absent when billing's answer predates it.
+`hasCustomer` (boolean, optional) says whether billing has a Stripe customer
+for the instance (a provisioned or comped plan has none, so no portal): owner
+and admins only, the plan cap included; absent for everyone else and when
+billing's answer predates it (unknown: the dashboard keeps Manage billing).
 
 | State | What it does | `reason` |
 |---|---|---|
-| free | solo: one person and their agents. Team features answer `plan_required`; the first invite passes while the trial never ran and starts the 14-day trial | `solo` |
+| solo or free, active, or past_due within `graceUntil` | one person and their agents ($1/month or $10/year after a 30-day no-card trial). Team features answer `plan_required`; the first invite passes while the Business trial never ran and starts the 14-day trial. Billing MUST report a Solo whose 30-day trial ended with no card as status `lapsed` | `solo` |
+| solo lapsed, or solo past_due past grace | **view-only** for everyone, the org owner included (lock mode `viewOnly`, `readOnly: true`): publishing (a new artifact or version, REST and MCP) and live-data writes (artifact data set, update, delete, anonymous visitors too), uploads for a new artifact, restoring a version, and runtime storage writes (PUT and DELETE) answer 403 `plan_read_only`; team features answer `plan_read_only` too, and the Business trial does not start. Every read, sharing and visibility, the owner's and admins' billing POSTs, revoking tokens and machines, and profile edits keep working. Non-owners carry the `plan` cap as under solo (so a member's other writes, comments included, are refused); the owner has no cap, and the lock binds them for publishing and live-data writes | `solo_unpaid` |
 | trial (until `trialEndsAt`), team, business, past_due within `graceUntil` | today's behaviour | none |
 | trial ended, lapsed, past_due past grace, suspended | read-only (`readOnly: true`): team features answer `plan_read_only` | `trial_ended`, `lapsed`, `payment_failed`, `suspended` |
 | billing unreachable over 7 days (`PLAN_STALE_MS`) | read-only; never falls back upward | `billing_unreachable` |
 
 Under free or read-only: everyone but the org owner is read-only (`Me.auth.cap`
-`"plan"`, `readOnly: true`; reads are kept, agents can't connect); the owner
-keeps their personal artifacts and loses the team features: invites, shares
-to others, shared spaces (create, settings, members, mappings, publishing and
+`"plan"`, `readOnly: true`; reads are kept; an agent can connect, with the same rules: reads plus sharing, every other write refused); the owner
+keeps their personal artifacts and loses the team features: invites, shared spaces (create, settings, members, mappings, publishing and
 writing in them), moves and transfers, directory connect, sync now, a held
 group's confirm and restricted groups, and (free only) a promotion or a
 reactivation through `PATCH R.member` (a demotion passes). While
-read-only, anonymous live-data writes stop too. Removals (a member, a share,
-a demotion while read-only) always pass. Nothing is ever deleted. The plan
+read-only, anonymous live-data writes stop too. Sharing is free on every plan
+and under every payment lock (not `suspended`, an operator's stop: there new
+shares, visibility changes and a capped member's agent are refused, and only
+removing a share passes): sharing an artifact, unsharing it and changing its
+visibility pass, for the owner and for a plan-capped member on their
+own artifacts (a mechanism to make OA viral). Removals (a member, a
+demotion while read-only) always pass. Nothing is ever deleted. The plan
 cap hides the trash (as any cap does).
 
 The owner and admins can always pay and see their instance: the billing
@@ -398,9 +427,16 @@ Free-tier caps (configuration; each OFF until set, positive integers):
 live artifact, history included, each distinct blob once (an inline file by
 its content digest, an upload by its key), trashed artifacts excluded),
 `FREE_DATA_DOCS` (live-data docs per artifact), `FREE_DATA_DAILY_WRITES`
-(live-data writes per artifact per UTC day). On the free tier only, past one:
-403 `plan_limit`, details `PlanLimitDetails { tier: "free", limit, max }`
-(`limit` storage_bytes | data_docs | data_daily_writes).
+(live-data writes per artifact per UTC day), `FREE_DATA_DAILY_WRITES_TOTAL`
+(live-data writes per install per UTC day, across all artifacts: data
+writes, per-viewer storage writes and the owner's data reset; a single D1
+counter row, read and bumped only while the cap is on. Viewer-level and
+anonymous writes are refused once today's total reaches 80% of the cap;
+editor level and above may write up to the full cap; `max` in the error is
+the bound that applied. A write refused after it is counted (429,
+too_large, a bad body) still counts.) On the free tier only, past one:
+403 `plan_limit`, details `PlanLimitDetails { tier: "solo", limit, max }` (a server from before Solo sent tier "free", still accepted)
+(`limit` storage_bytes | data_docs | data_daily_writes | data_daily_writes_total).
 
 A creator (the bill) is a user who published a version, or wrote live data
 at editor level or above, in the UTC month, by any credential (an agent
@@ -409,19 +445,21 @@ and anonymous writes never count.
 
 Routes, the org owner or an admin only (the plan cap included; else 404; 404
 off hosted):
-`POST R.billingCheckout` `BillingCheckoutInput { tier: team | business }` →
+`POST R.billingCheckout` `BillingCheckoutInput { tier: solo | team | business, interval?: month | year }` (interval required for solo, 400 for any other tier) →
 `BillingUrl { url }` (Stripe Checkout); `POST R.billingPortal` → `BillingUrl`
 (Customer Portal); `POST R.billingUsage` → `BillingUsage { month, count }`.
-503 `billing_unavailable` when billing can't be reached. Billing's 503
+503 `billing_unavailable` when billing can't be reached. `POST R.billingPortal`
+answers 409 `no_billing_customer` when billing has no Stripe customer for the
+instance (billing's 409 `no_customer`; no other route or status maps to it). Billing's 503
 `{ error: "retry" }` (Stripe still running the same idempotent request) is
 retried once, with the same signed body, after a short backoff. Checkout
-sends billing `{ install, ts, plan }`. Checkout and Portal
+sends billing `{ install, ts, plan }`, plus `interval` for solo only; the billing service maps solo+month and solo+year to the Solo prices (hosted half, #1568). Checkout and Portal
 depend on Platform's billing routes (#849 gate allowlist for `POST /checkout`
 and `/portal`); until those ship they answer 503 `billing_unavailable`.
 
 Errors: `plan_required` (403) and `plan_read_only` (403), details
 `PlanRefusalDetails { tier, reason }`; `plan_limit` (403), details
-`PlanLimitDetails`; `billing_unavailable` (503). Mocks:
+`PlanLimitDetails`; `billing_unavailable` (503); `no_billing_customer` (409). Mocks:
 `createHostedMock({ billing, billingDown })`.
 
 ## Test hooks (`hosted/test-hooks.ts`, types only)

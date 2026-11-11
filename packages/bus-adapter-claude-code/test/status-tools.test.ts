@@ -38,6 +38,10 @@ describe("set_status: shape", () => {
       "fetch",
       "self",
       "set_status",
+      "follow",
+      "unfollow",
+      "following",
+      "propose_reach",
     ]);
     for (const t of TOOLS) expect(t.description).not.toMatch(/claude/i);
   });

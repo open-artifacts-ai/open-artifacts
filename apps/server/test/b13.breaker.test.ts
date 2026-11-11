@@ -58,7 +58,7 @@ beforeAll(async () => {
 });
 
 describe("B13 breaks", () => {
-  it("IPv6: one /64 must share one RL_ANON key (rotating ::1, ::2 bypasses 30/min)", async () => {
+  it("IPv6: one /64 must share one RL_ANON_WRITES key (rotating ::1, ::2 bypasses the ceiling)", async () => {
     const id = await pub({ visibility: "public", allowAnonymousWrites: true });
     const keys: string[] = [];
     const rl = {
@@ -71,9 +71,10 @@ describe("B13 breaks", () => {
       await anon(
         R.dataDoc(id, "c", "a"),
         ip,
-        { RL_ANON: rl },
+        { RL_ANON_WRITES: rl },
         { method: "PUT", body: "1" },
       );
+    expect(keys).toHaveLength(2);
     expect(keys[0]).toBe(keys[1]);
   });
 
@@ -82,7 +83,11 @@ describe("B13 breaks", () => {
     const r = await anon(
       R.dataDoc(id, "c", "a"),
       "203.0.113.9",
-      { RL_ANON: undefined, ENVIRONMENT: "production" },
+      {
+        RL_ANON: undefined,
+        RL_ANON_WRITES: undefined,
+        ENVIRONMENT: "production",
+      },
       { method: "PUT", body: "1" },
     );
     expect(r.status).not.toBe(200);

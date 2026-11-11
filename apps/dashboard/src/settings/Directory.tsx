@@ -50,10 +50,19 @@ import { useMe } from "../auth/useMe";
 import { LoadError } from "../layout/LoadError";
 import { Modal } from "../layout/Modal";
 import { Notice } from "../layout/Notice";
+import { shownDirectoryMode } from "../layout/SyncBanner";
 import { useDocumentTitle, useInstanceName } from "../layout/useDocumentTitle";
+import { AppLink } from "../library/AppLink";
 import { relativeTime } from "../library/time";
 import { GroupPicker } from "./GroupPicker";
-import { errorText, muted, SettingsCard, STACK } from "./ui";
+import {
+  errorText,
+  muted,
+  ReadOnlyNote,
+  SettingsCard,
+  STACK,
+  WriteLock,
+} from "./ui";
 
 const PAGE = "/settings/directory";
 const REAUTH = `/auth/login/google?next=${encodeURIComponent(PAGE)}`;
@@ -363,6 +372,33 @@ function Header({
   );
 }
 
+/** #2009: frozen is Team after Business; the way back to group sync is Business. */
+function UpgradeLine() {
+  const state = useMe();
+  const me = state.status === "authed" ? state.me : null;
+  const plan =
+    !!me?.instance.billing &&
+    (me.user.role === "owner" || me.user.role === "admin");
+  return (
+    <p className={muted}>
+      Google group sync is part of Business.{" "}
+      {plan ? (
+        <>
+          <AppLink
+            href="/settings/plan"
+            className="underline underline-offset-2"
+          >
+            Upgrade to Business
+          </AppLink>{" "}
+          to sync again.
+        </>
+      ) : (
+        "Upgrade to Business to sync again."
+      )}
+    </p>
+  );
+}
+
 function StatusHeader({
   sync,
   owner,
@@ -491,6 +527,7 @@ function StatusHeader({
             "Space memberships are managed manually."
           )}
         </p>
+        <UpgradeLine />
       </Header>
     );
 
@@ -905,15 +942,17 @@ function RestrictedRow({ g }: { g: RestrictedGroup }) {
         </small>
       </td>
       <td className="py-[var(--oa-space-3)] text-right">
-        <Button
-          size="sm"
-          variant="outline"
-          className="text-[length:var(--oa-text-sm)]"
-          aria-label={`Lift restriction on ${g.name ?? g.email}`}
-          onClick={() => setAsking(true)}
-        >
-          Lift
-        </Button>
+        <WriteLock>
+          <Button
+            size="sm"
+            variant="outline"
+            className="text-[length:var(--oa-text-sm)]"
+            aria-label={`Lift restriction on ${g.name ?? g.email}`}
+            onClick={() => setAsking(true)}
+          >
+            Lift
+          </Button>
+        </WriteLock>
         <Confirm
           open={asking}
           onClose={() => setAsking(false)}
@@ -976,13 +1015,15 @@ function RestrictedGroups({
         </table>
       )}
       {mode === "google" && (
-        <GroupPicker
-          label="Add a restricted group"
-          placeholder="Add a restricted group…"
-          exclude={groups.map((g) => g.groupId)}
-          disabled={add.isPending}
-          onPick={(g) => add.mutate(g.groupId)}
-        />
+        <WriteLock>
+          <GroupPicker
+            label="Add a restricted group"
+            placeholder="Add a restricted group…"
+            exclude={groups.map((g) => g.groupId)}
+            disabled={add.isPending}
+            onPick={(g) => add.mutate(g.groupId)}
+          />
+        </WriteLock>
       )}
       {mode === "frozen" && (
         <p className={muted}>
@@ -1095,7 +1136,20 @@ function Reauth() {
 const isReauth = (e: unknown) =>
   e instanceof ApiClientError && e.code === "reauth_required";
 
+/** #2009: directory sync off (Solo, or Team that never synced) has no page; an old link lands on Connections. */
 export function Directory() {
+  const state = useMe();
+  const off =
+    state.status === "authed" && shownDirectoryMode(state.me) === "off";
+  const navigate = useNavigate();
+  useEffect(() => {
+    if (off) void navigate({ to: "/settings/connections", replace: true });
+  }, [off, navigate]);
+  if (state.status !== "authed" || off) return null;
+  return <DirectoryPage />;
+}
+
+function DirectoryPage() {
   useDocumentTitle("Directory");
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
@@ -1168,6 +1222,7 @@ export function Directory() {
 
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       {/* After the status loads: the copy names the bound domain. */}
       {search.error !== undefined && !status.isPending && (
         <Notice

@@ -1,0 +1,368 @@
+{
+  "valid": [
+    {
+      "name": "hello",
+      "frame": {
+        "v": 1,
+        "id": "hello",
+        "type": "hello",
+        "kind": "hermes",
+        "client_version": "0.0.0",
+        "agent_ref": "0d1c5a52-4f6c-4d0e-9a53-3f7e8d2b9a11",
+        "pid": 4242,
+        "cwd": "/home/u/proj",
+        "proposed_name": "hermes-proj",
+        "caps": [
+          "mailbox",
+          "pending",
+          "follow",
+          "link"
+        ],
+        "attest": {
+          "proc_start": "Fri Nov  6 21:00:00 2026"
+        }
+      }
+    },
+    {
+      "name": "hello without optional fields",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "hello",
+        "kind": "hermes",
+        "agent_ref": "s1",
+        "pid": 1
+      }
+    },
+    {
+      "name": "send",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "send",
+        "to": "bob",
+        "body": "hi"
+      }
+    },
+    {
+      "name": "send to a namespace, asking for late notices",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "send",
+        "to": "Bob 2",
+        "body": "héllo ✓",
+        "namespace": "team/a",
+        "late": true
+      }
+    },
+    {
+      "name": "list",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "list",
+        "late": true
+      }
+    },
+    {
+      "name": "self",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "self"
+      }
+    },
+    {
+      "name": "self with row",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "self",
+        "row": true
+      }
+    },
+    {
+      "name": "fetch",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "fetch",
+        "msg_id": "mmmmmmmmmmmmmmm1"
+      }
+    },
+    {
+      "name": "ack",
+      "frame": {
+        "v": 1,
+        "id": "ack-3",
+        "type": "ack",
+        "msg_id": "mmmmmmmmmmmmmmm1"
+      }
+    },
+    {
+      "name": "set_status",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "set_status",
+        "state": "waiting_on_owner",
+        "label": "reviewing"
+      }
+    },
+    {
+      "name": "set_status without label",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "set_status",
+        "state": "idle"
+      }
+    },
+    {
+      "name": "follow",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "follow",
+        "artifact": "https://x.test/a/abc"
+      }
+    },
+    {
+      "name": "unfollow",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "unfollow",
+        "artifact": "abc"
+      }
+    },
+    {
+      "name": "following",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "following"
+      }
+    },
+    {
+      "name": "link_proof (#1856: a hash, no pid)",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proof",
+        "hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "link_proof that names a pid",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proof",
+        "hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "pid": 4242
+      }
+    },
+    {
+      "name": "link_proof that names an agent",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proof",
+        "hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "agent_ref": "other"
+      }
+    },
+    {
+      "name": "link_proof with no hash",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proof"
+      }
+    },
+    {
+      "name": "link_proof with a hash in capitals",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proof",
+        "hash": "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+      }
+    },
+    {
+      "name": "link_proof with a short hash",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proof",
+        "hash": "abc123"
+      }
+    },
+    {
+      "name": "unknown kind",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "hello",
+        "kind": "emacs",
+        "agent_ref": "s",
+        "pid": 1
+      }
+    },
+    {
+      "name": "pid zero",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "hello",
+        "kind": "hermes",
+        "agent_ref": "s",
+        "pid": 0
+      }
+    },
+    {
+      "name": "agent_ref with a space",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "hello",
+        "kind": "hermes",
+        "agent_ref": "a b",
+        "pid": 1
+      }
+    },
+    {
+      "name": "agent_ref that is a forbidden name",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "hello",
+        "kind": "hermes",
+        "agent_ref": "__proto__",
+        "pid": 1
+      }
+    },
+    {
+      "name": "hello with an empty cwd",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "hello",
+        "kind": "hermes",
+        "agent_ref": "s",
+        "pid": 1,
+        "cwd": ""
+      }
+    },
+    {
+      "name": "send with an empty body",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "send",
+        "to": "bob",
+        "body": ""
+      }
+    },
+    {
+      "name": "send to an address",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "send",
+        "to": "1.2.3.4",
+        "body": "x"
+      }
+    },
+    {
+      "name": "send to a non-canonical namespace",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "send",
+        "to": "bob",
+        "body": "x",
+        "namespace": "Team A"
+      }
+    },
+    {
+      "name": "fetch with a short msg_id",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "fetch",
+        "msg_id": "abc"
+      }
+    },
+    {
+      "name": "ack with no msg_id",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "ack"
+      }
+    },
+    {
+      "name": "set_status with a bad state",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "set_status",
+        "state": "asleep"
+      }
+    },
+    {
+      "name": "follow with no artifact",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "follow"
+      }
+    },
+    {
+      "name": "unfollow with an empty artifact",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "unfollow",
+        "artifact": ""
+      }
+    },
+    {
+      "name": "self with row false",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "self",
+        "row": false
+      }
+    },
+    {
+      "name": "wrong version",
+      "frame": {
+        "v": 2,
+        "id": "1",
+        "type": "list"
+      }
+    },
+    {
+      "name": "no id",
+      "frame": {
+        "v": 1,
+        "type": "list"
+      }
+    },
+    {
+      "name": "unknown type",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "shout"
+      }
+    }
+  ]
+}

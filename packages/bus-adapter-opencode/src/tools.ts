@@ -1,5 +1,10 @@
 import { callTool, TOOLS, type ToolResult } from "@oa/bus-adapter-claude-code";
-import { CLIENT_VERSION, type DaemonClient, Hello } from "@oa/bus-ipc";
+import {
+  ADAPTER_CAPS,
+  CLIENT_VERSION,
+  type DaemonClient,
+  Hello,
+} from "@oa/bus-ipc";
 import { BusNameSchema, LIMITS } from "@oa/bus-protocol";
 import type { OpenCodeSession } from "./session.ts";
 
@@ -29,6 +34,30 @@ const text = (t: string): ToolResult => ({
 });
 
 /**
+ * The hello for one call's session. `agent_ref` is the root conversation; the
+ * attestation names the calling session. `session.directory` must be set.
+ */
+export function helloFor(
+  sessionId: string,
+  session: OpenCodeSession,
+  caps: string[],
+): Hello {
+  return Hello.parse({
+    v: 1,
+    id: "hello",
+    type: "hello",
+    kind: "opencode",
+    client_version: CLIENT_VERSION,
+    agent_ref: session.root,
+    pid: process.pid,
+    cwd: session.directory,
+    proposed_name: nameOf(session.title),
+    caps,
+    attest: { session_id: sessionId },
+  });
+}
+
+/**
  * One OpenCode service hosts every session's MCP calls, so identity is per
  * call: `_meta`'s session id, mapped to its root. Tool arguments never name
  * the sender. One daemon connection per call, closed after it.
@@ -53,18 +82,12 @@ export async function handleToolCall(input: {
       return text(
         `oa-bus: OpenCode did not say which directory session ${session.root} is in.`,
       );
-    const hello = Hello.parse({
-      v: 1,
-      id: "hello",
-      type: "hello",
-      kind: "opencode",
-      client_version: CLIENT_VERSION,
-      agent_ref: session.root,
-      pid: process.pid,
-      cwd: session.directory,
-      proposed_name: nameOf(session.title),
-      attest: { session_id: sessionId },
-    });
+    const hello = helloFor(sessionId, session, [
+      ADAPTER_CAPS.mailbox,
+      ADAPTER_CAPS.pending,
+      ADAPTER_CAPS.follow,
+      ADAPTER_CAPS.reach,
+    ]);
     let client: DaemonClient;
     try {
       client = await input.connect(hello);

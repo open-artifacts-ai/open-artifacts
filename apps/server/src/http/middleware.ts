@@ -10,7 +10,13 @@ import {
 } from "@oa/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
-import { callerOf, capOfCaller, planOfMember, withCap } from "../auth/authz.js";
+import {
+  callerOf,
+  capOfCaller,
+  planOfMember,
+  suspendedMember,
+  withCap,
+} from "../auth/authz.js";
 import { authConfig } from "../auth/config.js";
 import { sessionCredId, setCred } from "../auth/cred.js";
 import { verifyPat } from "../auth/pat.js";
@@ -89,12 +95,21 @@ export const NO_REFERRER: ReadonlySet<string> = new Set([
   AUTH.callback,
   AUTH.callbackGoogle,
   R.directoryCallback,
+  // The confirm pages (#1372, #1567) hold their link's secret in the URL
+  // fragment (#1426), which a Referer never carries; no referrer anyway.
+  "/bus/roles/confirm",
+  "/bus/links/confirm",
+  "/bus/reach/confirm",
 ]);
 /**
- * Path prefixes that also send no referrer: a role proposal's confirm link
- * carries its secret in the path (#1372, bus/role-confirm.ts).
+ * Path prefixes that also send no referrer: the old confirm links carried the
+ * secret in the path (before #1426); their notice page sends none either.
  */
-export const NO_REFERRER_PREFIXES: readonly string[] = ["/bus/roles/confirm/"];
+export const NO_REFERRER_PREFIXES: readonly string[] = [
+  "/bus/roles/confirm/",
+  "/bus/links/confirm/",
+  "/bus/reach/confirm/",
+];
 
 /**
  * `frameAncestors` (a pre-validated source list from frameOpts) replaces
@@ -469,8 +484,23 @@ const CAPPED_ALLOWED: readonly (readonly [string, RegExp])[] = [
   ["DELETE", /^\/api\/v1\/oauth-clients\/[^/]+$/],
   // #1291: revoking one's own bus machine (the route checks ownership).
   ["DELETE", /^\/api\/v1\/bus\/machines\/[^/]+$/],
+  // #1346: removing one of their own reach grants (a remove always works, #863).
+  ["DELETE", /^\/api\/v1\/bus\/reach\/[^/]+$/],
   // Dismissing their own guest-share notice (notices.own; guests get 404 there).
   ["POST", /^\/api\/v1\/notices\/guest_shares\/dismiss$/],
+];
+
+/**
+ * Sharing is free on every plan: a plan-capped member keeps sharing and
+ * unsharing their artifacts and changing who can open them (the PATCH is
+ * visibility only for them: services/artifacts.ts patch). The artifact rule
+ * still decides whose artifact it is. Only the plan cap: a guest or a
+ * restricted member stays read-only.
+ */
+const PLAN_CAP_SHARING: readonly (readonly [string, RegExp])[] = [
+  ["PUT", /^\/api\/v1\/artifacts\/[^/]+\/shares$/],
+  ["DELETE", /^\/api\/v1\/artifacts\/[^/]+\/shares\/[^/]+$/],
+  ["PATCH", /^\/api\/v1\/artifacts\/[^/]+$/],
 ];
 
 /** The billing routes a plan-capped owner or admin may still POST. */
@@ -496,6 +526,18 @@ export const readOnlyCap = (): MiddlewareHandler<AppEnv> => async (c, next) => {
   if (cap) {
     const path = c.req.path;
     if (CAPPED_ALLOWED.some(([am, re]) => am === m && re.test(path)))
+      return next();
+    // Not under a suspension (an operator's stop, not a payment state), where
+    // only removing a share passes.
+    if (
+      cap === "plan" &&
+      PLAN_CAP_SHARING.some(
+        ([am, re]) =>
+          am === m &&
+          re.test(path) &&
+          (m === "DELETE" || !suspendedMember(c.var.user)),
+      )
+    )
       return next();
     // Hosted billing's plan cap: the owner and admins can still pay
     // (Checkout, Portal, the usage report; orgCan billing.manage). Members

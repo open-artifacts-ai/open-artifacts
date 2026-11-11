@@ -12,7 +12,7 @@ const VENDOR = /claude|anthropic|openai|chatgpt/i;
 
 describe("MCP surface is vendor-neutral", () => {
   it("every ?harness= variant of the skill is vendor-neutral", async () => {
-    // The note names tool names, never a harness path or product: an install
+    // The note names tool names, never a harness path or a vendor: an install
     // renders for one harness, and the served text stays neutral for all.
     for (const h of ["claude", "codex", "opencode", "pi", "omp"] as const) {
       const r = await callWorker(
@@ -46,8 +46,8 @@ describe("MCP surface is vendor-neutral", () => {
 
   it.each([
     // The bus's tool too: the test pool binds BUS_HUB (#1372).
-    ["spaces off", "", 19],
-    ["spaces on", "spaces", 20],
+    ["spaces off", "", 22],
+    ["spaces on", "spaces", 23],
   ] as const)(
     "everything the server sends (%s): tools, schemas, instructions, resources",
     async (_, features, n) => {

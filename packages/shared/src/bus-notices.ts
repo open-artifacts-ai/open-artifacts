@@ -17,7 +17,15 @@ export const SHARE_NOTICE_MAX = 10;
  */
 export const NOTICE_SENDER = "open-artifacts";
 
-export type NoticeKind = "shared" | "changed";
+/** `comment` (#1535): an ask or mention on a comment. */
+/** `commented` (#682): a comment was added to an artifact the agent follows. */
+/** `ask_answered` (#1535): a person answered an ask the agent's member posted. */
+export type NoticeKind =
+  | "shared"
+  | "changed"
+  | "comment"
+  | "commented"
+  | "ask_answered";
 
 /**
  * One notice for one address in one member's bus: the shape the server
@@ -41,6 +49,15 @@ export type BusNotice = {
   coalesceKey: string;
   /** Hold until then (ms epoch); absent: deliver now. */
   notBefore?: number;
+  /** `comment` notices (#1535): the thread and comment the notice is about, server-generated ids only, for list_comments and add_comment. */
+  threadId?: string;
+  commentId?: string;
+  /**
+   * `comment` notices (#1752): the comment target (with `artifactId` and
+   * `commentId`) whose delivery state the hub updates when the daemon acks
+   * or refuses the notice.
+   */
+  target?: { kind: "mention" | "asker"; key: string };
 };
 
 const BUS_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,62}[A-Za-z0-9_-])?$/;
@@ -94,6 +111,98 @@ export const BusRoleSchema = z.strictObject({
   setAt: z.string(),
 });
 export type BusRole = z.infer<typeof BusRoleSchema>;
+
+/** Links between two of the member's namespaces (#1567) one member may hold. */
+export const BUS_LINK_MAX = 100;
+/** Links one namespace may have (#1567), so a send's lookup stays small. */
+export const BUS_LINKS_PER_NAMESPACE = 10;
+
+/** Role reach grants (#1346), one per role and target namespace, one member may hold. */
+export const BUS_REACH_MAX = 200;
+/** Namespaces one role may reach (#1346), so a send's and a roster's lookup stay small. */
+export const BUS_REACH_PER_ROLE = 10;
+
+/**
+ * One link (#1567): the two namespaces see each other's agents and may
+ * message each other. Stored once as a sorted pair (`a` < `b`) and read both
+ * ways; never transitive.
+ */
+export const BusLinkSchema = z.strictObject({
+  id: z.string(),
+  a: BusAddressSchema.shape.namespace,
+  b: BusAddressSchema.shape.namespace,
+  createdAt: z.string(),
+});
+export type BusLink = z.infer<typeof BusLinkSchema>;
+
+/** GET R.busLinks, ordered by `a` then `b`. `live` false: the bus could not be asked (links is then []). */
+export const BusLinksSchema = z.strictObject({
+  links: z.array(BusLinkSchema).max(BUS_LINK_MAX),
+  live: z.boolean(),
+});
+export type BusLinks = z.infer<typeof BusLinksSchema>;
+
+/** PUT R.busLinks: link namespaces `a` and `b` (any order; two different ones). */
+export const BusLinkPutSchema = z.strictObject({
+  a: BusAddressSchema.shape.namespace,
+  b: BusAddressSchema.shape.namespace,
+});
+export type BusLinkPut = z.infer<typeof BusLinkPutSchema>;
+
+/**
+ * One reach grant (#1346): the role (`role`) may message agents in
+ * `namespace`, and they may reply to its holder. One per role and target
+ * namespace; the role is the key, never the agent. Never transitive.
+ */
+export const BusReachSchema = z.strictObject({
+  id: z.string(),
+  role: z.strictObject({
+    namespace: BusAddressSchema.shape.namespace,
+    name: BusAddressSchema.shape.name,
+  }),
+  namespace: BusAddressSchema.shape.namespace,
+  createdAt: z.string(),
+});
+export type BusReach = z.infer<typeof BusReachSchema>;
+
+/** GET R.busReach, by role then namespace. `live` false: the bus could not be asked (reach is then []). */
+export const BusReachListSchema = z.strictObject({
+  reach: z.array(BusReachSchema).max(BUS_REACH_MAX),
+  live: z.boolean(),
+});
+export type BusReachList = z.infer<typeof BusReachListSchema>;
+
+/** PUT R.busReach: let the role reach `namespace` (a canonical namespace other than the role's own). */
+export const BusReachPutSchema = z.strictObject({
+  role: z.strictObject({
+    namespace: BusAddressSchema.shape.namespace,
+    name: BusAddressSchema.shape.name,
+  }),
+  namespace: BusAddressSchema.shape.namespace,
+});
+export type BusReachPut = z.infer<typeof BusReachPutSchema>;
+
+/** How long a link proposal's confirm link works (#1567): one hour. */
+export const BUS_LINK_PROPOSAL_TTL_MS = 60 * 60_000;
+/** Link proposals waiting for the member at once (#1567). */
+export const BUS_LINK_PROPOSALS_PENDING_MAX = 10;
+/** Link proposals one machine may make in an hour (#1567), then `rate_limited`. */
+export const BUS_LINK_PROPOSALS_PER_MACHINE_HOUR = 10;
+
+/** POST R.busLinkProposals (a machine token): link or unlink two namespaces, for the member to confirm. */
+export const BusLinkProposeSchema = z.strictObject({
+  action: z.enum(["link", "unlink"]),
+  a: BusAddressSchema.shape.namespace,
+  b: BusAddressSchema.shape.namespace,
+});
+export type BusLinkPropose = z.infer<typeof BusLinkProposeSchema>;
+
+/** The proposal route's answer: the one-time confirm URL and when it expires. */
+export const BusLinkProposedSchema = z.strictObject({
+  confirmUrl: z.string(),
+  expiresAt: z.string(),
+});
+export type BusLinkProposed = z.infer<typeof BusLinkProposedSchema>;
 
 /** How long a role proposal's confirm link works (#1372). */
 export const BUS_ROLE_PROPOSAL_TTL_MS = 15 * 60_000;
@@ -187,3 +296,35 @@ export const BusRoleProposeInputSchema = z.strictObject({
   agent: BusAddressSchema.shape.name.optional(),
 });
 export type BusRoleProposeInput = z.infer<typeof BusRoleProposeInputSchema>;
+
+/** How long a reach proposal's confirm link works (#1346): one hour. */
+export const BUS_REACH_PROPOSAL_TTL_MS = 60 * 60_000;
+/** Reach proposals waiting for the member at once (#1346). */
+export const BUS_REACH_PROPOSALS_PENDING_MAX = 10;
+/** Reach proposals one machine may make in an hour (#1346), then `rate_limited`. */
+export const BUS_REACH_PROPOSALS_PER_MACHINE_HOUR = 10;
+
+/**
+ * POST R.busReachProposals (a machine token): the agent whose session is
+ * `nativeRef` on that machine asks that the role it holds reach `namespaces`.
+ * The role is never named here: the hub finds it from the agent, so one
+ * machine can't ask for another machine's agent's role. The daemon must
+ * derive `nativeRef` from the calling session (the token is the machine's).
+ * Nothing changes until the member
+ * confirms the returned link in a browser.
+ */
+export const BusReachProposeSchema = z.strictObject({
+  nativeRef: z.string().min(1).max(512),
+  namespaces: z
+    .array(BusAddressSchema.shape.namespace)
+    .min(1)
+    .max(BUS_REACH_PER_ROLE),
+});
+export type BusReachPropose = z.infer<typeof BusReachProposeSchema>;
+
+/** The reach proposal route's answer: the one-time confirm URL and when it expires. */
+export const BusReachProposedSchema = z.strictObject({
+  confirmUrl: z.string(),
+  expiresAt: z.string(),
+});
+export type BusReachProposed = z.infer<typeof BusReachProposedSchema>;

@@ -178,13 +178,11 @@ describe("ci.yml no-test-hooks job", () => {
   });
   // P3 T17 (#602): the test-hook strip test builds both variants and must
   // run here, where the builds work, and never skip.
-  it("runs the test-hook strip test after the real-build pin, required and gated", () => {
+  it("runs the test-hook strip test, required and gated", () => {
     expect(job).toBeDefined();
     const names = steps.map((st) => (st as { name?: string }).name ?? "");
-    const pin = names.indexOf("Real-build pin test");
     const strip = names.indexOf("Test-hook strip test");
-    expect(pin).toBeGreaterThan(-1);
-    expect(strip).toBeGreaterThan(pin);
+    expect(strip).toBeGreaterThan(-1);
     const st = steps[strip] as {
       run?: string;
       if?: string;
@@ -198,8 +196,8 @@ describe("ci.yml no-test-hooks job", () => {
   });
   it("uses the same checkout, pnpm and node setup as the other jobs", () => {
     expect(job).toBeDefined();
-    expect(s).toContain("actions/checkout@v4");
-    expect(s).toContain("pnpm/action-setup@v4");
+    expect(s).toMatch(/actions\/checkout@[0-9a-f]{40}/);
+    expect(s).toMatch(/pnpm\/action-setup@[0-9a-f]{40}/);
     expect(s).toContain("node-version-file");
     expect(runs).toContain("pnpm install --frozen-lockfile");
   });

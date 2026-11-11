@@ -9,6 +9,8 @@ import {
   LIMITS,
   METHOD_CAPABILITY,
   PageSchema,
+  PROTOCOL_COMMENT_DRAFT,
+  PROTOCOL_PIN_CHANGED,
   parseArtifactMessage,
   R,
   RUNTIME_PARAMS,
@@ -79,6 +81,12 @@ export interface BridgeOptions {
     >["positions"],
   ) => void;
   onCommentOpen?: (id: string) => void;
+  /** A click in pin mode: x and y are 0..1 of the image or page. */
+  onCommentEscape?: () => void;
+  onCommentSelection?: (has: boolean, bottom: number) => void;
+  onCommentPin?: (
+    pin: Extract<ArtifactToShell, { type: "comment.pin" }>["pin"],
+  ) => void;
 }
 
 /** A document's scroll offset and how far it could scroll. */
@@ -172,6 +180,8 @@ export function createBridge(opts: BridgeOptions) {
   let minting: Promise<void> | null = null;
   const subs = new Map<string, Sub>();
   let disposed = false;
+  /** The frame's `hello` protocol, 0 until it says hello (#1698). */
+  let frameProtocol = 0;
   let thumbPending = false;
   let lostFired = false;
   let inFlight = 0;
@@ -484,6 +494,7 @@ export function createBridge(opts: BridgeOptions) {
     if (!m || m.nonce !== current.nonce) return;
     switch (m.type) {
       case "hello":
+        frameProtocol = m.protocol;
         reply({
           oa: 1,
           type: "welcome",
@@ -543,6 +554,15 @@ export function createBridge(opts: BridgeOptions) {
       case "comment.open":
         opts.onCommentOpen?.(m.id);
         break;
+      case "comment.escape":
+        opts.onCommentEscape?.();
+        break;
+      case "comment.selection":
+        opts.onCommentSelection?.(m.has, m.bottom);
+        break;
+      case "comment.pin":
+        opts.onCommentPin?.(m.pin);
+        break;
     }
   };
 
@@ -568,6 +588,11 @@ export function createBridge(opts: BridgeOptions) {
   window.addEventListener("message", onMessage);
   iframe.addEventListener("load", onLoad);
   const current = loadArtifactFrame(iframe, opts.url);
+  // A frame loaded from here has said nothing yet: its runtime may be older
+  // than one we read before, so hold back fields it may not know (#1698). A
+  // `load` event is the wrong hook: it waits for subresources, so the runtime's
+  // hello can arrive first.
+  frameProtocol = 0;
 
   return {
     dispose,
@@ -589,13 +614,33 @@ export function createBridge(opts: BridgeOptions) {
       if (next.id === id) artifact = next;
     },
     /** Comments (#682): the mode, then the threads to draw (anchors and ids only, never text). */
-    setCommentsMode(mode: "off" | "select" | "pin") {
+    setCommentsMode(mode: "off" | "view" | "select" | "pin") {
       reply({ oa: 1, type: "comments.mode", mode });
     },
     setComments(
       threads: Extract<ShellToArtifact, { type: "comments.set" }>["threads"],
+      ghost?: { x: number; y: number; page?: number },
+      /** The quote being written about, kept highlighted (#1834). */
+      draft?: Extract<ShellToArtifact, { type: "comments.set" }>["draft"],
     ) {
-      reply({ oa: 1, type: "comments.set", threads });
+      reply({
+        oa: 1,
+        type: "comments.set",
+        // #1698: a runtime older than this shell rejects the whole message
+        // over one field it does not know, and every pin would vanish. Leave
+        // out what that runtime cannot read; it draws the pins unmarked.
+        threads:
+          frameProtocol >= PROTOCOL_PIN_CHANGED
+            ? threads
+            : threads.map(({ changed: _, ...t }) => t),
+        ...(ghost ? { ghost } : {}),
+        // Same rule as `changed`: only for a runtime that knows the field.
+        ...(draft && frameProtocol >= PROTOCOL_COMMENT_DRAFT ? { draft } : {}),
+      });
+    },
+    /** #1732: the reader tapped "Comment on selection"; the frame runs its own Comment path. */
+    commentOnSelection() {
+      reply({ oa: 1, type: "comments.comment" });
     },
     focusComment(threadId: string) {
       reply({ oa: 1, type: "comments.focus", id: threadId });

@@ -24,9 +24,11 @@ jobs:
         run: |
           [ -n "$OWNER" ] || { echo "::error::OA_OWNER_EMAIL is not set"; exit 1; }
           [[ ! "$OWNER" =~ [[:upper:][:space:]] ]] || { echo "::error::OA_OWNER_EMAIL must be trimmed and lowercase"; exit 1; }
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -60,9 +62,11 @@ jobs:
       STAGING_URL: https://staging.open-artifacts.com
       STAGING_OWNER_PAT: ${{ secrets.STAGING_OWNER_PAT }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -76,6 +80,19 @@ jobs:
       - name: auth login redirects to Access
         run: bash scripts/ci/staging-smoke.sh login https://staging.open-artifacts.com
       - run: pnpm --filter @oa/server smoke
+      # #1736: the MCP happy-path suite (MCP-only, no browser). It runs last of
+      # the checks, so the hosted prod gate (smoke green at or after a tag)
+      # covers it. The PAT goes to a 0600 file, never echoed; the sharing
+      # recipient PAT stays unset, so that spec skips. Zero retries.
+      - run: pnpm --filter @oa/shared build
+      - name: MCP happy path
+        timeout-minutes: 8
+        run: |
+          umask 077
+          pat_file="$RUNNER_TEMP/staging-owner.pat"
+          printf '%s' "$STAGING_OWNER_PAT" > "$pat_file"
+          export OA_STAGING_PAT_FILE="$pat_file"
+          pnpm --filter @oa/dashboard test:e2e:happy-path
       - name: ANALYTICS_TOKEN put outcome (fails the run if the deploy job's put failed)
         env:
           ANALYTICS_OUTCOME: ${{ needs.deploy.outputs.analytics }}
@@ -84,7 +101,7 @@ jobs:
   # deploy counts) opens one `blocker` issue, "Staging smoke red on main",
   # assigned to vars.OA_ALERT_GITHUB_LOGIN, or comments on it @-mentioning
   # that login; a green run closes it; a cancelled run does nothing.
-  # Prod promotion reads the runs themselves (scripts/ci/staging-smoke-gate.sh).
+  # Prod promotion reads the runs themselves (the hosted repo's staging-smoke-gate.sh).
   report:
     needs: [deploy, smoke]
     if: ${{ always() && github.ref == 'refs/heads/main' }}

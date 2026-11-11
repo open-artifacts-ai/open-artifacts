@@ -164,6 +164,10 @@ describe("frames", () => {
       "fetch",
       "status",
       "rename",
+      "follow",
+      "unfollow",
+      "following",
+      "link_bind",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -176,6 +180,10 @@ describe("frames", () => {
       "receipt_update",
       "roster_changed",
       "renamed",
+      "followed",
+      "unfollowed",
+      "follows",
+      "link_bound",
     ]);
   });
   it("formats a rejection with the frame id when there is one", () => {

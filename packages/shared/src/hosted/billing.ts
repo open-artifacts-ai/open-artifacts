@@ -5,11 +5,21 @@
 import { z } from "zod";
 
 /**
- * The tier billing stores (oa-<p>-billing `tiers.tier`): free is a solo
- * instance (one person and their agents), trial is everything in Business
- * for 14 days from the first invite, team and business are paid per creator.
+ * The tier billing stores (oa-<p>-billing `tiers.tier`): solo is one person
+ * and their agents ($1/month or $10/year after a 30-day no-card trial), trial
+ * is everything in Business for 14 days from the first invite, team and
+ * business are paid per creator. free is the pre-Solo value: hosted billing
+ * that predates Solo still answers it, and it keeps today's rules (the solo
+ * lock, the first invite starts the trial). Billing must report a Solo whose
+ * 30-day trial ended with no card as status lapsed.
  */
-export const BillingTierSchema = z.enum(["free", "trial", "team", "business"]);
+export const BillingTierSchema = z.enum([
+  "free",
+  "solo",
+  "trial",
+  "team",
+  "business",
+]);
 export type BillingTier = z.infer<typeof BillingTierSchema>;
 
 /** Billing's status column: past_due runs a grace period, lapsed is unpaid. */
@@ -24,7 +34,9 @@ export type BillingStatus = z.infer<typeof BillingStatusSchema>;
 /**
  * Why team features are read-only (PlanView.reason), or why a free instance
  * refuses them:
- * - solo: a free instance (one person); team features need a plan.
+ * - solo: a Solo instance (one person); team features need a plan.
+ * - solo_unpaid: no paid Solo subscription (lapsed, past due after the
+ *   grace period, on tier solo): view-only for everyone, the owner too.
  * - trial_ended: the 14-day trial is over and no plan was bought.
  * - lapsed: the subscription ended or was never paid (billing said lapsed).
  * - payment_failed: past due and the grace period is over.
@@ -34,6 +46,7 @@ export type BillingStatus = z.infer<typeof BillingStatusSchema>;
  */
 export const PlanReasonSchema = z.enum([
   "solo",
+  "solo_unpaid",
   "trial_ended",
   "lapsed",
   "payment_failed",
@@ -45,7 +58,7 @@ export type PlanReason = z.infer<typeof PlanReasonSchema>;
 /**
  * Me.instance.billing (hosted only; absent self-hosted and on older servers).
  * Everyone sees tier, readOnly and reason (the banner). status, trialEndsAt,
- * graceUntil and creatorsThisMonth are billing details: the org owner and
+ * soloTrialEndsAt, graceUntil and creatorsThisMonth are billing details: the org owner and
  * admins only; null (creatorsThisMonth absent) for everyone else.
  */
 export const PlanViewSchema = z.object({
@@ -54,14 +67,27 @@ export const PlanViewSchema = z.object({
   status: BillingStatusSchema.nullable(),
   /** ISO; the trial's end (set once a trial started). Owner and admins; null for others. */
   trialEndsAt: z.string().nullable(),
+  /**
+   * ISO; the Solo trial's end. Separate from trialEndsAt, which is the
+   * Business trial's only. Owner and admins; null for others; absent when
+   * billing's answer predates it.
+   */
+  soloTrialEndsAt: z.string().nullable().optional(),
   /** ISO; while past_due, the grace period's end. Owner and admins; null for others. */
   graceUntil: z.string().nullable(),
+  /**
+   * Whether billing has a Stripe customer for this instance (the portal needs
+   * one). Owner and admins only; absent for others and when billing's answer
+   * predates it (unknown: the dashboard keeps showing Manage billing).
+   */
+  hasCustomer: z.boolean().optional(),
   /** Distinct creators this UTC calendar month so far (CREATOR definition). Owner and admins only. */
   creatorsThisMonth: z.number().int().nonnegative().optional(),
   /**
-   * Team features are read-only (spaces, shares to others, invites, every
-   * write by anyone but the org owner). Nothing is deleted; the owner's own
-   * artifacts stay readable and writable.
+   * Team features are read-only (spaces, invites, every write by anyone but
+   * the org owner), except sharing, which is free on every plan: sharing an
+   * artifact and changing who can open it always work. Nothing is deleted;
+   * the owner's own artifacts stay readable and writable.
    */
   readOnly: z.boolean(),
   /** Why readOnly, or why a free instance refuses team features ("solo"). */
@@ -83,18 +109,24 @@ export type PlanRefusalDetails = z.infer<typeof PlanRefusalDetailsSchema>;
  * A free-tier cap (apps/server billing/caps.ts; each is off until the
  * operator sets it): storage_bytes (FREE_STORAGE_BYTES), data_docs per
  * artifact (FREE_DATA_DOCS), data_daily_writes per artifact per UTC day
- * (FREE_DATA_DAILY_WRITES).
+ * (FREE_DATA_DAILY_WRITES), data_daily_writes_total per install per UTC day
+ * across all artifacts (FREE_DATA_DAILY_WRITES_TOTAL).
  */
 export const PlanLimitSchema = z.enum([
   "storage_bytes",
   "data_docs",
   "data_daily_writes",
+  "data_daily_writes_total",
 ]);
 export type PlanLimit = z.infer<typeof PlanLimitSchema>;
 
-/** details of 403 plan_limit: which cap, and its value. The paywall names it. */
+/**
+ * details of 403 plan_limit: which cap, and its value. The paywall names it.
+ * The server emits solo; free is still accepted because a server from before
+ * Solo sent it.
+ */
 export const PlanLimitDetailsSchema = z.object({
-  tier: z.literal("free"),
+  tier: z.enum(["solo", "free"]),
   limit: PlanLimitSchema,
   max: z.number().int().positive(),
 });
@@ -106,12 +138,22 @@ export const PLAN_STALE_MS = 7 * 86_400_000;
 export const TRIAL_DAYS = 14;
 
 /**
- * POST R.billingCheckout body: the plan to buy. The answer is BillingUrl,
- * the Stripe Checkout page to open; nothing else.
+ * POST R.billingCheckout body: the plan to buy. Solo also names the billing
+ * interval (month or year); the billing service maps solo+month and
+ * solo+year to the Solo prices. Any other tier refuses an interval. The
+ * answer is BillingUrl, the Stripe Checkout page to open; nothing else.
  */
-export const BillingCheckoutInputSchema = z.strictObject({
-  tier: z.enum(["team", "business"]),
-});
+export const BillingIntervalSchema = z.enum(["month", "year"]);
+export type BillingInterval = z.infer<typeof BillingIntervalSchema>;
+export const BillingCheckoutInputSchema = z
+  .strictObject({
+    tier: z.enum(["solo", "team", "business"]),
+    interval: BillingIntervalSchema.optional(),
+  })
+  .refine((v) => (v.tier === "solo") === (v.interval !== undefined), {
+    message: "interval is required for solo and refused for other tiers",
+    path: ["interval"],
+  });
 export type BillingCheckoutInput = z.infer<typeof BillingCheckoutInputSchema>;
 
 /** R.billingCheckout and R.billingPortal answer: a Stripe-hosted URL only. */

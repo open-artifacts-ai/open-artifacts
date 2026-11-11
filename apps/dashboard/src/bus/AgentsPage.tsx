@@ -2,7 +2,7 @@
 // the roster, namespaces, roles and share notices.
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { muted } from "../settings/ui";
-import { NamespacesTab } from "./Namespaces";
+import { NamespacesTab } from "./NamespacesTab";
 import { AGENTS_TABS, type AgentsTab, BusLink } from "./nav";
 import { RolesTab } from "./Roles";
 import { Roster } from "./Roster";
@@ -30,9 +30,13 @@ export function AgentsPage({
       <h1 className="m-0 text-[length:var(--oa-text-xl)] font-semibold">
         Agents
       </h1>
-      <p className={`m-0 ${muted}`}>Your agents on every machine</p>
+      <p className={`m-0 ${muted}`}>
+        Your agents on every machine. Only you see this page.
+      </p>
       <nav
-        className="mt-[var(--oa-space-3)] mb-[var(--oa-space-5)] flex gap-[var(--oa-space-1)] overflow-x-auto shadow-[inset_0_-1px_0_var(--color-border)] [scrollbar-width:none]"
+        // On phones the strip wraps onto a second row instead of scrolling, so
+        // every section stays in view (#1453).
+        className="mt-[var(--oa-space-3)] mb-[var(--oa-space-5)] flex flex-wrap gap-x-[var(--oa-space-1)] gap-y-0 shadow-[inset_0_-1px_0_var(--color-border)]"
         aria-label="Agents sections"
       >
         {AGENTS_TABS.map((t) => (

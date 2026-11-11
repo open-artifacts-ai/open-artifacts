@@ -30,6 +30,8 @@ export type Policy =
       anon401?: string;
       /** Floor context for viewer thumbnails (the handler applies the exact rule). */
       ctx?: { firstThumbnail?: boolean };
+      /** Sharing is free: the billing plan cap doesn't stop this route at the gate (the handler decides). */
+      planSharing?: true;
     }
   | { org: OrgAction; offWhen?: EnvFlag }
   | { user: string }
@@ -43,9 +45,12 @@ const art = (
     allowDeleted?: true;
     anon401?: string;
     ctx?: { firstThumbnail?: boolean };
+    /** Sharing is free: the billing plan cap doesn't stop this route at the gate (the handler decides). */
+    planSharing?: true;
   } = {},
 ): Policy => ({ artifact: action, ...extra });
 const SAVE = "Sign in to save changes";
+const COMMENT = "Sign in to comment";
 const ARTS = "/api/v1/artifacts/:id";
 const SPACES = "/api/v1/spaces/:id";
 const signedIn = { signedIn: true } as const;
@@ -73,6 +78,14 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // same-origin) and the pending code cookie carry the protection.
   "POST /auth/code/request": { public: "code request; login guard, Turnstile" },
   "POST /auth/code/verify": { public: "code verify; login guard" },
+  // #1467 comment-email unsubscribe: a signed token (one person, one flag)
+  // is the only credential; GET changes nothing.
+  "GET /auth/unsubscribe/comments": {
+    public: "comment email unsubscribe confirm; signed token",
+  },
+  "POST /auth/unsubscribe/comments": {
+    public: "comment email unsubscribe (RFC 8058 one-click); signed token",
+  },
   "POST /auth/logout": { public: "sign-out (same-origin, CSRF)" },
   "GET /auth/dev-login": { public: "dev only; refused outside dev" },
   // P2 test hooks: 404 unless TEST_HOOKS is on (test-hooks/index.ts decides).
@@ -172,6 +185,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   // any non-guest member; guest_summary: install-wide, the org owner only.
   "POST /api/v1/notices/guest_shares/dismiss": { org: "notices.own" },
   "POST /api/v1/notices/guest_summary/dismiss": { org: "notices.manage" },
+  // The first-run checklist's install-wide state: the uncapped org owner.
+  "GET /api/v1/onboarding": { org: "onboarding.manage" },
+  "PUT /api/v1/onboarding": { org: "onboarding.manage" },
   "PUT /api/v1/members/:id/restricted": { org: "restricted.member" },
   "DELETE /api/v1/members/:id/restricted": { org: "restricted.member" },
   "PATCH /api/v1/settings": { org: "settings.manage" },
@@ -183,7 +199,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     org: "artifact.create",
   },
   [`GET ${ARTS}`]: art("view"),
-  [`PATCH ${ARTS}`]: art("publish", signedIn),
+  // A plan-capped member may change visibility only (patch applies it).
+  [`PATCH ${ARTS}`]: art("publish", { signedIn: true, planSharing: true }),
   [`DELETE ${ARTS}`]: art("delete", signedIn),
   [`POST ${ARTS}/undelete`]: art("undelete", {
     signedIn: true,
@@ -229,6 +246,29 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`GET ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`PUT ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`DELETE ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
+  // #682 comments: the floor is read access; the handler applies comments_off,
+  // the embed refusal and who may edit or delete (the author, or an editor).
+  [`GET ${ARTS}/comments`]: art("comments.read"),
+  [`POST ${ARTS}/comments`]: art("comments.write", { anon401: COMMENT }),
+  [`PATCH ${ARTS}/comments/:threadId`]: art("comments.write", {
+    anon401: COMMENT,
+  }),
+  [`POST ${ARTS}/comments/:threadId/replies`]: art("comments.write", {
+    anon401: COMMENT,
+  }),
+  [`PATCH ${ARTS}/comments/:threadId/comments/:commentId`]: art(
+    "comments.write",
+    { anon401: COMMENT },
+  ),
+  // #1535: answering is for the people asked (the handler); the agents list
+  // is for the owner and editors (others get none).
+  [`POST ${ARTS}/comments/:threadId/comments/:commentId/answer`]: art(
+    "comments.write",
+    { anon401: COMMENT },
+  ),
+  [`GET ${ARTS}/agents`]: art("comments.read"),
+  [`DELETE ${ARTS}/comments/:threadId/comments/:commentId`]:
+    art("comments.read"),
   "GET /api/v1/tokens": { user: "the caller's tokens" },
   "POST /api/v1/tokens": { org: "tokens.create" },
   "PATCH /api/v1/tokens/:id": { user: "the caller's tokens" },
@@ -260,9 +300,11 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
     public:
       "bus code entry (RFC 8628 5.4); redirects to sign-in, checks mcp.connect",
   },
+  // #1299: the decide step is new configuration, so a plan cap (a hosted
+  // non-owner under a billing lock or suspension) refuses it (bus/cap.ts).
   "POST /bus/approve": {
     public:
-      "bus code check and decision; session, form token, mcp.connect, RL per member and IP",
+      "bus code check and decision; session, form token, mcp.connect, plan cap refuses the decide, RL per member and IP",
   },
   "GET /bus/connect": { signed: "bus machine token (oa_machine_), D1" },
   // #1300 the member's server-rendered /bus page (bus/page.ts): the handler
@@ -280,28 +322,95 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /bus/machines/:id/revoke": {
     public: "revoke; form CSRF, the caller's own machine only",
   },
+  // #1299: as PUT R.shareNotices, a plan cap refuses the save.
   "POST /bus/share-notices": {
-    public: "share notices; form CSRF, checks canConnect",
+    public: "share notices; form CSRF, checks canConnect, plan cap refuses",
   },
   "GET /api/v1/bus/machines": { user: "the caller's bus machines" },
   // In CAPPED_ALLOWED: a capped caller can always revoke.
   "DELETE /api/v1/bus/machines/:id": { user: "the caller's bus machines" },
+  // #1299: the hosted canary's probe of the reserved ping hub; a read, so a
+  // plan cap never blocks it. 404 while the bus is off.
+  "GET /api/v1/bus/ping": { user: "the bus hub's liveness; no member data" },
   "GET /api/v1/bus/agents": { org: "mcp.connect" },
   // #1296 role addresses; PUT and DELETE browser sessions only (handler).
   "GET /api/v1/bus/roles": { org: "mcp.connect" },
   "PUT /api/v1/bus/roles": { org: "mcp.connect" },
   "DELETE /api/v1/bus/roles/:id": { org: "mcp.connect" },
+  // #1567 project links; PUT and DELETE browser sessions only (handler).
+  "GET /api/v1/bus/links": { org: "mcp.connect" },
+  "PUT /api/v1/bus/links": { org: "mcp.connect" },
+  "DELETE /api/v1/bus/links/:id": { org: "mcp.connect" },
+  // #1346: role reach grants; writes also need a cookie session (the handler).
+  "GET /api/v1/bus/reach": { org: "mcp.connect" },
+  "PUT /api/v1/bus/reach": { org: "mcp.connect" },
+  "DELETE /api/v1/bus/reach/:id": { org: "mcp.connect" },
   // #1372: the role proposal confirm page (bus/role-confirm.ts). The handler
   // takes only an interactive cookie session of the hub's own member (a
   // PAT, an OAuth grant or a machine token is refused) and a POST its form
   // token; the link's secret finds the proposal in that member's hub only.
+  // #1426: the secret is in the URL fragment; the page loads without it and
+  // its script posts the secret in a body.
+  "GET /bus/roles/confirm": {
+    public:
+      "role proposal confirm page, no secret in the request; hops to sign-in, interactive session",
+  },
   "GET /bus/roles/confirm/:token": {
     public:
-      "role proposal confirm page; redirects to sign-in, interactive session, the caller's own hub",
+      "notice for the old path-style link; reads nothing, changes nothing",
   },
-  "POST /bus/roles/confirm/:token": {
+  "POST /bus/roles/confirm/view": {
     public:
-      "role proposal decision; interactive session, form CSRF, the caller's own hub, single use",
+      "role proposal details; interactive session, page CSRF, the caller's own hub",
+  },
+  "POST /bus/roles/confirm": {
+    public:
+      "role proposal decision; interactive session, form CSRF, plan cap refuses (#1299), the caller's own hub, single use",
+  },
+  // #1567: `oa-bus link` records a proposal with a bus machine token (the
+  // handler verifies it: a PAT, an OAuth token or a cookie is 401); the
+  // member confirms on the one-time page below, the role confirm's rules.
+  "POST /api/v1/bus/links/proposals": {
+    signed:
+      "bus machine token (oa_machine_), D1; records a proposal only; its member under a plan cap is refused (#1299)",
+  },
+  // #1346: an agent's reach proposal, the link rules above: a bus machine
+  // token records it, the member confirms on the one-time page below.
+  "POST /api/v1/bus/reach/proposals": {
+    signed:
+      "bus machine token (oa_machine_), D1; records a proposal only; its member under a plan cap is refused (#1299)",
+  },
+  "GET /bus/reach/confirm": {
+    public:
+      "reach confirm page, no secret in the request; hops to sign-in, interactive session",
+  },
+  "GET /bus/reach/confirm/:token": {
+    public:
+      "notice for the old path-style link; reads nothing, changes nothing",
+  },
+  "POST /bus/reach/confirm/view": {
+    public:
+      "reach proposal details; interactive session, page CSRF, the caller's own hub",
+  },
+  "POST /bus/reach/confirm": {
+    public:
+      "reach proposal decision; interactive session, form CSRF, plan cap refuses (#1299), the caller's own hub, single use",
+  },
+  "GET /bus/links/confirm": {
+    public:
+      "link confirm page, no secret in the request; hops to sign-in, interactive session",
+  },
+  "GET /bus/links/confirm/:token": {
+    public:
+      "notice for the old path-style link; reads nothing, changes nothing",
+  },
+  "POST /bus/links/confirm/view": {
+    public:
+      "link details; interactive session, page CSRF, the caller's own hub",
+  },
+  "POST /bus/links/confirm": {
+    public:
+      "link decision; interactive session, form CSRF, plan cap refuses (#1299), the caller's own hub, single use",
   },
   "GET /api/v1/oauth-clients": { user: "the caller's grants" },
   "PATCH /api/v1/oauth-clients/:grantId": { user: "the caller's grants" },
@@ -322,8 +431,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
  * to free (under any lock PATCH members refuses only a promotion or a
  * reactivation: services/members.ts patchMember). The first invite on a
  * free instance whose trial never ran passes
- * and starts the trial. Artifact writes in shared spaces, shares, moves and
- * transfers are refused per artifact (policy can, putShare).
+ * and starts the trial. Artifact writes in shared spaces, moves and
+ * transfers are refused per artifact (policy can). Sharing (share, unshare,
+ * visibility) is free on every plan and is never listed or refused.
  */
 export const TEAM_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/v1/members",
@@ -390,6 +500,9 @@ export const TOOL_POLICY: Readonly<Record<string, Policy>> = {
   artifact_data_set: art("data.write"),
   artifact_data_update: art("data.write"),
   artifact_data_delete: art("data.write"),
+  list_comments: art("comments.read"),
+  add_comment: art("comments.write"),
+  resolve_comment: art("comments.write"),
   list_spaces: { user: "the caller's own publishable spaces" },
   // #1372: proposes only (the caller's own hub); offered while the bus is on.
   bus_role_propose: { org: "mcp.connect" },

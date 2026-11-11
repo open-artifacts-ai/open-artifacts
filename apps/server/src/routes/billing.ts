@@ -9,6 +9,7 @@ import {
   caller,
   capOfCaller,
   interactiveSession,
+  planOfMember,
   requireUser,
 } from "../auth/authz.js";
 import { orgCan } from "../auth/policy.js";
@@ -18,6 +19,7 @@ import {
   BillingUnavailableError,
   billingCall,
   CHECKOUT_PATH,
+  NO_CUSTOMER_CODE,
   PORTAL_PATH,
 } from "../billing/transport.js";
 import { jsonBody } from "../http/body.js";
@@ -90,6 +92,18 @@ async function stripeUrl(
     if (!r.success) throw new BillingUnavailableError("bad_answer");
     return { url: r.data.url };
   } catch (e) {
+    // A plan with no Stripe customer (provisioned or comped) has no portal:
+    // a fixed 409 the dashboard can explain, not "unreachable".
+    if (
+      path === PORTAL_PATH &&
+      e instanceof BillingUnavailableError &&
+      e.why === "http_409" &&
+      e.code === NO_CUSTOMER_CODE
+    )
+      throw new ApiError(
+        "no_billing_customer",
+        "This plan has no billing account, so there is no portal to open",
+      );
     const why = e instanceof BillingUnavailableError ? e.why : "error";
     logWarn("billing_url_failed", undefined, { route: path, why });
     throw unavailable();
@@ -98,10 +112,26 @@ async function stripeUrl(
 
 export function mountBilling(app: AppType): void {
   app.post(R.billingCheckout, async (c) => {
-    requireBillingManager(c);
-    const { tier } = await jsonBody(c, BillingCheckoutInputSchema);
-    // Billing's /checkout body is { install, ts, plan } (Platform #858).
-    return c.json(await stripeUrl(c, CHECKOUT_PATH, { plan: tier }));
+    const user = requireBillingManager(c);
+    const { tier, interval } = await jsonBody(c, BillingCheckoutInputSchema);
+    // Solo prices are for a Solo instance: a Team or Business instance
+    // can't buy them (409, as a state conflict, not a bad body).
+    if (tier === "solo") {
+      const now = planOfMember(user)?.tier;
+      if (now !== "solo" && now !== "free" && now !== "trial")
+        throw new ApiError(
+          "conflict",
+          "Solo can only be bought on a Solo or trial instance",
+        );
+    }
+    // Billing's /checkout body is { install, ts, plan } (Platform #858), plus
+    // interval for solo only (month or year; hosted half, #1568).
+    return c.json(
+      await stripeUrl(c, CHECKOUT_PATH, {
+        plan: tier,
+        ...(interval ? { interval } : {}),
+      }),
+    );
   });
 
   app.post(R.billingPortal, async (c) => {

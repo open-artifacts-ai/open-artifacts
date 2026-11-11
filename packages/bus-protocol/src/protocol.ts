@@ -3,6 +3,7 @@ import { CapsSchema } from "./caps.ts";
 import { IdSchema, newId } from "./ids.ts";
 import { AgentKindSchema, KindTokenSchema } from "./kinds.ts";
 import { LIMITS, utf8Exceeds } from "./limits.ts";
+import { INSTANCE_SENDER_NAME } from "./meta.ts";
 import { BusNameSchema } from "./names.ts";
 import { WireNamespaceSchema } from "./namespace.ts";
 import {
@@ -84,6 +85,16 @@ const AgentUp = z.strictObject({
    * it only to hubs that accept it.
    */
   name_kind: NameKindSchema.optional(),
+  /**
+   * #1295: the agent_ref this one takes over from, after a /clear: the same
+   * live process now reports a new session. The hub honours it only for a
+   * socket whose hello listed `BUS_CAPS.mailbox`, when the old ref is an
+   * agent of the same machine; the new ref then inherits the old address
+   * (name, former names) and its pending mail, instead of `<name>-2`. A hub
+   * decoder older than this field refuses the key, so a client sends it only
+   * after `hello_ok.caps` listed `mailbox`.
+   */
+  replaces: AgentRefSchema.optional(),
 });
 
 const AgentDown = z.strictObject({
@@ -196,6 +207,98 @@ const Rename = z.strictObject({
   name_kind: NameKindSchema.optional(),
 });
 
+/**
+ * What a follow names: an artifact id or its page URL on the instance. The
+ * hub passes it to the follows service, which parses it; it never carries an
+ * address (the hub takes that from the registered agent, #1317).
+ */
+const FollowRefSchema = WellFormedText.pipe(z.string().min(1).max(2048));
+
+/**
+ * Follow an artifact as the agent `from_ref` (#1317, `BUS_CAPS.follow`).
+ * Answered by `followed`, or `error` (`not_found`, `follow_limit`,
+ * `not_registered`, `bad_frame`, `internal`). Following again is a no-op.
+ */
+const Follow = z.strictObject({
+  ...base,
+  type: z.literal("follow"),
+  from_ref: AgentRefSchema,
+  artifact: FollowRefSchema,
+});
+
+/** Stop following. Answered by `unfollowed`, or `error`. */
+const Unfollow = z.strictObject({
+  ...base,
+  type: z.literal("unfollow"),
+  from_ref: AgentRefSchema,
+  artifact: FollowRefSchema,
+});
+
+/** The agent's own follows. Answered by `follows`, or `error`. */
+const Following = z.strictObject({
+  ...base,
+  type: z.literal("following"),
+  from_ref: AgentRefSchema,
+});
+
+/**
+ * The header a session's /mcp requests carry its link proof in (#1822), and
+ * the strict shape of that proof: 43 base64url characters (32 random bytes).
+ * Anything else is treated as no proof.
+ */
+export const LINK_PROOF_HEADER = "X-OA-Agent-Proof-Token";
+/** #1856: the reserved tool argument harnesses that cannot set a header carry the proof in. */
+export const LINK_PROOF_ARG = "_oa_agent_proof";
+export const LinkProofSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+
+/** The sha256 hex of a proof: 64 lowercase hex characters. */
+export const LinkProofHashSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+/**
+ * Bind a proof to the agent `agent_ref` (#1822, `BUS_CAPS.link`). Only for an
+ * agent this socket registered. The hub keeps the hash on the agent row until
+ * the session closes; a new bind replaces it. Answered by `link_bound`, or
+ * `error` (`not_registered`, `bad_frame`).
+ */
+const LinkBind = z.strictObject({
+  ...base,
+  type: z.literal("link_bind"),
+  agent_ref: AgentRefSchema,
+  hash: LinkProofHashSchema,
+});
+
+const LinkBound = z.strictObject({
+  ...base,
+  type: z.literal("link_bound"),
+});
+
+/**
+ * Most follows one member holds, so the most `follows` lists. Equals
+ * FOLLOW_LIMIT in @oa/shared (a server test pins the two).
+ */
+export const MAX_FOLLOWS = 200;
+
+const FollowEntry = z.strictObject({
+  artifact_id: z.string().min(1).max(64),
+  url: z.string().min(1).max(2048),
+  followed_at: IsoTimeSchema,
+});
+const Followed = z.strictObject({
+  ...base,
+  type: z.literal("followed"),
+  ...FollowEntry.shape,
+});
+const Unfollowed = z.strictObject({
+  ...base,
+  type: z.literal("unfollowed"),
+  removed: z.boolean(),
+});
+const Follows = z.strictObject({
+  ...base,
+  type: z.literal("follows"),
+  follows: z.array(FollowEntry).max(MAX_FOLLOWS),
+});
+
 const HelloOk = z.strictObject({
   ...base,
   type: z.literal("hello_ok"),
@@ -246,9 +349,16 @@ const RosterAgent = z.strictObject({
   global: z.boolean(),
   /**
    * `live`: machine connected. `queued`: machine disconnected but the session
-   * was last reported open (mail waits up to 1 h). Closed agents are omitted.
+   * was last reported open (mail waits). `away` (#1295, cap-gated): closed,
+   * its mailbox kept for 7 d. Other closed agents are omitted.
    */
-  state: z.enum(["live", "queued"]),
+  state: z.enum(["live", "queued", "away"]),
+  /**
+   * When an `away` agent closed (#1295). Sent, with `state: "away"`, only to
+   * a socket whose hello listed `BUS_CAPS.mailbox`: a decoder older than
+   * either refuses the row, and with it the whole roster.
+   */
+  since: IsoTimeSchema.optional(),
   /** The agent's machine label. */
   machine_label: MachineLabelSchema.optional(),
   /** Self-reported ("agent says"); cleared on close. */
@@ -296,6 +406,8 @@ const ErrorFrame = z.strictObject({
     "too_large",
     "rate_limited",
     "internal",
+    /** Only to a socket whose hello listed `BUS_CAPS.follow` (#1317). */
+    "follow_limit",
   ]),
   message: WellFormedText.pipe(z.string().max(1024)),
 });
@@ -311,7 +423,12 @@ const Deliver = z
     type: z.literal("deliver"),
     msg_id: MsgIdSchema,
     to_ref: AgentRefSchema,
-    from_name: BusNameSchema,
+    /**
+     * The sender's name, or the instance's reserved sender (#1317: the hub's
+     * server notices). Only a server frame carries the reserved name: every
+     * name an agent can send or register still refuses it (BusNameSchema).
+     */
+    from_name: z.union([BusNameSchema, z.literal(INSTANCE_SENDER_NAME)]),
     /** The sender's agent id on the hub: a reply names it as `to_id`. */
     from_id: IdSchema.optional(),
     /** The SENDER's namespace, so a reply can set `to_namespace` from it. */
@@ -350,6 +467,10 @@ export const CLIENT_FRAMES = [
   "fetch",
   "status",
   "rename",
+  "follow",
+  "unfollow",
+  "following",
+  "link_bind",
 ] as const;
 export const SERVER_FRAMES = [
   "hello_ok",
@@ -362,6 +483,10 @@ export const SERVER_FRAMES = [
   "receipt_update",
   "roster_changed",
   "renamed",
+  "followed",
+  "unfollowed",
+  "follows",
+  "link_bound",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -376,6 +501,10 @@ export const ClientFrameSchema = z.discriminatedUnion("type", [
   Fetch,
   Status,
   Rename,
+  Follow,
+  Unfollow,
+  Following,
+  LinkBind,
 ]);
 export const ServerFrameSchema = z.discriminatedUnion("type", [
   HelloOk,
@@ -388,6 +517,10 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   ReceiptUpdate,
   RosterChanged,
   Renamed,
+  Followed,
+  Unfollowed,
+  Follows,
+  LinkBound,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -401,6 +534,10 @@ export const FrameSchema = z.discriminatedUnion("type", [
   Fetch,
   Status,
   Rename,
+  Follow,
+  Unfollow,
+  Following,
+  LinkBind,
   HelloOk,
   AgentOk,
   ReceiptFrame,
@@ -411,6 +548,10 @@ export const FrameSchema = z.discriminatedUnion("type", [
   ReceiptUpdate,
   RosterChanged,
   Renamed,
+  Followed,
+  Unfollowed,
+  Follows,
+  LinkBound,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;
@@ -423,6 +564,7 @@ export type RefuseFrame = z.infer<typeof Refuse>;
 export type HelloFrame = z.infer<typeof Hello>;
 export type RenameFrame = z.infer<typeof Rename>;
 export type RenamedFrame = z.infer<typeof Renamed>;
+export type FollowEntryWire = z.infer<typeof FollowEntry>;
 
 /**
  * Serializes a frame with `v` then `id` first, so an oversize id is recoverable.

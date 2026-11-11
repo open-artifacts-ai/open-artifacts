@@ -4,8 +4,10 @@ import {
   displayKind,
   excerptOf,
   lateDeliveredText,
+  linkedLiveNamespace,
   movedName,
   receiptText,
+  rosterText,
   unconfirmedText,
 } from "../src/copy.ts";
 
@@ -94,9 +96,9 @@ describe("receipt copy", () => {
   it("an expired notice moves the quote down when line 1 would pass 80 columns", () => {
     const long = excerptOf("x".repeat(60)) as string;
     const s = receiptText({ state: "expired" }, "oa-team-e0", undefined, long);
-    // The quote and its tail fit on their own line.
+    // The quote fits on its own line; the longer tail moves below it.
     expect(s).toBe(
-      `×  Expired: your message to oa-team-e0,\n   "${long}", was not taken within 7 days.`,
+      `×  Expired: your message to oa-team-e0,\n   "${long}",\n   was not confirmed as delivered. Mail waits at most 7 days.`,
     );
     // Every line after the first is indented three spaces, the quote included.
     expect(
@@ -123,7 +125,7 @@ describe("receipt copy", () => {
 
   it("keeps the quote on line 1 when it fits, the tail below", () => {
     expect(receiptText({ state: "expired" }, "e0", undefined, "hi")).toBe(
-      `×  Expired: your message to e0, "hi",\n   was not taken within 7 days.`,
+      `×  Expired: your message to e0, "hi",\n   was not confirmed as delivered. Mail waits at most 7 days.`,
     );
     expect(
       receiptText(
@@ -139,7 +141,7 @@ describe("receipt copy", () => {
 
   it("without an excerpt (a legacy entry) the quote is omitted", () => {
     expect(receiptText({ state: "expired" }, "peer")).toBe(
-      "×  Expired: your message to peer was not taken within 7 days.",
+      "×  Expired: your message to peer was not confirmed as delivered. Mail waits at most 7 days.",
     );
     expect(
       receiptText({ state: "expired", reason: "recipient_closed" }, "peer"),
@@ -274,5 +276,154 @@ describe("displayKind (C26h)", () => {
     expect(displayKind("\x1b[2J")).toBe("unknown");
     expect(displayKind("zz\u202e)sn ,ip(\u200b\u2066")).toBe("zz)sn ,ip(");
     expect(displayKind("\u200f\ufeff")).toBe("unknown");
+  });
+});
+
+describe("linked namespaces (#1567)", () => {
+  const row = (name: string, namespace: string, state = "live") => ({
+    name,
+    namespace,
+    live: state === "live",
+    state,
+  });
+  it("closed and revoked refusals say to pass to_namespace when a linked namespace has the live agent", () => {
+    for (const reason of ["closed", "revoked"] as const) {
+      const out = receiptText(
+        { state: "refused", reason },
+        "docs",
+        undefined,
+        "hi",
+        undefined,
+        "github.com/acme/docs",
+      );
+      expect(out).toContain(
+        "pass to_namespace github.com/acme/docs to reach the live one.",
+      );
+    }
+    // Other refusals and no linked namespace: no hint.
+    expect(
+      receiptText(
+        { state: "refused", reason: "unknown_agent" },
+        "docs",
+        undefined,
+        "hi",
+        undefined,
+        "github.com/acme/docs",
+      ),
+    ).not.toContain("to_namespace");
+    expect(
+      receiptText(
+        { state: "refused", reason: "closed" },
+        "docs",
+        undefined,
+        "hi",
+      ),
+    ).not.toContain("to_namespace");
+  });
+  it("finds the one namespace with a live agent of that name, ignoring case", () => {
+    expect(
+      linkedLiveNamespace("Docs", [row("docs", "a/b"), row("x", "c/d")]),
+    ).toBe("a/b");
+    expect(
+      linkedLiveNamespace("docs", [row("docs", "a/b", "away")]),
+    ).toBeUndefined();
+    expect(
+      linkedLiveNamespace("docs", [row("docs", "a/b", "queued")]),
+    ).toBeUndefined();
+    // Live in two: ambiguous, no hint.
+    expect(
+      linkedLiveNamespace("docs", [row("docs", "a/b"), row("docs", "c/d")]),
+    ).toBeUndefined();
+    expect(linkedLiveNamespace("docs", [])).toBeUndefined();
+  });
+});
+
+describe("rosterText (#1860)", () => {
+  const NOW = Date.parse("2026-11-09T12:00:00.000Z");
+  const SINCE = "2026-11-05T10:00:00.000Z";
+  const a = (r: Record<string, unknown>) => ({
+    name: "alpha",
+    kind: "pi",
+    namespace: "ns",
+    live: true,
+    state: "live",
+    ...r,
+  });
+  const away = (name: string, kind = "pi") =>
+    a({ name, kind, live: false, state: "away", since: SINCE });
+  const text = (rows: Record<string, unknown>[]) =>
+    rosterText(rows as unknown as Parameters<typeof rosterText>[0], NOW);
+
+  it("keeps live, queued and chosen-name away rows; no count line at zero", () => {
+    expect(
+      text([
+        a({}),
+        a({ name: "beta", live: false, state: "queued" }),
+        away("gamma"),
+      ]),
+    ).toBe(
+      "- alpha (pi, ns)\n- beta (pi, ns) (queued)\n- gamma (pi, ns) (away since 2026-11-05 10:00 UTC)",
+    );
+  });
+
+  it("one collapsed away row says session", () => {
+    expect(text([a({}), away("pi-6")])).toBe(
+      "- alpha (pi, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
+    );
+  });
+
+  it("many collapsed away rows say sessions, across kinds", () => {
+    expect(
+      text([
+        away("claude-1262814", "claude-code"),
+        a({}),
+        away("omp-3", "omp"),
+        away("pi-6"),
+        away("agent"),
+        away("agent-4", "pi"),
+      ]),
+    ).toBe(
+      "- alpha (pi, ns)\n- agent-4 (pi, ns) (away since 2026-11-05 10:00 UTC)\n4 more away sessions with no chosen name (not listed, still reachable by name)",
+    );
+  });
+
+  it("never collapses a live or queued agent with a fallback name", () => {
+    expect(
+      text([
+        a({ name: "claude-1262814", kind: "claude-code" }),
+        a({ name: "pi-6", live: false, state: "queued" }),
+        a({ name: "agent", state: undefined, live: true }),
+      ]),
+    ).toBe(
+      "- claude-1262814 (claude-code, ns)\n- pi-6 (pi, ns) (queued)\n- agent (pi, ns)",
+    );
+  });
+
+  it("folds uppercase fallback names; one folded row alone says session", () => {
+    expect(text([away("PI-6"), a({ name: "x" })])).toBe(
+      "- x (pi, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
+    );
+    expect(text([away("Claude-12", "claude-code")])).toBe(
+      "1 away session with no chosen name (not listed, still reachable by name)",
+    );
+  });
+
+  it("only collapsed rows: just the count line; empty: the old message", () => {
+    expect(text([away("pi-1"), away("pi-2")])).toBe(
+      "2 away sessions with no chosen name (not listed, still reachable by name)",
+    );
+    expect(text([])).toBe("No agents in your namespace and linked ones.");
+  });
+});
+
+describe("correctedDeliveredText (#1760)", () => {
+  it("reads Product's wording, with and without an excerpt", async () => {
+    const { correctedDeliveredText } = await import("../src/copy.ts");
+    expect(correctedDeliveredText("peer")).toBe(
+      "✓  Delivered after all: your message to peer reached it. Ignore the earlier Expired notice.",
+    );
+    expect(correctedDeliveredText("peer", "hi")).toBe(
+      '✓  Delivered after all: your message to peer, "hi",\n   reached it. Ignore the earlier Expired notice.',
+    );
   });
 });

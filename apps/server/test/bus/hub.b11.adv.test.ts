@@ -30,7 +30,7 @@ import {
   OWNER_ORG_ID,
 } from "../../src/bus/hub.js";
 import { logError, logInfo } from "../../src/log.js";
-import { e, hello, ns, up } from "./helpers.js";
+import { e, hello, ns, trackSocket, up } from "./helpers.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -56,6 +56,7 @@ type D = {
 
 function wire(ws: WebSocket, decode: boolean): Omit<D, "send"> {
   ws.accept();
+  trackSocket(ws);
   const queue: ServerFrame[] = [];
   const waiting: ((f: ServerFrame) => void)[] = [];
   const seen: ServerFrame[] = [];
@@ -721,5 +722,32 @@ describe("L4: the revoke drain visits only agents with work", () => {
         "select count(*) as n from receipts where state = 'expired' and reason = 'revoked'",
       ),
     ).toBe(3);
+  });
+});
+
+describe("#1749: a rate-limited socket stays dead across hibernation", () => {
+  it("frames after a wake (a fresh instance on the same state and sockets) are not processed", async () => {
+    const h = freshHub();
+    const t0 = Date.now() + HOUR;
+    await clock(h, t0);
+    const m = await machineOn(h);
+    const d = await daemonOn(h, m.id);
+    await sync(d);
+    await emptyBucket(h, m.id, 0);
+    d.send(junkAck());
+    expect((await d.closed).code).toBe(LIMITS.rateLimitCloseCode);
+    // A wake: new instance, empty #rateClosed and budgets, same attachments.
+    const agentsAfter = await inHub(h, async (_, s) => {
+      const fresh = new BusHub(s, e);
+      for (const ws of s.getWebSockets("daemon"))
+        await fresh.webSocketMessage(
+          ws,
+          encodeFrame(up("late", "late-ref", "late", "ns1749")),
+        );
+      return s.storage.sql
+        .exec<{ n: number }>("select count(*) as n from agents")
+        .one().n;
+    });
+    expect(agentsAfter).toBe(0);
   });
 });

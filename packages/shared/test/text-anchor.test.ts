@@ -296,6 +296,40 @@ describe("short quotes need context (M1)", () => {
   });
 });
 
+describe("no context at all (#1739)", () => {
+  const bare = (exact: string) => ({
+    kind: "text" as const,
+    version: 1,
+    exact,
+    prefix: "",
+    suffix: "",
+  });
+  it("an unfound quote is orphan, not collapsed at the start", () => {
+    expect(
+      resolveTextAnchor("Some page text here.", bare("not on the page at all")),
+    ).toEqual({ state: "orphan" });
+  });
+  it("a short quote does not match inside a longer word", () => {
+    expect(resolveTextAnchor("the cat sat", bare("he"))).toEqual({
+      state: "orphan",
+    });
+  });
+  it("a short quote on word boundaries is still exact", () => {
+    expect(resolveTextAnchor("the cat, he sat", bare("he"))).toMatchObject({
+      state: "exact",
+      start: 9,
+      end: 11,
+    });
+  });
+  it("an empty prefix with a suffix sent still means the document start", () => {
+    const a = { ...bare("gone words"), suffix: " and the rest" };
+    expect(resolveTextAnchor("all of it rewritten", a)).toEqual({
+      state: "collapsed",
+      at: 0,
+    });
+  });
+});
+
 describe("a weak hit beside its context is still the quote (N1)", () => {
   it("keeps TODO when the line around it was reworded", () => {
     const before = "Shopping list\n- milk\n- eggs\n- TODO: fix login";
@@ -476,5 +510,128 @@ describe("performance", () => {
       "orphan",
     );
     expect(performance.now() - t0).toBeLessThan(5000);
+  });
+});
+
+describe("anchors saved before blocks were separated (#1708)", () => {
+  it("keeps the right occurrence when the context straddles a block break", () => {
+    const fused = "itemitemitem"; // the old flat text of three <li>item</li>
+    const spaced = "item item item"; // the new one
+    const anchor = createTextAnchor(fused, 4, 8, 1); // the 2nd item
+    expect(anchor.prefix).toBe("item");
+    expect(anchor.suffix).toBe("item");
+    expect(createTextResolver(spaced)(anchor)).toEqual({
+      state: "exact",
+      start: 5,
+      end: 9,
+    });
+    const first = createTextAnchor(fused, 0, 4, 1);
+    expect(createTextResolver(spaced)(first)).toMatchObject({ start: 0 });
+    const third = createTextAnchor(fused, 8, 12, 1);
+    expect(createTextResolver(spaced)(third)).toMatchObject({ start: 10 });
+  });
+
+  // Hand-made anchors so that one side of the context alone decides. "item"
+  // sits three times; only the second is followed/preceded by "b"/"a".
+  const at = (text: string, a: { prefix: string; suffix: string }) =>
+    createTextResolver(text)({
+      kind: "text",
+      version: 1,
+      exact: "item",
+      ...a,
+    });
+
+  it("a fused suffix alone picks the occurrence in spaced text", () => {
+    expect(
+      at("item a item b item c", { prefix: "", suffix: "bitemc" }),
+    ).toEqual({ state: "exact", start: 7, end: 11 });
+  });
+
+  it("a fused prefix alone picks the occurrence in spaced text", () => {
+    expect(at("item a item b item c", { prefix: "itema", suffix: "" })).toEqual(
+      {
+        state: "exact",
+        start: 7,
+        end: 11,
+      },
+    );
+  });
+
+  it("a spaced suffix alone picks the occurrence in fused text", () => {
+    expect(at("itemaitembitemc", { prefix: "", suffix: " b item c" })).toEqual({
+      state: "exact",
+      start: 5,
+      end: 9,
+    });
+  });
+
+  it("a spaced prefix alone picks the occurrence in fused text", () => {
+    expect(at("itemaitembitemc", { prefix: "item a ", suffix: "" })).toEqual({
+      state: "exact",
+      start: 5,
+      end: 9,
+    });
+  });
+});
+
+describe("a short quote placed by context (#1735)", () => {
+  it("an anchor {exact:'j', prefix, suffix} from one of many occurrences resolves to that one, not the first", () => {
+    const text = Array.from(
+      { length: 12 },
+      (_, n) => `step ${n}: i pops j then k${n}`,
+    ).join(". ");
+    let at = -1;
+    for (let k = 0; k <= 7; k++) at = text.indexOf("j", at + 1);
+    const a = anchorOf(text, "j", 7);
+    expect(a.prefix.length).toBeGreaterThan(0);
+    expect(a.suffix.length).toBeGreaterThan(0);
+    // The server keeps the live page's context, cut to 32 each side.
+    const kept = {
+      ...a,
+      prefix: a.prefix.slice(-32),
+      suffix: a.suffix.slice(0, 32),
+    };
+    expect(resolveTextAnchor(text, kept)).toEqual({
+      state: "exact",
+      start: at,
+      end: at + 1,
+    });
+    expect(text.indexOf("j")).not.toBe(at);
+  });
+});
+
+describe("partial-match work per resolve pass (#1735)", () => {
+  it("500 anchors of 1000 unfound chars: the first get partial, those past the total budget collapse", () => {
+    let seed = 12345;
+    const rnd = (n: number) => {
+      let s = "";
+      for (let i = 0; i < n; i++) {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        s += String.fromCharCode(97 + ((seed >> 8) % 26));
+      }
+      return s;
+    };
+    const parts: string[] = [];
+    const anchors: Parameters<typeof resolveTextAnchor>[1][] = [];
+    for (let i = 0; i < 500; i++) {
+      const prefix = rnd(32);
+      const piece = rnd(400);
+      parts.push(prefix, piece, rnd(300), " ");
+      anchors.push({
+        kind: "text",
+        version: 1,
+        exact: piece + rnd(600),
+        prefix,
+        suffix: "",
+      });
+    }
+    const resolve = createTextResolver(parts.join(""));
+    const states = anchors.map((a) => resolve(a).state);
+    expect(states.slice(0, 4).every((s) => s === "partial")).toBe(true);
+    expect(states.slice(-100).every((s) => s === "collapsed")).toBe(true);
+    expect(states.filter((s) => s === "partial").length).toBeLessThan(20);
+    expect(states.every((s) => s === "partial" || s === "collapsed")).toBe(
+      true,
+    );
   });
 });

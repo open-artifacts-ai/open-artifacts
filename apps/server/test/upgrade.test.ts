@@ -35,6 +35,40 @@ const upgrade = async (e: unknown = E({ WORKER_NAME: WORKER })) => {
   return r.text();
 };
 
+/** Lines of `text` that print a git remote or config raw (#1923). */
+const remoteLeaks = (text: string) =>
+  text
+    .replace(/\\\r?\n\s*/g, " ")
+    .split("\n")
+    .filter(
+      (l) =>
+        /git\b[^\n]*?\bremote\s+(-\w*v|--verbose|show)\b/.test(l) ||
+        /ls-remote|\.git\/config|remote\.origin/.test(l) ||
+        /git\b[^\n]*?\bconfig\b/.test(l) ||
+        (/remote\s+get-url/.test(l) &&
+          !/get-url\s+\S+\s*\|\s*(sed -E|grep -qE) /.test(l)),
+    );
+
+const LEAKS = [
+  "git remote -v",
+  "git remote --verbose",
+  "git remote show origin",
+  "git -C . remote -v",
+  "git remote get-url origin",
+  "git ls-remote origin",
+  "cat .git/config",
+  "git config --get remote.origin.url",
+  "git config -l",
+  "git config --list --local",
+  "git config --local --list",
+  "git remote get-url origin \\\n  | cat",
+  "git remote -v",
+];
+const SAFE = [
+  "git remote get-url origin | sed -E 's#^(https?://)[^/]*@#\\1***@#'",
+  "if git remote get-url origin | grep -qE '^https?://[^/]*@'; then echo x; fi",
+];
+
 function frontmatter(md: string) {
   const m = /^---\n([\s\S]*?)\n---\n/.exec(md);
   if (!m?.[1]) throw new Error("no frontmatter");
@@ -53,7 +87,7 @@ function frontmatter(md: string) {
 
 /** Every `oa:setup` command line in the skill's code blocks. */
 const setupLines = (md: string) =>
-  md.split("\n").filter((l) => l.includes("pnpm -s oa:setup "));
+  md.split("\n").filter((l) => /\boa:setup\b/.test(l) && l.includes(" --"));
 
 describe("upgrade.md drift", () => {
   // upgrade.generated.ts is gitignored and written by `pnpm gen` before every
@@ -91,9 +125,15 @@ describe("upgrade.md drift", () => {
       expect(md, f).toMatch(new RegExp(`(?<![\\w-])${f}(?![\\w-])`));
     const lines = setupLines(md);
     expect(lines.length).toBeGreaterThanOrEqual(3);
-    const allowed = new Set<string>(UPGRADE_FLAGS);
+    // Only the reporter form keeps stdout pure JSON on a failure under pnpm 11.
     for (const l of lines)
-      for (const f of l.match(/--[a-z][a-z-]*/g) ?? [])
+      expect(l, l).toContain("pnpm --reporter=silent oa:setup");
+    for (const text of [md, UPGRADE_TEMPLATE])
+      expect(text).not.toMatch(/pnpm\s+(-s|--silent)\s+oa:setup/);
+    const allowed = new Set<string>(UPGRADE_FLAGS);
+    // Flags after `oa:setup` only; `--reporter=silent` belongs to pnpm.
+    for (const l of lines)
+      for (const f of l.split("oa:setup")[1]?.match(/--[a-z][a-z-]*/g) ?? [])
         expect(allowed.has(f), `${f} in: ${l}`).toBe(true);
   });
 });
@@ -215,6 +255,22 @@ describe("upgrade.md content", () => {
     const md = await upgrade();
     expect(md).not.toContain("—");
     expect(md.replace(BANG_RULE, "")).not.toMatch(/\bClaude\b/);
+  });
+
+  it("never prints a git remote or git config raw (#1923)", async () => {
+    const e = E({ WORKER_NAME: WORKER });
+    const docs = [
+      await upgrade(e),
+      await (await get(`${APP}/skill.md`, {}, e)).text(),
+      await (await get(`${APP}/llms.txt`, {}, e)).text(),
+    ];
+    for (const md of docs) expect(remoteLeaks(md)).toEqual([]);
+    expect(docs[0]).toContain("grep -qE '^https?://[^/]*@'");
+  });
+
+  it("the remote guard fails on each bypass and passes the redacted forms", () => {
+    for (const l of LEAKS) expect(remoteLeaks(l), l).not.toEqual([]);
+    for (const l of SAFE) expect(remoteLeaks(l), l).toEqual([]);
   });
 
   it("the rollback trigger is rendered from ROLLBACK_STEPS", async () => {

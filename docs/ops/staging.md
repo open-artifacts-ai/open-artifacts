@@ -32,7 +32,7 @@ Put the new ids into `wrangler.staging.jsonc`, then deploy once.
 
 ## Deploy
 
-`deploy-staging.yml` on push to `main`: build, migrate, deploy, smoke. Manual:
+`deploy-staging.yml` on push to `main`: build, migrate, deploy, smoke (healthz, robots, login redirect, `pnpm --filter @oa/server smoke`, then the MCP happy-path suite, which gates prod). Manual:
 `pnpm --filter @oa/server exec wrangler deploy -c wrangler.staging.jsonc --env staging --var "OWNER_EMAIL:$OA_OWNER_EMAIL"`.
 The address isn't committed, so without `--var` the deploy removes `OWNER_EMAIL`.
 
@@ -175,3 +175,5 @@ Until all four resolve, the step is `action_required` (with the link and the rec
 **Staging.** Staging sends from `mail.open-artifacts.com` (onboarded; not the default `mail.<app host>`): `wrangler.staging.jsonc` has `"send_email": [{ "name": "EMAIL" }]` and `vars.EMAIL_FROM = "noreply@mail.open-artifacts.com"`, asserted by `scripts/check-staging-config.test.ts`.
 
 **Prod.** `prod-setup.sh` passes `--team --yes-paid --email-domain mail.leourbina.com` to install, preflight and upgrade (`EMAIL_SWITCH` in the script; the demo modes stay `--solo --no-email`). `mail.leourbina.com` is onboarded (MX, SPF, DKIM and DMARC all resolve). The first release after that change deploys the `EMAIL` binding and `EMAIL_FROM=noreply@mail.leourbina.com`; until it lands the Worker has no `EMAIL`, which the deploy step treats as a planned addition, so `--check --strict` (preflight) passes. If the onboarding records ever disappear, the `email` step reports `todo` and preflight fails (exit 2): that is drift, not a planned change. Sending a real invite is a separate, human-approved step.
+
+**Staging request logs.** Confirm links carry their secret in the URL fragment (#1426), so a request log never holds one. Staging `invocation_logs` can be re-enabled for debugging without that risk. The infra config is unchanged by #1426; turning them back on is a separate, deliberate change to `wrangler.staging.jsonc`.

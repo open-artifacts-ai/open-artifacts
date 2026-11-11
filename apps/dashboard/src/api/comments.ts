@@ -1,15 +1,19 @@
 import {
   ANON_ID_HEADER,
+  ArtifactAgentSchema,
   COMMENT_BODY_MAX,
   type Comment,
   CommentListSchema,
   CommentSchema,
   CommentThreadSchema,
+  MENTIONS_MAX,
+  type Me,
   type NewThreadBody,
   R,
   type ReplyBody,
 } from "@oa/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { z } from "zod";
 import {
   isAnonToken,
   loadAnonToken,
@@ -17,7 +21,13 @@ import {
   withMintLock,
 } from "../viewer/anonId";
 import { ApiClientError, api, type RequestExtra } from "./client";
-import { cappedCopy } from "./errorCopy";
+import {
+  billingContext,
+  cappedCopy,
+  type ErrorContext,
+  errorCopy,
+} from "./errorCopy";
+import { qk } from "./queries";
 
 export const commentsKey = (id: string) => ["comments", id] as const;
 
@@ -86,12 +96,48 @@ export const useReply = (id: string, guest = false) =>
     api.send(
       "POST",
       R.commentReplies(id, v.thread),
-      { body: v.body, ...(v.guestName ? { guestName: v.guestName } : {}) },
+      {
+        body: v.body,
+        ...(v.guestName ? { guestName: v.guestName } : {}),
+        ...(v.mentions?.length ? { mentions: v.mentions } : {}),
+        ...(v.toAsker ? { toAsker: true } : {}),
+      },
       CommentSchema,
       undefined,
       x,
     ),
   );
+const AgentList = z.array(ArtifactAgentSchema);
+/** The agents that follow or publish to the artifact (the @ picker). Owners and editors only; a failure just means no picker. */
+export const useArtifactAgents = (id: string, enabled: boolean) =>
+  useQuery<z.infer<typeof AgentList>>({
+    enabled,
+    queryKey: ["comment-agents", id],
+    retry: false,
+    staleTime: 30_000,
+    // A server without the route (404) stays answered: no refetch on mount or focus.
+    refetchOnMount: (q) => q.state.status !== "error",
+    refetchOnWindowFocus: (q) => q.state.status !== "error",
+    queryFn: ({ signal }) => api.get(R.artifactAgents(id), AgentList, signal),
+  });
+
+/** Tap an option on an ask. The list refetches on settle, so a 409 shows the closed ask. */
+export const useAnswerAsk = (id: string) =>
+  useRefetching(
+    id,
+    false,
+    false,
+    (v: { thread: string; comment: string; optionId: string }, x) =>
+      api.send(
+        "POST",
+        R.commentAnswer(id, v.thread, v.comment),
+        { optionId: v.optionId },
+        CommentSchema,
+        undefined,
+        x,
+      ),
+  );
+
 export const useSetThreadStatus = (id: string, guest = false) =>
   useRefetching(
     id,
@@ -137,14 +183,48 @@ export const useDeleteComment = (id: string, guest = false) =>
     ),
   );
 
+/** More agents @mentioned than one comment may carry. */
+export class TooManyMentions extends Error {}
+
 /** "5 seconds", "2 minutes": a Retry-After rounded up. */
 const wait = (s: number) =>
   s <= 90
     ? `${Math.max(1, s)} second${s <= 1 ? "" : "s"}`
     : `${Math.ceil(s / 60)} minutes`;
 
+const isPlanRefusal = (code: string | null) =>
+  code === "plan_required" || code === "plan_read_only";
+
+/** No Me (anonymous) or a capped account: billing details never reach them. */
+const planOutsider = (ctx?: ErrorContext) => !ctx || ctx.capped === true;
+
+/** Who the caller is for the plan copy (owners read the action, members whom to ask). */
+// A missing Me is an outsider: a signed-out viewer never reaches a plan code
+// (authz.ts:449, the 401 path), so this is the safe default while Me loads or fails.
+export const commentErrorCtx = (me: Me | null | undefined): ErrorContext =>
+  me
+    ? {
+        ...billingContext(me),
+        // Only a guest or restricted account is an outsider; cap "plan" is a
+        // locked instance's member or admin, who keep the plan copy.
+        capped: me.auth?.cap === "guest" || me.auth?.cap === "restricted",
+      }
+    : { capped: true };
+
+export const useCommentErrorCtx = (): ErrorContext => {
+  // Read the cached Me; a comment surface never fetches it just for error copy.
+  const qc = useQueryClient();
+  return commentErrorCtx(qc.getQueryData<Me>(qk.me));
+};
+
 /** The copy for a failed comment call (Product's strings where the spec has them). */
-export function commentError(e: unknown, capped = false): string {
+export function commentError(
+  e: unknown,
+  capped = false,
+  ctx?: ErrorContext,
+): string {
+  if (e instanceof TooManyMentions)
+    return `Mention at most ${MENTIONS_MAX} agents in one comment.`;
   const code = e instanceof ApiClientError ? e.code : null;
   // A capped (guest or restricted) member's writes are refused as read-only:
   // the server answers 404, and says nothing about a missing comment.
@@ -153,6 +233,11 @@ export function commentError(e: unknown, capped = false): string {
     (code === "not_found" || code === "forbidden" || code === "space_forbidden")
   )
     return cappedCopy("comment");
+  // The plan cap refuses a comment write: the plan copy the rest of the app uses.
+  if (isPlanRefusal(code))
+    return planOutsider(ctx)
+      ? cappedCopy("comment")
+      : errorCopy(e, "Couldn't post your comment. Try again.", ctx);
   switch (code) {
     case "rate_limited":
       return e instanceof ApiClientError && e.retryAfter
@@ -161,7 +246,7 @@ export function commentError(e: unknown, capped = false): string {
     case "invalid_body":
       return `A comment needs 1 to ${COMMENT_BODY_MAX.toLocaleString("en")} characters.`;
     case "anchor_not_in_version":
-      return "That text isn't in this version.";
+      return "That version of the page is gone.";
     case "comments_off":
       return "Comments are off for this page.";
     case "forbidden":
@@ -170,6 +255,8 @@ export function commentError(e: unknown, capped = false): string {
       return "That comment is gone.";
     case "conflict":
       return "This thread has too many replies. Start a new comment instead.";
+    case "not_an_ask":
+      return "That ask is no longer open to questions. Reply instead.";
     case "bad_request":
       return "That comment couldn't be found.";
     case "unauthorized":
@@ -177,4 +264,21 @@ export function commentError(e: unknown, capped = false): string {
     default:
       return "Couldn't post your comment. Try again.";
   }
+}
+
+/** Copy for a failed answer: 403 not asked, 409 closed, 400 unknown option. */
+export function answerError(e: unknown, ctx?: ErrorContext): string {
+  if (e instanceof ApiClientError && isPlanRefusal(e.code))
+    return planOutsider(ctx)
+      ? cappedCopy("answer")
+      : errorCopy(e, "Couldn't send your answer. Try again.", ctx);
+  const status = e instanceof ApiClientError ? e.status : 0;
+  if (status === 403)
+    return "Only the people this ask is addressed to can answer.";
+  if (status === 409)
+    return "The agent already closed this ask, so it can't be changed.";
+  if (status === 400)
+    return "That option isn't on this ask any more. Reload to see the current ones.";
+  if (status === 404) return "That ask is gone.";
+  return "Couldn't send your answer. Try again.";
 }

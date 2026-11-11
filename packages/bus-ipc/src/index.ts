@@ -1,26 +1,38 @@
-export { BUS_CMD } from "@oa/bus-protocol";
+export { BUS_CMD, LINK_PROOF_HEADER } from "@oa/bus-protocol";
 export {
   connectDaemon,
   type DaemonClient,
   DaemonSilentError,
+  daemonLinkProof,
   daemonStatus,
   HelloRefused,
 } from "./client.ts";
 export {
   cleanStatusLabel,
+  collapsedAwayLine,
+  correctedDeliveredText,
   deliveredText,
   displayKind,
   earlierStatusText,
   excerptOf,
+  FOLLOW_DAEMON_BAD_FRAME,
+  FOLLOW_OLD_DAEMON,
   fitName,
+  followingText,
+  followText,
   lateDeliveredText,
+  linkedLiveNamespace,
   messageHeader,
   movedName,
   neutralizeBody,
   oversizedText,
+  REACH_OLD_DAEMON,
+  reachNamespacesOf,
+  reachProposedText,
   receiptText,
   replyGoneText,
   rosterLine,
+  rosterText,
   STATUS_COPY,
   STATUS_STALE_MS,
   type StatusFields,
@@ -30,6 +42,7 @@ export {
   statusSetText,
   stripTerminalControls,
   unconfirmedText,
+  unfollowText,
 } from "./copy.ts";
 export * from "./frames.ts";
 export { FrameTooLarge, LineDecoder } from "./lines.ts";

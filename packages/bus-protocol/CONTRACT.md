@@ -13,8 +13,7 @@ renames and role addresses; `role_vacant` came back with role addresses, see
 Role addresses); version gates (`AGENT_CARD_MIN_CLIENT`,
 `KIND_TOKEN_MIN_CLIENT`) are gone because no old client exists; the machine
 token is `oa_machine_`; the routes live under `/bus/` on the instance origin.
-`follow`, `unfollow`, `following` and the `notice` frame come with step 2 of
-the design. Renames (OpenBus R393a, #1325) are gated on a `hello` capability,
+`link_bind` came with #1822 (see Session links). `follow`, `unfollow` and `following` came with #1317 (see Follows). Renames (OpenBus R393a, #1325) are gated on a `hello` capability,
 not a version (see Renames).
 
 Anything both the instance (`apps/server/src/bus/`) and the local client
@@ -64,7 +63,9 @@ States: `pending | delivered | expired | refused`. Refusal reasons
 (`REFUSAL_REASONS`): `unknown_agent`, `closed`, `inbox_full`, `too_large`,
 `other_namespace`, `revoked`, `ambiguous`, `role_vacant` (only to a
 `roles`-cap socket, see Role addresses), `agent_gone` (only to an `ids`-cap
-socket, see Reply ids). `expired` may carry
+socket, see Reply ids), `mailbox_full` and `reserved_name` (only to a
+`mailbox`-cap socket, see Lasting mailboxes; any other reads `inbox_full` and
+`unknown_agent`). `expired` may carry
 `recipient_closed`. The `receipt` reply to `send` is only `pending` or
 `refused`; `receipt_update` may carry any state.
 
@@ -88,6 +89,8 @@ Client to hub (`CLIENT_FRAMES`):
 - `fetch {from_ref, msg_id}`
 - `status {from_ref, state, label?}`: fire and forget.
 - `rename {agent_ref, proposed_name, name_kind?}`: rename a live agent; `proposed_name` 1..256 chars. Answered by `renamed` or `error`.
+- `follow {from_ref, artifact}`, `unfollow {from_ref, artifact}`, `following {from_ref}` (`BUS_CAPS.follow`, see Follows): `artifact` is an id or the page URL, 1..2048 chars.
+- `link_bind {agent_ref, hash}` (`BUS_CAPS.link`, see Session links).
 
 Hub to client (`SERVER_FRAMES`):
 
@@ -96,11 +99,13 @@ Hub to client (`SERVER_FRAMES`):
 - `receipt {msg_id, state, reason?, to_name?}`; `to_name` is the recipient's current name, only on a former-name hit to a `rename`-cap socket, or on a role hit to a `roles`-cap socket
 - `roster {agents: [{bus_name, kind, namespace, global, state, machine_label?, status?, status_label?, status_at?, former_names?}]}`; `kind` is any kind token.
 - `body {msg_id, body}`
-- `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
+- `error {code, message}`; `code` is `bad_frame | not_registered | not_found | too_large | rate_limited | internal`, and `follow_limit` to a socket whose hello listed `follow`. Cap refusals of `agent_up` use the exact `AGENT_CAP_MESSAGES` strings.
 - `deliver {msg_id, to_ref, from_name, from_id?, namespace, body | notice}`; `from_id` is the sender's agent id.
 - `receipt_update {msg_id, state, reason?}`: the schema shares `to_name?` with `receipt`, but the hub sets it only on `receipt`.
 - `roster_changed {namespace}`
 - `renamed {agent_ref, bus_name, former?}`: reply to `rename`. `former` is the name left, absent on a no-op. Names compare case-insensitively.
+- `followed {artifact_id, url, followed_at}`, `unfollowed {removed}`, `follows {follows: [{artifact_id, url, followed_at}]}` (at most `MAX_FOLLOWS`, 200): replies to `follow`, `unfollow`, `following`.
+- `link_bound {}`: reply to `link_bind`.
 
 Targeting, idempotency (a send's `id` is unique per sender for at least 1 h;
 a resend reuses it) and the decoder bounds are unchanged from OpenBus:
@@ -111,6 +116,56 @@ depth <= 4, `:` plus `,` <= 16384, structural characters <= 65536; server
 frames depth <= 5, 65536 and 131072, so a full roster of rows with status
 fields and 5 `former_names` fits. Either way at most 64 `:` plus `,` directly
 in one object.
+
+## Follows (`BUS_CAPS.follow`, #1317)
+
+An agent follows an artifact so the instance can tell it when it changes
+(notices, #1292). The frames are the agent's own: the hub takes the member
+from the machine's token and the address (namespace, name) from the agent
+`from_ref` registered on that socket. The frames carry no member or address,
+so an agent can only follow, unfollow and list as itself.
+
+- `hello.caps` listing `follow`: the hub then answers the three frames and
+  lists `follow` in `hello_ok.caps`. Any other socket gets `bad_frame` for
+  them, as a hub before this change does. A client sends them only when
+  `hello_ok.caps` listed `follow`; no protocol version change.
+- `follow` answers `followed` (a repeat is a no-op that keeps the first
+  `followed_at`), or `error`: `not_found` (no such artifact, or the member
+  cannot read it: one answer for both), `follow_limit` (200 follows per member,
+  across all their agents), `not_registered` (`from_ref` is not an agent of
+  this socket), `rate_limited` (too many follows in flight), `internal`.
+- `unfollow` answers `unfollowed {removed}`; no read access is needed.
+- `following` answers `follows`, newest first: ids and links only.
+
+## Session links (`BUS_CAPS.link`, #1822)
+
+A session proves which bus agent it is on `/mcp` with a random proof in the
+`X-OA-Agent-Proof-Token` header (43 base64url characters). The client sends
+the proof's hash, never the proof, over the machine's socket.
+
+A harness that cannot set a header (Hermes, OpenClaw) sends the same proof as
+the reserved tool argument `_oa_agent_proof` (`LINK_PROOF_ARG`) on a
+`tools/call`. The Worker removes it before the tool sees the call, on every
+call, and the header wins when both are present. In a JSON-RPC batch every
+`tools/call` must carry the same value, else the request is unlinked. Other
+methods are never read.
+
+- `hello.caps` listing `link`: the hub then answers `link_bind` and lists
+  `link` in `hello_ok.caps`. Any other socket gets `bad_frame`, as an older
+  hub does. A client sends it only when `hello_ok.caps` listed `link`.
+- `link_bind {agent_ref, hash}`: `hash` is the sha256 hex (64 lowercase hex
+  characters) of the proof. Answers `link_bound`, or `error` `not_registered`
+  when `agent_ref` is not an open agent this socket registered. A new bind
+  replaces the old hash; closing the session clears it. The first accepted
+  bind gives the agent an opaque `identity_id`, kept through renames and moved
+  with a name the hub hands over to a restarted session on the same machine.
+- `link_arg` in `hello_ok.caps` (#1856): this hub's `/mcp` removes
+  `_oa_agent_proof` before any tool schema sees it. A daemon tells a harness
+  adapter its proof was taken only when `hello_ok.caps` listed both `link` and
+  `link_arg`; an older hub gets no argument, because a strict tool schema would
+  refuse the call.
+- The hub answers a lookup by hash only for the member who owns it; the
+  Worker asks only the hub of the credential's own member.
 
 ## Reply ids (`BUS_CAPS.ids`)
 
@@ -133,6 +188,31 @@ whoever holds the name now.
 - Compatibility, pre-launch: the local client always sends `hello.caps`, and a
   hub before v0.111.0 refuses a hello with `caps` (`bad_frame`). There is no
   shim: installs are upgraded instead (the only instance is the owner's).
+
+## Lasting mailboxes (`BUS_CAPS.mailbox`, #1295)
+
+A closed agent keeps its name and its pending mail for 7 days (`away`); the
+fields below go only to a socket whose hello listed `mailbox` (the hub lists it
+in `hello_ok.caps`, also to a hello that listed only `mailbox`). Every other
+socket sees today's shapes: its strict decoder never meets a new key.
+
+- `receipt` (to `send`, `pending`) gains `queued: "away" | "offline"` and
+  `since` (ISO time). `away`: the recipient is closed and its mailbox waits
+  for it, since its close. `offline`: it is open but its machine is offline,
+  since the machine went offline. Absent when the mail was pushed.
+- `mailbox_full` replaces `inbox_full` (pending count, bytes, hub total).
+  `reserved_name`: the name is only a 1 h `held` reservation of an agent that
+  moved or flipped scope; it has no mailbox (others read `unknown_agent`).
+- `roster` rows gain `state: "away"` and `since` (the close): closed agents
+  whose mailbox is kept, in the asker's scope.
+- `agent_up.replaces` (an `agent_ref`): after a `/clear` the same live process
+  reports a new session. The hub honours it only on a `mailbox` socket, for an
+  agent of the same machine, when the new ref is not yet known: the agent row
+  is re-keyed to the new ref, so it keeps its name, former names and mail
+  instead of `<name>-2`. A client sends it only when `hello_ok.caps` listed
+  `mailbox`; the daemon sends it only for the same pid and process start.
+- Mail pushed but not yet acked when a `/clear` happens is delivered again to
+  the new session, so an agent may see it twice.
 
 ## Renames (#393)
 
@@ -227,7 +307,7 @@ claims one.
   holder by bus name; the hub checks it as the dashboard write (a live agent
   of this hub, the name rules below) and binds it to that agent's id, the
   role and the holder it displaces. It changes nothing. The member confirms
-  it on its one-time link (`/bus/roles/confirm/<secret>`, 15 minutes, the
+  it on its one-time link (`/bus/roles/confirm#<secret>`, the secret in the URL fragment so no request or log carries it, 15 minutes, the
   hub keeps only the secret's sha256) in a browser session; the hub then
   applies it with the dashboard's own write, only while the role and both
   agents' names are still as proposed. The session must be a sign-in under
@@ -265,5 +345,26 @@ suffixes folded. Namespaces are canonical `[a-z0-9._~/-]{1,128}`, derived by
 `namespaceFrom`.
 
 `.oa-bus.json` (`CONFIG_FILE`): strict `{namespace?, global?}`, nearest file
-wins per key. `global` grants nothing; global comes only from the user's
+wins per key. A `namespace` that differs from the derived one takes effect
+only for a directory the user approved for exactly that namespace
+(`oa-bus namespace approve`, `<home>/namespaces.json`, read strictly, matched by
+directory identity); otherwise the derived namespace is used and the file is
+listed as `pending`. `global` grants nothing; global comes only from the user's
 allowlist under the client's home folder.
+
+## Reach proposals (`ADAPTER_CAPS.reach`, #1346)
+
+Not a hub wire frame, so no `BUS_CAPS` entry and no version change. An adapter
+that listed the `reach` cap sends the daemon `propose_reach {namespaces}`
+(1..`REACH_PROPOSAL_MAX` canonical namespaces) and gets `reach_proposed
+{confirm_url, expires_at}` or `error`. The daemon posts
+`{nativeRef, namespaces}` to `BUS_ROUTES.reachProposals` on the hub's origin
+with the machine token (`redirect: "error"`, bounded in time), where
+`nativeRef` is the calling connection's own agent ref: the frame, the tool
+and the adapter name no session. It only records a proposal; the member
+confirms the link in a browser. Errors: `unauthorized` (401), `unsupported`
+(404, a hub without the route), the route's 409 `details.reason` (`no_role`,
+`ambiguous`, `rate_limited`, `proposal_limit`, `no_bus`), `hub_unavailable`
+(no answer in time), `bad_reply`, and `refused` (a plan cap or anything else,
+with the hub's words and the HTTP status). An older daemon answers the frame
+`bad_frame`.

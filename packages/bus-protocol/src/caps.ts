@@ -27,6 +27,67 @@ export const BUS_CAPS = {
    * client sends `to_id` only when it did.
    */
   ids: "ids",
+  /**
+   * Lasting mailboxes (#1295): the client decodes a send receipt's `queued`
+   * and `since`, the `mailbox_full` and `reserved_name` refusals, and roster
+   * rows with `state: "away"` and `since`. The hub sends those only to a
+   * socket whose hello listed it, and lists it in `hello_ok.caps`; any other
+   * socket sees today's shapes (`inbox_full`, `unknown_agent`, no away rows).
+   * A client also lists it to have the hub hand an address over on `agent_up`
+   * `replaces` (a /clear).
+   */
+  mailbox: "mailbox",
+  /**
+   * Project links (#1567): the client understands roster rows and routing
+   * across the namespaces its member linked (each row carries its own
+   * `namespace`; a name in two linked namespaces is `ambiguous` until the
+   * send names `to_namespace`). The hub widens a socket's roster and routing
+   * only when its hello listed it, and lists it in `hello_ok.caps`; any other
+   * socket sees today's isolation.
+   */
+  links: "links",
+  /**
+   * Scoped role reach (#1346): a role the member gave reach to other
+   * namespaces lets its holder see and message the agents there (each row
+   * carries its own `namespace`; a name in two namespaces is `ambiguous`
+   * until the send names `to_namespace`), and those agents reply to it. The
+   * hub widens a socket's roster and routing only when its hello listed it,
+   * and lists it in `hello_ok.caps`; any other socket sees today's behaviour.
+   */
+  reach: "reach",
+  /**
+   * Follows (#1317): the client may send `follow`, `unfollow` and `following`
+   * and decodes `followed`, `unfollowed`, `follows` and the `follow_limit`
+   * error. The hub answers those frames only on a socket whose hello listed
+   * it (any other gets `bad_frame`, as an old hub would) and lists it in
+   * `hello_ok.caps`; a client sends them only when it did.
+   */
+  follow: "follow",
+  /**
+   * Session links (#1822): the client may send `link_bind` and decodes
+   * `link_bound`. The hub answers it only on a socket whose hello listed it
+   * (any other gets `bad_frame`, as an old hub would) and lists it in
+   * `hello_ok.caps`; a client sends it only when it did.
+   */
+  link: "link",
+  /**
+   * Link argument (#1856): `/mcp` reads and removes the reserved tool argument
+   * `_oa_agent_proof` (LINK_PROOF_ARG) on every `tools/call`. Only a hub that
+   * lists it in `hello_ok.caps` may be sent calls carrying it: an older one
+   * would hand the argument to a strict tool schema and fail the call. A
+   * daemon tells a harness adapter its proof was taken (`link_proofed.bound`)
+   * only when the hub listed both `link` and this.
+   */
+  linkArg: "link_arg",
+  /**
+   * Notice acks (#1752): a daemon listing it sends the existing `ack` frame
+   * with a notice deliver frame's `msg_id` only once the harness took the
+   * notice (nothing while it waits), and `refuse` (reason `closed`) if it is
+   * dropped or the session is gone. The hub then reads the notice as held,
+   * not delivered, until that ack. A socket without it keeps today's rule:
+   * accepted by the socket is delivered.
+   */
+  noticeAck: "notice_ack",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

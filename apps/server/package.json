@@ -29,7 +29,6 @@
     "@oa/provisioning-contract": "workspace:*",
     "@oa/render": "workspace:*",
     "@oa/runtime": "workspace:*",
-    "@oa/scheduler": "workspace:*",
     "@types/node": "^20.19.43",
     "drizzle-kit": "^0.31.11",
     "typescript": "^5.9.3",
@@ -44,6 +43,7 @@
     "@oa/shared": "workspace:*",
     "agents": "0.28.1",
     "drizzle-orm": "^0.45.4",
+    "entities": "8.1.0",
     "hono": "^4.13.13",
     "jose": "^6.2.12",
     "zod": "^4.6.7"

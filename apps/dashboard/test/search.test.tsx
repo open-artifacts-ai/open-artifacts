@@ -13,6 +13,7 @@ import {
   installHarness,
   intersect,
   mount,
+  mountHosted,
   page,
   seen,
   server,
@@ -116,10 +117,53 @@ describe("Search", () => {
     await waitFor(() => expect(router.state.location.pathname).toBe("/"));
   });
 
-  it("clearing the box on /search drops q", async () => {
+  it("clearing the box on /search returns to the full library (#1640)", async () => {
     const router = mount("/search?q=notes");
-    fireEvent.change(await box(), { target: { value: "" } });
-    await waitFor(() => expect(router.state.location.searchStr).toBe(""));
-    expect(router.state.location.pathname).toBe("/search");
+    const input = await box();
+    input.focus();
+    fireEvent.change(input, { target: { value: "" } });
+    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+    expect(router.state.location.searchStr).toBe("");
+    expect(await box()).toHaveFocus();
+    // The library's own list is back, not the empty search prompt.
+    expect(
+      await screen.findByRole("link", { name: arts[0]?.title as string }),
+    ).toBeInTheDocument();
+  });
+
+  it("clearing a scoped search keeps its space and focus (#1642)", async () => {
+    const space = "SpEngNpQrSt2uVwX";
+    const router = mountHosted(`/search?q=notes&space=${space}`);
+    const input = await screen.findByRole("searchbox", {
+      name: "Search in Engineering",
+    });
+    input.focus();
+    fireEvent.change(input, { target: { value: "" } });
+    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+    expect(router.state.location.search).toEqual({ space });
+    expect(
+      await screen.findByRole("searchbox", { name: "Search in Engineering" }),
+    ).toHaveFocus();
+    expect(
+      await screen.findByRole("heading", { name: "Engineering", level: 1 }),
+    ).toBeVisible();
+  });
+
+  it("Backspace in an empty scoped results box leaves search unscoped and focused (#1642)", async () => {
+    const router = mountHosted("/search?space=SpEngNpQrSt2uVwX");
+    const input = await screen.findByRole("searchbox", {
+      name: "Search in Engineering",
+    });
+    input.focus();
+    fireEvent.keyDown(input, { key: "Backspace" });
+    await waitFor(() => expect(router.state.location.pathname).toBe("/"));
+    expect(router.state.location.searchStr).toBe("");
+    expect(await box()).toHaveFocus();
+    expect(
+      screen.queryByRole("button", { name: "Search everywhere" }),
+    ).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: "Library", level: 1 }),
+    ).toBeVisible();
   });
 });

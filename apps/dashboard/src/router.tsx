@@ -28,6 +28,8 @@ import { Connections } from "./settings/Agents";
 import { Directory } from "./settings/Directory";
 import { Instance } from "./settings/Instance";
 import { Members } from "./settings/Members";
+import { Notifications } from "./settings/Notifications";
+import { Plan } from "./settings/Plan";
 import { Profile } from "./settings/Profile";
 import { Gate, SettingsLayout } from "./settings/SettingsLayout";
 import { canAdminSpaces } from "./settings/spaces/access";
@@ -76,6 +78,7 @@ const library = (path: string, scope: Scope) =>
         ...(str(s.agent) && { agent: str(s.agent) }),
         ...(via.success && { agentVia: via.data }),
         ...(str(s.space) && { space: str(s.space) }),
+        ...(s.filter === "needs_answer" && { filter: s.filter }),
         ...(view && { view }),
       };
     },
@@ -282,6 +285,7 @@ const routeTree = root.addChildren([
   route("/a/$id/diff/$from/$to", DiffRoute),
   settings.addChildren([
     gated("/settings/profile", [...ADMINS, "member"], "/", Profile),
+    gated("/settings/notifications", [...ADMINS, "member"], "/", Notifications),
     gated("/settings/members", ADMINS, "/settings/connections", Members),
     createRoute({
       getParentRoute: () => settings,
@@ -308,6 +312,8 @@ const routeTree = root.addChildren([
       },
     }),
     gated("/settings/instance", ADMINS, "/settings/connections", Instance),
+    // Owners and admins, also while the plan locks the instance.
+    gated("/settings/plan", ADMINS, "/settings/connections", Plan),
     createRoute({
       getParentRoute: () => settings,
       path: "/settings/machines",

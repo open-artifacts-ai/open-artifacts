@@ -93,6 +93,19 @@ describe("errors", () => {
     ).toEqual({ a: 1 });
   });
 
+  it("a bus revoke whose connection didn't close answers its own code, not internal (#1453)", async () => {
+    const res = await appThrowing(
+      new ApiError(
+        "revoke_not_closed",
+        "The machine is revoked, but its connection could not be closed yet. Try again.",
+      ),
+    ).request("/x");
+    expect(res.status).toBe(503);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe(
+      "revoke_not_closed",
+    );
+  });
+
   it("generic Error -> 500 internal without stack", async () => {
     const err = new Error("boom");
     const res = await appThrowing(err).request("/x");

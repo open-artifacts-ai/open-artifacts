@@ -62,6 +62,10 @@ export default defineConfig({
         test: {
           name: "jsdom",
           environment: "jsdom",
+          // Node 25+ ships its own localStorage global, which shadows jsdom's
+          // (and is undefined without --localstorage-file). Turn it off so
+          // jsdom's window.localStorage is used on every Node version.
+          execArgv: ["--no-experimental-webstorage"],
           include: ["test/**/*.test.tsx"],
           setupFiles: ["test/setup.ts"],
           // Above test/setup.ts's 5 s asyncUtilTimeout, so a stuck wait reports its own failure.

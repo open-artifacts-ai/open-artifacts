@@ -49,6 +49,10 @@ describe("contract is pinned", () => {
       "fetch",
       "status",
       "rename",
+      "follow",
+      "unfollow",
+      "following",
+      "link_bind",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -61,10 +65,14 @@ describe("contract is pinned", () => {
       "receipt_update",
       "roster_changed",
       "renamed",
+      "followed",
+      "unfollowed",
+      "follows",
+      "link_bound",
     ]);
   });
 
-  it("pins the 8 refusal reasons, in order", () => {
+  it("pins the 10 refusal reasons, in order", () => {
     expect(REFUSAL_REASONS).toEqual([
       "unknown_agent",
       "closed",
@@ -75,6 +83,8 @@ describe("contract is pinned", () => {
       "ambiguous",
       "role_vacant",
       "agent_gone",
+      "mailbox_full",
+      "reserved_name",
     ]);
   });
 

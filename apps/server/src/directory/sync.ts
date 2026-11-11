@@ -726,6 +726,8 @@ export class SyncEngine {
     const s = await directoryStatus(this.env, {
       showProblem: true,
       expire: false,
+      // The mode this DO follows (the caller's), not the provisioned FEATURES.
+      mode: this.follow(),
     });
     // The snoozes as this DO holds them: D1's copy may trail by an alarm
     // when a write raced an RPC's (SNOOZE_SYNC_KEY heals it).

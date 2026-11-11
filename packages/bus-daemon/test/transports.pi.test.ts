@@ -103,12 +103,8 @@ describe("PiTransport", () => {
     expect(await shut.notify(agent(), "x", "mmmmmmmmmmmmmmm1")).toBe(false);
   });
 
-  it("a late ack from the same session is remembered for a while; from another, never", async () => {
-    const t = new PiTransport({
-      push: () => true,
-      ackTimeoutMs: 20,
-      lateAckMs: 200,
-    });
+  it("a late ack from the same session is remembered; from another, never", async () => {
+    const t = new PiTransport({ push: () => true, ackTimeoutMs: 20 });
     expect(await t.deliver(agent(), mail())).toEqual({
       ok: false,
       reason: "timeout",
@@ -120,15 +116,44 @@ describe("PiTransport", () => {
     expect(t.lateAck("mmmmmmmmmmmmmmm1", "pi-1")).toBe(false);
   });
 
-  it("a late ack window closes", async () => {
+  it("a late ack is accepted long after the timeout while the link is live", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = new PiTransport({ push: () => true, ackTimeoutMs: 10 });
+      const p = t.deliver(agent(), mail());
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await p).toEqual({ ok: false, reason: "timeout" });
+      await vi.advanceTimersByTimeAsync(3_600_000);
+      expect(t.lateAck("mmmmmmmmmmmmmmm1", "pi-1")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a late ack after the link closed is ignored; dropRef drops only that session's ids", async () => {
+    const t = new PiTransport({ push: () => true, ackTimeoutMs: 5 });
+    await t.deliver(agent(), mail());
+    await t.deliver(agent({ ref: "pi-2" }), mail("mmmmmmmmmmmmmmm2"));
+    t.dropRef("pi-1");
+    expect(t.lateAck("mmmmmmmmmmmmmmm1", "pi-1")).toBe(false);
+    expect(t.lateAck("mmmmmmmmmmmmmmm2", "pi-2")).toBe(true);
+  });
+
+  it("the per-session cap evicts the oldest late id", async () => {
     const t = new PiTransport({
       push: () => true,
-      ackTimeoutMs: 10,
-      lateAckMs: 30,
+      ackTimeoutMs: 5,
+      lateAckCap: 2,
     });
-    await t.deliver(agent(), mail());
-    await new Promise((r) => setTimeout(r, 60));
+    for (const id of [
+      "mmmmmmmmmmmmmmm1",
+      "mmmmmmmmmmmmmmm2",
+      "mmmmmmmmmmmmmmm3",
+    ])
+      await t.deliver(agent(), mail(id));
     expect(t.lateAck("mmmmmmmmmmmmmmm1", "pi-1")).toBe(false);
+    expect(t.lateAck("mmmmmmmmmmmmmmm2", "pi-1")).toBe(true);
+    expect(t.lateAck("mmmmmmmmmmmmmmm3", "pi-1")).toBe(true);
   });
 
   it("dropRef closes that session's waiting deliveries at once, and only its", async () => {

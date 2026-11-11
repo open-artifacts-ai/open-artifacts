@@ -7,8 +7,8 @@ export type PiTransportOptions = {
   push: (agentRef: string, frame: DaemonFrame) => boolean;
   /** How long the extension has to call pi.sendMessage and ack. Default 10 s. */
   ackTimeoutMs?: number;
-  /** How long after a timeout that session's ack still confirms the message. Default 60 s. */
-  lateAckMs?: number;
+  /** Most timed-out ids kept per session for a late ack; the oldest go first. Default 1000. */
+  lateAckCap?: number;
 };
 
 type Waiter = { ref: string; done: (o: DeliverOutcome) => void };
@@ -20,8 +20,10 @@ type Waiter = { ref: string; done: (o: DeliverOutcome) => void };
  */
 export class PiTransport {
   #waiting = new Map<string, Waiter>();
-  /** Timed-out pushes: msg_id -> the session whose late ack still counts. */
-  #late = new Map<string, { ref: string; timer: NodeJS.Timeout }>();
+  /** Timed-out pushes: msg_id -> the session whose late ack still counts, until its link closes. */
+  #late = new Map<string, string>();
+  /** The same ids per session, oldest first, for the cap and for dropRef. */
+  #lateByRef = new Map<string, Set<string>>();
 
   constructor(private readonly opts: PiTransportOptions) {}
 
@@ -65,13 +67,16 @@ export class PiTransport {
 
   /** An ack that came after the timeout, from the session it was pushed to; true once. */
   lateAck(msgId: string, ref: string): boolean {
-    if (this.#late.get(msgId)?.ref !== ref) return false;
+    if (this.#late.get(msgId) !== ref) return false;
     this.#forget(msgId);
     return true;
   }
 
   /** The session's last connection closed: nothing it was pushed can be acked now. */
   dropRef(ref: string): void {
+    for (const msgId of this.#lateByRef.get(ref) ?? [])
+      this.#late.delete(msgId);
+    this.#lateByRef.delete(ref);
     for (const [msgId, w] of this.#waiting) {
       if (w.ref !== ref) continue;
       this.#waiting.delete(msgId);
@@ -96,16 +101,24 @@ export class PiTransport {
 
   #remember(msgId: string, ref: string): void {
     this.#forget(msgId);
-    const timer = setTimeout(
-      () => this.#late.delete(msgId),
-      this.opts.lateAckMs ?? 60_000,
-    );
-    timer.unref();
-    this.#late.set(msgId, { ref, timer });
+    this.#late.set(msgId, ref);
+    const ids = this.#lateByRef.get(ref) ?? new Set<string>();
+    this.#lateByRef.set(ref, ids);
+    ids.add(msgId);
+    const cap = this.opts.lateAckCap ?? 1000;
+    while (ids.size > cap) {
+      const oldest = ids.values().next().value as string;
+      ids.delete(oldest);
+      this.#late.delete(oldest);
+    }
   }
 
   #forget(msgId: string): void {
-    clearTimeout(this.#late.get(msgId)?.timer);
+    const ref = this.#late.get(msgId);
+    if (ref === undefined) return;
     this.#late.delete(msgId);
+    const ids = this.#lateByRef.get(ref);
+    ids?.delete(msgId);
+    if (ids?.size === 0) this.#lateByRef.delete(ref);
   }
 }

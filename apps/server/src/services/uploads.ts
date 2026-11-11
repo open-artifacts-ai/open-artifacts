@@ -5,17 +5,25 @@ import {
   type Member,
   newId,
   normalizePath,
+  planOf,
   R,
   type UploadCreated,
   type UploadCreateInput,
 } from "@oa/shared";
-import { authorize, callerOf, capOfCaller } from "../auth/authz.js";
+import {
+  authorize,
+  callerOf,
+  capOfCaller,
+  planOfMember,
+} from "../auth/authz.js";
 import { contentKey } from "../auth/keys.js";
 import { orgCan } from "../auth/policy.js";
 import { requireFreeStorage } from "../billing/caps.js";
+import { refuseViewOnly } from "../billing/plan.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { hmacSign, hmacVerify } from "../util/crypto.js";
+import { sha256Sink } from "../util/digest.js";
 
 const CONTENT_TYPE =
   /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(\s*;\s*[a-z0-9_.+-]+=("[^"\\\r\n]*"|[a-z0-9_.+-]+))*$/i;
@@ -71,10 +79,14 @@ export async function createUpload(
     });
   const contentType = input.contentType ?? contentTypeFor(p.path);
   if (contentType.length > 200 || !CONTENT_TYPE.test(contentType))
-    throw new ApiError("bad_request", "Invalid contentType", {
-      path: input.path,
-      reason: "invalid_content_type",
-    });
+    throw new ApiError(
+      "bad_request",
+      "Invalid contentType. Use a MIME type such as text/html or application/pdf.",
+      {
+        path: input.path,
+        reason: "invalid_content_type",
+      },
+    );
   // A missing or short key fails here, before any row is written.
   await signingKey(env);
   const db = env.DB;
@@ -83,6 +95,8 @@ export async function createUpload(
   const who = callerOf(user);
   // Reserving or uploading into a new artifact is a create (capped callers can't).
   const mayCreate = () => {
+    // An unpaid Solo is view-only: no new artifact, so no upload into one.
+    refuseViewOnly(planOfMember(user));
     if (!orgCan(user, "artifact.create", { cap: capOfCaller(who) }))
       throw new ApiError("space_forbidden", "You can't create artifacts");
   };
@@ -120,8 +134,8 @@ export async function createUpload(
   stmts.push(
     db
       .prepare(
-        `insert into uploads (id, artifact_id, user_id, r2_key, size, content_type, path, created_at)
-         values (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `insert into uploads (id, artifact_id, user_id, r2_key, size, content_type, path, created_at, expected_sha256)
+         values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         uploadId,
@@ -132,6 +146,7 @@ export async function createUpload(
         contentType,
         p.path,
         now,
+        input.sha256 ?? null,
       ),
   );
   await db.batch(stmts);
@@ -165,10 +180,15 @@ export async function putUpload(
   if (!(await hmacVerify(await signingKey(env), `${uploadId}:${exp}`, sig)))
     throw notFound();
   const row = await env.DB.prepare(
-    "select r2_key, size, content_type from uploads where id = ? and consumed = 0",
+    "select r2_key, size, content_type, expected_sha256 from uploads where id = ? and consumed = 0",
   )
     .bind(uploadId)
-    .first<{ r2_key: string; size: number; content_type: string }>();
+    .first<{
+      r2_key: string;
+      size: number;
+      content_type: string;
+      expected_sha256: string | null;
+    }>();
   if (!row) throw notFound();
   const len = req.headers.get("content-length");
   const measure = row.size === 0; // created without a size
@@ -208,7 +228,10 @@ export async function putUpload(
     .bind(uploadId)
     .run();
   if (!claim.meta.changes)
-    throw new ApiError("conflict", "Upload already received");
+    throw new ApiError(
+      "conflict",
+      "Upload already received. Create a new one with create_upload to send different bytes.",
+    );
   const release = async () => {
     await env.FILES.delete(row.r2_key).catch(() => {});
     await env.DB.prepare(
@@ -221,11 +244,22 @@ export async function putUpload(
   try {
     obj = await env.FILES.put(row.r2_key, req.body, {
       httpMetadata: { contentType: row.content_type },
+      ...(row.expected_sha256 ? { sha256: row.expected_sha256 } : {}),
     });
   } catch (e) {
     await release();
+    if (
+      row.expected_sha256 &&
+      e instanceof Error &&
+      /\(10037\)$/.test(e.message)
+    )
+      throw new ApiError(
+        "bad_request",
+        "Upload SHA-256 does not match the declared checksum. Send the original bytes or create a new upload with their checksum.",
+      );
     throw e;
   }
+  let finalSize = row.size;
   if (measure) {
     if (!obj || obj.size <= 0 || obj.size > LIMITS.fileBytes) {
       await release();
@@ -242,14 +276,8 @@ export async function putUpload(
       await release();
       throw e;
     }
-    await env.DB.prepare(
-      "update uploads set size = ?, received_at = ? where id = ? and received_at = -1",
-    )
-      .bind(obj.size, now, uploadId)
-      .run();
-    return;
-  }
-  if (!obj || obj.size !== row.size) {
+    finalSize = obj.size;
+  } else if (!obj || obj.size !== row.size) {
     await release();
     throw new ApiError(
       "bad_request",
@@ -259,10 +287,25 @@ export async function putUpload(
       },
     );
   }
+  // R2 verified the supplied checksum while storing the bytes. Without one,
+  // paid plans reread and hash; Free keeps null to stay within its CPU budget.
+  let digest: string | null = row.expected_sha256;
+  if (!digest && planOf(env.PLAN) === "paid") {
+    try {
+      const stored = await env.FILES.get(row.r2_key);
+      if (!stored) throw new Error("upload not readable after put");
+      const sink = sha256Sink();
+      await stored.body.pipeTo(sink.writable);
+      digest = await sink.hex();
+    } catch (e) {
+      await release();
+      throw e;
+    }
+  }
   await env.DB.prepare(
-    "update uploads set received_at = ? where id = ? and received_at = -1",
+    "update uploads set size = ?, received_at = ?, digest = ? where id = ? and received_at = -1",
   )
-    .bind(now, uploadId)
+    .bind(finalSize, now, digest, uploadId)
     .run();
 }
 

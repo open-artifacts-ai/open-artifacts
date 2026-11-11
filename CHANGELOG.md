@@ -1,5 +1,491 @@
 # Changelog
 
+## [0.153.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.153.0...v0.153.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **bus:** comment targets settle on old daemons and late acks ([#2062](https://github.com/open-artifacts-ai/open-artifacts/issues/2062)) ([#2064](https://github.com/open-artifacts-ai/open-artifacts/issues/2064)) ([ed471d3](https://github.com/open-artifacts-ai/open-artifacts/commit/ed471d31f9688b4d9aaa8ddd77b90901f8acfbd1))
+
+## [0.153.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.152.1...v0.153.0) (2026-11-11)
+
+
+### Features
+
+* **bus:** one artifact's comment notices fold into one while an agent is away ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2055](https://github.com/open-artifacts-ai/open-artifacts/issues/2055)) ([5453b87](https://github.com/open-artifacts-ai/open-artifacts/commit/5453b879f15895e7c2940ffb7b9acba438793e68))
+* **provisioning-contract:** optional billingTier on installs ([#2058](https://github.com/open-artifacts-ai/open-artifacts/issues/2058)) ([#2061](https://github.com/open-artifacts-ai/open-artifacts/issues/2061)) ([e5dd994](https://github.com/open-artifacts-ai/open-artifacts/commit/e5dd99489def570ee76b3e4b398a86b8fbaa0b7b))
+
+## [0.152.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.152.0...v0.152.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **bus:** a comment notice reaches a role address's holder ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2051](https://github.com/open-artifacts-ai/open-artifacts/issues/2051)) ([8254d8c](https://github.com/open-artifacts-ai/open-artifacts/commit/8254d8c1da5a98afbd16c8b0940f933fcbf08b39))
+* **bus:** a daemon restart keeps live Claude sessions linked ([#2050](https://github.com/open-artifacts-ai/open-artifacts/issues/2050)) ([#2053](https://github.com/open-artifacts-ai/open-artifacts/issues/2053)) ([e1b69a1](https://github.com/open-artifacts-ai/open-artifacts/commit/e1b69a1fcc3e9d2dd36f7d294998d72e18eabf4c))
+* **bus:** notice-ack settle follow-ups from [#2037](https://github.com/open-artifacts-ai/open-artifacts/issues/2037) ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2052](https://github.com/open-artifacts-ai/open-artifacts/issues/2052)) ([2d9a78e](https://github.com/open-artifacts-ai/open-artifacts/commit/2d9a78ea28a4239828d94556e4b1084f05a6dcc4))
+
+## [0.152.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.151.1...v0.152.0) (2026-11-11)
+
+
+### Features
+
+* **viewer:** a mentioned agent shows its face ([#1890](https://github.com/open-artifacts-ai/open-artifacts/issues/1890)) ([#2001](https://github.com/open-artifacts-ai/open-artifacts/issues/2001)) ([b1f30d3](https://github.com/open-artifacts-ai/open-artifacts/commit/b1f30d32d1305bc7b07eb777386d5d02a1c1861e))
+
+## [0.151.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.151.0...v0.151.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **comment-email:** defang non-ASCII domains and bare IPv4 addresses in excerpts ([#1997](https://github.com/open-artifacts-ai/open-artifacts/issues/1997)) ([#2048](https://github.com/open-artifacts-ai/open-artifacts/issues/2048)) ([3e25cd6](https://github.com/open-artifacts-ai/open-artifacts/commit/3e25cd60a341de4e2c599ba3ea3c59867dc0c8cf))
+
+## [0.151.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.150.0...v0.151.0) (2026-11-11)
+
+
+### Features
+
+* **bus:** a comment notice reads delivered only at the daemon's ack (notice_ack, [#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2037](https://github.com/open-artifacts-ai/open-artifacts/issues/2037)) ([649c081](https://github.com/open-artifacts-ai/open-artifacts/commit/649c081c27d7f487b8cdf6fcfa2197560d141f3c))
+
+
+### Bug Fixes
+
+* **follows:** the agent that published a version isn't told it changed ([#2036](https://github.com/open-artifacts-ai/open-artifacts/issues/2036)) ([#2038](https://github.com/open-artifacts-ai/open-artifacts/issues/2038)) ([8ee6d87](https://github.com/open-artifacts-ai/open-artifacts/commit/8ee6d87988e3d280d18c1a41ea0626b839673760))
+* **openclaw:** uninstall clears OpenClaw's entry when the folder is gone; no build race ([#1805](https://github.com/open-artifacts-ai/open-artifacts/issues/1805)) ([#2043](https://github.com/open-artifacts-ai/open-artifacts/issues/2043)) ([482f8a0](https://github.com/open-artifacts-ai/open-artifacts/commit/482f8a0aa27a7d0cc0ce3444b5d52b272e284261))
+
+## [0.150.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.149.0...v0.150.0) (2026-11-11)
+
+
+### Features
+
+* **bus-cli:** print oa-bus commands when our PATH shim is on PATH ([#1998](https://github.com/open-artifacts-ai/open-artifacts/issues/1998)) ([#2033](https://github.com/open-artifacts-ai/open-artifacts/issues/2033)) ([e9abecc](https://github.com/open-artifacts-ai/open-artifacts/commit/e9abeccaa98a91af7841c0fc7932446cb3d70bf6))
+
+## [0.149.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.148.0...v0.149.0) (2026-11-10)
+
+
+### Features
+
+* **comments:** drop assign, keep only @-mention ([#1792](https://github.com/open-artifacts-ai/open-artifacts/issues/1792)) ([#1801](https://github.com/open-artifacts-ai/open-artifacts/issues/1801)) ([820762e](https://github.com/open-artifacts-ai/open-artifacts/commit/820762e6edf75f84974acca707cf5cebd55f75d4))
+* **comments:** email people about comments ([#1467](https://github.com/open-artifacts-ai/open-artifacts/issues/1467)) ([#1975](https://github.com/open-artifacts-ai/open-artifacts/issues/1975)) ([bd223a7](https://github.com/open-artifacts-ai/open-artifacts/commit/bd223a743e388ecc8e13f5bcbc7b34a9c14a237d))
+* **comments:** Notifications switch for comment email; ?thread= opens the thread ([#1467](https://github.com/open-artifacts-ai/open-artifacts/issues/1467)) ([#1978](https://github.com/open-artifacts-ai/open-artifacts/issues/1978)) ([00d93cf](https://github.com/open-artifacts-ai/open-artifacts/commit/00d93cf0b8b187ee015dfbf73d1a4122a1374754))
+* **comments:** pins on images and pdfs are speech bubbles with the author's face ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#2020](https://github.com/open-artifacts-ai/open-artifacts/issues/2020)) ([f34e728](https://github.com/open-artifacts-ai/open-artifacts/commit/f34e728ac825ddcd400609c7e36b380cfacc95e2))
+* **dashboard:** an always-on upgrade line in the Version card ([#1924](https://github.com/open-artifacts-ai/open-artifacts/issues/1924)) ([#1999](https://github.com/open-artifacts-ai/open-artifacts/issues/1999)) ([62122e7](https://github.com/open-artifacts-ai/open-artifacts/commit/62122e7bb3b743940fd46b43f304244074fd5c0d))
+* **settings:** plan cards and comparison with a Monthly/Yearly toggle ([#2007](https://github.com/open-artifacts-ai/open-artifacts/issues/2007)) ([#2014](https://github.com/open-artifacts-ai/open-artifacts/issues/2014)) ([5eb484c](https://github.com/open-artifacts-ai/open-artifacts/commit/5eb484c661fe83a70535e4dddf2de2f5a8cdc4f8))
+
+
+### Bug Fixes
+
+* **bus:** a notice to a renamed agent's former address still reaches it ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2003](https://github.com/open-artifacts-ai/open-artifacts/issues/2003)) ([2f0be28](https://github.com/open-artifacts-ai/open-artifacts/commit/2f0be28a4d7b55a37946c9eccf3ce2a876d1318f))
+* **comments:** guests never see an agent's face, only its masked name ([#2004](https://github.com/open-artifacts-ai/open-artifacts/issues/2004)) ([a50ce98](https://github.com/open-artifacts-ai/open-artifacts/commit/a50ce98c850e080bbf756b67b521c5cc908a1770))
+* **comments:** the short pin sheet hides the whole-page box so the open card fills it ([#1783](https://github.com/open-artifacts-ai/open-artifacts/issues/1783)) ([#1799](https://github.com/open-artifacts-ai/open-artifacts/issues/1799)) ([8e3c2c9](https://github.com/open-artifacts-ai/open-artifacts/commit/8e3c2c9a180ea210c98ece6edc026cbe123a541d))
+* **runtime:** three frame-side comment lows: dropped stylesheet, aborted signal, link clicks ([#1473](https://github.com/open-artifacts-ai/open-artifacts/issues/1473)) ([#1829](https://github.com/open-artifacts-ai/open-artifacts/issues/1829)) ([1065dad](https://github.com/open-artifacts-ai/open-artifacts/commit/1065dad7969471283706727ce6bda1e5117f9341))
+* **settings:** Directory tab and dot only where group sync exists ([#2009](https://github.com/open-artifacts-ai/open-artifacts/issues/2009)) ([#2011](https://github.com/open-artifacts-ai/open-artifacts/issues/2011)) ([3c4db68](https://github.com/open-artifacts-ai/open-artifacts/commit/3c4db68107d973f45609e73387f22c1f8af144de))
+* **shortcuts:** real titles, deleted artifacts leave the band, no 'not checked' noise ([#2015](https://github.com/open-artifacts-ai/open-artifacts/issues/2015), [#2016](https://github.com/open-artifacts-ai/open-artifacts/issues/2016)) ([#2017](https://github.com/open-artifacts-ai/open-artifacts/issues/2017)) ([df876e2](https://github.com/open-artifacts-ai/open-artifacts/commit/df876e21ee93126a0f4bb2ea71eb897ca7244ba1))
+
+## [0.148.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.147.0...v0.148.0) (2026-11-10)
+
+
+### Features
+
+* **bus-cli:** install puts oa-bus on PATH ([#1626](https://github.com/open-artifacts-ai/open-artifacts/issues/1626)) ([#1995](https://github.com/open-artifacts-ai/open-artifacts/issues/1995)) ([2c4933d](https://github.com/open-artifacts-ai/open-artifacts/commit/2c4933dbfa9230fd89a1b1285fac823a9f21310d))
+* **bus:** oa-bus install also installs the Artifacts Teammate output style ([#1970](https://github.com/open-artifacts-ai/open-artifacts/issues/1970)) ([#1985](https://github.com/open-artifacts-ai/open-artifacts/issues/1985)) ([b9460fa](https://github.com/open-artifacts-ai/open-artifacts/commit/b9460fa468b38ac9d5643a60910ebcca1686bf14))
+* Claude Code plugin with the Artifacts Teammate output style ([#1970](https://github.com/open-artifacts-ai/open-artifacts/issues/1970)) ([#1991](https://github.com/open-artifacts-ai/open-artifacts/issues/1991)) ([6a32572](https://github.com/open-artifacts-ai/open-artifacts/commit/6a3257232c5c51fc3cbac9a7d2108df4ca881b9e))
+* **comments:** a mentioned agent shows its own face ([#1890](https://github.com/open-artifacts-ai/open-artifacts/issues/1890)) ([#1949](https://github.com/open-artifacts-ai/open-artifacts/issues/1949)) ([ee86b77](https://github.com/open-artifacts-ai/open-artifacts/commit/ee86b77f9d6b0355906496db0aa3bf7de3567bce))
+* **viewer:** people can resize the comments column ([#1986](https://github.com/open-artifacts-ai/open-artifacts/issues/1986)) ([#1987](https://github.com/open-artifacts-ai/open-artifacts/issues/1987)) ([7544ddf](https://github.com/open-artifacts-ai/open-artifacts/commit/7544ddf3051584b3b36a4bdc93c25fb597632ffe))
+
+
+### Bug Fixes
+
+* **bus:** a second proof for a live session doesn't unlink the first ([#1984](https://github.com/open-artifacts-ai/open-artifacts/issues/1984)) ([#1988](https://github.com/open-artifacts-ai/open-artifacts/issues/1988)) ([f05249b](https://github.com/open-artifacts-ai/open-artifacts/commit/f05249b90ce38a6fd601219890319df63b6f2346))
+* **dashboard:** jsdom tests run on Node 26 ([#1751](https://github.com/open-artifacts-ai/open-artifacts/issues/1751)) ([#1989](https://github.com/open-artifacts-ai/open-artifacts/issues/1989)) ([76ee60f](https://github.com/open-artifacts-ai/open-artifacts/commit/76ee60f61d80faf181549334f07b0c4f1df60348))
+
+## [0.147.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.146.0...v0.147.0) (2026-11-10)
+
+
+### Features
+
+* **bus-cli:** Codex 0.76+ gets the skill as a file, not an AGENTS.md block ([#1963](https://github.com/open-artifacts-ai/open-artifacts/issues/1963)) ([#1974](https://github.com/open-artifacts-ai/open-artifacts/issues/1974)) ([a5f8ca5](https://github.com/open-artifacts-ai/open-artifacts/commit/a5f8ca5972990638a93179e9bedb7ca8ecb573f6))
+* **comments:** an agent in a thread hears later replies ([#1900](https://github.com/open-artifacts-ai/open-artifacts/issues/1900)) ([#1907](https://github.com/open-artifacts-ai/open-artifacts/issues/1907)) ([82d16c3](https://github.com/open-artifacts-ai/open-artifacts/commit/82d16c3c23091703059a1544665ea63740e07d62))
+
+
+### Bug Fixes
+
+* **billing:** a plan with no Stripe customer has no portal, and says so ([#1969](https://github.com/open-artifacts-ai/open-artifacts/issues/1969)) ([90c4f20](https://github.com/open-artifacts-ai/open-artifacts/commit/90c4f20eebe717ee83b84fdb568886860e6340a4))
+* **bus:** the "Delivered after all" correction survives an away sender and a restart, and follows its Expired notice ([#1951](https://github.com/open-artifacts-ai/open-artifacts/issues/1951)) ([#1957](https://github.com/open-artifacts-ai/open-artifacts/issues/1957)) ([c7816ec](https://github.com/open-artifacts-ai/open-artifacts/commit/c7816ecf727791eac200d05fa2ecc6ae588d53ee))
+* **bus:** the daemon sweeps lapsed ref bindings; a closed binding lapses after 24 h idle ([#1956](https://github.com/open-artifacts-ai/open-artifacts/issues/1956)) ([#1966](https://github.com/open-artifacts-ai/open-artifacts/issues/1966)) ([0c7971c](https://github.com/open-artifacts-ai/open-artifacts/commit/0c7971c6684f07c2531b09ae950a6cb35d1d12a0))
+* **comments:** the @ menu shows a session online only while it is live ([#1960](https://github.com/open-artifacts-ai/open-artifacts/issues/1960)) ([384cf3c](https://github.com/open-artifacts-ai/open-artifacts/commit/384cf3cf1bf902048438fc3d1fd55a1e89e0013d))
+* **docs:** the upgrade guide never prints a git remote's credentials ([#1923](https://github.com/open-artifacts-ai/open-artifacts/issues/1923)) ([#1976](https://github.com/open-artifacts-ai/open-artifacts/issues/1976)) ([f7eec93](https://github.com/open-artifacts-ai/open-artifacts/commit/f7eec931279a9579a6c0001a9d575a43697e0244))
+* **mcp:** an error at the /mcp entry is logged and answered, not an uncaught 1101 ([#1973](https://github.com/open-artifacts-ai/open-artifacts/issues/1973)) ([8aa1856](https://github.com/open-artifacts-ai/open-artifacts/commit/8aa18561b29f7a22ee4fcdc20dc84ffbddb6dad8))
+* **skill:** the copy pi, omp, Codex and OpenCode share names each one's bus tools ([#1963](https://github.com/open-artifacts-ai/open-artifacts/issues/1963)) ([#1980](https://github.com/open-artifacts-ai/open-artifacts/issues/1980)) ([5698fac](https://github.com/open-artifacts-ai/open-artifacts/commit/5698fac714fdce69f5777cf59477dbb60c9362b7))
+
+## [0.146.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.145.0...v0.146.0) (2026-11-10)
+
+
+### Features
+
+* **billing:** install-wide daily live-data write cap for Solo ([#1903](https://github.com/open-artifacts-ai/open-artifacts/issues/1903)) ([8c30873](https://github.com/open-artifacts-ai/open-artifacts/commit/8c308738c8a085a55251951de237ddc8c68fe3d1))
+* **bus:** a Codex thread proves which bus agent it is on /mcp ([#1856](https://github.com/open-artifacts-ai/open-artifacts/issues/1856)) ([#1962](https://github.com/open-artifacts-ai/open-artifacts/issues/1962)) ([8506a9b](https://github.com/open-artifacts-ai/open-artifacts/commit/8506a9b41c323c7bbd58e5e7293ad0c0ca14140e))
+* **bus:** a pi session proves which bus agent it is on /mcp ([#1856](https://github.com/open-artifacts-ai/open-artifacts/issues/1856)) ([#1939](https://github.com/open-artifacts-ai/open-artifacts/issues/1939)) ([d3707be](https://github.com/open-artifacts-ai/open-artifacts/commit/d3707bee768fb22fbdfac5b45b50c6608c02726f))
+* **bus:** an omp session proves which bus agent it is on /mcp ([#1856](https://github.com/open-artifacts-ai/open-artifacts/issues/1856)) ([#1948](https://github.com/open-artifacts-ai/open-artifacts/issues/1948)) ([983832b](https://github.com/open-artifacts-ai/open-artifacts/commit/983832baa3059972f98e862cb96d9c4d1b0728fd))
+* **bus:** an OpenCode session proves which bus agent it is on /mcp ([#1856](https://github.com/open-artifacts-ai/open-artifacts/issues/1856)) ([#1952](https://github.com/open-artifacts-ai/open-artifacts/issues/1952)) ([87d931c](https://github.com/open-artifacts-ai/open-artifacts/commit/87d931c4661daecedcf1fbe37a22e22efae4bf81))
+* **bus:** habit: never ask through the harness's own question prompt ([#1926](https://github.com/open-artifacts-ai/open-artifacts/issues/1926)) ([#1941](https://github.com/open-artifacts-ai/open-artifacts/issues/1941)) ([f636fc5](https://github.com/open-artifacts-ai/open-artifacts/commit/f636fc5a0b619a35dba4730f25db8ca1ce70a596))
+* **bus:** habits for page-first decisions and acting on your user's ask picks ([#1882](https://github.com/open-artifacts-ai/open-artifacts/issues/1882), [#1897](https://github.com/open-artifacts-ai/open-artifacts/issues/1897)) ([#1913](https://github.com/open-artifacts-ai/open-artifacts/issues/1913)) ([f856ef0](https://github.com/open-artifacts-ai/open-artifacts/commit/f856ef0d586c80151ab69f1d92b1f78a4c7cf045))
+* **bus:** Hermes and OpenClaw sessions prove their agent on /mcp ([#1856](https://github.com/open-artifacts-ai/open-artifacts/issues/1856)) ([#1884](https://github.com/open-artifacts-ai/open-artifacts/issues/1884)) ([98417da](https://github.com/open-artifacts-ai/open-artifacts/commit/98417da3a8ef0ec7bf6b1476c35d63b30a372bad))
+* **claude-code:** add session artifact shortcuts ([#1678](https://github.com/open-artifacts-ai/open-artifacts/issues/1678)) ([39efdf4](https://github.com/open-artifacts-ai/open-artifacts/commit/39efdf49f9c2be08a4f6e2d67d4a0577371b8e5e))
+* **comments:** a comment you typed carries weight with your own agents ([#1797](https://github.com/open-artifacts-ai/open-artifacts/issues/1797)) ([#1809](https://github.com/open-artifacts-ai/open-artifacts/issues/1809)) ([07e2b2c](https://github.com/open-artifacts-ai/open-artifacts/commit/07e2b2c37a6b79bafa1dd0c18ea22235d83c3ae5))
+* **comments:** links in comment text open in a new tab ([#1917](https://github.com/open-artifacts-ai/open-artifacts/issues/1917)) ([#1919](https://github.com/open-artifacts-ai/open-artifacts/issues/1919)) ([ffc719e](https://github.com/open-artifacts-ai/open-artifacts/commit/ffc719ef35552d6e607485e50f4caeaa8d67f64a))
+* **comments:** one agent face on comments, server side ([#1822](https://github.com/open-artifacts-ai/open-artifacts/issues/1822)) ([#1881](https://github.com/open-artifacts-ai/open-artifacts/issues/1881)) ([f3b58cb](https://github.com/open-artifacts-ai/open-artifacts/commit/f3b58cbaa4263246a1e158518102886008a8bc16))
+* **viewer:** an agent's comment shows its face ([#1822](https://github.com/open-artifacts-ai/open-artifacts/issues/1822)) ([#1921](https://github.com/open-artifacts-ai/open-artifacts/issues/1921)) ([d131721](https://github.com/open-artifacts-ai/open-artifacts/commit/d1317211bea4304737715275fb777ac8426b4a89))
+
+
+### Bug Fixes
+
+* **bus-cli:** say when the Hermes profiles folder is a symlink ([#1717](https://github.com/open-artifacts-ai/open-artifacts/issues/1717)) ([#1918](https://github.com/open-artifacts-ai/open-artifacts/issues/1918)) ([f720d79](https://github.com/open-artifacts-ai/open-artifacts/commit/f720d79cf30ac38174d4a2be48a8e9340651f433))
+* **bus-daemon:** bind a pi-like agent_ref to the first link that claimed it ([#1936](https://github.com/open-artifacts-ai/open-artifacts/issues/1936)) ([1783d00](https://github.com/open-artifacts-ai/open-artifacts/commit/1783d00a9a3d6bda16a0cf2619e0a9d70eb34326))
+* **bus:** a changed git remote needs approval before it picks the namespace ([#1570](https://github.com/open-artifacts-ai/open-artifacts/issues/1570)) ([#1938](https://github.com/open-artifacts-ai/open-artifacts/issues/1938)) ([738f127](https://github.com/open-artifacts-ai/open-artifacts/commit/738f12720a2cd313969f20561369ae779596b731))
+* **bus:** a Claude Code fork joins as "&lt;parent&gt; fork" ([#1916](https://github.com/open-artifacts-ai/open-artifacts/issues/1916)) ([#1920](https://github.com/open-artifacts-ai/open-artifacts/issues/1920)) ([7382321](https://github.com/open-artifacts-ai/open-artifacts/commit/738232155b5d1accd08b8a4a0464776058cb1656))
+* **bus:** a Codex session that drops its thread lock comes back ([#1748](https://github.com/open-artifacts-ai/open-artifacts/issues/1748)) ([#1892](https://github.com/open-artifacts-ai/open-artifacts/issues/1892)) ([6e26863](https://github.com/open-artifacts-ai/open-artifacts/commit/6e268630ec4a00831fe3bcd796325cb79fda43f5))
+* **bus:** a message the agent took after the hub lost its body is reported delivered, not expired ([#1760](https://github.com/open-artifacts-ai/open-artifacts/issues/1760)) ([#1953](https://github.com/open-artifacts-ai/open-artifacts/issues/1953)) ([61d6e98](https://github.com/open-artifacts-ai/open-artifacts/commit/61d6e98a3fa75b37e692b2a3170ea1d33bda8ad9))
+* **bus:** a refused notice stays held, not delivered; reconnect flushes are paced ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#1959](https://github.com/open-artifacts-ai/open-artifacts/issues/1959)) ([bb2f856](https://github.com/open-artifacts-ai/open-artifacts/commit/bb2f856f32dd56e8138b7af7ab1a4ec0f7ca6d7a))
+* **bus:** notices held for a too-old daemon are counted and can't crowd out others ([#1828](https://github.com/open-artifacts-ai/open-artifacts/issues/1828)) ([#1947](https://github.com/open-artifacts-ai/open-artifacts/issues/1947)) ([7524ec0](https://github.com/open-artifacts-ai/open-artifacts/commit/7524ec0b638881fdb86d53edee8b79f15176df4a))
+* **bus:** reach grants show a role's current name after a case rename ([#1346](https://github.com/open-artifacts-ai/open-artifacts/issues/1346)) ([#1945](https://github.com/open-artifacts-ai/open-artifacts/issues/1945)) ([da55e26](https://github.com/open-artifacts-ai/open-artifacts/commit/da55e26889a9cd4742249df187bf0e8b10505770))
+* **bus:** the daemon stops stalling under load, and a busy daemon no longer says 'run install' ([#1925](https://github.com/open-artifacts-ai/open-artifacts/issues/1925)) ([#1928](https://github.com/open-artifacts-ai/open-artifacts/issues/1928)) ([bd53d2e](https://github.com/open-artifacts-ai/open-artifacts/commit/bd53d2eab2cb355076c31bea7c2fe220edb9dd25))
+* **bus:** the helper finds the native Claude build on macOS ([#1822](https://github.com/open-artifacts-ai/open-artifacts/issues/1822)) ([#1886](https://github.com/open-artifacts-ai/open-artifacts/issues/1886)) ([f20e5eb](https://github.com/open-artifacts-ai/open-artifacts/commit/f20e5eb861eb21c8c6930b728dfa14d525b976a9))
+* **bus:** two flaky daemon tests, and a held rename goes out as its latest name ([#1929](https://github.com/open-artifacts-ai/open-artifacts/issues/1929)) ([#1932](https://github.com/open-artifacts-ai/open-artifacts/issues/1932)) ([d17ee29](https://github.com/open-artifacts-ai/open-artifacts/commit/d17ee290b673afba916208bb4156f5c0d47a8c6a))
+* **comments:** a comment refused by the plan cap says why ([#1908](https://github.com/open-artifacts-ai/open-artifacts/issues/1908)) ([#1940](https://github.com/open-artifacts-ai/open-artifacts/issues/1940)) ([f2802ec](https://github.com/open-artifacts-ai/open-artifacts/commit/f2802ecd2b0466dbd963634a7a86629dcd33ef6d))
+* **comments:** a quote with no context orphans and keeps word boundaries ([#1739](https://github.com/open-artifacts-ai/open-artifacts/issues/1739)) ([#1887](https://github.com/open-artifacts-ai/open-artifacts/issues/1887)) ([16b36ef](https://github.com/open-artifacts-ai/open-artifacts/commit/16b36efb42a774ab139154cc25f56387f5e5e17c))
+* **comments:** an unlinked agent shows its product or its person, never a bus name ([#1822](https://github.com/open-artifacts-ai/open-artifacts/issues/1822)) ([#1927](https://github.com/open-artifacts-ai/open-artifacts/issues/1927)) ([de1470a](https://github.com/open-artifacts-ai/open-artifacts/commit/de1470a9314368c0e82fed55119fcf653778faef))
+* **comments:** guests never see a mentioned agent's bus name, whatever the case ([#1890](https://github.com/open-artifacts-ai/open-artifacts/issues/1890)) ([#1946](https://github.com/open-artifacts-ai/open-artifacts/issues/1946)) ([aa4a26d](https://github.com/open-artifacts-ai/open-artifacts/commit/aa4a26df82ddd6463f0e0e71ffe0c8b7f1c5ccdf))
+* **comments:** quote check keeps a fragment page's top-level text ([#1895](https://github.com/open-artifacts-ai/open-artifacts/issues/1895)) ([#1896](https://github.com/open-artifacts-ai/open-artifacts/issues/1896)) ([3618a55](https://github.com/open-artifacts-ai/open-artifacts/commit/3618a5533cc5234beed84f93de2b6b56e91a5dbf))
+* **comments:** quote check keeps xmp and plaintext raw ([#1738](https://github.com/open-artifacts-ai/open-artifacts/issues/1738)) ([#1893](https://github.com/open-artifacts-ai/open-artifacts/issues/1893)) ([1bac370](https://github.com/open-artifacts-ai/open-artifacts/commit/1bac3706d6eb0bfc9bd9b894e3a46a26b30eeb27))
+* **comments:** re-place the selection button when the page reflows late ([#1904](https://github.com/open-artifacts-ai/open-artifacts/issues/1904)) ([dc3fc30](https://github.com/open-artifacts-ai/open-artifacts/commit/dc3fc30579ca0dd54757446aa95db6cc1e0b732d))
+* **comments:** typed-comment follow-ups from the [#1809](https://github.com/open-artifacts-ai/open-artifacts/issues/1809) review ([#1888](https://github.com/open-artifacts-ai/open-artifacts/issues/1888)) ([#1906](https://github.com/open-artifacts-ai/open-artifacts/issues/1906)) ([7ef461b](https://github.com/open-artifacts-ai/open-artifacts/commit/7ef461b8b3149be53cd4da63d4a99ff4802bceb2))
+* **names:** names that read as an agent stay off every surface ([#1894](https://github.com/open-artifacts-ai/open-artifacts/issues/1894)) ([#1935](https://github.com/open-artifacts-ai/open-artifacts/issues/1935)) ([3ab1826](https://github.com/open-artifacts-ai/open-artifacts/commit/3ab1826c4f3046af282723a878827f8cb311b2f7))
+* **onboarding:** the first-artifact step reads a server signal ([#1832](https://github.com/open-artifacts-ai/open-artifacts/issues/1832)) ([#1943](https://github.com/open-artifacts-ai/open-artifacts/issues/1943)) ([2e97f7a](https://github.com/open-artifacts-ai/open-artifacts/commit/2e97f7a7b8a977f2bc435362203c7f73df26fe9b))
+* **runtime:** anchor RTL selection comments at the left edge ([#1660](https://github.com/open-artifacts-ai/open-artifacts/issues/1660)) ([ff45a9a](https://github.com/open-artifacts-ai/open-artifacts/commit/ff45a9a2cebba78e96524f0deccaa3dccb23874e))
+* **sec:** per-artifact anonymous write budget plus install-wide per-IP ceiling ([#687](https://github.com/open-artifacts-ai/open-artifacts/issues/687)) ([#1937](https://github.com/open-artifacts-ai/open-artifacts/issues/1937)) ([fc0bdf5](https://github.com/open-artifacts-ai/open-artifacts/commit/fc0bdf530b844cbbe750e03f0fe1ba45c223265e))
+* **security:** expired or v1 anon tokens are never re-issued and name no author ([#1934](https://github.com/open-artifacts-ai/open-artifacts/issues/1934)) ([c902297](https://github.com/open-artifacts-ai/open-artifacts/commit/c902297104989ffcd219b2a85f243e71976c95bd))
+
+## [0.145.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.144.0...v0.145.0) (2026-11-10)
+
+
+### Features
+
+* **bus:** Claude Code session link, helper, daemon bind and install ([#1822](https://github.com/open-artifacts-ai/open-artifacts/issues/1822)) ([#1858](https://github.com/open-artifacts-ai/open-artifacts/issues/1858)) ([997b9c0](https://github.com/open-artifacts-ai/open-artifacts/commit/997b9c0093ee78d9a329dff7e25eaa9ceda3f52e))
+
+## [0.144.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.143.0...v0.144.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** the Agents page can show today's dropped notices ([#1317](https://github.com/open-artifacts-ai/open-artifacts/issues/1317)) ([#1870](https://github.com/open-artifacts-ai/open-artifacts/issues/1870)) ([35a72f6](https://github.com/open-artifacts-ai/open-artifacts/commit/35a72f62217d12b611387027d8782941cdc3191c))
+
+## [0.143.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.142.0...v0.143.0) (2026-11-09)
+
+
+### Features
+
+* **dashboard:** the first invite says it starts the trial; Plan comparison stacks on phones ([#1836](https://github.com/open-artifacts-ai/open-artifacts/issues/1836), [#1837](https://github.com/open-artifacts-ai/open-artifacts/issues/1837)) ([#1853](https://github.com/open-artifacts-ai/open-artifacts/issues/1853)) ([7631494](https://github.com/open-artifacts-ai/open-artifacts/commit/76314947f228346fd7e6492882606142fca781e8))
+
+
+### Bug Fixes
+
+* **bus-daemon:** a running Codex session survives a daemon restart ([#1748](https://github.com/open-artifacts-ai/open-artifacts/issues/1748)) ([#1848](https://github.com/open-artifacts-ai/open-artifacts/issues/1848)) ([0ceb231](https://github.com/open-artifacts-ai/open-artifacts/commit/0ceb231d42860309b5b370a5dfa183c843144d92))
+* **runtime:** report a selection made before the comments mode arrives ([#1877](https://github.com/open-artifacts-ai/open-artifacts/issues/1877)) ([#1878](https://github.com/open-artifacts-ai/open-artifacts/issues/1878)) ([8495707](https://github.com/open-artifacts-ai/open-artifacts/commit/8495707f4b6943c2580131aca1c59e84b10aaf4a))
+* **ui:** show pointer cursors on enabled action controls ([#1666](https://github.com/open-artifacts-ai/open-artifacts/issues/1666)) ([216772b](https://github.com/open-artifacts-ai/open-artifacts/commit/216772b8e33e78d179207adbcea2a9e9a49f094e))
+
+## [0.142.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.141.0...v0.142.0) (2026-11-09)
+
+
+### Features
+
+* **auth:** Google sign-in with empty AUTH_DOMAINS (owner + invites) ([#1825](https://github.com/open-artifacts-ai/open-artifacts/issues/1825)) ([08c2537](https://github.com/open-artifacts-ai/open-artifacts/commit/08c2537cfe83dc20f521d2d5d9a1e411da6bc457))
+* **bus:** session link bind and /mcp proof lookup, server half ([#1822](https://github.com/open-artifacts-ai/open-artifacts/issues/1822)) ([#1857](https://github.com/open-artifacts-ai/open-artifacts/issues/1857)) ([8ac2866](https://github.com/open-artifacts-ai/open-artifacts/commit/8ac286601b7d0eb248eeb919129d1c80f604c74b))
+* **comments:** a reply can reach the agent that asked ([#1614](https://github.com/open-artifacts-ai/open-artifacts/issues/1614)) ([#1798](https://github.com/open-artifacts-ai/open-artifacts/issues/1798)) ([c898e2f](https://github.com/open-artifacts-ai/open-artifacts/commit/c898e2f21314aa722b8d2708a04e6c4ed05842aa))
+* **comments:** Ask a question to the agent that asked ([#1794](https://github.com/open-artifacts-ai/open-artifacts/issues/1794)) ([#1868](https://github.com/open-artifacts-ai/open-artifacts/issues/1868)) ([4be5972](https://github.com/open-artifacts-ai/open-artifacts/commit/4be5972b29036814d2ebc22a2ea005b5cb851849))
+* **dashboard:** first-run Get started checklist ([#1769](https://github.com/open-artifacts-ai/open-artifacts/issues/1769)) ([46a3220](https://github.com/open-artifacts-ai/open-artifacts/commit/46a322030771dbbce5fcba99c2665124640fb0e4))
+* **viewer:** an agent's comment shows as the agent ([#1789](https://github.com/open-artifacts-ai/open-artifacts/issues/1789)) ([#1807](https://github.com/open-artifacts-ai/open-artifacts/issues/1807)) ([767b041](https://github.com/open-artifacts-ai/open-artifacts/commit/767b041adab110554b1849ab6c4c3215c0910ce8))
+
+
+### Bug Fixes
+
+* **billing:** the Business trial starts only on an announced invite or restore ([#1851](https://github.com/open-artifacts-ai/open-artifacts/issues/1851)) ([#1855](https://github.com/open-artifacts-ai/open-artifacts/issues/1855)) ([dc64e53](https://github.com/open-artifacts-ai/open-artifacts/commit/dc64e532b604dafa2286e5c3bdd5cfa22f1144f9))
+* **bus:** a confirm whose outcome is unknown no longer says nothing changed ([#1861](https://github.com/open-artifacts-ai/open-artifacts/issues/1861)) ([#1869](https://github.com/open-artifacts-ai/open-artifacts/issues/1869)) ([9da1651](https://github.com/open-artifacts-ai/open-artifacts/commit/9da165134bea0dbfae510685db95b8dd57f0b25f))
+
+## [0.141.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.140.0...v0.141.0) (2026-11-09)
+
+
+### Features
+
+* **asks:** Library asks work on a real instance ([#1623](https://github.com/open-artifacts-ai/open-artifacts/issues/1623)) ([#1806](https://github.com/open-artifacts-ai/open-artifacts/issues/1806)) ([dad5199](https://github.com/open-artifacts-ai/open-artifacts/commit/dad519977ab6e6fb652fbdaef41b288a1d9fe72b))
+* **bus-cli:** install OpenClaw: plugin, skill, uninstall, status ([#1693](https://github.com/open-artifacts-ai/open-artifacts/issues/1693)) ([#1788](https://github.com/open-artifacts-ai/open-artifacts/issues/1788)) ([13c2259](https://github.com/open-artifacts-ai/open-artifacts/commit/13c22590b25e7ba60f2ca3170465306f94a872c3))
+* **bus:** a restarted session keeps its plain roles ([#1816](https://github.com/open-artifacts-ai/open-artifacts/issues/1816)) ([#1866](https://github.com/open-artifacts-ai/open-artifacts/issues/1866)) ([04949f0](https://github.com/open-artifacts-ai/open-artifacts/commit/04949f08adcea7d845c240fa7297f322c79c406c))
+* **bus:** agents can ask for role reach with a propose_reach tool ([#1346](https://github.com/open-artifacts-ai/open-artifacts/issues/1346)) ([#1867](https://github.com/open-artifacts-ai/open-artifacts/issues/1867)) ([d1b146c](https://github.com/open-artifacts-ai/open-artifacts/commit/d1b146ca78cd92e3a52863f856e88955b75d6a17))
+* **bus:** Hermes sends the user-set session title as typed ([#1704](https://github.com/open-artifacts-ai/open-artifacts/issues/1704)) ([#1791](https://github.com/open-artifacts-ai/open-artifacts/issues/1791)) ([88494c2](https://github.com/open-artifacts-ai/open-artifacts/commit/88494c225dcc89b39bc806a7b750925854363eb1))
+* **bus:** lead templates and a local check ([#1328](https://github.com/open-artifacts-ai/open-artifacts/issues/1328), PR 1) ([#1845](https://github.com/open-artifacts-ai/open-artifacts/issues/1845)) ([bbeec24](https://github.com/open-artifacts-ai/open-artifacts/commit/bbeec247c3b69b08eb71b49b116c3a108ea9afca))
+* **bus:** list_agents folds away fallback-named rows into one count ([#1860](https://github.com/open-artifacts-ai/open-artifacts/issues/1860)) ([#1862](https://github.com/open-artifacts-ai/open-artifacts/issues/1862)) ([9d5ef45](https://github.com/open-artifacts-ai/open-artifacts/commit/9d5ef4515c7ba7a9687b00cec95b611e35a9a893))
+* **bus:** role reach proposals and confirm ([#1346](https://github.com/open-artifacts-ai/open-artifacts/issues/1346)) ([#1823](https://github.com/open-artifacts-ai/open-artifacts/issues/1823)) ([8c27849](https://github.com/open-artifacts-ai/open-artifacts/commit/8c27849e8fa573bc941123dafb8f27fd944c4147))
+* **comments:** @ hint in the placeholder and posted [@names](https://github.com/names) as chips ([#1795](https://github.com/open-artifacts-ai/open-artifacts/issues/1795)) ([#1811](https://github.com/open-artifacts-ai/open-artifacts/issues/1811)) ([b127f31](https://github.com/open-artifacts-ai/open-artifacts/commit/b127f310d4fd648ff4563995c80533fab413ead1))
+* **comments:** an agent's comment shows as the agent ([#1789](https://github.com/open-artifacts-ai/open-artifacts/issues/1789)) ([#1800](https://github.com/open-artifacts-ai/open-artifacts/issues/1800)) ([5c88f88](https://github.com/open-artifacts-ai/open-artifacts/commit/5c88f88bd486848539043426b3ee8327616aa5e0))
+* **comments:** drop Assign; @ menu online dots, mention chips and Will notify ([#1614](https://github.com/open-artifacts-ai/open-artifacts/issues/1614) C, [#1792](https://github.com/open-artifacts-ai/open-artifacts/issues/1792)) ([#1786](https://github.com/open-artifacts-ai/open-artifacts/issues/1786)) ([83798e6](https://github.com/open-artifacts-ai/open-artifacts/commit/83798e65789f21e3af8e41b10e6440b2cbdcc24b))
+* **comments:** keep the quote highlighted while the comment is written ([#1834](https://github.com/open-artifacts-ai/open-artifacts/issues/1834)) ([#1850](https://github.com/open-artifacts-ai/open-artifacts/issues/1850)) ([2770229](https://github.com/open-artifacts-ai/open-artifacts/commit/277022908874242353ca515aa2f222b686e7956d))
+* **dashboard:** billing banners and refusals say what happened and what to do ([#1839](https://github.com/open-artifacts-ai/open-artifacts/issues/1839), [#1840](https://github.com/open-artifacts-ai/open-artifacts/issues/1840), [#1841](https://github.com/open-artifacts-ai/open-artifacts/issues/1841), [#1843](https://github.com/open-artifacts-ai/open-artifacts/issues/1843), [#1844](https://github.com/open-artifacts-ai/open-artifacts/issues/1844)) ([#1854](https://github.com/open-artifacts-ai/open-artifacts/issues/1854)) ([68a7dab](https://github.com/open-artifacts-ai/open-artifacts/commit/68a7dab93af6c266bca9234e8b54c1509df3b548))
+* **viewer:** N asks for you toolbar button and header count ([#1614](https://github.com/open-artifacts-ai/open-artifacts/issues/1614)) ([#1779](https://github.com/open-artifacts-ai/open-artifacts/issues/1779)) ([964d5be](https://github.com/open-artifacts-ai/open-artifacts/commit/964d5be59b6cbc3bfd95fd0018f872e472100103))
+* **viewer:** presence animal icons ([#949](https://github.com/open-artifacts-ai/open-artifacts/issues/949) Task 8) ([#1710](https://github.com/open-artifacts-ai/open-artifacts/issues/1710)) ([183c5ff](https://github.com/open-artifacts-ai/open-artifacts/commit/183c5ffe52c4c47364910541dc8d15a6ad1fa24a))
+
+
+### Bug Fixes
+
+* **billing:** a month billing calls malformed no longer stops later usage reports ([#1492](https://github.com/open-artifacts-ai/open-artifacts/issues/1492)) ([#1821](https://github.com/open-artifacts-ai/open-artifacts/issues/1821)) ([11e2714](https://github.com/open-artifacts-ai/open-artifacts/commit/11e2714c1c159270f7a4c03afa5dba8b808c5540))
+* **billing:** a passed Business trial is Solo until billing answers, not read-only ([#1756](https://github.com/open-artifacts-ai/open-artifacts/issues/1756)) ([#1831](https://github.com/open-artifacts-ai/open-artifacts/issues/1831)) ([f53a1b8](https://github.com/open-artifacts-ai/open-artifacts/commit/f53a1b8251efbd4aac5345dcd2dda7b03f4c004b))
+* **bus-cli:** Hermes home on Windows is %LOCALAPPDATA%\hermes ([#1690](https://github.com/open-artifacts-ai/open-artifacts/issues/1690)) ([#1803](https://github.com/open-artifacts-ai/open-artifacts/issues/1803)) ([dbc47db](https://github.com/open-artifacts-ai/open-artifacts/commit/dbc47dbb8453c0a9cad7c55535e147fd1a8d16d9))
+* **bus-daemon:** a revived socket's unnamed reply is refused at send time ([#1391](https://github.com/open-artifacts-ai/open-artifacts/issues/1391)) ([#1818](https://github.com/open-artifacts-ai/open-artifacts/issues/1818)) ([9ee9f67](https://github.com/open-artifacts-ai/open-artifacts/commit/9ee9f67a7b8e661b85312a1af5c3c6f141d2a132))
+* **bus-hermes:** drain mail on turns Hermes prefixes with a recovery note ([#1689](https://github.com/open-artifacts-ai/open-artifacts/issues/1689)) ([#1784](https://github.com/open-artifacts-ai/open-artifacts/issues/1784)) ([9eb0924](https://github.com/open-artifacts-ai/open-artifacts/commit/9eb0924c2e683beb326132fb6eff9afbe00e5504))
+* **bus:** a notice is not marked delivered to a daemon that can't read it ([#1827](https://github.com/open-artifacts-ai/open-artifacts/issues/1827)) ([a6bca30](https://github.com/open-artifacts-ai/open-artifacts/commit/a6bca306d9289582029b1be046f7cc055323e7e8))
+* **bus:** a renamed Codex session shows its name ([#1748](https://github.com/open-artifacts-ai/open-artifacts/issues/1748)) ([#1847](https://github.com/open-artifacts-ai/open-artifacts/issues/1847)) ([bf9ff4a](https://github.com/open-artifacts-ai/open-artifacts/commit/bf9ff4ac5e93997f55a92c936886eb46eea270a6))
+* **bus:** a role send to an away holder queues ([#1349](https://github.com/open-artifacts-ai/open-artifacts/issues/1349)) ([#1815](https://github.com/open-artifacts-ai/open-artifacts/issues/1815)) ([b7d6354](https://github.com/open-artifacts-ai/open-artifacts/commit/b7d6354bf8b2c6c5b1c0a4f5a993ee849350a0be))
+* **bus:** follows follow a renamed session; dead follows free the cap ([#1766](https://github.com/open-artifacts-ai/open-artifacts/issues/1766)) ([#1781](https://github.com/open-artifacts-ai/open-artifacts/issues/1781)) ([4b7899a](https://github.com/open-artifacts-ai/open-artifacts/commit/4b7899abaf38eaba44347516649715f542bd6c6b))
+* **bus:** hub-started closes never wait on a hung index ([#1749](https://github.com/open-artifacts-ai/open-artifacts/issues/1749)) ([#1824](https://github.com/open-artifacts-ai/open-artifacts/issues/1824)) ([d1dc793](https://github.com/open-artifacts-ai/open-artifacts/commit/d1dc793145f6885cca2b07e9be50aac6a3caadd2))
+* **bus:** keep the usable part of a session name with refused characters ([#1480](https://github.com/open-artifacts-ai/open-artifacts/issues/1480)) ([#1864](https://github.com/open-artifacts-ai/open-artifacts/issues/1864)) ([1b0e419](https://github.com/open-artifacts-ai/open-artifacts/commit/1b0e419d953b826540785ed38022b0ea5e4e977c))
+* **ci:** the release commit's run recognises itself from its own PR ([#1782](https://github.com/open-artifacts-ai/open-artifacts/issues/1782)) ([#1804](https://github.com/open-artifacts-ai/open-artifacts/issues/1804)) ([0dae53c](https://github.com/open-artifacts-ai/open-artifacts/commit/0dae53cb62f2fbae2d2f9580ee8d5e00fc1c4f6b))
+* **comments:** a chosen pin mode holds, Esc is not taken from a default, older runtime still draws pins ([#1698](https://github.com/open-artifacts-ai/open-artifacts/issues/1698)) ([#1754](https://github.com/open-artifacts-ai/open-artifacts/issues/1754)) ([eb8a43d](https://github.com/open-artifacts-ai/open-artifacts/commit/eb8a43d5bd5d1cd7be4fe33bb6a1e24496a01e27))
+* **comments:** an agent whose machine is away reads offline in the @ menu ([#1535](https://github.com/open-artifacts-ai/open-artifacts/issues/1535)) ([#1810](https://github.com/open-artifacts-ai/open-artifacts/issues/1810)) ([56008de](https://github.com/open-artifacts-ai/open-artifacts/commit/56008de08dabb4290d1d269b697318efad317418))
+* **comments:** ask letters only when options need them; key on the decided line ([#1796](https://github.com/open-artifacts-ai/open-artifacts/issues/1796)) ([#1802](https://github.com/open-artifacts-ai/open-artifacts/issues/1802)) ([48b4b2f](https://github.com/open-artifacts-ai/open-artifacts/commit/48b4b2f9672171ab97cd9e502c78908387cedc39))
+* **openclaw:** only the latest user run's model calls prove a root ([#1724](https://github.com/open-artifacts-ai/open-artifacts/issues/1724)) ([#1787](https://github.com/open-artifacts-ai/open-artifacts/issues/1787)) ([790fd58](https://github.com/open-artifacts-ai/open-artifacts/commit/790fd581780aed368754786dfd3b533cd3d5eed2))
+* **runtime:** place the selection button again when a webfont swaps in ([#1648](https://github.com/open-artifacts-ai/open-artifacts/issues/1648)) ([#1758](https://github.com/open-artifacts-ai/open-artifacts/issues/1758)) ([5cc2b93](https://github.com/open-artifacts-ai/open-artifacts/commit/5cc2b93feb37094298526cdf670c8f30210b9145))
+
+## [0.140.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.139.0...v0.140.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** role reach REST routes and billing gate ([#1346](https://github.com/open-artifacts-ai/open-artifacts/issues/1346)) ([#1780](https://github.com/open-artifacts-ai/open-artifacts/issues/1780)) ([ab39a2b](https://github.com/open-artifacts-ai/open-artifacts/commit/ab39a2bd06cfa94fa23df167c9ee77cb90b0767f))
+* **bus:** scoped role reach, hub core ([#1346](https://github.com/open-artifacts-ai/open-artifacts/issues/1346), PR 1) ([#1700](https://github.com/open-artifacts-ai/open-artifacts/issues/1700)) ([61d4db0](https://github.com/open-artifacts-ai/open-artifacts/commit/61d4db07805204adf76e670715794ba2531471b6))
+* **comments:** @ menu lists the viewer's running agents; a mention follows ([#1535](https://github.com/open-artifacts-ai/open-artifacts/issues/1535)) ([#1768](https://github.com/open-artifacts-ai/open-artifacts/issues/1768)) ([b7139c7](https://github.com/open-artifacts-ai/open-artifacts/commit/b7139c73f70c4c46492593dc4968569ef77968cd))
+* **comments:** tell the asker's agents when an ask is answered ([#1535](https://github.com/open-artifacts-ai/open-artifacts/issues/1535)) ([#1778](https://github.com/open-artifacts-ai/open-artifacts/issues/1778)) ([fc62dfa](https://github.com/open-artifacts-ai/open-artifacts/commit/fc62dfa972af13e011e27e9aaf1758b110562154))
+* **mcp:** add_comment takes an ask ([#1535](https://github.com/open-artifacts-ai/open-artifacts/issues/1535)) ([#1772](https://github.com/open-artifacts-ai/open-artifacts/issues/1772)) ([a5a4aaf](https://github.com/open-artifacts-ai/open-artifacts/commit/a5a4aafd8fb6039158df15c925c4197d5ddbed6c))
+
+## [0.139.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.138.0...v0.139.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** follow, unfollow and following from the local client ([#1317](https://github.com/open-artifacts-ai/open-artifacts/issues/1317), step 2) ([#1767](https://github.com/open-artifacts-ai/open-artifacts/issues/1767)) ([c57475b](https://github.com/open-artifacts-ai/open-artifacts/commit/c57475bc1ebff5df6bbd3ca16919a1f4e204315a))
+
+## [0.138.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.137.0...v0.138.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** deliver server notices through the BusHub ([#1317](https://github.com/open-artifacts-ai/open-artifacts/issues/1317), step 1) ([#1746](https://github.com/open-artifacts-ai/open-artifacts/issues/1746)) ([f6a7e56](https://github.com/open-artifacts-ai/open-artifacts/commit/f6a7e561bc1cea1755bef02eeaeb35ebe0512f86))
+* **library:** asks filters as chips ([#1614](https://github.com/open-artifacts-ai/open-artifacts/issues/1614)) ([#1761](https://github.com/open-artifacts-ai/open-artifacts/issues/1761)) ([52a4e04](https://github.com/open-artifacts-ai/open-artifacts/commit/52a4e04d5c89d3148f288f337ce7b01b7e318782))
+* **provisioning-contract:** reserve look-alike and role slugs ([#1011](https://github.com/open-artifacts-ai/open-artifacts/issues/1011)) ([#1765](https://github.com/open-artifacts-ai/open-artifacts/issues/1765)) ([f20551d](https://github.com/open-artifacts-ai/open-artifacts/commit/f20551d49dec66e06d02dcf7702f81cc5b2dbf55))
+* **viewer:** ask card follow-ups ([#1614](https://github.com/open-artifacts-ai/open-artifacts/issues/1614)) ([#1763](https://github.com/open-artifacts-ai/open-artifacts/issues/1763)) ([175744e](https://github.com/open-artifacts-ai/open-artifacts/commit/175744e3a9477842ddd9781e86c513c0abad3312))
+
+
+### Bug Fixes
+
+* **bus:** a restarted or moved session takes back its own name ([#1742](https://github.com/open-artifacts-ai/open-artifacts/issues/1742)) ([#1770](https://github.com/open-artifacts-ai/open-artifacts/issues/1770)) ([7c93390](https://github.com/open-artifacts-ai/open-artifacts/commit/7c93390c7c0285f7f90895f18bfd83ab065d48eb))
+* **bus:** an expiry notice no longer claims 7 days passed ([#1760](https://github.com/open-artifacts-ai/open-artifacts/issues/1760)) ([#1773](https://github.com/open-artifacts-ai/open-artifacts/issues/1773)) ([60d5a15](https://github.com/open-artifacts-ai/open-artifacts/commit/60d5a1529a8e16866c68fc44c3a981706b91d53b))
+
+## [0.137.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.136.1...v0.137.0) (2026-11-09)
+
+
+### Features
+
+* **bus:** Hermes habits only behind the user's --habits yes (habits.on marker) ([#1602](https://github.com/open-artifacts-ai/open-artifacts/issues/1602)) ([#1715](https://github.com/open-artifacts-ai/open-artifacts/issues/1715)) ([910a0f3](https://github.com/open-artifacts-ai/open-artifacts/commit/910a0f3bcc8b01a56ed6ad6fadda4615fe202dae))
+* **bus:** OpenClaw plugin adapter and openclaw kind ([#1693](https://github.com/open-artifacts-ai/open-artifacts/issues/1693)) ([#1714](https://github.com/open-artifacts-ai/open-artifacts/issues/1714)) ([b26d6c8](https://github.com/open-artifacts-ai/open-artifacts/commit/b26d6c82809bedf2594ab463f708ccf4a9332202))
+* **uploads:** verify optional client SHA-256 with R2 ([#1669](https://github.com/open-artifacts-ai/open-artifacts/issues/1669)) ([da8e78a](https://github.com/open-artifacts-ai/open-artifacts/commit/da8e78ac66c192b5ff4d646237965f055801c730))
+* **viewer:** comments column starts closed ([#1731](https://github.com/open-artifacts-ai/open-artifacts/issues/1731)) ([#1747](https://github.com/open-artifacts-ai/open-artifacts/issues/1747)) ([383f8c3](https://github.com/open-artifacts-ai/open-artifacts/commit/383f8c3442a3750c53e0ee6c30c55c5a34488e98))
+
+
+### Bug Fixes
+
+* **billing:** Solo follow-ups: plan error for view-only editors, solo plan_limit tier, Solo trial date ([#1639](https://github.com/open-artifacts-ai/open-artifacts/issues/1639), [#1568](https://github.com/open-artifacts-ai/open-artifacts/issues/1568)) ([#1753](https://github.com/open-artifacts-ai/open-artifacts/issues/1753)) ([c625428](https://github.com/open-artifacts-ai/open-artifacts/commit/c625428a01bdd967a8e09fc872235027b42336e5))
+* **setup:** default Codex CLI instructions to OAuth ([#1664](https://github.com/open-artifacts-ai/open-artifacts/issues/1664)) ([c8177c2](https://github.com/open-artifacts-ai/open-artifacts/commit/c8177c271069e62af02275096fbe77c7396f3d33))
+
+## [0.136.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.136.0...v0.136.1) (2026-11-08)
+
+
+### Bug Fixes
+
+* **comments:** quotes on script-rendered text and every html entity ([#1735](https://github.com/open-artifacts-ai/open-artifacts/issues/1735)) ([#1737](https://github.com/open-artifacts-ai/open-artifacts/issues/1737)) ([0e89b29](https://github.com/open-artifacts-ai/open-artifacts/commit/0e89b298b211dd835a4a243dba932c978515bd91))
+
+## [0.136.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.135.0...v0.136.0) (2026-11-07)
+
+
+### Documentation
+
+* **readme:** hosted code now lives in open-artifacts-cloud ([#1056](https://github.com/open-artifacts-ai/open-artifacts/issues/1056)) ([#1733](https://github.com/open-artifacts-ai/open-artifacts/issues/1733)) ([f1ce58b](https://github.com/open-artifacts-ai/open-artifacts/commit/f1ce58ba56782be6e2595c3b63c81ff0af699e57))
+
+## [0.135.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.134.0...v0.135.0) (2026-11-07)
+
+
+### Features
+
+* **bus-protocol:** hub accepts agent kind openclaw ([#1693](https://github.com/open-artifacts-ai/open-artifacts/issues/1693), split A) ([#1725](https://github.com/open-artifacts-ai/open-artifacts/issues/1725)) ([c2f3656](https://github.com/open-artifacts-ai/open-artifacts/commit/c2f3656a28dfb78d2930b4892cfb2f57ba009b66))
+* **bus:** PAT-callable /api/v1/bus/ping for the hosted canary ([#1299](https://github.com/open-artifacts-ai/open-artifacts/issues/1299), PR 3) ([#1682](https://github.com/open-artifacts-ai/open-artifacts/issues/1682)) ([36827c4](https://github.com/open-artifacts-ai/open-artifacts/commit/36827c42177ba9d07bc53e3b2645179819ac6f0b))
+* **dashboard:** self-host upgrade banner with a copy-paste agent prompt ([#1628](https://github.com/open-artifacts-ai/open-artifacts/issues/1628)) ([#1691](https://github.com/open-artifacts-ai/open-artifacts/issues/1691)) ([52b8736](https://github.com/open-artifacts-ai/open-artifacts/commit/52b87364c416e25c3be3842b4d07b94f4a4a0264))
+* **mcp:** list_comments, add_comment, resolve_comment and the comment notice ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#1644](https://github.com/open-artifacts-ai/open-artifacts/issues/1644)) ([d500100](https://github.com/open-artifacts-ai/open-artifacts/commit/d5001004c7b9a2e4e5ffc1ac94163258d2b72396))
+
+
+### Bug Fixes
+
+* **bus-cli:** Hermes install sweeps only stale staging; realpath the ~/.hermes check ([#1621](https://github.com/open-artifacts-ai/open-artifacts/issues/1621)) ([#1688](https://github.com/open-artifacts-ai/open-artifacts/issues/1688)) ([ad48f71](https://github.com/open-artifacts-ai/open-artifacts/commit/ad48f715192020e155d1146f7ac22b897675385c))
+* **bus-daemon:** accept late acks while the link is live ([#1610](https://github.com/open-artifacts-ai/open-artifacts/issues/1610)) ([#1687](https://github.com/open-artifacts-ai/open-artifacts/issues/1687)) ([bb83f66](https://github.com/open-artifacts-ai/open-artifacts/commit/bb83f66a40ac4502a6d38f0b8444f701dd6001c0))
+* **bus-hermes:** drain mail into gateway turns with group context or timestamps ([#1611](https://github.com/open-artifacts-ai/open-artifacts/issues/1611)) ([#1686](https://github.com/open-artifacts-ai/open-artifacts/issues/1686)) ([23602b4](https://github.com/open-artifacts-ai/open-artifacts/commit/23602b4a2467d59d17c591bf1354fa753d8240ee))
+* **bus:** a Claude session's unchanged name never loops renames ([#1635](https://github.com/open-artifacts-ai/open-artifacts/issues/1635)) ([#1701](https://github.com/open-artifacts-ai/open-artifacts/issues/1701)) ([de9a517](https://github.com/open-artifacts-ai/open-artifacts/commit/de9a5175060df2bdc42c0169322dc4d92064d49e))
+* **bus:** a pi session keeps its typed name on the bus ([#1635](https://github.com/open-artifacts-ai/open-artifacts/issues/1635)) ([#1703](https://github.com/open-artifacts-ai/open-artifacts/issues/1703)) ([e96522a](https://github.com/open-artifacts-ai/open-artifacts/commit/e96522a8f120f8f4e3fdd4b7aaa8bd50f8834d44))
+* **comments:** pinned comments work on pages with &lt;br&gt; and &lt;hr&gt; ([#1718](https://github.com/open-artifacts-ai/open-artifacts/issues/1718)) ([#1722](https://github.com/open-artifacts-ai/open-artifacts/issues/1722)) ([d1bf7f6](https://github.com/open-artifacts-ai/open-artifacts/commit/d1bf7f6524a9ce79a86f54ae273b3e54a5b507bf))
+* **comments:** pins start in Pin on images, keep the phone sheet short, and mark a changed pin ([#1696](https://github.com/open-artifacts-ai/open-artifacts/issues/1696)) ([cb851f5](https://github.com/open-artifacts-ai/open-artifacts/commit/cb851f55a840e9fe2e96dde5846a31b06594faf6))
+* **dashboard:** disambiguate namespace component imports on macOS ([#1656](https://github.com/open-artifacts-ai/open-artifacts/issues/1656)) ([33f0335](https://github.com/open-artifacts-ai/open-artifacts/commit/33f03352bd493ad9267cd36543d732bf7b5abc95))
+* **provision:** always write HOSTS on a mode change (P22, [#1593](https://github.com/open-artifacts-ai/open-artifacts/issues/1593)) ([#1695](https://github.com/open-artifacts-ai/open-artifacts/issues/1695)) ([10c032a](https://github.com/open-artifacts-ai/open-artifacts/commit/10c032a2182c933eac0b0d77ffa7cb9a7a4421b0))
+* **redline:** read migrations from the repo root in schemaAhead ([#1692](https://github.com/open-artifacts-ai/open-artifacts/issues/1692)) ([#1694](https://github.com/open-artifacts-ai/open-artifacts/issues/1694)) ([d8359a4](https://github.com/open-artifacts-ai/open-artifacts/commit/d8359a406fc4c296f6ab7f4e27f0ea482dea6ca3))
+* **runtime:** comment on a selection that spans several elements ([#1708](https://github.com/open-artifacts-ai/open-artifacts/issues/1708)) ([#1712](https://github.com/open-artifacts-ai/open-artifacts/issues/1712)) ([356ad2f](https://github.com/open-artifacts-ai/open-artifacts/commit/356ad2f8bd4d74bb184f5c1c7d0ba398626b416b))
+
+## [0.134.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.133.0...v0.134.0) (2026-11-07)
+
+
+### Features
+
+* **billing:** Solo plan, public half: solo tier and view-only lock ([#1568](https://github.com/open-artifacts-ai/open-artifacts/issues/1568)) ([#1633](https://github.com/open-artifacts-ai/open-artifacts/issues/1633)) ([f81f676](https://github.com/open-artifacts-ai/open-artifacts/commit/f81f67646d4d5b2966cc49aa8b19f06ad92fa514))
+* **bus-cli:** always-on bus habits, written only with the user's yes ([#1583](https://github.com/open-artifacts-ai/open-artifacts/issues/1583)) ([#1638](https://github.com/open-artifacts-ai/open-artifacts/issues/1638)) ([5a92182](https://github.com/open-artifacts-ai/open-artifacts/commit/5a92182eb305e74b8db047a88fc466ce9e8be9d8))
+* **comments:** pins on images and PDFs ([#1490](https://github.com/open-artifacts-ai/open-artifacts/issues/1490)) ([#1589](https://github.com/open-artifacts-ai/open-artifacts/issues/1589)) ([83cbba2](https://github.com/open-artifacts-ai/open-artifacts/commit/83cbba276adfa6d8287e61fb971f3f7e5818e3fb))
+* **comments:** version contentHash; server stamps pin hashes ([#1490](https://github.com/open-artifacts-ai/open-artifacts/issues/1490)) ([#1622](https://github.com/open-artifacts-ai/open-artifacts/issues/1622)) ([30a979f](https://github.com/open-artifacts-ai/open-artifacts/commit/30a979fcedf4fe83225257e1dda66e2ddaaac677))
+* **dashboard:** Plan and billing screens; paused Solo controls ([#953](https://github.com/open-artifacts-ai/open-artifacts/issues/953), [#1639](https://github.com/open-artifacts-ai/open-artifacts/issues/1639)) ([#1676](https://github.com/open-artifacts-ai/open-artifacts/issues/1676)) ([41ba652](https://github.com/open-artifacts-ai/open-artifacts/commit/41ba6526d2bd1a6eefe70ccaff8287cc537616a5))
+* **dashboard:** uploads open images, and a HEIC photo becomes a JPEG ([#1654](https://github.com/open-artifacts-ai/open-artifacts/issues/1654)) ([6537711](https://github.com/open-artifacts-ai/open-artifacts/commit/653771133a2401c18f050a4356090b87225fa082))
+* **skill:** terse background output, wait timeouts, and the installer's habits question ([#1578](https://github.com/open-artifacts-ai/open-artifacts/issues/1578)) ([6013a63](https://github.com/open-artifacts-ai/open-artifacts/commit/6013a63309d7abb680ddf6ff02ff9f53dfb6aee6))
+
+
+### Bug Fixes
+
+* **bus:** a pi session rename reaches the hub ([#1635](https://github.com/open-artifacts-ai/open-artifacts/issues/1635)) ([#1646](https://github.com/open-artifacts-ai/open-artifacts/issues/1646)) ([c057292](https://github.com/open-artifacts-ai/open-artifacts/commit/c0572925b981947ee6ec0800bd8c681283530679))
+* **bus:** a session rename after connect reaches the hub ([#1635](https://github.com/open-artifacts-ai/open-artifacts/issues/1635)) ([#1636](https://github.com/open-artifacts-ai/open-artifacts/issues/1636)) ([fd5c528](https://github.com/open-artifacts-ai/open-artifacts/commit/fd5c528cfc77a081e5d6de859444c5e27dabb30b))
+* **bus:** long-lived bus sockets stay in the install index, so suspend closes them ([#1299](https://github.com/open-artifacts-ai/open-artifacts/issues/1299), PR 1) ([#1609](https://github.com/open-artifacts-ai/open-artifacts/issues/1609)) ([21ff37e](https://github.com/open-artifacts-ai/open-artifacts/commit/21ff37e064cfa12108ded2292936f22e8c306cfb))
+* **bus:** no work outlives a closed bus socket at test teardown ([#1299](https://github.com/open-artifacts-ai/open-artifacts/issues/1299)) ([#1652](https://github.com/open-artifacts-ai/open-artifacts/issues/1652)) ([a9f0ee5](https://github.com/open-artifacts-ai/open-artifacts/commit/a9f0ee56037c210f96be4cb7e2c7cf2ca4b45cea))
+* **bus:** the [#1453](https://github.com/open-artifacts-ai/open-artifacts/issues/1453) polish pass on the Agents and Machines pages ([#1650](https://github.com/open-artifacts-ai/open-artifacts/issues/1650)) ([2740258](https://github.com/open-artifacts-ai/open-artifacts/commit/2740258a2a174b54410add27a9017af8a30543bd))
+* **comments:** load agents on composer focus so Assign to shows without typing @ ([#1653](https://github.com/open-artifacts-ai/open-artifacts/issues/1653)) ([0d84c0c](https://github.com/open-artifacts-ai/open-artifacts/commit/0d84c0c8f20c626cc877ff91e7615df5ddacbef1))
+* **dashboard:** clearing the search box returns to the library ([#1640](https://github.com/open-artifacts-ai/open-artifacts/issues/1640)) ([#1641](https://github.com/open-artifacts-ai/open-artifacts/issues/1641)) ([f64459d](https://github.com/open-artifacts-ai/open-artifacts/commit/f64459de065af6f5706f165469b27070e251419a))
+* **dashboard:** member Agents page wraps its command and client tabs at 390px ([#1634](https://github.com/open-artifacts-ai/open-artifacts/issues/1634)) ([303c2f0](https://github.com/open-artifacts-ai/open-artifacts/commit/303c2f01e02b2c2b63f260d4ba7142ccd4981262))
+* **dashboard:** plan page phone table cue, lapsed note ([#1677](https://github.com/open-artifacts-ai/open-artifacts/issues/1677)) ([#1679](https://github.com/open-artifacts-ai/open-artifacts/issues/1679)) ([ed7374e](https://github.com/open-artifacts-ai/open-artifacts/commit/ed7374e59fc08ea5c691b34cfae9fe7ef4b911cc))
+* **dashboard:** plan table fade only while it can scroll ([#1680](https://github.com/open-artifacts-ai/open-artifacts/issues/1680)) ([#1683](https://github.com/open-artifacts-ai/open-artifacts/issues/1683)) ([68d535d](https://github.com/open-artifacts-ai/open-artifacts/commit/68d535d46ab3bb0941f005f5537757aa07d4da60))
+* **runtime:** selection Comment button matches the design and the viewer theme ([#1647](https://github.com/open-artifacts-ai/open-artifacts/issues/1647)) ([8faee8f](https://github.com/open-artifacts-ai/open-artifacts/commit/8faee8fc76c903a3deba1b480b509fd411b82ad5))
+* **viewer:** comments P2 design gaps (composer row, tab order, column default, full-screen toolbar) ([#1649](https://github.com/open-artifacts-ai/open-artifacts/issues/1649)) ([e21015a](https://github.com/open-artifacts-ai/open-artifacts/commit/e21015a5c9290adce20af464a014bf3919f32664))
+* **viewer:** comments P3 design gaps (avatars, resolved line, via inline, column, phone sheet) ([#1651](https://github.com/open-artifacts-ai/open-artifacts/issues/1651)) ([d011cc7](https://github.com/open-artifacts-ai/open-artifacts/commit/d011cc78b72462470fb62bde873741680b7fdf98))
+
+## [0.133.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.132.1...v0.133.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** Hermes Agent plugin adapter and hermes kind ([#1602](https://github.com/open-artifacts-ai/open-artifacts/issues/1602)) ([#1607](https://github.com/open-artifacts-ai/open-artifacts/issues/1607)) ([755e55d](https://github.com/open-artifacts-ai/open-artifacts/commit/755e55df781d17a798661eb3ed0514315c3b2457))
+* **dashboard:** asks and [@mentions](https://github.com/mentions) on the artifact page ([#1535](https://github.com/open-artifacts-ai/open-artifacts/issues/1535)) ([#1612](https://github.com/open-artifacts-ai/open-artifacts/issues/1612)) ([c82d7e5](https://github.com/open-artifacts-ai/open-artifacts/commit/c82d7e5e4bca9a874ef8c611b1c6cbdc0c32403b))
+* **mcp:** tool descriptions start with "Open Artifacts:"; publish errors say what to do next ([#1540](https://github.com/open-artifacts-ai/open-artifacts/issues/1540)) ([#1613](https://github.com/open-artifacts-ai/open-artifacts/issues/1613)) ([03ea4e6](https://github.com/open-artifacts-ai/open-artifacts/commit/03ea4e63c2fa0a332b39c8a175f71ab030d04c09))
+* **server:** comments store and REST ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#1496](https://github.com/open-artifacts-ai/open-artifacts/issues/1496)) ([d33ea44](https://github.com/open-artifacts-ai/open-artifacts/commit/d33ea44381aecf1503ba51eae4ccd35308570e85))
+
+
+### Bug Fixes
+
+* **redline:** P22 names why a restored install isn't serving; dispatch Workers Logs ([#1593](https://github.com/open-artifacts-ai/open-artifacts/issues/1593)) ([#1616](https://github.com/open-artifacts-ai/open-artifacts/issues/1616)) ([89c645e](https://github.com/open-artifacts-ai/open-artifacts/commit/89c645e4ba2329d21cccaf1fd927699239dc1bf0))
+
+## [0.132.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.132.0...v0.132.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **bus:** rate-limit role and link writes; revoking a credential expires its proposals ([#1358](https://github.com/open-artifacts-ai/open-artifacts/issues/1358), [#1403](https://github.com/open-artifacts-ai/open-artifacts/issues/1403)) ([#1601](https://github.com/open-artifacts-ai/open-artifacts/issues/1601)) ([f5108f7](https://github.com/open-artifacts-ai/open-artifacts/commit/f5108f7a93c8466270ab18b9c177e28f6354d47f))
+
+## [0.132.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.131.1...v0.132.0) (2026-11-06)
+
+
+### Features
+
+* **billing:** hosted billing stack (inert; for the cloud sync) ([#1591](https://github.com/open-artifacts-ai/open-artifacts/issues/1591)) ([123915f](https://github.com/open-artifacts-ai/open-artifacts/commit/123915fb2201faa8da0f16e616563597db6d7692))
+* publish with expectedVersion and small edits ([#1216](https://github.com/open-artifacts-ai/open-artifacts/issues/1216), [#1540](https://github.com/open-artifacts-ai/open-artifacts/issues/1540)) ([#1548](https://github.com/open-artifacts-ai/open-artifacts/issues/1548)) ([7421670](https://github.com/open-artifacts-ai/open-artifacts/commit/7421670672e7d3281ada17d4a9532300fe3e7a99))
+* **shared:** asks and [@mentions](https://github.com/mentions) contract for comments ([#1535](https://github.com/open-artifacts-ai/open-artifacts/issues/1535)) ([#1587](https://github.com/open-artifacts-ai/open-artifacts/issues/1587)) ([f8b3ec9](https://github.com/open-artifacts-ai/open-artifacts/commit/f8b3ec9bf87caac5581ecd1b8ee87454124c21d4))
+
+
+### Bug Fixes
+
+* **bus-daemon:** c12 link-drop test no longer advances the faked clock ([#1522](https://github.com/open-artifacts-ai/open-artifacts/issues/1522)) ([#1599](https://github.com/open-artifacts-ai/open-artifacts/issues/1599)) ([c91ff73](https://github.com/open-artifacts-ai/open-artifacts/commit/c91ff73d8115055ace1754aec8132b2edd33ddf6))
+* **bus:** confirm links carry their secret in the URL fragment ([#1426](https://github.com/open-artifacts-ai/open-artifacts/issues/1426)) ([#1586](https://github.com/open-artifacts-ai/open-artifacts/issues/1586)) ([a02c182](https://github.com/open-artifacts-ai/open-artifacts/commit/a02c182de5271197ac28105ecc96212c8fefd93e))
+* **redline:** T19 transport resets are infra, named ([#1596](https://github.com/open-artifacts-ai/open-artifacts/issues/1596)) ([#1597](https://github.com/open-artifacts-ai/open-artifacts/issues/1597)) ([907af1e](https://github.com/open-artifacts-ai/open-artifacts/commit/907af1eced6b3633f7c5a5bdbb02c93e76f7b951))
+* **server:** deterministic search order on bm25 ties (unbreaks main) ([#1598](https://github.com/open-artifacts-ai/open-artifacts/issues/1598)) ([c1a2ef3](https://github.com/open-artifacts-ai/open-artifacts/commit/c1a2ef31590e93d1e3462ae6c67e8a503688a8c3))
+
+## [0.131.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.131.0...v0.131.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **bus-daemon:** hold a /clear handover until hello_ok ([#1582](https://github.com/open-artifacts-ai/open-artifacts/issues/1582)) ([#1585](https://github.com/open-artifacts-ai/open-artifacts/issues/1585)) ([3b88a40](https://github.com/open-artifacts-ai/open-artifacts/commit/3b88a4075db340825bac652d50d30b9467bb1846))
+* **server:** search ranks title matches first ([#1554](https://github.com/open-artifacts-ai/open-artifacts/issues/1554)) ([#1555](https://github.com/open-artifacts-ai/open-artifacts/issues/1555)) ([a21f50c](https://github.com/open-artifacts-ai/open-artifacts/commit/a21f50cea87c91b3b40288b984849c227df27a93))
+
+## [0.131.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.130.0...v0.131.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** oa-bus link via a confirm link; adapters show linked agents ([#1567](https://github.com/open-artifacts-ai/open-artifacts/issues/1567), PR 2 of 3) ([#1579](https://github.com/open-artifacts-ai/open-artifacts/issues/1579)) ([260cf15](https://github.com/open-artifacts-ai/open-artifacts/commit/260cf153dd94d1b487831cf7bf2146051365bde8))
+
+## [0.130.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.129.0...v0.130.0) (2026-11-06)
+
+
+### Features
+
+* **dashboard:** link two bus namespaces from Agents › Namespaces ([#1567](https://github.com/open-artifacts-ai/open-artifacts/issues/1567)) ([#1577](https://github.com/open-artifacts-ai/open-artifacts/issues/1577)) ([b48b57e](https://github.com/open-artifacts-ai/open-artifacts/commit/b48b57e8d97e2666f2a3ea1832c2167b888706c0))
+* **viewer:** sign-up nudge for signed-out and guest viewers on hosted ([#1564](https://github.com/open-artifacts-ai/open-artifacts/issues/1564)) ([#1576](https://github.com/open-artifacts-ai/open-artifacts/issues/1576)) ([1f2545f](https://github.com/open-artifacts-ai/open-artifacts/commit/1f2545f0ee66680b569fb08a384eec0b4c918aa5))
+
+## [0.129.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.128.0...v0.129.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** link two namespaces on the hub ([#1567](https://github.com/open-artifacts-ai/open-artifacts/issues/1567), PR 1 of 3) ([#1572](https://github.com/open-artifacts-ai/open-artifacts/issues/1572)) ([e6dad03](https://github.com/open-artifacts-ai/open-artifacts/commit/e6dad03e879496a33319567ce41570bd04f3152c))
+
+## [0.128.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.127.0...v0.128.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* **bus:** A folder that set its namespace in .oa-bus.json joins its derived namespace until you run: oa-bus namespace approve <dir>
+
+### Bug Fixes
+
+* **bus:** a .oa-bus.json namespace takes effect only after the user approves it ([#1525](https://github.com/open-artifacts-ai/open-artifacts/issues/1525)) ([#1569](https://github.com/open-artifacts-ai/open-artifacts/issues/1569)) ([bb2ac29](https://github.com/open-artifacts-ai/open-artifacts/commit/bb2ac295bf42fb24a78932f1db059c4641debd2f))
+* **comments:** mock permissions follow the server; two-line author line; older-version badge ([#1529](https://github.com/open-artifacts-ai/open-artifacts/issues/1529)) ([#1549](https://github.com/open-artifacts-ai/open-artifacts/issues/1549)) ([d31d5af](https://github.com/open-artifacts-ai/open-artifacts/commit/d31d5af1eabadfcb4f61f458747fd08419325741))
+
+## [0.127.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.126.0...v0.127.0) (2026-11-06)
+
+
+### Features
+
+* **bus:** install the skill beside the bus tools ([#1456](https://github.com/open-artifacts-ai/open-artifacts/issues/1456)) ([#1551](https://github.com/open-artifacts-ai/open-artifacts/issues/1551)) ([ffae385](https://github.com/open-artifacts-ai/open-artifacts/commit/ffae38543d764388fb846a25d1683ad8668b497b))
+
+
+### Bug Fixes
+
+* **dashboard:** plan copy before the trial, admin wording, suspended ([#1518](https://github.com/open-artifacts-ai/open-artifacts/issues/1518)) ([#1560](https://github.com/open-artifacts-ai/open-artifacts/issues/1560)) ([c257ffd](https://github.com/open-artifacts-ai/open-artifacts/commit/c257ffda657935a5cf3cf8d8bb37d23aabaafd43))
+* **directory:** status reports the mode the DO follows ([#860](https://github.com/open-artifacts-ai/open-artifacts/issues/860)) ([#1562](https://github.com/open-artifacts-ai/open-artifacts/issues/1562)) ([8f6525e](https://github.com/open-artifacts-ai/open-artifacts/commit/8f6525efe3bdeec9604768b4af95658d3ad46880))
+
+## [0.126.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.125.0...v0.126.0) (2026-11-06)
+
+
+### Features
+
+* **ci:** the deploy refuses a token that is not the env's pinned deploy token ([#1545](https://github.com/open-artifacts-ai/open-artifacts/issues/1545)) ([7226d35](https://github.com/open-artifacts-ai/open-artifacts/commit/7226d3573b3c3e767203ffff9c3e9dfc6ebcdfa8))
+
+## [0.125.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.124.0...v0.125.0) (2026-11-05)
+
+
+### Features
+
+* **comments:** runtime view mode for viewers who can't comment; Design polish ([#1491](https://github.com/open-artifacts-ai/open-artifacts/issues/1491), [#1529](https://github.com/open-artifacts-ai/open-artifacts/issues/1529)) ([#1531](https://github.com/open-artifacts-ai/open-artifacts/issues/1531)) ([aa41cbe](https://github.com/open-artifacts-ai/open-artifacts/commit/aa41cbe4cadc2c804a12ec5cc062955b33df7b0e))
+* **skill:** publish a file in one call, and with this instance's tools ([#1540](https://github.com/open-artifacts-ai/open-artifacts/issues/1540)) ([#1542](https://github.com/open-artifacts-ai/open-artifacts/issues/1542)) ([f5e7a70](https://github.com/open-artifacts-ai/open-artifacts/commit/f5e7a70631295e3fb593374a8e809e0aaf732f79))
+
+
+### Bug Fixes
+
+* **bus:** show refused config files with their fix; accept a group-writable file you own ([#1527](https://github.com/open-artifacts-ai/open-artifacts/issues/1527)) ([#1530](https://github.com/open-artifacts-ai/open-artifacts/issues/1530)) ([bf0a895](https://github.com/open-artifacts-ai/open-artifacts/commit/bf0a895034047c750889550359763cbfd0beedaf))
+* **ci:** hosted-publish resolves a release from a failed release-please run ([#1524](https://github.com/open-artifacts-ai/open-artifacts/issues/1524)) ([fdca013](https://github.com/open-artifacts-ai/open-artifacts/commit/fdca0139a3d4fdafd5df979d1cbac2f15ffb2f4d))
+
 ## [0.124.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.123.0...v0.124.0) (2026-11-05)
 
 

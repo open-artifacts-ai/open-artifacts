@@ -55,7 +55,13 @@ export type PolicyAction =
   | "transfer"
   | "anonId"
   /** MCP data tools on an artifact without the db capability (B14, narrowed). */
-  | "data.seed";
+  | "data.seed"
+  /** #682: read comments: anyone who can view. */
+  | "comments.read"
+  /** #682: comment, reply, resolve and reopen; edit and delete (the handler: one's own, or an editor's). */
+  | "comments.write"
+  /** #682: delete anyone's comment: editors and up. */
+  | "comments.moderate";
 
 export type OrgAction =
   | "space.create"
@@ -86,6 +92,8 @@ export type OrgAction =
   | "notices.manage"
   /** See and dismiss one's own guest-share notice (Me.notices.guestShares): any non-guest member. */
   | "notices.own"
+  /** Read and change the first-run checklist state (R.onboarding): the uncapped org owner. */
+  | "onboarding.manage"
   | "audit.read"
   | "members.manage"
   | "members.manageAdmins"
@@ -134,10 +142,15 @@ export type CanCtx = {
   /**
    * Hosted billing's lock on this instance (billing/plan.ts PlanLock.mode),
    * absent or null when none: shared-space artifacts are read-only, and so
-   * are the team actions on personal ones (share, move, transfer); while
+   * are the team actions on personal ones (move, transfer); while
    * read-only, anonymous data writes too. Reads are never touched.
    */
-  plan?: "solo" | "readOnly" | null;
+  plan?: "solo" | "readOnly" | "viewOnly" | null;
+  /**
+   * The lock is a suspension (PlanLock.reason): not a payment state, so
+   * sharing is not free under it (only share-list reads and removals pass).
+   */
+  suspended?: boolean;
 };
 
 /**
@@ -167,18 +180,40 @@ const PLAN_TEAM_ACTIONS: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
   "transfer",
 ]);
 /**
- * Never refused here: "share" also gates reading the share list, and
- * "unshare" is a removal (removing people is how a team drops back to free).
- * A new share is refused by putShare itself (requireTeamPlan).
+ * Sharing is free on every payment plan (not under a suspension, CanCtx.suspended): viewing and changing who can open an
+ * artifact (share, unshare, visibility) is never refused by a plan lock, on
+ * any artifact the caller may share. A plan-capped member keeps it too
+ * (SHARING_ACTIONS: authz.ts authorize reads their level uncapped).
  */
 const PLAN_EXEMPT: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
   "share",
   "unshare",
+  "visibility",
+]);
+export const SHARING_ACTIONS: ReadonlySet<PolicyAction> = PLAN_EXEMPT;
+
+/**
+ * What the unpaid-Solo view-only lock (PlanLock.mode "viewOnly") refuses on
+ * an artifact, for EVERYONE (the owner and anonymous visitors included):
+ * publishing and live-data writes. Everything else, sharing included, passes.
+ */
+const VIEW_ONLY_REFUSED: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
+  "publish",
+  "restore",
+  "upload",
+  "data.write",
+  "data.reset",
+  "data.seed",
 ]);
 
 /** Whether the instance's plan lock refuses `action` (reads never). */
 export function planRefuses(action: PolicyAction, ctx: CanCtx): boolean {
-  if (!ctx.plan || READ.has(action) || PLAN_EXEMPT.has(action)) return false;
+  if (!ctx.plan || READ.has(action)) return false;
+  // View-only refuses publishing and data writes for everyone, then the solo
+  // team rules apply as under the solo lock.
+  if (ctx.plan === "viewOnly" && VIEW_ONLY_REFUSED.has(action)) return true;
+  if (PLAN_EXEMPT.has(action) && !(ctx.suspended && action === "visibility"))
+    return false;
   if (!ctx.personal) return true;
   if (PLAN_TEAM_ACTIONS.has(action)) return true;
   return ctx.plan === "readOnly" && ctx.anonymous === true;
@@ -306,6 +341,7 @@ const READ: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
   "data.read",
   "events",
   "subscribe",
+  "comments.read",
 ]);
 const EDIT: ReadonlySet<PolicyAction> = new Set<PolicyAction>([
   "version.text",
@@ -347,6 +383,13 @@ export function can(
         return !ctx.anonymous && level !== "viewer";
       // Anonymous callers only reach a level on a public artifact.
       return true;
+    // Anyone who can open it comments (a signed-out caller reaches a level
+    // only on a public artifact), except a capped caller (read-only on the
+    // whole API, readOnlyCap).
+    case "comments.write":
+      return !capped;
+    case "comments.moderate":
+      return !capped && !ctx.anonymous && level !== "viewer";
     case "storage":
       return !capped && !ctx.anonymous;
     case "thumbnail.write":
@@ -433,6 +476,8 @@ export function orgCan(
     cap?: CapReason | null;
     /** The request only reads (GET/HEAD): the billing plan cap keeps admin reads. */
     read?: boolean;
+    /** The plan lock is a suspension: the plan cap may not connect an agent. */
+    suspended?: boolean;
   } = {},
 ): boolean {
   // Hosted billing's plan cap never locks the owner and admins out of
@@ -477,15 +522,23 @@ export function orgCan(
     case "signin.problems":
     // The install-wide guest summary and its dismissal (parity 2).
     case "notices.manage":
+    // The first-run checklist's state (R.onboarding).
+    case "onboarding.manage":
     // Acting on an org owner or admin (role, removal, suspension, Google
     // link reset): owner only (#475).
     case "members.manageAdmins":
       return m.role === "owner" && !capped;
-    // Capped callers never connect agents, the billing plan cap included
-    // (fail closed: the owner's agents keep working).
+    // Guests and restricted members never connect agents (fail closed).
     case "tokens.create":
-    case "mcp.connect":
       return TEAM_ROLES.includes(m.role) && !capped;
+    // The billing plan cap alone may connect an agent: sharing is free, and
+    // through the agent the plan cap's rules apply as for the member
+    // (reads, share, unshare, visibility; every other write is refused).
+    case "mcp.connect":
+      return (
+        TEAM_ROLES.includes(m.role) &&
+        (!capped || (opts.cap === "plan" && opts.suspended !== true))
+      );
     default:
       return admin;
   }

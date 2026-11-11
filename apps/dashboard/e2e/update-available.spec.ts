@@ -28,7 +28,7 @@ test("admin: the chip opens the popover; Upgrade copies the prompt", async ({
   await expect(pop).toContainText("v0.14.2");
   await expect(pop).toContainText("v0.15.0");
   await expect(pop.getByRole("status")).toBeEmpty();
-  await pop.getByRole("button", { name: "Upgrade" }).click();
+  await pop.getByRole("button", { name: "Upgrade", exact: true }).click();
   await expect(pop.getByRole("status")).toHaveText(COPIED);
   const origin = new URL(baseURL ?? page.url()).origin;
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
@@ -57,7 +57,7 @@ test("admin: the Version card copies the same prompt", async ({
   await page.goto("/settings/instance?mock=update");
   const card = page.getByRole("region", { name: "Version" });
   await expect(card).toContainText("Update available");
-  await card.getByRole("button", { name: "Upgrade" }).click();
+  await card.getByRole("button", { name: "Upgrade", exact: true }).click();
   await expect(card.getByRole("status")).toHaveText(COPIED);
   await expect(card.getByRole("status")).toBeEmpty({ timeout: 6000 });
 });
@@ -79,11 +79,18 @@ test("member: no chip and no Version card", async ({ page }) => {
   await expect(chip(page)).toHaveCount(0);
 });
 
-test("null update: nothing", async ({ page }) => {
+test("null update: no chip; the card shows only the upgrade line", async ({
+  page,
+}) => {
   await page.goto("/settings/instance");
   await expect(page.getByLabel("Instance name")).toBeVisible();
   await expect(chip(page)).toHaveCount(0);
-  await expect(page.getByRole("region", { name: "Version" })).toHaveCount(0);
+  const card = page.getByRole("region", { name: "Version" });
+  await expect(card).toContainText("To upgrade, tell your agent: Follow");
+  await expect(card.getByRole("link", { name: /upgrade\.md/ })).toHaveAttribute(
+    "target",
+    "_blank",
+  );
 });
 
 for (const scheme of ["light", "dark"] as const) {
@@ -170,7 +177,7 @@ for (const w of [1280, 390])
       .getByRole("status");
     const actions = page
       .getByRole("region", { name: "Version" })
-      .getByRole("button", { name: "Upgrade" });
+      .getByRole("button", { name: "Upgrade", exact: true });
     await expect(status).toBeAttached();
     expect((await status.boundingBox())?.height).toBe(0);
     // The settings card's padding, plus its 1px border.
@@ -192,3 +199,81 @@ for (const w of [1280, 390])
     await expect(status).toBeEmpty({ timeout: 6000 });
     await expect.poll(gap).toBe(pad);
   });
+
+// The artifact view is a viewport-tall column: a banner above the viewer takes
+// its height out of the viewer's, so the page never scrolls (#1628).
+const ART = "De6gHjKmNp7qRsTu";
+for (const [name, query, banner] of [
+  ["with the update banner", "mock=update", true],
+  ["without a banner", "", false],
+  ["with the quota banner", "mock=quota", false],
+] as const) {
+  for (const [w, h] of [
+    [1100, 700],
+    [390, 700],
+  ] as const) {
+    test(`artifact view ${name} at ${w}px doesn't scroll the page`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: w, height: h });
+      await page.goto(`/a/${ART}${query ? `?${query}` : ""}`);
+      // The quota mock fails the artifact load: its banner is what shows.
+      if (query === "mock=quota")
+        await expect(
+          page.getByText("Daily free-plan limit reached", { exact: false }),
+        ).toBeVisible();
+      else
+        await expect(
+          page.getByRole("heading", { name: "Meeting notes" }),
+        ).toBeVisible();
+      if (banner) await expect(page.getByTestId("update-banner")).toBeVisible();
+      const g = await page.evaluate(() => ({
+        scroll: (document.scrollingElement as Element).scrollHeight,
+        inner: window.innerHeight,
+      }));
+      expect(g.scroll).toBeLessThanOrEqual(g.inner);
+    });
+  }
+}
+
+// Full screen has a fixed toolbar over the top-right: no banner under it.
+for (const [w, h] of [
+  [1100, 700],
+  [390, 700],
+] as const) {
+  test(`/full shows no update banner at ${w}px`, async ({ page }) => {
+    await page.setViewportSize({ width: w, height: h });
+    await page.goto(`/a/${ART}/full?mock=update`);
+    await expect(page.locator("#oa-main")).toBeVisible();
+    await page.waitForLoadState("networkidle");
+    await expect(page.getByTestId("update-banner")).toHaveCount(0);
+  });
+}
+
+// A tall edge panel in a short window grows and the page scrolls: the panel
+// starts below the banner above it instead of overlapping it, and its bottom
+// is reachable.
+test("edge panel on a short phone window isn't clipped at the top", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 180 });
+  await page.goto(`/a/${ART}?mock=quota`);
+  await page.locator(".oa-edge h1").first().waitFor();
+  const r = await page.evaluate(() => {
+    const e = document.querySelector(".oa-edge") as HTMLElement;
+    const p = document.querySelector(".oa-panel") as HTMLElement;
+    return {
+      top: p.getBoundingClientRect().top,
+      above: (e.previousElementSibling as HTMLElement).getBoundingClientRect()
+        .bottom,
+    };
+  });
+  expect(r.top).toBeGreaterThanOrEqual(r.above);
+  // The panel's own bottom is reachable by scrolling the page.
+  const reach = await page.evaluate(() => {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    const p = document.querySelector(".oa-panel")?.getBoundingClientRect();
+    return p ? p.bottom <= window.innerHeight + 1 : false;
+  });
+  expect(reach).toBe(true);
+});

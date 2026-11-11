@@ -64,7 +64,10 @@ type Roster = Extract<ServerFrame, { type: "roster" }>;
  * A daemon on a new machine of the owner (or `userId`) that said hello,
  * listing BUS_CAPS.rename unless `caps` is false (an old client).
  */
-async function at(caps = true, userId?: string): Promise<Daemon> {
+async function at(
+  caps: boolean | string[] = true,
+  userId?: string,
+): Promise<Daemon> {
   const m = await machine("MacBook", userId);
   const d = await daemon(m.token);
   d.send({
@@ -73,7 +76,9 @@ async function at(caps = true, userId?: string): Promise<Daemon> {
     type: "hello",
     machine_label: "MacBook",
     client_version: "0.0.0",
-    ...(caps ? { caps: [BUS_CAPS.rename] } : {}),
+    ...(caps === false
+      ? {}
+      : { caps: caps === true ? [BUS_CAPS.rename] : caps }),
   });
   await waitFor(d, "hello_ok");
   return d;
@@ -279,6 +284,20 @@ async function churn(d: Daemon, ref: string, times: number): Promise<string> {
 }
 
 describe("rename (R393b)", () => {
+  it("a daemon without the rename cap (ids, mailbox, links) renames its agent; list shows the new name (#1635)", async () => {
+    const d = await at([BUS_CAPS.ids, BUS_CAPS.mailbox, BUS_CAPS.links]);
+    const n = ns("rn");
+    const a = uniq("Alpha");
+    const b = uniq("Bravo");
+    await reg(d, "s", uniq("Sender"), n);
+    await reg(d, "a", a, n);
+    expect(await renamed(d, "a", b)).toMatchObject({ bus_name: b });
+    const ro = await list(d, "s");
+    expect(row(ro, b)).toBeDefined();
+    expect(row(ro, a)).toBeUndefined();
+    d.close();
+  });
+
   it("A→B: renamed with former; a send to A is delivered to it, with to_name B", async () => {
     const d = await at();
     const n = ns("rn");
@@ -566,8 +585,10 @@ describe("rename (R393b)", () => {
     await renamed(d, "a", a2);
     expect(await formerRows(a2)).toEqual([a]);
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
+    // The chosen former name stays reserved; the away current name goes to a
+    // restarted session (#1742).
     expect(await reg(d, "x", a, n)).toBe(`${a}-2`);
-    expect(await reg(d, "x2", a2, n)).toBe(`${a2}-2`);
+    expect(await reg(d, "x2", a2, n)).toBe(a2);
     expect(await formerRows(a2)).toEqual([a]);
 
     const b = uniq("Sess");
@@ -576,7 +597,7 @@ describe("rename (R393b)", () => {
     await renamed(d, "b", b2);
     d.send({ v: 1, id: id("c"), type: "sessions", open: [], closed: ["b"] });
     expect(await reg(d, "y", b, n)).toBe(`${b}-2`);
-    expect(await reg(d, "y2", b2, n)).toBe(`${b2}-2`);
+    expect(await reg(d, "y2", b2, n)).toBe(b2);
     expect(await formerRows(b2)).toEqual([b]);
 
     const m = await machine("Revokee");
@@ -1676,16 +1697,16 @@ describe("OpenBus #451 nits", () => {
     d.send({ v: 1, id: id("d"), type: "agent_down", agent_ref: "a" });
     // OpenBus #451: the close holds the name for the grace; then another
     // takes it.
-    expect(await reg(d, "o", dup, n)).toBe(`${dup}-2`);
-    await setClock(t0 + MAILBOX_RETAIN_MS);
-    expect(await reg(d, "o2", dup, n)).toBe(dup);
-    expect(await reg(d, "a", dup, n)).toBe(`${dup}-3`);
+    // #1742: a restarted session takes the away name; the old session
+    // reopening finds it taken and is de-collided.
+    expect(await reg(d, "o", dup, n)).toBe(dup);
+    expect(await reg(d, "a", dup, n)).toBe(`${dup}-2`);
     const log = await inHub(
       (_, st) =>
         st.storage.sql
           .exec(
             "select count(*) as n from rename_rl r join agents a on a.id = r.agent_id where a.name = ?",
-            `${dup}-3`,
+            `${dup}-2`,
           )
           .one().n,
     );
@@ -1908,7 +1929,7 @@ describe("OpenBus #451 review of 35017e2", () => {
 describe("OpenBus #451: a session leaving a namespace holds its name there for 1 h", () => {
   // #1448: a revoke holds nothing (its own describe below).
   for (const how of ["agent_down", "sessions"] as const)
-    it(`a close by ${how}: a stranger gets -2; mail is queued for the away agent; then the name is free`, async () => {
+    it(`a close by ${how}: mail is queued for the away agent; the reservation lasts 7 d, then the name is free`, async () => {
       const t0 = Date.now() + 100 * GRACE + seq * 1000;
       await setClock(t0);
       const d = await at();
@@ -1926,9 +1947,8 @@ describe("OpenBus #451: a session leaving a namespace holds its name there for 1
           open: [],
           closed: ["a"],
         });
-      expect(await reg(d, "x", mine, n)).toBe(`${mine}-2`);
-      // Never delivered to the stranger: a plain close (#1295) reserves the
-      // name as `away` and queues the mail for its agent.
+      // A plain close (#1295) reserves the name as `away` and queues the
+      // mail for its agent.
       expect((await send(d, "s", mine)).state).toBe("pending");
       expect(await holds(mine)).toEqual([]);
       expect(await aways(mine)).toEqual([`${n}/0`]);
@@ -2233,8 +2253,11 @@ describe("OpenBus #451: a session leaving a namespace holds its name there for 1
     // The close reserves its own scope as `away`; the moves left `held` rows.
     expect(await holds(mine)).toEqual(spaces.slice(0, -1).map((s) => `${s}/0`));
     expect(await aways(mine)).toEqual([`${spaces[spaces.length - 1]}/0`]);
-    for (const s of spaces)
+    // The held scopes still block; the away one is taken back (#1742).
+    const last = spaces[spaces.length - 1] as string;
+    for (const s of spaces.slice(0, -1))
       expect(await reg(d, id("x"), mine, s)).toBe(`${mine}-2`);
+    expect(await reg(d, id("x"), mine, last)).toBe(mine);
     d.close();
   });
 });
@@ -2317,9 +2340,11 @@ describe("#1448: revoking a machine frees every name its agents held or reserved
     expect(await reg(b.d, "e", elsewhere, n2)).toBe(elsewhere);
     // C is not revoked: its live name and its 1 h hold still protect.
     expect(await reg(b.d, "x", live, n)).toBe(`${live}-2`);
-    expect(await reg(b.d, "y", left, n)).toBe(`${left}-2`);
-    // (#1295: a plain close reserves as `away`, for 7 d.)
+    // (#1295: a plain close reserves as `away`, for 7 d; #1742: a restarted
+    // session on any machine takes an away name back.)
     expect(await aways(left)).toEqual([`${n}/0`]);
+    expect(await reg(b.d, "y", left, n)).toBe(left);
+    expect(await aways(left)).toEqual([]);
     // Mail to the freed name reaches its new holder.
     const rc = await send(c.d, "s", open);
     expect(rc.state).toBe("pending");

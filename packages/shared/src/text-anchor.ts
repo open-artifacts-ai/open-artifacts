@@ -13,6 +13,13 @@ const SHORT_QUOTE = 16;
 const SPOT_SLACK = 16;
 /** Most char comparisons the partial-match step may spend on one anchor. */
 const LCS_BUDGET = 2_000_000;
+/**
+ * Most char comparisons the partial-match step may spend across every anchor
+ * resolved through one resolver (one resolve pass). Past it, an anchor that
+ * would need the step is collapsed (or orphan) instead, so many unfound
+ * quotes cannot freeze the page (#1735).
+ */
+const TOTAL_LCS_BUDGET = 16_000_000;
 /** Occurrence lists are capped so a degenerate needle stays linear. */
 const MAX_OCCURRENCES = 20000;
 
@@ -88,25 +95,44 @@ function occurrences(hay: string, needle: string): number[] {
   return out;
 }
 
+const isWs = (c: number) =>
+  c === 32 || (c >= 9 && c <= 13) || c === 0xa0 || c === 0xfeff;
+
+/**
+ * How much of the end of `b` ends at `aEnd` in `a`, in chars of `b`.
+ * Whitespace is skipped on both sides: a block break may be a space in one
+ * text and nothing in the other (anchors saved before blocks were separated).
+ */
 const commonSuffix = (a: string, aEnd: number, b: string): number => {
-  let n = 0;
-  while (
-    n < b.length &&
-    n < aEnd &&
-    a.charCodeAt(aEnd - 1 - n) === b.charCodeAt(b.length - 1 - n)
-  )
-    n++;
-  return n;
+  let i = aEnd - 1;
+  let j = b.length - 1;
+  while (j >= 0) {
+    if (isWs(b.charCodeAt(j))) {
+      j--;
+      continue;
+    }
+    while (i >= 0 && isWs(a.charCodeAt(i))) i--;
+    if (i < 0 || a.charCodeAt(i) !== b.charCodeAt(j)) break;
+    i--;
+    j--;
+  }
+  return b.length - 1 - j;
 };
+/** The same from the start of `b` at `aStart`, in chars of `b`. */
 const commonPrefix = (a: string, aStart: number, b: string): number => {
-  let n = 0;
-  while (
-    n < b.length &&
-    aStart + n < a.length &&
-    a.charCodeAt(aStart + n) === b.charCodeAt(n)
-  )
-    n++;
-  return n;
+  let i = aStart;
+  let j = 0;
+  while (j < b.length) {
+    if (isWs(b.charCodeAt(j))) {
+      j++;
+      continue;
+    }
+    while (i < a.length && isWs(a.charCodeAt(i))) i++;
+    if (i >= a.length || a.charCodeAt(i) !== b.charCodeAt(j)) break;
+    i++;
+    j++;
+  }
+  return j;
 };
 
 /** Newline offsets, built once per resolve and only when a tie needs them. */
@@ -201,7 +227,8 @@ function longestCommon(
 /**
  * A resolver for one text. Build it once per text version: the whitespace-
  * normalized copy and the line index are made lazily, once, and shared by
- * every anchor resolved through it.
+ * every anchor resolved through it, as is the TOTAL_LCS_BUDGET of partial-
+ * match comparisons: anchors past it collapse instead of going partial.
  */
 export function createTextResolver(
   text: string,
@@ -212,6 +239,7 @@ export function createTextResolver(
     return normed;
   };
   const getLine = lineOf(text);
+  let spent = 0;
 
   return (anchor) => {
     const { exact, prefix, suffix } = anchor;
@@ -269,8 +297,11 @@ export function createTextResolver(
           )
         : [];
       starts.sort((a, b) => a - b);
-      if (prefix === "" && starts.length === 0) ends = [0];
-      if (suffix === "" && ends.length === 0) starts = [text.length];
+      // A document edge counts only when the other side was sent: with no
+      // context at all (an agent over MCP or REST), nothing says where it was.
+      if (prefix === "" && suffix !== "" && starts.length === 0) ends = [0];
+      if (suffix === "" && prefix !== "" && ends.length === 0)
+        starts = [text.length];
       spots = { ends, starts };
       return spots;
     };
@@ -302,7 +333,9 @@ export function createTextResolver(
         const ss = commonPrefix(hay, s + hlen, suf);
         const score =
           solid(pre.slice(pre.length - ps)) + solid(suf.slice(0, ss));
-        if (short && score < need && !bounded(hay, s, s + hlen)) continue;
+        // No context at all (need 0) still needs word boundaries: "he" is not in "the".
+        if (short && (score < need || need === 0) && !bounded(hay, s, s + hlen))
+          continue;
         const dist =
           wantLine === undefined
             ? 0
@@ -390,8 +423,10 @@ export function createTextResolver(
       at = ends.length ? ends[0] : starts[0];
     } else at = from;
 
-    // 3. What survives of the quote near that spot (skipped over budget).
-    if (to > from && (to - from) * len <= LCS_BUDGET) {
+    // 3. What survives of the quote near that spot (skipped over either budget).
+    const cost = (to - from) * len;
+    if (to > from && cost <= LCS_BUDGET && spent + cost <= TOTAL_LCS_BUDGET) {
+      spent += cost;
       const { start, len: n } = longestCommon(text, from, to, exact);
       const s = snap(text, start, 1);
       const e = snap(text, start + n, -1);
@@ -418,13 +453,16 @@ export function createTextResolver(
  * - partial: no whole quote, but a piece of at least minSurvivingChars(...)
  *   sits where the prefix/suffix say the quote was. Among several context
  *   pairs, the one whose gap is closest to the quote's old length wins. The
- *   comparison spends at most 2M char comparisons; over that it is skipped and
- *   the result is collapsed.
+ *   comparison spends at most 2M char comparisons per anchor, and at most 16M
+ *   across all anchors resolved through one createTextResolver; over either it
+ *   is skipped and the result is collapsed.
  * - collapsed: nothing of the quote, but the old spot is found from the
  *   prefix and/or suffix. `at` is the offset where the quote used to start.
  *   An empty prefix or suffix (a document edge) says nothing while the other
  *   side can be found. A shortened (16 or 8 char) context probe counts only
- *   if it is unique, or nearest the block.line hint.
+ *   if it is unique, or nearest the block.line hint. With no context at all
+ *   there is no spot: an unfound quote is orphan, and a short one must sit on
+ *   word boundaries to be exact.
  * - orphan: neither quote nor spot.
  * block.path and block.page are not used here (flat text has no blocks).
  */

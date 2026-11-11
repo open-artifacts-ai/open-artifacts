@@ -1,5 +1,5 @@
 import { FAVICON_TAGS } from "../http/head.js";
-import { html, type SafeHtml } from "../http/pages.js";
+import { html, SafeHtml } from "../http/pages.js";
 
 // The bus approval page (#1291): GET /bus/approve takes the typed code,
 // POST decides, and the success screen follows. Server-rendered with no
@@ -53,6 +53,9 @@ a.primary{display:inline-flex;align-items:center;height:36px;padding:0 16px;bord
 :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 .foot{margin:16px 0 0;font-size:12px;color:var(--muted);text-align:center}
 .muted{color:var(--muted);font-size:12px;margin:0}
+p.muted+ul{margin-top:12px}
+.ns{display:block;padding-left:1em;text-indent:-1em}
+.slot{width:100%;max-width:440px}
 .nw{white-space:nowrap}
 .wrap{overflow-wrap:anywhere}
 .field{display:block;font-weight:500;font-size:13px;margin:0 0 6px}
@@ -246,10 +249,11 @@ export type RoleConfirmView = {
   priorHolderGone: boolean;
   /** The new holder's current name (set, repoint). */
   agentName: string | null;
+  /** #1346: the namespaces the role reaches now (sorted; [] for none or a new role). */
+  reach: string[];
   /** Minutes until the link expires (at least 1). */
   minutesLeft: number;
   userEmail: string;
-  formAction: string;
   csrf: string;
   switchUrl: string;
 };
@@ -259,6 +263,10 @@ const ROLE_HEADINGS = {
   repoint: "Re-point this role?",
   clear: "Remove this role?",
 } as const;
+
+/** Namespaces one per line in monospace, like the link page's Project rows. Each is escaped. */
+const names = (ns: string[]): SafeHtml =>
+  html`${ns.map((x) => html`<span class="ns mono wrap">${x}</span>`)}`;
 
 /** The confirm form: what changes, from whom to whom, as whom; Reject or Confirm. */
 export function renderRoleConfirm(v: RoleConfirmView): string {
@@ -278,10 +286,8 @@ export function renderRoleConfirm(v: RoleConfirmView): string {
     v.minutesLeft <= 1
       ? "This link expires in about a minute."
       : `This link expires in ${v.minutesLeft} minutes.`;
-  return shell(
-    "Confirm a role change",
-    v.instanceHost,
-    html`<form class="card" method="post" action="${v.formAction}">
+  return String(
+    html`<form class="card">
     <input type="hidden" name="csrf" value="${v.csrf}">
     <h1>${ROLE_HEADINGS[v.action]}</h1>
     <p>An AI agent in one of your coding sessions asked for this change. Nothing changes unless you confirm it.</p>
@@ -289,6 +295,11 @@ export function renderRoleConfirm(v: RoleConfirmView): string {
       <li>${CHECK}<div><b>Role</b><small><span class="wrap">${v.name}</span> in <span class="mono wrap">${v.namespace}</span></small></div></li>
       <li class="no">${CROSS}<div><b>Now</b><small class="wrap">${now}</small></div></li>
       <li>${CHECK}<div><b>After</b><small class="wrap">${after}</small></div></li>
+      ${
+        v.reach.length === 0
+          ? ""
+          : html`<li>${CHECK}<div><b>${v.action === "clear" ? "Its reach is removed" : "Its reach goes with the role"}</b><small>${v.action === "clear" ? "This role can message agents in:" : "The new holder can message agents in:"}${names(v.reach)}</small></div></li>`
+      }
     </ul>
     <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
     <div class="note" role="note">${WARN}<span>Messages sent to this role go to its holder at send time. Only confirm a change you asked for. ${left}</span></div>
@@ -307,14 +318,115 @@ export function renderRoleDone(v: {
   message: string;
   busUrl: string;
 }): string {
-  return shell(
-    v.title,
-    v.instanceHost,
-    html`<div class="card">
+  return shell(v.title, v.instanceHost, doneCard(v));
+}
+
+/** The same outcome as a card, for the confirm pages' script to place in the page. */
+export function renderDoneCard(v: {
+  title: string;
+  message: string;
+  busUrl: string;
+}): string {
+  return String(doneCard(v));
+}
+
+/** A card with one sign-in link, for a POST the script made after the session ended or went stale. */
+export function renderSignInCard(v: {
+  title: string;
+  message: string;
+  href: string;
+  label: string;
+}): string {
+  return String(html`<div class="card">
+    <h1>${v.title}</h1>
+    <p>${v.message}</p>
+    <div class="actions"><a class="primary" href="${v.href}">${v.label}</a></div>
+  </div>`);
+}
+
+const doneCard = (v: { title: string; message: string; busUrl: string }) =>
+  html`<div class="card">
     <h1>${v.title}</h1>
     <p>${v.message}</p>
     <p class="muted">Your bus: <a href="${v.busUrl}">${v.busUrl}</a></p>
-  </div>`,
+  </div>`;
+
+/**
+ * #1426: the confirm pages' shell. The link's secret rides in the URL
+ * fragment, which the browser never sends, so the page loads without it; this
+ * script reads it, asks the server for the proposal (a POST that carries the
+ * secret in its body) and shows the card, and posts the decision the same
+ * way. The secret is kept in sessionStorage (this tab only, an hour at most)
+ * so a sign-in round trip, which leaves the fragment behind, can bring the
+ * member back to it; it is dropped once the link is spent or refused.
+ * Static text: everything it shows comes from the server as escaped HTML.
+ */
+const CONFIRM_SCRIPT = `(function(){
+var c=document.getElementById("c"),base=c.dataset.base,vcsrf=c.dataset.csrf,K="oa-confirm:"+base;
+function secret(){var h=location.hash.slice(1);
+if(h){try{sessionStorage.setItem(K,JSON.stringify({s:h,t:Date.now()}))}catch(e){}
+try{history.replaceState(null,"",base)}catch(e){}return h}
+try{var o=JSON.parse(sessionStorage.getItem(K)||"null");if(o&&Date.now()-o.t<36e5)return o.s}catch(e){}
+return ""}
+function clear(){try{sessionStorage.removeItem(K)}catch(e){}}
+var NONE="Something went wrong. Nothing changed. Reload the page to try again.",
+UNKNOWN="We could not confirm this finished. Check before trying again, then reload the page.";
+function show(t){c.className="slot card";c.textContent=t}
+function send(url,body,decide){return fetch(url,{method:"POST",credentials:"same-origin",cache:"no-store",
+headers:{"content-type":"application/json"},body:JSON.stringify(body)}).then(function(r){return r.text().then(function(t){
+var j=null;try{j=JSON.parse(t)}catch(e){}
+if(j&&typeof j.html==="string"){c.className="slot";c.innerHTML=j.html;if(!j.keep)clear();return}
+show(decide?UNKNOWN:NONE)})}).catch(function(){show(decide?UNKNOWN:NONE)})}
+var s=secret();
+if(!s){show("This page needs the whole link. Open the link the command or the agent gave you, not just this page's address.")}
+else send(base+"/view",{secret:s,csrf:vcsrf});
+c.addEventListener("submit",function(e){e.preventDefault();
+var f=e.target,d=e.submitter&&e.submitter.value,s2=secret();
+if(!s2||!d)return;
+send(base,{secret:s2,csrf:f.elements.csrf.value,decision:d},true)});
+})();`;
+
+/** What sign-in needs to bring the member back: keeps the fragment's secret, then goes to `loginUrl`. */
+const STASH_SCRIPT = `(function(){
+var e=document.getElementById("s"),h=location.hash.slice(1);
+if(h){try{sessionStorage.setItem("oa-confirm:"+e.dataset.base,JSON.stringify({s:h,t:Date.now()}))}catch(x){}
+try{history.replaceState(null,"",e.dataset.base)}catch(x){}}
+if(e.dataset.go)location.replace(e.dataset.go)})();`;
+
+const withScript = (script: string, nonce: string) =>
+  new SafeHtml(`<script nonce="${nonce}">${script}</script>`);
+
+/** The confirm page: a card the script fills in. `base` is the page's own path, no secret. */
+export function renderConfirmPage(v: {
+  instanceHost: string;
+  title: string;
+  base: string;
+  csrf: string;
+  nonce: string;
+}): string {
+  return shell(
+    v.title,
+    v.instanceHost,
+    html`<div class="slot card" id="c" data-base="${v.base}" data-csrf="${v.csrf}" aria-live="polite">Loading the change you were sent here to confirm…</div>
+${withScript(CONFIRM_SCRIPT, v.nonce)}`,
+  );
+}
+
+/**
+ * Signed out: keep the fragment's secret in this tab, then go to `go` (the
+ * sign-in, whose `next` is the page's own path, never the secret).
+ */
+export function renderSignInHop(v: {
+  instanceHost: string;
+  base: string;
+  go: string;
+  nonce: string;
+}): string {
+  return shell(
+    "Sign in",
+    v.instanceHost,
+    html`<div class="card" id="s" data-base="${v.base}" data-go="${v.go}">Taking you to sign in…</div>
+${withScript(STASH_SCRIPT, v.nonce)}`,
   );
 }
 
@@ -323,15 +435,121 @@ export function renderRoleReauth(v: {
   instanceHost: string;
   userEmail: string;
   reauthUrl: string;
+  /** What is being confirmed, in the copy (default "a role change"). */
+  what?: string;
+  /** The confirm page's path and a script nonce: keep the fragment's secret across the sign-in. */
+  stash?: { base: string; nonce: string };
 }): string {
   return shell(
     "Sign in again",
     v.instanceHost,
     html`<div class="card">
     <h1>Sign in again</h1>
-    <p>To confirm a role change, sign in again first. Your last sign-in is more than 10 minutes old.</p>
+    <p>To confirm ${v.what ?? "a role change"}, sign in again first. Your last sign-in is more than 10 minutes old.</p>
     <div class="who">Signed in as <b>${v.userEmail}</b></div>
     <div class="actions"><a class="primary" href="${v.reauthUrl}">Sign in again</a></div>
-  </div>`,
+  </div>
+${v.stash ? html`<div id="s" data-base="${v.stash.base}" data-go=""></div>${withScript(STASH_SCRIPT, v.stash.nonce)}` : ""}`,
+  );
+}
+
+export type LinkConfirmView = {
+  instanceHost: string;
+  action: "link" | "unlink";
+  a: string;
+  b: string;
+  /** True when confirming changes nothing (already linked, or no such link). */
+  noop: boolean;
+  /** The proposing machine's label (null: gone) and when, in ms. */
+  machineLabel: string | null;
+  proposedAt: number;
+  minutesLeft: number;
+  userEmail: string;
+  csrf: string;
+  switchUrl: string;
+};
+
+/** The link confirm form (#1567): which two namespaces, link or unlink, as whom; Reject or Confirm. */
+export function renderLinkConfirm(v: LinkConfirmView): string {
+  const link = v.action === "link";
+  const left =
+    v.minutesLeft <= 1
+      ? "This link expires in about a minute."
+      : `This link expires in ${v.minutesLeft} minutes.`;
+  const noopNote = v.noop
+    ? link
+      ? "These two are already linked, so confirming changes nothing."
+      : "These two are not linked, so confirming changes nothing."
+    : null;
+  return String(
+    html`<form class="card">
+    <input type="hidden" name="csrf" value="${v.csrf}">
+    <h1>${link ? "Link" : "Unlink"} <span class="mono wrap">${v.a}</span> and <span class="mono wrap">${v.b}</span>?</h1>
+    <p>A command you ran in a terminal on one of your machines asked for this. Nothing changes unless you confirm it.</p>
+    <p class="muted">Proposed from <b class="wrap">${v.machineLabel ?? "a machine that is gone"}</b> at ${new Date(v.proposedAt).toISOString().slice(0, 16).replace("T", " ")} UTC. If an agent asked you to confirm this, check that it is the machine you expect.</p>
+    <ul>
+      <li>${CHECK}<div><b>${link ? "Linked projects see each other" : "After this they no longer see each other"}</b><small>${link ? "Their agents appear in each other's lists and can message each other. Only these two: a link never chains to a third project." : "Their agents stop appearing in each other's lists and can no longer message each other."}</small></div></li>
+      <li>${CHECK}<div><b>Project</b><small class="wrap mono">${v.a}</small></div></li>
+      <li>${CHECK}<div><b>Project</b><small class="wrap mono">${v.b}</small></div></li>
+    </ul>
+    ${noopNote === null ? "" : html`<div class="note" role="note">${WARN}<span>${noopNote}</span></div>`}
+    <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
+    <div class="note" role="note">${WARN}<span>Only confirm a change you asked for. ${left}</span></div>
+    <div class="actions">
+      <button type="submit" name="decision" value="reject">Reject</button>
+      <button type="submit" name="decision" value="confirm" class="primary">Confirm</button>
+    </div>
+  </form>`,
+  );
+}
+
+export type ReachConfirmView = {
+  instanceHost: string;
+  roleName: string;
+  roleNamespace: string;
+  /** The role's holder when it was proposed. */
+  holderName: string;
+  /** The namespaces asked for, sorted. */
+  namespaces: string[];
+  /** Of those, the ones no agent on the member's machines ever used. */
+  unknown: string[];
+  /** True when the role already reaches all of them: confirming changes nothing. */
+  noop: boolean;
+  /** The proposing machine's label (null: gone) and when, in ms. */
+  machineLabel: string | null;
+  proposedAt: number;
+  minutesLeft: number;
+  userEmail: string;
+  csrf: string;
+  switchUrl: string;
+};
+
+/** The reach confirm form (#1346): which role, which namespaces, as whom; Reject or Confirm. */
+export function renderReachConfirm(v: ReachConfirmView): string {
+  const left =
+    v.minutesLeft <= 1
+      ? "This link expires in about a minute."
+      : `This link expires in ${v.minutesLeft} minutes.`;
+  return String(
+    html`<form class="card">
+    <input type="hidden" name="csrf" value="${v.csrf}">
+    <h1>Let <span class="wrap">${v.roleName}</span> reach other projects?</h1>
+    <p>An AI agent in one of your coding sessions asked for this. Nothing changes unless you confirm it.</p>
+    <p class="muted">Proposed from <b class="wrap">${v.machineLabel ?? "a machine that is gone"}</b> at ${new Date(v.proposedAt).toISOString().slice(0, 16).replace("T", " ")} UTC. If an agent asked you to confirm this, check that it is the machine you expect.</p>
+    <ul>
+      <li>${CHECK}<div><b>What it allows</b><small><span class="wrap">${v.roleName}</span> can message agents in:${names(v.namespaces)}They can reply.</small></div></li>
+      <li>${CHECK}<div><b>Role</b><small><span class="wrap">${v.roleName}</span> in <span class="mono wrap">${v.roleNamespace}</span></small></div></li>
+      <li>${CHECK}<div><b>Held by</b><small class="wrap">${v.holderName}</small></div></li>
+      <li class="no">${CROSS}<div><b>Only the holder</b><small>Only the agent that holds this role reaches them. The rest of its project stays closed to them.</small></div></li>
+    </ul>
+    ${v.unknown.length === 0 ? "" : html`<div class="note" role="note">${WARN}<span>Never seen on your machines:${names(v.unknown)}</span></div>`}
+    ${v.noop ? html`<div class="note" role="note">${WARN}<span>This role already reaches all of these, so confirming changes nothing.</span></div>` : ""}
+    <div class="who">Signed in as <b>${v.userEmail}</b><a href="${v.switchUrl}">Not you?</a></div>
+    <div class="note" role="note">${WARN}<span>Only confirm a change you asked for. ${left}</span></div>
+    <div class="actions">
+      <button type="submit" name="decision" value="reject">Reject</button>
+      <button type="submit" name="decision" value="confirm" class="primary">Confirm</button>
+    </div>
+  </form>`,
   );
 }

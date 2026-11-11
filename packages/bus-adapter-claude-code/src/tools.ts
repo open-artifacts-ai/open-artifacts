@@ -4,14 +4,23 @@ import {
   type DaemonClient,
   earlierStatusText,
   excerptOf,
+  FOLLOW_DAEMON_BAD_FRAME,
+  FOLLOW_OLD_DAEMON,
+  followingText,
+  followText,
+  linkedLiveNamespace,
   movedName,
+  REACH_OLD_DAEMON,
+  reachNamespacesOf,
+  reachProposedText,
   receiptText,
-  rosterLine,
+  rosterText,
   SetStatus,
   STATUS_COPY,
   selfText,
   statusLabelTooLong,
   statusSetText,
+  unfollowText,
 } from "@oa/bus-ipc";
 
 /** LIMITS.maxLabelChars: a status label's limit, in code points. */
@@ -27,7 +36,7 @@ export const TOOLS = [
   {
     name: "list_agents",
     description:
-      "List the agents you can message, in your Open Artifacts bus namespace.",
+      "List the agents you can message, in your Open Artifacts bus namespace and linked ones.",
     inputSchema: none,
   },
   {
@@ -41,7 +50,7 @@ export const TOOLS = [
         to_namespace: {
           type: "string",
           description:
-            "The recipient's namespace, when a global agent's target name exists in several.",
+            "The recipient's namespace, when the target name exists in several: a global agent's, or a linked project's.",
         },
       },
       required: ["to", "text"],
@@ -84,6 +93,50 @@ export const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "follow",
+    description:
+      "Follow an Open Artifacts artifact, by id or link, to get a notice when it changes.",
+    inputSchema: {
+      type: "object",
+      properties: { artifact: { type: "string" } },
+      required: ["artifact"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "unfollow",
+    description: "Stop following an artifact, by id or link.",
+    inputSchema: {
+      type: "object",
+      properties: { artifact: { type: "string" } },
+      required: ["artifact"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "following",
+    description: "List the artifacts you follow.",
+    inputSchema: none,
+  },
+  {
+    name: "propose_reach",
+    description:
+      "Ask that the role you hold be able to message agents in more namespaces. Name only other namespaces: your role already reaches its own. This only asks: nothing changes until the person confirms on the link you get back.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        namespaces: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 10,
+        },
+      },
+      required: ["namespaces"],
+      additionalProperties: false,
+    },
+  },
 ] as const;
 
 export type ToolResult = {
@@ -97,7 +150,7 @@ const text = (t: string, isError?: boolean): ToolResult => ({
 });
 
 /** Older daemons send only `live`. */
-const queued = (a: { live: boolean; state?: "live" | "queued" }) =>
+const queued = (a: { live: boolean; state?: "live" | "queued" | "away" }) =>
   (a.state ?? (a.live ? "live" : "queued")) === "queued";
 
 /**
@@ -144,17 +197,14 @@ async function run(
 ): Promise<ToolResult> {
   try {
     if (name === "set_status") return await statusTool(args, request);
+    if (name === "follow" || name === "unfollow" || name === "following")
+      return await followTool(name, args, request);
+    if (name === "propose_reach") return await reachTool(args, request);
     if (name === "list_agents") {
       const r = await request({ type: "list" });
       if (r.type !== "roster") return failed(r);
       const now = Date.now();
-      return text(
-        r.agents.length
-          ? r.agents
-              .map((a) => rosterLine({ ...a, queued: queued(a) }, now))
-              .join("\n")
-          : "No agents in your namespace.",
-      );
+      return text(rosterText(r.agents, now));
     }
     if (name === "send_message") {
       const to = String(args.to ?? "");
@@ -179,8 +229,12 @@ async function run(
         r.reason === "revoked"
           ? await movedTo(to, namespace, request)
           : undefined;
+      const linked =
+        (r.reason === "closed" || r.reason === "revoked") && !namespace
+          ? await linkedLive(to, request)
+          : undefined;
       return text(
-        receiptText(r, to, n, excerptOf(body), moved),
+        receiptText(r, to, n, excerptOf(body), moved, linked),
         r.state === "refused" || r.state === "expired",
       );
     }
@@ -247,6 +301,58 @@ async function statusTool(
   return text(r.message, true);
 }
 
+/** follow, unfollow and following (#1317). Refusals are the hub's or daemon's copy, as-is. */
+async function followTool(
+  name: "follow" | "unfollow" | "following",
+  args: Record<string, unknown>,
+  request: Request,
+): Promise<ToolResult> {
+  const artifact =
+    typeof args.artifact === "string" ? args.artifact.trim() : "";
+  if (name !== "following" && !artifact)
+    return text("oa-bus: artifact is required (an id or a link)", true);
+  const r =
+    name === "following"
+      ? await request({ type: "following" })
+      : await request({ type: name, artifact });
+  if (r.type === "followed") return text(followText(r.url));
+  if (r.type === "unfollowed") return text(unfollowText(r.removed, artifact));
+  if (r.type === "follows") return text(followingText(r.follows));
+  // Only a daemon that does not know the frame; its own refusals say what they are.
+  if (
+    r.type === "error" &&
+    r.code === "bad_frame" &&
+    r.message !== FOLLOW_DAEMON_BAD_FRAME.noCap &&
+    r.message !== FOLLOW_DAEMON_BAD_FRAME.wire
+  )
+    return text(FOLLOW_OLD_DAEMON, true);
+  return failed(r);
+}
+
+/**
+ * propose_reach (#1346). The frame carries the namespaces only: the daemon
+ * knows the session, so a caller cannot name another agent's. Refusals are
+ * the daemon's copy, as-is.
+ */
+async function reachTool(
+  args: Record<string, unknown>,
+  request: Request,
+): Promise<ToolResult> {
+  const given = reachNamespacesOf(args.namespaces);
+  if ("error" in given) return text(given.error, true);
+  const r = await request({
+    type: "propose_reach",
+    namespaces: given.namespaces,
+  });
+  if (r.type === "reach_proposed")
+    return text(
+      reachProposedText(given.namespaces, r.confirm_url, r.expires_at),
+    );
+  if (r.type === "error" && r.code === "bad_frame")
+    return text(REACH_OLD_DAEMON, true);
+  return failed(r);
+}
+
 /** How many namespaces hold `name`; undefined when the roster is unavailable. */
 async function namespacesOf(
   name: string,
@@ -281,6 +387,20 @@ async function movedTo(
         .filter((a) => namespace === undefined || a.namespace === namespace)
         .map((a) => a.name),
     );
+  } catch {
+    return undefined;
+  }
+}
+
+/** #1567: the linked namespace with a live agent called `name`; undefined when none or the roster is unavailable. */
+async function linkedLive(
+  name: string,
+  request: Request,
+): Promise<string | undefined> {
+  try {
+    const r = await request({ type: "list" });
+    if (r.type !== "roster") return undefined;
+    return linkedLiveNamespace(name, r.agents);
   } catch {
     return undefined;
   }

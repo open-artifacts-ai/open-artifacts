@@ -127,6 +127,15 @@ export const InlineFileSchema = z.union([
 ]);
 export type InlineFile = z.infer<typeof InlineFileSchema>;
 
+/** One small edit (#1540): `old` must occur exactly once in the text as it stands at that step. */
+export const PublishEditSchema = z.strictObject({
+  old: z.string().min(1),
+  new: z.string(),
+});
+export type PublishEdit = z.infer<typeof PublishEditSchema>;
+/** Most edits in one publish. */
+export const MAX_EDITS = 64;
+
 const PublishShape = z.strictObject({
   id: z.string().optional(),
   title: z.string().trim().min(1).max(200).optional(),
@@ -143,6 +152,8 @@ const PublishShape = z.strictObject({
   dataWriters: DataWritersSchema.optional(),
   /** Deprecated (#681): true means dataWriters "viewers"; false, "editors" on a public artifact. */
   allowAnonymousWrites: z.boolean().optional(),
+  /** #682: switch the built-in comments layer on or off (owner and managers). */
+  comments: z.boolean().optional(),
   /**
    * Hosted M1: the space to create the artifact in (default: the caller's
    * personal space). Create only: with the id of an existing artifact it is
@@ -150,6 +161,20 @@ const PublishShape = z.strictObject({
    * space_forbidden; so is any create by a capped caller.
    */
   spaceId: z.string().optional(),
+  /**
+   * #1216: publish only if this is still the artifact's current version, else
+   * 409 version_conflict (the message gives the current version). Needs `id`.
+   * A settings-only publish with it is 400 (it creates no version).
+   */
+  expectedVersion: z.number().int().min(1).optional(),
+  /**
+   * #1540: small edits to the current version's entry file (html, markdown or
+   * code), applied in order; each `old` must occur exactly once at its step,
+   * else 400 edit_failed and nothing is published. Needs `id`; not with
+   * content, files, entry, format or language. Takes the current version as
+   * its expectedVersion; other files are reused unchanged.
+   */
+  edits: z.array(PublishEditSchema).min(1).max(MAX_EDITS).optional(),
 });
 
 const refinePublish =
@@ -161,8 +186,20 @@ const refinePublish =
     const hasFiles = v.files !== undefined;
     // The MCP tool takes neither with an id: a settings-only update (#681 D),
     // checked by the server (publishSettings).
-    const settingsOnly = tool && v.id !== undefined && !hasContent && !hasFiles;
-    if (hasContent === hasFiles && !settingsOnly) {
+    const hasEdits = v.edits !== undefined;
+    const settingsOnly =
+      tool && v.id !== undefined && !hasContent && !hasFiles && !hasEdits;
+    if (hasEdits) {
+      if (v.id === undefined) issue("edits need an id", ["edits"]);
+      for (const k of [
+        "content",
+        "files",
+        "entry",
+        "format",
+        "language",
+      ] as const)
+        if (v[k] !== undefined) issue(`edits can't be combined with ${k}`, [k]);
+    } else if (hasContent === hasFiles && !settingsOnly) {
       issue("Provide exactly one of content or files", [
         hasContent ? "files" : "content",
       ]);
@@ -170,6 +207,8 @@ const refinePublish =
     if (v.id === undefined && v.title === undefined) {
       issue("title is required when id is absent", ["title"]);
     }
+    if (v.expectedVersion !== undefined && v.id === undefined)
+      issue("expectedVersion needs an id", ["expectedVersion"]);
     if (v.id !== undefined && !isId(v.id))
       issue("id is not a valid artifact id", ["id"]);
     if (hasContent && v.format === undefined && v.entry === undefined) {
@@ -236,6 +275,8 @@ export const PublishResultSchema = z.object({
   id: z.string(),
   version: z.number().int(),
   url: z.string().url(),
+  /** The artifact's current title after the call (#2015); absent on restore_version. */
+  title: z.string().optional(),
   /** Set when the artifact ends up public, declares db and lets viewers write data (#681). */
   warning: z.string().optional(),
 });
@@ -272,6 +313,8 @@ export const ArtifactSummarySchema = z.object({
   can: ArtifactCanSchema.optional(),
   /** #682: the Comments setting (on by default). Absent: the server has no comments (older than #1496), so the shell shows none. */
   comments: z.boolean().optional(),
+  /** #1535: open asks addressed to the caller. Absent reads as 0. */
+  asksForYou: z.number().int().min(0).optional(),
 });
 export type ArtifactSummary = z.infer<typeof ArtifactSummarySchema>;
 
@@ -297,6 +340,12 @@ export const VersionInfoSchema = z.object({
   textIndexed: z.boolean(),
   /** This version's format (old versions keep theirs after a later publish). */
   format: FormatSchema,
+  /**
+   * SHA-256 (hex) of the entry file's bytes, or null when the version has no
+   * recorded digest (an uploaded entry, or a version from before digests).
+   * Pins carry the hash the server stamped from the same bytes (#1490).
+   */
+  contentHash: z.string().nullable(),
 });
 export type VersionInfo = z.infer<typeof VersionInfoSchema>;
 
@@ -330,6 +379,8 @@ export const ListQuerySchema = z
     cursor: z.string().optional(),
     limit: z.coerce.number().int().min(1).max(100).default(25),
     includeDeleted: z.union([z.boolean(), z.stringbool()]).default(false),
+    /** #1535: needs_answer = open asks addressed to the caller. */
+    filter: z.enum(["needs_answer"]).optional(),
     /**
      * Artifacts with any version from this connection (AgentViaSchema). Only
      * the caller's own grant or token matches; any other is an empty page.
@@ -596,6 +647,12 @@ export const InstanceUpdateSchema = z.object({
   notesUrl: z.string(),
   /** When the last good check ran (ISO). */
   checkedAt: z.string(),
+  /**
+   * When the latest release was published (ISO); null when unknown (the
+   * rate-limited fallback check). Optional: older servers omit it. The
+   * dashboard's upgrade notice treats null as "not old".
+   */
+  latestPublishedAt: z.string().nullable().optional(),
 });
 export type InstanceUpdate = z.infer<typeof InstanceUpdateSchema>;
 
@@ -633,6 +690,8 @@ export const MeSchema = z.object({
   suggestedName: z.string().nullable(),
   /** No chosen name and no usable IdP name: ask the user for one. */
   needsDisplayName: z.boolean(),
+  /** Email me about comments (#1467); on unless turned off (PATCH R.me, or the unsubscribe link in a comment email). Optional: older servers omit it (on). */
+  commentEmail: z.boolean().optional(),
   /** Hosted M1: how this request authenticated. */
   auth: MeAuthSchema.optional(),
   /** Hosted M1: the caller's personal space id (equals user.id). */
@@ -665,6 +724,21 @@ const isUnsafeNameChar = (cp: number) =>
   (cp >= 0x2060 && cp <= 0x2069) ||
   cp === 0xfeff;
 
+/** Default-ignorable and filler code points: invisible, so they only disguise a name (#1822). */
+export const NAME_FILLERS =
+  /[\p{Default_Ignorable_Code_Point}\u115F\u1160\u3164\uFFA0]/u;
+
+/** A name that ends in "'s agent" (any apostrophe, case, trailing punctuation): it would read as someone's agent. The server also folds lookalike letters on read. */
+export const namesAnAgent = (s: string): boolean =>
+  /['\u2018\u2019\u02bc\u2032\u00b4`]\s*s\s*agent$/u.test(
+    s
+      .normalize("NFKC")
+      .normalize("NFD")
+      .replace(/\p{M}/gu, "")
+      .toLowerCase()
+      .replace(/[\p{P}\p{S}\s]+$/u, ""),
+  );
+
 /** A user-chosen display name: trimmed, 1–80 characters, no control/bidi/zero-width characters. */
 export const DisplayNameSchema = z
   .string()
@@ -674,9 +748,19 @@ export const DisplayNameSchema = z
   .refine(
     (s) => ![...s].some((ch) => isUnsafeNameChar(ch.codePointAt(0) ?? 0)),
     "Name contains invalid characters",
-  );
+  )
+  .refine((s) => !NAME_FILLERS.test(s), "Name contains invalid characters")
+  .refine((s) => !namesAnAgent(s), "Name must not read as an agent");
 
-export const MePatchSchema = z.strictObject({ displayName: DisplayNameSchema });
+export const MePatchSchema = z
+  .strictObject({
+    displayName: DisplayNameSchema.optional(),
+    commentEmail: z.boolean().optional(),
+  })
+  .refine(
+    (p) => p.displayName !== undefined || p.commentEmail !== undefined,
+    "Send displayName or commentEmail",
+  );
 export type MePatch = z.infer<typeof MePatchSchema>;
 
 export const TokenSchema = z.object({
@@ -787,7 +871,7 @@ export const BusMachinesSchema = z.strictObject({
 });
 export type BusMachines = z.infer<typeof BusMachinesSchema>;
 
-export const BUS_AGENT_STATES = ["live", "queued"] as const;
+export const BUS_AGENT_STATES = ["live", "queued", "away"] as const;
 export const BUS_STATUS_STATES = [
   "working",
   "idle",
@@ -796,11 +880,12 @@ export const BUS_STATUS_STATES = [
 ] as const;
 
 /**
- * One open agent on the caller's bus (#1291). `state`: live while its
- * machine is connected, queued otherwise (mail waits up to 1 h). `running`
- * is true for every listed agent (closed sessions are omitted); it is the
- * field the share-notice picks match on. `status*`: self-reported by the
- * agent ("agent says"), absent when none.
+ * One agent on the caller's bus (#1291). `state`: live while its machine is
+ * connected, queued otherwise, away (#1295) once its session closed: its
+ * mailbox and name are kept for 7 days. `running` is true for open agents and
+ * false for away ones; it is the field the share-notice picks match on.
+ * `since`: when an away agent closed, null for any other. `status*`:
+ * self-reported by the agent ("agent says"), absent when none.
  */
 export const BusAgentSchema = z.strictObject({
   id: z.string(),
@@ -812,6 +897,7 @@ export const BusAgentSchema = z.strictObject({
   global: z.boolean(),
   state: z.enum(BUS_AGENT_STATES),
   running: z.boolean(),
+  since: z.string().nullable(),
   updatedAt: z.string(),
   status: z.enum(BUS_STATUS_STATES).optional(),
   statusLabel: z.string().optional(),
@@ -819,10 +905,15 @@ export const BusAgentSchema = z.strictObject({
 });
 export type BusAgent = z.infer<typeof BusAgentSchema>;
 
-/** GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then []. */
+/**
+ * GET R.busAgents. `live` is false when the bus could not be asked (off, unbound, timeout): agents is then [].
+ * `droppedNotices` (#1317): notices for the caller's own bus that found no
+ * agent today (UTC), 0 when none (or from an older server).
+ */
 export const BusAgentsSchema = z.strictObject({
   agents: z.array(BusAgentSchema).max(1000),
   live: z.boolean(),
+  droppedNotices: z.number().int().min(0).default(0),
 });
 export type BusAgents = z.infer<typeof BusAgentsSchema>;
 
@@ -848,6 +939,22 @@ export const SettingsSchema = z.object({
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
+/** GET/PUT R.onboarding: the first-run checklist's install-wide state. */
+export const OnboardingSchema = z.strictObject({
+  dismissed: z.boolean(),
+  completed: z.boolean(),
+  /** The caller owns at least one artifact not in the trash (#1832; absent on older servers). */
+  hasArtifacts: z.boolean().optional(),
+});
+export type Onboarding = z.infer<typeof OnboardingSchema>;
+
+/** PUT R.onboarding: a flag only turns on (true), never off. */
+export const OnboardingPatchSchema = z.strictObject({
+  dismissed: z.literal(true).optional(),
+  completed: z.literal(true).optional(),
+});
+export type OnboardingPatch = z.infer<typeof OnboardingPatchSchema>;
+
 export const SettingsPatchSchema = SettingsSchema.partial().strict();
 export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
 
@@ -857,6 +964,11 @@ export const UploadCreateInputSchema = z.strictObject({
   /** Exact byte size the PUT must match. Omit it and the server measures the bytes at PUT (up to 25 MB). */
   size: z.number().int().positive().optional(),
   contentType: z.string().optional(),
+  sha256: z
+    .string()
+    .regex(/^[a-fA-F0-9]{64}$/)
+    .toLowerCase()
+    .optional(),
 });
 export type UploadCreateInput = z.infer<typeof UploadCreateInputSchema>;
 

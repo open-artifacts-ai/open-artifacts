@@ -15,6 +15,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
 import { CODES_PER_IP, RL_KEYS } from "../../src/bus/routes.js";
+import { BUS_PING_HUB_NAME } from "../../src/services/bus.js";
 import { api, errOf, fetchAndWait } from "../helpers.js";
 import { limiter } from "../mcp-helpers.js";
 import {
@@ -23,6 +24,7 @@ import {
   type Member,
   machine,
   member,
+  trackSocket,
   upgrade,
   waitFor,
   workerFetch,
@@ -550,9 +552,11 @@ describe("approval page: the person types the code (RFC 8628 5.4)", () => {
     expect(html).toContain(
       `Requested just now from Germany · code <span class="mono nw">${d.user_code}</span>`,
     );
-    expect(html).not.toContain("FRA");
-    expect(html).not.toContain("Frankfurt");
-    expect(html).not.toContain("3320");
+    // The random user code (A-Z, 2-9) can itself spell "FRA": drop it first.
+    const noCode = html.split(d.user_code).join("");
+    expect(noCode).not.toContain("FRA");
+    expect(noCode).not.toContain("Frankfurt");
+    expect(noCode).not.toContain("3320");
     const row = await env.DB.prepare(
       "select origin_network as n from bus_device_codes where user_code = ?",
     )
@@ -725,6 +729,7 @@ describe("GET /bus/connect: the machine token and nothing else", () => {
     expect(r.status).toBe(101);
     const ws = r.webSocket as WebSocket;
     ws.accept();
+    trackSocket(ws);
     const got = new Promise<string>((res) =>
       ws.addEventListener("message", (m) => res(String(m.data))),
     );
@@ -861,7 +866,11 @@ describe("the bus is off: unbound, or hosted (until #1299)", () => {
       unbound,
     );
     expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ agents: [], live: false });
+    expect(await r.json()).toEqual({
+      agents: [],
+      live: false,
+      droppedNotices: 0,
+    });
   });
 });
 
@@ -905,7 +914,11 @@ describe("dashboard REST", () => {
         .status,
     ).toBe(204);
     expect((await upgrade(m.token)).status).toBe(401);
-    expect((await upgrade(other.token)).status).toBe(101);
+    const live = await upgrade(other.token);
+    expect(live.status).toBe(101);
+    const lws = live.webSocket as WebSocket;
+    lws.accept();
+    trackSocket(lws);
   });
 
   it("/me says canConnect, on GET and PATCH, from the server's rule", async () => {
@@ -962,12 +975,75 @@ describe("dashboard REST", () => {
     expect((await api(app, R.busAgents, bob.cookie)).status).toBe(200);
   });
 
+  it("GET agents carries the caller's own dropped-notice count for today (#1317)", async () => {
+    const me = await member();
+    const other = await member();
+    const setCount = (userId: string, n: number, day: string) =>
+      e.DB.prepare(
+        "insert into counters (key, n, day) values (?, ?, ?) on conflict (key) do update set n = excluded.n, day = excluded.day",
+      )
+        .bind(`notice:dropped:${userId}`, n, day)
+        .run();
+    const today = new Date().toISOString().slice(0, 10);
+    const read = async (cookie: string) =>
+      (
+        (await (await api(app, R.busAgents, cookie)).json()) as {
+          droppedNotices: number;
+        }
+      ).droppedNotices;
+    // Default: none dropped.
+    expect(await read(me.cookie)).toBe(0);
+    await setCount(me.userId, 3, today);
+    await setCount(other.userId, 9, today);
+    expect(await read(me.cookie)).toBe(3);
+    // Only the caller's own: another member's count never shows.
+    expect(await read(other.cookie)).toBe(9);
+    const third = await member();
+    expect(await read(third.cookie)).toBe(0);
+    // A count from an earlier day is not today's.
+    await setCount(me.userId, 5, "2020-01-01");
+    expect(await read(me.cookie)).toBe(0);
+  });
+
+  it("a D1 failure reading the dropped count never fails the agents list (#1317)", async () => {
+    const me = await member();
+    const db = new Proxy(e.DB, {
+      get(t, k) {
+        if (k === "prepare")
+          return (sql: string) => {
+            if (sql.includes("from counters where key"))
+              throw new Error("d1 down");
+            return t.prepare(sql);
+          };
+        const v = Reflect.get(t, k) as unknown;
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+    const r = await fetchAndWait(
+      app,
+      new Request(`http://app.localhost${R.busAgents}`, {
+        headers: { cookie: me.cookie },
+      }),
+      { ...env, DB: db },
+    );
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({
+      agents: [],
+      live: true,
+      droppedNotices: 0,
+    });
+  });
+
   it("GET agents for a member whose machines never connected: no agents, live (the hub's state is known)", async () => {
     const fay = await member();
     await machine("never", fay.userId);
     const r = await api(app, R.busAgents, fay.cookie);
     expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ agents: [], live: true });
+    expect(await r.json()).toEqual({
+      agents: [],
+      live: true,
+      droppedNotices: 0,
+    });
   });
 
   it("no BusHub is created for a member without a machine that connected", async () => {
@@ -979,7 +1055,11 @@ describe("dashboard REST", () => {
     const agents = await api(app, R.busAgents, dave.cookie);
     // Live (#1300 review M1): no machine ever connected, so none can be
     // connected and nothing is unknown, though no hub was read.
-    expect(await agents.json()).toEqual({ agents: [], live: true });
+    expect(await agents.json()).toEqual({
+      agents: [],
+      live: true,
+      droppedNotices: 0,
+    });
     // Looking inside builds the DO (schema), so the check is that the routes
     // never reached it: no machines mirror row, no revokedAt.
     const { runInDurableObject } = await import("cloudflare:test");
@@ -1001,6 +1081,7 @@ describe("dashboard REST", () => {
     const r = await upgrade(m.token);
     const ws = r.webSocket as WebSocket;
     ws.accept();
+    trackSocket(ws);
     const j = (await (await api(app, R.busMachines, erin.cookie)).json()) as {
       machines: {
         id: string;
@@ -1012,5 +1093,89 @@ describe("dashboard REST", () => {
     expect(j.machines[0]?.lastUsedAt).not.toBeNull();
     ws.close();
     void waitFor;
+  });
+});
+
+describe("GET /api/v1/bus/ping (#1299)", () => {
+  const ping = (headers: Record<string, string>, ev: unknown = env) =>
+    fetchAndWait(
+      app,
+      new Request(`http://app.localhost${R.busPing}`, { headers }),
+      ev,
+    );
+
+  it("answers { ok: true } to a PAT when the bus is on", async () => {
+    const m = await member();
+    const pat = (await createPat(env, m.userId, "ping")).token;
+    const r = await ping({ authorization: `Bearer ${pat}` });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ ok: true });
+  });
+
+  it("is 401 without a credential", async () => {
+    expect((await ping({})).status).toBe(401);
+  });
+
+  /** `env` with BUS_HUB wrapped so each idFromName call is recorded. */
+  const spied = (names: string[], extra: Record<string, unknown> = {}) => {
+    const ns = env.BUS_HUB as NonNullable<typeof env.BUS_HUB>;
+    return {
+      ...env,
+      ...extra,
+      BUS_HUB: new Proxy(ns, {
+        get(t, k) {
+          if (k === "idFromName")
+            return (n: string) => {
+              names.push(n);
+              return t.idFromName(n);
+            };
+          const v = Reflect.get(t, k);
+          return typeof v === "function" ? v.bind(t) : v;
+        },
+      }),
+    };
+  };
+
+  it("is 404 while the bus is off, before any hub is touched: unbound, or hosted without FEATURES bus", async () => {
+    const m = await member();
+    const pat = (await createPat(env, m.userId, "ping-off")).token;
+    const auth = { authorization: `Bearer ${pat}` };
+    const names: string[] = [];
+    const un = await ping(auth, { ...env, BUS_HUB: undefined });
+    expect(un.status).toBe(404);
+    const ho = await ping(auth, spied(names, { HOSTED: "1" }));
+    expect(ho.status).toBe(404);
+    expect(((await ho.json()) as { error: { code: string } }).error.code).toBe(
+      "not_found",
+    );
+    expect(names).toEqual([]);
+  });
+
+  it("uses the reserved hub name, never the caller's hub", async () => {
+    const m = await member();
+    const pat = (await createPat(env, m.userId, "ping-hub")).token;
+    const names: string[] = [];
+    const r = await ping({ authorization: `Bearer ${pat}` }, spied(names));
+    expect(r.status).toBe(200);
+    expect(names).toEqual([BUS_PING_HUB_NAME]);
+    expect(names).not.toContain(`bus:${m.userId}`);
+  });
+
+  it("is 503 storage_unavailable with retry-after when the hub does not answer in time", async () => {
+    const m = await member();
+    const pat = (await createPat(env, m.userId, "ping-slow")).token;
+    const slow = {
+      ...env,
+      BUS_HUB: {
+        idFromName: (n: string) => n,
+        get: () => ({ ping: () => new Promise(() => {}) }),
+      },
+    };
+    const r = await ping({ authorization: `Bearer ${pat}` }, slow);
+    expect(r.status).toBe(503);
+    expect(r.headers.get("retry-after")).toBe("5");
+    expect(((await r.json()) as { error: { code: string } }).error.code).toBe(
+      "storage_unavailable",
+    );
   });
 });

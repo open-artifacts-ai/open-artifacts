@@ -23,6 +23,7 @@ const summary = {
   capabilities: { db: false, viewer: false, storage: false },
   dataWriters: "editors",
   allowAnonymousWrites: false,
+  comments: true,
 };
 
 describe("runtime params/results", () => {
@@ -322,6 +323,7 @@ describe("MCP inputs", () => {
       files: [],
       language: null,
       textIndexed: false,
+      contentHash: null,
       format: "html",
     };
     expect(

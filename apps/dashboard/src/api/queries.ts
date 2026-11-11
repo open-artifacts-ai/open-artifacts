@@ -3,6 +3,9 @@ import {
   ArtifactSummarySchema,
   type BusAddress,
   BusAgentsSchema,
+  type BusLinkPut,
+  BusLinkSchema,
+  BusLinksSchema,
   BusMachinesSchema,
   type BusRolePut,
   BusRoleSchema,
@@ -20,6 +23,9 @@ import {
   type NoticeId,
   type OAuthClient,
   OAuthClientSchema,
+  type Onboarding,
+  type OnboardingPatch,
+  OnboardingSchema,
   PageSchema,
   type PublishInput,
   PublishResultSchema,
@@ -66,6 +72,7 @@ import {
   TrashItemSchema,
 } from "./contract";
 import {
+  billingContext,
   DIRECTORY_SETTINGS,
   type ErrorContext,
   errorCopy,
@@ -101,7 +108,9 @@ export const qk = {
   busAgents: ["bus", "agents"] as const,
   shareNotices: ["bus", "share-notices"] as const,
   busRoles: ["bus", "roles"] as const,
+  busLinks: ["bus", "links"] as const,
   settings: ["settings"] as const,
+  onboarding: ["onboarding"] as const,
   usage: ["usage"] as const,
   spaces: (q?: SpacesQueryInput) => ["spaces", q ?? {}] as const,
   space: (id: string) => ["spaces", id] as const,
@@ -203,6 +212,32 @@ export const useTokens = (enabled = true) =>
     queryKey: qk.tokens,
     queryFn: ({ signal }) => api.get(R.tokens, z.array(TokenSchema), signal),
   });
+/** The first-run checklist's server state (GET R.onboarding); the owner only. */
+export const useOnboarding = (enabled = true) =>
+  useQuery({
+    enabled,
+    queryKey: qk.onboarding,
+    queryFn: ({ signal }) => api.get(R.onboarding, OnboardingSchema, signal),
+  });
+/** PUT R.onboarding: turn on `dismissed` or `completed`; the cache shows the answer. */
+export const useSetOnboarding = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: OnboardingPatch) =>
+      api.send("PUT", R.onboarding, patch, OnboardingSchema),
+    onMutate: (patch) => {
+      const before = qc.getQueryData<Onboarding>(qk.onboarding);
+      if (before)
+        qc.setQueryData<Onboarding>(qk.onboarding, { ...before, ...patch });
+      return { before };
+    },
+    onError: (e, _p, ctx) => {
+      if (ctx?.before) qc.setQueryData(qk.onboarding, ctx.before);
+      failToast(e, "Couldn't save that.");
+    },
+    onSuccess: (r) => qc.setQueryData(qk.onboarding, r),
+  });
+};
 export const useOAuthClients = (enabled = true) =>
   useQuery({
     enabled,
@@ -318,6 +353,30 @@ export const useDeleteBusRole = () =>
     () => [qk.busRoles],
     "Couldn't remove the role.",
   );
+/** #1567: the member's namespace links (GET R.busLinks); polled while visible. */
+export const useBusLinks = (enabled = true) =>
+  useQuery({
+    enabled,
+    queryKey: qk.busLinks,
+    queryFn: ({ signal }) => api.get(R.busLinks, BusLinksSchema, signal),
+    refetchInterval: BUS_POLL_MS,
+  });
+/** Link two namespaces (PUT R.busLinks, idempotent). Refusals (409) are the dialog's to show. */
+export const usePutBusLink = () => {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (v: BusLinkPut) =>
+      api.send("PUT", R.busLinks, v, z.object({ link: BusLinkSchema })),
+    onSettled: () => qc.invalidateQueries({ queryKey: qk.busLinks }),
+  });
+};
+/** Remove a link (DELETE R.busLink(id), idempotent). */
+export const useDeleteBusLink = () =>
+  useInvalidating(
+    (id: string) => api.send("DELETE", R.busLink(id), undefined),
+    () => [qk.busLinks],
+    "Couldn't remove the link.",
+  );
 export const useSettings = () =>
   useQuery({
     queryKey: qk.settings,
@@ -344,10 +403,15 @@ export const useUsage = (
   });
 
 /** Where the error shows and who hit it, for `errorCopy` and `errorLink`. */
-const errorContext = (qc: QueryClient): ErrorContext => ({
-  capped: qc.getQueryData<Me>(qk.me)?.auth?.cap != null,
-  onDirectoryPage: location.pathname.startsWith(DIRECTORY_SETTINGS),
-});
+const errorContext = (qc: QueryClient): ErrorContext => {
+  const me = qc.getQueryData<Me>(qk.me);
+  return {
+    capped: me?.auth?.cap != null,
+    cap: me?.auth?.cap ?? null,
+    ...billingContext(me),
+    onDirectoryPage: location.pathname.startsWith(DIRECTORY_SETTINGS),
+  };
+};
 
 /** A failure toast: `title`, Design's copy for `e`, and its link if any. */
 const failureToast = (
@@ -453,7 +517,13 @@ export const useInviteMember = () => {
   return useMutation({
     mutationFn: (input: MemberInvite) =>
       api.send("POST", R.members, input, MemberInviteResultSchema),
-    onSuccess: () => qc.invalidateQueries({ queryKey: qk.members }),
+    // An invite can start the Business trial: Me carries the billing the
+    // checklist's trial line and the invite dialog's trial notice read.
+    onSuccess: () =>
+      Promise.all([
+        qc.invalidateQueries({ queryKey: qk.members }),
+        qc.invalidateQueries({ queryKey: qk.me }),
+      ]),
     // invite_unreachable: the dialog says why under the email field.
     // member_removed: the dialog offers Restore; guest_lapsed: it says to share (parity 1).
     onError: (e) => {
@@ -462,7 +532,11 @@ export const useInviteMember = () => {
         (e.code === "invite_unreachable" ||
           e.code === "member_removed" ||
           e.code === "guest_lapsed" ||
-          e.code === "directory_managed")
+          e.code === "directory_managed" ||
+          // The dialog words a plan refusal itself (#1838); a toast with the
+          // server's text would say it a second, different way.
+          e.code.startsWith("plan_") ||
+          e.code === "billing_unavailable")
       )
         return;
       failToast(e, "Couldn't send the invite.");
@@ -477,6 +551,8 @@ const useOptimisticMembers = <V>(
   failure: string,
   /** A 403 owner_only: the caller says so on the row (no toast). */
   onOwnerOnly?: (v: V) => void,
+  /** A free instance's plan_limit / plan_required: the caller says so on the row, with this copy. */
+  onPlan?: (v: V, copy: string) => void,
 ) => {
   const qc = useQueryClient();
   return useMutation({
@@ -500,18 +576,28 @@ const useOptimisticMembers = <V>(
         void qc.invalidateQueries({ queryKey: qk.me });
         if (onOwnerOnly) return onOwnerOnly(v);
       }
+      if (
+        onPlan &&
+        e instanceof ApiClientError &&
+        (e.code === "plan_limit" || e.code === "plan_required")
+      )
+        return onPlan(v, errorCopy(e, failure, errorContext(qc)));
       failToast(e, failure);
     },
     onSettled: () => qc.invalidateQueries({ queryKey: qk.members }),
   });
 };
-export const usePatchMember = (onOwnerOnly?: (id: string) => void) =>
+export const usePatchMember = (
+  onOwnerOnly?: (id: string) => void,
+  onPlan?: (id: string, copy: string) => void,
+) =>
   useOptimisticMembers(
     (v: { id: string } & MemberPatch) =>
       api.send("PATCH", R.member(v.id), { role: v.role }, MemberSchema),
     (list, v) => list.map((m) => (m.id === v.id ? { ...m, role: v.role } : m)),
     "Couldn't change the role.",
     onOwnerOnly && ((v) => onOwnerOnly(v.id)),
+    onPlan && ((v, copy) => onPlan(v.id, copy)),
   );
 export const useRemoveMember = (onOwnerOnly?: (id: string) => void) =>
   useOptimisticMembers(
@@ -711,6 +797,8 @@ export const useSpaceCandidates = (id: string, q: string, enabled = true) =>
 /** The People card shows member refusals by the row, and snaps the role back. */
 const memberInline = (e: ApiClientError) =>
   e.code === "space_forbidden" ||
+  e.code === "plan_limit" ||
+  e.code === "plan_required" ||
   e.code === "member_synced" ||
   e.code === "managed_by_org_mapping" ||
   e.code === "not_found";
@@ -1056,7 +1144,8 @@ export const useRestoreMember = () =>
   useInvalidating(
     (memberId: string) =>
       api.send("POST", R.memberRestore(memberId), undefined, MemberSchema),
-    () => [qk.members],
+    // A restore can start the trial too: Me's billing changes.
+    () => [qk.members, qk.me],
     "Couldn't restore them.",
     () => true,
   );

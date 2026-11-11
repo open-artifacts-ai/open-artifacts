@@ -1,9 +1,11 @@
 import {
   BAD_NS_CHARS,
   BUS_CMD,
+  isFallbackName,
   LIMITS,
   MAILBOX_PENDING_CAP,
   MAILBOX_RETAIN_MS,
+  REACH_PROPOSAL_MAX,
   type ReceiptReason,
   type ReceiptState,
 } from "@oa/bus-protocol";
@@ -45,6 +47,16 @@ const refusals: Record<
   inbox_full: [
     `${MAILBOX_PENDING_CAP} messages are already waiting.`,
     "Send again once some are delivered or expire.",
+  ],
+  // #1295: the cap sockets' inbox_full (pending count, bytes or the hub total).
+  mailbox_full: [
+    "Its mailbox is full.",
+    "Send again once it has read some, or message another agent.",
+  ],
+  // #1295: a name only held after a move; no one reads it.
+  reserved_name: [
+    "No one has that name now; it was left by an agent that moved.",
+    "Run the oa_bus list_agents tool to find who has it now.",
   ],
   too_large: [
     `It is too large to send (the limit is ${MB}).`,
@@ -91,7 +103,9 @@ const quoted = (head: string, quote: string, tail: string): string => {
  * namespaces hold `to`, for `ambiguous`. `excerpt` (from `excerptOf`) is the
  * message an expired or refused notice is about; without it the quote is left
  * out. `movedTo` (from `movedName`, #1448) is the live agent a `revoked` name
- * most likely moved to: the refusal then says to try it.
+ * most likely moved to: the refusal then says to try it. `linkedNs` (from
+ * `linkedLiveNamespace`, #1567) is the linked namespace holding a live agent of
+ * that name: a `closed` or `revoked` refusal then says to pass `to_namespace`.
  */
 export function receiptText(
   r: { state: ReceiptState; reason?: ReceiptReason },
@@ -99,6 +113,7 @@ export function receiptText(
   namespaces?: number,
   excerpt?: string,
   movedTo?: string,
+  linkedNs?: string,
 ): string {
   const quote = excerpt ? `"${excerpt}"` : undefined;
   const to = sentTo;
@@ -115,7 +130,7 @@ export function receiptText(
       const tail = (v: string) =>
         r.reason === "recipient_closed"
           ? `was not delivered because ${v} closed first.`
-          : `was not taken within ${RETAIN}.`;
+          : `was not confirmed as delivered. Mail waits at most ${RETAIN}.`;
       const head = (v: string) => `×  Expired: your message to ${v}`;
       if (!quote) return fitLine((v) => `${head(v)} ${tail(v)}`, to);
       return fitLine((v) => quoted(head(v), quote, tail(v)), to);
@@ -144,6 +159,13 @@ export function receiptText(
             : `×  ${label}: your message to ${v} was not delivered.`,
           ...(said(v) ? [`   ${said(v)}`] : []),
           ...(hint ? [`   ${hint}`] : []),
+          ...(linkedNs !== undefined &&
+          (r.reason === "closed" || r.reason === "revoked")
+            ? [
+                "   A linked project has a live agent with that name:",
+                `   pass to_namespace ${linkedNs} to reach the live one.`,
+              ]
+            : []),
         ].join("\n");
       return fitLine(lines, to);
     }
@@ -176,6 +198,36 @@ export function movedName(
 }
 
 /**
+ * #1567: for a send refused `closed` or `revoked` with no `to_namespace`, the
+ * namespace of the one live agent called `name` in `roster` (ignoring case);
+ * undefined when none, or when it is live in several namespaces. A hub sends
+ * rows of linked namespaces only to a socket whose hello listed the `links`
+ * cap, so any other sees none and gets no hint. An agent live under that name
+ * in the sender's own namespace would not have been refused.
+ */
+export function linkedLiveNamespace(
+  name: string,
+  roster: readonly {
+    name: string;
+    namespace: string;
+    live?: boolean;
+    state?: string;
+  }[],
+): string | undefined {
+  const l = name.toLowerCase();
+  const seen = new Set(
+    roster
+      .filter(
+        (a) =>
+          a.name.toLowerCase() === l &&
+          (a.state ?? (a.live ? "live" : "queued")) === "live",
+      )
+      .map((a) => a.namespace),
+  );
+  return seen.size === 1 ? [...seen][0] : undefined;
+}
+
+/**
  * A send given up on after the hub link dropped mid-send (C16): the hub may
  * have taken it. The Expired shape and wrap; the last two lines are fixed and
  * never wrap. design/cli/transcript.md "Receipts", verbatim.
@@ -188,6 +240,17 @@ export function unconfirmedText(to: string, excerpt?: string): string {
     "\n   Ask the recipient whether it arrived before sending it again.";
   if (!excerpt) return fitLine((v) => `${head(v)} ${tail}${fixed}`, to);
   return fitLine((v) => `${quoted(head(v), `"${excerpt}"`, tail)}${fixed}`, to);
+}
+
+/**
+ * The correction to an Expired notice the sender already saw (#1760): the
+ * recipient took the message after all. The Expired shape and wrap.
+ */
+export function correctedDeliveredText(to: string, excerpt?: string): string {
+  const head = (v: string) => `✓  Delivered after all: your message to ${v}`;
+  const tail = "reached it. Ignore the earlier Expired notice.";
+  if (!excerpt) return fitLine((v) => `${head(v)} ${tail}`, to);
+  return fitLine((v) => quoted(head(v), `"${excerpt}"`, tail), to);
 }
 
 /**
@@ -292,9 +355,14 @@ export const oversizedText = (size: number, msgId: string): string =>
 
 /**
  * A name as the hub takes it: at most `max` UTF-16 units, never ending in
- * half a surrogate pair, and any lone surrogate replaced with U+FFFD.
+ * half a surrogate pair, and any lone surrogate replaced with U+FFFD. A
+ * /fork title's U+2442 mark survives the cut (#1916): the parent part is
+ * trimmed instead, so the hub still sees a fork and names it "<parent> fork".
  */
 export function fitName(name: string, max: number): string {
+  const mark = name.indexOf("\u2442");
+  if (name.length > max && mark >= max - 1 && max >= 3)
+    return `${fitName(name.slice(0, mark), max - 2)} \u2442`;
   let cut = name.slice(0, max);
   const last = cut.charCodeAt(cut.length - 1);
   if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
@@ -369,6 +437,80 @@ export const statusSetText = (state: string, label?: string): string =>
 export const earlierStatusText = (message: string): string =>
   `Your previous status did not reach the user. ${message}`;
 
+/** The `follow` result (#1317). */
+export const followText = (url: string): string =>
+  `Following ${url}. You get a notice here when it changes.`;
+
+/** The `unfollow` result. */
+export const unfollowText = (removed: boolean, artifact: string): string =>
+  removed
+    ? `Stopped following ${artifact}.`
+    : `You were not following ${artifact}.`;
+
+/** The `following` result: one line per artifact, newest first. */
+export const followingText = (
+  follows: readonly { url: string; followed_at: string }[],
+): string =>
+  follows.length
+    ? follows.map((f) => `${f.url} (since ${f.followed_at})`).join("\n")
+    : "You are not following any artifacts.";
+
+/** What an agent sees when its daemon is too old for the follow frames. */
+export const FOLLOW_OLD_DAEMON =
+  "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus.";
+
+/** The `propose_reach` result (#1346). Nothing has changed; the person confirms on the link. */
+export const reachProposedText = (
+  namespaces: readonly string[],
+  url: string,
+  expiresAt: string,
+): string =>
+  `Proposed: let your role reach ${namespaces.join(", ")}. Nothing has changed. Give the person this link to confirm it in their browser, signed in (it works once and expires at ${expiresAt}): ${url}`;
+
+/**
+ * The `propose_reach` tool's namespaces, checked before anything is sent: 1 to
+ * 10, each a namespace as `list_agents` shows it (lowercase letters, digits
+ * and . _ ~ / -). An `error` is the tool's own text.
+ */
+export const reachNamespacesOf = (
+  value: unknown,
+): { namespaces: string[] } | { error: string } => {
+  const list = Array.isArray(value)
+    ? value.map((v) => (typeof v === "string" ? v.trim() : ""))
+    : [];
+  if (list.length < 1 || list.length > REACH_PROPOSAL_MAX)
+    return {
+      error: `oa-bus: namespaces: give 1 to ${REACH_PROPOSAL_MAX} namespaces. Nothing was asked.`,
+    };
+  const bad = list.find(
+    (n) =>
+      n.length < 1 ||
+      n.length > LIMITS.maxNamespaceChars ||
+      !/^[a-z0-9._~/-]+$/.test(n),
+  );
+  if (bad !== undefined)
+    return {
+      error: `oa-bus: namespaces: "${bad.slice(0, 40)}" is not a namespace. Use one as list_agents shows it. Nothing was asked.`,
+    };
+  return { namespaces: [...new Set(list)] };
+};
+
+/** What an agent sees when its daemon is too old for the reach frames. */
+export const REACH_OLD_DAEMON =
+  "This oa-bus daemon is too old to ask for reach. Ask the user to update oa-bus.";
+
+/**
+ * The two bad_frame answers a current daemon gives a follow tool call itself
+ * (#1766): the adapter never listed the cap, or the frame would not pass the
+ * hub's wire (a too-long artifact). Any other bad_frame on a follow call is a
+ * daemon that does not know the frame: FOLLOW_OLD_DAEMON. The adapters mirror
+ * the strings (pi, Hermes), the daemon sends these.
+ */
+export const FOLLOW_DAEMON_BAD_FRAME = {
+  noCap: "follow is not supported on this connection",
+  wire: "the frame is not valid on the hub wire",
+} as const;
+
 /** A status at least this old says how old it is (AC5c; Design-approved). */
 export const STATUS_STALE_MS = 10 * 60_000;
 
@@ -418,6 +560,14 @@ export function statusSaysText(
   ].join(" · ");
 }
 
+/** "2026-11-05 10:00 UTC" from an ISO time; unreadable times are shown as sent. */
+const awayTime = (iso: string): string => {
+  const t = Date.parse(iso);
+  return Number.isNaN(t)
+    ? iso
+    : `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+};
+
 /** One `list_agents` line: the agent, then its status after two spaces. */
 export function rosterLine(
   a: StatusFields & {
@@ -426,11 +576,60 @@ export function rosterLine(
     namespace: string;
     machine_label?: unknown;
     queued: boolean;
+    /** #1295: ISO time the agent went away; it is closed, its mailbox kept. */
+    away?: string | undefined;
   },
   now = Date.now(),
 ): string {
   const says = statusSaysText(a, now);
-  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+}
+
+/** The count line for away rows with a harness fallback name (#1860). */
+export function collapsedAwayLine(n: number, listed: boolean): string {
+  return `${n}${listed ? " more" : ""} away ${n === 1 ? "session" : "sessions"} with no chosen name (not listed, still reachable by name)`;
+}
+
+/**
+ * The `list_agents` text from the hub's roster rows. Live and queued agents,
+ * and away agents with a chosen name, get a line each. Away rows whose name is
+ * only a harness fallback (isFallbackName) become one count line, shown only
+ * when there are any. Display only: the hub still holds and delivers to them.
+ */
+export function rosterText(
+  agents: readonly (StatusFields & {
+    name: string;
+    kind: string;
+    namespace: string;
+    machine_label?: unknown;
+    state?: string | undefined;
+    live?: boolean | undefined;
+    since?: string | undefined;
+  })[],
+  now = Date.now(),
+): string {
+  if (!agents.length) return "No agents in your namespace and linked ones.";
+  const lines: string[] = [];
+  let collapsed = 0;
+  for (const a of agents) {
+    const away = a.state === "away";
+    if (away && isFallbackName(a.name, a.kind)) {
+      collapsed++;
+      continue;
+    }
+    lines.push(
+      rosterLine(
+        {
+          ...a,
+          queued: (a.state ?? (a.live ? "live" : "queued")) === "queued",
+          away: away ? (a.since ?? "") : undefined,
+        },
+        now,
+      ),
+    );
+  }
+  if (collapsed > 0) lines.push(collapsedAwayLine(collapsed, lines.length > 0));
+  return lines.join("\n");
 }
 
 /** The `self` result: the agent entry, its hub-supplied status cleaned as list_agents shows it. */

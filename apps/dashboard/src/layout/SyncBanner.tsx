@@ -1,4 +1,4 @@
-import { type Me, R } from "@oa/shared";
+import { type DirectoryMode, type Me, R } from "@oa/shared";
 import { useLayoutEffect, useRef, useState } from "react";
 import type { InstanceDirectory, SyncState } from "../api/contract";
 import { AppLink } from "../library/AppLink";
@@ -97,7 +97,14 @@ export function SyncBanner({
   const [dismissed, setDismissed] = useState(read);
   const ref = useRef<HTMLDivElement>(null);
   const admin = role === "owner" || role === "admin";
-  const state = d?.banner && admin && d.state !== "ok" ? d.state : null;
+  // Only a running sync (google) can break; frozen and off never show it (#2009).
+  const state =
+    d?.banner &&
+    admin &&
+    shownDirectoryMode(me) === "google" &&
+    d.state !== "ok"
+      ? d.state
+      : null;
   const stage = state && stageOf(state, d?.unhealthySince ?? null);
   const key = `${state}:${stage}`;
   const shown = !!state && dismissed !== key;
@@ -163,6 +170,23 @@ export function SyncBanner({
 }
 
 /**
+ * Directory sync as the dashboard shows it (#2009). Hosted, the plan decides:
+ * Solo and free report the trial's features so paywalls can show them, but
+ * have no directory (off); a Team that never synced has none either; the
+ * rest follows the server's mode (Team frozen, trial and Business google). Self-host (no billing block) follows the server's mode.
+ */
+export function shownDirectoryMode(me: Me | null): DirectoryMode {
+  const mode = me?.instance.directory?.mode ?? "off";
+  const tier = me?.instance.billing?.tier;
+  if (tier === "solo" || tier === "free") return "off";
+  // Team's features are sync_frozen (the server's mode); a Team that never
+  // synced has nothing to show (owners and admins see state "never").
+  if (tier === "team" && me?.instance.directory?.state === "never")
+    return "off";
+  return mode;
+}
+
+/**
  * The dot's tone while sync needs an owner's or admin's attention (any state
  * but ok, or a held sweep), else null. Members and guests get null: the
  * server sends them no state and no held count.
@@ -171,6 +195,8 @@ export function syncDot(me: Me | null): Stage | null {
   const d: InstanceDirectory | null = me?.instance.directory ?? null;
   const role = me?.user.role;
   if (!d || (role !== "owner" && role !== "admin")) return null;
+  // Only a running sync asks for attention: off (Solo, Team) and frozen don't (#2009).
+  if (shownDirectoryMode(me) !== "google") return null;
   if (d.state && d.state !== "ok") return stageOf(d.state, d.unhealthySince);
   return d.heldSweeps > 0 ? "warning" : null;
 }

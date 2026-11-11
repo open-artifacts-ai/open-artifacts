@@ -15,10 +15,126 @@ const TOKENS: Record<string, HostedMockOptions> = {
   "scope-missing": { unhealthy: true, unhealthyState: "scope_missing" },
   "customer-mismatch": { unhealthy: true, unhealthyState: "customer_mismatch" },
   trial: { tier: "trial" },
+  // Solo: in its 30-day trial, and unpaid (view-only, the owner included).
+  solo: {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: null,
+      // 20 days out, so the note always shows.
+      soloTrialEndsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      graceUntil: null,
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  // Solo after a used Business trial: trialEndsAt is the past trial, so no note.
+  "solo-used-trial": {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: "2026-10-01T00:00:00.000Z",
+      soloTrialEndsAt: null,
+      graceUntil: null,
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  "plan-team": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      creatorsThisMonth: 4,
+      readOnly: false,
+    },
+  },
+  // Business with no Stripe customer (provisioned or comped), and with one.
+  "plan-no-customer": {
+    billing: {
+      tier: "business",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: false,
+      creatorsThisMonth: 4,
+      readOnly: false,
+    },
+  },
+  "plan-customer": {
+    billing: {
+      tier: "business",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      creatorsThisMonth: 4,
+      readOnly: false,
+    },
+  },
+  "plan-team-lapsed": {
+    billing: {
+      tier: "team",
+      status: "lapsed",
+      trialEndsAt: null,
+      graceUntil: null,
+      creatorsThisMonth: 4,
+      readOnly: true,
+      reason: "lapsed",
+    },
+  },
+  // Team read-only for each reason the banner words (Self-serve screens v6, 3).
+  "plan-team-payment-failed": {
+    billing: {
+      tier: "team",
+      status: "past_due",
+      trialEndsAt: null,
+      graceUntil: "2026-11-01T00:00:00.000Z",
+      creatorsThisMonth: 4,
+      readOnly: true,
+      reason: "payment_failed",
+    },
+  },
+  "plan-team-suspended": {
+    billing: {
+      tier: "team",
+      status: "suspended",
+      trialEndsAt: null,
+      graceUntil: null,
+      creatorsThisMonth: 4,
+      readOnly: true,
+      reason: "suspended",
+    },
+  },
+  "plan-team-unreachable": {
+    billing: {
+      tier: "team",
+      status: "active",
+      trialEndsAt: null,
+      graceUntil: null,
+      creatorsThisMonth: 4,
+      readOnly: true,
+      reason: "billing_unreachable",
+    },
+  },
+  "solo-paused": {
+    billing: {
+      tier: "solo",
+      status: "lapsed",
+      trialEndsAt: null,
+      graceUntil: null,
+      creatorsThisMonth: 1,
+      readOnly: true,
+      reason: "solo_unpaid",
+    },
+  },
   team: { tier: "team" },
   business: { tier: "business" },
   frozen: { directory: "frozen" },
   "sync-off": { directory: "off" },
+  // Business before its first connect (#2009): sync on, nothing connected yet.
+  "not-connected": { unbound: true },
   admin: { actAs: "admin" },
   "guest-notices": { selfHosted: true, guestShares: 2, guestOwners: 2 },
   "guest-departed": {
@@ -55,7 +171,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
 /**
  * Mock-only: `?hosted=` turns on the hosted mocks. Comma tokens: 1 (defaults),
  * access, email-only, turnstile, unhealthy (backoff), auth-failed,
- * scope-missing, customer-mismatch, trial, team, business, frozen, sync-off,
+ * scope-missing, customer-mismatch, trial, solo, solo-paused,
+ * plan-team-lapsed, plan-team-payment-failed, plan-team-suspended, plan-team-unreachable, team, business, frozen, sync-off, not-connected,
  * admin (you are an admin, not the owner), guest-notices (an Access-only
  * install with parity 2's notices, spaces off), guest-departed (the same, one
  * guest owner has left), spaces-on, workspace-change (the confirm

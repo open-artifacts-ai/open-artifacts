@@ -3,6 +3,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -142,6 +143,14 @@ async function boot() {
   writeFileSync(
     join(project, ".oa-bus.json"),
     JSON.stringify({ namespace: NS }),
+    { mode: 0o600 },
+  );
+  // #1525: the namespace takes effect only once the user approves it.
+  writeFileSync(
+    join(home, "namespaces.json"),
+    JSON.stringify({
+      approved: [{ dir: realpathSync(project), namespace: NS }],
+    }),
     { mode: 0o600 },
   );
 
@@ -433,7 +442,9 @@ describe("daemon end to end, one machine, three harnesses", () => {
     expect(notices[0]).toMatch(
       /^×\s+Expired: your message to claude, "please review/,
     );
-    expect(notices[0]).toContain("was not taken within 7 days.");
+    expect(notices[0]).toContain(
+      "was not confirmed as delivered. Mail waits at most 7 days.",
+    );
     expect(e.claudeT).not.toHaveBeenCalled();
     expect(e.hub.bad).toEqual([]);
   });

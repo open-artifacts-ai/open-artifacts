@@ -4,7 +4,10 @@
  * fixture, so a test or the mock app has something to show.
  */
 import { delay, type HttpHandler, HttpResponse, http } from "msw";
+import type { Anchor } from "../anchor.js";
 import {
+  AnswerBodySchema,
+  type ArtifactAgent,
   anchorInputSchema,
   type Comment,
   type CommentAuthor,
@@ -15,6 +18,51 @@ import type { ErrorCode } from "../errors.js";
 import { newId } from "../ids.js";
 import type { ArtifactSummary } from "../schemas.js";
 
+/** The agents the mock lists for every artifact (R.artifactAgents). */
+export const MOCK_AGENTS: ArtifactAgent[] = [
+  {
+    key: "agent:claude-code",
+    name: "Claude Code",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: "laptop",
+  },
+  {
+    key: "agent:manager-2",
+    name: "OA Manager-2",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: "laptop",
+  },
+  {
+    key: "agent:codex",
+    name: "Codex",
+    online: false,
+    state: "away",
+    lastActiveAt: new Date(Date.now() - 2 * 3600_000).toISOString(),
+    machine: "laptop",
+  },
+  {
+    key: "agent:sam-bot",
+    name: "OA Manager (Sam)",
+    online: true,
+    state: "online",
+    lastActiveAt: null,
+    machine: null,
+    owner: "Sam",
+  },
+  {
+    key: "agent:manager",
+    name: "OA Manager",
+    online: false,
+    state: "away",
+    lastActiveAt: new Date(Date.now() - 19 * 3600_000).toISOString(),
+    machine: "workstation",
+  },
+];
+
 type Deps = {
   artifacts: ArtifactSummary[];
   me: { user: { id: string; name: string | null; email: string } };
@@ -22,17 +70,34 @@ type Deps = {
   emit: (id: string, open: number) => void;
   /** Every write answers 429 with this Retry-After (seconds). */
   rateLimit?: number;
+  /** The hash of a version's content, which the server stamps on a pin (#1490). */
+  contentHash?: (id: string, version: number) => string | null | undefined;
+  /** Also seed an open ask addressed to the caller on "Landing page" (default off: list responses stay byte-identical to the fixtures). */
+  seedAsk?: boolean;
+  /** Also seed a thread with a linked agent, an unlinked agent of the same name and a person (#1822). */
+  seedAgents?: boolean;
 };
 
 const iso = () => new Date().toISOString();
 
-export function createCommentHandlers({
+export function createCommentHandlers(d: Deps): HttpHandler[] {
+  return createCommentMock(d).handlers;
+}
+
+export function createCommentMock({
   artifacts,
   me,
   err,
   emit,
   rateLimit,
-}: Deps): HttpHandler[] {
+  contentHash,
+  seedAsk,
+  seedAgents,
+}: Deps): {
+  handlers: HttpHandler[];
+  /** Open asks addressed to the caller on this artifact. */
+  asksForYou: (id: string) => number;
+} {
   const threads = new Map<string, CommentThread[]>();
   const mine = (): CommentAuthor => ({
     kind: "user",
@@ -46,18 +111,144 @@ export function createCommentHandlers({
     name: "Sam Rivera",
     me: false,
   };
-  const comment = (body: string, by: CommentAuthor): Comment => ({
+  /** Per #1496: edit is the author's; delete is the author's or a moderator's (owner, manager or editor). */
+  const comment = (
+    body: string,
+    by: CommentAuthor,
+    moderator = false,
+  ): Comment => ({
     id: newId(),
     body,
     author: by,
     createdAt: iso(),
     editedAt: null,
-    can: { edit: by.me, delete: true },
+    typed: by.kind === "user",
+    can: { edit: by.me, delete: by.me || moderator },
   });
+  const moderates = (id: string) => {
+    const a = artifacts.find((x) => x.id === id);
+    return a?.owner.id === me.user.id || a?.can?.edit === true;
+  };
   const seed = (id: string): CommentThread[] => {
-    const a = comment("Can we tighten this headline?", other);
+    const m = moderates(id);
+    const a = comment("Can we tighten this headline?", other, m);
     const b = comment("Agreed, shorter is better.", mine());
-    const c = comment("Looks good overall.", other);
+    const c = comment("Looks good overall.", other, m);
+    const d = comment("Which layout do we ship?", other, m);
+    d.ask = {
+      question: "Which layout do we ship?",
+      options: [
+        { id: "wide", label: "Wide hero", detail: "Full-bleed image" },
+        { id: "compact", label: "Compact hero" },
+      ],
+      recommended: { optionId: "compact", why: "Loads faster on mobile." },
+      to: [mine()],
+      closed: false,
+    };
+    const e = comment("Ship the banner?", mine());
+    e.ask = {
+      question: "Ship the banner?",
+      options: [
+        { id: "yes", label: "Yes" },
+        { id: "no", label: "No" },
+      ],
+      to: [other],
+      closed: false,
+    };
+    const asked: CommentThread[] = seedAsk
+      ? [
+          {
+            id: newId(),
+            anchor: { kind: "note" },
+            version: 1,
+            status: "open",
+            resolvedBy: null,
+            resolvedAt: null,
+            createdAt: d.createdAt,
+            comments: [d],
+          },
+          {
+            id: newId(),
+            anchor: { kind: "note" },
+            version: 1,
+            status: "open",
+            resolvedBy: null,
+            resolvedAt: null,
+            createdAt: e.createdAt,
+            comments: [e],
+          },
+        ]
+      : [];
+    const faces: CommentThread[] = [];
+    if (seedAgents) {
+      const agent = (linked: boolean): CommentAuthor => ({
+        kind: "agent",
+        // An unlinked agent is named by its product (server rule).
+        name: linked ? "OA Product" : "Claude Code",
+        for: "Leo Urbina",
+        linked,
+        ...(linked
+          ? { product: "Claude Code", animal: { id: "fox", color: 2 } }
+          : {}),
+        me: false,
+      });
+      const fox = {
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color: 2 },
+      };
+      const ask = comment("Which layout should the Agents page use?", other, m);
+      ask.ask = {
+        question: "Which layout should the Agents page use?",
+        options: [
+          { id: "list", label: "List only" },
+          { id: "detail", label: "List and detail" },
+        ],
+        to: [
+          { ...agent(true), id: "agent:product", name: "OA Product" },
+          { ...agent(false), id: "agent:claude", name: "Claude Code" },
+        ],
+        closed: false,
+      };
+      const mention = comment(
+        "Looping in @OA Product and @Claude Code on this.",
+        other,
+        m,
+      );
+      mention.mentions = [
+        {
+          key: "agent:product",
+          name: "OA Product",
+          ...fox,
+          for: "Leo Urbina",
+          delivery: "delivered",
+        },
+        {
+          key: "agent:claude",
+          name: "Claude Code",
+          linked: false,
+          for: "Leo Urbina",
+          delivery: "queued",
+        },
+      ];
+      const f = [
+        comment("Can the pricing section be shorter?", other, m),
+        comment("Shortened to three sentences.", agent(true)),
+        comment("Also fixed the footer typo.", agent(false)),
+        mention,
+        ask,
+      ];
+      faces.push({
+        id: newId(),
+        anchor: { kind: "note" },
+        version: 1,
+        status: "open",
+        resolvedBy: null,
+        resolvedAt: null,
+        createdAt: f[0]?.createdAt ?? iso(),
+        comments: f,
+      });
+    }
     return [
       {
         id: newId(),
@@ -85,6 +276,8 @@ export function createCommentHandlers({
         createdAt: c.createdAt,
         comments: [c],
       },
+      ...asked,
+      ...faces,
     ];
   };
   const list = (id: string) => {
@@ -125,14 +318,76 @@ export function createCommentHandlers({
       anchor?: unknown;
     } | null;
     const r = ReplyBodySchema.safeParse(raw);
-    return r.success ? { body: r.data.body, anchor: raw?.anchor } : null;
+    return r.success ? { ...r.data, anchor: raw?.anchor } : null;
+  };
+  const agentOf = (k: string) => MOCK_AGENTS.find((x) => x.key === k);
+  const person = (k: string): CommentAuthor =>
+    k === me.user.id
+      ? mine()
+      : agentOf(k)
+        ? { kind: "agent", id: k, name: agentOf(k)?.name ?? k, me: false }
+        : { ...other, id: k };
+  /**
+   * Ask and mentions from a parsed body onto a new comment. mentions
+   * are owner and editors only: a Response is the 403.
+   */
+  const decorate = (
+    c: Comment,
+    j: {
+      mentions?: { key: string }[];
+    },
+    id: string,
+  ): Response | null => {
+    if (j.mentions && !moderates(id))
+      return err("forbidden", "Only the owner and editors can mention");
+    if (j.mentions)
+      c.mentions = j.mentions.map((m) => ({
+        key: m.key,
+        name: agentOf(m.key)?.name ?? m.key,
+        delivery: agentOf(m.key)?.online === false ? "queued" : "delivered",
+      }));
+    return null;
+  };
+  const closeAsks = (t: CommentThread) => {
+    for (const c of t.comments)
+      if (c.ask) c.ask.closed = t.status === "resolved";
   };
   const A = "*/api/v1/artifacts/:id/comments";
   const base = A;
   const thr = `${A}/:tid`;
   const rep = `${A}/:tid/replies`;
   const one = `${A}/:tid/comments/:cid`;
-  return [
+  const answer = `${A}/:tid/comments/:cid/answer`;
+  const handlers = [
+    http.get("*/api/v1/artifacts/:id/agents", ({ params }) => {
+      if (!art(params.id)) return err("not_found", "Not found");
+      return HttpResponse.json(MOCK_AGENTS);
+    }),
+    http.post(answer, async ({ params, request }) => {
+      const bad = guard(params.id, true) ?? badIds(params.tid, params.cid);
+      if (bad) return bad;
+      const c = list(String(params.id))
+        .find((x) => x.id === params.tid)
+        ?.comments.find((x) => x.id === params.cid);
+      if (!c?.ask) return err("not_found", "Not found");
+      if (!c.ask.to.some((a) => a.me))
+        return err("forbidden", "Only the people asked can answer");
+      if (c.ask.closed) return err("conflict", "This ask is closed");
+      const j = AnswerBodySchema.safeParse(
+        await request.json().catch(() => null),
+      );
+      if (!j.success || !c.ask.options.some((o) => o.id === j.data.optionId))
+        return err("bad_request", "Unknown option");
+      c.ask.answer = {
+        optionId: j.data.optionId,
+        by: mine(),
+        at: iso(),
+        typed: true,
+        yes: c.author.me,
+      };
+      emit(String(params.id), open(String(params.id)));
+      return HttpResponse.json(c);
+    }),
     http.get(base, async ({ params, request }) => {
       await delay(0);
       const bad = guard(params.id);
@@ -153,14 +408,22 @@ export function createCommentHandlers({
       const a = art(params.id) as ArtifactSummary;
       const parsed = anchorInputSchema.safeParse(j.anchor);
       if (!parsed.success) return err("invalid_anchor", "Invalid anchor");
-      const anchor =
-        parsed.data.kind === "note"
-          ? parsed.data
-          : {
-              ...parsed.data,
-              version: parsed.data.version ?? a.currentVersion,
-            };
+      const d = parsed.data;
+      const anchor: Anchor =
+        d.kind === "note"
+          ? d
+          : d.kind === "pin"
+            ? {
+                ...d,
+                version: d.version ?? a.currentVersion,
+                // The server stamps a pin's hash; null when the version has none.
+                contentHash:
+                  contentHash?.(a.id, d.version ?? a.currentVersion) ?? null,
+              }
+            : { ...d, version: d.version ?? a.currentVersion };
       const c = comment(j.body, mine());
+      const bad2 = decorate(c, j, a.id);
+      if (bad2) return bad2;
       const t: CommentThread = {
         id: newId(),
         anchor,
@@ -186,6 +449,8 @@ export function createCommentHandlers({
       if (t.comments.length > MAX_REPLIES)
         return err("conflict", "This thread has too many replies");
       const c = comment(j.body, mine());
+      const bad2 = decorate(c, j, String(params.id));
+      if (bad2) return bad2;
       t.comments.push(c);
       emit(String(params.id), open(String(params.id)));
       return HttpResponse.json(c, { status: 201 });
@@ -203,6 +468,7 @@ export function createCommentHandlers({
       t.status = j.status;
       t.resolvedBy = j.status === "resolved" ? mine() : null;
       t.resolvedAt = j.status === "resolved" ? iso() : null;
+      closeAsks(t);
       emit(String(params.id), open(String(params.id)));
       return HttpResponse.json(t);
     }),
@@ -234,4 +500,16 @@ export function createCommentHandlers({
       return new HttpResponse(null, { status: 204 });
     }),
   ];
+  const comments = (id: string) => list(id).flatMap((t) => t.comments);
+  return {
+    handlers,
+    asksForYou: (id) =>
+      list(id).filter(
+        (t) =>
+          t.status === "open" &&
+          t.comments.some(
+            (c) => c.ask && !c.ask.answer && c.ask.to.some((a) => a.me),
+          ),
+      ).length,
+  };
 }

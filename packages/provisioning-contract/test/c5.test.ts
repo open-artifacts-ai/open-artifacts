@@ -35,6 +35,7 @@ import {
   ALERT_STATE_SUFFIXES,
   AUDIT_REFUSAL_RETENTION_MS,
   alertStateKey,
+  BILLING_HEALTH_OK_KEY,
   DCR_COUNTER_RETENTION_MS,
   EXPIRED_AUTH_RETENTION_MS,
   HEALTH_GATE_KEY,
@@ -95,6 +96,7 @@ describe("platform_state keys (5.8, 0006)", () => {
   it("the scheduler's own keys", () => {
     expect(HEALTH_GATE_KEY).toBe("health_checked_at");
     expect(HEALTH_ROUND_KEY).toBe("health_round_at");
+    expect(BILLING_HEALTH_OK_KEY).toBe("billing_health_ok_at");
     expect(SWEEP_CURSOR_KEY).toBe("sweep_open_cursor");
     expect(SWEEP_TERMINATED_PREFIX).toBe("sweep_terminated:");
     const id = "01JBQ4ZKXW5V9R3M2N8P6T7Y0A";

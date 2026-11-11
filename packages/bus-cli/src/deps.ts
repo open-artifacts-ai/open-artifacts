@@ -11,6 +11,7 @@ export type Deps = {
   exec: (
     cmd: string,
     args: string[],
+    opts?: { env?: Record<string, string>; timeoutMs?: number },
   ) => Promise<{ code: number; stdout: string; stderr: string }>;
 };
 
@@ -73,12 +74,13 @@ export const resolveCmd = (cmd: string): string =>
 /** execFile with a kill at `timeoutMs`; a killed command fails like any other. */
 export const makeExec =
   (timeoutMs: number): Deps["exec"] =>
-  async (cmd, args) => {
+  async (cmd, args, opts) => {
     guardServiceManager(cmd, args);
     try {
       const r = await promisify(execFile)(resolveCmd(cmd), args, {
+        ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
         maxBuffer: 8 * 1024 * 1024,
-        timeout: timeoutMs,
+        timeout: opts?.timeoutMs ?? timeoutMs,
         killSignal: "SIGKILL",
       });
       return { code: 0, stdout: r.stdout, stderr: r.stderr };
@@ -93,7 +95,7 @@ export const makeExec =
         code: typeof err.code === "number" ? err.code : 1,
         stdout: err.stdout ?? "",
         stderr: err.killed
-          ? `timed out after ${timeoutMs} ms`
+          ? `timed out after ${opts?.timeoutMs ?? timeoutMs} ms`
           : (err.stderr ?? String(e)),
       };
     }

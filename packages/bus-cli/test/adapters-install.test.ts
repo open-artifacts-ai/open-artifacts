@@ -165,7 +165,14 @@ describe("installAdapters", () => {
     const { h, deps, calls } = setup(["pi"]);
     const out = await installAdapters(deps);
     expect(out.installed).toEqual(["pi"]);
-    expect(out.absent).toEqual(["claude", "opencode", "omp", "codex"]);
+    expect(out.absent).toEqual([
+      "claude",
+      "opencode",
+      "omp",
+      "codex",
+      "hermes",
+      "openclaw",
+    ]);
     expect(calls).toEqual([]);
     expect(existsSync(join(h, ".config"))).toBe(false);
     expect(existsSync(join(h, ".oa-bus"))).toBe(false);

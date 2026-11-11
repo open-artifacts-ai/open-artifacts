@@ -1,6 +1,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { closeSync, openSync, readFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
+import { createInterface } from "node:readline";
 import {
   busHome,
   claudeReturnDir,
@@ -16,8 +17,10 @@ import {
   DaemonSilentError,
   daemonStatus,
   type StatusReply,
+  stripTerminalControls,
   systemTool,
 } from "@oa/bus-ipc";
+import { BUS_CMD } from "@oa/bus-protocol";
 import { type Copy, copy } from "./copy.ts";
 import { type Deps, realDeps } from "./deps.ts";
 import { cliSource, systemService } from "./steps/service.ts";
@@ -97,10 +100,16 @@ export type Ctx = Deps & {
   version: string;
   style: Style;
   copy: Copy;
+  /** The command printed in the terminal: `oa-bus` or the npx form (#1998). */
+  busCmd: string;
   platform: string;
   nodeVersion: string;
   /** The Codex desktop app's bundle (macOS); undefined: none to look for. */
   codexApp?: string;
+  /** Whether stdin is a terminal a person can answer at (#1525). */
+  stdinIsTTY?: boolean;
+  /** Prints `question` and reads one line from stdin. */
+  readLine?: (question: string) => Promise<string>;
 };
 
 /** The package's version, set by the bundler (scripts/bundle.mjs). */
@@ -201,9 +210,24 @@ export function realCtx(noColor: boolean): Ctx {
     version: VERSION,
     style,
     copy: copy(style),
+    busCmd: BUS_CMD,
     platform: `${process.platform} ${process.arch}`,
     nodeVersion: process.version,
     ...(process.platform === "darwin" ? { codexApp: CODEX_APP } : {}),
+    stdinIsTTY: Boolean(process.stdin.isTTY),
+    readLine: async (question) => {
+      const rl = createInterface({
+        input: process.stdin,
+        output: process.stdout,
+      });
+      try {
+        return await new Promise<string>((resolve) =>
+          rl.question(question, resolve),
+        );
+      } finally {
+        rl.close();
+      }
+    },
   };
   ctx.service = systemService({
     platform: process.platform,
@@ -325,3 +349,31 @@ export const tilde = (ctx: Pick<Ctx, "userHome">, path: string) =>
     : path.startsWith(`${ctx.userHome}/`)
       ? `~${path.slice(ctx.userHome.length)}`
       : path;
+
+/** Text from a path never drives the terminal or forges a line. */
+export const plain = (text: string) =>
+  stripTerminalControls(text).replace(/[\r\n\t]/g, " ");
+
+/**
+ * Config files refused or noted: the file shown under `~`, the fix as given
+ * (its path is quoted, so `~` would not expand), controls stripped from both.
+ */
+export const configFileLines = (
+  ctx: Ctx,
+  files: readonly {
+    file: string;
+    state: "refused" | "noted" | "pending";
+    reason: string;
+    fix: string;
+  }[],
+): string[] =>
+  files.flatMap((f) =>
+    ctx.copy.configFile({
+      state: f.state,
+      reason: plain(f.reason),
+      file: plain(tilde(ctx, f.file)),
+      fix: plain(f.fix),
+      // The namespace is resolved when a session starts.
+      restart: f.file.endsWith("/.oa-bus.json") || f.file.endsWith("/.git"),
+    }),
+  );

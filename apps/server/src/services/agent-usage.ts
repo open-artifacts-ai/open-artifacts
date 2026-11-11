@@ -16,8 +16,19 @@ import type { Env } from "../env.js";
 /** The grant or token a request authenticated with. */
 export type Via = { kind: "grant" | "token"; id: string };
 
-/** An agent ref plus the grant or token behind it (server-internal; never serialized). */
-export type AgentAttr = AgentRef & { via?: Via };
+/** #1822: the bus session a request's proof resolved to, in the credential owner's own hub. */
+export type AgentIdentity = {
+  identityId: string;
+  namespace: string;
+  name: string;
+  kind: string;
+};
+
+/** #1889: most identity ids one names lookup reads on a member's hub. */
+export const NAMES_OF_MAX = 100;
+
+/** An agent ref plus the grant or token behind it, and the bus session it proved (server-internal; never serialized). */
+export type AgentAttr = AgentRef & { via?: Via; identity?: AgentIdentity };
 
 /** `versions.agent_via` for a publish: `g:<grantId>` or `t:<tokenId>` (a scrubbed row: SCRUBBED_VIA). */
 export const viaKey = (v: Via) => `${v.kind === "grant" ? "g" : "t"}:${v.id}`;

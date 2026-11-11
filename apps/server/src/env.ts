@@ -52,12 +52,13 @@ export interface Env {
    */
   RL_ANON?: RateLimit;
   /**
-   * Optional limiter for anonymous data writes only, keyed per IP. Bound, it
-   * replaces RL_ANON for those writes (except with HOSTED=1, where both
-   * apply), so ANON_WRITES_PER_MIN above RL_ANON's 30 can take effect.
-   * Unbound (the default), RL_ANON applies as before. Setup's wrangler
-   * template doesn't carry it yet, and setup regenerates wrangler.jsonc, so a
-   * hand-added binding is dropped on the next deploy (the safe direction).
+   * Install-wide ceiling on anonymous data writes per IP (IPv4, or the IPv6
+   * /64), keyed `ip:{key}` with no artifact id: 4x the default
+   * ANON_WRITES_PER_MIN (120 per minute, wrangler `ratelimits`). The normal
+   * budget is per (artifact, IP), counted in the artifact's DO; a write must
+   * pass both (#687). Unbound (a wrangler config from before it), RL_ANON's
+   * 30 stands in. The 120 is this binding's fixed limit, set in wrangler
+   * `ratelimits`; ANON_WRITES_PER_MIN does not change it.
    */
   RL_ANON_WRITES?: RateLimit;
   /** Sign-in code limiter, keyed `${installKey}:${ip}`; unbound in the test pool. */
@@ -102,9 +103,8 @@ export interface Env {
   /**
    * Anonymous writes per IP per artifact per minute, enforced in the DO
    * (anonWritesPerMin: 1..600, default LIMITS.anonWritesPerMinPerIp). The
-   * RL_ANON binding's own per-IP limit (wrangler `ratelimits`, 30) applies
-   * first, so a higher value has no effect until setup supports the
-   * RL_ANON_WRITES binding.
+   * install-wide per-IP ceiling (RL_ANON_WRITES, 120) also applies, so a value
+   * above 120 has no effect until that binding's limit is raised.
    */
   ANON_WRITES_PER_MIN?: string;
   /**
@@ -126,6 +126,7 @@ export interface Env {
   FREE_STORAGE_BYTES?: string;
   FREE_DATA_DOCS?: string;
   FREE_DATA_DAILY_WRITES?: string;
+  FREE_DATA_DAILY_WRITES_TOTAL?: string;
   // vars
   APP_HOST: string;
   CONTENT_HOST: string;
@@ -175,6 +176,8 @@ export interface Env {
   TEST_DOMAIN?: string;
   /** Invite and share emails per UTC day, instance-wide (1..100000, default 100); set per install by Platform. */
   EMAIL_DAILY_CAP?: string;
+  /** Comment notice emails per UTC day, instance-wide (1..100000, default EMAIL_DAILY_CAP's value); a bucket apart from it (#1467). */
+  COMMENT_EMAIL_DAILY_CAP?: string;
   /** "1" on hosted installs (Me.instance.hosted). */
   HOSTED?: string;
   /**

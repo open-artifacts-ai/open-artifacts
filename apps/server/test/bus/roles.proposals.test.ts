@@ -4,6 +4,7 @@
 // user's guardrail ("Let's do B", then "1, propose via MCP, I confirm by
 // link"): no MCP tool, no REST credential (PAT, OAuth grant, machine token)
 // and no bus frame can confirm one.
+
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { BUS_CAPS } from "@oa/bus-protocol";
@@ -21,6 +22,7 @@ import { sessionCookieName, signSession } from "../../src/auth/session.js";
 import type { BusHub } from "../../src/bus/hub.js";
 import { ROLE_CONFIRM_SCOPE } from "../../src/bus/role-confirm.js";
 import { formCsrf } from "../../src/http/pages.js";
+import { revokeAllGrants } from "../../src/mcp/oauth-api.js";
 import { sha256Hex } from "../../src/util/crypto.js";
 import { trial } from "../auth-helpers.js";
 import { accessSignIn } from "../fake-access.js";
@@ -33,6 +35,7 @@ import {
   textOf,
   tool,
 } from "../mcp-helpers.js";
+import { confirmBrowser } from "./confirm-browser.js";
 import {
   type Daemon,
   daemon,
@@ -121,40 +124,27 @@ type Proposed = { proposal: BusRoleProposal; confirmUrl: string };
 const proposed = (r: ToolResult): Proposed & { secret: string } => {
   expect(r.isError, textOf(r)).toBeFalsy();
   const sc = r.structuredContent as Proposed;
-  const m = /\/bus\/roles\/confirm\/([A-Za-z0-9_-]{43})$/.exec(sc.confirmUrl);
+  const m = /\/bus\/roles\/confirm#([A-Za-z0-9_-]{43})$/.exec(sc.confirmUrl);
   if (!m?.[1]) throw new Error(`no confirm link: ${sc.confirmUrl}`);
   return { ...sc, secret: m[1] };
 };
 
-const path = (secret: string) => `/bus/roles/confirm/${secret}`;
+const BASE = "/bus/roles/confirm";
+const path = (secret: string) => `${BASE}#${secret}`;
+const browser = confirmBrowser(app, APP, BASE);
 
 const get = (
   secret: string,
   headers: Record<string, string>,
   e: unknown = env,
-) => fetchAndWait(app, new Request(`${APP}${path(secret)}`, { headers }), e);
+) => browser.get(secret, headers, e);
 
 const post = (
   secret: string,
   headers: Record<string, string>,
   fields: [string, string][],
   e: unknown = env,
-) => {
-  const body = new URLSearchParams(fields).toString();
-  return fetchAndWait(
-    app,
-    new Request(`${APP}${path(secret)}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        "content-length": String(body.length),
-        ...headers,
-      },
-      body,
-    }),
-    e,
-  );
-};
+) => browser.post(secret, headers, fields, e);
 
 const csrfOf = (body: string) => {
   const m = /name="csrf" value="([^"]+)"/.exec(body);
@@ -268,6 +258,59 @@ describe("role proposals over MCP (#1372)", () => {
     ]);
     expect(again.status).toBe(410);
     expect((await get(p.secret, { cookie: who.cookie })).status).toBe(410);
+    d.close();
+  });
+
+  it("if the role applies but the audit write fails, the card says so as JSON, never nothing changed", async () => {
+    const { who, d, pat } = await withBus();
+    const n = ns("au");
+    const alice = await open(who.userId, d, n);
+    const p = proposed(
+      await propose(pat, {
+        action: "set",
+        namespace: n,
+        name: "audit-lead",
+        agent: alice.name,
+      }),
+    );
+    const csrf = csrfOf(
+      await (await get(p.secret, { cookie: who.cookie })).text(),
+    );
+    await env.DB.prepare(
+      "alter table audit_events rename to audit_events_x",
+    ).run();
+    let r: Response;
+    try {
+      // Raw, as the page's script gets it: the harness's `post` unwraps JSON.
+      r = await browser.postJson(
+        env,
+        BASE,
+        { cookie: who.cookie },
+        {
+          secret: p.secret,
+          csrf,
+          decision: "confirm",
+        },
+      );
+    } finally {
+      await env.DB.prepare(
+        "alter table audit_events_x rename to audit_events",
+      ).run();
+    }
+    expect(r.status).toBe(500);
+    expect(r.headers.get("content-type")).toContain("application/json");
+    const { html: card, keep } = (await r.json()) as {
+      html: string;
+      keep: boolean;
+    };
+    // The link stays usable, so a reload says "Already decided".
+    expect(keep).toBe(true);
+    expect(card).toContain("We could not confirm this finished");
+    expect(card).not.toContain("Nothing changed");
+    // The role did apply.
+    expect(await roles(who.userId)).toMatchObject([
+      { namespace: n, name: "audit-lead" },
+    ]);
     d.close();
   });
 
@@ -505,7 +548,15 @@ describe("role proposals over MCP (#1372)", () => {
       ["decision", "confirm"],
     ]);
     expect(r.status).toBe(401);
-    expect((await get(p.secret, { cookie: old })).status).toBe(302);
+    // Signed out: a hop page that keeps the fragment's secret in the tab and
+    // goes to sign-in with the page's own path, never the secret, as `next`.
+    const hop = await get(p.secret, { cookie: old });
+    expect(hop.status).toBe(200);
+    const hopHtml = await hop.text();
+    expect(hopHtml).toContain(
+      `data-go="/auth/login?next=${encodeURIComponent(BASE)}"`,
+    );
+    expect(hopHtml).not.toContain(p.secret);
     expect(await roles(who.userId)).toEqual([]);
     expect((await proposals(who.userId))[0]?.status).toBe("pending");
     d.close();
@@ -933,6 +984,221 @@ const MIN = 60_000;
 const CODES = trial({ AUTH_DOMAINS: "x.com" });
 const envOf = (provider: string) => (provider === "code" ? CODES : env);
 
+describe("role proposals: revoking the proposing credential (#1403)", () => {
+  const revokePat = (cookie: string, id: string) =>
+    api(app, `/api/v1/tokens/${id}`, cookie, { method: "DELETE" });
+
+  it("revoking the PAT expires its pending proposals at once: the link refuses, an audit row names why; another credential's and decided ones are untouched", async () => {
+    const { who, d } = await withBus();
+    const n = ns("rp");
+    const alice = await open(who.userId, d, n);
+    const a = await createPat(env, who.userId, "a");
+    const b = await createPat(env, who.userId, "b");
+    const mk = async (token: string, name: string) =>
+      proposed(
+        await propose(token, {
+          action: "set",
+          namespace: n,
+          name,
+          agent: alice.name,
+        }),
+      );
+    const a1 = await mk(a.token, "lead-a1");
+    const a2 = await mk(a.token, "lead-a2");
+    const a3 = await mk(a.token, "lead-a3");
+    const b1 = await mk(b.token, "lead-b1");
+    // a3 is decided before the revoke: it must stay as it was.
+    expect(
+      (await confirmInBrowser(who.cookie, a3.secret, "reject")).status,
+    ).toBe(200);
+
+    expect((await revokePat(who.cookie, a.id)).status).toBe(204);
+
+    const byName = Object.fromEntries(
+      (await proposals(who.userId)).map((p) => [p.name, p]),
+    );
+    expect(byName["lead-a1"]?.status).toBe("expired");
+    expect(byName["lead-a2"]?.status).toBe("expired");
+    expect(byName["lead-a3"]).toMatchObject({
+      status: "refused",
+      reason: "rejected",
+    });
+    expect(byName["lead-b1"]?.status).toBe("pending");
+
+    // The confirm link refuses (expired), and nothing was applied.
+    const dead = await post(a1.secret, { cookie: who.cookie }, [
+      ["csrf", await forgedCsrf(who.userId, a1.secret)],
+      ["decision", "confirm"],
+    ]);
+    expect(dead.status).toBe(410);
+    expect(await roles(who.userId)).toEqual([]);
+
+    const rows = (await auditRows(who.userId)).filter(
+      (r) => r.action === "bus.role.expired",
+    );
+    expect(
+      rows
+        .map((r) => [r.actor_kind, JSON.parse(r.detail)])
+        .sort((x, y) =>
+          String(x[1].proposalId).localeCompare(String(y[1].proposalId)),
+        ),
+    ).toEqual(
+      [a1, a2]
+        .map((p) => [
+          "system",
+          {
+            proposalId: p.proposal.id,
+            action: "set",
+            agentId: alice.id,
+            why: "credential_revoked",
+          },
+        ])
+        .sort((x, y) =>
+          String((x[1] as { proposalId: string }).proposalId).localeCompare(
+            String((y[1] as { proposalId: string }).proposalId),
+          ),
+        ),
+    );
+
+    // The other credential's link still confirms.
+    expect((await confirmInBrowser(who.cookie, b1.secret)).status).toBe(200);
+    expect((await roles(who.userId)).map((r) => r.name)).toEqual(["lead-b1"]);
+    // Revoking again (or a credential with no proposals) changes nothing.
+    expect((await revokePat(who.cookie, a.id)).status).toBe(404);
+    d.close();
+  });
+
+  it("revoking the OAuth grant expires its pending proposals", async () => {
+    const { who, d } = await withBus();
+    const n = ns("rp");
+    const alice = await open(who.userId, d, n);
+    const { accessToken } = await oauthToken("", "Agent", who);
+    const p = proposed(
+      await propose(accessToken, {
+        action: "set",
+        namespace: n,
+        name: "lead",
+        agent: alice.name,
+      }),
+    );
+    const grants = (await (
+      await api(app, R.oauthClients, who.cookie)
+    ).json()) as { grants?: { grantId: string }[] } | { grantId: string }[];
+    const list = Array.isArray(grants) ? grants : (grants.grants ?? []);
+    expect(list).toHaveLength(1);
+    const del = await api(
+      app,
+      `${R.oauthClients}/${list[0]?.grantId}`,
+      who.cookie,
+      { method: "DELETE" },
+    );
+    expect(del.status).toBe(204);
+    expect((await proposals(who.userId))[0]).toMatchObject({
+      id: p.proposal.id,
+      status: "expired",
+    });
+    expect(
+      (await auditRows(who.userId)).filter(
+        (r) => r.action === "bus.role.expired",
+      ),
+    ).toHaveLength(1);
+    d.close();
+  });
+
+  it("a bulk revoke that never calls the hook (identity reset, suspend) still ends its links: checked at view and confirm", async () => {
+    const { who, d } = await withBus();
+    const n = ns("rp");
+    const alice = await open(who.userId, d, n);
+    const a = await createPat(env, who.userId, "a");
+    const b = await createPat(env, who.userId, "b");
+    const mk = async (token: string, name: string) =>
+      proposed(
+        await propose(token, {
+          action: "set",
+          namespace: n,
+          name,
+          agent: alice.name,
+        }),
+      );
+    const viaPat = await mk(a.token, "lead-a");
+    const viaPat2 = await mk(a.token, "lead-a2");
+    const keep = await mk(b.token, "lead-b");
+    // What resetIdentity and setUserStatus do: tokens revoked in D1, the
+    // member stays (or becomes again) active; no hook runs.
+    await env.DB.prepare("update tokens set revoked_at = ? where id = ?")
+      .bind(Date.now(), a.id)
+      .run();
+    // The page that loads the link refuses, and the proposal is spent.
+    expect((await get(viaPat.secret, { cookie: who.cookie })).status).toBe(410);
+    const dead = await post(viaPat2.secret, { cookie: who.cookie }, [
+      ["csrf", await forgedCsrf(who.userId, viaPat2.secret)],
+      ["decision", "confirm"],
+    ]);
+    expect(dead.status).toBe(410);
+    expect(await roles(who.userId)).toEqual([]);
+    const byName = Object.fromEntries(
+      (await proposals(who.userId)).map((p) => [p.name, p.status]),
+    );
+    expect(byName).toEqual({
+      "lead-a": "expired",
+      "lead-a2": "expired",
+      "lead-b": "pending",
+    });
+    const rows = (await auditRows(who.userId)).filter(
+      (r) => r.action === "bus.role.expired",
+    );
+    expect(rows.map((r) => JSON.parse(r.detail).why)).toEqual([
+      "credential_revoked",
+      "credential_revoked",
+    ]);
+    expect((await confirmInBrowser(who.cookie, keep.secret)).status).toBe(200);
+    d.close();
+  });
+
+  it("a bulk OAuth grant revoke (revokeAllGrants) ends the grant's links too", async () => {
+    const { who, d } = await withBus();
+    const n = ns("rp");
+    const alice = await open(who.userId, d, n);
+    const { accessToken } = await oauthToken("", "Agent", who);
+    const p = proposed(
+      await propose(accessToken, {
+        action: "set",
+        namespace: n,
+        name: "lead",
+        agent: alice.name,
+      }),
+    );
+    await revokeAllGrants(env, who.userId);
+    expect((await get(p.secret, { cookie: who.cookie })).status).toBe(410);
+    expect((await proposals(who.userId))[0]?.status).toBe("expired");
+    d.close();
+  });
+
+  it("a proposal recorded before this change has no credential: revoking a PAT leaves it", async () => {
+    const { who, d, pat } = await withBus();
+    const n = ns("rp");
+    const alice = await open(who.userId, d, n);
+    const other = await createPat(env, who.userId, "other");
+    const p = proposed(
+      await propose(pat, {
+        action: "set",
+        namespace: n,
+        name: "lead",
+        agent: alice.name,
+      }),
+    );
+    await runInDurableObject(await hubOf(who.userId), (_: BusHub, s) => {
+      s.storage.sql.exec("update role_proposals set credential = null");
+    });
+    expect((await revokePat(who.cookie, other.id)).status).toBe(204);
+    expect((await proposals(who.userId))[0]).toMatchObject({
+      id: p.proposal.id,
+      status: "pending",
+    });
+    d.close();
+  });
+});
+
 describe("role proposals: a fresh sign-in, bound names (#1372 review)", () => {
   async function pending() {
     const { who, d, pat } = await withBus();
@@ -952,7 +1218,7 @@ describe("role proposals: a fresh sign-in, bound names (#1372 review)", () => {
   it("a sign-in older than 10 minutes can neither load nor post the form; the page asks for a forced sign-in", async () => {
     const { who, d, p } = await pending();
     const csrf = await forgedCsrf(who.userId, p.secret);
-    const next = encodeURIComponent(path(p.secret));
+    const next = encodeURIComponent(BASE);
     for (const [provider, link] of [
       ["access", `/auth/login?via=access&amp;reauth=1&amp;next=${next}`],
       ["code", `/sign-in?next=${next}`],
@@ -1173,7 +1439,7 @@ describe("role proposals: the forced sign-in marker, through the real sign-in (#
         agent: alice.name,
       }),
     );
-    const cb = await accessSignIn(email, { reauth, next: path(p.secret) });
+    const cb = await accessSignIn(email, { reauth, next: BASE });
     expect(cb.status).toBe(302);
     const set = cb.headers
       .getSetCookie()
@@ -1200,6 +1466,181 @@ describe("role proposals: the forced sign-in marker, through the real sign-in (#
     const { who, d, p, cookie } = await viaAccess(true);
     expect((await confirmInBrowser(cookie, p.secret)).status).toBe(200);
     expect(await roles(who.userId)).toHaveLength(1);
+    d.close();
+  });
+});
+
+describe("role proposals: the secret rides in the URL fragment (#1426)", () => {
+  async function pending() {
+    const { who, d, pat } = await withBus();
+    const n = ns("rf");
+    const alice = await open(who.userId, d, n);
+    const p = proposed(
+      await propose(pat, {
+        action: "set",
+        namespace: n,
+        name: "lead",
+        agent: alice.name,
+      }),
+    );
+    return { who, d, n, alice, p };
+  }
+
+  it("the link is the page's path plus the secret as a fragment; no request URL ever holds the secret", async () => {
+    const { who, d, p } = await pending();
+    expect(p.confirmUrl).toBe(`${APP}${BASE}#${p.secret}`);
+    const b = confirmBrowser(app, APP, BASE);
+    // The page: loaded with no secret, one nonce-bound script, same-origin calls only.
+    const page = await b.send(env, `${APP}${BASE}`, {
+      headers: { cookie: who.cookie },
+    });
+    expect(page.status).toBe(200);
+    const csp = page.headers.get("content-security-policy") ?? "";
+    const nonce = /script-src 'nonce-([^']+)'/.exec(csp)?.[1];
+    expect(nonce).toBeTruthy();
+    expect(csp).toContain("connect-src 'self'");
+    expect(csp).toContain("default-src 'none'");
+    expect(page.headers.get("referrer-policy")).toBe("no-referrer");
+    const html = await page.text();
+    expect(html).toContain(`<script nonce="${nonce}">`);
+    expect(html).not.toContain(p.secret);
+    // Fragment -> details -> confirm, as the script does it.
+    const viewed = await b.get(p.secret, { cookie: who.cookie }, env);
+    expect(viewed.status).toBe(200);
+    const card = await viewed.text();
+    expect(card).toContain("Create this role?");
+    expect(card).not.toContain(p.secret);
+    expect(await roles(who.userId)).toEqual([]);
+    const done = await b.post(
+      p.secret,
+      { cookie: who.cookie },
+      [
+        ["csrf", csrfOf(card)],
+        ["decision", "confirm"],
+      ],
+      env,
+    );
+    expect(done.status).toBe(200);
+    expect(await done.text()).toContain("Role updated");
+    expect(await roles(who.userId)).toHaveLength(1);
+    // Every request made: no secret in any URL (path or query).
+    expect(b.urls.length).toBeGreaterThanOrEqual(3);
+    for (const u of b.urls) expect(u, u).not.toContain(p.secret);
+    d.close();
+  });
+
+  it("the details request needs the page's token: a wrong one, another member's, or none is refused and nothing is shown", async () => {
+    const { who, d, p } = await pending();
+    const b = confirmBrowser(app, APP, BASE);
+    const bad = await b.postJson(
+      env,
+      `${BASE}/view`,
+      { cookie: who.cookie },
+      {
+        secret: p.secret,
+        csrf: `1.${"A".repeat(43)}`,
+      },
+    );
+    expect(bad.status).toBe(403);
+    expect(await bad.text()).not.toContain("Create this role?");
+    // The decision's form token is not the page token.
+    const asForm = await b.postJson(
+      env,
+      `${BASE}/view`,
+      { cookie: who.cookie },
+      {
+        secret: p.secret,
+        csrf: await forgedCsrf(who.userId, p.secret),
+      },
+    );
+    expect(asForm.status).toBe(403);
+    // A secret in the query string or the path is not read.
+    const q = await fetchAndWait(
+      app,
+      new Request(`${APP}${BASE}?secret=${p.secret}`, {
+        headers: { cookie: who.cookie },
+      }),
+      env,
+    );
+    expect(await q.text()).not.toContain("Create this role?");
+    expect((await proposals(who.userId))[0]?.status).toBe("pending");
+    d.close();
+  });
+
+  it("an old path-style link is refused with a clear notice and does not consume the proposal", async () => {
+    const { who, d, p } = await pending();
+    for (const cookie of [who.cookie, ""]) {
+      const old = await fetchAndWait(
+        app,
+        new Request(`${APP}${BASE}/${p.secret}`, { headers: { cookie } }),
+        env,
+      );
+      expect(old.status).toBe(410);
+      expect(await old.text()).toContain("old format");
+    }
+    // An old-style POST does nothing either.
+    const oldPost = await fetchAndWait(
+      app,
+      new Request(`${APP}${BASE}/${p.secret}`, {
+        method: "POST",
+        headers: {
+          cookie: who.cookie,
+          "content-type": "application/x-www-form-urlencoded",
+          "content-length": "0",
+        },
+      }),
+      env,
+    );
+    expect(oldPost.status).toBeGreaterThanOrEqual(400);
+    expect((await proposals(who.userId))[0]?.status).toBe("pending");
+    // The new-style link still works.
+    const ok = await confirmInBrowser(who.cookie, p.secret);
+    expect(await ok.text()).toContain("Role updated");
+    d.close();
+  });
+
+  it("signed out, the hop keeps the secret out of the sign-in's next; the page script holds it in sessionStorage, not the URL", async () => {
+    const { p } = await pending();
+    const b = confirmBrowser(app, APP, BASE);
+    const hop = await b.send(env, `${APP}${BASE}`);
+    expect(hop.status).toBe(200);
+    const html = await hop.text();
+    expect(html).toContain(
+      `data-go="/auth/login?next=${encodeURIComponent(BASE)}"`,
+    );
+    expect(html).toContain(
+      `sessionStorage.setItem("oa-confirm:"+e.dataset.base`,
+    );
+    expect(html).not.toContain(p.secret);
+    expect(hop.headers.get("location")).toBeNull();
+    for (const u of b.urls) expect(u).not.toContain(p.secret);
+  });
+
+  it("a decision posted with a stale or ended session gets a card the script keeps the secret for, not a page", async () => {
+    const { who, d, p } = await pending();
+    const b = confirmBrowser(app, APP, BASE);
+    const body = {
+      secret: p.secret,
+      csrf: await forgedCsrf(who.userId, p.secret),
+      decision: "confirm",
+    };
+    const old = await sessionAt(
+      who.userId,
+      Date.now() - 11 * MIN,
+      "access",
+      Date.now() - 11 * MIN,
+    );
+    const stale = await b.postJson(env, BASE, { cookie: old }, body);
+    expect(stale.status).toBe(403);
+    expect(stale.headers.get("content-type")).toContain("application/json");
+    const j = (await stale.json()) as { html: string; keep: boolean };
+    expect(j.keep).toBe(true);
+    expect(j.html).toContain("Sign in again");
+    expect(j.html).not.toContain(p.secret);
+    const out = await b.postJson(env, BASE, {}, body);
+    expect(out.status).toBe(401);
+    expect(((await out.json()) as { keep: boolean }).keep).toBe(true);
+    expect((await proposals(who.userId))[0]?.status).toBe("pending");
     d.close();
   });
 });

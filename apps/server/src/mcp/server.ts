@@ -8,7 +8,12 @@ import {
   QUOTA_MESSAGE,
 } from "@oa/shared";
 import { createMcpHandler } from "agents/mcp/server";
-import { type Caller, callerOf, withAccessCache } from "../auth/authz.js";
+import {
+  type Caller,
+  callerOf,
+  planOfMember,
+  withAccessCache,
+} from "../auth/authz.js";
 import { enforce, TOOL_POLICY } from "../auth/route-policy.js";
 import type { Env } from "../env.js";
 import {
@@ -28,6 +33,7 @@ import { INSTRUCTIONS, RUNTIME_DOC_URI } from "./instructions.js";
 import { renderSkill, SKILL_DOC_URI, skillUrl } from "./skill.js";
 import { registerArtifactTools } from "./tools/artifacts.js";
 import { registerBusTools } from "./tools/bus.js";
+import { registerCommentTools } from "./tools/comments.js";
 import { registerDataTools } from "./tools/data.js";
 
 export type McpContext = {
@@ -132,6 +138,7 @@ export function createServer(ctx: McpContext): McpServer {
   enforceToolPolicy(server, t);
   registerArtifactTools(server, t);
   registerDataTools(server, t);
+  registerCommentTools(server, t);
   registerBusTools(server, t);
   server.registerResource(
     "runtime-docs",
@@ -301,6 +308,17 @@ type Dispatch = {
   _registeredTools: Record<string, unknown>;
   executeToolHandler: (tool: unknown, args: unknown, ctx: unknown) => unknown;
 };
+/** publish_artifact args that name an artifact and set its visibility, nothing else (`message` is ignored). */
+const isVisibilityOnlyCall = (args: unknown): boolean => {
+  const set = Object.entries((args ?? {}) as Record<string, unknown>)
+    .filter(([, v]) => v !== undefined)
+    .map(([k]) => k);
+  return (
+    set.includes("id") &&
+    set.includes("visibility") &&
+    set.every((k) => k === "id" || k === "visibility" || k === "message")
+  );
+};
 function enforceToolPolicy(server: McpServer, t: ToolEnv): void {
   const d = server as unknown as Dispatch;
   const run = d.executeToolHandler.bind(server);
@@ -308,7 +326,18 @@ function enforceToolPolicy(server: McpServer, t: ToolEnv): void {
     const name = Object.entries(d._registeredTools).find(
       ([, v]) => v === tool,
     )?.[0];
-    const p = name === undefined ? undefined : TOOL_POLICY[name];
+    let p = name === undefined ? undefined : TOOL_POLICY[name];
+    // Sharing is free on every payment plan: a plan-capped member's
+    // settings-only publish_artifact that changes visibility alone is
+    // set_visibility, and takes its policy (patch checks the rest).
+    if (
+      name === "publish_artifact" &&
+      t.caller.kind === "user" &&
+      (t.caller.cap === "plan" ||
+        planOfMember(t.caller.user)?.lock?.mode === "viewOnly") &&
+      isVisibilityOnlyCall(args)
+    )
+      p = TOOL_POLICY.set_visibility;
     return withAccessCache(async () => {
       try {
         if (!p)

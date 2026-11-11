@@ -113,11 +113,9 @@ function googleConfig(
       "GOOGLE_CLIENT_ID isn't set",
       "Set it, or turn Google sign-in off",
     );
-  if (domains.length === 0)
-    return fail(
-      "AUTH_DOMAINS is empty",
-      "Set the Google Workspace domains that may sign in",
-    );
+  // An empty AUTH_DOMAINS is valid: admission is then by OWNER_EMAIL and
+  // invites only (domainJoin is forced to "invite" below). It never means
+  // "any Google account may join".
   const clientId = env.GOOGLE_CLIENT_ID.trim();
   // Hosted installs never hold the shared Google client secret: the broker
   // alone does the code exchange. Fail closed, and never fall back to direct
@@ -177,8 +175,18 @@ function googleConfig(
 }
 
 /** Hosted installs never admit by domain: their AUTH_DOMAINS aren't proven owned (M1). */
-function domainJoin(env: Env, problems: string[]): AuthConfig["domainJoin"] {
+function domainJoin(
+  env: Env,
+  domains: readonly string[],
+  problems: string[],
+): AuthConfig["domainJoin"] {
   const join = env.AUTH_DOMAIN_JOIN === "member" ? "member" : "invite";
+  if (domains.length === 0 && join === "member") {
+    problems.push(
+      'AUTH_DOMAIN_JOIN is "member", but AUTH_DOMAINS is empty, so there is no domain to join and invites apply.',
+    );
+    return "invite";
+  }
   if (env.HOSTED === "1" && join === "member") {
     problems.push(
       'AUTH_DOMAIN_JOIN is "member", but a hosted install admits people by invite only, so invites apply.',
@@ -197,6 +205,12 @@ function build(env: Env): AuthConfig {
       `AUTH_DOMAINS has "${d}", which isn't a valid domain, so it's ignored. Fix or remove it.`,
     );
   const domains = parsed.domains;
+  // Set but nothing usable: a typo must not quietly become owner+invite-only.
+  const domainsSet = nonEmpty(env.AUTH_DOMAINS);
+  if (domainsSet && domains.length === 0)
+    problems.push(
+      "AUTH_DOMAINS is set but has no valid domain, so no domain is admitted (owner and invites only). Fix it, or clear it on purpose.",
+    );
 
   let turnstile: AuthConfig["turnstile"] = null;
   if (nonEmpty(env.TURNSTILE_SITE_KEY) && nonEmpty(env.TURNSTILE_SECRET))
@@ -234,7 +248,7 @@ function build(env: Env): AuthConfig {
   return {
     providers,
     domains,
-    domainJoin: domainJoin(env, problems),
+    domainJoin: domainJoin(env, domains, problems),
     emailCodes: providers.has("email") && canSend,
     domainCodes:
       env.EMAIL_CODE_DOMAIN === "on" &&

@@ -40,6 +40,15 @@ const withAgents = (agents = AGENTS) =>
 function hub(polls: unknown[], code: () => Response = deviceCode) {
   return vi.fn(async (url: string | URL | Request) => {
     if (String(url).endsWith("/bus/device")) return code();
+    // The instance also serves the skill; that fetch never consumes a poll.
+    if (String(url).includes("/skill.md"))
+      return new Response(
+        "---\nname: open-artifacts-oa-test\n---\n\n# skill\n",
+        {
+          status: 200,
+          headers: { "content-type": "text/markdown" },
+        },
+      );
     const next = polls.shift();
     if (next instanceof Error) throw next;
     return Response.json(next);
@@ -67,6 +76,14 @@ const allHarnesses = (over: Partial<Ctx> = {}) => ({
   ...over,
 });
 
+/** The habits question for the agent's user closes a no-TTY install; it has its own tests (habits.test.ts). */
+const withoutHabitsQuestion = (lines: string[]) => {
+  const at = lines.indexOf(
+    "Installed. One question for your user before you finish:",
+  );
+  return at === -1 ? lines : lines.slice(0, at - 1);
+};
+
 const run = (ctx: Fake, opts: Parameters<typeof install>[0] = {}) =>
   install({ label: LABEL, hub: HUB, ...opts }, ctx);
 
@@ -79,7 +96,7 @@ describe("install: transcript state 1, first run", () => {
     expect(await run(ctx)).toBe(0);
     const [first, after] = transcript("## 1. First run, browser opens");
     const waiting = (first as string[]).length - 1;
-    expect(ctx.out()).toEqual([
+    expect(withoutHabitsQuestion(ctx.out())).toEqual([
       ...(first as string[]).slice(0, waiting),
       "Waiting for approval (up to 10 minutes)…",
       ...(after as string[]),
@@ -184,7 +201,7 @@ describe("install: transcript state 1, first run", () => {
     expect(await run(ctx)).toBe(0);
     expect(ctx.out()).toEqual(
       expect.arrayContaining([
-        "[[warning]]![[/warning]]  No Claude Code, OpenCode, Pi, oh-my-pi or Codex found",
+        "[[warning]]![[/warning]]  No Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw found",
         "   Install one, then run npx @open-artifacts/bus again.",
       ]),
     );
@@ -215,9 +232,10 @@ describe("install: transcript state 1, first run", () => {
       ...allHarnesses({ status: vi.fn(async () => withAgents([])) }),
     });
     await run(ctx);
-    expect(ctx.out().slice(-4)).toEqual([
+    expect(withoutHabitsQuestion(ctx.out()).slice(-5)).toEqual([
       `No agents in namespace [[accent]]${NS}[[/accent]] yet.`,
-      "Start Claude Code, OpenCode, Pi, oh-my-pi or Codex in this folder and it joins.",
+      "Start Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw",
+      "in this folder. It joins.",
       "",
       "[[muted]]Check this machine anytime with npx @open-artifacts/bus status.[[/muted]]",
     ]);
@@ -354,7 +372,8 @@ describe("install: daemon confirmation", () => {
       "[[danger]]×[[/danger]]  The daemon did not start within 10 seconds.",
       "   Run npx @open-artifacts/bus doctor to see why.",
     ]);
-    expect(ctx.out().at(-1)).toMatch(/OpenCode service/);
+    // The harness lines (the output style's too) come before the daemon step.
+    expect(ctx.out().some((l) => /OpenCode service/.test(l))).toBe(true);
   });
 });
 
@@ -457,7 +476,10 @@ describe("install: transcript states 2 to 6", () => {
     expect(await run(ctx)).toBe(0);
     const [block] = transcript("## 5. Already registered");
     expect(ctx.out().slice(0, 8)).toEqual((block as string[]).slice(0, 8));
-    expect(ctx.fetch).not.toHaveBeenCalled();
+    // Nothing is fetched from the hub here; the only call is the skill file the
+    // installer writes for the harnesses it already configured.
+    for (const call of vi.mocked(ctx.fetch).mock.calls)
+      expect(String(call[0])).toContain("/skill.md");
   });
 
   it("6: retries /device/code at 2, 4 and 8 s, then succeeds", async () => {
@@ -470,6 +492,11 @@ describe("install: transcript states 2 to 6", () => {
           });
         return deviceCode();
       }
+      if (String(url).includes("/skill.md"))
+        return new Response(
+          "---\nname: open-artifacts-oa-test\n---\n\n# skill\n",
+          { status: 200, headers: { "content-type": "text/markdown" } },
+        );
       return Response.json(approved);
     }) as unknown as typeof globalThis.fetch;
     const ctx = fakeCtx({ fetch, ...allHarnesses() });
@@ -776,6 +803,28 @@ describe("install: steps and install.json", () => {
   });
 });
 
+describe("skill fetch failure", () => {
+  it("keeps going, then exits non-zero and names the URL and the rerun", async () => {
+    const base = hub([{ status: "pending" }, approved]);
+    const fetch = vi.fn(async (url: string | URL | Request) => {
+      // The instance answers, but not with a skill: wrong content type.
+      if (String(url).includes("/skill.md"))
+        return new Response("<html>nope</html>", {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        });
+      return base(url);
+    }) as unknown as typeof globalThis.fetch;
+    const ctx = fakeCtx({ fetch, ...allHarnesses() });
+    expect(await run(ctx)).toBe(1);
+    // The steps after harnesses still ran: the run reached the daemon line.
+    expect(ctx.out().join("\n")).toMatch(/Daemon running/);
+    expect(ctx.err().join("\n")).toContain("Could not fetch the skill from");
+    expect(ctx.err().join("\n")).toContain("/skill.md?harness=");
+    expect(ctx.err().join("\n")).toContain("install to write the skill");
+  });
+});
+
 describe("roster machine column", () => {
   it("fills a remote agent's machine from the daemon status", () => {
     const ctx = fakeCtx({});
@@ -788,5 +837,103 @@ describe("roster machine column", () => {
     });
     expect(lines[1]).toContain("desktop");
     expect(lines[2]).not.toContain("desktop");
+  });
+});
+
+describe("install and uninstall: the Pi entry notes (#1856)", () => {
+  const withPi = (version: string) =>
+    allHarnesses({
+      which: (c: string) => c === "pi",
+      exec: vi.fn(async (cmd: string, args: string[]) =>
+        cmd === "pi" && args[0] === "--version"
+          ? { code: 0, stdout: `${version}\n`, stderr: "" }
+          : { code: 0, stdout: "", stderr: "" },
+      ),
+    });
+  const mcpFile = (ctx: Fake) => join(ctx.userHome, ".pi/agent/mcp.json");
+  const seed = (ctx: Fake) => {
+    mkdirSync(join(ctx.userHome, ".pi/agent"), { recursive: true });
+    writeFileSync(
+      mcpFile(ctx),
+      JSON.stringify({
+        mcpServers: { "open-artifacts": { type: "http", url: `${HUB}/mcp` } },
+      }),
+    );
+  };
+
+  it("install prints a note the adapter step made", async () => {
+    const ctx = fakeCtx({ fetch: hub([approved]), ...withPi("1.4.0") });
+    seed(ctx);
+    await install({ label: LABEL, hub: HUB }, ctx);
+    expect(ctx.out().join("\n")).toContain(
+      `left the open-artifacts entry in ${mcpFile(ctx)} as it is: Pi needs 1.5.0 or later to show as its own session on pages. Its tools still work.`,
+    );
+  });
+
+  it("install does not repeat a note another line already shows", async () => {
+    const ctx = fakeCtx({
+      fetch: hub([approved]),
+      ...allHarnesses({ which: (c: string) => ["claude", "pi"].includes(c) }),
+    });
+    await install({ label: LABEL, hub: HUB }, ctx);
+    expect(ctx.out().join("\n")).not.toMatch(/no codex binary|Nix mode/);
+  });
+
+  it("uninstall that cannot put the entry back keeps the extension and the moved file, and says why", async () => {
+    const ctx = fakeCtx({ fetch: hub([approved]), ...withPi("1.5.0") });
+    seed(ctx);
+    await install({ label: LABEL, hub: HUB }, ctx);
+    const ext = join(ctx.userHome, ".pi/agent/extensions/oa-bus.ts");
+    const moved = join(ctx.home, "pi-mcp-entry.json");
+    expect(existsSync(ext)).toBe(true);
+    expect(existsSync(moved)).toBe(true);
+    writeFileSync(mcpFile(ctx), "{ broken");
+    await uninstall({ purge: false }, ctx);
+    expect(existsSync(ext)).toBe(true);
+    expect(existsSync(moved)).toBe(true);
+    expect(ctx.out().join("\n")).toContain(mcpFile(ctx));
+  });
+});
+
+describe("install: the Claude Code output style (#1970)", () => {
+  it("writes it, says how to turn it on, and uninstall removes it", async () => {
+    const ctx = fakeCtx({
+      fetch: hub([{ status: "pending" }, approved]),
+      ...allHarnesses(),
+    });
+    expect(await run(ctx)).toBe(0);
+    const path = join(
+      ctx.userHome,
+      ".claude/output-styles/artifacts-teammate.md",
+    );
+    expect(readFileSync(path, "utf8")).toContain("name: Artifacts Teammate");
+    const out = ctx.out().join("\n");
+    expect(out).toContain(
+      "Turned on the Artifacts Teammate output style\n   (~/.claude/output-styles/artifacts-teammate.md).\n   Restart Claude Code sessions to use it.",
+    );
+    const settings = join(ctx.userHome, ".claude/settings.json");
+    expect(JSON.parse(readFileSync(settings, "utf8"))).toEqual({
+      outputStyle: "Artifacts Teammate",
+    });
+    expect(await uninstall({ purge: false }, ctx)).toBe(0);
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(settings)).toBe(false);
+  });
+
+  it("keeps the person's own style and says so", async () => {
+    const ctx = fakeCtx({
+      fetch: hub([{ status: "pending" }, approved]),
+      ...allHarnesses(),
+    });
+    const settings = join(ctx.userHome, ".claude/settings.json");
+    mkdirSync(join(ctx.userHome, ".claude"), { recursive: true });
+    writeFileSync(settings, '{"outputStyle":"Explanatory"}\n');
+    expect(await run(ctx)).toBe(0);
+    expect(ctx.out()).toContain(
+      "[[success]]✓[[/success]]  Added the Artifacts Teammate output style. You're on Explanatory; switch with /output-style.",
+    );
+    expect(readFileSync(settings, "utf8")).toBe(
+      '{"outputStyle":"Explanatory"}\n',
+    );
   });
 });

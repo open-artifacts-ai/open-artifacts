@@ -506,6 +506,8 @@ const PUBLISH_BODY = (spaceId: string) => ({
   // On an existing artifact: 400 use_move, after the publish check.
   spaceId,
 });
+/** Text no artifact holds: an edit's `old` that never matches. */
+const EDIT_MISS = "\u0001no-such-text\u0001";
 /** A well-formed id for the use_move probes (never looked up). */
 const SOME_ID = "AAAAAAAAAAAAAAAA";
 /** A minimal body that passes the server's WebP check (RIFF....WEBP). */
@@ -571,6 +573,21 @@ export const SURFACES: readonly Surface[] = [
       status(201),
     ),
   ),
+  // #1540: an edit that can't match, so an allowed caller reaches edit_failed
+  // after the publish check and nothing is written.
+  {
+    ...rest(
+      "rest publish edits",
+      "publish",
+      [`POST ${ARTS}/versions`],
+      exact(
+        "POST",
+        (id) => `${A(id)}/versions`,
+        () => ({ body: { edits: [{ old: EDIT_MISS, new: "x" }] } }),
+        (r) => r.status === 400 && r.code === "edit_failed",
+      ),
+    ),
+  },
   rest(
     "rest restore_version",
     "restore",
@@ -929,6 +946,88 @@ export const SURFACES: readonly Surface[] = [
       },
     ),
   ),
+  // #682 comments. Writes stop at a request that fails after the access
+  // rules: no body (POST) or a malformed id (400 bad_request), so nothing is
+  // written.
+  rest(
+    "comments list",
+    "comments.read",
+    [`GET ${ARTS}/comments`],
+    read((id) => `${A(id)}/comments`, 200),
+  ),
+  rest(
+    "comments post",
+    "comments.write",
+    [`POST ${ARTS}/comments`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments`,
+      () => ({ body: {} }),
+      // An empty body fails its anchor first: invalid_anchor, still a 400.
+      (r) => r.status === 400,
+    ),
+  ),
+  rest(
+    "comments thread status",
+    "comments.write",
+    [`PATCH ${ARTS}/comments/:threadId`],
+    exact(
+      "PATCH",
+      (id) => `${A(id)}/comments/${BAD}`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "comments reply",
+    "comments.write",
+    [`POST ${ARTS}/comments/:threadId/replies`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments/${BAD}/replies`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "comments edit",
+    "comments.write",
+    [`PATCH ${ARTS}/comments/:threadId/comments/:commentId`],
+    exact(
+      "PATCH",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "comments answer",
+    "comments.write",
+    [`POST ${ARTS}/comments/:threadId/comments/:commentId/answer`],
+    exact(
+      "POST",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}/answer`,
+      () => ({ body: {} }),
+      badRequest,
+    ),
+  ),
+  rest(
+    "artifact agents",
+    "comments.read",
+    [`GET ${ARTS}/agents`],
+    read((id) => `${A(id)}/agents`, 200),
+  ),
+  rest(
+    "comments delete",
+    "comments.write",
+    [`DELETE ${ARTS}/comments/:threadId/comments/:commentId`],
+    exact(
+      "DELETE",
+      (id) => `${A(id)}/comments/${BAD}/comments/${BAD}`,
+      () => ({}),
+      badRequest,
+    ),
+  ),
   rest(
     "anon id",
     "anonId",
@@ -1119,6 +1218,19 @@ export const SURFACES: readonly Surface[] = [
     ),
     name: "mcp publish_artifact (settings only, description)",
   },
+  // #1540: as the REST edits probe, an edit that misses.
+  {
+    ...mcp(
+      "publish_artifact",
+      "publish",
+      tool(
+        "publish_artifact",
+        (id) => ({ id, edits: [{ old: EDIT_MISS, new: "x" }] }),
+        (o) => o.isError && /^edit_failed\b/.test(o.text),
+      ),
+    ),
+    name: "mcp publish_artifact (edits)",
+  },
   mcp(
     "create_upload",
     "upload",
@@ -1129,6 +1241,32 @@ export const SURFACES: readonly Surface[] = [
       contentType: "text/plain",
     })),
     "data",
+  ),
+  // #682 comments over MCP. The write probes stop after the access rules at
+  // a request that fails (an empty body; a thread that does not exist), so
+  // nothing is written.
+  mcp(
+    "list_comments",
+    "comments.read",
+    tool("list_comments", (id) => ({ id })),
+  ),
+  mcp(
+    "add_comment",
+    "comments.write",
+    tool(
+      "add_comment",
+      (id) => ({ id, body: " " }),
+      (o) => o.isError && /^invalid_body\b/.test(o.text),
+    ),
+  ),
+  mcp(
+    "resolve_comment",
+    "comments.write",
+    tool(
+      "resolve_comment",
+      (id) => ({ id, threadId: SOME_ID }),
+      (o) => o.isError && /^not_found: No such thread/.test(o.text),
+    ),
   ),
   // Not artifact-scoped (the caller's publishable spaces).
   mcp(
@@ -1487,6 +1625,11 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
     // An empty patch: settings.manage, then nothing to change.
     real: { req: () => ({ path: "", body: {} }), allow: ok(200) },
   },
+  // An empty patch: the owner rule, then nothing to write.
+  "PUT /api/v1/onboarding": {
+    refuse: invalid(),
+    real: { req: () => ({ path: "", body: {} }), allow: ok(200) },
+  },
   "POST /api/v1/spaces": {
     refuse: invalid(),
     real: {
@@ -1798,6 +1941,43 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: ok(204),
     },
   },
+  // #1567: the caller's own links; the conflict while they have no bus.
+  "PUT /api/v1/bus/links": {
+    refuse: invalid(),
+    real: {
+      req: () => ({
+        path: "",
+        body: { a: "probe/a", b: "probe/b" },
+      }),
+      allow: either(ok(200), code("conflict")),
+    },
+  },
+  "DELETE /api/v1/bus/links/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/bus/links/probe-link" }),
+      allow: ok(204),
+    },
+  },
+  // #1346: role reach; the conflict while they have no bus (or no such role).
+  "PUT /api/v1/bus/reach": {
+    refuse: invalid(),
+    real: {
+      req: () => ({
+        path: "",
+        body: {
+          role: { namespace: "probe/a", name: "probe-role" },
+          namespace: "probe/b",
+        },
+      }),
+      allow: either(ok(200), code("conflict")),
+    },
+  },
+  "DELETE /api/v1/bus/reach/:id": {
+    real: {
+      req: () => ({ path: "/api/v1/bus/reach/probe-reach" }),
+      allow: ok(204),
+    },
+  },
 };
 
 /** A short random tag (space names). */
@@ -1882,6 +2062,8 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["DELETE /api/v1/members/:id/restricted", org("restricted.member")],
   ["GET /api/v1/settings", org("settings.read"), [200]],
   ["PATCH /api/v1/settings", org("settings.manage")],
+  ["GET /api/v1/onboarding", org("onboarding.manage"), [200]],
+  ["PUT /api/v1/onboarding", org("onboarding.manage")],
   ["GET /api/v1/spaces", U, [200]],
   ["POST /api/v1/spaces", org("space.create")],
   ["GET /api/v1/spaces/:id", { user: true, space: "member" }, [200]],
@@ -1969,11 +2151,20 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   // CAPPED_ALLOWED); agents need mcp.connect.
   ["GET /api/v1/bus/machines", U, [200]],
   ["DELETE /api/v1/bus/machines/:id", U],
+  ["GET /api/v1/bus/ping", U, [200]],
   ["GET /api/v1/bus/agents", org("mcp.connect"), [200]],
   // #1296: role addresses; writes also need a cookie session (the handler).
   ["GET /api/v1/bus/roles", org("mcp.connect"), [200]],
   ["PUT /api/v1/bus/roles", org("mcp.connect")],
   ["DELETE /api/v1/bus/roles/:id", org("mcp.connect")],
+  // #1567: project links; writes also need a cookie session (the handler).
+  ["GET /api/v1/bus/links", org("mcp.connect"), [200]],
+  ["PUT /api/v1/bus/links", org("mcp.connect")],
+  ["DELETE /api/v1/bus/links/:id", org("mcp.connect")],
+  // #1346: role reach; writes also need a cookie session (the handler).
+  ["GET /api/v1/bus/reach", org("mcp.connect"), [200]],
+  ["PUT /api/v1/bus/reach", org("mcp.connect")],
+  ["DELETE /api/v1/bus/reach/:id", org("mcp.connect")],
 ];
 
 /** Every instance route (an org or user policy) not reached through an artifact. */
@@ -2020,6 +2211,8 @@ export const PUBLIC_ROUTES: readonly string[] = [
   "GET /auth/callback/google",
   "POST /auth/code/request",
   "POST /auth/code/verify",
+  "GET /auth/unsubscribe/comments",
+  "POST /auth/unsubscribe/comments",
   "POST /auth/logout",
   "GET /auth/dev-login",
   "ALL /__test/*",
@@ -2043,8 +2236,26 @@ export const PUBLIC_ROUTES: readonly string[] = [
   // #1372: the role proposal confirm page (an interactive cookie session of
   // the hub's member and a form token, checked by the handler;
   // bus/roles.proposals.test.ts covers each).
+  "GET /bus/roles/confirm",
   "GET /bus/roles/confirm/:token",
-  "POST /bus/roles/confirm/:token",
+  "POST /bus/roles/confirm/view",
+  "POST /bus/roles/confirm",
+  // #1567: `oa-bus link`'s proposal (a machine token, checked by the
+  // handler) and its confirm page (the role confirm's rules); covered by
+  // bus/links.proposals.test.ts.
+  "POST /api/v1/bus/links/proposals",
+  "GET /bus/links/confirm",
+  "GET /bus/links/confirm/:token",
+  "POST /bus/links/confirm/view",
+  "POST /bus/links/confirm",
+  // #1346: an agent's reach proposal (a machine token, checked by the
+  // handler) and its confirm page (the same rules); covered by
+  // bus/reach.proposals.test.ts.
+  "POST /api/v1/bus/reach/proposals",
+  "GET /bus/reach/confirm",
+  "GET /bus/reach/confirm/:token",
+  "POST /bus/reach/confirm/view",
+  "POST /bus/reach/confirm",
   "GET /a/:id",
   "GET /a/:id/full",
   "GET /a/:id/v/:v",

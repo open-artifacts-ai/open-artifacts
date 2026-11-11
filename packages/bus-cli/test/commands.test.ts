@@ -861,7 +861,10 @@ describe("doctor: transcript state 8", () => {
     const before = readdirSync(ctx.home);
     vi.mocked(ctx.exec).mockClear();
     expect(await doctor(ctx)).toBe(0);
-    expect(ctx.all()).toEqual(blocks[0]);
+    // The habits line is the user's choice, not a check: habits.test.ts owns it.
+    expect(ctx.all().filter((l) => !l.startsWith("Habits:"))).toEqual(
+      blocks[0],
+    );
     expect(readdirSync(ctx.home)).toEqual(before);
     for (const [cmd, args] of vi.mocked(ctx.exec).mock.calls)
       expect([cmd, ...args]).toEqual(["opencode", "--version"]);
@@ -879,7 +882,9 @@ describe("doctor: transcript state 8", () => {
     approve(ctx);
     await wire(ctx, (c) => c === "claude");
     expect(await doctor(ctx)).toBe(1);
-    expect(ctx.all()).toEqual(blocks[1]);
+    expect(ctx.all().filter((l) => !l.startsWith("Habits:"))).toEqual(
+      blocks[1],
+    );
   });
 
   it("each check's failure line", async () => {

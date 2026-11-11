@@ -133,6 +133,10 @@ describe("the codex MCP adapter", () => {
       "fetch",
       "self",
       "set_status",
+      "follow",
+      "unfollow",
+      "following",
+      "propose_reach",
     ]);
     expect(d.hellos).toEqual([]);
   });
@@ -142,7 +146,9 @@ describe("the codex MCP adapter", () => {
     const { call } = await codex(d.path);
     const r = await call(meta());
     expect(r.isError).toBeFalsy();
-    expect(r.content[0]?.text).toBe("No agents in your namespace.");
+    expect(r.content[0]?.text).toBe(
+      "No agents in your namespace and linked ones.",
+    );
     await call(meta({ call: "call_4" }));
     expect(d.hellos).toEqual([
       {
@@ -155,6 +161,7 @@ describe("the codex MCP adapter", () => {
         pid: 4321,
         cwd: WORK,
         proposed_name: "codex",
+        caps: ["mailbox", "pending", "follow", "reach"],
         attest: {},
         codex: {
           thread_id: THREAD,

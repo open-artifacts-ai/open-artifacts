@@ -1,8 +1,8 @@
 // Open Artifacts bus extension for Pi and oh-my-pi. Installed by `oa-bus install`; managed file. Do not edit: reinstall overwrites it.
 // Standalone: Pi loads it from its extensions directory, so it imports node built-ins only.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { connect, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -26,6 +26,8 @@ type Ctx = {
    * tool, clones) in this process. Its presence is how a session is known as omp.
    */
   agent?: { kind?: string };
+  /** omp only: the run mode ("tui" is the interactive terminal; ACP and RPC report "rpc"). */
+  mode?: string;
 };
 type ToolResult = {
   content: { type: "text"; text: string }[];
@@ -52,6 +54,9 @@ type Pi = {
     ): Promise<ToolResult>;
   }): void;
   on(event: string, handler: (event: unknown, ctx: Ctx) => unknown): void;
+  /** Pi only, and not every version: absent on omp and older Pi (#1856). */
+  registerMcpServer?(name: string, config: Json): void;
+  unregisterMcpServer?(name: string): void;
   sendMessage(
     message: {
       customType: string;
@@ -65,6 +70,17 @@ type Pi = {
     },
   ): void;
 };
+
+/** #1856: the header the instance's /mcp reads a session's link proof from (LINK_PROOF_HEADER). */
+const PROOF_HEADER = "X-OA-Agent-Proof-Token";
+/** The daemon gets this long to take a link_proof; an answer after it leaves the session unlinked. */
+const PROOF_MS = 2_000;
+/** A proof the daemon did not take is offered again at most this often. */
+const PROOF_RETRY_MS = 60_000;
+/** Written by `oa-bus install`: the instance's /mcp entry it moved out of Pi's mcp.json. */
+const ENTRY_FILE = "pi-mcp-entry.json";
+/** Written by `oa-bus install` for omp: `{ "origin": "<the instance origin>" }`. */
+const OMP_ORIGIN_FILE = "omp-mcp-origin.json";
 
 /** Above the daemon's 10 s hub wait plus its 5 s wait for delivered. */
 const REQUEST_TIMEOUT_MS = 20_000;
@@ -115,6 +131,16 @@ const refusals: Record<
   inbox_full: [
     `200 messages are already waiting.`,
     "Send again once some are delivered or expire.",
+  ],
+  // #1295: the cap sockets' inbox_full (pending count, bytes or the hub total).
+  mailbox_full: [
+    "Its mailbox is full.",
+    "Send again once it has read some, or message another agent.",
+  ],
+  // #1295: a name only held after a move; no one reads it.
+  reserved_name: [
+    "No one has that name now; it was left by an agent that moved.",
+    "Run the oa_bus list_agents tool to find who has it now.",
   ],
   too_large: [
     "It is too large to send (the limit is 1 MB).",
@@ -168,6 +194,7 @@ function receiptText(
   namespaces?: number,
   excerpt?: string,
   movedTo?: string,
+  linkedNs?: string,
 ): string {
   const quote = excerpt ? `"${excerpt}"` : undefined;
   const to = sentTo;
@@ -184,7 +211,7 @@ function receiptText(
       const tail = (v: string) =>
         r.reason === "recipient_closed"
           ? `was not delivered because ${v} closed first.`
-          : `was not taken within ${RETAIN}.`;
+          : `was not confirmed as delivered. Mail waits at most ${RETAIN}.`;
       const head = (v: string) => `×  Expired: your message to ${v}`;
       if (!quote) return fitLine((v) => `${head(v)} ${tail(v)}`, to);
       return fitLine((v) => quoted(head(v), quote, tail(v)), to);
@@ -213,10 +240,40 @@ function receiptText(
             : `×  ${label}: your message to ${v} was not delivered.`,
           ...(said(v) ? [`   ${said(v)}`] : []),
           ...(hint ? [`   ${hint}`] : []),
+          ...(linkedNs !== undefined &&
+          (r.reason === "closed" || r.reason === "revoked")
+            ? [
+                "   A linked project has a live agent with that name:",
+                `   pass to_namespace ${linkedNs} to reach the live one.`,
+              ]
+            : []),
         ].join("\n");
       return fitLine(lines, to);
     }
   }
+}
+
+/** @oa/bus-ipc linkedLiveNamespace (#1567): the one namespace with a live agent called `name`. */
+function linkedLiveNamespace(
+  name: string,
+  roster: readonly {
+    name: string;
+    namespace: string;
+    live?: boolean;
+    state?: string;
+  }[],
+): string | undefined {
+  const l = name.toLowerCase();
+  const seen = new Set(
+    roster
+      .filter(
+        (a) =>
+          a.name.toLowerCase() === l &&
+          (a.state ?? (a.live ? "live" : "queued")) === "live",
+      )
+      .map((a) => a.namespace),
+  );
+  return seen.size === 1 ? [...seen][0] : undefined;
 }
 
 /**
@@ -355,6 +412,67 @@ const statusSetText = (state: string, label?: string): string =>
 const earlierStatusText = (message: string): string =>
   `Your previous status did not reach the user. ${message}`;
 
+/** The `follow` result (#1317). */
+const followText = (url: string): string =>
+  `Following ${url}. You get a notice here when it changes.`;
+
+/** The `unfollow` result. */
+const unfollowText = (removed: boolean, artifact: string): string =>
+  removed
+    ? `Stopped following ${artifact}.`
+    : `You were not following ${artifact}.`;
+
+/** The `following` result: one line per artifact, newest first. */
+const followingText = (
+  follows: readonly { url: string; followed_at: string }[],
+): string =>
+  follows.length
+    ? follows.map((f) => `${f.url} (since ${f.followed_at})`).join("\n")
+    : "You are not following any artifacts.";
+
+/** The bad_frame answers a current daemon gives a follow call itself (@oa/bus-ipc FOLLOW_DAEMON_BAD_FRAME). */
+const FOLLOW_DAEMON_BAD_FRAME = [
+  "follow is not supported on this connection",
+  "the frame is not valid on the hub wire",
+];
+
+/** What an agent sees when its daemon is too old for the follow frames. */
+const FOLLOW_OLD_DAEMON =
+  "This oa-bus daemon is too old to follow artifacts. Ask the user to update oa-bus.";
+
+/** The `propose_reach` result (#1346). */
+const reachProposedText = (
+  namespaces: readonly string[],
+  url: string,
+  expiresAt: string,
+): string =>
+  `Proposed: let your role reach ${namespaces.join(", ")}. Nothing has changed. Give the person this link to confirm it in their browser, signed in (it works once and expires at ${expiresAt}): ${url}`;
+
+/** What an agent sees when its daemon is too old for the reach frames. */
+const REACH_OLD_DAEMON =
+  "This oa-bus daemon is too old to ask for reach. Ask the user to update oa-bus.";
+
+/** The `propose_reach` namespaces: 1 to 10, each as list_agents shows it. @oa/bus-ipc reachNamespacesOf. */
+const reachNamespacesOf = (
+  value: unknown,
+): { namespaces: string[] } | { error: string } => {
+  const list = Array.isArray(value)
+    ? value.map((v) => (typeof v === "string" ? v.trim() : ""))
+    : [];
+  if (list.length < 1 || list.length > 10)
+    return {
+      error: "oa-bus: namespaces: give 1 to 10 namespaces. Nothing was asked.",
+    };
+  const bad = list.find(
+    (n) => n.length < 1 || n.length > 128 || !/^[a-z0-9._~/-]+$/.test(n),
+  );
+  if (bad !== undefined)
+    return {
+      error: `oa-bus: namespaces: "${bad.slice(0, 40)}" is not a namespace. Use one as list_agents shows it. Nothing was asked.`,
+    };
+  return { namespaces: [...new Set(list)] };
+};
+
 /** @oa/bus-protocol BAD_NS_CHARS: control, bidi and zero-width characters. */
 const BAD_LABEL_CHARS =
   // biome-ignore lint/suspicious/noControlCharactersInRegex: rejecting them is the point
@@ -416,6 +534,14 @@ function statusSaysText(
   ].join(" · ");
 }
 
+/** "2026-11-05 10:00 UTC" from an ISO time; unreadable times are shown as sent. */
+const awayTime = (iso: string): string => {
+  const t = Date.parse(iso);
+  return Number.isNaN(t)
+    ? iso
+    : `${new Date(t).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+};
+
 /** @oa/bus-ipc rosterLine: one list_agents line. */
 function rosterLine(
   a: StatusFields & {
@@ -424,11 +550,65 @@ function rosterLine(
     namespace: string;
     machine_label?: unknown;
     queued: boolean;
+    /** #1295: ISO time the agent went away; it is closed, its mailbox kept. */
+    away?: string | undefined;
   },
   now = Date.now(),
 ): string {
   const says = statusSaysText(a, now);
-  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+  return `- ${a.name} (${displayKind(a.kind)}, ${a.namespace}${typeof a.machine_label === "string" && a.machine_label ? `, ${a.machine_label}` : ""})${a.away !== undefined ? (a.away ? ` (away since ${awayTime(a.away)})` : " (away)") : a.queued ? " (queued)" : ""}${says ? `  ${says}` : ""}`;
+}
+
+/** @oa/bus-protocol isFallbackName: a name only the harness gave the session. */
+const isFallbackName = (name: string, kind: string): boolean => {
+  const lname = name.toLowerCase();
+  return (
+    lname === kind ||
+    lname.startsWith(`${kind}-`) ||
+    lname === "agent" ||
+    /^claude-\d+$/.test(lname)
+  );
+};
+
+/** @oa/bus-ipc collapsedAwayLine: the count of away fallback-named rows. */
+const collapsedAwayLine = (n: number, listed: boolean): string =>
+  `${n}${listed ? " more" : ""} away ${n === 1 ? "session" : "sessions"} with no chosen name (not listed, still reachable by name)`;
+
+/** @oa/bus-ipc rosterText: the list_agents text from the hub's roster rows. */
+function rosterText(
+  agents: readonly (StatusFields & {
+    name: string;
+    kind: string;
+    namespace: string;
+    machine_label?: unknown;
+    state?: unknown;
+    live?: unknown;
+    since?: unknown;
+  })[],
+  now = Date.now(),
+): string {
+  if (!agents.length) return "No agents in your namespace and linked ones.";
+  const lines: string[] = [];
+  let collapsed = 0;
+  for (const a of agents) {
+    const away = a.state === "away";
+    if (away && isFallbackName(a.name, a.kind)) {
+      collapsed++;
+      continue;
+    }
+    lines.push(
+      rosterLine(
+        {
+          ...a,
+          queued: (a.state ?? (a.live ? "live" : "queued")) === "queued",
+          away: away ? String(a.since ?? "") : undefined,
+        },
+        now,
+      ),
+    );
+  }
+  if (collapsed > 0) lines.push(collapsedAwayLine(collapsed, lines.length > 0));
+  return lines.join("\n");
 }
 
 /** @oa/bus-ipc selfText: the agent entry, its status cleaned. */
@@ -462,12 +642,21 @@ export const copy = {
   statusLabelTooLong,
   statusSetText,
   earlierStatusText,
+  followText,
+  unfollowText,
+  followingText,
+  FOLLOW_OLD_DAEMON,
+  reachProposedText,
+  REACH_OLD_DAEMON,
+  reachNamespacesOf,
   displayKind,
   statusSaysText,
   rosterLine,
+  rosterText,
   selfText,
   receiptText,
   movedName,
+  linkedLiveNamespace,
   excerptOf,
   stripTerminalControls,
   neutralizeBody,
@@ -488,7 +677,7 @@ const TOOLS = [
     name: "oabus_list_agents",
     label: "Open Artifacts bus: list agents",
     description:
-      "List the agents you can message, in your Open Artifacts bus namespace.",
+      "List the agents you can message, in your Open Artifacts bus namespace and linked ones.",
     parameters: none,
   },
   {
@@ -503,7 +692,7 @@ const TOOLS = [
         to_namespace: {
           type: "string",
           description:
-            "The recipient's namespace, when a global agent's target name exists in several.",
+            "The recipient's namespace, when the target name exists in several: a global agent's, or a linked project's.",
         },
       },
       required: ["to", "text"],
@@ -547,6 +736,54 @@ const TOOLS = [
         },
       },
       required: ["state"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "oabus_follow",
+    label: "Open Artifacts bus: follow artifact",
+    description:
+      "Follow an Open Artifacts artifact, by id or link, to get a notice when it changes.",
+    parameters: {
+      type: "object",
+      properties: { artifact: { type: "string" } },
+      required: ["artifact"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "oabus_unfollow",
+    label: "Open Artifacts bus: unfollow artifact",
+    description: "Stop following an artifact, by id or link.",
+    parameters: {
+      type: "object",
+      properties: { artifact: { type: "string" } },
+      required: ["artifact"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "oabus_following",
+    label: "Open Artifacts bus: list follows",
+    description: "List the artifacts you follow.",
+    parameters: none,
+  },
+  {
+    name: "oabus_propose_reach",
+    label: "Open Artifacts bus: ask for reach",
+    description:
+      "Ask that the role you hold be able to message agents in more namespaces. Name only other namespaces: your role already reaches its own. This only asks: nothing changes until the person confirms on the link you get back.",
+    parameters: {
+      type: "object",
+      properties: {
+        namespaces: {
+          type: "array",
+          items: { type: "string" },
+          minItems: 1,
+          maxItems: 10,
+        },
+      },
+      required: ["namespaces"],
       additionalProperties: false,
     },
   },
@@ -681,15 +918,27 @@ function procStart(): string | undefined {
   }
 }
 
-/** A session name as a bus name: lowercase words joined by `-`; the kind when nothing is left. */
+/**
+ * A session name as typed (#1635), made a valid bus name the way the hub
+ * (BusNameSchema) wants one. Accents fold away (NFKD, combining marks
+ * dropped). Letters, digits, single spaces, `.` `_` `-` keep their place and
+ * case. A run of any other character becomes `-` only between two kept
+ * non-space characters (`docs/readme` gives `docs-readme`); elsewhere it is
+ * dropped. Starts with a letter or digit, ends with a letter, digit, `_` or
+ * `-`, at most 64 characters; the kind when nothing is left. The hub would
+ * turn a name with any other character into `agent-N`.
+ */
 function nameOf(title: string | undefined, kind: string): string {
-  const slug = (title ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+/, "")
+  const cut = (title ?? "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/([A-Za-z0-9._-])[^A-Za-z0-9 ._-]+(?=[A-Za-z0-9._-])/g, "$1-")
+    .replace(/[^A-Za-z0-9 ._-]+/g, "")
+    .replace(/ {2,}/g, " ")
+    .replace(/^[ ._-]+/, "")
     .slice(0, 64)
-    .replace(/-+$/, "");
-  return slug || kind;
+    .replace(/[ .]+$/, "");
+  return cut || kind;
 }
 
 type Identity = { ref: string; cwd: string; name: string; kind: "pi" | "omp" };
@@ -698,9 +947,24 @@ type Link = {
   welcome: Frame;
   request: (frame: Json, timeoutMs?: number) => Promise<Frame>;
   ack: (msgId: string) => void;
+  /** #1635: tell the daemon the session's new name; false when this daemon does not take it. */
+  rename: (name: string) => boolean;
+  /** #1856: this link's proof hash, to a daemon whose welcome listed `link`; true only when it bound it. */
+  prove: (hash: string) => Promise<boolean>;
   closed: () => boolean;
   close: () => void;
 };
+
+/**
+ * #1608: the daemon's binding token per ref, in memory only. A reconnect (and a
+ * /reload, which re-evaluates this module in the same process) echoes it.
+ */
+const bindTokens = (() => {
+  const g = globalThis as Record<symbol, unknown>;
+  const key = Symbol.for("oa-bus.bindTokens");
+  if (!(g[key] instanceof Map)) g[key] = new Map<string, string>();
+  return g[key] as Map<string, string>;
+})();
 
 function open(
   id: Identity,
@@ -757,6 +1021,21 @@ function open(
         }),
       // Fire-and-forget: the daemon answers an ack with nothing.
       ack: (msgId) => write({ type: "ack", id: `ack-${++seq}`, msg_id: msgId }),
+      // Only to a daemon whose welcome listed `rename`: an older one has no such frame.
+      rename: (name) => {
+        const caps = link.welcome.caps;
+        if (ended || !Array.isArray(caps) || !caps.includes("rename"))
+          return false;
+        write({ type: "rename", id: `rename-${++seq}`, name });
+        return true;
+      },
+      prove: async (hash) => {
+        const caps = link.welcome.caps;
+        if (ended || !Array.isArray(caps) || !caps.includes("link"))
+          return false;
+        const r = await link.request({ type: "link_proof", hash }, PROOF_MS);
+        return r.type === "link_proofed" && r.bound === true;
+      },
       closed: () => ended,
       close: () => {
         ended = true;
@@ -802,6 +1081,8 @@ function open(
           welcomed = true;
           clearTimeout(helloTimer);
           link.welcome = f;
+          if (typeof f.bind_token === "string")
+            bindTokens.set(id.ref, f.bind_token);
           resolve(link);
           continue;
         }
@@ -838,6 +1119,12 @@ function open(
         pid: process.pid,
         cwd: id.cwd,
         proposed_name: id.name,
+        // #1295: this asset decodes away rows and the new refusals.
+        // #1525: and a config file that is pending approval.
+        // #1635: and may send a rename.
+        // #1856: and may send a link_proof.
+        caps: ["mailbox", "pending", "rename", "follow", "reach", "link"],
+        bind_token: bindTokens.get(id.ref),
         attest: start ? { proc_start: start } : {},
       }),
     );
@@ -921,6 +1208,237 @@ export default function oaBus(pi: Pi): void {
     link.ack(msgId);
   };
 
+  // --- #1856: the session proves which bus agent it is on the instance's /mcp.
+  // install moved the instance's entry out of Pi's mcp.json into ENTRY_FILE;
+  // this registers it for the session, with the proof header only while this
+  // session's own link is bound to it. The proof is random per link, lives in
+  // memory, and is never written, logged or sent anywhere but as its hash.
+  type Proof = {
+    link: Link;
+    value: string;
+    at: number;
+    busy: boolean;
+    taken: boolean;
+  };
+  let proof: Proof | undefined;
+  /** Whether the registered entry carries a proof header now. */
+  let headed = false;
+
+  const isRecord = (v: unknown): v is Json =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
+  /** The moved entry, or undefined when there is none or it is not one Pi would take. */
+  const entryOf = ():
+    | { name: string; config: Json; origin?: string }
+    | undefined => {
+    try {
+      const v: unknown = JSON.parse(
+        readFileSync(join(home(), ENTRY_FILE), "utf8"),
+      );
+      if (
+        isRecord(v) &&
+        typeof v.name === "string" &&
+        /^[A-Za-z0-9_-]+$/.test(v.name) &&
+        isRecord(v.config)
+      )
+        return {
+          name: v.name,
+          config: v.config,
+          ...(typeof v.origin === "string" ? { origin: v.origin } : {}),
+        };
+    } catch {}
+    return undefined;
+  };
+  /** Pi 1.5+ only, never omp: its own MCP client reads what is registered. */
+  const mcpHere = () =>
+    identity?.kind === "pi" && typeof pi.registerMcpServer === "function";
+  /**
+   * Whether the entry is on the origin install matched it on: only then does
+   * it ever get a proof, so the header cannot reach another server.
+   */
+  const onHub = (e: { config: Json; origin?: string }) => {
+    try {
+      return (
+        e.origin !== undefined &&
+        typeof e.config.url === "string" &&
+        new URL(e.config.url).origin === e.origin
+      );
+    } catch {
+      return false;
+    }
+  };
+  /**
+   * Registers the entry, plain or with `value` as the proof header. A proof
+   * header the user set is always dropped. Never throws.
+   */
+  const register = (value?: string) => {
+    if (!mcpHere()) return;
+    const entry = entryOf();
+    if (!entry) return;
+    const own = isRecord(entry.config.headers) ? entry.config.headers : {};
+    const headers: Json = {};
+    for (const [k, v] of Object.entries(own))
+      if (k.toLowerCase() !== PROOF_HEADER.toLowerCase()) headers[k] = v;
+    if (value !== undefined && onHub(entry)) headers[PROOF_HEADER] = value;
+    const config = { ...entry.config };
+    if (Object.keys(headers).length > 0) config.headers = headers;
+    else delete config.headers;
+    try {
+      pi.registerMcpServer?.(entry.name, config);
+      headed = headers[PROOF_HEADER] !== undefined;
+    } catch {}
+  };
+  // --- #1856 omp: omp reads its MCP servers from its own mcp.json and has no
+  // per-server header hook, so the extension wraps the global fetch its MCP
+  // client calls (HttpTransport in omp 18.17.0 calls `fetch(url, init)` each
+  // time). The wrap adds the proof header to a request whose origin and path
+  // are exactly the instance's /mcp, and to nothing else. omp shares one MCP
+  // manager across its subagents, so they show the parent's face, as intended.
+  // Only the interactive TUI is wrapped (ctx.mode "tui"): one session at a
+  // time. RPC and ACP (which reports "rpc") can host several sessions that
+  // share this one fetch, where the wrap cannot tell whose request it sees.
+  /** The proof the daemon bound for this session's link; undefined until then. */
+  let face: string | undefined;
+  /** A session switch has begun: no header until it is over or was cancelled. */
+  let held = false;
+  /** This extension instance's fetch wrap, while it is on. */
+  let ompWrap: { restore: () => void } | undefined;
+  const ompOrigin = (): string | undefined => {
+    try {
+      const v: unknown = JSON.parse(
+        readFileSync(join(home(), OMP_ORIGIN_FILE), "utf8"),
+      );
+      if (isRecord(v) && typeof v.origin === "string") {
+        const u = new URL(v.origin);
+        if (u.origin === v.origin && /^https?:$/.test(u.protocol))
+          return u.origin;
+      }
+    } catch {}
+    return undefined;
+  };
+  /** Whether `url` is exactly the instance's /mcp (a trailing slash and a query are the same endpoint). */
+  const isMcp = (url: URL, origin: string) =>
+    url.origin === origin && url.pathname.replace(/\/+$/, "") === "/mcp";
+  /** A body that can be sent a second time as it is. */
+  const replayable = (body: unknown) =>
+    body === undefined ||
+    body === null ||
+    typeof body === "string" ||
+    body instanceof URLSearchParams ||
+    body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(body);
+  const ompWrapOn = () => {
+    if (ompWrap) return;
+    const origin = ompOrigin();
+    const g = globalThis as { fetch?: typeof fetch };
+    const orig = g.fetch;
+    if (!origin || typeof orig !== "function") return;
+    let on = true;
+    /** The caller's headers without any proof header, plus `value` when there is one. */
+    const withProof = (init: RequestInit | undefined, value?: string) => {
+      const h = new Headers(init?.headers);
+      h.delete(PROOF_HEADER);
+      if (value !== undefined) h.set(PROOF_HEADER, value);
+      return h;
+    };
+    const wrapped = async (
+      input: Parameters<typeof fetch>[0],
+      init?: RequestInit,
+    ): Promise<Response> => {
+      let headers: Headers | undefined;
+      try {
+        if (on && (typeof input === "string" || input instanceof URL)) {
+          if (isMcp(new URL(String(input)), origin))
+            // A proof header the user set is never sent as it is.
+            headers = withProof(init, held ? undefined : face);
+        }
+      } catch {
+        headers = undefined;
+      }
+      if (!headers) return orig(input, init);
+      // The caller asked for no redirect handling of its own kind: nothing to hold back.
+      if (init?.redirect !== undefined && init.redirect !== "follow")
+        return orig(input, { ...init, headers });
+      // The proofed call never follows a redirect, so the header cannot leave /mcp.
+      const res = await orig(input, { ...init, headers, redirect: "manual" });
+      if (![301, 302, 303, 307, 308].includes(res.status)) return res;
+      if (!replayable(init?.body)) return res;
+      // A redirect: the caller's own request goes again through the native
+      // fetch, which strips Authorization across origins and applies the method rules.
+      await res.body?.cancel().catch(() => {});
+      return orig(input, { ...init, headers: withProof(init) });
+    };
+    g.fetch = wrapped as typeof fetch;
+    ompWrap = {
+      restore: () => {
+        on = false;
+        // Wrapped again on top by someone else: stay in the chain, inert.
+        if (g.fetch === (wrapped as typeof fetch)) g.fetch = orig;
+        ompWrap = undefined;
+      },
+    };
+  };
+  const offerProof = async (p: Proof) => {
+    if (p.busy) return;
+    p.busy = true;
+    p.at = Date.now();
+    try {
+      const hash = createHash("sha256").update(p.value).digest("hex");
+      const bound = await p.link.prove(hash);
+      // Only for the link that is still this session's, and only once bound.
+      if (bound && proof === p && !p.link.closed() && !stopped) {
+        p.taken = true;
+        register(p.value);
+        if (ompWrap) face = p.value;
+      }
+    } catch {
+    } finally {
+      p.busy = false;
+    }
+  };
+  /** A new proof for a new link; nothing for a daemon that did not list `link`. */
+  const proveLink = (l: Link) => {
+    proof = undefined;
+    const caps = l.welcome.caps;
+    const entry = entryOf();
+    if (!ompWrap && (!mcpHere() || !entry || !onHub(entry))) return;
+    if (!Array.isArray(caps) || !caps.includes("link")) return;
+    proof = {
+      link: l,
+      value: randomBytes(32).toString("base64url"),
+      at: Date.now(),
+      busy: false,
+      taken: false,
+    };
+    void offerProof(proof);
+  };
+  /**
+   * The session is over (a switch to another session, or shutdown): the header
+   * goes. A link that is only lost keeps its last header: changing it would
+   * make Pi reconnect the MCP server and kill calls in flight, and the instance
+   * already reads a proof as no link once the daemon closed that link and
+   * cleared its hash. The next bind replaces the header.
+   */
+  const dropHeader = () => {
+    proof = undefined;
+    face = undefined;
+    held = false;
+    if (headed) register();
+  };
+  /** A turn on a link the daemon did not take a proof for: offer it again, at most once a minute. */
+  const retryProof = () => {
+    const p = proof;
+    if (
+      !p ||
+      p.taken ||
+      p.busy ||
+      p.link !== current ||
+      p.link.closed() ||
+      Date.now() - p.at < PROOF_RETRY_MS
+    )
+      return;
+    void offerProof(p);
+  };
+
   const reconnect = (e?: unknown) => {
     if (stopped || retry || !identity) return;
     const refused = (e as { refused?: boolean } | undefined)?.refused === true;
@@ -937,6 +1455,7 @@ export default function oaBus(pi: Pi): void {
     if (current?.ref === id.ref && !current.closed())
       return Promise.resolve(current);
     if (connecting?.ref === id.ref) return connecting.link;
+    if (current && current.ref !== id.ref) dropHeader();
     current?.close();
     current = undefined;
     const link = open(id, start, {
@@ -960,6 +1479,14 @@ export default function oaBus(pi: Pi): void {
         }
         current = l;
         refusals = 0;
+        proveLink(l);
+        // Renamed while this hello was in flight (#1635).
+        if (
+          identity.kind !== "omp" &&
+          identity.name !== id.name &&
+          identity.name !== identity.kind
+        )
+          l.rename(identity.name);
         return l;
       },
       (e: unknown) => {
@@ -988,15 +1515,78 @@ export default function oaBus(pi: Pi): void {
    */
   const subagent = (ctx: Ctx | undefined) => ctx?.agent?.kind === "sub";
 
+  /**
+   * #1635: the session was renamed (/name, --name, setSessionName). One frame
+   * per change; nothing for the fallback name. The identity carries the name,
+   * so a reconnect's hello proposes the new one.
+   */
+  const renamed = (ctx: Ctx) => {
+    if (stopped || !identity) return;
+    // omp titles a session itself ("auto") after its first message, and its
+    // extension context does not say whether a name was typed by the user:
+    // so omp never renames on the hub. (pi has no auto titles.)
+    if (identity.kind === "omp") return;
+    const id = identityOf(ctx);
+    if (id.ref !== identity.ref || id.name === identity.name) return;
+    identity = { ...identity, name: id.name };
+    if (id.name === id.kind) return;
+    // An open link tells the daemon now; a daemon without the cap, or no
+    // link, learns it from the next hello.
+    if (current && !current.closed() && current.ref === id.ref)
+      current.rename(id.name);
+  };
+  pi.on("session_info_changed", (_event, ctx) => {
+    if (!subagent(ctx)) renamed(ctx);
+  });
+  // A turn start checks too (cheap when unchanged); omp is skipped in renamed().
+  pi.on("turn_start", (_event, ctx) => {
+    if (subagent(ctx)) return;
+    renamed(ctx);
+    if (
+      held &&
+      identity?.kind === "omp" &&
+      identityOf(ctx).ref === identity.ref
+    )
+      held = false;
+    retryProof();
+  });
+
   pi.on("session_start", async (_event, ctx) => {
     if (subagent(ctx)) return;
     stopped = false;
+    // The entry works unlinked: no header until this session's link is bound.
+    identity = identityOf(ctx);
+    register();
+    if (identity.kind === "omp" && ctx.mode === "tui") ompWrapOn();
     // Pi is reachable while this link is open; a daemon that is down is retried.
     await ensure(identityOf(ctx)).catch(reconnect);
   });
+  // omp's /new, /resume and fork keep the process and emit only these two, no
+  // shutdown or start: a new session id gets a fresh link and a fresh proof.
+  const switched = (_event: unknown, ctx: Ctx) => {
+    if (subagent(ctx) || stopped || identity?.kind !== "omp") return;
+    const id = identityOf(ctx);
+    if (id.ref === identity.ref) {
+      held = false;
+      return;
+    }
+    dropHeader();
+    void ensure(id).catch(reconnect);
+  };
+  // The switch emits before_switch first, and can be cancelled there: hold the
+  // header back so a /mcp call inside newSession carries no old proof; a turn
+  // on the same session id gives it back.
+  pi.on("session_before_switch", (_event, ctx) => {
+    if (!subagent(ctx) && identity?.kind === "omp") held = true;
+  });
+  pi.on("session_switch", switched);
+  pi.on("session_branch", switched);
   pi.on("session_shutdown", (_event, ctx) => {
     if (subagent(ctx)) return;
     stopped = true;
+    identity = identity ?? identityOf(ctx);
+    dropHeader();
+    ompWrap?.restore();
     if (retry) clearTimeout(retry);
     retry = undefined;
     connecting = undefined;
@@ -1021,23 +1611,15 @@ export default function oaBus(pi: Pi): void {
       if (r.type !== "roster") failed(r);
       const agents = (r.agents ?? []) as Json[];
       const now = Date.now();
-      return agents.length
-        ? agents
-            .map((a) =>
-              rosterLine(
-                {
-                  ...a,
-                  name: String(a.name),
-                  kind: String(a.kind),
-                  namespace: String(a.namespace),
-                  queued:
-                    (a.state ?? (a.live ? "live" : "queued")) === "queued",
-                },
-                now,
-              ),
-            )
-            .join("\n")
-        : "No agents in your namespace.";
+      return rosterText(
+        agents.map((a) => ({
+          ...a,
+          name: String(a.name),
+          kind: String(a.kind),
+          namespace: String(a.namespace),
+        })),
+        now,
+      );
     }
     if (name === "oabus_send_message") {
       const to = String(args.to ?? "");
@@ -1068,7 +1650,12 @@ export default function oaBus(pi: Pi): void {
         receipt.reason === "revoked"
           ? await movedTo(to, namespace, link)
           : undefined;
-      const out = receiptText(receipt, to, n, excerptOf(body), moved);
+      const linked =
+        (receipt.reason === "closed" || receipt.reason === "revoked") &&
+        !namespace
+          ? await linkedLive(to, link)
+          : undefined;
+      const out = receiptText(receipt, to, n, excerptOf(body), moved, linked);
       if (receipt.state === "refused" || receipt.state === "expired")
         throw new Error(out);
       return out;
@@ -1083,9 +1670,64 @@ export default function oaBus(pi: Pi): void {
       return stripTerminalControls(String(r.body));
     }
     if (name === "oabus_set_status") return statusTool(args, link);
+    if (name === "oabus_propose_reach") return reachTool(args, link);
+    if (
+      name === "oabus_follow" ||
+      name === "oabus_unfollow" ||
+      name === "oabus_following"
+    )
+      return followTool(name.slice("oabus_".length), args, link);
     const r = await link.request({ type: "self", row: true });
     if (r.type !== "agent") failed(r);
     return selfText((r.agent ?? null) as Json | null);
+  };
+
+  /** propose_reach (#1346): the frame carries the namespaces only; the daemon knows the session. */
+  const reachTool = async (args: Json, link: Link): Promise<string> => {
+    const given = reachNamespacesOf(args.namespaces);
+    if ("error" in given) throw new Error(given.error);
+    const r = await link.request({
+      type: "propose_reach",
+      namespaces: given.namespaces,
+    });
+    if (r.type === "reach_proposed")
+      return reachProposedText(
+        given.namespaces,
+        String(r.confirm_url),
+        String(r.expires_at),
+      );
+    if (r.type === "error" && r.code === "bad_frame")
+      throw new Error(REACH_OLD_DAEMON);
+    return failed(r);
+  };
+
+  /** follow, unfollow and following (#1317). Refusals are the hub's or daemon's copy, as-is. */
+  const followTool = async (
+    name: string,
+    args: Json,
+    link: Link,
+  ): Promise<string> => {
+    const artifact =
+      typeof args.artifact === "string" ? args.artifact.trim() : "";
+    if (name !== "following" && !artifact)
+      throw new Error("oa-bus: artifact is required (an id or a link)");
+    const r = await link.request(
+      name === "following" ? { type: name } : { type: name, artifact },
+    );
+    if (r.type === "followed") return followText(String(r.url));
+    if (r.type === "unfollowed")
+      return unfollowText(r.removed === true, artifact);
+    if (r.type === "follows")
+      return followingText(
+        (r.follows ?? []) as { url: string; followed_at: string }[],
+      );
+    if (
+      r.type === "error" &&
+      r.code === "bad_frame" &&
+      !FOLLOW_DAEMON_BAD_FRAME.includes(String(r.message))
+    )
+      throw new Error(FOLLOW_OLD_DAEMON);
+    return failed(r);
   };
 
   /** set_status. Arguments are checked first. Refusals are the daemon's copy, as-is. */
@@ -1181,6 +1823,26 @@ async function movedTo(
         .filter((a) => namespace === undefined || a.namespace === namespace)
         .map((a) => String(a.name)),
     );
+  } catch {
+    return undefined;
+  }
+}
+
+/** #1567: the linked namespace with a live agent called `name`; undefined when none or the roster is unavailable. */
+async function linkedLive(
+  name: string,
+  link: Link,
+): Promise<string | undefined> {
+  try {
+    const r = await link.request({ type: "list" });
+    if (r.type !== "roster") return undefined;
+    const agents = ((r.agents ?? []) as Json[]).map((a) => ({
+      name: String(a.name),
+      namespace: String(a.namespace),
+      ...(typeof a.live === "boolean" ? { live: a.live } : {}),
+      ...(typeof a.state === "string" ? { state: a.state } : {}),
+    }));
+    return linkedLiveNamespace(name, agents);
   } catch {
     return undefined;
   }

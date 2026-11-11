@@ -1,9 +1,12 @@
-import type {
-  AdapterFrame,
-  AgentInfo,
-  DaemonFrame,
-  Hello,
-  Unframed,
+import {
+  ADAPTER_CAPS,
+  type AdapterFrame,
+  type AgentInfo,
+  type ConfigFile,
+  type DaemonFrame,
+  FOLLOW_DAEMON_BAD_FRAME,
+  type Hello,
+  type Unframed,
 } from "@oa/bus-ipc";
 import {
   AGENT_CAP_MESSAGES,
@@ -15,12 +18,22 @@ import {
 import type { z } from "zod";
 import type { AgentTable } from "./agents.ts";
 import type { HubConnection } from "./hub.ts";
+import { REACH_COPY, type ReachResult } from "./reach.ts";
 import type { Timer } from "./sent.ts";
 import { STATUS_COPY } from "./status.ts";
 
 export type HubReply = Extract<
   ServerFrame,
-  { type: "receipt" | "roster" | "body" | "error" }
+  {
+    type:
+      | "receipt"
+      | "roster"
+      | "body"
+      | "error"
+      | "followed"
+      | "unfollowed"
+      | "follows";
+  }
 >;
 
 type Waiter = {
@@ -158,6 +171,13 @@ export const MACHINE_CAP_COPY =
 export const MEMBER_CAP_COPY =
   "Your bus has too many agents right now. Close a session you no longer need; this one retries in a few minutes.";
 
+/** What an agent sees when a follow cannot reach a hub that supports it. */
+export const FOLLOW_COPY = {
+  down: "The hub is not connected right now. Try again in a moment.",
+  old_hub:
+    "This Open Artifacts hub is too old to follow artifacts. Ask the user to update it.",
+} as const;
+
 export type AgentCap = "machine" | "member";
 export const CAP_COPY: Record<AgentCap, string> = {
   machine: MACHINE_CAP_COPY,
@@ -183,6 +203,27 @@ export type RouteCtx = {
     ref: string,
     reply: (f: Unframed) => unknown,
   ) => Unframed | undefined;
+  /**
+   * Whether the hub link can take follow frames (#1317): `ok`, `old_hub` (its
+   * hello_ok did not list `follow`) or `down` (no link, or no hello_ok yet).
+   * Without it, refused as `down`.
+   */
+  followSupport?: () => "ok" | "old_hub" | "down";
+  /**
+   * Asks the hub, over HTTP with the machine's token, that `ref`'s role reach
+   * `namespaces` (#1346). `ref` is always the attested connection's, never
+   * from a frame. Without it, refused as `hub_unavailable`.
+   */
+  proposeReach?: (ref: string, namespaces: string[]) => Promise<ReachResult>;
+  /**
+   * link_proof (#1856): the proof hash of the agent `ref`, taken from its own
+   * hello'd connection. True when a live record took it.
+   */
+  linked?: (ref: string, hash: string) => boolean;
+  /** rename (#1635): the session's new name, from an adapter that listed the cap. */
+  renamed?: (ref: string, name: string) => void;
+  /** Config files refused or noted on this agent's folder chain, plus the allowlist, for `self` with `row` (#1527). */
+  configFiles?: (cwd: string, pending?: boolean) => ConfigFile[];
   /** The daemon's version, reported by `self`. */
   version?: string;
   /**
@@ -207,6 +248,43 @@ const statusOf = (row: StatusRow | undefined): StatusRow =>
     ),
   );
 
+/** What an adapter that did not list `mailbox` is shown for the new refusals. */
+const OLD_REASON = {
+  mailbox_full: "inbox_full",
+  reserved_name: "unknown_agent",
+} as const;
+
+/**
+ * #1295: a reply as an adapter without the `mailbox` cap can decode it: no
+ * away rows, no `since` or `queued`, and the new refusals as the reasons they
+ * replace (as the hub does for a socket without the cap).
+ */
+function forOldAdapter(f: DaemonFrame): DaemonFrame {
+  if (f.type === "roster")
+    return {
+      ...f,
+      agents: f.agents
+        .filter((a) => a.state !== "away")
+        .map(({ since: _since, ...a }) => a),
+    };
+  if (f.type === "receipt") {
+    const {
+      queued: _q,
+      since: _s,
+      ...r
+    } = f as typeof f & {
+      queued?: unknown;
+      since?: unknown;
+    };
+    const reason =
+      r.reason !== undefined && r.reason in OLD_REASON
+        ? OLD_REASON[r.reason as keyof typeof OLD_REASON]
+        : r.reason;
+    return { ...r, ...(reason === undefined ? {} : { reason }) } as DaemonFrame;
+  }
+  return f;
+}
+
 /** A local request is attributed to the connection's attested agent, never to a frame field. */
 export function routeLocal(
   frame: Exclude<AdapterFrame, { type: "hello" }>,
@@ -221,14 +299,24 @@ export function routeLocal(
 
   switch (frame.type) {
     case "self": {
+      const files = frame.row
+        ? (ctx.configFiles?.(
+            agent.cwd,
+            hello.caps?.includes(ADAPTER_CAPS.pending),
+          ) ?? [])
+        : [];
       const self = {
         type: "agent",
         agent: {
           name: agent.busName,
           namespace: agent.namespace,
+          ...(agent.namespaceSource
+            ? { namespace_source: agent.namespaceSource }
+            : {}),
           kind: agent.kind,
           live: agent.live,
           global: agent.global,
+          ...(files.length > 0 ? { config_files: files } : {}),
         },
       } as const;
       // The status is the hub's: asked for only by the self tool.
@@ -252,6 +340,30 @@ export function routeLocal(
         code: "unauthorized",
         message: "not a delivery to this agent",
       };
+    case "rename":
+      // An adapter that did not list the cap was never told to send one.
+      if (
+        (hello.kind !== "pi" && hello.kind !== "omp") ||
+        !hello.caps?.includes(ADAPTER_CAPS.rename) ||
+        !ctx.renamed
+      )
+        return {
+          type: "error",
+          code: "bad_frame",
+          message: "rename is not supported on this connection",
+        };
+      ctx.renamed(ref, frame.name);
+      return undefined;
+    case "link_proof":
+      // Bound to the connection's own agent: the frame names none. An adapter
+      // that did not list the cap was never told to send one.
+      if (!hello.caps?.includes(ADAPTER_CAPS.link) || !ctx.linked)
+        return {
+          type: "error",
+          code: "bad_frame",
+          message: "link_proof is not supported on this connection",
+        };
+      return { type: "link_proofed", bound: ctx.linked(ref, frame.hash) };
     case "set_status": {
       const cap = ctx.limited?.(ref);
       if (cap)
@@ -265,6 +377,90 @@ export function routeLocal(
       return ctx.setStatus(frame, ref, (f) =>
         reply({ ...f, v: 1, id: frame.id } as DaemonFrame),
       );
+    }
+    case "follow":
+    case "unfollow":
+    case "following": {
+      // An adapter that did not list the cap was never told it could.
+      if (!hello.caps?.includes(ADAPTER_CAPS.follow))
+        return {
+          type: "error",
+          code: "bad_frame",
+          message: FOLLOW_DAEMON_BAD_FRAME.noCap,
+        };
+      const cap = ctx.limited?.(ref);
+      if (cap)
+        return { type: "error", code: "rate_limited", message: CAP_COPY[cap] };
+      const support = ctx.followSupport?.() ?? "down";
+      if (support !== "ok")
+        return {
+          type: "error",
+          code: support === "old_hub" ? "unsupported" : "hub_unavailable",
+          message: FOLLOW_COPY[support],
+        };
+      const build = (id: string): ClientFrame =>
+        frame.type === "following"
+          ? { v: 1, id, type: "following", from_ref: ref }
+          : {
+              v: 1,
+              id,
+              type: frame.type,
+              from_ref: ref,
+              artifact: frame.artifact,
+            };
+      if (!ClientFrameSchema.safeParse(build("probe")).success)
+        return {
+          type: "error",
+          code: "bad_frame",
+          message: FOLLOW_DAEMON_BAD_FRAME.wire,
+        };
+      const id = ctx.pending.open(frame.id, reply);
+      if (ctx.hub.send(build(id))) return undefined;
+      ctx.pending.cancel(id);
+      return {
+        type: "error",
+        code: "hub_unavailable",
+        message: FOLLOW_COPY.down,
+      };
+    }
+    case "propose_reach": {
+      // An adapter that did not list the cap was never told it could.
+      if (!hello.caps?.includes(ADAPTER_CAPS.reach))
+        return {
+          type: "error",
+          code: "bad_frame",
+          message: "reach is not supported on this connection",
+        };
+      const cap = ctx.limited?.(ref);
+      if (cap)
+        return { type: "error", code: "rate_limited", message: CAP_COPY[cap] };
+      if (!ctx.proposeReach)
+        return {
+          type: "error",
+          code: "hub_unavailable",
+          message: REACH_COPY.down,
+        };
+      const answer = (f: Unframed) =>
+        reply({ ...f, v: 1, id: frame.id } as DaemonFrame);
+      ctx.proposeReach(ref, frame.namespaces).then(
+        (r) =>
+          answer(
+            r.ok
+              ? {
+                  type: "reach_proposed",
+                  confirm_url: r.confirmUrl,
+                  expires_at: r.expiresAt,
+                }
+              : { type: "error", code: r.code, message: r.message },
+          ),
+        () =>
+          answer({
+            type: "error",
+            code: "hub_unavailable",
+            message: REACH_COPY.down,
+          }),
+      );
+      return undefined;
     }
     case "list":
     case "send":
@@ -298,7 +494,10 @@ export function routeLocal(
           code: "bad_frame",
           message: "the frame is not valid on the hub wire",
         };
-      const id = ctx.pending.open(frame.id, reply);
+      const gated = hello.caps?.includes(ADAPTER_CAPS.mailbox)
+        ? reply
+        : (f: DaemonFrame) => reply(forOldAdapter(f));
+      const id = ctx.pending.open(frame.id, gated);
       if (ctx.hub.send(build(id))) return undefined;
       ctx.pending.cancel(id);
       return {

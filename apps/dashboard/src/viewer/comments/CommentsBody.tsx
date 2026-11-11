@@ -1,29 +1,134 @@
 import {
+  type ArtifactAgent,
   COMMENT_BODY_MAX,
   COMMENT_GUEST_NAME_MAX,
   type CommentAuthor,
   type Comment as CommentT,
   type CommentThread,
+  MENTIONS_MAX,
   viewerPath,
 } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { Check, FileText, Quote as QuoteIcon } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { ApiClientError } from "../../api/client";
 import {
   commentError,
+  TooManyMentions,
+  useArtifactAgents,
+  useCommentErrorCtx,
   useCreateThread,
   useDeleteComment,
   useEditComment,
   useReply,
   useSetThreadStatus,
 } from "../../api/comments";
+import { isEmbed } from "../../embed";
 import { TXT } from "../ui";
-import { versionDate } from "../versionDate";
-import { numbering } from "./model";
+import { exactDate, versionDate } from "../versionDate";
+import { AuthorFace, AuthorSub, initials } from "./AuthorFace";
+import { useActionRowSlot } from "./actionRow";
+import {
+  AskBlock,
+  actor,
+  asksForMe,
+  Delivery,
+  type Extras,
+  extrasBody,
+  MentionChips,
+  MentionedText,
+  MentionMenu,
+  matchAgents,
+  mentionedKeys,
+  mentionQuery,
+  nextAskFor,
+  removeMention,
+} from "./asks";
+import { numbering, pinChanged, pinNumbering } from "./model";
 import { type CommentsApi, useCommentsApi } from "./useComments";
 
+const touch = () =>
+  typeof window !== "undefined" &&
+  window.matchMedia?.("(pointer: coarse)").matches === true;
+
+/** "Click to place a pin" on a pointer device, "Tap to place a pin" on touch. */
+export const pinHint = () =>
+  touch() ? "Tap to place a pin" : "Click to place a pin";
+
+/** "Esc to cancel", on a device with a keyboard only: touch has the Select button. */
+function EscHint({ esc }: { esc: boolean }) {
+  // #1698: only where Esc actually leaves pin mode (a mode the reader chose).
+  return esc && !touch() ? <span> · Esc to cancel</span> : null;
+}
+
+/** Select and Pin tools for images and pdf pages (#1490). */
+function Tools({ api }: { api: CommentsApi }) {
+  if (!api.pinFormat || !api.canComment) return null;
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex gap-2">
+        <Button
+          size="xs"
+          variant={api.mode === "select" ? "default" : "outline"}
+          aria-pressed={api.mode === "select"}
+          onClick={() => api.setMode("select")}
+        >
+          Select
+        </Button>
+        <Button
+          size="xs"
+          variant={api.mode === "pin" ? "default" : "outline"}
+          aria-pressed={api.mode === "pin"}
+          onClick={() => api.setMode("pin")}
+        >
+          Pin
+        </Button>
+      </div>
+      {api.mode === "pin" && (
+        <p className={`${TXT} ${MUTED}`}>
+          <span>{pinHint()}</span>
+          <EscHint esc={api.pinChosen} />
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Over the page while placing a pin when the list is a sheet that closed. */
+export function PinBar() {
+  const api = useCommentsApi();
+  if (api.mode !== "pin") return null;
+  return (
+    <div
+      role="status"
+      className="fixed bottom-4 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border bg-card px-3 py-1 shadow-md"
+    >
+      <span className={`${TXT} whitespace-nowrap`}>
+        <span>{pinHint()}</span>
+        <EscHint esc={api.pinChosen} />
+      </span>
+      <Button size="xs" variant="ghost" onClick={() => api.setMode("select")}>
+        Select
+      </Button>
+    </div>
+  );
+}
+
 const MUTED = "text-muted-foreground";
+
+/**
+ * #1657: in the phone sheet's short height (a pin's card), the action row
+ * stays on screen instead of being cut at the bottom edge. The sheet carries
+ * the named group; elsewhere these variants do nothing. The row needs its own
+ * surface while it floats (content scrolls under it), and that surface is the
+ * one it sits on: a thread card's, or the sheet's in the note composer.
+ */
+const STICKY =
+  "group-data-[sheet-height=pin]/sheet:sticky group-data-[sheet-height=pin]/sheet:bottom-0 group-data-[sheet-height=pin]/sheet:z-10";
+export const ACTIONS = `${STICKY} group-data-[sheet-height=pin]/sheet:bg-background`;
+export const ACTIONS_PLAIN = `${STICKY} group-data-[sheet-height=pin]/sheet:bg-card`;
 
 /** Everything below renders comment text as React text: never HTML. */
 
@@ -41,9 +146,26 @@ function GuestName({ api }: { api: CommentsApi }) {
   );
 }
 
+/** A guest's way to sign in, back to this page. */
+function SignInLink() {
+  return (
+    <a
+      className={`${TXT} text-[var(--oa-accent-fg)] underline`}
+      href={`/sign-in?next=${encodeURIComponent(
+        `${window.location.pathname}${window.location.search}`,
+      )}`}
+      target={isEmbed() ? "_blank" : undefined}
+      rel="noopener noreferrer"
+    >
+      Sign in
+    </a>
+  );
+}
+
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
 function Composer({
   placeholder,
+  mentionPlaceholder,
   label,
   submit,
   extra,
@@ -54,14 +176,31 @@ function Composer({
   alwaysOpen = true,
   failure,
   onDirty,
+  mentionable = false,
+  actions = ACTIONS,
+  float = false,
+  buttonsRight = false,
+  lead,
 }: {
+  /** Offer @mentions: the agent list is fetched on the composer's first focus. */
+  mentionable?: boolean;
+  /** The action row's own surface while it floats in the short sheet (#1657). */
+  actions?: string;
+  /** Let the sheet's outlet take the row while it is short (#1711). */
+  float?: boolean;
+  /** The new-comment layout: Cancel and the accent submit at the right. */
+  buttonsRight?: boolean;
+  /** Shown at the left of the button row (a guest's Sign in link). */
+  lead?: React.ReactNode;
   /** Called when the box gains or loses text the reader typed. */
   onDirty?: (dirty: boolean) => void;
   placeholder: string;
+  /** The placeholder for someone who can mention agents here. */
+  mentionPlaceholder?: string;
   label: string;
   submit: string;
   extra?: React.ReactNode;
-  onSubmit: (body: string) => Promise<unknown>;
+  onSubmit: (body: string, extras: Extras) => Promise<unknown>;
   onCancel?: () => void;
   initial?: string;
   autoFocus?: boolean;
@@ -69,13 +208,65 @@ function Composer({
   alwaysOpen?: boolean;
   failure?: (e: unknown) => React.ReactNode;
 }) {
-  const { capped } = useCommentsApi();
+  const api = useCommentsApi();
+  const { capped, canMention, guest } = api;
+  const errCtx = useCommentErrorCtx();
   const [text, setText] = useState(initial);
   const [open, setOpen] = useState(alwaysOpen);
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
   const once = useRef(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  const [caret, setCaret] = useState(0);
+  const [menuOff, setMenuOff] = useState(false);
+  const [activeOpt, setActiveOpt] = useState(0);
+  const menuId = useId();
+  // The list is fetched lazily: first focus of a composer an owner/editor can
+  // use (then kept), never on column open. A transient error is retried on the
+  // next focus; a 404 (no route) stays answered.
+  const [wantAgents, setWantAgents] = useState(false);
+  const agentsQ = useArtifactAgents(
+    api.artifactId,
+    mentionable && wantAgents && api.canMention && api.canComment,
+  );
+  const agents = agentsQ.data;
+  // #1711: in the short pin sheet the sheet's own outlet takes the row, so it
+  // stays at the sheet's bottom for a long thread too. The outlet carries the
+  // surface, the padding and the safe-area inset; the card keeps it elsewhere.
+  const slot = useActionRowSlot(float && open);
+  const retryAgents = () => {
+    if (!wantAgents) setWantAgents(true);
+    if (
+      agentsQ.isError &&
+      !agentsQ.isFetching &&
+      !(agentsQ.error instanceof ApiClientError && agentsQ.error.status === 404)
+    )
+      void agentsQ.refetch();
+  };
+  const query = agents?.length ? mentionQuery(text.slice(0, caret)) : null;
+  const found =
+    query !== null && agents && !menuOff ? matchAgents(agents, query) : null;
+  const matches = found ?? [];
+  const menuOpen = matches.length > 0;
+  const pickedAt = useRef<number | null>(null);
+  const pick = (a: ArtifactAgent) => {
+    const before = text.slice(0, caret).replace(/@[\w .-]{0,40}$/, "");
+    setText(`${before}@${a.name} ${text.slice(caret)}`);
+    const at = before.length + a.name.length + 2;
+    setCaret(at);
+    setMenuOff(true);
+    setActiveOpt(0);
+    pickedAt.current = at;
+  };
+  // Put the caret after the picked name in the same commit as the new text. A
+  // frame later is too late: keys typed in between land before it (#1795).
+  useLayoutEffect(() => {
+    const at = pickedAt.current;
+    if (at === null) return;
+    pickedAt.current = null;
+    ref.current?.focus();
+    ref.current?.setSelectionRange(at, at);
+  });
   useEffect(() => {
     if (autoFocus) ref.current?.focus();
   }, [autoFocus]);
@@ -92,7 +283,13 @@ function Composer({
     setBusy(true);
     setError(null);
     try {
-      await onSubmit(body);
+      // Only agents whose @name is still in the text are mentioned.
+      const keys = mentionedKeys(body, agents ?? []);
+      if (keys.length > MENTIONS_MAX) throw new TooManyMentions();
+      const mentions = keys.map((key) => ({ key }));
+      await onSubmit(body, {
+        mentions,
+      });
       setText("");
       if (!alwaysOpen) setOpen(false);
     } catch (e) {
@@ -116,14 +313,57 @@ function Composer({
       <Textarea
         ref={ref}
         aria-label={label}
-        placeholder={placeholder}
+        placeholder={
+          mentionable && canMention && api.canComment && mentionPlaceholder
+            ? mentionPlaceholder
+            : placeholder
+        }
         value={text}
         maxLength={COMMENT_BODY_MAX}
         rows={open ? 3 : 1}
         className={TXT}
-        onFocus={() => setOpen(true)}
-        onChange={(e) => setText(e.target.value)}
+        onFocus={() => {
+          setOpen(true);
+          retryAgents();
+        }}
+        onChange={(e) => {
+          setText(e.target.value);
+          setCaret(e.target.selectionStart);
+          setMenuOff(false);
+          setActiveOpt(0);
+        }}
+        aria-controls={menuOpen ? menuId : undefined}
+        aria-activedescendant={menuOpen ? `${menuId}-${activeOpt}` : undefined}
+        onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
         onKeyDown={(e) => {
+          if (menuOpen) {
+            if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+              e.preventDefault();
+              const n = matches.length;
+              setActiveOpt(
+                (i) => (i + (e.key === "ArrowDown" ? 1 : n - 1)) % n,
+              );
+              return;
+            }
+            if (
+              (e.key === "Enter" || e.key === "Tab") &&
+              !e.nativeEvent.isComposing &&
+              !e.shiftKey &&
+              !e.metaKey &&
+              !e.ctrlKey
+            ) {
+              e.preventDefault();
+              const a = matches[activeOpt];
+              if (a) pick(a);
+              return;
+            }
+            if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              setMenuOff(true);
+              return;
+            }
+          }
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             void go();
@@ -134,28 +374,91 @@ function Composer({
           }
         }}
       />
+      {!canMention &&
+        !guest &&
+        !capped &&
+        initial === "" &&
+        /(^|\s)@/.test(text) && (
+          <p className={`${TXT} text-muted-foreground`}>
+            Only the owner and editors can wake agents.
+          </p>
+        )}
+      {found && (
+        <MentionMenu
+          id={menuId}
+          matches={matches}
+          all={agents}
+          active={activeOpt}
+          onPick={pick}
+        />
+      )}
+      {agents && agents.length > 0 && (
+        <MentionChips
+          text={text}
+          agents={agents}
+          onRemove={(a) => setText((t) => removeMention(t, a.name, agents))}
+        />
+      )}
       {error != null && (
         <p role="alert" className={`${TXT} text-destructive`}>
-          {commentError(error, capped)}
+          {commentError(error, capped, errCtx)}
           {failure?.(error)}
         </p>
       )}
-      {open && (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button size="xs" disabled={!body || busy} onClick={() => void go()}>
-            {submit}
-          </Button>
-          {extra}
-          {(onCancel || !alwaysOpen) && (
+      {open &&
+        (() => {
+          const cancelBtn = (onCancel || !alwaysOpen) && (
             <Button size="xs" variant="ghost" onClick={cancel}>
               Cancel
             </Button>
-          )}
-        </div>
-      )}
+          );
+          // Portaled into the sheet's outlet, the row keeps its layout and
+          // drops its own surface: the outlet is the surface (#1711).
+          const surface = slot ? "" : actions;
+          const row = buttonsRight ? (
+            <div
+              data-oa-actions=""
+              className={`flex flex-col gap-2 ${surface}`}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                {lead}
+                <div className="ml-auto flex items-center gap-2">
+                  {extra}
+                  {cancelBtn}
+                  <Button
+                    size="xs"
+                    className="bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]"
+                    disabled={!body || busy}
+                    onClick={() => void go()}
+                  >
+                    {submit}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div
+              data-oa-actions=""
+              className={`flex flex-wrap items-center gap-2 ${surface}`}
+            >
+              <Button
+                size="xs"
+                disabled={!body || busy}
+                onClick={() => void go()}
+              >
+                {submit}
+              </Button>
+              {extra}
+              {cancelBtn}
+            </div>
+          );
+          return slot ? createPortal(row, slot) : row;
+        })()}
     </div>
   );
 }
+
+export { initials };
 
 function Who({
   a,
@@ -166,15 +469,35 @@ function Who({
   at: string;
   edited: boolean;
 }) {
+  const isAgent = a.kind === "agent";
   return (
-    <p className={`flex flex-wrap items-baseline gap-x-1 ${TXT}`}>
-      <b>{a.name}</b>
-      {a.agent && <span className={MUTED}>{a.agent}</span>}
-      <span className={MUTED}>
-        {versionDate(at)}
-        {edited && " · edited"}
-      </span>
-    </p>
+    <div className="flex min-w-0 items-start gap-2">
+      <AuthorFace a={a} />
+      <div className="flex min-w-0 flex-col self-center">
+        <p className={`m-0 flex min-w-0 items-baseline gap-x-1 ${TXT}`}>
+          <b className="min-w-0 truncate" title={a.name}>
+            {a.name}
+          </b>
+          {isAgent && (
+            <span
+              data-agent-tag=""
+              className="shrink-0 rounded-full border border-primary/30 bg-primary/10 px-1.5 text-[length:var(--oa-text-xs)] text-foreground"
+            >
+              agent
+            </span>
+          )}
+          <span
+            className={`${MUTED} shrink-0 whitespace-nowrap`}
+            title={exactDate(at)}
+          >
+            {versionDate(at)}
+            {edited && " · edited"}
+          </span>
+        </p>
+        {/* #1789/#1822: product (or "not linked") and "for <person>" on a muted line. */}
+        <AuthorSub a={a} />
+      </div>
+    </div>
   );
 }
 
@@ -183,12 +506,17 @@ function CommentRow({
   thread,
   c,
   root,
+  askQuestion,
 }: {
   api: CommentsApi;
   thread: CommentThread;
   c: CommentT;
   root: boolean;
+  /** Open a question to the agent that asked (#1794). */
+  askQuestion?: () => void;
 }) {
+  const nextAsk = nextAskFor(api, thread.id);
+  const errCtx = useCommentErrorCtx();
   const edit = useEditComment(api.artifactId, api.guest);
   const del = useDeleteComment(api.artifactId, api.guest);
   const [menu, setMenu] = useState(false);
@@ -252,9 +580,26 @@ function CommentRow({
             setMode("view");
           }}
         />
+      ) : c.ask ? (
+        <AskBlock
+          artifactId={api.artifactId}
+          thread={thread}
+          c={c}
+          next={nextAsk ? () => api.reveal(nextAsk) : undefined}
+          reply={api.canComment ? () => api.select(thread.id, true) : undefined}
+          askQuestion={askQuestion}
+          guest={api.guest}
+        />
       ) : (
-        <p className={`whitespace-pre-wrap break-words ${TXT}`}>{c.body}</p>
+        <p className={`whitespace-pre-wrap break-words ${TXT}`}>
+          <MentionedText
+            body={c.body}
+            mentions={c.mentions}
+            guest={api.guest}
+          />
+        </p>
       )}
+      <Delivery c={c} guest={api.guest} />
       {mode === "delete" && (
         <div
           role="alertdialog"
@@ -268,7 +613,7 @@ function CommentRow({
           </p>
           {delError != null && (
             <p role="alert" className={`${TXT} text-destructive`}>
-              {commentError(delError, api.capped)}
+              {commentError(delError, api.capped, errCtx)}
             </p>
           )}
           <div className="flex gap-2">
@@ -298,16 +643,33 @@ function CommentRow({
 
 /** What the card says about where its quote went (from the frame's state). */
 function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
+  const isAsk = !!t.comments[0]?.ask;
   const a = t.anchor;
   const state = api.positions.get(t.id)?.state;
   if (a.kind === "note")
-    return <p className={`${TXT} font-medium ${MUTED}`}>Whole page</p>;
-  if (a.kind === "pin") {
-    const n = numbering(api.threads).get(t.id) ?? 1;
     return (
-      <p className={`${TXT} font-medium ${MUTED}`}>
-        {a.page ? `Page ${a.page} · ` : ""}Pin {n}
+      <p className={`flex items-center gap-1 ${TXT} font-medium ${MUTED}`}>
+        <FileText aria-hidden="true" className="size-3.5 shrink-0" />
+        Whole page
       </p>
+    );
+  if (a.kind === "pin") {
+    const n = pinNumbering(api.threads).get(t.id) ?? 1;
+    // Only when both hashes are known and differ (a pdf's hash covers the whole file, so the note says file).
+    const changed = pinChanged(a.contentHash, api.contentHash);
+    return (
+      <div className="flex flex-col gap-1">
+        <p className={`${TXT} font-medium ${MUTED}`}>
+          {a.page ? `Page ${a.page} · ` : ""}Pin {n}
+        </p>
+        {changed && api.pinFormat && (
+          <p className={`${TXT} ${MUTED}`}>
+            {api.pinFormat === "image"
+              ? "The image changed since this was placed."
+              : "This file changed since this was placed."}
+          </p>
+        )}
+      </div>
     );
   }
   const where = a.block?.page
@@ -321,13 +683,22 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
     <div className="flex flex-col gap-1">
       {where && <p className={`${TXT} ${MUTED}`}>{where}</p>}
       {state === "partial" && (
-        <p className={`${TXT} ${MUTED}`}>Text changed since this comment</p>
+        <p className={`${TXT} ${MUTED}`}>
+          Text changed since this {isAsk ? "ask" : "comment"}
+        </p>
       )}
       <blockquote
-        className={`border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED} line-clamp-3 break-words`}
+        className={`flex items-start gap-1.5 border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED}`}
       >
-        {original ? "Original text: " : ""}
-        {original ? `“${a.exact}”` : a.exact}
+        <QuoteIcon
+          aria-hidden="true"
+          data-quote-chip=""
+          className="mt-0.5 size-3.5 shrink-0"
+        />
+        <span className="line-clamp-3 min-w-0 break-words">
+          {original ? "Original text: " : ""}
+          {original ? `“${a.exact}”` : a.exact}
+        </span>
       </blockquote>
     </div>
   );
@@ -336,7 +707,11 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
 function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const isActive = api.active === t.id;
   const reply = useReply(api.artifactId, api.guest);
+  // The agent a question goes to, kept while the box is open so a pick
+  // elsewhere doesn't swap the draft away (the server then says why).
+  const [asking, setAsking] = useState<string | null>(null);
   const status = useSetThreadStatus(api.artifactId, api.guest);
+  const errCtx = useCommentErrorCtx();
   const [statusErr, setStatusErr] = useState<unknown>(null);
   const el = useRef<HTMLLIElement>(null);
   const navigate = useNavigate();
@@ -345,10 +720,77 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const expanded = isActive || rest.length === 0;
   const shown = expanded ? rest : [];
   const orphan = api.positions.get(t.id)?.state === "orphan";
+  const revealTick = api.revealed.tick;
+  const revealedHere = api.revealed.id === t.id;
+  // Runs on mount too, so a column that is just opening still scrolls and focuses.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card.
   useEffect(() => {
-    if (isActive) el.current?.scrollIntoView?.({ block: "nearest" });
+    if (!isActive) return;
+    el.current?.scrollIntoView?.({ block: "nearest" });
+    // #1783: in the short pin sheet a thread with 2+ replies shows its last
+    // reply just above the floating action row, not the card's top.
+    const card = el.current;
+    const last =
+      t.comments.length > 2 ? t.comments[t.comments.length - 1] : null;
+    let frame = 0;
+    let watch: ResizeObserver | undefined;
+    // Only where the sheet owns a floating row (its outlet exists): the wide
+    // overlay at pin height has none and does not scroll.
+    const outlet = card
+      ?.closest('[data-sheet-height="pin"]')
+      ?.querySelector<HTMLElement>("[data-oa-action-outlet]");
+    if (card && last && outlet) {
+      const go = () => {
+        // Hidden (not claimed yet) or gone (the sheet grew for typing): wait
+        // for a real measure, never scroll on 0.
+        if (!outlet.isConnected || outlet.offsetHeight === 0) return;
+        const reply = card.querySelector<HTMLElement>(
+          `[data-comment="${last.id}"]`,
+        );
+        if (!reply) return;
+        // The row's own height, which already includes the safe-area inset.
+        // The composer claims the outlet after this effect, so the height
+        // changes from 0 once it shows: the observer re-measures and scrolls.
+        reply.style.scrollMarginBottom = `${outlet.offsetHeight}px`;
+        // One measure is enough: later size changes (typing) don't re-scroll.
+        watch?.disconnect();
+        const reduce =
+          window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ===
+          true;
+        reply.scrollIntoView?.({
+          block: "end",
+          behavior: reduce ? "auto" : "smooth",
+        });
+      };
+      frame = requestAnimationFrame(go);
+      if (typeof ResizeObserver !== "undefined") {
+        watch = new ResizeObserver(go);
+        watch.observe(outlet);
+      }
+    }
+    if (revealedHere && revealTick > api.revealDone.current) {
+      api.revealDone.current = revealTick;
+      el.current?.focus({ preventScroll: true });
+    }
+    return () => {
+      cancelAnimationFrame(frame);
+      watch?.disconnect();
+    };
+  }, [isActive, revealTick]);
+  // Leaving the thread drops the question mode.
+  useEffect(() => {
+    if (!isActive) setAsking(null);
   }, [isActive]);
   if (!first) return null;
+  // "Ask a question" (#1794): an open, unanswered ask from an agent, to someone who may reply.
+  const asker =
+    first.ask &&
+    first.author.kind === "agent" &&
+    !first.ask.answer &&
+    !first.ask.closed &&
+    api.canComment
+      ? first.author.name
+      : null;
   const toggle = () => {
     setStatusErr(null);
     status.mutate(
@@ -361,13 +803,18 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       ref={el}
       data-thread={t.id}
       data-active={isActive ? "" : undefined}
-      className="rounded-lg border border-border bg-background p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
+      tabIndex={-1}
+      className="rounded-lg border focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] border-border bg-background p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
     >
       <div className="flex flex-col gap-2">
         <button
           type="button"
           className="cursor-pointer border-0 bg-transparent p-0 text-left"
-          aria-label={`Show in page: ${t.anchor.kind === "text" ? t.anchor.exact : "comment"}`}
+          aria-label={
+            t.anchor.kind === "pin"
+              ? `Show pin ${pinNumbering(api.threads).get(t.id) ?? 1} in page`
+              : `Show in page: ${t.anchor.kind === "text" ? t.anchor.exact : "comment"}`
+          }
           aria-pressed={isActive}
           onClick={() => api.select(t.id, true)}
         >
@@ -390,13 +837,31 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
           </p>
         )}
         {resolved && (
-          <p className={`${TXT} ${MUTED}`}>
-            Resolved by {t.resolvedBy?.name ?? "someone"}
+          <p
+            data-resolved-line=""
+            className={`flex items-center gap-1 ${TXT} text-green-700 dark:text-green-400`}
+          >
+            <Check aria-hidden="true" className="size-3.5 shrink-0" />
+            Resolved by{" "}
+            {t.resolvedBy ? actor(t.resolvedBy, t.resolvedBy.name) : "someone"}
             {t.resolvedAt ? ` · ${versionDate(t.resolvedAt)}` : ""}
           </p>
         )}
         <ul className="m-0 flex list-none flex-col gap-3 p-0">
-          <CommentRow api={api} thread={t} c={first} root />
+          <CommentRow
+            api={api}
+            thread={t}
+            c={first}
+            root
+            askQuestion={
+              asker && !asking
+                ? () => {
+                    setAsking(asker);
+                    api.select(t.id, true);
+                  }
+                : undefined
+            }
+          />
           {shown.map((c) => (
             <CommentRow key={c.id} api={api} thread={t} c={c} root={false} />
           ))}
@@ -413,20 +878,51 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         )}
         {statusErr != null && (
           <p role="alert" className={`${TXT} text-destructive`}>
-            {commentError(statusErr, api.capped)}
+            {commentError(statusErr, api.capped, errCtx)}
           </p>
         )}
-        {api.canComment && isActive ? (
+        {asking && isActive ? (
+          <>
+            {api.guest && <GuestName api={api} />}
+            <Composer
+              key="ask"
+              label="Question"
+              placeholder={`Ask ${asking} a question`}
+              submit="Send"
+              autoFocus
+              buttonsRight
+              onCancel={() => setAsking(null)}
+              lead={
+                <span className={`${TXT} ${MUTED}`} data-to-asker="">
+                  To {asking}, the agent that asked
+                </span>
+              }
+              onSubmit={async (body) => {
+                await reply.mutateAsync({
+                  thread: t.id,
+                  body,
+                  toAsker: true,
+                  ...(api.guest ? { guestName: api.guestName.trim() } : {}),
+                });
+                setAsking(null);
+              }}
+            />
+          </>
+        ) : api.canComment && isActive ? (
           <>
             {api.guest && <GuestName api={api} />}
             <Composer
               label="Reply"
               placeholder="Reply"
+              mentionPlaceholder="Reply. Type @ to mention an agent."
               submit="Reply"
-              onSubmit={(body) =>
+              mentionable
+              float
+              onSubmit={(body, x) =>
                 reply.mutateAsync({
                   thread: t.id,
                   body,
+                  ...extrasBody(x),
                   ...(api.guest ? { guestName: api.guestName.trim() } : {}),
                 })
               }
@@ -484,27 +980,43 @@ function NewThread({ api }: { api: CommentsApi }) {
           You're commenting on version {api.version}.
         </p>
       )}
-      <blockquote
-        className={`border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED} line-clamp-3 break-words`}
-      >
-        {draft.anchor.exact}
-      </blockquote>
+      {"pin" in draft ? (
+        <p className={`${TXT} font-medium ${MUTED}`}>
+          {draft.pin.page ? `Page ${draft.pin.page} · ` : ""}New pin
+        </p>
+      ) : (
+        <blockquote
+          className={`border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED} line-clamp-3 break-words`}
+        >
+          {draft.anchor.exact}
+        </blockquote>
+      )}
       <GuestName api={api} />
       <Composer
         label="Add a comment"
         placeholder="Add a comment"
+        mentionPlaceholder="Add a comment. Type @ to mention an agent."
         submit="Comment"
         autoFocus
+        buttonsRight
+        lead={api.guest ? <SignInLink /> : undefined}
+        mentionable
         onDirty={api.setDraftDirty}
         onCancel={api.cancelDraft}
-        onSubmit={async (body) => {
+        onSubmit={async (body, x) => {
           last.current = body;
           await create.mutateAsync({
-            anchor: { ...draft.anchor, kind: "text", version: api.version },
+            anchor:
+              "pin" in draft
+                ? { kind: "pin", version: api.version, ...draft.pin }
+                : { ...draft.anchor, kind: "text", version: api.version },
             body,
+            ...extrasBody(x),
             ...guest,
           });
-          api.cancelDraft();
+          // Posted: keep the quote painted until the list carries the thread
+          // (#1834), so the draft highlight becomes the thread's, no gap.
+          api.cancelDraft(true);
         }}
         failure={(e) =>
           e instanceof ApiClientError && e.code === "anchor_not_in_version" ? (
@@ -520,7 +1032,10 @@ function NewThread({ api }: { api: CommentsApi }) {
                       body: last.current,
                       ...guest,
                     })
-                    .then(api.cancelDraft, () => {})
+                    .then(
+                      () => api.cancelDraft(true),
+                      () => {},
+                    )
                 }
               >
                 Add as a page note
@@ -541,12 +1056,18 @@ function NoteComposer({ api }: { api: CommentsApi }) {
       <Composer
         label="Comment on the whole page"
         placeholder="Comment on the whole page"
+        mentionPlaceholder="Add a comment. Type @ to mention an agent."
         submit="Comment"
         alwaysOpen={false}
-        onSubmit={(body) =>
+        buttonsRight
+        actions={ACTIONS_PLAIN}
+        lead={api.guest ? <SignInLink /> : undefined}
+        mentionable
+        onSubmit={(body, x) =>
           create.mutateAsync({
             anchor: { kind: "note" },
             body,
+            ...extrasBody(x),
             ...(api.guest ? { guestName: api.guestName.trim() } : {}),
           })
         }
@@ -555,8 +1076,39 @@ function NoteComposer({ api }: { api: CommentsApi }) {
   );
 }
 
+/** Amber "N asks for you" button: steps to the next unanswered ask. */
+function AsksForYou({
+  count,
+  onClick,
+}: {
+  count: number;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-asks-for-you
+      className="cursor-pointer rounded-sm border-0 bg-[var(--oa-warning-soft)] px-2 py-0.5 font-semibold text-[var(--oa-warning)] shadow-[inset_0_0_0_1px_var(--oa-warning)] focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)]"
+    >
+      {count} ask{count === 1 ? "" : "s"} for you
+    </button>
+  );
+}
+
 /** The list, header and composers: one body for the column, panel tab and sheet. */
-export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
+export function CommentsBody({
+  textFormat = true,
+  /** Grow to fill the surface. Off in the phone sheet's short height, where the
+      action row's outlet follows the list as a sibling (#1711). */
+  grow = true,
+  /** The phone sheet's short height, kept for reading one pinned card (#1783). */
+  short = false,
+}: {
+  textFormat?: boolean;
+  grow?: boolean;
+  short?: boolean;
+}) {
   const api = useCommentsApi();
   const resolvedCount = api.threads.filter(
     (t) => t.status === "resolved",
@@ -566,31 +1118,60 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
   const ordered = visible(api.ordered);
   const orphans = visible(api.orphans);
   const none = api.threads.length === 0;
+  const forMe = asksForMe([...api.ordered, ...api.orphans]);
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+    // #1711: in the short sheet the list keeps its content height (`flex-none`:
+    // no grow, no shrink, no zero basis), so the action row's outlet sits after
+    // it, stuck to the sheet's bottom, instead of riding up to the sheet's top
+    // when a card is scrolled into view. Every other surface grows as before.
+    <div
+      className={`flex min-h-0 ${grow ? "flex-1" : "flex-none"} flex-col gap-3 p-4`}
+    >
       <div className={`flex items-center justify-between gap-2 ${TXT}`}>
-        <span>{api.open} open</span>
-        {resolvedCount > 0 && (
-          <Button
-            size="xs"
-            variant="ghost"
-            aria-pressed={api.showResolved}
-            onClick={() => api.setShowResolved(!api.showResolved)}
-          >
-            {api.showResolved
-              ? "Hide resolved"
-              : `Show resolved (${resolvedCount})`}
-          </Button>
+        <span>{api.listedOpen} open</span>
+        <div className="flex items-center gap-2">
+          {forMe.length > 0 && (
+            <AsksForYou
+              count={forMe.length}
+              onClick={() => {
+                const id = nextAskFor(api, api.active, { includeSelf: true });
+                if (id) api.reveal(id);
+              }}
+            />
+          )}
+          {resolvedCount > 0 && (
+            <Button
+              size="xs"
+              variant="ghost"
+              aria-pressed={api.showResolved}
+              onClick={() => api.setShowResolved(!api.showResolved)}
+            >
+              {api.showResolved
+                ? "Hide resolved"
+                : `Show resolved (${resolvedCount})`}
+            </Button>
+          )}
+        </div>
+      </div>
+      <Tools api={api} />
+      {api.draft && api.canComment && (
+        <NewThread
+          key={JSON.stringify(
+            "pin" in api.draft ? api.draft.pin : api.draft.anchor,
+          )}
+          api={api}
+        />
+      )}
+      {/* #1783: the short sheet is for the pinned card, so the whole-page box
+          is not shown there. Hidden with CSS, never unmounted: a typed draft has
+          to survive a pin tap, and dragging the sheet up brings the box back. */}
+      <div className={short ? "hidden" : "contents"}>
+        {api.canComment ? (
+          <NoteComposer api={api} />
+        ) : (
+          api.guest && <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
         )}
       </div>
-      {api.draft && api.canComment && (
-        <NewThread key={JSON.stringify(api.draft.anchor)} api={api} />
-      )}
-      {api.canComment ? (
-        <NoteComposer api={api} />
-      ) : (
-        api.guest && <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
-      )}
       {api.error != null && !api.threads.length ? (
         <div role="alert" className={`flex flex-col gap-2 ${TXT}`}>
           <p>Couldn't load comments.</p>
@@ -609,9 +1190,11 @@ export function CommentsBody({ textFormat = true }: { textFormat?: boolean }) {
         </p>
       ) : none ? (
         <p className={`${TXT} ${MUTED}`}>
-          {textFormat
-            ? "No comments yet. Select text to add one."
-            : "No comments yet."}
+          {api.pinFormat === "image" && api.canComment
+            ? "No comments yet. Place a pin to add one."
+            : textFormat && api.canComment
+              ? "No comments yet. Select text to add one."
+              : "No comments yet."}
         </p>
       ) : (
         <>

@@ -12,7 +12,7 @@ import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { ApiClientError } from "../api/client";
 import { qk, useOAuthClients, useTokens } from "../api/queries";
-import { useHosted } from "../auth/permissions";
+import { isSoloPaused, useFrozen, useHosted } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import {
@@ -30,6 +30,7 @@ import { AppLink } from "./AppLink";
 import { ArtifactCard } from "./ArtifactCard";
 import { ArtifactRow } from "./ArtifactRow";
 import { Filters } from "./Filters";
+import { GetStarted } from "./GetStarted";
 import { LibraryIcon } from "./icons";
 import { ALERT, BAR, Empty, GRID, H1, LIST, PAGE } from "./ui";
 import { uniqueItems, useSentinel } from "./useInfinite";
@@ -153,8 +154,11 @@ export function Library({ scope }: { scope: Scope }) {
     agentVia?: string;
     space?: string;
     view?: View;
+    filter?: string;
   };
-  // The root route passes unvalidated params through: only a well-formed via.
+  // The root route passes unvalidated params through: a stale filter value is none.
+  const filter = s.filter === "needs_answer" ? s.filter : undefined;
+  // And only a well-formed via.
   const agentVia = AgentViaSchema.safeParse(s.agentVia).success
     ? s.agentVia
     : undefined;
@@ -173,6 +177,7 @@ export function Library({ scope }: { scope: Scope }) {
     agent,
     agentVia,
     space: space?.id,
+    filter,
   });
   // A space-scoped 404: the caller's role in it is gone (or the space is), and
   // /me is stale. Refetch /me so it leaves the sidebar; the notice outlives the
@@ -215,14 +220,22 @@ export function Library({ scope }: { scope: Scope }) {
   const agents = [...seenAgents.current].sort();
   const guest = me.status === "authed" && me.me.user.role === "guest";
   const meId = me.status === "authed" ? me.me.user.id : undefined;
-  // Guests and restricted (capped) members can't create anywhere.
+  // Guests and restricted (capped) members can't create anywhere, nor can
+  // anyone on an unpaid Solo (publishing is paused for the owner too).
   const canCreate =
-    me.status === "authed" && !guest && (me.me.auth?.cap ?? null) === null;
+    me.status === "authed" &&
+    !guest &&
+    (me.me.auth?.cap ?? null) === null &&
+    !isSoloPaused(me.me);
 
   const canSetUpAgent = useCanSetUpAgent();
+  // The plan lock (Design, #863): every publish is refused (readOnlyCap, and
+  // agents fail canConnect), so the space prompt's Copy is off. The prompt
+  // stays readable in the empty text.
+  const frozen = useFrozen();
   const sentinel = useSentinel(q);
 
-  const filtered = Boolean(s.format || agent || agentVia);
+  const filtered = Boolean(s.format || agent || agentVia || filter);
   const canPublishHere =
     personal || myRole === "editor" || myRole === "manager";
   const uploadSpace = useUploadSpace(space?.id);
@@ -258,6 +271,7 @@ export function Library({ scope }: { scope: Scope }) {
         size="sm"
         variant="outline"
         className="text-[length:var(--oa-text-sm)]"
+        disabled={frozen}
         onClick={() =>
           copyText(`publish this to ${space.name}`, "Prompt copied")
         }
@@ -268,16 +282,30 @@ export function Library({ scope }: { scope: Scope }) {
 
   const results = (
     <>
+      {!filtered && !space && scope === "all" && !showRevoked && (
+        // Your own artifacts only: ones shared with you aren't your first.
+        <GetStarted
+          hasArtifacts={items.some((a) => a.owner.id === meId)}
+          loaded={q.isSuccess}
+        />
+      )}
       <Filters
         format={s.format}
         agent={agent}
         agents={agents}
+        waiting={filter}
+        onWaiting={(filter) => set({ filter })}
         via={agentVia === undefined ? undefined : { label: viaName ?? "" }}
         view={view}
         onFormat={(format) => set({ format })}
         onAgent={(agent) => set({ agent, agentVia: undefined })}
         onClear={() =>
-          set({ format: undefined, agent: undefined, agentVia: undefined })
+          set({
+            format: undefined,
+            agent: undefined,
+            agentVia: undefined,
+            filter: undefined,
+          })
         }
         onView={(v) => {
           storeView(v);
@@ -319,7 +347,13 @@ export function Library({ scope }: { scope: Scope }) {
       {q.isSuccess && items.length === 0 && (
         <Empty
           icon={<LibraryIcon />}
-          title={filtered ? "No artifacts match these filters" : emptyTitle}
+          title={
+            filter === "needs_answer"
+              ? "No asks need your answer."
+              : filtered
+                ? "No artifacts match these filters"
+                : emptyTitle
+          }
           description={
             filtered ? (
               "Try removing a filter."

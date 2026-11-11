@@ -18,7 +18,7 @@ import { Details } from "./Details";
 import { Share } from "./Share";
 import { refocusPending, VERSIONS_PANEL_ID, Versions } from "./Versions";
 
-export const PANEL_TABS = ["versions", "share", "details", "comments"] as const;
+export const PANEL_TABS = ["comments", "versions", "share", "details"] as const;
 export type PanelTab = (typeof PANEL_TABS)[number];
 export const isPanelTab = (t: unknown): t is PanelTab =>
   PANEL_TABS.includes(t as PanelTab);
@@ -105,7 +105,7 @@ export function SidePanel({
       ref={ref}
       tabIndex={-1}
       // Below 960px the panel covers the frame.
-      className="relative flex w-[353px] flex-none flex-col overflow-hidden border-0 border-l border-l-[var(--oa-border)] bg-card outline-none max-[959.98px]:absolute max-[959.98px]:inset-0 max-[959.98px]:z-10 max-[959.98px]:w-auto max-[959.98px]:border-l-0"
+      className="relative flex w-[var(--oa-comments-w)] flex-none flex-col overflow-hidden border-0 border-l border-l-[var(--oa-border)] bg-card outline-none max-[959.98px]:absolute max-[959.98px]:inset-0 max-[959.98px]:z-10 max-[959.98px]:w-auto max-[959.98px]:border-l-0"
       aria-label="Side panel"
       onKeyDown={(e) => {
         if (e.key === "Escape" && !e.defaultPrevented) onClose();

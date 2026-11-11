@@ -9,13 +9,22 @@ import {
   displayKind,
   earlierStatusText,
   excerptOf,
+  FOLLOW_DAEMON_BAD_FRAME,
+  FOLLOW_OLD_DAEMON,
+  followingText,
+  followText,
+  linkedLiveNamespace,
   messageHeader,
   movedName,
   neutralizeBody,
   oversizedText,
+  REACH_OLD_DAEMON,
   REFUSAL,
+  reachNamespacesOf,
+  reachProposedText,
   receiptText,
   rosterLine,
+  rosterText,
   STATUS_COPY,
   selfText,
   statusLabelTooLong,
@@ -23,6 +32,7 @@ import {
   statusSetText,
   stripTerminalControls,
   unconfirmedText,
+  unfollowText,
 } from "@oa/bus-ipc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import oa_bus, { copy } from "../assets/oa-bus.ts";
@@ -200,17 +210,21 @@ describe("pi extension asset", () => {
     expect(src.split("\n")[0]).toMatch(/managed file/i);
   });
 
-  it("registers the five tools with the same JSON-Schema parameters as the MCP tools", () => {
+  it("registers the nine tools with the same JSON-Schema parameters as the MCP tools", () => {
     const p = fakePi();
     oa_bus(p.pi as never);
     expect([...p.tools.keys()]).toEqual(TOOLS.map((t) => piName(t.name)));
     expect([...p.tools.keys()].sort()).toEqual(
       [
         "oabus_fetch",
+        "oabus_follow",
+        "oabus_following",
         "oabus_list_agents",
+        "oabus_propose_reach",
         "oabus_self",
         "oabus_send_message",
         "oabus_set_status",
+        "oabus_unfollow",
       ].sort(),
     );
     for (const t of TOOLS) {
@@ -224,7 +238,7 @@ describe("pi extension asset", () => {
   it("registers no name the OpenBus extension registers, so Pi starts with both (#1448)", () => {
     const p = fakePi();
     oa_bus(p.pi as never);
-    expect(p.tools.size).toBe(5);
+    expect(p.tools.size).toBe(9);
     for (const name of p.tools.keys())
       expect(OPENBUS_TOOLS).not.toContain(name);
   });
@@ -250,7 +264,8 @@ describe("pi extension asset", () => {
       agent_ref: "pi-sess-1",
       pid: process.pid,
       cwd: "/work/repo",
-      proposed_name: "my-pi",
+      proposed_name: "My Pi",
+      caps: ["mailbox", "pending", "rename", "follow", "reach", "link"],
       attest: { proc_start: procStartOf(process.pid) },
     });
     // `TZ=UTC LC_ALL=C ps -o lstart=`: "Fri Oct 23 08:13:26 2026".
@@ -350,6 +365,84 @@ describe("pi extension asset", () => {
     expect(JSON.parse(await p.call("self", {})).kind).toBe("zz");
   });
 
+  it("#1567: list_agents covers linked projects; a closed send names the linked namespace", async () => {
+    const row = (name: string, namespace: string) => ({
+      name,
+      namespace,
+      kind: "pi",
+      live: true,
+      state: "live",
+      global: false,
+    });
+    const { p } = await started((f) =>
+      f.type === "list"
+        ? {
+            type: "roster",
+            agents: [row("me", "acme/app"), row("docs", "acme/docs")],
+          }
+        : f.type === "send"
+          ? { type: "receipt", msg_id: ID, state: "refused", reason: "closed" }
+          : undefined,
+    );
+    expect(await p.call("list_agents", {})).toBe(
+      "- me (pi, acme/app)\n- docs (pi, acme/docs)",
+    );
+    await expect(
+      p.call("send_message", { to: "docs", text: "hi" }),
+    ).rejects.toThrow("pass to_namespace acme/docs to reach the live one.");
+    expect(
+      await p
+        .call("send_message", {
+          to: "docs",
+          text: "hi",
+          to_namespace: "acme/docs",
+        })
+        .catch((e: Error) => e.message),
+    ).not.toContain("to_namespace acme/docs to reach");
+  });
+
+  it("#1567: the empty list says linked ones too", async () => {
+    const { p } = await started((f) =>
+      f.type === "list" ? { type: "roster", agents: [] } : undefined,
+    );
+    expect(await p.call("list_agents", {})).toBe(
+      "No agents in your namespace and linked ones.",
+    );
+  });
+
+  it("#1527: self shows the config files the daemon refused", async () => {
+    const { p } = await started((f) =>
+      f.type === "self"
+        ? {
+            type: "agent",
+            agent: {
+              name: "me",
+              namespace: "ns",
+              kind: "pi",
+              live: true,
+              global: false,
+              config_files: [
+                {
+                  file: "/home/u/x/.oa-bus.json",
+                  state: "refused",
+                  reason: "is writable by everyone",
+                  fix: "run chmod o-w /home/u/x/.oa-bus.json",
+                },
+              ],
+            },
+          }
+        : undefined,
+    );
+    expect(JSON.parse(await p.call("self", {})).config_files).toEqual([
+      {
+        file: "/home/u/x/.oa-bus.json",
+        state: "refused",
+        reason: "is writable by everyone",
+        fix: "run chmod o-w /home/u/x/.oa-bus.json",
+      },
+    ]);
+  });
+
   it("list_agents, self and fetch render like the MCP tools", async () => {
     const { p } = await started((f) =>
       f.type === "list"
@@ -373,6 +466,15 @@ describe("pi extension asset", () => {
                 global: false,
                 machine_label: "desktop",
               },
+              {
+                name: "c",
+                namespace: "ns",
+                kind: "pi",
+                live: false,
+                state: "away",
+                since: "2026-11-05T10:00:00.000Z",
+                global: false,
+              },
             ],
           }
         : f.type === "self"
@@ -395,7 +497,7 @@ describe("pi extension asset", () => {
             : undefined,
     );
     expect(await p.call("list_agents", {})).toBe(
-      "- a (pi, ns)\n- b (opencode, ns, desktop) (queued)",
+      "- a (pi, ns)\n- b (opencode, ns, desktop) (queued)\n- c (pi, ns) (away since 2026-11-05 10:00 UTC)",
     );
     expect(JSON.parse(await p.call("self", {}))).toMatchObject({
       name: "pi-agent",
@@ -563,7 +665,7 @@ describe("pi extension asset", () => {
     const d = await fakeDaemon(home);
     const p = fakePi();
     oa_bus(p.pi as never);
-    await p.emit("session_start", ctx("pi-sess-4", "!!!"));
+    await p.emit("session_start", ctx("pi-sess-4", " \u0001 "));
     await vi.waitFor(() =>
       expect(d.conns[0]?.frames[0]).toMatchObject({ proposed_name: "pi" }),
     );
@@ -598,6 +700,16 @@ describe("the asset's own copy matches the shared copy", () => {
     const revoked = { state: "refused", reason: "revoked" } as const;
     expect(copy.receiptText(revoked, to, undefined, "hi", `${to}-2`)).toBe(
       receiptText(revoked, to, undefined, "hi", `${to}-2`),
+    );
+    for (const reason of ["closed", "revoked", "unknown_agent"] as const) {
+      const r = { state: "refused", reason } as const;
+      expect(copy.receiptText(r, to, undefined, "hi", undefined, "a/b")).toBe(
+        receiptText(r, to, undefined, "hi", undefined, "a/b"),
+      );
+    }
+    const live = [{ name: to, namespace: "a/b", live: true, state: "live" }];
+    expect(copy.linkedLiveNamespace(to, live)).toBe(
+      linkedLiveNamespace(to, live),
     );
     const roster = [`${to}-3`, `${to}-2`, `${to}-2x`, "other"];
     expect(copy.movedName(to, roster)).toBe(movedName(to, roster));
@@ -665,9 +777,11 @@ describe("pi late deliveries (C17)", () => {
               reason: "closed",
               late: [LATE],
             }
-        : f.type === "self"
-          ? { type: "agent", agent: null }
-          : undefined,
+        : f.type === "list"
+          ? { type: "roster", agents: [] }
+          : f.type === "self"
+            ? { type: "agent", agent: null }
+            : undefined,
     );
     expect(await p.call("send_message", { to: "e0", text: "yo" })).toBe(
       `✓  Delivered to e0.\n\n${LATE}`,
@@ -735,7 +849,7 @@ describe("one file for Pi and oh-my-pi (C23b)", () => {
     oa_bus(p.pi as never);
     for (const t of p.tools.values()) expect(t).not.toHaveProperty("loadMode");
     const o = ompHost();
-    expect(o.tools.size).toBe(5);
+    expect(o.tools.size).toBe(9);
     expect(o.tools.get("oabus_send_message")).toMatchObject({
       loadMode: "essential",
     });
@@ -907,6 +1021,201 @@ describe("set_status", () => {
   });
 });
 
+describe("follow tools (#1317)", () => {
+  const entry = {
+    artifact_id: "abc",
+    url: "https://x.test/a/abc",
+    followed_at: "2026-11-09T10:00:00.000Z",
+  };
+  const at = (answer: (f: Frame) => Record<string, unknown>) =>
+    started((f) =>
+      ["follow", "unfollow", "following"].includes(f.type)
+        ? answer(f)
+        : undefined,
+    );
+  const sent = (d: Awaited<ReturnType<typeof started>>["d"]) =>
+    d.conns[0].frames.filter((f) => f.type !== "hello");
+
+  it("registers the three tools with the shared descriptions", () => {
+    const p = fakePi();
+    oa_bus(p.pi as never);
+    for (const n of ["follow", "unfollow", "following"])
+      expect(p.tools.get(`oabus_${n}`)?.description).toBe(
+        TOOLS.find((t) => t.name === n)?.description,
+      );
+  });
+
+  it("follow sends the artifact only; the result says what the agent gets", async () => {
+    const { d, p } = await at(() => ({ type: "followed", ...entry }));
+    expect(
+      await p.call("follow", { artifact: ` ${entry.url} `, name: "other" }),
+    ).toBe(followText(entry.url));
+    expect(sent(d)).toMatchObject([{ type: "follow", artifact: entry.url }]);
+    expect(sent(d)[0]).not.toHaveProperty("name");
+  });
+
+  it("unfollow says whether it was followed", async () => {
+    const { p } = await at(() => ({ type: "unfollowed", removed: false }));
+    expect(await p.call("unfollow", { artifact: "abc" })).toBe(
+      unfollowText(false, "abc"),
+    );
+  });
+
+  it("following lists the links", async () => {
+    const { p } = await at(() => ({ type: "follows", follows: [entry] }));
+    expect(await p.call("following", {})).toBe(followingText([entry]));
+  });
+
+  it("an empty artifact is refused before the daemon", async () => {
+    const { d, p } = await at(() => ({ type: "followed", ...entry }));
+    await expect(p.call("follow", { artifact: " " })).rejects.toThrow(
+      /^oa-bus: artifact is required/,
+    );
+    expect(sent(d)).toEqual([]);
+  });
+
+  it("the hub's copy as-is", async () => {
+    const { p } = await at(() => ({
+      type: "error",
+      code: "not_found",
+      message: "Not found",
+    }));
+    await expect(p.call("follow", { artifact: "abc" })).rejects.toThrow(
+      new Error("oa-bus: Not found"),
+    );
+  });
+
+  it("a daemon without the frames (bad_frame) says to update", async () => {
+    const { p } = await at(() => ({
+      type: "error",
+      code: "bad_frame",
+      message: "Invalid input",
+    }));
+    await expect(p.call("following", {})).rejects.toThrow(
+      new Error(FOLLOW_OLD_DAEMON),
+    );
+  });
+
+  for (const message of Object.values(FOLLOW_DAEMON_BAD_FRAME))
+    it(`the daemon's own bad_frame refusal "${message}" is shown as it is, not as an old daemon (#1766)`, async () => {
+      const { p } = await at(() => ({
+        type: "error",
+        code: "bad_frame",
+        message,
+      }));
+      await expect(p.call("follow", { artifact: "abc" })).rejects.toThrow(
+        new Error(`oa-bus: ${message}`),
+      );
+    });
+
+  it("the asset's copy matches the shared copy", () => {
+    expect(copy.followText(entry.url)).toBe(followText(entry.url));
+    expect(copy.unfollowText(true, "abc")).toBe(unfollowText(true, "abc"));
+    expect(copy.followingText([])).toBe(followingText([]));
+    expect(copy.followingText([entry, entry])).toBe(
+      followingText([entry, entry]),
+    );
+    expect(copy.FOLLOW_OLD_DAEMON).toBe(FOLLOW_OLD_DAEMON);
+  });
+});
+
+describe("propose_reach tool (#1346)", () => {
+  const at = (answer: (f: Frame) => Record<string, unknown>) =>
+    started((f) => (f.type === "propose_reach" ? answer(f) : undefined));
+  const sent = (d: Awaited<ReturnType<typeof started>>["d"]) =>
+    d.conns[0].frames.filter((f) => f.type !== "hello");
+  const url = `https://x.test/bus/reach/confirm#${"A".repeat(43)}`;
+
+  it("sends the namespaces only, whatever else the caller names", async () => {
+    const { d, p } = await at(() => ({
+      type: "reach_proposed",
+      confirm_url: url,
+      expires_at: "2026-11-09T11:00:00.000Z",
+    }));
+    const out = await p.call("propose_reach", {
+      namespaces: [" a/b ", "c"],
+      nativeRef: "someone-else",
+      from_ref: "someone-else",
+    });
+    expect(out).toBe(
+      reachProposedText(["a/b", "c"], url, "2026-11-09T11:00:00.000Z"),
+    );
+    expect(out).toContain("Nothing has changed");
+    expect(out).not.toContain("\u2014");
+    const [f] = sent(d);
+    expect(f).toMatchObject({
+      type: "propose_reach",
+      namespaces: ["a/b", "c"],
+    });
+    expect(f).not.toHaveProperty("nativeRef");
+    expect(f).not.toHaveProperty("from_ref");
+  });
+
+  it("the tool's schema has no field that names a session", () => {
+    const t = TOOLS.find((x) => x.name === "propose_reach");
+    expect(Object.keys(t?.inputSchema.properties ?? {})).toEqual([
+      "namespaces",
+    ]);
+    expect(t?.inputSchema.additionalProperties).toBe(false);
+  });
+
+  it("refuses bad namespaces before sending anything", async () => {
+    const { d, p } = await at(() => ({ type: "reach_proposed" }));
+    for (const namespaces of [
+      [],
+      undefined,
+      "a",
+      ["A"],
+      [""],
+      Array.from({ length: 11 }, (_, i) => `n${i}`),
+    ])
+      await expect(p.call("propose_reach", { namespaces })).rejects.toThrow(
+        /oa-bus: namespaces/,
+      );
+    expect(sent(d)).toEqual([]);
+  });
+
+  it("shows the daemon's refusal as-is", async () => {
+    const { p } = await at(() => ({
+      type: "error",
+      code: "no_role",
+      message: "You hold no role.",
+    }));
+    await expect(
+      p.call("propose_reach", { namespaces: ["x"] }),
+    ).rejects.toThrow(new Error("oa-bus: You hold no role."));
+  });
+
+  it("a daemon without the frame (bad_frame) says to update", async () => {
+    const { p } = await at(() => ({
+      type: "error",
+      code: "bad_frame",
+      message: "Invalid input",
+    }));
+    await expect(
+      p.call("propose_reach", { namespaces: ["x"] }),
+    ).rejects.toThrow(new Error(REACH_OLD_DAEMON));
+  });
+
+  it("the asset's copy matches the shared copy", () => {
+    expect(copy.reachProposedText(["a", "b"], "u", "t")).toBe(
+      reachProposedText(["a", "b"], "u", "t"),
+    );
+    expect(copy.REACH_OLD_DAEMON).toBe(REACH_OLD_DAEMON);
+    for (const v of [
+      [],
+      ["a"],
+      ["A"],
+      [" a ", "a", "b"],
+      ["a b"],
+      ["x".repeat(129)],
+      Array.from({ length: 11 }, (_, i) => `n${i}`),
+      "a",
+    ])
+      expect(copy.reachNamespacesOf(v)).toEqual(reachNamespacesOf(v));
+  });
+});
+
 describe("the asset's status copy matches the shared copy", () => {
   it("STATUS_COPY and the status lines", () => {
     expect(copy.STATUS_COPY).toEqual(STATUS_COPY);
@@ -1026,5 +1335,42 @@ describe("status, as Pi shows it", () => {
     expect(copy.rosterLine(a, NOW)).toBe(rosterLine(a, NOW));
     expect(copy.statusSaysText(r, NOW)).toBe(statusSaysText(r, NOW));
     expect(copy.selfText(row(r))).toBe(selfText(row(r)));
+  });
+
+  it("#1860: rosterText matches @oa/bus-ipc", () => {
+    const since = "2026-11-05T10:00:00.000Z";
+    const mk = (name: string, kind: string, state: string) => ({
+      name,
+      kind,
+      namespace: "ns",
+      live: state === "live",
+      state,
+      ...(state === "away" ? { since } : {}),
+    });
+    const sets = [
+      [],
+      [mk("a", "pi", "live")],
+      [mk("pi-6", "pi", "away")],
+      [mk("PI-6", "pi", "away")],
+      [mk("Claude-12", "claude-code", "away"), mk("AGENT", "pi", "away")],
+      [mk("a", "pi", "live"), mk("OMP-3", "omp", "away")],
+      [mk("pi-6", "pi", "live"), mk("pi-7", "pi", "queued")],
+      [
+        mk("a", "pi", "live"),
+        mk("claude-12", "claude-code", "away"),
+        mk("omp-3", "omp", "away"),
+        mk("agent", "pi", "away"),
+        mk("kept", "pi", "away"),
+      ],
+    ];
+    for (const s of sets)
+      expect(copy.rosterText(s as never, NOW)).toBe(
+        rosterText(s as never, NOW),
+      );
+    expect(
+      copy.rosterText([mk("a", "pi", "live"), mk("pi-6", "pi", "away")], NOW),
+    ).toBe(
+      "- a (pi, ns)\n1 more away session with no chosen name (not listed, still reachable by name)",
+    );
   });
 });

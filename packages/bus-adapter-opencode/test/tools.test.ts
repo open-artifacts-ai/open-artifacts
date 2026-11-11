@@ -51,13 +51,17 @@ const call = (
   });
 
 describe("opencode mcp tools", () => {
-  it("exposes the five vendor-neutral tools, and no card", () => {
+  it("exposes the nine vendor-neutral tools, and no card", () => {
     expect(TOOLS.map((t) => t.name)).toEqual([
       "list_agents",
       "send_message",
       "fetch",
       "self",
       "set_status",
+      "follow",
+      "unfollow",
+      "following",
+      "propose_reach",
     ]);
   });
 
@@ -75,6 +79,37 @@ describe("opencode mcp tools", () => {
     expect(svc.requests.map((r) => r.ref)).toEqual(["ses_a", "ses_b"]);
     // Each call's connection is its own, and is closed after it.
     expect(svc.closed).toEqual(["ses_a", "ses_b"]);
+  });
+
+  it("lists the follow cap, and a follow is the session's own request (#1317)", async () => {
+    const svc = service({
+      ses_a: { root: "ses_a", directory: "/work/a", title: null },
+    });
+    await call(svc, "ses_a", "follow", { artifact: "abc", name: "other" });
+    expect(svc.hellos[0]?.caps).toContain("follow");
+    expect(svc.requests).toEqual([
+      {
+        ref: "ses_a",
+        frame: { type: "follow", artifact: "abc", late: true },
+      },
+    ]);
+  });
+
+  it("lists the reach cap, and a proposal is the session's own request (#1346)", async () => {
+    const svc = service({
+      ses_a: { root: "ses_a", directory: "/work/a", title: null },
+    });
+    await call(svc, "ses_a", "propose_reach", {
+      namespaces: ["x"],
+      nativeRef: "ses_b",
+    });
+    expect(svc.hellos[0]?.caps).toContain("reach");
+    expect(svc.requests).toEqual([
+      {
+        ref: "ses_a",
+        frame: { type: "propose_reach", namespaces: ["x"], late: true },
+      },
+    ]);
   });
 
   it("says hello with the IPC marker (C23c)", async () => {
@@ -303,6 +338,22 @@ describe("status in OpenCode", () => {
     }).then((r) => ({ text: r.content[0]?.text, frames, r }));
   };
 
+  it("#1567: list_agents includes linked projects' agents with their namespace", async () => {
+    const { text } = await run("list_agents", {}, () => ({
+      type: "roster",
+      agents: [
+        row({ name: "a" }),
+        row({ name: "docs", namespace: "acme/docs" }),
+      ],
+    }));
+    expect(text).toBe("- a (opencode, ns)\n- docs (opencode, acme/docs)");
+    const empty = await run("list_agents", {}, () => ({
+      type: "roster",
+      agents: [],
+    }));
+    expect(empty.text).toBe("No agents in your namespace and linked ones.");
+  });
+
   it("list_agents: statuses, stale, hostile; no role", async () => {
     const { text } = await run("list_agents", {}, () => ({
       type: "roster",
@@ -316,6 +367,12 @@ describe("status in OpenCode", () => {
         row({ name: "c", status: "blocked", status_at: at(180) }),
         row({ name: "d", status_label: "\x1b]0;t\x07" }),
         row({ name: "e" }),
+        row({
+          name: "f",
+          state: "away",
+          live: false,
+          since: "2026-11-05T10:00:00.000Z",
+        }),
       ],
     }));
     expect(text).toBe(
@@ -325,8 +382,60 @@ describe("status in OpenCode", () => {
         "- c (opencode, ns)  agent says: blocked · 3 h ago",
         "- d (opencode, ns)",
         "- e (opencode, ns)",
+        "- f (opencode, ns) (away since 2026-11-05 10:00 UTC)",
       ].join("\n"),
     );
+  });
+
+  it("#1860: away fallback-named rows collapse to a count", async () => {
+    const away = (name: string) =>
+      row({
+        name,
+        state: "away",
+        live: false,
+        since: "2026-11-05T10:00:00.000Z",
+      });
+    const { text } = await run("list_agents", {}, () => ({
+      type: "roster",
+      agents: [
+        row({ name: "live-one" }),
+        away("opencode-3"),
+        away("opencode"),
+        away("agent"),
+        away("kept"),
+      ],
+    }));
+    expect(text).toBe(
+      [
+        "- live-one (opencode, ns)",
+        "- kept (opencode, ns) (away since 2026-11-05 10:00 UTC)",
+        "3 more away sessions with no chosen name (not listed, still reachable by name)",
+      ].join("\n"),
+    );
+  });
+
+  it("#1527: self shows the config files the daemon refused", async () => {
+    const self = await run("self", {}, () => ({
+      type: "agent",
+      agent: row({
+        config_files: [
+          {
+            file: "/home/u/x/.oa-bus.json",
+            state: "refused",
+            reason: "is writable by everyone",
+            fix: "run chmod o-w /home/u/x/.oa-bus.json",
+          },
+        ],
+      }),
+    }));
+    expect(JSON.parse(self.text).config_files).toEqual([
+      {
+        file: "/home/u/x/.oa-bus.json",
+        state: "refused",
+        reason: "is writable by everyone",
+        fix: "run chmod o-w /home/u/x/.oa-bus.json",
+      },
+    ]);
   });
 
   it("self asks for its own row and names no role", async () => {

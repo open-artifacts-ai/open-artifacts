@@ -1,3 +1,4 @@
+import type { SelectionAnchor } from "@oa/shared";
 import {
   type Anchor,
   type BlockHint,
@@ -22,7 +23,8 @@ import {
 // anchors it built from the page's own text, ids, states and pixel offsets.
 // Nothing here adds a node to the page tree except one overlay host under
 // <html> (its UI sits in a shadow root), and highlights use the CSS Custom
-// Highlight API with an adopted stylesheet. This is tidiness, not a security
+// Highlight API with an adopted stylesheet (an inline <style> would be blocked
+// by a page's `style-src 'self'`). This is tidiness, not a security
 // boundary: the page's own script shares this window, so it can see every
 // message, reach the overlay and forge every message the frame sends. The
 // shell must treat them all as hints.
@@ -45,7 +47,7 @@ type Slot = {
   /** The highlight range (exact/partial), or the char beside a collapsed spot. */
   range: Range | null;
 };
-type Mode = "off" | "select" | "pin";
+type Mode = "off" | "view" | "select" | "pin";
 type Pos = {
   id: string;
   state: "exact" | "partial" | "collapsed" | "orphan" | "pin";
@@ -61,11 +63,27 @@ const FLASH_MS = 1200;
 
 const OVERLAY_CSS = `
 :host{all:initial}
-.btn{position:absolute;font:600 13px system-ui,sans-serif;padding:4px 10px;border:0;border-radius:6px;background:#1f5fbf;color:#fff;cursor:pointer;pointer-events:auto;box-shadow:0 2px 8px #0004}
+.btn{position:absolute;display:flex;align-items:center;gap:6px;font:500 13px/1 system-ui,sans-serif;padding:6px 10px;border:1px solid #d4d4d8;border-radius:8px;background:#fff;color:#27272a;cursor:pointer;pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.btn svg{width:14px;height:14px;flex:none}
 .mark{position:absolute;width:6px;height:16px;border-radius:2px;background:#e0a000;pointer-events:auto;cursor:pointer}
 .mark.on{background:#1f5fbf}
-.pin{position:absolute;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;background:#1f5fbf;color:#fff;font:700 12px/22px system-ui,sans-serif;text-align:center;pointer-events:auto;cursor:pointer;box-shadow:0 1px 4px #0006}
-.pin.on{outline:3px solid #e0a000}
+/* A pin is a 30px speech bubble whose bottom-left corner is the anchor: left/top
+   are the stored point and the margin lifts the bubble above it, so the tail
+   is exactly on x,y. It holds the pin's number (the frame never carries names).
+   Ring: 2px white. Open (.on): plus a 2.5px amber ring. */
+.pin{position:absolute;width:30px;height:30px;margin:-30px 0 0 0;border-radius:15px 15px 15px 3px;background:#1f5fbf;color:#fff;font:600 12.5px/30px system-ui,sans-serif;text-align:center;pointer-events:auto;cursor:pointer;box-shadow:0 0 0 2px #fff,0 3px 8px rgba(0,0,0,.3)}
+/* Edges: flip, never clip. The sharp corner stays on x,y. Near the top the
+   bubble hangs below the point; near the right edge it sits left of it. */
+.pin.flip-y{margin:0;border-radius:3px 15px 15px 15px}
+.pin.flip-x{margin:-30px 0 0 -30px;border-radius:15px 15px 3px 15px}
+.pin.flip-x.flip-y{margin:0 0 0 -30px;border-radius:15px 3px 15px 15px}
+.pin.on{z-index:1;box-shadow:0 0 0 2px #fff,0 0 0 4.5px #e0a000,0 3px 8px rgba(0,0,0,.3)}
+/* Placing: a translucent accent bubble with a dashed edge. */
+.pin.ghost{background:#1f5fbf55;border:2px dashed #1f5fbf;box-sizing:border-box;box-shadow:none;pointer-events:none}
+/* A pin whose page changed: a dashed outline outside the ring, not a colour alone, plus a title. */
+.pin.changed{outline:2px dashed #8a5a00;outline-offset:4px}
+/* Open and changed: the dashed outline sits past the 4.5px amber ring, so both read. */
+.pin.changed.on{outline-offset:6.5px}
 `;
 const PAGE_CSS =
   "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}";
@@ -76,6 +94,17 @@ export interface Comments {
   dispose(): void;
 }
 
+const BUBBLE =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7l-3 3v-3h-.5a1 1 0 0 1-1-1z"/></svg>';
+/** Gap between the selection's end and the button, and the viewport margin. */
+const BTN_GAP = 6;
+const BTN_MARGIN = 4;
+/** #1732: the shell's touch bar (48px) plus a 12px gap; the selection's last line stays above it. */
+const BAR_CLEAR = 48 + 12;
+const SELECTION_MS = 100;
+/** How long a collapsed selection stays usable for the shell's command. */
+const KEPT_MS = 1500;
+
 export function createComments(
   bridge: Pick<Bridge, "on" | "send">,
   signal?: AbortSignal,
@@ -85,7 +114,20 @@ export function createComments(
     "html";
   const hasPins = format === "image" || format === "pdf";
   let mode: Mode = "off";
+  /** Disposed: nothing may paint or send again (#1473 review). */
+  let ended = false;
+  /**
+   * The quote a comment is being written about (#1834), kept painted. No
+   * version: it is a paint hint, not a record (the resolver ignores it).
+   */
+  let draftText: SelectionAnchor | undefined;
+  let draftCache: {
+    text: SelectionAnchor;
+    ver: number;
+    range: Range | null;
+  } | null = null;
   let threads: Thread[] = [];
+  let ghost: { x: number; y: number; page?: number } | undefined;
   /** Text index of the body, rebuilt when the text version or the body changes. */
   let index: TextIndex | null = null;
   let indexVer = -1;
@@ -99,6 +141,15 @@ export function createComments(
   let flashId: string | undefined;
   let flashTimer: ReturnType<typeof setTimeout> | undefined;
   const lastPositions = new Map<string, Pos>();
+  /** Touch: the shell draws the Comment bar, so the floating button stays off. */
+  const coarse = () =>
+    typeof matchMedia === "function" &&
+    matchMedia("(pointer: coarse)").matches === true;
+  /** The last non-empty selection (#1732): iOS can collapse it before the shell's command arrives. */
+  let kept: { start: number; end: number; ver: number } | null = null;
+  let selTimer: ReturnType<typeof setTimeout> | undefined;
+  let keptTimer: ReturnType<typeof setTimeout> | undefined;
+  let selSent: { has: boolean; bottom: number } = { has: false, bottom: 0 };
 
   // ---- overlay: one host under <html>, closed shadow root ----
   let host: HTMLElement | undefined;
@@ -118,18 +169,37 @@ export function createComments(
     return layer;
   };
 
+  /**
+   * The page's highlight rules: an adopted sheet, never an inline `<style>`.
+   * An artifact page can ship a CSP that blocks inline styles
+   * (`style-src 'self'`), and constructable sheets are not subject to it
+   * (#1473 review). A page that rewrites `document.adoptedStyleSheets` takes
+   * ours with it, so it is adopted again by anything that can notice: a paint,
+   * a page mutation, a click or a selection change.
+   */
   let sheet: CSSStyleSheet | undefined;
-  const highlights = (): Registry | undefined => {
-    if (typeof CSS === "undefined" || !("highlights" in CSS)) return undefined;
-    if (!sheet && typeof CSSStyleSheet !== "undefined") {
+  const adoptSheet = () => {
+    if (typeof CSSStyleSheet === "undefined") return;
+    if (!sheet) {
       try {
         sheet = new CSSStyleSheet();
         sheet.replaceSync(PAGE_CSS);
-        document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
       } catch {
-        sheet = undefined;
+        return;
       }
     }
+    // Never rebuilt after a failed adoption: the sheet is created once.
+    if (document.adoptedStyleSheets.includes(sheet)) return;
+    try {
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    } catch {
+      // No setter (older engines, jsdom): nothing to adopt into.
+    }
+  };
+
+  const highlights = (): Registry | undefined => {
+    if (typeof CSS === "undefined" || !("highlights" in CSS)) return undefined;
+    adoptSheet();
     return (CSS as unknown as { highlights: Registry }).highlights;
   };
 
@@ -143,6 +213,18 @@ export function createComments(
     return index;
   };
 
+  /** Pin bubbles are this tall and wide; one near an edge flips so it is never clipped. */
+  const BUBBLE_PX = 30;
+  /** The classes that keep the bubble's sharp corner on x,y near the top or right edge. */
+  const flips = (x: number, y: number): string =>
+    [
+      y < BUBBLE_PX ? "flip-y" : "",
+      x > (document.documentElement.clientWidth || innerWidth) - BUBBLE_PX
+        ? "flip-x"
+        : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
   const clampTop = (n: number) => Math.min(10_000_000, Math.max(0, n));
   const docTop = (r: DOMRect) => clampTop(r.top + scrollY);
 
@@ -189,6 +271,21 @@ export function createComments(
     return slots;
   }
 
+  /** The draft quote's range, resolved once per text version. */
+  function draftRange(): Range | null {
+    if (!draftText) return null;
+    if (draftCache?.text === draftText && draftCache.ver === textVer)
+      return draftCache.range;
+    const idx = getIndex();
+    const res = createTextResolver(idx.text)(draftText as TextAnchor);
+    const range =
+      res.state === "exact" || res.state === "partial"
+        ? rangeFromIndex(idx, res.start, res.end)
+        : null;
+    draftCache = { text: draftText, ver: textVer, range };
+    return range;
+  }
+
   const clearPaint = () => {
     painted = [];
     const reg = highlights();
@@ -215,8 +312,14 @@ export function createComments(
     }
     const reg = highlights();
     if (reg && typeof Highlight !== "undefined") {
+      // #1834: the quote being written about takes the active thread's colour,
+      // so choosing Comment highlights it and posting changes nothing.
+      const draft = draftRange();
       reg.set("oa-comment", new Highlight(...normal));
-      reg.set("oa-comment-active", new Highlight(...active));
+      reg.set(
+        "oa-comment-active",
+        new Highlight(...active, ...(draft ? [draft] : [])),
+      );
     }
   }
 
@@ -252,12 +355,16 @@ export function createComments(
         const y = box.top + scrollY + th.anchor.y * box.height;
         out.push({ id: th.id, state: "pin", top: clampTop(y) });
         if (!th.resolved) {
-          const d = mark(
-            isActive ? "pin on" : "pin",
-            x,
-            clampTop(y),
-            String(th.n ?? ""),
-          );
+          const cls = [
+            "pin",
+            isActive ? "on" : "",
+            th.changed ? "changed" : "",
+            flips(x, clampTop(y)),
+          ]
+            .filter(Boolean)
+            .join(" ");
+          const d = mark(cls, x, clampTop(y), String(th.n ?? ""));
+          if (th.changed) d.title = "Changed since this was placed.";
           d.addEventListener("click", () => open(th.id));
         }
         continue;
@@ -279,6 +386,17 @@ export function createComments(
           docTop(rect),
         );
         d.addEventListener("click", () => open(th.id));
+      }
+    }
+    if (ghost) {
+      const box = pinBox({ kind: "pin", page: ghost.page } as Extract<
+        Anchor,
+        { kind: "pin" }
+      >);
+      if (box) {
+        const gx = box.left + scrollX + ghost.x * box.width;
+        const gy = clampTop(box.top + scrollY + ghost.y * box.height);
+        mark(["pin ghost", flips(gx, gy)].filter(Boolean).join(" "), gx, gy);
       }
     }
     if (marks.length || layer)
@@ -315,7 +433,16 @@ export function createComments(
       if (b) showButton();
     });
   };
-  const onSelectionChange = () => schedule(false, true);
+  const onSelectionChange = () => {
+    adoptSheet();
+    schedule(false, true);
+    if (mode !== "select") return;
+    clearTimeout(selTimer);
+    selTimer = setTimeout(reportSelection, SELECTION_MS);
+  };
+  // Also when the document grew or shrank (an image loaded, content arrived
+  // above): re-measure the pins and re-place the button. showButton only
+  // shows one for a live selection in select mode, as before.
   const onResize = () => schedule(true, true);
   const onScroll = () => schedule(true, false);
 
@@ -341,39 +468,118 @@ export function createComments(
     while (start < end && /\s/.test(t[start])) start++;
     while (end > start && /\s/.test(t[end - 1])) end--;
     if (end <= start) return null;
-    const a = nodeAtIndex(idx, start);
-    const b = nodeAtIndex(idx, end - 1);
-    const block = blockOf(a);
-    if (!a || !b || !block || block !== blockOf(b)) return null;
+    // A selection may span blocks: the flat text separates them with a space,
+    // as the server's does, so the quote verifies and resolves the same way.
+    if (!nodeAtIndex(idx, start) || !nodeAtIndex(idx, end - 1)) return null;
     return { start, end, range };
+  }
+
+  /** Tell the shell whether text is selected, and keep its last line clear of the bar. */
+  function reportSelection() {
+    const s = mode === "select" ? selection() : null;
+    let bottom = 0;
+    if (s) {
+      kept = { start: s.start, end: s.end, ver: textVer };
+      const rects = s.range.getClientRects();
+      const r = rects[rects.length - 1] ?? s.range.getBoundingClientRect();
+      bottom = Math.min(10_000_000, Math.max(-10_000_000, r.bottom));
+      // Only when the bar first appears: never while the reader drags a handle.
+      const vh = globalThis.visualViewport?.height ?? innerHeight;
+      const over = bottom - (vh - BAR_CLEAR);
+      if (coarse() && over > 0 && !selSent.has) scrollBy(0, over);
+      clearTimeout(keptTimer);
+    } else if (kept) {
+      // A collapse is forgotten after the tap window, so a stale quote never
+      // comes back on a later command.
+      clearTimeout(keptTimer);
+      keptTimer = setTimeout(() => {
+        kept = null;
+      }, KEPT_MS);
+    }
+    const has = !!s;
+    if (selSent.has === has && selSent.bottom === bottom) return;
+    selSent = { has, bottom };
+    bridge.send({ oa: 1, type: "comment.selection", has, bottom });
   }
 
   function hideButton() {
     btn?.remove();
   }
 
-  function showButton() {
-    if (mode !== "select") return hideButton();
+  /** The last rect of the selection: the button hangs under the end of it. */
+  function endRect(): DOMRect | null {
     const s = selection();
-    if (!s) return hideButton();
+    if (!s) return null;
     const rects = s.range.getClientRects();
-    const rect = rects[rects.length - 1] ?? s.range.getBoundingClientRect();
+    return (rects[rects.length - 1] ?? s.range.getBoundingClientRect()) || null;
+  }
+
+  /** Centered under the end of the selection, kept inside the viewport. */
+  function place(rect: DOMRect) {
+    const s = selection();
+    if (!btn || !s) return;
+    const vw = document.documentElement.clientWidth || innerWidth;
+    const w = btn.offsetWidth;
+    const end = nodeAtIndex(getIndex(), s.end - 1)?.parentElement;
+    const edge =
+      end && getComputedStyle(end).direction === "rtl" ? rect.left : rect.right;
+    const x = Math.max(BTN_MARGIN, Math.min(edge - w / 2, vw - w - BTN_MARGIN));
+    btn.style.left = `${x + scrollX}px`;
+    btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
+  }
+
+  /**
+   * A webfont that swaps in after the button shows reflows the page, which
+   * moves the selection's rect; the button would sit off center until the next
+   * selection (#1648). Its own width cannot change (the overlay is a closed
+   * shadow root with `:host{all:initial}` and a system-ui font), so what is
+   * placed again is the button, from a fresh rect. Later batches and a lazy
+   * `@font-face` fire `loadingdone` too, which is why the listener is on the
+   * font set rather than a one-shot `ready`. Other late reflows (an image
+   * that loads, content inserted above) change the document's size: a
+   * ResizeObserver on <html> re-measures then.
+   */
+  function onFontsLoaded() {
+    if (mode !== "select" || !btn?.isConnected) return;
+    const rect = endRect();
+    if (rect) place(rect);
+  }
+
+  function fontSet(): FontFaceSet | undefined {
+    // A hostile page can define `document.fonts` with a throwing getter.
+    try {
+      return (
+        (document as Document & { fonts?: FontFaceSet }).fonts ?? undefined
+      );
+    } catch {
+      return undefined;
+    }
+  }
+
+  function showButton() {
+    if (mode !== "select" || coarse()) return hideButton();
+    const rect = endRect();
+    if (!rect) return hideButton();
     if (!btn) {
       btn = document.createElement("button");
-      btn.textContent = "Comment";
+      btn.innerHTML = `${BUBBLE}<span>Comment</span>`;
       // Keep the selection while the button is pressed.
       btn.addEventListener("pointerdown", (e) => e.preventDefault());
       btn.addEventListener("mousedown", (e) => e.preventDefault());
       btn.addEventListener("click", onCommentClick);
       btn.className = "btn";
     }
-    btn.style.left = `${rect.right + scrollX}px`;
-    btn.style.top = `${rect.bottom + scrollY + 4}px`;
     if (!btn.isConnected) overlay().append(btn);
+    place(rect);
   }
 
   function onCommentClick() {
-    const s = selection();
+    const live = selection();
+    const s =
+      live ??
+      (kept && kept.ver === textVer
+        ? { start: kept.start, end: kept.end }
+        : null);
     if (!s) return hideButton();
     const block: BlockHint = {};
     if (format === "pdf") {
@@ -403,12 +609,16 @@ export function createComments(
     );
     bridge.send({ oa: 1, type: "comment.select", anchor });
     getSelection()?.removeAllRanges();
+    kept = null;
     hideButton();
+    clearTimeout(selTimer);
+    reportSelection();
   }
 
   // ---- clicks on the page: pin placement and highlight hits ----
   function onClick(e: MouseEvent) {
     if (mode === "off" || e.composedPath()[0] === host) return;
+    adoptSheet();
     if (mode === "pin") {
       if (!hasPins) return;
       const target = e.target instanceof Element ? e.target : null;
@@ -433,6 +643,18 @@ export function createComments(
     }
     const sel = getSelection();
     if (sel && sel.rangeCount > 0 && !sel.isCollapsed) return;
+    // #1473: a link or a control under the pointer does its own thing; opening
+    // the thread too would both navigate and cover the page.
+    // `composedPath()[0]`, not `target`: inside a shadow root the target is the
+    // host, and a link in there would not be seen (#1473 review).
+    const inner = e.composedPath()[0];
+    const hit = inner instanceof Element ? inner : null;
+    if (
+      hit?.closest(
+        "a[href], button, input, select, textarea, label, [role='button'], [role='link']",
+      )
+    )
+      return;
     let best: { id: string; size: number } | undefined;
     for (const p of painted) {
       for (const r of Array.from(p.range.getClientRects())) {
@@ -450,11 +672,44 @@ export function createComments(
     if (best) open(best.id);
   }
 
+  /** Where Esc belongs to the page or to a dialog above the frame (#1698). */
+  const ESC_NOT_OURS =
+    "input, textarea, select, [aria-modal='true'], [data-state='open'][role='dialog'], [role='alertdialog']";
+  // Esc in pin mode: the frame holds focus after a click, so tell the shell.
+  // Not while an IME, a field or a modal owns the key, matching the shell's guard.
+  function onKey(e: KeyboardEvent) {
+    if (e.key !== "Escape" || mode !== "pin") return;
+    if (e.isComposing) return;
+    const t = e.target;
+    if (
+      t instanceof HTMLElement &&
+      (t.isContentEditable || t.closest(ESC_NOT_OURS) !== null)
+    )
+      return;
+    bridge.send({ oa: 1, type: "comment.escape" });
+  }
+
   // ---- shell messages ----
   const off = bridge.on((m) => {
     if (m.type === "comments.mode") {
+      const was = mode;
       mode = m.mode;
+      if (mode !== "select") {
+        kept = null;
+        clearTimeout(selTimer);
+        reportSelection();
+      } else if (was !== "select") {
+        // A selection made before the shell's mode arrived (a fast reader,
+        // or a test) is reported on entering select, not on its next change.
+        // A repeated select is a no-op, so a stale quote's timer isn't reset.
+        clearTimeout(selTimer);
+        reportSelection();
+      }
       if (mode === "off") {
+        // No mode, no draft: a quote left behind would paint on the next set
+        // (#1850 review).
+        draftText = undefined;
+        draftCache = null;
         hideButton();
         clearPaint();
         lastReport = "";
@@ -464,8 +719,13 @@ export function createComments(
       }
     } else if (m.type === "comments.set") {
       threads = m.threads;
+      ghost = m.ghost;
+      draftText = m.draft;
+      draftCache = null;
       slots = null;
       report(true);
+    } else if (m.type === "comments.comment") {
+      if (mode === "select") onCommentClick();
     } else if (m.type === "comments.focus") {
       const p = lastPositions.get(m.id);
       if (p?.top != null) scrollTo(0, Math.max(0, p.top - innerHeight / 3));
@@ -503,6 +763,9 @@ export function createComments(
     );
   };
   const onMutation = (records: MutationRecord[]) => {
+    // A page that rewrote `adoptedStyleSheets` may not repaint anything: the
+    // observer is the first thing to notice (#1473 review).
+    adoptSheet();
     if (records.every(ours)) return;
     textVer++;
     const now = Date.now();
@@ -527,21 +790,38 @@ export function createComments(
     subtree: true,
     characterData: true,
   });
+  // <html>, as for mutations: a replaced body stays observed. Our overlay is
+  // absolutely placed, so moving the button never resizes the document.
+  const sizer =
+    typeof ResizeObserver === "undefined"
+      ? undefined
+      : new ResizeObserver(onResize);
+  sizer?.observe(document.documentElement);
   document.addEventListener("selectionchange", onSelectionChange);
   document.addEventListener("click", onClick, true);
+  document.addEventListener("keydown", onKey, true);
   addEventListener("resize", onResize, { passive: true });
   addEventListener("scroll", onScroll, { passive: true });
 
+  const fonts = fontSet();
+  fonts?.addEventListener?.("loadingdone", onFontsLoaded);
+
   const dispose = () => {
     off();
+    fonts?.removeEventListener?.("loadingdone", onFontsLoaded);
     observer?.disconnect();
+    sizer?.disconnect();
     document.removeEventListener("selectionchange", onSelectionChange);
     document.removeEventListener("click", onClick, true);
+    document.removeEventListener("keydown", onKey, true);
     removeEventListener("resize", onResize);
     removeEventListener("scroll", onScroll);
     clearTimeout(mutTimer);
     clearTimeout(flashTimer);
+    clearTimeout(selTimer);
+    clearTimeout(keptTimer);
     if (raf) cancelAnimationFrame(raf);
+    ended = true;
     const reg = highlights();
     reg?.delete("oa-comment");
     reg?.delete("oa-comment-active");
@@ -551,6 +831,10 @@ export function createComments(
       );
     host?.remove();
   };
-  signal?.addEventListener("abort", dispose);
-  return { flush: () => report(false), dispose };
+  // #1473: a signal that was already aborted never fires `abort`, so the host,
+  // the listener and the stylesheet would stay behind.
+  if (signal?.aborted) dispose();
+  else signal?.addEventListener("abort", dispose);
+  // `flush` after dispose would paint again and put the host back.
+  return { flush: () => (ended ? undefined : report(false)), dispose };
 }

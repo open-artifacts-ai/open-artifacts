@@ -5,8 +5,10 @@ import {
   BusNameSchema,
   IsoTimeSchema,
   KindTokenSchema,
+  LinkProofHashSchema,
   MachineLabelSchema,
   MsgIdSchema,
+  REACH_PROPOSAL_MAX,
   ReceiptReasonSchema,
   RefusalReasonSchema,
   StatusLabelSchema,
@@ -52,6 +54,55 @@ const clientVersion = {
   client_version: z.string().min(1).max(64).optional(),
 };
 
+/**
+ * What an adapter tells the daemon it can decode, in `hello.caps` (#1295).
+ * `mailbox`: roster rows with `state: "away"` and `since`, and the
+ * `mailbox_full` and `reserved_name` refusals. The daemon sends those only to
+ * an adapter that listed it; an older one would fail to decode them.
+ */
+export const ADAPTER_CAPS = {
+  mailbox: "mailbox",
+  /**
+   * `pending` (#1525): a `config_files` entry with `state: "pending"`, a
+   * namespace waiting for the user's approval. An older strict decoder would
+   * reject the whole frame on it, so the daemon sends it only to a client that
+   * listed this.
+   */
+  pending: "pending",
+  /**
+   * `rename` (#1635): the adapter may send a `rename` frame when its session
+   * is renamed. The daemon lists `rename` in `welcome.caps` only for an
+   * adapter that listed it, and an adapter sends the frame only to a daemon
+   * whose welcome listed it, so neither side meets a frame its decoder lacks.
+   */
+  rename: "rename",
+  /**
+   * `follow` (#1317): the adapter may send `follow`, `unfollow` and
+   * `following`. The daemon lists `follow` in `welcome.caps` only for an
+   * adapter that listed it, and an adapter sends the frames only to a daemon
+   * whose welcome listed it. The adapter tools are offered either way: a
+   * daemon without it answers them with a plain "update" error instead.
+   */
+  follow: "follow",
+  /**
+   * `reach` (#1346): the adapter may send `propose_reach`. The daemon lists
+   * `reach` in `welcome.caps` only for an adapter that listed it. The adapter
+   * tool is offered either way: a daemon without it answers with a plain
+   * "update" error. The request goes to the hub over HTTP, so there is no
+   * hub cap: a hub without the route answers 404.
+   */
+  reach: "reach",
+  /**
+   * `link` (#1856): the adapter may send a hello'd `link_proof` (its root's
+   * proof hash, no pid) and decodes `link_proofed`. The daemon lists `link` in
+   * `welcome.caps` only for an adapter that listed it, and an adapter sends
+   * the frame only to a daemon whose welcome listed it.
+   */
+  link: "link",
+} as const;
+
+export { REACH_PROPOSAL_MAX };
+
 export const Hello = z.object({
   ...base,
   ...clientVersion,
@@ -71,6 +122,14 @@ export const Hello = z.object({
     .max(64)
     .refine(isWellFormed, WELL_FORMED)
     .optional(),
+  /** What this adapter can decode (ADAPTER_CAPS); absent means none. */
+  caps: z.array(z.string().max(32)).max(16).optional(),
+  /**
+   * #1608: the token the daemon's first welcome for this ref issued. A pi-like
+   * ref stays bound to its first claimant after the link closes; a later hello
+   * proves it is the same adapter by echoing this. Memory only, never logged.
+   */
+  bind_token: z.string().min(16).max(128).optional(),
   /** What the harness told the adapter, re-checked by the daemon. */
   attest: z
     .object({
@@ -172,6 +231,49 @@ export const SetStatus = z.object({
   label: StatusLabelSchema.optional(),
 });
 /**
+ * The session was renamed (#1635): the new bus name, already a slug. Fire and
+ * forget; the daemon tells the hub once and answers only a refusal.
+ */
+export const Rename = z.object({
+  ...base,
+  ...optIn,
+  type: z.literal("rename"),
+  name: z.string().min(1).max(64).refine(isWellFormed, WELL_FORMED),
+});
+/**
+ * Follow, unfollow or list follows (#1317). The agent is the connection's
+ * attested one and the member is the machine's: the frames name neither. The
+ * daemon forwards them to the hub only when its hello_ok listed `follow`.
+ */
+export const Follow = z.object({
+  ...base,
+  ...optIn,
+  type: z.literal("follow"),
+  artifact: z.string().min(1).max(2048).refine(isWellFormed, WELL_FORMED),
+});
+export const Unfollow = z.object({
+  ...base,
+  ...optIn,
+  type: z.literal("unfollow"),
+  artifact: z.string().min(1).max(2048).refine(isWellFormed, WELL_FORMED),
+});
+export const Following = z.object({
+  ...base,
+  ...optIn,
+  type: z.literal("following"),
+});
+/**
+ * Ask that the role this agent holds reach more namespaces (#1346). The agent
+ * is the connection's attested one: the frame names no session, role or
+ * address. Answered by `reach_proposed`, or `error`.
+ */
+export const ProposeReach = z.object({
+  ...base,
+  ...optIn,
+  type: z.literal("propose_reach"),
+  namespaces: z.array(WireNamespaceSchema).min(1).max(REACH_PROPOSAL_MAX),
+});
+/**
  * A local CLI asking the daemon how it is (`oa-bus status`, `install`). No
  * hello: the socket is the user's own (0600). `cwd` picks the namespace.
  */
@@ -180,8 +282,39 @@ export const StatusRequest = z.object({
   ...clientVersion,
   type: z.literal("status"),
   cwd: z.string().min(1).max(4096).optional(),
+  /** What this client can decode (ADAPTER_CAPS); absent means none. */
+  caps: z.array(z.string().max(32)).max(16).optional(),
 });
 export type StatusRequest = z.infer<typeof StatusRequest>;
+
+/**
+ * `oa-bus mcp-proof` telling the daemon a Claude process's proof hash (#1822).
+ * No hello, like `status`: the socket is the user's own (0600). `pid` is the
+ * Claude process the helper found; the daemon binds the hash only to a live
+ * Claude record it attested for that pid.
+ */
+export const LinkProofRequest = z.object({
+  ...base,
+  type: z.literal("link_proof"),
+  pid: z.number().int().positive(),
+  hash: LinkProofHashSchema,
+});
+export type LinkProofRequest = z.infer<typeof LinkProofRequest>;
+
+/**
+ * A harness adapter telling the daemon its root's proof hash on its own
+ * hello'd link (#1856, `ADAPTER_CAPS.link`). It names no agent and no pid: the
+ * daemon binds the hash to the agent this connection's hello attested, so a
+ * link cannot speak for any other. Strict, so a frame that tries is refused.
+ */
+export const AdapterLinkProof = z
+  .object({
+    ...base,
+    type: z.literal("link_proof"),
+    hash: LinkProofHashSchema,
+  })
+  .strict();
+export type AdapterLinkProof = z.infer<typeof AdapterLinkProof>;
 
 export const AdapterFrame = z.discriminatedUnion("type", [
   Hello,
@@ -191,17 +324,46 @@ export const AdapterFrame = z.discriminatedUnion("type", [
   Fetch,
   Ack,
   SetStatus,
+  Rename,
+  Follow,
+  Unfollow,
+  Following,
+  ProposeReach,
+  AdapterLinkProof,
 ]);
 export type AdapterFrame = z.infer<typeof AdapterFrame>;
+
+/**
+ * A config file the daemon refused or noted (#1527). `reason` completes
+ * "<file> …"; `fix` is the exact step. `pending` (#1525): a namespace waiting for approval.
+ */
+export const ConfigFile = z.object({
+  file: z.string(),
+  /** `pending` (#1525) goes only to clients that listed ADAPTER_CAPS.pending. */
+  state: z.enum(["refused", "noted", "pending"]),
+  reason: z.string(),
+  fix: z.string(),
+});
+export type ConfigFile = z.infer<typeof ConfigFile>;
+
+/** Where a namespace came from (#1570): an approved `.oa-bus.json`, the git remote, the git folder's name, or the cwd's. */
+export const NamespaceSource = z.enum(["config", "git", "dir", "cwd"]);
 
 export const AgentInfo = z.object({
   name: z.string(),
   namespace: z.string(),
+  /** `self` only (#1570). */
+  namespace_source: NamespaceSource.optional(),
   kind: KIND_TOKEN,
   /** `state === "live"`; kept for older adapters. */
   live: z.boolean(),
-  /** Roster entries only: `queued` means the agent's machine is disconnected. */
-  state: z.enum(["live", "queued"]).optional(),
+  /**
+   * Roster entries only: `queued` means the agent's machine is disconnected;
+   * `away` (#1295) means it is closed and its mailbox is kept, with `since`.
+   */
+  state: z.enum(["live", "queued", "away"]).optional(),
+  /** When an `away` agent closed. */
+  since: IsoTimeSchema.optional(),
   global: z.boolean(),
   /** The agent's machine (B13); absent when the hub is older. */
   machine_label: MachineLabelSchema.optional(),
@@ -209,6 +371,8 @@ export const AgentInfo = z.object({
   status: StatusStateSchema.optional(),
   status_label: StatusLabelSchema.optional(),
   status_at: IsoTimeSchema.optional(),
+  /** `self` with `row` only: config files refused or noted. Older adapters ignore it. */
+  config_files: z.array(ConfigFile).optional(),
 });
 
 export const Welcome = z.object({
@@ -218,6 +382,10 @@ export const Welcome = z.object({
   bus_name: z.string(),
   namespace: z.string(),
   global: z.boolean(),
+  /** What this daemon accepts (ADAPTER_CAPS), only for an adapter that listed `rename` or `follow`. */
+  caps: z.array(z.string().max(32)).max(16).optional(),
+  /** #1608: pi-like kinds only. Echo it in every later hello for this ref. */
+  bind_token: z.string().min(16).max(128).optional(),
 });
 export const Receipt = z.object({
   ...base,
@@ -252,6 +420,41 @@ export const StatusSet = z.object({
   type: z.literal("status_set"),
   /** An earlier status the hub refused, or that never reached it: show it with this result. */
   earlier: z.object({ code: z.string(), message: z.string() }).optional(),
+  ...late,
+});
+/** One followed artifact, as the hub lists it. */
+const FollowEntry = z.object({
+  artifact_id: z.string(),
+  url: z.string(),
+  followed_at: z.string(),
+});
+/** The reply to `follow`. */
+export const Followed = z.object({
+  ...base,
+  type: z.literal("followed"),
+  ...FollowEntry.shape,
+  ...late,
+});
+/** The reply to `unfollow`. */
+export const Unfollowed = z.object({
+  ...base,
+  type: z.literal("unfollowed"),
+  removed: z.boolean(),
+  ...late,
+});
+/** The reply to `following`, newest first. */
+export const Follows = z.object({
+  ...base,
+  type: z.literal("follows"),
+  follows: z.array(FollowEntry),
+  ...late,
+});
+/** The reply to `propose_reach`: the one-time link for the member, and when it expires. */
+export const ReachProposed = z.object({
+  ...base,
+  type: z.literal("reach_proposed"),
+  confirm_url: z.string(),
+  expires_at: z.string(),
   ...late,
 });
 export const Body = z.object({
@@ -305,12 +508,16 @@ export const StatusReply = z.object({
   hub_since: z.number().optional(),
   /** The hub's `server_version` from its last `hello_ok`. Absent before one, and from older daemons. */
   hub_version: z.string().optional(),
+  /** This daemon takes `link_proof` (#1822). Older daemons omit it. */
+  link: z.boolean().optional(),
   /** The namespace `cwd` resolves to, when the request named one. */
   namespace: z.string().optional(),
   /** One roster per namespace: this machine's sessions', or only `cwd`'s. */
   namespaces: z.array(
     z.object({
       namespace: z.string(),
+      /** Where it came from (#1570); absent from older daemons. */
+      source: NamespaceSource.optional(),
       agents: z.array(
         z.object({
           name: z.string(),
@@ -325,6 +532,8 @@ export const StatusReply = z.object({
       ),
     }),
   ),
+  /** Config files refused or noted (#1527). Absent from older daemons, and when there are none. */
+  config_files: z.array(ConfigFile).optional(),
   /** Messages sent from this machine the hub delivered after the 5 s window, within the last hour. */
   late: z
     .array(
@@ -341,7 +550,15 @@ export const StatusReply = z.object({
 });
 export type StatusReply = z.infer<typeof StatusReply>;
 
+/** The reply to `link_proof` (either form): whether a live record took the hash. */
+export const LinkProofed = z.object({
+  ...base,
+  type: z.literal("link_proofed"),
+  bound: z.boolean(),
+});
+
 export const DaemonFrame = z.discriminatedUnion("type", [
+  LinkProofed,
   Welcome,
   Receipt,
   Roster,
@@ -352,5 +569,9 @@ export const DaemonFrame = z.discriminatedUnion("type", [
   ErrorFrame,
   StatusReply,
   StatusSet,
+  Followed,
+  Unfollowed,
+  Follows,
+  ReachProposed,
 ]);
 export type DaemonFrame = z.infer<typeof DaemonFrame>;

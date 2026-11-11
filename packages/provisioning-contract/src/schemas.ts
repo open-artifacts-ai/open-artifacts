@@ -1,4 +1,8 @@
-import { TEST_HOOK_REFUSALS } from "@oa/shared";
+import {
+  BillingStatusSchema,
+  BillingTierSchema,
+  TEST_HOOK_REFUSALS,
+} from "@oa/shared";
 import { z } from "zod";
 import {
   ALERT_KEYS,
@@ -64,11 +68,6 @@ export const AuthSchema = z
         "Code sign-in for anyone at auth.domains: sets EMAIL_CODE_DOMAIN=on. Needs email in auth.providers, no google, at least one domain, and ownerEmail's domain in auth.domains. Turnstile is checked; that the env can send email is not checked.",
       ),
   })
-  // checkGoogleBroker, until #865.
-  .refine(
-    (a) => !a.providers.includes("google") || a.domains.length > 0,
-    "google needs at least one domain",
-  )
   // The server's rule (auth/config.ts domainCodes), so a create can't ask for
   // what it would silently leave off.
   .refine(
@@ -121,6 +120,16 @@ export const InstallSummarySchema = z.object({
   servingMode: ServingModeSchema,
   version: VersionSchema.nullable(),
   tier: TierSchema.nullable(),
+  /**
+   * The billing tier (billing's tiers row), not the created-as `tier`. Absent
+   * or null: billing is not bound here or did not answer (#2058).
+   */
+  billingTier: BillingTierSchema.nullable().optional().catch(null),
+  /**
+   * billing's status for that tier (active, past_due, lapsed, suspended). An
+   * unknown value from version skew reads null, never fails the list.
+   */
+  billingStatus: BillingStatusSchema.nullable().optional().catch(null),
   auth: z.object({
     providers: z.array(AuthProviderSchema),
     domainCount: z.number(),

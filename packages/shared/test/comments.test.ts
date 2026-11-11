@@ -2,17 +2,22 @@ import { setupServer } from "msw/node";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   ApiErrorSchema,
+  ArtifactAgentSchema,
   ArtifactEventSchema,
   ArtifactPatchSchema,
   ArtifactSummarySchema,
+  AskInputSchema,
   anchorInputSchema,
+  CommentAskSchema,
   CommentListSchema,
   CommentSchema,
   CommentThreadSchema,
+  ListQuerySchema,
   NewThreadBodySchema,
   R,
   ReplyBodySchema,
 } from "../src/index.js";
+import { createCommentHandlers } from "../src/mocks/comments.js";
 import { createArtifactEvents } from "../src/mocks/events.js";
 import { fixtures } from "../src/mocks/fixtures.js";
 import { createHandlers } from "../src/mocks/handlers.js";
@@ -49,6 +54,7 @@ const comment = {
   author,
   createdAt: "2026-11-05T10:00:00Z",
   editedAt: null,
+  typed: true,
   can: { edit: true, delete: false },
 };
 
@@ -103,6 +109,7 @@ describe("comment schemas", () => {
       "invalid_anchor",
       "invalid_body",
       "anchor_not_in_version",
+      "not_an_ask",
       "comments_off",
       "forbidden",
     ])
@@ -127,7 +134,7 @@ describe("comment schemas", () => {
 
 describe("comment request bodies", () => {
   const text = { kind: "text", exact: "a", prefix: "", suffix: "" };
-  const pin = { kind: "pin", x: 0.5, y: 0.25, contentHash: "h" };
+  const pin = { kind: "pin", x: 0.5, y: 0.25, contentHash: "a".repeat(64) };
 
   it("accepts an anchor with or without version; note needs none", () => {
     for (const a of [
@@ -136,6 +143,7 @@ describe("comment request bodies", () => {
       { ...text, version: 3 },
       pin,
       { ...pin, version: 2, page: 4 },
+      { kind: "pin", x: 0.5, y: 0.25 },
     ])
       expect(anchorInputSchema.safeParse(a).success).toBe(true);
   });
@@ -153,6 +161,8 @@ describe("comment request bodies", () => {
       { ...pin, y: -0.1 },
       { ...pin, x: Number.NaN },
       { ...pin, contentHash: "" },
+      { ...pin, contentHash: "h" },
+      { ...pin, contentHash: "A".repeat(64) },
     ])
       expect(anchorInputSchema.safeParse(a).success).toBe(false);
   });
@@ -209,6 +219,41 @@ describe("comments mock", () => {
       ).json(),
     );
     expect(t2.version).toBe(1);
+  });
+
+  it("#1496: edit is the author's; delete is the author's or a moderator's", async () => {
+    const me = { user: { id: "me1", name: "Me", email: "me@x.test" } };
+    const handlers = (over: object) =>
+      createCommentHandlers({
+        artifacts: [{ ...art, ...over }] as never,
+        me,
+        err: () => new Response(null, { status: 400 }),
+        emit: () => {},
+      });
+    const cans = async (over: object) => {
+      server.use(...handlers(over));
+      const l = await list();
+      return l.threads[0]?.comments.map((c) => ({
+        by: c.author.me,
+        edit: c.can.edit,
+        del: c.can.delete,
+      }));
+    };
+    const someone = { ...art.owner, id: "someone-else" };
+    // A plain viewer: nobody else's comment is theirs to change.
+    expect(await cans({ owner: someone, can: { edit: false } })).toEqual([
+      { by: false, edit: false, del: false },
+      { by: true, edit: true, del: true },
+    ]);
+    // The owner, or one who can edit the artifact, may delete others' comments, never edit them.
+    for (const over of [
+      { owner: { ...someone, id: "me1" } },
+      { owner: someone, can: { edit: true } },
+    ])
+      expect(await cans(over)).toEqual([
+        { by: false, edit: false, del: true },
+        { by: true, edit: true, del: true },
+      ]);
   });
 
   it("400 invalid_anchor for a bad anchor", async () => {
@@ -334,5 +379,276 @@ describe("comments mock", () => {
       open: expect.any(Number),
     });
     ws.close();
+  });
+});
+
+describe("asks and mentions (#1535)", () => {
+  const viewerArt = fixtures.artifacts.find(
+    (a) => a.title === "Onboarding guide",
+  );
+  if (!viewerArt) throw new Error("no Onboarding guide fixture");
+  const opts = [
+    { id: "a", label: "A" },
+    { id: "b", label: "B", detail: "d" },
+  ];
+  const ask = (to: string) => ({
+    question: "Which?",
+    options: opts,
+    recommended: { optionId: "a", why: "Because" },
+    to: [{ key: to }],
+  });
+  const seeded = async () => {
+    const t = (await list()).threads.find((x) => x.comments.some((c) => c.ask));
+    const c = t?.comments.find((x) => x.ask);
+    if (!t || !c) throw new Error("no seeded ask");
+    return { t, c };
+  };
+  const answerUrl = (t: string, c: string) =>
+    `${O}${R.commentAnswer(art.id, t, c)}`;
+
+  it("route builders", () => {
+    expect(R.commentAnswer("a", "t", "c")).toBe(
+      "/api/v1/artifacts/a/comments/t/comments/c/answer",
+    );
+    expect(R.artifactAgents("a")).toBe("/api/v1/artifacts/a/agents");
+  });
+
+  it("bounds on asks, options and keys; recommended must be an option", () => {
+    expect(AskInputSchema.safeParse(ask("agent:codex")).success).toBe(true);
+    const bad = (a: unknown) => AskInputSchema.safeParse(a).success;
+    expect(bad({ ...ask("u"), options: [opts[0]] })).toBe(false);
+    expect(
+      bad({
+        ...ask("u"),
+        options: Array.from({ length: 7 }, (_, i) => ({
+          id: `o${i}`,
+          label: "l",
+        })),
+      }),
+    ).toBe(false);
+    expect(
+      bad({ ...ask("u"), options: [opts[0], { id: "a", label: "dup" }] }),
+    ).toBe(false);
+    expect(bad({ ...ask("u"), question: "q".repeat(1001) })).toBe(false);
+    expect(bad({ ...ask("u"), question: "   " })).toBe(false);
+    expect(
+      bad({ ...ask("u"), options: [opts[0], { id: "b", label: " \t " }] }),
+    ).toBe(false);
+    const trimmed = AskInputSchema.parse({
+      ...ask("u"),
+      question: "  Which?  ",
+      options: [{ ...opts[0], label: "  A  " }, opts[1]],
+    });
+    expect(trimmed.question).toBe("Which?");
+    expect(trimmed.options[0]?.label).toBe("A");
+    expect(
+      bad({
+        ...ask("u"),
+        options: [opts[0], { id: "b", label: "x".repeat(121) }],
+      }),
+    ).toBe(false);
+    expect(
+      bad({
+        ...ask("u"),
+        options: [opts[0], { id: "b", label: "l", detail: "x".repeat(501) }],
+      }),
+    ).toBe(false);
+    expect(
+      bad({
+        ...ask("u"),
+        recommended: { optionId: "a", why: "x".repeat(501) },
+      }),
+    ).toBe(false);
+    expect(bad({ ...ask("u"), to: [] })).toBe(false);
+    expect(bad(ask("bad key"))).toBe(false);
+    expect(bad(ask("k".repeat(129)))).toBe(false);
+    // recommended.optionId must be one of the options, on input and on output.
+    expect(
+      bad({ ...ask("u"), recommended: { optionId: "zzz", why: "w" } }),
+    ).toBe(false);
+    expect(bad({ ...ask("u"), recommended: undefined })).toBe(true);
+    const out = {
+      question: "Q",
+      options: opts,
+      to: [author],
+      closed: false,
+    };
+    expect(CommentAskSchema.safeParse(out).success).toBe(true);
+    expect(
+      CommentAskSchema.safeParse({
+        ...out,
+        recommended: { optionId: "b", why: "w" },
+      }).success,
+    ).toBe(true);
+    expect(
+      CommentAskSchema.safeParse({
+        ...out,
+        recommended: { optionId: "zzz", why: "w" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("the REST bodies do not take an ask", async () => {
+    const withAsk = { body: "x", ask: ask("u") };
+    expect(ReplyBodySchema.parse(withAsk)).not.toHaveProperty("ask");
+    expect(
+      NewThreadBodySchema.parse({ ...withAsk, anchor: { kind: "note" } }),
+    ).not.toHaveProperty("ask");
+    use();
+    const r = await send("POST", base, {
+      anchor: { kind: "note" },
+      ...withAsk,
+    });
+    expect(r.status).toBe(201);
+    expect(
+      CommentThreadSchema.parse(await r.json()).comments[0]?.ask,
+    ).toBeUndefined();
+  });
+
+  it("mentions shape; assign is stripped, not stored", () => {
+    expect(
+      ReplyBodySchema.safeParse({
+        body: "x",
+        mentions: [{ key: "agent:codex" }],
+      }).success,
+    ).toBe(true);
+    // The other fields are not strict: an unknown `assign` is dropped by parsing.
+    expect(
+      ReplyBodySchema.parse({
+        body: "x",
+        assign: { key: "agent:codex" },
+      }),
+    ).toEqual({ body: "x" });
+    expect(
+      ReplyBodySchema.safeParse({ body: "x", mentions: [{ key: "a b" }] })
+        .success,
+    ).toBe(false);
+    // An old comment that still carries `assigned` reads, with it gone.
+    const old = CommentSchema.parse({
+      ...comment,
+      mentions: [{ key: "k", name: "N", delivery: "gone" }],
+      assigned: { key: "k", name: "N", state: "done" },
+    });
+    expect(old.mentions).toHaveLength(1);
+    expect(old).not.toHaveProperty("assigned");
+  });
+
+  it("the list query accepts filter and summaries carry asksForYou", async () => {
+    use({ commentAsks: true });
+    expect(ListQuerySchema.parse({ filter: "needs_answer" }).filter).toBe(
+      "needs_answer",
+    );
+    expect(ListQuerySchema.safeParse({ filter: "nope" }).success).toBe(false);
+    const need = await (
+      await send("GET", `${O}${R.artifacts}?filter=needs_answer`)
+    ).json();
+    expect(need.items.map((a: { id: string }) => a.id)).toEqual([art.id]);
+    expect(ArtifactSummarySchema.parse(need.items[0]).asksForYou).toBe(1);
+    expect(
+      (await send("GET", `${O}${R.artifacts}?filter=waiting_on_agents`)).status,
+    ).toBe(400);
+    expect((await send("GET", `${O}${R.artifacts}?filter=x`)).status).toBe(400);
+  });
+
+  it("GET artifactAgents lists key, name and online", async () => {
+    use({ commentAsks: true });
+    const r = await send("GET", `${O}${R.artifactAgents(art.id)}`);
+    const l = ArtifactAgentSchema.array().parse(await r.json());
+    expect(l.length).toBeGreaterThan(0);
+    expect(
+      (await send("GET", `${O}${R.artifactAgents("Zz9yXwVuTs8rQpOn")}`)).status,
+    ).toBe(404);
+  });
+
+  it("answers: addressee only, change before close, 409 once closed, 400 unknown option", async () => {
+    use({ commentAsks: true });
+    const { t, c } = await seeded();
+    expect(CommentSchema.parse(c).ask?.closed).toBe(false);
+    const url = answerUrl(t.id, c.id);
+    let r = await send("POST", url, { optionId: "nope" });
+    expect(r.status).toBe(400);
+    expect(ApiErrorSchema.parse(await r.json()).error.code).toBe("bad_request");
+    const first = c.ask?.options[0]?.id;
+    const second = c.ask?.options[1]?.id;
+    r = await send("POST", url, { optionId: first });
+    expect(r.status).toBe(200);
+    expect(CommentSchema.parse(await r.json()).ask?.answer?.optionId).toBe(
+      first,
+    );
+    r = await send("POST", url, { optionId: second });
+    expect(CommentSchema.parse(await r.json()).ask?.answer?.optionId).toBe(
+      second,
+    );
+    expect((await list()).threads.find((x) => x.id === t.id)?.status).toBe(
+      "open",
+    );
+    // Answered: no longer an ask for you.
+    const none = await (
+      await send("GET", `${O}${R.artifacts}?filter=needs_answer`)
+    ).json();
+    expect(none.items).toEqual([]);
+    await send("PATCH", `${base}/${t.id}`, { status: "resolved" });
+    expect(
+      (await list()).threads
+        .find((x) => x.id === t.id)
+        ?.comments.find((x) => x.id === c.id)?.ask?.closed,
+    ).toBe(true);
+    r = await send("POST", url, { optionId: first });
+    expect(r.status).toBe(409);
+    expect(ApiErrorSchema.parse(await r.json()).error.code).toBe("conflict");
+    await send("PATCH", `${base}/${t.id}`, { status: "open" });
+    expect((await send("POST", url, { optionId: first })).status).toBe(200);
+  });
+
+  it("403 forbidden when the caller is not an addressee; 404 for a comment with no ask", async () => {
+    use({ commentAsks: true });
+    const t = (await list()).threads.find((x) =>
+      x.comments.some((c) => c.ask && !c.ask.to.some((a) => a.me)),
+    );
+    const c = t?.comments[0];
+    if (!t || !c) throw new Error("no ask for someone else");
+    const a = await send("POST", answerUrl(t.id, c.id), { optionId: "yes" });
+    expect(a.status).toBe(403);
+    expect(ApiErrorSchema.parse(await a.json()).error.code).toBe("forbidden");
+    const plain = await send("POST", `${base}/${t.id}/replies`, { body: "r" });
+    const pc = CommentSchema.parse(await plain.json());
+    expect(
+      (await send("POST", answerUrl(t.id, pc.id), { optionId: "a" })).status,
+    ).toBe(404);
+  });
+
+  it("mentions: delivery by agent presence; an assign in the body is ignored", async () => {
+    use();
+    const r = await send("POST", base, {
+      anchor: { kind: "note" },
+      body: "@Claude Code @Codex",
+      mentions: [{ key: "agent:claude-code" }, { key: "agent:codex" }],
+      assign: { key: "agent:codex" },
+    });
+    expect(r.status).toBe(201);
+    const c = CommentThreadSchema.parse(await r.json()).comments[0];
+    expect(c?.mentions).toEqual([
+      { key: "agent:claude-code", name: "Claude Code", delivery: "delivered" },
+      { key: "agent:codex", name: "Codex", delivery: "queued" },
+    ]);
+    expect(c).not.toHaveProperty("assigned");
+  });
+
+  it("403 forbidden for mentions from a non owner or editor", async () => {
+    use();
+    const url = `${O}${R.comments(viewerArt.id)}`;
+    for (const extra of [{ mentions: [{ key: "agent:codex" }] }]) {
+      const r = await send("POST", url, {
+        anchor: { kind: "note" },
+        body: "x",
+        ...extra,
+      });
+      expect(r.status).toBe(403);
+      expect(ApiErrorSchema.parse(await r.json()).error.code).toBe("forbidden");
+    }
+    // A plain comment is still fine.
+    expect(
+      (await send("POST", url, { anchor: { kind: "note" }, body: "x" })).status,
+    ).toBe(201);
   });
 });

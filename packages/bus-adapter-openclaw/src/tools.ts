@@ -1,0 +1,66 @@
+import { callTool, TOOLS } from "@oa/bus-adapter-claude-code";
+import type { AgentTool, ToolContext } from "./api.ts";
+import type { Bus } from "./bus.ts";
+import { LinkError } from "./link.ts";
+import { refusal } from "./roots.ts";
+
+/**
+ * Tools of the shared set this adapter does not offer yet: it lists no `reach`
+ * cap in its hello, so a call would only fail, and its manifest does not name
+ * it (a tool missing from the manifest drops the whole registration).
+ */
+const NOT_YET = new Set(["propose_reach"]);
+const OFFERED = TOOLS.filter((t) => !NOT_YET.has(t.name));
+
+/** The bus tools, named as Pi and Hermes name them (#1448): the MCP tools behind an `oabus_` prefix. */
+export const TOOL_NAMES = OFFERED.map((t) => `oabus_${t.name}`);
+
+const text = (t: string) => ({ content: [{ type: "text" as const, text: t }] });
+
+/**
+ * The tools for one caller, or none: a session that cannot be on the bus
+ * (a subagent, an ACP or cron session, a runtime this adapter does not
+ * claim) never sees them. A tool call runs on the root's attested link; a
+ * `from` argument is never read.
+ */
+export function toolsFor(bus: Bus, ctx: ToolContext): AgentTool[] {
+  const r = bus.resolve(
+    {
+      agentId: ctx.agentId,
+      sessionKey: ctx.sessionKey,
+      modelProviderId: ctx.activeModel?.provider,
+      modelId: ctx.activeModel?.modelId,
+      workspaceDir: ctx.workspaceDir,
+    },
+    "tool",
+    ctx.runtimeConfig ?? ctx.config ?? bus.config,
+  );
+  if (!r.ok) return [];
+  const root = r.root;
+  return OFFERED.map((t) => ({
+    name: `oabus_${t.name}`,
+    label: `oabus_${t.name}`,
+    description: t.description,
+    parameters: t.inputSchema,
+    async execute(_id, params, signal) {
+      // A heartbeat or other automatic run on this root must not drive the bus.
+      if (!bus.userRun(root)) throw new Error(refusal.trigger);
+      try {
+        const client = await bus.ensure(root);
+        const out = await callTool(
+          t.name,
+          params && typeof params === "object" ? params : {},
+          client,
+          signal,
+        );
+        const body = out.content.map((c) => c.text).join("\n\n");
+        // OpenClaw reads a thrown error as a failed tool call.
+        if (out.isError) throw new Error(body);
+        return text(body);
+      } catch (e) {
+        if (e instanceof LinkError) throw new Error(`oa-bus: ${e.message}`);
+        throw e;
+      }
+    },
+  }));
+}

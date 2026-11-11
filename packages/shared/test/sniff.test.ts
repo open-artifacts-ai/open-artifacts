@@ -196,7 +196,7 @@ describe("sniff: images", () => {
     const r = checkEntry("a.png", "image", JPEG_640x480, false);
     expect(r?.reason).toBe("not_image");
     expect(r?.message).toBe(
-      `"a.png" is a JPEG image, so it can't be shown as a PNG image.`,
+      `"a.png" is a JPEG image, so it can't be shown as a PNG image. Publish a real PNG file, or name the file for its real type.`,
     );
     expect(checkEntry("a.gif", "image", s("GIF88a"), false)?.reason).toBe(
       "not_image",
@@ -262,7 +262,7 @@ describe("sniff: images", () => {
     const r = checkEntry("a.png", "image", PNG_1x1, false, "image/jpeg");
     expect(r?.reason).toBe("content_type");
     expect(r?.message).toBe(
-      `"a.png" was uploaded as image/jpeg, but a .png image is image/png.`,
+      `"a.png" was uploaded as image/jpeg, but a .png image is image/png. Create a new upload with contentType image/png.`,
     );
     expect(
       checkEntry("a.svg", "image", s("<svg>"), false, "text/html")?.reason,

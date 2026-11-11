@@ -2,7 +2,7 @@ import { isId } from "@oa/shared";
 import type { Context, MiddlewareHandler } from "hono";
 import { matchedRoutes } from "hono/route";
 import { featuresOf, planNow } from "../billing/features.js";
-import { planError, requireTeamPlan } from "../billing/plan.js";
+import { isViewOnly, planError, requireTeamPlan } from "../billing/plan.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, resolveSession } from "../http/middleware.js";
 import {
@@ -12,6 +12,7 @@ import {
   caller,
   capOfCaller,
   planOfMember,
+  suspendedMember,
   withAccessCache,
 } from "./authz.js";
 import { orgCan } from "./policy.js";
@@ -115,7 +116,26 @@ export async function enforce(
     // Malformed ids never reach D1.
     if (!isId(id)) throw notFound();
     try {
-      await authorize(env, who, id, p.artifact, {
+      // Sharing is free: a plan-capped caller passes this floor on a route
+      // that carries sharing (the handler refuses the rest of the write).
+      const gate: Caller =
+        p.planSharing &&
+        who.kind === "user" &&
+        who.cap === "plan" &&
+        !suspendedMember(who.user)
+          ? { ...who, cap: null }
+          : who;
+      // The unpaid-Solo view-only lock refuses "publish" for everyone, so on a
+      // route that carries sharing the floor is the sharing level (the
+      // handler, patch, refuses everything but visibility).
+      const action =
+        p.planSharing &&
+        p.artifact === "publish" &&
+        planOfMember(who.kind === "user" ? who.user : null)?.lock?.mode ===
+          "viewOnly"
+          ? "visibility"
+          : p.artifact;
+      await authorize(env, gate, id, action, {
         allowDeleted: p.allowDeleted,
         prefetch: true,
         ctx: p.ctx,
@@ -123,9 +143,15 @@ export async function enforce(
     } catch (e) {
       // Hosted billing: a member under the plan cap whose role would allow
       // this gets the clear 403, not 404 (they can see the artifact).
+      // The view-only lock binds uncapped callers too (the owner included):
+      // one who can edit the artifact but misses the sharing floor gets the
+      // 403 as well. Someone with no real access still gets the 404.
+      const memberLock =
+        write && who.kind === "user" ? planOfMember(who.user)?.lock : null;
       const lock =
-        write && who.kind === "user" && who.cap === "plan"
-          ? planOfMember(who.user)?.lock
+        who.kind === "user" &&
+        (who.cap === "plan" || (!who.cap && isViewOnly(memberLock)))
+          ? memberLock
           : null;
       if (
         lock &&
@@ -157,7 +183,11 @@ export async function enforce(
     throw new ApiError("unauthorized", "Sign in required");
   if (
     "org" in p &&
-    !orgCan(who.user, p.org, { cap: capOfCaller(who), read: !write })
+    !orgCan(who.user, p.org, {
+      cap: capOfCaller(who),
+      read: !write,
+      suspended: suspendedMember(who.user),
+    })
   ) {
     // Hosted billing: an admin under the plan cap gets the clear 403 on a
     // write their role would allow (their admin reads and billing pass

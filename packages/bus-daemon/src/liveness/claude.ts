@@ -1,6 +1,10 @@
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { notASession, peerTokenFor } from "@oa/bus-adapter-claude-code";
+import {
+  notASession,
+  ProcStartUnknownError,
+  peerTokenFor,
+} from "@oa/bus-adapter-claude-code";
 import { AgentRefSchema } from "@oa/bus-protocol";
 
 export type LiveClaude = {
@@ -9,6 +13,8 @@ export type LiveClaude = {
   pid: number;
   socketPath: string;
   cwd: string;
+  /** The process start the session file recorded: tells a reused pid from the session's own. */
+  procStart: string;
 };
 
 export type ClaudeLivenessDeps = {
@@ -19,7 +25,7 @@ export type ClaudeLivenessDeps = {
   sha256?: (s: string) => string;
 };
 
-type SessionFile = LiveClaude & { procStart: string; stamp: string };
+type SessionFile = LiveClaude & { stamp: string };
 
 /** Every well-formed session file, without asking the OS anything. */
 function sessionFiles(dir: string): SessionFile[] {
@@ -33,9 +39,7 @@ function sessionFiles(dir: string): SessionFile[] {
   for (const fn of names) {
     if (!/^\d+\.json$/.test(fn)) continue;
     let rec: Record<string, unknown>;
-    let mtime: number;
     try {
-      mtime = statSync(join(dir, fn)).mtimeMs;
       rec = JSON.parse(readFileSync(join(dir, fn), "utf8"));
     } catch {
       continue;
@@ -56,7 +60,8 @@ function sessionFiles(dir: string): SessionFile[] {
           : "",
       cwd: typeof rec.cwd === "string" ? rec.cwd : "",
       procStart: rec.procStart,
-      stamp: `${rec.procStart}\u0000${mtime}`,
+      // Not the mtime: live sessions rewrite their file every 15-60 s. A reused pid writes a new procStart.
+      stamp: rec.procStart,
     });
   }
   return out;
@@ -65,17 +70,42 @@ function sessionFiles(dir: string): SessionFile[] {
 const alive = (s: SessionFile, deps: ClaudeLivenessDeps) =>
   deps.isRunning(s.pid) && deps.procStart(s.pid, s.stamp) === s.procStart;
 
-const strip = ({ procStart: _, stamp: __, ...s }: SessionFile): LiveClaude => s;
+const strip = ({ stamp: _, ...s }: SessionFile): LiveClaude => s;
+
+/** Every live session file, one per process: a membership test, never deduped. */
+export function liveClaudeFiles(deps: ClaudeLivenessDeps): LiveClaude[] {
+  return sessionFiles(deps.dir)
+    .filter((s) => alive(s, deps))
+    .map(strip);
+}
 
 /**
  * Claude sessions that are running now, from `~/.claude/sessions`: the process
  * is up and its start time matches. One with no socket (cross-session
  * messaging off) can still send; it just cannot receive.
  */
-export function liveClaudeSessions(deps: ClaudeLivenessDeps): LiveClaude[] {
-  return sessionFiles(deps.dir)
-    .filter((s) => alive(s, deps))
-    .map(strip);
+export function liveClaudeSessions(
+  deps: ClaudeLivenessDeps,
+  /** The pid the caller already knows for a ref (its record's, a hello's): that file wins. */
+  preferPid?: (ref: string) => number | undefined,
+): LiveClaude[] {
+  // One file per session: a headless `claude --resume` shares the id, and
+  // its nameless file must not stand for the session (#1635).
+  const byRef = new Map<string, LiveClaude>();
+  const rank = (s: LiveClaude) =>
+    (s.pid === preferPid?.(s.ref) ? 4 : 0) +
+    (s.socketPath !== "" ? 2 : 0) +
+    (s.name !== `claude-${s.pid}` ? 1 : 0);
+  for (const s of liveClaudeFiles(deps)) {
+    const cur = byRef.get(s.ref);
+    if (
+      !cur ||
+      rank(s) > rank(cur) ||
+      (rank(s) === rank(cur) && s.pid < cur.pid)
+    )
+      byRef.set(s.ref, s);
+  }
+  return [...byRef.values()];
 }
 
 /** Where to inject for one session, read fresh each time; null when it is gone. Asks the OS about that session only. */
@@ -97,32 +127,52 @@ export function claudeTarget(
   return peerToken ? { socketPath: s.socketPath, peerToken } : null;
 }
 
+/** A live pid's start time never changes, so a long TTL is safe. */
+export const PROC_START_TTL_MS = 60_000;
+
 /**
- * At most one `ps` per pid per sync interval. A stopped pid, a session file
- * rewritten (new stamp) or an entry `ttlMs` old asks again, so a pid killed
- * and reused between two ticks, its file untouched, is not masked.
+ * At most one `ps` per pid per `ttlMs` (60 s by default). A stopped pid
+ * (`running()` is false) or a session file rewritten (new stamp) asks again at
+ * once. A pid killed and reused with its file untouched is caught by
+ * `running()` only until the reuse, so it can go unnoticed for up to `ttlMs`.
+ * A `ps` that times out is "unknown", not "gone": the last known start stays.
  */
 export function cachedProcStart(
   procStart: (pid: number) => string | null,
   running: (pid: number) => boolean,
-  opts: { ttlMs?: number; now?: () => number } = {},
+  opts: { ttlMs?: number; jitter?: number; now?: () => number } = {},
 ): (pid: number, stamp?: string) => string | null {
-  const ttl = opts.ttlMs ?? 2000;
+  const ttl = opts.ttlMs ?? PROC_START_TTL_MS;
   const now = opts.now ?? Date.now;
   const cache = new Map<
     number,
     { start: string; stamp?: string; at: number }
   >();
+  const lastKnown = new Map<number, string>();
   return (pid, stamp) => {
     if (!running(pid)) {
       cache.delete(pid);
+      lastKnown.delete(pid);
       return null;
     }
     const hit = cache.get(pid);
-    if (hit && hit.stamp === stamp && now() - hit.at < ttl) return hit.start;
-    const start = procStart(pid);
-    if (start === null) cache.delete(pid);
-    else cache.set(pid, { start, stamp, at: now() });
+    // Spread by pid so entries made on one tick do not all expire on the same later tick.
+    const life = ttl + (pid % 16) * ((ttl * (opts.jitter ?? 0.5)) / 16);
+    if (hit && hit.stamp === stamp && now() - hit.at < life) return hit.start;
+    let start: string | null;
+    try {
+      start = procStart(pid);
+    } catch (e) {
+      if (e instanceof ProcStartUnknownError) return lastKnown.get(pid) ?? null;
+      throw e;
+    }
+    if (start === null) {
+      cache.delete(pid);
+      lastKnown.delete(pid);
+    } else {
+      cache.set(pid, { start, stamp, at: now() });
+      lastKnown.set(pid, start);
+    }
     return start;
   };
 }

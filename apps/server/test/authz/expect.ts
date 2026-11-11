@@ -241,6 +241,7 @@ const READS: readonly SurfaceAction[] = [
   "data.read",
   "events",
   "subscribe",
+  "comments.read",
 ];
 const EDITS: readonly SurfaceAction[] = [
   "version.text",
@@ -303,6 +304,8 @@ export function expected(
         ? writer && isEditor(level)
         : writer || !t.session,
     );
+  // Comments: as data writes under "viewers" (a capped caller is read-only).
+  if (action === "comments.write") return yes(writer || !t.session);
   if (action === "storage") return yes(writer);
   if (action === "thumbnail.write")
     // A viewer is eligible for the first thumbnail only, through a share or
@@ -348,6 +351,7 @@ export const CAPPED_WRITES: readonly string[] = [
   "DELETE /api/v1/tokens/:id",
   "DELETE /api/v1/oauth-clients/:grantId",
   "DELETE /api/v1/bus/machines/:id",
+  "DELETE /api/v1/bus/reach/:id",
   "POST /api/v1/notices/guest_shares/dismiss",
 ];
 
@@ -409,6 +413,7 @@ function guardExpected(
     case "broker.check":
     // Parity 2: the install-wide guest summary, the uncapped owner's only.
     case "notices.manage":
+    case "onboarding.manage":
       return yes(t.role === "owner" && !t.capped);
     // Parity 2: one's own guest-share notice, any non-guest (a cap too).
     case "notices.own":

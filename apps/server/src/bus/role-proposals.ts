@@ -12,6 +12,7 @@
 // browser REST path's own functions, so putRole's checks run again then.
 // It is decided once: applied, refused or expired.
 import {
+  BUS_REACH_PER_ROLE,
   BUS_ROLE_MAX,
   BUS_ROLE_PROPOSAL_TTL_MS,
   BUS_ROLE_PROPOSALS_LISTED,
@@ -21,6 +22,7 @@ import {
   type BusRoleProposalAction,
 } from "@oa/shared";
 import { iso } from "./dto.js";
+import { reachOfRole } from "./reach.js";
 import { checkRole, deleteRole, putRole, type RoleRefusal } from "./roles.js";
 
 /** Decided proposals kept for the dashboard: at most this many, and none older than RETAIN_MS. */
@@ -46,6 +48,8 @@ export type ProposeInput = {
   name: string;
   /** The new holder's bus name (set only). */
   agent: string | null;
+  /** The PAT (`t:<id>`) or OAuth grant (`g:<id>`) that proposed; null when unknown (#1403). */
+  credential?: string | null;
 };
 
 /** The ids an audit row may carry (never names): services/bus.ts audits them. */
@@ -82,7 +86,17 @@ export type ProposalRefusalReason =
   | "role_limit";
 
 export type ViewResult =
-  | { ok: true; proposal: BusRoleProposal; expired: ProposalAudit[] }
+  | {
+      ok: true;
+      proposal: BusRoleProposal;
+      /**
+       * #1346: the namespaces the role reaches now, sorted. A re-point or a
+       * removal changes who holds that reach (or ends it), so the card lists
+       * it: an agent's proposal can't hand over reach unseen.
+       */
+      reach: string[];
+      expired: ProposalAudit[];
+    }
   | {
       ok: false;
       reason: ProposalRefusalReason;
@@ -223,6 +237,35 @@ export function expireProposals(
   return gone;
 }
 
+/**
+ * #1403: expires every pending proposal `credential` (`t:<id>` or `g:<id>`)
+ * made, at once, for the revoke of that PAT or grant. Decided proposals,
+ * other credentials' and ones with no credential recorded are untouched.
+ * Returns the newly expired, for their audit rows.
+ */
+export function expireByCredential(
+  sql: SqlStorage,
+  orgId: string,
+  credential: string,
+  now: number,
+): ProposalAudit[] {
+  return all<{
+    id: string;
+    action: BusRoleProposalAction;
+    roleId: string | null;
+    agentId: string | null;
+    priorAgentId: string | null;
+  }>(
+    sql,
+    `update role_proposals set status = 'expired', decided_at = ?
+      where org_id = ? and status = 'pending' and credential = ?
+      returning id, action, role_id as roleId, agent_id as agentId, prior_agent_id as priorAgentId`,
+    now,
+    orgId,
+    credential,
+  ).map(auditOf);
+}
+
 /** The newest proposals (pending or decided), newest first, for GET R.busRoles. */
 export function listProposals(
   sql: SqlStorage,
@@ -313,8 +356,8 @@ export function propose(
   const id = newId();
   sql.exec(
     `insert into role_proposals (id, org_id, token_hash, action, namespace, name, lname,
-       role_id, agent_id, agent_name, prior_agent_id, prior_holder_name, created_at, expires_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       role_id, agent_id, agent_name, prior_agent_id, prior_holder_name, created_at, expires_at, credential)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     id,
     orgId,
     tokenHash,
@@ -329,6 +372,7 @@ export function propose(
     nameOf(sql, orgId, priorAgentId),
     now,
     now + BUS_ROLE_PROPOSAL_TTL_MS,
+    input.credential ?? null,
   );
   const row = byHash(sql, orgId, tokenHash);
   if (row === null) throw new Error("proposal row missing after write");
@@ -407,7 +451,16 @@ export function viewProposal(
     };
   const why = blocker(sql, orgId, p, now, maxRoles);
   return why === null
-    ? { ok: true, proposal: dto, expired }
+    ? {
+        ok: true,
+        proposal: dto,
+        // A new role has none (the grants go with the role).
+        reach:
+          p.action === "set"
+            ? []
+            : reachOfRole(sql, orgId, p.namespace, p.lname, BUS_REACH_PER_ROLE),
+        expired,
+      }
     : { ok: false, reason: why, proposal: dto, expired };
 }
 

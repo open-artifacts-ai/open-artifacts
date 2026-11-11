@@ -18,7 +18,7 @@ import {
   PONG,
   type ServerFrame,
 } from "@oa/bus-protocol";
-import { expect } from "vitest";
+import { afterAll, expect, vi } from "vitest";
 import { type BusHub, busHubName } from "../../src/bus/hub.js";
 import type { Env } from "../../src/env.js";
 import worker from "../../src/index.js";
@@ -35,7 +35,12 @@ let memberSeq = 0;
 export async function member(
   role: "member" | "admin" | "owner" | "guest" = "member",
 ): Promise<Member> {
-  return login(`bus-${++memberSeq}-${newId().slice(0, 8)}@x.com`, role);
+  const m = await login(
+    `bus-${++memberSeq}-${newId().slice(0, 8)}@x.com`,
+    role,
+  );
+  touchedUsers.add(m.userId);
+  return m;
 }
 
 let owner: Promise<Member> | null = null;
@@ -51,6 +56,7 @@ export async function machine(
   userId?: string,
 ): Promise<{ id: string; token: string; userId: string }> {
   const uid = userId ?? (await theOwner()).userId;
+  touchedUsers.add(uid);
   const id = newId();
   const token = newMachineToken();
   await e.DB.prepare(
@@ -121,12 +127,141 @@ export function upgrade(
   );
 }
 
+/** Room for the index to settle when the whole suite loads the worker pool. */
+const INDEX_SETTLE_MS = 20_000;
+const CLOSE_WAIT_MS = 10_000;
+const HOOK_MS = CLOSE_WAIT_MS + 2 * INDEX_SETTLE_MS + 5_000;
+
+const opened = new Set<Daemon>();
+/** Users whose hub this file may have opened a socket on. */
+const touchedUsers = new Set<string>();
+const rawSockets = new Map<WebSocket, Promise<unknown>>();
+
+/**
+ * Registers a socket a test opened without `daemon()` (a raw upgrade, a hub
+ * stub forward). The file's afterAll closes it and waits for the close, so the
+ * hub's last-socket work does not run at worker teardown.
+ */
+export function trackSocket<T extends WebSocket>(ws: T): T {
+  rawSockets.set(
+    ws,
+    new Promise((r) => ws.addEventListener("close", r, { once: true })),
+  );
+  return ws;
+}
+
+// #1299: a hub removes its install-index row (`gone`) when its last socket
+// closes. A file that ends with sockets still closing would tear the worker
+// down with that RPC in flight (vitest: "Closing rpc while resolve was
+// pending"), so close every socket the file opened and wait for the index to
+// hold no bus rows.
+afterAll(async () => {
+  const closes: Promise<unknown>[] = [...opened].map((d) => d.closed);
+  for (const d of opened)
+    try {
+      d.close();
+    } catch {
+      // Already closed.
+    }
+  for (const [ws, closed] of rawSockets) {
+    closes.push(closed);
+    try {
+      ws.close(1000, "bye");
+    } catch {
+      // Already closed or never accepted.
+    }
+  }
+  // A socket the hub already tore down reported its close earlier. A close
+  // that never arrives fails the file with a clear message, inside the hook's
+  // own timeout; giving up silently is what let the worker tear down with the
+  // hub's `gone` RPC still in flight.
+  let giveUp: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.all(closes),
+    new Promise<never>((_, reject) => {
+      giveUp = setTimeout(
+        () =>
+          reject(
+            new Error(
+              `bus sockets still open ${CLOSE_WAIT_MS} ms after the file's afterAll closed them`,
+            ),
+          ),
+        CLOSE_WAIT_MS,
+      );
+    }),
+  ]).finally(() => clearTimeout(giveUp));
+  opened.clear();
+  rawSockets.clear();
+  const ns = e.USER_PRESENCE;
+  if (!ns) return;
+  const idx = ns.get(ns.idFromName("~install"));
+  const rows = (): Promise<number> =>
+    runInDurableObject(idx, (_i, s: DurableObjectState) => {
+      // The index creates its tables on first use; a file that never opened a
+      // socket has none, and no rows to wait for.
+      const has = s.storage.sql
+        .exec<{ n: number }>(
+          "select count(*) as n from sqlite_master where name = 'seen'",
+        )
+        .one().n;
+      if (!has) return 0;
+      return s.storage.sql
+        .exec<{ n: number }>(
+          "select count(*) as n from seen where substr(artifact_id, 1, 4) = 'bus:'",
+        )
+        .one().n;
+    });
+  // A client close is only the echo of the hub's: the hub's work after it
+  // (the `gone` it sends) runs later. Wait until every hub this file touched
+  // holds no OPEN daemon socket, then until its close/error handlers and index
+  // calls are done (indexInFlight 0), so the worker is not torn down with one
+  // pending. A CLOSING socket whose peer never echoes never fires
+  // webSocketClose, so it cannot be waited on; the window left is an echo
+  // still in flight, which this does not gate.
+  for (const uid of touchedUsers) {
+    const ns = e.BUS_HUB;
+    if (!ns) break;
+    const hub = ns.get(ns.idFromName(busHubName(uid)));
+    await vi.waitFor(
+      async () =>
+        expect(
+          await runInDurableObject(
+            hub,
+            (_i, s: DurableObjectState) =>
+              s.getWebSockets("daemon").filter((w) => w.readyState === 1)
+                .length,
+          ),
+        ).toBe(0),
+      { timeout: INDEX_SETTLE_MS },
+    );
+    await vi.waitFor(
+      async () =>
+        expect(
+          await runInDurableObject(hub, (i: BusHub) => i.indexInFlight),
+        ).toBe(0),
+      { timeout: INDEX_SETTLE_MS },
+    );
+  }
+  touchedUsers.clear();
+  // The close events above are the client's; the hub's `gone` report lands
+  // after them. Wait for the index to show it, and fail the file (not warn) if
+  // a row stays: that is a hub that never reported its last socket gone.
+  await vi.waitFor(async () => expect(await rows()).toBe(0), {
+    timeout: INDEX_SETTLE_MS,
+  });
+}, HOOK_MS);
+
 /** A daemon socket. Every frame it receives must parse with decodeServerFrame. */
 export async function daemon(
   token: string,
   extra: Record<string, string> = {},
+  /** Opens the upgrade another way (e.g. a hosted env with ctx.props). */
+  open: (token: string, extra: Record<string, string>) => Promise<Response> = (
+    t,
+    x,
+  ) => upgrade(t, x),
 ): Promise<Daemon> {
-  const res = await upgrade(token, extra);
+  const res = await open(token, extra);
   expect(res.status).toBe(101);
   const ws = res.webSocket as WebSocket;
   ws.accept();
@@ -164,7 +299,7 @@ export async function daemon(
       });
     });
   };
-  return {
+  const d: Daemon = {
     ws,
     raw,
     next,
@@ -172,6 +307,8 @@ export async function daemon(
     close: () => ws.close(1000, "bye"),
     closed,
   };
+  opened.add(d);
+  return d;
 }
 
 /** Consumes frames until one matches `type` (roster broadcasts may interleave). */

@@ -1,11 +1,13 @@
 import { type ArtifactSummary, type Me, viewerPath } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
+import { MessageSquare } from "lucide-react";
 import {
   type ReactNode,
   type SyntheticEvent,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -21,16 +23,19 @@ import { NotFound } from "../pages/NotFound";
 import { NotPublic } from "../pages/NotPublic";
 import { createBridge, type ScrollPos } from "./bridge";
 import { Crumbs } from "./Crumbs";
-import { CommentsBody } from "./comments/CommentsBody";
+import { asksForMe, nextAskFor } from "./comments/asks";
+import { CommentsBody, PinBar } from "./comments/CommentsBody";
 import {
   CommentsColumn,
   CommentsDialog,
+  SelectionBar,
   useSurface,
 } from "./comments/surfaces";
 import {
   CommentsProvider,
   useCommentsController,
 } from "./comments/useComments";
+import { CommentsResizer, useCommentsWidthVar } from "./commentsWidth";
 import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
 import { FullScreenEscape } from "./FullScreenEscape";
 import { frameLoad, SANDBOX, safeContentUrl } from "./frame";
@@ -43,6 +48,7 @@ import {
 } from "./navigate";
 import { isPanelTab, type PanelTab, SidePanel } from "./panels/SidePanel";
 import { RenavNotice } from "./RenavNotice";
+import { SignupNudge } from "./SignupNudge";
 import { SlowNotice } from "./SlowNotice";
 import { TitleBar } from "./TitleBar";
 import { useArtifactSideEffects } from "./useArtifactSideEffects";
@@ -132,11 +138,14 @@ function Viewer({
   version,
   explicitVersion,
   authed,
+  anonymous,
   readOnly = false,
   viewer,
   role,
+  hosted,
   plan,
   chromeless,
+  colState,
   slot,
   newer = false,
   gone = null,
@@ -147,8 +156,13 @@ function Viewer({
   restoreScroll,
   onAccessLost,
   onUndelete,
+  shown = true,
 }: {
+  /** This layer is the one on screen (not a preloaded version behind it). */
+  shown?: boolean;
   chromeless: boolean;
+  /** The column's open/closed choice, kept by the shell across version swaps. */
+  colState: [boolean | null, (v: boolean | null) => void];
   /** The live-version chip (title bar) or pill (/full); only on the shown layer. */
   slot?: ReactNode;
   newer?: boolean;
@@ -168,11 +182,15 @@ function Viewer({
   /** The owner's Restore of an artifact deleted while open. */
   onUndelete?: () => Promise<void>;
   role: Me["user"]["role"] | undefined;
+  /** The signed-in install is hosted (Me.instance.hosted). */
+  hosted: boolean;
   plan: Me["instance"]["plan"] | undefined;
   artifact: ArtifactSummary;
   version: number;
   explicitVersion: boolean;
   authed: boolean;
+  /** /me answered 401 (signed out), not loading or errored. */
+  anonymous: boolean;
   /** A capped (guest or restricted) member: the server refuses their comment writes. */
   readOnly?: boolean;
   viewer: { email: string; name: string | null } | null;
@@ -195,6 +213,7 @@ function Viewer({
   const search = useSearch({ strict: false }) as {
     panel?: string;
     tab?: string;
+    thread?: unknown;
   };
   const panelOpen = search.panel === "open";
   const requestedTab: PanelTab = isPanelTab(search.tab)
@@ -214,19 +233,37 @@ function Viewer({
   // Comments (#682). The list lives in a column beside the page, a tab of the
   // side panel, or a dialog (phones, full screen).
   const surface = useSurface(chromeless);
-  const [colOpen, setColOpen] = useState<boolean | null>(null);
+  const [colOpen, setColOpen] = colState;
   const [dialogOpen, setDialogOpen] = useState(false);
   const openSurface = useRef(() => {});
   const getBridge = useCallback(() => bridge.current, []);
+  const versionInfo = useVersionInfo(artifact.id, version).data;
+  const pinFmt =
+    versionInfo?.format ??
+    (version === artifact.currentVersion ? artifact.format : undefined);
   const cmt = useCommentsController({
     artifact,
     version,
     pinned: explicitVersion,
     authed,
     readOnly,
+    pinFormat: pinFmt === "image" || pinFmt === "pdf" ? pinFmt : null,
+    contentHash: versionInfo?.contentHash ?? null,
     getBridge,
     openSurface: () => openSurface.current(),
   });
+  // The card being read is a pin's: the phone sheet shortens so its pin stays
+  // in view (#1657).
+  const pinCard =
+    cmt.threads.find((t) => t.id === cmt.active && t.anchor.kind === "pin")
+      ?.id ?? null;
+  // #1783: a pin with replies needs the half height to show one.
+  const pinReplies =
+    (cmt.threads.find((t) => t.id === pinCard)?.comments.length ?? 0) > 1;
+  // A sheet or overlay would cover the page: leave it while placing a pin.
+  useEffect(() => {
+    if (cmt.mode === "pin") setDialogOpen(false);
+  }, [cmt.mode]);
   const cmtRef = useRef(cmt);
   cmtRef.current = cmt;
   const commentsOn =
@@ -234,22 +271,34 @@ function Viewer({
   // The panel's Comments tab: offered only where comments are on and the list
   // isn't a dialog; a link to it elsewhere falls back to Versions.
   const commentsTab = commentsOn && surface !== "dialog";
+  // Not state: a drag would re-render the whole viewer on every pointermove.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useCommentsWidthVar(rootRef);
   const tab: PanelTab = !authed
     ? "comments"
     : requestedTab === "comments" && !commentsTab
       ? "versions"
       : requestedTab;
-  // Open by default only when there is something to show.
-  const columnShown =
-    colOpen ??
-    (cmt.threads.length > 0 || cmt.draft !== null || cmt.error != null);
+  // Closed until asked for (#1731): the Comments button, a selection, a pin or
+  // a thread's highlight opens it (each calls openSurface). A list that fails
+  // to load opens it too, so the failure and its Retry are seen.
+  const columnShown = colOpen ?? cmt.error != null;
+  // Where the list is on screen its Pin button is the cue; otherwise (a closed
+  // column, another panel tab, a phone with no sheet) the bar is, so pin mode
+  // never runs unannounced. Hidden under the sheet too: it would overlap it.
+  const listShown =
+    surface === "dialog"
+      ? dialogOpen
+      : panelOpen
+        ? commentsTab && tab === "comments"
+        : surface === "column" && columnShown;
   openSurface.current = () => {
     if (surface === "dialog") setDialogOpen(true);
     else if (surface === "panel" || panelOpen) setPanel(true, "comments");
     else setColOpen(true);
   };
   // Latest values for the effect: the parent's key remounts this on id/version change.
-  const vformat = useVersionInfo(artifact.id, version).data?.format;
+  const vformat = versionInfo?.format;
   const formatRef = useRef(vformat);
   formatRef.current = vformat;
   const latest = useRef({ artifact, viewer, theme });
@@ -420,6 +469,9 @@ function Viewer({
       onCommentSelect: (a) => cmtRef.current.onSelect(a),
       onCommentPositions: (p) => cmtRef.current.onPositions(p),
       onCommentOpen: (id) => cmtRef.current.onOpen(id),
+      onCommentPin: (p) => cmtRef.current.onPin(p),
+      onCommentEscape: () => cmtRef.current.onEscape(),
+      onCommentSelection: (has) => cmtRef.current.onSelection(has),
       onPdfText: (t) => fxRef.current.onPdfText(t),
       onThumb: (b) => fxRef.current.onThumb(b),
       // The shell re-checks access: still readable, or the gone state.
@@ -460,6 +512,40 @@ function Viewer({
     bridge.current?.setArtifact(artifact);
   }, [artifact.capabilities, artifact.dataWriters, artifact.visibility]);
 
+  const asks = useMemo(() => {
+    const all = [...cmt.ordered, ...cmt.orphans];
+    return all.some((t) => t.comments.some((c) => c.ask))
+      ? { count: asksForMe(all).length }
+      : undefined;
+  }, [cmt.ordered, cmt.orphans]);
+  // #1467: a comment email links to ?thread=<id>. Once the list has loaded,
+  // open the comments at that thread (showing resolved ones if it is), then
+  // drop the parameter so a reload or Back doesn't jump again. Only the shown
+  // layer acts; a failed list waits for its Retry.
+  const wantThread =
+    typeof search.thread === "string" && search.thread
+      ? search.thread
+      : undefined;
+  const threadDone = useRef<string | null>(null);
+  useEffect(() => {
+    if (!wantThread || !shown || threadDone.current === wantThread) return;
+    if (cmt.loading || cmt.error) return;
+    threadDone.current = wantThread;
+    const t = cmt.threads.find((x) => x.id === wantThread);
+    if (t?.status === "resolved") cmt.setShowResolved(true);
+    // The panel keeps its open tab in the URL: set it in the same navigation
+    // that drops the parameter, so neither write undoes the other.
+    const viaPanel =
+      !!t && surface !== "dialog" && (surface === "panel" || panelOpen);
+    if (t && !viaPanel) openSurface.current();
+    if (t) cmt.reveal(t.id);
+    void navigate({
+      to: ".",
+      replace: true,
+      search: (({ thread: _, ...p }: Record<string, unknown>) =>
+        viaPanel ? { ...p, panel: "open", tab: "comments" } : p) as never,
+    });
+  }, [wantThread, shown, cmt, navigate, surface, panelOpen]);
   if ((content.notFound || signedOut) && isEmbed())
     return <NotPublic id={artifact.id} />;
   if (content.notFound) return <NotFound />;
@@ -480,30 +566,49 @@ function Viewer({
     vformat ??
     (version === artifact.currentVersion ? artifact.format : undefined);
   const textFormat = fmt !== "pdf" && fmt !== "image";
-  const commentsButton = commentsOn
+  const listButton = commentsOn
     ? surface === "column"
       ? {
-          open: cmt.open,
+          open: cmt.listedOpen,
           expanded: columnShown && !panelOpen,
           onClick: () =>
             panelOpen ? setPanel(true, "comments") : setColOpen(!columnShown),
         }
       : surface === "panel"
         ? {
-            open: cmt.open,
+            open: cmt.listedOpen,
             expanded: panelOpen && tab === "comments",
             onClick: () =>
               setPanel(!(panelOpen && tab === "comments"), "comments"),
           }
         : {
-            open: cmt.open,
+            open: cmt.listedOpen,
             expanded: dialogOpen,
             onClick: () => setDialogOpen((o) => !o),
           }
     : undefined;
+  // #1732: while text is selected the button is the same action as the bar.
+  const commentsButton = listButton && {
+    ...listButton,
+    selecting: cmt.hasSelection,
+    onClick: cmt.hasSelection ? cmt.commentOnSelection : listButton.onClick,
+  };
+  // #1614: "N asks for you" opens the comments surface (never toggles it shut) and steps to the next ask.
+  const asksButton =
+    commentsOn && asks
+      ? {
+          count: asks.count,
+          onClick: () => {
+            const id = nextAskFor(cmt, cmt.active, { includeSelf: true });
+            if (!id) return;
+            openSurface.current();
+            cmt.reveal(id);
+          },
+        }
+      : undefined;
   return (
     <CommentsProvider value={cmt}>
-      <div className="oa-viewer">
+      <div ref={rootRef} className="oa-viewer">
         {!chromeless && (
           <>
             <Crumbs title={artifact.title} />
@@ -521,6 +626,13 @@ function Viewer({
               newer={newer}
               gone={gone !== null}
               comments={commentsButton}
+              asks={asksButton}
+            />
+            <SignupNudge
+              authed={authed}
+              anonymous={anonymous}
+              guest={role === "guest"}
+              hosted={hosted}
             />
             {gone && (
               <GoneBanner
@@ -579,6 +691,10 @@ function Viewer({
               />
             </div>
           )}
+          {((commentsOn && surface === "column" && columnShown && !panelOpen) ||
+            (panelOpen && (authed || commentsTab) && !chromeless)) && (
+            <CommentsResizer />
+          )}
           {commentsOn && surface === "column" && columnShown && !panelOpen && (
             <CommentsColumn textFormat={textFormat} />
           )}
@@ -598,9 +714,16 @@ function Viewer({
             />
           )}
         </div>
+        {commentsOn && !listShown && <PinBar />}
+        {commentsOn &&
+          !chromeless &&
+          !panelOpen &&
+          !(surface === "dialog" && dialogOpen) && <SelectionBar />}
         {commentsOn && surface === "dialog" && dialogOpen && (
           <CommentsDialog
             textFormat={textFormat}
+            pinCard={pinCard}
+            pinReplies={pinReplies}
             onClose={() => setDialogOpen(false)}
           />
         )}
@@ -614,6 +737,7 @@ function Viewer({
                   <Button
                     variant="outline"
                     size="xs"
+                    className="oa-fscomments"
                     aria-label={
                       commentsButton.open > 0
                         ? `Comments, ${commentsButton.open} open`
@@ -622,7 +746,8 @@ function Viewer({
                     aria-expanded={commentsButton.expanded}
                     onClick={commentsButton.onClick}
                   >
-                    Comments
+                    <MessageSquare className="oa-fsicon" aria-hidden="true" />
+                    <span className="oa-fsword">Comments</span>
                     {commentsButton.open > 0 && ` ${commentsButton.open}`}
                   </Button>
                 )}
@@ -670,6 +795,9 @@ function ArtifactShell({
   chromeless?: boolean;
 }) {
   const q = useArtifact(id);
+  // The comments column's open/closed choice outlives a version swap (each
+  // version's Viewer is its own keyed layer).
+  const colState = useState<boolean | null>(null);
   // In render, not an effect: child effects run first, and the viewer may
   // mount in this same commit when the info is cached.
   const prefetched = useRef(false);
@@ -791,15 +919,19 @@ function ArtifactShell({
               version={n}
               explicitVersion={v !== undefined}
               chromeless={chromeless}
+              colState={colState}
               authed={authed}
+              anonymous={me.status === "anonymous"}
               readOnly={authed && me.me.auth?.readOnly === true}
               role={authed ? me.me.user.role : undefined}
+              hosted={authed && me.me.instance.hosted === true}
               plan={authed ? me.me.instance.plan : undefined}
               viewer={
                 authed
                   ? { email: me.me.user.email, name: me.me.user.name }
                   : null
               }
+              shown={shown}
               slot={shown ? slot : undefined}
               newer={shown && newer}
               gone={live.gone}

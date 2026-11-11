@@ -1,3 +1,7 @@
+import {
+  createExecutionContext,
+  waitOnExecutionContext,
+} from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   Client,
@@ -56,15 +60,72 @@ export async function connect(
   );
   const transport = new StreamableHTTPClientTransport(new URL(MCP_URL), {
     requestInit: { headers: { authorization: `Bearer ${token}` } },
-    fetch: (url, init) =>
-      callWorker(
-        new Request(String(url), init as RequestInit),
-        opts.env,
-        opts.props,
-      ),
+    fetch: async (url, init) => {
+      // The MCP response streams (SSE) and can return before the tool has
+      // run, so its waitUntil work is registered after the response exists.
+      // Keep the ctx and wait on it in settle(), once the tool call is done.
+      const ctx = createExecutionContext();
+      if (opts.props)
+        Object.defineProperty(ctx, "props", { value: opts.props });
+      contexts.get(client)?.push(ctx);
+      const r = await worker.fetch(
+        new Request(String(url), init as RequestInit) as never,
+        (opts.env ?? E()) as never,
+        ctx as never,
+      );
+      // As fetchAndWait does, for direct client calls. Waiting on a ctx again
+      // later is safe: it also awaits waitUntils registered after this wait.
+      await waitOnExecutionContext(ctx);
+      return r;
+    },
   });
+  contexts.set(client, []);
   await client.connect(transport);
+  await settle(client);
   return client;
+}
+
+// Per client: the ExecutionContexts of its requests. Never pruned until
+// close(); waiting on a ctx with no work left resolves at once.
+const contexts = new WeakMap<Client, ExecutionContext[]>();
+
+// One shared in-flight wait per ctx (waitOnExecutionContext takes the ctx's
+// promises out, so a second concurrent wait would return early). Only share a
+// wait that began after this settle did: an earlier one may have missed work
+// registered since.
+let seq = 0;
+const inflight = new WeakMap<
+  ExecutionContext,
+  { seq: number; p: Promise<void> }
+>();
+const waitCtx = (c: ExecutionContext, after: number): Promise<void> => {
+  const r = inflight.get(c);
+  if (r && r.seq > after) return r.p;
+  if (r) return r.p.then(() => waitCtx(c, after));
+  const e = { seq: ++seq, p: Promise.resolve() };
+  e.p = waitOnExecutionContext(c).finally(() => {
+    if (inflight.get(c) === e) inflight.delete(c);
+  });
+  inflight.set(c, e);
+  return e.p;
+};
+
+/**
+ * Awaits every waitUntil the client's requests started (including work those
+ * start). Never waits on a response body, so it cannot hang on an unread
+ * stream. Call after direct client calls; tool() does it for you.
+ */
+export async function settle(client: Client): Promise<void> {
+  const me = seq;
+  const list = contexts.get(client);
+  if (list) await Promise.all([...list].map((c) => waitCtx(c, me)));
+}
+
+/** settle(client), then client.close(): nothing is left running at teardown. */
+export async function close(client: Client): Promise<void> {
+  await settle(client);
+  await client.close();
+  contexts.delete(client);
 }
 
 export type ToolResult = {
@@ -78,10 +139,12 @@ export async function tool(
   name: string,
   args: Record<string, unknown>,
 ): Promise<ToolResult> {
-  return (await client.callTool({
+  const r = (await client.callTool({
     name,
     arguments: args,
   })) as unknown as ToolResult;
+  await settle(client);
+  return r;
 }
 
 export const textOf = (r: ToolResult) =>

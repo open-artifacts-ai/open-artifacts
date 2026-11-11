@@ -1,11 +1,13 @@
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { canonicalHome, daemonSocketPath } from "@oa/bus-adapter-claude-code";
 import {
   MIN_PROMPT_ID_VERSION,
   opencodeVersion,
   supportsPromptId,
 } from "@oa/bus-adapter-opencode";
+import { codexBinFile } from "@oa/bus-daemon";
 import { BUS_CMD, type StatusReply } from "@oa/bus-ipc";
+import { useBusCmd } from "../bus-cmd.ts";
 import {
   askDaemon,
   type Ctx,
@@ -23,8 +25,23 @@ import {
   type Harness,
   installAdapters,
   readAssets,
+  unshownNotes,
 } from "../steps/adapters.ts";
+import { readCodexVersion } from "../steps/codex.ts";
+import { hermesEnabled } from "../steps/hermes.ts";
+import { openclawVerify } from "../steps/openclaw.ts";
+import {
+  installOutputStyle,
+  outputStyleSource,
+} from "../steps/output-style.ts";
+import { installShim } from "../steps/path-shim.ts";
+import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
+import {
+  type HabitsMode,
+  habitsAfterInstall,
+  habitsCommand,
+} from "./habits.ts";
 import { LoginFailed, login } from "./login.ts";
 
 /** Transcript state 6: four attempts, waiting 2, 4 and 8 s between them. */
@@ -40,6 +57,10 @@ export type InstallOpts = {
   label?: string;
   /** Skip the launchd or systemd step: the user runs the daemon. */
   noService?: boolean;
+  /** --habits, --no-habits or --show-habits: only the always-on block, nothing else reruns. */
+  habits?: HabitsMode;
+  /** The result as one JSON line on stdout; the human lines go to stderr. */
+  json?: boolean;
 };
 
 const originOf = (hub: string) => {
@@ -159,12 +180,17 @@ export async function loginStep(
   }
 }
 
-async function harnessesStep(ctx: Ctx): Promise<boolean> {
+async function harnessesStep(
+  ctx: Ctx,
+  hub: string | undefined,
+): Promise<boolean> {
   const c = ctx.copy;
+  const hubOrigin = hub ? originOf(hub) : machineOrigin(ctx);
   const out = await installAdapters({
     home: ctx.userHome,
     busHome: ctx.home,
     env: ctx.env,
+    ...(hubOrigin ? { hub: hubOrigin } : {}),
     // The service runs this same copy.
     busBin: ctx.service.cli(),
     assets: readAssets(),
@@ -176,11 +202,82 @@ async function harnessesStep(ctx: Ctx): Promise<boolean> {
   else if (out.skipped.length === 0) say(ctx, c.noHarness());
   if (out.sharedPiFile) say(ctx, c.sharedPiFile());
   if (out.codexNoWake) say(ctx, c.codexNoWake());
+  if (out.hermesRestart) say(ctx, c.hermesRestart());
+  if (out.openclawRestart) say(ctx, c.openclawRestart());
+  if (out.openclawNix) say(ctx, c.openclawNix());
+  for (const n of unshownNotes(out.notes)) say(ctx, [n]);
   for (const s of out.skipped)
     say(ctx, await skippedLines(ctx, s.harness, s.reason));
   if (out.installed.includes("opencode"))
     say(ctx, out.opencodeRestarted ? c.restarted() : c.opencodeNotRunning());
+
+  // The skill goes next to the tools, fetched from the instance, never vendored.
+  // A fetch failure does not stop later steps: it is recorded and the run exits
+  // non-zero at the end, after the daemon (or whatever follows) has had its turn.
+  const codexVersion = out.installed.includes("codex")
+    ? await readCodexVersion({
+        configFile: codexBinFile(ctx.home),
+        exec: ctx.exec,
+        path: ctx.env.PATH,
+        app: ctx.codexApp,
+      })
+    : undefined;
+  const skill = await installSkill(
+    {
+      home: ctx.userHome,
+      env: ctx.env,
+      codexVersion,
+      fetchSkill: (url) => fetchSkillText(ctx.fetch, url),
+    },
+    hub ? originOf(hub) : machineOrigin(ctx),
+    out.installed,
+  );
+  for (const n of skill.notes) say(ctx, [n]);
+  if (skill.failedUrl) skillFailure.set(ctx, skill.failedUrl);
+  // The Claude Code output style: written, and turned on only when the person has no style chosen.
+  try {
+    const style = installOutputStyle(
+      {
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        text: outputStyleSource(),
+      },
+      out.installed,
+    );
+    for (const n of style.notes) say(ctx, [n]);
+    if (style.settings === "set" && style.written[0])
+      say(ctx, c.outputStyleOn(tilde(ctx, style.written[0])));
+    else if (style.settings === "kept" && style.first)
+      say(ctx, c.outputStyleKept(style.kept));
+  } catch (e) {
+    say(ctx, [
+      `Could not write the output style: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
+  // Written quietly: the harnesses line above is the user-visible outcome, and
+  // a run that writes nothing has nothing to say.
   return true;
+}
+
+/** A skill fetch that failed, reported once the remaining steps have run. */
+const skillFailure = new WeakMap<Ctx, string>();
+
+/** Prints the skill failure and its rerun line, when the harnesses step recorded one. */
+function reportSkillFailure(ctx: Ctx): boolean {
+  const url = skillFailure.get(ctx);
+  if (!url) return false;
+  sayErr(ctx, [
+    `Could not fetch the skill from ${url}.`,
+    `The bus tools are set up. Rerun ${ctx.busCmd} install to write the skill.`,
+  ]);
+  return true;
+}
+
+/** The approved machine's hub origin, or undefined when there is no machine. */
+function machineOrigin(ctx: Ctx): string | undefined {
+  const m = readMachine(ctx.home);
+  return m.state === "ok" ? originOf(m.hub) : undefined;
 }
 
 async function skippedLines(ctx: Ctx, h: Harness, reason: string) {
@@ -271,6 +368,7 @@ export function rosterBlock(
   return {
     lines: [
       c.rosterHeader(ns.namespace, rows.length - queued, queued),
+      ...(ns.source ? [c.namespaceSource(ns.source)] : []),
       ...shown.flatMap((r) => {
         const says = c.rosterSays(r, now);
         return [c.rosterRow(r), ...(says ? [says] : [])];
@@ -303,12 +401,15 @@ export function roster(ctx: Ctx, st: StatusReply): string[] {
   return ns ? rosters(ctx, [ns]) : [ctx.copy.noNamespace()];
 }
 
-export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
+export const installSteps = (
+  opts: InstallOpts,
+  bus: string = BUS_CMD,
+): Step<Ctx>[] => [
   {
     name: "login",
     label: "Machine approved",
     failed: "Machine not approved",
-    action: `Run ${BUS_CMD} to approve it.`,
+    action: `Run ${bus} to approve it.`,
     check: async (ctx) => {
       const m = readMachine(ctx.home);
       return m.state === "ok" && !m.revoked ? "done" : "todo";
@@ -319,27 +420,46 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
     name: "harnesses",
     label: "Harnesses configured",
     failed: "Harnesses not configured",
-    action: `Run ${BUS_CMD} to configure them.`,
-    check: async (ctx) =>
-      Object.values(
-        checkAdapters({
+    action: `Run ${bus} to configure them.`,
+    check: async (ctx) => {
+      const wiring = checkAdapters({
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        which: ctx.which,
+        codexApp: ctx.codexApp,
+        busBin: ctx.service.argv?.(),
+      });
+      if (Object.values(wiring).includes("missing")) return "todo";
+      // The plugin files can be right while Hermes has it disabled.
+      if (
+        wiring.hermes === "configured" &&
+        !(await hermesEnabled({
           home: ctx.userHome,
-          busHome: ctx.home,
           env: ctx.env,
-          which: ctx.which,
-          codexApp: ctx.codexApp,
-          busBin: ctx.service.argv?.(),
-        }),
-      ).includes("missing")
-        ? "todo"
-        : "done",
-    apply: harnessesStep,
+          exec: ctx.exec,
+        }))
+      )
+        return "todo";
+      // Likewise OpenClaw: installed and enabled, and its runtime shows the plugin loaded.
+      if (
+        wiring.openclaw === "configured" &&
+        (await openclawVerify({
+          home: ctx.userHome,
+          env: ctx.env,
+          exec: ctx.exec,
+        })) !== undefined
+      )
+        return "todo";
+      return "done";
+    },
+    apply: (ctx) => harnessesStep(ctx, opts.hub),
   },
   {
     name: "daemon",
     label: "Daemon answering",
     failed: "Daemon not answering",
-    action: `Run ${BUS_CMD} to start it.`,
+    action: `Run ${bus} to start it.`,
     check: async (ctx) => {
       try {
         await askDaemon(ctx, { timeoutMs: 1000 });
@@ -352,13 +472,43 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
   },
 ];
 
+/** #1626: `oa-bus` on PATH. Never fails the install: a note at most. */
+function reportShim(ctx: Ctx): void {
+  const argv = ctx.service.argv?.();
+  if (!argv || argv.length !== 2) return;
+  try {
+    const r = installShim({
+      userHome: ctx.userHome,
+      busHome: ctx.home,
+      platform: ctx.platform,
+      env: ctx.env,
+      argv,
+    });
+    if (r.kind === "installed") {
+      say(ctx, ctx.copy.shimInstalled(tilde(ctx, r.path)));
+      if (!r.onPath && r.hint)
+        say(ctx, ctx.copy.shimNotOnPath(tilde(ctx, dirname(r.path)), r.hint));
+    } else if (r.kind === "other-home")
+      say(ctx, ctx.copy.shimOtherHome(tilde(ctx, r.path), tilde(ctx, r.home)));
+    else if (r.kind === "foreign")
+      say(ctx, ctx.copy.shimForeign(tilde(ctx, r.path)));
+  } catch (e) {
+    say(ctx, [
+      `Could not add the oa-bus command: ${e instanceof Error ? e.message : String(e)}`,
+    ]);
+  }
+}
+
 export async function install(
   opts: InstallOpts & { check?: boolean },
-  ctx: Ctx,
+  realCtx: Ctx,
 ): Promise<number> {
+  if (opts.habits) return habitsCommand(opts.habits, realCtx);
+  const json = Boolean(opts.json && !opts.check);
+  const ctx: Ctx = json ? { ...realCtx, stdout: realCtx.stderr } : realCtx;
   const c = ctx.copy;
   say(ctx, c.header(ctx.version), "");
-  const steps = installSteps(opts);
+  const steps = installSteps(opts, ctx.busCmd);
   if (opts.check) {
     const results = await checkSteps(steps, ctx);
     for (const { step, state } of results) {
@@ -371,5 +521,27 @@ export async function install(
     path: join(ctx.home, "install.json"),
     now: ctx.now,
   });
-  return ok ? 0 : 1;
+  if (ok) {
+    reportShim(ctx);
+    // The shim now exists: what is printed from here on can name oa-bus.
+    useBusCmd(ctx);
+  }
+  const skillFailed = reportSkillFailure(ctx);
+  // The always-on habits come last, once everything else is done: a person is
+  // asked, an agent gets a question for its user. Nothing is written unasked.
+  const habits = ok ? await habitsAfterInstall(ctx, json) : undefined;
+  const code = ok && !skillFailed ? 0 : 1;
+  if (json)
+    realCtx.stdout.write(
+      `${JSON.stringify({
+        ok: code === 0,
+        habits: habits && {
+          state: habits.state,
+          files: habits.files,
+          plugins: habits.plugins,
+        },
+        question: habits?.question ?? null,
+      })}\n`,
+    );
+  return code;
 }

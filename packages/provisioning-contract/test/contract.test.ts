@@ -129,6 +129,74 @@ describe("slugs", () => {
     expect(slugError("billing")).toBe("slug_reserved");
   });
 
+  describe("issue #1011 look-alike and role names", () => {
+    it.each([
+      "admins",
+      "administrator",
+      "root",
+      "superuser",
+      "sysadmin",
+      "owner",
+      "team",
+      "staff",
+      "official",
+      "support",
+      "help",
+      "helpdesk",
+      "contact",
+      "security",
+      "abuse",
+      "trust",
+      "safety",
+      "legal",
+      "privacy",
+      "compliance",
+      "postmaster",
+      "hostmaster",
+      "webmaster",
+      "noreply",
+      "no-reply",
+      "info",
+      "smtp",
+      "imap",
+      "pop",
+      "mx",
+      "account",
+      "accounts",
+      "signin",
+      "sign-in",
+      "register",
+      "password",
+      "verify",
+      "oauth",
+      "id",
+      "identity",
+      "open-artifacts",
+      "openartifacts",
+      "artifacts",
+      "dashboard",
+      "console",
+      "cdn",
+      "assets",
+      "static",
+      "files",
+      "health",
+      "test",
+      "dev",
+      "internal",
+      "ns1",
+      "ns2",
+      "signup",
+      "status",
+      "admin",
+    ])("%s is reserved", (name) => {
+      expect(slugError(name)).toBe("slug_reserved");
+    });
+    it.each(["leo", "rl-a", "rl-b", "demo"])("%s stays valid", (name) => {
+      expect(slugError(name)).toBeNull();
+    });
+  });
+
   it("inputs take any short slug, so policy can say slug_* or confirm_mismatch", () => {
     const rid = "req_0123456789abcdef";
     for (const slug of ["admin", "Bad_Slug", "xn--abc"])
@@ -289,9 +357,16 @@ describe("shapes", () => {
     ).toBeTruthy();
   });
 
-  it("AuthSchema: google needs a domain", () => {
+  it("AuthSchema: google with no domains is owner and invites only", () => {
     expect(
       AuthSchema.safeParse({ providers: ["google"], domains: [] }).success,
+    ).toBe(true);
+    expect(
+      AuthSchema.safeParse({
+        providers: ["google"],
+        domains: [],
+        domainCodes: true,
+      }).success,
     ).toBe(false);
     expect(
       AuthSchema.safeParse({ providers: ["email"], domains: [] }).success,
@@ -491,5 +566,21 @@ describe("bodyHash", () => {
     expect(await bodyHash("R8", IID, body)).not.toBe(h);
     expect(await bodyHash("R7", "iabcdefgh235", body)).not.toBe(h);
     expect(await bodyHash("R7", null, body)).not.toBe(h);
+  });
+});
+
+describe("InstallSummary billingTier and billingStatus (#2058)", () => {
+  const parse = (o: Record<string, unknown>) =>
+    InstallSummarySchema.parse({ ...fixtureSummary(), ...o });
+  it("are optional, nullable, and any billing tier and status", () => {
+    for (const billingTier of [undefined, null, "solo", "free", "team"])
+      expect(parse({ billingTier }).billingTier).toBe(billingTier);
+    for (const billingStatus of [undefined, null, "active", "lapsed"])
+      expect(parse({ billingStatus }).billingStatus).toBe(billingStatus);
+  });
+  it("an unknown value from version skew parses to null, never fails", () => {
+    const r = parse({ billingTier: "gold", billingStatus: "frozen" });
+    expect(r.billingTier).toBeNull();
+    expect(r.billingStatus).toBeNull();
   });
 });

@@ -16,7 +16,7 @@ import {
   ToggleGroupItem,
 } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { ApiClientError, api } from "../api/client";
 import {
   qk,
@@ -25,6 +25,7 @@ import {
   useRevokeToken,
   useTokens,
 } from "../api/queries";
+import { useFrozen } from "../auth/permissions";
 import { useMe } from "../auth/useMe";
 import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
@@ -45,8 +46,10 @@ import {
   errorText,
   GAP,
   muted,
+  ReadOnlyNote,
   SettingsCard,
   STACK,
+  WriteLock,
 } from "./ui";
 
 const when = (iso: string) => relativeTime(iso) || "Unknown";
@@ -61,6 +64,7 @@ function SnippetTabs({
   mcpUrl: string;
   variant: "oauth" | "token";
 }) {
+  const frozen = useFrozen();
   const all = snippets(mcpUrl, { tokenFile: tokenFile() });
   const list = all
     .filter((s) => s.variant === "oauth")
@@ -75,34 +79,24 @@ function SnippetTabs({
     list.findIndex((s) => s.agent === picked),
     0,
   );
-  const listRef = useRef<HTMLDivElement>(null);
   return (
     <Tabs
       value={String(current)}
-      onValueChange={(v) => {
-        setPicked(list[Number(v)]?.agent);
-        // The strip scrolls sideways on phones; keep the picked tab in view
-        // (clicks and arrow keys alike).
-        listRef.current?.children[Number(v)]?.scrollIntoView?.({
-          block: "nearest",
-          inline: "nearest",
-        });
-      }}
+      onValueChange={(v) => setPicked(list[Number(v)]?.agent)}
       className={`min-w-0 ${GAP}`}
     >
-      {/* The strip scrolls, so it clips anything outside it: the hairline is
-          an inset shadow, the underline sits at the bottom edge, and the
-          focus ring is inset. */}
+      {/* On phones the strip wraps onto a second row instead of scrolling, so
+          every client stays in view. The hairline is an inset shadow, the
+          underline sits at the bottom edge, and the focus ring is inset. */}
       <TabsList
-        ref={listRef}
         variant="line"
-        className="h-[34px] w-full justify-start gap-[var(--oa-space-4)] overflow-x-auto rounded-none p-0 shadow-[inset_0_-1px_0_var(--color-border)] [scrollbar-width:none]"
+        className="w-full flex-wrap justify-start gap-x-[var(--oa-space-4)] gap-y-[var(--oa-space-1)] rounded-none p-0 shadow-[inset_0_-1px_0_var(--color-border)] group-data-[orientation=horizontal]/tabs:h-auto"
       >
         {list.map(({ agent }, i) => (
           <TabsTrigger
             key={agent}
             value={String(i)}
-            className="h-full flex-none px-0 text-[length:var(--oa-text-sm)] group-data-[orientation=horizontal]/tabs:after:bottom-0 group-data-[orientation=horizontal]/tabs:after:h-[2px] focus-visible:outline-offset-[-2px]"
+            className="h-[34px] flex-none px-0 text-[length:var(--oa-text-sm)] group-data-[orientation=horizontal]/tabs:after:bottom-0 group-data-[orientation=horizontal]/tabs:after:h-[2px] focus-visible:outline-offset-[-2px]"
           >
             {agent}
           </TabsTrigger>
@@ -128,7 +122,8 @@ function SnippetTabs({
                 <Code
                   code={s.code}
                   label={s.language === "bash" ? "Copy command" : "Copy config"}
-                  wrap={variant === "token"}
+                  disabled={frozen}
+                  wrap
                 />
               )}
             </>
@@ -406,14 +401,16 @@ function Tokens() {
       title="Personal access tokens"
       action={
         !revokeOnly && (
-          <Button
-            variant="outline"
-            size="sm"
-            className="text-[length:var(--oa-text-sm)]"
-            onClick={() => setCreating(true)}
-          >
-            Create token
-          </Button>
+          <WriteLock>
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-[length:var(--oa-text-sm)]"
+              onClick={() => setCreating(true)}
+            >
+              Create token
+            </Button>
+          </WriteLock>
         )
       }
     >
@@ -435,6 +432,7 @@ function Tokens() {
               <span className={muted}>
                 Last used {t.lastUsedAt ? when(t.lastUsedAt) : "Never"}
               </span>
+              {/* Never locked: a capped caller may revoke (CAPPED_ALLOWED). */}
               <Button
                 className={ACTION}
                 variant="ghost"
@@ -471,8 +469,12 @@ export function Connections() {
   const state = useMe();
   const mcpUrl = state.status === "authed" ? state.me.instance.mcpUrl : null;
   const canConnect = useCanSetUpAgent();
+  // The plan lock (Design, #863): connecting an agent is refused, so its
+  // copy buttons are off. The URL and snippets stay readable.
+  const frozen = useFrozen();
   return (
     <div className={STACK}>
+      <ReadOnlyNote />
       <p className="m-0 text-[length:var(--oa-text-sm)] text-muted-foreground">
         {CONNECTIONS_INTRO}
       </p>
@@ -489,6 +491,7 @@ export function Connections() {
             <Button
               variant="outline"
               className="h-[30px] flex-none text-[length:var(--oa-text-sm)]"
+              disabled={frozen}
               onClick={() => copyText(mcpUrl, "MCP URL copied")}
             >
               Copy URL

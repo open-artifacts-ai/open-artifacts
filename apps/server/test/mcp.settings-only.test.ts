@@ -95,8 +95,13 @@ describe("publish_artifact with only settings (#681 D)", () => {
       message: "ignored",
     });
     const out = sc(r);
-    // publish's shape: id, the current version and the same view URL.
-    expect(out).toEqual({ id, version: 1, url: first.url });
+    // publish's shape: id, the current version, the same view URL and the stored title (#2015).
+    expect(out).toEqual({
+      id,
+      version: 1,
+      url: first.url,
+      title: `so ${tag}`,
+    });
     expect(r.content).toHaveLength(1);
     expect(textOf(r)).not.toContain("\n");
     expect(textOf(r)).toContain(first.url);

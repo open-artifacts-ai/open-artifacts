@@ -1,0 +1,426 @@
+{
+  "valid": [
+    {
+      "name": "welcome",
+      "frame": {
+        "v": 1,
+        "id": "hello",
+        "type": "welcome",
+        "agent_ref": "0d1c5a52-4f6c-4d0e-9a53-3f7e8d2b9a11",
+        "bus_name": "hermes-proj",
+        "namespace": "ns",
+        "global": false
+      }
+    },
+    {
+      "name": "receipt delivered",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "receipt",
+        "msg_id": "mmmmmmmmmmmmmmm1",
+        "state": "delivered"
+      }
+    },
+    {
+      "name": "receipt refused with reason, text and late notices",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "receipt",
+        "msg_id": "frame-9",
+        "state": "refused",
+        "reason": "unknown_agent",
+        "held": true,
+        "text": "Held for resend.",
+        "late": [
+          "Delivered to bob."
+        ]
+      }
+    },
+    {
+      "name": "receipt expired by a closed recipient",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "receipt",
+        "msg_id": "mmmmmmmmmmmmmmm1",
+        "state": "expired",
+        "reason": "recipient_closed"
+      }
+    },
+    {
+      "name": "roster",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "roster",
+        "agents": [
+          {
+            "name": "pi-agent",
+            "namespace": "ns",
+            "kind": "pi",
+            "live": true,
+            "global": false
+          },
+          {
+            "name": "away-one",
+            "namespace": "ns",
+            "kind": "claude-code",
+            "live": true,
+            "global": false,
+            "state": "away",
+            "since": "2026-11-05T10:00:00.000Z",
+            "machine_label": "laptop",
+            "status": "working",
+            "status_label": "building",
+            "status_at": "2026-11-05T10:01:00.000Z"
+          },
+          {
+            "name": "newer",
+            "namespace": "ns",
+            "kind": "a-future-kind",
+            "live": false,
+            "global": false,
+            "state": "queued"
+          }
+        ]
+      }
+    },
+    {
+      "name": "empty roster",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "roster",
+        "agents": []
+      }
+    },
+    {
+      "name": "agent",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "agent",
+        "agent": {
+          "name": "pi-agent",
+          "namespace": "ns",
+          "kind": "pi",
+          "live": true,
+          "global": false
+        }
+      }
+    },
+    {
+      "name": "agent null",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "agent",
+        "agent": null
+      }
+    },
+    {
+      "name": "body",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "body",
+        "msg_id": "mmmmmmmmmmmmmmm1",
+        "body": "the whole body"
+      }
+    },
+    {
+      "name": "deliver with a body",
+      "frame": {
+        "v": 1,
+        "id": "deliver-mmmmmmmmmmmmmmm1",
+        "type": "deliver",
+        "msg_id": "mmmmmmmmmmmmmmm1",
+        "from_name": "peer",
+        "namespace": "ns",
+        "body": "hi"
+      }
+    },
+    {
+      "name": "deliver with an oversized notice",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "deliver",
+        "msg_id": "mmmmmmmmmmmmmmm1",
+        "from_name": "peer",
+        "namespace": "ns",
+        "notice": {
+          "size": 2000000,
+          "msg_id": "mmmmmmmmmmmmmmm1"
+        }
+      }
+    },
+    {
+      "name": "notice",
+      "frame": {
+        "v": 1,
+        "id": "0",
+        "type": "notice",
+        "text": "Your message expired.",
+        "msg_id": "mmmmmmmmmmmmmmm1"
+      }
+    },
+    {
+      "name": "error",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "error",
+        "code": "bad_frame",
+        "message": "Unreadable frame"
+      }
+    },
+    {
+      "name": "status_set",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "status_set"
+      }
+    },
+    {
+      "name": "status_set with an earlier refusal",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "status_set",
+        "earlier": {
+          "code": "rate_limited",
+          "message": "Too often."
+        }
+      }
+    },
+    {
+      "name": "followed",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "followed",
+        "artifact_id": "abc",
+        "url": "https://x.test/a/abc",
+        "followed_at": "2026-11-09T10:00:00.000Z"
+      }
+    },
+    {
+      "name": "unfollowed",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "unfollowed",
+        "removed": true
+      }
+    },
+    {
+      "name": "link_proofed",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proofed",
+        "bound": true
+      }
+    },
+    {
+      "name": "follows",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "follows",
+        "follows": [
+          {
+            "artifact_id": "abc",
+            "url": "https://x.test/a/abc",
+            "followed_at": "2026-11-09T10:00:00.000Z"
+          }
+        ]
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "link_proofed with no bound",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proofed"
+      }
+    },
+    {
+      "name": "link_proofed with a string bound",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "link_proofed",
+        "bound": "yes"
+      }
+    },
+    {
+      "name": "deliver with both body and notice",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "deliver",
+        "msg_id": "mmmmmmmmmmmmmmm1",
+        "from_name": "p",
+        "namespace": "ns",
+        "body": "x",
+        "notice": {
+          "size": 1,
+          "msg_id": "mmmmmmmmmmmmmmm1"
+        }
+      }
+    },
+    {
+      "name": "deliver with neither",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "deliver",
+        "msg_id": "mmmmmmmmmmmmmmm1",
+        "from_name": "p",
+        "namespace": "ns"
+      }
+    },
+    {
+      "name": "welcome without a bus_name",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "welcome",
+        "agent_ref": "0d1c5a52-4f6c-4d0e-9a53-3f7e8d2b9a11",
+        "namespace": "ns",
+        "global": false
+      }
+    },
+    {
+      "name": "receipt with an unknown state",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "receipt",
+        "msg_id": "mmmmmmmmmmmmmmm1",
+        "state": "lost"
+      }
+    },
+    {
+      "name": "receipt with an unknown reason",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "receipt",
+        "msg_id": "mmmmmmmmmmmmmmm1",
+        "state": "refused",
+        "reason": "rude"
+      }
+    },
+    {
+      "name": "roster agent with a bad kind token",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "roster",
+        "agents": [
+          {
+            "name": "pi-agent",
+            "namespace": "ns",
+            "kind": "Bad Kind",
+            "live": true,
+            "global": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "roster agent without live",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "roster",
+        "agents": [
+          {
+            "name": "a",
+            "namespace": "ns",
+            "kind": "pi",
+            "global": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "notice with empty text",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "notice",
+        "text": ""
+      }
+    },
+    {
+      "name": "error without a code",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "error",
+        "message": "m"
+      }
+    },
+    {
+      "name": "agent that is not an object",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "agent",
+        "agent": "bob"
+      }
+    },
+    {
+      "name": "followed with no url",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "followed",
+        "artifact_id": "abc",
+        "followed_at": "x"
+      }
+    },
+    {
+      "name": "unfollowed with a string",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "unfollowed",
+        "removed": "yes"
+      }
+    },
+    {
+      "name": "version 0",
+      "frame": {
+        "v": 0,
+        "id": "1",
+        "type": "status_set"
+      }
+    },
+    {
+      "name": "id too long",
+      "frame": {
+        "v": 1,
+        "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "type": "status_set"
+      }
+    },
+    {
+      "name": "unknown type",
+      "frame": {
+        "v": 1,
+        "id": "1",
+        "type": "weird"
+      }
+    }
+  ]
+}

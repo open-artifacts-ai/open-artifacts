@@ -370,3 +370,28 @@ describe("connected: where to manage this machine (suite step 1)", () => {
     for (const l of lines) expect([...l].length).toBeLessThanOrEqual(80);
   });
 });
+
+describe("OpenClaw lines", () => {
+  it("say the restart, Nix, no-CLI and DM-scope things in plain words", () => {
+    const text = (l: string[]) => l.join("\n");
+    expect(text(plain.openclawRestart())).toContain(
+      "Run openclaw gateway restart to load the plugin.",
+    );
+    expect(text(plain.openclawNix())).toContain(
+      "OpenClaw is in Nix mode, so oa-bus didn't change it.",
+    );
+    expect(text(plain.openclawNoCli())).toContain(
+      "Once openclaw is on PATH again, run openclaw plugins uninstall oa-bus.",
+    );
+    const note = plain.openclawDmNote();
+    expect(note).toHaveLength(4);
+    for (const l of [
+      ...note,
+      ...plain.openclawRestart(),
+      ...plain.openclawNix(),
+    ]) {
+      expect(l).not.toContain("—");
+      expect(l.length).toBeLessThanOrEqual(80);
+    }
+  });
+});

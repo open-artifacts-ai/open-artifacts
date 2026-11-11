@@ -89,6 +89,7 @@ export const R = {
   oauthClient: (grantId: string) => `/api/v1/oauth-clients/${seg(grantId)}`,
   /** GET -> BusMachines: the caller's own bus machines (#1291). Never a token. */
   busMachines: "/api/v1/bus/machines",
+  busPing: "/api/v1/bus/ping",
   /** DELETE -> 204: revoke one of the caller's machines (idempotent; another member's or unknown: 404). */
   busMachine: (id: string) => `/api/v1/bus/machines/${seg(id)}`,
   /** GET -> BusAgents: the caller's open bus agents (canConnect; else 404). Empty when the bus is off. */
@@ -110,6 +111,45 @@ export const R = {
   busRoles: "/api/v1/bus/roles",
   /** DELETE -> 204: removes the caller's role (idempotent: unknown is 204 too). Same rules as PUT R.busRoles. */
   busRole: (id: string) => `/api/v1/bus/roles/${seg(id)}`,
+  /**
+   * GET -> BusLinks: the member's links between namespaces (#1567). PUT
+   * BusLinkPut -> { link: BusLink }: links two namespaces (idempotent: an
+   * existing link is returned); 400 bad_request (invalid or equal
+   * namespaces), 409 conflict with details `{ reason }`: `link_limit`
+   * (BUS_LINK_MAX) or `no_bus` (no machine has connected yet). mcp.connect;
+   * PUT and DELETE take an interactive cookie session (a PAT, OAuth grant or
+   * machine token gets 404), so no AI agent can link namespaces.
+   */
+  busLinks: "/api/v1/bus/links",
+  /**
+   * POST BusLinkPropose -> BusLinkProposed (#1567): the CLI's `oa-bus link`.
+   * Authenticated by a bus machine token only (never a session, PAT or OAuth
+   * grant). It records a proposal and links nothing: the member confirms on
+   * the returned one-time URL, in a browser. 409 { reason: rate_limited |
+   * proposal_limit | no_bus }.
+   */
+  busLinkProposals: "/api/v1/bus/links/proposals",
+  /** DELETE -> 204: removes the caller's link (idempotent: unknown is 204 too). Same rules as PUT R.busLinks. */
+  busLink: (id: string) => `/api/v1/bus/links/${seg(id)}`,
+  /**
+   * GET -> BusReachList: the member's role reach grants (#1346), with `live`
+   * false when the bus could not be asked. PUT BusReachPut -> `{ reach:
+   * BusReach }`: lets the role (namespace, name) reach one more namespace
+   * (idempotent: an existing grant is returned); 400 bad_request (invalid
+   * body, role name, or a target that is not canonical or is the role's own
+   * namespace), 409 conflict with details `{ reason }`: `role_unknown` (the
+   * role must exist first), `reach_limit` (BUS_REACH_MAX or
+   * BUS_REACH_PER_ROLE), or `no_bus` (no machine has connected yet); 403
+   * plan_read_only under a plan cap (new configuration, #1299). mcp.connect;
+   * PUT and DELETE take an interactive cookie session (a PAT, OAuth grant or
+   * machine token gets 404), so no AI agent grants reach: the member does,
+   * in a browser. GET and DELETE stay open under a plan cap.
+   */
+  busReach: "/api/v1/bus/reach",
+  /** DELETE -> 204: removes one reach grant (idempotent: unknown is 204 too). Same rules as PUT R.busReach, but open under a plan cap. */
+  busReachGrant: (id: string) => `/api/v1/bus/reach/${seg(id)}`,
+  /** POST (a bus machine token only) -> { confirmUrl, expiresAt }: an agent asks that its role reach namespaces (#1346). Grants nothing until the member confirms the URL in a browser. 409 details.reason: no_role, ambiguous, rate_limited, proposal_limit, no_bus. */
+  busReachProposals: "/api/v1/bus/reach/proposals",
   /** GET -> Settings; PATCH SettingsPatch -> Settings (hosted: spaceManagerMappings, settings.manage, audited settings.space_manager_mappings) */
   settings: "/api/v1/settings",
   /**
@@ -175,6 +215,11 @@ export const R = {
   /** PATCH { body } -> Comment; DELETE -> 204 (the root's deletes the thread). */
   comment: (id: string, thread: string, comment: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}`,
+  /** POST AnswerBody { optionId } -> Comment (#1535). Addressees only (403 forbidden); 409 conflict once the ask is closed (thread resolved); the answer may change before that; 400 bad_request for an unknown optionId. */
+  commentAnswer: (id: string, thread: string, comment: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/comments/${seg(comment)}/answer`,
+  /** GET -> ArtifactAgent[] (followers and publishers) (#1535). */
+  artifactAgents: (id: string) => `${A}/${seg(id)}/agents`,
   /** GET Upgrade: websocket; frames are DataChange */
   dataSubscribe: (id: string, col: string) =>
     `${A}/${seg(id)}/data-subscribe?collection=${seg(col)}`,
@@ -337,6 +382,14 @@ export const R = {
    * uncapped org owner only. Anyone else, and an unknown notice, 404.
    */
   noticeDismiss: (notice: NoticeId) => `/api/v1/notices/${seg(notice)}/dismiss`,
+  /**
+   * GET -> Onboarding; PUT OnboardingPatch -> Onboarding: the first-run
+   * "Get started" checklist's install-wide state, kept on the server. Both
+   * only for the uncapped org owner (anyone else 404). PUT { dismissed: true }
+   * hides the checklist for good; { completed: true } records that every step
+   * was done. Idempotent; neither can be undone through the API.
+   */
+  onboarding: "/api/v1/onboarding",
   /** GET ?cursor&limit -> Page<AuditEvent> (org owner, admin). */
   audit: "/api/v1/audit",
   /**

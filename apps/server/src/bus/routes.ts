@@ -15,7 +15,16 @@ import {
   newUserCode,
   normalizeUserCode,
 } from "@oa/bus-protocol";
-import { AUTH, BusRolePutSchema, type Member, R } from "@oa/shared";
+import {
+  AUTH,
+  BusLinkProposeSchema,
+  BusLinkPutSchema,
+  BusReachProposeSchema,
+  BusReachPutSchema,
+  BusRolePutSchema,
+  type Member,
+  R,
+} from "@oa/shared";
 import type { Context } from "hono";
 import { canConnect } from "../auth/agents.js";
 import { interactiveSession, requireUser } from "../auth/authz.js";
@@ -31,23 +40,34 @@ import {
   pageResponse,
   sessionUser,
 } from "../http/pages.js";
-import { logInfo } from "../log.js";
+import { logError, logInfo } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import {
   busOn,
+  busPing,
+  deleteBusLink,
+  deleteBusReach,
   deleteBusRole,
   listBusAgents,
+  listBusLinks,
   listBusMachines,
+  listBusReach,
   listBusRoles,
   MAX_ACTIVE_MACHINES,
+  proposeBusLink,
+  proposeBusReach,
+  putBusLink,
+  putBusReach,
   putBusRole,
   revokeBusMachine,
 } from "../services/bus.js";
+import { droppedToday } from "../services/follows.js";
 import { getSettings } from "../services/members.js";
 import { getUser } from "../services/users.js";
 import { hmacSign, sha256Hex } from "../util/crypto.js";
 import { renderApprove, renderApproved, renderEntry } from "./approve-page.js";
+import { busConfigCap, busConfigRefusal } from "./cap.js";
 import {
   AUTHZ_AT_HEADER,
   busHubName,
@@ -73,6 +93,8 @@ export const RL_KEYS = {
   /** POST /bus/approve step=code (typing a code), per member and per IP. */
   code: "bus-code:u:",
   codeIp: "bus-code:ip:",
+  /** PUT and DELETE of roles and links (#1358), per signed-in member. */
+  write: "bus-write:u:",
 } as const;
 
 /** Outstanding (unexpired) device codes per install; a new code past it is 429. */
@@ -99,6 +121,7 @@ export const APPROVE_PATH = BUS_ROUTES.approve;
 
 const COUNTRY = /^[A-Z]{2}$/;
 // Controls, bidi and zero-width characters: they can disguise a name.
+// biome-ignore lint/complexity/useRegexLiterals: a literal would trip noControlCharactersInRegex; the string form is deliberate
 const UNSAFE = new RegExp(
   "[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u202a-\\u202e\\u2060-\\u2069\\ufeff]",
   "gu",
@@ -526,6 +549,10 @@ async function postApprove(c: Context<AppEnv>): Promise<Response> {
   }
   if (step !== "decide")
     return messagePage("Can't connect this machine", "Invalid form.", 400);
+  // #1299: approving a machine is new configuration; a plan cap refuses it.
+  const capped = busConfigRefusal(user);
+  if (capped)
+    return messagePage("Can't connect this machine", capped.message, 403);
   const code = codeOf(one("code") ?? undefined);
   if (
     code === null ||
@@ -662,10 +689,31 @@ export function mountBus(app: AppType): void {
     if (!(await revokeBusMachine(c.env, user.id, id))) throw notFound();
     return c.body(null, 204);
   });
+  // #1299: the hosted canary's probe. Reads the reserved hub, never the caller's.
+  app.get(R.busPing, async (c) => {
+    requireUser(c);
+    if (!(await busPing(c.env)))
+      throw new ApiError(
+        "storage_unavailable",
+        "Temporarily unavailable. Try again shortly.",
+        undefined,
+        { "retry-after": "5" },
+      );
+    return c.json({ ok: true });
+  });
   app.get(R.busAgents, async (c) => {
     const user = requireUser(c);
     if (!canConnect(user)) throw notFound();
-    return c.json(await listBusAgents(c.env, user.id));
+    // The caller's own dropped-notice count for today rides along (#1317): one D1 read, no hub call.
+    const [view, droppedNotices] = await Promise.all([
+      listBusAgents(c.env, user.id),
+      // Best effort: a D1 failure here never fails the Agents list.
+      droppedToday(c.env, user.id).catch((e) => {
+        logError("bus_dropped_count_failed", e);
+        return 0;
+      }),
+    ]);
+    return c.json({ ...view, droppedNotices });
   });
 
   // #1296 role addresses. The gate allows mcp.connect; a write also takes a
@@ -680,6 +728,8 @@ export function mountBus(app: AppType): void {
   });
   app.put(R.busRoles, async (c) => {
     const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
     const body = await jsonBody(c, BusRolePutSchema);
     // The bus's own name rules (reserved names) on top of the wire shape.
     if (!BusNameSchema.safeParse(body.name).success)
@@ -696,11 +746,122 @@ export function mountBus(app: AppType): void {
   });
   app.delete(`${R.busRoles}/:id`, async (c) => {
     const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
     const id = c.req.param("id") ?? "";
     // Role ids are bus ids; anything beyond that shape is never one.
     if (!ROLE_ID.test(id))
       throw new ApiError("bad_request", "Invalid id", { field: "id" });
     await deleteBusRole(c.env, user.id, id);
+    return c.body(null, 204);
+  });
+
+  // #1567 project links: the same rules as role writes. An AI agent can
+  // never link namespaces (no MCP tool, no frame, no PAT or machine token).
+  app.get(R.busLinks, async (c) => {
+    const user = requireUser(c);
+    if (!canConnect(user)) throw notFound();
+    return c.json(await listBusLinks(c.env, user.id));
+  });
+  // #1567: the CLI's `oa-bus link`. A bus machine token (never a session, a
+  // PAT or an OAuth grant) may only record a proposal; the member links
+  // nothing until they confirm its one-time URL in a browser.
+  app.post(R.busLinkProposals, async (c) => {
+    if (!busOn(c.env)) throw notFound();
+    const token = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
+    if (!isMachineToken(token)) return unauthorized();
+    const m = await stmt(c.env.DB, MACHINE_BY_HASH)
+      .bind(await sha256Hex(token))
+      .first<{ id: string; userId: string; revokedAt: number | null }>();
+    if (!m || m.revokedAt !== null) return unauthorized();
+    const user = await getUser(c.env, m.userId);
+    if (!user || !canConnect(user)) return unauthorized();
+    // #1299: a plan-capped member's machine may not propose new links.
+    busConfigCap(user);
+    const body = await jsonBody(c, BusLinkProposeSchema);
+    return c.json(await proposeBusLink(c.env, user.id, m.id, body));
+  });
+  app.put(R.busLinks, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    const body = await jsonBody(c, BusLinkPutSchema);
+    if (body.a === body.b)
+      throw new ApiError("bad_request", "Invalid namespaces", {
+        field: "namespaces",
+      });
+    return c.json({
+      link: await putBusLink(c.env, user.id, body.a, body.b),
+    });
+  });
+  app.delete(`${R.busLinks}/:id`, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    const id = c.req.param("id") ?? "";
+    if (!ROLE_ID.test(id))
+      throw new ApiError("bad_request", "Invalid id", { field: "id" });
+    await deleteBusLink(c.env, user.id, id);
+    return c.body(null, 204);
+  });
+
+  // #1346 role reach: the same rules as role and link writes (an interactive
+  // member session; an AI agent never grants reach). A grant is the member's
+  // own direct add, so it needs no further confirmation. A new grant is new
+  // bus configuration, so a plan cap refuses it (#1299); GET and DELETE stay
+  // open ("Remove always works", #863).
+  app.get(R.busReach, async (c) => {
+    const user = requireUser(c);
+    if (!canConnect(user)) throw notFound();
+    return c.json(await listBusReach(c.env, user.id));
+  });
+  // #1346: the agent holding a role asks, with its machine's token (never a
+  // session, a PAT or an OAuth grant), that the role reach namespaces. It
+  // only records a proposal; the member confirms its one-time URL in a
+  // browser (bus/reach-confirm.ts). The role is the one the hub finds the
+  // agent holding, never one the caller names.
+  app.post(R.busReachProposals, async (c) => {
+    if (!busOn(c.env)) throw notFound();
+    const token = BEARER.exec(c.req.header("authorization") ?? "")?.[1] ?? "";
+    if (!isMachineToken(token)) return unauthorized();
+    const m = await stmt(c.env.DB, MACHINE_BY_HASH)
+      .bind(await sha256Hex(token))
+      .first<{ id: string; userId: string; revokedAt: number | null }>();
+    if (!m || m.revokedAt !== null) return unauthorized();
+    const user = await getUser(c.env, m.userId);
+    if (!user || !canConnect(user)) return unauthorized();
+    // #1299: a plan-capped member's machine may not propose new reach.
+    busConfigCap(user);
+    const body = await jsonBody(c, BusReachProposeSchema);
+    return c.json(await proposeBusReach(c.env, user.id, m.id, body));
+  });
+  app.put(R.busReach, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    busConfigCap(user);
+    const body = await jsonBody(c, BusReachPutSchema);
+    // The bus's own name rules (reserved names) on top of the wire shape.
+    if (!BusNameSchema.safeParse(body.role.name).success)
+      throw new ApiError("bad_request", "Invalid role", { field: "name" });
+    return c.json({
+      reach: await putBusReach(
+        c.env,
+        user.id,
+        body.role.namespace,
+        body.role.name,
+        body.namespace,
+      ),
+    });
+  });
+  app.delete(`${R.busReach}/:id`, async (c) => {
+    const user = roleWriter(c);
+    const rl = await limited(c.env, RL_KEYS.write + user.id);
+    if (rl) return rl;
+    const id = c.req.param("id") ?? "";
+    if (!ROLE_ID.test(id))
+      throw new ApiError("bad_request", "Invalid id", { field: "id" });
+    await deleteBusReach(c.env, user.id, id);
     return c.body(null, 204);
   });
 }

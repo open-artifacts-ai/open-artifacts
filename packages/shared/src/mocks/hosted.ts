@@ -96,7 +96,11 @@ import type {
   Share,
   ShareRecipient,
 } from "../schemas.js";
-import { MemberInviteSchema, SettingsPatchSchema } from "../schemas.js";
+import {
+  MemberInviteSchema,
+  OnboardingPatchSchema,
+  SettingsPatchSchema,
+} from "../schemas.js";
 
 /** The code the mock accepts (any address). */
 export const HOSTED_MOCK_CODE = "24681357";
@@ -115,6 +119,8 @@ export type HostedMockOptions = {
   tier?: Tier | null;
   /** Directory binding mode (default "google"). */
   directory?: DirectoryMode;
+  /** With directory "google": Business that hasn't connected Google Workspace yet (no binding, state never). */
+  unbound?: boolean;
   /** The failing state when unhealthy (default "backoff"). */
   unhealthyState?:
     | "backoff"
@@ -362,6 +368,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   const sharesDismissed = new Set<string>();
   /** guest_summary dismissed for the install. */
   let summaryDismissed = false;
+  // R.onboarding: install-wide, the uncapped owner only (anyone else 404).
+  const onboarding = { dismissed: false, completed: false };
   if (o.actAs === "admin") me.user.role = "admin";
   /**
    * Departed members' and guests' personal artifacts, counts only (admins
@@ -528,27 +536,27 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
   const unhealthySince = o.unhealthy
     ? new Date(Date.now() - (o.stale ? 8 * 24 : 2) * 3600_000).toISOString()
     : null;
+  // Off has no binding; neither has Business before its first connect.
+  const unbound = directoryMode === "off" || o.unbound === true;
   const sync: SyncStatus = {
     mode: directoryMode,
-    binding:
-      directoryMode === "off"
-        ? null
-        : {
-            provider: "google",
-            customerId: "C01mock",
-            domain: MOCK_DOMAIN,
-            connectedBy: ada.email,
-            connectedAt: T0,
-          },
-    healthy: directoryMode === "off" ? null : !o.unhealthy,
-    state:
-      directoryMode === "off"
-        ? "never"
-        : o.unhealthy
-          ? (o.unhealthyState ?? "backoff")
-          : "ok",
+    binding: unbound
+      ? null
+      : {
+          provider: "google",
+          customerId: "C01mock",
+          domain: MOCK_DOMAIN,
+          connectedBy: ada.email,
+          connectedAt: T0,
+        },
+    healthy: unbound ? null : !o.unhealthy,
+    state: unbound
+      ? "never"
+      : o.unhealthy
+        ? (o.unhealthyState ?? "backoff")
+        : "ok",
     unhealthySince,
-    lastSuccessAt: directoryMode === "off" ? null : (unhealthySince ?? iso()),
+    lastSuccessAt: unbound ? null : (unhealthySince ?? iso()),
     lastError: o.unhealthy
       ? { at: iso(), message: "Google returned 503" }
       : null,
@@ -562,7 +570,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     pendingCustomerChange: null,
     liftsPaused: [],
     held:
-      directoryMode === "google"
+      directoryMode === "google" && !unbound
         ? [
             {
               ...G.sales,
@@ -624,7 +632,13 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     if (o.selfHosted) return undefined;
     if (isAdmin()) return { ...billing };
     const { creatorsThisMonth: _, ...rest } = billing;
-    return { ...rest, status: null, trialEndsAt: null, graceUntil: null };
+    return {
+      ...rest,
+      status: null,
+      trialEndsAt: null,
+      ...("soloTrialEndsAt" in rest ? { soloTrialEndsAt: null } : {}),
+      graceUntil: null,
+    };
   };
   /** The server's plan refusal for an invite, or null. */
   const planRefusal = (): Response | null => {
@@ -634,16 +648,28 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         tier: billing.tier,
         reason: billing.reason ?? "lapsed",
       } satisfies PlanRefusalDetails);
-    if (billing.tier === "free" && billing.trialEndsAt !== null)
+    if (billing.tier === "solo" && billing.trialEndsAt !== null)
       return err("plan_required", "Inviting people needs a team plan", {
-        tier: "free",
+        tier: "solo",
         reason: "solo",
       } satisfies PlanRefusalDetails);
     return null;
   };
-  const billingUrl = (kind: "checkout" | "portal") =>
+  /**
+   * The server's planGate on a team route other than an invite (TEAM_ROUTES):
+   * a Solo instance is refused whether or not its trial ran.
+   */
+  const teamRefusal = (): Response | null => {
+    if (!o.selfHosted && billing.tier === "solo" && !billing.readOnly)
+      return err("plan_required", "This needs a team plan", {
+        tier: "solo",
+        reason: "solo",
+      } satisfies PlanRefusalDetails);
+    return planRefusal();
+  };
+  const billingUrl = (kind: "checkout" | "portal", suffix = "") =>
     HttpResponse.json({
-      url: `https://checkout.stripe.com/c/pay/cs_test_mock_${kind}`,
+      url: `https://checkout.stripe.com/c/pay/cs_test_mock_${kind}${suffix}`,
     });
   /** Snoozed now (#412): until is still ahead (server health.ts snoozedAt). */
   const snoozedNow = (h: HeldSweep) =>
@@ -1426,12 +1452,19 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       if (r.error) return r.error;
       if (o.billingDown)
         return err("billing_unavailable", "Billing is unavailable");
-      return billingUrl("checkout");
+      // Solo names its interval (the schema refuses a missing one).
+      return billingUrl(
+        "checkout",
+        r.data.tier === "solo" ? `_solo_${r.data.interval}` : "",
+      );
     }),
     http.post("*/api/v1/billing/portal", ({ request }) => {
       if (o.selfHosted || c.isAnon(request) || !isAdmin()) return notFound();
       if (o.billingDown)
         return err("billing_unavailable", "Billing is unavailable");
+      // The server's answer when billing has no Stripe customer.
+      if (billing.hasCustomer === false)
+        return err("no_billing_customer", "No billing account");
       return billingUrl("portal");
     }),
     http.post("*/api/v1/billing/usage", ({ request }) => {
@@ -1443,6 +1476,37 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         count: billing.creatorsThisMonth ?? 0,
       });
     }),
+    // -- solo_unpaid (view-only, the owner included): publishing, restoring,
+    // uploads, live-data and storage writes answer 403 plan_read_only. Reads,
+    // sharing and visibility keep working, as on the server.
+    // Data writes are refused for anonymous callers too; the rest need a
+    // sign-in first (the base handlers answer their 401).
+    ...(
+      [
+        ["post", "*/api/v1/artifacts", true],
+        ["post", "*/api/v1/artifacts/:id/versions", true],
+        ["post", "*/api/v1/artifacts/:id/versions/:v/restore", true],
+        ["post", "*/api/v1/uploads", true],
+        ["put", "*/api/v1/artifacts/:id/data", false],
+        ["put", "*/api/v1/artifacts/:id/data/*", false],
+        ["patch", "*/api/v1/artifacts/:id/data/*", false],
+        ["delete", "*/api/v1/artifacts/:id/data/*", false],
+        ["put", "*/api/v1/artifacts/:id/storage/*", true],
+        ["delete", "*/api/v1/artifacts/:id/storage/*", true],
+      ] as const
+    ).map(([method, path, signedIn]) =>
+      http[method](path, ({ request }) =>
+        !o.selfHosted &&
+        !(signedIn && c.isAnon(request)) &&
+        billing.reason === "solo_unpaid" &&
+        billing.readOnly
+          ? err("plan_read_only", "Publishing is paused", {
+              tier: billing.tier,
+              reason: "solo_unpaid",
+            } satisfies PlanRefusalDetails)
+          : undefined,
+      ),
+    ),
     http.post("*/api/v1/members", async ({ request }) => {
       if (!c.isAnon(request) && isAdmin()) {
         const refused = planRefusal();
@@ -2202,6 +2266,24 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
         return noContent();
       }),
     ),
+    http.get(
+      "*/api/v1/onboarding",
+      authed(() =>
+        me.user.role === "owner" && cap() === null
+          ? HttpResponse.json(onboarding)
+          : notFound(),
+      ),
+    ),
+    http.put(
+      "*/api/v1/onboarding",
+      authed(async ({ request }) => {
+        if (me.user.role !== "owner" || cap() !== null) return notFound();
+        const r = await c.body(request, OnboardingPatchSchema);
+        if (r.error) return r.error;
+        Object.assign(onboarding, r.data);
+        return HttpResponse.json(onboarding);
+      }),
+    ),
     // -- settings (hosted adds spaceManagerMappings; settings.manage = org owner, admin)
     http.get(
       "*/api/v1/settings",
@@ -2444,6 +2526,8 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       "*/api/v1/directory/held/:groupId/snooze",
       authed(async ({ params, request }) => {
         if (me.user.role !== "owner") return notFound();
+        const refused = teamRefusal();
+        if (refused) return refused;
         const off = syncOff();
         if (off) return off;
         // The body is optional: none means no reason.

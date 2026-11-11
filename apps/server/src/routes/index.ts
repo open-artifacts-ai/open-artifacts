@@ -1,5 +1,7 @@
 import type { Hono } from "hono";
+import { mountLinkConfirm } from "../bus/link-confirm.js";
 import { mountBusPage } from "../bus/page.js";
+import { mountReachConfirm } from "../bus/reach-confirm.js";
 import { mountRoleConfirm } from "../bus/role-confirm.js";
 import { mountBus } from "../bus/routes.js";
 import type { AppEnv } from "../http/middleware.js";
@@ -13,9 +15,12 @@ import { mountAudit } from "./audit.js";
 import { mountAuth } from "./auth.js";
 import { mountBilling } from "./billing.js";
 import { mountCodes } from "./codes.js";
+import { mountCommentUnsub } from "./comment-unsub.js";
+import { mountComments } from "./comments.js";
 import { mountDirectory } from "./directory.js";
 import { mountMe } from "./me.js";
 import { mountMembers } from "./members.js";
+import { mountOnboarding } from "./onboarding.js";
 import { mountSearch } from "./search.js";
 import { mountSettings } from "./settings.js";
 import { mountShareNotices } from "./share-notices.js";
@@ -33,10 +38,12 @@ export type AppType = Hono<AppEnv>;
 export function mountRoutes(app: AppType): void {
   mountAuth(app);
   mountCodes(app);
+  mountCommentUnsub(app);
   mountMe(app);
   mountShareNotices(app);
   mountMembers(app);
   mountSettings(app);
+  mountOnboarding(app);
   mountSpaces(app);
   mountDirectory(app);
   mountArtifacts(app);
@@ -44,6 +51,7 @@ export function mountRoutes(app: AppType): void {
   mountShares(app);
   mountSearch(app);
   mountRuntime(app);
+  mountComments(app);
   mountTokens(app);
   mountUsage(app);
   mountAudit(app);
@@ -52,6 +60,8 @@ export function mountRoutes(app: AppType): void {
   mountOAuth(app);
   mountBus(app);
   mountRoleConfirm(app);
+  mountLinkConfirm(app);
+  mountReachConfirm(app);
   mountBusPage(app, {
     busView,
     busMachine,
