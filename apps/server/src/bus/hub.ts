@@ -4015,6 +4015,161 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
+   * #2175: the notices still HELD for an agent removed from a comment thread
+   * lose the targets of `commentIds` on `artifactId`; a row left with none is
+   * deleted. Notices already sent (notice_acks) count as delivered and stay.
+   * Withdrawn targets are returned, never settled: the caller marks them.
+   * The agent is found by identity, else by namespace + name (live or away,
+   * or a live former name in grace). Worker only.
+   */
+  async withdrawHeld(a: {
+    namespace: string;
+    name: string;
+    identityId?: string;
+    artifactId: string;
+    commentIds: string[];
+  }): Promise<{
+    withdrawn: Array<{ commentId: string; kind: string; key: string }>;
+  }> {
+    const withdrawn: Array<{ commentId: string; kind: string; key: string }> =
+      [];
+    try {
+      if (
+        typeof a?.namespace !== "string" ||
+        typeof a.name !== "string" ||
+        typeof a.artifactId !== "string" ||
+        !Array.isArray(a.commentIds) ||
+        a.commentIds.length === 0
+      )
+        return { withdrawn };
+      const ids = new Set(
+        a.commentIds.filter((c): c is string => typeof c === "string"),
+      );
+      const sql = this.ctx.storage.sql;
+      const addrs = new Map<string, [string, string]>();
+      const add = (ns: string, name: string) =>
+        addrs.set(`${ns}\u0000${name.toLowerCase()}`, [ns, name.toLowerCase()]);
+      if (typeof a.identityId === "string" && a.identityId.length > 0) {
+        for (const r of all<{ namespace: string; name: string }>(
+          sql,
+          "select namespace, name from agents where org_id = ? and identity_id = ?",
+          OWNER_ORG_ID,
+          a.identityId,
+        ))
+          add(r.namespace, r.name);
+      } else {
+        const lname = a.name.toLowerCase();
+        for (const r of all<{ namespace: string; name: string }>(
+          sql,
+          "select namespace, name from agents where org_id = ? and namespace = ? and lower(name) = ? and live in (0, 1)",
+          OWNER_ORG_ID,
+          a.namespace,
+          lname,
+        ))
+          add(r.namespace, r.name);
+        for (const r of liveFormer(
+          sql,
+          lname,
+          this.#now(),
+          { ns: a.namespace },
+          2,
+        ))
+          add(r.namespace, r.name);
+      }
+      type Held = {
+        toNs: string;
+        toLname: string;
+        ckey: string;
+        ack: string | null;
+        foldN: number;
+        foldRef: string | null;
+        foldAcks: string | null;
+      };
+      const parse = (s: string | null): AckTarget | null => {
+        if (!s) return null;
+        try {
+          const t = JSON.parse(s) as AckTarget;
+          return typeof t?.a === "string" && typeof t.c === "string" ? t : null;
+        } catch {
+          return null;
+        }
+      };
+      const hit = (s: string | null) => {
+        const t = parse(s);
+        return t !== null && t.a === a.artifactId && ids.has(t.c) ? t : null;
+      };
+      let rowsTouched = 0;
+      this.ctx.storage.transactionSync(() => {
+        for (const [ns, lname] of addrs.values()) {
+          const held = all<Held>(
+            sql,
+            "select to_ns as toNs, to_lname as toLname, ckey, ack, fold_n as foldN, fold_ref as foldRef, fold_acks as foldAcks from notices where to_ns = ? and to_lname = ?",
+            ns,
+            lname,
+          );
+          for (const r of held) {
+            const folds = parseAcks(r.foldAcks);
+            const keptFolds: string[] = [];
+            let removedFolds = 0;
+            for (const f of folds) {
+              const t = hit(f);
+              if (t) {
+                withdrawn.push({ commentId: t.c, kind: t.k, key: t.key });
+                removedFolds++;
+              } else keptFolds.push(f);
+            }
+            const own = hit(r.ack);
+            if (own)
+              withdrawn.push({ commentId: own.c, kind: own.k, key: own.key });
+            if (!own && removedFolds === 0) continue;
+            rowsTouched++;
+            let foldN = Math.max(0, r.foldN - removedFolds);
+            let ack = r.ack;
+            let text: string | null = null;
+            if (own) {
+              const next = keptFolds.pop();
+              if (next === undefined) {
+                sql.exec(
+                  "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+                  r.toNs,
+                  r.toLname,
+                  r.ckey,
+                );
+                continue;
+              }
+              ack = next;
+              foldN = Math.max(0, foldN - 1);
+              // The promoted comment's text is not stored; a neutral line
+              // stands in rather than text about a removed comment.
+              text = `New comment on artifact ${parse(next)?.a ?? a.artifactId}. Read it with list_comments.`;
+            }
+            sql.exec(
+              `update notices set ack = ?, fold_n = ?, fold_ref = ?, fold_acks = ?${text === null ? "" : ", text = ?"}
+               where to_ns = ? and to_lname = ? and ckey = ?`,
+              ack,
+              foldN,
+              foldN > 0 ? r.foldRef : null,
+              keptFolds.length > 0 ? JSON.stringify(keptFolds) : null,
+              ...(text === null ? [] : [text]),
+              r.toNs,
+              r.toLname,
+              r.ckey,
+            );
+          }
+        }
+      });
+      logEvent("notice_withdrawn", {
+        rows: rowsTouched,
+        targets: withdrawn.length,
+      });
+    } catch (e) {
+      logError("bus_withdraw_held_failed", e);
+      return { withdrawn: [] };
+    }
+    return { withdrawn };
+  }
+
+  /**
    * #1822: the live session whose proof hashes to `hash`, or null. Reads this
    * member's own agents only (one hub per member), so a proof of another
    * member never resolves here. Worker only.
