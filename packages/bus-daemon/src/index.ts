@@ -105,9 +105,15 @@ import {
 import { remotesFile } from "./namespaces.ts";
 import { Outbox } from "./outbox.ts";
 import {
+  type AttachDeps,
+  cachedAttach,
+  defaultAttachDeps,
+} from "./presence/attached.ts";
+import {
   lstartEpoch,
   opencodePresenceDir,
   openSessions,
+  openState,
 } from "./presence/opencode.ts";
 import { proposeReach } from "./reach.ts";
 import { Resends } from "./resend.ts";
@@ -156,6 +162,7 @@ export * from "./namespace.ts";
 export * from "./namespaces.ts";
 export * from "./outbox.ts";
 export { readOwnFile } from "./own-file.ts";
+export * from "./presence/attached.ts";
 export * from "./presence/opencode.ts";
 export * from "./resend.ts";
 export * from "./routes.ts";
@@ -269,6 +276,8 @@ export type DaemonDeps = {
     presenceDir?: string;
     /** Replaces reading presence files: the open root session ids. */
     openSessions?: () => Set<string>;
+    /** OS reads tying a TUI to its service (#1950); default the real /proc, ps and lsof. */
+    attach?: AttachDeps;
     /** Runs `opencode api`; default execFile with a 20 s kill timeout. */
     spawn?: Spawn;
     procStart?: (pid: number) => string | null;
@@ -604,7 +613,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ttlMs: cl.syncMs ?? 2000,
     jitter: 0,
   });
-  const ocComm = oc.comm ?? commOf;
   const cx = deps.codex ?? {};
   /** One per daemon: it pins each Codex process's start and the call ids used. */
   /** Hellos admitted from a proxied call (#1856): link_proof only. */
@@ -619,12 +627,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let codexTicks = 0;
   /** Each OpenCode record's service start time, taken at hello: a reused pid is not that service. */
   const ocServiceStart = new Map<string, string | null>();
+  const ocComm = oc.comm ?? commOf;
   const ocServiceGone = (ref: string, pid: number) => {
     if (!ocRunning(pid)) return true;
     const comm = ocComm(pid);
     if (comm !== null && basename(comm) !== "opencode") return true;
+    // Gone needs positive evidence: a start time that cannot be read is unknown.
     const start = ocServiceStart.get(ref);
-    return start != null && ocStart(pid) !== start;
+    if (start == null) return false;
+    const now = ocStart(pid);
+    return now !== null && now !== start;
   };
   const presenceDir = oc.presenceDir ?? opencodePresenceDir();
   /** Read on every delivery, hello and tick: the TUI decides, not the adapter's connection. */
@@ -635,6 +647,26 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         isRunning: ocRunning,
         procStartEpoch: (pid, stamp) => lstartEpoch(ocStart(pid, stamp)),
       }));
+  const ocAttached = cachedAttach(
+    oc.attach ?? defaultAttachDeps,
+    deps.bindingNow,
+  );
+  /** A hello counts only sessions in TUIs attached to its own service (#1950). */
+  const openCodeStateFor = (service: number, ref: string): boolean | null =>
+    oc.openSessions
+      ? oc.openSessions().has(ref)
+      : openState(
+          presenceDir,
+          {
+            isRunning: ocRunning,
+            procStartEpoch: (pid, stamp) => lstartEpoch(ocStart(pid, stamp)),
+            accept: ocAttached(service),
+          },
+          ref,
+        );
+  /** Only a definite yes counts: unknown (a failed OS read) is refused. */
+  const openCodeSessionsFor = (service: number, ref: string): Set<string> =>
+    openCodeStateFor(service, ref) === true ? new Set([ref]) : new Set();
   const ocSpawn = oc.spawn ?? execSpawn(20_000);
   /** Unknown until read, just before the hub link starts: no delivery comes sooner. */
   let promptIdSupported = false;
@@ -1641,7 +1673,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             : attest(h, {
                 // The dir liveness reads: a session is attested where it is seen.
                 sessionsDir: claudeSessions.dir,
-                openSessions: openCodeSessions,
+                openSessions: openCodeSessionsFor,
                 ancestors: oc.ancestors,
                 comm: oc.comm,
                 codex: codexCheck,
@@ -1702,13 +1734,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           )
             prev.pid = pid;
         }
-        // `opencode service restart`: the session moves only once its old service is gone.
+        // The incumbent keeps a live record (#1950). It moves to another
+        // service only once its own service is gone (`opencode service
+        // restart`, a reused pid) or no longer has the session open in a TUI
+        // attached to it (reopened under another service). Otherwise a second
+        // service could take B's record and deliveries. Residual, accepted
+        // under #1856 option A: a same-user process under one service that
+        // claims first can block B through another service until then (DoS).
         if (
           prev?.live &&
           prev.kind === "opencode" &&
           hello.kind === "opencode" &&
           prev.pid !== pid &&
-          ocServiceGone(prev.ref, prev.pid)
+          (ocServiceGone(prev.ref, prev.pid) ||
+            openCodeStateFor(prev.pid, prev.ref) === false)
         ) {
           prev.pid = pid;
           ocServiceStart.set(prev.ref, ocStart(pid));
