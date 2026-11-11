@@ -261,10 +261,10 @@ describe("POST AUTH.codeRequest", () => {
 });
 
 describe("POST AUTH.codeVerify", () => {
-  async function start(e: Env, email: string, next = "/a/x") {
+  async function start(e: Env, email: string, next = "/a/x", ip?: string) {
     const m = mailer();
     const em = withMail(e, m);
-    const r = await request(em, email, { next });
+    const r = await request(em, email, { next, ...(ip ? { ip } : {}) });
     return {
       e: em,
       cookie: cookieOf(r, CODE_COOKIE),
@@ -520,10 +520,14 @@ describe("POST AUTH.codeVerify", () => {
           limit: async () => ({ success: true }),
         } as unknown as RateLimit,
       });
-    let s = await start(open(), guest);
+    // Each request from its own address: three from one (address, IP) in ten
+    // minutes would be refused, leaving no code to guess.
+    let n = 0;
+    const fresh = () => start(open(), guest, "/a/x", `198.51.100.${10 + n++}`);
+    let s = await fresh();
     let last: Response | undefined;
     for (let i = 0; i < 31; i++) {
-      if (i % 5 === 0) s = await start(open(), guest);
+      if (i % 5 === 0) s = await fresh();
       last = await verify(s.e, "00000000", s.cookie, { ip });
       // Every guess under the cap is a plain wrong code.
       if (i < 30) expect(last.status).toBe(401);
