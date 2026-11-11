@@ -547,7 +547,8 @@ describe("opencode through runDaemon", () => {
         // TUI 4321 is attached to both services (#1950), so the registry's
         // per-service policy is what these tests exercise.
         attach: {
-          exeOf: (pid) => (pid === 4321 || pid >= 8000 ? "/oc" : null),
+          exeOf: (pid) =>
+            (pid >= 4321 && pid <= 4322) || pid >= 8000 ? "/oc" : null,
           ppidOf: () => 1,
           // A service holds the accepted end of each TUI connection; the TUI the other end.
           established: (pid) =>
@@ -640,6 +641,31 @@ describe("opencode through runDaemon", () => {
     await expect(h.adapter("ses_root", oc(7002))).rejects.toThrow(/in use/);
     expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
     start = "t1"; // a reused pid: positive evidence
+    expect((await h.adapter("ses_root", oc(7002))).welcome).toMatchObject({
+      type: "welcome",
+    });
+    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8002);
+  });
+
+  it("an unparseable presence file keeps the incumbent; a vanished one lets the move happen (#1950)", async () => {
+    const dir = presenceDir();
+    const conn = new Set([8001, 8002]);
+    presence(dir, 4321, ["ses_root"]);
+    const alive = new Set([4321, 4322, 8001, 8002]);
+    const h = await attested(dir, alive, conn);
+    (await h.adapter("ses_root", oc(7001))).close();
+    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
+    // A second TUI opens the session, attached to service 8002 only.
+    presence(dir, 4322, ["ses_root"]);
+    conn.delete(8001);
+    const file = join(dir, "4321.json");
+    writeFileSync(file, "{torn");
+    // Unknown whether 4321 still holds it under 8001: no move.
+    await expect(h.adapter("ses_root", oc(7002))).rejects.toThrow(
+      /not open in a TUI attached|in use/,
+    );
+    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
+    rmSync(file); // 4321 really left
     expect((await h.adapter("ses_root", oc(7002))).welcome).toMatchObject({
       type: "welcome",
     });

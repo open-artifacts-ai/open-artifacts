@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -322,6 +322,37 @@ describe("open state with an unknown candidate (#1950)", () => {
     expect(openState(dir, deps({ 12: null, 13: false }), "ses_B")).toBeNull();
     expect(openState(dir, deps({ 12: false, 13: false }), "ses_B")).toBe(false);
     expect(openState(dir, deps({ 12: null, 13: true }), "ses_B")).toBe(true);
+  });
+});
+
+describe("open state with unreadable presence files (#1950)", () => {
+  const deps = {
+    isRunning: () => true,
+    procStartEpoch: () => null,
+    accept: () => true,
+  };
+  it("an unlistable directory is unknown", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ob-ul-"));
+    const file = join(dir, "f");
+    writeFileSync(file, "x");
+    expect(openState(file, deps, "ses_B")).toBeNull(); // ENOTDIR
+    expect(openState(join(dir, "missing"), deps, "ses_B")).toBeNull();
+  });
+  it("an unparseable row is unknown unless another row is attached; a vanished file is a plain no", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ob-ul-"));
+    writeFileSync(join(dir, "12.json"), "{torn");
+    expect(openState(dir, deps, "ses_B")).toBeNull();
+    writeFileSync(
+      join(dir, "13.json"),
+      JSON.stringify({ pid: 13, sessionIDs: ["ses_B"] }),
+    );
+    expect(openState(dir, deps, "ses_B")).toBe(true);
+    expect(
+      openState(dir, { ...deps, accept: (p) => p === 99 }, "ses_B"),
+    ).toBeNull();
+    rmSync(join(dir, "12.json"));
+    rmSync(join(dir, "13.json"));
+    expect(openState(dir, deps, "ses_B")).toBe(false);
   });
 });
 

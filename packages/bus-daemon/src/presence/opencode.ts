@@ -73,7 +73,7 @@ export function openState(
   try {
     names = readdirSync(dir);
   } catch {
-    return false;
+    return null; // cannot list the directory: unknown, not "no TUI"
   }
   let unknown = false;
   for (const fn of names) {
@@ -83,7 +83,12 @@ export function openState(
     try {
       mtime = statSync(join(dir, fn)).mtimeMs / 1000;
       data = JSON.parse(readFileSync(join(dir, fn), "utf8"));
-    } catch {
+    } catch (e) {
+      // The file is gone: its TUI really left. Anything else (a read error, or
+      // a parse error: the plugin writes via rename, so a torn file is
+      // unexpected) cannot be told, so the answer is unknown unless another
+      // row is definitely attached.
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") unknown = true;
       continue;
     }
     const pid = data?.pid;
