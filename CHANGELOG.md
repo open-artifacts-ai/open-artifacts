@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.151.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.150.0...v0.151.0) (2026-11-11)
+
+
+### Features
+
+* **bus:** a comment notice reads delivered only at the daemon's ack (notice_ack, [#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2037](https://github.com/open-artifacts-ai/open-artifacts/issues/2037)) ([649c081](https://github.com/open-artifacts-ai/open-artifacts/commit/649c081c27d7f487b8cdf6fcfa2197560d141f3c))
+
+
+### Bug Fixes
+
+* **follows:** the agent that published a version isn't told it changed ([#2036](https://github.com/open-artifacts-ai/open-artifacts/issues/2036)) ([#2038](https://github.com/open-artifacts-ai/open-artifacts/issues/2038)) ([8ee6d87](https://github.com/open-artifacts-ai/open-artifacts/commit/8ee6d87988e3d280d18c1a41ea0626b839673760))
+* **openclaw:** uninstall clears OpenClaw's entry when the folder is gone; no build race ([#1805](https://github.com/open-artifacts-ai/open-artifacts/issues/1805)) ([#2043](https://github.com/open-artifacts-ai/open-artifacts/issues/2043)) ([482f8a0](https://github.com/open-artifacts-ai/open-artifacts/commit/482f8a0aa27a7d0cc0ce3444b5d52b272e284261))
+
 ## [0.150.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.149.0...v0.150.0) (2026-11-11)
 
 
