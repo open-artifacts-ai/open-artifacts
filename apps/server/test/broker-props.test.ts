@@ -65,7 +65,7 @@ import {
   type FakeDirectory,
   fakeDirectory,
 } from "./fixtures/fake-directory.js";
-import { fetchAndWait, login } from "./helpers.js";
+import { errOf, fetchAndWait, login } from "./helpers.js";
 import { pinMiddayUtc } from "./midday.js";
 
 const MIN = 60_000;
@@ -328,6 +328,11 @@ async function alarms(now: number): Promise<"done" | "starved"> {
     }
     throw new Error("run never finished");
   });
+}
+/** A tick and one alarm, for a DO that is off: it never settles `due`, so alarms() would loop. */
+async function offPeriod(now: number) {
+  await cronTick(now);
+  await inDo((s) => engine(s).alarm(now));
 }
 /** A scheduler tick then the DO's alarms: one 2-min period, hosted. */
 async function period(now: number) {
@@ -1053,7 +1058,7 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
     vi.useRealTimers();
   });
 
-  it("a trial syncs (google handed over) though the provisioned TIER is Team", async () => {
+  it("a trial does not sync (Business only): nothing is minted or called, the binding stays", async () => {
     const t0 = pinMiddayUtc();
     // Connect while the install's provisioned features allow it (the request
     // carries no billing gate), then run on a Team-provisioned install whose
@@ -1070,15 +1075,15 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
     await tier({ tier: "trial", trialEndsAt: t0 + TRIAL_DAYS * DAY }, t0);
     modes.length = 0;
     const google0 = g.adminCalls.length;
-    expect(await period(t0 + FAST_MS)).toBe("done");
-    expect(modes.length).toBeGreaterThan(0);
-    expect(new Set(modes)).toEqual(new Set(["google"]));
-    expect(await kv("mode")).toBe("google");
-    expect(g.adminCalls.length).toBeGreaterThan(google0);
-    expect((await status()).state).toBe("ok");
+    const mints0 = mints();
+    await offPeriod(t0 + FAST_MS);
+    expect(modes.every((m) => m === "off")).toBe(true);
+    expect(mints()).toBe(mints0);
+    expect(g.adminCalls.length).toBe(google0);
+    expect((await status()).binding).not.toBeNull();
   });
 
-  it("Business to Team freezes group sync only: no group call, user lanes run, no lane failure, no alert; Business again resumes groups", async () => {
+  it("Business to Team stops sync: no Google call, no lane failure, no alert, binding kept; Business again resumes groups", async () => {
     const t0 = pinMiddayUtc();
     const m = mailer();
     e = hostedEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
@@ -1088,20 +1093,21 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
     const failed0 = await audits("directory.sync.failed");
     const stale0 = await audits("directory.stale");
     const sent0 = m.sent.length;
-    const members0 = g.adminCalls.filter((c) => c.includes("/members")).length;
+    const google0 = g.adminCalls.length;
+    const binding0 = (await status()).binding;
+    expect(binding0).not.toBeNull();
     await tier({ tier: "team" }, t0 + MIN);
-    // Every tick hands frozen over (never a pause); the user lanes keep
-    // running and the groups stay untouched.
+    // Team has no directory (mode off): the feed hands nothing over, so no
+    // Google call, mint, failure or alert, and the binding stays.
     const late = t0 + ALERT_AFTER_MS + NO_FEED_MS + 2 * MIN;
     for (const t of [t0 + FAST_MS, t0 + FAST_MS + NO_FEED_MS + MIN, late]) {
-      expect(await period(t)).toBe("done");
-      expect(await kv("mode")).toBe("frozen");
+      await offPeriod(t);
+      expect(await kv("mode")).toBe("off");
       expect(await kv("paused")).toBeFalsy();
     }
-    expect(g.adminCalls.filter((c) => c.includes("/members")).length).toBe(
-      members0,
-    );
+    expect(g.adminCalls.length).toBe(google0);
     const s = await status();
+    expect(s.binding).toEqual(binding0);
     expect(s.state).toBe("ok");
     expect(s.lastError ?? null).toBeNull();
     expect(await audits("directory.sync.failed")).toBe(failed0);
@@ -1127,7 +1133,7 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
       { ...hostedProps(), ...billingProps } as never,
     );
 
-  it("SyncStatus.mode is the mode the DO follows: Business to Team reports frozen from POST /directory/sync (#860)", async () => {
+  it("Business to Team: POST /directory/sync is refused plan_required and the DO is not kicked (#860)", async () => {
     const t0 = pinMiddayUtc();
     const m = mailer();
     e = hostedEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
@@ -1140,23 +1146,24 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
     expect(((await biz.json()) as SyncStatus).mode).toBe("google");
     await tier({ tier: "team" }, t0 + MIN);
     const r = await postBilled(R.directorySync);
-    expect(r.status).toBe(202);
-    expect(((await r.json()) as SyncStatus).mode).toBe("frozen");
-    expect(await kv("mode")).toBe("frozen");
-    expect((await status()).mode).toBe("frozen");
+    expect(r.status).toBe(403);
+    expect((await errOf(r)).code).toBe("plan_required");
+    expect(await kv("mode")).toBe("google");
+    expect((await status()).binding).not.toBeNull();
   });
 
-  it("a held confirm: on Team the route refuses (no status), and the DO's own confirm kick reports frozen (#860)", async () => {
+  it("a held confirm: on Team the route refuses plan_required, and the DO's own confirm kick still reports a handed frozen mode (#860)", async () => {
     const t0 = pinMiddayUtc();
     const m = mailer();
     e = hostedEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
     await tier({ tier: "business" }, t0);
     await connected(t0);
     await tier({ tier: "team" }, t0 + MIN);
-    // Group sync is stopped on Team: the confirm can't apply, so the route
-    // answers before the DO and no SyncStatus carries a mode.
+    // Team has no directory: the route answers before the DO and no
+    // SyncStatus carries a mode.
     const r = await postBilled(R.directoryHeldConfirm("g-none"));
-    expect(r.status).toBe(409);
+    expect(r.status).toBe(403);
+    expect((await errOf(r)).code).toBe("plan_required");
     // The kick a confirm ends with (and Sync now) hands over the tier's mode.
     const s = await inDo((st) =>
       engine(st).kick("confirm", t0 + 2 * MIN, "frozen", false),
@@ -1295,7 +1302,7 @@ describe("a frozen tier keeps its user lanes; only a plan lock with the gate pau
     );
   });
 
-  it("hosted Team with the gate and an unlocked team plan: the same", async () => {
+  it("hosted Team with the gate and an unlocked team plan: no directory, so no user lane either", async () => {
     const t0 = pinMiddayUtc();
     e = hostedEnv({ ...mailer().env, DIRECTORY_SYNC: fakeNs });
     const { u, uid } = await suspendedInGoogle(t0);
@@ -1305,8 +1312,9 @@ describe("a frozen tier keeps its user lanes; only a plan lock with the gate pau
     billingProps = b.props;
     await plan({}, t0);
     suspend(u);
-    expect(await period(t0 + FAST_MS)).toBe("done");
-    expect(await statusOf(uid)).toBe("suspended");
+    await offPeriod(t0 + FAST_MS);
+    expect(await statusOf(uid)).toBe("active");
+    expect(await kv("mode")).toBe("off");
   });
 
   it("with the gate and a locked plan: paused (nothing called); unlocked: resumes", async () => {
@@ -1317,7 +1325,7 @@ describe("a frozen tier keeps its user lanes; only a plan lock with the gate pau
     const b = fakeBilling();
     b.s.row = { ...b.s.row, tier: "free", version: 0 };
     billingProps = b.props;
-    await plan({ status: "lapsed" }, t0);
+    await plan({ tier: "business", status: "lapsed" }, t0);
     suspend(u);
     const google0 = g.adminCalls.length;
     await cronTick(t0 + FAST_MS);
@@ -1326,7 +1334,7 @@ describe("a frozen tier keeps its user lanes; only a plan lock with the gate pau
     expect(g.adminCalls.length).toBe(google0);
     expect(await kv("paused")).toBe(true);
     // Unlocked: the next tick hands no lock and the lanes run again.
-    await plan({}, t0 + MIN);
+    await plan({ tier: "business" }, t0 + MIN);
     expect(await period(t0 + FAST_MS + MIN)).toBe("done");
     expect(await kv("paused")).toBeFalsy();
     expect(await statusOf(uid)).toBe("suspended");

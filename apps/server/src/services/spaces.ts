@@ -52,6 +52,7 @@ import {
   orgCan,
 } from "../auth/policy.js";
 import { featuresOf } from "../billing/features.js";
+import { billingActive } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { spaces } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -114,6 +115,16 @@ export const directoryMode = (env: Env): DirectoryMode => {
   const m = directoryModeOf(featuresOf(env));
   if (m !== "off" || env.HOSTED === "1") return m;
   return directoryTransport(env).kind === "none" ? "off" : "google";
+};
+
+/**
+ * Synced rows are edited by hand: sync is frozen, or (hosted billing) the
+ * plan has no directory (Team after Business: mode off, rows and binding
+ * kept). Self-host with no directory is unchanged.
+ */
+const handEdits = (env: Env): boolean => {
+  const m = directoryMode(env);
+  return m === "frozen" || (m === "off" && billingActive(env));
 };
 
 // Frozen edits (P3 T15), each in the batch of the edit, before its writes:
@@ -1048,7 +1059,7 @@ export async function putSpaceMember(
     throw managedByOrgMapping(userId, every);
   if (role === every && !manual && !synced)
     return memberView(env, id, r.allMembersRole, userId);
-  const override = directoryMode(env) === "frozen" && synced !== null;
+  const override = handEdits(env) && synced !== null;
   const actor = userActor(u.id);
   const target = { type: "user", id: userId } as const;
   const a = admin ? 1 : 0;
@@ -1094,7 +1105,7 @@ export async function putSpaceMember(
               args: [id, userId, role, a],
             },
           }),
-          ...(directoryMode(env) === "frozen"
+          ...(handEdits(env)
             ? [
                 stmt(env.DB, RECORD_FROZEN_MANUAL).bind(
                   id,
@@ -1152,7 +1163,7 @@ export async function deleteSpaceMember(
   // remove, sync live or frozen.
   if (!manual && !synced && every) throw managedByOrgMapping(userId, every);
   const mode = directoryMode(env);
-  const both = mode === "frozen" && synced !== null;
+  const both = handEdits(env) && synced !== null;
   if (!manual && !both) {
     if (mode === "google")
       throw new ApiError(
@@ -1185,7 +1196,7 @@ export async function deleteSpaceMember(
     ),
     // Frozen: an explicit removal is final; the thaw only derives the synced
     // row again from fresh membership (P3 T15).
-    ...(mode === "frozen"
+    ...(handEdits(env)
       ? [
           stmt(env.DB, RECORD_FROZEN_DELETE).bind(
             id,

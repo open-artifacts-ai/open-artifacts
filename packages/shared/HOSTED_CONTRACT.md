@@ -46,10 +46,10 @@ empty = today's behaviour. `parseFeatures(raw)` (the only parser, in
 `Me.instance.features` reports every flag that is on.
 
 `TIER_FEATURES` (`Record<Tier, EnvFeatureFlag[]>`) is what each hosted tier
-sets: trial and business `spaces, sync_google, content_revocation`; team
-`spaces, sync_frozen, content_revocation`. Hosted adds `usage_off` on every
-tier. A downgrade only swaps `sync_google` for `sync_frozen`: it never
-widens access. `directoryModeOf(features)` gives `DirectoryMode`
+sets: business `spaces, sync_google, content_revocation`; team and trial
+(the Team trial) `spaces, content_revocation`: directory sync is Business only.
+Hosted adds `usage_off` on every tier. A downgrade only drops `sync_google`:
+it never widens access. `directoryModeOf(features)` gives `DirectoryMode`
 (`sync_google` → `google`, else `sync_frozen` → `frozen`, else `off`), as
 `Me.instance.directory.mode` reports it.
 
@@ -57,7 +57,7 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 |---|---|---|
 | `spaces` | FEATURES | Spaces and roles on; space routes 404 without it (authz identical either way) |
 | `sync_google` | FEATURES | Directory sync running |
-| `sync_frozen` | FEATURES | Team after trial: synced rows kept (`source: "sync"`), edited by hand (an edit becomes a manual override), user status still polled, no group reads; `lastSuccessAt`/`staleAt` keep the last run that read groups. Each frozen hand edit is recorded in D1 `frozen_edits` (server migration `0013_frozen_edits`). The first reconcile after return to Business, after its walks: an override's pre-freeze manual row comes back exactly (none: removed); an explicit frozen DELETE is final; a frozen manual add (no synced row) is kept; then the synced role is derived again from fresh membership and the narrowed are revoked. Audited by `sync`: `space.member.role` / `.add` / `.remove` with `{ thaw: true, role? }`, or `directory.sync` with `{ thaw: "removal_kept" }` / `{ thaw: "manual_kept", role }`. A live admin edit after sync returns, before that reconcile, supersedes the pending outcome (never undone). Synced-row changes at the thaw: `directory.sync` `{ thaw: "sync", from?, to? }` |
+| `sync_frozen` | FEATURES | Self-host only; no hosted tier sets it (Team has no directory): synced rows kept (`source: "sync"`), edited by hand (an edit becomes a manual override), user status still polled, no group reads; `lastSuccessAt`/`staleAt` keep the last run that read groups. Each frozen hand edit is recorded in D1 `frozen_edits` (server migration `0013_frozen_edits`). The first reconcile after return to Business, after its walks: an override's pre-freeze manual row comes back exactly (none: removed); an explicit frozen DELETE is final; a frozen manual add (no synced row) is kept; then the synced role is derived again from fresh membership and the narrowed are revoked. Audited by `sync`: `space.member.role` / `.add` / `.remove` with `{ thaw: true, role? }`, or `directory.sync` with `{ thaw: "removal_kept" }` / `{ thaw: "manual_kept", role }`. A live admin edit after sync returns, before that reconcile, supersedes the pending outcome (never undone). Synced-row changes at the thaw: `directory.sync` `{ thaw: "sync", from?, to? }` |
 | `guests_read_only` | **reported only** | Guests capped at viewer, no data writes. One source: `authConfig.guestsReadOnly`, true on every install, Access-only ones included (parity 2; not configurable; no `GUEST_ACCESS` var). Share rows keep their role; the cap lowers it at read time. FEATURES can't set it |
 | `content_revocation` | FEATURES | Accepted, no longer needed (parity 1): every install binds `/c/` content tokens minted for a signed-in user (REST content-url, MCP download URLs) to the user and their `session_epoch`, and the content host re-checks their status. A space's `publicLinks` is never part of the `/p/` check: off only refuses new public links |
 | `usage_off` | FEATURES | Hosted: the Usage page and `R.usage` are 404 |
@@ -369,12 +369,13 @@ Which tier applies (in this order):
    trial allowed) until the first good read, never unenforced.
 
 Features (`Me.instance.features` and every check) follow that tier at read
-time through `TIER_FEATURES` (the trial, solo and free report Business's; hosted
+time through `TIER_FEATURES` (the trial, solo and free report the trial's, Team's; hosted
 adds `usage_off`), not the provisioned `FEATURES`. `Me.instance.tier` is the
-same tier (null for solo and free). Business to Team swaps `sync_google` for
-`sync_frozen`: the binding and synced rows stay, sync stops. Every kick,
-feed and RPC hands DirectorySync the effective directory mode (frozen while
-locked too), so its alarm calls nothing and fails nothing (no
+same tier (null for solo and free). Business to Team drops `sync_google`
+(directory mode off): the binding and synced rows stay, sync stops, and the
+Directory API answers 403 `plan_required` ("Directory sync is on the Business plan."). Every kick,
+feed and RPC hands DirectorySync the effective directory mode (off on Team; frozen while
+locked), so its alarm calls nothing and fails nothing (no
 `transport_no_feed`, no session cap, no alert) until the tier brings
 `sync_google` back. No transition deletes anything.
 
@@ -384,8 +385,8 @@ locked too), so its alarm calls nothing and fails nothing (no
 suspended. Everyone gets `tier`, `readOnly`, `reason`. `status`,
 `trialEndsAt`, `soloTrialEndsAt`, `graceUntil` (ISO) and `creatorsThisMonth`
 go to the org owner and admins only, the plan cap included; everyone else gets
-null and no count. `trialEndsAt` is the Business trial's alone (a Solo row
-with one is a used Business trial); `soloTrialEndsAt` is the Solo 30-day
+null and no count. `trialEndsAt` is the Team trial's alone (a Solo row
+with one is a used Team trial); `soloTrialEndsAt` is the Solo 30-day
 trial's end, optional, absent when billing's answer predates it.
 `hasCustomer` (boolean, optional) says whether billing has a Stripe customer
 for the instance (a provisioned or comped plan has none, so no portal): owner
@@ -394,8 +395,8 @@ billing's answer predates it (unknown: the dashboard keeps Manage billing).
 
 | State | What it does | `reason` |
 |---|---|---|
-| solo or free, active, or past_due within `graceUntil` | one person and their agents ($1/month or $10/year after a 30-day no-card trial). Team features answer `plan_required`; the first invite passes while the Business trial never ran and starts the 30-day trial. Billing MUST report a Solo whose 30-day trial ended with no card as status `lapsed` | `solo` |
-| solo lapsed, or solo past_due past grace | **view-only** for everyone, the org owner included (lock mode `viewOnly`, `readOnly: true`): publishing (a new artifact or version, REST and MCP) and live-data writes (artifact data set, update, delete, anonymous visitors too), uploads for a new artifact, restoring a version, and runtime storage writes (PUT and DELETE) answer 403 `plan_read_only`; team features answer `plan_read_only` too, and the Business trial does not start. Every read, sharing and visibility, the owner's and admins' billing POSTs, revoking tokens and machines, and profile edits keep working. Non-owners carry the `plan` cap as under solo (so a member's other writes, comments included, are refused); the owner has no cap, and the lock binds them for publishing and live-data writes | `solo_unpaid` |
+| solo or free, active, or past_due within `graceUntil` | one person and their agents ($1/month or $10/year after a 30-day no-card trial). Team features answer `plan_required`; the first invite passes while the Team trial never ran and starts the 30-day trial. Billing MUST report a Solo whose 30-day trial ended with no card as status `lapsed` | `solo` |
+| solo lapsed, or solo past_due past grace | **view-only** for everyone, the org owner included (lock mode `viewOnly`, `readOnly: true`): publishing (a new artifact or version, REST and MCP) and live-data writes (artifact data set, update, delete, anonymous visitors too), uploads for a new artifact, restoring a version, and runtime storage writes (PUT and DELETE) answer 403 `plan_read_only`; team features answer `plan_read_only` too, and the Team trial does not start. Every read, sharing and visibility, the owner's and admins' billing POSTs, revoking tokens and machines, and profile edits keep working. Non-owners carry the `plan` cap as under solo (so a member's other writes, comments included, are refused); the owner has no cap, and the lock binds them for publishing and live-data writes | `solo_unpaid` |
 | trial (until `trialEndsAt`), team, business, past_due within `graceUntil` | today's behaviour | none |
 | trial ended, lapsed, past_due past grace, suspended | read-only (`readOnly: true`): team features answer `plan_read_only` | `trial_ended`, `lapsed`, `payment_failed`, `suspended` |
 | billing unreachable over 7 days (`PLAN_STALE_MS`) | read-only; never falls back upward | `billing_unreachable` |

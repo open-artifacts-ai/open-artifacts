@@ -8,6 +8,7 @@ import { readBinding } from "../directory/store.js";
 import { type KickReason, tokenFor } from "../directory/sync.js";
 import { TransportError } from "../directory/transport.js";
 import type { Env } from "../env.js";
+import { ApiError } from "../http/errors.js";
 import { logWarn } from "../log.js";
 import { directoryMode } from "./spaces.js";
 
@@ -122,7 +123,15 @@ export async function feedSync(env: Env): Promise<FeedOutcome> {
   const ns = env.DIRECTORY_SYNC;
   const client = directoryClient(env);
   const mode = syncModeFor(env);
-  if (!ns || !client || mode === "off") return "off";
+  if (ns && mode === "off") {
+    // A plan with no directory (Team after Business): tell a DO that has
+    // synced before to stop, or its alarm would keep the last handed mode
+    // (google) and fail its lanes once no token comes. The binding stays.
+    if (billingActive(env) && (await readBinding(env)).binding)
+      await ns.get(ns.idFromName(SYNC_DO_NAME)).wantsToken("off", false);
+    return "off";
+  }
+  if (!ns || !client) return "off";
   if (client.kind !== "broker") return "self";
   const kind = brokerTransportKind(env, "directory");
   // Hosted without the capability: nothing can feed the DO from here (its
@@ -188,6 +197,22 @@ export function syncModeFor(env: Env): DirectoryMode {
 export function syncPausedFor(env: Env): boolean {
   return (
     billingActive(env) && directoryMode(env) !== "off" && !!scopedPlan()?.lock
+  );
+}
+
+/**
+ * Hosted billing: the Directory API is a Business feature. Any other plan
+ * (mode off: Team, the invite trial, Solo) is refused 403 plan_required.
+ * Self-host (billing off) is never refused here. Nothing is deleted: the
+ * binding and the synced rows stay for a return to Business.
+ */
+export function requireDirectoryPlan(env: Env): void {
+  if (!billingActive(env) || directoryMode(env) !== "off") return;
+  const tier = scopedPlan()?.tier;
+  throw new ApiError(
+    "plan_required",
+    "Directory sync is on the Business plan.",
+    tier ? { tier } : undefined,
   );
 }
 

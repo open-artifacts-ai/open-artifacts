@@ -78,7 +78,7 @@ export type DirectoryMode = z.infer<typeof DirectoryModeSchema>;
 /**
  * Instance feature flags, as Me.instance.features reports them.
  * spaces: spaces and roles; sync_google: directory sync running;
- * sync_frozen: Team after trial, synced rows kept and edited by hand;
+ * sync_frozen: sync stopped, synced rows kept and edited by hand (self-host; no hosted tier sets it);
  * guests_read_only: guests capped at viewer (REPORTED ONLY, see below);
  * content_revocation: uid-bound /c/ content tokens re-check the user's
  * status (a space's publicLinks is never part of the /p/ check: off only
@@ -127,14 +127,15 @@ export const parseFeatures = (raw: string | undefined): FeatureFlag[] => [
 
 /**
  * The FEATURES each hosted tier sets (provisioning writes them; hosted adds
- * usage_off on every tier). The trial is Business. Team freezes sync: a
- * downgrade swaps sync_google for sync_frozen and keeps every other flag, so
- * it never widens access (spec 4.5).
+ * usage_off on every tier). Directory sync (sync_google) is Business only:
+ * the invite trial follows Team, and neither has a directory (mode off).
+ * A downgrade drops sync_google and keeps every other flag, so it never
+ * widens access (spec 4.5); nothing is deleted and the Google binding stays.
  */
 export const TIER_FEATURES: Readonly<Record<Tier, readonly EnvFeatureFlag[]>> =
   {
-    trial: ["spaces", "sync_google", "content_revocation"],
-    team: ["spaces", "sync_frozen", "content_revocation"],
+    trial: ["spaces", "content_revocation"],
+    team: ["spaces", "content_revocation"],
     business: ["spaces", "sync_google", "content_revocation"],
   };
 

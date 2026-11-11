@@ -224,14 +224,14 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
     return getMe(owner.cookie);
   };
 
-  it("the trial gets Business's features; Me's two tiers agree; provisioned FEATURES don't count", async () => {
+  it("the trial gets Team's features (no directory); Me's two tiers agree; provisioned FEATURES don't count", async () => {
     const me = await featuresAt("trial", 2);
     expect(
       new Set(me.instance.features?.filter((f) => f !== "guests_read_only")),
-    ).toEqual(new Set([...TIER_FEATURES.business, "usage_off"]));
+    ).toEqual(new Set([...TIER_FEATURES.team, "usage_off"]));
     expect(me.instance.tier).toBe("trial");
     expect(me.instance.billing?.tier).toBe("trial");
-    expect(me.instance.directory?.mode).toBe("google");
+    expect(me.instance.directory).toBeUndefined();
     // H provisions FEATURES "spaces,content_revocation" only.
     expect(H.FEATURES).toBe("spaces,content_revocation");
   });
@@ -252,9 +252,9 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
     const before = await counts();
 
     const team = await featuresAt("team", 2);
-    expect(team.instance.features).toContain("sync_frozen");
+    expect(team.instance.features).not.toContain("sync_frozen");
     expect(team.instance.features).not.toContain("sync_google");
-    expect(team.instance.directory?.mode).toBe("frozen");
+    expect(team.instance.directory).toBeUndefined();
     expect(team.instance.tier).toBe("team");
 
     const business = await featuresAt("business", 3);
@@ -270,7 +270,7 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
       readOnly: true,
       reason: "lapsed",
     });
-    expect(lapsed.instance.features).toContain("sync_frozen");
+    expect(lapsed.instance.features).not.toContain("sync_google");
     await cachePlan(row({ tier: "solo", trialEndsAt: 1, version: 6 }), mid);
     expect((await getMe(owner.cookie)).instance.tier).toBeNull();
     expect(await counts()).toEqual(before);
@@ -279,6 +279,26 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
         .bind(`test.kept.${tag}`)
         .first(),
     ).toEqual({ value: '{"kept":true}' });
+  });
+
+  it("the directory mode per tier and lock: only Business is google", async () => {
+    const mode = async (r: Partial<BillingRow>, v: number) => {
+      await cachePlan(row({ ...r, version: v }), mid);
+      return (await getMe(owner.cookie)).instance.directory?.mode ?? "off";
+    };
+    expect(await mode({ tier: "solo", trialEndsAt: 1 }, 10)).toBe("off");
+    expect(await mode({ tier: "solo", trialEndsAt: mid + DAY }, 11)).toBe(
+      "off",
+    );
+    expect(await mode({ tier: "trial", trialEndsAt: mid + DAY }, 12)).toBe(
+      "off",
+    );
+    expect(await mode({ tier: "team" }, 13)).toBe("off");
+    expect(await mode({ tier: "team", status: "lapsed" }, 14)).toBe("off");
+    expect(await mode({ tier: "business" }, 15)).toBe("google");
+    expect(await mode({ tier: "business", status: "lapsed" }, 16)).toBe(
+      "google",
+    );
   });
 
   it("the cron pauses directory sync only on a locked plan (Team stays unpaused)", async () => {
@@ -301,23 +321,23 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
     await cachePlan(b.s.row, mid);
     await tick();
     expect(paused()).toBe(0);
-    // Team is frozen (groups stop) but not paused: its user lanes keep
-    // running, so no plan_paused line.
+    // Team has no directory (mode off): nothing to pause, no plan_paused line.
     b.s.row = row({ tier: "team", version: 2 });
     await cachePlan(b.s.row, mid);
     const teamN = paused();
     await tick();
     expect(paused()).toBe(teamN);
-    // A lapse and free: paused, nothing disconnected.
-    for (const r of [
-      row({ tier: "team", status: "lapsed", version: 3 }),
-      row({ tier: "solo", trialEndsAt: 1, version: 4 }),
-    ]) {
+    // A Business lapse: paused, nothing disconnected. Free (Solo) has no
+    // directory, so nothing to pause.
+    for (const [r, pausedBy] of [
+      [row({ tier: "business", status: "lapsed", version: 3 }), 1],
+      [row({ tier: "solo", trialEndsAt: 1, version: 4 }), 0],
+    ] as const) {
       b.s.row = r;
       await cachePlan(r, mid);
       const n = paused();
       await tick();
-      expect(paused()).toBe(n + 1);
+      expect(paused()).toBe(n + pausedBy);
     }
   });
 });
@@ -359,8 +379,88 @@ describe("the gate's team routes", () => {
       expect(await code(await f())).toBe("plan_required");
   });
 
+  it("the Directory API refuses Team and Solo with plan_required; Business passes; nothing is deleted", async () => {
+    const calls = [
+      () => send(props, R.directory, owner.cookie),
+      () => send(props, R.directoryConnect, owner.cookie),
+      () => send(props, R.directoryGroups, owner.cookie),
+      () =>
+        send(props, R.directoryDisconnect, owner.cookie, { method: "POST" }),
+      () =>
+        send(props, R.directorySync, owner.cookie, {
+          method: "POST",
+          body: {},
+        }),
+    ];
+    await cachePlan(row({ tier: "business", version: 1 }), mid);
+    for (const f of calls)
+      expect(await code(await f())).not.toBe("plan_required");
+    await env.DB.prepare(
+      "insert into directory_state (key, value) values (?, ?) on conflict (key) do nothing",
+    )
+      .bind(`test.kept.refuse.${tag}`, '{"kept":true}')
+      .run();
+    const before = await counts();
+    let v = 2;
+    for (const r of [
+      row({ tier: "team" }),
+      row({ tier: "trial", trialEndsAt: mid + DAY }),
+      row({ tier: "solo", trialEndsAt: mid + DAY }),
+    ]) {
+      await cachePlan({ ...r, version: v++ }, mid);
+      for (const f of calls) {
+        const res = await f();
+        expect(res.status).toBe(403);
+        const e = await errOf(res);
+        expect(e.code).toBe("plan_required");
+        // Solo's lock gate may speak first on a write; the code is the same.
+        if (r.tier !== "solo")
+          expect(e.message).toBe("Directory sync is on the Business plan.");
+      }
+    }
+    expect(await counts()).toEqual(before);
+  });
+
+  it("Team: synced rows stay and are edited by hand; the binding is untouched", async () => {
+    await cachePlan(row({ tier: "business", version: 1 }), mid);
+    const sp = await send(props, R.spaces, owner.cookie, {
+      method: "POST",
+      body: { name: `Hand ${tag}` },
+    });
+    const space = (await sp.json()) as { id: string };
+    const m = await login(`t-synced-${uniq()}@a.com`, "member");
+    await env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'sync', 1)",
+    )
+      .bind(space.id, m.userId)
+      .run();
+    await cachePlan(row({ tier: "team", version: 2 }), mid);
+    const put = await send(
+      props,
+      R.spaceMember(space.id, m.userId),
+      owner.cookie,
+      {
+        method: "PUT",
+        body: { role: "viewer" },
+      },
+    );
+    expect(put.status).toBe(200);
+    const del = await send(
+      props,
+      R.spaceMember(space.id, m.userId),
+      owner.cookie,
+      {
+        method: "DELETE",
+      },
+    );
+    expect(del.status).toBe(204);
+  });
+
   it("cancelling a snooze is a removal: it passes the plan gate under a lock", async () => {
-    await cachePlan(row({ tier: "team", status: "lapsed", version: 1 }), mid);
+    await cachePlan(
+      row({ tier: "business", status: "lapsed", version: 1 }),
+      mid,
+    );
     const r = await send(props, R.directoryHeldSnooze("g1"), owner.cookie, {
       method: "DELETE",
     });

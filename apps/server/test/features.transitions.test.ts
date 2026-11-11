@@ -1,5 +1,8 @@
-// P3 T15: tier transitions. A downgrade (trial or Business to Team) swaps
-// sync_google for sync_frozen and must never widen access (spec 4.5);
+// P3 T15: tier transitions. A downgrade from Business drops sync_google and
+// must never widen access (spec 4.5). Hosted Team now has no directory (mode
+// off, Business only); these tests keep exercising the frozen machinery
+// (self-host's sync_frozen) as the model of "sync stopped, rows edited by
+// hand", and billing-tiers.test.ts covers Team itself;
 // frozen keeps polling user status; the first reconcile after sync returns
 // replaces every frozen edit with the synced role.
 import { runInDurableObject } from "cloudflare:test";
@@ -45,14 +48,17 @@ let base: Env;
 let owner: { cookie: string; userId: string };
 let adminSub: string;
 
-/** This test's env with the tier's FEATURES. */
+/** This test's env: Business's FEATURES, or the frozen-sync stand-in for Team. */
 const tierEnv = (t: Tier): Env =>
-  ({ ...base, FEATURES: TIER_FEATURES[t].join(",") }) as Env;
-/** Every downgrade the tiers allow (spec 4.5: the trial is Business). */
-const DOWNGRADES: [Tier, Tier][] = [
-  ["trial", "team"],
-  ["business", "team"],
-];
+  ({
+    ...base,
+    FEATURES:
+      t === "business"
+        ? TIER_FEATURES.business.join(",")
+        : [...TIER_FEATURES[t], "sync_frozen"].join(","),
+  }) as Env;
+/** The downgrade the tiers allow: Business to a plan without Google sync. */
+const DOWNGRADES: [Tier, Tier][] = [["business", "team"]];
 
 const stub = () => {
   const ns = env.DIRECTORY_SYNC;

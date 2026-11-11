@@ -139,9 +139,10 @@ async function run(
           })().catch((e) => logError("cron_task_failed", e)),
         );
       // Hosted billing: no directory sync while team features are locked
-      // (free, or read-only), nor on a tier that freezes it (Team:
-      // sync_frozen). feedSync hands DirectorySync that mode (syncModeFor:
-      // frozen), so its alarm stops too, and nothing is minted. Nothing is
+      // (read-only), nor on a plan without a directory (Team, the invite
+      // trial, Solo: Business only). feedSync hands DirectorySync that
+      // mode (syncModeFor: frozen, or off), so its alarm stops too, and
+      // nothing is minted. Nothing is
       // disconnected or deleted: the binding and the synced rows stay, and
       // sync resumes with the tier.
       const fed = await feedSync(env);

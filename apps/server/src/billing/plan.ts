@@ -254,11 +254,10 @@ export function planOfRaw(
 const HOSTED_FLAGS: readonly EnvFeatureFlag[] = ["usage_off"];
 
 /**
- * The feature flags for `plan`'s tier (TIER_FEATURES; the trial is
- * Business, and a solo or free instance reports the trial's features: its team
- * features are refused by the solo lock, so the paywall can show them). A
- * downgrade to Team swaps sync_google for sync_frozen: nothing is deleted
- * or disconnected. A lapse keeps the tier's features, read-only (the lock).
+ * The feature flags for `plan`'s tier (TIER_FEATURES; a solo or free
+ * instance reports the trial's features: its team features are refused by
+ * the solo lock, so the paywall can show them). Only Business has
+ * sync_google; a downgrade drops it: nothing is deleted or disconnected. A lapse keeps the tier's features, read-only (the lock).
  */
 export function planFeatures(plan: EffectivePlan): EnvFeatureFlag[] {
   const tier =
