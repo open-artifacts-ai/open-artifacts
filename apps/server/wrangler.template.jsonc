@@ -74,6 +74,7 @@
     "PLAN": "free",
     "PUBLIC_HOME": "",
     "DATA_DOC_BYTES": "",
+    "DOCS_ENABLED": "",
     "DATA_DAILY_WRITES": "",
     "EMBED_ORIGINS": "",
     "EMBED_ALLOW_SAME_SITE": "",

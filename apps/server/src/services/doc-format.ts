@@ -11,7 +11,7 @@
 import {
   type ArtifactPatch,
   DOC_ENTRY,
-  DOCS_UNAVAILABLE_MESSAGE,
+  DOCS_DISABLED_MESSAGE,
   type Format,
   type PublishInput,
 } from "@oa/shared";
@@ -90,6 +90,9 @@ export const notConvertible = () =>
     "Other artifacts never become docs. Leave id out to create a new doc from this Markdown, or publish this artifact in its own format.",
   );
 
-/** Creating a doc while the switch is off: 400 with the next step. */
-export const docsUnavailable = () =>
-  bad("format", "docs_unavailable", DOCS_UNAVAILABLE_MESSAGE);
+/** Creating a doc where DOCS_ENABLED is off: 400 docs_disabled. */
+export const docsDisabled = () =>
+  new ApiError("docs_disabled", DOCS_DISABLED_MESSAGE, {
+    path: "format",
+    reason: "docs_disabled",
+  });

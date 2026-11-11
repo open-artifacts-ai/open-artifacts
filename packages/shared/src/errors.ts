@@ -69,6 +69,8 @@ export const ERROR_CODES = [
   "revoke_not_closed",
   // Collaborative docs (#1100): a whole-content publish to a doc.
   "use_edit_doc",
+  // Collaborative docs (#1100): doc creation is off on this deployment.
+  "docs_disabled",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -181,6 +183,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   revoke_not_closed: 503,
   /** A whole-content publish (content, files or edits) to an existing doc (#1100): docs change through edit_doc, so a rewrite never erases people's edits. Nothing is published. */
   use_edit_doc: 400,
+  /** Publishing format "doc" where DOCS_ENABLED is not "1" (#1100). Nothing is published. */
+  docs_disabled: 400,
 };
 
 /**

@@ -1,12 +1,8 @@
 /**
- * The one switch for creating docs (#1100). Off: publishing format "doc" is
- * refused (DOCS_UNAVAILABLE_MESSAGE) and no tool, skill or doc advertises it.
- * The PR that ships edit_doc and the doc room flips it. No imports: the skill
- * and manifest generators load this file directly. `DOCS_ENABLED=1` in the
- * environment turns it on for one deployment (tests, staging) without the flip.
+ * The switch for creating docs (#1100): the env var DOCS_ENABLED, "1" = on,
+ * anything else or unset = off (off everywhere for now). Off: publishing
+ * format "doc" is refused with docs_disabled, and tools/list and the skill
+ * don't list it. No imports: the skill and manifest generators load this file.
  */
-export const DOC_CREATION = false;
-
-/** Whether this deployment creates docs. */
 export const docsOn = (env: { DOCS_ENABLED?: string }): boolean =>
-  DOC_CREATION || env.DOCS_ENABLED === "1";
+  env.DOCS_ENABLED === "1";

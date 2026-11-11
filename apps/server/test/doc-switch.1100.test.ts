@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import { SKILL_TEMPLATE } from "../src/mcp/skill.generated.js";
-import { DOC_CREATION } from "../src/services/doc-switch.js";
+import { docsOn } from "../src/services/doc-switch.js";
 import { api, errOf, login } from "./helpers.js";
 import { close, connect, textOf, tool } from "./mcp-helpers.js";
 
@@ -24,8 +24,11 @@ afterAll(async () => {
 });
 
 describe("doc creation switch (off)", () => {
-  it("is off by default", () => {
-    expect(DOC_CREATION).toBe(false);
+  it("only DOCS_ENABLED=1 turns it on", () => {
+    expect(docsOn({})).toBe(false);
+    expect(docsOn({ DOCS_ENABLED: "" })).toBe(false);
+    expect(docsOn({ DOCS_ENABLED: "true" })).toBe(false);
+    expect(docsOn({ DOCS_ENABLED: "1" })).toBe(true);
   });
 
   it("REST: format doc is refused with the next step, nothing created", async () => {
@@ -35,7 +38,8 @@ describe("doc creation switch (off)", () => {
     });
     expect(r.status).toBe(400);
     const e = await errOf(r);
-    expect(e.message).toMatch(/Docs aren't available yet/);
+    expect(e.code).toBe("docs_disabled");
+    expect(e.message).toMatch(/Workers Paid plan.*Solo is \$1 a month/);
   });
 
   it("MCP: format doc is refused and not advertised", async () => {
@@ -46,7 +50,7 @@ describe("doc creation switch (off)", () => {
       title: "d",
       format: "doc",
     });
-    expect(textOf(r)).toMatch(/Docs aren't available yet/);
+    expect(textOf(r)).toMatch(/Workers Paid plan/);
     expect(r.isError).toBe(true);
   });
 

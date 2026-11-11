@@ -74,7 +74,7 @@ import { audit, userActor } from "./audit.js";
 import {
   apiFormat,
   docPlanInput,
-  docsUnavailable,
+  docsDisabled,
   notConvertible,
   refuseDocSettings,
   useEditDoc,
@@ -211,7 +211,7 @@ export async function publish(
   // An edits publish plans from the current version, once it is known; a
   // doc (#1100) once it is known to be a create.
   const asDoc = input.format === "doc";
-  if (asDoc && !docsOn(env)) throw docsUnavailable();
+  if (asDoc && !docsOn(env)) throw docsDisabled();
   let plan: Plan | null = input.edits || asDoc ? null : planFiles(input);
   const db = env.DB;
   const now = Date.now();

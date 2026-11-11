@@ -31,8 +31,6 @@ import {
   UnshareInputSchema,
 } from "@oa/shared";
 
-import { DOC_CREATION } from "../services/doc-switch.ts";
-
 const INLINE = `${LIMITS.inlineBytes / 1024} KB`;
 /** A well-formed artifact id for the examples. */
 const ID = "7Hq2mXc9KpR4tWbZ";
@@ -40,9 +38,7 @@ const ID = "7Hq2mXc9KpR4tWbZ";
 export const TOOL_DEFS = [
   {
     name: "publish_artifact",
-    inputSchema: DOC_CREATION
-      ? PublishToolInputSchema
-      : PublishToolInputNoDocSchema,
+    inputSchema: PublishToolInputNoDocSchema,
     example: {
       title: "Q3 report",
       format: "markdown",
