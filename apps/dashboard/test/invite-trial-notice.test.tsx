@@ -1,4 +1,4 @@
-// #1836: the first invite on an instance whose Business trial never ran starts
+// #1836: the first invite on an instance whose Team trial never ran starts
 // that 30-day trial (the server's trialEligible). The invite dialog says so
 // with Design's approved copy (Self-serve screens v6, decision 2), and only
 // then: billing active, a Solo instance, trial never used, caller sees the
@@ -24,7 +24,7 @@ const SOLO: PlanView = {
   readOnly: false,
   reason: "solo",
 };
-const NOTICE = "This starts your 30-day trial of Business.";
+const NOTICE = "This starts your 30-day Team trial.";
 const START = "Add member and start trial";
 
 const pin = (iso: string) => {
@@ -46,7 +46,7 @@ const meOf = (billing: PlanView | undefined) =>
   ({ instance: { billing } }) as unknown as Me;
 
 describe("trialWouldStart", () => {
-  it("is true for a Solo instance whose Business trial never ran", () => {
+  it("is true for a Solo instance whose Team trial never ran", () => {
     expect(trialWouldStart(meOf(SOLO))).toBe(true);
     // A server from before Solo called this tier free.
     expect(trialWouldStart(meOf({ ...SOLO, tier: "free" }))).toBe(true);
@@ -54,7 +54,7 @@ describe("trialWouldStart", () => {
     expect(trialWouldStart(meOf({ ...SOLO, reason: undefined }))).toBe(true);
   });
 
-  it("is false once the Business trial ran, on any other tier or lock, or with no billing", () => {
+  it("is false once the Team trial ran, on any other tier or lock, or with no billing", () => {
     const at = "2026-10-01T00:00:00.000Z";
     expect(trialWouldStart(meOf({ ...SOLO, trialEndsAt: at }))).toBe(false);
     for (const tier of ["trial", "team", "business"] as const)
@@ -253,7 +253,7 @@ describe("the invite dialog", () => {
     expect(within(dialog).queryByRole("button", { name: START })).toBe(null);
   });
 
-  it("says nothing once the Business trial ran", async () => {
+  it("says nothing once the Team trial ran", async () => {
     const dialog = await openInvite({
       ...SOLO,
       trialEndsAt: "2026-10-01T00:00:00.000Z",
