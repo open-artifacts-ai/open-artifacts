@@ -85,5 +85,38 @@ describe("--uninstall --check", () => {
     const n = setup({});
     expect(await run(["--uninstall", "--check"], n.deps, ROOT)).toBe(1);
     expect(w.calls).toEqual([]);
+    expect(n.calls).toEqual([]);
+  });
+
+  it("with no state and --name, lists names and a KV find-id step", async () => {
+    const n = setup({});
+    expect(await run(["--uninstall", "--check", "--name", "foo"], n.deps, ROOT)).toBe(0);
+    const out = n.lines.join("\n");
+    expect(out).toContain("d1 delete foo");
+    expect(out).toContain("r2 bucket delete foo");
+    expect(out).toContain("foo-oauth");
+    expect(out).toContain("kv namespace list");
+    expect(n.calls).toEqual([]);
+  });
+
+  it("refuses a --name that differs from the saved name, naming both", async () => {
+    const n = setup();
+    expect(await run(["--uninstall", "--check", "--name", "other"], n.deps, ROOT)).toBe(1);
+    expect(n.lines.join("\n")).toMatch(/other.*acme/);
+    expect(n.calls).toEqual([]);
+  });
+
+  it("lists an orphaned Access app, the full email records and wrangler.jsonc", async () => {
+    const n = setup({
+      [STATE]: JSON.stringify({ ...state, pendingAccessAppId: "orphan-1" }),
+    });
+    await run(["--uninstall", "--check"], n.deps, ROOT);
+    const out = n.lines.join("\n");
+    expect(out).toContain("orphan-1");
+    expect(out).toContain("cf-bounce._domainkey.mail.example.com");
+    expect(out).toContain("_dmarc.mail.example.com only if onboarding created it");
+    expect(out).toContain("apps/server/wrangler.jsonc");
+    expect(out).toContain("Open Artifacts – everyone");
+    expect(out).toContain("d1 export acme --remote --output backup.sql");
   });
 });
