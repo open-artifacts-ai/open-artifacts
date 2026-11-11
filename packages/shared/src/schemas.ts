@@ -40,10 +40,11 @@ export const DataWritersSchema = z.enum(["viewers", "editors"]);
 export const CommentersSchema = z.enum(["everyone", "signed-in"]);
 export type Commenters = z.infer<typeof CommentersSchema>;
 /** #2080: the `comments` input: on/off, or a named setting ("off" is off). */
-export const CommentsSettingSchema = z.union([
-  z.boolean(),
-  z.enum(["everyone", "signed-in", "off"]),
-]);
+export const CommentsSettingSchema = z
+  .union([z.boolean(), z.enum(["everyone", "signed-in", "off"])])
+  .describe(
+    'Comments: "everyone" (anyone who can open it may comment), "signed-in" (signed-out visitors read but cannot post; the default for new artifacts), or "off". true turns comments on and keeps who may comment; false is off.',
+  );
 export type CommentsSetting = z.infer<typeof CommentsSettingSchema>;
 /** #2080: a `comments` input as the stored pair; a field is absent when the input leaves it alone. */
 export function commentsSettingOf(v: CommentsSetting | undefined): {
@@ -504,10 +505,8 @@ export const ArtifactPatchSchema = z
     dataWriters: DataWritersSchema,
     /** Deprecated (#681): see resolveDataWriters. */
     allowAnonymousWrites: z.boolean(),
-    /** #682: owner and managers. */
-    comments: z.boolean(),
-    /** #2080: who may post when comments are on. */
-    commenters: CommentersSchema,
+    /** #682, #2080: owner and managers; a boolean, or "everyone" | "signed-in" | "off". */
+    comments: CommentsSettingSchema,
   })
   .partial();
 export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
