@@ -1,5 +1,5 @@
 import type { CommentAuthor, CommentThread, ThreadAgent } from "@oa/shared";
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { TXT } from "../ui";
 import { AuthorFace, initials, PartyFace } from "./AuthorFace";
 import { RemovalNotices, Tip, useAgentRemoval } from "./threadAgents";
@@ -54,6 +54,9 @@ export function ThreadParticipants({
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const pointer = useRef(false);
   const quiet = useRef(false);
+  const [room, setRoom] = useState<number | undefined>(undefined);
+  const asking = useRef(false);
+  asking.current = confirm !== null;
   const mouse = useRef(false);
   const id = useId();
   const member = !api.guest && t.agents !== undefined;
@@ -63,6 +66,12 @@ export function ThreadParticipants({
   const off: ThreadAgent[] = member && gone ? [gone] : [];
   const n = people.length + live.length + off.length;
 
+  // The list never grows past the thread card it floats over.
+  useLayoutEffect(() => {
+    if (!open) return;
+    const card = box.current?.closest("[data-thread]");
+    if (card) setRoom(card.clientWidth - 24);
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const down = (e: PointerEvent) => {
@@ -93,7 +102,7 @@ export function ThreadParticipants({
   const leave = () => {
     clearTimeout(timer.current);
     timer.current = setTimeout(() => {
-      if (!box.current?.contains(document.activeElement) && !confirm) {
+      if (!box.current?.contains(document.activeElement) && !asking.current) {
         setOpen(false);
       }
     }, 150);
@@ -159,7 +168,8 @@ export function ThreadParticipants({
         <div
           id={id}
           data-participants-list=""
-          className="absolute top-[calc(100%+6px)] right-0 z-20 flex w-max max-w-[calc(100vw-3.75rem)] min-w-[min(20.6rem,calc(100vw-3.75rem))] flex-col gap-1 rounded-lg border border-border bg-popover p-2.5 text-popover-foreground shadow-md"
+          style={room && room > 0 ? { maxWidth: room } : undefined}
+          className="absolute top-[calc(100%+6px)] right-0 z-20 before:absolute before:inset-x-0 before:-top-1.5 before:h-1.5 before:content-[''] flex w-[20.6rem] flex-col gap-1 rounded-lg border border-border bg-popover p-2.5 text-popover-foreground shadow-md"
         >
           {people.length > 0 && (
             <>
