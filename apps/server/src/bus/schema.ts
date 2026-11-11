@@ -452,15 +452,16 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   );
   // #1984: a live session holds several proofs (the last few binds), one row
   // each. A proof names one session (hash is the key). They end with the
-  // session: the triggers drop them when the row closes (live = 0) or goes.
+  // session: the triggers drop them when the row goes, or closes (live = 0)
+  // with no away_since (a revoke). #2110: a close into away (away_since set)
+  // keeps them for PROOF_AWAY_GRACE_MS (hub.ts agentByProof); the hub drops
+  // them itself on a close for good (agent_down, revoke, sign-out, takeover,
+  // the offline reap) and sweeps the rest once the grace has passed.
   sql.exec(
     "create table if not exists agent_proofs (hash text primary key, agent_id text not null, seq integer not null)",
   );
   sql.exec(
     "create index if not exists agent_proofs_agent on agent_proofs(agent_id, seq)",
-  );
-  sql.exec(
-    "create trigger if not exists agent_proofs_close after update of live on agents when new.live = 0 begin delete from agent_proofs where agent_id = new.id; end",
   );
   sql.exec(
     "create trigger if not exists agent_proofs_gone after delete on agents begin delete from agent_proofs where agent_id = old.id; end",
@@ -556,6 +557,12 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   // the latest. Add-only.
   if (!agentCols.has("away_since"))
     sql.exec("alter table agents add column away_since integer");
+  // #2110 (after away_since exists): the first trigger dropped proofs on every live = 0; replaced on
+  // existing hubs (drop if exists is a no-op once it has gone).
+  sql.exec("drop trigger if exists agent_proofs_close");
+  sql.exec(
+    "create trigger if not exists agent_proofs_close_unaway after update of live on agents when new.live = 0 and new.away_since is null begin delete from agent_proofs where agent_id = new.id; end",
+  );
   // B14: send_keys.final (1 once the key's receipt left pending), set
   // wherever a receipt is finalized (settle, #expire). Backfilled from
   // receipts in the step that adds it (a missing receipt counts as final).
