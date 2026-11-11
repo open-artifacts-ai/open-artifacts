@@ -258,14 +258,6 @@ export class ClaudeTransport {
   /** A status can arrive before the caller starts waiting; keep the latest. */
   #buffered = new Map<string, Status>();
   #closed = false;
-  /** Why the last closed outcome for a ref closed it; read once by closeReason. */
-  #closeBy = new Map<string, "liveness" | "delivery">();
-  /** #2110: the close reason the last closed outcome for `ref` set (default: a delivery refusal). */
-  closeReason(ref: string): "liveness" | "delivery" {
-    const r = this.#closeBy.get(ref);
-    this.#closeBy.delete(ref);
-    return r ?? "delivery";
-  }
   /** Claude sockets already logged as unsafe: each is logged once. */
   #unsafeLogged = new Set<string>();
   readonly #held: HeldStore | undefined;
@@ -318,7 +310,6 @@ export class ClaudeTransport {
 
   async #deliver(agent: AgentRecord, mail: Mail): Promise<DeliverOutcome> {
     if (this.#closed) return { ok: false, reason: "timeout" };
-    this.#closeBy.delete(agent.ref);
     // Refused, not closed: the session is fine, this daemon cannot reach it.
     if (this.#disabled)
       return { ok: false, reason: "closed", cause: "dropped" };
@@ -348,8 +339,11 @@ export class ClaudeTransport {
       // Still unknown: not a close; the receipt stays pending.
       if (why === "unknown")
         return { ok: false, reason: "timeout", retryable: true };
-      this.#closeBy.set(agent.ref, why === "gone" ? "liveness" : "delivery");
-      return { ok: false, reason: "closed" };
+      return {
+        ok: false,
+        reason: "closed",
+        closedBy: why === "gone" ? "liveness" : "delivery",
+      };
     }
     const unsafe = unsafeClaudeSocket(target.socketPath);
     if (unsafe) {

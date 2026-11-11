@@ -1255,7 +1255,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       ...deps.transports,
     },
     onClosed: (a, closedBy) => {
-      a.closedBy = closedBy ?? claude.closeReason(a.ref);
+      // Never downgrade a liveness close (the sync's or a concurrent
+      // delivery's) to a delivery refusal.
+      if (a.closedBy !== "liveness") a.closedBy = closedBy ?? "delivery";
       ev("agent_leave", agentFields(a, "delivery_closed"));
       announceSessions();
       return a.closedBy;

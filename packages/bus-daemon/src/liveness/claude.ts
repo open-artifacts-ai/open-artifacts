@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -6,6 +7,8 @@ import {
   peerTokenFor,
 } from "@oa/bus-adapter-claude-code";
 import { AgentRefSchema } from "@oa/bus-protocol";
+
+const sha256Of = (s: string) => createHash("sha256").update(s).digest("hex");
 
 export type LiveClaude = {
   ref: string;
@@ -91,6 +94,9 @@ const aliveState = (
   if (start === null) return "unknown";
   return start === s.procStart ? "yes" : "no";
 };
+// An unknown start time counts as alive here, so claudeTarget (and a resume's
+// preferPid) may name a pid whose start time is unconfirmed, for at most the
+// caller's grace window; the key's own procStart check still gates the token.
 const alive = (s: SessionFile, deps: ClaudeLivenessDeps) =>
   aliveState(s, deps) !== "no";
 
@@ -188,7 +194,26 @@ export function claudeTargetState(
   if (!f) return "gone";
   const st = aliveState(f, deps);
   if (st === "unknown") return "unknown";
-  return st === "yes" ? "unreachable" : "dead";
+  if (st !== "yes") return "dead";
+  if (f.socketPath === "") return "unreachable";
+  // peerTokenFor says null for a failed read as well as for an absent key:
+  // only an absent key (ENOENT, or a file without the token) is unreachable;
+  // a read or parse failure is unknown (the retry path).
+  try {
+    const key = JSON.parse(
+      readFileSync(
+        join(deps.dir, `${pid}.${(deps.sha256 ?? sha256Of)(f.socketPath)}.key`),
+        "utf8",
+      ),
+    ) as { peerToken?: unknown };
+    return typeof key.peerToken === "string" && key.peerToken
+      ? "unknown" // a good key now: the null was a race
+      : "unreachable";
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT"
+      ? "unreachable"
+      : "unknown";
+  }
 }
 
 /** A live pid's start time never changes, so a long TTL is safe. */

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,6 +75,29 @@ describe("claude liveness", () => {
     expect(live()).toEqual([]);
     writeSession(d, 4242, { agentBus: true });
     expect(live()).toEqual([]);
+  });
+
+  it("#2110: a failed key read is unknown; only an absent key is unreachable", () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const sock = "/tmp/cc-socks/4242.sock";
+    const sha = (x: string) => createHash("sha256").update(x).digest("hex");
+    const keyPath = join(d, `4242.${sha(sock)}.key`);
+    const st = () =>
+      claudeTargetState("s4242", 4242, {
+        dir: d,
+        procStart: () => "t0",
+        isRunning: () => true,
+      });
+    expect(st()).toBe("unreachable"); // ENOENT
+    writeFileSync(keyPath, '{"peerToken":'); // a partial write: parse fails
+    expect(st()).toBe("unknown");
+    rmSync(keyPath);
+    mkdirSync(keyPath); // unreadable (EISDIR)
+    expect(st()).toBe("unknown");
+    rmSync(keyPath, { recursive: true });
+    writeFileSync(keyPath, JSON.stringify({ procStart: "t0" })); // no token
+    expect(st()).toBe("unreachable");
   });
 
   it("#2110: claudeTargetState tells unknown, dead, gone and unreachable apart", () => {
@@ -157,6 +180,7 @@ describe("claude liveness", () => {
     expect(await t.deliver(agent, mail("m2"))).toEqual({
       ok: false,
       reason: "closed",
+      closedBy: "delivery",
     });
     await new Promise((r) => setTimeout(r, 50)); // absence: an injection would land here
     expect(seen).toEqual([]);
@@ -167,6 +191,7 @@ describe("claude liveness", () => {
     expect(await t.deliver(agent, mail("m3"))).toEqual({
       ok: false,
       reason: "closed",
+      closedBy: "delivery",
     });
     expect(seen).toEqual([]);
     await t.close();
@@ -353,6 +378,27 @@ describe("runDaemon claude session sync", () => {
     writeSession(d, 4242); // the file returns
     expect(await h.next("agent_up", 2)).toMatchObject({ agent_ref: "s4242" });
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+  });
+
+  it("#2110: two concurrent deliveries to a gone target refuse neither, and the record reopens", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: { ...syncDeps(d, running), syncMs: 1000 },
+    });
+    await h.next("agent_up");
+    rmSync(join(d, "4242.json"));
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm2", "s4242"));
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef("s4242")?.live).toBe(false),
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    expect(h.of("refuse")).toEqual([]);
+    expect(h.daemon.agents.byRef("s4242")?.closedBy).toBe("liveness");
+    writeSession(d, 4242);
+    expect(await h.next("agent_up", 2)).toMatchObject({ agent_ref: "s4242" });
   });
 
   it("#2110: mail for a record closed on a liveness miss is left pending, not refused", async () => {

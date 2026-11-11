@@ -29,6 +29,8 @@ export type DeliverOutcome =
       ok: false;
       reason: "closed" | "timeout" | "queued";
       cause?: Detail;
+      /** #2110: on a "closed" outcome, why: a liveness miss (the session may be back) or a delivery refusal. */
+      closedBy?: "liveness" | "delivery";
       /**
        * #2110: a timeout where nothing was written to the session (an unknown
        * target, an inject timer that fired before 'connect'). Only these are
@@ -216,7 +218,9 @@ export function createDeliver(ctx: {
           // A liveness close (the session may be back in a moment) leaves the
           // receipt pending for the reopen's flush; only a delivery refusal
           // is final.
-          if ((ctx.onClosed(agent) ?? "delivery") !== "liveness")
+          if (
+            (ctx.onClosed(agent, outcome.closedBy) ?? "delivery") !== "liveness"
+          )
             refuse(msg_id, "dropped");
         }
         // A timeout or a queued stays unrecorded and unacked: the receipt stays pending.
