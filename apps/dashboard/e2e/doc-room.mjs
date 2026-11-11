@@ -6,7 +6,8 @@
 //
 // --fakes (or OA_DOC_FAKES=1) also injects two people and one agent as remote
 // collaborators with fixed cursors, for screenshots. Prints "ready <port>"
-// once listening. Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
+// once listening. --too-large answers every client edit with the error frame
+// {"type":"error","code":"doc_too_large"} instead of applying it. Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
 import { docToYXmlFragment, markdownToDoc } from "@oa/doc-schema";
 import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
@@ -33,7 +34,7 @@ We ship the new landing page on **Thursday**. The plan has three parts: copy, de
 Start with ten percent of visitors, watch the error rate for an hour, then go to everyone. If anything looks off we roll back with \`git revert\` and write it up here.
 `;
 
-export function startDocRoom({ port, fakes = false }) {
+export function startDocRoom({ port, fakes = false, tooLarge = false }) {
   const ydoc = new Y.Doc();
   const { doc } = markdownToDoc(SAMPLE);
   docToYXmlFragment(doc, ydoc.getXmlFragment("default"));
@@ -79,6 +80,11 @@ export function startDocRoom({ port, fakes = false }) {
       const decoder = decoding.createDecoder(new Uint8Array(data));
       switch (decoding.readVarUint(decoder)) {
         case SYNC: {
+          // peek: the sync message type (2 is a client update).
+          if (tooLarge && decoding.peekVarUint(decoder) === 2) {
+            ws.send(JSON.stringify({ type: "error", code: "doc_too_large" }));
+            break;
+          }
           const enc = encoding.createEncoder();
           encoding.writeVarUint(enc, SYNC);
           syncProtocol.readSyncMessage(decoder, enc, ydoc, ws);
@@ -189,7 +195,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.env.OA_DOC_PORT) || 1235;
   const fakes =
     process.argv.includes("--fakes") || process.env.OA_DOC_FAKES === "1";
-  const room = startDocRoom({ port, fakes });
+  const tooLarge = process.argv.includes("--too-large");
+  const room = startDocRoom({ port, fakes, tooLarge });
   const stop = () => room.close().then(() => process.exit(0));
   process.on("SIGTERM", stop);
   process.on("SIGINT", stop);
