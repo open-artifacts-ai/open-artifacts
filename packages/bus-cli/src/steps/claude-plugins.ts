@@ -418,6 +418,7 @@ export async function installClaudePlugins(
       "marketplace",
       "update",
       MARKETPLACE,
+      "--json",
     ]);
     if (!u.ok)
       out.notes.push(

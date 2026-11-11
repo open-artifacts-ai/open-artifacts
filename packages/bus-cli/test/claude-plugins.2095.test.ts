@@ -157,7 +157,12 @@ const fake = (over: Partial<Fake> = {}): Fake => {
       if (b === "marketplace" && d === "update") {
         f.refreshed = (f.refreshed ?? 0) + 1;
         f.known = { ...f.upstream };
-        return { code: 0, stdout: "Updated 1 marketplace\n", stderr: "" };
+        // Real claude 2.1.322 with --json (test/fixtures/claude-2.1.322/marketplace-update-json.json).
+        return {
+          code: 0,
+          stdout: fxText("marketplace-update-json.json"),
+          stderr: "",
+        };
       }
       if (b === "marketplace" && d === "remove") {
         if (!f.markets.length) return line(fx("remove-again.json"), 1);
@@ -949,6 +954,24 @@ describe("review fixes", () => {
     await run(f, w, { version: "0.0.0" });
     expect(f.refreshed).toBe(1);
     expect(f.updated).toEqual([STYLE_PLUGIN]);
+  });
+
+  it("asks for --json, which claude 2.1.322 documents for `marketplace update <name>`", async () => {
+    expect(fxText("marketplace-update-help.txt")).toContain("--json");
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.0.0" });
+    await run(f, w, { version: "0.0.0" });
+    expect(
+      f.calls.find((x) => x[2] === "marketplace" && x[3] === "update"),
+    ).toEqual([
+      "claude",
+      "plugin",
+      "marketplace",
+      "update",
+      "open-artifacts",
+      "--json",
+    ]);
   });
 
   it("never refreshes a pinned release", async () => {
