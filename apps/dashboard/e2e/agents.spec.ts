@@ -39,29 +39,35 @@ test("OAuth command and client tabs wrap at 390px", async ({ page }) => {
   await expect(page.getByText(/claude mcp add/)).toBeVisible();
   // The command wraps instead of scrolling (the admin card's fix, #1128).
   expect(await clipped(page)).toBe(0);
-  // Every client stays in view: the strip wraps onto a second row rather than
-  // scrolling "Generic" out of it (#1383).
-  const strip = await page
-    .getByRole("tablist")
-    .first()
-    .evaluate((l) => {
+  // The strip scrolls sideways inside its own box (#2103), and the picked tab
+  // is scrolled into view: first one, then the last. The page never scrolls.
+  const list = page.getByRole("tablist").first();
+  const selectedInView = () =>
+    list.evaluate((l) => {
       const box = l.getBoundingClientRect();
-      return {
-        scroll: l.scrollWidth - l.clientWidth,
-        outside: [...l.querySelectorAll("[role=tab]")].filter((t) => {
-          const b = t.getBoundingClientRect();
-          return b.right > box.right + 0.5 || b.left < box.left - 0.5;
-        }).length,
-      };
+      const t = l.querySelector("[role=tab][aria-selected=true]");
+      const b = t?.getBoundingClientRect();
+      return !!b && b.right <= box.right + 0.5 && b.left >= box.left - 0.5;
     });
-  expect(strip).toEqual({ scroll: 0, outside: 0 });
+  await expect.poll(selectedInView).toBe(true);
+  // By keyboard, so the strip's own scroll-into-view is what is tested (a
+  // click scrolls the tab into view itself): focus the first tab, press End.
+  await page.getByRole("tab", { name: "Claude Code" }).first().focus();
+  await page.keyboard.press("End");
+  await expect(
+    page.getByRole("tab", { name: "Generic" }).first(),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect.poll(selectedInView).toBe(true);
   expect(await sideScroll(page)).toBe(0);
 });
+
+const VIEWPORT_H = 600;
 
 test("Token tab and token-created dialog wrap their commands at 390px", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+  // A short phone screen, so the dialog is certain to be taller than it.
+  await page.setViewportSize({ width: 390, height: VIEWPORT_H });
   await page.goto("/settings/connections");
   await page.getByRole("radio", { name: "Token" }).click();
   for (const name of ["Claude Code", "Codex CLI", "OpenCode"]) {
@@ -82,15 +88,20 @@ test("Token tab and token-created dialog wrap their commands at 390px", async ({
       const r = d.getBoundingClientRect();
       const strip = d.querySelector("[role=tablist]");
       return {
+        // What the tab strip holds is clipped by it, not overflowing.
         outside: [...d.querySelectorAll("*")].filter((el) => {
+          if (el.parentElement?.closest("[role=tablist]")) return false;
           const b = el.getBoundingClientRect();
           return b.width && (b.right > r.right + 0.5 || b.left < r.left - 0.5);
         }).length,
-        // The strip wraps onto a second row; it never scrolls.
-        scroll: strip ? strip.scrollWidth - strip.clientWidth : 0,
+        // The strip may scroll sideways inside its own box, never past it.
+        stripFits: strip
+          ? strip.getBoundingClientRect().right <= r.right + 0.5 &&
+            strip.getBoundingClientRect().left >= r.left - 0.5
+          : true,
       };
     });
-    expect(out).toEqual({ outside: 0, scroll: 0 });
+    expect(out).toEqual({ outside: 0, stripFits: true });
   }
   // Copy stays top-right of the save command.
   const pre = await dialog.locator("pre").first().boundingBox();
@@ -102,14 +113,14 @@ test("Token tab and token-created dialog wrap their commands at 390px", async ({
     expect(copy.x).toBeGreaterThanOrEqual(pre.x + pre.width);
     expect(copy.y - pre.y).toBeLessThan(8);
   }
-  // The body is taller than the phone screen: the dialog caps itself and
+  // The body is taller than this short screen: the dialog caps itself and
   // scrolls, so Done stays reachable instead of hanging past the viewport.
   const box = await dialog.evaluate((d) => ({
     height: d.getBoundingClientRect().height,
     scrollable: d.scrollHeight - d.clientHeight,
     overflow: getComputedStyle(d).overflowY,
   }));
-  expect(box.height).toBeLessThanOrEqual(844);
+  expect(box.height).toBeLessThanOrEqual(VIEWPORT_H);
   expect(box.overflow).toBe("auto");
   expect(box.scrollable).toBeGreaterThan(0);
   await dialog.getByRole("button", { name: "Done" }).click();

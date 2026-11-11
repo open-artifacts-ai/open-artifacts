@@ -1,0 +1,9 @@
+[
+  {
+    "name": "open-artifacts",
+    "source": "github",
+    "repo": "open-artifacts-ai/open-artifacts",
+    "ref": "v0.154.0",
+    "installLocation": "/home/u/.claude/plugins/marketplaces/open-artifacts"
+  }
+]

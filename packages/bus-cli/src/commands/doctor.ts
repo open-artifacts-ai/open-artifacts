@@ -34,6 +34,12 @@ import {
   opencodeProxyProblem,
 } from "../steps/adapters.ts";
 import {
+  claudePluginsState,
+  claudeVersion,
+  cmpVersion,
+  MIN_CLAUDE,
+} from "../steps/claude-plugins.ts";
+import {
   codexConfig,
   codexHome,
   findCodexBin,
@@ -292,7 +298,24 @@ export async function doctor(ctx: Ctx): Promise<number> {
       if (isolates === false) pass(c.claudeAccepts());
       if (isolates === true) warn(c.claudeIsolates(tilde(ctx, settings)));
       const style = outputStyleState({ home: ctx.userHome, env: ctx.env });
-      if (style) pass(c.outputStyleDoctor(tilde(ctx, style.path), style.on));
+      if (style) {
+        // The old file is replaced by the plugin's style, which needs a working claude.
+        const v = await claudeVersion(ctx.exec);
+        if ("version" in v && cmpVersion(v.version, MIN_CLAUDE) >= 0)
+          warn(c.styleFileOld(tilde(ctx, style.path)));
+        else warn(c.styleFileOldNoClaude(tilde(ctx, style.path), MIN_CLAUDE));
+      }
+      const plugins = await claudePluginsState({
+        home: ctx.userHome,
+        busHome: ctx.home,
+        env: ctx.env,
+        exec: ctx.exec,
+      });
+      if (plugins?.unknown) warn(c.pluginsDoctorUnknown());
+      else if (plugins?.missing.length)
+        fail(c.pluginsDoctorMissing(plugins.missing));
+      else if (plugins?.unconfigured) warn(c.pluginsDoctorUnconfigured());
+      else if (plugins) pass(c.pluginsDoctor());
     }
     if (h === "opencode") {
       const gone = opencodeProxyProblem({

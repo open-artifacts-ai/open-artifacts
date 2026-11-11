@@ -25,11 +25,14 @@ import {
   usePutMapping,
   useSpaceMappings,
 } from "../../api/queries";
+import { useMe } from "../../auth/useMe";
 import { LoadError } from "../../layout/LoadError";
+import { groupSyncHidden } from "../../layout/SyncBanner";
 import { AppLink } from "../../library/AppLink";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { GroupPicker } from "../GroupPicker";
 import { errorText, muted, SettingsCard, WriteLock } from "../ui";
+import { isOrgAdmin } from "./access";
 
 export const ROLE_LABEL: Record<SpaceRole, string> = {
   viewer: "Viewer",
@@ -228,6 +231,25 @@ export function AccessRow({
   );
 }
 
+/** Below Business: why the old Google groups listed here no longer update (#2113). */
+export function SyncEndedNote() {
+  const state = useMe();
+  const admin = state.status === "authed" && isOrgAdmin(state.me);
+  return (
+    <p className={muted}>
+      Google group sync is on the{" "}
+      {admin ? (
+        <AppLink href="/settings/plan" className="underline">
+          Business plan
+        </AppLink>
+      ) : (
+        "Business plan"
+      )}
+      . These groups no longer update, and people keep the roles they have now.
+    </p>
+  );
+}
+
 export function SpaceAccess({
   space,
   admin,
@@ -245,6 +267,8 @@ export function SpaceAccess({
   frozen?: boolean;
   onEditPeople?: (groupId: string) => void;
 }) {
+  const me = useMe();
+  const hideSync = me.status === "authed" && groupSyncHidden(me.me);
   const mappings = useSpaceMappings(space.id);
   // Every-space rows: org admins only (R.orgMappings is admin-only).
   const org = useOrgMappings(admin);
@@ -460,17 +484,22 @@ export function SpaceAccess({
           }}
         />
       )}
-      <p className={muted}>
-        {frozen
-          ? "Group sync is paused, so groups can't change here. Each space kept the people it had at the last sync. You can still add and remove people under People."
-          : !syncOn
-            ? "Group sync is off, so mappings can't change. Edit people manually under People."
-            : admin
-              ? "Someone in more than one group gets the highest role. Changes apply within a minute and are recorded in the audit log."
-              : canMap
-                ? "You can give a group Viewer or Editor. Only an admin can make a group a manager. Changes are recorded in the audit log."
-                : "An admin has turned off group mapping by space managers. Ask an admin to add or change groups."}
-      </p>
+      {hideSync && (rows.length > 0 || (org.data ?? []).length > 0) && (
+        <SyncEndedNote />
+      )}
+      {!hideSync && (
+        <p className={muted}>
+          {frozen
+            ? "Group sync is paused, so groups can't change here. Each space kept the people it had at the last sync. You can still add and remove people under People."
+            : !syncOn
+              ? "Group sync is off, so mappings can't change. Edit people manually under People."
+              : admin
+                ? "Someone in more than one group gets the highest role. Changes apply within a minute and are recorded in the audit log."
+                : canMap
+                  ? "You can give a group Viewer or Editor. Only an admin can make a group a manager. Changes are recorded in the audit log."
+                  : "An admin has turned off group mapping by space managers. Ask an admin to add or change groups."}
+        </p>
+      )}
     </SettingsCard>
   );
 }

@@ -221,6 +221,26 @@ describe("signed-in only", () => {
     expect(((await r.json()) as CommentList).threads).toHaveLength(1);
   });
 
+  it("a signed-out caller cannot stop or undo a thread's agent (#2035)", async () => {
+    const id = await pub();
+    const t = (await (await post(id, owner, "root")).json()) as Thread;
+    for (const method of ["DELETE", "PUT"])
+      for (const h of [{}, { [ANON_ID_HEADER]: "bogus" }] as Record<
+        string,
+        string
+      >[]) {
+        const r = await call(id, null, `/${t.id}/agents/${"a".repeat(32)}`, {
+          method,
+          headers: h,
+        });
+        expect([401, 403]).toContain(r.status);
+        if (r.status === 403)
+          expect(await errOf(r)).toMatchObject({
+            code: "comments_signed_in_only",
+          });
+      }
+  });
+
   it("a signed-in member who is not the owner can still comment", async () => {
     const id = await pub();
     expect((await post(id, guest)).status).toBe(201);

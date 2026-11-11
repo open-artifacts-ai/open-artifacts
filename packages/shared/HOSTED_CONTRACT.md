@@ -447,7 +447,7 @@ and anonymous writes never count.
 
 Routes, the org owner or an admin only (the plan cap included; else 404; 404
 off hosted):
-`POST R.billingCheckout` `BillingCheckoutInput { tier: solo | team | business, interval?: month | year }` (interval required for solo, 400 for any other tier) →
+`POST R.billingCheckout` `BillingCheckoutInput { tier: solo | team | business, interval?: month | year, seats?: integer 1..10000 }` (interval required for solo, optional for team and business, where absent means monthly; seats required with interval year; refused (400) with month, with no interval, and for solo) →
 `BillingUrl { url }` (Stripe Checkout); `POST R.billingPortal` → `BillingUrl`
 (Customer Portal); `POST R.billingUsage` → `BillingUsage { month, count }`.
 503 `billing_unavailable` when billing can't be reached. `POST R.billingPortal`
@@ -455,7 +455,7 @@ answers 409 `no_billing_customer` when billing has no Stripe customer for the
 instance (billing's 409 `no_customer`; no other route or status maps to it). Billing's 503
 `{ error: "retry" }` (Stripe still running the same idempotent request) is
 retried once, with the same signed body, after a short backoff. Checkout
-sends billing `{ install, ts, plan }`, plus `interval` for solo only; the billing service maps solo+month and solo+year to the Solo prices (hosted half, #1568). Checkout and Portal
+sends billing `{ install, ts, plan }`, plus `interval` and `seats` when the body had them, unchanged; the billing service maps solo+month and solo+year to the Solo prices (hosted half, #1568). A yearly Team or Business plan prepays `seats` creators; extra creators bill as overage at the monthly price ($10 per creator for Team, $25 for Business; Team and Business prices are per creator) (decided 2026-11-11). Checkout and Portal
 depend on Platform's billing routes (#849 gate allowlist for `POST /checkout`
 and `/portal`); until those ship they answer 503 `billing_unavailable`.
 

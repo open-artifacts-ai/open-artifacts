@@ -18,6 +18,9 @@ const misaligned = (page: Page, token: string) =>
       "[data-slot=card-header] > :first-child",
       "[data-slot=card-content] > *",
       "[data-slot=tabs-list]",
+      // The Connections tab strip bleeds 8px each side of this rule (px-2 tabs
+      // so the focus ring clears the label); the rule is what aligns.
+      "[data-slot=tab-rule]",
       "[data-slot=tabs-content]:not([hidden]) > *",
       "li > b",
     ].join(",");
@@ -31,6 +34,11 @@ const misaligned = (page: Page, token: string) =>
       for (const el of card.querySelectorAll(inset)) {
         const b = el.getBoundingClientRect();
         if (!b.width) continue;
+        if (
+          el.matches("[data-slot=tabs-list]") &&
+          el.closest("[data-slot=tab-rule]")
+        )
+          continue;
         const name = `${card.textContent?.slice(0, 20)} ${el.tagName}.${el.getAttribute("data-slot") ?? el.className}`;
         if (Math.abs(b.left - left) > 0.5)
           bad.push(`${name} left ${b.left} != ${left}`);
@@ -46,7 +54,9 @@ const misaligned = (page: Page, token: string) =>
         for (let p = el.parentElement; p && p !== card; p = p.parentElement)
           if (getComputedStyle(p).overflowX !== "visible") scrolled = true;
         const b = el.getBoundingClientRect();
-        if (!scrolled && b.width && b.right > right + 0.5)
+        // The Connections strip bleeds 8px past the rule (px-2 tabs); no more.
+        const slack = el.closest("[data-slot=tab-rule]") ? 8.5 : 0.5;
+        if (!scrolled && b.width && b.right > right + slack)
           bad.push(`${el.tagName} past the card's content edge`);
       }
     }

@@ -12,6 +12,7 @@ import {
   isId,
   type KeyRef,
   type CommentThread as Thread,
+  type ThreadAgent,
 } from "@oa/shared";
 import { canConnect } from "../auth/agents.js";
 import { type ArtifactRow, accessLevel, callerOf } from "../auth/authz.js";
@@ -22,6 +23,7 @@ import { logInfo } from "../log.js";
 import {
   bodyOk,
   type NewExtras,
+  type ParticipantRow,
   type StoredActor,
   type StoredAgent,
   type StoredComment,
@@ -113,6 +115,8 @@ export type CommentViewer = {
   short: string | null;
   /** The viewer's level may delete anyone's comment (owner, manager, editor). */
   moderator?: boolean;
+  /** #2035: the viewer owns the artifact (may remove any agent from a thread). */
+  owner?: boolean;
   /** Signed out, or a guest-role member: sees "<person>'s agent", never a bus name (#1822). */
   guest?: boolean;
   /**
@@ -396,6 +400,7 @@ async function allClashes(env: Env): Promise<NameClashes> {
 const hasAgent = (c: StoredComment): boolean =>
   !!c.author.agent ||
   !!c.mentions?.length ||
+  !!c.notified?.length ||
   !!c.ask?.answer?.by.agent ||
   !!c.ask?.to.some((p) => p.kind === "agent");
 
@@ -403,7 +408,11 @@ async function ctxFor(
   env: Env,
   ids: Set<string>,
   agents: boolean,
-  shown: { comments: StoredComment[]; actors?: (StoredActor | null)[] } = {
+  shown: {
+    comments: StoredComment[];
+    actors?: (StoredActor | null)[];
+    agents?: { owner: string; identity?: StoredIdentity }[];
+  } = {
     comments: [],
   },
 ): Promise<Ctx> {
@@ -425,7 +434,11 @@ async function ctxFor(
  */
 export async function currentNames(
   env: Env,
-  s: { comments: StoredComment[]; actors?: (StoredActor | null)[] },
+  s: {
+    comments: StoredComment[];
+    actors?: (StoredActor | null)[];
+    agents?: { owner: string; identity?: StoredIdentity }[];
+  },
 ): Promise<Map<string, string>> {
   const byOwner = new Map<string, Set<string>>();
   const add = (owner: string | undefined, id: string | undefined) => {
@@ -438,10 +451,12 @@ export async function currentNames(
     if (a?.kind === "user") add(a.ref, a.agent?.identity?.identityId);
   };
   for (const a of s.actors ?? []) actor(a);
+  for (const a of s.agents ?? []) add(a.owner, a.identity?.identityId);
   for (const c of s.comments) {
     actor(c.author);
     actor(c.ask?.answer?.by);
     for (const m of c.mentions ?? []) add(m.owner, m.identity?.identityId);
+    for (const m of c.notified ?? []) add(m.owner, m.identity?.identityId);
     for (const p of c.ask?.to ?? [])
       if (p.kind === "agent") add(p.owner, p.identity?.identityId);
   }
@@ -467,8 +482,27 @@ export async function currentNames(
   return out;
 }
 
+/** #2035: an agent a thread's replies reach, as a member sees it. */
+const threadAgentView = (
+  p: ParticipantRow,
+  viewer: CommentViewer,
+  users: Ctx,
+): ThreadAgent => ({
+  key: p.key,
+  name: agentName(
+    currentName(p, users),
+    users.users.get(p.owner),
+    viewer,
+    users.clash,
+  ),
+  for: forLine(users.users.get(p.owner), faceViewer(viewer), users.clash),
+  ...identityFace({ ...p, name: currentName(p, users) }, viewer, users),
+  canRemove: viewer.owner === true || viewer.userId === p.owner,
+});
+
 async function threadViews(
   env: Env,
+  artifactId: string,
   threads: StoredThread[],
   viewer: CommentViewer,
 ): Promise<Thread[]> {
@@ -477,13 +511,32 @@ async function threadViews(
     if (t.resolvedBy?.kind === "user") ids.add(t.resolvedBy.ref);
     for (const c of t.comments) userIds(c, ids);
   }
+  // #2035: members see the agents replies reach; guests, anonymous and
+  // restricted members see none, as they are never told.
+  const members = !outsider(viewer) && viewer.userId !== null;
+  const roster = members
+    ? new Map(
+        await call(() =>
+          stub(env, artifactId).commentsParticipants({
+            threadIds: threads.map((t) => t.id),
+          }),
+        ),
+      )
+    : new Map<string, ParticipantRow[]>();
+  const live = (t: StoredThread) =>
+    (roster.get(t.id) ?? []).filter((p) => !p.removed);
+  for (const t of threads) for (const p of live(t)) ids.add(p.owner);
   const users = await ctxFor(
     env,
     ids,
-    threads.some((t) => t.comments.some(hasAgent) || t.resolvedBy?.agent),
+    threads.some(
+      (t) =>
+        t.comments.some(hasAgent) || t.resolvedBy?.agent || live(t).length > 0,
+    ),
     {
       comments: threads.flatMap((t) => t.comments),
       actors: threads.map((t) => t.resolvedBy),
+      agents: threads.flatMap(live),
     },
   );
   return threads.map((t) => ({
@@ -495,6 +548,9 @@ async function threadViews(
     resolvedAt: t.resolvedAt,
     createdAt: t.createdAt,
     comments: t.comments.map((c) => commentOf(c, viewer, users)),
+    ...(live(t).length
+      ? { agents: live(t).map((p) => threadAgentView(p, viewer, users)) }
+      : {}),
   }));
 }
 
@@ -502,6 +558,7 @@ async function threadViews(
 function userIds(c: StoredComment, into: Set<string>): void {
   if (c.author.kind === "user") into.add(c.author.ref);
   for (const m of c.mentions ?? []) if (m.owner) into.add(m.owner);
+  for (const m of c.notified ?? []) if (m.owner) into.add(m.owner);
   if (!c.ask) return;
   for (const p of c.ask.to) into.add(p.kind === "user" ? p.key : p.owner);
   if (c.ask.answer?.by.kind === "user") into.add(c.ask.answer.by.ref);
@@ -684,6 +741,34 @@ const commentOf = (
           },
         }
       : {}),
+    ...(c.notified?.length && !outsider(viewer) && viewer.userId !== null
+      ? {
+          notified: c.notified.map((m) => ({
+            key: m.key,
+            name: agentName(
+              currentName(m, users),
+              m.owner ? users.users.get(m.owner) : undefined,
+              viewer,
+              users.clash,
+            ),
+            ...(m.owner
+              ? {
+                  for: forLine(
+                    users.users.get(m.owner),
+                    faceViewer(viewer),
+                    users.clash,
+                  ),
+                }
+              : {}),
+            ...identityFace(
+              { ...m, name: currentName(m, users) },
+              viewer,
+              users,
+            ),
+            delivery: m.state as "delivered" | "queued" | "seen" | "gone",
+          })),
+        }
+      : {}),
     ...(c.mentions?.length
       ? {
           mentions: c.mentions.map((m, i) => ({
@@ -740,7 +825,7 @@ export async function listComments(
   const r = await call(() => stub(env, artifactId).commentsList(status));
   if (rows) await reconcileAsks(env, artifactId, r.threads, r.truncated, rows);
   return {
-    threads: await threadViews(env, r.threads, viewer),
+    threads: await threadViews(env, artifactId, r.threads, viewer),
     open: r.open,
     truncated: r.truncated,
   };
@@ -847,6 +932,7 @@ async function authorParticipant(
       name: id.name,
       owner: who.id,
       namespace: id.namespace,
+      identity: { identityId: id.identityId, kind: id.kind },
     },
   ];
 }
@@ -1015,7 +1101,11 @@ async function resolveExtras(
     agents: [...agents.values()],
     mentions: mentioned.map((m) => m.key),
     mentionKind: "mention",
-    participants: [...agents.values()].map((x) => participantOf(x.agent)),
+    // #2035: an @-mention or an ask also puts back an agent a person removed.
+    participants: [...agents.values()].map((x) => ({
+      ...participantOf(x.agent),
+      readd: true as const,
+    })),
   };
 }
 
@@ -1143,12 +1233,13 @@ async function withIdentities(env: Env, r: Resolved): Promise<Resolved> {
     }),
   );
   const ids = new Map(keys.map((k, i) => [k, found[i]]));
-  const put = (p: StoredAgent): StoredAgent => {
+  const put = <T extends StoredAgent>(p: T): T => {
     const identity = ids.get(p.key);
     return identity ? { ...p, identity } : p;
   };
   return {
     ...r,
+    participants: r.participants.map(put),
     extras: {
       ...x,
       ...(x.mentions ? { mentions: x.mentions.map(put) } : {}),
@@ -1199,9 +1290,20 @@ export async function addThread(
   // After the rate-limit charge, and after the page mention is added: a
   // refused post costs no hub reads, and the page's agent gets its identity too.
   const r = await withIdentities(env, r0);
+  const pageIdentity = page
+    ? r.extras?.mentions?.find((m) => m.key === page.key)?.identity
+    : undefined;
   const participants = [
     ...r.participants,
-    ...(page ? [{ ...participantOf(page), page: true as const }] : []),
+    ...(page
+      ? [
+          {
+            ...participantOf(page),
+            page: true as const,
+            ...(pageIdentity ? { identity: pageIdentity } : {}),
+          },
+        ]
+      : []),
     ...(await authorParticipant(a.id, who)),
   ];
   const t = await call(() =>
@@ -1224,7 +1326,7 @@ export async function addThread(
   }
   await announce(env, a.id, who, opts.after, r);
   await emailPeople(env, a.id, t.id, root, false, opts.after);
-  return (await threadViews(env, [t], viewer))[0] as Thread;
+  return (await threadViews(env, a.id, [t], viewer))[0] as Thread;
 }
 
 /**
@@ -1267,7 +1369,9 @@ async function resolveToAsker(
  * asker). An agent's reply never does this. The bound (a cap per thread, none once resolved) is spent in the DO; an agent
  * whose member lost access or cannot hold a bus is skipped and its spend given
  * back. A notice goes only to the exact participant, never its member's other
- * agents. Never throws.
+ * agents. #2035: an agent a person removed from the thread is skipped, and
+ * the others are recorded on the reply with how each notice went. Returns the
+ * comment as then stored. Never throws.
  */
 async function threadReply(
   env: Env,
@@ -1276,10 +1380,11 @@ async function threadReply(
   c: StoredComment,
   r: Resolved,
   viewer: CommentViewer,
-): Promise<void> {
+): Promise<StoredComment> {
   // Members only (#1900, #1968): never an agent, a signed-out visitor, a guest
   // or a guest-role member.
-  if (c.author.kind !== "user" || c.author.agent || outsider(viewer)) return;
+  if (c.author.kind !== "user" || c.author.agent || outsider(viewer)) return c;
+  let out = c;
   try {
     const due = await call(() =>
       stub(env, a.id).commentsThreadReplyTake({
@@ -1290,7 +1395,7 @@ async function threadReply(
         skipPage: r.agents.length > 0,
       }),
     );
-    if (due.length === 0) return;
+    if (due.length === 0) return c;
     const reached: RosterAgent[] = [];
     const users = new Map<string, boolean>();
     for (const p of due) {
@@ -1312,6 +1417,18 @@ async function threadReply(
           address: { namespace: p.namespace, name: p.name },
         });
     }
+    // The rows exist (queued) before any notice goes out, as a mention's do, so
+    // a daemon's ack that beats the write below still finds its row to settle.
+    await call(() =>
+      stub(env, a.id).commentsReplyTargets({
+        threadId,
+        commentId: c.id,
+        targets: reached.map((agent) => ({
+          p: due.find((d) => d.key === agent.key) as StoredParticipant,
+          state: "queued",
+        })),
+      }),
+    ).catch(() => c);
     const version = Math.max(1, a.currentVersion);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const late = new Promise<DeliveryState>((res) => {
@@ -1339,6 +1456,17 @@ async function threadReply(
     } finally {
       clearTimeout(timer);
     }
+    out = await call(() =>
+      stub(env, a.id).commentsTargetStates({
+        threadId,
+        commentId: c.id,
+        states: reached.map((agent, i) => ({
+          kind: "reply" as const,
+          key: agent.key,
+          state: stateOf(outs[i] ?? "dropped"),
+        })),
+      }),
+    ).catch(() => c);
     // Spent for a notice that went out or is held; given back for the rest.
     const back = [
       ...due.filter((p) => !reached.some((x) => x.key === p.key)),
@@ -1358,6 +1486,7 @@ async function threadReply(
       code: e instanceof ApiError ? e.code : "error",
     });
   }
+  return out;
 }
 
 /** A reply. It does not reopen the thread. */
@@ -1392,7 +1521,7 @@ export async function addReply(
     ...r.participants,
     ...(await authorParticipant(artifactId, who)),
   ];
-  const c = await call(() =>
+  let c = await call(() =>
     stub(env, artifactId).commentsReply({
       threadId,
       actor: actorOf(who),
@@ -1416,7 +1545,7 @@ export async function addReply(
     .first<{ v: number }>();
   const a = { id: artifactId, currentVersion: row?.v ?? 1 };
   // #1900: a person's reply also tells the thread's other agents, once each.
-  await threadReply(env, a, threadId, c, r, viewer);
+  c = await threadReply(env, a, threadId, c, r, viewer);
   if (r.agents.length === 0) {
     await announce(env, artifactId, who, opts.after, r);
     await emailPeople(env, artifactId, threadId, c, true, opts.after);
@@ -1529,7 +1658,40 @@ export async function setStatus(
     }),
   );
   await indexStatus(env, artifactId, threadId, status);
-  return (await threadViews(env, [t], viewer))[0] as Thread;
+  return (await threadViews(env, artifactId, [t], viewer))[0] as Thread;
+}
+
+/**
+ * #2035: stops (or, with `removed` false, resumes) replies in a thread
+ * reaching one of its agents. Only the agent's own person or the artifact's
+ * owner may; a guest, a signed-out visitor or a restricted member never (404
+ * for an agent they cannot see). 404 when the thread has no such agent.
+ */
+export async function setThreadAgent(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  key: string,
+  viewer: CommentViewer,
+  removed: boolean,
+): Promise<void> {
+  if (outsider(viewer) || viewer.userId === null)
+    throw new ApiError("forbidden", "Only members can change who is notified");
+  const rows = new Map(
+    await call(() =>
+      stub(env, artifactId).commentsParticipants({ threadIds: [threadId] }),
+    ),
+  );
+  const p = rows.get(threadId)?.find((x) => x.key === key);
+  if (!p) throw new ApiError("not_found", "Not found");
+  if (!(viewer.owner === true || viewer.userId === p.owner))
+    throw new ApiError(
+      "forbidden",
+      "Only the person whose agent it is, or the artifact's owner, can change this",
+    );
+  await call(() =>
+    stub(env, artifactId).commentsParticipantSet({ threadId, key, removed }),
+  );
 }
 
 /** Edits a comment's body: its author only (403 forbidden). */

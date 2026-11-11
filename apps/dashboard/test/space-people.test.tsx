@@ -1041,3 +1041,142 @@ it("409 managed_by_org_mapping shows the Every space line by the row", async () 
   ).toBeVisible();
   expect(screen.queryByText("server text")).toBeNull();
 });
+
+const asTier =
+  (tier: "team" | "trial" | "business") =>
+  (m: Me): Me => ({
+    ...m,
+    instance: {
+      ...m.instance,
+      billing: m.instance.billing && { ...m.instance.billing, tier },
+    },
+  });
+
+// -- below Business (#2113): a synced person reads as an ordinary member
+
+for (const [name, tier, directory] of [
+  ["Team, synced before (sync_google)", "team", "google"],
+  ["Team, frozen", "team", "frozen"],
+  ["the Team trial", "trial", "google"],
+] as const) {
+  it(`${name}: no sync wording, no role floor, the normal menu`, async () => {
+    mountHosted(ENG, { directory }, asTier(tier));
+    const card = await people();
+    const bob = await row("Bob Builder");
+    expect(bob).toHaveTextContent("bob@example.com · manually added");
+    expect(card).not.toHaveTextContent(/kept from|Group sync|via eng@/);
+    fireEvent.click(
+      within(bob).getByRole("combobox", { name: "Role for Bob Builder" }),
+    );
+    expect(
+      (await screen.findAllByRole("option")).map((o) => o.textContent),
+    ).toEqual(["Viewer", "Editor", "Manager"]);
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    fireEvent.click(
+      within(await openMenu("Bob Builder")).getByRole("menuitem", {
+        name: "Remove from Engineering…",
+      }),
+    );
+    expect(screen.getByRole("alertdialog")).toHaveTextContent(
+      "Bob keeps Viewer through All members.",
+    );
+    expect(screen.getByRole("alertdialog")).not.toHaveTextContent(/sync/i);
+  });
+}
+
+it("Business still says kept from when frozen", async () => {
+  mountHosted(ENG, { directory: "frozen" }, asTier("business"));
+  expect(await row("Bob Builder")).toHaveTextContent(
+    "bob@example.com · kept from eng@",
+  );
+  expect(await people()).toHaveTextContent("Group sync is paused.");
+});
+
+// Team and the trial stay server-frozen: a synced person's role change and
+// removal send the same requests as Business frozen.
+for (const tier of ["business", "team", "trial"] as const) {
+  it(`${tier} + frozen: a synced person's role change PUTs and Remove DELETEs by user id`, async () => {
+    const puts = calls("PUT");
+    const dels = calls("DELETE");
+    mountHosted(ENG, { directory: "frozen" }, asTier(tier));
+    const bob = await row("Bob Builder");
+    fireEvent.click(
+      within(bob).getByRole("combobox", { name: "Role for Bob Builder" }),
+    );
+    fireEvent.click(await screen.findByRole("option", { name: "Viewer" }));
+    await waitFor(() =>
+      expect(puts.at(-1)).toEqual(
+        expect.objectContaining({
+          path: `/api/v1/spaces/${ID}/members/${BOB}`,
+          body: { role: "viewer" },
+        }),
+      ),
+    );
+    fireEvent.click(
+      within(await openMenu("Bob Builder")).getByRole("menuitem", {
+        name: "Remove from Engineering…",
+      }),
+    );
+    fireEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Remove",
+      }),
+    );
+    await waitFor(() =>
+      expect(dels.at(-1)?.path).toBe(`/api/v1/spaces/${ID}/members/${BOB}`),
+    );
+  });
+}
+
+// Every space groups keep their floor on Team and the trial, as on Business frozen.
+const everyEditor = person({
+  userId: "e3",
+  user: { id: "e3", name: "Ivy Stone", email: "ivy@example.com" },
+  role: "editor",
+  source: "sync",
+  syncRole: "editor",
+  groups: [
+    { ...eng, role: "editor", via: "space" },
+    { ...exec, role: "editor", via: "every" },
+  ],
+});
+for (const tier of ["business", "team", "trial"] as const) {
+  it(`${tier} + frozen: an Every space group keeps the floor`, async () => {
+    mountHosted(ENG, { directory: "frozen" }, asTier(tier), [
+      serve([everyOnly, everyEditor]),
+    ]);
+    const eve = await row("Eve Park");
+    expect(eve).toHaveTextContent("Set by an Every space group.");
+    fireEvent.click(
+      within(eve).getByRole("combobox", { name: "Role for Eve Park" }),
+    );
+    let roles = (await screen.findAllByRole("option")).map(
+      (o) => o.textContent,
+    );
+    expect(roles.some((t) => t?.startsWith("Viewer"))).toBe(false);
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    const ivy = await row("Ivy Stone");
+    expect(ivy).toHaveTextContent(
+      tier === "business"
+        ? "kept from eng@, exec@"
+        : "Editor via exec@ (every space), Editor (manually added)",
+    );
+    if (tier !== "business") {
+      fireEvent.click(
+        within(await openMenu("Ivy Stone")).getByRole("menuitem", {
+          name: /Remove manually added role/,
+        }),
+      );
+      expect(screen.getByRole("alertdialog")).toHaveTextContent(
+        "They keep Editor from an Every space group.",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    }
+    fireEvent.click(
+      within(ivy).getByRole("combobox", { name: "Role for Ivy Stone" }),
+    );
+    roles = (await screen.findAllByRole("option")).map((o) => o.textContent);
+    expect(roles.some((t) => t?.startsWith("Viewer"))).toBe(false);
+    expect(roles.some((t) => t?.startsWith("Manager"))).toBe(true);
+  });
+}
