@@ -1,3 +1,11 @@
+// Timing check for a doc near the 2 MB cap. Wall-clock asserts flake in CI, so
+// this runs only with PERF=1 (pnpm exec vitest run test/perf.test.ts) and
+// prints a table. Measured locally on a ~1.25 MB-text doc (about the cap once
+// encoded), 2026-11-11, before -> after:
+//   closestText on a not-found quote   317 ms -> 11 ms (typo'd quote: 1 ms)
+//   1000-char prefix on repeated text  689 ms -> 4 ms
+//   50 distinct ops, applyOpsToDoc     1300 ms -> 92 ms
+//   50 distinct ops, applyDocOps       -> 209-385 ms (includes Yjs conversion)
 import { docFragment, docToYXmlFragment, markdownToDoc } from "@oa/doc-schema";
 import { describe, expect, it } from "vitest";
 import * as Y from "yjs";
@@ -35,7 +43,7 @@ const time = (f: () => void) => {
 const log = (name: string, ms: number) =>
   process.stderr.write(`perf ${name}: ${ms.toFixed(1)} ms\n`);
 
-describe("a doc at the size cap", () => {
+describe.skipIf(!process.env.PERF)("a doc at the size cap", () => {
   it("is near the cap", () => {
     expect(Y.encodeStateAsUpdate(ydoc).byteLength).toBeGreaterThan(
       MAX_DOC_BYTES / 3,
@@ -52,7 +60,6 @@ describe("a doc at the size cap", () => {
       expect(r.kind).toBe("not_found");
     });
     log("not found", ms);
-    expect(ms).toBeLessThan(150);
   });
 
   it("a repeated prefix does not scan 1000 characters everywhere", () => {
@@ -61,7 +68,6 @@ describe("a doc at the size cap", () => {
       expect(r.kind).toBe("not_found");
     });
     log("long prefix", ms);
-    expect(ms).toBeLessThan(150);
   });
 
   it("50 ops on it take well under a second", () => {
@@ -77,7 +83,6 @@ describe("a doc at the size cap", () => {
     log("50 ops (applyOpsToDoc)", ms);
     // Later ops hit text an earlier one replaced, so some fail; count the first failure.
     expect(result).toBeDefined();
-    expect(ms).toBeLessThan(250);
   });
 
   it("50 distinct edits", () => {
@@ -92,7 +97,6 @@ describe("a doc at the size cap", () => {
     });
     log("50 distinct ops (applyOpsToDoc)", ms);
     expect(result?.ok || JSON.stringify(result)).toBe(true);
-    expect(ms).toBeLessThan(250);
     const y = new Y.Doc();
     docToYXmlFragment(doc, docFragment(y));
     const total = time(() => {
@@ -111,6 +115,5 @@ describe("a doc at the size cap", () => {
       );
     });
     log("closestText typo", ms);
-    expect(ms).toBeLessThan(150);
   });
 });

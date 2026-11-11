@@ -81,3 +81,58 @@ describe("closestText", () => {
     expect(performance.now() - start).toBeLessThan(2000);
   });
 });
+
+describe("lookup correctness", () => {
+  const md = "alpha one\n\nbeta two\n\nalpha three\n\nbeta four\n";
+  const { doc } = markdownToDoc(md);
+  const textOf = (r: ReturnType<typeof findQuote>) =>
+    r.kind === "found"
+      ? doc.textBetween(r.match.from, r.match.to, "\n")
+      : r.kind;
+
+  it("maps every found range back to the quoted text", () => {
+    for (const q of ["one", "beta two", "alpha three", "four", "e\n\nbeta t"]) {
+      const r = findQuote(doc, q);
+      expect(textOf(r).replace(/\n+/g, "\n")).toBe(q.replace(/\n+/g, "\n"));
+    }
+  });
+
+  it("a prefix or suffix picks the right repeat, across a block break", () => {
+    expect(textOf(findQuote(doc, "alpha", undefined, " three"))).toBe("alpha");
+    const r = findQuote(doc, "alpha", undefined, " three");
+    expect(
+      r.kind === "found" && doc.textBetween(r.match.to, r.match.to + 6),
+    ).toBe(" three");
+    const p = findQuote(doc, "beta", "one\n\n");
+    expect(
+      p.kind === "found" && doc.textBetween(p.match.to, p.match.to + 4),
+    ).toBe(" two");
+    const q = findQuote(doc, "beta", "three\n");
+    expect(
+      q.kind === "found" && doc.textBetween(q.match.to, q.match.to + 5),
+    ).toBe(" four");
+    expect(findQuote(doc, "beta", "alpha").kind).toBe("not_found");
+    expect(findQuote(doc, "alpha", undefined, " nine").kind).toBe("not_found");
+  });
+
+  it("a match at the very start and end of the doc", () => {
+    expect(textOf(findQuote(doc, "alpha one"))).toBe("alpha one");
+    expect(textOf(findQuote(doc, "four", "beta "))).toBe("four");
+    expect(textOf(findQuote(doc, "alpha", "")).length).toBeGreaterThan(0);
+  });
+
+  it("closestText finds a typo'd quote among many look-alikes", () => {
+    const filler = "the quick brown fox jumps over the lazy dog. ".repeat(2000);
+    const text = `${filler}Needle phrase with a distinctive tail ending here. ${filler}`;
+    expect(
+      closestText(text, "needle phrase with a distinctve tail endng here"),
+    ).toBe("Needle phrase with a distinctive tail ending here.");
+    // A piece near the start and one near the end of the quote both locate it.
+    expect(
+      closestText(
+        text,
+        "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXX distinctive tail ending here.",
+      ),
+    ).toBe("a distinctive tail ending here.");
+  });
+});
