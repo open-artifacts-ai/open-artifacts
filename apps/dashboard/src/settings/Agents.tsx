@@ -31,6 +31,7 @@ import { Modal } from "../layout/Modal";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
 import { relativeTime } from "../library/time";
+import { TabStrip } from "../viewer/panels/SidePanel";
 import { AgentRow } from "./AgentRow";
 import {
   AgentSetupCard,
@@ -85,23 +86,26 @@ function SnippetTabs({
       onValueChange={(v) => setPicked(list[Number(v)]?.agent)}
       className={`min-w-0 ${GAP}`}
     >
-      {/* On phones the strip wraps onto a second row instead of scrolling, so
-          every client stays in view. The hairline is an inset shadow, the
-          underline sits at the bottom edge, and the focus ring is inset. */}
-      <TabsList
-        variant="line"
-        className="w-full flex-wrap justify-start gap-x-[var(--oa-space-4)] gap-y-[var(--oa-space-1)] rounded-none p-0 shadow-[inset_0_-1px_0_var(--color-border)] group-data-[orientation=horizontal]/tabs:h-auto"
-      >
-        {list.map(({ agent }, i) => (
-          <TabsTrigger
-            key={agent}
-            value={String(i)}
-            className="h-[34px] flex-none px-0 text-[length:var(--oa-text-sm)] group-data-[orientation=horizontal]/tabs:after:bottom-0 group-data-[orientation=horizontal]/tabs:after:h-[2px] focus-visible:outline-offset-[-2px]"
-          >
-            {agent}
-          </TabsTrigger>
-        ))}
-      </TabsList>
+      {/* Nine clients rarely fit: the strip scrolls sideways, with a fade on
+          each cut edge and the picked tab kept in view (the viewer panel's
+          TabStrip). The hairline is an inset shadow, the underline sits at the
+          bottom edge, and the focus ring is inset. */}
+      <TabStrip tab={String(current)} count={list.length} className="">
+        <TabsList
+          variant="line"
+          className="flex w-auto justify-start gap-x-[var(--oa-space-4)] overflow-x-auto overflow-y-hidden rounded-none p-0 shadow-[inset_0_-1px_0_var(--color-border)] [scrollbar-width:none] group-data-[orientation=horizontal]/tabs:h-auto"
+        >
+          {list.map(({ agent }, i) => (
+            <TabsTrigger
+              key={agent}
+              value={String(i)}
+              className="h-[34px] flex-none px-0 text-[length:var(--oa-text-sm)] group-data-[orientation=horizontal]/tabs:after:bottom-0 group-data-[orientation=horizontal]/tabs:after:h-[2px] focus-visible:outline-offset-[-2px]"
+            >
+              {agent}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </TabStrip>
       {list.map(({ agent, s }, i) => (
         <TabsContent
           key={agent}

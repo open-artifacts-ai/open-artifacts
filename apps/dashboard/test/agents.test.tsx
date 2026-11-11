@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   hostSlug,
   R,
@@ -345,10 +348,24 @@ describe("snippets parse in their target format", () => {
       }
       if (s.language === "bash") {
         execFileSync("bash", ["-n", "-c", s.code]);
-        const argv = execFileSync("bash", [
-          "-c",
-          `claude() { printf '%s\\0' "$@"; }; codex() { claude "$@"; }; pi() { claude "$@"; }; hermes() { claude "$@"; }; openclaw() { claude "$@"; }; ${s.code}`,
-        ])
+        // Every agent CLI is a shell function that only prints its argv, and
+        // PATH is empty with a throwaway HOME, so no real binary or config can
+        // be reached (a snippet once ran the real pi).
+        const stubs = [
+          "claude",
+          "codex",
+          "pi",
+          "omp",
+          "hermes",
+          "openclaw",
+          "opencode",
+          "oa-bus",
+        ]
+          .map((n) => `${n}() { printf '%s\\0' "$@"; };`)
+          .join(" ");
+        const argv = execFileSync("/bin/bash", ["-c", `${stubs} ${s.code}`], {
+          env: { HOME: mkdtempSync(join(tmpdir(), "oa-snip-")), PATH: "" },
+        })
           .toString()
           .split("\0");
         // OAuth passes the url as an argument; add-json inside the config.
