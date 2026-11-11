@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import type { AdapterDeps } from "./adapters.ts";
 import { HABITS_MARKER_TEXT, pluginHash } from "./hermes.ts";
 import { writeAtomic } from "./skill.ts";
+import { readInstallFile, updateInstallFile } from "./step.ts";
 
 /** The plugin's id in openclaw.plugin.json, and its folder under extensions/. */
 export const OPENCLAW_PLUGIN_ID = "oa-bus";
@@ -173,6 +174,23 @@ export function openclawPluginState(
     return "stale";
   }
 }
+
+/**
+ * Install notes in <bus home>/install.json which state dir it put the plugin in.
+ * Uninstall runs OpenClaw's own uninstall for a folder that is gone only when
+ * this says we installed it, so a user who never did sees nothing.
+ */
+const installFile = (deps: Pick<AdapterDeps, "home" | "busHome">): string =>
+  join(deps.busHome ?? join(deps.home, ".oa-bus"), "install.json");
+const recordedStateDir = (deps: AdapterDeps): string | undefined => {
+  const r = readInstallFile(installFile(deps)).openclaw;
+  const d = (r as { stateDir?: unknown } | null)?.stateDir;
+  return typeof d === "string" ? d : undefined;
+};
+const forgetInstall = (deps: AdapterDeps) => {
+  if (recordedStateDir(deps) !== undefined)
+    updateInstallFile(installFile(deps), { openclaw: {} });
+};
 
 const exec = async (
   deps: Pick<AdapterDeps, "exec" | "home" | "env">,
@@ -330,6 +348,9 @@ export async function installOpenclaw(
       join(dest, OPENCLAW_MARKER),
       `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
     );
+    updateInstallFile(installFile(deps), {
+      openclaw: { stateDir: openclawStateDir(deps.home, deps.env ?? {}) },
+    });
     // A habits.on in the shipped folder is not the user's yes.
     rmSync(habitsFile, { force: true });
     restore();
@@ -360,14 +381,23 @@ export async function uninstallOpenclaw(
     // The folder may have been deleted by hand, leaving OpenClaw's config entry
     // behind. OpenClaw's own uninstall clears an orphaned record; we never edit
     // its config. Nothing to keep here, so a failure is a note, not an error.
-    if (openclawNix(deps.env) || !deps.which("openclaw")) return "none";
+    // Only when our install record says we put the plugin in this state dir.
+    if (
+      recordedStateDir(deps) !== openclawStateDir(deps.home, deps.env ?? {}) ||
+      openclawNix(deps.env) ||
+      !deps.which("openclaw")
+    )
+      return "none";
     const r = await exec(deps, [
       "plugins",
       "uninstall",
       "--force",
       OPENCLAW_PLUGIN_ID,
     ]);
-    if (r.code === 0) return "done";
+    if (r.code === 0) {
+      forgetInstall(deps);
+      return "done";
+    }
     notes.push(OPENCLAW_STRAY_NOTE(why(r)));
     return "none";
   }
@@ -389,6 +419,7 @@ export async function uninstallOpenclaw(
       );
   } else notes.push(OPENCLAW_NO_CLI);
   rmSync(dest, { recursive: true, force: true });
+  forgetInstall(deps);
   return "done";
 }
 
