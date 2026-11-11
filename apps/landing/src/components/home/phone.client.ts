@@ -75,6 +75,29 @@ export function initPhone(lp: HTMLElement, reduce: boolean) {
     });
   });
 
+  /* live poll: four votes arrive as the card plays, then a tap toggles yours */
+  const pollBtns = $$(".poll button", live);
+  const arrived = [0, 0, 0];
+  let myVote: number | null = null;
+  const drawPoll = () => {
+    const v = arrived.map((n, i) => n + (myVote === i ? 1 : 0));
+    const total = v[0] + v[1] + v[2];
+    pollBtns.forEach((b, i) => {
+      $("b", b).textContent = String(v[i]);
+      $("i", b).style.width = `${total ? (v[i] / total) * 100 : 0}%`;
+      b.setAttribute("aria-pressed", String(myVote === i));
+    });
+    $("[data-pcnt]", live).textContent =
+      `${total} ${total === 1 ? "vote" : "votes"}`;
+  };
+  pollBtns.forEach((b, i) => {
+    b.addEventListener("click", () => {
+      myVote = myVote === i ? null : i;
+      drawPoll();
+    });
+  });
+  drawPoll();
+
   /* versions */
   const ver = mp("ver");
   const list = $(".vlist", ver);
@@ -149,6 +172,8 @@ export function initPhone(lp: HTMLElement, reduce: boolean) {
       bump($("[data-ver]", m), "v2");
     },
     live: (_m, k) => {
+      arrived[[1, 0, 1, 1][k - 1]]++;
+      drawPoll();
       const i = k - 1;
       if (touchedItems[i]) return;
       items[i].classList.add("ck");

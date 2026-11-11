@@ -23,150 +23,155 @@ const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const narrow = () => lp.clientWidth <= 820;
 lp.classList.add("lp-js");
 
-/* ---- before and after ---- */
-const ba = $("#ba"),
-  term = $("#term"),
-  trs = $("#trs"),
-  trstat = $("#trstat"),
-  arstat = $("#arstat");
-let look: Look = "claude";
-let run = 0,
-  cur: Question | "" = "dec",
-  touched = false;
+/* ---- before and after (only when the hero has it) ---- */
+if (lp.querySelector("#ba")) {
+  const ba = $("#ba"),
+    term = $("#term"),
+    trs = $("#trs"),
+    trstat = $("#trstat"),
+    arstat = $("#arstat");
+  let look: Look = "claude";
+  let run = 0,
+    cur: Question | "" = "dec",
+    touched = false;
 
-function draw(l: Look) {
-  look = l;
-  term.dataset.look = l;
-  $("#tname").textContent = l;
-  const none = trs.querySelector(".none") as HTMLElement;
-  trs.replaceChildren(none);
-  for (const ln of lines(l)) {
-    const p = document.createElement("p");
-    if (ln.cls) p.className = ln.cls;
-    if (ln.tag) p.dataset.tag = ln.tag;
-    p.textContent = ln.text;
-    if (ln.sub) {
-      const s = document.createElement("span");
-      s.className = "sub";
-      s.textContent = ln.sub;
-      p.append(s);
+  function draw(l: Look) {
+    look = l;
+    term.dataset.look = l;
+    $("#tname").textContent = l;
+    const none = trs.querySelector(".none") as HTMLElement;
+    trs.replaceChildren(none);
+    for (const ln of lines(l)) {
+      const p = document.createElement("p");
+      if (ln.cls) p.className = ln.cls;
+      if (ln.tag) p.dataset.tag = ln.tag;
+      p.textContent = ln.text;
+      if (ln.sub) {
+        const s = document.createElement("span");
+        s.className = "sub";
+        s.textContent = ln.sub;
+        p.append(s);
+      }
+      trs.append(p);
     }
-    trs.append(p);
+    for (const b of $$(".x-look button")) press(b, b.dataset.look === l);
   }
-  for (const b of $$(".x-look button")) press(b, b.dataset.look === l);
-}
-function targetFor(q: Question) {
-  if (q === "team") return 0;
-  const el = trs.querySelector<HTMLElement>(
-    `[data-tag=${q === "dec" ? "dec" : "chg"}]`,
-  ) as HTMLElement;
-  const max = trs.scrollHeight - trs.clientHeight;
-  return Math.max(
-    0,
-    Math.min(
-      max,
-      el.offsetTop - trs.offsetTop - trs.clientHeight / 2 + el.offsetHeight / 2,
-    ),
-  );
-}
-function show(side: string) {
-  ba.dataset.show = side;
-  for (const b of $$(".x-flip button")) press(b, b.dataset.side === side);
-  // Coming back to the transcript, the answer is where the last question left it.
-  if (side === "tr" && cur && ba.hasAttribute("data-landed"))
-    trs.scrollTop = targetFor(cur);
-}
-function land(q: Question) {
-  const ps = $$("#trs p:not(.none)");
-  for (const e of ps) e.classList.remove("hit");
-  term.removeAttribute("data-none");
-  if (q === "dec")
-    ps.find((p) => p.dataset.tag === "dec")?.classList.add("hit");
-  else if (q === "chg") {
-    for (const p of ps) if (p.dataset.tag === "chg") p.classList.add("hit");
-  } else term.setAttribute("data-none", "");
-  trstat.textContent = transcriptStatus(q, lines(look));
-}
-function ask(q: Question) {
-  const id = ++run;
-  cur = q;
-  ba.dataset.q = q;
-  ba.removeAttribute("data-landed");
-  for (const b of $$(".x-qs button")) press(b, b.dataset.q === q);
-  for (const e of $$("#trs .hit")) e.classList.remove("hit");
-  term.removeAttribute("data-none");
-  for (const b of $$(".x-blk")) b.classList.toggle("hit", b.id === `b-${q}`);
-  const blk = $(`#b-${q}`),
-    body = blk.parentElement as HTMLElement;
-  body.scrollTop = q === "dec" ? 0 : blk.offsetTop - body.offsetTop - 8;
-  arstat.textContent = ARTIFACT_STATUS[q];
-  const max = trs.scrollHeight - trs.clientHeight;
-  const target = targetFor(q);
-  const done = () => {
-    if (id !== run) return;
-    land(q);
-    if (q === "team") trs.scrollTop = 0;
-    // On a phone the "Now see it in an artifact" button shows once this lands.
-    ba.setAttribute("data-landed", "");
-  };
-  // Reduced motion, or the transcript is on the hidden side: land at once.
-  if (reduce || !trs.clientHeight) {
-    trs.scrollTop = target;
-    done();
-    return;
-  }
-  trstat.textContent = "Scrolling back…";
-  trs.scrollTop = max;
-  const dur = q === "team" ? 2600 : q === "chg" ? 2200 : 1800,
-    t0 = performance.now();
-  (function step(now: number) {
-    if (id !== run) return;
-    const p = Math.min(1, (now - t0) / dur),
-      e = p < 0.5 ? 2 * p * p : 1 - (-2 * p + 2) ** 2 / 2;
-    trs.scrollTop = max + (target - max) * e;
-    if (p < 1) requestAnimationFrame(step);
-    else done();
-  })(t0);
-}
-for (const b of $$(".x-qs button"))
-  b.addEventListener("click", () => {
-    touched = true;
-    ask(b.dataset.q as Question);
-  });
-for (const b of $$(".x-flip button"))
-  b.addEventListener("click", () => {
-    touched = true;
-    show(b.dataset.side as string);
-  });
-$("#nudge").addEventListener("click", () => {
-  touched = true;
-  show("ar");
-  $(".x-flip button[data-side=ar]").focus({ preventScroll: true });
-});
-for (const b of $$(".x-look button"))
-  b.addEventListener("click", () => {
-    touched = true;
-    draw(b.dataset.look as Look);
-    if (cur) ask(cur);
-    else trs.scrollTop = trs.scrollHeight;
-  });
-// The first question plays once on load, unless the reader already picked one.
-trs.scrollTop = trs.scrollHeight;
-if (!reduce)
-  setTimeout(() => {
-    if (!touched) ask("dec");
-  }, 900);
-else {
-  trs.scrollTop = 0;
-  const hit = trs.querySelector<HTMLElement>(".hit");
-  if (hit)
-    trs.scrollTop = Math.max(
+  function targetFor(q: Question) {
+    if (q === "team") return 0;
+    const el = trs.querySelector<HTMLElement>(
+      `[data-tag=${q === "dec" ? "dec" : "chg"}]`,
+    ) as HTMLElement;
+    const max = trs.scrollHeight - trs.clientHeight;
+    return Math.max(
       0,
-      hit.offsetTop -
-        trs.offsetTop -
-        trs.clientHeight / 2 +
-        hit.offsetHeight / 2,
+      Math.min(
+        max,
+        el.offsetTop -
+          trs.offsetTop -
+          trs.clientHeight / 2 +
+          el.offsetHeight / 2,
+      ),
     );
+  }
+  function show(side: string) {
+    ba.dataset.show = side;
+    for (const b of $$(".x-flip button")) press(b, b.dataset.side === side);
+    // Coming back to the transcript, the answer is where the last question left it.
+    if (side === "tr" && cur && ba.hasAttribute("data-landed"))
+      trs.scrollTop = targetFor(cur);
+  }
+  function land(q: Question) {
+    const ps = $$("#trs p:not(.none)");
+    for (const e of ps) e.classList.remove("hit");
+    term.removeAttribute("data-none");
+    if (q === "dec")
+      ps.find((p) => p.dataset.tag === "dec")?.classList.add("hit");
+    else if (q === "chg") {
+      for (const p of ps) if (p.dataset.tag === "chg") p.classList.add("hit");
+    } else term.setAttribute("data-none", "");
+    trstat.textContent = transcriptStatus(q, lines(look));
+  }
+  function ask(q: Question) {
+    const id = ++run;
+    cur = q;
+    ba.dataset.q = q;
+    ba.removeAttribute("data-landed");
+    for (const b of $$(".x-qs button")) press(b, b.dataset.q === q);
+    for (const e of $$("#trs .hit")) e.classList.remove("hit");
+    term.removeAttribute("data-none");
+    for (const b of $$(".x-blk")) b.classList.toggle("hit", b.id === `b-${q}`);
+    const blk = $(`#b-${q}`),
+      body = blk.parentElement as HTMLElement;
+    body.scrollTop = q === "dec" ? 0 : blk.offsetTop - body.offsetTop - 8;
+    arstat.textContent = ARTIFACT_STATUS[q];
+    const max = trs.scrollHeight - trs.clientHeight;
+    const target = targetFor(q);
+    const done = () => {
+      if (id !== run) return;
+      land(q);
+      if (q === "team") trs.scrollTop = 0;
+      // On a phone the "Now see it in an artifact" button shows once this lands.
+      ba.setAttribute("data-landed", "");
+    };
+    // Reduced motion, or the transcript is on the hidden side: land at once.
+    if (reduce || !trs.clientHeight) {
+      trs.scrollTop = target;
+      done();
+      return;
+    }
+    trstat.textContent = "Scrolling back…";
+    trs.scrollTop = max;
+    const dur = q === "team" ? 2600 : q === "chg" ? 2200 : 1800,
+      t0 = performance.now();
+    (function step(now: number) {
+      if (id !== run) return;
+      const p = Math.min(1, (now - t0) / dur),
+        e = p < 0.5 ? 2 * p * p : 1 - (-2 * p + 2) ** 2 / 2;
+      trs.scrollTop = max + (target - max) * e;
+      if (p < 1) requestAnimationFrame(step);
+      else done();
+    })(t0);
+  }
+  for (const b of $$(".x-qs button"))
+    b.addEventListener("click", () => {
+      touched = true;
+      ask(b.dataset.q as Question);
+    });
+  for (const b of $$(".x-flip button"))
+    b.addEventListener("click", () => {
+      touched = true;
+      show(b.dataset.side as string);
+    });
+  $("#nudge").addEventListener("click", () => {
+    touched = true;
+    show("ar");
+    $(".x-flip button[data-side=ar]").focus({ preventScroll: true });
+  });
+  for (const b of $$(".x-look button"))
+    b.addEventListener("click", () => {
+      touched = true;
+      draw(b.dataset.look as Look);
+      if (cur) ask(cur);
+      else trs.scrollTop = trs.scrollHeight;
+    });
+  // The first question plays once on load, unless the reader already picked one.
+  trs.scrollTop = trs.scrollHeight;
+  if (!reduce)
+    setTimeout(() => {
+      if (!touched) ask("dec");
+    }, 900);
+  else {
+    trs.scrollTop = 0;
+    const hit = trs.querySelector<HTMLElement>(".hit");
+    if (hit)
+      trs.scrollTop = Math.max(
+        0,
+        hit.offsetTop -
+          trs.offsetTop -
+          trs.clientHeight / 2 +
+          hit.offsetHeight / 2,
+      );
+  }
 }
 
 /* ---- phone chapters ---- */
@@ -205,7 +210,11 @@ const ver = $("#ver"),
   track = $("#track"),
   clip = track.parentElement as HTMLElement;
 const items = $$("#cl li"),
-  opts = $$(".opt");
+  opts = $$(".opt"),
+  pollBtns = $$("#poll button");
+let userVote: number | null = null;
+// A tiny helper: the first matching element inside a parent.
+const $in = (s: string, r: HTMLElement) => r.querySelector(s) as HTMLElement;
 let userPick: string | null = null,
   T = -1,
   lastVer = "";
@@ -238,9 +247,10 @@ function render(force = false) {
   const step = Math.floor(t / 10);
   stage.dataset.step = String(step);
   for (const e of ons) e.classList.toggle("on", t >= Number(e.dataset.on));
-  // The checklist is out of reach until it has appeared.
-  ($("#cl") as HTMLElement & { inert: boolean }).inert =
-    !$("#cl").classList.contains("on");
+  // The poll and checklist are out of reach until they have appeared.
+  for (const id of ["#poll", "#cl"])
+    ($(id) as HTMLElement & { inert: boolean }).inert =
+      !$(id).classList.contains("on");
   chs.forEach((c, i) => {
     c.classList.toggle("cur", i + 1 === step || (step === 0 && i === 0));
   });
@@ -305,9 +315,23 @@ function render(force = false) {
   });
   $("#cnt").textContent = `${n} of 5`;
   ($("#cbar") as HTMLElement).style.width = `${n * 20}%`;
+  // The poll: four votes arrive as the chapter plays, then the reader's own
+  // click toggles one more.
+  const votes = [0, 0, 0];
+  [1, 0, 1, 1].forEach((day, i) => {
+    if (t >= 40 + i) votes[day]++;
+  });
+  if (userVote !== null) votes[userVote]++;
+  const total = votes[0] + votes[1] + votes[2];
+  pollBtns.forEach((b, i) => {
+    $in("b", b).textContent = String(votes[i]);
+    $in("i", b).style.width = `${total ? (votes[i] / total) * 100 : 0}%`;
+    press(b, userVote === i);
+  });
+  $("#pcnt").textContent = `${total} ${total === 1 ? "vote" : "votes"}`;
   const need = Math.max(
     0,
-    Math.min($("#clh").offsetTop - 10, track.scrollHeight - clip.clientHeight),
+    Math.min($("#plh").offsetTop - 10, track.scrollHeight - clip.clientHeight),
   );
   const lnTop = Math.max(0, ln.offsetTop - 10);
   track.style.transform =
@@ -338,6 +362,12 @@ for (const o of opts)
     userPick = o.dataset.k as string;
     render(true);
   });
+pollBtns.forEach((b, i) => {
+  b.addEventListener("click", () => {
+    userVote = userVote === i ? null : i;
+    render(true);
+  });
+});
 items.forEach((li, i) => {
   (li.querySelector("button") as HTMLElement).addEventListener("click", () => {
     user[i] = !li.classList.contains("ck");
@@ -355,7 +385,9 @@ render(true);
 /* ---- pause the animations when their section is off screen ---- */
 if ("IntersectionObserver" in window) {
   const seen = new Set<Element>();
-  const targets = [$(".x-ba"), $(".x-busg"), $("#story"), $(".x-intro")];
+  const targets = ["header.hero", ".sbs", ".x-ba", "#story", ".x-intro"]
+    .map((s) => lp.querySelector(s))
+    .filter((e): e is Element => !!e);
   const io = new IntersectionObserver((es) => {
     for (const e of es)
       if (e.isIntersecting) seen.add(e.target);

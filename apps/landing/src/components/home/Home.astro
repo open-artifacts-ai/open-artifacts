@@ -1,69 +1,65 @@
 ---
-// The landing page body (#1457): hero with the before/after demo, the problem,
-// a scroll story, the bus, proof, ownership, pricing, self-host and the close.
-// Everything renders in its landed state in HTML; home.client.ts enhances it.
+// The landing page body (#1457): hero with a demo, the problem, a scroll story,
+// pricing, self-host and the close. Everything renders in its landed state in
+// HTML; home.client.ts enhances it.
 import { REPO_URL } from "@oa/shared";
 import { signupHref } from "../../lib/hero";
-import Agent from "./Agent.astro";
 import BeforeAfter from "./BeforeAfter.astro";
 import Pricing from "./Pricing.astro";
+import SideBySide from "./SideBySide.astro";
 import Story from "./Story.astro";
 import "./home.css";
+
+// The two picks the page waits on. Each is a one-line change.
+// HERO: "side" (a transcript scrolling beside the artifact), "questions"
+// (the interactive before/after with three question chips) or "plain" (no demo).
+// HEADLINE: "stop", "bad" or "coding".
+const HERO = "side" as "side" | "questions" | "plain";
+const HEADLINE = "stop" as "stop" | "bad" | "coding";
+
+const HEADLINES = {
+  stop: {
+    h1: "Stop reading transcripts.",
+    problem: "Transcripts are a bad place to do work.",
+    kicker: "Chat is great for asking, and bad for keeping.",
+  },
+  bad: {
+    h1: "Transcripts are a bad place to do work.",
+    problem: "Chat is great for asking, and bad for keeping.",
+    kicker: null,
+  },
+  coding: {
+    h1: "Coding agent transcripts are a bad place to do work.",
+    problem: "Chat is great for asking, and bad for keeping.",
+    kicker: null,
+  },
+};
+const words = HEADLINES[HEADLINE];
 
 const signup = signupHref(import.meta.env.HOSTED_SIGNUP_URL);
 const prompt = "install open-artifacts.com/llms.txt";
 const [promptLead, promptUrl] = prompt.split(/(?<=install )/);
+const cue = "Scroll to follow one artifact through its first week.";
 ---
-<div class="lp" id="lp">
+<div class="lp" id="lp" data-hl={HEADLINE} data-hero={HERO}>
   <header class="hero" id="top"><div class="wrap">
     <p class="x-eb">For people and agents, on any model</p>
-    <h1>Stop reading transcripts.</h1>
+    <h1>{words.h1}</h1>
     <p class="lede">Your agents put their work in an artifact. Your team reads it, comments and decides, right where the work is. Works with Claude, Codex, Gemini or any agent.</p>
     <div class="btns"><a class="btn p" href={signup}>Start free for 30 days</a><a class="btn" href="#self-host">Self-host it</a></div>
     <p class="fine">No card needed. Then $1 a month. Open source, MIT licensed.</p>
+    {HERO === "plain" && <p class="cue"><i aria-hidden="true"></i>{cue}</p>}
   </div>
-  <BeforeAfter />
+  {HERO === "side" && <SideBySide />}
+  {HERO === "questions" && <BeforeAfter />}
   </header>
 
   <section class="x-sec x-problem" aria-labelledby="problem-h"><div class="wrap x-prob">
-    <div><h2 id="problem-h">Transcripts are a bad place to do work.</h2><p class="x-kick">Chat is great for asking, and bad for keeping.</p></div>
+    <div><h2 id="problem-h">{words.problem}</h2>{words.kicker && <p class="x-kick">{words.kicker}</p>}</div>
     <ul class="x-loss"><li><span>You</span>scroll back to find the decision.</li><li><span>Your agent</span>forgets it after compaction.</li><li><span>Your team</span>never saw the chat at all.</li></ul>
   </div></section>
 
-  <Story />
-
-  <section class="x-sec x-band" aria-labelledby="bus-h"><div class="wrap x-busg">
-    <div><h2 id="bus-h">Agents that work together.</h2><p class="x-lede">Your agents message each other across machines and harnesses, and you see it all in artifacts.</p></div>
-    <div class="x-bus" aria-hidden="true">
-      <div class="x-ags">
-        <div class="x-agc"><Agent /><b>Backend</b><small>Claude Code, your laptop</small><p class="x-msg m1">Schema change is up for review.</p></div>
-        <div class="x-agc"><Agent class="b" /><b>Reviewer</b><small>Codex, a workstation</small><p class="x-msg m2">Reviewed. One fix on line 40.</p></div>
-        <div class="x-agc"><Agent class="x-g3" /><b>Release</b><small>OpenCode, a server</small><p class="x-msg m3">Fixed and on staging.</p></div>
-      </div>
-      <div class="x-wire"><i></i></div>
-      <div class="x-rel"><div class="x-abar"><span class="t">Release status</span><span class="x-sp"></span><span class="chip ver">v7</span></div>
-        <div class="x-rr"><span>Schema change</span><span class="x-pill r1">reviewed</span></div>
-        <div class="x-rr"><span>Fix from review</span><span class="x-pill r2">merged</span></div>
-        <div class="x-rr"><span>Staging</span><span class="x-pill r3">live</span></div></div>
-    </div>
-  </div></section>
-
-  <section class="x-sec x-proof" aria-labelledby="proof-h"><div class="wrap x-proofg">
-    <div><h2 id="proof-h">We build Open Artifacts with Open Artifacts.</h2>
-      <p class="x-lede">A team of agent leads ships this product. Every plan, spec, status report and decision lives in an artifact.</p></div>
-    <div class="x-tri" role="group" aria-label="A real thread from our milestone triage">
-      <div class="x-trh"><b>Milestone triage</b><span>4 comments, all resolved</span></div>
-      <div class="x-cm"><span class="pp" aria-hidden="true">DP</span><p><b>Dana</b>Is the pin work already done?</p></div>
-      <div class="x-cm"><Agent class="b" /><p><b>OA Design <span class="x-tag">agent</span></b>Half done: placement is merged, two tests are left.</p></div>
-      <div class="x-cm"><span class="pp" aria-hidden="true">DP</span><p><b>Dana</b>Accept the logo change.</p></div>
-      <div class="x-cm"><Agent class="x-g3" /><p><b>OA Contributions <span class="x-tag">agent</span></b>Done. I asked the contributor for screenshots before the merge.</p></div>
-    </div>
-  </div></section>
-
-  <section class="x-sec" aria-labelledby="own-h"><div class="wrap x-own">
-    <div><h2 id="own-h">Own your work. Share it with anyone.</h2><p class="x-lede">Open Artifacts is open source under the MIT license. Use our hosted version, or run your own copy in your own account. Your artifacts, versions and comments are yours.</p></div>
-    <span class="x-mit">MIT licensed</span>
-  </div></section>
+  <Story cue={HERO !== "plain"} scripted={HERO === "plain"} />
 
   <Pricing signup={signup} />
 
