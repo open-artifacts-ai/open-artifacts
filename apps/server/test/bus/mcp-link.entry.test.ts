@@ -114,7 +114,10 @@ describe("/mcp entry points ask the credential owner's hub (#1822)", () => {
     watchHandler();
     const r = await callWorker(mcpReq(pat.token, proof), ev);
     expect(r.status).toBe(200);
-    expect(asked).toEqual([`bus:${a.userId}`]);
+    // The lookup may start after the answer (it is bounded, not cancelled).
+    await vi.waitFor(() => expect(asked).toEqual([`bus:${a.userId}`]), {
+      timeout: 5000,
+    });
     expect(seen).toEqual([null]);
   });
 
@@ -132,7 +135,10 @@ describe("/mcp entry points ask the credential owner's hub (#1822)", () => {
     watchHandler();
     const r = await callWorker(mcpReq(accessToken, proof), ev);
     expect(r.status).toBe(200);
-    expect(asked).toEqual([`bus:${a.userId}`]);
+    // The lookup may start after the answer (it is bounded, not cancelled).
+    await vi.waitFor(() => expect(asked).toEqual([`bus:${a.userId}`]), {
+      timeout: 5000,
+    });
     expect(seen).toEqual([null]);
   });
 });
@@ -217,21 +223,28 @@ function spyResolve() {
       };
     },
   };
-  return { asked, hashes, ev: E({ BUS_HUB }) };
+  // The lookup runs after a D1 read and is not cancelled when the bound fires,
+  // so it can start after the call has answered: wait for the ask itself.
+  const settled = (n: number) =>
+    vi.waitFor(() => expect(hashes.length).toBeGreaterThanOrEqual(n), {
+      timeout: 5000,
+    });
+  return { asked, hashes, settled, ev: E({ BUS_HUB }) };
 }
 
 describe("/mcp proof by tool argument (#1856)", () => {
-  it("a PAT: the owner's hub resolves it and the handler never sees the key", async () => {
+  it("a PAT: the owner's hub is asked for its hash and the handler never sees the key", async () => {
     const proof = proofOf();
     const a = await bound(proof);
     const pat = await createPat(e, a.userId, "agent-a");
-    const { asked, hashes, ev } = spyResolve();
+    const { asked, hashes, settled, ev } = spyResolve();
     watchBodies();
     const r = await callWorker(
       post(pat.token, call("list_artifacts", { [LINK_PROOF_ARG]: proof })),
       ev,
     );
     expect(r.status).toBe(200);
+    await settled(1);
     expect(asked).toEqual([`bus:${a.userId}`]);
     expect(hashes).toEqual([await sha256Hex(proof)]);
     expect(bodies).toHaveLength(1);
@@ -252,13 +265,14 @@ describe("/mcp proof by tool argument (#1856)", () => {
       cookie: b.cookie,
       userId: b.userId,
     });
-    const { asked, hashes, ev } = spyResolve();
+    const { asked, hashes, settled, ev } = spyResolve();
     watchBodies();
     const r = await callWorker(
       post(accessToken, call("list_artifacts", { [LINK_PROOF_ARG]: proof })),
       ev,
     );
     expect(r.status).toBe(200);
+    await settled(1);
     expect(asked).toEqual([`bus:${b.userId}`]);
     expect(asked).not.toContain(`bus:${a.userId}`);
     expect(hashes).toEqual([await sha256Hex(proof)]);
@@ -307,7 +321,7 @@ describe("/mcp proof by tool argument (#1856)", () => {
     const other = proofOf();
     const a = await bound(good);
     const pat = await createPat(e, a.userId, "agent-a");
-    const { hashes, ev } = spyResolve();
+    const { hashes, settled, ev } = spyResolve();
     watchBodies();
     // Good header, junk argument: linked through the header.
     await callWorker(
@@ -316,37 +330,43 @@ describe("/mcp proof by tool argument (#1856)", () => {
       }),
       ev,
     );
+    await settled(1);
     expect(hashes).toEqual([await sha256Hex(good)]);
     // Bad header, good argument: the header wins, so the bad proof is the one
-    // asked (no fallback to the argument).
-    hashes.length = 0;
+    // asked next (no fallback to the argument). The list is never reset.
     await callWorker(
       post(pat.token, call("list_artifacts", { [LINK_PROOF_ARG]: good }), {
         [LINK_PROOF_HEADER]: other,
       }),
       ev,
     );
-    expect(hashes).toEqual([await sha256Hex(other)]);
+    await settled(2);
+    expect(hashes).toEqual([await sha256Hex(good), await sha256Hex(other)]);
     for (const b of bodies)
       expect(await b.text()).not.toContain(LINK_PROOF_ARG);
   });
 
-  it("a batch: one shared proof links; differing, missing or bad proofs are unlinked; the key is gone from every call", async () => {
+  it("a batch: one shared proof is looked up once; differing, missing or bad proofs are not looked up; the key is gone from every call", async () => {
     const proof = proofOf();
     const a = await bound(proof);
     const pat = await createPat(e, a.userId, "agent-a");
-    const run = async (items: unknown[]) => {
-      const { hashes, ev } = spyResolve();
+    const run = async (items: unknown[], looksUp = false) => {
+      const { hashes, settled, ev } = spyResolve();
       watchBodies();
       await callWorker(post(pat.token, items), ev);
       const text = (await bodies[0]?.text()) ?? "";
       expect(text).not.toContain(LINK_PROOF_ARG);
+      // Only a call that reaches the lookup is waited for; the others never do.
+      if (looksUp) await settled(1);
       return hashes;
     };
-    const same = await run([
-      call("list_artifacts", { [LINK_PROOF_ARG]: proof }, 1),
-      call("list_artifacts", { [LINK_PROOF_ARG]: proof }, 2),
-    ]);
+    const same = await run(
+      [
+        call("list_artifacts", { [LINK_PROOF_ARG]: proof }, 1),
+        call("list_artifacts", { [LINK_PROOF_ARG]: proof }, 2),
+      ],
+      true,
+    );
     expect(same).toEqual([await sha256Hex(proof)]);
     for (const items of [
       [
@@ -385,10 +405,11 @@ describe("/mcp proof by tool argument (#1856)", () => {
     const proof = proofOf();
     const a = await bound(proof);
     const pat = await createPat(e, a.userId, "agent-a");
-    const { hashes, ev } = spyResolve();
+    const { hashes, settled, ev } = spyResolve();
     watchBodies();
     const raw = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_artifacts","arguments":{"\\u005foa_agent_proof":"${proof}"}}}`;
     await callWorker(post(pat.token, raw), ev);
+    await settled(1);
     expect(hashes).toEqual([await sha256Hex(proof)]);
     const text = (await bodies[0]?.text()) ?? "";
     expect(text).not.toContain(proof);
@@ -462,7 +483,7 @@ describe("/mcp proof by tool argument (#1856)", () => {
         ev as never,
       );
       expect(r.status).toBe(200);
-      expect(hubCalls).toBe(1);
+      await vi.waitFor(() => expect(hubCalls).toBe(1), { timeout: 5000 });
       expect(Date.now() - t0).toBeLessThan(2500);
       expect(await bodies[0]?.text()).not.toContain(proof);
     }
@@ -520,7 +541,7 @@ describe("/mcp proof by tool argument (#1856)", () => {
     const proof = proofOf();
     const a = await bound(proof);
     const pat = await createPat(e, a.userId, "agent-a");
-    const { hashes, ev } = spyResolve();
+    const { hashes, settled, ev } = spyResolve();
     watchBodies();
     const r = await callWorker(
       post(
@@ -533,6 +554,7 @@ describe("/mcp proof by tool argument (#1856)", () => {
       ev,
     );
     expect(r.status).toBe(200);
+    await settled(1);
     expect(hashes).toEqual([await sha256Hex(proof)]);
     const rec = bodies[0] as unknown as Request;
     const text = await rec.text();
