@@ -528,13 +528,15 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
   );
   if (!noticeCols.has("ack"))
     sql.exec("alter table notices add column ack text");
-  if (!noticeCols.has("fold_n")) {
+  // #2062: each column is guarded on its own, so a half-applied migrate heals.
+  if (!noticeCols.has("fold_n"))
     sql.exec(
       "alter table notices add column fold_n integer not null default 0",
     );
+  if (!noticeCols.has("fold_ref"))
     sql.exec("alter table notices add column fold_ref text");
+  if (!noticeCols.has("fold_acks"))
     sql.exec("alter table notices add column fold_acks text");
-  }
   sql.exec(HUB_SCHEMA_B7_INDEXES);
   // open-bus #422: when the machine's last daemon socket went (epoch ms);
   // null while it is connected, or not yet seen offline. The alarm closes the
