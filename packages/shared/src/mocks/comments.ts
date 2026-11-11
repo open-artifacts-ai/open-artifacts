@@ -288,6 +288,22 @@ export function createCommentMock({
         comments: f,
         agents: THREAD_AGENTS.map((x) => ({ ...x })),
       });
+      // #2035: a thread with one agent, which fits on one line.
+      const one = [
+        comment("Can you check the footer link?", other, m),
+        comment("Fixed, it points at /pricing now.", agent(true)),
+      ];
+      faces.push({
+        id: newId(),
+        anchor: { kind: "note" },
+        version: 1,
+        status: "open",
+        resolvedBy: null,
+        resolvedAt: null,
+        createdAt: one[0]?.createdAt ?? iso(),
+        comments: one,
+        agents: THREAD_AGENTS.slice(0, 1).map((x) => ({ ...x })),
+      });
     }
     return [
       {
