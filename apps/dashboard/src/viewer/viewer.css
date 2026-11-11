@@ -155,6 +155,24 @@
   width: 18px;
   height: 18px;
 }
+/* The light-ink mark on dark chrome, the dark-ink mark on light. */
+.oa-fsx-dk {
+  display: none;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .oa-fsx-lt {
+    display: none;
+  }
+  :root:not([data-theme="light"]) .oa-fsx-dk {
+    display: block;
+  }
+}
+:root[data-theme="dark"] .oa-fsx-lt {
+  display: none;
+}
+:root[data-theme="dark"] .oa-fsx-dk {
+  display: block;
+}
 .oa-fsx-arrow,
 .oa-fsx-x {
   width: 14px;
@@ -446,6 +464,23 @@ a.oa-lpill-gone {
     animation: none;
   }
 }
+/* Touch: a 44px strip and 40px buttons. */
+@media (pointer: coarse) {
+  .oa-fsbar {
+    height: 44px;
+  }
+  .oa-fsx,
+  .oa-fsbar .oa-fscomments,
+  .oa-fsbar .oa-opencomment,
+  .oa-fsbar .oa-lpill {
+    min-width: 40px;
+    min-height: 40px;
+    justify-content: center;
+  }
+  .oa-fsx::before {
+    display: none;
+  }
+}
 @media print {
   .oa-fsbar {
     display: none;
@@ -539,6 +574,8 @@ a.oa-lpill-gone {
 /* Embeds show no comments, only a way to open the artifact and add one (#682).
    It sits in the full-screen bar, left of the chip, so it never covers it. */
 .oa-opencomment {
+  display: inline-flex;
+  align-items: center;
   padding: 2px 8px;
   border-radius: 6px;
   background: var(--oa-bg);

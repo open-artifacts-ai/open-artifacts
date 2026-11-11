@@ -42,6 +42,7 @@ const cases = [
   ["1280-light", 1280, 800, "light"],
   ["1280-dark", 1280, 800, "dark"],
   ["390-light", 390, 800, "light"],
+  ["390-dark", 390, 800, "dark"],
 ] as const;
 
 for (const [name, width, height, theme] of cases)
@@ -66,21 +67,26 @@ test("strip, public artifact signed out", async ({ page }) => {
   await shot(page, "strip-signed-out");
 });
 
-test("strip, embedded in another site", async ({ page, context }) => {
-  await context.route(
-    (u) => u.href.startsWith(ATTACKER),
-    (r) =>
-      r.fulfill({
-        contentType: "text/html",
-        body: `<!doctype html><title>other site</title><body style="margin:0;background:#eef"><p style="margin:12px">Another site</p><iframe src="${APP}/a/${POLL}/full" style="width:800px;height:500px;border:1px solid #888"></iframe>`,
-      }),
-  );
-  await page.setViewportSize({ width: 1000, height: 640 });
-  await page.goto(ATTACKER);
-  const app = page.frameLocator("iframe");
-  await expect(app.locator(".oa-fsbar")).toBeVisible();
-  await expect(
-    app.frameLocator("iframe.oa-vframe").getByText("Q3 pipeline"),
-  ).toBeVisible();
-  await shot(page, "strip-embedded");
-});
+for (const theme of ["light", "dark"] as const)
+  test(`strip, embedded in another site (${theme})`, async ({
+    page,
+    context,
+  }) => {
+    await page.emulateMedia({ colorScheme: theme });
+    await context.route(
+      (u) => u.href.startsWith(ATTACKER),
+      (r) =>
+        r.fulfill({
+          contentType: "text/html",
+          body: `<!doctype html><title>other site</title><body style="margin:0;background:#eef"><p style="margin:12px">Another site</p><iframe src="${APP}/a/${POLL}/full" style="width:800px;height:500px;border:1px solid #888"></iframe>`,
+        }),
+    );
+    await page.setViewportSize({ width: 1000, height: 640 });
+    await page.goto(ATTACKER);
+    const app = page.frameLocator("iframe");
+    await expect(app.locator(".oa-fsbar")).toBeVisible();
+    await expect(
+      app.frameLocator("iframe.oa-vframe").getByText("Q3 pipeline"),
+    ).toBeVisible();
+    await shot(page, `strip-embedded-${theme}`);
+  });

@@ -132,6 +132,38 @@ test.describe("full-screen strip", () => {
       expect(out.height).toBeGreaterThanOrEqual(28);
     });
 
+  test("touch: a 44px strip and buttons of at least 40px; the frame starts below it", async ({
+    browser,
+  }) => {
+    const ctx = await browser.newContext({
+      hasTouch: true,
+      isMobile: true,
+      viewport: { width: 390, height: 800 },
+    });
+    await ctx.route("https://content.example.com/**", (r) =>
+      r.fulfill({ contentType: "text/html", body: "<!doctype html><p>x" }),
+    );
+    const page = await ctx.newPage();
+    await page.goto(FULL);
+    const exit = page.getByRole("link", { name: TOP });
+    await expect(exit).toBeVisible();
+    expect(
+      await page.evaluate(() => matchMedia("(pointer: coarse)").matches),
+    ).toBe(true);
+    const strip = (await page.locator(".oa-fsbar").boundingBox()) as Box;
+    expect(strip.height).toBe(44);
+    const frame = (await page.locator("iframe.oa-vframe").boundingBox()) as Box;
+    expect(frame.y).toBeGreaterThanOrEqual(44);
+    for (const b of [
+      await exit.boundingBox(),
+      await page.getByRole("button", { name: /^Comments/ }).boundingBox(),
+    ]) {
+      expect(b?.width).toBeGreaterThanOrEqual(40);
+      expect(b?.height).toBeGreaterThanOrEqual(40);
+    }
+    await ctx.close();
+  });
+
   test("a long title truncates with an ellipsis", async ({ page }) => {
     await page.goto(FULL);
     await page.setViewportSize({ width: 390, height: 800 });

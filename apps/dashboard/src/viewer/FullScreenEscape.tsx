@@ -60,13 +60,24 @@ export function FullScreenEscape({
             }
           >
             {inFrame && (
-              <img
-                src={brand.markDark}
-                alt=""
-                aria-hidden="true"
-                width={18}
-                height={18}
-              />
+              <>
+                <img
+                  className="oa-fsx-lt"
+                  src={brand.markLight}
+                  alt=""
+                  aria-hidden="true"
+                  width={18}
+                  height={18}
+                />
+                <img
+                  className="oa-fsx-dk"
+                  src={brand.markDark}
+                  alt=""
+                  aria-hidden="true"
+                  width={18}
+                  height={18}
+                />
+              </>
             )}
             <span className="oa-fsx-label">
               {inFrame ? "Open in Open Artifacts" : "Exit full screen"}
