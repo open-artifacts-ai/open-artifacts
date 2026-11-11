@@ -878,7 +878,7 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
     const { major, minor } = devParts(st.dev);
     writeFileSync(
       join(proc, "locks"),
-      `1: FLOCK  ADVISORY  WRITE 4242 ${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino} 0 EOF\n`,
+      `1: FLOCK  ADVISORY  WRITE 100 ${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino} 0 EOF\n`,
     );
     for (const [pid, file] of [
       [100, locked],
@@ -887,7 +887,7 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
       mkdirSync(join(proc, String(pid), "fd"), { recursive: true });
       symlinkSync(file, join(proc, String(pid), "fd", "7"));
     }
-    // 102 has `a` open too, but not as a locker's fd set: no lock on `b`.
+    // 101 has `b` open but nobody locks it: not a holder.
     expect(lockHoldersLinux([locked, open], proc)).toEqual(
       new Map([
         [locked, [100]],
@@ -895,6 +895,14 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
       ]),
     );
     expect(lockHoldersLinux([locked], join(dir, "nope"))).toBeUndefined();
+    // The locker /proc/locks names (99) comes before another opener (100), whatever the directory order.
+    mkdirSync(join(proc, "99", "fd"), { recursive: true });
+    symlinkSync(locked, join(proc, "99", "fd", "3"));
+    writeFileSync(
+      join(proc, "locks"),
+      `1: FLOCK  ADVISORY  WRITE 99 ${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino} 0 EOF\n`,
+    );
+    expect(lockHoldersLinux([locked], proc)?.get(locked)).toEqual([99, 100]);
   });
 
   it("the attestor's default holder lookup on Linux does not run lsof", () => {
@@ -915,6 +923,14 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
       procRoot: proc,
       procs: w.codex.procs,
     });
+    expect(a.holders([THREAD])?.get(THREAD)).toMatchObject({ pid: P });
+    // The locker is a non-codex pid (200, node) and 100 only inherited the fd: 100 is the holder.
+    writeFileSync(
+      join(proc, "locks"),
+      `1: FLOCK  ADVISORY  WRITE 200 ${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino} 0 EOF\n`,
+    );
+    mkdirSync(join(proc, "200", "fd"), { recursive: true });
+    symlinkSync(lock, join(proc, "200", "fd", "7"));
     expect(a.holders([THREAD])?.get(THREAD)).toMatchObject({ pid: P });
     // Open, not locked: no holder.
     writeFileSync(join(proc, "locks"), "");

@@ -2155,8 +2155,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           .filter((r) => held.has(r.ref))
           .map((r) => r.ref)
           .slice(0, MAX_WAITING_QUERY);
-        if (refs.length) counts = await hubWaitingCounts(refs);
-        if (!counts) log("codex wake skipped: the hub did not answer");
+        if (refs.length) {
+          counts = await hubWaitingCounts(refs);
+          if (!counts) log("codex wake skipped: the hub did not answer");
+        }
       }
       for (const r of rows) {
         const h = held.get(r.ref);

@@ -1128,10 +1128,39 @@ export function lockHoldersLinux(
       } catch {}
   }
   const locked = holdingLinux(pairs, procRoot);
+  const lockers = lockerPids(procRoot);
   const out = new Map<string, number[]>(files.map((f) => [f, []]));
   pairs.forEach((p, i) => {
     if (locked[i]) out.get(p.file)?.push(p.pid);
   });
+  // The pid /proc/locks names holds the lock itself; any other opener inherited the fd.
+  for (const [f, list] of out) {
+    let key: string | undefined;
+    try {
+      const st = statSync(f, { bigint: true });
+      const { major, minor } = devParts(st.dev);
+      key = `${major}:${minor}:${st.ino}`;
+    } catch {}
+    const first = (pid: number) => (key && lockers.get(key)?.has(pid) ? 0 : 1);
+    list.sort((a, b) => first(a) - first(b));
+  }
+  return out;
+}
+
+/** The pids /proc/locks names as lockers, by `MAJ:MIN:INODE` (decimal). */
+function lockerPids(procRoot: string): Map<string, Set<number>> {
+  const out = new Map<string, Set<number>>();
+  try {
+    for (const l of readFileSync(join(procRoot, "locks"), "utf8").split("\n")) {
+      const f = l.trim().split(/\s+/);
+      const [maj, min, ino] = (f[5] ?? "").split(":");
+      const pid = Number(f[4]);
+      if (!maj || !min || !ino || !pid) continue;
+      if (!/^[0-9a-f]+$/i.test(maj + min) || !/^\d+$/.test(ino)) continue;
+      const k = `${BigInt(`0x${maj}`)}:${BigInt(`0x${min}`)}:${ino}`;
+      out.set(k, (out.get(k) ?? new Set()).add(pid));
+    }
+  } catch {}
   return out;
 }
 

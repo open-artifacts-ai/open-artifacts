@@ -363,6 +363,10 @@ describe("mailbox wire (#1295 PR B)", () => {
     await close(rcv, ref);
     await send(snd, "snd", name);
     await send(snd, "snd", name);
+    // A live agent of the same machine with mail pending (no ack): still not counted.
+    const liveRef = uniq("l");
+    const liveName = await reg(rcv, liveRef, uniq("Live"), n);
+    await send(snd, "snd", liveName);
     const ask = async (d: Daemon, refs: string[]) => {
       const fid = id("q");
       d.send({ v: 1, id: fid, type: "waiting_query", agent_refs: refs });
@@ -373,13 +377,13 @@ describe("mailbox wire (#1295 PR B)", () => {
       }
     };
     // Its own away ref counts; unknown and live refs are left out.
-    expect(await ask(rcv, [ref, "nope", "snd"])).toMatchObject({
-      type: "waiting_counts",
-      counts: { [ref]: 2 },
-    });
+    const own = await ask(rcv, [ref, liveRef, "nope"]);
+    expect(own).toMatchObject({ type: "waiting_counts" });
+    expect((own as { counts: unknown }).counts).toEqual({ [ref]: 2 });
     // Another machine never learns this one's refs.
-    const other = await ask(snd, [ref, "snd"]);
-    expect(other).toMatchObject({ type: "waiting_counts", counts: {} });
+    const other = await ask(snd, [ref, "snd", liveRef]);
+    expect(other).toMatchObject({ type: "waiting_counts" });
+    expect((other as { counts: unknown }).counts).toEqual({});
     // A socket without the cap gets what an older hub gives.
     const om = await machine("Old");
     const old = await connect(om.token, MB);
