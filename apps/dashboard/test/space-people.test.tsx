@@ -1157,8 +1157,21 @@ for (const tier of ["business", "team", "trial"] as const) {
     fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
     const ivy = await row("Ivy Stone");
     expect(ivy).toHaveTextContent(
-      tier === "business" ? "kept from eng@, exec@" : "manually added",
+      tier === "business"
+        ? "kept from eng@, exec@"
+        : "Editor via exec@ (every space), Editor (manually added)",
     );
+    if (tier !== "business") {
+      fireEvent.click(
+        within(await openMenu("Ivy Stone")).getByRole("menuitem", {
+          name: /Remove manually added role/,
+        }),
+      );
+      expect(screen.getByRole("alertdialog")).toHaveTextContent(
+        "They keep Editor from an Every space group.",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    }
     fireEvent.click(
       within(ivy).getByRole("combobox", { name: "Role for Ivy Stone" }),
     );

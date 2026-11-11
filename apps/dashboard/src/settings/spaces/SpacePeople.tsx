@@ -732,12 +732,21 @@ export function SpacePeople({
   // Every space groups stay: the server enforces their floor whatever the mode.
   const ordinary = (m: SpaceMember): SpaceMember => {
     if (!hideSync || !(m.syncRole || m.groups.length)) return m;
-    const bySpace = m.groups.some((g) => g.via === "space");
+    const top = (gs: SpaceMember["groups"]) =>
+      gs.reduce<SpaceRole | null>(
+        (best, g) =>
+          best === null || RANK[g.role] > RANK[best] ? g.role : best,
+        null,
+      );
+    const every = m.groups.filter((g) => g.via === "every");
+    const own = top(m.groups.filter((g) => g.via === "space"));
     return {
       ...m,
-      manualRole: bySpace ? (m.manualRole ?? m.syncRole) : m.manualRole,
-      syncRole: null,
-      groups: m.groups.filter((g) => g.via === "every"),
+      // This space's own group role reads as one set by hand.
+      manualRole: m.manualRole ?? own,
+      // What the server computes: the Every space groups' highest role.
+      syncRole: top(every),
+      groups: every,
     };
   };
   const rows = [...(list.data?.pages.flatMap((p) => p.items) ?? [])]
