@@ -974,11 +974,24 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       expect(x.f.runs()).toHaveLength(0);
     });
 
-    it("a young attempt may still have a `codex queue` child running: no spawn", async () => {
-      const x = setup([], { age: 1_000 });
+    it("an attempt younger than 60 s may still have an orphaned `codex queue` child: no spawn", async () => {
+      const x = setup([], { age: 30_000 });
       const r = go(x);
       await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
       expect(x.f.runs()).toHaveLength(0);
+    });
+
+    it("a fresh attempt for an item already in Codex's queue (a lost record file) is recorded queued, not spawned", async () => {
+      const f = fakeCodex();
+      const home = tmp("ob-cxh-");
+      queueDb(home, { rows: [{ thread: THREAD, text }] });
+      const r = transport(
+        { path: f.bin, from: "path" },
+        { home, takenFile: join(tmp("ob-cxp-"), "p.json") },
+      );
+      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+      expect(f.runs()).toHaveLength(0);
+      expect(r.watch.state(ID)).toBe("queued");
     });
 
     it("the rollout cannot be located: unknown, not the end, no spawn", async () => {

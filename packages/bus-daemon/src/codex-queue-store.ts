@@ -11,7 +11,9 @@ import { startsWithHead } from "./codex-taken.ts";
  *   `payload_json.UserInput.content[0].text`. A row is deleted when a turn
  *   takes it.
  * - `queued_thread_revisions(revision, thread_id)`: bumped on every insert,
- *   update and delete for the thread.
+ *   update and delete for the thread. The re-queue rule (revision equal to the
+ *   one saved with the attempt) assumes this row is monotonic and never
+ *   deleted; if a future Codex deletes it, a pinned `null` compare could pass.
  */
 export type QueueRead = {
   /** An item of this thread starts with `${head}\n\n`. */

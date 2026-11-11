@@ -18,6 +18,13 @@ import type { DeliverOutcome, Mail } from "../deliver.ts";
 
 /** How long `codex queue` may run; it writes one sqlite row. */
 export const CODEX_QUEUE_TIMEOUT_MS = 10_000;
+
+/**
+ * An interrupted attempt is queued again only when older than this: an
+ * orphaned `codex queue` child (its timeout dies with the daemon) may hang
+ * well past CODEX_QUEUE_TIMEOUT_MS and still commit its row.
+ */
+export const REQUEUE_MIN_AGE_MS = 60_000;
 /**
  * The most text one `codex queue` carries, in UTF-8 bytes. Inline bodies are
  * at most 32 KB, so only a bug reaches it; over it, the fetch notice goes.
@@ -412,8 +419,8 @@ export class CodexTransport {
    * Codex's queue on two looks (a turn deletes the row and appends to the
    * rollout, so one look can land on the hand-over) with the thread's queue
    * revision equal to the one saved with the attempt (nothing was added since:
-   * our row never committed) and the attempt older than `codex queue`'s
-   * timeout (an orphaned child has finished). Anything unreadable, moved or
+   * our row never committed) and the attempt older than REQUEUE_MIN_AGE_MS
+   * (an orphaned child has finished). Anything unreadable, moved or
    * too young stays queued; it expires and that is reported.
    */
   #recover(id: string, ref: string, head: string): Queue | undefined {
@@ -430,7 +437,7 @@ export class CodexTransport {
       info.rev === undefined ||
       a.rev !== b.rev ||
       b.rev !== info.rev ||
-      info.age <= CODEX_QUEUE_TIMEOUT_MS
+      info.age <= REQUEUE_MIN_AGE_MS
     )
       return unsettled;
     return undefined;
@@ -504,6 +511,11 @@ export class CodexTransport {
         `codex ${id} not queued: its record could not be written`,
       );
       return { ok: false, taken: "no" };
+    }
+    // Already in Codex's queue (a lost record file): do not queue it again.
+    if (rev?.present) {
+      this.opts.taken.queued(id);
+      return { ok: true, how: "known" };
     }
     this.#flight.add(id);
     try {
