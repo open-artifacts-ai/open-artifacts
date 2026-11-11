@@ -62,7 +62,7 @@ url = "https://api.open-artifacts.app/mcp"",
     "verify": "Run \`pi mcp login oa-admin\` to sign in with your browser. Then \`pi mcp list\` shows oa-admin as connected.",
   },
   {
-    "agent": "omp",
+    "agent": "oh-my-pi (omp)",
     "code": "{
   "mcpServers": {
     "oa-admin": {
@@ -83,7 +83,7 @@ url = "https://api.open-artifacts.app/mcp"",
     "language": "bash",
     "reload": "Run \`/reload-mcp\` in a running Hermes session, or start a new one.",
     "variant": "oauth",
-    "verify": "Run \`hermes mcp login oa-admin\` to sign in with your browser. Then \`hermes mcp test oa-admin\` connects.",
+    "verify": "Run \`hermes mcp test oa-admin\`. If it asks you to sign in, run \`hermes mcp login oa-admin\`.",
   },
   {
     "agent": "OpenClaw",
@@ -91,7 +91,7 @@ url = "https://api.open-artifacts.app/mcp"",
     "language": "bash",
     "reload": "Run \`openclaw mcp reload\`. Your next message uses it.",
     "variant": "oauth",
-    "verify": "Run \`openclaw mcp login oa-admin\` to sign in with your browser. Then \`openclaw mcp probe\` lists its tools.",
+    "verify": "Run \`openclaw mcp login oa-admin\` to sign in with your browser. Then \`openclaw mcp probe oa-admin\` lists its tools.",
   },
   {
     "agent": "Generic",
@@ -276,7 +276,7 @@ url = "https://oa.example.com/mcp"",
     "verify": "Run \`pi mcp login open-artifacts\` to sign in with your browser. Then \`pi mcp list\` shows open-artifacts as connected.",
   },
   {
-    "agent": "omp",
+    "agent": "oh-my-pi (omp)",
     "code": "{
   "mcpServers": {
     "open-artifacts": {
@@ -297,7 +297,7 @@ url = "https://oa.example.com/mcp"",
     "language": "bash",
     "reload": "Run \`/reload-mcp\` in a running Hermes session, or start a new one.",
     "variant": "oauth",
-    "verify": "Run \`hermes mcp login open-artifacts\` to sign in with your browser. Then \`hermes mcp test open-artifacts\` connects.",
+    "verify": "Run \`hermes mcp test open-artifacts\`. If it asks you to sign in, run \`hermes mcp login open-artifacts\`.",
   },
   {
     "agent": "OpenClaw",
@@ -305,7 +305,7 @@ url = "https://oa.example.com/mcp"",
     "language": "bash",
     "reload": "Run \`openclaw mcp reload\`. Your next message uses it.",
     "variant": "oauth",
-    "verify": "Run \`openclaw mcp login open-artifacts\` to sign in with your browser. Then \`openclaw mcp probe\` lists its tools.",
+    "verify": "Run \`openclaw mcp login open-artifacts\` to sign in with your browser. Then \`openclaw mcp probe open-artifacts\` lists its tools.",
   },
   {
     "agent": "Generic",
@@ -486,7 +486,7 @@ exports[`agentClients snapshots > default output is unchanged (file form) 1`] = 
     "verify": "Run \`pi mcp login open-artifacts\` to sign in with your browser. Then \`pi mcp list\` shows open-artifacts as connected.",
   },
   {
-    "agent": "omp",
+    "agent": "oh-my-pi (omp)",
     "code": "{
   "mcpServers": {
     "open-artifacts": {
@@ -507,7 +507,7 @@ exports[`agentClients snapshots > default output is unchanged (file form) 1`] = 
     "language": "bash",
     "reload": "Run \`/reload-mcp\` in a running Hermes session, or start a new one.",
     "variant": "oauth",
-    "verify": "Run \`hermes mcp login open-artifacts\` to sign in with your browser. Then \`hermes mcp test open-artifacts\` connects.",
+    "verify": "Run \`hermes mcp test open-artifacts\`. If it asks you to sign in, run \`hermes mcp login open-artifacts\`.",
   },
   {
     "agent": "OpenClaw",
@@ -515,7 +515,7 @@ exports[`agentClients snapshots > default output is unchanged (file form) 1`] = 
     "language": "bash",
     "reload": "Run \`openclaw mcp reload\`. Your next message uses it.",
     "variant": "oauth",
-    "verify": "Run \`openclaw mcp login open-artifacts\` to sign in with your browser. Then \`openclaw mcp probe\` lists its tools.",
+    "verify": "Run \`openclaw mcp login open-artifacts\` to sign in with your browser. Then \`openclaw mcp probe open-artifacts\` lists its tools.",
   },
   {
     "agent": "Generic",

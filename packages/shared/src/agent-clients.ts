@@ -74,7 +74,7 @@ const harnessOauth = (url: string, name: string): Snippet[] => [
     reload: PI_RELOAD,
   },
   {
-    agent: "omp",
+    agent: "oh-my-pi (omp)",
     variant: "oauth",
     language: "json",
     file: "~/.omp/agent/mcp.json",
@@ -87,7 +87,7 @@ const harnessOauth = (url: string, name: string): Snippet[] => [
     variant: "oauth",
     language: "bash",
     code: `hermes mcp add ${name} --url ${sh(url)} --auth oauth`,
-    verify: `Run \`hermes mcp login ${name}\` to sign in with your browser. Then \`hermes mcp test ${name}\` connects.`,
+    verify: `Run \`hermes mcp test ${name}\`. If it asks you to sign in, run \`hermes mcp login ${name}\`.`,
     reload: HERMES_RELOAD,
   },
   {
@@ -95,7 +95,7 @@ const harnessOauth = (url: string, name: string): Snippet[] => [
     variant: "oauth",
     language: "bash",
     code: `openclaw mcp add ${name} --url ${sh(url)} --transport streamable-http --auth oauth --no-probe`,
-    verify: `Run \`openclaw mcp login ${name}\` to sign in with your browser. Then \`openclaw mcp probe\` lists its tools.`,
+    verify: `Run \`openclaw mcp login ${name}\` to sign in with your browser. Then \`openclaw mcp probe ${name}\` lists its tools.`,
     reload: OPENCLAW_RELOAD,
   },
 ];

@@ -117,7 +117,7 @@ describe("Agents settings", () => {
       "Cursor",
       "OpenCode",
       "pi",
-      "omp",
+      "oh-my-pi (omp)",
       "Hermes",
       "OpenClaw",
       "Generic",

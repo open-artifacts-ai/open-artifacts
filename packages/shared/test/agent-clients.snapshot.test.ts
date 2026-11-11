@@ -62,7 +62,7 @@ describe("agentClients: pi, omp, Hermes, OpenClaw (#2103)", () => {
       "Cursor",
       "OpenCode",
       "pi",
-      "omp",
+      "oh-my-pi (omp)",
       "Hermes",
       "OpenClaw",
       "Generic",
@@ -74,7 +74,7 @@ describe("agentClients: pi, omp, Hermes, OpenClaw (#2103)", () => {
     const s = agentClients(URL_, { tokenFile: FILE });
     const pi = s.find((x) => x.agent === "pi" && x.variant === "token");
     expect(pi?.code).toContain(`cat ${FILE}`);
-    for (const a of ["omp", "Hermes", "OpenClaw"])
+    for (const a of ["oh-my-pi (omp)", "Hermes", "OpenClaw"])
       expect(s.some((x) => x.agent === a && x.variant === "token")).toBe(false);
   });
 });

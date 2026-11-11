@@ -116,12 +116,12 @@ describe("agentClients", () => {
     "Cursor",
     "OpenCode",
     "pi",
-    "omp",
+    "oh-my-pi (omp)",
     "Hermes",
     "OpenClaw",
     "Generic",
   ];
-  const NOT_YET = ["omp", "Hermes", "OpenClaw"];
+  const NOT_YET = ["oh-my-pi (omp)", "Hermes", "OpenClaw"];
 
   it("dashboard form: 9 agents per variant, oauth first, each with verify and reload", () => {
     const all = agentClients(URL_);
@@ -216,6 +216,28 @@ describe("agentClients", () => {
         Authorization: "Bearer oa_pat_abc",
       });
     }
+  });
+
+  it("file form: the pi header command prints the bearer value, and fails without the file", () => {
+    const home = mkdtempSync(join(tmpdir(), "oa-pi-helper-"));
+    const pi = agentClients(URL_, {
+      tokenFile: "~/.open-artifacts/x-pat-token",
+    }).find((s) => s.agent === "pi" && s.variant === "token");
+    const auth = JSON.parse(pi?.code ?? "{}").mcpServers["open-artifacts"]
+      .headers.Authorization as string;
+    expect(auth.startsWith("!")).toBe(true);
+    const run = () =>
+      spawnSync("bash", ["-c", auth.slice(1)], {
+        env: { HOME: home, PATH: process.env.PATH },
+      });
+    const missing = run();
+    expect(missing.status).not.toBe(0);
+    expect(missing.stdout.toString()).toBe("");
+    mkdirSync(join(home, ".open-artifacts"));
+    writeFileSync(join(home, ".open-artifacts", "x-pat-token"), "x");
+    const ok = run();
+    expect(ok.status).toBe(0);
+    expect(ok.stdout.toString()).toBe("Bearer x");
   });
 
   it("file form: both OpenCode variants match OpenCode's McpRemoteConfig schema", () => {
