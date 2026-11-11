@@ -1,0 +1,1 @@
+{"command":"uninstall","outcome":"failed","plugin":"open-artifacts@open-artifacts","scope":"user","message":"Plugin \"open-artifacts@open-artifacts\" not found in installed plugins","failureCode":"not_installed"}

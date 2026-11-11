@@ -1,0 +1,1 @@
+{"command":"marketplace-remove","outcome":"ok","marketplace":"open-artifacts","message":"Successfully removed marketplace: open-artifacts\nAlso uninstalled 1 plugin from this marketplace:\n  open-artifacts@open-artifacts\nThe removal also deletes their saved options, secrets and data where it can.\nTo use a plugin again, add the marketplace back and reinstall the plugin."}
