@@ -384,7 +384,7 @@ const noticeAckGated = (ws: WebSocket): boolean => {
   );
 };
 
-/** #1752: how long a sent notice waits for its ack; past it the target stays queued. */
+/** #1752/#2082: how long a sent notice waits for its ack; past it its targets settle as gone (not confirmed delivered). */
 export const NOTICE_ACK_TTL_MS = 6 * HOUR_MS;
 /** #1752: notices waiting for an ack at once; the oldest go first. */
 export const NOTICE_ACKS_MAX = 2000;
@@ -6525,11 +6525,18 @@ export class BusHub extends DurableObject<Env> {
       const over =
         (one<{ n: number }>(sql, "select count(*) as n from notice_acks")?.n ??
           0) - NOTICE_ACKS_MAX;
-      if (over > 0)
-        sql.exec(
-          "delete from notice_acks where rowid in (select rowid from notice_acks order by rowid limit ?)",
+      if (over > 0) {
+        // #2082: an evicted row never gets its ack: its targets settle gone.
+        const old = all<{ rid: number; ack: string }>(
+          sql,
+          "select rowid as rid, ack from notice_acks order by rowid limit ?",
           over,
         );
+        for (const r of old) {
+          this.#settleAckRow(r.ack);
+          sql.exec("delete from notice_acks where rowid = ?", r.rid);
+        }
+      }
       this.#arm(expiresAt);
     }
     return true;
@@ -6613,6 +6620,17 @@ export class BusHub extends DurableObject<Env> {
       toLname,
       ckey,
     );
+  }
+
+  /** #2082: a notice_acks row that will never be acked: its target and every folded one settle as gone. */
+  #settleAckRow(ack: string): void {
+    try {
+      const t = JSON.parse(ack) as AckTarget & { more?: AckTarget[] };
+      for (const x of [t, ...(Array.isArray(t.more) ? t.more : [])])
+        this.#settleTarget(x, "gone");
+    } catch {
+      // a malformed target has nothing to settle
+    }
   }
 
   #settleGone(acks: (string | null)[]): void {
@@ -6838,8 +6856,18 @@ export class BusHub extends DurableObject<Env> {
           .map((r) => r.id)
           .join(","),
       });
-    // #1752: an ack that never came leaves the target queued.
-    sql.exec("delete from notice_acks where expires_at <= ?", now);
+    // #1752/#2082: an ack that never came settles its targets gone (a late
+    // ack still lifts gone to delivered). Bounded by BATCH per pass; the
+    // alarm re-arms for the rest.
+    for (const r of all<{ rid: number; ack: string }>(
+      sql,
+      "select rowid as rid, ack from notice_acks where expires_at <= ? order by expires_at limit ?",
+      now,
+      BATCH,
+    )) {
+      this.#settleAckRow(r.ack);
+      sql.exec("delete from notice_acks where rowid = ?", r.rid);
+    }
     const gone = expired.length >= BATCH;
     const due = all<NoticeRow>(
       sql,
