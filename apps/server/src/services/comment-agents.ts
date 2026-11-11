@@ -384,12 +384,16 @@ export async function notifyAgent(
           : `${artifactId}:${commentId}:${kind}`,
     threadId,
     commentId,
-    // #1752: the comment target the hub settles on the daemon's ack. A thread reply has none.
-    ...(kind === "thread_reply"
-      ? {}
-      : {
-          target: { kind: kind === "asker" ? "asker" : "mention", key: to.key },
-        }),
+    // #1752: the comment target the hub settles on the daemon's ack. #2035: a thread reply's is "reply".
+    target: {
+      kind:
+        kind === "thread_reply"
+          ? "reply"
+          : kind === "asker"
+            ? "asker"
+            : "mention",
+      key: to.key,
+    },
   };
   const out = await deliverNotice(env, to.userId, n);
   logInfo("comment_notice", { artifactId, kind, outcome: out });

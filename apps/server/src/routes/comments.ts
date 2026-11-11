@@ -2,6 +2,7 @@ import type { AccessLevel } from "@oa/shared";
 import {
   ANON_ID_HEADER,
   AnswerBodySchema,
+  COMMENT_KEY_RE,
   isId,
   NewThreadBodySchema,
   ReplyBodySchema,
@@ -41,6 +42,7 @@ import {
   editComment,
   listComments,
   setStatus,
+  setThreadAgent,
 } from "../services/comments.js";
 import { utf8Decoder } from "../util/text.js";
 import type { AppType } from "./index.js";
@@ -59,6 +61,7 @@ const REPLIES = `${THREAD}/replies`;
 const COMMENT = `${THREAD}/comments/:commentId`;
 const ANSWER = `${COMMENT}/answer`;
 const AGENTS = `${ART}/agents`;
+const THREAD_AGENT = `${THREAD}/agents/:key`;
 
 /** A body is at most 2,000 characters; the anchor adds under 3 KB. */
 const MAX_BODY = 32 * 1024;
@@ -201,7 +204,10 @@ export function mountComments(app: AppType): void {
     });
     if (!q.success) throw new ApiError("bad_request", "Invalid status");
     const { viewer } = await identity(c, id, false, modOf(cw, level, art));
-    const out = await listComments(c.env, id, q.data.status, viewer);
+    const out = await listComments(c.env, id, q.data.status, {
+      ...viewer,
+      owner: level === "owner",
+    });
     return c.json(out);
   });
 
@@ -218,10 +224,17 @@ export function mountComments(app: AppType): void {
       who.kind === "guest" && named !== undefined
         ? { ...who, name: named }
         : who;
-    const t = await addThread(c.env, artifact, w, viewer, raw.data, {
-      moderator,
-      after: { version: artifact.currentVersion, ctx: execCtx(c) },
-    });
+    const t = await addThread(
+      c.env,
+      artifact,
+      w,
+      { ...viewer, owner: level === "owner" },
+      raw.data,
+      {
+        moderator,
+        after: { version: artifact.currentVersion, ctx: execCtx(c) },
+      },
+    );
     return withAnon(issued, c.json(t, 201));
   });
 
@@ -288,7 +301,7 @@ export function mountComments(app: AppType): void {
       id,
       threadId,
       who,
-      viewer,
+      { ...viewer, owner: level === "owner" },
       raw.data.status,
     );
     return c.json(out);
@@ -368,6 +381,35 @@ export function mountComments(app: AppType): void {
       ),
     );
   });
+
+  // #2035: stop replies in a thread reaching one agent (DELETE), or undo (PUT).
+  // The agent's own person or the artifact's owner; the service enforces it.
+  for (const [method, removed] of [
+    ["delete", true],
+    ["put", false],
+  ] as const)
+    app[method](THREAD_AGENT, async (c) => {
+      const { id, who: cw, level, artifact } = await open(c, "comments.read");
+      const threadId = idParam(c, "threadId");
+      const key = c.req.param("key") ?? "";
+      if (!COMMENT_KEY_RE.test(key))
+        throw new ApiError("bad_request", "Invalid key");
+      const { viewer } = await identity(
+        c,
+        id,
+        false,
+        modOf(cw, level, artifact),
+      );
+      await setThreadAgent(
+        c.env,
+        id,
+        threadId,
+        key,
+        { ...viewer, owner: level === "owner" },
+        removed,
+      );
+      return c.body(null, 204);
+    });
 
   app.delete(COMMENT, async (c) => {
     const {

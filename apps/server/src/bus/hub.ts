@@ -3402,7 +3402,7 @@ function noticeAckOf(n: BusNotice): string | null {
   const t = n.target;
   if (
     !t ||
-    (t.kind !== "mention" && t.kind !== "asker") ||
+    (t.kind !== "mention" && t.kind !== "asker" && t.kind !== "reply") ||
     typeof t.key !== "string" ||
     t.key.length === 0 ||
     t.key.length > 256 ||
@@ -6397,7 +6397,12 @@ export class BusHub extends DurableObject<Env> {
     );
     if (!r) return false;
     sql.exec("delete from notice_acks where msg_id = ?", msgId);
-    let t: { a: string; c: string; k: "mention" | "asker"; key: string };
+    let t: {
+      a: string;
+      c: string;
+      k: "mention" | "asker" | "reply";
+      key: string;
+    };
     try {
       t = JSON.parse(r.ack);
     } catch {

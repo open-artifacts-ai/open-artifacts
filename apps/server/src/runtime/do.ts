@@ -63,6 +63,9 @@ import {
   listThreads,
   type NewExtras,
   openCount,
+  type ParticipantRow,
+  participantsOf,
+  recordReplyTargets,
   refundAsker,
   refundEmail,
   refundThreadReply,
@@ -74,6 +77,7 @@ import {
   type StoredParticipant,
   type StoredThread,
   setAnswer,
+  setParticipantRemoved,
   setTargetState,
   settleTarget,
   spendAsker,
@@ -558,6 +562,18 @@ export class ArtifactRuntime extends DurableObject<Env> {
           .some((c) => c.name === "identity")
       )
         sql.exec("alter table comment_targets add column identity text");
+      // #2035: a thread's participant can be removed, and carries its identity.
+      const pcols = sql
+        .exec<{ name: string }>(
+          "select name from pragma_table_info('comment_participants')",
+        )
+        .toArray();
+      if (!pcols.some((c) => c.name === "removed"))
+        sql.exec(
+          "alter table comment_participants add column removed integer not null default 0",
+        );
+      if (!pcols.some((c) => c.name === "identity"))
+        sql.exec("alter table comment_participants add column identity text");
       if (legacy)
         sql.exec(`insert or ignore into totals (id, bytes, day, writes, cols)
           select 1, coalesce((select v from meta where k = 'bytes'), 0), 0, 0,
@@ -2175,7 +2191,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
     threadId: string;
     commentId: string;
     states: {
-      kind: "mention" | "asker";
+      kind: "mention" | "asker" | "reply";
       key: string;
       state: string;
     }[];
@@ -2193,7 +2209,7 @@ export class ArtifactRuntime extends DurableObject<Env> {
   /** #1752: a daemon acked (delivered) or refused (gone) a notice: moves a still-queued target. */
   commentsTargetSettle(a: {
     commentId: string;
-    kind: "mention" | "asker";
+    kind: "mention" | "asker" | "reply";
     key: string;
     state: "delivered" | "gone";
   }): boolean {
@@ -2260,6 +2276,44 @@ export class ArtifactRuntime extends DurableObject<Env> {
         a.skipPage === true,
       ),
     );
+  }
+
+  /** #2035: the participant agents of `threadIds`, removed ones included (the service decides what shows). */
+  commentsParticipants(a: {
+    threadIds: string[];
+  }): [string, ParticipantRow[]][] {
+    this.ensureSchema();
+    return [...participantsOf(this.sql, a.threadIds)];
+  }
+
+  /** #2035: removes or puts back one participant. False when the thread has no such agent. */
+  commentsParticipantSet(a: {
+    threadId: string;
+    key: string;
+    removed: boolean;
+  }): boolean {
+    this.ensureSchema();
+    const ok = this.ctx.storage.transactionSync(() =>
+      setParticipantRemoved(this.sql, a.threadId, a.key, a.removed),
+    );
+    if (ok) this.broadcastComments();
+    return ok;
+  }
+
+  /** #2035: records who a person's reply also told, and how it went; returns the comment. */
+  commentsReplyTargets(a: {
+    threadId: string;
+    commentId: string;
+    targets: { p: StoredParticipant; state: string }[];
+  }): StoredComment {
+    this.ensureSchema();
+    const c = this.ctx.storage.transactionSync(() => {
+      recordReplyTargets(this.sql, a.threadId, a.commentId, a.targets);
+      return getComment(this.sql, a.threadId, a.commentId);
+    });
+    if (!c) fail("not_found", "Not found");
+    this.broadcastComments();
+    return c;
   }
 
   /** Gives back the thread-reply notices spent at `at` for `keys` when delivery found no session. */
@@ -2469,6 +2523,9 @@ type RpcMethods =
   | "commentsEmailRefund"
   | "commentsThreadReplyTake"
   | "commentsThreadReplyRefund"
+  | "commentsParticipants"
+  | "commentsParticipantSet"
+  | "commentsReplyTargets"
   | "commentsStatus"
   | "commentsEdit"
   | "commentsDelete"
