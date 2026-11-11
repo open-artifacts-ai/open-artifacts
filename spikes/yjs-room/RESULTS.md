@@ -71,8 +71,14 @@ is Product's call (see Open questions).
    second per room. Alarms count as writes, so arm one only when the buffer
    was empty. Connected clients hold any unflushed edits and resend them on
    reconnect.
-3. **Compact when a version is saved, not after a row count.** Compaction
-   costs 11 to 19 ms per MB on a doc that is already loaded.
+3. **Compact when a version is saved, and also on a threshold.** Compaction
+   costs 11 to 19 ms per MB on a doc that is already loaded. Version saves
+   alone leave the tail unbounded, so also compact when the update rows pass
+   a byte total or a row count, checked after each batched write (the 1 s
+   alarm). Thresholds: **Free 128 KB or 500 rows; Paid 256 KB or 500 rows**,
+   whichever comes first (see "Threshold compaction"). Under relay-first the
+   room must load the doc for this, so budget load plus compact, not compact
+   alone.
 4. **Throttle client messages.** Batch keystroke updates on the client for
    50 to 100 ms and send cursors at most every 250 ms. At 20:1 billing,
    100 messages/s works out to 5 requests/s, so the Free account's 100k
@@ -81,6 +87,61 @@ is Product's call (see Open questions).
    was 2 to 4 times slower.
 6. **`edit_doc` cost is mostly building the text index** (about 10 ms per MB).
    Cache the index while the room is warm.
+
+## Threshold compaction
+
+The room compacts when the update rows reach `COMPACT_ROWS` rows or
+`COMPACT_BYTES` bytes (`src/room.ts`, `insertRow`). With batching it runs in
+the 1 s alarm, so it never sits on the typing path, and a threshold of N bytes
+caps the tail at N bytes plus one second of writes. One run: 20 editors typing
+5 keys/s write merged rows at about **1.1 KB/s** (22 KB in 20 s, one row per
+second). A 256 KB threshold is reached after about 4 minutes of that, 128 KB
+after 2, and 500 rows after 8 minutes. Bytes therefore trip first, and the
+row count is the backstop for many tiny rows.
+
+Cost of one threshold compaction, workerd, in DO, median of 5 (ms). "Warm" is
+a doc already in memory (encode only). "Cold" is the relay-first case: wake,
+load snapshot and tail, then encode.
+
+| doc (state size) | warm encode | cold load + encode |
+|---|---|---|
+| heavy 128 KB (152 KB) | 2 | 7 + 2 = 9 |
+| heavy 1 MB | 15 | 78 + 15 = 93 |
+| heavy 2 MB | 50 to 64 | 205 to 233 + 50 to 64 |
+| typing 128 KB (130 KB) | 1 to 2 | 5 + 2 = 7 |
+| typing 1 MB | 9 to 11 | 30 + 10 = 40 |
+| typing 2 MB | 20 to 22 | 87 + 21 = 108 |
+
+What the tail costs while it waits (the tail built from single keystrokes,
+merged 50 per row, 140 rows, 90 to 105 KB; the 500-row case is 9 to 10 KB):
+
+| | cold load (none / 500 rows / ~100 KB) | full-state join (same) |
+|---|---|---|
+| heavy 128 KB | 7 / 8 / 8 ms | 2 / 3 / 3 |
+| heavy 1 MB | 78 / 71 / 73 | 15 / 14 / 15 |
+| heavy 2 MB | 233 / 205 / 204 | 56 / 43 / 46 |
+| typing 1 MB | 30 / 31 / 52 | 10 / 10 / 10 |
+| typing 2 MB | 87 / 90 / 90 | 19 / 18 / 19 |
+
+- **The tail is cheap to carry; the doc is the cost.** A 100 KB tail changes
+  cold load and join by within noise on every size except one typing 1 MB load
+  (30 to 52 ms, not repeated). Its main costs are storage and the row reads
+  on wake, not CPU. So the threshold is about bounding rows and bytes, and
+  can be generous.
+- **Threshold compaction costs the same as a version-save compaction**, so
+  the load-the-doc cost above is the real price. On Free, a cold compaction
+  of a heavy 128 KB doc is about 9 ms, right at the 10 ms limit. Run it in
+  the alarm, and when the room is already warm where possible.
+- **Mechanism check:** 20 editors, 1 s batching, heavy 128 KB, 16 KB
+  threshold, 20 s: one compaction (4 ms), tail 5 KB / 5 rows at the end
+  (22 KB / 22 rows without it). The 1 MB run with a 64 KB threshold never
+  reached the threshold in 20 s (as the 1.1 KB/s rate predicts), so it only
+  shows no compaction when under the line. Raw data: `results/threshold.json`
+  (`THRESHOLD=1 pnpm bench:do`).
+- **Steady-state tail with thresholds:** at most the threshold plus a second
+  of writes. Free: 128 KB / 500 rows. Paid: 256 KB / 500 rows. A compaction
+  fires every 2 to 4 minutes under constant 20-editor typing, and rarely for
+  ordinary use.
 
 ## Measurements
 
@@ -237,4 +298,4 @@ Files:
 - `bench/fixture.ts`: the fixture generator.
 - `bench/node-bench.ts` and `bench/do-bench.ts`: the two benchmarks.
 - `results/`: the raw JSON from the runs quoted above (two runs of the DO
-  bench, one of the Node bench).
+  bench, one of the Node bench, one `THRESHOLD=1` run of the DO bench).

@@ -19,6 +19,8 @@ export interface Env {
   FLUSH_MS: string;
   /** Compact after this many update rows. */
   COMPACT_ROWS: string;
+  /** Also compact once the update rows total this many bytes (0 = off). */
+  COMPACT_BYTES?: string;
 }
 
 const MSG_SYNC = 0;
@@ -39,6 +41,8 @@ export class YRoom extends DurableObject<Env> {
   private lastFlush = 0;
   private alarmSet = false;
   private rowsSinceCompact = 0;
+  private bytesSinceCompact = 0;
+  private readonly compactBytes: number;
   private readonly flushMs: number;
   private readonly compactRows: number;
   readonly stats = {
@@ -50,6 +54,7 @@ export class YRoom extends DurableObject<Env> {
     rowsWritten: 0,
     compactions: 0,
     lastCompactMs: 0,
+    compactMsTotal: 0,
     msgs: 0,
     msgMsTotal: 0,
     msgMsMax: 0,
@@ -61,6 +66,7 @@ export class YRoom extends DurableObject<Env> {
     this.sql = ctx.storage.sql;
     this.flushMs = Number(env.FLUSH_MS ?? "0");
     this.compactRows = Number(env.COMPACT_ROWS ?? "500");
+    this.compactBytes = Number(env.COMPACT_BYTES ?? "0");
     ctx.blockConcurrencyWhile(async () => this.load());
   }
 
@@ -86,6 +92,7 @@ export class YRoom extends DurableObject<Env> {
     });
     this.doc = doc;
     this.rowsSinceCompact = rows.length;
+    this.bytesSinceCompact = rows.reduce((n, r) => n + r.data.byteLength, 0);
     doc.on("update", (u: Uint8Array, origin: unknown) =>
       this.onUpdate(u, origin),
     );
@@ -141,7 +148,16 @@ export class YRoom extends DurableObject<Env> {
   private insertRow(update: Uint8Array) {
     this.sql.exec("INSERT INTO updates (data) VALUES (?)", update);
     this.stats.rowsWritten++;
-    if (++this.rowsSinceCompact >= this.compactRows) this.compact();
+    this.bytesSinceCompact += update.byteLength;
+    // Threshold compaction: bounds the tail between version saves. It runs
+    // on the flush path (the alarm when batched), loads nothing extra here
+    // because this spike room always holds the doc; a relay-first room would
+    // have to load it first (see RESULTS.md).
+    if (
+      ++this.rowsSinceCompact >= this.compactRows ||
+      (this.compactBytes > 0 && this.bytesSinceCompact >= this.compactBytes)
+    )
+      this.compact();
   }
 
   /** One snapshot row replaces the snapshot and every update row. */
@@ -157,9 +173,11 @@ export class YRoom extends DurableObject<Env> {
       this.sql.exec("DELETE FROM updates");
     });
     this.rowsSinceCompact = 0;
+    this.bytesSinceCompact = 0;
     this.stats.rowsWritten++;
     this.stats.compactions++;
     this.stats.lastCompactMs = now() - t0;
+    this.stats.compactMsTotal += this.stats.lastCompactMs;
     return snap.byteLength;
   }
 

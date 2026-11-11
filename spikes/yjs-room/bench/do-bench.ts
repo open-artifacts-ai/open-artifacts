@@ -44,12 +44,15 @@ const bundle = await build({
 });
 const code = bundle.outputFiles[0]?.text ?? "";
 
-function start(flushMs: number) {
+function start(
+  flushMs: number,
+  extra: Record<string, string> = {},
+) {
   return new Miniflare({
     modules: [{ type: "ESModule", path: "room.js", contents: code }],
     compatibilityDate: "2026-01-01",
     durableObjects: { ROOM: { className: "YRoom", useSQLite: true } },
-    bindings: { FLUSH_MS: String(flushMs), COMPACT_ROWS: "1000000" },
+    bindings: { FLUSH_MS: String(flushMs), COMPACT_ROWS: "1000000", ...extra },
   });
 }
 
@@ -325,6 +328,118 @@ async function editDocBench(profile: Profile, size: number) {
   out.compactMs = r2(compact.json.ms ?? 0);
   await mf.dispose();
   return out;
+}
+
+/** Seed body with the tail merged into rows of `group` updates. */
+function mergedSeed(size: number, tailN: number, profile: Profile, group: number) {
+  const { snapshot, tail } = decodeSeed(seedBody(size, tailN, profile));
+  const rows: Uint8Array[] = [];
+  for (let i = 0; i < tail.length; i += group)
+    rows.push(Y.mergeUpdates(tail.slice(i, i + group)));
+  const parts = [snapshot, ...rows];
+  const out = new Uint8Array(parts.reduce((n, p) => n + 4 + p.byteLength, 0));
+  const dv = new DataView(out.buffer);
+  let off = 0;
+  for (const p of parts) {
+    dv.setUint32(off, p.byteLength, true);
+    out.set(p, off + 4);
+    off += 4 + p.byteLength;
+  }
+  return { body: out, rows: rows.length, tailBytes: rows.reduce((n, r) => n + r.byteLength, 0) };
+}
+
+/** Threshold compaction cost and the tail it leaves, per doc size. */
+async function thresholdCost(profile: Profile, size: number) {
+  const mf = start(0);
+  const out: Record<string, unknown> = {};
+  // none: just compacted. rows500: 500 one-keystroke rows (the row
+  // threshold). bytes256k: ~256 KB of 1 s merged rows (the byte threshold).
+  const variants: Record<string, { body: Uint8Array; rows: number; tailBytes: number }> = {
+    none: { ...mergedSeed(size, 1, profile, 1), rows: 0, tailBytes: 0 },
+    rows500: mergedSeed(size, 500, profile, 1),
+    bytes256k: mergedSeed(size, 7000, profile, 50),
+  };
+  for (const [name, v] of Object.entries(variants)) {
+    const room = `thr-${profile}-${size}-${name}`;
+    await seed(mf, room, v.body);
+    const wake: number[] = [];
+    const join: number[] = [];
+    const compact: number[] = [];
+    let state = 0;
+    for (let i = 0; i < REPS; i++) {
+      await evict(mf, room);
+      const st = (await call(mf, room, "stats")).json;
+      wake.push(st.loadMs ?? Number.NaN);
+      state = st.stateBytes ?? 0;
+      // A fresh client with an empty doc joins: the room's slowest message.
+      await evict(mf, room);
+      const [c] = await connect(mf, room, 1);
+      await c?.synced;
+      await sleep(50);
+      join.push((await call(mf, room, "stats")).json.msgMsMax ?? Number.NaN);
+      c?.ws.close();
+      await evict(mf, room);
+      compact.push((await call(mf, room, "compact")).json.ms ?? Number.NaN);
+    }
+    out[name] = {
+      tailRows: v.rows,
+      tailBytes: v.tailBytes,
+      stateBytes: state,
+      coldLoadMs: r2(median(wake)),
+      joinMsgMs: r2(median(join)),
+      compactEncodeMs: r2(median(compact)),
+    };
+    process.stderr.write(`thr ${profile} ${size} ${name}\n`);
+  }
+  await mf.dispose();
+  return out;
+}
+
+/** 20 editors, batched rows: how big does the tail get, with and without. */
+async function thresholdLive(profile: Profile, size: number, compactBytes: number) {
+  const mf = start(1000, { COMPACT_BYTES: String(compactBytes) });
+  const room = `live-${profile}-${size}-${compactBytes}`;
+  await seed(mf, room, mergedSeed(size, 1, profile, 1).body);
+  const clients = await connect(mf, room, EDITORS);
+  await Promise.all(clients.map((c) => c.synced));
+  await sleep(3000);
+  const s0 = (await call(mf, room, "stats")).json;
+  const SECS = 20;
+  for (let tick = 0; tick < SECS * 5; tick++) {
+    clients.forEach((c, i) => {
+      c.type(i * 7 + tick);
+    });
+    await sleep(200);
+  }
+  await sleep(1500);
+  const s1 = (await call(mf, room, "stats")).json;
+  for (const c of clients) c.ws.close();
+  await mf.dispose();
+  const d = (k: string) => (s1[k] ?? 0) - (s0[k] ?? 0);
+  return {
+    compactBytes,
+    seconds: SECS,
+    rowsWritten: d("rowsWritten"),
+    compactions: d("compactions"),
+    compactMsTotal: r2(d("compactMsTotal")),
+    updateRowsAtEnd: s1.updateRows,
+    updateRowBytesAtEnd: s1.updateRowBytes,
+  };
+}
+
+if (process.env.THRESHOLD) {
+  const res: Record<string, unknown> = {};
+  for (const profile of ["heavy", "typing"] as Profile[])
+    for (const size of [128_000, 1_000_000, 2_000_000])
+      res[`${profile} ${size / 1000}KB`] = await thresholdCost(profile, size);
+  res.live = {
+    "heavy 128KB, no threshold": await thresholdLive("heavy", 128_000, 0),
+    "heavy 128KB, 16 KB": await thresholdLive("heavy", 128_000, 16_384),
+    "heavy 1MB, no threshold": await thresholdLive("heavy", 1_000_000, 0),
+    "heavy 1MB, 64 KB": await thresholdLive("heavy", 1_000_000, 65_536),
+  };
+  console.log(JSON.stringify(res));
+  process.exit(0);
 }
 
 const results: Record<string, unknown> = {
