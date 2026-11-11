@@ -164,6 +164,12 @@ function SignInLink() {
 
 /** What the box really does: ⌘ Enter (Ctrl Enter elsewhere) sends. */
 function SendHint() {
+  // A touch screen has no ⌘ or Ctrl key to press: show it for fine pointers only.
+  if (
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(pointer: coarse)").matches
+  )
+    return null;
   const mac =
     typeof navigator !== "undefined" &&
     /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
@@ -913,7 +919,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
           <Button
             size="xs"
             variant="ghost"
-            className="self-start"
+            className="ml-8 h-auto self-start px-0"
             onClick={() => api.select(t.id, true)}
           >
             {rest.length === 1 ? "1 reply" : `${rest.length} replies`}
@@ -983,7 +989,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
           </>
         ) : (
           api.canComment && (
-            <div className="flex gap-2">
+            <div className="flex gap-2 pl-8">
               <Button
                 size="xs"
                 variant="outline"
@@ -1162,6 +1168,9 @@ export function CommentsBody({
   const orphans = visible(api.orphans);
   const none = api.threads.length === 0;
   const forMe = asksForMe([...api.ordered, ...api.orphans]);
+  // #2118: one composer at a time: a quote open hides the whole-page box
+  // (mounted still, so a typed note survives) until Cancel or send.
+  const draftOpen = api.draft != null && api.canComment;
   return (
     // #1711: in the short sheet the list keeps its content height (`flex-none`:
     // no grow, no shrink, no zero basis), so the action row's outlet sits after
@@ -1173,7 +1182,9 @@ export function CommentsBody({
       {heading && (
         <div className="flex items-baseline justify-between gap-2">
           <h2 className={`m-0 font-semibold ${CTXT}`}>Comments</h2>
-          <span className={`${TXT} ${MUTED}`}>{api.listedOpen} open</span>
+          {api.listedOpen > 0 && (
+            <span className={`${TXT} ${MUTED}`}>{api.listedOpen} open</span>
+          )}
         </div>
       )}
       {(forMe.length > 0 || resolvedCount > 0) && (
@@ -1215,7 +1226,10 @@ export function CommentsBody({
       {/* #1783: the short sheet is for the pinned card, so the whole-page box
           is not shown there. Hidden with CSS, never unmounted: a typed draft has
           to survive a pin tap, and dragging the sheet up brings the box back. */}
-      <div className={short ? "hidden" : "contents"}>
+      <div
+        hidden={draftOpen}
+        className={short || draftOpen ? "hidden" : "contents"}
+      >
         {api.canComment ? (
           <NoteComposer api={api} />
         ) : (

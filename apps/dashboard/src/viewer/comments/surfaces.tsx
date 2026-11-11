@@ -200,7 +200,9 @@ export function CommentsDialog({
         <div className={`flex items-center justify-between px-4 pt-3 ${TXT}`}>
           <div className="flex items-baseline gap-2">
             <h2 className="m-0 font-semibold">Comments</h2>
-            <span className="text-muted-foreground">{open} open</span>
+            {open > 0 && (
+              <span className="text-muted-foreground">{open} open</span>
+            )}
           </div>
           <Button
             variant="ghost"

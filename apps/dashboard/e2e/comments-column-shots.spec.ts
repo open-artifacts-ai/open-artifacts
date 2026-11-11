@@ -6,10 +6,10 @@ import { expect, type Page, test } from "@playwright/test";
 const ID = "Cd5fGhJkLm6nPqRs"; // Landing page
 const OUT = process.env.COLUMN_SHOTS_DIR;
 
-async function open(page: Page, w: number, theme: string) {
+async function open(page: Page, w: number, theme: string, id = ID) {
   await page.emulateMedia({ colorScheme: theme as "light" | "dark" });
   await page.setViewportSize({ width: w, height: w < 600 ? 844 : 800 });
-  await page.goto(`/a/${ID}?mock=agents`);
+  await page.goto(`/a/${id}?mock=agents`);
   await page.getByRole("button", { name: /^Comments/ }).click();
   await expect(
     page.getByRole("textbox", { name: "Comment on the whole page" }),
@@ -27,6 +27,11 @@ for (const w of [1280, 390]) {
     test(`${w} ${theme}: column, composer, quote`, async ({ page }) => {
       await open(page, w, theme);
       await shot(page, `${w}-${theme}-column`);
+      if (OUT && w === 390)
+        await page
+          .locator("[data-thread]")
+          .first()
+          .screenshot({ path: `${OUT}/390-${theme}-thread.png` });
       const note = page.getByRole("textbox", {
         name: "Comment on the whole page",
       });
@@ -62,4 +67,16 @@ for (const w of [1280, 390]) {
       await shot(page, `${w}-${theme}-quote-composer`);
     });
   }
+}
+
+// No comments: the heading shows no count.
+for (const w of [1280, 390]) {
+  test(`${w} light: no count at 0`, async ({ page }) => {
+    await open(page, w, "light", "De6gHjKmNp7qRsTu"); // Notes: no threads
+    await expect(
+      page.getByRole("textbox", { name: "Comment on the whole page" }),
+    ).toBeVisible();
+    await expect(page.getByText(/^\d+ open$/)).toHaveCount(0);
+    await shot(page, `${w}-light-zero`);
+  });
 }
