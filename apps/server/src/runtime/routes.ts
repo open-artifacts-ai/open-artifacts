@@ -38,10 +38,18 @@ import { requireFreeData } from "../billing/caps.js";
 import { recordDataCreator } from "../billing/creators.js";
 import { planNow } from "../billing/features.js";
 import { refuseViewOnly } from "../billing/plan.js";
+import {
+  DOC_ROLE_HEADER,
+  DOC_VERSION_HEADER,
+  type DocRole,
+} from "../docs/room.js";
 import { cappedJson, readCapped } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import type { AppType } from "../routes/index.js";
+import { docsAvailable } from "../services/docs-available.js";
+import { DOC_SWITCH } from "../services/doc-switch.js";
+import { docsNeedPaid, docsUnavailable } from "../services/doc-format.js";
 import { type AnonId, resolveAnonId } from "./anon-id.js";
 import {
   ACTOR_HEADER,
@@ -61,6 +69,7 @@ const QUERY = `${COL}/query`;
 const DOC = `${COL}/:doc`;
 const SUBSCRIBE = `${ART}/data-subscribe`;
 const EVENTS = `${ART}/events`;
+const DOC_SOCKET = `${ART}/doc`;
 const COUNT = `${ART}/data-count/:col`;
 const ANON_ID = `${ART}/anon-id`;
 const STORAGE = `${ART}/storage`;
@@ -576,6 +585,65 @@ export function mountRuntime(app: AppType): void {
         },
       },
     );
+  });
+
+  // The collaborative doc's room socket (#1100), served by the DocRoom DO.
+  // Same checks as EVENTS (Origin, embed downgrade, access 404, RL_ANON for
+  // anonymous callers), then: docs must be available, the artifact a doc.
+  // The role is the server's: "edit" for who may publish, else "read". Every
+  // header the DO trusts is set here and replaces anything the client sent
+  // (the upgrade is rebuilt from scratch, never forwarded).
+  app.get(DOC_SOCKET, async (c) => {
+    const origin = c.req.header("origin");
+    if (origin !== undefined && origin !== appOrigin(c.env))
+      throw new ApiError("csrf", "Cross-site request");
+    const artifactId = c.req.param("id") ?? "";
+    if (!isId(artifactId)) throw new ApiError("not_found", "Not found");
+    const who: Caller =
+      c.req.header("x-oa-embed") === "1" ? { kind: "anonymous" } : caller(c);
+    const authzAt = authzAtOf(c);
+    const r = await accessLevel(c.env, who, artifactId);
+    if (!r) throw new ApiError("not_found", "Not found");
+    if (!r.artifact.doc)
+      throw new ApiError(
+        "bad_request",
+        'This artifact is not a doc. Use GET /api/v1/artifacts/:id/events for live versions, or create a doc with format "doc".',
+      );
+    if (!docsAvailable(c.env))
+      throw DOC_SWITCH.creation ? docsNeedPaid() : docsUnavailable();
+    const rooms = c.env.DOC_ROOM;
+    if (!rooms)
+      throw new HTTPException(503, { message: "doc rooms unavailable" });
+    let actor: string;
+    if (who.kind === "user") actor = `u:${who.user.id}`;
+    else {
+      const key = anonIpKey(c.req.header("cf-connecting-ip") ?? "");
+      if (!key)
+        throw new ApiError("rate_limited", "Anonymous access is unavailable");
+      await anonLimit(c, `doc:ip:${key}`, "connections");
+      actor = `ip:${key}`;
+    }
+    if (c.req.header("upgrade")?.toLowerCase() !== "websocket")
+      return c.text("Expected WebSocket upgrade", 426);
+    const role: DocRole =
+      who.kind === "user" &&
+      can(r.level, "publish", {
+        ...canCtx(who, r.artifact, null),
+        personal: r.personal,
+      })
+        ? "edit"
+        : "read";
+    return rooms
+      .get(rooms.idFromName(artifactId))
+      .fetch("https://runtime.invalid/doc", {
+        headers: {
+          Upgrade: "websocket",
+          [ACTOR_HEADER]: actor,
+          [AUTHZ_AT_HEADER]: String(authzAt),
+          [DOC_ROLE_HEADER]: role,
+          [DOC_VERSION_HEADER]: String(r.artifact.currentVersion),
+        },
+      });
   });
 
   app.get(STORAGE, async (c) => {

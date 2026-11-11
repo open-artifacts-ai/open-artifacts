@@ -18,11 +18,22 @@ import * as encoding from "lib0/encoding";
 import * as Y from "yjs";
 import type { Env } from "../env.js";
 import { logError } from "../log.js";
-import { ACTOR_HEADER, AUTHZ_AT_HEADER } from "../runtime/do.js";
-import { SKEW_MS } from "../runtime/presence.js";
+import {
+  ACTOR_HEADER,
+  AUTHZ_AT_HEADER,
+  SOCKET_TTL_MS,
+  SOCKET_TTL_SLACK_MS,
+} from "../runtime/do.js";
+import {
+  DOC_PRESENCE_PREFIX,
+  presenceStub,
+  SKEW_MS,
+} from "../runtime/presence.js";
 
 /** Trusted headers from the route: the socket's role ("edit" | "read"). */
 export const DOC_ROLE_HEADER = "X-OA-Doc-Role";
+/** Trusted header from the route: the artifact's current version (hello frame). */
+export const DOC_VERSION_HEADER = "X-OA-Doc-Version";
 
 /** Doc size cap, one for every plan (docs need Workers Paid): snapshot + pending. */
 export const DOC_MAX_BYTES = 2 * 1024 * 1024;
@@ -88,6 +99,8 @@ interface Attachment {
   /** May write (set once at accept from the trusted route header). */
   write: boolean;
   actor: string;
+  /** Accept time (ms): the socket TTL counts from here. */
+  t?: number;
   /** Awareness [clientId, clock] pairs this socket announced (for removal). */
   aw: [number, number][];
 }
@@ -180,10 +193,17 @@ export class DocRoom extends DurableObject<Env> {
       return new Response("Missing authorization time", { status: 400 });
 
     const anon = actor.startsWith("ip:");
-    if (role === "edit") {
-      if (this.ctx.getWebSockets("role:edit").length >= MAX_EDIT_SOCKETS)
-        return new Response("Too many editors", { status: 429 });
-    } else if (this.ctx.getWebSockets("role:read").length >= MAX_READ_SOCKETS)
+    const version = Number(req.headers.get(DOC_VERSION_HEADER));
+    // A full room (MAX_EDIT_SOCKETS) joins read-only; a viewer reads by access.
+    const full =
+      role === "edit" &&
+      this.ctx.getWebSockets("role:edit").length >= MAX_EDIT_SOCKETS;
+    const granted: DocRole = role === "edit" && !full ? "edit" : "read";
+    const reason = full ? "room_full" : role === "read" ? "access" : undefined;
+    if (
+      granted === "read" &&
+      this.ctx.getWebSockets("role:read").length >= MAX_READ_SOCKETS
+    )
       return new Response("Too many readers", { status: 429 });
     if (anon && this.ctx.getWebSockets("pool:anon").length >= MAX_ANON_SOCKETS)
       return new Response("Too many subscribers", { status: 429 });
@@ -197,15 +217,18 @@ export class DocRoom extends DurableObject<Env> {
     const pair = new WebSocketPair();
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [
-      `role:${role}`,
+      `role:${granted}`,
       anon ? "pool:anon" : "pool:user",
       `a:${actor}`,
     ]);
+    const t = this.now();
     server.serializeAttachment({
-      write: role === "edit",
+      write: granted === "edit",
       actor,
+      t,
       aw: [],
     } satisfies Attachment);
+    await this.armAlarm(t + SOCKET_TTL_MS);
     if (limited) {
       try {
         server.send(RATE_LIMITED_FRAME);
@@ -230,6 +253,28 @@ export class DocRoom extends DurableObject<Env> {
       }
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
+    // Accepted (and tagged) before touch, so a closeActor that runs while
+    // touch is in flight finds it; a touch after a revocation started is
+    // refused and the socket closes here (as ArtifactRuntime.fetch does).
+    if (actor.startsWith("u:") && !(await this.touchPresence(actor, authzAt))) {
+      try {
+        server.close(4403, "access_removed");
+      } catch {
+        // already closed
+      }
+      return new Response(null, { status: 101, webSocket: pair[0] });
+    }
+    // The hello frame comes first: role is the server's, never the client's.
+    server.send(
+      JSON.stringify({
+        type: "hello",
+        role: granted,
+        ...(reason ? { reason } : {}),
+        bytes: this.storedBytes(),
+        cap: DOC_MAX_BYTES,
+        version: Number.isSafeInteger(version) && version >= 0 ? version : 0,
+      }),
+    );
     // Our state vector: the client answers with what we lack (sync step 2).
     const enc = encoding.createEncoder();
     encoding.writeVarUint(enc, MSG_SYNC);
@@ -246,8 +291,14 @@ export class DocRoom extends DurableObject<Env> {
     return r ? Number(r.v) : null;
   }
 
-  /** Closes every socket (4403) and records the change time (see fetch). */
-  closeSockets(reason: string): number {
+  /**
+   * Closes every socket and records the change time (see fetch): 4403
+   * access_removed, or 4404 not_found when the doc was deleted.
+   */
+  closeSockets(
+    reason: string,
+    gone: "changed" | "deleted" = "changed",
+  ): number {
     this.sql.exec(
       `INSERT INTO meta (k, v) VALUES ('access_changed', ?)
        ON CONFLICT (k) DO UPDATE SET v = max(v, excluded.v)`,
@@ -256,12 +307,18 @@ export class DocRoom extends DurableObject<Env> {
     const all = this.ctx.getWebSockets();
     for (const ws of all) {
       try {
-        ws.close(4403, reason.slice(0, 120));
+        if (gone === "deleted") ws.close(4404, "not_found");
+        else ws.close(4403, reason.slice(0, 120));
       } catch {
         // already closed
       }
     }
     return all.length;
+  }
+
+  /** UserPresence.closeAll with a null actor (the install index): every socket. */
+  closeAllSockets(reason: string): number {
+    return this.closeSockets(reason);
   }
 
   /** Closes one actor's sockets (4403); other actors stay. */
@@ -275,6 +332,22 @@ export class DocRoom extends DurableObject<Env> {
       }
     }
     return socks.length;
+  }
+
+  /** Records this signed-in socket with the user's presence (revocation closes it). */
+  private async touchPresence(
+    actor: string,
+    authzAt: number,
+  ): Promise<boolean> {
+    const id = this.ctx.id.name;
+    const p = presenceStub(this.env, actor.slice(2));
+    if (!p || !id) return true;
+    try {
+      return (await p.touch(`${DOC_PRESENCE_PREFIX}${id}`, authzAt)).ok;
+    } catch (e) {
+      logError("presence_touch_failed", e);
+      return false;
+    }
   }
 
   // ------------------------------------------------------------ messages
@@ -596,6 +669,9 @@ export class DocRoom extends DurableObject<Env> {
   // ------------------------------------------------------------ storage
 
   override async alarm() {
+    // Sockets at their TTL close 4401 (the client reconnects, and the cookie
+    // re-authorizes); the alarm re-arms for the oldest remaining one.
+    const nextTtl = this.expireSockets();
     try {
       this.flush();
     } catch (e) {
@@ -603,6 +679,8 @@ export class DocRoom extends DurableObject<Env> {
       logError("doc_room_flush_failed", e);
       await this.armAlarm(this.now() + FLUSH_MS);
       return;
+    } finally {
+      if (nextTtl !== null) await this.armAlarm(nextTtl);
     }
     // A refusal at the cap asked for a squeeze (in memory: if lost, the
     // row and byte thresholds still bound the tail).
@@ -610,6 +688,33 @@ export class DocRoom extends DurableObject<Env> {
       this.squeeze = false;
       if (this.rowCount > 0) this.compact();
     }
+  }
+
+  /**
+   * Closes sockets within SOCKET_TTL_SLACK_MS of their TTL (4401 auth_expired);
+   * returns when the oldest remaining one expires, or null with none left.
+   */
+  private expireSockets(): number | null {
+    const now = this.now();
+    let next: number | null = null;
+    for (const ws of this.ctx.getWebSockets()) {
+      let t = 0;
+      try {
+        t = (ws.deserializeAttachment() as Attachment | null)?.t ?? 0;
+      } catch {
+        // closed
+      }
+      if (now - t >= SOCKET_TTL_MS - SOCKET_TTL_SLACK_MS) {
+        try {
+          ws.close(4401, "auth_expired");
+        } catch {
+          // already closed
+        }
+      } else
+        next =
+          next === null ? t + SOCKET_TTL_MS : Math.min(next, t + SOCKET_TTL_MS);
+    }
+    return next;
   }
 
   /** Writes the buffer as ONE merged row; compacts past the thresholds. */

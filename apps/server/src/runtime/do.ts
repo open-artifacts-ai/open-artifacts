@@ -174,9 +174,9 @@ const MAX_ANON_EVENTS_PER_ACTOR = 3;
 /** Sockets per actor (X-OA-Actor on the upgrade request); fetch returns 429 past it. */
 const MAX_SOCKETS_PER_ACTOR = 20;
 /** Max socket lifetime: a revocation the server missed can't outlive a signed URL. */
-const SOCKET_TTL_MS = LIMITS.signedUrlTtlSec * 1000;
+export const SOCKET_TTL_MS = LIMITS.signedUrlTtlSec * 1000;
 /** The alarm also closes sockets this close to their TTL, batching alarms (≤1/min). */
-const SOCKET_TTL_SLACK_MS = 60_000;
+export const SOCKET_TTL_SLACK_MS = 60_000;
 /**
  * Search indexing (C3) runs this long after scheduleIndex, from the alarm:
  * a burst of publishes indexes only the newest version, and the alarm runs

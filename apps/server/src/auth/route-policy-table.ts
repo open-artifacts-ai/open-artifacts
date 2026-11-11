@@ -242,6 +242,8 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   [`PUT ${ARTS}/data`]: art("data.reset"),
   [`GET ${ARTS}/data-subscribe`]: art("subscribe"),
   [`GET ${ARTS}/events`]: art("events"),
+  // #1100: the doc room socket; the handler grants role edit by "publish".
+  [`GET ${ARTS}/doc`]: art("events"),
   [`GET ${ARTS}/storage`]: art("storage", { anon401: SAVE }),
   [`GET ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
   [`PUT ${ARTS}/storage/:key`]: art("storage", { anon401: SAVE }),
