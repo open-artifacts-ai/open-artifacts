@@ -11,6 +11,7 @@
 import {
   type ArtifactPatch,
   DOC_ENTRY,
+  DOCS_UNAVAILABLE_MESSAGE,
   type Format,
   type PublishInput,
 } from "@oa/shared";
@@ -88,3 +89,7 @@ export const notConvertible = () =>
     "doc_conversion",
     "Other artifacts never become docs. Leave id out to create a new doc from this Markdown, or publish this artifact in its own format.",
   );
+
+/** Creating a doc while the switch is off: 400 with the next step. */
+export const docsUnavailable = () =>
+  bad("format", "docs_unavailable", DOCS_UNAVAILABLE_MESSAGE);

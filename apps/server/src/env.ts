@@ -112,6 +112,8 @@ export interface Env {
    * default). Clamped to 256 KB on Free, 1920 KB on Paid.
    */
   DATA_DOC_BYTES?: string;
+  /** "1": this deployment creates docs (#1100), ahead of the DOC_CREATION flip (services/doc-switch.ts). */
+  DOCS_ENABLED?: string;
   /**
    * Data/storage writes per artifact per UTC day (dataLimits; empty or unset:
    * 10,000). Clamped to 10,000 on Free, 1,000,000 on Paid.

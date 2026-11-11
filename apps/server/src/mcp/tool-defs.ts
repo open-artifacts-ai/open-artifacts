@@ -21,6 +21,7 @@ import {
   ListQuerySchema,
   ListSpacesInputSchema,
   ListVersionsInputSchema,
+  PublishToolInputNoDocSchema,
   PublishToolInputSchema,
   ResolveCommentInputSchema,
   RestoreVersionInputSchema,
@@ -30,6 +31,8 @@ import {
   UnshareInputSchema,
 } from "@oa/shared";
 
+import { DOC_CREATION } from "../services/doc-switch.ts";
+
 const INLINE = `${LIMITS.inlineBytes / 1024} KB`;
 /** A well-formed artifact id for the examples. */
 const ID = "7Hq2mXc9KpR4tWbZ";
@@ -37,7 +40,9 @@ const ID = "7Hq2mXc9KpR4tWbZ";
 export const TOOL_DEFS = [
   {
     name: "publish_artifact",
-    inputSchema: PublishToolInputSchema,
+    inputSchema: DOC_CREATION
+      ? PublishToolInputSchema
+      : PublishToolInputNoDocSchema,
     example: {
       title: "Q3 report",
       format: "markdown",
@@ -278,10 +283,17 @@ export const descriptionFor = (name: ToolName, spaces = true): string => {
  * registerTool's config for `name`: its description and input schema.
  * `spaces` false: the description without the spaces wording.
  */
-export const toolConfig = <N extends ToolName>(name: N, spaces = true) => {
+export const toolConfig = <N extends ToolName>(
+  name: N,
+  spaces = true,
+  docs = false,
+) => {
   const d = defOf(name);
   return {
     description: descriptionFor(name, spaces),
-    inputSchema: d.inputSchema as Extract<ToolDef, { name: N }>["inputSchema"],
+    // A deployment with docs on (DOCS_ENABLED) takes the schema that names doc.
+    inputSchema: (docs && name === "publish_artifact"
+      ? PublishToolInputSchema
+      : d.inputSchema) as Extract<ToolDef, { name: N }>["inputSchema"],
   };
 };

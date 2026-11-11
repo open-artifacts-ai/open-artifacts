@@ -70,6 +70,8 @@ async function downloadUrl(
   return `${contentOrigin(env)}${p}`;
 }
 
+import { docsOn } from "../../services/doc-switch.js";
+
 export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
   const { env, user, caller } = t;
   // Without the spaces feature no description names spaces, and
@@ -78,7 +80,7 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
 
   server.registerTool(
     "publish_artifact",
-    toolConfig("publish_artifact", sp),
+    toolConfig("publish_artifact", sp, docsOn(env)),
     (input) =>
       guard(async () => {
         // An id with neither content nor files: settings only, no version (#681 D).

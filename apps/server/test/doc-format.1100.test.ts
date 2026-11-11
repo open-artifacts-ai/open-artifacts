@@ -18,10 +18,13 @@ let owner: { cookie: string; userId: string };
 let client: Client;
 
 beforeAll(async () => {
+  // Docs are off by default (doc-switch.1100.test.ts); on for this file.
+  (env as { DOCS_ENABLED?: string }).DOCS_ENABLED = "1";
   owner = await login(`doc-${newId().slice(0, 6).toLowerCase()}@x.com`);
   client = await connect((await createPat(env, owner.userId, "doc")).token);
 });
 afterAll(async () => {
+  (env as { DOCS_ENABLED?: string }).DOCS_ENABLED = undefined;
   await close(client);
 });
 
