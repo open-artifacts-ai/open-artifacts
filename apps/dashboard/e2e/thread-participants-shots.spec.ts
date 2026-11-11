@@ -32,7 +32,7 @@ for (const w of [1280, 390])
       await shot("1-closed");
 
       if (w >= 600) await trig.hover();
-      else await trig.tap();
+      else await trig.click();
       const list = card.locator("[data-participants-list]");
       await expect(list).toBeVisible();
       // The list floats: the thread does not grow.
@@ -61,7 +61,7 @@ for (const w of [1280, 390])
       const g = page.locator("[data-participants-trigger]").first();
       await expect(g).toBeVisible();
       if (w >= 600) await g.hover();
-      else await g.tap();
+      else await g.click();
       await expect(
         page.locator("[data-participants-list]").first(),
       ).toBeVisible();
