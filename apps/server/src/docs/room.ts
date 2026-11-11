@@ -58,6 +58,12 @@ const ACTOR_RE = /^(u|ip|agent):[\x21-\x7e]{1,250}$/;
 
 export const DOC_TOO_LARGE_FRAME =
   '{"type":"error","code":"doc_too_large","message":"This doc is at its 2 MB size limit. Start a new doc to keep writing."}';
+/** Awareness frames per socket per second; the excess is dropped. */
+const MAX_AWARENESS_PER_SEC = 10;
+
+/** A frame the room refuses and closes the socket for. */
+class BadFrame extends Error {}
+
 const BAD_UPDATE_FRAME =
   '{"type":"error","code":"bad_update","message":"That update could not be read."}';
 
@@ -241,10 +247,13 @@ export class DocRoom extends DurableObject<Env> {
       const type = decoding.readVarUint(dec);
       if (type === MSG_SYNC) this.onSync(ws, att, dec);
       else if (type === MSG_AWARENESS) this.onAwareness(ws, att, msg);
+      else throw new BadFrame("unknown message type");
     } catch {
-      // Malformed frame: ignore it, keep the socket.
+      // Malformed frame (truncated, bad lengths, unknown type): nothing from
+      // it was stored or relayed; tell the sender and close its socket.
       try {
         ws.send(BAD_UPDATE_FRAME);
+        ws.close(1007, "bad frame");
       } catch {
         // closing
       }
@@ -257,7 +266,8 @@ export class DocRoom extends DurableObject<Env> {
       this.sendState(ws);
       return;
     }
-    if (sub !== SYNC_STEP2 && sub !== SYNC_UPDATE) return;
+    if (sub !== SYNC_STEP2 && sub !== SYNC_UPDATE)
+      throw new BadFrame("unknown sync message");
     // The room, not the browser, enforces read-only.
     if (att.role !== "edit") return;
     const update = decoding.readVarUint8Array(dec);
@@ -266,14 +276,15 @@ export class DocRoom extends DurableObject<Env> {
   }
 
   private acceptUpdate(ws: WebSocket, att: Attachment, update: Uint8Array) {
-    let svOf: Map<number, number>;
+    // Decode the whole update (structs and delete set) before accepting it:
+    // parseUpdateMeta skips the delete set, so a truncated update would pass
+    // and then wedge every flush, compaction and joiner.
+    let meta: { from: Map<number, number>; to: Map<number, number> };
     try {
-      // parseUpdateMeta, not encodeStateVectorFromUpdate: that one counts only
-      // from clock 0, so a later update of a client would add nothing.
-      svOf = Y.parseUpdateMeta(update).to;
+      Y.decodeUpdate(update);
+      meta = Y.parseUpdateMeta(update);
     } catch {
-      ws.send(BAD_UPDATE_FRAME);
-      return;
+      throw new BadFrame("undecodable update");
     }
     if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES) {
       // Rows and the buffer overcount what a compacted doc holds. Never
@@ -286,8 +297,15 @@ export class DocRoom extends DurableObject<Env> {
       ws.send(DOC_TOO_LARGE_FRAME);
       return;
     }
-    for (const [c, clock] of svOf)
-      if ((this.sv.get(c) ?? 0) < clock) this.sv.set(c, clock);
+    // Advance a client's clock only when the update continues what we hold:
+    // a gap (structs at a far clock) must not claim the clocks in between,
+    // or the real author's missing edits would never be requested.
+    // (parseUpdateMeta, not encodeStateVectorFromUpdate, which counts only
+    // from clock 0.) Compaction recomputes the vector from the doc.
+    for (const [c, to] of meta.to) {
+      const have = this.sv.get(c) ?? 0;
+      if (have < to && (meta.from.get(c) ?? 0) <= have) this.sv.set(c, to);
+    }
     const wasEmpty = this.buffer.length === 0;
     this.buffer.push(update);
     this.bufferBytes += update.byteLength;
@@ -332,30 +350,63 @@ export class DocRoom extends DurableObject<Env> {
     );
   }
 
+  private awRate = new WeakMap<WebSocket, { sec: number; n: number }>();
+
+  /** True when another socket announced awareness client `id`. */
+  private ownedElsewhere(ws: WebSocket, id: number): boolean {
+    for (const other of this.ctx.getWebSockets()) {
+      if (other === ws) continue;
+      const o = other.deserializeAttachment() as Attachment | null;
+      if (o?.aw.some(([c]) => c === id)) return true;
+    }
+    return false;
+  }
+
   private onAwareness(ws: WebSocket, att: Attachment, msg: Uint8Array) {
     if (msg.byteLength > MAX_AWARENESS_BYTES) return;
+    const sec = Math.floor(this.now() / 1000);
+    const rate = this.awRate.get(ws);
+    if (rate && rate.sec === sec) {
+      if (++rate.n > MAX_AWARENESS_PER_SEC) return;
+    } else this.awRate.set(ws, { sec, n: 1 });
     const outer = decoding.createDecoder(msg);
     decoding.readVarUint(outer);
     const dec = decoding.createDecoder(decoding.readVarUint8Array(outer));
     const n = decoding.readVarUint(dec);
-    let changed = false;
+    if (n > MAX_AWARENESS_IDS) throw new BadFrame("too many awareness ids");
+    const entries: { id: number; clock: number; null: boolean }[] = [];
     for (let i = 0; i < n; i++) {
       const id = decoding.readVarUint(dec);
       const clock = decoding.readVarUint(dec);
       const state = decoding.readVarString(dec);
-      const at = att.aw.findIndex(([c]) => c === id);
-      if (state === "null") {
+      let isNull = false;
+      if (state === "null") isNull = true;
+      else {
+        const v: unknown = JSON.parse(state);
+        if (typeof v !== "object" || v === null || Array.isArray(v))
+          throw new BadFrame("awareness state is not an object");
+      }
+      entries.push({ id, clock, null: isNull });
+    }
+    // A socket may only set or remove client ids it introduced itself.
+    for (const e of entries)
+      if (!att.aw.some(([c]) => c === e.id) && this.ownedElsewhere(ws, e.id))
+        return;
+    let changed = false;
+    for (const e of entries) {
+      const at = att.aw.findIndex(([c]) => c === e.id);
+      if (e.null) {
         if (at >= 0) {
           att.aw.splice(at, 1);
           changed = true;
         }
       } else if (at >= 0) {
-        if ((att.aw[at] as [number, number])[1] !== clock) {
-          att.aw[at] = [id, clock];
+        if ((att.aw[at] as [number, number])[1] !== e.clock) {
+          att.aw[at] = [e.id, e.clock];
           changed = true;
         }
       } else if (att.aw.length < MAX_AWARENESS_IDS) {
-        att.aw.push([id, clock]);
+        att.aw.push([e.id, e.clock]);
         changed = true;
       }
     }
@@ -431,12 +482,29 @@ export class DocRoom extends DurableObject<Env> {
 
   private writeBuffer(): boolean {
     if (this.buffer.length === 0) return false;
-    const merged =
-      this.buffer.length === 1
-        ? (this.buffer[0] as Uint8Array)
-        : Y.mergeUpdates(this.buffer);
+    const pending = this.buffer;
     this.buffer = [];
     this.bufferBytes = 0;
+    let merged: Uint8Array;
+    try {
+      merged =
+        pending.length === 1
+          ? (pending[0] as Uint8Array)
+          : Y.mergeUpdates(pending);
+    } catch (e) {
+      // Never wedge the room: keep the updates that decode, drop the rest.
+      logError("doc_room_flush_bad_update", e);
+      const ok = pending.filter((u) => {
+        try {
+          Y.decodeUpdate(u);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      if (ok.length === 0) return false;
+      merged = Y.mergeUpdates(ok);
+    }
     this.ctx.storage.transactionSync(() => {
       this.sql.exec(
         "INSERT INTO updates (data, at) VALUES (?, ?)",
@@ -476,10 +544,18 @@ export class DocRoom extends DurableObject<Env> {
         .toArray();
       doc.transact(() => {
         if (snap) Y.applyUpdate(doc, new Uint8Array(snap.state));
-        for (const r of rows) Y.applyUpdate(doc, new Uint8Array(r.data));
+        for (const r of rows) {
+          try {
+            Y.applyUpdate(doc, new Uint8Array(r.data));
+          } catch (e) {
+            // A row that fails to decode must not wedge compaction.
+            logError("doc_room_compact_bad_row", e);
+          }
+        }
       });
       const state = Y.encodeStateAsUpdate(doc);
       const sv = Y.encodeStateVector(doc);
+      this.sv = Y.decodeStateVector(sv);
       this.ctx.storage.transactionSync(() => {
         this.sql.exec(
           "INSERT OR REPLACE INTO snapshot (id, state, sv, bytes) VALUES (1, ?, ?, ?)",

@@ -414,3 +414,190 @@ describe("DocRoom sockets", () => {
     await connect(stub, { authzAt: Date.now() + 60_000 });
   });
 });
+
+const awFrame = (entries: [number, number, string][]) => {
+  const inner = encoding.createEncoder();
+  encoding.writeVarUint(inner, entries.length);
+  for (const [id, clock, state] of entries) {
+    encoding.writeVarUint(inner, id);
+    encoding.writeVarUint(inner, clock);
+    encoding.writeVarString(inner, state);
+  }
+  const enc = encoding.createEncoder();
+  encoding.writeVarUint(enc, 1);
+  encoding.writeVarUint8Array(enc, encoding.toUint8Array(inner));
+  return encoding.toUint8Array(enc);
+};
+
+const syncFrame = (sub: number, data: Uint8Array) => {
+  const enc = encoding.createEncoder();
+  encoding.writeVarUint(enc, 0);
+  encoding.writeVarUint(enc, sub);
+  encoding.writeVarUint8Array(enc, data);
+  return encoding.toUint8Array(enc);
+};
+
+/** A real text-insert update (its last byte is the empty delete set). */
+const textUpdate = (s: string) => {
+  const d = new Y.Doc();
+  let u: Uint8Array = new Uint8Array();
+  d.on("update", (x: Uint8Array) => {
+    u = x;
+  });
+  d.getText("t").insert(0, s);
+  return u;
+};
+
+describe("DocRoom hostile input", () => {
+  const good = textUpdate("abc");
+  const bad: [string, Uint8Array][] = [
+    ["truncated update", syncFrame(2, good.slice(0, -1))],
+    [
+      "garbage delete set",
+      syncFrame(2, new Uint8Array([...good.slice(0, -1), 1, 0xff, 0xff, 0xff])),
+    ],
+    [
+      "bad varint length",
+      new Uint8Array([0, 2, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 1, 2]),
+    ],
+    ["unknown message type", new Uint8Array([9, 1, 2, 3])],
+    ["unknown sync message", new Uint8Array([0, 7, 0])],
+  ];
+
+  it.each(bad)(
+    "%s: refused, socket closed, room keeps saving and compacting",
+    async (_n, frame) => {
+      const stub = roomStub();
+      const culprit = await connect(stub);
+      const peer = await connect(stub);
+      culprit.ws.send(frame);
+      await culprit.closed;
+      await peer.ping();
+      expect(textOf(peer)).toBe("");
+      expect(await inRoom(stub, (r) => r.size())).toBe(0);
+      type(peer, "ok");
+      await peer.ping();
+      await runDurableObjectAlarm(stub);
+      expect(await rows(stub)).toBe(1);
+      await inRoom(stub, (r) => r.compact());
+      expect(await snapRows(stub)).toBe(1);
+      const j = await connect(stub);
+      await j.until(() => textOf(j) === "ok");
+    },
+  );
+
+  it("flush and compact skip a bad update instead of wedging", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    type(a, "ok");
+    await a.ping();
+    await runDurableObjectAlarm(stub);
+    await inRoom(stub, (r) => {
+      const x = r as unknown as {
+        sql: SqlStorage;
+        buffer: Uint8Array[];
+        bufferBytes: number;
+      };
+      x.sql.exec(
+        "INSERT INTO updates (data, at) VALUES (?, 1)",
+        good.slice(0, -1),
+      );
+      // Two entries, so the flush merges (and the merge throws).
+      x.buffer.push(textUpdate("zz"), good.slice(0, -1));
+      x.bufferBytes += good.length + 8;
+    });
+    await inRoom(stub, (r) => r.flush());
+    await inRoom(stub, (r) => r.compact());
+    expect(await rows(stub)).toBe(0);
+    expect(await inRoom(stub, (r) => r.size())).toBeGreaterThan(0);
+    const j = await connect(stub);
+    await j.until(() => textOf(j).includes("ok") && textOf(j).includes("zz"));
+  });
+
+  it("a gap does not advance the state vector for a client", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    const victim = new Y.Doc();
+    victim.clientID = 777;
+    const ups: Uint8Array[] = [];
+    victim.on("update", (u: Uint8Array) => ups.push(u));
+    for (let i = 0; i < 5; i++) victim.getText("t").insert(i, "v");
+    // Only the last update: structs at clock 4, nothing before.
+    a.ws.send(syncFrame(2, ups[4] as Uint8Array));
+    await a.ping();
+    const j1 = await connect(stub);
+    expect(Y.decodeStateVector(j1.serverSvs[0] as Uint8Array).get(777)).toBe(
+      undefined,
+    );
+    // The contiguous prefix then the rest advance it.
+    for (let i = 0; i < 4; i++) a.ws.send(syncFrame(2, ups[i] as Uint8Array));
+    await a.ping();
+    const j2 = await connect(stub);
+    expect(Y.decodeStateVector(j2.serverSvs[0] as Uint8Array).get(777)).toBe(4);
+    // Compaction recomputes it from the doc: all five.
+    await inRoom(stub, (r) => r.compact());
+    const j3 = await connect(stub);
+    expect(Y.decodeStateVector(j3.serverSvs[0] as Uint8Array).get(777)).toBe(5);
+  });
+});
+
+describe("DocRoom awareness hardening", () => {
+  it("a socket cannot set or remove another socket's client id", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    const b = await connect(stub);
+    const c = await connect(stub);
+    const seen: number[] = [];
+    c.awareness.on("update", (u: { added: number[]; updated: number[] }) =>
+      seen.push(...u.added, ...u.updated),
+    );
+    a.ws.send(awFrame([[111, 1, '{"n":"a"}']]));
+    await c.until(() => seen.includes(111));
+    seen.length = 0;
+    b.ws.send(awFrame([[111, 99, '{"n":"evil"}']]));
+    b.ws.send(awFrame([[111, 100, "null"]]));
+    b.ws.send(awFrame([[222, 1, '{"n":"b"}']]));
+    await c.until(() => seen.includes(222));
+    expect(seen).toEqual([222]);
+    expect(c.awareness.getStates().get(111)).toEqual({ n: "a" });
+  });
+
+  it("refuses a non-JSON or non-object state and closes the socket", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    const b = await connect(stub);
+    a.ws.send(awFrame([[5, 1, "not json"]]));
+    await a.closed;
+    const a2 = await connect(stub);
+    a2.ws.send(awFrame([[6, 1, "[1,2]"]]));
+    await a2.closed;
+    await b.ping();
+    expect(b.awareness.getStates().has(5)).toBe(false);
+    expect(b.awareness.getStates().has(6)).toBe(false);
+  });
+
+  it("drops awareness past the per-second rate", async () => {
+    const stub = roomStub();
+    await inRoom(stub, (r) => {
+      (r as unknown as { now: () => number }).now = () => 5_000;
+    });
+    const a = await connect(stub);
+    const b = await connect(stub);
+    let got = 0;
+    b.awareness.on("update", () => got++);
+    for (let i = 1; i <= 15; i++) a.ws.send(awFrame([[9, i, '{"i":1}']]));
+    await a.ping();
+    await b.ping();
+    expect(got).toBe(10);
+  });
+
+  it("drops an oversized awareness frame", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    const b = await connect(stub);
+    a.ws.send(awFrame([[3, 1, JSON.stringify({ x: "y".repeat(9000) })]]));
+    await a.ping();
+    await b.ping();
+    expect(b.awareness.getStates().has(3)).toBe(false);
+  });
+});
