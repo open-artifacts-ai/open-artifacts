@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from "vitest";
 const mode = vi.hoisted(() => ({
   code: "ETIMEDOUT" as string | undefined,
   calls: 0,
+  connected: false,
 }));
 vi.mock("@oa/bus-adapter-claude-code", async (orig) => ({
   ...(await orig<typeof import("@oa/bus-adapter-claude-code")>()),
@@ -17,7 +18,7 @@ vi.mock("@oa/bus-adapter-claude-code", async (orig) => ({
     const { InjectError: IE } = await vi.importActual<
       typeof import("@oa/bus-adapter-claude-code")
     >("@oa/bus-adapter-claude-code");
-    throw new IE("injection timed out", false, mode.code);
+    throw new IE("injection timed out", mode.connected, mode.code);
   },
 }));
 
@@ -52,6 +53,7 @@ describe("#2110 inject timeout", () => {
     expect(await t.deliver(agent, mail)).toEqual({
       ok: false,
       reason: "timeout",
+      retryable: true,
     });
     await t.close();
   });
@@ -92,7 +94,20 @@ describe("#2110 inject timeout", () => {
     expect(await t.deliver(agent, mail)).toEqual({
       ok: false,
       reason: "timeout",
+      retryable: true,
     });
+    await t.close();
+  });
+
+  it("a timeout after connecting is a plain timeout: it may have been delivered", async () => {
+    mode.code = "ETIMEDOUT";
+    mode.connected = true;
+    const t = transport();
+    expect(await t.deliver(agent, mail)).toEqual({
+      ok: false,
+      reason: "timeout",
+    });
+    mode.connected = false;
     await t.close();
   });
 });

@@ -346,7 +346,8 @@ export class ClaudeTransport {
     if (!target) {
       const why = this.opts.state?.(agent) ?? "gone";
       // Still unknown: not a close; the receipt stays pending.
-      if (why === "unknown") return { ok: false, reason: "timeout" };
+      if (why === "unknown")
+        return { ok: false, reason: "timeout", retryable: true };
       this.#closeBy.set(agent.ref, why === "gone" ? "liveness" : "delivery");
       return { ok: false, reason: "closed" };
     }
@@ -388,10 +389,14 @@ export class ClaudeTransport {
         timeoutMs: this.opts.injectTimeoutMs,
       });
     } catch (e) {
-      // Nothing listening: the session is gone. Anything after connecting, or
-      // a timeout (#2110: the timer can fire before 'connect' on a busy
-      // machine, which proves nothing about the session): retry.
-      return e instanceof InjectError && !e.connected && e.code !== "ETIMEDOUT"
+      // Nothing listening: the session is gone. Anything after connecting: a
+      // timeout the hub or the local retry resolves. A timer that fired before
+      // 'connect' (#2110) proves nothing about the session and nothing was
+      // written, so it is a retryable timeout; after connecting it may have
+      // been delivered, so it is not retried.
+      if (e instanceof InjectError && e.code === "ETIMEDOUT" && !e.connected)
+        return { ok: false, reason: "timeout", retryable: true };
+      return e instanceof InjectError && !e.connected
         ? { ok: false, reason: "closed" }
         : { ok: false, reason: "timeout" };
     }

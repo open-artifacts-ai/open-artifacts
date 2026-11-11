@@ -329,6 +329,32 @@ describe("runDaemon claude session sync", () => {
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
   });
 
+  it("#2110: retries that all time out close the record without a refuse, and the sync reopens it", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: {
+        ...syncDeps(d, running),
+        syncMs: 50,
+        retryDelaysMs: [5, 5, 5],
+      },
+      transports: {
+        "claude-code": async () => ({
+          ok: false,
+          reason: "timeout",
+          retryable: true,
+        }),
+      },
+    });
+    await h.next("agent_up");
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    expect(await h.next("agent_up", 2)).toMatchObject({ agent_ref: "s4242" });
+    expect(h.of("refuse")).toEqual([]);
+    expect(h.of("sessions").flatMap((x) => x.closed)).toContain("s4242");
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+  });
+
   it("#2110: a session with no socket closes as a delivery refusal and is not churned by the sync", async () => {
     const d = dir();
     writeSession(d, 4242, { messagingSocketPath: undefined });

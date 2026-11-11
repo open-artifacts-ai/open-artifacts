@@ -270,6 +270,8 @@ export type DaemonDeps = {
     syncMs?: number;
     /** #2110: how long a running session with an unreadable start time or file stays live. Default 10 min. */
     unknownGraceMs?: number;
+    /** #2110: delays of the local retries of a retryable timeout. Default 2 s, 5 s, 15 s. */
+    retryDelaysMs?: number[];
     procStart?: (pid: number) => string | null;
     isRunning?: (pid: number) => boolean;
     /** Proof hashes of live sessions kept across a restart (#2050); default ~/.oa-bus/claude-links.json. */
@@ -1240,6 +1242,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
 
   const delivery = createDeliver({
     agents,
+    ...(cl.retryDelaysMs ? { retryDelaysMs: cl.retryDelaysMs } : {}),
     hub: { send: (f) => hub.send(f) },
     transports: {
       "claude-code": (agent, mail) => claude.deliver(agent, mail),
@@ -1251,8 +1254,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       codex: (agent, mail) => codex.deliver(agent, mail),
       ...deps.transports,
     },
-    onClosed: (a) => {
-      a.closedBy = claude.closeReason(a.ref);
+    onClosed: (a, closedBy) => {
+      a.closedBy = closedBy ?? claude.closeReason(a.ref);
       ev("agent_leave", agentFields(a, "delivery_closed"));
       announceSessions();
     },
@@ -2454,6 +2457,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       clearInterval(socketWatch);
       clearInterval(watcher);
       clearInterval(retry);
+      delivery.stop();
       outbox.stop();
       resends.stop();
       for (const t of limited.values()) clearTimeout(t);
