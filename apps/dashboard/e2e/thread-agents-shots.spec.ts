@@ -9,7 +9,11 @@ const OUT = process.env.THREAD_AGENTS_SHOTS_DIR;
 async function open(page: Page) {
   await page.goto(`/a/${ID}?mock=agents`);
   await page.getByRole("button", { name: /^Comments/ }).click();
-  await page.getByRole("button", { name: "2 replies" }).click();
+  await page
+    .locator("li[data-thread]")
+    .filter({ hasText: "Can the pricing section be shorter?" })
+    .getByRole("button", { name: /\d+ replies/ })
+    .click();
   await expect(page.locator("[data-thread-agents]")).toBeVisible();
 }
 
