@@ -19,6 +19,11 @@ export class HeldStore {
     return msgId in this.#read();
   }
 
+  /** When `msgId` was added (ms), if it is held. */
+  at(msgId: string): number | undefined {
+    return this.#read()[msgId];
+  }
+
   add(msgId: string): void {
     this.#write({ ...this.#read(), [msgId]: this.#now() });
   }

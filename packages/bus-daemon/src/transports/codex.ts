@@ -10,6 +10,7 @@ import {
   systemTool,
 } from "@oa/bus-ipc";
 import type { AgentRecord } from "../agents.ts";
+import { CODEX_TOOL_NAMESPACE } from "../codex-attest.ts";
 import type { DeliverOutcome, Mail } from "../deliver.ts";
 
 /** How long `codex queue` may run; it writes one sqlite row. */
@@ -317,7 +318,7 @@ export class CodexTransport {
 
   async deliver(agent: AgentRecord, mail: Mail): Promise<DeliverOutcome> {
     if (!(await this.#wakes(agent))) return { ok: false, reason: "queued" };
-    const r = await this.#queue(agent, mail.msg_id, codexText(agent, mail));
+    const r = await this.#queue(agent.ref, mail.msg_id, codexText(agent, mail));
     if (r.ok) return { ok: true };
     return { ok: false, reason: r.taken === "no" ? "timeout" : "queued" };
   }
@@ -329,9 +330,29 @@ export class CodexTransport {
     msgId: string,
   ): Promise<boolean> {
     if (!(await this.#wakes(agent))) return false;
-    const r = await this.#queue(agent, `notice:${msgId}`, `[oa-bus] ${text}`);
+    const r = await this.#queue(
+      agent.ref,
+      `notice:${msgId}`,
+      `[oa-bus] ${text}`,
+    );
     // Maybe told already: a second copy is worse than none.
     return r.ok || r.taken === "maybe";
+  }
+
+  /**
+   * #2029: one fixed bus-written text into a thread that is not admitted, as
+   * `id` (once per id, even after a failure). Only to a host that wakes on a
+   * queued message (`pid` is that host); admission is not touched.
+   */
+  canWake(pid: number): Promise<boolean> {
+    return this.opts.wakes(pid);
+  }
+
+  async wake(ref: string, pid: number, id: string, text: string) {
+    if (!(await this.opts.wakes(pid))) return "no_host" as const;
+    const r = await this.#queue(ref, id, text);
+    if (r.ok) return "sent" as const;
+    return r.taken === "maybe" ? ("maybe" as const) : ("failed" as const);
   }
 
   #wakes(agent: AgentRecord): Promise<boolean> {
@@ -357,7 +378,7 @@ export class CodexTransport {
     }
   }
 
-  async #queue(agent: AgentRecord, id: string, text: string): Promise<Queue> {
+  async #queue(ref: string, id: string, text: string): Promise<Queue> {
     if (this.#has(id)) return { ok: true };
     // Maybe never landed: stays queued, so it ends expired, never a false Delivered.
     if (this.#has(`maybe:${id}`)) return { ok: false, taken: "maybe" };
@@ -374,7 +395,7 @@ export class CodexTransport {
     }
     this.#missingLogged = false;
     // `=` keeps a value that starts with `-` from reading as an option.
-    const args = ["queue", `--thread=${agent.ref}`, `--message=${text}`];
+    const args = ["queue", `--thread=${ref}`, `--message=${text}`];
     let res: Awaited<ReturnType<CodexRun>>;
     try {
       res = await this.opts.run(bin.path, args, {
@@ -384,7 +405,7 @@ export class CodexTransport {
     } catch (e) {
       this.#bin = undefined;
       this.opts.event?.("codex_queue_failed", {
-        thread: agent.ref,
+        thread: ref,
         reason: "start",
       });
       this.opts.log?.(
@@ -399,22 +420,20 @@ export class CodexTransport {
       // Killed at its timeout: it may have written the row, and a second copy is worse than a late one.
       this.#keep(`maybe:${id}`);
       this.opts.event?.("codex_queue_failed", {
-        thread: agent.ref,
+        thread: ref,
         reason: "timeout",
       });
-      this.opts.log?.(
-        `codex queue for ${agent.ref} timed out; not queued again`,
-      );
+      this.opts.log?.(`codex queue for ${ref} timed out; not queued again`);
       return { ok: false, taken: "maybe" };
     }
     this.#bin = undefined;
     this.opts.event?.("codex_queue_failed", {
-      thread: agent.ref,
+      thread: ref,
       reason: "exit",
       code: res.code,
     });
     this.opts.log?.(
-      `codex queue for ${agent.ref} exited ${res.code}: ${stripTerminalControls(res.stderr.trim()).slice(0, 300)}`,
+      `codex queue for ${ref} exited ${res.code}: ${stripTerminalControls(res.stderr.trim()).slice(0, 300)}`,
     );
     return { ok: false, taken: "no" };
   }
@@ -425,3 +444,6 @@ export const codexHostWakes = async (pid: number): Promise<boolean> => {
   const args = await processArgs(pid);
   return args !== undefined && hostWakes(args);
 };
+
+/** #2029: the one text a bus wake queues into a thread; nothing is added to it. */
+export const CODEX_WAKE_TEXT = `Open Artifacts bus: messages are waiting for this thread. Call the tool ${CODEX_TOOL_NAMESPACE}__self once, by that literal name (do not look it up from a tool list), to receive them.`;

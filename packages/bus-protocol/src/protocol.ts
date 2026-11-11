@@ -359,6 +359,11 @@ const RosterAgent = z.strictObject({
    * either refuses the row, and with it the whole roster.
    */
   since: IsoTimeSchema.optional(),
+  /**
+   * #2029: mail pending to an `away` agent, counted up to 100. Only on away
+   * rows, which only a `BUS_CAPS.mailbox` socket sees.
+   */
+  waiting: z.number().int().min(1).max(100).optional(),
   /** The agent's machine label. */
   machine_label: MachineLabelSchema.optional(),
   /** Self-reported ("agent says"); cleared on close. */
