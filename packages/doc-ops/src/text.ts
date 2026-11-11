@@ -120,7 +120,7 @@ export interface QuoteMatch {
 export type QuoteLookup =
   | { kind: "found"; match: QuoteMatch }
   | { kind: "not_found"; closest: string | null; withoutContext: number }
-  | { kind: "ambiguous"; matches: number }
+  | { kind: "ambiguous"; matches: number; tooMany?: true }
   | { kind: "spans_hidden" };
 
 interface Span {
@@ -128,26 +128,46 @@ interface Span {
   end: number;
 }
 
+/** The most places a quote's text is examined, whether or not each passes. */
+export const MAX_CANDIDATES = 1000;
+
+interface Matches {
+  spans: Span[];
+  /** More places were left than MAX_CANDIDATES allows examining. */
+  truncated: boolean;
+  /** How many places were examined. */
+  examined: number;
+}
+
 // Every place the quote's text occurs, overlapping ones too, at most
-// MAX_MATCHES that pass `accept`. A quote with no line break is a plain
-// substring; one with breaks matches a run of breaks as one (see pattern()).
+// MAX_MATCHES that pass `accept`, and at most MAX_CANDIDATES examined. A quote
+// with no line break is a plain substring; one with breaks matches a run of
+// breaks as one (see pattern()).
 function matchesOf(
   text: string,
   quote: string,
   accept: (index: number, end: number) => boolean,
-): Span[] {
-  const out: Span[] = [];
+): Matches {
+  const spans: Span[] = [];
+  let examined = 0;
+  const visit = (index: number, end: number): "more" | "stop" | "over" => {
+    if (examined === MAX_CANDIDATES) return "over";
+    examined++;
+    if (accept(index, end)) spans.push({ index, end });
+    return spans.length >= MAX_MATCHES ? "stop" : "more";
+  };
+  let truncated = false;
   if (!quote.includes("\n")) {
     for (
       let at = text.indexOf(quote);
       at >= 0;
       at = text.indexOf(quote, at + 1)
     ) {
-      if (accept(at, at + quote.length))
-        out.push({ index: at, end: at + quote.length });
-      if (out.length >= MAX_MATCHES) break;
+      const r = visit(at, at + quote.length);
+      if (r === "over") truncated = true;
+      if (r !== "more") break;
     }
-    return out;
+    return { spans, truncated, examined };
   }
   const re = new RegExp(pattern(quote), "gu");
   for (;;) {
@@ -156,31 +176,33 @@ function matchesOf(
     // Overlapping matches count too ("aa" twice in "aaa").
     re.lastIndex = m.index + 1;
     if (m[0].length === 0) continue;
-    const end = m.index + m[0].length;
-    if (accept(m.index, end)) out.push({ index: m.index, end });
-    if (out.length >= MAX_MATCHES) break;
+    const r = visit(m.index, m.index + m[0].length);
+    if (r === "over") truncated = true;
+    if (r !== "more") break;
   }
-  return out;
+  return { spans, truncated, examined };
 }
 
 // A prefix or suffix is checked at a match, not searched for: a plain compare
-// when it has no line break, else a regex over a bounded slice beside it.
-function endsAt(text: string, index: number, prefix: string): boolean {
+// when it has no line break, else a regex (compiled once per lookup) over a
+// bounded slice beside it.
+function prefixCheck(prefix: string): (text: string, index: number) => boolean {
   if (!prefix.includes("\n")) {
-    return (
-      index >= prefix.length && text.startsWith(prefix, index - prefix.length)
-    );
+    return (text, index) =>
+      index >= prefix.length && text.startsWith(prefix, index - prefix.length);
   }
   const room = prefix.length * 4 + 64;
   const re = new RegExp(`(?:${pattern(prefix)})$`, "u");
-  return re.test(text.slice(Math.max(0, index - room), index));
+  return (text, index) => re.test(text.slice(Math.max(0, index - room), index));
 }
 
-function startsAt(text: string, end: number, suffix: string): boolean {
-  if (!suffix.includes("\n")) return text.startsWith(suffix, end);
+function suffixCheck(suffix: string): (text: string, end: number) => boolean {
+  if (!suffix.includes("\n")) {
+    return (text, end) => text.startsWith(suffix, end);
+  }
   const room = suffix.length * 4 + 64;
   const re = new RegExp(`^(?:${pattern(suffix)})`, "u");
-  return re.test(text.slice(end, end + room));
+  return (text, end) => re.test(text.slice(end, end + room));
 }
 
 /**
@@ -202,14 +224,22 @@ export function findQuote(
   // A match must start and end on a character, never on a block break.
   const onText = (index: number, end: number) =>
     posAt(vt, index) >= 0 && posAt(vt, end - 1) >= 0;
-  const found = matchesOf(
+  const hasPre = prefixCheck(pre);
+  const hasSuf = suffixCheck(suf);
+  const all = matchesOf(
     text,
     q,
     (index, end) =>
-      (!pre || endsAt(text, index, pre)) &&
-      (!suf || startsAt(text, end, suf)) &&
+      (!pre || hasPre(text, index)) &&
+      (!suf || hasSuf(text, end)) &&
       onText(index, end),
   );
+  const found = all.spans;
+  if (found.length > 1) return { kind: "ambiguous", matches: found.length };
+  // Too many places to check them all: the quote is not specific enough.
+  if (all.truncated) {
+    return { kind: "ambiguous", matches: all.examined, tooMany: true };
+  }
   if (found.length === 1) {
     const { index, end } = found[0];
     const last = blockOf(vt, end - 1);
@@ -221,10 +251,9 @@ export function findQuote(
       match: { from: posAt(vt, index), to: posAt(vt, end - 1) + 1 },
     };
   }
-  if (found.length > 1) return { kind: "ambiguous", matches: found.length };
   if (pre || suf) {
     // The quote is there, but not with this prefix or suffix: show where it is.
-    const bare = matchesOf(text, q, onText);
+    const bare = matchesOf(text, q, onText).spans;
     if (bare.length > 0) {
       const { index, end } = bare[0];
       return {

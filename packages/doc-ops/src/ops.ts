@@ -396,7 +396,9 @@ function locate(
   if (found.kind === "ambiguous") {
     throw new OpFailure({
       code: "quote_ambiguous",
-      message: `The quote matches ${found.matches} places. Add a prefix (text right before it) or a suffix (text right after it) to pick one, or quote more text.`,
+      message: found.tooMany
+        ? `The quote is in more than ${found.matches - 1} places, too many to check. Quote a longer span of text that appears once.`
+        : `The quote matches ${found.matches} places. Add a prefix (text right before it) or a suffix (text right after it) to pick one, or quote more text.`,
       matches: found.matches,
     });
   }

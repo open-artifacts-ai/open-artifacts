@@ -65,9 +65,26 @@ describe.skipIf(!process.env.PERF)("a doc at the size cap", () => {
   it("a repeated prefix does not scan 1000 characters everywhere", () => {
     const ms = time(() => {
       const r = findQuote(doc, "agent edits", "x".repeat(1000));
-      expect(r.kind).toBe("not_found");
+      expect(r.kind).toBe("ambiguous");
     });
     log("long prefix", ms);
+  });
+
+  it("a prefix or suffix no place has, on a doc of one letter", () => {
+    const flat = markdownToDoc(`${"a".repeat(1_900_000)}\n`).doc;
+    const brk = markdownToDoc(
+      `${Array.from({ length: 200_000 }, () => "a").join("\n\n")}\n`,
+    ).doc;
+    for (const [name, d, pre, suf] of [
+      ["prefix", flat, `${"a".repeat(999)}c`, undefined],
+      ["suffix", flat, undefined, `${"a".repeat(999)}c`],
+      ["prefix with a break", brk, "c\n", undefined],
+    ] as const) {
+      const ms = time(() => {
+        expect(findQuote(d, "a", pre, suf).kind).toBe("ambiguous");
+      });
+      log(name, ms);
+    }
   });
 
   it("50 ops on it take well under a second", () => {

@@ -124,3 +124,33 @@ describe("quote limits", () => {
     }
   });
 });
+
+describe("candidate bound", () => {
+  it("refuses a quote in too many places, even if none passes the context", () => {
+    // A long run of "a" with a prefix no place has: every place fails, and
+    // the lookup stops after MAX_CANDIDATES instead of scanning them all.
+    const md = `${"a".repeat(5000)}\n`;
+    for (const op of [
+      { op: "delete", quote: "a", prefix: `${"a".repeat(30)}c` },
+      { op: "delete", quote: "a", suffix: `${"a".repeat(30)}c` },
+    ]) {
+      const e = refused(md, op, "quote_ambiguous");
+      expect(e?.message).toMatch(/too many to check.*longer span/);
+    }
+  });
+  it("with a break in the prefix, too", () => {
+    const md = `${Array.from({ length: 3000 }, () => "a").join("\n\n")}\n`;
+    const e = refused(
+      md,
+      { op: "delete", quote: "a", prefix: "c\n" },
+      "quote_ambiguous",
+    );
+    expect(e?.message).toMatch(/too many to check/);
+  });
+  it("a quote under the bound still resolves with context", () => {
+    const md = `${"a".repeat(500)}c${"a".repeat(500)}\n`;
+    expect(
+      applied(md, { op: "replace", quote: "a", prefix: "c", with: "b" }),
+    ).toBe(`${"a".repeat(500)}cb${"a".repeat(499)}\n`);
+  });
+});
