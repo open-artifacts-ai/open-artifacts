@@ -196,6 +196,19 @@ it("Plan and billing: a Solo trial shows its end and the two upgrades", async ()
   expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
 });
 
+it("Plan and billing: links to how to leave hosted, in a new tab (#2108)", async () => {
+  mountHosted("/settings/plan", { billing: TRIAL });
+  const link = await screen.findByRole("link", {
+    name: /Leaving\? Here's how/,
+  });
+  expect(link).toHaveAttribute(
+    "href",
+    "https://open-artifacts.com/docs/hosted/",
+  );
+  expect(link).toHaveAttribute("target", "_blank");
+  expect(link).toHaveAttribute("rel", "noopener");
+});
+
 it("Plan and billing: Team shows Manage billing, which opens the portal", async () => {
   const posts = calls("POST");
   mountHosted("/settings/plan", { billing: TEAM });
