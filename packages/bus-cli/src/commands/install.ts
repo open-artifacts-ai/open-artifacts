@@ -521,7 +521,8 @@ export async function install(
   opts: InstallOpts & { check?: boolean },
   realCtx: Ctx,
 ): Promise<number> {
-  // Before anything is written: purge later deletes only what was not there.
+  if (opts.habits) return habitsCommand(opts.habits, realCtx);
+  // Before install writes anything: purge later deletes only what was not there.
   if (!opts.check)
     try {
       noteMade({
@@ -530,7 +531,6 @@ export async function install(
         env: realCtx.env,
       });
     } catch {}
-  if (opts.habits) return habitsCommand(opts.habits, realCtx);
   const json = Boolean(opts.json && !opts.check);
   const ctx: Ctx = json ? { ...realCtx, stdout: realCtx.stderr } : realCtx;
   const c = ctx.copy;

@@ -95,6 +95,11 @@ const FLAGS: Record<string, string[]> = {
 export { main } from "./main.ts";
 
 export function parse(argv: string[]): Command {
+  // Help wins over everything else on the line, even a flag parseArgs would refuse.
+  const end = argv.indexOf("--");
+  const own = end === -1 ? argv : argv.slice(0, end);
+  if (own.includes("--help") || own.includes("-h") || argv[0] === "help")
+    return { cmd: "help", noColor: own.includes("--no-color") };
   // Flags may come before or after the subcommand: it is the first positional.
   const { values, positionals, tokens } = parseArgs({
     args: argv,

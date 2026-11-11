@@ -655,9 +655,12 @@ const codexHere = (
 const OC_RESTARTED = "opencode service restarted";
 const OC_MANUAL = "opencode restart left to the user: running inside OpenCode";
 
-/** True when this process was started by an OpenCode session (it sets OPENCODE in its shells). */
+/**
+ * True when this ran from a shell an OpenCode session started. Only OpenCode's
+ * tool shells carry OPENCODE=1 and OPENCODE_SESSION_ID, not its own process.
+ */
 const insideOpencode = (deps: Pick<AdapterDeps, "env">) =>
-  Boolean(deps.env?.OPENCODE || deps.env?.OPENCODE_PID);
+  Boolean(deps.env?.OPENCODE === "1" || deps.env?.OPENCODE_SESSION_ID);
 
 /**
  * A restart drops running OpenCode sessions, so it runs only when the config or
@@ -879,10 +882,12 @@ const uninstall: Record<Harness, Step> = {
       );
     }
     const path = paths(deps).claude;
-    const doc = readDoc(path);
     // Nothing to remove: say nothing was removed, whatever the CLI exits with.
-    if ((doc.mcpServers as Doc | undefined)?.[NAME] === undefined)
-      return "none";
+    // A file that cannot be read is no proof of that: the CLI gets its turn.
+    try {
+      if ((readDoc(path).mcpServers as Doc | undefined)?.[NAME] === undefined)
+        return "none";
+    } catch {}
     if (deps.which("claude")) {
       const r = await run(deps, "claude", [
         "mcp",
@@ -893,6 +898,7 @@ const uninstall: Record<Harness, Step> = {
       ]);
       if (r.code === 0) return "done";
     }
+    const doc = readDoc(path);
     if (!save(path, doc, removeMcpServer(doc, NAME))) return "none";
     notes.push(`removed oa_bus from ${path} directly`);
     return "done";

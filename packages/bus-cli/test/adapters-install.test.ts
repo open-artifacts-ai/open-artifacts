@@ -241,6 +241,25 @@ describe("installAdapters", () => {
     expect(calls).not.toContainEqual(CLAUDE_RM);
   });
 
+  it("OPENCODE_SESSION_ID also marks an OpenCode shell; OPENCODE_PID does not", async () => {
+    const a = setup(["opencode"]);
+    a.deps.env = { OPENCODE_SESSION_ID: "ses_1" };
+    expect((await installAdapters(a.deps)).opencodeRestartByUser).toBe(true);
+    const b = setup(["opencode"]);
+    b.deps.env = { OPENCODE_PID: "1" };
+    const out = await installAdapters(b.deps);
+    expect(out.opencodeRestartByUser).toBe(false);
+    expect(out.opencodeRestarted).toBe(true);
+  });
+
+  it("a malformed ~/.claude.json still gets the CLI's remove (#2106)", async () => {
+    const { h, deps, calls } = setup(["claude"]);
+    put(p.claude(h), "{ not json");
+    const out = await uninstallAdapters(deps);
+    expect(calls).toContainEqual(CLAUDE_RM);
+    expect(out.removed).toEqual(["claude"]);
+  });
+
   it("an uninstall with nothing to remove does not restart OpenCode (#2105)", async () => {
     const { deps, calls } = setup(["opencode"]);
     await uninstallAdapters(deps);
