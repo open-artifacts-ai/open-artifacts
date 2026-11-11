@@ -14,6 +14,57 @@ import {
   undeletion,
 } from "./model.ts";
 
+// Terminal cells for one character: combining marks 0, East Asian wide and
+// emoji 2, the rest 1.
+function cellsOf(ch: string): number {
+  const c = ch.codePointAt(0) ?? 0;
+  if (
+    /^\p{M}$/u.test(ch) ||
+    c === 0x200b ||
+    c === 0x200d ||
+    (c >= 0xfe00 && c <= 0xfe0f)
+  )
+    return 0;
+  if (
+    /^\p{Extended_Pictographic}$/u.test(ch) ||
+    (c >= 0x1100 && c <= 0x115f) ||
+    (c >= 0x2e80 && c <= 0x303e) ||
+    (c >= 0x3041 && c <= 0x33ff) ||
+    (c >= 0x3400 && c <= 0x4dbf) ||
+    (c >= 0x4e00 && c <= 0xa4cf) ||
+    (c >= 0xa960 && c <= 0xa97f) ||
+    (c >= 0xac00 && c <= 0xd7a3) ||
+    (c >= 0xf900 && c <= 0xfaff) ||
+    (c >= 0xfe30 && c <= 0xfe6f) ||
+    (c >= 0xff00 && c <= 0xff60) ||
+    (c >= 0xffe0 && c <= 0xffe6) ||
+    (c >= 0x1f300 && c <= 0x1faff) ||
+    (c >= 0x20000 && c <= 0x3fffd)
+  )
+    return ch === "↗" ? 1 : 2;
+  return 1;
+}
+
+function cells(text: string): number {
+  let n = 0;
+  for (const ch of text) n += cellsOf(ch);
+  return n;
+}
+
+// The text cut with "…" to at most `room` cells.
+function clip(text: string, room: number): string {
+  if (cells(text) <= room) return text;
+  let out = "";
+  let used = 0;
+  for (const ch of Array.from(text)) {
+    const w = cellsOf(ch);
+    if (used + w > room - 1) break;
+    out += ch;
+    used += w;
+  }
+  return `${out}…`;
+}
+
 // The small public API surface this plugin uses; no client internals or credentials.
 type Event = Record<string, unknown>;
 type Next = (event: Event) => Promise<unknown>;
@@ -293,21 +344,27 @@ export function register(
           ...rows.slice(0, count).map((a) => {
             const prefix = "↗ ";
             const suffix = ` v${a.publishedVersion}`;
-            const length = Math.max(1, columns - prefix.length - suffix.length);
-            const title = Array.from(a.title);
-            const label =
-              title.length > length
-                ? `${title.slice(0, Math.max(0, length - 1)).join("")}…`
-                : a.title;
+            // One column of slack: filling the last column can wrap or clip.
+            const room = Math.max(
+              1,
+              columns - cells(prefix) - cells(suffix) - 1,
+            );
+            const label = clip(a.title, room);
             return Box({
               flexDirection: "row",
               width: columns,
               height: 1,
               overflow: "hidden",
               children: [
-                Text({ dimColor: true, children: [prefix] }),
+                Box({
+                  flexShrink: 0,
+                  children: [Text({ dimColor: true, children: [prefix] })],
+                }),
                 Link({ href: a.url, label }),
-                Text({ dimColor: true, children: [suffix] }),
+                Box({
+                  flexShrink: 0,
+                  children: [Text({ dimColor: true, children: [suffix] })],
+                }),
               ],
             });
           }),

@@ -507,9 +507,23 @@ describe("native presentation contract", () => {
       const label = /"label":"([^"]*)"/.exec(row)?.[1] ?? "";
       expect(label.endsWith("…")).toBe(true);
       expect(2 + Array.from(label).length + suffix.length).toBeLessThanOrEqual(
-        width,
+        width - 1,
       );
     }
+  });
+
+  it("cuts a CJK title by display width so the suffix stays", async () => {
+    const h = host();
+    await h.publish(result(5, "cjk"), {
+      title: "研究設計：エージェントチーム".repeat(3),
+    });
+    const { value } = await h.draw(1, 30);
+    const row = JSON.stringify(value);
+    expect(row).toContain('"children":[" v5"]');
+    const label = /"label":"([^"]*)"/.exec(row)?.[1] ?? "";
+    expect(label.endsWith("…")).toBe(true);
+    const wide = Array.from(label.slice(0, -1)).length * 2 + 1;
+    expect(2 + wide + 3).toBeLessThanOrEqual(29);
   });
 
   it("leaves surveys, hidden bands, empty sessions and unconfigured instances alone", async () => {
