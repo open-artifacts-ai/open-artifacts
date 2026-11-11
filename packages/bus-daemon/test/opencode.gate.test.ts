@@ -523,7 +523,11 @@ describe("opencode through runDaemon", () => {
     expect(spawn).toHaveBeenCalledOnce();
   });
 
-  async function attested(dir: string, alive: Set<number>) {
+  async function attested(
+    dir: string,
+    alive: Set<number>,
+    conn: Set<number> = new Set([8001, 8002]),
+  ) {
     return daemonHarness({
       attest: undefined, // the real attest, as runDaemon wires it
       claude: { syncMs: 3_600_000 },
@@ -541,7 +545,7 @@ describe("opencode through runDaemon", () => {
           exeOf: (pid) => (pid === 4321 || pid >= 8000 ? "/oc" : null),
           ppidOf: () => null,
           listenPorts: (pid) => new Set([pid]),
-          connectedPorts: () => new Set([8001, 8002]),
+          connectedPorts: () => conn,
         },
       },
     });
@@ -569,20 +573,52 @@ describe("opencode through runDaemon", () => {
     expect(h.of("agent_up")).toEqual([]);
   });
 
-  it("a claim through one service never blocks the same session through another (#1950)", async () => {
+  const claimed = async (alive: Set<number>, conn: Set<number>) => {
     const dir = presenceDir();
     presence(dir, 4321, ["ses_root"]);
+    const h = await attested(dir, alive, conn);
+    (await h.adapter("ses_root", oc(7001))).close();
+    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
+    return h;
+  };
+
+  it("keeps the incumbent: a second service cannot take a live record the first still has attached (#1950)", async () => {
+    const h = await claimed(new Set([4321, 8001, 8002]), new Set([8001, 8002]));
+    await expect(h.adapter("ses_root", oc(7002))).rejects.toThrow(/in use/);
+    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
+  });
+
+  it("lets a second service take it once the first service is gone", async () => {
     const alive = new Set([4321, 8001, 8002]);
-    const h = await attested(dir, alive);
-    // Service 8001 claims first; service 8002's hello for the same session still succeeds.
-    (await h.adapter("ses_root", oc(7001))).close();
-    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
-    const again = await h.adapter("ses_root", oc(7002));
-    expect(again.welcome).toMatchObject({ type: "welcome" });
+    const h = await claimed(alive, new Set([8001, 8002]));
+    alive.delete(8001);
+    expect((await h.adapter("ses_root", oc(7002))).welcome).toMatchObject({
+      type: "welcome",
+    });
     expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8002);
-    // The older service is not locked out either: the newer hello wins.
-    (await h.adapter("ses_root", oc(7001))).close();
-    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
+  });
+
+  it("lets a second service take it once the first no longer has it attached", async () => {
+    const conn = new Set([8001, 8002]);
+    const h = await claimed(new Set([4321, 8001, 8002]), conn);
+    conn.delete(8001); // the TUI reopened the session under the second service
+    expect((await h.adapter("ses_root", oc(7002))).welcome).toMatchObject({
+      type: "welcome",
+    });
+    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8002);
+  });
+
+  it("`opencode service restart` (same exe, new pid) still works", async () => {
+    const alive = new Set([4321, 8001, 8002]);
+    const conn = new Set([8001]);
+    const h = await claimed(alive, conn);
+    alive.delete(8001);
+    conn.clear();
+    conn.add(8002);
+    expect((await h.adapter("ses_root", oc(7002))).welcome).toMatchObject({
+      type: "welcome",
+    });
+    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8002);
   });
 });
 

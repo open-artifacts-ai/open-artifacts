@@ -32,8 +32,9 @@ export type AttachDeps = {
  * Residual, accepted under #1856 option A (same user, same machine): a
  * same-user process that runs a real opencode process connected to this
  * service and writes a presence file for it can claim B through this service;
- * it can't block B through another service (the registry lets the newer
- * service's hello take the record). The cross-person line is unchanged.
+ * the incumbent keeps B's record, so a claim made first can block B through
+ * another service until its service goes or no longer has B attached (a
+ * same-user DoS). The cross-person line is unchanged.
  */
 /** A binary replaced on disk reads `<path> (deleted)`: the same path, so the same program. */
 export const exePath = (exe: string | null): string | null =>
