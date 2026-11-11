@@ -816,7 +816,7 @@ export function refundAskerIfAllGone(sql: SqlStorage, commentId: string): void {
   if (open.length === 0) refundAsker(sql, c.threadId, c.at);
 }
 
-/** #2175: this thread's comments with a target for `key` still held (queued): what the hub may still hold. */
+/** #2175: this thread's comments with a target for `key` still held (queued) or expired by the Worker (gone; the hub may still hold it): what to ask the hub about. */
 export function heldTargets(
   sql: SqlStorage,
   threadId: string,
@@ -824,7 +824,7 @@ export function heldTargets(
 ): { commentId: string; kind: "mention" | "asker" | "reply" }[] {
   return sql
     .exec<{ commentId: string; kind: "mention" | "asker" | "reply" }>(
-      "select comment_id as commentId, kind from comment_targets where thread_id = ? and key = ? and state = 'queued' order by rowid",
+      "select comment_id as commentId, kind from comment_targets where thread_id = ? and key = ? and state in ('queued', 'gone') order by rowid",
       threadId,
       key,
     )
@@ -833,7 +833,7 @@ export function heldTargets(
 
 /**
  * #2175: marks the targets the hub withdrew "withdrawn" (only while still
- * queued, so a late ack never races it) and gives back their spends: an asker
+ * queued or gone, so a delivered or seen one stays) and gives back their spends: an asker
  * notice like one that never reached the agent, a thread reply's per key.
  */
 export function withdrawTargets(
@@ -843,16 +843,22 @@ export function withdrawTargets(
   targets: { commentId: string; kind: "mention" | "asker" | "reply" }[],
 ): void {
   const askers = new Set<string>();
+  const move = (t: { commentId: string; kind: string }, from: string) =>
+    sql.exec(
+      "update comment_targets set state = 'withdrawn' where comment_id = ? and kind = ? and key = ? and thread_id = ? and state = ?",
+      t.commentId,
+      t.kind,
+      key,
+      threadId,
+      from,
+    ).rowsWritten > 0;
   for (const t of targets) {
-    const moved =
-      sql.exec(
-        "update comment_targets set state = 'withdrawn' where comment_id = ? and kind = ? and key = ? and thread_id = ? and state = 'queued'",
-        t.commentId,
-        t.kind,
-        key,
-        threadId,
-      ).rowsWritten > 0;
-    if (!moved) continue;
+    // A target the Worker already gave up on ("gone") was refunded then: it
+    // becomes withdrawn without a second refund.
+    if (!move(t, "queued")) {
+      move(t, "gone");
+      continue;
+    }
     if (t.kind === "asker") askers.add(t.commentId);
     else if (t.kind === "reply") {
       const c = sql

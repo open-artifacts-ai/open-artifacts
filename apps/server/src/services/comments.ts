@@ -11,6 +11,7 @@ import {
   type CommentList,
   isId,
   type KeyRef,
+  type MentionDelivery,
   type CommentThread as Thread,
   type ThreadAgent,
 } from "@oa/shared";
@@ -765,7 +766,7 @@ const commentOf = (
               viewer,
               users,
             ),
-            delivery: m.state as "delivered" | "queued" | "seen" | "gone",
+            delivery: m.state as MentionDelivery,
           })),
         }
       : {}),
@@ -788,7 +789,7 @@ const commentOf = (
               viewer,
               users,
             ),
-            delivery: m.state as "delivered" | "queued" | "seen" | "gone",
+            delivery: m.state as MentionDelivery,
           })),
         }
       : {}),

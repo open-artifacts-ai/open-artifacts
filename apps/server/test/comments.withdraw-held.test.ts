@@ -247,6 +247,135 @@ describe("removing an agent withdraws its held notices (#2175)", () => {
     expect(n).toBe(0);
   });
 
+  const seedTarget = (
+    id: string,
+    commentId: string,
+    threadId: string,
+    kind: string,
+    key: string,
+    state: string,
+  ) =>
+    rt(id)((_i, st) =>
+      st.storage.sql.exec(
+        "insert or replace into comment_targets (comment_id, thread_id, kind, key, name, state, owner) values (?, ?, ?, ?, 'Claude', ?, ?)",
+        commentId,
+        threadId,
+        kind,
+        key,
+        state,
+        owner.userId,
+      ),
+    );
+  const stateOf = (id: string, commentId: string, kind: string) =>
+    rt(id)(
+      (_i, st) =>
+        st.storage.sql
+          .exec<{ state: string }>(
+            "select state from comment_targets where comment_id = ? and kind = ?",
+            commentId,
+            kind,
+          )
+          .toArray()[0]?.state,
+    );
+  const threadOf = async (mentionHeld = true) => {
+    const s = await setup();
+    bus.outcome = mentionHeld ? "held" : "delivered";
+    const t = (await (
+      await post(s.id, editor, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    return { s, t, root: t.comments[0] as Comment };
+  };
+
+  it("a target the Worker gave up on (gone) is withdrawn too, with no second refund", async () => {
+    const { s, t, root } = await threadOf();
+    await seedTarget(s.id, root.id, t.id, "mention", s.claude, "gone");
+    await seedTarget(s.id, root.id, t.id, "asker", s.claude, "gone");
+    await rt(s.id)((_i, st) =>
+      st.storage.sql.exec(
+        "insert into comment_asker_notices (thread_id, last_at, prev_at, n) select ?, created_at, null, 1 from comments where id = ?",
+        t.id,
+        root.id,
+      ),
+    );
+    await hold("mention", s.claude, s.id, root.id);
+    await hold("asker", s.claude, s.id, root.id);
+    expect((await stop(s.id, t.id, s.claude, owner)).status).toBe(204);
+    expect(await stateOf(s.id, root.id, "mention")).toBe("withdrawn");
+    expect(await stateOf(s.id, root.id, "asker")).toBe("withdrawn");
+    const n = await rt(s.id)(
+      (_i, st) =>
+        st.storage.sql
+          .exec<{ n: number }>(
+            "select n from comment_asker_notices where thread_id = ?",
+            t.id,
+          )
+          .toArray()[0]?.n,
+    );
+    expect(n).toBe(1);
+  });
+
+  it("a delivered or seen target named by the hub stays", async () => {
+    const { s, t, root } = await threadOf(false);
+    await seedTarget(s.id, root.id, t.id, "asker", s.claude, "seen");
+    await rt(s.id)((_i, st) =>
+      st.storage.sql.exec(
+        "insert into comment_asker_notices (thread_id, last_at, prev_at, n) select ?, created_at, null, 1 from comments where id = ?",
+        t.id,
+        root.id,
+      ),
+    );
+    await runtimeStub(E, s.id).commentsTargetsWithdraw({
+      threadId: t.id,
+      key: s.claude,
+      targets: [
+        { commentId: root.id, kind: "mention" },
+        { commentId: root.id, kind: "asker" },
+      ],
+    });
+    expect(await stateOf(s.id, root.id, "mention")).toBe("delivered");
+    expect(await stateOf(s.id, root.id, "asker")).toBe("seen");
+    const n = await rt(s.id)(
+      (_i, st) =>
+        st.storage.sql
+          .exec<{ n: number }>("select n from comment_asker_notices")
+          .toArray()[0]?.n,
+    );
+    expect(n).toBe(1);
+  });
+
+  it("a withdrawn thread reply gives its notice back", async () => {
+    const { s, t, root } = await threadOf();
+    await seedTarget(s.id, root.id, t.id, "reply", s.claude, "queued");
+    await rt(s.id)((_i, st) =>
+      st.storage.sql.exec(
+        "insert into comment_reply_notices (thread_id, key, last_at, prev_at, n) select ?, ?, created_at, null, 1 from comments where id = ?",
+        t.id,
+        s.claude,
+        root.id,
+      ),
+    );
+    await hold("reply", s.claude, s.id, root.id);
+    await stop(s.id, t.id, s.claude, owner);
+    expect(await stateOf(s.id, root.id, "reply")).toBe("withdrawn");
+    const n = await rt(s.id)(
+      (_i, st) =>
+        st.storage.sql
+          .exec<{ n: number }>(
+            "select n from comment_reply_notices where thread_id = ?",
+            t.id,
+          )
+          .toArray()[0]?.n,
+    );
+    expect(n).toBe(0);
+  });
+
+  it("only the removed agent's targets are marked, whatever the hub names", async () => {
+    const { s, t, root } = await threadOf();
+    await hold("mention", "agent:someone-else", s.id, root.id);
+    await stop(s.id, t.id, s.claude, owner);
+    expect(await stateOf(s.id, root.id, "mention")).toBe("queued");
+  });
+
   it("a hub failure still removes the agent", async () => {
     const s = await setup();
     bus.outcome = "held";
