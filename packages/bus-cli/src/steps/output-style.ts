@@ -337,8 +337,21 @@ export function uninstallOutputStyle(deps: Where): OutputStyleResult {
       `Left ${path} alone: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
-  if (gone) turnOff(deps, out);
+  // Our setting points at the plugin's style, which uninstall removes: undo it
+  // whatever became of any file. Without our record nothing is changed.
+  if (gone || setByUs(deps)) turnOff(deps, out);
   return out;
+}
+
+/** Our record says we set outputStyle, and it still holds the plugin's style name. */
+function setByUs(deps: Where): boolean {
+  try {
+    const rec = deps.busHome ? readRecord(deps.busHome) : undefined;
+    const cur = readSettings(claudeSettingsFile(deps));
+    return !!rec?.set && cur.ok && cur.style === OUTPUT_STYLE_PLUGIN_NAME;
+  } catch {
+    return false;
+  }
 }
 
 /** Whether settings.json selects the plugin's style. */

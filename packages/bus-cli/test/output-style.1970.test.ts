@@ -576,6 +576,22 @@ describe("the key goes only after our file is gone", () => {
     expect(readFileSync(file(h), "utf8")).toBe("my own style\n");
   });
 
+  it("with our record and a user's own unmarked file, uninstall keeps the file and undoes our setting", () => {
+    const h = home();
+    put(settingsOf(h), '{"a":1}\n');
+    installOutputStyle(withBus(h), ["claude"]);
+    expect(readFileSync(settingsOf(h), "utf8")).toContain(NAME);
+    put(file(h), "my own style\n");
+    uninstallOutputStyle(withBus(h));
+    expect(readFileSync(file(h), "utf8")).toBe("my own style\n");
+    expect(JSON.parse(readFileSync(settingsOf(h), "utf8"))).toEqual({ a: 1 });
+    expect(existsSync(join(h, ".oa-bus/install.json"))).toBe(true);
+    expect(
+      JSON.parse(readFileSync(join(h, ".oa-bus/install.json"), "utf8"))
+        .outputStyle,
+    ).toBeUndefined();
+  });
+
   it("keeps outputStyle when the style file is a symlink", () => {
     const h = home();
     put(join(h, "real.md"), "x");
