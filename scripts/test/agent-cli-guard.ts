@@ -26,9 +26,15 @@
  *    - ANY argv element or shell word is an absolute path whose basename is
  *      a guarded CLI outside the stub dir and temp dirs (`timeout 5 /abs/pi`,
  *      `env -u X /abs/pi`, `sh -c "/abs/pi"`, `cd / && /abs/pi`).
+ *    - ANY argv element or shell word is an absolute path whose real path
+ *      is the target of a guarded CLI symlink found on the PATH at setup
+ *      (`node /abs/.../pi-coding-agent/dist/cli.js`, `bun /abs/cli.js`),
+ *      outside the stub dir and temp dirs. The targets are collected from
+ *      the PATH before the stub dir goes on it (see guardEntriesOn).
  *    Not covered: a CLI reached by a bare name inside a shell string after
- *    the first word (PATH stubs cover it), or by a path built at run time
- *    inside the child.
+ *    the first word (PATH stubs cover it), a path built at run time inside
+ *    the child, a JS entry the PATH does not link to, or a CLI whose
+ *    entry is a relative path with a changed cwd inside a shell string.
  * Trusted by design: anything under a temp dir (/tmp, /var/tmp, os.tmpdir),
  * where tests build their own fakes, including symlinks to system tools.
  * Not exercised: the DEFAULT_PATH fallback and the macOS /private symlink
@@ -129,6 +135,30 @@ place("OA_BUS_HOME", ".oa-bus");
 place("PI_CODING_AGENT_DIR", join(".pi", "agent"));
 place("HERMES_HOME", ".hermes");
 
+// Real files the guarded names resolve to on a PATH: a bin symlink such as
+// `pi -> ../lib/node_modules/.../dist/cli.js` runs the same code as
+// `node <abs>/cli.js`. Anything under the stub dir or a temp dir is left out.
+const ENTRIES = new Set<string>();
+export function guardEntriesOn(path: string): void {
+  for (const d of path.split(delimiter))
+    for (const n of AGENT_CLIS) {
+      if (!d) continue;
+      const f = join(d, n);
+      if (!isExecFile(f)) continue;
+      const r = real(f);
+      if (!(under(r, STUB_DIR) || TMP_ROOTS.some((t) => under(r, t))))
+        ENTRIES.add(r);
+    }
+}
+function isExecFile(p: string): boolean {
+  try {
+    return statSync(p).isFile();
+  } catch {
+    return false;
+  }
+}
+guardEntriesOn(process.env.PATH ?? "");
+
 // 2. Stub dir first on PATH.
 const pathParts = (process.env.PATH ?? "")
   .split(delimiter)
@@ -158,8 +188,11 @@ const WRAPPERS = new Set(["env", "nohup", "exec", "command"]);
 function scanWords(parts: readonly string[], cwd: string | undefined): void {
   for (const part of parts)
     for (const w of part.split(/[\s;&|()"'`$<>]+/))
-      if (w.startsWith("/") && CLI_SET.has(basename(w)))
-        refuse(basename(w), resolve(cwd ?? process.cwd(), w));
+      if (w.startsWith("/")) {
+        const abs = resolve(cwd ?? process.cwd(), w);
+        if (CLI_SET.has(basename(w))) refuse(basename(w), abs);
+        else if (ENTRIES.has(real(abs))) refuse(basename(w), real(abs));
+      }
 }
 
 function refuse(name: string, p: string): void {

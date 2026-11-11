@@ -352,6 +352,13 @@ unset OA_TOKEN`
           mcpServers: {
             [name]: {
               url: mcpUrl,
+              // pi-mcp-adapter expands ${VAR} in header values (ordinary values
+              // keep env interpolation; only a leading `!` runs a command):
+              // https://github.com/nicobailon/pi-mcp-adapter/blob/1382423d353a06146f1b720631dccbfe81a1905d/utils.ts#L146-L180
+              // and docs/auth.md "Headers, bearer tokens, and secret commands".
+              // Read from source, not run. Pi's own built-in MCP (before the
+              // adapter replaces it on pi 0.99+) is not proven to do the same;
+              // the file-based `!` form is the proven one (#2193).
               headers: { Authorization: "Bearer ${OA_TOKEN}" },
             },
           },
