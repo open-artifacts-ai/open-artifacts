@@ -39,22 +39,19 @@ test("OAuth command and client tabs wrap at 390px", async ({ page }) => {
   await expect(page.getByText(/claude mcp add/)).toBeVisible();
   // The command wraps instead of scrolling (the admin card's fix, #1128).
   expect(await clipped(page)).toBe(0);
-  // Every client stays in view: the strip wraps onto a second row rather than
-  // scrolling "Generic" out of it (#1383).
-  const strip = await page
-    .getByRole("tablist")
-    .first()
-    .evaluate((l) => {
+  // The strip scrolls sideways inside its own box (#2103), and the picked tab
+  // is scrolled into view: first one, then the last. The page never scrolls.
+  const list = page.getByRole("tablist").first();
+  const selectedInView = () =>
+    list.evaluate((l) => {
       const box = l.getBoundingClientRect();
-      return {
-        scroll: l.scrollWidth - l.clientWidth,
-        outside: [...l.querySelectorAll("[role=tab]")].filter((t) => {
-          const b = t.getBoundingClientRect();
-          return b.right > box.right + 0.5 || b.left < box.left - 0.5;
-        }).length,
-      };
+      const t = l.querySelector("[role=tab][aria-selected=true]");
+      const b = t?.getBoundingClientRect();
+      return !!b && b.right <= box.right + 0.5 && b.left >= box.left - 0.5;
     });
-  expect(strip).toEqual({ scroll: 0, outside: 0 });
+  expect(await selectedInView()).toBe(true);
+  await page.getByRole("tab", { name: "Generic" }).first().click();
+  expect(await selectedInView()).toBe(true);
   expect(await sideScroll(page)).toBe(0);
 });
 
@@ -82,15 +79,21 @@ test("Token tab and token-created dialog wrap their commands at 390px", async ({
       const r = d.getBoundingClientRect();
       const strip = d.querySelector("[role=tablist]");
       return {
+        // What a scroller holds (the tab strip) is clipped, not overflowing.
         outside: [...d.querySelectorAll("*")].filter((el) => {
+          for (let p = el.parentElement; p && p !== d; p = p.parentElement)
+            if (getComputedStyle(p).overflowX !== "visible") return false;
           const b = el.getBoundingClientRect();
           return b.width && (b.right > r.right + 0.5 || b.left < r.left - 0.5);
         }).length,
-        // The strip wraps onto a second row; it never scrolls.
-        scroll: strip ? strip.scrollWidth - strip.clientWidth : 0,
+        // The strip may scroll sideways inside its own box, never past it.
+        stripFits: strip
+          ? strip.getBoundingClientRect().right <= r.right + 0.5 &&
+            strip.getBoundingClientRect().left >= r.left - 0.5
+          : true,
       };
     });
-    expect(out).toEqual({ outside: 0, scroll: 0 });
+    expect(out).toEqual({ outside: 0, stripFits: true });
   }
   // Copy stays top-right of the save command.
   const pre = await dialog.locator("pre").first().boundingBox();

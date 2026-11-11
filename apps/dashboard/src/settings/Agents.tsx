@@ -93,7 +93,10 @@ function SnippetTabs({
       {/* The hairline spans the content. The strip is 8px wider each side
           (px-2 tabs, so the inset focus ring clears the label), and the first
           label still lines up with the content edge. */}
-      <div className="shadow-[inset_0_-1px_0_var(--color-border)]">
+      <div
+        data-slot="tab-rule"
+        className="shadow-[inset_0_-1px_0_var(--color-border)]"
+      >
         <TabStrip tab={String(current)} count={list.length} className="-mx-2">
           <TabsList
             variant="line"
