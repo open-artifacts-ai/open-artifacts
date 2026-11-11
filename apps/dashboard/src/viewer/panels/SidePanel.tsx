@@ -207,11 +207,13 @@ function TabStrip({ tab, children }: { tab: string; children: ReactNode }) {
       setMore(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
     update();
     el.addEventListener("scroll", update, { passive: true });
-    const ro = new ResizeObserver(update);
-    ro.observe(el);
+    // Some test DOMs have no ResizeObserver: the fade then follows scrolls only.
+    const ro =
+      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
+    ro?.observe(el);
     return () => {
       el.removeEventListener("scroll", update);
-      ro.disconnect();
+      ro?.disconnect();
     };
   }, []);
   useEffect(() => {
