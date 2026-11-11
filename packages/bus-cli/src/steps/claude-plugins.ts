@@ -206,6 +206,9 @@ const originOf = (url: string): string | undefined => {
  * this instance, and moves the output style over to the plugin. Only when
  * Claude Code is among the harnesses. Never throws on a claude failure: the
  * result carries the notes.
+ *
+ * This step follows CLAUDE_CONFIG_DIR / HOME, like claude itself. It is deliberately
+ * not gated on the bus service isolation (the "xdg" case of #2216 is a real-HOME install).
  */
 export async function installClaudePlugins(
   deps: Where & {
@@ -271,6 +274,8 @@ export async function installClaudePlugins(
       "--json",
     ]);
   let marketplace = prior?.marketplace ?? false;
+  // A re-pin removed our plugins; whatever happens next, the style must follow them.
+  let repinned = false;
   // A re-pin whose add failed: re-add the old ref and reinstall what the remove took
   // away, with the shortcuts' saved options. The record then matches what is installed.
   // outputStyle must not point at a style that is not installed.
@@ -282,6 +287,11 @@ export async function installClaudePlugins(
     });
     out.notes.push(...cleared.notes);
     if (cleared.cleared) out.notes.push(...copy.pluginsStyleCleared());
+  };
+  // Remembers a custom mcpServer a double failure would lose: only a note, no storage.
+  const noteLost = (opts: Options | undefined) => {
+    if (opts?.mcpServer && opts.mcpServer !== DEFAULT_MCP_SERVER)
+      out.notes.push(...copy.pluginsLostOptions(opts.mcpServer));
   };
   const rollBack = async (
     ids: string[],
@@ -299,8 +309,11 @@ export async function installClaudePlugins(
     ]);
     if (!back.ok) {
       // Both failed. A rollback that timed out may still have landed: record it as ours.
-      await recordIfLanded([]);
+      // If the list fails too, it may have: keep it recorded so uninstall can clean it up.
+      if ((await recordIfLanded([])) === undefined)
+        saveRecord(deps.busHome, true, []);
       out.notes.push(...copy.pluginsRolledBack("none", back.message));
+      noteLost(opts);
       clearStyle();
       return;
     }
@@ -376,8 +389,18 @@ export async function installClaudePlugins(
         out.notes.push(
           ...copy.pluginsFailed("move the plugin source", gone.message),
         );
+        // A remove that timed out may still have landed and taken the plugins with it.
+        const now = await listInstalled(exec);
+        if (now !== undefined)
+          saveRecord(
+            deps.busHome,
+            true,
+            (prior?.plugins ?? []).filter((id) => now.includes(id)),
+          );
+        if (now === undefined || !now.includes(STYLE_PLUGIN)) clearStyle();
         return out;
       }
+      repinned = true;
       // Nothing of ours is left in Claude Code; the record follows.
       writeRecord(deps.busHome, undefined);
       prior = undefined;
@@ -397,6 +420,7 @@ export async function installClaudePlugins(
           // A marketplace that did land stays ours (uninstall re-lists and removes it only
           // if it is there and ours), and the style plugin is already gone.
           saveRecord(deps.busHome, true, []);
+          noteLost(saved);
           clearStyle();
           return out;
         }
@@ -436,6 +460,8 @@ export async function installClaudePlugins(
   if (before === undefined) {
     out.notes.push(...copy.pluginsFailed("list the plugins", "no list"));
     saveRecord(deps.busHome, marketplace, prior?.plugins ?? []);
+    // After a re-pin the plugins are gone and we cannot tell what came back.
+    if (repinned) clearStyle();
     return out;
   }
   const mine = new Set(prior?.plugins ?? []);
@@ -516,6 +542,8 @@ export async function installClaudePlugins(
     }
   }
   saveRecord(deps.busHome, marketplace, [...mine]);
+  // One rule: a style we set is never left pointing at a plugin that is not installed.
+  if (!live.has(STYLE_PLUGIN) && !before.includes(STYLE_PLUGIN)) clearStyle();
 
   if (live.has(STYLE_PLUGIN)) {
     try {
@@ -563,6 +591,8 @@ export type ClaudeCopy = {
   pluginsRolledBack: (state: "all" | "some" | "none", why: string) => string[];
   /** The output style we had turned on was cleared because its plugin is gone. */
   pluginsStyleCleared: () => string[];
+  /** A custom mcpServer was lost with the removed plugins. */
+  pluginsLostOptions: (mcpServer: string) => string[];
   /** A re-pin's add failed and the marketplace list failed too. */
   pluginsAddUnknown: (why: string) => string[];
   pluginsBadInstance: () => string[];

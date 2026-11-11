@@ -986,6 +986,95 @@ describe("review fixes", () => {
     expect(f.refreshed ?? 0).toBe(0);
   });
 
+  it("clears the style when the add worked but the plugin list then fails", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    expect(styleSetting(w.home)).toBeDefined();
+    const orig = f.exec;
+    let added = false;
+    f.exec = async (cmd, args, o) => {
+      const res = await orig(cmd, args, o);
+      if (args[1] === "marketplace" && args[2] === "add") added = true;
+      return added && args[1] === "list"
+        ? { code: 1, stdout: "", stderr: "boom" }
+        : res;
+    };
+    await run(f, w, { version: "0.154.0" });
+    expect(styleSetting(w.home)).toBeUndefined();
+    expect(record(w.busHome)).toEqual({ marketplace: true, plugins: [] });
+  });
+
+  it("clears the style when the style plugin does not install after a re-pin", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    f.failInstall = STYLE_PLUGIN;
+    await run(f, w, { version: "0.154.0" });
+    expect(f.installed).toEqual([SHORTCUTS_PLUGIN]);
+    expect(styleSetting(w.home)).toBeUndefined();
+  });
+
+  it("clears the style when the remove timed out but landed, and fixes the record", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    const orig = f.exec;
+    f.exec = async (cmd, args, o) => {
+      const res = await orig(cmd, args, o);
+      return args[1] === "marketplace" && args[2] === "remove"
+        ? bad("timeout", "timed out")
+        : res;
+    };
+    await run(f, w, { version: "0.154.0" });
+    expect(f.installed).toEqual([]);
+    expect(styleSetting(w.home)).toBeUndefined();
+    expect(record(w.busHome)).toEqual({ marketplace: true, plugins: [] });
+  });
+
+  it("records a rollback add that landed when the list fails too", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    f.failAddRef = "v0.154.0";
+    const orig = f.exec;
+    let rolled = false;
+    f.exec = async (cmd, args, o) => {
+      if (rolled && args[1] === "marketplace" && args[2] === "list")
+        return { code: 1, stdout: "", stderr: "boom" };
+      const res = await orig(cmd, args, o);
+      if (
+        args[1] === "marketplace" &&
+        args[2] === "add" &&
+        args[3]?.endsWith("#v0.153.0")
+      ) {
+        // The rollback's add lands, then reports a timeout; the list after it fails.
+        rolled = true;
+        return bad("timeout", "timed out");
+      }
+      return res;
+    };
+    await run(f, w, { version: "0.154.0" });
+    expect(f.markets[0]).toMatchObject({ ref: "v0.153.0" });
+    expect(record(w.busHome)).toEqual({ marketplace: true, plugins: [] });
+  });
+
+  it("names a custom mcpServer that a double failure lost", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    editSettings(w.home, (o) => {
+      (
+        (o.pluginConfigs as Record<string, { options: object }>)[
+          SHORTCUTS_PLUGIN
+        ] as { options: Record<string, string> }
+      ).options.mcpServer = "oa-prod";
+    });
+    f.failAdd = true;
+    const r = await run(f, w, { version: "0.154.0" });
+    expect(r.notes.join(" ")).toContain('"oa-prod"');
+  });
+
   it("a failed options reinstall after an update is a note", async () => {
     const w = setup();
     const f = fake({ mcpList: FOUND });

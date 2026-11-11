@@ -736,6 +736,11 @@ export function copy(style: Style, bus: string = BUS_CMD) {
         "Turned the Artifacts Teammate output style off again, because its plugin is not installed. The install turns it back on.",
       ),
     ],
+    pluginsLostOptions: (mcpServer: string) => [
+      warn(
+        `The shortcuts' saved server name "${mcpServer}" was lost with the removed plugins. Run: claude plugin configure open-artifacts-shortcuts and enter it again.`,
+      ),
+    ],
     pluginsAddUnknown: (why: string) => [
       warn(
         `Couldn't add the plugin source (${why}) and couldn't check what is installed, so nothing was changed back. Run the install again.`,
