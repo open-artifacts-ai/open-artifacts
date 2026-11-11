@@ -1242,7 +1242,9 @@ describe("prod and staging tokens never cross", () => {
       for (const i of [build, hooks, fake]) {
         expect(steps[i]?.if).toBe(GATE);
         expect(JSON.stringify(steps[i]?.env ?? {})).not.toContain("secrets.");
+        expect(steps[i]?.["continue-on-error"]).toBeUndefined();
       }
+      expect(steps[build]?.run).toContain("--variant release");
       expect(steps[up]?.env?.OA_CHECK_NO_TEST_HOOKS).toBe("1");
     });
     it("guards stable-only (prerelease and latest)", () => {
