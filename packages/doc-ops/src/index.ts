@@ -7,7 +7,6 @@ export {
   type DocOpErrorCode,
   INLINE_MARKS,
   type InlineMark,
-  isSafeHref,
   MAX_OPS,
   type OpImportChange,
   type PlanResult,

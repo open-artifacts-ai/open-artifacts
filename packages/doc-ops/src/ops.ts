@@ -1,4 +1,9 @@
-import { docSchema, type ImportChange, markdownToDoc } from "@oa/doc-schema";
+import {
+  docSchema,
+  type ImportChange,
+  isAllowedHref,
+  markdownToDoc,
+} from "@oa/doc-schema";
 import {
   Fragment,
   type Mark,
@@ -113,24 +118,15 @@ function invalid(message: string): OpFailure {
 }
 
 /**
- * Links an agent writes may use http:, https: or mailto: only. The scheme is
- * read the way a browser reads it: whitespace and control characters go, so
- * "java\tscript:" is still javascript:. A relative link has no scheme and no
- * base to resolve against in a doc, so it fails too. A failing link refuses the
- * whole op with a next-step error (nothing is applied); it is never dropped
- * silently.
+ * Links an agent writes go through the schema's isAllowedHref: http:, https:
+ * and mailto: only, nothing trimmed or repaired, so " javascript:", "java\tscript:"
+ * and relative links all fail. A failing link refuses the whole op with a
+ * next-step error (nothing is applied). Markdown the agent sends goes through
+ * the schema's importer, which drops a disallowed link and keeps its text
+ * (reported as an import change); checkLinks below is a backstop.
  */
-export function isSafeHref(href: string): boolean {
-  const clean = href.replace(
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: browsers drop these
-    /[\u0000-\u0020\u007f-\u009f\u200b-\u200d\u2028\u2029\ufeff]/g,
-    "",
-  );
-  return /^(https?|mailto):/i.test(clean);
-}
-
 function checkHref(href: unknown): void {
-  if (typeof href !== "string" || !isSafeHref(href)) {
+  if (typeof href !== "string" || !isAllowedHref(href)) {
     throw invalid(
       "A link must start with http:, https: or mailto:. Use a full URL, or leave the link out and keep the text.",
     );

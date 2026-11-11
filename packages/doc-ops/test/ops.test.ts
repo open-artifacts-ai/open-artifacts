@@ -1,6 +1,6 @@
-import { markdownToDoc } from "@oa/doc-schema";
+import { docToMarkdown, isAllowedHref, markdownToDoc } from "@oa/doc-schema";
 import { describe, expect, it } from "vitest";
-import { applyOpsToDoc, isSafeHref, MAX_OPS } from "../src/index.ts";
+import { applyOpsToDoc, MAX_OPS } from "../src/index.ts";
 import { edit, failure } from "./helpers.ts";
 
 describe("replace", () => {
@@ -519,17 +519,23 @@ describe("link schemes", () => {
         result.doc.descendants((n) => {
           for (const m of n.marks)
             if (m.type.name === "link")
-              expect(isSafeHref(m.attrs.href)).toBe(true);
+              expect(isAllowedHref(m.attrs.href)).toBe(true);
           return true;
         });
       }
     }
   });
-  it("refuses a Markdown link with a relative target", () => {
-    const error = failure("see docs\n", [
-      { op: "replace", quote: "docs", with: "[x](/relative)" },
-    ]);
-    expect(error.message).toMatch(/http:, https: or mailto:/);
+  it("drops a Markdown link with a bad target and keeps the text", () => {
+    for (const href of [
+      "/relative",
+      "javascript:alert(1)",
+      "data:text/html,x",
+    ]) {
+      const result = applyOpsToDoc(markdownToDoc("see docs\n").doc, [
+        { op: "replace", quote: "docs", with: `[x](<${href}>)` },
+      ]);
+      expect(result.ok && docToMarkdown(result.doc)).toBe("see x\n");
+    }
   });
   it("allows http, https and mailto, any case", () => {
     for (const href of ["https://x.test", "HTTP://x.test", "mailto:a@b.test"]) {
