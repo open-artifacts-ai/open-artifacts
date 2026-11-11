@@ -1203,6 +1203,7 @@ describe("prod and staging tokens never cross", () => {
       uses?: string;
       with?: Record<string, unknown>;
       env?: Record<string, string>;
+      "continue-on-error"?: unknown;
       run?: string;
     }[];
     const tok = "${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}";
