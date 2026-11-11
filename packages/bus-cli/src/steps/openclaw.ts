@@ -2,8 +2,7 @@
 // ships the built plugin folder with the CLI and has OpenClaw's own CLI install
 // and enable it (`plugins install <dir>`, `plugins enable oa-bus`), so OpenClaw
 // writes its own config and install record: nothing here edits openclaw.json or
-// reads anything else in the state dir, except one case: uninstall after the
-// folder was deleted by hand removes our own plugins.entries.oa-bus entry. Ownership is a marker file we add to
+// reads anything else in the state dir. Ownership is a marker file we add to
 // the installed folder, <state dir>/extensions/oa-bus, after OpenClaw copies it.
 
 import {
@@ -36,6 +35,9 @@ export const OPENCLAW_NIX =
 /** The note uninstall leaves when the folder went with no `openclaw` to uninstall it. */
 export const OPENCLAW_NO_CLI =
   "no openclaw binary found; its config may still list oa-bus";
+/** The note when the folder is gone and OpenClaw's own uninstall could not clear the config entry. */
+export const OPENCLAW_STRAY_NOTE = (reason: string): string =>
+  `the oa-bus plugin folder is gone and \`openclaw plugins uninstall oa-bus\` failed (${reason}); run that command yourself to remove oa-bus from OpenClaw's config`;
 /** The CLI's default 10 s kill is too short for OpenClaw: install is the slow one. */
 const INSTALL_TIMEOUT_MS = 180_000;
 const ENABLE_TIMEOUT_MS = 60_000;
@@ -346,69 +348,29 @@ export async function installOpenclaw(
 }
 
 /** Uninstalls the plugin through OpenClaw, then removes any folder left. Anything not ours stays. */
-/**
- * The plugin folder is gone (deleted by hand) but OpenClaw's config still lists
- * plugins.entries.oa-bus. Remove that one key and nothing else. The file is
- * rewritten only when plain JSON re-serializes to exactly its current bytes, so
- * every other setting stays byte for byte; otherwise it is left and a note says
- * what to remove. Returns whether the entry was removed.
- */
-function removeStrayEntry(deps: AdapterDeps, notes: string[]): boolean {
-  const file = join(
-    openclawStateDir(deps.home, deps.env ?? {}),
-    "openclaw.json",
-  );
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    return false;
-  }
-  let cfg: unknown;
-  try {
-    cfg = JSON.parse(text);
-  } catch {
-    return false;
-  }
-  const entries = (cfg as { plugins?: { entries?: Record<string, unknown> } })
-    ?.plugins?.entries;
-  if (
-    !entries ||
-    typeof entries !== "object" ||
-    !Object.hasOwn(entries, OPENCLAW_PLUGIN_ID)
-  )
-    return false;
-  const fmt = [2, 4, "\t", 0]
-    .flatMap((i) => [
-      `${JSON.stringify(cfg, null, i)}\n`,
-      JSON.stringify(cfg, null, i),
-    ])
-    .indexOf(text);
-  if (fmt < 0) {
-    notes.push(
-      `${file} lists ${OPENCLAW_PLUGIN_ID} but is not in a layout we can edit safely; remove plugins.entries.${OPENCLAW_PLUGIN_ID} by hand`,
-    );
-    return false;
-  }
-  const indent = [2, 4, "\t", 0][fmt >> 1] as number | string;
-  const trailing = fmt % 2 === 0 ? "\n" : "";
-  delete entries[OPENCLAW_PLUGIN_ID];
-  writeAtomic(file, `${JSON.stringify(cfg, null, indent)}${trailing}`);
-  return true;
-}
-
 export async function uninstallOpenclaw(
   deps: AdapterDeps,
   notes: string[],
 ): Promise<"done" | "none"> {
   const dest = openclawPluginDir(deps.home, deps.env ?? {});
   const state = openclawPluginState(dest, deps.assets.openclaw);
-  if (state === "absent") {
-    if (openclawNix(deps.env)) return "none";
-    return removeStrayEntry(deps, notes) ? "done" : "none";
-  }
   if (state === "foreign")
     throw new Error(`${dest} is not Open Artifacts bus's; left it untouched`);
+  if (state === "absent") {
+    // The folder may have been deleted by hand, leaving OpenClaw's config entry
+    // behind. OpenClaw's own uninstall clears an orphaned record; we never edit
+    // its config. Nothing to keep here, so a failure is a note, not an error.
+    if (openclawNix(deps.env) || !deps.which("openclaw")) return "none";
+    const r = await exec(deps, [
+      "plugins",
+      "uninstall",
+      "--force",
+      OPENCLAW_PLUGIN_ID,
+    ]);
+    if (r.code === 0) return "done";
+    notes.push(OPENCLAW_STRAY_NOTE(why(r)));
+    return "none";
+  }
   if (openclawNix(deps.env)) {
     notes.push(OPENCLAW_NIX);
     return "none";

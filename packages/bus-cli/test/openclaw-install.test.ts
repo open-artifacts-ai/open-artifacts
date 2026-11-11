@@ -587,49 +587,45 @@ describe("uninstallAdapters: openclaw", () => {
     expect(existsSync(dest)).toBe(false);
   });
 
-  it("removes only our config entry when the folder was deleted by hand", async () => {
+  it("is none when nothing is installed and openclaw has no such plugin", async () => {
+    const { deps, calls } = setup();
+    const out = await uninstallAdapters({
+      ...deps,
+      exec: (async (c: string, a: string[]) => {
+        calls.push([c, ...a]);
+        return { code: 1, stdout: "", stderr: "Plugin not found: oa-bus" };
+      }) as Exec,
+    });
+    expect(out.removed).not.toContain("openclaw");
+    expect(calls).toEqual([UNINSTALL]);
+  });
+
+  it("runs openclaw's own uninstall when the folder was deleted by hand", async () => {
     const { deps, dest, calls } = setup();
     await installAdapters(deps);
-    const cfgPath = join(
-      openclawStateDir(deps.home, deps.env ?? {}),
-      "openclaw.json",
-    );
-    const other = { enabled: true, config: { k: [1, 2, { z: "a" }] } };
-    const cfg = {
-      theme: "dark",
-      plugins: { entries: { "oa-bus": { enabled: true }, other } },
-    };
-    writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`);
     rmSync(dest, { recursive: true, force: true });
     calls.length = 0;
     const out = await uninstallAdapters(deps);
     expect(out.removed).toContain("openclaw");
-    expect(calls).toEqual([]);
-    expect(readFileSync(cfgPath, "utf8")).toBe(
-      `${JSON.stringify({ theme: "dark", plugins: { entries: { other } } }, null, 2)}\n`,
-    );
-    const again = await uninstallAdapters(deps);
-    expect(again.removed).not.toContain("openclaw");
+    expect(calls).toEqual([UNINSTALL]);
   });
 
-  it("leaves a config it cannot rewrite exactly, with a note", async () => {
-    const { deps, dest } = setup();
-    await installAdapters(deps);
-    const cfgPath = join(
-      openclawStateDir(deps.home, deps.env ?? {}),
-      "openclaw.json",
-    );
-    const text = '{ "plugins": {"entries": {"oa-bus": {}}} }';
-    writeFileSync(cfgPath, text);
-    rmSync(dest, { recursive: true, force: true });
-    const out = await uninstallAdapters(deps);
+  it("notes the command to run when that uninstall fails and the folder is gone", async () => {
+    const { deps } = setup();
+    const out = await uninstallAdapters({
+      ...deps,
+      exec: (async () => ({ code: 1, stdout: "", stderr: "locked" })) as Exec,
+    });
     expect(out.removed).not.toContain("openclaw");
-    expect(readFileSync(cfgPath, "utf8")).toBe(text);
+    expect(out.skipped).toEqual([]);
+    expect(out.notes.join("\n")).toContain(
+      "`openclaw plugins uninstall oa-bus` failed (locked)",
+    );
   });
 
-  it("is none when nothing is installed", async () => {
+  it("is none with no openclaw binary and no folder", async () => {
     const { deps, calls } = setup();
-    const out = await uninstallAdapters(deps);
+    const out = await uninstallAdapters({ ...deps, which: () => false });
     expect(out.removed).not.toContain("openclaw");
     expect(calls).toEqual([]);
   });
