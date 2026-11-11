@@ -191,10 +191,13 @@ export type ClaudeTransportOptions = {
   /** Where to inject for a session right now; null when the session is gone. */
   target: (ref: string) => { socketPath: string; peerToken: string } | null;
   /**
-   * #2110: true when a null target means "cannot tell" (the process runs but
-   * its session file is mid-rewrite or its start time unreadable), not "gone".
+   * #2110: why a null target is null (see claudeTargetState). Unknown is
+   * re-read a few times; unreachable closes as a delivery refusal; gone closes
+   * as a liveness miss, which the sync reopens when the session is seen again.
    */
-  unknown?: (agent: AgentRecord) => boolean;
+  state?: (agent: AgentRecord) => "unknown" | "unreachable" | "gone";
+  /** Production 100 ms between the re-reads of an unknown target. */
+  unknownRetryMs?: number;
   /** Production 2000 ms: how long a hold status may take to arrive. */
   statusWindowMs?: number;
   /** How long a held message waits for the user; the mail TTL bounds it anyway. */
@@ -255,6 +258,14 @@ export class ClaudeTransport {
   /** A status can arrive before the caller starts waiting; keep the latest. */
   #buffered = new Map<string, Status>();
   #closed = false;
+  /** Why the last closed outcome for a ref closed it; read once by closeReason. */
+  #closeBy = new Map<string, "liveness" | "delivery">();
+  /** #2110: the close reason the last closed outcome for `ref` set (default: a delivery refusal). */
+  closeReason(ref: string): "liveness" | "delivery" {
+    const r = this.#closeBy.get(ref);
+    this.#closeBy.delete(ref);
+    return r ?? "delivery";
+  }
   /** Claude sockets already logged as unsafe: each is logged once. */
   #unsafeLogged = new Set<string>();
   readonly #held: HeldStore | undefined;
@@ -307,6 +318,7 @@ export class ClaudeTransport {
 
   async #deliver(agent: AgentRecord, mail: Mail): Promise<DeliverOutcome> {
     if (this.#closed) return { ok: false, reason: "timeout" };
+    this.#closeBy.delete(agent.ref);
     // Refused, not closed: the session is fine, this daemon cannot reach it.
     if (this.#disabled)
       return { ok: false, reason: "closed", cause: "dropped" };
@@ -320,12 +332,22 @@ export class ClaudeTransport {
       this.#heldOp("write", (h) => h.delete(mail.msg_id), this.#injected);
       return { ok: true };
     }
-    const target = this.opts.target(agent.ref);
+    let target = this.opts.target(agent.ref);
+    // A mid-rewrite session file clears in milliseconds: look again.
+    for (
+      let i = 0;
+      !target && i < 5 && this.opts.state?.(agent) === "unknown";
+      i++
+    ) {
+      await new Promise((r) => setTimeout(r, this.opts.unknownRetryMs ?? 100));
+      if (this.#closed) return { ok: false, reason: "timeout" };
+      target = this.opts.target(agent.ref);
+    }
     if (!target) {
-      // Unknown is not gone: the hub retries. Gone is a liveness close, which
-      // the sync reopens if the session is seen again.
-      if (this.opts.unknown?.(agent)) return { ok: false, reason: "timeout" };
-      agent.closedBy = "liveness";
+      const why = this.opts.state?.(agent) ?? "gone";
+      // Still unknown: not a close; the receipt stays pending.
+      if (why === "unknown") return { ok: false, reason: "timeout" };
+      this.#closeBy.set(agent.ref, why === "gone" ? "liveness" : "delivery");
       return { ok: false, reason: "closed" };
     }
     const unsafe = unsafeClaudeSocket(target.socketPath);

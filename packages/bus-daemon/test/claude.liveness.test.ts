@@ -303,10 +303,46 @@ describe("runDaemon claude session sync", () => {
     await h.next("agent_up");
     writeFileSync(join(d, "4242.json"), '{"pid":4242,');
     h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
-    await new Promise((r) => setTimeout(r, 200));
+    await new Promise((r) => setTimeout(r, 900)); // past the target re-reads
     expect(h.of("refuse")).toEqual([]);
     expect(h.of("ack")).toEqual([]);
     expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+  });
+
+  it("#2110: a delivery to a gone target closes as a liveness miss, which the sync reopens", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: { ...syncDeps(d, running), syncMs: 1000 },
+    });
+    await h.next("agent_up");
+    rmSync(join(d, "4242.json")); // the process runs, its file is gone
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    expect(await h.next("refuse")).toMatchObject({ reason: "closed" });
+    expect(h.daemon.agents.byRef("s4242")).toMatchObject({
+      live: false,
+      closedBy: "liveness",
+    });
+    writeSession(d, 4242); // the file returns
+    expect(await h.next("agent_up", 2)).toMatchObject({ agent_ref: "s4242" });
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+  });
+
+  it("#2110: a session with no socket closes as a delivery refusal and is not churned by the sync", async () => {
+    const d = dir();
+    writeSession(d, 4242, { messagingSocketPath: undefined });
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: { ...syncDeps(d, running), syncMs: 100 },
+    });
+    await h.next("agent_up");
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    expect(await h.next("refuse")).toMatchObject({ reason: "closed" });
+    expect(h.daemon.agents.byRef("s4242")?.closedBy).toBe("delivery");
+    await new Promise((r) => setTimeout(r, 400)); // several sync ticks
+    expect(h.of("agent_up")).toHaveLength(1);
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
   });
 
   it("#2110: an unreadable start time lists the session as unknown", () => {

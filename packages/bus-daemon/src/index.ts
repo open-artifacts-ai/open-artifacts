@@ -93,7 +93,7 @@ import { HubConnection, type HubOptions } from "./hub.ts";
 import {
   cachedProcStart,
   claudeTarget,
-  claudeTargetUnknown,
+  claudeTargetState,
   isRunning,
   liveClaudeFiles,
   liveClaudeScan,
@@ -880,7 +880,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     injectTimeoutMs: cl.injectTimeoutMs,
     log,
     target: (ref) => claudeTarget(ref, claudeSessions),
-    unknown: (a) => claudeTargetUnknown(a.ref, a.pid, claudeSessions),
+    state: (a) => claudeTargetState(a.ref, a.pid, claudeSessions),
     // A native reply is a message from the session: the sink names the sender, never the frame.
     // Every reply names the peer's namespace (the deliver's), so a same-named local peer cannot get it.
     onReply: (agentRef, peerName, text, namespace, peerId, unnamed) => {
@@ -1252,7 +1252,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       ...deps.transports,
     },
     onClosed: (a) => {
-      a.closedBy ??= "delivery";
+      a.closedBy = claude.closeReason(a.ref);
       ev("agent_leave", agentFields(a, "delivery_closed"));
       announceSessions();
     },

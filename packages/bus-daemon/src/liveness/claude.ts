@@ -169,21 +169,24 @@ export function claudeTarget(
 }
 
 /**
- * #2110: a null `claudeTarget` can mean "cannot tell". True when the pid runs
- * and its session file is unreadable right now, or the file is there but the
- * start time could not be read.
+ * #2110: why `claudeTarget` is null. "unknown": the pid runs but its session
+ * file is unreadable right now or its start time cannot be read. "unreachable":
+ * the session is there and alive but has no socket or no peer token (messaging
+ * off), so a close would only churn. "gone": no running process or no file.
  */
-export function claudeTargetUnknown(
+export function claudeTargetState(
   ref: string,
   pid: number,
   deps: ClaudeLivenessDeps,
-): boolean {
-  if (!deps.isRunning(pid)) return false;
+): "unknown" | "unreachable" | "gone" {
+  if (!deps.isRunning(pid)) return "gone";
   const scan = scanSessions(deps.dir);
-  if (scan.unreadable.has(pid)) return true;
-  return scan.files.some(
-    (x) => x.ref === ref && aliveState(x, deps) === "unknown",
-  );
+  if (scan.unreadable.has(pid)) return "unknown";
+  const f = scan.files.find((x) => x.ref === ref);
+  if (!f) return "gone";
+  const st = aliveState(f, deps);
+  if (st === "unknown") return "unknown";
+  return st === "yes" ? "unreachable" : "gone";
 }
 
 /** A live pid's start time never changes, so a long TTL is safe. */
