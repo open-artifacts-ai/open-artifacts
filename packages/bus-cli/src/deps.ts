@@ -11,7 +11,7 @@ export type Deps = {
   exec: (
     cmd: string,
     args: string[],
-    opts?: { env?: Record<string, string>; timeoutMs?: number },
+    opts?: { env?: Record<string, string>; timeoutMs?: number; input?: string },
   ) => Promise<{ code: number; stdout: string; stderr: string }>;
 };
 
@@ -77,12 +77,16 @@ export const makeExec =
   async (cmd, args, opts) => {
     guardServiceManager(cmd, args);
     try {
-      const r = await promisify(execFile)(resolveCmd(cmd), args, {
+      const run = promisify(execFile)(resolveCmd(cmd), args, {
         ...(opts?.env ? { env: { ...process.env, ...opts.env } } : {}),
         maxBuffer: 8 * 1024 * 1024,
         timeout: opts?.timeoutMs ?? timeoutMs,
         killSignal: "SIGKILL",
       });
+      // Stdin is always closed (with `input`, or empty): a command that reads it never waits.
+      run.child.stdin?.on("error", () => {});
+      run.child.stdin?.end(opts?.input ?? "");
+      const r = await run;
       return { code: 0, stdout: r.stdout, stderr: r.stderr };
     } catch (e) {
       const err = e as {
