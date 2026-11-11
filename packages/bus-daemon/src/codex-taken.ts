@@ -44,13 +44,19 @@ export type TakenOptions = {
   tailCap?: number;
 };
 
-/** The rollout's first line when complete within 512 bytes: it names the session, so a replacement differs. */
-function firstLine(fd: number, size: number): string | undefined {
+/** The rollout's first bytes (up to 512): its first line names the session (timestamp, id), so a replacement differs. */
+function prefix(fd: number, size: number): string | undefined {
   const buf = Buffer.alloc(Math.min(512, size));
-  if (readSync(fd, buf, 0, buf.length, 0) <= 0) return undefined;
-  const nl = buf.indexOf(10);
-  return nl < 0 ? undefined : buf.subarray(0, nl).toString("utf8");
+  if (buf.length === 0 || readSync(fd, buf, 0, buf.length, 0) <= 0)
+    return undefined;
+  return buf.toString("latin1");
 }
+
+/** Whether two prefixes of one file agree over the shorter of them. */
+const samePrefix = (a: string, b: string): boolean => {
+  const n = Math.min(a.length, b.length);
+  return a.slice(0, n) === b.slice(0, n);
+};
 
 /** The texts of one rollout line when it is a user item, else none. */
 export function userTexts(line: string): string[] {
@@ -210,18 +216,25 @@ export class TakenWatch {
       const stat = fstatSync(fd);
       const size = stat.size;
       // A replaced file: another inode, or (Linux reuses inodes) another first line.
-      const sig = firstLine(fd, size);
+      const sig = prefix(fd, size);
       if (
         st.ino !== undefined &&
         (st.ino !== stat.ino ||
-          (st.sig !== undefined && sig !== undefined && st.sig !== sig))
+          (st.sig !== undefined &&
+            sig !== undefined &&
+            !samePrefix(st.sig, sig)))
       ) {
         this.#reads.delete(thread);
         if (again) this.#scan(thread, taken, false);
         return;
       }
       st.ino = stat.ino;
-      st.sig ??= sig;
+      // A file that was shorter than 512 bytes grows into a longer prefix.
+      if (
+        sig !== undefined &&
+        (st.sig === undefined || sig.length > st.sig.length)
+      )
+        st.sig = sig;
       let skipFirst = false;
       if (st.offset < 0 || st.offset > size) {
         st.offset = Math.max(0, size - (this.opts.tailCap ?? TAKEN_TAIL_CAP));

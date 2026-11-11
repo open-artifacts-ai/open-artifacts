@@ -890,24 +890,25 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
   });
 
-  it("a rollout rewritten in place (same inode, longer) is read again from its tail", async () => {
+  it("a rollout rewritten in place (same inode, a 21 KB session_meta line) is read again from its start", async () => {
     const f = fakeCodex();
     const { t, home, watch, onTaken } = transport({
       path: f.bin,
       from: "path",
     });
     await t.deliver(agent(), mail("hi"));
-    writeRollout(home, [
-      JSON.stringify({ type: "session_meta", payload: { id: "old" } }),
-      userItem("nothing yet"),
-    ]);
+    // Real session_meta lines are 21-27 KB: no newline within the first 512 bytes.
+    const meta = (id: string) =>
+      JSON.stringify({
+        type: "session_meta",
+        payload: { id, pad: "x".repeat(21_000) },
+      });
+    writeRollout(home, [meta("old"), userItem("nothing yet")]);
     watch.check();
-    // Truncate-and-write keeps the inode, as a reused inode on Linux does; the new file is longer than the old offset.
-    writeRollout(home, [
-      JSON.stringify({ type: "session_meta", payload: { id: "new" } }),
-      JSON.stringify({ type: "event_msg", payload: { pad: "x".repeat(500) } }),
-      userItem(codexText(agent(), mail("hi"))),
-    ]);
+    // Truncate-and-write keeps the inode, as a reused inode on Linux does. The new
+    // item starts before the old offset and ends after it, so reading on from the
+    // old offset would see only its tail.
+    writeRollout(home, [meta("new"), userItem(codexText(agent(), mail("hi")))]);
     watch.check();
     expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
   });
