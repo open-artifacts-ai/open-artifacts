@@ -697,3 +697,21 @@ html:has(.oa-bare) body {
   flex: 1;
   min-height: 0;
 }
+
+/* #2179: a reply that arrived live is tinted for 2.5s, then it fades to
+   nothing. With reduced motion the tint stays still until the attribute goes. */
+[data-comment][data-live] {
+  border-radius: 6px;
+  background-color: color-mix(in srgb, var(--oa-accent) 16%, transparent);
+  animation: oa-live-tint 2.5s ease-out forwards;
+}
+@keyframes oa-live-tint {
+  to {
+    background-color: transparent;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-comment][data-live] {
+    animation: none;
+  }
+}

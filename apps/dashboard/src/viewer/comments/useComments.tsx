@@ -16,6 +16,7 @@ import { ApiClientError } from "../../api/client";
 import { useThreads } from "../../api/comments";
 import { isEmbed } from "../../embed";
 import type { createBridge } from "../bridge";
+import { type LiveReplies, useLiveReplies } from "./liveReplies";
 import {
   arrange,
   createGate,
@@ -65,6 +66,8 @@ export type CommentsApi = {
   refetch: () => void;
   /** Threads shown here: all of them, or the ones made on a pinned older version. */
   threads: readonly CommentThread[];
+  /** Replies that arrived while the page was open (#2179). */
+  live: LiveReplies;
   ordered: readonly CommentThread[];
   orphans: readonly CommentThread[];
   positions: Positions;
@@ -190,6 +193,7 @@ export function useCommentsController({
         : (all ?? []),
     [all, older, version],
   );
+  const live = useLiveReplies(id, all);
   const [positions, setPositions] = useState<Positions>(new Map());
   const [active, setActive] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(null);
@@ -422,6 +426,7 @@ export function useCommentsController({
       error: q.error,
       refetch: () => void refetch(),
       threads,
+      live,
       ordered,
       orphans,
       positions,
@@ -471,6 +476,7 @@ export function useCommentsController({
       q.error,
       refetch,
       threads,
+      live,
       ordered,
       orphans,
       positions,

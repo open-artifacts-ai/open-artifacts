@@ -87,7 +87,7 @@ for (const [w, h] of [
           document.querySelector(".oa-vbody")?.append(d);
         });
       await page
-        .getByRole("button", { name: /\d+ replies/ })
+        .getByRole("button", { name: /Show \d+ earlier repl/ })
         .first()
         .click();
       await page.waitForTimeout(700);

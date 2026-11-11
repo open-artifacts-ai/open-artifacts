@@ -46,6 +46,7 @@ import {
   nextAskFor,
   removeMention,
 } from "./asks";
+import { NewReplyPill, useKeepScroll } from "./keepScroll";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { type CommentsApi, useCommentsApi } from "./useComments";
 
@@ -591,7 +592,11 @@ function CommentRow({
   const [delError, setDelError] = useState<unknown>(null);
   const any = c.can.edit || c.can.delete;
   return (
-    <li className="flex flex-col gap-1" data-comment={c.id}>
+    <li
+      className="flex flex-col gap-1"
+      data-comment={c.id}
+      data-live={api.live.tint.has(c.id) ? "" : undefined}
+    >
       <div className="flex items-start justify-between gap-2">
         <Who a={c.author} at={c.createdAt} edited={c.editedAt !== null} />
         {any && mode === "view" && (
@@ -786,7 +791,13 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const resolved = t.status === "resolved";
   const [first, ...rest] = t.comments;
   const expanded = isActive || rest.length === 0;
-  const shown = expanded ? rest : [];
+  // #2179: a folded thread keeps its first comment and its latest reply in
+  // view, plus any reply that arrived live; older ones fold behind a button.
+  const last = rest[rest.length - 1];
+  const shown = expanded
+    ? rest
+    : rest.filter((c) => c === last || api.live.kept.has(c.id));
+  const hidden = rest.length - shown.length;
   const orphan = api.positions.get(t.id)?.state === "orphan";
   const revealTick = api.revealed.tick;
   const revealedHere = api.revealed.id === t.id;
@@ -930,20 +941,25 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
                 : undefined
             }
           />
+          {hidden > 0 && (
+            <li className="list-none">
+              <Button
+                size="xs"
+                variant="ghost"
+                data-earlier=""
+                className="-my-1.5 ml-8 h-auto min-h-6 self-start px-0 py-1.5 max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5"
+                onClick={() => api.select(t.id, true)}
+              >
+                {hidden === 1
+                  ? "Show 1 earlier reply"
+                  : `Show ${hidden} earlier replies`}
+              </Button>
+            </li>
+          )}
           {shown.map((c) => (
             <CommentRow key={c.id} api={api} thread={t} c={c} root={false} />
           ))}
         </ul>
-        {!expanded && (
-          <Button
-            size="xs"
-            variant="ghost"
-            className="-my-1.5 ml-8 h-auto min-h-6 self-start px-0 py-1.5 max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5"
-            onClick={() => api.select(t.id, true)}
-          >
-            {rest.length === 1 ? "1 reply" : `${rest.length} replies`}
-          </Button>
-        )}
         {statusErr != null && (
           <p role="alert" className={`${TXT} text-destructive`}>
             {commentError(statusErr, api.capped, errCtx)}
@@ -1193,16 +1209,23 @@ export function CommentsBody({
   // #2118: one composer at a time: a quote open hides the whole-page box
   // (mounted still, so a typed note survives) until Cancel or send.
   const draftOpen = api.draft != null && api.canComment;
+  const box = useRef<HTMLDivElement>(null);
+  const keep = useKeepScroll(box, api.live.tint);
   return (
     // #1711: in the short sheet the list keeps its content height (`flex-none`:
     // no grow, no shrink, no zero basis), so the action row's outlet sits after
     // it, stuck to the sheet's bottom, instead of riding up to the sheet's top
     // when a card is scrolled into view. Every other surface grows as before.
     <div
-      className={`flex min-h-0 ${grow ? "flex-1" : "flex-none"} flex-col gap-3 p-4`}
+      ref={box}
+      className={`flex ${grow ? "min-h-fit flex-1" : "min-h-0 flex-none"} flex-col gap-3 p-4 [overflow-anchor:none]`}
     >
+      {keep.pill && <NewReplyPill onClick={keep.go} />}
       {heading && (
-        <div className="flex items-baseline justify-between gap-2">
+        <div
+          data-comments-header=""
+          className="sticky top-0 z-20 -mx-4 -mt-4 flex items-baseline justify-between gap-2 bg-[var(--oa-bg)] px-4 pt-4 pb-2"
+        >
           <h2 className={`m-0 font-semibold ${CTXT}`}>Comments</h2>
           {api.listedOpen > 0 && (
             <span className={`${TXT} ${MUTED}`}>{api.listedOpen} open</span>
