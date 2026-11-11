@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.152.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.151.1...v0.152.0) (2026-11-11)
+
+
+### Features
+
+* **viewer:** a mentioned agent shows its face ([#1890](https://github.com/open-artifacts-ai/open-artifacts/issues/1890)) ([#2001](https://github.com/open-artifacts-ai/open-artifacts/issues/2001)) ([b1f30d3](https://github.com/open-artifacts-ai/open-artifacts/commit/b1f30d32d1305bc7b07eb777386d5d02a1c1861e))
+
 ## [0.151.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.151.0...v0.151.1) (2026-11-11)
 
 

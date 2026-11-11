@@ -31,8 +31,10 @@ export type AgentRecord = {
   /**
    * #1822: the hashes of the proofs this session's `oa-bus mcp-proof` helper
    * sent, oldest first, at most LINK_HASHES_MAX (#1984: a later run must not
-   * unlink the header an earlier one gave Claude). Memory only: a restarted
-   * daemon learns them again at the next connect.
+   * unlink the header an earlier one gave Claude). A live Claude
+   * record's hashes are also kept in claude-links.json (#2050), keyed by pid +
+   * procStart, so a restarted daemon replays them: Claude never re-runs its
+   * helper.
    */
   linkHashes?: string[];
 };

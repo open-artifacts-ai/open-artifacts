@@ -108,6 +108,10 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       sessionsDir: mkdtempSync(join(tmpdir(), "ob-cs-")),
       socketsDir: join(mkdtempSync(join(tmpdir(), "ob-cr-")), "r"),
       heldFile: join(mkdtempSync(join(tmpdir(), "ob-ch-")), "held.json"),
+      linksFile: join(
+        mkdtempSync(join(tmpdir(), "ob-cl-")),
+        "claude-links.json",
+      ),
       ...over.claude,
     },
     // Never a real `opencode` or the real presence files.
