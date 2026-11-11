@@ -97,7 +97,7 @@ export function CommentsColumn({ textFormat }: { textFormat: boolean }) {
   return (
     <aside
       aria-label="Comments"
-      className="flex w-[340px] min-[960px]:w-[var(--oa-comments-w)] flex-none flex-col overflow-y-auto border-0 border-l border-l-[var(--oa-border)] bg-[var(--oa-bg)]"
+      className="relative flex w-[340px] min-[960px]:w-[var(--oa-comments-w)] flex-none flex-col overflow-y-auto border-0 border-l border-l-[var(--oa-border)] bg-[var(--oa-bg)]"
     >
       <CommentsBody textFormat={textFormat} />
     </aside>

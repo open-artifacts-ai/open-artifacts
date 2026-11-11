@@ -260,24 +260,25 @@ for (const width of [1280, 390])
     });
   }
 
-test("an explicit version never swaps: Current is vN selects Current", async ({
+test("an explicit version never swaps: Back to current selects Current", async ({
   page,
 }) => {
   await page.goto(`/a/${LANDING}/v/1`);
   await loaded(page);
-  const hint = page.getByRole("button", { name: "Current is v2" });
-  await expect(hint).toBeVisible();
+  const back = page.getByRole("button", { name: "Back to current" });
+  await expect(back).toBeVisible();
+  const banner = page.locator("[data-older-banner]");
+  await expect(banner).toHaveAttribute("data-current", "2");
   const v = await publish(page);
-  await expect(
-    page.getByRole("button", { name: `Current is v${v}` }),
-  ).toBeVisible({
+  // The live feed reaches the older page: the banner now points at the new current.
+  await expect(banner).toHaveAttribute("data-current", String(v), {
     timeout: LIVE_MS,
   });
   await expect(page.getByRole("button", { name: /View version/ })).toHaveCount(
     0,
   );
   await expect(page.getByRole("button", { name: "Version: v1" })).toBeVisible();
-  await page.getByRole("button", { name: `Current is v${v}` }).click();
+  await back.click();
   await expect(page).toHaveURL(new RegExp(`/a/${LANDING}$`));
   await expect(
     page.getByRole("button", { name: `Version: v${v} · Current` }),
