@@ -61,10 +61,13 @@ test("OAuth command and client tabs wrap at 390px", async ({ page }) => {
   expect(await sideScroll(page)).toBe(0);
 });
 
+const VIEWPORT_H = 600;
+
 test("Token tab and token-created dialog wrap their commands at 390px", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+  // A short phone screen, so the dialog is certain to be taller than it.
+  await page.setViewportSize({ width: 390, height: VIEWPORT_H });
   await page.goto("/settings/connections");
   await page.getByRole("radio", { name: "Token" }).click();
   for (const name of ["Claude Code", "Codex CLI", "OpenCode"]) {
@@ -110,14 +113,14 @@ test("Token tab and token-created dialog wrap their commands at 390px", async ({
     expect(copy.x).toBeGreaterThanOrEqual(pre.x + pre.width);
     expect(copy.y - pre.y).toBeLessThan(8);
   }
-  // The body is taller than the phone screen: the dialog caps itself and
+  // The body is taller than this short screen: the dialog caps itself and
   // scrolls, so Done stays reachable instead of hanging past the viewport.
   const box = await dialog.evaluate((d) => ({
     height: d.getBoundingClientRect().height,
     scrollable: d.scrollHeight - d.clientHeight,
     overflow: getComputedStyle(d).overflowY,
   }));
-  expect(box.height).toBeLessThanOrEqual(844);
+  expect(box.height).toBeLessThanOrEqual(VIEWPORT_H);
   expect(box.overflow).toBe("auto");
   expect(box.scrollable).toBeGreaterThan(0);
   await dialog.getByRole("button", { name: "Done" }).click();
