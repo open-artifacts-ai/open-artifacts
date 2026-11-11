@@ -177,14 +177,14 @@ for (const width of [1280, 390])
         await expect(pill).toBeVisible({ timeout: LIVE_MS });
         await expect(pill).toHaveText(`v${v} available · View`);
         await shot(page, `chip-full-${tag}`);
-        // Collapses to the 28px square after 4 s.
+        // Collapses to the 32px circle after 4 s.
         await expect(pill).toHaveAttribute("data-open", "false", {
           timeout: 6_000,
         });
         // The width transitions: measure once it has finished.
         await expect
           .poll(async () => (await pill.boundingBox())?.width)
-          .toBe(28);
+          .toBe(32);
         await pill.click();
         await expect(pill).toHaveCount(0);
       });

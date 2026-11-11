@@ -645,13 +645,12 @@ function Viewer({
             )}
           </>
         )}
-        {/* Above the frame in the DOM and on screen: the strip is the first Tab stops, then the artifact. */}
+        {/* Before the frame in the DOM (it floats, fixed), so Tab and screen readers reach Comments and Exit before the artifact. */}
         {chromeless && (
           <FullScreenEscape
             artifact={artifact}
             live={
               <>
-                {slot}
                 {commentsButton && (
                   <Button
                     variant="outline"
@@ -680,6 +679,7 @@ function Viewer({
                     Open to comment
                   </a>
                 )}
+                {slot}
               </>
             }
             gone={gone !== null}

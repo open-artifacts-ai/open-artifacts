@@ -18,11 +18,10 @@ test.beforeEach(async ({ context }) => {
 });
 
 const ID = "Cd5fGhJkLm6nPqRs"; // Landing page
-type Box = { x: number; y: number; width: number; height: number };
 
 for (const width of [1280, 390])
   for (const theme of ["light", "dark"] as const)
-    test(`full screen at ${width}px ${theme}: the frame fills the window below the strip`, async ({
+    test(`full screen at ${width}px ${theme}: the frame fills the window`, async ({
       page,
     }, info) => {
       await page.emulateMedia({ colorScheme: theme });
@@ -30,14 +29,11 @@ for (const width of [1280, 390])
       await page.goto(`/a/${ID}/full`);
       const frame = page.locator("iframe.oa-vframe");
       await expect(frame).toBeVisible();
-      const strip = await page.locator(".oa-fsbar").boundingBox();
-      expect(strip).toEqual({ x: 0, y: 0, width, height: 36 });
-      // The strip never overlaps the artifact: the frame starts below it.
       expect(await frame.boundingBox()).toEqual({
         x: 0,
-        y: 36,
+        y: 0,
         width,
-        height: 764,
+        height: 800,
       });
       await expect(page.getByRole("heading", { level: 1 })).toHaveCount(0);
       await expect(
@@ -90,93 +86,97 @@ test("phones: Full screen is in the ••• menu", async ({ page, context }) =
   await expect(tab).toHaveURL(new RegExp(`/a/${ID}/full$`));
 });
 
-// Option B (#2112): the strip above the frame.
+// Option A: the peek chip (spec-fullscreen-chip.md).
 const FULL = `/a/${ID}/full`;
-const TOP = "Exit full screen";
+const TOP = "Exit full screen, back to Landing page";
 // Real embeds are public-only (a framed shell runs anonymously).
 const PUBLIC_FULL = "/a/Gh9kLmNpQrAsTuVx/full"; // Team poll
 const EMBED = "Open Team poll in Open Artifacts (opens in new tab)";
+const width = (l: import("@playwright/test").Locator) =>
+  l.evaluate((e) => e.getBoundingClientRect().width);
+type Page = import("@playwright/test").Page;
+/** Loads `url` on a fake clock, so the 3 s reveal is stepped, not waited for. */
+const gotoFaked = async (page: Page, url: string) => {
+  await page.clock.install();
+  // Not waiting for "load": the frame's content can hold it past the reveal.
+  await page.goto(url, { waitUntil: "commit" });
+  // Paused as soon as the chip mounts: the reveal fires only when stepped.
+  await page.locator(".oa-fsx").waitFor({ state: "attached" });
+  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 100);
+};
+/** Steps past the 3 s reveal and expects the chip collapsed. */
+const revealEnds = async (
+  page: Page,
+  chip: import("@playwright/test").Locator,
+) => {
+  await expect(chip).toBeVisible();
+  await page.clock.runFor(3_100);
+  await expect(chip).toHaveAttribute("data-open", "false");
+  await page.clock.resume();
+};
 
-test.describe("full-screen strip", () => {
-  for (const width of [1280, 390])
-    test(`the strip ends at or above the frame at ${width}px, and holds the title and controls in order`, async ({
-      page,
-    }) => {
-      await page.setViewportSize({ width, height: 800 });
-      await page.goto(FULL);
-      const exit = page.getByRole("link", { name: TOP });
-      await expect(exit).toBeVisible();
-      const strip = (await page.locator(".oa-fsbar").boundingBox()) as Box;
-      const frame = (await page
-        .locator("iframe.oa-vframe")
-        .boundingBox()) as Box;
-      expect(strip.y + strip.height).toBeLessThanOrEqual(frame.y);
-      expect(strip.height).toBeGreaterThanOrEqual(32);
-      expect(strip.height).toBeLessThanOrEqual(36);
-      const title = (await page.locator(".oa-fstitle").boundingBox()) as Box;
-      const comments = (await page
-        .getByRole("button", { name: /^Comments/ })
-        .boundingBox()) as Box;
-      const out = (await exit.boundingBox()) as Box;
-      await expect(page.locator(".oa-fstitle")).toHaveText("Landing page");
-      expect(title.x + title.width).toBeLessThanOrEqual(comments.x);
-      expect(comments.x + comments.width).toBeLessThanOrEqual(out.x);
-      // Nothing of the strip sits over the frame.
-      for (const b of [title, comments, out])
-        expect(b.y + b.height).toBeLessThanOrEqual(frame.y);
-      // The label shows from 600px and up; the name stays either way.
-      await expect(page.locator(".oa-fsx-label")).toBeVisible({
-        visible: width > 600,
-      });
-      await expect(exit).toHaveAccessibleName(TOP);
-      expect(out.height).toBeGreaterThanOrEqual(28);
-    });
-
-  test("touch: a 44px strip and buttons of at least 40px; the frame starts below it", async ({
-    browser,
+test.describe("full-screen chip", () => {
+  test("widened for 3 s on load, then a 32px circle; the name never changes", async ({
+    page,
   }) => {
-    const ctx = await browser.newContext({
-      hasTouch: true,
-      isMobile: true,
-      viewport: { width: 390, height: 800 },
-    });
-    await ctx.route("https://content.example.com/**", (r) =>
-      r.fulfill({ contentType: "text/html", body: "<!doctype html><p>x" }),
+    await gotoFaked(page, FULL);
+    const chip = page.getByRole("link", { name: TOP });
+    await expect(chip).toHaveAttribute("data-open", "true");
+    await expect.poll(() => width(chip)).toBeGreaterThan(100);
+    await expect(chip).toHaveAttribute("href", `/a/${ID}`);
+    await revealEnds(page, chip);
+    await expect.poll(() => width(chip)).toBe(32);
+    await expect(chip).toHaveAccessibleName(TOP);
+    expect(await chip.evaluate((e) => getComputedStyle(e).opacity)).toBe(
+      "0.72",
     );
-    const page = await ctx.newPage();
-    await page.goto(FULL);
-    const exit = page.getByRole("link", { name: TOP });
-    await expect(exit).toBeVisible();
-    expect(
-      await page.evaluate(() => matchMedia("(pointer: coarse)").matches),
-    ).toBe(true);
-    const strip = (await page.locator(".oa-fsbar").boundingBox()) as Box;
-    expect(strip.height).toBe(44);
-    const frame = (await page.locator("iframe.oa-vframe").boundingBox()) as Box;
-    expect(frame.y).toBeGreaterThanOrEqual(44);
-    for (const b of [
-      await exit.boundingBox(),
-      await page.getByRole("button", { name: /^Comments/ }).boundingBox(),
-    ]) {
-      expect(b?.width).toBeGreaterThanOrEqual(40);
-      expect(b?.height).toBeGreaterThanOrEqual(40);
-    }
-    await ctx.close();
   });
 
-  test("a long title truncates with an ellipsis", async ({ page }) => {
-    await page.goto(FULL);
-    await page.setViewportSize({ width: 390, height: 800 });
-    const t = page.locator(".oa-fstitle");
-    await t.evaluate((e) => {
-      e.textContent = "A very long artifact title ".repeat(10);
-    });
+  test("widens on hover, collapses 400 ms after the pointer leaves", async ({
+    page,
+  }) => {
+    await gotoFaked(page, FULL);
+    const chip = page.getByRole("link", { name: TOP });
+    await revealEnds(page, chip);
+    await chip.hover();
+    await expect(chip).toHaveAttribute("data-open", "true");
+    await expect.poll(() => width(chip)).toBeGreaterThan(100);
+    await page.mouse.move(10, 10);
+    await expect(chip).toHaveAttribute("data-open", "false");
+  });
+
+  test("Tab reaches Comments and Exit before the artifact; keyboard focus widens Exit and shows the ring", async ({
+    page,
+  }) => {
+    await gotoFaked(page, FULL);
+    const chip = page.getByRole("link", { name: TOP });
+    const comments = page.getByRole("button", { name: /^Comments/ });
+    await revealEnds(page, chip);
+    // The bar is before the frame in the DOM, so it holds the first Tab stops.
     expect(
-      await t.evaluate((e) => [
-        getComputedStyle(e).textOverflow,
-        e.scrollWidth > e.clientWidth,
-      ]),
-    ).toEqual(["ellipsis", true]);
+      await page.evaluate(() => {
+        const bar = document.querySelector(".oa-fsbar");
+        const frame = document.querySelector("iframe.oa-vframe");
+        if (!bar || !frame) return false;
+        return Boolean(
+          bar.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING,
+        );
+      }),
+    ).toBe(true);
+    await page.keyboard.press("Tab");
+    await expect(comments).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(chip).toBeFocused();
+    await expect(chip).toHaveAttribute("data-open", "true");
+    const css = await chip.evaluate((e) => {
+      const s = getComputedStyle(e);
+      return [s.outlineStyle, s.outlineColor, s.boxShadow];
+    });
+    expect(css).toEqual([
+      "solid",
+      "rgb(255, 255, 255)",
+      "rgb(35, 80, 208) 0px 0px 0px 5px",
+    ]);
   });
 
   test("Esc goes back to the viewer, in the same tab", async ({ page }) => {
@@ -187,47 +187,47 @@ test.describe("full-screen strip", () => {
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   });
 
-  test("Tab goes through the strip first (Comments, Exit), then the frame; the focus ring shows", async ({
+  test("reduced motion: no transition, and the 3 s reveal still happens", async ({
     page,
   }) => {
-    await page.goto(FULL);
-    const exit = page.getByRole("link", { name: TOP });
-    const comments = page.getByRole("button", { name: /^Comments/ });
-    await expect(exit).toBeVisible();
-    await page.keyboard.press("Tab");
-    await expect(comments).toBeFocused();
-    await page.keyboard.press("Tab");
-    await expect(exit).toBeFocused();
-    expect(await exit.evaluate((e) => getComputedStyle(e).outlineStyle)).toBe(
-      "solid",
-    );
-    await page.keyboard.press("Tab");
-    await expect(exit).not.toBeFocused();
-    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe(
-      "IFRAME",
-    );
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await gotoFaked(page, FULL);
+    const chip = page.getByRole("link", { name: TOP });
+    await expect(chip).toHaveAttribute("data-open", "true");
+    expect(
+      await chip.evaluate((e) => getComputedStyle(e).transitionDuration),
+    ).toBe("0s");
+    await revealEnds(page, chip);
+    expect(await width(chip)).toBe(32);
   });
 
-  test("the comments surface opens below the strip", async ({ page }) => {
-    await page.setViewportSize({ width: 1280, height: 800 });
+  test("motion: 200ms cubic-bezier(.2,0,0,1)", async ({ page }) => {
     await page.goto(FULL);
-    await page.getByRole("button", { name: /^Comments/ }).click();
-    const strip = (await page.locator(".oa-fsbar").boundingBox()) as Box;
-    const surface = page.getByRole("dialog");
-    await expect(surface).toBeVisible();
-    const box = (await surface.boundingBox()) as Box;
-    expect(box.y).toBeGreaterThanOrEqual(strip.y + strip.height);
+    const chip = page.getByRole("link", { name: TOP });
+    const t = await chip.evaluate((e) => {
+      const s = getComputedStyle(e);
+      return [
+        s.transitionProperty,
+        s.transitionDuration,
+        s.transitionTimingFunction,
+      ];
+    });
+    expect(t).toEqual([
+      "max-width, padding, opacity",
+      "0.2s, 0.2s, 0.2s",
+      "cubic-bezier(0.2, 0, 0, 1), cubic-bezier(0.2, 0, 0, 1), cubic-bezier(0.2, 0, 0, 1)",
+    ]);
   });
 
   test("hidden when printed", async ({ page }) => {
     await page.goto(FULL);
-    const bar = page.locator(".oa-fsbar");
-    await expect(bar).toBeVisible();
+    const chip = page.getByRole("link", { name: TOP });
+    await expect(chip).toBeVisible();
     await page.emulateMedia({ media: "print" });
-    await expect(bar).toBeHidden();
+    await expect(chip).toBeHidden();
   });
 
-  test("embedded: the title and one link that opens a new tab; no Esc", async ({
+  test("embedded: new tab, collapsed from the start, no Esc", async ({
     page,
   }) => {
     await page.route("**/__embed", (r) =>
@@ -239,54 +239,17 @@ test.describe("full-screen strip", () => {
     await page.goto("/__embed");
     const frame = page.frameLocator("iframe");
     const chip = frame.getByRole("link", { name: EMBED });
+    await expect(chip).toHaveAttribute("data-open", "false");
     await expect(chip).toHaveAttribute("target", "_blank");
     await expect(chip).toHaveAttribute("rel", "noopener");
-    await expect(chip).toContainText("Open in Open Artifacts");
-    await expect(frame.locator(".oa-fstitle")).toHaveText("Team poll");
+    expect(await width(chip)).toBe(32);
     await chip.focus();
     await page.keyboard.press("Escape");
     await expect(chip).toBeVisible();
     expect(page.frames()[1]?.url()).toMatch(new RegExp(`${PUBLIC_FULL}$`));
-    const strip = (await frame.locator(".oa-fsbar").boundingBox()) as Box;
-    const inner = (await frame
-      .locator("iframe.oa-vframe")
-      .boundingBox()) as Box;
-    expect(strip.y + strip.height).toBeLessThanOrEqual(inner.y);
-  });
-
-  test("a 300px embed: the strip does not overflow, even gone", async ({
-    page,
-  }) => {
-    await page.route("**/__embed", (r) =>
-      r.fulfill({
-        contentType: "text/html",
-        body: `<iframe src="${PUBLIC_FULL}" style="width:300px;height:400px;border:0"></iframe>`,
-      }),
-    );
-    await page.goto("/__embed");
-    const frame = page.frameLocator("iframe");
-    const bar = frame.locator(".oa-fsbar");
-    await expect(bar).toBeVisible();
-    const fits = () =>
-      bar.evaluate((e) => ({ s: e.scrollWidth, c: e.clientWidth }));
-    const a = await fits();
-    expect(a.s).toBeLessThanOrEqual(a.c);
-    // Gone: the long pill truncates instead of pushing the strip wider.
-    await frame.owner().evaluate(async (el) => {
-      await (el as HTMLIFrameElement).contentWindow?.fetch(
-        "/api/v1/artifacts/Gh9kLmNpQrAsTuVx",
-        {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ visibility: "private" }),
-        },
-      );
-    });
-    await expect(
-      frame.getByText("No longer available", { exact: true }),
-    ).toBeVisible({ timeout: 15_000 });
-    const g = await fits();
-    expect(g.s).toBeLessThanOrEqual(g.c);
+    await chip.hover();
+    await expect(chip).toHaveAttribute("data-open", "true");
+    await expect(chip).toContainText("Open in Open Artifacts");
   });
 
   test("Full screen has the Maximize2 icon on the button and the menu item", async ({
@@ -305,5 +268,29 @@ test.describe("full-screen strip", () => {
         .getByRole("menuitem", { name: "Full screen" })
         .locator("svg.lucide-maximize-2"),
     ).toBeVisible();
+  });
+});
+
+test.describe("full-screen chip, coarse pointer", () => {
+  test.use({
+    hasTouch: true,
+    isMobile: true,
+    viewport: { width: 390, height: 844 },
+  });
+
+  test("the first tap widens without navigating; the second follows", async ({
+    page,
+  }) => {
+    await gotoFaked(page, FULL);
+    expect(
+      await page.evaluate(() => matchMedia("(pointer: coarse)").matches),
+    ).toBe(true);
+    const chip = page.getByRole("link", { name: TOP });
+    await revealEnds(page, chip);
+    await chip.tap();
+    await expect(chip).toHaveAttribute("data-open", "true");
+    await expect(page).toHaveURL(new RegExp(`${FULL}$`));
+    await chip.tap();
+    await expect(page).toHaveURL(new RegExp(`/a/${ID}$`));
   });
 });
