@@ -1,5 +1,10 @@
 import { type ArtifactSummary, viewerPath } from "@oa/shared";
-import { brand } from "@oa/ui/brand";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@oa/ui/shadcn";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, X } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
@@ -12,11 +17,31 @@ const embedded = () => {
     return true; // A cross-origin parent throws on access.
   }
 };
-/** The full-screen view's way back (#2112, option B): a 36px strip above the
-    frame, never over it. The title is on the left; on the right `live` (the
-    new-version pill and Comments) precedes the exit link in tab order.
-    Embedded, the link opens the viewer in a new tab instead. `gone` turns the
-    link into "No longer available". */
+
+/** Tooltip on hover and keyboard focus; the control keeps its own name. */
+export function FsTip({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="bottom" align="end" collisionPadding={8}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** The full-screen view's controls (#2189): one compact group floating at the
+    top right, over the artifact. Comments (`live`, with the new-version pill)
+    then Exit. Embedded, Exit opens the viewer in a new tab instead. The surface
+    is always solid; the icons are muted at rest and full contrast on hover or
+    focus within. It never hides or moves. `gone` swaps Exit for "No longer
+    available". */
 export function FullScreenEscape({
   artifact,
   live,
@@ -39,57 +64,34 @@ export function FullScreenEscape({
     return () => document.removeEventListener("keydown", onKey);
   }, [inFrame, navigate, to]);
 
+  const label = inFrame ? "Open in Open Artifacts" : "Exit full screen";
   return (
-    <div className="oa-fsbar">
-      <span className="oa-fstitle" title={artifact.title}>
-        {artifact.title}
-      </span>
-      <div className="oa-fsactions">
+    <TooltipProvider delayDuration={300}>
+      <div className="oa-fsbar">
         {live}
         {gone ? (
           <FullGone id={artifact.id} embed={inFrame} />
         ) : (
-          <Link
-            to={to}
-            {...(inFrame ? { target: "_blank", rel: "noopener" } : {})}
-            className="oa-fsx"
-            aria-label={
-              inFrame
-                ? `Open ${artifact.title} in Open Artifacts (opens in new tab)`
-                : "Exit full screen"
-            }
-          >
-            {inFrame && (
-              <>
-                <img
-                  className="oa-fsx-lt"
-                  src={brand.markLight}
-                  alt=""
-                  aria-hidden="true"
-                  width={18}
-                  height={18}
-                />
-                <img
-                  className="oa-fsx-dk"
-                  src={brand.markDark}
-                  alt=""
-                  aria-hidden="true"
-                  width={18}
-                  height={18}
-                />
-              </>
-            )}
-            <span className="oa-fsx-label">
-              {inFrame ? "Open in Open Artifacts" : "Exit full screen"}
-            </span>
-            {inFrame ? (
-              <ArrowUpRight className="oa-fsx-arrow" aria-hidden="true" />
-            ) : (
-              <X className="oa-fsx-x" aria-hidden="true" />
-            )}
-          </Link>
+          <FsTip label={label}>
+            <Link
+              to={to}
+              {...(inFrame ? { target: "_blank", rel: "noopener" } : {})}
+              className="oa-fsx"
+              aria-label={
+                inFrame
+                  ? `Open ${artifact.title} in Open Artifacts (opens in new tab)`
+                  : `Exit full screen, back to ${artifact.title}`
+              }
+            >
+              {inFrame ? (
+                <ArrowUpRight className="oa-fsicon" aria-hidden="true" />
+              ) : (
+                <X className="oa-fsicon" aria-hidden="true" />
+              )}
+            </Link>
+          </FsTip>
         )}
       </div>
-    </div>
+    </TooltipProvider>
   );
 }

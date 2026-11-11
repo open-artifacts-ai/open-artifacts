@@ -53,7 +53,7 @@ test.describe("embed", () => {
   });
 
   for (const theme of ["light", "dark"] as const)
-    test(`collapsed pill opens a new tab, never names (${theme})`, async ({
+    test(`the pill opens a new tab, never names (${theme})`, async ({
       page,
     }) => {
       await page.emulateMedia({ colorScheme: theme });
@@ -109,13 +109,13 @@ test.describe("embed", () => {
         name: "Version 2 available, open Team poll in a new tab",
       });
       await expect(pill).toBeVisible({ timeout: 2_000 });
-      await expect(pill).toHaveAttribute("data-open", "false");
+      // #2189: the pill is always open in the compact floating group.
+      await expect(pill).toHaveAttribute("data-open", "true");
       await expect(pill).toHaveAttribute("target", "_blank");
       await expect(pill).toHaveAttribute("rel", "noopener");
       await expect(app.getByText("Secret Agent")).toHaveCount(0);
       await shot(page, `embed-collapsed-${theme}`);
       await pill.hover();
-      await expect(pill).toHaveAttribute("data-open", "true");
       await expect(pill).toContainText("v2 available · Open ↗");
       await shot(page, `embed-hover-${theme}`);
       // Made private by its owner: the anonymous embed can't read it now.
