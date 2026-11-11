@@ -282,8 +282,6 @@ export type DaemonDeps = {
     wakes?: CodexTransportOptions["wakes"];
     /** Queued ids no turn has taken yet; default ~/.oa-bus/codex-pending.json. */
     takenFile?: string;
-    /** msg_ids `codex queue` took; default ~/.oa-bus/codex-queued.json. */
-    queuedFile?: string;
     /** Live Codex threads kept across a restart (#1748); default ~/.oa-bus/codex-agents.json. */
     agentsFile?: string;
     /** #2029: Codex threads proved here, kept for wake; default ~/.oa-bus/codex-away.json. */
@@ -639,7 +637,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     run: cx.run ?? execCodex(),
     home: codexIndexHome,
     wakes: cx.wakes ?? codexHostWakes,
-    queued: new HeldStore(cx.queuedFile ?? join(home(), "codex-queued.json")),
     taken: codexTaken,
     log,
   });

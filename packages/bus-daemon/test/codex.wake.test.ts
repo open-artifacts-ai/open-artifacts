@@ -29,7 +29,6 @@ import {
   resolveCodexBin,
   splitArgv0,
 } from "../src/transports/codex.ts";
-import { HeldStore } from "../src/transports/held.ts";
 import { daemonHarness, deliverFrame, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
@@ -100,15 +99,14 @@ function transport(
   over: {
     run?: ReturnType<typeof execCodex>;
     wakes?: (pid: number) => Promise<boolean>;
-    queued?: { has: (id: string) => boolean; add: (id: string) => void };
-    queuedFile?: string;
     /** Built after the watch exists: a run that acts while `codex queue` is running. */
     runWith?: (w: TakenWatch, home: string) => ReturnType<typeof execCodex>;
     resolve?: () => CodexBin | undefined;
     takenFile?: string;
+    home?: string;
   } = {},
 ) {
-  const home = tmp("ob-cxh-");
+  const home = over.home ?? tmp("ob-cxh-");
   const log = vi.fn();
   const onTaken = vi.fn();
   const watch = new TakenWatch({
@@ -123,14 +121,15 @@ function transport(
     run: over.run ?? over.runWith?.(watch, home) ?? execCodex(5_000),
     home,
     wakes: over.wakes ?? (async () => true),
-    queued:
-      over.queued ??
-      new HeldStore(over.queuedFile ?? join(tmp("ob-cxq-"), "q.json")),
     taken: watch,
     log,
   });
   return { t, home, log, resolve, watch, onTaken };
 }
+
+/** Waiting for a turn: attempted or queued, not yet taken. */
+const watching = (w: TakenWatch, id: string): boolean =>
+  w.state(id) === "attempt" || w.state(id) === "queued";
 
 const QUEUED = { ok: false, reason: "queued" } as const;
 const RETRY = { ok: false, reason: "timeout" } as const;
@@ -225,21 +224,23 @@ describe("codex queue transport (C26d)", () => {
 
   it("a timed-out run is killed, kept as maybe, and stays queued without a second run", async () => {
     const f = fakeCodex({ sleepMs: 30_000 });
-    const queuedFile = join(tmp("ob-cxq-"), "q.json");
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
     const { t, log } = transport(
       { path: f.bin, from: "path" },
-      { run: execCodex(2_000), queuedFile },
+      { run: execCodex(2_000), takenFile },
     );
     await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/timed out/));
     // A redelivery, even after a restart, stays queued: never a false Delivered.
     await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
-    const again = transport({ path: f.bin, from: "path" }, { queuedFile });
+    const again = transport({ path: f.bin, from: "path" }, { takenFile });
     await expect(again.t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
     expect(f.runs()).toHaveLength(1);
-    expect(Object.keys(JSON.parse(readFileSync(queuedFile, "utf8")))).toEqual([
-      "maybe:mmmmmmmmmmmmmmm1",
-    ]);
+    const recs = JSON.parse(readFileSync(takenFile, "utf8"));
+    expect(recs.mmmmmmmmmmmmmmm1).toMatchObject({
+      state: "queued",
+      maybe: true,
+    });
   });
 
   it.each([
@@ -257,25 +258,15 @@ describe("codex queue transport (C26d)", () => {
     expect(f.runs()).toHaveLength(2);
   });
 
-  it("a store that fails after exit 0 is loud, queued, and never queued twice", async () => {
+  it("a record that cannot be written before the spawn: nothing is spawned, retryable, never delivered", async () => {
     const f = fakeCodex();
-    const { t, log } = transport(
-      { path: f.bin, from: "path" },
-      {
-        queued: {
-          has: () => false,
-          add: () => {
-            throw new Error("ENOSPC");
-          },
-        },
-      },
-    );
-    await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
+    const takenFile = join(tmp("ob-cxp-"), "gone", "p.json");
+    const { t, log } = transport({ path: f.bin, from: "path" }, { takenFile });
+    await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(RETRY);
+    expect(f.runs()).toHaveLength(0);
     expect(log).toHaveBeenCalledWith(
-      expect.stringMatching(/^ERROR: codex took .*ENOSPC/),
+      expect.stringMatching(/could not be written/),
     );
-    await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
-    expect(f.runs()).toHaveLength(1);
   });
 
   it("no binary: the message stays queued, logged once; a vanished binary is re-resolved", async () => {
@@ -302,18 +293,11 @@ describe("codex queue transport (C26d)", () => {
 
   it("a retry after a restart never queues twice", async () => {
     const f = fakeCodex();
-    const queuedFile = join(tmp("ob-cxq-"), "q.json");
     const takenFile = join(tmp("ob-cxp-"), "p.json");
-    const one = transport(
-      { path: f.bin, from: "path" },
-      { queuedFile, takenFile },
-    );
+    const one = transport({ path: f.bin, from: "path" }, { takenFile });
     await expect(one.t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
     // Still not taken after a restart: the retry stays pending, never acked.
-    const two = transport(
-      { path: f.bin, from: "path" },
-      { queuedFile, takenFile },
-    );
+    const two = transport({ path: f.bin, from: "path" }, { takenFile });
     await expect(two.t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
     expect(f.runs()).toHaveLength(1);
   });
@@ -394,7 +378,6 @@ describe("createDeliver with codex", () => {
 describe("the daemon delivers to codex threads", () => {
   it("acks only once a turn takes the queued item, late, and a retry after a restart runs nothing (#2029)", async () => {
     const f = fakeCodex();
-    const queuedFile = join(tmp("ob-cxq-"), "q.json");
     const takenFile = join(tmp("ob-cxp-"), "p.json");
     const home = tmp("ob-cxh-");
     const codex = {
@@ -402,7 +385,6 @@ describe("the daemon delivers to codex threads", () => {
       resolveBin: () => ({ path: f.bin, from: "path" as const }),
       run: execCodex(5_000),
       wakes: async () => true,
-      queuedFile,
       takenFile,
     };
     const claude = { syncMs: 30 };
@@ -666,34 +648,25 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     const f = fakeCodex();
     const takenFile = join(tmp("ob-cxp-"), "p.json");
     const queuedFile = join(tmp("ob-cxq-"), "q.json");
-    const one = transport(
-      { path: f.bin, from: "path" },
-      { takenFile, queuedFile },
-    );
+    const one = transport({ path: f.bin, from: "path" }, { takenFile });
     await one.t.deliver(agent(), mail("hi"));
     // Taken while the daemon is down.
     writeRollout(one.home, [userItem(codexText(agent(), mail("hi")))]);
     const onTaken = vi.fn();
     const w2 = new TakenWatch({ home: one.home, file: takenFile, onTaken });
-    expect(w2.has("mmmmmmmmmmmmmmm1")).toBe(true);
+    expect(watching(w2, "mmmmmmmmmmmmmmm1")).toBe(true);
     w2.check();
     expect(onTaken).toHaveBeenCalledWith("mmmmmmmmmmmmmmm1");
-    expect(w2.has("mmmmmmmmmmmmmmm1")).toBe(false);
+    expect(watching(w2, "mmmmmmmmmmmmmmm1")).toBe(false);
   });
 
   it("not yet taken after a restart: a retry stays pending and runs nothing", async () => {
     const f = fakeCodex();
     const takenFile = join(tmp("ob-cxp-"), "p.json");
     const queuedFile = join(tmp("ob-cxq-"), "q.json");
-    const one = transport(
-      { path: f.bin, from: "path" },
-      { takenFile, queuedFile },
-    );
+    const one = transport({ path: f.bin, from: "path" }, { takenFile });
     await one.t.deliver(agent(), mail("hi"));
-    const two = transport(
-      { path: f.bin, from: "path" },
-      { takenFile, queuedFile },
-    );
+    const two = transport({ path: f.bin, from: "path" }, { takenFile });
     await expect(two.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
     expect(f.runs()).toHaveLength(1);
   });
@@ -742,8 +715,8 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     });
     now += 6 * 3600_000 + 1000;
     w.check();
-    expect(w.has("nnnnnnnnnnnnnnn1")).toBe(false);
-    expect(w.has("mmmmmmmmmmmmmmm1")).toBe(true);
+    expect(watching(w, "nnnnnnnnnnnnnnn1")).toBe(false);
+    expect(watching(w, "mmmmmmmmmmmmmmm1")).toBe(true);
     expect(log).toHaveBeenCalledOnce();
   });
 
@@ -772,17 +745,14 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     const f = fakeCodex({ code: 3 });
     const { t, watch } = transport({ path: f.bin, from: "path" });
     await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(RETRY);
-    expect(watch.has("mmmmmmmmmmmmmmm1")).toBe(false);
+    expect(watching(watch, "mmmmmmmmmmmmmmm1")).toBe(false);
   });
 
   it("a watch dropped by its window is lost: a retry is never delivered, nor queued again", async () => {
     const f = fakeCodex();
     const takenFile = join(tmp("ob-cxp-"), "p.json");
     const queuedFile = join(tmp("ob-cxq-"), "q.json");
-    const one = transport(
-      { path: f.bin, from: "path" },
-      { takenFile, queuedFile },
-    );
+    const one = transport({ path: f.bin, from: "path" }, { takenFile });
     await one.t.deliver(agent(), mail("hi"));
     let now = Date.now();
     const w = new TakenWatch({
@@ -794,53 +764,93 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     });
     now += 5000;
     w.check();
-    expect(w.has("mmmmmmmmmmmmmmm1")).toBe(false);
-    expect(w.lost("mmmmmmmmmmmmmmm1")).toBe(true);
-    const two = transport(
-      { path: f.bin, from: "path" },
-      { takenFile, queuedFile },
-    );
+    expect(watching(w, "mmmmmmmmmmmmmmm1")).toBe(false);
+    expect(w.state("mmmmmmmmmmmmmmm1")).toBe("lost");
+    const two = transport({ path: f.bin, from: "path" }, { takenFile });
     await expect(two.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
     expect(f.runs()).toHaveLength(1);
   });
 
-  it("a restart rescans the bounded tail: an item inside it acks, one beyond it does not, nothing is queued again", async () => {
+  it("a restart reads on over several passes: an item after more output than one pass reads is found, nothing is queued again", async () => {
     const f = fakeCodex();
     const takenFile = join(tmp("ob-cxp-"), "p.json");
-    const queuedFile = join(tmp("ob-cxq-"), "q.json");
-    const ID1 = "mmmmmmmmmmmmmmm1";
-    const one = transport(
-      { path: f.bin, from: "path" },
-      { takenFile, queuedFile },
-    );
-    await one.t.deliver(agent(), mail("one", ID1));
-    await one.t.deliver(agent(), mail("two", ID2));
+    const one = transport({ path: f.bin, from: "path" }, { takenFile });
+    await one.t.deliver(agent(), mail("one"));
+    const pad = JSON.stringify({
+      type: "event_msg",
+      payload: { pad: "x".repeat(20_000) },
+    });
     writeRollout(one.home, [
-      userItem(codexText(agent(), mail("one", ID1))),
-      JSON.stringify({
-        type: "event_msg",
-        payload: { pad: "x".repeat(20_000) },
-      }),
-      userItem(codexText(agent(), mail("two", ID2))),
+      ...Array.from({ length: 20 }, () => pad),
+      userItem(codexText(agent(), mail("one"))),
     ]);
     const onTaken = vi.fn();
     const w = new TakenWatch({
       home: one.home,
       file: takenFile,
       onTaken,
-      tailCap: 2_000,
+      scanBudget: 100_000,
     });
     w.check();
-    expect(onTaken.mock.calls).toEqual([[ID2]]);
-    // The one beyond the tail stays watched, and a retry runs nothing.
+    expect(onTaken).not.toHaveBeenCalled();
+    for (let i = 0; i < 6 && !onTaken.mock.calls.length; i++) w.check();
+    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+    // Read back after another restart: taken, so a retry acks and runs nothing.
+    const two = transport({ path: f.bin, from: "path" }, { takenFile });
+    await expect(two.t.deliver(agent(), mail("one"))).resolves.toEqual({
+      ok: true,
+    });
+    expect(f.runs()).toHaveLength(1);
+  });
+
+  it("a crash after the attempt was written and before the spawn: the restart re-queues once, never suppressed", async () => {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const home = tmp("ob-cxh-");
+    const crashed = new TakenWatch({ home, file: takenFile, onTaken: vi.fn() });
+    expect(crashed.attempt("mmmmmmmmmmmmmmm1", THREAD, "head")).toBe(true);
+    const one = transport({ path: f.bin, from: "path" }, { takenFile });
+    await expect(one.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+    expect(f.runs()).toHaveLength(1);
+    expect(one.watch.state("mmmmmmmmmmmmmmm1")).toBe("queued");
+    // And now it is queued, not suppressed and not queued again.
+    await expect(one.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+    expect(f.runs()).toHaveLength(1);
+  });
+
+  it("an interrupted attempt whose item a turn already took is found in the rollout: acked, nothing re-queued", async () => {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const first = transport({ path: f.bin, from: "path" }, { takenFile });
+    // The queue ran and a turn took the item, but the record never got past "attempt".
+    first.watch.attempt(
+      "mmmmmmmmmmmmmmm1",
+      THREAD,
+      codexText(agent(), mail("hi")).split("\n", 1)[0] as string,
+    );
+    writeRollout(first.home, [userItem(codexText(agent(), mail("hi")))]);
     const two = transport(
       { path: f.bin, from: "path" },
-      { takenFile, queuedFile },
+      { takenFile, home: first.home },
     );
-    await expect(two.t.deliver(agent(), mail("one", ID1))).resolves.toEqual(
-      QUEUED,
+    await expect(two.t.deliver(agent(), mail("hi"))).resolves.toEqual({
+      ok: true,
+    });
+    expect(f.runs()).toHaveLength(0);
+  });
+
+  it("only a taken record acks: a missing or unreadable record never does", async () => {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    writeFileSync(takenFile, "{ not json");
+    const { t, watch } = transport(
+      { path: f.bin, from: "path" },
+      { takenFile },
     );
-    expect(f.runs()).toHaveLength(2);
+    expect(watch.state("mmmmmmmmmmmmmmm1")).toBeUndefined();
+    await expect(t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+    expect(watch.state("mmmmmmmmmmmmmmm1")).toBe("queued");
+    await expect(t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
   });
 
   it("follows a replaced rollout and forgets threads no longer watched", async () => {

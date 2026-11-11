@@ -12,7 +12,7 @@ import {
 import { INSTANCE_SENDER_NAME } from "@oa/bus-protocol";
 import type { AgentRecord } from "../agents.ts";
 import { CODEX_TOOL_NAMESPACE } from "../codex-attest.ts";
-import { NOTICE_WATCH_MS } from "../codex-taken.ts";
+import { NOTICE_WATCH_MS, type TakenWatch } from "../codex-taken.ts";
 import type { DeliverOutcome, Mail } from "../deliver.ts";
 
 /** How long `codex queue` may run; it writes one sqlite row. */
@@ -282,26 +282,22 @@ export type CodexTransportOptions = {
   /** Whether Codex process `pid` is a host that wakes on a queued message. */
   wakes: (pid: number) => Promise<boolean>;
   /**
-   * Ids `codex queue` took (exit 0), or `maybe:<id>` when it was killed at
-   * its timeout, kept on disk: never queued twice, across restarts too.
+   * One durable record per queued id (attempt, queued, taken, lost), kept on
+   * disk: never queued twice across restarts, and delivered (#2029) only once
+   * a turn took the item (the rollout's user item), never from a missing or
+   * unwritable record. Codex unloads an idle thread, and a queued item then
+   * waits for the next client.
    */
-  queued: { has: (id: string) => boolean; add: (id: string) => void };
-  /**
-   * Queued mail waits here until a turn takes it (the rollout's user item):
-   * only then is it delivered (#2029). Codex unloads an idle thread, and a
-   * queued item then waits for the next client.
-   */
-  taken: {
-    watch: (id: string, thread: string, head: string, ttlMs?: number) => void;
-    unwatch: (id: string) => void;
-    has: (id: string) => boolean;
-    /** Watched too long and dropped: not taken, never to be reported delivered. */
-    lost: (id: string) => boolean;
-  };
+  taken: Pick<
+    TakenWatch,
+    "state" | "maybe" | "attempt" | "queued" | "drop" | "reconcile"
+  >;
   log?: (msg: string) => void;
 };
 
-type Queue = { ok: true } | { ok: false; taken: "maybe" | "no" | "nobin" };
+type Queue =
+  | { ok: true; how: "spawned" | "known" | "taken" }
+  | { ok: false; taken: "maybe" | "no" | "nobin" };
 
 /**
  * Delivers to a Codex thread with the user's own `codex queue` (D2), and only
@@ -313,8 +309,8 @@ type Queue = { ok: true } | { ok: false; taken: "maybe" | "no" | "nobin" };
 export class CodexTransport {
   #bin: CodexBin | undefined;
   #missingLogged = false;
-  /** Taken ids the store failed to keep: still never queued twice by this daemon. */
-  #taken = new Set<string>();
+  /** Ids whose `codex queue` runs now: never run twice at once. */
+  #flight = new Set<string>();
 
   constructor(private readonly opts: CodexTransportOptions) {
     this.#bin = opts.resolve();
@@ -326,20 +322,26 @@ export class CodexTransport {
   }
 
   async deliver(agent: AgentRecord, mail: Mail): Promise<DeliverOutcome> {
-    // Queued, not yet taken: a hub redelivery must not ack it, nor queue it twice.
-    if (this.opts.taken.has(mail.msg_id) || this.opts.taken.lost(mail.msg_id))
+    // Only a taken record acks; a queued or lost one stays queued, never queued twice.
+    const st = this.opts.taken.state(mail.msg_id);
+    if (st === "taken") return { ok: true };
+    if (st === "queued" || st === "lost")
       return { ok: false, reason: "queued" };
     if (!(await this.#wakes(agent))) return { ok: false, reason: "queued" };
-    const text = codexText(agent, mail);
-    const fresh = !this.#has(mail.msg_id);
-    const r = await this.#queue(agent.ref, mail.msg_id, text, {
-      // A hub notice (the instance's own sender) is kept 6 h by the hub.
-      ...(mail.from_name === INSTANCE_SENDER_NAME
-        ? { ttlMs: NOTICE_WATCH_MS }
-        : {}),
-    });
-    // Queued before and no longer watched: a turn took it (or it was acked before #2029).
-    if (r.ok) return fresh ? { ok: false, reason: "queued" } : { ok: true };
+    const r = await this.#queue(
+      agent.ref,
+      mail.msg_id,
+      codexText(agent, mail),
+      {
+        // A hub notice (the instance's own sender) is kept 6 h by the hub.
+        ...(mail.from_name === INSTANCE_SENDER_NAME
+          ? { ttlMs: NOTICE_WATCH_MS }
+          : {}),
+      },
+    );
+    // Just queued: a turn taking it acks it late. Found taken on reconcile: acked now.
+    if (r.ok)
+      return r.how === "taken" ? { ok: true } : { ok: false, reason: "queued" };
     return { ok: false, reason: r.taken === "no" ? "timeout" : "queued" };
   }
 
@@ -379,34 +381,24 @@ export class CodexTransport {
     return agent.live ? this.opts.wakes(agent.pid) : Promise.resolve(false);
   }
 
-  #has(id: string): boolean {
-    return this.#taken.has(id) || this.opts.queued.has(id);
-  }
-
-  /** Remembers a taken id; a failing store is loud, and memory still holds it. */
-  #keep(id: string): boolean {
-    this.#taken.add(id);
-    try {
-      this.opts.queued.add(id);
-      this.#taken.delete(id);
-      return true;
-    } catch (e) {
-      this.opts.log?.(
-        `ERROR: codex took ${id} but it could not be recorded (${e instanceof Error ? e.message : String(e)}); a daemon restart could queue it again`,
-      );
-      return false;
-    }
-  }
-
   async #queue(
     ref: string,
     id: string,
     text: string,
     watch: false | { ttlMs?: number } = false,
   ): Promise<Queue> {
-    if (this.#has(id)) return { ok: true };
+    const st = this.opts.taken.state(id);
+    if (st === "taken") return { ok: true, how: "taken" };
     // Maybe never landed: stays queued, so it ends expired, never a false Delivered.
-    if (this.#has(`maybe:${id}`)) return { ok: false, taken: "maybe" };
+    if (st === "queued" || st === "lost")
+      return this.opts.taken.maybe(id)
+        ? { ok: false, taken: "maybe" }
+        : { ok: true, how: "known" };
+    if (this.#flight.has(id)) return { ok: false, taken: "maybe" };
+    const head = text.split("\n", 1)[0] ?? "";
+    // An interrupted attempt: the rollout may hold the item already.
+    if (st === "attempt" && watch && this.opts.taken.reconcile(id))
+      return { ok: true, how: "taken" };
     this.#bin ??= this.opts.resolve();
     const bin = this.#bin;
     if (!bin) {
@@ -422,37 +414,59 @@ export class CodexTransport {
     // `=` keeps a value that starts with `-` from reading as an option.
     const args = ["queue", `--thread=${ref}`, `--message=${text}`];
     let res: Awaited<ReturnType<CodexRun>>;
-    // Watched BEFORE the queue runs: a check may read the new user item before `codex queue` exits.
-    if (watch)
-      this.opts.taken.watch(id, ref, text.split("\n", 1)[0] ?? "", watch.ttlMs);
-    try {
-      res = await this.opts.run(bin.path, args, {
-        ...process.env,
-        CODEX_HOME: this.opts.home,
-      });
-    } catch (e) {
-      if (watch) this.opts.taken.unwatch(id);
-      this.#bin = undefined;
+    // The attempt is durable BEFORE the queue runs (a check may read the new
+    // user item before `codex queue` exits, and a crash must not forget it).
+    // Without a written record nothing is spawned: a retryable failure.
+    // A re-queue after an interrupted attempt may duplicate the item; that
+    // beats a silent loss.
+    if (
+      !this.opts.taken.attempt(
+        id,
+        ref,
+        watch ? head : undefined,
+        watch ? watch.ttlMs : undefined,
+      )
+    ) {
       this.opts.log?.(
-        `codex queue could not start (${bin.path}): ${e instanceof Error ? e.message : String(e)}`,
+        `codex ${id} not queued: its record could not be written`,
       );
       return { ok: false, taken: "no" };
     }
-    if (res.code === 0) {
-      return this.#keep(id) ? { ok: true } : { ok: false, taken: "maybe" };
+    this.#flight.add(id);
+    try {
+      let res: Awaited<ReturnType<CodexRun>>;
+      try {
+        res = await this.opts.run(bin.path, args, {
+          ...process.env,
+          CODEX_HOME: this.opts.home,
+        });
+      } catch (e) {
+        this.opts.taken.drop(id);
+        this.#bin = undefined;
+        this.opts.log?.(
+          `codex queue could not start (${bin.path}): ${e instanceof Error ? e.message : String(e)}`,
+        );
+        return { ok: false, taken: "no" };
+      }
+      if (res.code === 0) {
+        this.opts.taken.queued(id);
+        return { ok: true, how: "spawned" };
+      }
+      if (res.code === null) {
+        // Killed at its timeout: it may have written the row, and a second copy is worse than a late one.
+        this.opts.taken.queued(id, true);
+        this.opts.log?.(`codex queue for ${ref} timed out; not queued again`);
+        return { ok: false, taken: "maybe" };
+      }
+      this.opts.taken.drop(id);
+      this.#bin = undefined;
+      this.opts.log?.(
+        `codex queue for ${ref} exited ${res.code}: ${stripTerminalControls(res.stderr.trim()).slice(0, 300)}`,
+      );
+      return { ok: false, taken: "no" };
+    } finally {
+      this.#flight.delete(id);
     }
-    if (res.code === null) {
-      // Killed at its timeout: it may have written the row, and a second copy is worse than a late one.
-      this.#keep(`maybe:${id}`);
-      this.opts.log?.(`codex queue for ${ref} timed out; not queued again`);
-      return { ok: false, taken: "maybe" };
-    }
-    if (watch) this.opts.taken.unwatch(id);
-    this.#bin = undefined;
-    this.opts.log?.(
-      `codex queue for ${ref} exited ${res.code}: ${stripTerminalControls(res.stderr.trim()).slice(0, 300)}`,
-    );
-    return { ok: false, taken: "no" };
   }
 }
 
