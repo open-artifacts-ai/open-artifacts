@@ -6,6 +6,7 @@ import {
   type ArtifactPatchResult,
   type ArtifactSummary,
   artifactCan,
+  commentsSettingOf,
   type DataWriters,
   dataWritersWarning,
   type Format,
@@ -396,6 +397,7 @@ export async function publish(
     input.visibility ??
     (create ? (await getSettings(env)).defaultVisibility : undefined);
   if (create) dataWriters = resolveDataWriters(input, visibility) ?? "viewers";
+  const newComments = commentsSettingOf(input.comments);
 
   // Hosted billing: a free instance at its storage cap (off until set)
   // publishes nothing new; restores and renames never land here.
@@ -439,8 +441,8 @@ export async function publish(
       db
         .prepare(
           `insert into artifacts (id, owner_id, space_id, title, description, format, visibility,
-             current_version, capabilities, data_writers, allow_anonymous_writes, comments, created_at, updated_at)
-           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ? where 1${links}${
+             current_version, capabilities, data_writers, allow_anonymous_writes, comments, comment_access, created_at, updated_at)
+           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ? where 1${links}${
              role.sql ? ` and ${role.sql} >= 2` : ""
            }${guard}`,
         )
@@ -458,7 +460,9 @@ export async function publish(
           dataWriters,
           // Kept in step for one release (#681): a rollback reads it.
           dataWriters === "viewers" ? 1 : 0,
-          input.comments === false ? 0 : 1,
+          newComments.comments === false ? 0 : 1,
+          // #2080: new artifacts default to signed-in people.
+          newComments.commenters ?? "signed-in",
           now,
           now,
           ...(links ? [spaceId] : []),
@@ -486,8 +490,13 @@ export async function publish(
       ["data_writers", dataWriters],
       [
         "comments",
-        input.comments === undefined ? undefined : input.comments ? 1 : 0,
+        newComments.comments === undefined
+          ? undefined
+          : newComments.comments
+            ? 1
+            : 0,
       ],
+      ["comment_access", newComments.commenters],
       // Kept in step for one release (#681): a rollback reads it.
       [
         "allow_anonymous_writes",
@@ -844,6 +853,7 @@ export function toSummary(
     // Deprecated (#681): derived for one release.
     allowAnonymousWrites: dataWritersOf(a) === "viewers",
     comments: a.comments === 1,
+    commenters: a.commentAccess === "signed-in" ? "signed-in" : "everyone",
   };
 }
 
@@ -1017,6 +1027,15 @@ export const spaceCols = (
     : sql<number>`0`,
 });
 
+/** Whether the caller may post: comments on, not capped, and signed in where only signed-in people may (#2080). */
+function canComment(
+  caller: Caller,
+  out: Pick<ArtifactSummary, "comments" | "commenters">,
+): boolean {
+  if (capOfCaller(caller) || out.comments === false) return false;
+  return !(out.commenters === "signed-in" && caller.kind === "anonymous");
+}
+
 /**
  * `comments` after `can`, the schema's key order (responses are byte-equal to
  * their schema's parse).
@@ -1024,8 +1043,11 @@ export const spaceCols = (
 function commentsLast<T extends ArtifactSummary>(out: T): T {
   const c = out.comments;
   if (c === undefined) return out;
+  const k = out.commenters;
   delete out.comments;
+  delete out.commenters;
   out.comments = c;
+  if (k !== undefined) out.commenters = k;
   return out;
 }
 
@@ -1067,7 +1089,7 @@ export function withSpace<T extends ArtifactSummary>(
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
   });
-  out.can.comment = !capOfCaller(caller) && out.comments !== false;
+  out.can.comment = canComment(caller, out);
   return commentsLast(sharingFree(caller, out, !shared, sp?.rank ?? 0));
 }
 
@@ -1116,7 +1138,7 @@ export function withCan<T extends ArtifactSummary>(
     }),
     move: false,
     transfer: false,
-    comment: !capOfCaller(caller) && out.comments !== false,
+    comment: canComment(caller, out),
   };
   return commentsLast(sharingFree(caller, out, true));
 }
@@ -1706,7 +1728,9 @@ export async function patch(
       "capabilities = json_patch(capabilities, ?)",
       JSON.stringify(p.capabilities),
     );
-  if (p.comments !== undefined) set("comments = ?", p.comments ? 1 : 0);
+  const cs = commentsSettingOf(p.comments);
+  if (cs.comments !== undefined) set("comments = ?", cs.comments ? 1 : 0);
+  if (cs.commenters !== undefined) set("comment_access = ?", cs.commenters);
   if (dataWriters !== undefined) {
     set("data_writers = ?", dataWriters);
     // Kept in step for one release (#681): a rollback reads it.
