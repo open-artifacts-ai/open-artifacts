@@ -27,6 +27,7 @@ import { sha256Sink } from "../util/digest.js";
 
 const CONTENT_TYPE =
   /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*(\s*;\s*[a-z0-9_.+-]+=("[^"\\\r\n]*"|[a-z0-9_.+-]+))*$/i;
+const OVER_CAP = `The file is over ${LIMITS.fileBytes / 1024 / 1024} MB; Open Artifacts takes files up to ${LIMITS.fileBytes / 1024 / 1024} MB.`;
 const notFound = () => new ApiError("not_found", "Not found");
 
 /** Upload URLs: the "oa:upload" subkey (never the content-token one). */
@@ -60,24 +61,22 @@ export async function createUpload(
         reason: p.error,
       },
     );
-  if (!Number.isSafeInteger(input.size) || input.size <= 0)
+  // No size: the server measures the bytes at PUT (stored as 0 until then).
+  const declared = input.size;
+  if (
+    declared !== undefined &&
+    (!Number.isSafeInteger(declared) || declared <= 0)
+  )
     throw new ApiError(
       "bad_request",
-      "Invalid size. Pass size as the exact number of bytes in the file, a whole number above 0.",
-      {
-        path: input.path,
-        reason: "invalid_size",
-      },
+      "size must be a positive whole number of bytes. Fix it, or omit size and the server measures the file.",
+      { path: input.path, reason: "invalid_size" },
     );
-  if (input.size > LIMITS.fileBytes)
-    throw new ApiError(
-      "too_large",
-      `Files are limited to ${LIMITS.fileBytes} bytes. Split the file or publish a smaller one.`,
-      {
-        path: input.path,
-        reason: "too_large",
-      },
-    );
+  if (declared !== undefined && declared > LIMITS.fileBytes)
+    throw new ApiError("too_large", OVER_CAP, {
+      path: input.path,
+      reason: "too_large",
+    });
   const contentType = input.contentType ?? contentTypeFor(p.path);
   if (contentType.length > 200 || !CONTENT_TYPE.test(contentType))
     throw new ApiError(
@@ -129,7 +128,8 @@ export async function createUpload(
     }
   }
   // Hosted billing: a free instance's storage cap (off until set).
-  await requireFreeStorage(env, input.size);
+  // (Without a size it is checked at PUT, against the measured bytes.)
+  if (declared !== undefined) await requireFreeStorage(env, declared);
   const uploadId = newId();
   stmts.push(
     db
@@ -142,7 +142,7 @@ export async function createUpload(
         artifactId,
         user.id,
         `files/${artifactId}/${newId()}`,
-        input.size,
+        declared ?? 0,
         contentType,
         p.path,
         now,
@@ -191,19 +191,36 @@ export async function putUpload(
     }>();
   if (!row) throw notFound();
   const len = req.headers.get("content-length");
-  if (
-    len === null ||
-    !/^\d+$/.test(len) ||
-    Number(len) !== row.size ||
-    !req.body
-  )
-    throw new ApiError(
-      "bad_request",
-      "Content-Length must equal the declared size. Send exactly the declared number of bytes, or create a new upload with the right size.",
-      {
-        expected: row.size,
-      },
-    );
+  const measure = row.size === 0; // created without a size
+  if (!measure) {
+    if (
+      len === null ||
+      !/^\d+$/.test(len) ||
+      Number(len) !== row.size ||
+      !req.body
+    )
+      throw new ApiError(
+        "bad_request",
+        "Content-Length must equal the declared size. Send exactly the declared bytes, or create a new upload without a size.",
+        { expected: row.size },
+      );
+  } else {
+    if (!req.body)
+      throw new ApiError(
+        "bad_request",
+        "The PUT has no body. Send the file's bytes.",
+      );
+    if (len === null || !/^\d+$/.test(len))
+      throw new ApiError(
+        "bad_request",
+        "The PUT has no Content-Length. Send a Content-Length header; curl -T and fetch with a Blob do this.",
+        { reason: "length_required" },
+      );
+    if (Number(len) > LIMITS.fileBytes)
+      throw new ApiError("too_large", OVER_CAP, { reason: "too_large" });
+  }
+  // Unsized: refuse an over-cap instance before storing anything (re-checked on the measured bytes below).
+  if (measure) await requireFreeStorage(env, Number(len));
   // Write-once: claim the slot atomically (received_at = -1 while in flight).
   const claim = await env.DB.prepare(
     "update uploads set received_at = -1 where id = ? and received_at is null and consumed = 0",
@@ -242,11 +259,29 @@ export async function putUpload(
       );
     throw e;
   }
-  if (!obj || obj.size !== row.size) {
+  let finalSize = row.size;
+  if (measure) {
+    if (!obj || obj.size <= 0 || obj.size > LIMITS.fileBytes) {
+      await release();
+      throw obj && obj.size > LIMITS.fileBytes
+        ? new ApiError("too_large", OVER_CAP, { reason: "too_large" })
+        : new ApiError(
+            "bad_request",
+            "The body is empty. Send the file's bytes.",
+          );
+    }
+    try {
+      await requireFreeStorage(env, obj.size);
+    } catch (e) {
+      await release();
+      throw e;
+    }
+    finalSize = obj.size;
+  } else if (!obj || obj.size !== row.size) {
     await release();
     throw new ApiError(
       "bad_request",
-      "Body size must equal the declared size. Send exactly the declared number of bytes, or create a new upload with the right size.",
+      "Body size must equal the declared size. Send exactly the declared bytes, or create a new upload without a size.",
       {
         expected: row.size,
       },
@@ -268,9 +303,9 @@ export async function putUpload(
     }
   }
   await env.DB.prepare(
-    "update uploads set received_at = ?, digest = ? where id = ? and received_at = -1",
+    "update uploads set size = ?, received_at = ?, digest = ? where id = ? and received_at = -1",
   )
-    .bind(now, digest, uploadId)
+    .bind(finalSize, now, digest, uploadId)
     .run();
 }
 

@@ -121,6 +121,8 @@ export type CommentViewer = {
    * it. Signed-out visitors are `guest`.
    */
   capped?: boolean;
+  /** #2080: signed out where only signed-in people may comment: no edit or delete. */
+  readOnly?: boolean;
 };
 
 /** Anonymous, guest-role, or capped to guest or restricted: never wakes an agent without an @. */
@@ -639,7 +641,9 @@ const commentOf = (
     createdAt: c.createdAt,
     editedAt: c.editedAt,
     typed: isTyped(c.author),
-    can: { edit: author.me, delete: author.me || viewer.moderator === true },
+    can: viewer.readOnly
+      ? { edit: false, delete: false }
+      : { edit: author.me, delete: author.me || viewer.moderator === true },
     ...(c.ask
       ? {
           ask: {

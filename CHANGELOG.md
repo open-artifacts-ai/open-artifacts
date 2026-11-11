@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.155.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.154.0...v0.155.0) (2026-11-11)
+
+
+### Features
+
+* **billing:** the invite-started Business trial is 30 days ([#2093](https://github.com/open-artifacts-ai/open-artifacts/issues/2093)) ([e75a40d](https://github.com/open-artifacts-ai/open-artifacts/commit/e75a40d20f1f6528d7933c66551bd697b68a69e5))
+* **comments:** signed-out visitors can read but not post ([#2080](https://github.com/open-artifacts-ai/open-artifacts/issues/2080)) ([#2086](https://github.com/open-artifacts-ai/open-artifacts/issues/2086)) ([88a091d](https://github.com/open-artifacts-ai/open-artifacts/commit/88a091d8b1cfcf3966509736f4d096dad54ab9e4))
+* create_upload without a size ([#1540](https://github.com/open-artifacts-ai/open-artifacts/issues/1540)) ([#1543](https://github.com/open-artifacts-ai/open-artifacts/issues/1543)) ([876f42b](https://github.com/open-artifacts-ai/open-artifacts/commit/876f42b59e3d0bd8bcdbd25578d1c7964ecd6e9e))
+
+
+### Bug Fixes
+
+* **bus-daemon:** OpenCode hello needs a TUI attached to the attested service ([#1950](https://github.com/open-artifacts-ai/open-artifacts/issues/1950)) ([#2041](https://github.com/open-artifacts-ai/open-artifacts/issues/2041)) ([7bd92f2](https://github.com/open-artifacts-ai/open-artifacts/commit/7bd92f2cded302a417948160cf38b86fffae39b0))
+* **bus:** an un-acked comment notice reads gone after the ack TTL ([#2082](https://github.com/open-artifacts-ai/open-artifacts/issues/2082)) ([#2084](https://github.com/open-artifacts-ai/open-artifacts/issues/2084)) ([ea7e57c](https://github.com/open-artifacts-ai/open-artifacts/commit/ea7e57cf26d8b79f79512519f4175864dfd68033))
+* **bus:** the daemon logs joins, refusals and liveness always ([#2029](https://github.com/open-artifacts-ai/open-artifacts/issues/2029)) ([#2030](https://github.com/open-artifacts-ai/open-artifacts/issues/2030)) ([97923a9](https://github.com/open-artifacts-ai/open-artifacts/commit/97923a9f706cf078b323eb4f5557b42c9802e183))
+* **viewer:** panel tabs stop before the close button ([#2085](https://github.com/open-artifacts-ai/open-artifacts/issues/2085)) ([474a67e](https://github.com/open-artifacts-ai/open-artifacts/commit/474a67ea70604545472bc5f28ee9b291ca672c3b))
+
+## [0.154.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.153.1...v0.154.0) (2026-11-11)
+
+
+### Features
+
+* **auth:** silent Google sign-in for a new owner after sign-up ([#2026](https://github.com/open-artifacts-ai/open-artifacts/issues/2026)) ([#2028](https://github.com/open-artifacts-ai/open-artifacts/issues/2028)) ([c53fcba](https://github.com/open-artifacts-ai/open-artifacts/commit/c53fcbaf1a7157b4bc19d378c37c6c50316d9b5f))
+* **bus:** prose titles and impersonating prefixes get the default name ([#1916](https://github.com/open-artifacts-ai/open-artifacts/issues/1916)) ([#2076](https://github.com/open-artifacts-ai/open-artifacts/issues/2076)) ([301d1b9](https://github.com/open-artifacts-ai/open-artifacts/commit/301d1b927dd87c8f6ef6b986e1f869ea3af25b67))
+* **shortcuts:** band row reads ↗ title v{n}, version never cut ([#2068](https://github.com/open-artifacts-ai/open-artifacts/issues/2068)) ([#2070](https://github.com/open-artifacts-ai/open-artifacts/issues/2070)) ([d8cec3b](https://github.com/open-artifacts-ai/open-artifacts/commit/d8cec3bccac390ad20ca5becb5de55e83368e479))
+
+
+### Bug Fixes
+
+* **asks:** one waiting answer notice per ask and a fanout deadline ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2074](https://github.com/open-artifacts-ai/open-artifacts/issues/2074)) ([410df2e](https://github.com/open-artifacts-ai/open-artifacts/commit/410df2e7ed269dfecf34076a2f78cb9d9aede810))
+* **bus:** a notice's own target always settles on a non-acking send ([#2065](https://github.com/open-artifacts-ai/open-artifacts/issues/2065)) ([#2069](https://github.com/open-artifacts-ai/open-artifacts/issues/2069)) ([32f8cfd](https://github.com/open-artifacts-ai/open-artifacts/commit/32f8cfdbed4bd114a692d4c919fdf4199f9dcad4))
+* **bus:** wake a restarted Codex thread when mail waits for it ([#2029](https://github.com/open-artifacts-ai/open-artifacts/issues/2029)) ([#2031](https://github.com/open-artifacts-ai/open-artifacts/issues/2031)) ([5912374](https://github.com/open-artifacts-ai/open-artifacts/commit/5912374656518061003d2c5475484271739bf7b3))
+
 ## [0.153.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.153.0...v0.153.1) (2026-11-11)
 
 

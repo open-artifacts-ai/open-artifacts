@@ -34,7 +34,8 @@ describe("agent-config snippets", () => {
       oauth: false,
       headers: { Authorization: `Bearer {file:${FILE}}` },
     });
-    expect(s.codexToken).toContain('bearer_token_env_var = "OA_TOKEN"');
+    expect(s.codexToken).toContain(`http_headers_helper = "T=$(cat ${FILE})`);
+    expect(s.codexToken).not.toContain("OA_TOKEN");
     expect(s.codexToken).toContain("[mcp_servers.open-artifacts]");
     expect(
       JSON.parse(s.json as string).mcpServers["open-artifacts"].headers,
@@ -49,10 +50,11 @@ describe("agent-config snippets", () => {
     expect(c?.note).toContain("codex mcp login open-artifacts");
     expect(c?.note).not.toContain(FILE);
   });
-  it("Codex's token fallback launches it with the file and says not to edit profiles", () => {
+  it("Codex's token fallback reads the file through a helper and needs no env var", () => {
     const note = fileSnippets("open-artifacts", URL, FILE).codexToken?.note;
-    expect(note).toContain(`OA_TOKEN="$(cat ${FILE})" codex`);
-    expect(note).toContain("Don't edit shell profiles");
+    expect(note).toContain("Codex 0.163 or later");
+    expect(note).toContain(FILE);
+    expect(note).not.toContain("OA_TOKEN");
   });
   it("without a token file there are no file-based fallbacks", () => {
     const n = fileSnippets("open-artifacts", URL);

@@ -105,6 +105,10 @@ function transport(
     takenFile?: string;
     home?: string;
     scanBudget?: number;
+    event?: (
+      name: string,
+      fields: Record<string, string | number | undefined>,
+    ) => void;
   } = {},
 ) {
   const home = over.home ?? tmp("ob-cxh-");
@@ -128,6 +132,7 @@ function transport(
     wakes: over.wakes ?? (async () => true),
     taken: watch,
     log,
+    ...(over.event ? { event: over.event } : {}),
   });
   tr = t;
   return { t, home, log, resolve, watch, onTaken };

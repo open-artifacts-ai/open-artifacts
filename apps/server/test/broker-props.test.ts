@@ -5,7 +5,7 @@
 // token lives in memory only).
 import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { R, type SyncStatus } from "@oa/shared";
+import { R, type SyncStatus, TRIAL_DAYS } from "@oa/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   BrokerGateRefusedError,
@@ -1067,7 +1067,7 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
       TIER: "team",
       FEATURES: "spaces,sync_frozen",
     });
-    await tier({ tier: "trial", trialEndsAt: t0 + 14 * DAY }, t0);
+    await tier({ tier: "trial", trialEndsAt: t0 + TRIAL_DAYS * DAY }, t0);
     modes.length = 0;
     const google0 = g.adminCalls.length;
     expect(await period(t0 + FAST_MS)).toBe("done");
