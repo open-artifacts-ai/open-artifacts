@@ -506,7 +506,7 @@ describe("skill.md drift", () => {
         "A page or file under",
         "is one call: read the file and pass its text as content",
         "That is the default for pages you edit over time",
-        "size is the exact byte count of the file as it will be sent",
+        "If you pass size, it is the exact byte count of the file as it will be sent",
         "never estimate it",
         "An upload id works once",
         "create a new upload instead of reusing that id",
