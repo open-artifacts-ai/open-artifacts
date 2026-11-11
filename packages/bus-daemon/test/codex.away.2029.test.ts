@@ -38,6 +38,8 @@ const P2 = 101;
 const A1 = 200;
 const A2 = 201;
 const A3 = 202;
+/** Positive waits under a loaded full-package run. */
+const LOADED = { timeout: 8000 };
 const tmp = (p: string) => mkdtempSync(join(tmpdir(), p));
 const line = (type: string, payload: object) =>
   `${JSON.stringify({ timestamp: new Date().toISOString(), type, payload })}\n`;
@@ -572,16 +574,25 @@ describe("waking an away Codex thread (#2029)", () => {
     let i = 0;
     const { two } = await restarted(w, { wakeAgainMs: 0 });
     const stop = answerLists(two, () => seq[Math.min(i++, seq.length - 1)]);
-    await vi.waitFor(() => expect(w.runs()).toHaveLength(2));
-    await new Promise((r) => setTimeout(r, 300));
+    await vi.waitFor(() => expect(w.runs()).toHaveLength(2), LOADED);
+    // Signal, not a sleep: two more asks have been answered with the same count.
+    await vi.waitFor(
+      () => expect(i).toBeGreaterThanOrEqual(seq.length + 2),
+      LOADED,
+    );
     expect(w.runs()).toHaveLength(2);
     stop();
     await stopAll();
     const w2 = world();
     const c = await restarted(w2, { wakeAgainMs: 0 });
     const stop2 = answerLists(c.two, () => 100);
-    await vi.waitFor(() => expect(w2.runs()).toHaveLength(3));
-    await new Promise((r) => setTimeout(r, 300));
+    await vi.waitFor(() => expect(w2.runs()).toHaveLength(3), LOADED);
+    // All three slots are spent and recorded; a fourth does not exist.
+    await vi.waitFor(() => {
+      const spent = readFileSync(w2.files.wokenFile, "utf8");
+      for (const n of [1, 2, 3]) expect(spent).toContain(`#${n}`);
+      expect(spent).not.toContain("#4");
+    }, LOADED);
     expect(w2.runs()).toHaveLength(3);
     stop2();
   });
