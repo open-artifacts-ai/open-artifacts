@@ -518,6 +518,32 @@ const serializer = new MarkdownSerializer(
         state.text("\\!", false);
         return;
       }
+      const afterBreak =
+        index > 0 && parent.child(index - 1).type === docSchema.nodes.hardBreak;
+      if (afterBreak && !inAutolink && text.length > 0) {
+        // This text starts a line of the same paragraph: escape it as a line
+        // start, keep leading whitespace (the parser strips it) and keep a
+        // line of only "=" from becoming a setext heading underline.
+        let rest = text;
+        const ws = /^[ \t]/.exec(rest);
+        if (ws) {
+          state.text(ws[0] === " " ? "&#32;" : "&#9;", false);
+          rest = rest.slice(1);
+          state.atBlockStart = false;
+        } else {
+          state.atBlockStart = true;
+          if (
+            /^=+[ \t]*$/.test(rest) &&
+            (!next || next.type === parent.type.schema.nodes.hardBreak)
+          ) {
+            state.text("\\=", false);
+            rest = rest.slice(1);
+            state.atBlockStart = false;
+          }
+        }
+        if (rest) state.text(rest, true);
+        return;
+      }
       state.text(text, !inAutolink);
     },
   },
