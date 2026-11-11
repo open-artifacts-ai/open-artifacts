@@ -322,4 +322,80 @@ describe("notice_ack (#1752)", () => {
     );
     expect(n0).toBe(0);
   });
+
+  it("a refused asker notice does not refund while another target is still queued", async () => {
+    const s = await setup(ACK);
+    const art = uniq("art");
+    const ns_ = e.ARTIFACT_RUNTIME;
+    const at = "2026-01-01T00:00:00.000Z";
+    await runInDurableObject(
+      ns_.get(ns_.idFromName(art)),
+      (inst: unknown, st) => {
+        (inst as { ensureSchema(): void }).ensureSchema();
+        st.storage.sql.exec(
+          "insert into comments (id, thread_id, body, author, created_at) values ('c1', 't1', 'b', 'a', ?)",
+          at,
+        );
+        st.storage.sql.exec(
+          `insert into comment_targets (comment_id, thread_id, kind, key, name, state)
+           values ('c1', 't1', 'asker', 'k1', 'a', 'queued'), ('c1', 't1', 'mention', 'k2', 'b', 'queued')`,
+        );
+        st.storage.sql.exec(
+          "insert into comment_asker_notices (thread_id, last_at, prev_at, n) values ('t1', ?, null, 1)",
+          at,
+        );
+      },
+    );
+    const n = note(addr(s), art, "c1", "k1");
+    n.target = { kind: "asker", key: "k1" };
+    await (await hubOf(s.userId)).deliverNotice(n);
+    const f = await waitFor(s.d, "deliver");
+    s.d.send({
+      v: 1,
+      id: id("rf"),
+      type: "refuse",
+      msg_id: f.msg_id,
+      reason: "closed",
+      detail: "dropped",
+    } as never);
+    await vi.waitFor(async () =>
+      expect(
+        await runInDurableObject(
+          ns_.get(ns_.idFromName(art)),
+          (_i, st) =>
+            st.storage.sql
+              .exec("select state from comment_targets where key = 'k1'")
+              .one().state as string,
+        ),
+      ).toBe("gone"),
+    );
+    const n0 = await runInDurableObject(
+      ns_.get(ns_.idFromName(art)),
+      (_i, st) =>
+        st.storage.sql
+          .exec("select n from comment_asker_notices where thread_id = 't1'")
+          .one().n as number,
+    );
+    expect(n0).toBe(1);
+  });
+
+  it("write precedence: gone replaces queued and gone; delivered never replaces seen", async () => {
+    const art = uniq("art");
+    await seedTarget(art, "c1", "k1");
+    const write = (state: string) =>
+      runInDurableObject(
+        e.ARTIFACT_RUNTIME.get(e.ARTIFACT_RUNTIME.idFromName(art)),
+        (_i, st) =>
+          setTargetState(st.storage.sql, "c1", "mention", "k1", state),
+      );
+    await write("gone");
+    expect(await targetState(art, "c1")).toBe("gone");
+    await write("gone");
+    expect(await targetState(art, "c1")).toBe("gone");
+    await setState(art, "c1", "seen");
+    await write("delivered");
+    expect(await targetState(art, "c1")).toBe("seen");
+    await write("gone");
+    expect(await targetState(art, "c1")).toBe("seen");
+  });
 });
