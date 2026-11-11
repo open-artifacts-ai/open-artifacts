@@ -153,7 +153,7 @@ function reportIssue(o: {
     "",
     `Run: ${o.run}`,
     "",
-    "While it stays red, prod promotion refuses every tag (scripts/ci/staging-smoke-gate.sh, in the release chain and in deploy-hosted-platform.yml's prod run). Each later red run comments here; the next green run on main closes this issue.",
+    "While it stays red, prod promotion refuses every tag (the staging smoke gate, run in the release chain and in the cloud repo's prod deploy). Each later red run comments here; the next green run on main closes this issue.",
   ].join("\n");
   // The label is shared: create it if it's missing, never reset it.
   const labels = JSON.parse(

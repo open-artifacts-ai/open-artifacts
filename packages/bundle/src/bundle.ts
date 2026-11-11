@@ -25,7 +25,7 @@ export interface Bundle {
   version: string;
   variant: BundleVariant;
   /**
-   * The exact dry-run config wrangler built from (JSON). hosted-build requires
+   * The exact dry-run config wrangler built from (JSON). the release build requires
    * the two variants' configs to be byte-identical but for the define value.
    */
   config: string;

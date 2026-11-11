@@ -24,6 +24,9 @@ export type AgentIdentity = {
   kind: string;
 };
 
+/** #1889: most identity ids one names lookup reads on a member's hub. */
+export const NAMES_OF_MAX = 100;
+
 /** An agent ref plus the grant or token behind it, and the bus session it proved (server-internal; never serialized). */
 export type AgentAttr = AgentRef & { via?: Via; identity?: AgentIdentity };
 

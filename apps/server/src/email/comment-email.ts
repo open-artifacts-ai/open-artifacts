@@ -99,7 +99,7 @@ export function excerptOf(body: string): string {
   return (
     oneLine(body, EXCERPT_MAX)
       // Fullwidth and ideographic lookalikes of "." and "@" first.
-      .replace(/[\u3002\uFF0E\uFF61]/g, ".")
+      .replace(/[\u2024\u3002\uFE52\uFF0E\uFF61]/g, ".")
       .replace(/\uFF20/g, "@")
       // An address (an "@" between two non-space runs): "@" becomes "[at]".
       // A leading "@name" is left alone.
@@ -107,10 +107,15 @@ export function excerptOf(body: string): string {
       // A scheme: "https://x" becomes "https[:]//x".
       .replace(/\b([a-z][a-z0-9+.-]*):\/\//gi, "$1[:]//")
       // A bare domain: a word-ish token whose last label looks like a TLD
-      // ("paypal.com.evil.io/login", "b.co"); "e.g." and "1.5" stay.
+      // ("paypal.com.evil.io/login", "b.co"), in any script ("пример.рф", "उदाहरण.भारत",
+      // "xn--e1afmkfd.xn--p1ai", #1997); "e.g." and "1.5" stay.
       .replace(
-        /\b(?=[a-z0-9_-]*[a-z])[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.[a-z]{2,24}\b/gi,
+        /(?<![\p{L}\p{M}\p{N}_-])(?=[\p{L}\p{M}\p{N}_-]*\p{L})[\p{L}\p{M}\p{N}_-]+(?:\.[\p{L}\p{M}\p{N}_-]+)*\.(?:xn--[a-z0-9-]{1,59}|\p{L}[\p{L}\p{M}]{1,23})(?![\p{L}\p{M}\p{N}_-])/giu,
         (m) => m.replace(/\./g, "[.]"),
+      )
+      // A bare IPv4 address ("192.168.0.1", "10.0.0.1:8080/x"), #1997.
+      .replace(/(?<![\d.])\d{1,3}(?:\.\d{1,3}){3}(?![\d.]*\d)/g, (m) =>
+        m.replace(/\./g, "[.]"),
       )
   );
 }

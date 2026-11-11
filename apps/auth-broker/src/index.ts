@@ -15,7 +15,9 @@ import {
   GOOGLE_AUTHORIZE_URL,
   GOOGLE_TOKEN_URL,
   isPlatformPrincipalId,
+  SILENT_TICKET_MAX_LEN,
   verifyBrokerTicket,
+  verifySilentTicket,
 } from "@oa/auth-core";
 import {
   ASSERTION_SKEW_MS,
@@ -95,6 +97,43 @@ const ipLimited = (env: Env, req: Request) => limitIp(limits(env), req, log);
 const installLimited = (env: Env, install: string, scope: string) =>
   limitInstall(limits(env), install, log, scope);
 
+/**
+ * The ticket's expected Google sub, or null (fall back to the picker). The
+ * ticket verifies against the i00000signup registry keys, for this install
+ * and this install's registered origin.
+ */
+async function silentSubOf(
+  env: Env,
+  q: URLSearchParams,
+  install: string,
+  entry: { origin: string },
+  now: number,
+): Promise<string | null> {
+  const t = q.get("silent") ?? "";
+  if (!t || t.length > SILENT_TICKET_MAX_LEN) return null;
+  const signup = await lookupInstall(env.BROKER_REGISTRY, "i00000signup", now);
+  if (!signup) return null;
+  const v = await verifySilentTicket(
+    signup.keys,
+    t,
+    { install, aud: entry.origin },
+    now,
+  );
+  return v?.sub ?? null;
+}
+
+/** The `sub` claim of a Google ID token, read without verifying (see redeem). */
+function tokenSub(idToken: string): string | null {
+  try {
+    const p = idToken.split(".")[1] ?? "";
+    const raw = atob(p.replace(/-/g, "+").replace(/_/g, "/"));
+    const sub = (JSON.parse(raw) as { sub?: unknown }).sub;
+    return typeof sub === "string" ? sub : null;
+  } catch {
+    return null;
+  }
+}
+
 async function authorize(
   req: Request,
   env: Env,
@@ -146,6 +185,15 @@ async function authorize(
     platform ? `authorize:${rateKeyOf(req)}` : "authorize",
   );
   if (busy) return busy;
+  // Silent sign-in (#2026): prompt=none + login_hint only for a ticket the
+  // sign-up host signed for exactly this install and its registered origin,
+  // unexpired, and never on a break-glass (reauth) flow. Anything else is
+  // today's account picker.
+  const reauth = q.get("reauth") === "1";
+  const silentSub =
+    !platform && !reauth
+      ? await silentSubOf(env, q, install, entry, now)
+      : null;
   const u = new URL(GOOGLE_AUTHORIZE_URL);
   u.search = new URLSearchParams({
     client_id: env.GOOGLE_CLIENT_ID,
@@ -157,6 +205,7 @@ async function authorize(
       s: state,
       h: await flowHash(nonce, challenge),
       exp: now + STATE_TTL_MS,
+      ...(silentSub ? { u: silentSub } : {}),
     }),
     // One Google client, one redirect URI: bind the nonce to this install so
     // a token minted through another install can never redeem here. The
@@ -164,11 +213,12 @@ async function authorize(
     nonce: await brokerNonce(install, nonce),
     code_challenge: challenge,
     code_challenge_method: "S256",
-    prompt: "select_account",
+    prompt: silentSub ? "none" : "select_account",
+    ...(silentSub ? { login_hint: silentSub } : {}),
     ...(entry.domains?.[0] ? { hd: entry.domains[0] } : {}),
     // The install's break-glass sign-in (P3 T18): Google must
     // re-authenticate; the install checks auth_time.
-    ...(q.get("reauth") === "1" ? { max_age: "0" } : {}),
+    ...(reauth ? { max_age: "0" } : {}),
   }).toString();
   log("authorize", "ok");
   return Response.redirect(u.toString(), 302);
@@ -322,6 +372,13 @@ async function redeem(req: Request, env: Env, now: number): Promise<Response> {
   if (typeof out?.id_token !== "string")
     return (
       log("redeem", "no_id_token"), json({ error: "exchange_failed" }, 400)
+    );
+  // A silent flow relays only the signed ticket's expected Google sub. This
+  // filters Google's raw token (fetched straight from Google over TLS); the
+  // broker still vouches for nobody and the install verifies the token itself.
+  if (st.u !== undefined && tokenSub(out.id_token) !== st.u)
+    return (
+      log("redeem", "silent_sub_mismatch"), json({ error: "sub_mismatch" }, 403)
     );
   log("redeem", "ok");
   return json({ id_token: out.id_token });

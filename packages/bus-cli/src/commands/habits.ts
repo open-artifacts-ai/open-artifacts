@@ -101,7 +101,7 @@ function turnOn(ctx: Ctx): number {
   const { targets, plugins } = wired(ctx);
   if (targets.length === 0 && plugins.length === 0) {
     sayErr(ctx, [
-      `No harness with an always-on instructions file is set up. Run ${BUS_CMD} install first.`,
+      `No harness with an always-on instructions file is set up. Run ${ctx.busCmd} install first.`,
     ]);
     return 1;
   }
@@ -215,6 +215,8 @@ export async function habitsAfterInstall(
   const asked = pending.map((p) => p.path);
   const question = habitsQuestion(
     pending.map((p) => p.label ?? one(ctx, p.path)),
+    // --json goes to an agent that may hand the commands to its user's own shell.
+    json ? BUS_CMD : ctx.busCmd,
   );
   if (ctx.stdinIsTTY && ctx.readLine && !json) {
     say(ctx, "", disclosure(ctx, pending));
@@ -224,7 +226,7 @@ export async function habitsAfterInstall(
     );
     const a = (
       await ctx.readLine(
-        `Add them? ${outside ? "[y/N]" : "[Y/n]"}   (the full block: ${BUS_CMD} install --show-habits) `,
+        `Add them? ${outside ? "[y/N]" : "[Y/n]"}   (the full block: ${ctx.busCmd} install --show-habits) `,
       )
     )
       .trim()
@@ -315,6 +317,6 @@ export function habitsLine(ctx: Ctx): string | undefined {
   if (used.some((p) => pluginHabitsState(deps(ctx), p) === "on"))
     return `Habits: ${states.join("; ")}`;
   if (targets.length > 0 || plugins.length > 0)
-    return `Habits: not decided (${BUS_CMD} install --habits to add them)${tail}`;
+    return `Habits: not decided (${ctx.busCmd} install --habits to add them)${tail}`;
   return undefined;
 }

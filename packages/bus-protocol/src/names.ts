@@ -77,8 +77,16 @@ export function suffixName(base: string, n: number): string {
  * `caf`); symbols and emoji are dropped like punctuation. The cleaned name is
  * checked as any name is, so reserved and IPv4-shaped results still fall back.
  * NAME_RE itself is the wire contract and is not widened.
+ *
+ * #1916: with `harness: true` (a title the harness made, never a user's
+ * explicit rename) a name that reads as prose also falls back
+ * (`looksLikeProse`). Fork titles keep their own handling: the parent part
+ * is a name.
  */
-export function candidateName(proposed: string): string {
+export function candidateName(
+  proposed: string,
+  opts: { harness?: boolean } = {},
+): string {
   // #1916: a Claude Code /fork title is "<parent> \u2442 <prompt words>". The
   // name is the parent plus " fork"; the parent part is trimmed so it fits.
   const mark = proposed.indexOf(FORK_MARK);
@@ -91,7 +99,44 @@ export function candidateName(proposed: string): string {
     const out = `${parent}${FORK_SUFFIX}`;
     return BusNameSchema.safeParse(out).success ? out : FALLBACK_BUS_NAME;
   }
-  return cleanName(proposed, LIMITS.maxBusNameChars) ?? FALLBACK_BUS_NAME;
+  const out = cleanName(proposed, LIMITS.maxBusNameChars) ?? FALLBACK_BUS_NAME;
+  return opts.harness && looksLikeProse(out) ? FALLBACK_BUS_NAME : out;
+}
+
+/** #1916: a harness title is prose, not a name, past this many words... */
+export const PROSE_MAX_WORDS = 4;
+/** ...or this many characters (after cleaning). */
+export const PROSE_MAX_CHARS = 32;
+
+/**
+ * #1916: a cleaned name that looks like a sentence a harness made from the
+ * first prompt: more than PROSE_MAX_WORDS words, or longer than
+ * PROSE_MAX_CHARS characters. Pure; the caller decides when it applies
+ * (harness-made names only).
+ */
+export function looksLikeProse(name: string): boolean {
+  return (
+    name.length > PROSE_MAX_CHARS ||
+    name.split(" ").filter(Boolean).length > PROSE_MAX_WORDS
+  );
+}
+
+/**
+ * #1916: `name` starts with `other` plus a space and the rest is more than
+ * one word, so it reads as another agent's name followed by a sentence.
+ * `<other>-2`, `<other> fork` and `<other> B` (one extra word) are fine.
+ * Case-insensitive. The caller supplies the live names that count.
+ */
+export function impersonates(name: string, other: string): boolean {
+  const n = name.toLowerCase();
+  const o = other.toLowerCase();
+  if (o === "" || !n.startsWith(`${o} `)) return false;
+  return (
+    n
+      .slice(o.length + 1)
+      .split(" ")
+      .filter(Boolean).length > 1
+  );
 }
 
 /** U+2442 OCR fork, which Claude Code puts between a fork's parent title and prompt. */
@@ -117,11 +162,14 @@ function cleanName(proposed: string, cap: number): string | null {
  * clean to one name this way are different names, so neither may take the
  * other's away reservation or queued mail. A fallback is never "dropped".
  */
-export function droppedRefusedChars(proposed: string): boolean {
+export function droppedRefusedChars(
+  proposed: string,
+  opts: { harness?: boolean } = {},
+): boolean {
   // #1916: a fork is never its parent, so it may not reclaim the parent's
   // away address or mail, even when the parent part falls back.
   if (proposed.includes(FORK_MARK)) return true;
-  const out = candidateName(proposed);
+  const out = candidateName(proposed, opts);
   if (out === FALLBACK_BUS_NAME) return false;
   const old = proposed
     // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point

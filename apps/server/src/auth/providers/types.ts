@@ -30,6 +30,11 @@ export interface OidcProvider {
       challenge: string;
       /** Force a fresh authentication at the provider (break-glass, P3 T18). */
       reauth?: boolean;
+      /**
+       * A silent-sign-in ticket (#2026) for the hosted broker to verify; the
+       * broker decides, and anything it rejects gets the account picker.
+       */
+      silent?: string;
     },
   ): Promise<string> | string;
   /**

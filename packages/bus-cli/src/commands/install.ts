@@ -7,6 +7,7 @@ import {
 } from "@oa/bus-adapter-opencode";
 import { codexBinFile } from "@oa/bus-daemon";
 import { BUS_CMD, type StatusReply } from "@oa/bus-ipc";
+import { useBusCmd } from "../bus-cmd.ts";
 import {
   askDaemon,
   type Ctx,
@@ -268,7 +269,7 @@ function reportSkillFailure(ctx: Ctx): boolean {
   if (!url) return false;
   sayErr(ctx, [
     `Could not fetch the skill from ${url}.`,
-    `The bus tools are set up. Rerun ${BUS_CMD} install to write the skill.`,
+    `The bus tools are set up. Rerun ${ctx.busCmd} install to write the skill.`,
   ]);
   return true;
 }
@@ -400,12 +401,15 @@ export function roster(ctx: Ctx, st: StatusReply): string[] {
   return ns ? rosters(ctx, [ns]) : [ctx.copy.noNamespace()];
 }
 
-export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
+export const installSteps = (
+  opts: InstallOpts,
+  bus: string = BUS_CMD,
+): Step<Ctx>[] => [
   {
     name: "login",
     label: "Machine approved",
     failed: "Machine not approved",
-    action: `Run ${BUS_CMD} to approve it.`,
+    action: `Run ${bus} to approve it.`,
     check: async (ctx) => {
       const m = readMachine(ctx.home);
       return m.state === "ok" && !m.revoked ? "done" : "todo";
@@ -416,7 +420,7 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
     name: "harnesses",
     label: "Harnesses configured",
     failed: "Harnesses not configured",
-    action: `Run ${BUS_CMD} to configure them.`,
+    action: `Run ${bus} to configure them.`,
     check: async (ctx) => {
       const wiring = checkAdapters({
         home: ctx.userHome,
@@ -455,7 +459,7 @@ export const installSteps = (opts: InstallOpts): Step<Ctx>[] => [
     name: "daemon",
     label: "Daemon answering",
     failed: "Daemon not answering",
-    action: `Run ${BUS_CMD} to start it.`,
+    action: `Run ${bus} to start it.`,
     check: async (ctx) => {
       try {
         await askDaemon(ctx, { timeoutMs: 1000 });
@@ -504,7 +508,7 @@ export async function install(
   const ctx: Ctx = json ? { ...realCtx, stdout: realCtx.stderr } : realCtx;
   const c = ctx.copy;
   say(ctx, c.header(ctx.version), "");
-  const steps = installSteps(opts);
+  const steps = installSteps(opts, ctx.busCmd);
   if (opts.check) {
     const results = await checkSteps(steps, ctx);
     for (const { step, state } of results) {
@@ -517,7 +521,11 @@ export async function install(
     path: join(ctx.home, "install.json"),
     now: ctx.now,
   });
-  if (ok) reportShim(ctx);
+  if (ok) {
+    reportShim(ctx);
+    // The shim now exists: what is printed from here on can name oa-bus.
+    useBusCmd(ctx);
+  }
   const skillFailed = reportSkillFailure(ctx);
   // The always-on habits come last, once everything else is done: a person is
   // asked, an agent gets a question for its user. Nothing is written unasked.
