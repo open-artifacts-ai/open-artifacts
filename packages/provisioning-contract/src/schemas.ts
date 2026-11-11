@@ -1,4 +1,4 @@
-import { TEST_HOOK_REFUSALS } from "@oa/shared";
+import { BillingTierSchema, TEST_HOOK_REFUSALS } from "@oa/shared";
 import { z } from "zod";
 import {
   ALERT_KEYS,
@@ -116,6 +116,11 @@ export const InstallSummarySchema = z.object({
   servingMode: ServingModeSchema,
   version: VersionSchema.nullable(),
   tier: TierSchema.nullable(),
+  /**
+   * The billing tier (billing's tiers row), not the created-as `tier`. Absent
+   * or null: billing is not bound here or did not answer (#2058).
+   */
+  billingTier: BillingTierSchema.nullable().optional(),
   auth: z.object({
     providers: z.array(AuthProviderSchema),
     domainCount: z.number(),
