@@ -1046,7 +1046,7 @@ async function followMentioned(
  */
 async function deliver(
   env: Env,
-  a: Pick<ArtifactRow, "id" | "currentVersion">,
+  a: Pick<ArtifactRow, "id" | "currentVersion"> & { title?: string },
   threadId: string,
   c: StoredComment,
   r: Resolved,
@@ -1081,6 +1081,7 @@ async function deliver(
               agent,
               // Only a comment a person typed, to an agent of that same person.
               isTyped(c.author) && c.author.ref === agent.userId,
+              a.title,
             ),
             late,
           ]),
@@ -1163,7 +1164,9 @@ async function withIdentities(env: Env, r: Resolved): Promise<Resolved> {
 /** A new thread: `raw` is the anchor as posted, `body` the first comment. 201 Thread. */
 export async function addThread(
   env: Env,
-  a: Pick<ArtifactRow, "id" | "format" | "currentVersion">,
+  a: Pick<ArtifactRow, "id" | "format" | "currentVersion"> & {
+    title?: string;
+  },
   who: CommentWho,
   viewer: CommentViewer,
   raw: { anchor: unknown; body: unknown } & CommentExtras,
@@ -1406,11 +1409,15 @@ export async function addReply(
   if (c.ask) await indexAsk(env, artifactId, threadId, c.id, c.ask.to);
   const row = await stmt(
     env.DB,
-    "select current_version as v from artifacts where id = ?",
+    "select current_version as v, title from artifacts where id = ?",
   )
     .bind(artifactId)
-    .first<{ v: number }>();
-  const a = { id: artifactId, currentVersion: row?.v ?? 1 };
+    .first<{ v: number; title: string }>();
+  const a = {
+    id: artifactId,
+    currentVersion: row?.v ?? 1,
+    ...(row ? { title: row.title } : {}),
+  };
   // #1900: a person's reply also tells the thread's other agents, once each.
   await threadReply(env, a, threadId, c, r, viewer);
   if (r.agents.length === 0) {

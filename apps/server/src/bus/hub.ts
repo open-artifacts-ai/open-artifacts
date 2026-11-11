@@ -3391,8 +3391,55 @@ type NoticeRow = {
   ckey: string;
   text: string;
   ack: string | null;
+  foldN: number;
+  foldRef: string | null;
+  foldAcks: string | null;
 };
-const NOTICE_COLS = "to_ns as toNs, to_lname as toLname, ckey, text, ack";
+const NOTICE_COLS =
+  "to_ns as toNs, to_lname as toLname, ckey, text, ack, fold_n as foldN, fold_ref as foldRef, fold_acks as foldAcks";
+
+/** #1752: folded targets a waiting notice keeps; older ones settle as gone at once. */
+const NOTICE_FOLD_MAX = 50;
+
+type AckTarget = { a: string; c: string; k: "mention" | "asker"; key: string };
+
+function parseAcks(s: string | null): string[] {
+  if (!s) return [];
+  try {
+    const v = JSON.parse(s);
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The text a waiting notice is sent with: its own, plus the fold line when earlier ones were replaced by it. */
+function noticeTextOf(r: NoticeRow): string {
+  if (r.foldN <= 0 || !r.foldRef) return r.text;
+  try {
+    const f = JSON.parse(r.foldRef) as { a: string; t: string };
+    return `${r.text}\n${r.foldN} more comment${r.foldN === 1 ? "" : "s"} on "${f.t}" (${f.a}). Read them with list_comments.`;
+  } catch {
+    return r.text;
+  }
+}
+
+/** The ack recorded for a send: the notice's own target, then the folded ones as `more`. */
+function noticeSendAck(r: NoticeRow): string | null {
+  const all = [r.ack, ...parseAcks(r.foldAcks)].filter(
+    (x): x is string => typeof x === "string",
+  );
+  if (all.length <= 1) return all[0] ?? null;
+  try {
+    const [first, ...rest] = all;
+    return JSON.stringify({
+      ...JSON.parse(first as string),
+      more: rest.map((x) => JSON.parse(x)),
+    });
+  } catch {
+    return all[0] ?? null;
+  }
+}
 
 /**
  * #1752: the comment target a notice reports back to, as the JSON stored with
@@ -6397,12 +6444,19 @@ export class BusHub extends DurableObject<Env> {
     );
     if (!r) return false;
     sql.exec("delete from notice_acks where msg_id = ?", msgId);
-    let t: { a: string; c: string; k: "mention" | "asker"; key: string };
+    let t: AckTarget & { more?: AckTarget[] };
     try {
       t = JSON.parse(r.ack);
     } catch {
       return true;
     }
+    // #1752: targets of notices this one replaced settle with it.
+    for (const x of [t, ...(Array.isArray(t.more) ? t.more : [])])
+      this.#settleTarget(x, outcome === "delivered" ? "delivered" : "gone");
+    return true;
+  }
+
+  #settleTarget(t: AckTarget, state: "delivered" | "gone"): void {
     // The runtime DO moves a target only out of "queued" (never past seen).
     this.ctx.waitUntil(
       runtimeStub(this.env, t.a)
@@ -6410,14 +6464,13 @@ export class BusHub extends DurableObject<Env> {
           commentId: t.c,
           kind: t.k,
           key: t.key,
-          state: outcome === "delivered" ? "delivered" : "gone",
+          state,
         })
         .then(
           () => undefined,
           () => logEvent("notice_ack_failed", {}),
         ),
     );
-    return true;
   }
 
   #acceptNotice(n: BusNotice): DeliveryOutcome {
@@ -6466,12 +6519,16 @@ export class BusHub extends DurableObject<Env> {
         return ack !== null && noticeAckGated(socket) ? "held" : "delivered";
       }
     }
-    const exists =
-      one<{ x: number }>(
-        sql,
-        "select 1 as x from notices where to_ns = ? and to_lname = ? and ckey = ?",
-        ...key,
-      ) !== null;
+    const old = one<{
+      ack: string | null;
+      foldN: number;
+      foldAcks: string | null;
+    }>(
+      sql,
+      "select ack, fold_n as foldN, fold_acks as foldAcks from notices where to_ns = ? and to_lname = ? and ckey = ?",
+      ...key,
+    );
+    const exists = old !== null;
     // Due with no usable socket: parked until the machine's agent_up (1), or
     // held for a live daemon too old to read it (2, own caps).
     // A socket that can read notices but refused the frame (#1752) is
@@ -6499,9 +6556,27 @@ export class BusHub extends DurableObject<Env> {
       }
     }
     const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
+    // #1752: the replaced notice's target and fold count move to the new row.
+    const folds = old
+      ? [...parseAcks(old.foldAcks), ...(old.ack ? [old.ack] : [])]
+      : [];
+    // Oldest first beyond the bound: those targets settle as gone now.
+    for (const x of folds.splice(
+      0,
+      Math.max(0, folds.length - NOTICE_FOLD_MAX),
+    ))
+      try {
+        this.#settleTarget(JSON.parse(x), "gone");
+      } catch {
+        // a malformed target has nothing to settle
+      }
+    const foldRef =
+      typeof n.foldTitle === "string" && n.foldTitle.length <= 200
+        ? JSON.stringify({ a: n.artifactId, t: n.foldTitle })
+        : null;
     sql.exec(
-      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack, fold_n, fold_ref, fold_acks)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ...key,
       n.id,
       n.text,
@@ -6509,6 +6584,9 @@ export class BusHub extends DurableObject<Env> {
       expiresAt,
       parked,
       noticeAckOf(n),
+      old ? old.foldN + 1 : 0,
+      foldRef,
+      folds.length > 0 ? JSON.stringify(folds) : null,
     );
     this.#arm(parked > 0 ? expiresAt : notBefore);
     this.#arm(expiresAt);
@@ -6539,7 +6617,8 @@ export class BusHub extends DurableObject<Env> {
     for (const r of rows) {
       // The address resolves to this agent now, or the notice is not its.
       if (liveVisibleIn(sql, r.toNs, r.toLname)?.id !== agent.id) continue;
-      if (!this.#sendNotice(ws, agent, r.text, r.ack)) break;
+      if (!this.#sendNotice(ws, agent, noticeTextOf(r), noticeSendAck(r)))
+        break;
       sql.exec(
         "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
         r.toNs,
@@ -6606,7 +6685,11 @@ export class BusHub extends DurableObject<Env> {
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
       const live = agent && liveSocket(this.ctx, agent.machineId);
       const socket = live && noticeGated(live) ? live : null;
-      if (agent && socket && this.#sendNotice(socket, agent, r.text, r.ack)) {
+      if (
+        agent &&
+        socket &&
+        this.#sendNotice(socket, agent, noticeTextOf(r), noticeSendAck(r))
+      ) {
         sent++;
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",

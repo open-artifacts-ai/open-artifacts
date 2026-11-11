@@ -19,6 +19,7 @@ import {
 import { canConnect } from "../auth/agents.js";
 import { accessLevel, callerOf } from "../auth/authz.js";
 import { stmt } from "../db/stmt.js";
+import { oneLine } from "../email/templates.js";
 import type { Env } from "../env.js";
 import { appOrigin } from "../http/errors.js";
 import { logInfo } from "../log.js";
@@ -356,6 +357,8 @@ export async function notifyAgent(
   to: RosterAgent,
   /** The comment was typed in the web app by `to`'s own user (#1797). */
   fromYourUser = false,
+  /** The artifact's title, for the hub's "n more comments" line (#1752). */
+  title?: string,
 ): Promise<DeliveryState> {
   const url = appOrigin(env) + viewerPath(artifactId);
   const n: BusNotice = {
@@ -381,7 +384,13 @@ export async function notifyAgent(
         : kind === "thread_reply"
           ? // One waiting notice per agent per thread (#1900): replies while it is unread replace it, so it points at the latest comment.
             `${artifactId}:${threadId}:thread_reply:${to.key}`
-          : `${artifactId}:${commentId}:${kind}`,
+          : // #1752: one waiting notice per artifact, agent, kind and tier: later
+            // ones replace it and the hub says how many it folded. The tier is in
+            // the key so one tier's text never replaces the other's (#1797).
+            `${artifactId}:${kind}:${to.key}:${fromYourUser ? "yours" : "others"}`,
+    ...(title !== undefined && (kind === "ask" || kind === "mention")
+      ? { foldTitle: oneLine(title, 80) }
+      : {}),
     threadId,
     commentId,
     // #1752: the comment target the hub settles on the daemon's ack. A thread reply has none.
