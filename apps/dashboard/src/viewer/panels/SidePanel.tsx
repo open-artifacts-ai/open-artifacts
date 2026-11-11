@@ -114,11 +114,11 @@ export function SidePanel({
       <TooltipProvider>
         <Tooltip>
           <TooltipTrigger asChild>
-            {/* Centred on the 34px tab row below the 16px top padding. */}
+            {/* Centred on the 34px tabs below the 11px top padding (the row adds 5px under them for the active line). */}
             <Button
               variant="ghost"
               size="icon-sm"
-              className="absolute top-[17px] right-4 z-10"
+              className="absolute top-[12px] right-4 z-10"
               aria-label="Close panel"
               onClick={onClose}
             >
@@ -135,18 +135,18 @@ export function SidePanel({
       >
         {/* The tabs end before the close button (mr-9) and scroll sideways
             when the panel is too narrow for all four, never running under it. */}
-        <div className="px-4 pt-4">
+        <div className="px-4 pt-[11px]">
           <div className="border-b border-border">
-            <TabStrip tab={tab}>
+            <TabStrip tab={tab} count={tabs.length}>
               <TabsList
                 variant="line"
-                className="flex h-auto w-auto justify-start gap-0 overflow-x-auto border-0 p-0 [scrollbar-width:none]"
+                className="flex h-auto w-auto justify-start group-data-[orientation=horizontal]/tabs:h-auto gap-0 overflow-x-auto overflow-y-hidden border-0 p-0 pb-[5px] [scrollbar-width:none]"
               >
                 {tabs.map((t) => (
                   <TabsTrigger
                     key={t}
                     value={t}
-                    className={`h-[34px] flex-none rounded-sm px-2 ${TXT} ${PROGRAMMATIC}`}
+                    className={`h-[34px] flex-none rounded-sm px-2 focus-visible:-outline-offset-2 ${TXT} ${PROGRAMMATIC}`}
                   >
                     {LABELS[t]}
                   </TabsTrigger>
@@ -197,13 +197,23 @@ export function SidePanel({
  * fade on each edge with tabs off screen, and the active tab scrolled into view. The
  * focus ring is drawn inset so the scroller never clips it.
  */
-function TabStrip({ tab, children }: { tab: string; children: ReactNode }) {
+function TabStrip({
+  tab,
+  count,
+  children,
+}: {
+  tab: string;
+  /** How many tabs show: a change re-measures the fades. */
+  count: number;
+  children: ReactNode;
+}) {
   const box = useRef<HTMLDivElement>(null);
   const [more, setMore] = useState(false);
   const [less, setLess] = useState(false);
   useEffect(() => {
     const el = box.current?.querySelector<HTMLElement>('[role="tablist"]');
-    if (!el) return;
+    // Re-measured per tab count: new tabs grow the list's content, not its box.
+    if (!el || count === 0) return;
     const update = () => {
       setMore(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
       setLess(el.scrollLeft > 1);
@@ -214,11 +224,13 @@ function TabStrip({ tab, children }: { tab: string; children: ReactNode }) {
     const ro =
       typeof ResizeObserver === "undefined" ? null : new ResizeObserver(update);
     ro?.observe(el);
+    // A tab's own width changes (a font swap) resize the tabs, not the list.
+    for (const t of el.children) ro?.observe(t);
     return () => {
       el.removeEventListener("scroll", update);
       ro?.disconnect();
     };
-  }, []);
+  }, [count]);
   useEffect(() => {
     const el = box.current?.querySelector<HTMLElement>('[role="tablist"]');
     // Radix names each trigger "<base>-trigger-<value>".
