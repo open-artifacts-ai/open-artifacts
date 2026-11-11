@@ -12,3 +12,5 @@ export const HERO_COPY = {
 
 export const HOME_TITLE = "Open Artifacts: stop reading transcripts";
 export const HOME_DESCRIPTION = `${HERO_COPY.headline} ${HERO_COPY.question}`;
+export const OG_ALT =
+  "Stop reading transcripts. The same work in a transcript and in an artifact.";

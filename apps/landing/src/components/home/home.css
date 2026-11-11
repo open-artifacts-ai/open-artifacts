@@ -2071,11 +2071,6 @@ footer */
       align-items: baseline;
       gap: 12px;
     }
-    .ci > .n::after {
-      content: counter(c) " of 9";
-      font: 400 13px var(--oa-font-sans);
-      color: var(--oa-text-muted);
-    }
     .ch h2 {
       font-size: 24px;
       max-width: none;

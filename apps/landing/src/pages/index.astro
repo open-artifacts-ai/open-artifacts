@@ -1,13 +1,15 @@
 ---
 import Home from "../components/home/Home.astro";
 import Base from "../layouts/Base.astro";
-import { HOME_DESCRIPTION, HOME_TITLE } from "../lib/copy";
+import { HOME_DESCRIPTION, HOME_TITLE, OG_ALT } from "../lib/copy";
 import { gatesFor } from "../lib/release";
 ---
 
 <Base
   fallbacks={gatesFor("index")}
   homeNav
+  ogPath="/og-home.png"
+  ogAlt={OG_ALT}
   title={HOME_TITLE}
   description={HOME_DESCRIPTION}
 >

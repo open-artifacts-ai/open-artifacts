@@ -49,6 +49,30 @@ describe("landing sections", () => {
     expect(desc).not.toContain("Google Docs");
   });
 
+  it("has the link-preview tags for the home page", () => {
+    const meta = (k: string, v: string) =>
+      index.match(new RegExp(`<meta ${k}="${v}" content="([^"]*)"`))?.[1];
+    expect(meta("property", "og:image")).toBe(
+      "https://open-artifacts.com/og-home.png",
+    );
+    expect(meta("name", "twitter:image")).toBe(
+      "https://open-artifacts.com/og-home.png",
+    );
+    expect(meta("name", "twitter:card")).toBe("summary_large_image");
+    expect(meta("property", "og:image:width")).toBe("1200");
+    expect(meta("property", "og:image:height")).toBe("630");
+    const alt =
+      "Stop reading transcripts. The same work in a transcript and in an artifact.";
+    expect(meta("property", "og:image:alt")).toBe(alt);
+    expect(meta("name", "twitter:image:alt")).toBe(alt);
+    const png = readFileSync(
+      fileURLToPath(new URL("../dist/og-home.png", import.meta.url)),
+    );
+    expect(png.subarray(1, 4).toString()).toBe("PNG");
+    expect(png.readUInt32BE(16)).toBe(1200);
+    expect(png.readUInt32BE(20)).toBe(630);
+  });
+
   it("the hero has the lead line, the question and the cue under the buttons", () => {
     expect(index).toContain(
       '<p class="lede lead1">Create artifacts just like Google Docs</p>',
