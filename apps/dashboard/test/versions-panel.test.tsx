@@ -4,9 +4,10 @@
 import { viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { exactDate, versionDate } from "../src/viewer/versionDate";
-import { installHarness, intersect, mount, seen } from "./harness";
+import { installHarness, intersect, mount, seen, server } from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
@@ -272,5 +273,44 @@ describe("versionDate", () => {
     expect(exactDate("2025-10-22T15:10:00Z", now)).toMatch(
       /^October 22, 2025 at /,
     );
+  });
+});
+
+// #2118 item 11: a linked agent's animal beside the author; nothing for people,
+// unlinked agents or an older server that omits the fields.
+describe("agent faces in the list", () => {
+  it("shows the animal for a linked agent only", async () => {
+    const [v2, v1] = fixtures.versions[OWNED];
+    const agent = v2.agent;
+    if (!agent) throw new Error("fixture has no agent");
+    server.use(
+      http.get(`*/api/v1/artifacts/${OWNED}/versions`, () =>
+        HttpResponse.json([
+          {
+            ...v2,
+            agent: {
+              ...agent,
+              linked: true,
+              product: "Claude Code",
+              animal: { id: "fox", color: 2 },
+            },
+          },
+          { ...v1, agent: null },
+        ]),
+      ),
+    );
+    mount(panel(OWNED));
+    const r2 = await row(2);
+    expect(
+      r2.querySelector("[data-avatar='agent'][data-animal='fox']"),
+    ).not.toBeNull();
+    const r1 = await row(1);
+    expect(r1.querySelector("[data-avatar]")).toBeNull();
+  });
+
+  it("an agent without the fields (older server) has no face", async () => {
+    mount(panel(OWNED));
+    const r2 = await row(2);
+    expect(r2.querySelector("[data-avatar]")).toBeNull();
   });
 });

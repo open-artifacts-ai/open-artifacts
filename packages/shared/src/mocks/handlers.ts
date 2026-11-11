@@ -1011,6 +1011,20 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
             .slice(0, VERSIONS_PAGE_SIZE)
             .map((v) =>
               anon ? { ...v, createdBy: hideEmail(v.createdBy) } : v,
+            )
+            // ?mock=agents (#2118): every even version is a linked publish.
+            .map((v) =>
+              opts.commentAgents && !anon && v.agent && v.version % 2 === 0
+                ? {
+                    ...v,
+                    agent: {
+                      ...v.agent,
+                      linked: true,
+                      product: "Claude Code",
+                      animal: { id: "fox", color: 2 },
+                    },
+                  }
+                : v,
             ),
         );
       }),

@@ -289,6 +289,29 @@ export const agentOwnedBy = (u: Member | undefined, c: NameClashes): string =>
   !u || clashes(c, u) ? MEMBERS_AGENT : ownersAgent(u);
 
 /**
+ * The linked, product and animal of a bus identity: the one rule for a
+ * comment author and a version's agent. An outsider (signed out, guest role,
+ * guest or restricted cap) gets none, so the stable animal cannot join one
+ * agent's masked work across artifacts (#1890, #2004).
+ */
+export const linkedFields = (
+  identity: { identityId: string; kind: string },
+  outsider: boolean | undefined,
+): {
+  linked?: true;
+  product?: string;
+  animal?: { id: string; color: number };
+} => {
+  if (outsider) return {};
+  const product = PRODUCTS[identity.kind];
+  return {
+    linked: true,
+    ...(product ? { product } : {}),
+    animal: faceOf(identity.identityId),
+  };
+};
+
+/**
  * An agent-written comment's author as `v` sees it, from the stored actor.
  * Linked (the connection proved a bus session): the bus name, the product from
  * the hub kind, an animal from the identity. A guest sees "<owner>'s agent"
@@ -315,13 +338,7 @@ export function agentFace(
     return {
       ...base,
       name: v.guest && !me ? agentOwnedBy(owner, c) : bus,
-      ...(v.outsider
-        ? {}
-        : {
-            linked: true,
-            ...(product ? { product } : {}),
-            animal: faceOf(a.identity.identityId),
-          }),
+      ...linkedFields(a.identity, v.outsider),
     };
   }
   // An unlinked grant's client name is self-asserted: shown only when it is

@@ -20,6 +20,7 @@ import { toast } from "../../layout/toast";
 import { AppLink } from "../../library/AppLink";
 import { useSentinel } from "../../library/useInfinite";
 import { ConfirmDialog } from "../../settings/ConfirmDialog";
+import { PartyFace } from "../comments/AuthorFace";
 import { LINK_BTN, SM, TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
 
@@ -309,8 +310,12 @@ export function Versions({
                         )}
                         <span className="sr-only">,</span>
                       </span>{" "}
-                      <span className="text-[length:var(--oa-text-xs)] text-muted-foreground">
-                        <Marked text={author(x)} q={counting ? query : ""} />
+                      <span className="flex items-center gap-1.5 text-[length:var(--oa-text-xs)] text-muted-foreground">
+                        {/* #2118: a linked agent's animal; none for people, outsiders or older servers. */}
+                        {x.agent && <PartyFace p={x.agent} />}
+                        <span className="min-w-0">
+                          <Marked text={author(x)} q={counting ? query : ""} />
+                        </span>
                       </span>
                     </button>
                     {/* Viewing Current: nothing to do from its row. */}
