@@ -364,7 +364,10 @@ describe("snippets parse in their target format", () => {
           .map((n) => `${n}() { printf '%s\\0' "$@"; };`)
           .join(" ");
         const argv = execFileSync("/bin/bash", ["-c", `${stubs} ${s.code}`], {
-          env: { HOME: mkdtempSync(join(tmpdir(), "oa-snip-")), PATH: "" },
+          env: {
+            HOME: mkdtempSync(join(tmpdir(), "oa-snip-")),
+            PATH: "/nonexistent",
+          },
         })
           .toString()
           .split("\0");
