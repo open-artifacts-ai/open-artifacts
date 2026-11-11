@@ -329,6 +329,14 @@ describe("a live reply (#2179)", () => {
           const rows = [...box.querySelectorAll("[data-comment]")];
           const i = rows.indexOf(this);
           if (i >= 0) return rect(i * 50 - box.scrollTop, 40);
+          // A thread spans its rows.
+          const own = rows.filter(
+            (r) => r.closest("[data-thread]") === this,
+          ) as Element[];
+          if (own.length) {
+            const first = rows.indexOf(own[0] as Element);
+            return rect(first * 50 - box.scrollTop, own.length * 50 - 10);
+          }
           return rect(-1000, 100);
         },
       );
@@ -458,6 +466,37 @@ describe("a live reply (#2179)", () => {
       );
     });
 
+    it("Show N earlier replies keeps the thread's top and focuses the first revealed reply", async () => {
+      serve(() => [
+        thread("t1", [
+          comment("c1", "First"),
+          comment("c2", "Second"),
+          comment("c3", "Third"),
+          comment("c4", "Fourth"),
+        ]),
+      ]);
+      mount(viewerPath(OWNED));
+      const c = await col();
+      c.style.overflowY = "auto";
+      await within(c).findByText("Fourth");
+      layout(c);
+      // Rows: c1 0, c4 50. The reader is on c4 (top -10); the thread's top is -60.
+      c.scrollTop = 60;
+      fireEvent.scroll(c);
+      fireEvent.click(
+        within(c).getByRole("button", { name: "Show 2 earlier replies" }),
+      );
+      await within(c).findByText("Second");
+      // Rows now c1 0, c2 50, c3 100, c4 150: the thread's top is still -60,
+      // so the revealed replies open in view, below it.
+      expect(c.scrollTop).toBe(60);
+      await waitFor(() =>
+        expect(document.activeElement).toBe(
+          c.querySelector('[data-comment="c2"]'),
+        ),
+      );
+    });
+
     it("shows no pill when the reply is in view", async () => {
       const { c, above } = await setup();
       await above();
@@ -508,6 +547,22 @@ describe("a live reply (#2179)", () => {
     expect(within(c).getByRole("textbox", { name: "Reply" })).toHaveValue(
       "half a thought",
     );
+  });
+});
+
+describe("a scroller that appears after the first commit (#2179)", () => {
+  it("is found within a few frames: it gets the header's scroll padding with no new commit", async () => {
+    serve(() => [
+      thread("t1", [comment("c1", "First"), comment("c2", "Second")]),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Second");
+    const head = c.querySelector("[data-comments-header]") as HTMLElement;
+    vi.spyOn(head, "offsetHeight", "get").mockReturnValue(44);
+    // Like the side panel's ScrollArea viewport once Radix has measured.
+    c.style.overflowY = "auto";
+    await waitFor(() => expect(c.style.scrollPaddingTop).toBe("44px"));
   });
 });
 

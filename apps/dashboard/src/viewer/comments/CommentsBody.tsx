@@ -46,7 +46,12 @@ import {
   nextAskFor,
   removeMention,
 } from "./asks";
-import { NewReplyPill, useKeepScroll } from "./keepScroll";
+import {
+  focusRow,
+  holdAnchor,
+  NewReplyPill,
+  useKeepScroll,
+} from "./keepScroll";
 import { LIVE_TINT_MS } from "./liveReplies";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { ThreadAgents } from "./threadAgents";
@@ -860,6 +865,17 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       watch?.disconnect();
     };
   }, [isActive, revealTick]);
+  // #2179: "Show N earlier replies" moves focus to the first reply it
+  // revealed (after the effect above, which may focus the card).
+  const [revealFirst, setRevealFirst] = useState<string | null>(null);
+  useEffect(() => {
+    if (!revealFirst || !expanded) return;
+    const r = el.current?.querySelector<HTMLElement>(
+      `[data-comment="${CSS.escape(revealFirst)}"]`,
+    );
+    setRevealFirst(null);
+    if (r) focusRow(r);
+  }, [revealFirst, expanded]);
   // Leaving the thread drops the question mode.
   useEffect(() => {
     if (!isActive) setAsking(null);
@@ -954,7 +970,13 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               variant="ghost"
               data-earlier=""
               className="-my-1.5 ml-8 h-auto min-h-6 self-start px-0 py-1.5 max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5"
-              onClick={() => api.select(t.id, true)}
+              onClick={() => {
+                // The thread keeps its top: the revealed replies open below
+                // it, not above the reader.
+                holdAnchor(el.current);
+                setRevealFirst(rest[0]?.id ?? null);
+                api.select(t.id, true);
+              }}
             >
               {`Show ${hidden} earlier replies`}
             </Button>
@@ -1356,7 +1378,12 @@ export function CommentsBody({
         </>
       )}
       {keep.pill === "down" && (
-        <NewReplyPill dir="down" onClick={keep.go} under={heading} />
+        <NewReplyPill
+          dir="down"
+          foot={keep.foot}
+          onClick={keep.go}
+          under={heading}
+        />
       )}
     </div>
   );
