@@ -1180,3 +1180,26 @@ for (const tier of ["business", "team", "trial"] as const) {
     expect(roles.some((t) => t?.startsWith("Manager"))).toBe(true);
   });
 }
+
+// A manual Viewer plus a space group's Editor holds Editor: the row says so.
+const manualViewerGroupEditor = person({
+  userId: "v4",
+  user: { id: "v4", name: "Vic Hall", email: "vic@example.com" },
+  role: "editor",
+  source: "sync",
+  manualRole: "viewer",
+  syncRole: "editor",
+  groups: [{ ...eng, role: "editor", via: "space" }],
+});
+for (const tier of ["team", "trial"] as const) {
+  it(`${tier}: a manual Viewer with a space group Editor reads Editor`, async () => {
+    mountHosted(ENG, { directory: "frozen" }, asTier(tier), [
+      serve([manualViewerGroupEditor]),
+    ]);
+    const vic = await row("Vic Hall");
+    expect(
+      within(vic).getByRole("combobox", { name: "Role for Vic Hall" }),
+    ).toHaveTextContent("Editor");
+    expect(vic).not.toHaveTextContent("Viewer");
+  });
+}

@@ -223,6 +223,12 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
   const rows = org.data ?? [];
   const me = useMe();
   const hideSync = me.status === "authed" && groupSyncHidden(me.me);
+  // Hosted Team and the trial keep a frozen directory: removals still work.
+  const canRemove =
+    syncOn ||
+    (hideSync &&
+      me.status === "authed" &&
+      me.me.instance.directory?.mode === "frozen");
   const change = (groupId: string, role: SpaceRole) => {
     setProblem(null);
     setPending((p) => ({ ...p, [groupId]: role }));
@@ -264,14 +270,21 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
                   .filter(Boolean)
                   .join(" · ")}
                 control={
-                  syncOn ? (
+                  canRemove ? (
                     <WriteLock>
-                      <RoleSelect
-                        label={`Role for ${g.email}`}
-                        value={pending[g.groupId] ?? g.role}
-                        roles={ALL_ROLES}
-                        onChange={(r) => r && change(g.groupId, r)}
-                      />
+                      {syncOn ? (
+                        <RoleSelect
+                          label={`Role for ${g.email}`}
+                          value={pending[g.groupId] ?? g.role}
+                          roles={ALL_ROLES}
+                          onChange={(r) => r && change(g.groupId, r)}
+                        />
+                      ) : (
+                        // Frozen on Team or the trial (#2176): the role stays visible next to Remove.
+                        <span className="text-[length:var(--oa-text-sm)]">
+                          {ROLE_LABEL[g.role]}
+                        </span>
+                      )}
                       <Button
                         size="sm"
                         variant="ghost"
