@@ -645,6 +645,46 @@ function Viewer({
             )}
           </>
         )}
+        {/* Above the frame in the DOM and on screen: the strip is the first Tab stops, then the artifact. */}
+        {chromeless && (
+          <FullScreenEscape
+            artifact={artifact}
+            live={
+              <>
+                {slot}
+                {commentsButton && (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="oa-fscomments"
+                    aria-label={
+                      commentsButton.open > 0
+                        ? `Comments, ${commentsButton.open} open`
+                        : "Comments"
+                    }
+                    aria-expanded={commentsButton.expanded}
+                    onClick={commentsButton.onClick}
+                  >
+                    <MessageSquare className="oa-fsicon" aria-hidden="true" />
+                    <span className="oa-fsword">Comments</span>
+                    {commentsButton.open > 0 && ` ${commentsButton.open}`}
+                  </Button>
+                )}
+                {isEmbed() && artifact.comments === true && (
+                  <a
+                    className="oa-opencomment"
+                    href={viewerPath(artifact.id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open to comment
+                  </a>
+                )}
+              </>
+            }
+            gone={gone !== null}
+          />
+        )}
         <div className="oa-vbody">
           {!url && (content.current || content.error) ? (
             <ErrorPanel onRetry={() => void content.refresh()} />
@@ -725,46 +765,6 @@ function Viewer({
             pinCard={pinCard}
             pinReplies={pinReplies}
             onClose={() => setDialogOpen(false)}
-          />
-        )}
-        {/* After the frame, so it is the top document's only Tab stop. */}
-        {chromeless && (
-          <FullScreenEscape
-            artifact={artifact}
-            live={
-              <>
-                {commentsButton && (
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    className="oa-fscomments"
-                    aria-label={
-                      commentsButton.open > 0
-                        ? `Comments, ${commentsButton.open} open`
-                        : "Comments"
-                    }
-                    aria-expanded={commentsButton.expanded}
-                    onClick={commentsButton.onClick}
-                  >
-                    <MessageSquare className="oa-fsicon" aria-hidden="true" />
-                    <span className="oa-fsword">Comments</span>
-                    {commentsButton.open > 0 && ` ${commentsButton.open}`}
-                  </Button>
-                )}
-                {isEmbed() && artifact.comments === true && (
-                  <a
-                    className="oa-opencomment"
-                    href={viewerPath(artifact.id)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Open to comment
-                  </a>
-                )}
-                {slot}
-              </>
-            }
-            gone={gone !== null}
           />
         )}
       </div>
