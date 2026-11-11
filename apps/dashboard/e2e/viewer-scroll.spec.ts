@@ -119,3 +119,20 @@ for (const [w, h] of [
     await page.evaluate(() => window.scrollBy(0, 500));
     expect(await page.evaluate(() => scrollY)).toBe(0);
   });
+
+// The full-page panels under .oa-bare have no viewer: when they are taller
+// than the window they scroll inside the column, so their last button is
+// reachable (the clip applies only while a viewer is mounted).
+test("a tall full-page panel (not found) scrolls to its last action at 390x200", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 200 });
+  await page.goto("/a/Zz9yXwVuTsRqPoNm");
+  const panel = page.locator(".oa-bare > .oa-edge");
+  await expect(panel).toBeVisible();
+  const last = panel.locator("a, button").last();
+  await last.scrollIntoViewIfNeeded();
+  await expect(last).toBeInViewport({ ratio: 1 });
+  const m = await doc(page);
+  expect(m.scrollY).toBe(0);
+});

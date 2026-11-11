@@ -610,13 +610,16 @@ a.oa-lpill-gone {
   height: 100vh;
   /* biome-ignore lint/suspicious/noDuplicateProperties: svh fallback */
   height: 100svh;
-  /* #2172: the app never scrolls the document, and clip (unlike hidden) can't
-     be scrolled by scrollIntoView or focus either. Only the frame and the
-     comments panel scroll, inside themselves. */
+}
+/* #2172: with a viewer mounted the app never scrolls the document, and clip
+   (unlike hidden) can't be scrolled by scrollIntoView or focus either. Only
+   the frame and the comments panel scroll, inside themselves. The full-page
+   panels (not public, not found, error) have no viewer and keep scrolling. */
+.oa-bare:has(> .oa-viewer, > .oa-vstack) {
   overflow: clip;
 }
-html:has(.oa-bare),
-html:has(.oa-bare) body {
+html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack),
+html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   overflow: hidden;
 }
 .oa-bare > .oa-viewer,
@@ -625,10 +628,11 @@ html:has(.oa-bare) body {
   height: auto;
   min-height: 0;
 }
-/* A tall panel grows and the page scrolls; it is never clipped at the top. */
+/* A tall full-page panel scrolls inside the column; it is never clipped at the top. */
 .oa-bare > .oa-edge {
-  flex: 1 0 auto;
+  flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
 }
 .oa-bare > .oa-vstack {
   grid-template-rows: minmax(0, 1fr);
@@ -696,4 +700,5 @@ html:has(.oa-bare) body {
 .oa-vbody > .oa-edge {
   flex: 1;
   min-height: 0;
+  overflow-y: auto;
 }
