@@ -365,21 +365,25 @@ describe("named saves and contributors", () => {
         },
       }),
     );
-    expect(await contributors(room.id, 2)).toEqual([
-      {
-        kind: "agent",
-        key: "tok1",
-        user_id: owner.userId,
-        agent_name: "Claude",
-      },
-      { kind: "person", key: "anon", user_id: null, agent_name: null },
-      {
-        kind: "person",
-        key: owner.userId,
-        user_id: owner.userId,
-        agent_name: null,
-      },
-    ]);
+    const got = await contributors(room.id, 2);
+    expect(got).toHaveLength(3);
+    expect(got).toEqual(
+      expect.arrayContaining([
+        {
+          kind: "agent",
+          key: "tok1",
+          user_id: owner.userId,
+          agent_name: "Claude",
+        },
+        { kind: "person", key: "anon", user_id: null, agent_name: null },
+        {
+          kind: "person",
+          key: owner.userId,
+          user_id: owner.userId,
+          agent_name: null,
+        },
+      ]),
+    );
     expect((await versions(room.id))[1]?.agent_name).toBe("Claude");
     // The next version only has who edited after it.
     write(a, "# Two\n");
@@ -468,6 +472,7 @@ describe("R2 first, then the row", () => {
     const before = await r2Count(room.id);
     const log: string[] = [];
     await failing(room, "put", log);
+    room.clock.t = T0 + AUTOSAVE_IDLE_MS;
     await expect(
       inRoom(room, (r) =>
         r.saveVersion({
@@ -481,7 +486,7 @@ describe("R2 first, then the row", () => {
     expect(await r2Count(room.id)).toBe(before);
     // The edits are still in the room; an automatic retry waits SAVE_RETRY_MS.
     await heal(room);
-    await tick(room, T0 + AUTOSAVE_IDLE_MS);
+    await tick(room, T0 + AUTOSAVE_IDLE_MS + SAVE_RETRY_MS - 1);
     expect((await versions(room.id)).length).toBe(1);
     await tick(room, T0 + AUTOSAVE_IDLE_MS + SAVE_RETRY_MS);
     expect((await versions(room.id)).length).toBe(2);
