@@ -26,6 +26,7 @@ import {
   RequestIdSchema,
   TokenIdSchema,
 } from "./ids.js";
+import { SIGNUPS_ENABLED_VALUES } from "./constants.js";
 import { OAUTH_STORE_MODES } from "./oauth-store.js";
 import { SLUG_RE, slugRule } from "./slugs.js";
 
@@ -450,6 +451,6 @@ export const WorldSchema = z.object({
   prodClean: z
     .object({ at: z.number(), ok: z.boolean(), code: z.string() })
     .nullable(),
-  signups: z.enum(["false", "true", "test-users"]),
+  signups: z.enum(SIGNUPS_ENABLED_VALUES),
 });
 export type World = z.infer<typeof WorldSchema>;
