@@ -1,0 +1,1 @@
+No MCP server named "nosuch". Configured servers: open-artifacts, spy

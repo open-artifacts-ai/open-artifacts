@@ -581,7 +581,15 @@ export function createRuntime(opts: RuntimeOptions = {}): OpenArtifacts {
   // Comments (#682) live in the schemas chunk; inert until the shell sends a mode.
   if (!bridge.raw)
     void loadSchemas()
-      .then((s) => s.createComments?.(bridge, opts.signal))
+      .then((s) =>
+        s.createComments?.(bridge, opts.signal, {
+          get: () => api.theme,
+          on: (cb) => {
+            themeCbs.add(cb);
+            return () => themeCbs.delete(cb);
+          },
+        }),
+      )
       .catch(() => {});
   if (bridge.raw) welcomed();
   // Renderer pages (markdown/code/pdf) send their own hello.

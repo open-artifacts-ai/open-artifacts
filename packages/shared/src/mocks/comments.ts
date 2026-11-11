@@ -276,6 +276,10 @@ export function createCommentMock({
         comment("Also fixed the footer typo.", agent(false)),
         mention,
         ask,
+        // #2172: a long run of linked-agent replies (each has an sr-only "linked, " span).
+        ...Array.from({ length: 8 }, (_, i) =>
+          comment(`Follow-up ${i + 1}: checked and done.`, agent(true)),
+        ),
       ];
       faces.push({
         id: newId(),

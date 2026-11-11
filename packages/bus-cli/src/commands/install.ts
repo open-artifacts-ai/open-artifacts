@@ -27,13 +27,10 @@ import {
   readAssets,
   unshownNotes,
 } from "../steps/adapters.ts";
+import { installClaudePlugins } from "../steps/claude-plugins.ts";
 import { readCodexVersion } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
-import {
-  installOutputStyle,
-  outputStyleSource,
-} from "../steps/output-style.ts";
 import { installShim } from "../steps/path-shim.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
 import { checkSteps, runSteps, type Step } from "../steps/step.ts";
@@ -234,26 +231,28 @@ async function harnessesStep(
   );
   for (const n of skill.notes) say(ctx, [n]);
   if (skill.failedUrl) skillFailure.set(ctx, skill.failedUrl);
-  // The Claude Code output style: written, and turned on only when the person has no style chosen.
+  // The Claude Code plugins (session shortcuts, output style), through Claude Code's own
+  // marketplace commands. A failure here is a note, never a stop.
   try {
-    const style = installOutputStyle(
+    const plugins = await installClaudePlugins(
       {
         home: ctx.userHome,
         busHome: ctx.home,
         env: ctx.env,
-        text: outputStyleSource(),
+        exec: ctx.exec,
+        version: ctx.version,
+        origin: hub ? originOf(hub) : machineOrigin(ctx),
+        copy: c,
       },
       out.installed,
     );
-    for (const n of style.notes) say(ctx, [n]);
-    if (style.settings === "set" && style.written[0])
-      say(ctx, c.outputStyleOn(tilde(ctx, style.written[0])));
-    else if (style.settings === "kept" && style.first)
-      say(ctx, c.outputStyleKept(style.kept));
+    for (const n of plugins.notes) say(ctx, [n]);
+    if (plugins.ok) say(ctx, c.pluginsInstalled());
+    if (plugins.styleOn) say(ctx, c.outputStyleOn());
+    else if (plugins.keptStyleFirst)
+      say(ctx, c.outputStyleKept(plugins.keptStyle));
   } catch (e) {
-    say(ctx, [
-      `Could not write the output style: ${e instanceof Error ? e.message : String(e)}`,
-    ]);
+    say(ctx, c.pluginsSetupFailed(e instanceof Error ? e.message : String(e)));
   }
   // Written quietly: the harnesses line above is the user-visible outcome, and
   // a run that writes nothing has nothing to say.
