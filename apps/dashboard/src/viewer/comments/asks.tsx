@@ -14,6 +14,7 @@ import {
 } from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
+import { AuthorFace } from "./AuthorFace";
 import { linkify } from "./linkify";
 
 const MUTED = "text-muted-foreground";
@@ -71,14 +72,41 @@ const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
     : d === "gone"
       ? `${name} is gone · mention another agent`
       : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
-/** Delivery of each mention, in plain words. Names are text, never HTML. */
+/** #2035: how a reply reached an agent the thread already notifies. */
+const notifiedWord = (d: CommentMention["delivery"]) =>
+  d === "queued"
+    ? "Held until it's back"
+    : d === "gone"
+      ? "Expired"
+      : "Delivered";
+
+/** Delivery of each mention, and of each thread agent a reply also told, in plain words. Names are text, never HTML. */
 export function Delivery({ c }: { c: CommentT }) {
-  if (!c.mentions?.length) return null;
+  if (!c.mentions?.length && !c.notified?.length) return null;
   return (
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>
       {c.mentions?.map((m) => (
         <li key={m.key} data-mention={m.key}>
           {deliveryLine(m.name, m.delivery)}
+        </li>
+      ))}
+      {c.notified?.map((m) => (
+        <li
+          key={`n-${m.key}`}
+          data-notified={m.key}
+          className="flex items-center gap-1.5"
+        >
+          <AuthorFace
+            small
+            a={{
+              kind: "agent",
+              name: m.name,
+              ...(m.linked !== undefined ? { linked: m.linked } : {}),
+              ...(m.animal ? { animal: m.animal } : {}),
+              me: false,
+            }}
+          />
+          {m.name}: {notifiedWord(m.delivery)}
         </li>
       ))}
     </ul>

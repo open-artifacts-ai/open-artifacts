@@ -13,6 +13,7 @@ import {
   type CommentAuthor,
   type CommentThread,
   ReplyBodySchema,
+  type ThreadAgent,
 } from "../comments.js";
 import type { ErrorCode } from "../errors.js";
 import { newId } from "../ids.js";
@@ -60,6 +61,44 @@ export const MOCK_AGENTS: ArtifactAgent[] = [
     state: "away",
     lastActiveAt: new Date(Date.now() - 19 * 3600_000).toISOString(),
     machine: "workstation",
+  },
+];
+
+/** #2035: the agents the seeded agents thread notifies. The first two the caller may remove; the others are another member's. */
+const THREAD_AGENTS: ThreadAgent[] = [
+  {
+    key: "agent:product",
+    name: "OA Product",
+    for: "Leo Urbina",
+    linked: true,
+    product: "Claude Code",
+    animal: { id: "fox", color: 2 },
+    canRemove: true,
+  },
+  {
+    key: "agent:claude-code",
+    name: "Claude Code",
+    for: "Leo Urbina",
+    linked: false,
+    canRemove: true,
+  },
+  {
+    key: "agent:bus",
+    name: "OA Bus",
+    for: "Sam Rivera",
+    linked: true,
+    product: "Codex",
+    animal: { id: "owl", color: 4 },
+    canRemove: false,
+  },
+  {
+    key: "agent:polish",
+    name: "OA Polish",
+    for: "Sam Rivera",
+    linked: true,
+    product: "Codex",
+    animal: { id: "otter", color: 5 },
+    canRemove: false,
   },
 ];
 
@@ -206,6 +245,7 @@ export function createCommentMock({
         resolvedAt: null,
         createdAt: f[0]?.createdAt ?? iso(),
         comments: f,
+        agents: THREAD_AGENTS.map((x) => ({ ...x })),
       });
     }
     return [
@@ -410,10 +450,46 @@ export function createCommentMock({
       const c = comment(j.body, mine());
       const bad2 = decorate(c, j, String(params.id));
       if (bad2) return bad2;
+      // #2035: a reply also tells the thread's agents; the mock varies the outcome.
+      if (t.agents?.length)
+        c.notified = t.agents.map((x, i) => ({
+          key: x.key,
+          name: x.name,
+          ...(x.for ? { for: x.for } : {}),
+          ...(x.linked !== undefined ? { linked: x.linked } : {}),
+          ...(x.product ? { product: x.product } : {}),
+          ...(x.animal ? { animal: x.animal } : {}),
+          delivery: i % 3 === 0 ? "delivered" : i % 3 === 1 ? "queued" : "gone",
+        }));
       t.comments.push(c);
       emit(String(params.id), open(String(params.id)));
       return HttpResponse.json(c, { status: 201 });
     }),
+    // #2035: stop (DELETE) or resume (PUT) a thread's agent; the caller's own agents and the owner's.
+    ...(["delete", "put"] as const).map((method) =>
+      http[method](`${A}/:tid/agents/:key`, ({ params }) => {
+        const bad = guard(params.id, true) ?? badIds(params.tid);
+        if (bad) return bad;
+        const t = list(String(params.id)).find((x) => x.id === params.tid);
+        const key = String(params.key);
+        const known = THREAD_AGENTS.find((x) => x.key === key);
+        if (!t || !known) return err("not_found", "Not found");
+        if (!known.canRemove)
+          return err(
+            "forbidden",
+            "Only the person whose agent it is, or the owner, can change this",
+          );
+        const now = (t.agents ?? []).filter((x) => x.key !== key);
+        t.agents =
+          method === "delete"
+            ? now
+            : THREAD_AGENTS.filter(
+                (x) => x.key === key || now.some((y) => y.key === x.key),
+              ).map((x) => ({ ...x }));
+        emit(String(params.id), open(String(params.id)));
+        return new HttpResponse(null, { status: 204 });
+      }),
+    ),
     http.patch(thr, async ({ params, request }) => {
       const bad = guard(params.id, true) ?? badIds(params.tid);
       if (bad) return bad;

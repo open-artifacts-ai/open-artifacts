@@ -107,6 +107,22 @@ export const useReply = (id: string, guest = false) =>
       x,
     ),
   );
+/** #2035: stop (or undo) a thread's replies reaching one agent. The server allows the agent's person and the owner. */
+export const useThreadAgent = (id: string, guest = false) =>
+  useRefetching(
+    id,
+    guest,
+    false,
+    (v: { thread: string; key: string; removed: boolean }, x) =>
+      api.send(
+        v.removed ? "DELETE" : "PUT",
+        R.commentThreadAgent(id, v.thread, v.key),
+        undefined,
+        undefined,
+        undefined,
+        x,
+      ),
+  );
 const AgentList = z.array(ArtifactAgentSchema);
 /** The agents that follow or publish to the artifact (the @ picker). Owners and editors only; a failure just means no picker. */
 export const useArtifactAgents = (id: string, enabled: boolean) =>

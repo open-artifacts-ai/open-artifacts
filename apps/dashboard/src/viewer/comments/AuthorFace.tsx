@@ -21,13 +21,22 @@ const linkedFace = (a: CommentAuthor) =>
 
 /** One face for a comment author: person = initials in a circle; linked agent =
  * its animal in a square tile; unlinked agent = a dashed outline robot. */
-export function AuthorFace({ a }: { a: CommentAuthor }) {
+export function AuthorFace({
+  a,
+  small = false,
+}: {
+  a: CommentAuthor;
+  /** The 18px face for a chip. */
+  small?: boolean;
+}) {
+  const box = small ? "size-[18px]" : "size-6";
+  const icon = small ? "size-3" : "size-3.5";
   if (a.kind !== "agent") {
     return (
       <span
         aria-hidden="true"
         data-avatar=""
-        className="flex size-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[length:var(--oa-text-xs)] font-medium text-foreground"
+        className={`flex ${box} shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[length:var(--oa-text-xs)] font-medium text-foreground`}
       >
         {initials(a.name)}
       </span>
@@ -44,9 +53,9 @@ export function AuthorFace({ a }: { a: CommentAuthor }) {
         data-linked="true"
         data-animal={animal.id}
         style={{ backgroundColor: color }}
-        className="flex size-6 shrink-0 items-center justify-center rounded-md text-white"
+        className={`flex ${box} shrink-0 items-center justify-center rounded-md text-white`}
       >
-        <AnimalIcon id={animal.id as never} className="size-3.5" />
+        <AnimalIcon id={animal.id as never} className={icon} />
       </span>
     );
   }
@@ -55,9 +64,9 @@ export function AuthorFace({ a }: { a: CommentAuthor }) {
       aria-hidden="true"
       data-avatar="agent"
       data-linked="false"
-      className="flex size-6 shrink-0 items-center justify-center rounded-md border border-dashed border-muted-foreground bg-transparent text-muted-foreground"
+      className={`flex ${box} shrink-0 items-center justify-center rounded-md border border-dashed border-muted-foreground bg-transparent text-muted-foreground`}
     >
-      <Bot className="size-3.5" />
+      <Bot className={icon} />
     </span>
   );
 }
