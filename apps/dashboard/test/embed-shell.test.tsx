@@ -2,7 +2,7 @@
 // sign-in redirect; private content shows the not-public panel.
 import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { HttpResponse, http } from "msw";
 import {
   afterEach,
@@ -106,8 +106,13 @@ describe("embed mode", () => {
     const { id, title } = byTitle("Team poll"); // public
     const redirect = mount(`/a/${id}/full`);
     // The full-screen strip repeats the title (#2112); the frame is the iframe.
-    const named = await screen.findAllByTitle(title);
-    expect(named.some((el) => el instanceof HTMLIFrameElement)).toBe(true);
+    await waitFor(() =>
+      expect(
+        screen
+          .getAllByTitle(title)
+          .some((el) => el instanceof HTMLIFrameElement),
+      ).toBe(true),
+    );
     expect(redirect).not.toHaveBeenCalled();
     expect(seen.some((u) => u.pathname === "/api/v1/me")).toBe(false);
     expect(credentialed).toEqual([]);
