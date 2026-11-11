@@ -722,6 +722,13 @@ export function copy(style: Style, bus: string = BUS_CMD) {
         `Kept the Open Artifacts plugins on ${ref ?? "their default branch"}, as you set them.`,
       ),
     ],
+    pluginsRolledBack: (ok: boolean, why: string) => [
+      warn(
+        ok
+          ? "Put the previous Open Artifacts plugin source back, so your plugins are as they were. Run the install again to retry the move."
+          : `Couldn't put the previous plugin source back either (${why}), so the Open Artifacts plugins are not installed. Run the install again.`,
+      ),
+    ],
     pluginsBadInstance: () => [
       warn(
         "Couldn't read this instance's address, so the shortcuts don't know where your pages are yet.",

@@ -41,6 +41,9 @@ type Fake = {
   home?: string;
   removedOnce?: boolean;
   failAdd?: boolean;
+  refreshed?: number;
+  /** Fail adds of this ref only. */
+  failAddRef?: string;
   failInstall?: string;
   exec: (
     cmd: string,
@@ -124,6 +127,8 @@ const fake = (over: Partial<Fake> = {}): Fake => {
         if (f.failAdd) return bad("clone_failed", "Clone failed");
         const src = args[3] as string;
         const [url, ref] = src.split("#");
+        if (f.failAddRef !== undefined && f.failAddRef === (ref ?? ""))
+          return bad("clone_failed", "Clone failed");
         // Real claude 2.1.322: the same name from another source is refused.
         const was = f.markets[0];
         if (was && (was.url !== url || (was.ref ?? "") !== (ref ?? "")))
@@ -145,6 +150,10 @@ const fake = (over: Partial<Fake> = {}): Fake => {
                 : "add-fresh.json",
           ),
         );
+      }
+      if (b === "marketplace" && d === "update") {
+        f.refreshed = (f.refreshed ?? 0) + 1;
+        return { code: 0, stdout: "Updated 1 marketplace\n", stderr: "" };
       }
       if (b === "marketplace" && d === "remove") {
         if (!f.markets.length) return line(fx("remove-again.json"), 1);
@@ -766,7 +775,7 @@ describe("review fixes", () => {
     expect(r.ok).toBe(true);
   });
 
-  it("a re-pin whose add fails records what landed", async () => {
+  it("a re-pin whose add fails but landed keeps the new ref and installs the plugins", async () => {
     const w = setup();
     const f = fake({ mcpList: FOUND });
     await run(f, w, { version: "0.153.0" });
@@ -779,7 +788,78 @@ describe("review fixes", () => {
     };
     const r = await run(f, w, { version: "0.154.0" });
     expect(r.notes.join(" ")).toContain("Couldn't add the plugin source");
-    expect(record(w.busHome)).toEqual({ marketplace: true, plugins: [] });
+    expect(record(w.busHome)).toEqual({
+      marketplace: true,
+      plugins: [STYLE_PLUGIN, SHORTCUTS_PLUGIN],
+    });
+  });
+
+  it("a re-pin whose add fails puts the old ref and the plugins back, with their options", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    f.failAddRef = "v0.154.0";
+    const r = await run(f, w, { version: "0.154.0" });
+    expect(r.ok).not.toBe(true);
+    expect(r.notes.join(" ")).toContain("Couldn't add the plugin source");
+    expect(r.notes.join(" ")).toContain("Put the previous");
+    expect(f.markets[0]).toMatchObject({ ref: "v0.153.0" });
+    expect(f.installed.sort()).toEqual([SHORTCUTS_PLUGIN, STYLE_PLUGIN].sort());
+    expect(f.config).toEqual({
+      instanceUrl: `${ORIGIN}/mcp`,
+      mcpServer: "open-artifacts",
+    });
+    expect(record(w.busHome)).toEqual({
+      marketplace: true,
+      plugins: [STYLE_PLUGIN, SHORTCUTS_PLUGIN],
+    });
+  });
+
+  it("a re-pin whose add and rollback both fail reports both and leaves no record", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    f.failAdd = true;
+    const r = await run(f, w, { version: "0.154.0" });
+    const text = r.notes.join(" ");
+    expect(text).toContain("Couldn't add the plugin source");
+    expect(text).toContain("either");
+    expect(f.markets).toEqual([]);
+    expect(f.installed).toEqual([]);
+    expect(record(w.busHome)).toBeUndefined();
+  });
+
+  it("a re-pin documents that only the shortcuts' options survive: plugin data goes with the remove", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    f.config.extra = "kept-by-claude-with-the-plugin";
+    await run(f, w, { version: "0.154.0" });
+    // The remove cleared everything claude kept for the plugins; only instanceUrl and
+    // mcpServer are put back. A plugin with its own data dir would need it saved first.
+    expect(f.config).toEqual({
+      instanceUrl: `${ORIGIN}/mcp`,
+      mcpServer: "open-artifacts",
+    });
+  });
+
+  it("refreshes an unpinned marketplace before checking versions, so a dev build updates", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.0.0" });
+    expect(f.refreshed ?? 0).toBe(0);
+    f.versions[STYLE_PLUGIN] = ["1", "2"];
+    await run(f, w, { version: "0.0.0" });
+    expect(f.refreshed).toBe(1);
+    expect(f.updated).toEqual([STYLE_PLUGIN]);
+  });
+
+  it("never refreshes a pinned release", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    await run(f, w, { version: "0.153.0" });
+    expect(f.refreshed ?? 0).toBe(0);
   });
 
   it("a failed options reinstall after an update is a note", async () => {

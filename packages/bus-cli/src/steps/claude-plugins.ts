@@ -36,6 +36,8 @@ type Where = {
   exec: Exec;
 };
 
+type Options = { instanceUrl?: string; mcpServer?: string };
+
 type Record_ = { marketplace?: boolean; plugins?: string[] };
 
 export type ClaudePluginsResult = {
@@ -265,6 +267,43 @@ export async function installClaudePlugins(
       "--json",
     ]);
   let marketplace = prior?.marketplace ?? false;
+  // A re-pin whose add failed: re-add the old ref and reinstall what the remove took
+  // away, with the shortcuts' saved options. The record then matches what is installed.
+  const rollBack = async (
+    ids: string[],
+    oldRef: string | undefined,
+    opts: Options | undefined,
+  ) => {
+    const back = await claude(exec, [
+      "plugin",
+      "marketplace",
+      "add",
+      oldRef ? `${PLUGIN_REPO_URL}#${oldRef}` : PLUGIN_REPO_URL,
+      "--sparse",
+      ...SPARSE,
+      "--json",
+    ]);
+    if (!back.ok) {
+      // Both failed: the record stays empty (the remove already cleared it).
+      out.notes.push(...copy.pluginsRolledBack(false, back.message));
+      return;
+    }
+    const restored: string[] = [];
+    for (const id of ids) {
+      const cfg: string[] = [];
+      if (id === SHORTCUTS_PLUGIN) {
+        if (opts?.instanceUrl)
+          cfg.push("--config", `instanceUrl=${opts.instanceUrl}`);
+        if (opts?.mcpServer)
+          cfg.push("--config", `mcpServer=${opts.mcpServer}`);
+      }
+      const i = await claude(exec, ["plugin", "install", id, ...cfg, "--json"]);
+      if (i.ok) restored.push(id);
+      else out.notes.push(...copy.pluginsFailed(`reinstall ${id}`, i.message));
+    }
+    saveRecord(deps.busHome, true, restored);
+    out.notes.push(...copy.pluginsRolledBack(true, ""));
+  };
   // A failed or timed-out add may still have landed: if it did, it is ours and recorded.
   const recordIfLanded = async (plugins: string[]) => {
     const again = await claude(exec, [
@@ -278,9 +317,10 @@ export async function installClaudePlugins(
       Array.isArray(again.data) &&
       (again.data as Market[]).some((m) => m.name === MARKETPLACE && isOurs(m));
     if (landed) saveRecord(deps.busHome, true, plugins);
+    return landed;
   };
   // The shortcuts' saved options, read before a re-pin deletes them.
-  let saved: { instanceUrl?: string; mcpServer?: string } | undefined;
+  let saved: Options | undefined;
   if (!there) {
     const r = await addSource();
     if (!r.ok) {
@@ -321,16 +361,41 @@ export async function installClaudePlugins(
       writeRecord(deps.busHome, undefined);
       prior = undefined;
       marketplace = false;
+      // The remove also deleted each plugin's saved options and any data dir
+      // (Claude Code keeps both with the plugin). Only the shortcuts' options are
+      // read back (above, `saved`) and set again below. No plugin of ours keeps
+      // a data dir today; one that does must be saved here before the remove.
       const r = await addSource();
       if (!r.ok) {
-        await recordIfLanded([]);
+        // The add may have landed anyway (a timeout): then the new ref is in place.
+        const landed = await recordIfLanded([]);
         out.notes.push(
           ...copy.pluginsFailed("add the plugin source", r.message),
         );
-        return out;
+        if (!landed) {
+          // Nothing is left of ours: put the old ref and its plugins back.
+          await rollBack(fromIt, there.ref, saved);
+          return out;
+        }
       }
       marketplace = true;
     }
+  }
+
+  // A dev build follows the default branch, and install does not refresh an unpinned
+  // marketplace: refresh it so the update check below sees the newest version.
+  // A pinned release is never refreshed.
+  if (there && !wantRef) {
+    const u = await claude(exec, [
+      "plugin",
+      "marketplace",
+      "update",
+      MARKETPLACE,
+    ]);
+    if (!u.ok)
+      out.notes.push(
+        ...copy.pluginsFailed("refresh the plugin source", u.message),
+      );
   }
 
   // The plugins: only ones that were not there are ours.
@@ -461,6 +526,8 @@ export type ClaudeCopy = {
     fallback: string,
   ) => string[];
   pluginsKeptSource: (ref: string | undefined) => string[];
+  /** A re-pin's add failed; the old source was put back (ok) or could not be. */
+  pluginsRolledBack: (ok: boolean, why: string) => string[];
   pluginsBadInstance: () => string[];
 };
 
@@ -572,8 +639,6 @@ export async function claudePluginsState(
   }
   return { missing, unconfigured };
 }
-
-type Options = { instanceUrl?: string; mcpServer?: string };
 
 /** The shortcuts' saved options from settings.json (keys instanceUrl and mcpServer only); undefined when the file cannot be read. */
 function readShortcutOptions(deps: Where): Options | undefined {
