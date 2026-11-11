@@ -10,10 +10,10 @@ import {
 import { MAILBOX_RETAIN_MS } from "@oa/bus-protocol";
 import { globRollout, readLines, threadRow } from "./codex-attest.ts";
 
-/** What a restart reads of a rollout when it has no offset: its last 2 MB. */
 /** The hub keeps a notice record this long (#1752); a notice watch is dropped then. */
 export const NOTICE_WATCH_MS = 6 * 60 * 60 * 1000;
 
+/** What a restart reads of a rollout when it has no offset: its last 2 MB. */
 export const TAKEN_TAIL_CAP = 2 * 1024 * 1024;
 
 /** A queued item waiting for a turn to take it. */

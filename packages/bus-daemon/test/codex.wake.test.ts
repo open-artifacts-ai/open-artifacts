@@ -857,4 +857,36 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     watch.check();
     expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
   });
+
+  it("acks on the live three-line shape of a queued item: task_started (queue), the user item, item_completed", async () => {
+    const f = fakeCodex();
+    const { t, home, watch, onTaken } = transport({
+      path: f.bin,
+      from: "path",
+    });
+    await t.deliver(agent(), mail("hi"));
+    const text = codexText(agent(), mail("hi"));
+    const turn = "01a18536-7fa0-7712-8594-790b986a9971";
+    writeRollout(home, [
+      JSON.stringify({
+        type: "event_msg",
+        payload: { type: "task_started", turn_id: turn, turn_trigger: "queue" },
+      }),
+      userItem(text),
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "item_completed",
+          turn_id: turn,
+          item: {
+            type: "UserMessage",
+            id: "msg_1",
+            content: [{ type: "Text", text }],
+          },
+        },
+      }),
+    ]);
+    watch.check();
+    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+  });
 });
