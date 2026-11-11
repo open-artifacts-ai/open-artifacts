@@ -3457,6 +3457,10 @@ function noticeFrame(agent: AgentRow, text: string): ServerFrame {
   };
 }
 
+/** #1752: tries (and the base wait, ms) to settle a comment target after an ack. */
+const NOTICE_SETTLE_TRIES = 3;
+const NOTICE_SETTLE_RETRY_MS = 200;
+
 /**
  * The bus hub: one SQLite Durable Object per member (#1291). Reached only
  * through the Worker: GET /bus/connect forwards a verified daemon upgrade,
@@ -6404,19 +6408,27 @@ export class BusHub extends DurableObject<Env> {
       return true;
     }
     // The runtime DO moves a target only out of "queued" (never past seen).
-    this.ctx.waitUntil(
-      runtimeStub(this.env, t.a)
-        .commentsTargetSettle({
-          commentId: t.c,
-          kind: t.k,
-          key: t.key,
-          state: outcome === "delivered" ? "delivered" : "gone",
-        })
-        .then(
-          () => undefined,
-          () => logEvent("notice_ack_failed", {}),
-        ),
-    );
+    // A failed call is retried a few times (bounded), as it is idempotent.
+    const settle = async () => {
+      for (let i = 0; i < NOTICE_SETTLE_TRIES; i++) {
+        try {
+          await runtimeStub(this.env, t.a).commentsTargetSettle({
+            commentId: t.c,
+            kind: t.k,
+            key: t.key,
+            state: outcome === "delivered" ? "delivered" : "gone",
+          });
+          return;
+        } catch {
+          if (i + 1 < NOTICE_SETTLE_TRIES)
+            await new Promise((r) =>
+              setTimeout(r, NOTICE_SETTLE_RETRY_MS * (i + 1)),
+            );
+        }
+      }
+      logEvent("notice_ack_failed", {});
+    };
+    this.ctx.waitUntil(settle());
     return true;
   }
 

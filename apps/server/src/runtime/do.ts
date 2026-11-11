@@ -64,6 +64,7 @@ import {
   type NewExtras,
   openCount,
   refundAsker,
+  refundAskerIfAllGone,
   refundEmail,
   refundThreadReply,
   replyCount,
@@ -2198,9 +2199,13 @@ export class ArtifactRuntime extends DurableObject<Env> {
     state: "delivered" | "gone";
   }): boolean {
     this.ensureSchema();
-    const moved = this.ctx.storage.transactionSync(() =>
-      settleTarget(this.sql, a.commentId, a.kind, a.key, a.state),
-    );
+    const moved = this.ctx.storage.transactionSync(() => {
+      const m = settleTarget(this.sql, a.commentId, a.kind, a.key, a.state);
+      // A refused asker notice gives the asker bound back (#1614).
+      if (m && a.kind === "asker" && a.state === "gone")
+        refundAskerIfAllGone(this.sql, a.commentId);
+      return m;
+    });
     if (moved) this.broadcastComments();
     return moved;
   }
