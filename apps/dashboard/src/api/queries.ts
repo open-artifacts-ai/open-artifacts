@@ -517,7 +517,7 @@ export const useInviteMember = () => {
   return useMutation({
     mutationFn: (input: MemberInvite) =>
       api.send("POST", R.members, input, MemberInviteResultSchema),
-    // An invite can start the Business trial: Me carries the billing the
+    // An invite can start the Team trial: Me carries the billing the
     // checklist's trial line and the invite dialog's trial notice read.
     onSuccess: () =>
       Promise.all([

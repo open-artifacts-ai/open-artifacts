@@ -12,6 +12,6 @@ export default defineConfig({
   test: {
     environment: "node",
     include: ["test/**/*.test.ts"],
-    setupFiles: ["test/sentinel.ts"],
+    setupFiles: ["test/sentinel.ts", "../../scripts/test/agent-cli-guard.ts"],
   },
 });

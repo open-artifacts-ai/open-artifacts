@@ -36,7 +36,7 @@ import { ApiError } from "../http/errors.js";
 // features go read-only; it never falls back upward. A real lapse arrives as
 // status "lapsed" and applies at once.
 //
-// A cached Business trial whose end has passed is Solo at once (#1756), not
+// A cached Team trial whose end has passed is Solo at once (#1756), not
 // read-only, until billing's next answer; billing's scheduler read and the
 // owner's on-demand read (me.ts) already refresh it, so no new timer.
 //
@@ -71,7 +71,7 @@ export const TierAnswerSchema = z.object({
   trialEndsAt: z.number().int().nullable(),
   /**
    * End of the Solo 30-day trial (ms). Separate from trialEndsAt, which stays
-   * the Business trial's: trialEligible reads "Business trial never used" off
+   * the Team trial's: trialEligible reads "Team trial never used" off
    * trialEndsAt === null. Absent from an answer that predates it.
    */
   soloTrialEndsAt: z.number().int().nullable().optional(),
@@ -162,7 +162,7 @@ export function effectivePlan(
     trialEndsAt: null,
     graceUntil: null,
   };
-  // #1568, #1756: the end of the Business trial returns to Solo, never a full
+  // #1568, #1756: the end of the Team trial returns to Solo, never a full
   // lock. A billing answer (not the provisioned TIER) whose trial date has
   // passed is Solo now, with its status read as Solo's (lapsed or past due is
   // the unpaid view-only lock), until billing's next answer replaces it.
@@ -254,11 +254,12 @@ export function planOfRaw(
 const HOSTED_FLAGS: readonly EnvFeatureFlag[] = ["usage_off"];
 
 /**
- * The feature flags for `plan`'s tier (TIER_FEATURES; the trial is
- * Business, and a solo or free instance reports the trial's features: its team
- * features are refused by the solo lock, so the paywall can show them). A
- * downgrade to Team swaps sync_google for sync_frozen: nothing is deleted
- * or disconnected. A lapse keeps the tier's features, read-only (the lock).
+ * The feature flags for `plan`'s tier (TIER_FEATURES). A solo or free
+ * instance reports the trial's, so the paywall can show them: its team
+ * features are refused by the solo lock. Only Business has sync_google; every
+ * other plan is sync_frozen, so a downgrade swaps it: nothing is deleted or
+ * disconnected, sign-in and user-status checks keep running, and nothing
+ * syncs. A lapse keeps the tier's features, read-only (the lock).
  */
 export function planFeatures(plan: EffectivePlan): EnvFeatureFlag[] {
   const tier =
@@ -282,6 +283,14 @@ export async function readPlan(
   }>();
   return planOfRaw(env, r?.plan, r?.check, now);
 }
+
+/** Hosted: the Directory API and its creating writes are Business only. */
+export const directoryPlanError = (tier?: string): ApiError =>
+  new ApiError(
+    "plan_required",
+    "Directory sync is on the Business plan.",
+    tier ? { tier } : undefined,
+  );
 
 /** The refusal for a team-feature write under `lock`. */
 export function planError(lock: PlanLock): ApiError {

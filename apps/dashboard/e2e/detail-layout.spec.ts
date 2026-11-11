@@ -91,14 +91,15 @@ test("detail: no upload-version control and the old chrome classes are gone", as
 const MOBILE = { width: 390, height: 800 };
 const DESKTOP = { width: 1280, height: 800 };
 
-test("detail: xs buttons (24px) at 1280, 32px and a More menu at 390", async ({
+test("detail: title bar buttons are 32px at 1280 and 390, with a More menu at 390", async ({
   page,
 }) => {
   await page.setViewportSize(DESKTOP);
   await page.goto(`/a/${ID}`);
   const share = page.getByRole("button", { name: "Share", exact: true });
   await expect(share).toBeVisible();
-  expect((await share.boundingBox())?.height).toBe(24);
+  // #2118: the viewer's title bar buttons are 32px on desktop too.
+  expect((await share.boundingBox())?.height).toBe(32);
   await expect(page.getByRole("link", { name: "Full screen" })).toBeVisible();
   // The version chip is the only versions control (#471).
   await expect(page.getByRole("button", { name: /^Version: / })).toBeVisible();

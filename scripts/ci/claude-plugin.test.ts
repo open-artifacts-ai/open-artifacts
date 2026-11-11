@@ -44,11 +44,25 @@ describe("Claude Code plugin (#1970)", () => {
     const mk = json(".claude-plugin/marketplace.json");
     expect(mk.name).toBe("open-artifacts");
     expect(mk.owner.name).toBeTruthy();
-    expect(mk.plugins).toHaveLength(1);
+    expect(mk.plugins).toHaveLength(2);
     const [e] = mk.plugins;
     expect(e.name).toBe(json(`${PLUGIN}/.claude-plugin/plugin.json`).name);
     expect(e.source).toBe(`./${PLUGIN}`);
     expect(e.source).not.toContain("..");
+  });
+
+  // #2095: the shortcuts live where they are developed and install from the same marketplace.
+  it("lists the shortcuts plugin from its own folder, under the name its manifest has", () => {
+    const mk = json(".claude-plugin/marketplace.json");
+    const e = mk.plugins.find(
+      (p: { name: string }) => p.name === "open-artifacts-shortcuts",
+    );
+    expect(e.source).toBe("./packages/claude-code-shortcuts/plugin");
+    expect(e.source).not.toContain("..");
+    expect(
+      json("packages/claude-code-shortcuts/plugin/.claude-plugin/plugin.json")
+        .name,
+    ).toBe(e.name);
   });
 
   it("has no version, so release-please never rewrites the manifest", () => {

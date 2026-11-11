@@ -203,9 +203,10 @@ test.describe("full-screen strip", () => {
     );
     await page.keyboard.press("Tab");
     await expect(exit).not.toBeFocused();
-    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe(
-      "IFRAME",
-    );
+    // Focus passes through <body> on its way into the frame: wait for it to land.
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.tagName))
+      .toBe("IFRAME");
   });
 
   test("the comments surface opens below the strip", async ({ page }) => {

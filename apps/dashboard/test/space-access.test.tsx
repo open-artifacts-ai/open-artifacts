@@ -548,3 +548,137 @@ describe("the Remove confirm's copy", () => {
     });
   });
 });
+
+const asTier =
+  (tier: "team" | "trial" | "business") =>
+  (m: Me): Me => ({
+    ...m,
+    instance: {
+      ...m.instance,
+      billing: m.instance.billing && { ...m.instance.billing, tier },
+    },
+  });
+
+// -- below Business (#2113): no group sync UI
+
+for (const [name, tier, directory] of [
+  ["Team, synced before", "team", "google"],
+  ["Team, frozen", "team", "frozen"],
+  ["the Team trial", "trial", "google"],
+] as const) {
+  it(`${name}: no group pickers and no sync wording`, async () => {
+    mountHosted(ENG, { directory }, asTier(tier));
+    await row(/eng@example.com/);
+    expect(screen.queryByRole("combobox", { name: "Add a group" })).toBeNull();
+    expect(
+      screen.queryByRole("combobox", { name: "Add a group to every space" }),
+    ).toBeNull();
+    expect(screen.queryByText(/Group sync|Changes apply within/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Edit people/ })).toBeNull();
+  });
+}
+
+it("Business keeps the group picker and the apply note", async () => {
+  mountHosted(ENG, { directory: "google" }, asTier("business"));
+  await row(/eng@example.com/);
+  expect(screen.getByRole("combobox", { name: "Add a group" })).toBeVisible();
+  expect(screen.getByText(/Changes apply within a minute/)).toBeVisible();
+});
+
+// -- the line that explains the old groups (#2113)
+
+const ENDED_TEXT =
+  "Google group sync is on the Business plan. These groups no longer update, and people keep the roles they have now.";
+const ENDED = (_: string, el: Element | null) =>
+  el?.tagName === "P" && el.textContent === ENDED_TEXT;
+for (const tier of ["team", "trial"] as const) {
+  it(`${tier}: the listed groups get one line, linking to Plan for an admin`, async () => {
+    mountHosted(ENG, { directory: "frozen" }, asTier(tier), [serveOrg]);
+    await row(/eng@example.com/);
+    const note = screen.getAllByText(ENDED)[0] as HTMLElement;
+    expect(
+      within(note).getByRole("link", { name: "Business plan" }),
+    ).toHaveAttribute("href", "/settings/plan");
+  });
+
+  it(`${tier}: a space manager reads it as plain text`, async () => {
+    mountHosted(ENG, { directory: "frozen" }, (m) =>
+      asManager(asTier(tier)(m)),
+    );
+    await row(/eng@example.com/);
+    const note = screen.getByText(ENDED);
+    expect(within(note).queryByRole("link")).toBeNull();
+  });
+
+  it(`${tier}: the Every space card carries the line too`, async () => {
+    mountHosted("/settings/spaces", { directory: "frozen" }, asTier(tier), [
+      serveOrg,
+    ]);
+    const card = await screen.findByRole(
+      "region",
+      { name: "Every space" },
+      firstLoad,
+    );
+    await within(card).findByText(/exec@example.com/);
+    expect(within(card).getByText(ENDED)).toBeVisible();
+  });
+}
+
+it("Business shows no such line", async () => {
+  mountHosted(ENG, { directory: "frozen" }, asTier("business"), [serveOrg]);
+  await row(/eng@example.com/);
+  expect(screen.queryByText(ENDED)).toBeNull();
+});
+
+// -- hosted frozen below Business: the Every space mapping can still be removed
+
+for (const tier of ["team", "trial"] as const) {
+  it(`${tier} + frozen: Every space shows Remove only, and it sends the same DELETE`, async () => {
+    const put = calls("PUT");
+    const del = calls("DELETE");
+    mountHosted("/settings/spaces", { directory: "frozen" }, asTier(tier), [
+      serveOrg,
+    ]);
+    const card = await screen.findByRole(
+      "region",
+      { name: "Every space" },
+      firstLoad,
+    );
+    const r = await within(card).findByRole("row", {
+      name: /exec@example.com/,
+    });
+    expect(within(r).queryByRole("combobox")).toBeNull();
+    // The role still shows next to Remove, so the owner sees what Remove takes away.
+    expect(r).toHaveTextContent("Viewer");
+    expect(
+      within(card).queryByRole("combobox", {
+        name: "Add a group to every space",
+      }),
+    ).toBeNull();
+    fireEvent.click(
+      within(r).getByRole("button", { name: "Remove exec@example.com" }),
+    );
+    const d = await screen.findByRole("alertdialog", {
+      name: "Remove exec@example.com from every space?",
+    });
+    expect(d).not.toHaveTextContent(/sync/i);
+    fireEvent.click(within(d).getByRole("button", { name: "Remove" }));
+    await waitFor(() =>
+      expect(del.at(-1)?.path).toBe("/api/v1/directory/org-mappings/gExec02"),
+    );
+    expect(put).toHaveLength(0);
+  });
+}
+
+it("Business + frozen: Every space stays read-only", async () => {
+  mountHosted("/settings/spaces", { directory: "frozen" }, asTier("business"), [
+    serveOrg,
+  ]);
+  const card = await screen.findByRole(
+    "region",
+    { name: "Every space" },
+    firstLoad,
+  );
+  const r = await within(card).findByRole("row", { name: /exec@example.com/ });
+  expect(within(r).queryByRole("button", { name: /Remove/ })).toBeNull();
+});

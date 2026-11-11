@@ -195,7 +195,7 @@ export async function startTrialAnswer(
 
 /**
  * The scheduler tick's billing step: read the tier. It never starts the
- * Business trial: that starts only on an invite or a restore (members.ts),
+ * Team trial: that starts only on an invite or a restore (members.ts),
  * each of which announces it (#1851).
  */
 export async function billingTick(env: Env, now: number): Promise<void> {
