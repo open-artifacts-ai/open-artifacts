@@ -80,6 +80,22 @@ const EMPTY_UPDATE_LEN = 2;
 const isEmptyUpdate = (u: Uint8Array) =>
   u.byteLength === EMPTY_UPDATE_LEN && u[0] === 0 && u[1] === 0;
 
+function awarenessFrame(
+  entries: { id: number; clock: number; state: string }[],
+): Uint8Array {
+  const inner = encoding.createEncoder();
+  encoding.writeVarUint(inner, entries.length);
+  for (const e of entries) {
+    encoding.writeVarUint(inner, e.id);
+    encoding.writeVarUint(inner, e.clock);
+    encoding.writeVarString(inner, e.state);
+  }
+  const enc = encoding.createEncoder();
+  encoding.writeVarUint(enc, MSG_AWARENESS);
+  encoding.writeVarUint8Array(enc, encoding.toUint8Array(inner));
+  return encoding.toUint8Array(enc);
+}
+
 export class DocRoom extends DurableObject<Env> {
   private readonly sql: SqlStorage;
   private buffer: Uint8Array[] = [];
@@ -362,44 +378,60 @@ export class DocRoom extends DurableObject<Env> {
     return false;
   }
 
+  /**
+   * Awareness never closes the socket: y-websocket clients re-send remote and
+   * timed-out states, so a legitimate frame can carry many entries and other
+   * peers' client ids. Offending entries are dropped, the rest relayed.
+   */
   private onAwareness(ws: WebSocket, att: Attachment, msg: Uint8Array) {
     if (msg.byteLength > MAX_AWARENESS_BYTES) return;
+    const entries: { id: number; clock: number; state: string }[] = [];
+    try {
+      const outer = decoding.createDecoder(msg);
+      decoding.readVarUint(outer);
+      const dec = decoding.createDecoder(decoding.readVarUint8Array(outer));
+      const n = decoding.readVarUint(dec);
+      for (let i = 0; i < n; i++) {
+        const id = decoding.readVarUint(dec);
+        const clock = decoding.readVarUint(dec);
+        const state = decoding.readVarString(dec);
+        entries.push({ id, clock, state });
+      }
+    } catch {
+      return; // undecodable awareness: drop it, keep the socket
+    }
+    // A socket may only set or remove client ids it introduced itself; its
+    // state must be a JSON object or null.
+    const keep = entries.filter((e) => {
+      if (e.state !== "null") {
+        try {
+          const v: unknown = JSON.parse(e.state);
+          if (typeof v !== "object" || v === null || Array.isArray(v))
+            return false;
+        } catch {
+          return false;
+        }
+      }
+      const own = att.aw.some(([c]) => c === e.id);
+      if (own) return true;
+      if (e.state === "null") return false; // nothing of ours to remove
+      return (
+        att.aw.length < MAX_AWARENESS_IDS && !this.ownedElsewhere(ws, e.id)
+      );
+    });
+    // Only a frame with something of ours counts toward the rate limit.
+    if (keep.length === 0) return;
     const sec = Math.floor(this.now() / 1000);
     const rate = this.awRate.get(ws);
     if (rate && rate.sec === sec) {
       if (++rate.n > MAX_AWARENESS_PER_SEC) return;
     } else this.awRate.set(ws, { sec, n: 1 });
-    const outer = decoding.createDecoder(msg);
-    decoding.readVarUint(outer);
-    const dec = decoding.createDecoder(decoding.readVarUint8Array(outer));
-    const n = decoding.readVarUint(dec);
-    if (n > MAX_AWARENESS_IDS) throw new BadFrame("too many awareness ids");
-    const entries: { id: number; clock: number; null: boolean }[] = [];
-    for (let i = 0; i < n; i++) {
-      const id = decoding.readVarUint(dec);
-      const clock = decoding.readVarUint(dec);
-      const state = decoding.readVarString(dec);
-      let isNull = false;
-      if (state === "null") isNull = true;
-      else {
-        const v: unknown = JSON.parse(state);
-        if (typeof v !== "object" || v === null || Array.isArray(v))
-          throw new BadFrame("awareness state is not an object");
-      }
-      entries.push({ id, clock, null: isNull });
-    }
-    // A socket may only set or remove client ids it introduced itself.
-    for (const e of entries)
-      if (!att.aw.some(([c]) => c === e.id) && this.ownedElsewhere(ws, e.id))
-        return;
     let changed = false;
-    for (const e of entries) {
+    for (const e of keep) {
       const at = att.aw.findIndex(([c]) => c === e.id);
-      if (e.null) {
-        if (at >= 0) {
-          att.aw.splice(at, 1);
-          changed = true;
-        }
+      if (e.state === "null") {
+        att.aw.splice(at, 1);
+        changed = true;
       } else if (at >= 0) {
         if ((att.aw[at] as [number, number])[1] !== e.clock) {
           att.aw[at] = [e.id, e.clock];
@@ -411,7 +443,8 @@ export class DocRoom extends DurableObject<Env> {
       }
     }
     if (changed) ws.serializeAttachment(att);
-    this.broadcast(msg, ws);
+    const out = keep.length === entries.length ? msg : awarenessFrame(keep);
+    this.broadcast(out, ws);
   }
 
   private broadcast(msg: Uint8Array, except: WebSocket) {

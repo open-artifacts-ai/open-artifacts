@@ -562,18 +562,61 @@ describe("DocRoom awareness hardening", () => {
     expect(c.awareness.getStates().get(111)).toEqual({ n: "a" });
   });
 
-  it("refuses a non-JSON or non-object state and closes the socket", async () => {
+  it("drops a non-JSON or non-object state without closing the socket", async () => {
     const stub = roomStub();
     const a = await connect(stub);
     const b = await connect(stub);
     a.ws.send(awFrame([[5, 1, "not json"]]));
-    await a.closed;
-    const a2 = await connect(stub);
-    a2.ws.send(awFrame([[6, 1, "[1,2]"]]));
-    await a2.closed;
-    await b.ping();
+    a.ws.send(awFrame([[6, 1, "[1,2]"]]));
+    a.ws.send(awFrame([[7, 1, '{"ok":1}']]));
+    await b.until(() => b.awareness.getStates().has(7));
     expect(b.awareness.getStates().has(5)).toBe(false);
     expect(b.awareness.getStates().has(6)).toBe(false);
+    expect(a.ws.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("relays only the owned entries of a 12-entry frame with foreign ids", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    const b = await connect(stub);
+    const c = await connect(stub);
+    const seen: number[] = [];
+    c.awareness.on("update", (u: { added: number[]; updated: number[] }) =>
+      seen.push(...u.added, ...u.updated),
+    );
+    b.ws.send(awFrame([[500, 1, '{"b":1}']]));
+    await c.until(() => seen.includes(500));
+    seen.length = 0;
+    // a re-sends b's state (a foreign id) among its own and bogus entries.
+    const entries: [number, number, string][] = [
+      [500, 9, '{"stolen":1}'],
+      [501, 1, '{"a":1}'],
+      [502, 1, '{"a":2}'],
+    ];
+    for (let i = 0; i < 8; i++) entries.push([600 + i, 1, "nope"]);
+    entries.push([503, 1, '{"a":3}']);
+    expect(entries.length).toBe(12);
+    a.ws.send(awFrame(entries));
+    await c.until(() => seen.length >= 3);
+    expect(seen.sort()).toEqual([501, 502, 503]);
+    expect(c.awareness.getStates().get(500)).toEqual({ b: 1 });
+    expect(a.ws.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it("foreign-only frames do not count toward the rate limit", async () => {
+    const stub = roomStub();
+    await inRoom(stub, (r) => {
+      (r as unknown as { now: () => number }).now = () => 7_000;
+    });
+    const a = await connect(stub);
+    const b = await connect(stub);
+    b.ws.send(awFrame([[800, 1, '{"b":1}']]));
+    await b.ping();
+    for (let i = 0; i < 30; i++) a.ws.send(awFrame([[800, 2 + i, '{"x":1}']]));
+    a.ws.send(awFrame([[801, 1, '{"a":1}']]));
+    const seen: number[] = [];
+    b.awareness.on("update", (u: { added: number[] }) => seen.push(...u.added));
+    await b.until(() => seen.includes(801));
   });
 
   it("drops awareness past the per-second rate", async () => {
