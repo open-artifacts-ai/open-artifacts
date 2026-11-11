@@ -192,6 +192,12 @@ test.describe("full-screen controls", () => {
       return [s.outlineStyle, s.outlineOffset];
     });
     expect(css).toEqual(["solid", "-2px"]);
+    await page.keyboard.press("Tab");
+    await expect(chip).not.toBeFocused();
+    // Focus passes through <body> on its way into the frame: wait for it to land.
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.tagName))
+      .toBe("IFRAME");
   });
 
   test("Esc goes back to the viewer, in the same tab", async ({ page }) => {

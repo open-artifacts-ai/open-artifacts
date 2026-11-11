@@ -10,6 +10,11 @@
       "name": "open-artifacts",
       "source": "./plugins/open-artifacts",
       "description": "The Artifacts Teammate output style. The Open Artifacts tools and skill come in a later version."
+    },
+    {
+      "name": "open-artifacts-shortcuts",
+      "source": "./packages/claude-code-shortcuts/plugin",
+      "description": "Session shortcuts: the artifacts you publish in a Claude Code session, above the prompt. Uses your existing Open Artifacts connection."
     }
   ]
 }
