@@ -10,7 +10,7 @@ import {
 } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
-import { Check, FileText, Quote as QuoteIcon } from "lucide-react";
+import { Check, FileText } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ApiClientError } from "../../api/client";
@@ -26,7 +26,7 @@ import {
   useSetThreadStatus,
 } from "../../api/comments";
 import { isEmbed } from "../../embed";
-import { TXT } from "../ui";
+import { CTXT, TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
 import { AuthorFace, AuthorSub, initials } from "./AuthorFace";
 import { useActionRowSlot } from "./actionRow";
@@ -162,6 +162,33 @@ function SignInLink() {
   );
 }
 
+/** What the box really does: ⌘ Enter (Ctrl Enter elsewhere) sends. */
+function SendHint() {
+  const mac =
+    typeof navigator !== "undefined" &&
+    /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  return (
+    <span data-send-hint="" className={`${TXT} ${MUTED}`}>
+      {mac ? "⌘ Enter" : "Ctrl Enter"} to send
+    </span>
+  );
+}
+
+/** The quoted line under a 3px amber bar, two lines at most (#2118). */
+function QuoteBar({
+  children,
+  ...rest
+}: { children: React.ReactNode } & React.HTMLAttributes<HTMLQuoteElement>) {
+  return (
+    <blockquote
+      {...rest}
+      className={`m-0 border-0 border-l-[3px] border-l-[rgba(255,200,0,.6)] pl-2.5 ${TXT} ${MUTED} ${rest.className ?? ""}`}
+    >
+      <span className="line-clamp-2 min-w-0 break-words">{children}</span>
+    </blockquote>
+  );
+}
+
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
 function Composer({
   placeholder,
@@ -181,7 +208,13 @@ function Composer({
   float = false,
   buttonsRight = false,
   lead,
+  card = false,
+  quote,
 }: {
+  /** The composer as a card: quote on top, hint and button always visible (#2118). */
+  card?: boolean;
+  /** Shown at the top of the card, under an amber bar. */
+  quote?: React.ReactNode;
   /** Offer @mentions: the agent list is fetched on the composer's first focus. */
   mentionable?: boolean;
   /** The action row's own surface while it floats in the short sheet (#1657). */
@@ -307,9 +340,14 @@ function Composer({
   };
   return (
     <div
-      className="flex flex-col gap-2"
+      className={
+        card
+          ? "flex flex-col gap-2 rounded-lg border border-input bg-card p-3 focus-within:border-ring focus-within:ring-1 focus-within:ring-ring"
+          : "flex flex-col gap-2"
+      }
       data-oa-composing={composing ? "" : undefined}
     >
+      {quote}
       <Textarea
         ref={ref}
         aria-label={label}
@@ -321,7 +359,11 @@ function Composer({
         value={text}
         maxLength={COMMENT_BODY_MAX}
         rows={open ? 3 : 1}
-        className={TXT}
+        className={
+          card
+            ? `${CTXT} border-0 bg-transparent p-0 shadow-none focus-visible:outline-none`
+            : CTXT
+        }
         onFocus={() => {
           setOpen(true);
           retryAgents();
@@ -422,12 +464,13 @@ function Composer({
             >
               <div className="flex flex-wrap items-center gap-2">
                 {lead}
+                {card && <SendHint />}
                 <div className="ml-auto flex items-center gap-2">
                   {extra}
                   {cancelBtn}
                   <Button
                     size="xs"
-                    className="bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]"
+                    className={`bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]${card ? " h-8 px-4" : ""}`}
                     disabled={!body || busy}
                     onClick={() => void go()}
                   >
@@ -474,7 +517,7 @@ function Who({
     <div className="flex min-w-0 items-start gap-2">
       <AuthorFace a={a} />
       <div className="flex min-w-0 flex-col self-center">
-        <p className={`m-0 flex min-w-0 items-baseline gap-x-1 ${TXT}`}>
+        <p className={`m-0 flex min-w-0 items-baseline gap-x-1 ${CTXT}`}>
           <b className="min-w-0 truncate" title={a.name}>
             {a.name}
           </b>
@@ -487,7 +530,7 @@ function Who({
             </span>
           )}
           <span
-            className={`${MUTED} shrink-0 whitespace-nowrap`}
+            className={`${MUTED} shrink-0 whitespace-nowrap ${TXT}`}
             title={exactDate(at)}
           >
             {versionDate(at)}
@@ -539,104 +582,113 @@ function CommentRow({
           </Button>
         )}
       </div>
-      {menu && mode === "view" && (
-        <div className="flex gap-2">
-          {c.can.edit && (
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => {
-                setMode("edit");
-                setMenu(false);
-              }}
-            >
-              Edit
-            </Button>
-          )}
-          {c.can.delete && (
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => {
-                setMode("delete");
-                setMenu(false);
-              }}
-            >
-              Delete
-            </Button>
-          )}
-        </div>
-      )}
-      {mode === "edit" ? (
-        <Composer
-          label="Edit comment"
-          placeholder="Edit comment"
-          submit="Save"
-          initial={c.body}
-          autoFocus
-          onCancel={() => setMode("view")}
-          onSubmit={async (body) => {
-            await edit.mutateAsync({ thread: thread.id, comment: c.id, body });
-            setMode("view");
-          }}
-        />
-      ) : c.ask ? (
-        <AskBlock
-          artifactId={api.artifactId}
-          thread={thread}
-          c={c}
-          next={nextAsk ? () => api.reveal(nextAsk) : undefined}
-          reply={api.canComment ? () => api.select(thread.id, true) : undefined}
-          askQuestion={askQuestion}
-          guest={api.guest}
-        />
-      ) : (
-        <p className={`whitespace-pre-wrap break-words ${TXT}`}>
-          <MentionedText
-            body={c.body}
-            mentions={c.mentions}
+      {/* #2118: the face hangs in its own column; the text lines up with the name. */}
+      <div className="flex flex-col gap-1 pl-8" data-comment-body="">
+        {menu && mode === "view" && (
+          <div className="flex gap-2">
+            {c.can.edit && (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  setMode("edit");
+                  setMenu(false);
+                }}
+              >
+                Edit
+              </Button>
+            )}
+            {c.can.delete && (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  setMode("delete");
+                  setMenu(false);
+                }}
+              >
+                Delete
+              </Button>
+            )}
+          </div>
+        )}
+        {mode === "edit" ? (
+          <Composer
+            label="Edit comment"
+            placeholder="Edit comment"
+            submit="Save"
+            initial={c.body}
+            autoFocus
+            onCancel={() => setMode("view")}
+            onSubmit={async (body) => {
+              await edit.mutateAsync({
+                thread: thread.id,
+                comment: c.id,
+                body,
+              });
+              setMode("view");
+            }}
+          />
+        ) : c.ask ? (
+          <AskBlock
+            artifactId={api.artifactId}
+            thread={thread}
+            c={c}
+            next={nextAsk ? () => api.reveal(nextAsk) : undefined}
+            reply={
+              api.canComment ? () => api.select(thread.id, true) : undefined
+            }
+            askQuestion={askQuestion}
             guest={api.guest}
           />
-        </p>
-      )}
-      <Delivery c={c} guest={api.guest} />
-      {mode === "delete" && (
-        <div
-          role="alertdialog"
-          aria-label="Delete"
-          className="flex flex-col gap-2"
-        >
-          <p className={TXT}>
-            {root
-              ? "Delete this thread? Its replies go too."
-              : "Delete this reply?"}
+        ) : (
+          <p className={`whitespace-pre-wrap break-words ${CTXT}`}>
+            <MentionedText
+              body={c.body}
+              mentions={c.mentions}
+              guest={api.guest}
+            />
           </p>
-          {delError != null && (
-            <p role="alert" className={`${TXT} text-destructive`}>
-              {commentError(delError, api.capped, errCtx)}
+        )}
+        <Delivery c={c} guest={api.guest} />
+        {mode === "delete" && (
+          <div
+            role="alertdialog"
+            aria-label="Delete"
+            className="flex flex-col gap-2"
+          >
+            <p className={TXT}>
+              {root
+                ? "Delete this thread? Its replies go too."
+                : "Delete this reply?"}
             </p>
-          )}
-          <div className="flex gap-2">
-            <Button
-              size="xs"
-              variant="destructive"
-              disabled={del.isPending}
-              onClick={() => {
-                setDelError(null);
-                del.mutate(
-                  { thread: thread.id, comment: c.id },
-                  { onError: setDelError },
-                );
-              }}
-            >
-              Delete
-            </Button>
-            <Button size="xs" variant="ghost" onClick={() => setMode("view")}>
-              Keep
-            </Button>
+            {delError != null && (
+              <p role="alert" className={`${TXT} text-destructive`}>
+                {commentError(delError, api.capped, errCtx)}
+              </p>
+            )}
+            <div className="flex gap-2">
+              <Button
+                size="xs"
+                variant="destructive"
+                disabled={del.isPending}
+                onClick={() => {
+                  setDelError(null);
+                  del.mutate(
+                    { thread: thread.id, comment: c.id },
+                    { onError: setDelError },
+                  );
+                }}
+              >
+                Delete
+              </Button>
+              <Button size="xs" variant="ghost" onClick={() => setMode("view")}>
+                Keep
+              </Button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </li>
   );
 }
@@ -687,19 +739,10 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
           Text changed since this {isAsk ? "ask" : "comment"}
         </p>
       )}
-      <blockquote
-        className={`flex items-start gap-1.5 border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED}`}
-      >
-        <QuoteIcon
-          aria-hidden="true"
-          data-quote-chip=""
-          className="mt-0.5 size-3.5 shrink-0"
-        />
-        <span className="line-clamp-3 min-w-0 break-words">
-          {original ? "Original text: " : ""}
-          {original ? `“${a.exact}”` : a.exact}
-        </span>
-      </blockquote>
+      <QuoteBar>
+        {original ? "Original text: " : ""}
+        {original ? `“${a.exact}”` : a.exact}
+      </QuoteBar>
     </div>
   );
 }
@@ -804,7 +847,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       data-thread={t.id}
       data-active={isActive ? "" : undefined}
       tabIndex={-1}
-      className="rounded-lg border focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] border-border bg-background p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
+      className="rounded-lg border focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] border-border bg-card p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
     >
       <div className="flex flex-col gap-2">
         <button
@@ -971,25 +1014,11 @@ function NewThread({ api }: { api: CommentsApi }) {
   if (!draft) return null;
   const guest = api.guest ? { guestName: api.guestName.trim() } : {};
   return (
-    <div
-      className="flex flex-col gap-2 rounded-lg border border-ring bg-background p-3"
-      data-oa-composing=""
-    >
+    <div className="flex flex-col gap-2" data-oa-composing="">
       {api.older && (
         <p className={`${TXT} ${MUTED}`}>
           You're commenting on version {api.version}.
         </p>
-      )}
-      {"pin" in draft ? (
-        <p className={`${TXT} font-medium ${MUTED}`}>
-          {draft.pin.page ? `Page ${draft.pin.page} · ` : ""}New pin
-        </p>
-      ) : (
-        <blockquote
-          className={`border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED} line-clamp-3 break-words`}
-        >
-          {draft.anchor.exact}
-        </blockquote>
       )}
       <GuestName api={api} />
       <Composer
@@ -999,6 +1028,17 @@ function NewThread({ api }: { api: CommentsApi }) {
         submit="Comment"
         autoFocus
         buttonsRight
+        card
+        actions={ACTIONS_PLAIN}
+        quote={
+          "pin" in draft ? (
+            <p className={`${TXT} font-medium ${MUTED}`}>
+              {draft.pin.page ? `Page ${draft.pin.page} · ` : ""}New pin
+            </p>
+          ) : (
+            <QuoteBar>{draft.anchor.exact}</QuoteBar>
+          )
+        }
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
         onDirty={api.setDraftDirty}
@@ -1058,8 +1098,8 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         placeholder="Comment on the whole page"
         mentionPlaceholder="Add a comment. Type @ to mention an agent."
         submit="Comment"
-        alwaysOpen={false}
         buttonsRight
+        card
         actions={ACTIONS_PLAIN}
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
@@ -1104,7 +1144,10 @@ export function CommentsBody({
   grow = true,
   /** The phone sheet's short height, kept for reading one pinned card (#1783). */
   short = false,
+  /** The "Comments" heading with the open count; the phone sheet has its own row. */
+  heading = true,
 }: {
+  heading?: boolean;
   textFormat?: boolean;
   grow?: boolean;
   short?: boolean;
@@ -1127,10 +1170,15 @@ export function CommentsBody({
     <div
       className={`flex min-h-0 ${grow ? "flex-1" : "flex-none"} flex-col gap-3 p-4`}
     >
-      <div className={`flex items-center justify-between gap-2 ${TXT}`}>
-        <span>{api.listedOpen} open</span>
-        <div className="flex items-center gap-2">
-          {forMe.length > 0 && (
+      {heading && (
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 className={`m-0 font-semibold ${CTXT}`}>Comments</h2>
+          <span className={`${TXT} ${MUTED}`}>{api.listedOpen} open</span>
+        </div>
+      )}
+      {(forMe.length > 0 || resolvedCount > 0) && (
+        <div className={`flex items-center justify-between gap-2 ${TXT}`}>
+          {forMe.length > 0 ? (
             <AsksForYou
               count={forMe.length}
               onClick={() => {
@@ -1138,21 +1186,23 @@ export function CommentsBody({
                 if (id) api.reveal(id);
               }}
             />
+          ) : (
+            <span />
           )}
           {resolvedCount > 0 && (
-            <Button
-              size="xs"
-              variant="ghost"
+            <button
+              type="button"
               aria-pressed={api.showResolved}
+              className={`cursor-pointer border-0 bg-transparent p-0 underline underline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] ${MUTED}`}
               onClick={() => api.setShowResolved(!api.showResolved)}
             >
               {api.showResolved
                 ? "Hide resolved"
                 : `Show resolved (${resolvedCount})`}
-            </Button>
+            </button>
           )}
         </div>
-      </div>
+      )}
       <Tools api={api} />
       {api.draft && api.canComment && (
         <NewThread

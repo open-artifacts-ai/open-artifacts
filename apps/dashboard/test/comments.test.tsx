@@ -827,7 +827,9 @@ describe("comments: the frame", () => {
     await wait(30);
     expect(posts).toHaveLength(0);
     fireEvent.change(box, { target: { value: "  Nice  " } });
-    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Comment" })[0] as HTMLElement,
+    );
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]?.body).toMatchObject({
       anchor: {
@@ -857,7 +859,9 @@ describe("comments: actions", () => {
         target: { value: "Overall: great" },
       },
     );
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(
+      within(c).getAllByRole("button", { name: "Comment" })[0] as HTMLElement,
+    );
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]?.body).toEqual({
       anchor: { kind: "note" },
@@ -865,6 +869,53 @@ describe("comments: actions", () => {
     });
     expect(await within(c).findByText("Overall: great")).toBeInTheDocument();
     expect(within(c).getAllByText("Whole page").length).toBeGreaterThan(0);
+  });
+
+  it("#2118: the composer card shows its hint and Comment button before focus", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(
+      within(c).getByRole("heading", { name: "Comments" }),
+    ).toBeInTheDocument();
+    const btn = within(c).getByRole("button", { name: "Comment" });
+    expect(btn).toBeDisabled();
+    expect(c.querySelector("[data-send-hint]")?.textContent).toMatch(
+      /(⌘|Ctrl) Enter to send/,
+    );
+  });
+
+  it("#2118: Ctrl+Enter sends the note", async () => {
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = within(c).getByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.change(box, { target: { value: "Sent by key" } });
+    fireEvent.keyDown(box, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.body).toMatchObject({ body: "Sent by key" });
+  });
+
+  it("#2118: a quoted draft is one composer with the quote at its top", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "Landing",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    const card = box.parentElement as HTMLElement;
+    expect(card.firstElementChild?.textContent).toBe("Landing");
+    expect(card.querySelectorAll("textarea")).toHaveLength(1);
+    expect(
+      c.querySelectorAll('textarea[aria-label="Add a comment"]'),
+    ).toHaveLength(1);
   });
 
   it("replies, and resolves from the reply box", async () => {
@@ -1080,14 +1131,16 @@ describe("comments: actions", () => {
       }),
     );
     const box = await screen.findByRole("textbox", { name: "Add a comment" });
-    const row = screen.getByRole("button", { name: "Comment" })
-      .parentElement as HTMLElement;
+    const row = (
+      screen.getAllByRole("button", { name: "Comment" })[0] as HTMLElement
+    ).parentElement as HTMLElement;
     const names = [...row.querySelectorAll("button")].map((b) => b.textContent);
     expect(names).toEqual(["Cancel", "Comment"]);
     expect(row.className).toContain("ml-auto");
-    expect(screen.getByRole("button", { name: "Comment" }).className).toContain(
-      "--oa-accent",
-    );
+    expect(
+      (screen.getAllByRole("button", { name: "Comment" })[0] as HTMLElement)
+        .className,
+    ).toContain("--oa-accent");
     expect(box).toBeInTheDocument();
   });
 
@@ -1115,7 +1168,9 @@ describe("comments: errors", () => {
     });
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: text } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(
+      within(c).getAllByRole("button", { name: "Comment" })[0] as HTMLElement,
+    );
     return c;
   };
   const fail = (status: number, code: string) =>
@@ -1165,7 +1220,9 @@ describe("comments: errors", () => {
         target: { value: "about this" },
       },
     );
-    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Comment" })[0] as HTMLElement,
+    );
     const offer = await screen.findByRole("button", {
       name: "Add as a page note",
     });
@@ -1355,7 +1412,9 @@ describe("comments: live and signed out", () => {
     });
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: "hello" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(
+      within(c).getAllByRole("button", { name: "Comment" })[0] as HTMLElement,
+    );
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]?.body).toEqual({
       anchor: { kind: "note" },
@@ -1521,7 +1580,9 @@ describe("comments: guests and Retry-After", () => {
     });
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: "hi" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(
+      within(c).getAllByRole("button", { name: "Comment" })[0] as HTMLElement,
+    );
     await waitFor(() => expect(writes).toEqual([null]));
     await waitFor(() => expect(localStorage.getItem("oa.anonId")).toBe(TOKEN));
     // The refetch after the post carries the stored token.
@@ -1609,7 +1670,9 @@ describe("comments: guests and Retry-After", () => {
     });
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: "hi" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(
+      within(c).getAllByRole("button", { name: "Comment" })[0] as HTMLElement,
+    );
     return c;
   };
 
@@ -1785,7 +1848,9 @@ describe("comments: review round 1", () => {
     expect(screen.getByRole("textbox", { name: "Add a comment" })).toHaveValue(
       "my words",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Comment" })[0] as HTMLElement,
+    );
     await waitFor(() => expect(posts).toHaveLength(1));
     const sent = posts[0]?.body as { anchor: { exact: string } } | undefined;
     expect(sent?.anchor.exact).toBe("second-quote");
@@ -2068,7 +2133,9 @@ describe("comments: capped members", () => {
     });
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: "hi" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(
+      within(c).getAllByRole("button", { name: "Comment" })[0] as HTMLElement,
+    );
     return c;
   };
 
@@ -2237,7 +2304,9 @@ describe("comments: the quote stays highlighted while writing (#1834)", () => {
     await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
     const box = await screen.findByRole("textbox", { name: "Add a comment" });
     fireEvent.change(box, { target: { value: "Tighten this" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(
+      within(c).getAllByRole("button", { name: "Comment" })[0] as HTMLElement,
+    );
     await waitFor(() => expect(posts).toHaveLength(1));
     // The draft is closed, but the quote is still sent: no frame without a
     // highlight while the list refetches.
@@ -2268,7 +2337,9 @@ describe("comments: the quote stays highlighted while writing (#1834)", () => {
     await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
     const box = await screen.findByRole("textbox", { name: "Add a comment" });
     fireEvent.change(box, { target: { value: "Tighten this" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(
+      within(c).getAllByRole("button", { name: "Comment" })[0] as HTMLElement,
+    );
     await waitFor(() => expect(posts).toHaveLength(1));
     // Held for a moment (the list is still empty)...
     expect(sentQuote()).toMatchObject({ exact: "Landing" });
