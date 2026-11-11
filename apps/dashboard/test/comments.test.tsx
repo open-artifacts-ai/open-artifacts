@@ -1301,12 +1301,57 @@ describe("comments: live and signed out", () => {
     );
     mount(viewerPath(PUBLIC));
     const c = await col();
-    expect(
-      await within(c).findByText("Sign in to comment."),
-    ).toBeInTheDocument();
+    const link = await within(c).findByRole("link", {
+      name: "Sign in to comment",
+    });
+    expect(link).toHaveAttribute(
+      "href",
+      `/sign-in?next=${encodeURIComponent(window.location.pathname + window.location.search)}`,
+    );
     expect(within(c).getByText("From someone")).toBeInTheDocument();
     expect(within(c).queryByRole("button", { name: "Resolve" })).toBeNull();
     expect(within(c).queryByRole("textbox")).toBeNull();
+  });
+
+  it("#2080: commenters signed-in bars a guest without can.comment, and the refusal reads Sign in to comment.", async () => {
+    server.use(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json(
+          { error: { code: "unauthorized", message: "no" } },
+          { status: 401 },
+        ),
+      ),
+      http.get(`*${R.artifact(PUBLIC)}`, () =>
+        HttpResponse.json({
+          ...fixtures.artifacts.find((a) => a.id === PUBLIC),
+          visibility: "public",
+          commenters: "signed-in",
+          comments: true,
+        }),
+      ),
+      http.get(`*${R.comments(PUBLIC)}`, () =>
+        HttpResponse.json({ threads: [oneThread], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(PUBLIC));
+    const c = await col();
+    expect(
+      await within(c).findByRole("link", { name: "Sign in to comment" }),
+    ).toBeInTheDocument();
+    expect(within(c).getByText("From someone")).toBeInTheDocument();
+    expect(within(c).queryByRole("textbox")).toBeNull();
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    expect(
+      commentError(
+        new ApiClientError(
+          "comments_signed_in_only",
+          "Sign in to comment.",
+          403,
+        ),
+        false,
+      ),
+    ).toBe("Sign in to comment.");
   });
 
   it("a guest on a public artifact that allows anonymous writes gets a name field", async () => {
