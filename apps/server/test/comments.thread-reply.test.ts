@@ -42,9 +42,12 @@ class FakeBus implements NoticeDelivery {
   outcome: DeliveryOutcome = "delivered";
   /** What an offline agent has waiting: one per (member, address, coalesceKey), the newer replacing. */
   waiting = new Map<string, BusNotice>();
+  /** Runs while a notice is being delivered, before the sender hears the outcome (a daemon's ack that arrives first). */
+  during?: (notice: BusNotice) => Promise<void>;
   async deliver(_e: Env, userId: string, notice: BusNotice) {
     if (notice.kind === "commented") return "delivered" as const;
     this.sent.push({ userId, notice });
+    await this.during?.(notice);
     if (this.outcome === "held")
       this.waiting.set(
         [userId, notice.to.namespace, notice.to.name, notice.coalesceKey].join(
@@ -58,6 +61,7 @@ class FakeBus implements NoticeDelivery {
     this.waiting = new Map();
     this.sent = [];
     this.outcome = "delivered";
+    this.during = undefined;
   }
 }
 const bus = new FakeBus();
@@ -809,6 +813,26 @@ describe("the thread's agents, removable (#2035)", () => {
     // The stored thread shows it too.
     const stored = (await list(s.id, owner)).threads[0]?.comments;
     expect(stored?.[1]?.notified?.[0]?.delivery).toBe("delivered");
+  });
+
+  it("an ack that beats the recording still settles the line", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, editor, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    bus.outcome = "held";
+    bus.during = async (n) => {
+      if (!n.coalesceKey.includes(":thread_reply:")) return;
+      const ok = await runtimeStub(E, s.id).commentsTargetSettle({
+        commentId: n.commentId as string,
+        kind: "reply",
+        key: s.claude,
+        state: "delivered",
+      });
+      expect(ok).toBe(true);
+    };
+    const c = (await (await reply(s.id, t.id, viewer)).json()) as Comment;
+    expect(c.notified?.map((n) => n.delivery)).toEqual(["delivered"]);
   });
 
   it("outsiders get no agents and no delivery lines, and cannot remove", async () => {

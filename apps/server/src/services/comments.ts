@@ -1413,6 +1413,18 @@ async function threadReply(
           address: { namespace: p.namespace, name: p.name },
         });
     }
+    // The rows exist (queued) before any notice goes out, as a mention's do, so
+    // a daemon's ack that beats the write below still finds its row to settle.
+    await call(() =>
+      stub(env, a.id).commentsReplyTargets({
+        threadId,
+        commentId: c.id,
+        targets: reached.map((agent) => ({
+          p: due.find((d) => d.key === agent.key) as StoredParticipant,
+          state: "queued",
+        })),
+      }),
+    ).catch(() => c);
     const version = Math.max(1, a.currentVersion);
     let timer: ReturnType<typeof setTimeout> | undefined;
     const late = new Promise<DeliveryState>((res) => {
@@ -1441,11 +1453,12 @@ async function threadReply(
       clearTimeout(timer);
     }
     out = await call(() =>
-      stub(env, a.id).commentsReplyTargets({
+      stub(env, a.id).commentsTargetStates({
         threadId,
         commentId: c.id,
-        targets: reached.map((agent, i) => ({
-          p: due.find((d) => d.key === agent.key) as StoredParticipant,
+        states: reached.map((agent, i) => ({
+          kind: "reply" as const,
+          key: agent.key,
           state: stateOf(outs[i] ?? "dropped"),
         })),
       }),
