@@ -1867,10 +1867,14 @@ describe("Me.instance.billing and the billing routes", () => {
     const post = (body: unknown) =>
       send(R.billingCheckout, owner.cookie, { method: "POST", body });
     const before = calls.filter((c) => c.path === "/checkout").length;
-    expect((await post({ tier: "solo" })).status).toBe(400);
-    expect((await post({ tier: "solo", interval: "year", seats: 2 })).status).toBe(
-      400,
-    );
+    for (const body of [{ tier: "solo" }, { tier: "solo", interval: "week" }]) {
+      const r = await post(body);
+      expect(r.status).toBe(400);
+      expect(await errOf(r)).toMatchObject({ code: "bad_request" });
+    }
+    expect(
+      (await post({ tier: "solo", interval: "year", seats: 2 })).status,
+    ).toBe(400);
     expect((await post({ tier: "solo", interval: "week" })).status).toBe(400);
     expect(calls.filter((c) => c.path === "/checkout").length).toBe(before);
     const r = await post({ tier: "solo", interval: "year" });
@@ -1897,18 +1901,26 @@ describe("Me.instance.billing and the billing routes", () => {
       { tier: "team", interval: "year", seats: 1.5 },
       { tier: "team", interval: "month", seats: 3 },
       { tier: "team", seats: 3 },
-    ])
-      expect((await post(body)).status).toBe(400);
+    ]) {
+      const r = await post(body);
+      expect(r.status).toBe(400);
+      expect(await errOf(r)).toMatchObject({ code: "bad_request" });
+    }
     expect(n()).toBe(before);
     expect(
       (await post({ tier: "team", interval: "year", seats: 7 })).status,
     ).toBe(200);
-    expect(calls.filter((c) => c.path === "/checkout").at(-1)?.body).toMatchObject(
-      { install: INSTALL, plan: "team", interval: "year", seats: 7 },
-    );
     expect(
-      (await post({ tier: "business", interval: "month" })).status,
-    ).toBe(200);
+      calls.filter((c) => c.path === "/checkout").at(-1)?.body,
+    ).toMatchObject({
+      install: INSTALL,
+      plan: "team",
+      interval: "year",
+      seats: 7,
+    });
+    expect((await post({ tier: "business", interval: "month" })).status).toBe(
+      200,
+    );
     const last = calls.filter((c) => c.path === "/checkout").at(-1)?.body;
     expect(last).toMatchObject({ plan: "business", interval: "month" });
     expect(last).not.toHaveProperty("seats");

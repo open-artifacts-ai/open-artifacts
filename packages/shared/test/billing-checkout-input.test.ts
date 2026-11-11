@@ -32,6 +32,18 @@ describe("BillingCheckoutInputSchema", () => {
     }
   });
 
+  it("refuses negative, null and NaN seats, solo+month seats, and an explicit undefined interval where required", () => {
+    expect(ok({ tier: "team", interval: "year", seats: -1 })).toBe(false);
+    expect(ok({ tier: "team", interval: "year", seats: null })).toBe(false);
+    expect(ok({ tier: "team", interval: "year", seats: Number.NaN })).toBe(
+      false,
+    );
+    expect(ok({ tier: "solo", interval: "month", seats: 3 })).toBe(false);
+    expect(ok({ tier: "solo", interval: undefined })).toBe(false);
+    expect(ok({ tier: "team", interval: undefined })).toBe(true);
+    expect(ok({ tier: "team", interval: undefined, seats: 3 })).toBe(false);
+  });
+
   it("refuses unknown keys, tiers and intervals", () => {
     expect(ok({ tier: "team", extra: 1 })).toBe(false);
     expect(ok({ tier: "free" })).toBe(false);
