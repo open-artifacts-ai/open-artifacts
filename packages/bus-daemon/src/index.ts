@@ -69,6 +69,7 @@ import {
   writeCodexAway,
 } from "./codex-away.ts";
 import { codexThreadNames } from "./codex-names.ts";
+import { TakenWatch } from "./codex-taken.ts";
 import {
   type Config,
   claudeReturnDir,
@@ -94,8 +95,10 @@ import { HubConnection, type HubOptions } from "./hub.ts";
 import {
   cachedProcStart,
   claudeTarget,
+  claudeTargetState,
   isRunning,
   liveClaudeFiles,
+  liveClaudeScan,
   liveClaudeSessions,
 } from "./liveness/claude.ts";
 import {
@@ -150,6 +153,7 @@ export * from "./agents.ts";
 export * from "./attest.ts";
 export * from "./codex-attest.ts";
 export * from "./codex-names.ts";
+export * from "./codex-taken.ts";
 export * from "./config.ts";
 export * from "./config-issues.ts";
 export * from "./dedupe.ts";
@@ -267,6 +271,10 @@ export type DaemonDeps = {
     /** Default: beside heldFile, or ~/.oa-bus/claude-return.json. */
     returnIndexFile?: string;
     syncMs?: number;
+    /** #2110: how long a running session with an unreadable start time or file stays live. Default 10 min. */
+    unknownGraceMs?: number;
+    /** #2110: delays of the local retries of a retryable timeout. Default 2 s, 5 s, 15 s. */
+    retryDelaysMs?: number[];
     procStart?: (pid: number) => string | null;
     isRunning?: (pid: number) => boolean;
     /** Proof hashes of live sessions kept across a restart (#2050); default ~/.oa-bus/claude-links.json. */
@@ -299,8 +307,8 @@ export type DaemonDeps = {
     run?: CodexTransportOptions["run"];
     /** Whether a Codex process wakes on a queued message; default: not `codex exec`. */
     wakes?: CodexTransportOptions["wakes"];
-    /** msg_ids `codex queue` took; default ~/.oa-bus/codex-queued.json. */
-    queuedFile?: string;
+    /** Queued ids no turn has taken yet; default ~/.oa-bus/codex-pending.json. */
+    takenFile?: string;
     /** Live Codex threads kept across a restart (#1748); default ~/.oa-bus/codex-agents.json. */
     agentsFile?: string;
     /** #2029: Codex threads proved here, kept for wake; default ~/.oa-bus/codex-away.json. */
@@ -682,6 +690,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   });
   /** Where Codex keeps its thread names (#1748). */
   const codexIndexHome = cx.home ?? codexHome();
+  /** Queued Codex mail a turn has not taken yet (#2029): acked late, once it has. */
+  const codexTaken = new TakenWatch({
+    home: codexIndexHome,
+    file: cx.takenFile ?? join(home(), "codex-pending.json"),
+    onTaken: (id) => delivery.delivered(id),
+    log,
+  });
   const codex = new CodexTransport({
     resolve:
       cx.resolveBin ??
@@ -693,7 +708,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     run: cx.run ?? execCodex(),
     home: codexIndexHome,
     wakes: cx.wakes ?? codexHostWakes,
-    queued: new HeldStore(cx.queuedFile ?? join(home(), "codex-queued.json")),
+    taken: codexTaken,
     log,
     event: ev,
   });
@@ -877,6 +892,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     injectTimeoutMs: cl.injectTimeoutMs,
     log,
     target: (ref) => claudeTarget(ref, claudeSessions),
+    state: (a) => claudeTargetState(a.ref, a.pid, claudeSessions),
     // A native reply is a message from the session: the sink names the sender, never the frame.
     // Every reply names the peer's namespace (the deliver's), so a same-named local peer cannot get it.
     onReply: (agentRef, peerName, text, namespace, peerId, unnamed) => {
@@ -950,6 +966,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const takenOver = new Set<string>();
   /** Order in which this process's sessions were last seen (higher is later). */
   const seenAt = new Map<string, number>();
+  const REOPEN_SAME_PROC_MS = 30_000;
+  const reopenedAt = new Map<string, number>();
+  const unknownSince = new Map<string, number>();
+  const UNKNOWN_GRACE_MS = cl.unknownGraceMs ?? 600_000;
   let seenSeq = 0;
 
   /** rename ids awaiting the hub's answer, to their agent_ref; cleared with the link. */
@@ -1081,10 +1101,22 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
-    const live = liveClaudeSessions(
+    const scan = liveClaudeScan(
       claudeSessions,
       (ref) => agents.byRef(ref)?.pid,
     );
+    const now = Date.now();
+    // #2110: a running session whose start time or file cannot be read is
+    // unknown and stays live, for at most UNKNOWN_GRACE_MS of consecutive
+    // unknowns; then it is treated as gone.
+    const unknownNow = new Set<string>();
+    const live = scan.live.filter((s) => {
+      if (!s.unknown) return true;
+      unknownNow.add(s.ref);
+      const since = unknownSince.get(s.ref) ?? now;
+      unknownSince.set(s.ref, since);
+      return now - since <= UNKNOWN_GRACE_MS;
+    });
     const liveRefs = new Set(live.map((s) => s.ref));
     const livePid = (ref: string, pid: number) =>
       live.some((s) => s.ref === ref && s.pid === pid);
@@ -1106,8 +1138,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         renameIfChanged(prev, s.name, s.pid);
         continue;
       }
-      // Closed by a failed delivery and still the same process.
-      if (prev && prev.pid === s.pid) continue;
+      // #2110: a record closed while its process and session file are still
+      // there (a missed read, a failed delivery) reopens when seen again: the
+      // up below replays its link hashes. A different process under the ref is
+      // the /resume case, handled the same way. The same process reopens at
+      // most once per REOPEN_SAME_PROC_MS, so a session that really refuses
+      // deliveries does not flap.
+      if (prev && prev.pid === s.pid && prev.procStart === s.procStart) {
+        // A delivery refusal stays closed until a hello or a new process.
+        if (prev.closedBy !== "liveness") continue;
+        const last = reopenedAt.get(s.ref);
+        if (last !== undefined && Date.now() - last < REOPEN_SAME_PROC_MS)
+          continue;
+        reopenedAt.set(s.ref, Date.now());
+      }
       if (!isAbsolute(s.cwd)) continue;
       let ns: Namespace;
       try {
@@ -1135,9 +1179,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         global: ns.global,
         pid: s.pid,
         procStart: s.procStart,
-        // The same process keeps its proof across /clear; agent_ok rebinds it.
-        ...(old?.linkHashes !== undefined
-          ? { linkHashes: old.linkHashes }
+        // The same process keeps its proof across /clear and a reopen; agent_ok rebinds it.
+        ...((prev?.linkHashes ?? old?.linkHashes) !== undefined
+          ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
           : {}),
         sessionName: s.name,
         cwd: s.cwd,
@@ -1155,11 +1199,27 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     let closed = false;
     for (const a of agents.all()) {
       if (a.kind !== "claude-code" || !a.live || liveRefs.has(a.ref)) continue;
+      // #2110: an unreadable session file of a running process is unknown, not
+      // gone: keep it live, for at most UNKNOWN_GRACE_MS of consecutive
+      // unknowns. Otherwise only positive evidence closes (pid not running, a
+      // different start time, the file removed).
+      if (scan.unreadable.has(a.pid) && claudeSessions.isRunning(a.pid)) {
+        unknownNow.add(a.ref);
+        const since = unknownSince.get(a.ref) ?? now;
+        unknownSince.set(a.ref, since);
+        if (now - since <= UNKNOWN_GRACE_MS) continue;
+      }
       a.live = false;
+      a.closedBy = "liveness";
       closed = true;
       ev("agent_leave", agentFields(a, "session_gone"));
       void claude.drop(a.ref);
     }
+    // Consecutive unknowns only; a reopen stamp is dropped once it has expired.
+    for (const r of [...unknownSince.keys()])
+      if (!unknownNow.has(r)) unknownSince.delete(r);
+    for (const [r, at] of reopenedAt)
+      if (now - at >= REOPEN_SAME_PROC_MS) reopenedAt.delete(r);
     persistLinks();
     if (closed) announceSessions();
   };
@@ -1192,6 +1252,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
 
   const delivery = createDeliver({
     agents,
+    ...(cl.retryDelaysMs ? { retryDelaysMs: cl.retryDelaysMs } : {}),
     hub: { send: (f) => hub.send(f) },
     transports: {
       "claude-code": (agent, mail) => claude.deliver(agent, mail),
@@ -1203,9 +1264,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       codex: (agent, mail) => codex.deliver(agent, mail),
       ...deps.transports,
     },
-    onClosed: (a) => {
+    onClosed: (a, closedBy) => {
+      // Never downgrade a liveness close (the sync's or a concurrent
+      // delivery's) to a delivery refusal.
+      if (a.closedBy !== "liveness") a.closedBy = closedBy ?? "delivery";
       ev("agent_leave", agentFields(a, "delivery_closed"));
       announceSessions();
+      return a.closedBy;
     },
     log,
   });
@@ -2433,6 +2498,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // prompt it.
     for (const rec of agents.all()) if (rec.live) flushRename(rec);
     sweepBindings();
+    // Queued Codex mail a turn has taken is acked now, late (#2029).
+    try {
+      codexTaken.check();
+    } catch (e) {
+      log(
+        `codex taken check failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   };
   restoreCodex();
   sync();
@@ -2464,6 +2537,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       clearInterval(socketWatch);
       clearInterval(watcher);
       clearInterval(retry);
+      delivery.stop();
       outbox.stop();
       resends.stop();
       for (const t of limited.values()) clearTimeout(t);

@@ -1542,3 +1542,75 @@ describe("D1KvStore matches KV", () => {
     ).rejects.toThrow(/invalid list cursor/);
   });
 });
+
+// ------------------------------------------- transient storage errors (#2155)
+
+/** D1 whose OAuth store statements throw `err` once armed (statements are cached, so at execution). */
+function failingStoreDb(err: Error) {
+  const s = { armed: false };
+  const wrap = (st: D1PreparedStatement, sql: string): D1PreparedStatement =>
+    new Proxy(st, {
+      get(t, p) {
+        if (p === "bind") return (...a: unknown[]) => wrap(t.bind(...a), sql);
+        if (p === "first" || p === "all" || p === "run" || p === "raw")
+          return (...a: unknown[]) => {
+            if (s.armed && /oauth_kv/.test(sql)) return Promise.reject(err);
+            return (Reflect.get(t, p) as (...x: unknown[]) => unknown).apply(
+              t,
+              a,
+            );
+          };
+        const v = Reflect.get(t, p);
+        return typeof v === "function" ? v.bind(t) : v;
+      },
+    });
+  const db = new Proxy(env.DB, {
+    get(t, p) {
+      if (p === "prepare") return (sql: string) => wrap(t.prepare(sql), sql);
+      const v = Reflect.get(t, p);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+  return { s, db };
+}
+
+describe("a storage error on the token endpoint (#2155)", () => {
+  it("D1 network lost: 503 temporarily_unavailable with Retry-After, no secrets logged", async () => {
+    const { s, db } = failingStoreDb(
+      new Error("D1_ERROR: Network connection lost."),
+    );
+    const e = inMode("d1", { DB: db });
+    const member = await login(email("t503"));
+    const clientId = await register(e);
+    const { code, verifier } = await authorize(e, member.cookie, clientId);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    s.armed = true;
+    const r = await exchange(e, clientId, code, verifier);
+    s.armed = false;
+    expect(r.status).toBe(503);
+    expect(r.headers.get("retry-after")).toBe("2");
+    expect(r.headers.get("cache-control")).toBe("no-store");
+    expect(r.headers.get("content-type")).toBe("application/json");
+    const body = (await r.json()) as { error: string };
+    expect(body.error).toBe("temporarily_unavailable");
+    const logged = warn.mock.calls.map((c) => String(c[0])).join("\n");
+    warn.mockRestore();
+    expect(logged).toContain("oauth_storage_unavailable");
+    expect(logged).toContain("/oauth/token");
+    expect(logged).not.toContain(code);
+    // The failure came before any write: the same code still redeems.
+    expect((await exchange(e, clientId, code, verifier)).status).toBe(200);
+  });
+
+  it("a non-transient error still throws", async () => {
+    const { s, db } = failingStoreDb(new Error("boom: a bug of ours"));
+    const e = inMode("d1", { DB: db });
+    const member = await login(email("t500"));
+    const clientId = await register(e);
+    const { code, verifier } = await authorize(e, member.cookie, clientId);
+    s.armed = true;
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(exchange(e, clientId, code, verifier)).rejects.toThrow(/boom/);
+    err.mockRestore();
+  });
+});

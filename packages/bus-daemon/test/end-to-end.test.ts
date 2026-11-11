@@ -360,7 +360,7 @@ describe("daemon end to end, one machine, three harnesses", () => {
     expect(e.hub.bad).toEqual([]);
   });
 
-  it("refuses mail for a closed session and injects nothing", async () => {
+  it("refuses mail for a closed session, leaves a liveness-closed Claude record's mail pending, and injects nothing", async () => {
     const e = await boot();
     // The Claude session ends: its file goes, and the daemon tells the hub.
     rmSync(e.sessionFile);
@@ -388,13 +388,12 @@ describe("daemon end to end, one machine, three harnesses", () => {
         namespace: NS,
         body: "anyone there?",
       });
-    await vi.waitFor(() => expect(e.hub.of("refuse")).toHaveLength(2));
+    await vi.waitFor(() => expect(e.hub.of("refuse")).toHaveLength(1));
+    // #2110: the Claude process still runs and its file is only gone: a
+    // liveness close, so its mail stays pending for the reopen's flush (a
+    // refuse is final at the hub). Pi's connection closing is final.
+    await new Promise((r) => setTimeout(r, 100));
     expect(e.hub.of("refuse")).toEqual([
-      expect.objectContaining({
-        msg_id: ids(901),
-        reason: "closed",
-        detail: "dropped",
-      }),
       expect.objectContaining({
         msg_id: ids(902),
         reason: "closed",

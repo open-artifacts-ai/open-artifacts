@@ -4,6 +4,12 @@ An optional Claude Code mod for the **CLI** and **Claude Desktop's Code tab**. A
 
 The plugin uses your existing Open Artifacts MCP connection. It adds no MCP server, authentication, Bus connection, tool permission or background network request. It does not support ordinary Claude Chat or add a Codex integration.
 
+## Install with the bus installer
+
+`oa-bus install` adds this plugin and the Artifacts Teammate output style through Claude Code's own plugin commands, at user scope, when Claude Code is among your harnesses. It points the plugin at your instance and at your existing Open Artifacts MCP connection. Run `claude plugin install open-artifacts-shortcuts --marketplace open-artifacts-ai/open-artifacts` to install it by hand.
+
+We haven't verified the user-scope install in Claude Desktop's Code tab. There, use the project-local loader below.
+
 ## Load and configure
 
 Use a Claude Code version with the [public Mods API](https://code.claude.com/docs/en/plugins/mods). This plugin was exercised with CLI 2.1.319 and Desktop Code 2.1.317; the prototype used these versions too.

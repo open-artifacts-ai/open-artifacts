@@ -4,9 +4,10 @@
 import { viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { HttpResponse, http } from "msw";
 import { describe, expect, it, vi } from "vitest";
 import { exactDate, versionDate } from "../src/viewer/versionDate";
-import { installHarness, intersect, mount, seen } from "./harness";
+import { installHarness, intersect, mount, seen, server } from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
   createBridge: () => ({
@@ -272,5 +273,68 @@ describe("versionDate", () => {
     expect(exactDate("2025-10-22T15:10:00Z", now)).toMatch(
       /^October 22, 2025 at /,
     );
+  });
+});
+
+// #2118 item 11: a face beside each author, as in comment threads. A linked
+// agent: its animal; an unlinked one: the dashed tile; a person: initials in a
+// circle; an outsider's agent (no face fields): plain text.
+describe("faces in the version list", () => {
+  const [v2, v1] = fixtures.versions[OWNED];
+  const agent = v2.agent ?? { name: "Claude Code", version: null };
+  const serve = (list: unknown[]) =>
+    server.use(
+      http.get(`*/api/v1/artifacts/${OWNED}/versions`, () =>
+        HttpResponse.json(list),
+      ),
+    );
+  const rowOf = async (v: number) => row(v);
+
+  it("linked agent: animal tile", async () => {
+    serve([
+      {
+        ...v2,
+        agent: {
+          ...agent,
+          linked: true,
+          product: "Claude Code",
+          animal: { id: "fox", color: 2 },
+        },
+      },
+    ]);
+    mount(panel(OWNED));
+    const r = await rowOf(2);
+    expect(
+      r.querySelector("[data-avatar='agent'][data-animal='fox']"),
+    ).not.toBeNull();
+  });
+
+  it("unlinked agent: the dashed generic tile", async () => {
+    serve([{ ...v2, agent: { ...agent, linked: false } }]);
+    mount(panel(OWNED));
+    const r = await rowOf(2);
+    expect(
+      r.querySelector("[data-avatar='agent'][data-linked='false']"),
+    ).not.toBeNull();
+    expect(r.querySelector("[data-animal]")).toBeNull();
+  });
+
+  it("person: initials in a circle", async () => {
+    serve([{ ...v1, version: 1, agent: null }]);
+    mount(panel(OWNED));
+    const r = await rowOf(1);
+    const c = r.querySelector("[data-avatar='']");
+    expect(c).not.toBeNull();
+    expect(c?.textContent).toMatch(/^[A-Z?]{1,2}$/);
+  });
+
+  it("outsider or older server: an agent with no fields is plain text", async () => {
+    serve([
+      { ...v2, agent: { name: "Leo's agent", version: null, masked: true } },
+    ]);
+    mount(panel(OWNED));
+    const r = await rowOf(2);
+    expect(r.querySelector("[data-avatar]")).toBeNull();
+    expect(r).toHaveTextContent("Leo's agent");
   });
 });

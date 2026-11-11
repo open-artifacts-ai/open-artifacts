@@ -43,7 +43,12 @@ async function setup(caps: string[]) {
 }
 
 /** A runtime DO with one comment target row, state queued. */
-async function seedTarget(artifactId: string, commentId: string, key: string) {
+async function seedTarget(
+  artifactId: string,
+  commentId: string,
+  key: string,
+  kind: "mention" | "asker" | "reply" = "mention",
+) {
   const ns_ = e.ARTIFACT_RUNTIME;
   await runInDurableObject(
     ns_.get(ns_.idFromName(artifactId)),
@@ -51,8 +56,9 @@ async function seedTarget(artifactId: string, commentId: string, key: string) {
       (inst as { ensureSchema(): void }).ensureSchema();
       st.storage.sql.exec(
         `insert into comment_targets (comment_id, thread_id, kind, key, name, state)
-         values (?, 't1', 'mention', ?, 'a', 'queued')`,
+         values (?, 't1', ?, ?, 'a', 'queued')`,
         commentId,
+        kind,
         key,
       );
     },
@@ -325,6 +331,68 @@ describe("notice_ack (#1752)", () => {
     expect(n0).toBe(0);
   });
 
+  it("a thread-reply row beside it does not hold the asker refund back (#2035)", async () => {
+    const s = await setup(ACK);
+    const art = uniq("art");
+    const ns_ = e.ARTIFACT_RUNTIME;
+    const at = "2026-01-01T00:00:00.000Z";
+    await runInDurableObject(
+      ns_.get(ns_.idFromName(art)),
+      (inst: unknown, st) => {
+        (inst as { ensureSchema(): void }).ensureSchema();
+        st.storage.sql.exec(
+          "insert into comments (id, thread_id, body, author, created_at) values ('c1', 't1', 'b', 'a', ?)",
+          at,
+        );
+        st.storage.sql.exec(
+          `insert into comment_targets (comment_id, thread_id, kind, key, name, state)
+           values ('c1', 't1', 'asker', 'k1', 'a', 'queued'),
+                  ('c1', 't1', 'reply', 'k2', 'b', 'delivered')`,
+        );
+        st.storage.sql.exec(
+          "insert into comment_asker_notices (thread_id, last_at, prev_at, n) values ('t1', ?, null, 1)",
+          at,
+        );
+      },
+    );
+    const n = note(addr(s), art, "c1", "k1");
+    n.target = { kind: "asker", key: "k1" };
+    await (await hubOf(s.userId)).deliverNotice(n);
+    const f = await waitFor(s.d, "deliver");
+    s.d.send({
+      v: 1,
+      id: id("rf"),
+      type: "refuse",
+      msg_id: f.msg_id,
+      reason: "closed",
+      detail: "dropped",
+    } as never);
+    await vi.waitFor(async () =>
+      expect(
+        await runInDurableObject(
+          ns_.get(ns_.idFromName(art)),
+          (_i, st) =>
+            st.storage.sql
+              .exec("select state from comment_targets where key = 'k1'")
+              .one().state as string,
+        ),
+      ).toBe("gone"),
+    );
+    await vi.waitFor(async () =>
+      expect(
+        await runInDurableObject(
+          ns_.get(ns_.idFromName(art)),
+          (_i, st) =>
+            st.storage.sql
+              .exec(
+                "select n from comment_asker_notices where thread_id = 't1'",
+              )
+              .one().n as number,
+        ),
+      ).toBe(0),
+    );
+  });
+
   it("a refused asker notice does not refund while another target is still queued", async () => {
     const s = await setup(ACK);
     const art = uniq("art");
@@ -473,6 +541,32 @@ describe("notice_ack (#1752)", () => {
     for (const c of ["c1", "c2"])
       await vi.waitFor(async () =>
         expect(await targetState(art, c)).toBe("gone"),
+      );
+  });
+
+  it("a thread-reply target settles on the ack, as the notice's own and as a folded one (#2035)", async () => {
+    const s = await setup(ACK);
+    const art = uniq("art");
+    await seedTarget(art, "c1", "k1", "reply");
+    await seedTarget(art, "c2", "k2", "reply");
+    const hub = await hubOf(s.userId);
+    const n = note(addr(s), art, "c1", "k1");
+    n.target = { kind: "reply", key: "k1" };
+    await hub.deliverNotice(n);
+    const f = await waitFor(s.d, "deliver");
+    // The ack carries this notice's target and a folded one, both replies.
+    const t = (c: string, k: string) => ({ a: art, c, k: "reply", key: k });
+    await runInDurableObject(hub, (_i, st) =>
+      st.storage.sql.exec(
+        "update notice_acks set ack = ? where msg_id = ?",
+        JSON.stringify({ ...t("c1", "k1"), more: [t("c2", "k2")] }),
+        f.msg_id,
+      ),
+    );
+    s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
+    for (const c of ["c1", "c2"])
+      await vi.waitFor(async () =>
+        expect(await targetState(art, c)).toBe("delivered"),
       );
   });
 

@@ -7,12 +7,7 @@ import { Badge, Button, Input, Label } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useId, useState } from "react";
 import { ApiClientError } from "../../api/client";
-import {
-  directoryMode,
-  type GroupMapping,
-  type Space,
-  type SpaceRole,
-} from "../../api/contract";
+import type { GroupMapping, Space, SpaceRole } from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
 import {
   useAddSelfToSpace,
@@ -30,6 +25,7 @@ import { useMe } from "../../auth/useMe";
 import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
 import { LoadError } from "../../layout/LoadError";
 import { Modal } from "../../layout/Modal";
+import { groupSyncHidden, shownDirectoryMode } from "../../layout/SyncBanner";
 import { useDocumentTitle } from "../../layout/useDocumentTitle";
 import { AppLink } from "../../library/AppLink";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -54,6 +50,7 @@ import {
   ROLE_LABEL,
   RoleSelect,
   SpaceAccess,
+  SyncEndedNote,
 } from "./SpaceAccess";
 import { SpacePeople } from "./SpacePeople";
 import { Switch } from "./Switch";
@@ -224,6 +221,14 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
     typeof mappingProblem
   > | null>(null);
   const rows = org.data ?? [];
+  const me = useMe();
+  const hideSync = me.status === "authed" && groupSyncHidden(me.me);
+  // Hosted Team and the trial keep a frozen directory: removals still work.
+  const canRemove =
+    syncOn ||
+    (hideSync &&
+      me.status === "authed" &&
+      me.me.instance.directory?.mode === "frozen");
   const change = (groupId: string, role: SpaceRole) => {
     setProblem(null);
     setPending((p) => ({ ...p, [groupId]: role }));
@@ -265,14 +270,21 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
                   .filter(Boolean)
                   .join(" · ")}
                 control={
-                  syncOn ? (
+                  canRemove ? (
                     <WriteLock>
-                      <RoleSelect
-                        label={`Role for ${g.email}`}
-                        value={pending[g.groupId] ?? g.role}
-                        roles={ALL_ROLES}
-                        onChange={(r) => r && change(g.groupId, r)}
-                      />
+                      {syncOn ? (
+                        <RoleSelect
+                          label={`Role for ${g.email}`}
+                          value={pending[g.groupId] ?? g.role}
+                          roles={ALL_ROLES}
+                          onChange={(r) => r && change(g.groupId, r)}
+                        />
+                      ) : (
+                        // Frozen on Team or the trial (#2176): the role stays visible next to Remove.
+                        <span className="text-[length:var(--oa-text-sm)]">
+                          {ROLE_LABEL[g.role]}
+                        </span>
+                      )}
                       <Button
                         size="sm"
                         variant="ghost"
@@ -297,6 +309,7 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
           </tbody>
         </table>
       )}
+      {hideSync && rows.length > 0 && <SyncEndedNote />}
       {removing && (
         <RemoveMapping
           mapping={removing}
@@ -663,7 +676,7 @@ function SpaceDetail({
   useDocumentTitle(space.name);
   const state = useMe();
   const frozen =
-    state.status === "authed" && directoryMode(state.me) === "frozen";
+    state.status === "authed" && shownDirectoryMode(state.me) === "frozen";
   // A kept group's "Edit people" narrows People to it.
   const [group, setGroup] = useState("");
   return (
@@ -716,7 +729,7 @@ export function Spaces() {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const admin = isOrgAdmin(me);
-  const syncOn = !!me && directoryMode(me) === "google";
+  const syncOn = !!me && shownDirectoryMode(me) === "google";
   const orgName = me?.instance.name ?? "your organization";
   const { space: spaceId } = useSearch({ strict: false }) as { space?: string };
   const navigate = useNavigate();

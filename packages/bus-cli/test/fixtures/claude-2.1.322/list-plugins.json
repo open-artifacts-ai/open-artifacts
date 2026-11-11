@@ -1,0 +1,12 @@
+[
+  {
+    "id": "open-artifacts@open-artifacts",
+    "version": "235fffaf0552",
+    "scope": "user",
+    "enabled": true,
+    "installPath": "/home/u/.claude/plugins/cache/open-artifacts/open-artifacts/235fffaf0552",
+    "installedAt": "2026-11-11T15:45:38.631Z",
+    "lastUpdated": "2026-11-11T15:45:38.631Z",
+    "projectEnabled": false
+  }
+]

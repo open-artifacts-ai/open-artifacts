@@ -48,6 +48,7 @@ import {
 } from "./asks";
 import { NewReplyPill, useKeepScroll } from "./keepScroll";
 import { numbering, pinChanged, pinNumbering } from "./model";
+import { ThreadAgents } from "./threadAgents";
 import { type CommentsApi, useCommentsApi } from "./useComments";
 
 const touch = () =>
@@ -996,6 +997,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         ) : api.canComment && isActive ? (
           <>
             {api.guest && <GuestName api={api} />}
+            {!api.guest && !api.capped && <ThreadAgents t={t} api={api} />}
             <Composer
               label="Reply"
               actions={ACTIONS_PLAIN}

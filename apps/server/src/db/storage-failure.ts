@@ -1,7 +1,7 @@
 const MAX_CAUSE_DEPTH = 5;
 
 /**
- * Cloudflare's storage failing, not our code: the two forms seen on staging
+ * Cloudflare's storage failing, not our code: the forms seen on staging
  * (#1126). Exact on purpose: this answer is retryable (a 503, and a read
  * retry in db/retry.ts), so a bug of ours that merely mentions D1 or KV has
  * to stay a plain `internal`. Its own module so the retry wrapper can use it
@@ -9,6 +9,7 @@ const MAX_CAUSE_DEPTH = 5;
  */
 const STORAGE_FAILURE = [
   /^D1_ERROR: internal error\b/,
+  /^D1_ERROR: Network connection lost\b/,
   /^KV (?:GET|PUT|DELETE|LIST) failed: 5\d\d\b/,
 ];
 

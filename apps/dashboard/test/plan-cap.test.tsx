@@ -52,6 +52,14 @@ const LOCKED_PLAN = {
   reason: "trial_ended" as const,
 };
 const OPTS = { billing: LOCKED_PLAN };
+// Directory is Business only (#2113): a lapsed Business plan is the lock that reaches it.
+const LOCKED_BUSINESS = {
+  billing: {
+    ...LOCKED_PLAN,
+    tier: "business" as const,
+    reason: "lapsed" as const,
+  },
+};
 const NOTICE = "This instance is read-only right now. Ask your instance owner.";
 const locked =
   (role: "member" | "admin") =>
@@ -209,7 +217,7 @@ it("spaces: a locked admin sees the list; New space is disabled", async () => {
 });
 
 it("directory: a locked admin sees the page; its write controls are disabled", async () => {
-  lockedAdmin("/settings/directory");
+  mountHosted("/settings/directory", LOCKED_BUSINESS, locked("admin"));
   expect(
     await screen.findByRole("status", { name: "Sync status" }),
   ).toBeVisible();
@@ -352,8 +360,8 @@ const heldRegion = () =>
 it.each([
   [
     "plan_read_only",
-    OPTS,
-    "Your trial ended, so this instance is read-only until you pick a plan.",
+    LOCKED_BUSINESS,
+    "Your plan has lapsed. This instance is read-only. Manage billing to restart it.",
   ],
   // plan_required (Solo) can't reach this page since #2009: Solo has no Directory.
 ])(

@@ -46,7 +46,7 @@ import {
   sharingCaller,
   suspendedMember,
 } from "../auth/authz.js";
-import { can, dataWritersOf } from "../auth/policy.js";
+import { can, capsReads, dataWritersOf, isGuestRole } from "../auth/policy.js";
 import { requireFreeStorage } from "../billing/caps.js";
 import { creatorStmt } from "../billing/creators.js";
 import { featuresOf } from "../billing/features.js";
@@ -66,6 +66,7 @@ import { closeRuntimeSockets } from "../runtime/revoke.js";
 import {
   agentFor,
   isPrivateAgent,
+  linkedFields,
   ownersAgent,
   SCRUBBED_VIA,
   shownName,
@@ -1367,6 +1368,7 @@ type VersionRow = {
   agent_name: string | null;
   agent_version: string | null;
   agent_via: string | null;
+  agent_identity: string | null;
   created_by: string;
   created_at: number;
   text_indexed: number;
@@ -1378,6 +1380,27 @@ type VersionRow = {
 
 /** A versions page stops once its manifests' cumulative length passes this. */
 export const VERSIONS_PAGE_BYTES = 1024 * 1024;
+
+/** The face fields of a version's stored bus identity; none when unlinked, malformed or outsider. */
+function versionFace(
+  raw: string | null,
+  outsider: boolean,
+): {
+  linked?: boolean;
+  product?: string;
+  animal?: { id: string; color: number };
+} {
+  // Unlinked, to a viewer who may see faces: linked false (a dashed tile), as comments do.
+  if (!raw) return outsider ? {} : { linked: false };
+  try {
+    const i = JSON.parse(raw) as { identityId?: unknown; kind?: unknown };
+    if (typeof i.identityId !== "string" || typeof i.kind !== "string")
+      return outsider ? {} : { linked: false };
+    return linkedFields({ identityId: i.identityId, kind: i.kind }, outsider);
+  } catch {
+    return outsider ? {} : { linked: false };
+  }
+}
 
 /**
  * Viewer+; newest first, keyset `version < before`: at most VERSIONS_PAGE_SIZE,
@@ -1402,7 +1425,8 @@ export async function listVersions(
        from page window w as (order by version desc)
      )
      select v.version, v.entry, v.manifest, v.language, v.message, v.agent_name,
-       v.agent_version, v.agent_via, v.created_by, v.created_at, v.text_indexed,
+       v.agent_version, v.agent_via, v.agent_identity, v.created_by,
+       v.created_at, v.text_indexed,
        case when a.doc = 1 then 'doc' else coalesce(v.format, a.format) end as format,
        u.email, u.name, u.display_name as displayName
      from cut
@@ -1420,18 +1444,26 @@ export async function listVersions(
     )
     .all<VersionRow>();
   const viewerId = caller.kind === "user" ? caller.user.id : null;
+  // #2004: signed out, a guest role, or a guest or restricted cap gets no face.
+  const outsider =
+    caller.kind !== "user" ||
+    isGuestRole(caller.user.role) ||
+    capsReads(capOfCaller(caller));
   return results.map((v) => ({
     version: v.version,
     message: v.message,
     agent:
       v.agent_name == null
         ? null
-        : agentFor(
-            { name: v.agent_name, version: v.agent_version },
-            v.agent_via,
-            publisherOf(v.created_by, v),
-            viewerId,
-          ),
+        : {
+            ...agentFor(
+              { name: v.agent_name, version: v.agent_version },
+              v.agent_via,
+              publisherOf(v.created_by, v),
+              viewerId,
+            ),
+            ...versionFace(v.agent_identity, outsider),
+          },
     createdBy: redact(
       {
         id: v.created_by,
