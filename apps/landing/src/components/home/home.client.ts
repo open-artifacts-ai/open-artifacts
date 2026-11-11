@@ -9,6 +9,7 @@ import {
   type Question,
   transcriptStatus,
 } from "../../lib/transcript";
+import { initPhone } from "./phone.client";
 
 const lp = document.getElementById("lp") as HTMLElement;
 const $ = <T extends HTMLElement = HTMLElement>(s: string) =>
@@ -31,7 +32,6 @@ const ba = $("#ba"),
 let look: Look = "claude";
 let run = 0,
   cur: Question | "" = "dec",
-  sidePicked = false,
   touched = false;
 
 function draw(l: Look) {
@@ -55,9 +55,26 @@ function draw(l: Look) {
   }
   for (const b of $$(".x-look button")) press(b, b.dataset.look === l);
 }
+function targetFor(q: Question) {
+  if (q === "team") return 0;
+  const el = trs.querySelector<HTMLElement>(
+    `[data-tag=${q === "dec" ? "dec" : "chg"}]`,
+  ) as HTMLElement;
+  const max = trs.scrollHeight - trs.clientHeight;
+  return Math.max(
+    0,
+    Math.min(
+      max,
+      el.offsetTop - trs.offsetTop - trs.clientHeight / 2 + el.offsetHeight / 2,
+    ),
+  );
+}
 function show(side: string) {
   ba.dataset.show = side;
   for (const b of $$(".x-flip button")) press(b, b.dataset.side === side);
+  // Coming back to the transcript, the answer is where the last question left it.
+  if (side === "tr" && cur && ba.hasAttribute("data-landed"))
+    trs.scrollTop = targetFor(cur);
 }
 function land(q: Question) {
   const ps = $$("#trs p:not(.none)");
@@ -74,7 +91,7 @@ function ask(q: Question) {
   const id = ++run;
   cur = q;
   ba.dataset.q = q;
-  sidePicked = false;
+  ba.removeAttribute("data-landed");
   for (const b of $$(".x-qs button")) press(b, b.dataset.q === q);
   for (const e of $$("#trs .hit")) e.classList.remove("hit");
   term.removeAttribute("data-none");
@@ -83,37 +100,17 @@ function ask(q: Question) {
     body = blk.parentElement as HTMLElement;
   body.scrollTop = q === "dec" ? 0 : blk.offsetTop - body.offsetTop - 8;
   arstat.textContent = ARTIFACT_STATUS[q];
-  if (narrow()) show("tr");
   const max = trs.scrollHeight - trs.clientHeight;
-  let target = 0;
-  if (q !== "team") {
-    const el = trs.querySelector<HTMLElement>(
-      `[data-tag=${q === "dec" ? "dec" : "chg"}]`,
-    ) as HTMLElement;
-    target = Math.max(
-      0,
-      Math.min(
-        max,
-        el.offsetTop -
-          trs.offsetTop -
-          trs.clientHeight / 2 +
-          el.offsetHeight / 2,
-      ),
-    );
-  }
+  const target = targetFor(q);
   const done = () => {
     if (id !== run) return;
     land(q);
     if (q === "team") trs.scrollTop = 0;
-    if (narrow())
-      setTimeout(
-        () => {
-          if (id === run && !sidePicked) show("ar");
-        },
-        reduce ? 0 : 1400,
-      );
+    // On a phone the "Now see it in an artifact" button shows once this lands.
+    ba.setAttribute("data-landed", "");
   };
-  if (reduce) {
+  // Reduced motion, or the transcript is on the hidden side: land at once.
+  if (reduce || !trs.clientHeight) {
     trs.scrollTop = target;
     done();
     return;
@@ -138,10 +135,14 @@ for (const b of $$(".x-qs button"))
   });
 for (const b of $$(".x-flip button"))
   b.addEventListener("click", () => {
-    sidePicked = true;
     touched = true;
     show(b.dataset.side as string);
   });
+$("#nudge").addEventListener("click", () => {
+  touched = true;
+  show("ar");
+  $(".x-flip button[data-side=ar]").focus({ preventScroll: true });
+});
 for (const b of $$(".x-look button"))
   b.addEventListener("click", () => {
     touched = true;
@@ -165,7 +166,23 @@ else {
     );
 }
 
+/* ---- phone chapters ---- */
+initPhone(lp, reduce);
+
 /* ---- pricing ---- */
+// A fade on the right edge says the table scrolls sideways, until the end.
+{
+  const tw = $("#twf .tw"),
+    fade = $("#twf");
+  const update = () =>
+    fade.classList.toggle(
+      "x-end",
+      tw.scrollLeft + tw.clientWidth >= tw.scrollWidth - 4,
+    );
+  tw.addEventListener("scroll", update, { passive: true });
+  addEventListener("resize", update);
+  update();
+}
 for (const b of $$("#pricing .toggle button"))
   b.addEventListener("click", () => {
     const p = b.dataset.p as string;

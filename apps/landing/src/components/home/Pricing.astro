@@ -91,7 +91,7 @@ const groups: {
       <button type="button" data-p="m" aria-pressed="true">Monthly</button><button type="button" data-p="y" aria-pressed="false">Yearly <span class="save">2 months free</span></button>
     </div></div>
   <p class="x-lede x-pl">Viewers and sharing are free on every plan.</p>
-  <div class="tw" tabindex="0" role="region" aria-label="Plan comparison, scrolls sideways on a phone"><table class="cmp">
+  <div class="twf" id="twf"><div class="tw" tabindex="0" role="region" aria-label="Plan comparison, scrolls sideways on a phone"><table class="cmp">
     <thead><tr><th scope="col" class="corner">Compare plans</th>
       {plans.map((p) => (
         <th scope="col" class:list={{ "col-pop": p.pop }}>
@@ -113,6 +113,6 @@ const groups: {
         ))}
       </>))}
     </tbody>
-  </table></div>
+  </table></div></div>
   <p class="pnote">Solo is per account; Team and Business are per creator. Solo is free for 30 days, no card. Team starts with a 30-day trial when you invite someone.</p>
 </div></section>

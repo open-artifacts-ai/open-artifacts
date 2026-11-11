@@ -12,7 +12,7 @@ const questions = [
   { q: "team", label: "What does the team think?" },
 ];
 ---
-<div class="wrap x-ba" id="ba" data-show="tr" data-q="dec">
+<div class="wrap x-ba" id="ba" data-show="tr" data-q="dec" data-landed>
   <div class="x-bahead">
     <p class="x-bah" id="bah">Same work, two places. Pick a question:</p>
     <div class="x-qs" role="group" aria-labelledby="bah">
@@ -42,6 +42,7 @@ const questions = [
           ))}
         </div>
       </div>
+      <button type="button" class="x-nudge" id="nudge">Now see it in an artifact</button>
     </figure>
     <figure class="x-side x-ar">
       <figcaption><b>In an artifact</b><span class="x-stat ok" id="arstat" role="status">{ARTIFACT_STATUS.dec}</span></figcaption>

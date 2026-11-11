@@ -11,6 +11,10 @@ const index = readFileSync(
 const text = index
   .replace(/<script[\s\S]*?<\/script>|<style[\s\S]*?<\/style>/g, "")
   .replace(/<[^>]+>/g, " ")
+  .replace(/&#39;/g, "'")
+  .replace(/&quot;/g, '"')
+  .replace(/&gt;/g, ">")
+  .replace(/&amp;/g, "&")
   .replace(/\s+/g, " ");
 
 describe("landing sections", () => {
@@ -54,7 +58,7 @@ describe("landing sections", () => {
     ])
       expect(index).toMatch(
         new RegExp(
-          `<button[^>]*data-q="[a-z]+"[^>]*aria-pressed="(true|false)"[^>]*>${q}</button>`,
+          `<button[^>]*data-q="[a-z]+"[^>]*aria-pressed="(true|false)"[^>]*>${q.replace("?", "\\?")}</button>`,
         ),
       );
     expect(index).toMatch(/aria-pressed="true"[^>]*>Claude Code<\/button>/);
@@ -74,6 +78,17 @@ describe("landing sections", () => {
     ).toHaveLength(7);
     expect(index).toMatch(
       /aria-pressed="false"[^>]*>Hacker News post|data-k="a" aria-pressed="false"/,
+    );
+  });
+
+  it("has a card piece for each chapter on phones, and the button to the artifact side", () => {
+    const pieces =
+      index.match(
+        /<div class="mp[ "][^>]*data-mp="(pub|com|ask|live|ver|share|wall)"/g,
+      ) ?? [];
+    expect(pieces).toHaveLength(7);
+    expect(index).toMatch(
+      /<button[^>]*class="x-nudge"[^>]*>Now see it in an artifact<\/button>/,
     );
   });
 
