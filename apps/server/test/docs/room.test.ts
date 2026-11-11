@@ -829,16 +829,10 @@ describe("DocRoom per-actor budget and authorization time (#2154)", () => {
         [AUTHZ_AT_HEADER]: String(Date.now()),
       },
     });
+    if (res.status !== 101) return { status: res.status, opened: false };
     const ws = res.webSocket as WebSocket;
     ws.accept();
-    return new Promise<{ code: number | null; opened: boolean }>((resolve) => {
-      let opened = false;
-      ws.addEventListener("message", (e) => {
-        if (typeof e.data !== "string") opened = true;
-        if (opened) resolve({ code: null, opened });
-      });
-      ws.addEventListener("close", (e) => resolve({ code: e.code, opened }));
-    });
+    return { status: 101, opened: true };
   };
 
   it("budgets full-state work per actor across reconnects, refills, spares others", async () => {
@@ -852,17 +846,58 @@ describe("DocRoom per-actor budget and authorization time (#2154)", () => {
       const c = await connect(stub, { actor, strict: true, role: "read" });
       c.ws.close();
     }
-    expect((await rawOpen(stub, actor)).code).toBe(1013);
-    const other = await rawOpen(stub, "u:someone-else");
-    expect(other.opened).toBe(true);
+    expect((await rawOpen(stub, actor)).status).toBe(429);
+    expect((await rawOpen(stub, "u:someone-else")).opened).toBe(true);
     t += 61_000;
     expect((await rawOpen(stub, actor)).opened).toBe(true);
   });
 
-  it("an over-budget step 1 gets rate_limited and a 1013 close", async () => {
+  it("a refused first step 1 closes 1013 and never reports synced", async () => {
+    const stub = roomStub();
+    const w = await connect(stub);
+    type(w, "stored");
+    await w.ping();
+    await runDurableObjectAlarm(stub);
+    await inRoom(stub, (r) => {
+      r.budgetCap = 1; // the upgrade takes the only token
+      (r as unknown as { now: () => number }).now = () => 9_000_000;
+    });
+    const res = await stub.fetch("https://room/ws", {
+      headers: {
+        Upgrade: "websocket",
+        [ACTOR_HEADER]: "u:starved",
+        [DOC_ROLE_HEADER]: "read",
+        [AUTHZ_AT_HEADER]: String(Date.now()),
+      },
+    });
+    const ws = res.webSocket as WebSocket;
+    ws.accept();
+    const subs: number[] = [];
+    let code = 0;
+    const closed = new Promise<void>((r) =>
+      ws.addEventListener("close", (e) => {
+        code = e.code;
+        r();
+      }),
+    );
+    ws.addEventListener("message", (e) => {
+      if (typeof e.data === "string") return;
+      const d = decoding.createDecoder(new Uint8Array(e.data as ArrayBuffer));
+      if (decoding.readVarUint(d) === 0) subs.push(decoding.readVarUint(d));
+    });
+    const enc = encoding.createEncoder();
+    encoding.writeVarUint(enc, 0);
+    syncProtocol.writeSyncStep1(enc, new Y.Doc());
+    ws.send(encoding.toUint8Array(enc));
+    await closed;
+    expect(code).toBe(1013);
+    expect(subs).not.toContain(1);
+  });
+
+  it("surplus step 1s on a synced socket are ignored", async () => {
     const stub = roomStub();
     await inRoom(stub, (r) => {
-      (r as unknown as { now: () => number }).now = () => 9_000_000;
+      (r as unknown as { now: () => number }).now = () => 9_100_000;
     });
     const a = await connect(stub, { strict: true, role: "read" });
     const enc = encoding.createEncoder();
@@ -870,8 +905,47 @@ describe("DocRoom per-actor budget and authorization time (#2154)", () => {
     syncProtocol.writeSyncStep1(enc, new Y.Doc());
     const frame = encoding.toUint8Array(enc);
     for (let i = 0; i < 8; i++) a.ws.send(frame);
-    await a.closed;
-    expect(a.texts.some((x) => x.includes("rate_limited"))).toBe(true);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(a.ws.readyState).toBe(WebSocket.OPEN);
+    expect(a.texts).toEqual([]);
+  });
+
+  it("retries a failed compaction on the next alarm", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    type(a, "compact me");
+    await a.ping();
+    await runDurableObjectAlarm(stub);
+    expect(await rows(stub)).toBe(1);
+    await inRoom(stub, async (r) => {
+      const x = r as unknown as { sql: SqlStorage; squeeze: boolean };
+      const real = x.sql;
+      (globalThis as { __cfail?: boolean }).__cfail = true;
+      x.sql = {
+        exec: (q: string, ...args: unknown[]) => {
+          if (
+            (globalThis as { __cfail?: boolean }).__cfail &&
+            /INSERT OR REPLACE INTO snapshot/.test(q)
+          )
+            throw new Error("boom");
+          return real.exec(q, ...args);
+        },
+      } as unknown as SqlStorage;
+      x.squeeze = true;
+    });
+    await runInDurableObject(stub, (_r, st) =>
+      st.storage.setAlarm(Date.now() + 60_000),
+    );
+    await runDurableObjectAlarm(stub);
+    expect(await snapRows(stub)).toBe(0);
+    expect(
+      await runInDurableObject(stub, (_r, st) => st.storage.getAlarm()),
+    ).not.toBeNull();
+    await inRoom(stub, () => {
+      (globalThis as { __cfail?: boolean }).__cfail = false;
+    });
+    await runDurableObjectAlarm(stub);
+    expect(await snapRows(stub)).toBe(1);
   });
 
   it("refuses ip: and agent: actors without a trusted authorization time", async () => {

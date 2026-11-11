@@ -124,6 +124,10 @@ export class DocRoom extends DurableObject<Env> {
   /** Times a Y.Doc was loaded in this instance (tests: relay never loads). */
   docLoads = 0;
   private squeeze = false;
+  /** A compaction is owed (set on a threshold or squeeze; cleared on success). */
+  private compactPending = false;
+  /** Sockets that received their full state (in memory). */
+  private synced = new WeakSet<WebSocket>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -193,7 +197,11 @@ export class DocRoom extends DurableObject<Env> {
     )
       return new Response("Too many subscriptions", { status: 429 });
 
-    const limited = !this.takeToken(actor);
+    if (!this.takeToken(actor))
+      return new Response("Try again shortly", {
+        status: 429,
+        headers: { "Retry-After": "10" },
+      });
     const pair = new WebSocketPair();
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [
@@ -206,15 +214,6 @@ export class DocRoom extends DurableObject<Env> {
       actor,
       aw: [],
     } satisfies Attachment);
-    if (limited) {
-      try {
-        server.send(RATE_LIMITED_FRAME);
-        server.close(1013, "try_again");
-      } catch {
-        // already closed
-      }
-      return new Response(null, { status: 101, webSocket: pair[0] });
-    }
     // Authorized before this doc's last access change: the check may have
     // seen the old access, so refuse (any actor), as ArtifactRuntime does.
     const changed = this.accessChangedAt();
@@ -317,11 +316,14 @@ export class DocRoom extends DurableObject<Env> {
       } catch {
         throw new BadFrame("bad state vector");
       }
-      if (this.takeToken(att.actor)) this.sendState(ws);
-      else {
+      if (this.takeToken(att.actor)) {
+        this.synced.add(ws);
+        this.sendState(ws);
+      } else if (!this.synced.has(ws)) {
+        // Never answer a refused first step 1 as if synced: close instead.
         ws.send(RATE_LIMITED_FRAME);
         ws.close(1013, "try_again");
-      }
+      } // surplus step 1s on an already-synced socket are ignored
       return;
     }
     if (sub !== SYNC_STEP2 && sub !== SYNC_UPDATE)
@@ -351,7 +353,7 @@ export class DocRoom extends DurableObject<Env> {
       if (this.rowCount > 0 || this.buffer.length > 0) {
         this.squeeze = true;
         // Keep the batching cadence: never pull an armed alarm earlier.
-        void this.armAlarm(this.now() + FLUSH_MS);
+        this.armAlarmLogged(this.now() + FLUSH_MS);
       }
       ws.send(DOC_TOO_LARGE_FRAME);
       return;
@@ -369,7 +371,7 @@ export class DocRoom extends DurableObject<Env> {
       const at = cursor.get(c) ?? this.sv.get(c) ?? 0;
       const end = st.id.clock + st.length;
       if (end <= at) continue; // already held
-      const known = "content" in st || (st as object).constructor.name === "GC";
+      const known = st instanceof Y.Item || st instanceof Y.GC;
       if (!known || st.id.clock > at) {
         stopped.add(c);
         continue;
@@ -379,7 +381,7 @@ export class DocRoom extends DurableObject<Env> {
     for (const [c, to] of cursor) this.sv.set(c, to);
     this.buffer.push(update);
     this.bufferBytes += update.byteLength;
-    void this.armAlarm(this.now() + FLUSH_MS);
+    this.armAlarmLogged(this.now() + FLUSH_MS);
     const out = encoding.createEncoder();
     encoding.writeVarUint(out, MSG_SYNC);
     encoding.writeVarUint(out, SYNC_UPDATE);
@@ -413,6 +415,10 @@ export class DocRoom extends DurableObject<Env> {
     }
     this.budgets.set(key, { tokens: tokens - 1, at: t });
     return true;
+  }
+
+  private armAlarmLogged(at: number) {
+    this.armAlarm(at).catch((e) => logError("doc_room_arm_alarm_failed", e));
   }
 
   /** Arms the alarm at `at` unless one is already armed at or before it. */
@@ -598,17 +604,21 @@ export class DocRoom extends DurableObject<Env> {
   override async alarm() {
     try {
       this.flush();
+      // A refusal at the cap asked for a squeeze (in memory: if lost, the
+      // row and byte thresholds still bound the tail).
+      if (this.squeeze) {
+        this.squeeze = false;
+        if (this.rowCount > 0) this.compactPending = true;
+      }
+      if (this.compactPending) {
+        if (this.rowCount > 0) this.compact();
+        else this.compactPending = false;
+      }
     } catch (e) {
-      // Write failed: the batch is kept; retry on the next alarm.
-      logError("doc_room_flush_failed", e);
+      // A write or compaction failed: the batch and the owed compaction are
+      // kept; retry on the next alarm.
+      logError("doc_room_alarm_failed", e);
       await this.armAlarm(this.now() + FLUSH_MS);
-      return;
-    }
-    // A refusal at the cap asked for a squeeze (in memory: if lost, the
-    // row and byte thresholds still bound the tail).
-    if (this.squeeze) {
-      this.squeeze = false;
-      if (this.rowCount > 0) this.compact();
     }
   }
 
@@ -616,7 +626,8 @@ export class DocRoom extends DurableObject<Env> {
   flush() {
     if (!this.writeBuffer()) return;
     if (this.rowCount > COMPACT_ROWS || this.rowBytes > COMPACT_ROW_BYTES)
-      this.compact();
+      this.compactPending = true;
+    if (this.compactPending) this.compact();
   }
 
   private writeBuffer(): boolean {
@@ -714,6 +725,7 @@ export class DocRoom extends DurableObject<Env> {
         this.putSv();
       });
       this.snapBytes = state.byteLength;
+      this.compactPending = false;
       this.rowCount = 0;
       this.rowBytes = 0;
       return state.byteLength;
