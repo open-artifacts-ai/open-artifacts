@@ -209,6 +209,80 @@ describe("linkRequest (#1822)", () => {
     }
   });
 
+  it("#2110: a lookup that never answers waits LINK_LOOKUP_MS (1.5 s) and logs reason timeout", async () => {
+    expect(LINK_LOOKUP_MS).toBe(1500);
+    const proof = proofOf();
+    const a = await bound(proof);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const t0 = Date.now();
+      const r = await linkRequest(
+        spyHubs({ agentByProof: () => new Promise(() => {}) }).ev,
+        a.userId,
+        mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
+      );
+      expect(Object.keys(r)).toEqual(["req"]);
+      expect(Date.now() - t0).toBeGreaterThanOrEqual(LINK_LOOKUP_MS - 5);
+      const none = log.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("bus_link_lookup_none"))
+        .map((l) => JSON.parse(l));
+      expect(none).toHaveLength(1);
+      expect(none[0].reason).toBe("timeout");
+      expect(none[0].ms).toBeGreaterThanOrEqual(LINK_LOOKUP_MS - 5);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("#2110: a slow success links and logs bus_link_lookup_ok {ms}; a fast one under 150 ms logs nothing", async () => {
+    const proof = proofOf();
+    const a = await bound(proof);
+    const hash = await sha256Hex(proof);
+    const who = {
+      identityId: "f".repeat(32),
+      namespace: "n",
+      name: "Lead",
+      kind: "claude-code",
+    } as never;
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const ok = () =>
+      log.mock.calls
+        .map((c) => String(c[0]))
+        .filter((l) => l.includes("bus_link_lookup_ok"));
+    try {
+      const slow = await linkRequest(
+        spyHubs({
+          agentByProof: () =>
+            new Promise((res) => setTimeout(() => res(who), 400)),
+        }).ev,
+        a.userId,
+        mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
+      );
+      expect(slow.identity).toEqual(who);
+      expect(ok()).toHaveLength(1);
+      const line = ok()[0] as string;
+      expect(Object.keys(JSON.parse(line)).sort()).toEqual(
+        expect.arrayContaining(["ms"]),
+      );
+      expect(JSON.parse(line).ms).toBeGreaterThanOrEqual(400);
+      expect(line).not.toContain(proof);
+      expect(line).not.toContain(hash);
+      // Fast answers: any ok line they add is at least 150 ms (a loaded
+      // runner can be that slow), never a line for every request.
+      for (let i = 0; i < 3; i++)
+        await linkRequest(
+          spyHubs({ agentByProof: async () => who }).ev,
+          a.userId,
+          mcpReq("x", { [LINK_PROOF_HEADER]: proof }),
+        );
+      for (const l of ok())
+        expect(JSON.parse(l).ms).toBeGreaterThanOrEqual(150);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("with the bus off the header is stripped and no hub is asked", async () => {
     const proof = proofOf();
     const a = await bound(proof);

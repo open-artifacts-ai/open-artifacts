@@ -742,6 +742,35 @@ describe("the away grace (#2110)", () => {
     await setClock(s.m.userId, null);
   });
 
+  it("the migration replaces the old close trigger on an existing hub, idempotently", async () => {
+    const s = await scene();
+    const stub = await hubOf(s.m.userId);
+    const triggers = () =>
+      rows(
+        s.m.userId,
+        "select name from sqlite_master where type = 'trigger' and name like 'agent_proofs%' order by name",
+      );
+    await runInDurableObject(stub, (_: BusHub, st: DurableObjectState) => {
+      st.storage.sql.exec("drop trigger if exists agent_proofs_close_unaway");
+      st.storage.sql.exec(
+        "create trigger agent_proofs_close after update of live on agents when new.live = 0 begin delete from agent_proofs where agent_id = new.id; end",
+      );
+    });
+    for (let i = 0; i < 2; i++) {
+      await runInDurableObject(stub, (_: BusHub, st: DurableObjectState) =>
+        migrateHub(st.storage.sql),
+      );
+      expect(await triggers()).toEqual([
+        { name: "agent_proofs_close_unaway" },
+        { name: "agent_proofs_gone" },
+      ]);
+    }
+    await reg(s.d, "r1", "Lead", s.ns);
+    await bind(s.d, "r1", hashOf("9"));
+    await close(s.d, s.m.userId, "r1");
+    expect(await lookup(s.m.userId, hashOf("9"))).not.toBeNull();
+  });
+
   it("a proof resolves only to its own row: two agents, one away, and a swap", async () => {
     const s = await scene();
     const t0 = Date.now() + 3_600_000 + ++seq * 1000;
