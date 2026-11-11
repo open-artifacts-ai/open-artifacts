@@ -119,6 +119,7 @@ describe("/clear handover in the daemon", () => {
       BUS_CAPS.links,
       BUS_CAPS.follow,
       BUS_CAPS.link,
+      BUS_CAPS.noticeAck,
     ]);
   });
 
@@ -448,6 +449,7 @@ describe("/clear handover in the daemon", () => {
       BUS_CAPS.ids,
       BUS_CAPS.mailbox,
       BUS_CAPS.link,
+      BUS_CAPS.noticeAck,
     ]);
     const old = await upFor(h, "s-old");
     h.toDaemon({

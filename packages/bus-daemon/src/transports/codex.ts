@@ -283,6 +283,15 @@ export type CodexTransportOptions = {
    * its timeout, kept on disk: never queued twice, across restarts too.
    */
   queued: { has: (id: string) => boolean; add: (id: string) => void };
+  /**
+   * Queued mail waits here until a turn takes it (the rollout's user item):
+   * only then is it delivered (#2029). Codex unloads an idle thread, and a
+   * queued item then waits for the next client.
+   */
+  taken: {
+    watch: (id: string, thread: string, head: string) => void;
+    has: (id: string) => boolean;
+  };
   log?: (msg: string) => void;
 };
 
@@ -311,9 +320,15 @@ export class CodexTransport {
   }
 
   async deliver(agent: AgentRecord, mail: Mail): Promise<DeliverOutcome> {
+    // Queued, not yet taken: a hub redelivery must not ack it, nor queue it twice.
+    if (this.opts.taken.has(mail.msg_id))
+      return { ok: false, reason: "queued" };
     if (!(await this.#wakes(agent))) return { ok: false, reason: "queued" };
-    const r = await this.#queue(agent, mail.msg_id, codexText(agent, mail));
-    if (r.ok) return { ok: true };
+    const text = codexText(agent, mail);
+    const fresh = !this.#has(mail.msg_id);
+    const r = await this.#queue(agent, mail.msg_id, text, true);
+    // Queued before and no longer watched: a turn took it (or it was acked before #2029).
+    if (r.ok) return fresh ? { ok: false, reason: "queued" } : { ok: true };
     return { ok: false, reason: r.taken === "no" ? "timeout" : "queued" };
   }
 
@@ -352,7 +367,12 @@ export class CodexTransport {
     }
   }
 
-  async #queue(agent: AgentRecord, id: string, text: string): Promise<Queue> {
+  async #queue(
+    agent: AgentRecord,
+    id: string,
+    text: string,
+    watch = false,
+  ): Promise<Queue> {
     if (this.#has(id)) return { ok: true };
     // Maybe never landed: stays queued, so it ends expired, never a false Delivered.
     if (this.#has(`maybe:${id}`)) return { ok: false, taken: "maybe" };
@@ -384,6 +404,9 @@ export class CodexTransport {
       return { ok: false, taken: "no" };
     }
     if (res.code === 0) {
+      // Queued is not taken: the header line is what the turn's user item will start with.
+      if (watch)
+        this.opts.taken.watch(id, agent.ref, text.split("\n", 1)[0] ?? "");
       return this.#keep(id) ? { ok: true } : { ok: false, taken: "maybe" };
     }
     if (res.code === null) {

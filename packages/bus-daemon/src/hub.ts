@@ -189,6 +189,7 @@ export class HubConnection {
           BUS_CAPS.links,
           BUS_CAPS.follow,
           BUS_CAPS.link,
+          BUS_CAPS.noticeAck,
         ],
       });
       this.#guard("sessions", () => {

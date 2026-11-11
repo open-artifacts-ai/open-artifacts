@@ -79,6 +79,13 @@ export const BUS_CAPS = {
    * only when the hub listed both `link` and this.
    */
   linkArg: "link_arg",
+  /**
+   * Honest notice acks (#1752, #2029): the daemon acks a notice's `deliver`
+   * (its own msg_id) only once the harness took it (Codex: a turn took the
+   * queued item), and refuses it when it is dropped. The hub marks a notice
+   * delivered on ack and gone on refuse only for a socket whose hello listed it.
+   */
+  noticeAck: "notice_ack",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

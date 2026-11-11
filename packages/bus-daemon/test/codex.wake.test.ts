@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import {
+  appendFileSync,
   chmodSync,
   existsSync,
   mkdirSync,
@@ -11,6 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type AgentRecord, AgentTable } from "../src/agents.ts";
+import { TakenWatch } from "../src/codex-taken.ts";
 import { createDeliver, type Mail } from "../src/deliver.ts";
 import {
   CODEX_TEXT_CAP,
@@ -100,10 +102,18 @@ function transport(
     queued?: { has: (id: string) => boolean; add: (id: string) => void };
     queuedFile?: string;
     resolve?: () => CodexBin | undefined;
+    takenFile?: string;
   } = {},
 ) {
   const home = tmp("ob-cxh-");
   const log = vi.fn();
+  const onTaken = vi.fn();
+  const watch = new TakenWatch({
+    home,
+    file: over.takenFile ?? join(tmp("ob-cxp-"), "p.json"),
+    onTaken,
+    log,
+  });
   const resolve = vi.fn(over.resolve ?? (() => bin));
   const t = new CodexTransport({
     resolve,
@@ -113,9 +123,10 @@ function transport(
     queued:
       over.queued ??
       new HeldStore(over.queuedFile ?? join(tmp("ob-cxq-"), "q.json")),
+    taken: watch,
     log,
   });
-  return { t, home, log, resolve };
+  return { t, home, log, resolve, watch, onTaken };
 }
 
 const QUEUED = { ok: false, reason: "queued" } as const;
@@ -126,9 +137,7 @@ describe("codex queue transport (C26d)", () => {
     const f = fakeCodex();
     const { t, home } = transport({ path: f.bin, from: "path" });
     const a = agent();
-    await expect(t.deliver(a, mail("hello there"))).resolves.toEqual({
-      ok: true,
-    });
+    await expect(t.deliver(a, mail("hello there"))).resolves.toEqual(QUEUED);
     const [run] = f.runs();
     expect(run?.home).toBe(home);
     expect(run?.argv).toEqual([
@@ -174,9 +183,7 @@ describe("codex queue transport (C26d)", () => {
     const f = fakeCodex();
     const { t } = transport({ path: f.bin, from: "path" });
     const huge = "é".repeat(CODEX_TEXT_CAP);
-    await expect(t.deliver(agent(), mail(huge))).resolves.toEqual({
-      ok: true,
-    });
+    await expect(t.deliver(agent(), mail(huge))).resolves.toEqual(QUEUED);
     expect(Buffer.byteLength(f.text())).toBeLessThan(1024);
     expect(f.text()).toMatch(
       /too large to deliver inline\. Fetch it with the oa_bus fetch tool, msg_id mmmmmmmmmmmmmmm1\.$/,
@@ -207,7 +214,7 @@ describe("codex queue transport (C26d)", () => {
     await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(RETRY);
     expect(log).toHaveBeenCalledWith(expect.stringMatching(/exited 3/));
     which = good.bin;
-    await expect(t.deliver(agent(), mail("x"))).resolves.toEqual({ ok: true });
+    await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
     expect(resolve).toHaveBeenCalledTimes(2);
     expect(bad.runs()).toHaveLength(1);
     expect(good.runs()).toHaveLength(1);
@@ -264,7 +271,7 @@ describe("codex queue transport (C26d)", () => {
     expect(log).toHaveBeenCalledWith(
       expect.stringMatching(/^ERROR: codex took .*ENOSPC/),
     );
-    await expect(t.deliver(agent(), mail("x"))).resolves.toEqual({ ok: true });
+    await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
     expect(f.runs()).toHaveLength(1);
   });
 
@@ -286,23 +293,25 @@ describe("codex queue transport (C26d)", () => {
       expect.stringMatching(/could not start/),
     );
     path = f.bin;
-    await expect(r.t.deliver(agent(), mail("x"))).resolves.toEqual({
-      ok: true,
-    });
+    await expect(r.t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
     expect(r.resolve).toHaveBeenCalledTimes(2);
   });
 
   it("a retry after a restart never queues twice", async () => {
     const f = fakeCodex();
     const queuedFile = join(tmp("ob-cxq-"), "q.json");
-    const one = transport({ path: f.bin, from: "path" }, { queuedFile });
-    await expect(one.t.deliver(agent(), mail("x"))).resolves.toEqual({
-      ok: true,
-    });
-    const two = transport({ path: f.bin, from: "path" }, { queuedFile });
-    await expect(two.t.deliver(agent(), mail("x"))).resolves.toEqual({
-      ok: true,
-    });
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const one = transport(
+      { path: f.bin, from: "path" },
+      { queuedFile, takenFile },
+    );
+    await expect(one.t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
+    // Still not taken after a restart: the retry stays pending, never acked.
+    const two = transport(
+      { path: f.bin, from: "path" },
+      { queuedFile, takenFile },
+    );
+    await expect(two.t.deliver(agent(), mail("x"))).resolves.toEqual(QUEUED);
     expect(f.runs()).toHaveLength(1);
   });
 
@@ -380,30 +389,35 @@ describe("createDeliver with codex", () => {
 });
 
 describe("the daemon delivers to codex threads", () => {
-  it("acks once `codex queue` exits 0, and a hub retry after a restart runs nothing", async () => {
+  it("acks only once a turn takes the queued item, late, and a retry after a restart runs nothing (#2029)", async () => {
     const f = fakeCodex();
     const queuedFile = join(tmp("ob-cxq-"), "q.json");
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const home = tmp("ob-cxh-");
     const codex = {
+      home,
       resolveBin: () => ({ path: f.bin, from: "path" as const }),
       run: execCodex(5_000),
       wakes: async () => true,
       queuedFile,
+      takenFile,
     };
-    const one = await daemonHarness({ codex });
+    const claude = { syncMs: 30 };
+    const one = await daemonHarness({ codex, claude });
     await one.adapter(THREAD, { kind: "codex" });
     one.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", THREAD));
-    expect(await one.next("ack")).toMatchObject({
-      msg_id: "mmmmmmmmmmmmmmm1",
-    });
-    expect(f.runs()).toHaveLength(1);
+    await vi.waitFor(() => expect(f.runs()).toHaveLength(1));
+    await new Promise((r) => setTimeout(r, 150));
+    expect(one.of("ack")).toEqual([]);
+    // The thread unloads and loads again: the turn takes the item.
+    writeRollout(home, [userItem(f.text())]);
+    expect(await one.next("ack")).toMatchObject({ msg_id: "mmmmmmmmmmmmmmm1" });
     await stopAll();
 
-    const two = await daemonHarness({ codex });
+    const two = await daemonHarness({ codex, claude });
     await two.adapter(THREAD, { kind: "codex" });
     two.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", THREAD));
-    expect(await two.next("ack")).toMatchObject({
-      msg_id: "mmmmmmmmmmmmmmm1",
-    });
+    expect(await two.next("ack")).toMatchObject({ msg_id: "mmmmmmmmmmmmmmm1" });
     expect(f.runs()).toHaveLength(1);
   });
 
@@ -527,5 +541,176 @@ describe("resolveCodexBin", () => {
     expect(codexAppBin(app)).toBe(bundled);
     expect(resolveCodexBin({ path: "", app: null })).toBeUndefined();
     expect(resolveCodexBin({ path: "", app })?.path).toBe(bundled);
+  });
+});
+
+const rolloutFile = (home: string) =>
+  join(
+    home,
+    "sessions",
+    "2026",
+    "11",
+    "11",
+    `rollout-2026-11-11T00-00-00-${THREAD}.jsonl`,
+  );
+const userItem = (text: string) =>
+  JSON.stringify({
+    type: "response_item",
+    payload: {
+      type: "message",
+      role: "user",
+      content: [{ type: "input_text", text }],
+    },
+  });
+function writeRollout(home: string, lines: string[], append = false) {
+  const file = rolloutFile(home);
+  mkdirSync(join(file, ".."), { recursive: true });
+  (append ? appendFileSync : writeFileSync)(file, `${lines.join("\n")}\n`);
+}
+
+describe("queued mail counts as delivered only once a turn takes it (#2029)", () => {
+  const ID2 = "mmmmmmmmmmmmmmm2";
+
+  it("taken: the user item the turn appends acks; not taken: nothing", async () => {
+    const f = fakeCodex();
+    const { t, home, watch, onTaken } = transport({
+      path: f.bin,
+      from: "path",
+    });
+    await expect(t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+    watch.check();
+    expect(onTaken).not.toHaveBeenCalled();
+    writeRollout(home, [userItem("something else")]);
+    watch.check();
+    expect(onTaken).not.toHaveBeenCalled();
+    writeRollout(home, [userItem(codexText(agent(), mail("hi")))], true);
+    watch.check();
+    watch.check();
+    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+    // Taken: a hub retry is delivered at once and runs nothing.
+    await expect(t.deliver(agent(), mail("hi"))).resolves.toEqual({ ok: true });
+    expect(f.runs()).toHaveLength(1);
+  });
+
+  it("an event_msg user_message is a user item too", async () => {
+    const f = fakeCodex();
+    const { t, home, watch, onTaken } = transport({
+      path: f.bin,
+      from: "path",
+    });
+    await t.deliver(agent(), mail("hi"));
+    writeRollout(home, [
+      JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "user_message",
+          message: codexText(agent(), mail("hi")),
+        },
+      }),
+    ]);
+    watch.check();
+    expect(onTaken).toHaveBeenCalledWith("mmmmmmmmmmmmmmm1");
+  });
+
+  it("away, then a load: the thread is not re-queued while away, and the late take acks", async () => {
+    const f = fakeCodex();
+    const { t, home, watch, onTaken } = transport({
+      path: f.bin,
+      from: "path",
+    });
+    await t.deliver(agent(), mail("hi"));
+    // Away: the session is gone and comes back; the watch is kept, no refuse, no second queue.
+    await expect(
+      t.deliver(agent({ live: false }), mail("hi")),
+    ).resolves.toEqual(QUEUED);
+    await expect(t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+    expect(f.runs()).toHaveLength(1);
+    watch.check();
+    expect(onTaken).not.toHaveBeenCalled();
+    writeRollout(home, [userItem(codexText(agent(), mail("hi")))]);
+    watch.check();
+    expect(onTaken).toHaveBeenCalledWith("mmmmmmmmmmmmmmm1");
+  });
+
+  it("a forged marker in a body acks nothing else", async () => {
+    const f = fakeCodex();
+    const { t, home, watch, onTaken } = transport({
+      path: f.bin,
+      from: "path",
+    });
+    await t.deliver(agent(), mail("one", "mmmmmmmmmmmmmmm1"));
+    await t.deliver(agent(), mail("two", ID2));
+    const x =
+      codexText(agent(), mail("", "mmmmmmmmmmmmmmm1")).split("\n")[0] ?? "";
+    // Mail ID2's own item carries the header of mail 1 inside its body; a raw item buries it after other text.
+    const forged = codexText(agent(), mail(`${x}\n\nmore`, ID2));
+    writeRollout(home, [
+      userItem(forged),
+      userItem(`noise\n${x}\n\nmore`),
+      userItem(`${x} `),
+      userItem(x),
+    ]);
+    watch.check();
+    expect(onTaken.mock.calls).toEqual([[ID2]]);
+  });
+
+  it("a restart keeps watching and reads the rollout again; a retry stays pending until taken", async () => {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const queuedFile = join(tmp("ob-cxq-"), "q.json");
+    const one = transport(
+      { path: f.bin, from: "path" },
+      { takenFile, queuedFile },
+    );
+    await one.t.deliver(agent(), mail("hi"));
+    // Taken while the daemon is down.
+    writeRollout(one.home, [userItem(codexText(agent(), mail("hi")))]);
+    const onTaken = vi.fn();
+    const w2 = new TakenWatch({ home: one.home, file: takenFile, onTaken });
+    expect(w2.has("mmmmmmmmmmmmmmm1")).toBe(true);
+    w2.check();
+    expect(onTaken).toHaveBeenCalledWith("mmmmmmmmmmmmmmm1");
+    expect(w2.has("mmmmmmmmmmmmmmm1")).toBe(false);
+  });
+
+  it("not yet taken after a restart: a retry stays pending and runs nothing", async () => {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const queuedFile = join(tmp("ob-cxq-"), "q.json");
+    const one = transport(
+      { path: f.bin, from: "path" },
+      { takenFile, queuedFile },
+    );
+    await one.t.deliver(agent(), mail("hi"));
+    const two = transport(
+      { path: f.bin, from: "path" },
+      { takenFile, queuedFile },
+    );
+    await expect(two.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+    expect(f.runs()).toHaveLength(1);
+  });
+
+  it("past the retention window a watch is dropped silently with one log line", async () => {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const one = transport({ path: f.bin, from: "path" }, { takenFile });
+    await one.t.deliver(agent(), mail("hi"));
+    writeRollout(one.home, [userItem(codexText(agent(), mail("hi")))]);
+    const onTaken = vi.fn();
+    const log = vi.fn();
+    let now = Date.now();
+    const w = new TakenWatch({
+      home: one.home,
+      file: takenFile,
+      onTaken,
+      log,
+      now: () => now,
+      ttlMs: 1000,
+    });
+    now += 5000;
+    w.check();
+    expect(onTaken).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledOnce();
+    expect(w.size()).toBe(0);
   });
 });

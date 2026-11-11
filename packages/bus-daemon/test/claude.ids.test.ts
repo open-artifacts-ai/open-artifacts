@@ -118,6 +118,7 @@ describe("reply ids in the daemon", () => {
       BUS_CAPS.links,
       BUS_CAPS.follow,
       BUS_CAPS.link,
+      BUS_CAPS.noticeAck,
     ]);
   });
 
