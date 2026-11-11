@@ -90,22 +90,27 @@ function SnippetTabs({
           each cut edge and the picked tab kept in view (the viewer panel's
           TabStrip). The hairline is an inset shadow, the underline sits at the
           bottom edge, and the focus ring is inset. */}
-      <TabStrip tab={String(current)} count={list.length} className="">
-        <TabsList
-          variant="line"
-          className="flex w-auto justify-start gap-x-[var(--oa-space-4)] overflow-x-auto overflow-y-hidden rounded-none p-0 shadow-[inset_0_-1px_0_var(--color-border)] [scrollbar-width:none] group-data-[orientation=horizontal]/tabs:h-auto"
-        >
-          {list.map(({ agent }, i) => (
-            <TabsTrigger
-              key={agent}
-              value={String(i)}
-              className="h-[34px] flex-none px-0 text-[length:var(--oa-text-sm)] group-data-[orientation=horizontal]/tabs:after:bottom-0 group-data-[orientation=horizontal]/tabs:after:h-[2px] focus-visible:outline-offset-[-2px]"
-            >
-              {agent}
-            </TabsTrigger>
-          ))}
-        </TabsList>
-      </TabStrip>
+      {/* The hairline spans the content. The strip is 8px wider each side
+          (px-2 tabs, so the inset focus ring clears the label), and the first
+          label still lines up with the content edge. */}
+      <div className="shadow-[inset_0_-1px_0_var(--color-border)]">
+        <TabStrip tab={String(current)} count={list.length} className="-mx-2">
+          <TabsList
+            variant="line"
+            className="flex w-auto justify-start gap-0 overflow-x-auto overflow-y-hidden rounded-none p-0 [scrollbar-width:none] group-data-[orientation=horizontal]/tabs:h-auto"
+          >
+            {list.map(({ agent }, i) => (
+              <TabsTrigger
+                key={agent}
+                value={String(i)}
+                className="h-[34px] flex-none px-2 text-[length:var(--oa-text-sm)] group-data-[orientation=horizontal]/tabs:after:bottom-0 group-data-[orientation=horizontal]/tabs:after:h-[2px] focus-visible:outline-offset-[-2px]"
+              >
+                {agent}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </TabStrip>
+      </div>
       {list.map(({ agent, s }, i) => (
         <TabsContent
           key={agent}
