@@ -6401,9 +6401,22 @@ export class BusHub extends DurableObject<Env> {
     agent: AgentRow,
     text: string,
     ack: string | null,
+    ownSettledByCaller = false,
   ): boolean {
     const frame = noticeFrame(agent, text);
     if (!trySendFrame(ws, frame)) return false;
+    if (ack !== null && !noticeAckGated(ws)) {
+      // #2062: no notice_ack on this socket, so a send is the delivery: the
+      // row's target and every folded one settle now. The live path's own
+      // target is settled by the Worker from the "delivered" outcome.
+      try {
+        const t = JSON.parse(ack) as AckTarget & { more?: AckTarget[] };
+        const all = [...(ownSettledByCaller ? [] : [t]), ...(t.more ?? [])];
+        for (const x of all) this.#settleTarget(x, "delivered");
+      } catch {
+        // a malformed target has nothing to settle
+      }
+    }
     if (ack !== null && noticeAckGated(ws) && frame.type === "deliver") {
       const sql = this.ctx.storage.sql;
       const expiresAt = this.#now() + NOTICE_ACK_TTL_MS;
@@ -6594,6 +6607,7 @@ export class BusHub extends DurableObject<Env> {
           agent,
           noticeTextOf(merged),
           noticeSendAck(merged),
+          true,
         )
       ) {
         sql.exec(

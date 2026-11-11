@@ -6,6 +6,8 @@ import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
+import { migrateHub } from "../../src/bus/schema.js";
+import { runtimeStub } from "../../src/runtime/do.js";
 import {
   notifyAgent,
   type RosterAgent,
@@ -26,11 +28,11 @@ let seq = 0;
 const id = (t: string) => `${t}${++seq}`;
 const ACK = [BUS_CAPS.follow, BUS_CAPS.noticeAck];
 
-async function setup() {
+async function setup(caps: string[] = ACK) {
   const m = await member();
   const mach = await machine("Laptop", m.userId);
   const d = await daemon(mach.token);
-  d.send({ ...plainHello(id("h")), caps: ACK } as never);
+  d.send({ ...plainHello(id("h")), caps } as never);
   await waitFor(d, "hello_ok");
   const namespace = ns("fold");
   const ref = id("ref");
@@ -103,9 +105,9 @@ const targetState = (art: string, commentId: string) =>
 const send = (s: S, art: string, c: string, fromYourUser = false) =>
   notifyAgent(e, art, 1, "t1", c, "mention", s.to, fromYourUser);
 
-async function comeBack(s: S) {
+async function comeBack(s: S, caps: string[] = ACK) {
   const d = await daemon(s.mach.token);
-  d.send({ ...plainHello(id("h")), caps: ACK } as never);
+  d.send({ ...plainHello(id("h")), caps } as never);
   await waitFor(d, "hello_ok");
   d.send(up(id("u"), s.ref, s.ok.bus_name, s.namespace));
   return d;
@@ -301,5 +303,62 @@ describe("comment notice folding (#1752)", () => {
       await notifyAgent(e, art, 1, "t1", "c2", kind, s.to, false);
     }
     expect(await rows(s)).toHaveLength(4);
+  });
+
+  it("a folded held row flushed to a socket without notice_ack settles every target delivered (#2062)", async () => {
+    const s = await setup([BUS_CAPS.follow]);
+    const art = `art${++seq}`;
+    for (const c of ["c1", "c2", "c3"]) {
+      await seedTarget(art, c, s.to.key);
+      await send(s, art, c);
+    }
+    await comeBack(s, [BUS_CAPS.follow]);
+    for (const c of ["c1", "c2", "c3"])
+      await vi.waitFor(async () =>
+        expect(await targetState(art, c)).toBe("delivered"),
+      );
+  });
+
+  it("a late delivered ack moves a gone target to delivered; seen stays seen (#2062)", async () => {
+    const art = `art${++seq}`;
+    await seedTarget(art, "c1", "k1");
+    await seedTarget(art, "c2", "k2");
+    const stub = runtimeStub(e, art);
+    const settle = (c: string, k: string, state: "delivered" | "gone") =>
+      stub.commentsTargetSettle({
+        commentId: c,
+        kind: "mention",
+        key: k,
+        state,
+      });
+    await settle("c1", "k1", "gone");
+    expect(await targetState(art, "c1")).toBe("gone");
+    await settle("c1", "k1", "delivered");
+    expect(await targetState(art, "c1")).toBe("delivered");
+    await runInDurableObject(
+      e.ARTIFACT_RUNTIME.get(e.ARTIFACT_RUNTIME.idFromName(art)),
+      (_i, st) =>
+        st.storage.sql.exec(
+          "update comment_targets set state = 'seen' where comment_id = 'c2'",
+        ),
+    );
+    await settle("c2", "k2", "delivered");
+    expect(await targetState(art, "c2")).toBe("seen");
+  });
+
+  it("migrateHub adds each fold column on its own when only fold_n exists (#2062)", async () => {
+    const s = await setup();
+    await runInDurableObject(s.hub, (_i, st) => {
+      st.storage.sql.exec("alter table notices drop column fold_ref");
+      st.storage.sql.exec("alter table notices drop column fold_acks");
+      migrateHub(st.storage.sql);
+      const cols = st.storage.sql
+        .exec<{ name: string }>("select name from pragma_table_info('notices')")
+        .toArray()
+        .map((r) => r.name);
+      expect(cols).toEqual(
+        expect.arrayContaining(["fold_n", "fold_ref", "fold_acks"]),
+      );
+    });
   });
 });

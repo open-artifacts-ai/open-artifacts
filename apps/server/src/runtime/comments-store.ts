@@ -647,6 +647,13 @@ export function setTargetState(
  * #1752: a daemon's ack ("delivered") or refusal ("gone") of a notice. Moves
  * a target only out of "queued": seen, delivered and gone stay. True when it moved.
  */
+/**
+ * #2062: moves a queued target to `state`. A late "delivered" also lifts a
+ * "gone" target (a notice held past the Worker's budget, acked afterwards);
+ * "seen" and "delivered" stay final. The asker bound refunded when the target
+ * went gone is NOT re-spent: one extra ask is accepted. Only queued->gone
+ * refunds, so no path refunds twice.
+ */
 export function settleTarget(
   sql: SqlStorage,
   commentId: string,
@@ -656,11 +663,12 @@ export function settleTarget(
 ): boolean {
   return (
     sql.exec(
-      "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ? and state = 'queued'",
+      "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ? and (state = 'queued' or (? = 'delivered' and state = 'gone'))",
       state,
       commentId,
       kind,
       key,
+      state,
     ).rowsWritten > 0
   );
 }
