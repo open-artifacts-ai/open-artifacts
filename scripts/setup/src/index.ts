@@ -25,6 +25,7 @@ import { healthcheck, selftest } from "./steps/selftest.ts";
 import { withTokenFiles } from "./token-files.ts";
 import { isTokenCommand, tokenCommand } from "./token-page.ts";
 import { parseVarFlags } from "./tunables.ts";
+import { uninstallCommand } from "./uninstall.ts";
 
 export const STEPS: Step[] = [
   prereqs,
@@ -456,6 +457,10 @@ export const HELP = `Usage: pnpm oa:setup [options]
                 rolls back and the data stays. Not with --upgrade, --check or --ci.
                 Reads the deploy token like setup (env, --token-file, then the
                 saved file).
+  --uninstall --check  Dry run: list what setup created (Access app, email domain,
+                custom domains, Worker, KV, D1, R2, local files) and how to remove
+                each, in the order that leaves nothing dangling. Reads only the saved
+                state; changes nothing. There is no real delete yet. See /docs/uninstall/.
   -h, --help`;
 
 /** Runs setup; resolves to the exit code (0 ok, 2 action_required, 1 error). */
@@ -471,6 +476,7 @@ export async function run(
   }
   if (isTokenCommand(argv)) return tokenCommand(argv, deps, root);
   if (argv.includes("--rollback")) return rollbackCommand(argv, deps, root);
+  if (argv.includes("--uninstall")) return uninstallCommand(argv, deps, root);
   const ci = argv.includes("--ci");
   const json = argv.includes("--json") || ci;
   let human: string | undefined;
