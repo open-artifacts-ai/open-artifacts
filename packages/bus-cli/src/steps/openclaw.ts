@@ -38,7 +38,7 @@ export const OPENCLAW_NO_CLI =
   "no openclaw binary found; its config may still list oa-bus";
 /** The note when the folder is gone and OpenClaw's own uninstall could not clear the config entry. */
 export const OPENCLAW_STRAY_NOTE = (reason: string): string =>
-  `the oa-bus plugin folder is gone and \`openclaw plugins uninstall oa-bus\` failed (${reason}); run that command yourself to remove oa-bus from OpenClaw's config`;
+  `Couldn't remove oa-bus from OpenClaw's config: its plugin folder is gone, and \`openclaw plugins uninstall oa-bus\` failed (${reason}). Run that command yourself to finish.`;
 /** The CLI's default 10 s kill is too short for OpenClaw: install is the slow one. */
 const INSTALL_TIMEOUT_MS = 180_000;
 const ENABLE_TIMEOUT_MS = 60_000;

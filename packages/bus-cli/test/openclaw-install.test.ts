@@ -621,7 +621,7 @@ describe("uninstallAdapters: openclaw", () => {
     expect(out.removed).not.toContain("openclaw");
     expect(out.skipped).toEqual([]);
     expect(out.notes.join("\n")).toContain(
-      "`openclaw plugins uninstall oa-bus` failed (locked)",
+      "Couldn't remove oa-bus from OpenClaw's config: its plugin folder is gone, and `openclaw plugins uninstall oa-bus` failed (locked). Run that command yourself to finish.",
     );
   });
 
