@@ -33,7 +33,7 @@ export type AttestDeps = {
    */
   procStart?: (pid: number) => string | null;
   /** Root sessions open in TUIs; `service` limits them to TUIs attached to that service pid. */
-  openSessions?: (service: number) => Set<string>;
+  openSessions?: (service: number, ref: string) => Set<string>;
   /** OS reads that tie a TUI to its service (exe, ppid, sockets). */
   attach?: AttachDeps;
   /** The executable a pid runs (`ps -o comm=`), null when it cannot be told. */
@@ -133,8 +133,8 @@ function attestOpenCode(hello: Hello, deps: AttestDeps): Attest {
   if (service === undefined)
     return { ok: false, reason: "not running under an OpenCode service" };
   const open =
-    deps.openSessions ?? ((s) => defaultOpenSessions(s, deps.attach));
-  if (!open(service).has(hello.agent_ref))
+    deps.openSessions ?? ((s, ref) => defaultOpenSessions(s, ref, deps.attach));
+  if (!open(service, hello.agent_ref).has(hello.agent_ref))
     return {
       ok: false,
       reason: "opencode session is not open in a TUI attached to this service",
@@ -159,11 +159,16 @@ export function commOf(pid: number): string | null {
 
 function defaultOpenSessions(
   service: number,
+  ref: string,
   attach?: AttachDeps,
 ): Set<string> {
-  return openSessions(opencodePresenceDir(), {
-    accept: attachedTo(service, attach ?? defaultAttachDeps),
-    isRunning,
-    procStartEpoch: (pid) => lstartEpoch(procStartOf(pid)),
-  });
+  return openSessions(
+    opencodePresenceDir(),
+    {
+      accept: attachedTo(service, attach ?? defaultAttachDeps),
+      isRunning,
+      procStartEpoch: (pid) => lstartEpoch(procStartOf(pid)),
+    },
+    ref,
+  );
 }

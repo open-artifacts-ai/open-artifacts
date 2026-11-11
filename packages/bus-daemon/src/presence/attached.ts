@@ -9,14 +9,18 @@ const READ_TIMEOUT_MS = 1500;
  * What the daemon asks the OS about a TUI and an OpenCode service. Every
  * method returns null when it cannot tell; null never counts as attached.
  */
+/** One established socket: `local` and `remote` as `addr:port`, `[v6]:port` for v6. */
+export type Pair = { local: string; remote: string };
+
 export type AttachDeps = {
   /** Real path of the pid's executable. */
   exeOf: (pid: number) => string | null;
   ppidOf: (pid: number) => number | null;
-  /** Local ports the pid listens on (TCP, loopback or wildcard). */
-  listenPorts: (pid: number) => Set<number> | null;
-  /** Remote ports of the pid's established loopback TCP connections. */
-  connectedPorts: (pid: number) => Set<number> | null;
+  /**
+   * The pid's established TCP sockets as exact endpoint pairs (address and
+   * port, family kept, v4-mapped v6 folded to v4). Null when unreadable.
+   */
+  established: (pid: number) => Pair[] | null;
 };
 
 /**
@@ -25,7 +29,7 @@ export type AttachDeps = {
  *
  * A TUI is attached when it runs the same executable as the service AND is
  * either the service's parent (a standalone TUI spawns its own server) or
- * holds a connection to a port the service listens on. The executable check
+ * holds the other end of one of the service's established connections. The executable check
  * is what stops a script under another service from writing a presence file
  * under its own pid and opening a socket to this service.
  *
@@ -45,7 +49,7 @@ export function attachedTo(
   deps: AttachDeps,
 ): (tui: number) => boolean {
   let svcExe: string | null | undefined;
-  let ports: Set<number> | null | undefined;
+  let svcSockets: Pair[] | null | undefined;
   let parent: number | null | undefined;
   return (tui) => {
     if (svcExe === undefined) svcExe = exePath(deps.exeOf(service));
@@ -53,12 +57,15 @@ export function attachedTo(
     if (exePath(deps.exeOf(tui)) !== svcExe) return false;
     if (parent === undefined) parent = deps.ppidOf(service);
     if (parent === tui) return true;
-    if (ports === undefined) ports = deps.listenPorts(service);
-    if (!ports || ports.size === 0) return false;
-    const mine = deps.connectedPorts(tui);
+    if (svcSockets === undefined) svcSockets = deps.established(service);
+    if (!svcSockets || svcSockets.length === 0) return false;
+    const mine = deps.established(tui);
     if (!mine) return false;
-    for (const p of mine) if (ports.has(p)) return true;
-    return false;
+    // Socket pairs, not ports: the TUI's socket and the service's are the two
+    // ends of one connection, so 127.0.0.2:4096 is not 127.0.0.1:4096.
+    return mine.some((t) =>
+      svcSockets?.some((x) => x.remote === t.local && x.local === t.remote),
+    );
   };
 }
 
@@ -100,36 +107,52 @@ export function cachedAttach(
 
 // ---- Linux: /proc ----
 
-type TcpRow = {
-  state: string;
-  localPort: number;
-  remote: string;
-  inode: string;
-};
+type TcpRow = { state: string; local: string; remote: string; inode: string };
 
-/** Rows of /proc/net/tcp or tcp6. Addresses are hex; ports are big-endian hex. */
+const hexWord = (w: string): string =>
+  (w.match(/../g) ?? [])
+    .reverse()
+    .map((b) => Number.parseInt(b, 16))
+    .join(".");
+
+/** /proc prints each 32-bit word of an address little-endian. */
+function hexAddr(hex: string): string | null {
+  if (/^[0-9A-F]{8}$/i.test(hex)) return hexWord(hex);
+  if (!/^[0-9A-F]{32}$/i.test(hex)) return null;
+  const words = (hex.match(/.{8}/g) ?? []).map((w) =>
+    (w.match(/../g) ?? []).reverse().join(""),
+  );
+  // ::ffff:a.b.c.d is the same endpoint as a.b.c.d.
+  if (
+    words[0] === "00000000" &&
+    words[1] === "00000000" &&
+    words[2]?.toUpperCase() === "0000FFFF"
+  )
+    return hexWord((hex.slice(24) ?? "").toUpperCase());
+  const groups = words.flatMap((w) => [w.slice(0, 4), w.slice(4)]);
+  return `[${groups.map((g) => g.toLowerCase().replace(/^0+(?=.)/, "")).join(":")}]`;
+}
+
+function endpoint(field: string): string | null {
+  const [addr, port] = field.split(":");
+  if (!addr || !port) return null;
+  const a = hexAddr(addr);
+  return a === null ? null : `${a}:${Number.parseInt(port, 16)}`;
+}
+
+/** Rows of /proc/net/tcp or tcp6 whose addresses parse. */
 export function parseProcNetTcp(text: string): TcpRow[] {
   const rows: TcpRow[] = [];
   for (const line of text.split("\n").slice(1)) {
     const f = line.trim().split(/\s+/);
-    if (f.length < 10) continue;
-    const [la, ra] = [f[1], f[2]];
-    const lp = la?.split(":")[1];
-    if (!la || !ra || !lp || !f[3] || !f[9]) continue;
-    rows.push({
-      state: f[3],
-      localPort: Number.parseInt(lp, 16),
-      remote: ra,
-      inode: f[9],
-    });
+    if (f.length < 10 || !f[1] || !f[2] || !f[3] || !f[9]) continue;
+    const local = endpoint(f[1]);
+    const remote = endpoint(f[2]);
+    if (local === null || remote === null) continue;
+    rows.push({ state: f[3], local, remote, inode: f[9] });
   }
   return rows;
 }
-
-// /proc prints addresses as little-endian 32-bit words: 127.0.0.1, ::1, ::ffff:127.0.0.1.
-const LOOPBACK =
-  /^(0100007F|00000000000000000000000001000000|0000000000000000FFFF00000100007F):/i;
-const isLoopback = (remote: string): boolean => LOOPBACK.test(remote);
 
 function socketInodes(pid: number): Set<string> | null {
   try {
@@ -161,28 +184,13 @@ function tcpRows(): TcpRow[] | null {
   }
 }
 
-function linuxListenPorts(pid: number): Set<number> | null {
+function linuxEstablished(pid: number): Pair[] | null {
   const inodes = socketInodes(pid);
   const rows = tcpRows();
   if (!inodes || !rows) return null;
-  const out = new Set<number>();
-  for (const r of rows)
-    if (r.state === "0A" && inodes.has(r.inode)) out.add(r.localPort);
-  return out;
-}
-
-function linuxConnectedPorts(pid: number): Set<number> | null {
-  const inodes = socketInodes(pid);
-  const rows = tcpRows();
-  if (!inodes || !rows) return null;
-  const out = new Set<number>();
-  for (const r of rows) {
-    if (r.state !== "01" || !inodes.has(r.inode) || !isLoopback(r.remote))
-      continue;
-    const port = Number.parseInt(r.remote.split(":")[1] ?? "", 16);
-    if (Number.isInteger(port)) out.add(port);
-  }
-  return out;
+  return rows
+    .filter((r) => r.state === "01" && inodes.has(r.inode))
+    .map((r) => ({ local: r.local, remote: r.remote }));
 }
 
 // ---- lsof (macOS) and ps ----
@@ -207,28 +215,19 @@ export function parseLsofNames(text: string): string[] {
     .map((l) => l.slice(1));
 }
 
-const portOf = (addr: string): number | null => {
-  const m = /:(\d+)$/.exec(addr);
-  return m?.[1] ? Number(m[1]) : null;
-};
-
-export function lsofListenPorts(text: string): Set<number> {
-  const out = new Set<number>();
-  for (const n of parseLsofNames(text)) {
-    if (n.includes("->")) continue;
-    const p = portOf(n);
-    if (p !== null) out.add(p);
-  }
-  return out;
+/** `[::ffff:127.0.0.1]:5` and `127.0.0.1:5` are one endpoint. */
+function lsofEndpoint(e: string): string {
+  const m = /^\[::ffff:(\d+\.\d+\.\d+\.\d+)\](:\d+)$/i.exec(e);
+  return m ? `${m[1]}${m[2]}` : e.toLowerCase();
 }
 
-export function lsofConnectedPorts(text: string): Set<number> {
-  const out = new Set<number>();
+/** `n<local>-><remote>` lines of an ESTABLISHED listing. */
+export function lsofEstablished(text: string): Pair[] {
+  const out: Pair[] = [];
   for (const n of parseLsofNames(text)) {
-    const [, remote] = n.split("->");
-    if (!remote || !/^(127\.0\.0\.1|\[::1\]|localhost):/.test(remote)) continue;
-    const p = portOf(remote);
-    if (p !== null) out.add(p);
+    const [local, remote] = n.split("->");
+    if (local && remote)
+      out.push({ local: lsofEndpoint(local), remote: lsofEndpoint(remote) });
   }
   return out;
 }
@@ -250,21 +249,8 @@ export const defaultAttachDeps: AttachDeps = {
     const out = run("ps", ["-o", "ppid=", "-p", String(pid)])?.trim();
     return out && /^\d+$/.test(out) ? Number(out) : null;
   },
-  listenPorts(pid) {
-    if (process.platform === "linux") return linuxListenPorts(pid);
-    const out = run("lsof", [
-      "-nP",
-      "-a",
-      "-p",
-      String(pid),
-      "-iTCP",
-      "-sTCP:LISTEN",
-      "-Fn",
-    ]);
-    return out === null ? null : lsofListenPorts(out);
-  },
-  connectedPorts(pid) {
-    if (process.platform === "linux") return linuxConnectedPorts(pid);
+  established(pid) {
+    if (process.platform === "linux") return linuxEstablished(pid);
     const out = run("lsof", [
       "-nP",
       "-a",
@@ -274,6 +260,6 @@ export const defaultAttachDeps: AttachDeps = {
       "-sTCP:ESTABLISHED",
       "-Fn",
     ]);
-    return out === null ? null : lsofConnectedPorts(out);
+    return out === null ? null : lsofEstablished(out);
   },
 };

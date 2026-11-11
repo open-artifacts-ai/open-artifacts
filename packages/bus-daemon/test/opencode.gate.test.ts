@@ -546,8 +546,19 @@ describe("opencode through runDaemon", () => {
         attach: {
           exeOf: (pid) => (pid === 4321 || pid >= 8000 ? "/oc" : null),
           ppidOf: () => null,
-          listenPorts: (pid) => new Set([pid]),
-          connectedPorts: () => conn,
+          // A service holds the accepted end of each TUI connection; the TUI the other end.
+          established: (pid) =>
+            pid >= 8000
+              ? [
+                  {
+                    local: `127.0.0.1:${pid}`,
+                    remote: `127.0.0.1:${50000 + pid}`,
+                  },
+                ]
+              : [...conn].map((svc) => ({
+                  local: `127.0.0.1:${50000 + svc}`,
+                  remote: `127.0.0.1:${svc}`,
+                })),
         },
       },
     });

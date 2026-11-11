@@ -542,14 +542,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     deps.bindingNow,
   );
   /** A hello counts only sessions in TUIs attached to its own service (#1950). */
-  const openCodeSessionsFor = (service: number): Set<string> =>
+  const openCodeSessionsFor = (service: number, ref: string): Set<string> =>
     oc.openSessions
       ? oc.openSessions()
-      : openSessions(presenceDir, {
-          isRunning: ocRunning,
-          procStartEpoch: (pid, stamp) => lstartEpoch(ocStart(pid, stamp)),
-          accept: ocAttached(service),
-        });
+      : openSessions(
+          presenceDir,
+          {
+            isRunning: ocRunning,
+            procStartEpoch: (pid, stamp) => lstartEpoch(ocStart(pid, stamp)),
+            accept: ocAttached(service),
+          },
+          ref,
+        );
   const ocSpawn = oc.spawn ?? execSpawn(20_000);
   /** Unknown until read, just before the hub link starts: no delivery comes sooner. */
   let promptIdSupported = false;
@@ -1607,7 +1611,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hello.kind === "opencode" &&
           prev.pid !== pid &&
           (ocServiceGone(prev.ref, prev.pid) ||
-            !openCodeSessionsFor(prev.pid).has(prev.ref))
+            !openCodeSessionsFor(prev.pid, prev.ref).has(prev.ref))
         ) {
           prev.pid = pid;
           ocServiceStart.set(prev.ref, ocStart(pid));

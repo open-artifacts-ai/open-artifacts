@@ -182,8 +182,19 @@ describe("review: pid reuse", () => {
         attach: {
           exeOf: (pid) => (pid === 4321 || pid >= 8000 ? "/oc" : null),
           ppidOf: () => null,
-          listenPorts: (pid) => new Set([pid]),
-          connectedPorts: () => new Set([8001, 8002]),
+          // A service holds the accepted end of each TUI connection; the TUI the other end.
+          established: (pid) =>
+            pid >= 8000
+              ? [
+                  {
+                    local: `127.0.0.1:${pid}`,
+                    remote: `127.0.0.1:${50000 + pid}`,
+                  },
+                ]
+              : [...new Set([8001, 8002])].map((svc) => ({
+                  local: `127.0.0.1:${50000 + svc}`,
+                  remote: `127.0.0.1:${svc}`,
+                })),
         },
       },
     });

@@ -20,8 +20,13 @@ export type PresenceDeps = {
  * Root session ids some running TUI has open. The plugin removes its file on
  * a clean exit only, so a TUI killed by a signal leaves one behind; once its
  * pid is reused, a file written before that process started counts for nothing.
+ * With `only`, the answer is that ref alone, and the scan stops at the first row that passes.
  */
-export function openSessions(dir: string, deps: PresenceDeps): Set<string> {
+export function openSessions(
+  dir: string,
+  deps: PresenceDeps,
+  only?: string,
+): Set<string> {
   const out = new Set<string>();
   let names: string[];
   try {
@@ -42,10 +47,14 @@ export function openSessions(dir: string, deps: PresenceDeps): Set<string> {
     const pid = data?.pid;
     if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 1)
       continue;
-    if (!Array.isArray(data.sessionIDs) || !deps.isRunning(pid)) continue;
+    if (!Array.isArray(data.sessionIDs)) continue;
+    // Asked about one ref: rows that do not list it cost no OS check.
+    if (only !== undefined && !data.sessionIDs.includes(only)) continue;
+    if (!deps.isRunning(pid)) continue;
     if (deps.accept && !deps.accept(pid)) continue;
     const started = deps.procStartEpoch(pid, String(mtime));
     if (started !== null && started > mtime + START_TOLERANCE_SECONDS) continue;
+    if (only !== undefined) return new Set([only]);
     for (const id of data.sessionIDs) if (typeof id === "string") out.add(id);
   }
   return out;
