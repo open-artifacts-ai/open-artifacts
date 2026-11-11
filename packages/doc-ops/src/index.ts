@@ -16,6 +16,7 @@ export {
 export {
   closestText,
   findQuote,
+  posAt,
   type QuoteLookup,
   type QuoteMatch,
   type VisibleText,

@@ -1,6 +1,6 @@
 import { markdownToDoc } from "@oa/doc-schema";
 import { describe, expect, it } from "vitest";
-import { closestText, findQuote, visibleText } from "../src/index.ts";
+import { closestText, findQuote, posAt, visibleText } from "../src/index.ts";
 
 describe("visibleText", () => {
   it("is the text people see, one line break between blocks", () => {
@@ -12,12 +12,12 @@ describe("visibleText", () => {
 
   it("maps every character to its ProseMirror position", () => {
     const { doc } = markdownToDoc("ab\n\ncd\n");
-    const { text, pos } = visibleText(doc);
-    expect(pos.length).toBe(text.length);
-    expect(pos[2]).toBe(-1);
+    const vt = visibleText(doc);
+    const { text } = vt;
+    expect(posAt(vt, 2)).toBe(-1);
     for (let i = 0; i < text.length; i++) {
-      if (pos[i] >= 0)
-        expect(doc.textBetween(pos[i], pos[i] + 1)).toBe(text[i]);
+      const p = posAt(vt, i);
+      if (p >= 0) expect(doc.textBetween(p, p + 1)).toBe(text[i]);
     }
   });
 

@@ -2,32 +2,43 @@ import type { Node as PMNode } from "prosemirror-model";
 
 /**
  * The text a person sees in a doc, with no Markdown symbols: every non-empty
- * textblock's text in document order, one line break between blocks. `pos`
- * holds the ProseMirror position of each character, or -1 for a line break
- * that separates two blocks.
+ * textblock's text in document order, one line break between blocks. Kept as
+ * one string plus a small table per block (not one entry per character), so
+ * building it for a doc at the size cap takes a few milliseconds.
  */
 export interface VisibleText {
   text: string;
-  pos: number[];
+  /** Index in `text` where each block's text starts. */
+  starts: number[];
+  /** ProseMirror position of each block's first character. */
+  at: number[];
+  /** Each block's text length. */
+  lens: number[];
+  /** A rule or empty block lies between this block and the one before it. */
+  hiddenBefore: boolean[];
 }
 
-/** pos value of a line break between two blocks. */
+/** posAt value of a line break between two blocks. */
 export const BREAK = -1;
-/** pos value of a line break with a rule or empty block between its blocks. */
+/** posAt value of a line break with a rule or empty block between its blocks. */
 export const HIDDEN_BREAK = -2;
 
 export function visibleText(doc: PMNode): VisibleText {
   const parts: string[] = [];
-  const pos: number[] = [];
+  const starts: number[] = [];
+  const at: number[] = [];
+  const lens: number[] = [];
+  const hiddenBefore: boolean[] = [];
+  let length = 0;
   // A rule or an empty block shows no text; a quote spanning one would
   // delete it unseen, so its break is marked and matches over it are refused.
   let hidden = false;
-  doc.descendants((node, at) => {
+  doc.descendants((node, pos) => {
     if (!node.isTextblock) {
       if (node.isBlock && node.isLeaf) hidden = true;
       return true;
     }
-    // Slice-1 textblocks hold only text nodes, so character i sits at at+1+i.
+    // Slice-1 textblocks hold only text nodes, so character i sits at pos+1+i.
     const text = node.textContent;
     if (text.length === 0) {
       hidden = true;
@@ -35,14 +46,41 @@ export function visibleText(doc: PMNode): VisibleText {
     }
     if (parts.length > 0) {
       parts.push("\n");
-      pos.push(hidden ? HIDDEN_BREAK : BREAK);
+      length += 1;
     }
+    hiddenBefore.push(hidden && parts.length > 0);
     hidden = false;
+    starts.push(length);
+    at.push(pos + 1);
+    lens.push(text.length);
     parts.push(text);
-    for (let i = 0; i < text.length; i++) pos.push(at + 1 + i);
+    length += text.length;
     return false;
   });
-  return { text: parts.join(""), pos };
+  return { text: parts.join(""), starts, at, lens, hiddenBefore };
+}
+
+// The block holding text index i: the last one starting at or before i.
+function blockOf(vt: VisibleText, i: number): number {
+  let lo = 0;
+  let hi = vt.starts.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (vt.starts[mid] <= i) lo = mid;
+    else hi = mid - 1;
+  }
+  return lo;
+}
+
+/**
+ * The ProseMirror position of the character at text index i, or BREAK or
+ * HIDDEN_BREAK for a line break between blocks.
+ */
+export function posAt(vt: VisibleText, i: number): number {
+  const b = blockOf(vt, i);
+  const offset = i - vt.starts[b];
+  if (offset < vt.lens[b]) return vt.at[b] + offset;
+  return vt.hiddenBefore[b + 1] ? HIDDEN_BREAK : BREAK;
 }
 
 /**
@@ -85,25 +123,64 @@ export type QuoteLookup =
   | { kind: "ambiguous"; matches: number }
   | { kind: "spans_hidden" };
 
+interface Span {
+  index: number;
+  end: number;
+}
+
+// Every place the quote's text occurs, overlapping ones too, at most
+// MAX_MATCHES that pass `accept`. A quote with no line break is a plain
+// substring; one with breaks matches a run of breaks as one (see pattern()).
 function matchesOf(
   text: string,
-  source: string,
-): { index: number; end: number }[] {
-  const re = new RegExp(source, "gu");
-  const out: { index: number; end: number }[] = [];
+  quote: string,
+  accept: (index: number, end: number) => boolean,
+): Span[] {
+  const out: Span[] = [];
+  if (!quote.includes("\n")) {
+    for (
+      let at = text.indexOf(quote);
+      at >= 0;
+      at = text.indexOf(quote, at + 1)
+    ) {
+      if (accept(at, at + quote.length))
+        out.push({ index: at, end: at + quote.length });
+      if (out.length >= MAX_MATCHES) break;
+    }
+    return out;
+  }
+  const re = new RegExp(pattern(quote), "gu");
   for (;;) {
     const m = re.exec(text);
     if (!m) break;
-    if (m[0].length === 0) {
-      re.lastIndex = m.index + 1;
-      continue;
-    }
-    out.push({ index: m.index, end: m.index + m[0].length });
-    if (out.length >= MAX_MATCHES) break;
     // Overlapping matches count too ("aa" twice in "aaa").
     re.lastIndex = m.index + 1;
+    if (m[0].length === 0) continue;
+    const end = m.index + m[0].length;
+    if (accept(m.index, end)) out.push({ index: m.index, end });
+    if (out.length >= MAX_MATCHES) break;
   }
   return out;
+}
+
+// A prefix or suffix is checked at a match, not searched for: a plain compare
+// when it has no line break, else a regex over a bounded slice beside it.
+function endsAt(text: string, index: number, prefix: string): boolean {
+  if (!prefix.includes("\n")) {
+    return (
+      index >= prefix.length && text.startsWith(prefix, index - prefix.length)
+    );
+  }
+  const room = prefix.length * 4 + 64;
+  const re = new RegExp(`(?:${pattern(prefix)})$`, "u");
+  return re.test(text.slice(Math.max(0, index - room), index));
+}
+
+function startsAt(text: string, end: number, suffix: string): boolean {
+  if (!suffix.includes("\n")) return text.startsWith(suffix, end);
+  const room = suffix.length * 4 + 64;
+  const re = new RegExp(`^(?:${pattern(suffix)})`, "u");
+  return re.test(text.slice(end, end + room));
 }
 
 /**
@@ -117,28 +194,37 @@ export function findQuote(
   prefix?: string,
   suffix?: string,
 ): QuoteLookup {
-  const { text, pos } = visibleText(doc);
+  const vt = visibleText(doc);
+  const { text } = vt;
   const q = normalizeQuote(quote);
-  const body = pattern(q);
-  const before = prefix
-    ? `(?<=${pattern(prefix.replace(/\r\n?/g, "\n"))})`
-    : "";
-  const after = suffix ? `(?=${pattern(suffix.replace(/\r\n?/g, "\n"))})` : "";
+  const pre = prefix ? prefix.replace(/\r\n?/g, "\n") : "";
+  const suf = suffix ? suffix.replace(/\r\n?/g, "\n") : "";
   // A match must start and end on a character, never on a block break.
-  const found = matchesOf(text, before + body + after).filter(
-    (m) => pos[m.index] >= 0 && pos[m.end - 1] >= 0,
+  const onText = (index: number, end: number) =>
+    posAt(vt, index) >= 0 && posAt(vt, end - 1) >= 0;
+  const found = matchesOf(
+    text,
+    q,
+    (index, end) =>
+      (!pre || endsAt(text, index, pre)) &&
+      (!suf || startsAt(text, end, suf)) &&
+      onText(index, end),
   );
   if (found.length === 1) {
     const { index, end } = found[0];
-    if (pos.slice(index, end).some((p) => p === HIDDEN_BREAK)) {
-      return { kind: "spans_hidden" };
+    const last = blockOf(vt, end - 1);
+    for (let b = blockOf(vt, index) + 1; b <= last; b++) {
+      if (vt.hiddenBefore[b]) return { kind: "spans_hidden" };
     }
-    return { kind: "found", match: { from: pos[index], to: pos[end - 1] + 1 } };
+    return {
+      kind: "found",
+      match: { from: posAt(vt, index), to: posAt(vt, end - 1) + 1 },
+    };
   }
   if (found.length > 1) return { kind: "ambiguous", matches: found.length };
-  if (before || after) {
+  if (pre || suf) {
     // The quote is there, but not with this prefix or suffix: show where it is.
-    const bare = matchesOf(text, body);
+    const bare = matchesOf(text, q, onText);
     if (bare.length > 0) {
       const { index, end } = bare[0];
       return {
@@ -172,10 +258,36 @@ function widen(text: string, start: number, end: number): string {
   return text.slice(s, e).trim();
 }
 
+const SEED = 6;
+const SEEDS = 8;
+const HITS_PER_SEED = 16;
+const FALLBACK_SCAN = 64_000;
+
+// How many character pairs of the quote sit in hay[start, start + n).
+function overlapAt(
+  hay: string,
+  start: number,
+  n: number,
+  want: Map<string, number>,
+): number {
+  const have = new Map<string, number>();
+  let overlap = 0;
+  for (let i = start; i < start + n - 1; i++) {
+    const b = hay.slice(i, i + 2);
+    const h = have.get(b) ?? 0;
+    if (h < (want.get(b) ?? 0)) overlap++;
+    have.set(b, h + 1);
+  }
+  return overlap;
+}
+
 /**
  * The stretch of the doc's visible text most like the quote, by shared
- * character pairs (Dice coefficient) over a sliding window as long as the
- * quote. Linear in the doc's length. Null for an empty doc.
+ * character pairs (Dice coefficient) over windows as long as the quote. Only
+ * windows around short pieces of the quote found in the text are scored (a few
+ * dozen, each at most the quote's length, which is capped), so the cost is a
+ * handful of substring searches however long the doc is. A quote with no piece
+ * in the doc is scored against the first stretch of it. Null for an empty doc.
  */
 export function closestText(text: string, quote: string): string | null {
   if (text.length === 0) return null;
@@ -192,28 +304,51 @@ export function closestText(text: string, quote: string): string | null {
     const b = needle.slice(i, i + 2);
     want.set(b, (want.get(b) ?? 0) + 1);
   }
-  const have = new Map<string, number>();
-  let overlap = 0;
-  const add = (b: string) => {
-    const h = have.get(b) ?? 0;
-    if (h < (want.get(b) ?? 0)) overlap++;
-    have.set(b, h + 1);
-  };
-  const remove = (b: string) => {
-    const h = (have.get(b) ?? 0) - 1;
-    have.set(b, h);
-    if (h < (want.get(b) ?? 0)) overlap--;
-  };
-  // Window [start, start + n) holds the n - 1 pairs starting at start .. start + n - 2.
-  for (let i = 0; i < n - 1; i++) add(hay.slice(i, i + 2));
-  let best = overlap;
+  const starts = new Set<number>();
+  const seed = Math.min(SEED, n);
+  const last = n - seed;
+  for (let k = 0; k < SEEDS; k++) {
+    const offset = Math.round((last * k) / (SEEDS - 1));
+    const piece = needle.slice(offset, offset + seed);
+    let hit = hay.indexOf(piece);
+    for (let c = 0; hit >= 0 && c < HITS_PER_SEED; c++) {
+      starts.add(Math.min(Math.max(0, hit - offset), hay.length - n));
+      hit = hay.indexOf(piece, hit + 1);
+    }
+  }
+  let best = -1;
   let bestStart = 0;
-  for (let start = 1; start + n <= hay.length; start++) {
-    remove(hay.slice(start - 1, start + 1));
-    add(hay.slice(start + n - 2, start + n));
-    if (overlap > best) {
-      best = overlap;
-      bestStart = start;
+  if (starts.size > 0) {
+    for (const start of [...starts].sort((a, b) => a - b)) {
+      const overlap = overlapAt(hay, start, n, want);
+      if (overlap > best) {
+        best = overlap;
+        bestStart = start;
+      }
+    }
+  } else {
+    const window = hay.slice(0, FALLBACK_SCAN + n);
+    const have = new Map<string, number>();
+    let overlap = 0;
+    const add = (b: string) => {
+      const h = have.get(b) ?? 0;
+      if (h < (want.get(b) ?? 0)) overlap++;
+      have.set(b, h + 1);
+    };
+    const remove = (b: string) => {
+      const h = (have.get(b) ?? 0) - 1;
+      have.set(b, h);
+      if (h < (want.get(b) ?? 0)) overlap--;
+    };
+    for (let i = 0; i < n - 1; i++) add(window.slice(i, i + 2));
+    best = overlap;
+    for (let start = 1; start + n <= window.length; start++) {
+      remove(window.slice(start - 1, start + 1));
+      add(window.slice(start + n - 2, start + n));
+      if (overlap > best) {
+        best = overlap;
+        bestStart = start;
+      }
     }
   }
   return trimWords(widen(text, bestStart, bestStart + n), want, n);

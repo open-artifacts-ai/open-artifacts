@@ -252,7 +252,11 @@ function quoteOf(value: unknown, name: string): string {
       `${name} must be a quote: the text to find, not empty or only line breaks.`,
     );
   }
-  if (value.length > MAX_QUOTE_CHARS) throw tooLong(name);
+  if (
+    value.length > MAX_QUOTE_CHARS ||
+    normalizeQuote(value).length > MAX_QUOTE_CHARS
+  )
+    throw tooLong(name);
   return value;
 }
 
