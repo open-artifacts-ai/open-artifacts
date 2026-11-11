@@ -160,7 +160,14 @@ export function Plan() {
   // The portal needs a Stripe customer. A provisioned or comped plan has
   // none (hasCustomer false): no Manage billing, since billing would refuse.
   // Absent means billing's answer predates the field: keep the button.
-  const portal = (paid && !lapsedPaid) || billing.status === "past_due";
+  // A Solo reaches the portal only with a customer explicitly reported (never
+  // from an absent field) and a live subscription: active or past_due.
+  const soloSubscriber =
+    solo &&
+    billing.hasCustomer === true &&
+    (billing.status === "active" || billing.status === "past_due");
+  const portal =
+    (paid && !lapsedPaid) || billing.status === "past_due" || soloSubscriber;
   const operatorPlan = portal && billing.hasCustomer === false;
   return (
     <div className={STACK}>

@@ -243,6 +243,54 @@ it("Plan and billing: a solo plan with no customer still offers Checkout", async
   expect(screen.queryByText(/set up this plan for you/)).toBeNull();
 });
 
+describe("Plan and billing: Manage billing for Solo (#2127)", () => {
+  const SOLO_PAID = { ...TRIAL, soloTrialEndsAt: null };
+  const manage = () => screen.queryByRole("button", { name: "Manage billing" });
+  it("shows for an active Solo with a Stripe customer, in place of the Pay buttons", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...SOLO_PAID, hasCustomer: true },
+    });
+    expect(
+      await screen.findByRole("button", { name: "Manage billing" }),
+    ).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Pay $1/month" })).toBeNull();
+    expect(screen.queryByText(/set up this plan for you/)).toBeNull();
+    expect(screen.getByText("Price")).toBeVisible();
+  });
+  it("shows for a past_due Solo with a customer", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...SOLO_PAID, status: "past_due", hasCustomer: true },
+    });
+    expect(
+      await screen.findByRole("button", { name: "Manage billing" }),
+    ).toBeVisible();
+  });
+  it("is hidden for a Solo with no customer or an unknown one, which keeps the Pay buttons", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...SOLO_PAID, hasCustomer: false },
+    });
+    expect(
+      await screen.findByRole("button", { name: "Pay $1/month" }),
+    ).toBeVisible();
+    expect(manage()).toBeNull();
+    cleanup();
+    mountHosted("/settings/plan", { billing: SOLO_PAID });
+    expect(
+      await screen.findByRole("button", { name: "Pay $1/month" }),
+    ).toBeVisible();
+    expect(manage()).toBeNull();
+  });
+  it("is hidden for a lapsed Solo with a customer, which keeps the restart path", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...PAUSED, hasCustomer: true },
+    });
+    expect(
+      await screen.findByRole("button", { name: "Pay $10/year" }),
+    ).toBeVisible();
+    expect(manage()).toBeNull();
+  });
+});
+
 it("Plan and billing: Upgrade starts Checkout for the chosen tier", async () => {
   const posts = calls("POST");
   mountHosted("/settings/plan", { billing: TRIAL });

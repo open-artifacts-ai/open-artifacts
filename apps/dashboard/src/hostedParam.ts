@@ -50,6 +50,19 @@ const TOKENS: Record<string, HostedMockOptions> = {
       readOnly: false,
     },
   },
+  // Solo that pays: a Stripe customer, active (Manage billing shows).
+  "solo-paid": {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: null,
+      soloTrialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
   // Business with no Stripe customer (provisioned or comped), and with one.
   "plan-no-customer": {
     billing: {
