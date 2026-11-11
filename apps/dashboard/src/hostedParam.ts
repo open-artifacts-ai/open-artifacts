@@ -184,7 +184,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
 /**
  * Mock-only: `?hosted=` turns on the hosted mocks. Comma tokens: 1 (defaults),
  * access, email-only, turnstile, unhealthy (backoff), auth-failed,
- * scope-missing, customer-mismatch, trial, solo, solo-paused,
+ * scope-missing, customer-mismatch, trial, solo, solo-paid (a Solo with a
+ * Stripe customer, active), solo-paused,
  * plan-team-lapsed, plan-team-payment-failed, plan-team-suspended, plan-team-unreachable, team, business, frozen, sync-off, not-connected,
  * admin (you are an admin, not the owner), guest-notices (an Access-only
  * install with parity 2's notices, spaces off), guest-departed (the same, one

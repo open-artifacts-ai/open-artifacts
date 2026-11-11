@@ -244,56 +244,64 @@ it("Plan and billing: a solo plan with no customer still offers Checkout", async
 });
 
 describe("Plan and billing: Manage billing for Solo (#2127)", () => {
-  const SOLO_PAID = { ...TRIAL, soloTrialEndsAt: null };
+  const PAID = { ...TRIAL, soloTrialEndsAt: null, hasCustomer: true };
   const manage = () => screen.queryByRole("button", { name: "Manage billing" });
-  it("shows for an active Solo with a Stripe customer, in place of the Pay buttons", async () => {
-    mountHosted("/settings/plan", {
-      billing: { ...SOLO_PAID, hasCustomer: true },
-    });
-    expect(
-      await screen.findByRole("button", { name: "Manage billing" }),
-    ).toBeVisible();
-    expect(screen.queryByRole("button", { name: "Pay $1/month" })).toBeNull();
-    expect(screen.queryByText(/set up this plan for you/)).toBeNull();
-    expect(screen.getByText("Price")).toBeVisible();
-  });
-  it("keeps the Pay buttons, no Manage billing, during the free month even with a customer", async () => {
+  const pinNovember = () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-11-09T12:00:00.000Z"));
     onTestFinished(() => {
       vi.useRealTimers();
     });
-    mountHosted("/settings/plan", { billing: { ...TRIAL, hasCustomer: true } });
+  };
+  const bothShown = async () => {
     expect(
-      await screen.findByRole("button", { name: "Pay $10/year" }),
+      await screen.findByRole("button", { name: "Manage billing" }),
     ).toBeVisible();
     expect(screen.getByRole("button", { name: "Pay $1/month" })).toBeVisible();
-    expect(manage()).toBeNull();
+    expect(screen.getByRole("button", { name: "Pay $10/year" })).toBeVisible();
+  };
+  it("active Solo with a customer: Pay buttons and Manage billing", async () => {
+    mountHosted("/settings/plan", { billing: PAID });
+    await bothShown();
+    expect(screen.queryByText(/set up this plan for you/)).toBeNull();
   });
-  it("shows for a past_due Solo with a customer", async () => {
+  it("trialing Solo with a customer: both shown", async () => {
+    pinNovember();
+    mountHosted("/settings/plan", { billing: { ...TRIAL, hasCustomer: true } });
+    await bothShown();
+  });
+  it("past_due Solo with a customer: Manage billing stays (regression guard, already shown before)", async () => {
     mountHosted("/settings/plan", {
-      billing: { ...SOLO_PAID, status: "past_due", hasCustomer: true },
+      billing: { ...PAID, status: "past_due" },
     });
     expect(
       await screen.findByRole("button", { name: "Manage billing" }),
     ).toBeVisible();
   });
-  it("is hidden for a Solo with no customer or an unknown one, which keeps the Pay buttons", async () => {
+  it("Solo with no customer, or an unknown one: no Manage billing", async () => {
     mountHosted("/settings/plan", {
-      billing: { ...SOLO_PAID, hasCustomer: false },
+      billing: { ...PAID, hasCustomer: false },
     });
     expect(
       await screen.findByRole("button", { name: "Pay $1/month" }),
     ).toBeVisible();
     expect(manage()).toBeNull();
     cleanup();
-    mountHosted("/settings/plan", { billing: SOLO_PAID });
+    const { hasCustomer: _, ...unknown } = PAID;
+    mountHosted("/settings/plan", { billing: unknown });
     expect(
       await screen.findByRole("button", { name: "Pay $1/month" }),
     ).toBeVisible();
     expect(manage()).toBeNull();
   });
-  it("is hidden for a lapsed Solo with a customer, which keeps the restart path", async () => {
+  it("tier free with a customer: no Manage billing", async () => {
+    mountHosted("/settings/plan", { billing: { ...PAID, tier: "free" } });
+    expect(
+      await screen.findByRole("heading", { name: "Plan and billing" }),
+    ).toBeVisible();
+    expect(manage()).toBeNull();
+  });
+  it("lapsed Solo with a customer: unchanged, no Manage billing", async () => {
     mountHosted("/settings/plan", {
       billing: { ...PAUSED, hasCustomer: true },
     });
@@ -301,6 +309,32 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
       await screen.findByRole("button", { name: "Pay $10/year" }),
     ).toBeVisible();
     expect(manage()).toBeNull();
+  });
+  it("Solo's Upgrade to Team still goes to Checkout, not the portal", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", { billing: PAID });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Upgrade to Team" }),
+    );
+    await waitFor(() =>
+      expect(posts.some((c) => c.path.endsWith("/billing/checkout"))).toBe(
+        true,
+      ),
+    );
+    expect(posts.some((c) => c.path.endsWith("/billing/portal"))).toBe(false);
+  });
+  it("clicking Solo's Manage billing opens the portal", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", { billing: PAID });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Manage billing" }),
+    );
+    await waitFor(() =>
+      expect(lastRedirect).toHaveBeenCalledWith(
+        "https://checkout.stripe.com/c/pay/cs_test_mock_portal",
+      ),
+    );
+    expect(posts.some((c) => c.path.endsWith("/billing/portal"))).toBe(true);
   });
 });
 

@@ -160,21 +160,14 @@ export function Plan() {
   // The portal needs a Stripe customer. A provisioned or comped plan has
   // none (hasCustomer false): no Manage billing, since billing would refuse.
   // Absent means billing's answer predates the field: keep the button.
-  // A Solo reaches the portal only with a customer explicitly reported (never
-  // from an absent field) and a live subscription: active or past_due.
-  // The free month (no card) already has a customer: it keeps the Pay buttons,
-  // the only way to start paying or pick yearly.
-  const soloTrialing =
-    !!billing.soloTrialEndsAt &&
-    Date.parse(billing.soloTrialEndsAt) > Date.now();
-  const soloSubscriber =
-    solo &&
-    !soloTrialing &&
+  const portal = (paid && !lapsedPaid) || billing.status === "past_due";
+  const operatorPlan = portal && billing.hasCustomer === false;
+  // A Solo with a Stripe customer (the free month starts one) can cancel or
+  // update its card in the portal. Additive: Pay and Upgrade stay on Checkout.
+  const soloManage =
+    billing.tier === "solo" &&
     billing.hasCustomer === true &&
     (billing.status === "active" || billing.status === "past_due");
-  const portal =
-    (paid && !lapsedPaid) || billing.status === "past_due" || soloSubscriber;
-  const operatorPlan = portal && billing.hasCustomer === false;
   return (
     <div className={STACK}>
       <SettingsCard id="plan-card" title="Plan and billing">
@@ -245,6 +238,15 @@ export function Plan() {
                   >
                     Pay $10/year
                   </Button>
+                  {soloManage && (
+                    <Button
+                      variant="outline"
+                      disabled={busy}
+                      onClick={() => go.mutate("portal")}
+                    >
+                      Manage billing
+                    </Button>
+                  )}
                 </>
               )}
             </>
