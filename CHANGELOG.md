@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.150.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.149.0...v0.150.0) (2026-11-11)
+
+
+### Features
+
+* **bus-cli:** print oa-bus commands when our PATH shim is on PATH ([#1998](https://github.com/open-artifacts-ai/open-artifacts/issues/1998)) ([#2033](https://github.com/open-artifacts-ai/open-artifacts/issues/2033)) ([e9abecc](https://github.com/open-artifacts-ai/open-artifacts/commit/e9abeccaa98a91af7841c0fc7932446cb3d70bf6))
+
 ## [0.149.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.148.0...v0.149.0) (2026-11-10)
 
 
