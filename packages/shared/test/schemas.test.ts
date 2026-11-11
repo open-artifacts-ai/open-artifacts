@@ -445,8 +445,9 @@ describe("VersionInfoSchema format (C2)", () => {
     expect(
       VersionInfoSchema.safeParse({ ...v, format: "markdown" }).success,
     ).toBe(true);
+    // #1100: a doc's versions report format "doc".
     expect(VersionInfoSchema.safeParse({ ...v, format: "doc" }).success).toBe(
-      false,
+      true,
     );
   });
 });

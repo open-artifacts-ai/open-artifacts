@@ -4,6 +4,8 @@ import { Badge, cn } from "@oa/ui/shadcn";
 
 /** The app's 13px chrome text size. */
 export const TXT = "text-[length:var(--oa-text-sm)]";
+/** Comment text: 14px with a 1.45 line height (#2118). */
+export const CTXT = "text-[length:var(--oa-text-md)] leading-[1.45]";
 /** Chrome buttons are xs (24px); below 600px they grow to 32px to tap. */
 export const SM = `${TXT} max-[600px]:h-8 max-[600px]:px-3`;
 /** Title bar buttons: 32px with 14px text on every width (#2118). */
