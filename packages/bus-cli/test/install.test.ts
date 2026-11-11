@@ -395,6 +395,23 @@ describe("install: daemon confirmation", () => {
   });
 });
 
+describe("#2099: install under another HOME", () => {
+  it("makes no service call and prints the note", async () => {
+    const base = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
+    const ensure = vi.fn(async () => ({}));
+    const ctx = fakeCtx({
+      fetch: hub([approved]),
+      ...allHarnesses(),
+      service: { ...base.service, isolated: true, ensure },
+    });
+    expect(await run(ctx, {})).toBe(0);
+    expect(ensure).not.toHaveBeenCalled();
+    expect(ctx.out().join("\n")).toContain(
+      "Skipped the background service: this HOME isn't your account's home. Use --no-service, or run without a custom HOME.",
+    );
+  });
+});
+
 describe("install --no-service (C25)", () => {
   it("makes no service call, starts nothing, and says how to run the daemon", async () => {
     const ctx = fakeCtx({

@@ -10,7 +10,15 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  basename,
+  delimiter,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import { BUS_CMD } from "@oa/bus-protocol";
 import type { Service, ServiceProblem } from "../context.ts";
@@ -23,7 +31,49 @@ export const LAUNCHD_LABEL = "com.open-artifacts.bus";
 export const SYSTEMD_UNIT = "oa-bus.service";
 /** EX_CONFIG: the daemon's exit on revoke. systemd never restarts it. */
 export const REVOKED_EXIT = 78;
-const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin";
+/** The harness commands the daemon may run (wake, attestation). */
+const HARNESS_BINS = [
+  "claude",
+  "codex",
+  "opencode",
+  "pi",
+  "omp",
+  "hermes",
+  "openclaw",
+];
+
+/** An npx cache or a package's own .bin: never for a long-lived service. */
+const transient = (dir: string) =>
+  dir.split(/[\\/]/).some((seg) => seg === "node_modules" || seg === "_npx");
+
+/**
+ * The service's PATH: node's folder, the folders of the harness commands found
+ * on `env.PATH`, and the system folders. Never npx's or a project's
+ * node_modules/.bin (#2105).
+ */
+export function servicePath(
+  env: Env,
+  execPath: string,
+  platform: NodeJS.Platform,
+): string {
+  const system = [
+    "/usr/local/bin",
+    ...(platform === "darwin" ? ["/opt/homebrew/bin"] : []),
+    "/usr/bin",
+    "/bin",
+  ];
+  const found: string[] = [];
+  const onPath = (env.PATH ?? "")
+    .split(delimiter)
+    .filter((d) => isAbsolute(d) && !transient(d));
+  for (const bin of HARNESS_BINS) {
+    const dir = onPath.find((d) => present(join(d, bin)));
+    if (dir) found.push(dir);
+  }
+  return [...new Set([dirname(execPath), ...found, ...system])]
+    .filter((d) => isAbsolute(d) && !transient(d))
+    .join(delimiter);
+}
 const STOP_WAIT_MS = 5000;
 const POLL_MS = 250;
 
@@ -330,6 +380,12 @@ export function isOurDaemon(args: string, entry: string): boolean {
 export type ServiceDeps = {
   platform: NodeJS.Platform;
   userHome: string;
+  /**
+   * The OS account's home (`os.userInfo().homedir`). The service manager is the
+   * account's, whatever HOME says: when `userHome` or the bus home is not under
+   * it, no service call is made (#2099). Unset: no check.
+   */
+  accountHome?: string;
   /** OA_BUS_HOME, read on each call: `--home` sets it after the ctx is made. */
   home: () => string;
   env: Env;
@@ -411,6 +467,16 @@ export function systemService(d: ServiceDeps): Service {
     return r && present(r) ? r : fresh();
   };
   const installed = () => manager !== undefined && present(file());
+  /** HOME or the bus home points away from the account's: its manager is not ours to touch. */
+  const isolated = () => {
+    if (manager === undefined || d.accountHome === undefined) return false;
+    const account = real(d.accountHome);
+    const inside = (p: string) => {
+      const r = relative(account, real(p));
+      return r === "" || (!r.startsWith("..") && !isAbsolute(r));
+    };
+    return real(d.userHome) !== account || !inside(home());
+  };
   const domain = `gui/${d.uid}`;
   const systemctl = (...args: string[]) =>
     d.exec("systemctl", ["--user", ...args]);
@@ -481,11 +547,16 @@ export function systemService(d: ServiceDeps): Service {
       return installed() ? manager : undefined;
     },
 
+    get isolated() {
+      return isolated();
+    },
+
     get fallback() {
       return !installed() && record().fallback === true;
     },
 
     async ensure() {
+      if (isolated()) return { skipped: true };
       const h = home();
       const src = d.source();
       const logs = join(h, "logs");
@@ -493,7 +564,7 @@ export function systemService(d: ServiceDeps): Service {
         node: nodeOf(h),
         entry: join(h, "bin", entryName(src)),
         env: {
-          PATH: d.env.PATH ?? DEFAULT_PATH,
+          PATH: servicePath(d.env, d.execPath, d.platform),
           ...(isDefaultHome(h, d.userHome) ? {} : { OA_BUS_HOME: h }),
           // Attestation and wake read the Codex home this shell uses (C26e).
           ...codexHomeEnv(d.userHome, d.env),
@@ -557,6 +628,7 @@ export function systemService(d: ServiceDeps): Service {
     },
 
     async remove() {
+      if (isolated()) return { skipped: true };
       if (!installed()) {
         // The fallback's daemon, or one in a terminal.
         if ((await d.daemonPid()) === undefined) return {};

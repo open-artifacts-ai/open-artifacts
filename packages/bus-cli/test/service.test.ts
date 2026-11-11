@@ -254,7 +254,7 @@ describe("systemService: launchd", () => {
       `<string>${home}/bin/node</string><string>${home}/bin/dist/index.js</string><string>daemon</string>`,
     );
     expect(plist).toContain(
-      "<key>PATH</key><string>/opt/x/bin:/usr/bin</string>",
+      "<key>PATH</key><string>/opt/node/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>",
     );
     expect(plist).not.toContain("OA_BUS_HOME");
     expect(plist).toContain(`${home}/logs/daemon.log`);
@@ -313,7 +313,7 @@ describe("systemService: launchd", () => {
       `<key>CODEX_HOME</key><string>${codex}</string>`,
     );
     expect(s.env?.()).toEqual({
-      PATH: "/opt/x/bin:/usr/bin",
+      PATH: "/opt/node/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
       CODEX_HOME: codex,
     });
     // The default Codex home is not passed.
@@ -323,7 +323,9 @@ describe("systemService: launchd", () => {
     });
     await t.ensure();
     expect(readFileSync(plistOf(userHome), "utf8")).not.toContain("CODEX_HOME");
-    expect(t.env?.()).toEqual({ PATH: "/opt/x/bin:/usr/bin" });
+    expect(t.env?.()).toEqual({
+      PATH: "/opt/node/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+    });
   });
 
   it("boots out and writes the same label under a symlinked, missing home", async () => {
@@ -398,7 +400,9 @@ describe("systemService: systemd", () => {
     expect(u).toContain(
       `ExecStart="${home}/bin/node" "${home}/bin/dist/index.js" daemon`,
     );
-    expect(u).toContain('Environment="PATH=/opt/x/bin:/usr/bin"');
+    expect(u).toContain(
+      'Environment="PATH=/opt/node/bin:/usr/local/bin:/usr/bin:/bin"',
+    );
     expect(calls).toEqual([
       ["systemctl", ["--user", "daemon-reload"]],
       ["systemctl", ["--user", "enable", SYSTEMD_UNIT]],
@@ -427,7 +431,7 @@ describe("systemService: systemd", () => {
       join(home, "bin/node"),
       [join(home, "bin/dist/index.js"), "daemon"],
       {
-        env: { PATH: "/opt/x/bin:/usr/bin" },
+        env: { PATH: "/opt/node/bin:/usr/local/bin:/usr/bin:/bin" },
         out: join(home, "logs/daemon.log"),
         err: join(home, "logs/daemon.log"),
       },
@@ -1089,5 +1093,77 @@ describe("round 3: homes", () => {
     expect(disable).toBeGreaterThanOrEqual(0);
     expect(disable).toBeLessThan(reload);
     expect(existsSync(join(x1, "systemd/user", SYSTEMD_UNIT))).toBe(false);
+  });
+});
+
+describe("#2099: another HOME never reaches the real service manager", () => {
+  for (const platform of ["darwin", "linux"] as const) {
+    it(`${platform}: ensure and remove make no call when HOME is not the account's`, async () => {
+      const { d, calls } = deps(platform, { accountHome: tmp() });
+      const s = systemService(d);
+      expect(s.isolated).toBe(true);
+      expect(await s.ensure()).toEqual({ skipped: true });
+      expect(await s.remove()).toEqual({ skipped: true });
+      expect(calls).toEqual([]);
+      expect(d.exec).not.toHaveBeenCalled();
+      expect(d.spawnDaemon).not.toHaveBeenCalled();
+      expect(d.kill).not.toHaveBeenCalled();
+    });
+
+    it(`${platform}: a bus home outside the account's home makes no call`, async () => {
+      const account = tmp();
+      const { d, calls } = deps(platform, {
+        userHome: account,
+        accountHome: account,
+        home: () => join(tmp(), "bus"),
+      });
+      const s = systemService(d);
+      expect(await s.ensure()).toEqual({ skipped: true });
+      expect(await s.remove()).toEqual({ skipped: true });
+      expect(calls).toEqual([]);
+    });
+
+    it(`${platform}: the account's own home still installs`, async () => {
+      const account = tmp();
+      const { d, calls } = deps(platform, {
+        userHome: account,
+        accountHome: account,
+        home: () => join(account, ".oa-bus"),
+      });
+      const s = systemService(d);
+      expect(s.isolated).toBe(false);
+      await s.ensure();
+      expect(calls.length).toBeGreaterThan(0);
+    });
+  }
+});
+
+describe("#2105: the service PATH is minimal", () => {
+  it("holds no npx or node_modules folder, keeps node's and the harnesses'", async () => {
+    const bins = tmp();
+    writeFileSync(join(bins, "codex"), "");
+    const npx = join(tmp(), ".npm/_npx/abc/node_modules/.bin");
+    mkdirSync(npx, { recursive: true });
+    writeFileSync(join(npx, "claude"), "");
+    const PATH = [
+      npx,
+      "/proj/node_modules/.bin",
+      "/x/node-gyp-bin/../node_modules/.bin",
+      bins,
+      "/usr/bin",
+    ].join(":");
+    for (const platform of ["darwin", "linux"] as const) {
+      const { d, userHome } = deps(platform, { env: { PATH } });
+      await systemService(d).ensure();
+      const text = readFileSync(
+        platform === "darwin"
+          ? join(userHome, "Library/LaunchAgents", `${LAUNCHD_LABEL}.plist`)
+          : join(userHome, ".config/systemd/user", SYSTEMD_UNIT),
+        "utf8",
+      );
+      expect(text).not.toMatch(/_npx|node_modules/);
+      expect(text).toContain("/opt/node/bin");
+      expect(text).toContain(bins);
+    }
   });
 });

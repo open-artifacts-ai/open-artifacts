@@ -43,7 +43,9 @@ export type Service = {
    * `running`: a daemon that would not stop holds the socket, and nothing
    * was started.
    */
-  ensure: () => Promise<{ running?: number }>;
+  ensure: () => Promise<{ running?: number; skipped?: boolean }>;
+  /** HOME or the bus home is not the account's: no service call is made (#2099). */
+  isolated?: boolean;
   /** install could not start a service and runs the daemon itself. */
   fallback?: boolean;
   /**
@@ -54,6 +56,7 @@ export type Service = {
     unit?: "launchd" | "systemd";
     stopped?: boolean;
     running?: number;
+    skipped?: boolean;
   }>;
   problems?: () => ServiceProblem[];
   /** The installed service's environment, as install recorded it; empty when none is. */
@@ -232,6 +235,7 @@ export function realCtx(noColor: boolean): Ctx {
   ctx.service = systemService({
     platform: process.platform,
     userHome: ctx.userHome,
+    accountHome: userInfo().homedir,
     home: () => ctx.home,
     env,
     exec: ctx.exec,

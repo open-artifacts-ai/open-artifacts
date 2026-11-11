@@ -329,6 +329,10 @@ async function daemonStep(ctx: Ctx, noService = false): Promise<boolean> {
     say(ctx, roster(ctx, st), "", c.statusHint());
     return true;
   }
+  if (ctx.service.isolated) {
+    say(ctx, c.serviceOtherHome());
+    return daemonStep(ctx, true);
+  }
   const { running } = await ctx.service.ensure();
   if (running !== undefined) {
     sayErr(ctx, c.daemonInTheWay(shownSocket(ctx), running));

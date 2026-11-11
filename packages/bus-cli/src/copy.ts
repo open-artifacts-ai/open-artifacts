@@ -329,6 +329,11 @@ export function copy(style: Style, bus: string = BUS_CMD) {
               next(`Run ${bus} install.`),
             ],
     // install --no-service: the service step is skipped, nothing is started.
+    serviceOtherHome: () => [
+      warn(
+        "Skipped the background service: this HOME isn't your account's home. Use --no-service, or run without a custom HOME.",
+      ),
+    ],
     serviceSkipped: () => [
       warn("Skipped the service, so no daemon is running."),
       next(`Start it with ${bus} daemon, and again after a reboot.`),
