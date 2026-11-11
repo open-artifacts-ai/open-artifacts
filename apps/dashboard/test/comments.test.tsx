@@ -893,6 +893,34 @@ describe("comments: actions", () => {
     expect(posts[0]?.body).toMatchObject({ body: "Sent by key" });
   });
 
+  it("#2118: Esc in the note box keeps the draft and does not close the phone sheet", async () => {
+    viewport(400);
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    const box = await within(sheet).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.change(box, { target: { value: "Keep me" } });
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(
+      screen.getByRole("dialog", { name: "Comments" }),
+    ).toBeInTheDocument();
+    expect(box).toHaveValue("Keep me");
+  });
+
+  it("#2118: Show resolved has a 24px (32px on phones) hit area", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const btn = await within(c).findByRole("button", {
+      name: "Show resolved (1)",
+    });
+    expect(btn.className).toContain("min-h-6");
+    expect(btn.className).toContain("max-sm:min-h-8");
+  });
+
   it("#2118: a quoted draft is one composer with the quote at its top", async () => {
     mount(viewerPath(OWNED));
     const c = await col();
@@ -979,7 +1007,7 @@ describe("comments: actions", () => {
     // Floating over scrolling text needs an opaque surface, never an inherited
     // one: a card's own, and the sheet's in the note composer (#1696).
     expect(actions.className).toContain(
-      "group-data-[sheet-height=pin]/sheet:bg-background",
+      "group-data-[sheet-height=pin]/sheet:bg-card",
     );
     expect(ACTIONS).not.toContain("bg-inherit");
     expect(ACTIONS_PLAIN).toContain(

@@ -163,7 +163,11 @@ function SignInLink() {
 }
 
 /** What the box really does: ⌘ Enter (Ctrl Enter elsewhere) sends. */
-function SendHint() {
+const isCoarse = () =>
+  typeof window !== "undefined" &&
+  !!window.matchMedia?.("(pointer: coarse)").matches;
+
+function SendHint({ id }: { id?: string }) {
   // A touch screen has no ⌘ or Ctrl key to press: show it for fine pointers only.
   if (
     typeof window !== "undefined" &&
@@ -174,7 +178,7 @@ function SendHint() {
     typeof navigator !== "undefined" &&
     /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
   return (
-    <span data-send-hint="" className={`${TXT} ${MUTED}`}>
+    <span id={id} data-send-hint="" className={`${TXT} ${MUTED}`}>
       {mac ? "⌘ Enter" : "Ctrl Enter"} to send
     </span>
   );
@@ -188,7 +192,7 @@ function QuoteBar({
   return (
     <blockquote
       {...rest}
-      className={`m-0 border-0 border-l-[3px] border-l-[rgba(255,200,0,.6)] pl-2.5 ${TXT} ${MUTED} ${rest.className ?? ""}`}
+      className={`m-0 border-0 border-l-[3px] border-l-[color-mix(in_srgb,var(--oa-warning)_60%,transparent)] pl-2.5 ${TXT} ${MUTED} ${rest.className ?? ""}`}
     >
       <span className="line-clamp-2 min-w-0 break-words">{children}</span>
     </blockquote>
@@ -215,10 +219,13 @@ function Composer({
   buttonsRight = false,
   lead,
   card = false,
+  keepOnEsc = false,
   quote,
 }: {
   /** The composer as a card: quote on top, hint and button always visible (#2118). */
   card?: boolean;
+  /** Esc is swallowed here and the draft stays (the box never closes). */
+  keepOnEsc?: boolean;
   /** Shown at the top of the card, under an amber bar. */
   quote?: React.ReactNode;
   /** Offer @mentions: the agent list is fetched on the composer's first focus. */
@@ -260,6 +267,8 @@ function Composer({
   const [menuOff, setMenuOff] = useState(false);
   const [activeOpt, setActiveOpt] = useState(0);
   const menuId = useId();
+  const hintId = useId();
+  const coarse = isCoarse();
   // The list is fetched lazily: first focus of a composer an owner/editor can
   // use (then kept), never on column open. A transient error is retried on the
   // next focus; a 404 (no route) stays answered.
@@ -380,6 +389,7 @@ function Composer({
           setMenuOff(false);
           setActiveOpt(0);
         }}
+        aria-describedby={card && !coarse ? hintId : undefined}
         aria-controls={menuOpen ? menuId : undefined}
         aria-activedescendant={menuOpen ? `${menuId}-${activeOpt}` : undefined}
         onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
@@ -415,6 +425,10 @@ function Composer({
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             void go();
+          }
+          if (e.key === "Escape" && keepOnEsc) {
+            e.stopPropagation();
+            return;
           }
           if (e.key === "Escape" && (onCancel || !alwaysOpen)) {
             e.stopPropagation();
@@ -470,7 +484,7 @@ function Composer({
             >
               <div className="flex flex-wrap items-center gap-2">
                 {lead}
-                {card && <SendHint />}
+                {card && <SendHint id={hintId} />}
                 <div className="ml-auto flex items-center gap-2">
                   {extra}
                   {cancelBtn}
@@ -621,6 +635,7 @@ function CommentRow({
         {mode === "edit" ? (
           <Composer
             label="Edit comment"
+            actions={ACTIONS_PLAIN}
             placeholder="Edit comment"
             submit="Save"
             initial={c.body}
@@ -919,7 +934,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
           <Button
             size="xs"
             variant="ghost"
-            className="ml-8 h-auto self-start px-0"
+            className="-my-1.5 ml-8 h-auto min-h-6 self-start px-0 py-1.5 max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5"
             onClick={() => api.select(t.id, true)}
           >
             {rest.length === 1 ? "1 reply" : `${rest.length} replies`}
@@ -936,6 +951,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             <Composer
               key="ask"
               label="Question"
+              actions={ACTIONS_PLAIN}
               placeholder={`Ask ${asking} a question`}
               submit="Send"
               autoFocus
@@ -962,6 +978,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             {api.guest && <GuestName api={api} />}
             <Composer
               label="Reply"
+              actions={ACTIONS_PLAIN}
               placeholder="Reply"
               mentionPlaceholder="Reply. Type @ to mention an agent."
               submit="Reply"
@@ -1070,7 +1087,7 @@ function NewThread({ api }: { api: CommentsApi }) {
               {" "}
               <button
                 type="button"
-                className="cursor-pointer border-0 bg-transparent p-0 underline"
+                className="-my-1.5 min-h-6 cursor-pointer border-0 bg-transparent px-0 py-1.5 underline max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5"
                 onClick={() =>
                   void create
                     .mutateAsync({
@@ -1106,6 +1123,7 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         submit="Comment"
         buttonsRight
         card
+        keepOnEsc
         actions={ACTIONS_PLAIN}
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
