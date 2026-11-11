@@ -170,4 +170,36 @@ describe("silent result handling", () => {
     );
     expect(hasSession(r)).toBe(false);
   });
+
+  it("a refused silent result has no side effects (no user row, no directory sync)", async () => {
+    const e = brokerEnv();
+    const first = await get(`${AUTH.loginGoogle}?silent=${T}`, e);
+    const state = new URL(loc(first)).searchParams.get("state");
+    const other = await login(uniq("someone"));
+    const email = uniq("fresh", "a.com");
+    const redeem = vi.spyOn(googleProvider, "redeem").mockResolvedValue({
+      provider: "google",
+      subject: "s-fresh",
+      email,
+      name: null,
+      tenant: "a.com",
+    });
+    const r = await get(
+      `${AUTH.callbackGoogle}?state=${state}&code=c`,
+      e,
+      `${stateCookie(first)}; ${other.cookie}`,
+    );
+    expect(redeem).toHaveBeenCalled();
+    expect(hasSession(r)).toBe(false);
+    const row = await env.DB.prepare("select id from users where email = ?")
+      .bind(email.toLowerCase())
+      .first();
+    expect(row).toBeNull();
+    const ident = await env.DB.prepare(
+      "select 1 as x from identities where subject = ?",
+    )
+      .bind("s-fresh")
+      .first();
+    expect(ident).toBeNull();
+  });
 });

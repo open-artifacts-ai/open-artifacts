@@ -263,6 +263,25 @@ export function mountAuth(app: AppType): void {
     try {
       const id = await handleCallback(c.env, googleProvider, c.req.raw);
       next = id.next;
+      // A silent result never touches a session that appeared mid-flow (the
+      // login route only starts one with none). Checked before admit() and
+      // the directory sync, so a refusal leaves no user row or other effect.
+      // The uid is unknown until admit, so any session refuses; the person is
+      // already signed in and lands on `next`.
+      if (id.silent) {
+        const have = await readSession(
+          c.env,
+          getCookie(c, sessionCookieName(c.env)),
+        );
+        if (have) {
+          logAuth({
+            provider: "google",
+            outcome: "refused",
+            stage: "silent_other_session",
+          });
+          return redirect(id.next, clear);
+        }
+      }
       const r = await admit(c.env, authConfig(c.env), id);
       if (!r.ok) {
         logOidcFail(r.reason);

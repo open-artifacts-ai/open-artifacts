@@ -448,6 +448,10 @@ export async function handleCallback(
       });
     const code = q.get("code");
     if (!code) return fail("no_code");
+    // A silent redeem (st.sl) does not compare the token's sub with the
+    // ticket here: the broker enforces that (sub_mismatch refuses), and the
+    // silent ticket is never a credential (it only selects prompt=none +
+    // login_hint).
     const id = await provider.redeem(env, {
       code,
       verifier: st.verifier,
