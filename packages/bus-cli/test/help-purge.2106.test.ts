@@ -156,3 +156,13 @@ describe("uninstall --purge, end to end", () => {
     expect(existsSync(ctx.home)).toBe(false);
   });
 });
+
+describe("a habits-only run", () => {
+  it("writes no install.json (no record of what install made)", async () => {
+    const { install } = await import("../src/commands/install.ts");
+    const ctx = fakeCtx();
+    mkdirSync(ctx.home, { recursive: true });
+    expect(await install({ habits: "show" }, ctx)).toBe(0);
+    expect(existsSync(join(ctx.home, "install.json"))).toBe(false);
+  });
+});
