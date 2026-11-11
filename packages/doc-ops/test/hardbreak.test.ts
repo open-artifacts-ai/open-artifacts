@@ -24,9 +24,9 @@ describe("visible text with a hardBreak", () => {
       const p = posAt(vt, i);
       if (p < 0) continue;
       const node = doc.nodeAt(p);
-      expect(node?.type.name === "hardBreak" ? "\n" : node?.text?.[0]).toBe(
-        vt.text[i],
-      );
+      const ch =
+        node?.type.name === "hardBreak" ? "\n" : doc.textBetween(p, p + 1);
+      expect(ch).toBe(vt.text[i]);
     }
   });
 });
@@ -55,7 +55,7 @@ describe("edit_doc keeps hard breaks", () => {
     expect(result.ok).toBe(true);
     expect(md).toBe(`one 2${BR}II three\n`);
     const ydoc = ydocOf(md);
-    expect(ydoc.getXmlFragment("default").toString()).toContain("hardBreak");
+    expect(ydoc.getXmlFragment("default").toString()).toContain("<hardbreak>");
   });
 
   it("insert with a break in the middle of a block", () => {
@@ -92,7 +92,7 @@ describe("edit_doc keeps hard breaks", () => {
     const para = ydoc.getXmlFragment("default").get(0) as {
       toString(): string;
     };
-    expect(para.toString()).toMatch(/<hardBreak><\/hardBreak>/);
+    expect(para.toString()).toMatch(/<hardbreak><\/hardbreak>/);
   });
 
   it("replacing bold text with a break keeps the break unmarked", () => {
