@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.153.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.153.0...v0.153.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **bus:** comment targets settle on old daemons and late acks ([#2062](https://github.com/open-artifacts-ai/open-artifacts/issues/2062)) ([#2064](https://github.com/open-artifacts-ai/open-artifacts/issues/2064)) ([ed471d3](https://github.com/open-artifacts-ai/open-artifacts/commit/ed471d31f9688b4d9aaa8ddd77b90901f8acfbd1))
+
 ## [0.153.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.152.1...v0.153.0) (2026-11-11)
 
 
