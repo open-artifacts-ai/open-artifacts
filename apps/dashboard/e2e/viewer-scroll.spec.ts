@@ -135,4 +135,25 @@ test("a tall full-page panel (not found) scrolls to its last action at 390x200",
   await expect(last).toBeInViewport({ ratio: 1 });
   const m = await doc(page);
   expect(m.scrollY).toBe(0);
+  // And the top: the heading is reachable, not cut off above the scroll origin.
+  await panel.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  const h1 = panel.locator("h1");
+  expect((await h1.boundingBox())?.y ?? -1).toBeGreaterThanOrEqual(0);
+  await expect(h1).toBeInViewport();
+});
+
+test("a short full-page panel stays vertically centered", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/a/Zz9yXwVuTsRqPoNm");
+  const box = await page
+    .locator(".oa-bare > .oa-edge > .oa-panel")
+    .boundingBox();
+  const edge = await page.locator(".oa-bare > .oa-edge").boundingBox();
+  expect(box && edge).toBeTruthy();
+  if (!box || !edge) return;
+  const above = box.y - edge.y;
+  const below = edge.y + edge.height - (box.y + box.height);
+  expect(Math.abs(above - below)).toBeLessThanOrEqual(2);
 });

@@ -702,3 +702,13 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   min-height: 0;
   overflow-y: auto;
 }
+/* A scrolling edge panel taller than its box would overflow above the scroll
+   origin if centered by align-items; auto margins center it only when it fits. */
+.oa-bare > .oa-edge,
+.oa-vbody > .oa-edge {
+  align-items: flex-start;
+}
+.oa-bare > .oa-edge > .oa-panel,
+.oa-vbody > .oa-edge > .oa-panel {
+  margin-block: auto;
+}
