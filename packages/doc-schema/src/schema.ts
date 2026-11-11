@@ -62,9 +62,22 @@ const nodes: Record<string, NodeSpec> = {
 
 // Order matters for Markdown output: marks open in this order, so code is
 // always innermost.
+const ALLOWED_HREF = /^(?:https?|mailto):/i;
+
+/** Only http:, https: and mailto: links are allowed (scheme is case-insensitive). */
+export function isAllowedHref(href: unknown): href is string {
+  return typeof href === "string" && ALLOWED_HREF.test(href);
+}
+
+function validateHref(href: unknown): void {
+  if (!isAllowedHref(href)) {
+    throw new RangeError("A link must be http:, https: or mailto:");
+  }
+}
+
 const marks: Record<string, MarkSpec> = {
   link: {
-    attrs: { href: { validate: "string" }, title: { default: null } },
+    attrs: { href: { validate: validateHref }, title: { default: null } },
     inclusive: false,
   },
   bold: {},

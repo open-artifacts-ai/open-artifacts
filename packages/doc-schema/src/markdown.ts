@@ -7,7 +7,7 @@ import {
 } from "prosemirror-markdown";
 import type { Node as PMNode } from "prosemirror-model";
 import { type DocJSON, docFromJSON } from "./json.ts";
-import { docSchema } from "./schema.ts";
+import { docSchema, isAllowedHref } from "./schema.ts";
 
 /** What a Markdown import changed because the doc cannot hold it. */
 export type ImportChangeKind =
@@ -16,6 +16,7 @@ export type ImportChangeKind =
   | "image" // an image: kept as its Markdown source in plain text
   | "footnote" // a footnote definition: kept as plain text
   | "heading_level" // a heading 4 to 6: kept as a paragraph
+  | "link" // a link that isn't http(s) or mailto:: kept as plain text
   | "hard_break" // a hard line break: became a space
   | "mixed_task_list"; // a list with some task items: kept as a bullet list, "[ ]" as text
 
@@ -81,6 +82,9 @@ const md = MarkdownIt("commonmark", { html: true }).enable([
   "strikethrough",
   "table",
 ]);
+// markdown-it silently refuses javascript: and data: links; accept every href
+// here so rewriteInline sees it and reports the link it keeps as plain text.
+md.validateLink = () => true;
 md.block.ruler.before("reference", "oa_footnote_def", footnoteDefRule, {
   alt: ["paragraph", "reference"],
 });
@@ -155,7 +159,24 @@ function rewriteInline(inline: Token, changes: ImportChange[]): void {
   const children = inline.children;
   if (!children) return;
   const line = lineOf(inline);
-  inline.children = children.map((child) => {
+  let dropClose = false;
+  inline.children = children.flatMap((child) => {
+    if (child.type === "link_open") {
+      const href = child.attrGet("href") ?? "";
+      if (!isAllowedHref(href)) {
+        changes.push({ kind: "link", line, text: short(href) });
+        dropClose = true;
+        return [];
+      }
+    }
+    if (child.type === "link_close" && dropClose) {
+      dropClose = false;
+      return [];
+    }
+    return [rewriteChild(child)];
+  });
+
+  function rewriteChild(child: Token): Token {
     if (child.type === "html_inline") {
       changes.push({ kind: "html", line, text: short(child.content) });
       return textToken(child.content, child.level);
@@ -172,7 +193,7 @@ function rewriteInline(inline: Token, changes: ImportChange[]): void {
       return textToken(" ", child.level);
     }
     return child;
-  });
+  }
 }
 
 function matchingClose(tokens: Token[], open: number): number {
