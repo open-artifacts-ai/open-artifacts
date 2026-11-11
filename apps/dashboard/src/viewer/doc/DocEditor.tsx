@@ -45,8 +45,9 @@ export function DocEditor(props: DocEditorProps) {
   );
   const { onStatus } = props;
   useEffect(() => {
-    onStatus?.(room ? status : null);
-  }, [onStatus, room, status]);
+    // The state belongs to editing: a read-only viewer has nothing to save.
+    onStatus?.(room && props.canEdit ? status : null);
+  }, [onStatus, room, status, props.canEdit]);
   useEffect(() => () => onStatus?.(null), [onStatus]);
   if (!room) return <div className="oa-doc" aria-busy="true" />;
   return <Loaded {...props} room={room} error={error} />;

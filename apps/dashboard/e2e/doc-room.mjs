@@ -1,0 +1,197 @@
+// A local stand-in for the server's doc room (#1100): y-websocket compatible
+// (y-protocols sync and awareness over binary frames) on any path, one shared
+// Y.Doc seeded from a small Markdown sample.
+//
+//   OA_DOC_PORT=1235 node e2e/doc-room.mjs [--fakes]
+//
+// --fakes (or OA_DOC_FAKES=1) also injects two people and one agent as remote
+// collaborators with fixed cursors, for screenshots. Prints "ready <port>"
+// once listening. Dashboard side: VITE_MOCK=1 VITE_DOC_WS=ws://localhost:<port>.
+import { docToYXmlFragment, markdownToDoc } from "@oa/doc-schema";
+import * as decoding from "lib0/decoding";
+import * as encoding from "lib0/encoding";
+import { WebSocketServer } from "ws";
+import * as awarenessProtocol from "y-protocols/awareness";
+import * as syncProtocol from "y-protocols/sync";
+import * as Y from "yjs";
+
+const SYNC = 0;
+const AWARENESS = 1;
+
+export const SAMPLE = `# Launch plan
+
+We ship the new landing page on **Thursday**. The plan has three parts: copy, design and rollout. Read the [brief](https://example.com/brief) first.
+
+## Checklist
+
+- [x] Final copy reviewed
+- [ ] Hero image exported
+- [ ] Analytics events checked
+
+## Rollout
+
+Start with ten percent of visitors, watch the error rate for an hour, then go to everyone. If anything looks off we roll back with \`git revert\` and write it up here.
+`;
+
+export function startDocRoom({ port, fakes = false }) {
+  const ydoc = new Y.Doc();
+  const { doc } = markdownToDoc(SAMPLE);
+  docToYXmlFragment(doc, ydoc.getXmlFragment("default"));
+  const awareness = new awarenessProtocol.Awareness(ydoc);
+  awareness.setLocalState(null);
+  const conns = new Map(); // ws -> Set of awareness client ids it controls
+  const send = (ws, bytes) => {
+    if (ws.readyState === 1) ws.send(bytes);
+  };
+
+  ydoc.on("update", (update, origin) => {
+    const enc = encoding.createEncoder();
+    encoding.writeVarUint(enc, SYNC);
+    syncProtocol.writeUpdate(enc, update);
+    const msg = encoding.toUint8Array(enc);
+    for (const ws of conns.keys()) if (ws !== origin) send(ws, msg);
+  });
+  awareness.on("update", ({ added, updated, removed }, origin) => {
+    const owned = conns.get(origin);
+    if (owned) {
+      for (const id of added) owned.add(id);
+      for (const id of removed) owned.delete(id);
+    }
+    const enc = encoding.createEncoder();
+    encoding.writeVarUint(enc, AWARENESS);
+    encoding.writeVarUint8Array(
+      enc,
+      awarenessProtocol.encodeAwarenessUpdate(awareness, [
+        ...added,
+        ...updated,
+        ...removed,
+      ]),
+    );
+    const msg = encoding.toUint8Array(enc);
+    for (const ws of conns.keys()) send(ws, msg);
+  });
+
+  const wss = new WebSocketServer({ port });
+  wss.on("connection", (ws) => {
+    conns.set(ws, new Set());
+    ws.binaryType = "arraybuffer";
+    ws.on("message", (data) => {
+      const decoder = decoding.createDecoder(new Uint8Array(data));
+      switch (decoding.readVarUint(decoder)) {
+        case SYNC: {
+          const enc = encoding.createEncoder();
+          encoding.writeVarUint(enc, SYNC);
+          syncProtocol.readSyncMessage(decoder, enc, ydoc, ws);
+          if (encoding.length(enc) > 1) send(ws, encoding.toUint8Array(enc));
+          break;
+        }
+        case AWARENESS:
+          awarenessProtocol.applyAwarenessUpdate(
+            awareness,
+            decoding.readVarUint8Array(decoder),
+            ws,
+          );
+          break;
+      }
+    });
+    ws.on("close", () => {
+      const owned = conns.get(ws);
+      conns.delete(ws);
+      if (owned?.size)
+        awarenessProtocol.removeAwarenessStates(awareness, [...owned], null);
+    });
+    // Hello: our sync step 1 (so the client sends what we lack), then the
+    // current awareness states.
+    const enc = encoding.createEncoder();
+    encoding.writeVarUint(enc, SYNC);
+    syncProtocol.writeSyncStep1(enc, ydoc);
+    send(ws, encoding.toUint8Array(enc));
+    const states = [...awareness.getStates().keys()];
+    if (states.length) {
+      const a = encoding.createEncoder();
+      encoding.writeVarUint(a, AWARENESS);
+      encoding.writeVarUint8Array(
+        a,
+        awarenessProtocol.encodeAwarenessUpdate(awareness, states),
+      );
+      send(ws, encoding.toUint8Array(a));
+    }
+  });
+
+  let timer;
+  if (fakes) {
+    // Cursor positions are Yjs relative positions inside a block's text.
+    const fragment = ydoc.getXmlFragment("default");
+    const blocks = fragment
+      .toArray()
+      .filter(
+        (n) => n instanceof Y.XmlElement && n.firstChild instanceof Y.XmlText,
+      );
+    const at = (block, index) => {
+      const text = blocks[block].firstChild;
+      return Y.relativePositionToJSON(
+        Y.createRelativePositionFromTypeIndex(text, index),
+      );
+    };
+    const people = [
+      {
+        user: { name: "Maya Chen", color: "#c2410c", kind: "user" },
+        // A caret in the first paragraph, after "ship the new".
+        cursor: { anchor: at(1, 17), head: at(1, 17) },
+      },
+      {
+        user: { name: "Sam Okafor", color: "#15803d", kind: "user" },
+        // A selection in the rollout paragraph.
+        cursor: {
+          anchor: at(blocks.length - 1, 6),
+          head: at(blocks.length - 1, 31),
+        },
+      },
+      {
+        user: { name: "Docs agent", color: "#9333ea", kind: "agent" },
+        // A caret at the end of the first heading.
+        cursor: { anchor: at(0, 11), head: at(0, 11) },
+      },
+    ];
+    const fakeAwareness = people.map((p) => {
+      const a = new awarenessProtocol.Awareness(new Y.Doc());
+      a.setLocalState(p);
+      return a;
+    });
+    const renew = () => {
+      for (const a of fakeAwareness) {
+        // Bump the clock so the server's 30 s timeout never removes them.
+        a.setLocalState({ ...a.getLocalState() });
+        awarenessProtocol.applyAwarenessUpdate(
+          awareness,
+          awarenessProtocol.encodeAwarenessUpdate(a, [a.clientID]),
+          "fake",
+        );
+      }
+    };
+    renew();
+    timer = setInterval(renew, 5000);
+  }
+
+  return {
+    ydoc,
+    close: () =>
+      new Promise((resolve) => {
+        clearInterval(timer);
+        for (const ws of conns.keys()) ws.terminate();
+        wss.close(() => resolve());
+      }),
+  };
+}
+
+// Run directly.
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const port = Number(process.env.OA_DOC_PORT) || 1235;
+  const fakes =
+    process.argv.includes("--fakes") || process.env.OA_DOC_FAKES === "1";
+  const room = startDocRoom({ port, fakes });
+  const stop = () => room.close().then(() => process.exit(0));
+  process.on("SIGTERM", stop);
+  process.on("SIGINT", stop);
+  console.log(`ready ${port}`);
+}
