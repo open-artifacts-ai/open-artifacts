@@ -310,6 +310,8 @@ export class TakenWatch {
             `codex ${id} was never taken by a turn within the retention window; no longer watched`,
           );
         r.state = "lost";
+        r.text = undefined;
+        r.interrupted = undefined;
         changed = true;
       } else if (
         r.head !== undefined &&

@@ -1005,6 +1005,33 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     });
   });
 
+  it("past its window an attempt is lost and its text is gone from the saved file", () => {
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const home = tmp("ob-cxh-");
+    let now = Date.now();
+    const mk = () =>
+      new TakenWatch({
+        home,
+        file: takenFile,
+        onTaken: vi.fn(),
+        now: () => now,
+        ttlMs: 1000,
+      });
+    mk().attempt(
+      "mmmmmmmmmmmmmmm1",
+      THREAD,
+      "[oa-bus] h",
+      undefined,
+      "[oa-bus] h\n\nSECRET",
+    );
+    expect(readFileSync(takenFile, "utf8")).toContain("SECRET");
+    now += 5000;
+    const w = mk();
+    w.check();
+    expect(w.state("mmmmmmmmmmmmmmm1")).toBe("lost");
+    expect(readFileSync(takenFile, "utf8")).not.toContain("SECRET");
+  });
+
   describe("a stepped-over partial line is skipped only when the same bytes are read on", () => {
     const setup = (patch: Record<string, unknown>) => {
       const takenFile = join(tmp("ob-cxp-"), "p.json");
