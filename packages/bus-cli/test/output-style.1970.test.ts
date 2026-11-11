@@ -452,26 +452,18 @@ describe("review fixes (#1985)", () => {
     expect(readFileSync(settingsOf(h), "utf8")).not.toContain("outputStyle");
   });
 
-  it("without a record, uninstall drops only the old style's name and leaves the plugin's name and others alone", () => {
-    const h = home();
-    put(settingsOf(h), '{"a":1,"outputStyle":"Artifacts Teammate"}\n');
-    uninstallOutputStyle(withBus(h));
-    expect(JSON.parse(readFileSync(settingsOf(h), "utf8"))).toEqual({ a: 1 });
-    // The plugin's name may be the person's own choice.
-    put(settingsOf(h), `{"a":1,"outputStyle":"${NAME}"}\n`);
-    uninstallOutputStyle(withBus(h));
-    expect(JSON.parse(readFileSync(settingsOf(h), "utf8"))).toEqual({
-      a: 1,
-      outputStyle: NAME,
-    });
-    put(settingsOf(h), '{"outputStyle":"Explanatory"}\n');
-    uninstallOutputStyle(withBus(h));
-    expect(readFileSync(settingsOf(h), "utf8")).toBe(
-      '{"outputStyle":"Explanatory"}\n',
-    );
+  it("without a record, uninstall never changes outputStyle, whichever name it holds", () => {
+    for (const v of ["Artifacts Teammate", NAME, "Explanatory"]) {
+      const h = home();
+      put(settingsOf(h), `{"a":1,"outputStyle":"${v}"}\n`);
+      uninstallOutputStyle(withBus(h));
+      expect(readFileSync(settingsOf(h), "utf8")).toBe(
+        `{"a":1,"outputStyle":"${v}"}\n`,
+      );
+    }
   });
 
-  it("with a corrupt install.json, uninstall leaves the plugin's key alone", () => {
+  it("with a corrupt install.json, uninstall leaves outputStyle alone", () => {
     const h = home();
     put(settingsOf(h), "{}\n");
     installOutputStyle(withBus(h), ["claude"]);
@@ -594,11 +586,11 @@ describe("the key goes only after our file is gone", () => {
     expect(readFileSync(settingsOf(h), "utf8")).toContain("outputStyle");
   });
 
-  it("drops the old name when our file is already gone", () => {
+  it("keeps outputStyle with no record even when our file is already gone", () => {
     const h = home();
     put(settingsOf(h), '{"a":1,"outputStyle":"Artifacts Teammate"}\n');
     uninstallOutputStyle(withBus(h));
-    expect(readFileSync(settingsOf(h), "utf8")).not.toContain("outputStyle");
+    expect(readFileSync(settingsOf(h), "utf8")).toContain("outputStyle");
   });
 
   it("drops it after removing our file", () => {

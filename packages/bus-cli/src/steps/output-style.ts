@@ -277,14 +277,9 @@ function turnOff(deps: Where, out: OutputStyleResult) {
   const path = claudeSettingsFile(deps);
   try {
     const cur = readSettings(path);
-    // With no record, only the old style's name (its file is gone, so the key would
-    // dangle) goes. The plugin's name may be the person's own choice: left alone.
-    if (
-      cur.ok &&
-      cur.text !== undefined &&
-      isOurName(cur.style) &&
-      (rec || cur.style === OUTPUT_STYLE_NAME)
-    ) {
+    // With no record the setting is never touched: the person may have picked
+    // that style themselves (an own unmarked file of the same name, say).
+    if (rec && cur.ok && cur.text !== undefined && isOurName(cur.style)) {
       // Back to exactly what was there: the key absent, null, or the empty string.
       const was = rec?.set ? rec.before : undefined;
       const next =
