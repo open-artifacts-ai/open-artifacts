@@ -324,6 +324,9 @@ export function mountComments(app: AppType): void {
 
   app.post(ANSWER, async (c) => {
     const { id, who: cw, level, artifact } = await open(c, "comments.write");
+    // #1752: an ask is answered by a person; a token (an agent) cannot.
+    if (c.var.tokenId)
+      throw new ApiError("forbidden", "Only a person can answer an ask");
     const threadId = idParam(c, "threadId");
     const commentId = idParam(c, "commentId");
     const raw = AnswerBodySchema.safeParse(await jsonOf(c));

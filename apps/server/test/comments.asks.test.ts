@@ -20,7 +20,12 @@ import {
   installDelivery,
   type NoticeDelivery,
 } from "../src/services/bus-delivery.js";
-import { commentNoticeText } from "../src/services/comment-agents.js";
+import { createPat } from "../src/auth/pat.js";
+import {
+  ANSWER_WINDOW_MS,
+  commentNoticeText,
+  notifyAnswered,
+} from "../src/services/comment-agents.js";
 import {
   addReply,
   addThread,
@@ -719,6 +724,42 @@ describe("ask_answered notice (#1535)", () => {
       `${s.id}:${a.cid}:answered`,
       `${s.id}:${b.cid}:answered`,
     ]);
+  });
+
+  it("an answer notice waits out a window so rapid changes leave one (#1752)", async () => {
+    const s = await setup();
+    const { t, cid } = await askFrom(owner, s.id);
+    bus.clear();
+    const before = Date.now();
+    await answer(s.id, t.id, cid, viewer, "wide");
+    const n = answered()[0]?.notice;
+    expect(n?.notBefore).toBeGreaterThanOrEqual(before + ANSWER_WINDOW_MS);
+    expect(n?.notBefore).toBeLessThanOrEqual(Date.now() + ANSWER_WINDOW_MS);
+  });
+
+  it("the answer fan-out stops at its time budget and sends nothing past it (#1752)", async () => {
+    const s = await setup();
+    const { t, cid } = await askFrom(owner, s.id);
+    bus.clear();
+    await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId, false, -1);
+    expect(answered()).toHaveLength(0);
+    await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId);
+    expect(answered()).toHaveLength(1);
+  });
+
+  it("a token cannot answer an ask: 403 forbidden, nothing stored or sent (#1752)", async () => {
+    const s = await setup();
+    const { t, cid } = await askFrom(owner, s.id);
+    bus.clear();
+    const { token } = await createPat(E, viewer.userId, "agent");
+    const r = await api(app, R.commentAnswer(s.id, t.id, cid), token, {
+      method: "POST",
+      body: { optionId: "wide" },
+    });
+    expect(r.status).toBe(403);
+    expect(await errOf(r)).toMatchObject({ code: "forbidden" });
+    expect(answered()).toHaveLength(0);
+    expect((await answer(s.id, t.id, cid, viewer, "wide")).status).toBe(200);
   });
 
   it("a person-authored ask whose author has no following agent sends nothing", async () => {
