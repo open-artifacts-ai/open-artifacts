@@ -235,11 +235,54 @@ describe("runDaemon claude session sync", () => {
     const rec = h.daemon.agents.byRef("s4242");
     if (!rec) throw new Error("no record");
     rec.live = false;
+    rec.closedBy = "liveness";
     expect(await h.next("agent_up", 2)).toMatchObject({ agent_ref: "s4242" });
     expect(h.daemon.agents.byRef("s4242")).toMatchObject({
       pid: 4242,
       live: true,
     });
+  });
+
+  it("#2110: a record closed by a delivery refusal is not reopened by the sync", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({ claude: syncDeps(d, running) });
+    await h.next("agent_up");
+    const rec = h.daemon.agents.byRef("s4242");
+    if (!rec) throw new Error("no record");
+    rec.live = false;
+    rec.closedBy = "delivery";
+    await new Promise((r) => setTimeout(r, 200)); // several sync ticks
+    expect(h.of("agent_up")).toHaveLength(1);
+    expect(rec.live).toBe(false);
+  });
+
+  it("#2110: an unreadable file keeps a running session live only for the grace window", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: { ...syncDeps(d, running), unknownGraceMs: 150 },
+    });
+    await h.next("agent_up");
+    writeFileSync(join(d, "4242.json"), '{"pid":4242,');
+    await new Promise((r) => setTimeout(r, 60));
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef("s4242")?.live).toBe(false),
+    );
+  });
+
+  it("#2110: an unreadable start time lists the session as unknown", () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const live = liveClaudeSessions({
+      dir: d,
+      procStart: () => null,
+      isRunning: () => true,
+    });
+    expect(live).toMatchObject([{ ref: "s4242", unknown: true }]);
   });
 
   it("#2116: a same-process reopen is bounded, so a refusing session does not flap", async () => {
@@ -251,8 +294,10 @@ describe("runDaemon claude session sync", () => {
     const rec = h.daemon.agents.byRef("s4242");
     if (!rec) throw new Error("no record");
     rec.live = false;
+    rec.closedBy = "liveness";
     await h.next("agent_up", 2);
     rec.live = false; // closed again at once
+    rec.closedBy = "liveness";
     await new Promise((r) => setTimeout(r, 200));
     expect(h.of("agent_up")).toHaveLength(2);
     expect(rec.live).toBe(false);

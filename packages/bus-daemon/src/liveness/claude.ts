@@ -15,6 +15,8 @@ export type LiveClaude = {
   cwd: string;
   /** The process start the session file recorded: tells a reused pid from the session's own. */
   procStart: string;
+  /** #2110: running, but its start time could not be read: unknown, kept live for a bounded grace by the caller. */
+  unknown?: true;
 };
 
 export type ClaudeLivenessDeps = {
@@ -27,21 +29,27 @@ export type ClaudeLivenessDeps = {
 
 type SessionFile = LiveClaude & { stamp: string };
 
-/** Every well-formed session file, without asking the OS anything. */
-function sessionFiles(dir: string): SessionFile[] {
+/** Every well-formed session file, without asking the OS anything, and the pids whose file exists but cannot be read or parsed right now (a rewrite in flight: unknown, not gone). */
+function scanSessions(dir: string): {
+  files: SessionFile[];
+  unreadable: Set<number>;
+} {
   const out: SessionFile[] = [];
+  const unreadable = new Set<number>();
   let names: string[];
   try {
     names = readdirSync(dir);
   } catch {
-    return out;
+    return { files: out, unreadable };
   }
   for (const fn of names) {
-    if (!/^\d+\.json$/.test(fn)) continue;
+    const m = /^(\d+)\.json$/.exec(fn);
+    if (!m) continue;
     let rec: Record<string, unknown>;
     try {
       rec = JSON.parse(readFileSync(join(dir, fn), "utf8"));
     } catch {
+      unreadable.add(Number(m[1]));
       continue;
     }
     const pid = Number(rec?.pid);
@@ -64,60 +72,56 @@ function sessionFiles(dir: string): SessionFile[] {
       stamp: rec.procStart,
     });
   }
-  return out;
+  return { files: out, unreadable };
 }
+
+const sessionFiles = (dir: string) => scanSessions(dir).files;
 
 /**
- * #2110: closed only on positive evidence. A running pid whose start time
- * could not be read (null) is unknown and stays live; a different start time
- * (a reused pid) or a pid that is not running is gone.
+ * #2110: closed only on positive evidence. A pid that is not running, or a
+ * different start time (a reused pid), is gone; a running pid whose start time
+ * could not be read (null) is unknown.
  */
-const alive = (s: SessionFile, deps: ClaudeLivenessDeps) => {
-  if (!deps.isRunning(s.pid)) return false;
+const aliveState = (
+  s: SessionFile,
+  deps: ClaudeLivenessDeps,
+): "yes" | "unknown" | "no" => {
+  if (!deps.isRunning(s.pid)) return "no";
   const start = deps.procStart(s.pid, s.stamp);
-  return start === null || start === s.procStart;
+  if (start === null) return "unknown";
+  return start === s.procStart ? "yes" : "no";
 };
-
-/** Pids whose session file exists but cannot be read or parsed right now (a rewrite in flight): unknown, not gone. */
-export function unreadableClaudePids(dir: string): Set<number> {
-  const out = new Set<number>();
-  let names: string[];
-  try {
-    names = readdirSync(dir);
-  } catch {
-    return out;
-  }
-  for (const fn of names) {
-    const m = /^(\d+)\.json$/.exec(fn);
-    if (!m) continue;
-    try {
-      JSON.parse(readFileSync(join(dir, fn), "utf8"));
-    } catch {
-      out.add(Number(m[1]));
-    }
-  }
-  return out;
-}
+const alive = (s: SessionFile, deps: ClaudeLivenessDeps) =>
+  aliveState(s, deps) !== "no";
 
 const strip = ({ stamp: _, ...s }: SessionFile): LiveClaude => s;
 
+function liveOf(files: SessionFile[], deps: ClaudeLivenessDeps): LiveClaude[] {
+  const out: LiveClaude[] = [];
+  for (const s of files) {
+    const st = aliveState(s, deps);
+    if (st === "no") continue;
+    out.push(st === "unknown" ? { ...strip(s), unknown: true } : strip(s));
+  }
+  return out;
+}
+
 /** Every live session file, one per process: a membership test, never deduped. */
 export function liveClaudeFiles(deps: ClaudeLivenessDeps): LiveClaude[] {
-  return sessionFiles(deps.dir)
-    .filter((s) => alive(s, deps))
-    .map(strip);
+  return liveOf(sessionFiles(deps.dir), deps);
 }
 
 /**
  * Claude sessions that are running now, from `~/.claude/sessions`: the process
- * is up and its start time matches. One with no socket (cross-session
- * messaging off) can still send; it just cannot receive.
+ * is up and its start time matches (or could not be read: `unknown`). One with
+ * no socket (cross-session messaging off) can still send; it just cannot
+ * receive. `unreadable` is the pids whose file could not be read this pass.
  */
-export function liveClaudeSessions(
+export function liveClaudeScan(
   deps: ClaudeLivenessDeps,
   /** The pid the caller already knows for a ref (its record's, a hello's): that file wins. */
   preferPid?: (ref: string) => number | undefined,
-): LiveClaude[] {
+): { live: LiveClaude[]; unreadable: Set<number> } {
   // One file per session: a headless `claude --resume` shares the id, and
   // its nameless file must not stand for the session (#1635).
   const byRef = new Map<string, LiveClaude>();
@@ -125,7 +129,8 @@ export function liveClaudeSessions(
     (s.pid === preferPid?.(s.ref) ? 4 : 0) +
     (s.socketPath !== "" ? 2 : 0) +
     (s.name !== `claude-${s.pid}` ? 1 : 0);
-  for (const s of liveClaudeFiles(deps)) {
+  const scan = scanSessions(deps.dir);
+  for (const s of liveOf(scan.files, deps)) {
     const cur = byRef.get(s.ref);
     if (
       !cur ||
@@ -134,7 +139,14 @@ export function liveClaudeSessions(
     )
       byRef.set(s.ref, s);
   }
-  return [...byRef.values()];
+  return { live: [...byRef.values()], unreadable: scan.unreadable };
+}
+
+export function liveClaudeSessions(
+  deps: ClaudeLivenessDeps,
+  preferPid?: (ref: string) => number | undefined,
+): LiveClaude[] {
+  return liveClaudeScan(deps, preferPid).live;
 }
 
 /** Where to inject for one session, read fresh each time; null when it is gone. Asks the OS about that session only. */

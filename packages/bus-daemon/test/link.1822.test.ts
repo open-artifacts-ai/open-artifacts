@@ -93,6 +93,26 @@ describe("link_proof to link_bind (#1822)", () => {
     expect(h.of("link_bind")).toHaveLength(0);
   });
 
+  it("#2110: a same-process reopen keeps the proof and replays link_bind", async () => {
+    const { h } = await start([BUS_CAPS.ids, BUS_CAPS.link]);
+    expect(await proof(h, 4242)).toBe(true);
+    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(1));
+    const rec = h.daemon.agents.byRef("s-a");
+    if (!rec) throw new Error("no record");
+    rec.live = false;
+    rec.closedBy = "liveness";
+    await vi.waitFor(() => expect(h.of("agent_up")).toHaveLength(2));
+    expect(h.daemon.agents.byRef("s-a")?.linkHashes).toEqual([HASH]);
+    h.toDaemon({
+      id: h.of("agent_up")[1]?.id as string,
+      type: "agent_ok",
+      agent_ref: "s-a",
+      bus_name: "open-artifacts-9e",
+    });
+    await vi.waitFor(() => expect(h.of("link_bind")).toHaveLength(2));
+    expect(h.of("link_bind").at(-1)).toMatchObject({ hash: HASH });
+  });
+
   it("sends nothing to a hub that did not list link", async () => {
     const { h } = await start([BUS_CAPS.ids]);
     expect(await proof(h, 4242)).toBe(true);

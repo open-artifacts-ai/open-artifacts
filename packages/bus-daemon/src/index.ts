@@ -95,8 +95,8 @@ import {
   claudeTarget,
   isRunning,
   liveClaudeFiles,
+  liveClaudeScan,
   liveClaudeSessions,
-  unreadableClaudePids,
 } from "./liveness/claude.ts";
 import {
   gitRecordRoot,
@@ -267,6 +267,8 @@ export type DaemonDeps = {
     /** Default: beside heldFile, or ~/.oa-bus/claude-return.json. */
     returnIndexFile?: string;
     syncMs?: number;
+    /** #2110: how long a running session with an unreadable start time or file stays live. Default 10 min. */
+    unknownGraceMs?: number;
     procStart?: (pid: number) => string | null;
     isRunning?: (pid: number) => boolean;
     /** Proof hashes of live sessions kept across a restart (#2050); default ~/.oa-bus/claude-links.json. */
@@ -952,6 +954,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const seenAt = new Map<string, number>();
   const REOPEN_SAME_PROC_MS = 30_000;
   const reopenedAt = new Map<string, number>();
+  const unknownSince = new Map<string, number>();
+  const UNKNOWN_GRACE_MS = cl.unknownGraceMs ?? 600_000;
   let seenSeq = 0;
 
   /** rename ids awaiting the hub's answer, to their agent_ref; cleared with the link. */
@@ -1083,10 +1087,22 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
-    const live = liveClaudeSessions(
+    const scan = liveClaudeScan(
       claudeSessions,
       (ref) => agents.byRef(ref)?.pid,
     );
+    const now = Date.now();
+    // #2110: a running session whose start time or file cannot be read is
+    // unknown and stays live, for at most UNKNOWN_GRACE_MS of consecutive
+    // unknowns; then it is treated as gone.
+    const unknownNow = new Set<string>();
+    const live = scan.live.filter((s) => {
+      if (!s.unknown) return true;
+      unknownNow.add(s.ref);
+      const since = unknownSince.get(s.ref) ?? now;
+      unknownSince.set(s.ref, since);
+      return now - since <= UNKNOWN_GRACE_MS;
+    });
     const liveRefs = new Set(live.map((s) => s.ref));
     const livePid = (ref: string, pid: number) =>
       live.some((s) => s.ref === ref && s.pid === pid);
@@ -1114,7 +1130,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       // the /resume case, handled the same way. The same process reopens at
       // most once per REOPEN_SAME_PROC_MS, so a session that really refuses
       // deliveries does not flap.
-      if (prev && prev.pid === s.pid) {
+      if (prev && prev.pid === s.pid && prev.procStart === s.procStart) {
+        // A delivery refusal stays closed until a hello or a new process.
+        if (prev.closedBy !== "liveness") continue;
         const last = reopenedAt.get(s.ref);
         if (last !== undefined && Date.now() - last < REOPEN_SAME_PROC_MS)
           continue;
@@ -1147,9 +1165,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         global: ns.global,
         pid: s.pid,
         procStart: s.procStart,
-        // The same process keeps its proof across /clear; agent_ok rebinds it.
-        ...(old?.linkHashes !== undefined
-          ? { linkHashes: old.linkHashes }
+        // The same process keeps its proof across /clear and a reopen; agent_ok rebinds it.
+        ...((prev?.linkHashes ?? old?.linkHashes) !== undefined
+          ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
           : {}),
         sessionName: s.name,
         cwd: s.cwd,
@@ -1165,18 +1183,28 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     }
     claimProofs();
     let closed = false;
-    const unreadable = unreadableClaudePids(claudeSessions.dir);
     for (const a of agents.all()) {
       if (a.kind !== "claude-code" || !a.live || liveRefs.has(a.ref)) continue;
       // #2110: an unreadable session file of a running process is unknown, not
       // gone: keep it live. Only positive evidence closes (pid not running, a
       // different start time, the file removed).
-      if (unreadable.has(a.pid) && claudeSessions.isRunning(a.pid)) continue;
+      if (scan.unreadable.has(a.pid) && claudeSessions.isRunning(a.pid)) {
+        unknownNow.add(a.ref);
+        const since = unknownSince.get(a.ref) ?? now;
+        unknownSince.set(a.ref, since);
+        if (now - since <= UNKNOWN_GRACE_MS) continue;
+      }
       a.live = false;
+      a.closedBy = "liveness";
       closed = true;
       ev("agent_leave", agentFields(a, "session_gone"));
       void claude.drop(a.ref);
     }
+    // Consecutive unknowns only; a reopen stamp is dropped once it has expired.
+    for (const r of [...unknownSince.keys()])
+      if (!unknownNow.has(r)) unknownSince.delete(r);
+    for (const [r, at] of reopenedAt)
+      if (now - at >= REOPEN_SAME_PROC_MS) reopenedAt.delete(r);
     persistLinks();
     if (closed) announceSessions();
   };
@@ -1221,6 +1249,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       ...deps.transports,
     },
     onClosed: (a) => {
+      a.closedBy = "delivery";
       ev("agent_leave", agentFields(a, "delivery_closed"));
       announceSessions();
     },
