@@ -76,6 +76,7 @@ const art = async (id: string, who: U | null = owner) =>
   (await (await api(app, R.artifact(id), who?.cookie ?? null)).json()) as {
     comments: boolean;
     commenters?: string;
+    can?: { comment: boolean };
   };
 const patch = (id: string, comments: unknown) =>
   api(app, R.artifact(id), owner.cookie, {
@@ -159,6 +160,14 @@ describe("default and storage", () => {
 });
 
 describe("signed-in only", () => {
+  it("the artifact DTO says a signed-out viewer cannot comment; a member can", async () => {
+    const id = await pub();
+    expect((await art(id, null)).can?.comment).toBe(false);
+    expect((await art(id, guest)).can?.comment).toBe(true);
+    const open = await pub({ comments: "everyone" });
+    expect((await art(open, null)).can).toBeUndefined();
+  });
+
   it("refuses a signed-out write on every route with comments_signed_in_only; reads stay open", async () => {
     const id = await pub();
     const t = (await (await post(id, owner, "root")).json()) as Thread;
@@ -216,6 +225,34 @@ describe("signed-in only", () => {
     const id = await pub();
     expect((await post(id, guest)).status).toBe(201);
     expect((await post(id, owner)).status).toBe(201);
+  });
+
+  it("an anon commenter from before the switch loses edit and delete, in the list and on the routes", async () => {
+    const id = await pub({ comments: "everyone" });
+    const r = await post(id, null, "mine");
+    expect(r.status).toBe(201);
+    const h = { [ANON_ID_HEADER]: r.headers.get(ANON_ID_HEADER) as string };
+    const t = (await r.json()) as Thread;
+    const cid = t.comments[0]?.id as string;
+    const mine = async () =>
+      ((await (await call(id, null, "", { headers: h })).json()) as CommentList)
+        .threads[0]?.comments[0]?.can;
+    expect(await mine()).toEqual({ edit: true, delete: true });
+    await patch(id, "signed-in");
+    expect(await mine()).toEqual({ edit: false, delete: false });
+    await expectRefused(
+      await call(id, null, `/${t.id}/comments/${cid}`, {
+        method: "PATCH",
+        headers: h,
+        body: { body: "y" },
+      }),
+    );
+    await expectRefused(
+      await call(id, null, `/${t.id}/comments/${cid}`, {
+        method: "DELETE",
+        headers: h,
+      }),
+    );
   });
 
   it("everyone: a signed-out visitor posts; off: comments_off", async () => {

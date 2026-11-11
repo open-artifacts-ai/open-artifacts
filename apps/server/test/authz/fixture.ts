@@ -301,6 +301,9 @@ export async function buildWorld(): Promise<World> {
         format: "html",
         content: `<p>${a}</p>`,
         capabilities: { db: true, storage: true, viewer: true },
+        // #2080: the matrix world keeps anyone-can-comment; signed-in-only
+        // is covered by comments.access.2080.test.ts.
+        comments: "everyone",
         ...(space && space !== L ? { spaceId: space } : {}),
       } as never,
       null,
