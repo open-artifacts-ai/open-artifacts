@@ -221,7 +221,19 @@ export function AskBlock({
           data-needs-you={canAnswer && !pickedOpt ? "" : undefined}
         >
           <p className={`${TXT} ${MUTED}`} data-ask-from="">
-            {c.author.name} asks{askedWho(ask.to, mine)}
+            {c.author.name}
+            {c.author.kind === "agent" && (
+              <>
+                {" "}
+                <span
+                  data-agent-tag=""
+                  className="rounded-full border border-primary/30 bg-primary/10 px-1.5 text-[length:var(--oa-text-xs)] text-foreground"
+                >
+                  agent
+                </span>
+              </>
+            )}{" "}
+            asks{askedWho(ask.to, mine)}
           </p>
           <p id={qid} className={`${TXT} font-semibold break-words`}>
             {linked(ask.question, 0)}

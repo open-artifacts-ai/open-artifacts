@@ -233,6 +233,34 @@ describe("asks on the comments column", () => {
     expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
   });
 
+  it("an agent asker keeps its agent tag in the header", async () => {
+    const base = askThread();
+    serveThreads(() => [
+      askThread({
+        comments: [
+          {
+            ...base.comments[0],
+            author: {
+              kind: "agent",
+              id: "agent:product",
+              name: "OA Product",
+              me: false,
+              linked: true,
+              product: "Claude Code",
+              animal: { id: "fox", color: 1 },
+            },
+          },
+        ],
+      }),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    const head = c.querySelector("[data-ask-from]") as HTMLElement;
+    expect(head.textContent).toMatch(/^OA Product\s+agent\s+asks you$/);
+    expect(head.querySelector("[data-agent-tag]")).not.toBeNull();
+  });
+
   it.each([
     [[{ kind: "user", id: "me", name: "Me", me: true }], "Leo asks you"],
     [[{ kind: "user", id: "u1", name: "Sam", me: false }], "Leo asks Sam"],

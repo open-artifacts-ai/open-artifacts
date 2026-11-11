@@ -13,7 +13,15 @@ import { HttpResponse, http } from "msw";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setEmbedForTests } from "../src/embed";
 import { fullPath } from "../src/viewer/paths";
-import { arts, events, installHarness, mount, seen, server } from "./harness";
+import {
+  arts,
+  calls,
+  events,
+  installHarness,
+  mount,
+  seen,
+  server,
+} from "./harness";
 
 installHarness();
 afterEach(() => setEmbedForTests(false));
@@ -285,6 +293,54 @@ describe("live versions: the safe swap", () => {
     await act(() => new Promise((r) => setTimeout(r, 1_200)));
     expect(screen.queryByRole("button", { name: /View version/ })).toBeNull();
     expect(frames()).toEqual([first]);
+  });
+
+  it("older-version banner: Restore is hidden for a viewer who cannot edit", async () => {
+    const art = arts.find((a) => a.id === OWNED) as ArtifactSummary;
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () =>
+        HttpResponse.json({
+          ...art,
+          access: "viewer",
+          can: {
+            edit: false,
+            share: false,
+            setVisibility: false,
+            delete: false,
+            transfer: false,
+            move: false,
+            dataWrite: false,
+            comment: false,
+          },
+        }),
+      ),
+    );
+    mount(viewerPath(OWNED, 1));
+    expect(
+      await screen.findByRole("button", { name: "Back to current" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Restore this version" }),
+    ).toBeNull();
+  });
+
+  it("older-version banner: Restore confirms, restores, and moves to the new version", async () => {
+    const posts = calls("POST");
+    await open(viewerPath(OWNED, 1));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Restore this version" }),
+    );
+    // Nothing is sent before the confirm.
+    expect(posts).toHaveLength(0);
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Restore version" }),
+    );
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.path).toMatch(/\/versions\/1\/restore$/);
+    // v3 is current: the viewer is there, so the older-version strip is gone.
+    await waitFor(() =>
+      expect(screen.queryByText(/an older version\./)).toBeNull(),
+    );
   });
 
   it("a hello ahead of the shown version catches up (missed while away)", async () => {

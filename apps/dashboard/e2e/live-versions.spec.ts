@@ -269,9 +269,13 @@ test("an explicit version never swaps: Back to current selects Current", async (
   await loaded(page);
   const back = page.getByRole("button", { name: "Back to current" });
   await expect(back).toBeVisible();
+  const banner = page.locator("[data-older-banner]");
+  await expect(banner).toHaveAttribute("data-current", "2");
   const v = await publish(page);
-  await page.waitForTimeout(1_200);
-  await expect(back).toBeVisible({ timeout: LIVE_MS });
+  // The live feed reaches the older page: the banner now points at the new current.
+  await expect(banner).toHaveAttribute("data-current", String(v), {
+    timeout: LIVE_MS,
+  });
   await expect(page.getByRole("button", { name: /View version/ })).toHaveCount(
     0,
   );

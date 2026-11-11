@@ -66,7 +66,7 @@ const OVERLAY_CSS = `
 .btn{position:absolute;display:flex;align-items:center;gap:6px;font:500 13px/1 system-ui,sans-serif;padding:8px 12px;border:0;border-radius:999px;background:#17181a;color:#fff;cursor:pointer;pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,.25)}
 .btn::after{content:"";position:absolute;left:var(--ax,50%);top:100%;margin-left:-5px;border:5px solid transparent;border-top-color:#17181a;border-bottom:0}
 .btn.below::after{top:auto;bottom:100%;border-top:0;border-bottom:5px solid #17181a}
-@media(prefers-color-scheme:dark){.btn{background:#eceef1;color:#17181a;box-shadow:0 2px 8px rgba(0,0,0,.5)}.btn::after{border-top-color:#eceef1}.btn.below::after{border-bottom-color:#eceef1}}
+.dark .btn{background:#eceef1;color:#17181a;box-shadow:0 2px 8px rgba(0,0,0,.5)}.dark .btn::after{border-top-color:#eceef1}.dark .btn.below::after{border-bottom-color:#eceef1}
 .btn svg{width:14px;height:14px;flex:none}
 .mark{position:absolute;width:6px;height:16px;border-radius:2px;background:#e0a000;pointer-events:auto;cursor:pointer}
 .mark.on{background:#1f5fbf}
@@ -91,6 +91,12 @@ const OVERLAY_CSS = `
 const PAGE_CSS =
   "::highlight(oa-comment){background:rgba(255,200,0,.35)}::highlight(oa-comment-active){background:rgba(255,160,0,.6)}";
 
+/** The runtime's current theme and a way to hear it change. */
+export interface ThemeSource {
+  get(): "light" | "dark";
+  on(cb: (t: "light" | "dark") => void): () => void;
+}
+
 export interface Comments {
   /** Recompute positions now and report them if they changed. */
   flush(): void;
@@ -113,6 +119,8 @@ const KEPT_MS = 1500;
 export function createComments(
   bridge: Pick<Bridge, "on" | "send">,
   signal?: AbortSignal,
+  /** The viewer's theme (the shell's, not the OS's): the bubble follows it. */
+  theme?: ThemeSource,
 ): Comments {
   const format =
     document.querySelector('meta[name="oa-format"]')?.getAttribute("content") ??
@@ -169,6 +177,7 @@ export function createComments(
     const style = document.createElement("style");
     style.textContent = OVERLAY_CSS;
     layer = document.createElement("div");
+    layer.classList.toggle("dark", theme?.get() === "dark");
     root.append(style, layer);
     document.documentElement.append(host);
     return layer;
@@ -861,8 +870,13 @@ export function createComments(
       document.adoptedStyleSheets = document.adoptedStyleSheets.filter(
         (s) => s !== sheet,
       );
+    offTheme?.();
     host?.remove();
   };
+  // The bubble's colors follow the viewer's theme, not the OS's.
+  const offTheme = theme?.on((t) =>
+    layer?.classList.toggle("dark", t === "dark"),
+  );
   // #1473: a signal that was already aborted never fires `abort`, so the host,
   // the listener and the stylesheet would stay behind.
   if (signal?.aborted) dispose();

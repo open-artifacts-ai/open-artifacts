@@ -508,6 +508,17 @@ describe("selection button", () => {
     expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
   });
 
+  it("the bubble follows the viewer's theme, not the OS's", async () => {
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    const layer = button()?.parentElement;
+    expect(layer?.classList.contains("dark")).toBe(false);
+    await send({ type: "theme", theme: "dark" });
+    expect(layer?.classList.contains("dark")).toBe(true);
+    await send({ type: "theme", theme: "light" });
+    expect(layer?.classList.contains("dark")).toBe(false);
+  });
+
   it("does not show for an empty selection or when off", async () => {
     await start("select");
     select(textOf("a"), 3, textOf("a"), 4); // one space

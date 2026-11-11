@@ -138,6 +138,7 @@ function Viewer({
   artifact,
   version,
   explicitVersion,
+  newest,
   authed,
   anonymous,
   readOnly = false,
@@ -189,6 +190,8 @@ function Viewer({
   artifact: ArtifactSummary;
   version: number;
   explicitVersion: boolean;
+  /** The newest version the live feed has seen (never below the artifact's own). */
+  newest: number;
   authed: boolean;
   /** /me answered 401 (signed out), not loading or errored. */
   anonymous: boolean;
@@ -637,8 +640,12 @@ function Viewer({
             />
             {explicitVersion &&
               gone === null &&
-              version < artifact.currentVersion && (
-                <OlderBanner artifact={artifact} version={version} />
+              version < Math.max(artifact.currentVersion, newest) && (
+                <OlderBanner
+                  artifact={artifact}
+                  version={version}
+                  current={Math.max(artifact.currentVersion, newest)}
+                />
               )}
             {gone && (
               <GoneBanner
@@ -812,7 +819,6 @@ function ArtifactShell({
     prefetchContentUrl(id, v);
   }
   const me = useMe();
-  const navigate = useNavigate();
   const embed = isEmbed();
   // Deleted or made private while open: keep what's on screen (never blank it).
   const last = useRef<ArtifactSummary | undefined>(undefined);
@@ -922,6 +928,7 @@ function ArtifactShell({
               artifact={data}
               version={n}
               explicitVersion={v !== undefined}
+              newest={live.latest}
               chromeless={chromeless}
               colState={colState}
               authed={authed}

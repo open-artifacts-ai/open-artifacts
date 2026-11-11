@@ -7,19 +7,12 @@ import {
 import { Input, Button as ShButton, Skeleton } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { ApiClientError } from "../../api/client";
-import {
-  useRestoreVersion,
-  useVersionInfo,
-  useVersionPages,
-} from "../../api/queries";
-import { useSingleFlight } from "../../api/useSingleFlight";
+import { useVersionInfo, useVersionPages } from "../../api/queries";
 import { useCan } from "../../auth/permissions";
 import { personName } from "../../layout/person";
-import { toast } from "../../layout/toast";
 import { AppLink } from "../../library/AppLink";
 import { useSentinel } from "../../library/useInfinite";
-import { ConfirmDialog } from "../../settings/ConfirmDialog";
+import { RestoreDialog } from "../RestoreDialog";
 import { LINK_BTN, SM, TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
 
@@ -87,8 +80,6 @@ export function Versions({
 }) {
   const { id, currentVersion } = artifact;
   const q = useVersionPages(id);
-  const restore = useRestoreVersion(id);
-  const once = useSingleFlight();
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as Record<string, unknown>;
   const [target, setTarget] = useState<number | null>(null);
@@ -391,42 +382,7 @@ export function Versions({
           </div>
         )}
       </div>
-      <ConfirmDialog
-        open={target !== null}
-        onClose={() => setTarget(null)}
-        title={`Restore v${target ?? ""}?`}
-        body={
-          <p>
-            This publishes a new version with the contents of the selected one.
-          </p>
-        }
-        confirm="Restore version"
-        pending="Restoring…"
-        busy={restore.isPending}
-        onConfirm={() =>
-          target !== null &&
-          once((done) =>
-            restore.mutate(target, {
-              onSuccess: (r) => {
-                setTarget(null);
-                void navigate({
-                  to: viewerPath(id, r.version) as string,
-                  search: search as never,
-                });
-              },
-              onError: (e) =>
-                toast({
-                  title:
-                    e instanceof ApiClientError
-                      ? e.message
-                      : "Couldn't restore",
-                  tone: "danger",
-                }),
-              onSettled: done,
-            }),
-          )
-        }
-      />
+      <RestoreDialog id={id} version={target} onClose={() => setTarget(null)} />
     </div>
   );
 }
