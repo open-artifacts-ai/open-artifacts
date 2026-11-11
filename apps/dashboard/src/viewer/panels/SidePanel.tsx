@@ -194,17 +194,20 @@ export function SidePanel({
 
 /**
  * The tab row's frame: room for the close button, a right-edge
- * fade while tabs are off screen, and the active tab scrolled into view. The
+ * fade on each edge with tabs off screen, and the active tab scrolled into view. The
  * focus ring is drawn inset so the scroller never clips it.
  */
 function TabStrip({ tab, children }: { tab: string; children: ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
   const [more, setMore] = useState(false);
+  const [less, setLess] = useState(false);
   useEffect(() => {
     const el = box.current?.querySelector<HTMLElement>('[role="tablist"]');
     if (!el) return;
-    const update = () =>
+    const update = () => {
       setMore(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+      setLess(el.scrollLeft > 1);
+    };
     update();
     el.addEventListener("scroll", update, { passive: true });
     // Some test DOMs have no ResizeObserver: the fade then follows scrolls only.
@@ -231,6 +234,13 @@ function TabStrip({ tab, children }: { tab: string; children: ReactNode }) {
   return (
     <div ref={box} className="relative mr-9">
       {children}
+      {less && (
+        <div
+          aria-hidden="true"
+          data-testid="tabs-fade-start"
+          className="pointer-events-none absolute inset-y-0 left-0 w-8 bg-gradient-to-r from-card to-transparent"
+        />
+      )}
       {more && (
         <div
           aria-hidden="true"
