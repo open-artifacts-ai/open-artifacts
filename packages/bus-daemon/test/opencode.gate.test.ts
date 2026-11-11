@@ -529,16 +529,18 @@ describe("opencode through runDaemon", () => {
     conn: Set<number> = new Set([8001, 8002]),
     now: () => number = Date.now,
     failReads: () => boolean = () => false,
+    startOf?: (pid: number) => string | null,
   ) {
     return daemonHarness({
       bindingNow: now,
       attest: undefined, // the real attest, as runDaemon wires it
-      claude: { syncMs: 3_600_000 },
+      // A start-time test reads fresh every time: no cache TTL.
+      claude: { syncMs: startOf ? 0 : 3_600_000 },
       opencode: {
         presenceDir: dir,
         spawn: ok,
         isRunning: (pid) => alive.has(pid),
-        procStart: () => null,
+        procStart: startOf ?? (() => null),
         // MCP server 7xxx runs under OpenCode service 8xxx.
         ancestors: (pid) => [pid, pid + 1000, 1],
         comm: (pid) => (pid >= 8000 ? "/usr/local/bin/opencode" : "node"),
@@ -594,10 +596,11 @@ describe("opencode through runDaemon", () => {
     conn: Set<number>,
     now?: () => number,
     failReads?: () => boolean,
+    startOf?: (pid: number) => string | null,
   ) => {
     const dir = presenceDir();
     presence(dir, 4321, ["ses_root"]);
-    const h = await attested(dir, alive, conn, now, failReads);
+    const h = await attested(dir, alive, conn, now, failReads, startOf);
     (await h.adapter("ses_root", oc(7001))).close();
     expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
     return h;
@@ -622,6 +625,25 @@ describe("opencode through runDaemon", () => {
       /not open in a TUI attached|in use/,
     );
     expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
+  });
+
+  it("keeps a live incumbent whose start time cannot be read; a different start time displaces it", async () => {
+    let start: string | null = "t0";
+    const h = await claimed(
+      new Set([4321, 8001, 8002]),
+      new Set([8001, 8002]),
+      undefined,
+      undefined,
+      (pid) => (pid === 8001 ? start : "t9"),
+    );
+    start = null; // ps failed under load: unknown, not gone
+    await expect(h.adapter("ses_root", oc(7002))).rejects.toThrow(/in use/);
+    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
+    start = "t1"; // a reused pid: positive evidence
+    expect((await h.adapter("ses_root", oc(7002))).welcome).toMatchObject({
+      type: "welcome",
+    });
+    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8002);
   });
 
   it("lets a second service take it once the first service is gone", async () => {

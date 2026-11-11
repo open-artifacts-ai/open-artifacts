@@ -526,8 +526,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     if (!ocRunning(pid)) return true;
     const comm = ocComm(pid);
     if (comm !== null && basename(comm) !== "opencode") return true;
+    // Gone needs positive evidence: a start time that cannot be read is unknown.
     const start = ocServiceStart.get(ref);
-    return start != null && ocStart(pid) !== start;
+    if (start == null) return false;
+    const now = ocStart(pid);
+    return now !== null && now !== start;
   };
   const presenceDir = oc.presenceDir ?? opencodePresenceDir();
   /** Read on every delivery, hello and tick: the TUI decides, not the adapter's connection. */
