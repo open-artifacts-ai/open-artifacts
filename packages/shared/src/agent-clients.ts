@@ -61,7 +61,7 @@ const PI_RELOAD = "Run `/reload` in a running pi session, or start a new one.";
 const OMP_RELOAD = "Run `/mcp reload` in omp, or restart omp.";
 const HERMES_RELOAD =
   "Run `/reload-mcp` in a running Hermes session, or start a new one.";
-const OPENCLAW_RELOAD = "Run `openclaw mcp reload`. The next turn uses it.";
+const OPENCLAW_RELOAD = "Run `openclaw mcp reload`. Your next message uses it.";
 
 /** The four harnesses added for #2103: the OAuth form (same in both token forms). */
 const harnessOauth = (url: string, name: string): Snippet[] => [
@@ -229,7 +229,7 @@ function fileClients(
           },
         },
       }),
-      hint: `pi reads the token from ${f} each time it connects.`,
+      hint: `pi reads the token from ${f} each time it connects, so you export nothing.`,
       verify: `Run \`pi mcp list\`. It shows ${name} as connected.`,
       reload: PI_RELOAD,
     },
