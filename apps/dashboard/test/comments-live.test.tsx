@@ -1,3 +1,4 @@
+import type { CommentThread } from "@oa/shared";
 import { R, viewerPath } from "@oa/shared";
 import { fixtures } from "@oa/shared/mocks";
 import {
@@ -5,6 +6,7 @@ import {
   configure,
   fireEvent,
   getConfig,
+  renderHook,
   screen,
   waitFor,
   within,
@@ -21,7 +23,10 @@ import {
   onTestFinished,
   vi,
 } from "vitest";
-import { LIVE_TINT_MS } from "../src/viewer/comments/liveReplies";
+import {
+  LIVE_TINT_MS,
+  useLiveReplies,
+} from "../src/viewer/comments/liveReplies";
 import { events, installHarness, mount, server } from "./harness";
 import { FIRST_LOAD_MS } from "./timeouts";
 
@@ -164,12 +169,30 @@ describe("a folded thread (#2179)", () => {
   });
 });
 
+describe("folding (#2179, Design)", () => {
+  it("a thread with two replies shows both: never Show 1 earlier reply", async () => {
+    serve(() => [
+      thread("t1", [
+        comment("c1", "First"),
+        comment("c2", "Second"),
+        comment("c3", "Third"),
+      ]),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(await within(c).findByText("Second")).toBeInTheDocument();
+    expect(within(c).getByText("Third")).toBeInTheDocument();
+    expect(within(c).queryByText(/earlier repl/)).toBeNull();
+  });
+});
+
 describe("what was visible on load (#2179)", () => {
   it("the latest reply on load stays visible after two live replies; only replies folded at load stay folded", async () => {
     const t1 = (more: ReturnType<typeof comment>[] = []) =>
       thread("t1", [
         comment("c1", "First"),
         comment("c2", "Folded at load"),
+        comment("c2b", "Also folded at load"),
         comment("c3", "Latest on load"),
         ...more,
       ]);
@@ -191,7 +214,7 @@ describe("what was visible on load (#2179)", () => {
     expect(within(c).getByText("Live one")).toBeInTheDocument();
     expect(within(c).queryByText("Folded at load")).toBeNull();
     expect(
-      within(c).getByRole("button", { name: "Show 1 earlier reply" }),
+      within(c).getByRole("button", { name: "Show 2 earlier replies" }),
     ).toBeInTheDocument();
   });
 });
@@ -226,6 +249,10 @@ describe("a live reply (#2179)", () => {
       const row = await within(c).findByText("From an agent");
       const li = row.closest("[data-comment]") as HTMLElement;
       expect(li).toHaveAttribute("data-live");
+      // One polite message, with the name as shown.
+      expect(c.querySelector("[data-live-region]")).toHaveTextContent(
+        "New reply from OA Product",
+      );
       // A second live reply: everything already shown stays.
       list = [
         thread("t1", [
@@ -284,20 +311,21 @@ describe("a live reply (#2179)", () => {
   });
 
   describe("in the panel's scroller", () => {
-    // jsdom has no layout: rows sit 50px apart in document order, minus scrollTop.
-    const layout = (box: HTMLElement) => {
+    // jsdom has no layout: rows sit 50px apart in document order, minus
+    // scrollTop, in a panel `h` tall.
+    const layout = (box: HTMLElement, h = 500) => {
       vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
         function (this: Element) {
-          const rect = (top: number, h: number) =>
+          const rect = (top: number, height: number) =>
             ({
               top,
-              bottom: top + h,
+              bottom: top + height,
               left: 0,
               right: 0,
               width: 0,
-              height: h,
+              height,
             }) as DOMRect;
-          if (this === box) return rect(0, 500);
+          if (this === box) return rect(0, h);
           const rows = [...box.querySelectorAll("[data-comment]")];
           const i = rows.indexOf(this);
           if (i >= 0) return rect(i * 50 - box.scrollTop, 40);
@@ -305,7 +333,62 @@ describe("a live reply (#2179)", () => {
         },
       );
     };
-    const setup = async () => {
+    // jsdom has no IntersectionObserver: one that reads the layout above, and
+    // re-checks on demand (a real one does on scroll).
+    const observers = new Set<{ check: () => void }>();
+    const recheck = () =>
+      act(async () => {
+        for (const o of observers) o.check();
+      });
+    beforeEach(() => {
+      vi.stubGlobal(
+        "IntersectionObserver",
+        class {
+          el: Element | null = null;
+          constructor(
+            private cb: IntersectionObserverCallback,
+            private o: IntersectionObserverInit,
+          ) {}
+          check() {
+            const root = this.o.root as Element;
+            const el = this.el;
+            if (!el) return;
+            const m = Number.parseFloat(this.o.rootMargin ?? "0") || 0;
+            const rb = root.getBoundingClientRect();
+            const top = rb.top - m;
+            const r = el.getBoundingClientRect();
+            this.cb(
+              [
+                {
+                  target: el,
+                  isIntersecting: r.bottom > top && r.top < rb.bottom,
+                  boundingClientRect: r,
+                  rootBounds: { ...rb, top } as DOMRect,
+                } as unknown as IntersectionObserverEntry,
+              ],
+              this as unknown as IntersectionObserver,
+            );
+          }
+          observe(el: Element) {
+            this.el = el;
+            observers.add(this);
+            queueMicrotask(() => this.check());
+          }
+          disconnect() {
+            observers.delete(this);
+          }
+          unobserve() {}
+          takeRecords() {
+            return [];
+          }
+        },
+      );
+    });
+    afterEach(() => {
+      observers.clear();
+      vi.unstubAllGlobals();
+    });
+    const setup = async (h = 500) => {
       // t1 has no replies yet, so nothing folds when one arrives.
       const t2 = thread("t2", [
         comment("c3", "Other"),
@@ -317,19 +400,37 @@ describe("a live reply (#2179)", () => {
       const c = await col();
       c.style.overflowY = "auto";
       await within(c).findByText("Other reply");
-      layout(c);
+      layout(c, h);
+      // jsdom's Element.scrollTo does nothing: apply it on the panel.
+      c.scrollTo = ((o: ScrollToOptions) => {
+        c.scrollTop = o.top ?? c.scrollTop;
+      }) as typeof c.scrollTo;
+      return {
+        c,
+        above: async () => {
+          list = [
+            thread("t1", [comment("c1", "First"), comment("c5", "Arrived")]),
+            t2,
+          ];
+          await arrive();
+        },
+        below: async () => {
+          list = [
+            thread("t1", [comment("c1", "First")]),
+            thread("t2", [...t2.comments, comment("c6", "Arrived below")]),
+          ];
+          await arrive();
+        },
+      };
+    };
+    const pill = (c: HTMLElement) =>
+      within(c).queryByRole("button", { name: "New reply" });
+
+    it("keeps the reader's place when a reply lands above; an up pill scrolls the panel to it and focuses it", async () => {
+      const { c, above } = await setup();
       // Rows: c1 0, c3 50, c4 100. The reader is on c3 (top -10).
       c.scrollTop = 60;
       fireEvent.scroll(c);
-      list = [
-        thread("t1", [comment("c1", "First"), comment("c5", "Arrived")]),
-        t2,
-      ];
-      return { c, push: arrive };
-    };
-
-    it("keeps the reader's place when a reply lands above, and offers New reply", async () => {
-      const { c, push } = await setup();
       const scrollIntoView = vi.fn();
       const was = Element.prototype.scrollIntoView;
       Element.prototype.scrollIntoView = scrollIntoView;
@@ -337,31 +438,49 @@ describe("a live reply (#2179)", () => {
         Element.prototype.scrollIntoView = was;
       });
       const doc = vi.spyOn(window, "scrollTo");
-      await push();
+      await above();
       await within(c).findByText("Arrived");
       // Arrived is row 1, above c3: scrollTop moved by one row, c3 stays put.
       expect(c.scrollTop).toBe(110);
-      const pill = await within(c).findByRole("button", { name: "New reply" });
+      const p = await within(c).findByRole("button", { name: "New reply" });
+      expect(p.closest("[data-pill-dir]")).toHaveAttribute(
+        "data-pill-dir",
+        "up",
+      );
       expect(scrollIntoView).not.toHaveBeenCalled();
       expect(doc).not.toHaveBeenCalled();
-      // jsdom's Element.scrollTo does nothing: record it on the panel.
-      c.scrollTo = ((o: ScrollToOptions) => {
-        c.scrollTop = o.top ?? c.scrollTop;
-      }) as typeof c.scrollTo;
-      fireEvent.click(pill);
+      fireEvent.click(p);
       // Row 1 sits at 50 - 110 = -60; the panel scrolls it to the top (8px gap).
       await waitFor(() => expect(c.scrollTop).toBe(110 - 60 - 8));
-      expect(within(c).queryByRole("button", { name: "New reply" })).toBeNull();
+      expect(pill(c)).toBeNull();
+      expect(document.activeElement).toBe(
+        c.querySelector('[data-comment="c5"]'),
+      );
     });
 
-    it("does not show the pill when the reply is in view", async () => {
-      const { c, push } = await setup();
-      c.scrollTop = 0;
-      fireEvent.scroll(c);
-      await push();
+    it("shows no pill when the reply is in view", async () => {
+      const { c, above } = await setup();
+      await above();
       await within(c).findByText("Arrived");
+      await recheck();
       expect(c.scrollTop).toBe(0);
-      expect(within(c).queryByRole("button", { name: "New reply" })).toBeNull();
+      expect(pill(c)).toBeNull();
+    });
+
+    it("a reply below the view gets a down pill, which goes as soon as the reply scrolls into view", async () => {
+      // 120px tall: rows c1 0, c3 50, c4 100 fit; a fourth at 150 does not.
+      const { c, below } = await setup(120);
+      await below();
+      await within(c).findByText("Arrived below");
+      const p = await within(c).findByRole("button", { name: "New reply" });
+      expect(p.closest("[data-pill-dir]")).toHaveAttribute(
+        "data-pill-dir",
+        "down",
+      );
+      c.scrollTop = 60;
+      fireEvent.scroll(c);
+      await recheck();
+      await waitFor(() => expect(pill(c)).toBeNull());
     });
   });
 
@@ -392,6 +511,33 @@ describe("a live reply (#2179)", () => {
   });
 });
 
+describe("coming back to an artifact (#2179)", () => {
+  it("a cached list and the refetch that replaces it only seed: replies from while away are not tinted", () => {
+    const list = (...ids: string[]) =>
+      [
+        thread(
+          "t1",
+          ids.map((id) => comment(id, id)),
+        ),
+      ] as unknown as CommentThread[];
+    const { result, rerender, unmount } = renderHook(
+      (p: { all: CommentThread[]; settled: boolean }) =>
+        useLiveReplies("a1", p.all, p.settled),
+      // The cache from the last visit, while the mount's refetch runs.
+      { initialProps: { all: list("c1", "c2"), settled: false } },
+    );
+    // The refetch brings c3, written while the reader was away.
+    rerender({ all: list("c1", "c2", "c3"), settled: true });
+    expect(result.current.tint.size).toBe(0);
+    expect(result.current.arrived).toEqual([]);
+    expect(result.current.kept.has("c3")).toBe(true);
+    // From here on, a new reply is live.
+    rerender({ all: list("c1", "c2", "c3", "c4"), settled: true });
+    expect([...result.current.tint]).toEqual(["c4"]);
+    unmount();
+  });
+});
+
 describe("the panel header (#2179)", () => {
   it("is sticky at the top of the panel's scroller, with a background", async () => {
     serve(() => [
@@ -409,5 +555,18 @@ describe("the panel header (#2179)", () => {
     // The list below it is never narrower than its content, so the header's
     // sticky range covers the whole scroll.
     expect(head.parentElement?.className).toMatch(/min-h-fit/);
+    // Scrolled-to elements stop below it: the scroller's scroll padding is
+    // the header's height.
+    vi.spyOn(head, "offsetHeight", "get").mockReturnValue(44);
+    serve(() => [
+      thread("t1", [
+        comment("c1", "First"),
+        comment("c2", "Second"),
+        comment("c3", "Third"),
+      ]),
+    ]);
+    await arrive();
+    await within(c).findByText("Third");
+    expect(c.style.scrollPaddingTop).toBe("44px");
   });
 });

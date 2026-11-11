@@ -1,4 +1,5 @@
 import { Button } from "@oa/ui/shadcn";
+import { ArrowDown, ArrowUp } from "lucide-react";
 import {
   useCallback,
   useEffect,
@@ -19,27 +20,32 @@ export function scrollerOf(el: HTMLElement | null): HTMLElement | null {
 const reduced = () =>
   window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
 
-type Anchor = { el: Element; top: number };
+/** An element and its top in the scroller's content (independent of scrollTop). */
+type Anchor = { el: Element; at: number };
+
+const headOf = (box: HTMLElement) =>
+  box.querySelector<HTMLElement>("[data-comments-header]");
 
 /** Where the scroller's visible area starts: under the sticky header. */
-function viewTop(box: HTMLElement): number {
-  const head = box.querySelector<HTMLElement>("[data-comments-header]");
-  return box.getBoundingClientRect().top + (head?.offsetHeight ?? 0);
-}
+const viewTop = (box: HTMLElement) =>
+  box.getBoundingClientRect().top + (headOf(box)?.offsetHeight ?? 0);
+
+const contentTop = (box: HTMLElement, el: Element) =>
+  el.getBoundingClientRect().top -
+  box.getBoundingClientRect().top +
+  box.scrollTop;
 
 /**
- * The first comment, and the first thread, whose bottom is in view, and where
- * their tops sit. A comment is the finer anchor; its thread is the fallback
- * when the comment folds away.
+ * The first comment, and the first thread, whose bottom is in view. A comment
+ * is the finer anchor; its thread is the fallback when the comment is gone.
  */
 function pick(box: HTMLElement): Anchor[] {
   const base = box.getBoundingClientRect().top;
   const out: Anchor[] = [];
   for (const sel of ["[data-comment]", "[data-thread]"]) {
     for (const el of box.querySelectorAll(sel)) {
-      const r = el.getBoundingClientRect();
-      if (r.bottom > base) {
-        out.push({ el, top: r.top - base });
+      if (el.getBoundingClientRect().bottom > base) {
+        out.push({ el, at: contentTop(box, el) });
         break;
       }
     }
@@ -48,59 +54,72 @@ function pick(box: HTMLElement): Anchor[] {
 }
 
 const row = (box: HTMLElement, id: string) =>
-  box.querySelector(`[data-comment="${CSS.escape(id)}"]`);
+  box.querySelector<HTMLElement>(`[data-comment="${CSS.escape(id)}"]`);
+
+export type PillDir = "up" | "down";
 
 /**
  * #2179: content that appears above the reader never moves what they read.
- * The panel's own scrollTop is adjusted (the document is never scrolled), and
- * a reply that landed out of view above gets a "New reply" pill that scrolls
- * the panel to it. Browser scroll anchoring is off on the list so the two
- * never both correct.
+ * The panel's own scrollTop is adjusted (the document is never scrolled).
+ * The newest reply that arrived live gets a "New reply" pill while it is
+ * outside the panel's visible area (an IntersectionObserver rooted on the
+ * scroller, below the sticky header); the pill points the way, scrolls the
+ * panel to the reply and moves focus there. Browser scroll anchoring is off
+ * on the list so the two never both correct.
  */
 export function useKeepScroll(
   root: React.RefObject<HTMLElement | null>,
-  tint: ReadonlySet<string>,
+  arrived: readonly string[],
 ) {
+  const scroller = useRef<HTMLElement | null>(null);
   const anchors = useRef<Anchor[]>([]);
-  const seen = useRef(new Set<string>());
-  const [pill, setPill] = useState<string | null>(null);
+  const [target, setTarget] = useState<string | null>(null);
+  const [dir, setDir] = useState<PillDir | null>(null);
   const record = useCallback(() => {
-    const box = scrollerOf(root.current);
+    const box = scroller.current;
     anchors.current = box ? pick(box) : [];
-  }, [root]);
-  // Every commit: put the remembered element back where it was.
+  }, []);
+  // Every commit: find the scroller again (column, panel or sheet), and put
+  // the remembered element back where it was in the content.
   useLayoutEffect(() => {
     const box = scrollerOf(root.current);
+    scroller.current = box;
     if (!box) return;
     const a = anchors.current.find((a) => a.el.isConnected);
     if (a && box.scrollTop > 0) {
-      const base = box.getBoundingClientRect().top;
-      const delta = a.el.getBoundingClientRect().top - base - a.top;
+      const delta = contentTop(box, a.el) - a.at;
       if (delta !== 0) box.scrollTop += delta;
-    }
-    // A reply that arrived above the reader's view.
-    for (const id of tint) {
-      if (seen.current.has(id)) continue;
-      seen.current.add(id);
-      const el = row(box, id);
-      if (el && el.getBoundingClientRect().bottom <= viewTop(box)) setPill(id);
     }
     record();
   });
-  // Capture on the document: the scroller may only start scrolling (or be
-  // swapped, column to sheet) after this mounts.
+  // The sticky header covers the scroller's top: scrolled-to elements (a
+  // pin's card, Shift+Tab) stop below it. Checked on every commit, so a
+  // scroller swapped in later gets it too; cleared on unmount.
+  useLayoutEffect(() => {
+    const box = scroller.current;
+    const head = box && headOf(box);
+    if (!box || !head) return;
+    const pad = `${head.offsetHeight}px`;
+    if (box.style.scrollPaddingTop !== pad) box.style.scrollPaddingTop = pad;
+  });
+  useEffect(
+    () => () => {
+      if (scroller.current) scroller.current.style.scrollPaddingTop = "";
+    },
+    [],
+  );
+  // Capture on the document: scroll doesn't bubble. The cached scroller
+  // counts; another element is looked at only if it holds the list (a panel
+  // that became the scroller since the last commit).
   useEffect(() => {
     const onScroll = (e: Event) => {
-      const box = scrollerOf(root.current);
-      if (!box || e.target !== box) return;
+      const t = e.target;
+      if (t !== scroller.current) {
+        if (!(t instanceof HTMLElement) || !t.contains(root.current)) return;
+        if (scrollerOf(root.current) !== t) return;
+        scroller.current = t;
+      }
       record();
-      setPill((id) => {
-        if (!id) return id;
-        const el = row(box, id);
-        return el && el.getBoundingClientRect().bottom > viewTop(box)
-          ? null
-          : id;
-      });
     };
     document.addEventListener("scroll", onScroll, {
       capture: true,
@@ -109,34 +128,75 @@ export function useKeepScroll(
     return () =>
       document.removeEventListener("scroll", onScroll, { capture: true });
   }, [root, record]);
+  // The newest arrival is the pill's target until it is seen.
+  const newest = arrived.at(-1) ?? null;
+  useEffect(() => {
+    setTarget(newest);
+    setDir(null);
+  }, [newest]);
+  useEffect(() => {
+    const box = scroller.current;
+    const el = target && box ? row(box, target) : null;
+    if (!box || !el || typeof IntersectionObserver === "undefined") return;
+    const io = new IntersectionObserver(
+      ([e]) => {
+        if (!e) return;
+        if (e.isIntersecting) {
+          setTarget(null);
+          setDir(null);
+          return;
+        }
+        const top = e.rootBounds?.top ?? viewTop(box);
+        setDir(e.boundingClientRect.bottom <= top ? "up" : "down");
+      },
+      {
+        root: box,
+        rootMargin: `-${headOf(box)?.offsetHeight ?? 0}px 0px 0px 0px`,
+      },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [target]);
   const go = () => {
-    const box = scrollerOf(root.current);
-    const el = pill && box ? row(box, pill) : null;
-    setPill(null);
+    const box = scroller.current;
+    const el = target && box ? row(box, target) : null;
+    setTarget(null);
+    setDir(null);
     if (!box || !el) return;
     const top =
       box.scrollTop + el.getBoundingClientRect().top - viewTop(box) - 8;
     if (box.scrollTo) {
       box.scrollTo({ top, behavior: reduced() ? "auto" : "smooth" });
     } else box.scrollTop = top;
+    // The pill unmounts with focus on it: hand focus to the reply.
+    if (!el.hasAttribute("tabindex")) el.tabIndex = -1;
+    el.focus({ preventScroll: true });
     // The pill's removal commits before any scroll event: re-anchor now, or
     // that commit would undo this scroll.
     record();
   };
-  return { pill: pill != null, go };
+  return { pill: target && dir ? dir : null, go };
 }
 
-/** `under`: the panel's own sticky header is above it in the scroller. */
 export function NewReplyPill({
+  dir,
   onClick,
   under,
 }: {
+  dir: PillDir;
   onClick: () => void;
+  /** The panel's own sticky header is above it in the scroller. */
   under: boolean;
 }) {
+  const Icon = dir === "up" ? ArrowUp : ArrowDown;
   return (
     <div
-      className={`pointer-events-none sticky ${under ? "top-14" : "top-2"} z-10 -my-3 flex h-0 justify-center`}
+      data-pill-dir={dir}
+      className={`pointer-events-none sticky z-10 flex h-0 justify-center ${
+        dir === "up"
+          ? `${under ? "top-14" : "top-2"} -mb-3 items-start`
+          : "bottom-3 -mt-3 items-end"
+      }`}
     >
       <Button
         size="xs"
@@ -144,6 +204,7 @@ export function NewReplyPill({
         className="pointer-events-auto rounded-full shadow-md"
         onClick={onClick}
       >
+        <Icon aria-hidden="true" />
         New reply
       </Button>
     </div>

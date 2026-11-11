@@ -47,6 +47,7 @@ import {
   removeMention,
 } from "./asks";
 import { NewReplyPill, useKeepScroll } from "./keepScroll";
+import { LIVE_TINT_MS } from "./liveReplies";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { ThreadAgents } from "./threadAgents";
 import { type CommentsApi, useCommentsApi } from "./useComments";
@@ -796,10 +797,10 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   // view, and nothing the reader saw folds away mid-visit: the latest reply on
   // load and every reply since stay (api.live.kept). Only replies folded at
   // load stay behind the button.
+  // A fold hides two replies or more: never "Show 1 earlier reply".
   const last = rest[rest.length - 1];
-  const shown = expanded
-    ? rest
-    : rest.filter((c) => c === last || api.live.kept.has(c.id));
+  const kept = rest.filter((c) => c === last || api.live.kept.has(c.id));
+  const shown = expanded || rest.length - kept.length < 2 ? rest : kept;
   const hidden = rest.length - shown.length;
   const orphan = api.positions.get(t.id)?.state === "orphan";
   const revealTick = api.revealed.tick;
@@ -929,40 +930,49 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             {t.resolvedAt ? ` · ${versionDate(t.resolvedAt)}` : ""}
           </p>
         )}
-        <ul className="m-0 flex list-none flex-col gap-3 p-0">
-          <CommentRow
-            api={api}
-            thread={t}
-            c={first}
-            root
-            askQuestion={
-              asker && !asking
-                ? () => {
-                    setAsking(asker);
-                    api.select(t.id, true);
-                  }
-                : undefined
-            }
-          />
+        {/* The fold button sits between two lists, not inside one. */}
+        <div className="flex flex-col gap-3">
+          <ul className="m-0 flex list-none flex-col gap-3 p-0">
+            <CommentRow
+              api={api}
+              thread={t}
+              c={first}
+              root
+              askQuestion={
+                asker && !asking
+                  ? () => {
+                      setAsking(asker);
+                      api.select(t.id, true);
+                    }
+                  : undefined
+              }
+            />
+          </ul>
           {hidden > 0 && (
-            <li className="list-none">
-              <Button
-                size="xs"
-                variant="ghost"
-                data-earlier=""
-                className="-my-1.5 ml-8 h-auto min-h-6 self-start px-0 py-1.5 max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5"
-                onClick={() => api.select(t.id, true)}
-              >
-                {hidden === 1
-                  ? "Show 1 earlier reply"
-                  : `Show ${hidden} earlier replies`}
-              </Button>
-            </li>
+            <Button
+              size="xs"
+              variant="ghost"
+              data-earlier=""
+              className="-my-1.5 ml-8 h-auto min-h-6 self-start px-0 py-1.5 max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5"
+              onClick={() => api.select(t.id, true)}
+            >
+              {`Show ${hidden} earlier replies`}
+            </Button>
           )}
-          {shown.map((c) => (
-            <CommentRow key={c.id} api={api} thread={t} c={c} root={false} />
-          ))}
-        </ul>
+          {shown.length > 0 && (
+            <ul className="m-0 flex list-none flex-col gap-3 p-0">
+              {shown.map((c) => (
+                <CommentRow
+                  key={c.id}
+                  api={api}
+                  thread={t}
+                  c={c}
+                  root={false}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
         {statusErr != null && (
           <p role="alert" className={`${TXT} text-destructive`}>
             {commentError(statusErr, api.capped, errCtx)}
@@ -1214,7 +1224,7 @@ export function CommentsBody({
   // (mounted still, so a typed note survives) until Cancel or send.
   const draftOpen = api.draft != null && api.canComment;
   const box = useRef<HTMLDivElement>(null);
-  const keep = useKeepScroll(box, api.live.tint);
+  const keep = useKeepScroll(box, api.live.arrived);
   return (
     // #1711: in the short sheet the list keeps its content height (`flex-none`:
     // no grow, no shrink, no zero basis), so the action row's outlet sits after
@@ -1223,8 +1233,20 @@ export function CommentsBody({
     <div
       ref={box}
       className={`flex ${grow ? "min-h-fit flex-1" : "min-h-0 flex-none"} flex-col gap-3 p-4 [overflow-anchor:none]`}
+      style={
+        { "--oa-live-tint-ms": `${LIVE_TINT_MS}ms` } as React.CSSProperties
+      }
     >
-      {keep.pill && <NewReplyPill onClick={keep.go} under={heading} />}
+      {keep.pill === "up" && (
+        <NewReplyPill dir="up" onClick={keep.go} under={heading} />
+      )}
+      {/* #2179: one polite message per refetch that brought replies. The
+          region stays mounted; a zero-width space alternates so the same
+          words twice are still a change. */}
+      <p data-live-region="" className="sr-only" aria-live="polite">
+        {api.live.announce.text}
+        {api.live.announce.n % 2 ? "\u200b" : ""}
+      </p>
       {heading && (
         <div
           data-comments-header=""
@@ -1332,6 +1354,9 @@ export function CommentsBody({
             </section>
           )}
         </>
+      )}
+      {keep.pill === "down" && (
+        <NewReplyPill dir="down" onClick={keep.go} under={heading} />
       )}
     </div>
   );

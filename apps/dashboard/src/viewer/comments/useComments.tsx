@@ -193,7 +193,7 @@ export function useCommentsController({
         : (all ?? []),
     [all, older, version],
   );
-  const live = useLiveReplies(id, all);
+  const live = useLiveReplies(id, all, !q.isFetching);
   const [positions, setPositions] = useState<Positions>(new Map());
   const [active, setActive] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft>(null);
