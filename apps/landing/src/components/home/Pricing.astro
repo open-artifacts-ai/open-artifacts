@@ -107,7 +107,7 @@ const groups: {
         {g.rows.map(([label, inc]) => (
           <tr><th scope="row">{label}</th>
             {inc.map((on, i) => (
-              <td class:list={{ "col-pop": i === 1 }}>{on ? <span class="x-y" aria-label="Included">{"✓"}</span> : <span class="x-n" aria-label="Not included">{"–"}</span>}</td>
+              <td class:list={{ "col-pop": i === 1 }}>{on ? <><span class="x-y" aria-hidden="true">{"✓"}</span><span class="sr-only">Included</span></> : <><span class="x-n" aria-hidden="true">{"–"}</span><span class="sr-only">Not included</span></>}</td>
             ))}
           </tr>
         ))}
