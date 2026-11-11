@@ -30,7 +30,14 @@ import {
 import { deleteShare, putShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
-import { connect, oauthToken, textOf, tool } from "./mcp-helpers.js";
+import {
+  close,
+  connect,
+  oauthToken,
+  settle,
+  textOf,
+  tool,
+} from "./mcp-helpers.js";
 
 // #682 part 2: list_comments, add_comment, resolve_comment and the `comment`
 // notice. The tools call the services the REST routes call, so these tests
@@ -63,7 +70,7 @@ beforeAll(() => {
 });
 afterAll(async () => {
   installDelivery(prev);
-  await Promise.all(clients.map((c) => c.close()));
+  await Promise.all(clients.map((c) => close(c)));
 });
 
 async function mk(prefix: string): Promise<U> {
@@ -128,12 +135,12 @@ describe("comment tools over MCP", () => {
       email: reader.email,
       role: "viewer",
     });
-    const t = sc<{ thread: Thread }>(
-      (await reader.client.callTool({
-        name: "add_comment",
-        arguments: { id, body: "  Is this right?  " },
-      })) as never,
-    ).thread;
+    const added = (await reader.client.callTool({
+      name: "add_comment",
+      arguments: { id, body: "  Is this right?  " },
+    })) as never;
+    await settle(reader.client);
+    const t = sc<{ thread: Thread }>(added).thread;
     expect(t.anchor).toEqual({ kind: "note" });
     expect(t.comments[0]).toMatchObject({
       body: "Is this right?",

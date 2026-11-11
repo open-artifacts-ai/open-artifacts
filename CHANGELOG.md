@@ -1,5 +1,63 @@
 # Changelog
 
+## [0.153.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.153.0...v0.153.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **bus:** comment targets settle on old daemons and late acks ([#2062](https://github.com/open-artifacts-ai/open-artifacts/issues/2062)) ([#2064](https://github.com/open-artifacts-ai/open-artifacts/issues/2064)) ([ed471d3](https://github.com/open-artifacts-ai/open-artifacts/commit/ed471d31f9688b4d9aaa8ddd77b90901f8acfbd1))
+
+## [0.153.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.152.1...v0.153.0) (2026-11-11)
+
+
+### Features
+
+* **bus:** one artifact's comment notices fold into one while an agent is away ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2055](https://github.com/open-artifacts-ai/open-artifacts/issues/2055)) ([5453b87](https://github.com/open-artifacts-ai/open-artifacts/commit/5453b879f15895e7c2940ffb7b9acba438793e68))
+* **provisioning-contract:** optional billingTier on installs ([#2058](https://github.com/open-artifacts-ai/open-artifacts/issues/2058)) ([#2061](https://github.com/open-artifacts-ai/open-artifacts/issues/2061)) ([e5dd994](https://github.com/open-artifacts-ai/open-artifacts/commit/e5dd99489def570ee76b3e4b398a86b8fbaa0b7b))
+
+## [0.152.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.152.0...v0.152.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **bus:** a comment notice reaches a role address's holder ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2051](https://github.com/open-artifacts-ai/open-artifacts/issues/2051)) ([8254d8c](https://github.com/open-artifacts-ai/open-artifacts/commit/8254d8c1da5a98afbd16c8b0940f933fcbf08b39))
+* **bus:** a daemon restart keeps live Claude sessions linked ([#2050](https://github.com/open-artifacts-ai/open-artifacts/issues/2050)) ([#2053](https://github.com/open-artifacts-ai/open-artifacts/issues/2053)) ([e1b69a1](https://github.com/open-artifacts-ai/open-artifacts/commit/e1b69a1fcc3e9d2dd36f7d294998d72e18eabf4c))
+* **bus:** notice-ack settle follow-ups from [#2037](https://github.com/open-artifacts-ai/open-artifacts/issues/2037) ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2052](https://github.com/open-artifacts-ai/open-artifacts/issues/2052)) ([2d9a78e](https://github.com/open-artifacts-ai/open-artifacts/commit/2d9a78ea28a4239828d94556e4b1084f05a6dcc4))
+
+## [0.152.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.151.1...v0.152.0) (2026-11-11)
+
+
+### Features
+
+* **viewer:** a mentioned agent shows its face ([#1890](https://github.com/open-artifacts-ai/open-artifacts/issues/1890)) ([#2001](https://github.com/open-artifacts-ai/open-artifacts/issues/2001)) ([b1f30d3](https://github.com/open-artifacts-ai/open-artifacts/commit/b1f30d32d1305bc7b07eb777386d5d02a1c1861e))
+
+## [0.151.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.151.0...v0.151.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **comment-email:** defang non-ASCII domains and bare IPv4 addresses in excerpts ([#1997](https://github.com/open-artifacts-ai/open-artifacts/issues/1997)) ([#2048](https://github.com/open-artifacts-ai/open-artifacts/issues/2048)) ([3e25cd6](https://github.com/open-artifacts-ai/open-artifacts/commit/3e25cd60a341de4e2c599ba3ea3c59867dc0c8cf))
+
+## [0.151.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.150.0...v0.151.0) (2026-11-11)
+
+
+### Features
+
+* **bus:** a comment notice reads delivered only at the daemon's ack (notice_ack, [#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2037](https://github.com/open-artifacts-ai/open-artifacts/issues/2037)) ([649c081](https://github.com/open-artifacts-ai/open-artifacts/commit/649c081c27d7f487b8cdf6fcfa2197560d141f3c))
+
+
+### Bug Fixes
+
+* **follows:** the agent that published a version isn't told it changed ([#2036](https://github.com/open-artifacts-ai/open-artifacts/issues/2036)) ([#2038](https://github.com/open-artifacts-ai/open-artifacts/issues/2038)) ([8ee6d87](https://github.com/open-artifacts-ai/open-artifacts/commit/8ee6d87988e3d280d18c1a41ea0626b839673760))
+* **openclaw:** uninstall clears OpenClaw's entry when the folder is gone; no build race ([#1805](https://github.com/open-artifacts-ai/open-artifacts/issues/1805)) ([#2043](https://github.com/open-artifacts-ai/open-artifacts/issues/2043)) ([482f8a0](https://github.com/open-artifacts-ai/open-artifacts/commit/482f8a0aa27a7d0cc0ce3444b5d52b272e284261))
+
+## [0.150.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.149.0...v0.150.0) (2026-11-11)
+
+
+### Features
+
+* **bus-cli:** print oa-bus commands when our PATH shim is on PATH ([#1998](https://github.com/open-artifacts-ai/open-artifacts/issues/1998)) ([#2033](https://github.com/open-artifacts-ai/open-artifacts/issues/2033)) ([e9abecc](https://github.com/open-artifacts-ai/open-artifacts/commit/e9abeccaa98a91af7841c0fc7932446cb3d70bf6))
+
 ## [0.149.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.148.0...v0.149.0) (2026-11-10)
 
 

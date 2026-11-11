@@ -587,9 +587,108 @@ describe("uninstallAdapters: openclaw", () => {
     expect(existsSync(dest)).toBe(false);
   });
 
-  it("is none when nothing is installed", async () => {
+  it("is none, with no command and no note, when we never installed it", async () => {
     const { deps, calls } = setup();
     const out = await uninstallAdapters(deps);
+    expect(out.removed).not.toContain("openclaw");
+    expect(out.notes).toEqual([]);
+    expect(calls).toEqual([]);
+  });
+
+  it("runs openclaw's own uninstall when our record says we installed it and the folder was deleted by hand", async () => {
+    const { deps, dest, calls } = setup();
+    await installAdapters(deps);
+    rmSync(dest, { recursive: true, force: true });
+    calls.length = 0;
+    const out = await uninstallAdapters(deps);
+    expect(out.removed).toContain("openclaw");
+    expect(calls).toEqual([UNINSTALL]);
+    // The record is cleared: a second uninstall is quiet.
+    calls.length = 0;
+    const again = await uninstallAdapters(deps);
+    expect(again.removed).not.toContain("openclaw");
+    expect(calls).toEqual([]);
+  });
+
+  it("notes the command to run when that uninstall fails and the folder is gone", async () => {
+    const { deps, dest } = setup();
+    await installAdapters(deps);
+    rmSync(dest, { recursive: true, force: true });
+    const out = await uninstallAdapters({
+      ...deps,
+      exec: (async () => ({ code: 1, stdout: "", stderr: "locked" })) as Exec,
+    });
+    expect(out.removed).not.toContain("openclaw");
+    expect(out.skipped).toEqual([]);
+    expect(out.notes.join("\n")).toContain(
+      "Couldn't remove oa-bus from OpenClaw's config: its plugin folder is gone, and `openclaw plugins uninstall oa-bus` failed (locked). Run that command yourself to finish.",
+    );
+    // The note shows once: the record is cleared.
+    const again = await uninstallAdapters(deps);
+    expect(again.notes).toEqual([]);
+    expect(again.removed).not.toContain("openclaw");
+  });
+
+  it("is quiet for a record of a different state dir, and keeps it", async () => {
+    const { deps, busHome, calls } = setup();
+    const file = join(busHome, "install.json");
+    const rec = JSON.stringify({
+      openclaw: { stateDir: "/elsewhere/.openclaw" },
+    });
+    put(file, rec);
+    const out = await uninstallAdapters(deps);
+    expect(out.removed).not.toContain("openclaw");
+    expect(out.notes).toEqual([]);
+    expect(calls).toEqual([]);
+    expect(readFileSync(file, "utf8")).toBe(rec);
+  });
+
+  it("clears a matching record on a normal uninstall; a non-matching one survives", async () => {
+    const a = setup();
+    await installAdapters(a.deps);
+    await uninstallAdapters(a.deps);
+    expect(readFileSync(join(a.busHome, "install.json"), "utf8")).toContain(
+      '"openclaw": {}',
+    );
+    const b = setup();
+    await installAdapters(b.deps);
+    const file = join(b.busHome, "install.json");
+    const other = JSON.stringify({ openclaw: { stateDir: "/elsewhere" } });
+    writeFileSync(file, other);
+    await uninstallAdapters(b.deps);
+    expect(readFileSync(file, "utf8")).toBe(other);
+  });
+
+  it("is quiet in Nix mode when the folder is gone", async () => {
+    const { deps, dest, calls } = setup();
+    await installAdapters(deps);
+    rmSync(dest, { recursive: true, force: true });
+    calls.length = 0;
+    const out = await uninstallAdapters({
+      ...deps,
+      env: { ...deps.env, OPENCLAW_NIX_MODE: "1" },
+    });
+    expect(out.notes).toEqual([]);
+    expect(out.removed).not.toContain("openclaw");
+    expect(calls).toEqual([]);
+  });
+
+  it("an install of an already-current plugin writes the record", async () => {
+    const { deps, busHome } = setup();
+    await installAdapters(deps);
+    rmSync(join(busHome, "install.json"), { force: true });
+    await installAdapters(deps);
+    expect(readFileSync(join(busHome, "install.json"), "utf8")).toContain(
+      '"stateDir"',
+    );
+  });
+
+  it("is none with no openclaw binary and the folder gone", async () => {
+    const { deps, dest, calls } = setup();
+    await installAdapters(deps);
+    rmSync(dest, { recursive: true, force: true });
+    calls.length = 0;
+    const out = await uninstallAdapters({ ...deps, which: () => false });
     expect(out.removed).not.toContain("openclaw");
     expect(calls).toEqual([]);
   });

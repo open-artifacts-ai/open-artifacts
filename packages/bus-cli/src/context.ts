@@ -20,6 +20,7 @@ import {
   stripTerminalControls,
   systemTool,
 } from "@oa/bus-ipc";
+import { BUS_CMD } from "@oa/bus-protocol";
 import { type Copy, copy } from "./copy.ts";
 import { type Deps, realDeps } from "./deps.ts";
 import { cliSource, systemService } from "./steps/service.ts";
@@ -99,6 +100,8 @@ export type Ctx = Deps & {
   version: string;
   style: Style;
   copy: Copy;
+  /** The command printed in the terminal: `oa-bus` or the npx form (#1998). */
+  busCmd: string;
   platform: string;
   nodeVersion: string;
   /** The Codex desktop app's bundle (macOS); undefined: none to look for. */
@@ -207,6 +210,7 @@ export function realCtx(noColor: boolean): Ctx {
     version: VERSION,
     style,
     copy: copy(style),
+    busCmd: BUS_CMD,
     platform: `${process.platform} ${process.arch}`,
     nodeVersion: process.version,
     ...(process.platform === "darwin" ? { codexApp: CODEX_APP } : {}),

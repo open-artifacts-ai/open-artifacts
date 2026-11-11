@@ -11,6 +11,7 @@ import {
 } from "@oa/bus-ipc";
 import { INSTANCE_SENDER_NAME } from "@oa/bus-protocol";
 import type { AgentRecord } from "../agents.ts";
+import { CODEX_TOOL_NAMESPACE } from "../codex-attest.ts";
 import { NOTICE_WATCH_MS } from "../codex-taken.ts";
 import type { DeliverOutcome, Mail } from "../deliver.ts";
 
@@ -331,7 +332,7 @@ export class CodexTransport {
     if (!(await this.#wakes(agent))) return { ok: false, reason: "queued" };
     const text = codexText(agent, mail);
     const fresh = !this.#has(mail.msg_id);
-    const r = await this.#queue(agent, mail.msg_id, text, {
+    const r = await this.#queue(agent.ref, mail.msg_id, text, {
       // A hub notice (the instance's own sender) is kept 6 h by the hub.
       ...(mail.from_name === INSTANCE_SENDER_NAME
         ? { ttlMs: NOTICE_WATCH_MS }
@@ -349,9 +350,29 @@ export class CodexTransport {
     msgId: string,
   ): Promise<boolean> {
     if (!(await this.#wakes(agent))) return false;
-    const r = await this.#queue(agent, `notice:${msgId}`, `[oa-bus] ${text}`);
+    const r = await this.#queue(
+      agent.ref,
+      `notice:${msgId}`,
+      `[oa-bus] ${text}`,
+    );
     // Maybe told already: a second copy is worse than none.
     return r.ok || r.taken === "maybe";
+  }
+
+  /**
+   * #2029: one fixed bus-written text into a thread that is not admitted, as
+   * `id` (once per id, even after a failure). Only to a host that wakes on a
+   * queued message (`pid` is that host); admission is not touched.
+   */
+  canWake(pid: number): Promise<boolean> {
+    return this.opts.wakes(pid);
+  }
+
+  async wake(ref: string, pid: number, id: string, text: string) {
+    if (!(await this.opts.wakes(pid))) return "no_host" as const;
+    const r = await this.#queue(ref, id, text);
+    if (r.ok) return "sent" as const;
+    return r.taken === "maybe" ? ("maybe" as const) : ("failed" as const);
   }
 
   #wakes(agent: AgentRecord): Promise<boolean> {
@@ -378,7 +399,7 @@ export class CodexTransport {
   }
 
   async #queue(
-    agent: AgentRecord,
+    ref: string,
     id: string,
     text: string,
     watch: false | { ttlMs?: number } = false,
@@ -399,13 +420,13 @@ export class CodexTransport {
     }
     this.#missingLogged = false;
     // `=` keeps a value that starts with `-` from reading as an option.
-    const args = ["queue", `--thread=${agent.ref}`, `--message=${text}`];
+    const args = ["queue", `--thread=${ref}`, `--message=${text}`];
     let res: Awaited<ReturnType<CodexRun>>;
     // Watched BEFORE the queue runs: a check may read the new user item before `codex queue` exits.
     if (watch)
       this.opts.taken.watch(
         id,
-        agent.ref,
+        ref,
         text.split("\n", 1)[0] ?? "",
         watch.ttlMs,
       );
@@ -428,15 +449,13 @@ export class CodexTransport {
     if (res.code === null) {
       // Killed at its timeout: it may have written the row, and a second copy is worse than a late one.
       this.#keep(`maybe:${id}`);
-      this.opts.log?.(
-        `codex queue for ${agent.ref} timed out; not queued again`,
-      );
+      this.opts.log?.(`codex queue for ${ref} timed out; not queued again`);
       return { ok: false, taken: "maybe" };
     }
     if (watch) this.opts.taken.unwatch(id);
     this.#bin = undefined;
     this.opts.log?.(
-      `codex queue for ${agent.ref} exited ${res.code}: ${stripTerminalControls(res.stderr.trim()).slice(0, 300)}`,
+      `codex queue for ${ref} exited ${res.code}: ${stripTerminalControls(res.stderr.trim()).slice(0, 300)}`,
     );
     return { ok: false, taken: "no" };
   }
@@ -447,3 +466,6 @@ export const codexHostWakes = async (pid: number): Promise<boolean> => {
   const args = await processArgs(pid);
   return args !== undefined && hostWakes(args);
 };
+
+/** #2029: the one text a bus wake queues into a thread; nothing is added to it. */
+export const CODEX_WAKE_TEXT = `Open Artifacts bus: messages are waiting for this thread. Call the tool ${CODEX_TOOL_NAMESPACE}__self once, by that literal name (do not look it up from a tool list), to receive them.`;

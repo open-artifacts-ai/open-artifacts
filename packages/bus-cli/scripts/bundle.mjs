@@ -74,15 +74,21 @@ cpSync(at("../bus-adapter-hermes/assets/oa_bus"), at("assets/oa_bus"), {
   recursive: true,
   filter: (src) => !src.includes("__pycache__") && !src.endsWith(".pyc"),
 });
-// The OpenClaw plugin folder: built from its adapter, stamped with the same version.
+// The OpenClaw plugin folder: built from its adapter, stamped with the same
+// version, straight into our own assets/openclaw. It never touches the adapter's
+// dist/, which the adapter's own build (run in parallel by `pnpm -r build`) owns.
 execFileSync(
   process.execPath,
   [at("../bus-adapter-openclaw/scripts/build.mjs")],
-  { stdio: "inherit", env: { ...process.env, OA_BUS_CLI_VERSION: version } },
+  {
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      OA_BUS_CLI_VERSION: version,
+      OA_BUS_OPENCLAW_OUT: at("assets/openclaw"),
+    },
+  },
 );
-cpSync(at("../bus-adapter-openclaw/dist"), at("assets/openclaw"), {
-  recursive: true,
-});
 // The Claude Code output style, unchanged: the installer adds only its marker.
 cpSync(
   at("output-style/artifacts-teammate.md"),

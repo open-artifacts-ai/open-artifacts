@@ -64,6 +64,7 @@ import {
   type NewExtras,
   openCount,
   refundAsker,
+  refundAskerIfAllGone,
   refundEmail,
   refundThreadReply,
   replyCount,
@@ -75,6 +76,7 @@ import {
   type StoredThread,
   setAnswer,
   setTargetState,
+  settleTarget,
   spendAsker,
   takeThreadReply,
   threadExists,
@@ -2189,6 +2191,25 @@ export class ArtifactRuntime extends DurableObject<Env> {
     });
   }
 
+  /** #1752: a daemon acked (delivered) or refused (gone) a notice: moves a still-queued target. */
+  commentsTargetSettle(a: {
+    commentId: string;
+    kind: "mention" | "asker";
+    key: string;
+    state: "delivered" | "gone";
+  }): boolean {
+    this.ensureSchema();
+    const moved = this.ctx.storage.transactionSync(() => {
+      const m = settleTarget(this.sql, a.commentId, a.kind, a.key, a.state);
+      // A refused asker notice gives the asker bound back (#1614).
+      if (m && a.kind === "asker" && a.state === "gone")
+        refundAskerIfAllGone(this.sql, a.commentId);
+      return m;
+    });
+    if (moved) this.broadcastComments();
+    return moved;
+  }
+
   /** Gives back the asker notice a reply spent (#1614) when its delivery found no session. `at` is the reply's createdAt. */
   commentsAskerRefund(a: { threadId: string; at: string }): void {
     this.ensureSchema();
@@ -2447,6 +2468,7 @@ type RpcMethods =
   | "commentsReply"
   | "commentsAnswer"
   | "commentsTargetStates"
+  | "commentsTargetSettle"
   | "commentsAskerRefund"
   | "commentsEmailClaim"
   | "commentsEmailRefund"

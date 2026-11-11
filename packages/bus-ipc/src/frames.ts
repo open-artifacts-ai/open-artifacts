@@ -364,6 +364,8 @@ export const AgentInfo = z.object({
   state: z.enum(["live", "queued", "away"]).optional(),
   /** When an `away` agent closed. */
   since: IsoTimeSchema.optional(),
+  /** #2029: mail pending to an `away` agent, capped at 100. */
+  waiting: z.number().int().min(1).max(100).optional(),
   global: z.boolean(),
   /** The agent's machine (B13); absent when the hub is older. */
   machine_label: MachineLabelSchema.optional(),

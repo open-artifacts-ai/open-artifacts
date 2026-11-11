@@ -16,6 +16,7 @@ import {
   frameId,
   HUB_MAILBOX_BYTES_CAP,
   hasCap,
+  impersonates,
   isFallbackName,
   isId,
   LIMITS,
@@ -50,6 +51,7 @@ import {
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError, logInfo } from "../log.js";
+import { runtimeStub } from "../runtime/do.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
 import { type AgentIdentity, NAMES_OF_MAX } from "../services/agent-usage.js";
 import {
@@ -338,6 +340,8 @@ const HUB_CAPS = [
   BUS_CAPS.follow,
   BUS_CAPS.link,
   BUS_CAPS.linkArg,
+  BUS_CAPS.waiting,
+  BUS_CAPS.noticeAck,
 ];
 
 /**
@@ -366,6 +370,25 @@ const linkGated = (ws: WebSocket): boolean => {
  */
 const noticeGated = (ws: WebSocket): boolean => followGated(ws);
 
+/**
+ * #1752 (BUS_CAPS.noticeAck): a socket that acks a notice only once its
+ * harness took it. A notice sent to one is held until that ack. It also
+ * needs the notice gate, so it never narrows who can read a notice.
+ */
+const noticeAckGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return (
+    noticeGated(ws) &&
+    Array.isArray(caps) &&
+    hasCap({ caps }, BUS_CAPS.noticeAck)
+  );
+};
+
+/** #1752: how long a sent notice waits for its ack; past it the target stays queued. */
+export const NOTICE_ACK_TTL_MS = 6 * HOUR_MS;
+/** #1752: notices waiting for an ack at once; the oldest go first. */
+export const NOTICE_ACKS_MAX = 2000;
+
 /** #1317: follow requests one hub runs at once (each is a D1 round trip); past it, `rate_limited`. */
 const FOLLOWS_IN_FLIGHT_MAX = 8;
 /** #1317: how long a follow request waits on D1 before the agent is told `internal`. */
@@ -377,6 +400,15 @@ const FOLLOW_TIMEOUT_MS = 5_000;
  * `agent_up` handover go only to a socket whose hello listed it. Fails
  * closed, like renameGated.
  */
+const waitingGated = (ws: WebSocket | null): boolean => {
+  const caps = ws ? attachmentOf(ws)?.caps : undefined;
+  return (
+    Array.isArray(caps) &&
+    hasCap({ caps }, BUS_CAPS.mailbox) &&
+    hasCap({ caps }, BUS_CAPS.waiting)
+  );
+};
+
 const mailboxGated = (ws: WebSocket | null): boolean => {
   const caps = ws ? attachmentOf(ws)?.caps : undefined;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.mailbox);
@@ -1157,6 +1189,40 @@ type Assigned = {
 };
 
 /**
+ * #1916: the name a harness proposal asks for. A harness-made title that reads
+ * as prose (candidateName's `harness` option) or that starts with another live
+ * agent's full name plus more than one word becomes the fallback. Scope is
+ * nameTaken's: the namespace plus globals (a global: every namespace). Only
+ * LIVE agents count: an away or held name is on no roster, so a newcomer
+ * cannot pose as it, and counting them would block honest names for the
+ * whole retention. `<other>-N`, `<other> fork` and `<other> X` (one extra
+ * word, e.g. `OA Platform B` next to `OA Platform`) stay legit.
+ * A user's rename never comes through here (harness false).
+ */
+function harnessAsked(
+  sql: SqlStorage,
+  namespace: string,
+  proposed: string,
+  global: boolean,
+  selfId: string,
+  harness: boolean,
+): string {
+  const asked = candidateName(proposed, { harness });
+  if (!harness || asked === FALLBACK_BUS_NAME) return asked;
+  const scope = global ? "" : "and (namespace = ? or global = 1)";
+  const live = all<{ name: string }>(
+    sql,
+    `select name from agents where org_id = ? and live = 1 and id != ? ${scope}`,
+    OWNER_ORG_ID,
+    selfId,
+    ...(global ? [] : [namespace]),
+  );
+  return live.some((a) => impersonates(asked, a.name))
+    ? FALLBACK_BUS_NAME
+    : asked;
+}
+
+/**
  * The proposed name, else `-2`, `-3`... up to the roster cap, else the
  * fallback name suffixed the same way, else a random fallback suffix. Never
  * fails: a name collision is not an error. A `default` name is minted
@@ -1171,18 +1237,23 @@ function assignName(
   now: number,
   kind: NameKind = "chosen",
   reclaim?: { kind: string },
+  harness = false,
 ): Assigned {
   if (kind === "default")
     return mintName(sql, namespace, proposed, global, selfId, now);
   const free = (n: string) =>
     !nameTaken(sql, namespace, n, global, selfId, now);
-  const asked = candidateName(proposed);
+  const asked = harnessAsked(sql, namespace, proposed, global, selfId, harness);
   for (const base of new Set([asked, FALLBACK_BUS_NAME])) {
     if (free(base)) return { name: base, mint: null };
     // #1742: only the exact chosen name is ever taken back, never a suffix.
     // #1480: and never one reached by dropping refused characters: `OA Manager!`
     // is not `OA Manager`.
-    if (reclaim && base === asked && !droppedRefusedChars(proposed)) {
+    if (
+      reclaim &&
+      base === asked &&
+      !droppedRefusedChars(proposed, { harness })
+    ) {
       const from = awayHolder(
         sql,
         namespace,
@@ -1452,7 +1523,15 @@ function mintName(
   selfId: string,
   now: number,
 ): Assigned {
-  const proposedBase = candidateName(proposed);
+  // A default name is the harness's own, never a user's (#1916).
+  const proposedBase = harnessAsked(
+    sql,
+    namespace,
+    proposed,
+    global,
+    selfId,
+    true,
+  );
   // Never loops on a base that cannot carry a suffix (not expected).
   const base = BusNameSchema.safeParse(mintedName(proposedBase, "0000")).success
     ? proposedBase
@@ -1788,6 +1867,18 @@ function agentUp(
     now,
     f.name_kind,
     { kind: f.kind },
+    // #1916: agent_up carries the harness's title (the daemon sends renames,
+    // user-made, as `rename` frames). An agent keeping its own current name
+    // is not a new title, so neither rule touches it. Claude Code only writes a
+    // session name from /rename or /fork, never an auto prose title, so its
+    // agent_up is the user's choice (a fork title is still cut to "<parent>
+    // fork" by candidateName itself).
+    f.kind !== "claude-code" &&
+      !(
+        existing &&
+        candidateName(f.proposed_name).toLowerCase() ===
+          existing.name.toLowerCase()
+      ),
   );
   const wasLive = existing?.live === 1;
   const to: Scope = { namespace: f.namespace, global: f.global };
@@ -2028,6 +2119,7 @@ function roster(
   withAway = false,
   withLinks = false,
   withReach = false,
+  withWaiting = false,
 ): ServerFrame {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
@@ -2120,6 +2212,8 @@ function roster(
     if (away.length > 0) rows = [...rows, ...away].sort(byScope).slice(0, cap);
   }
   const awaySince = new Map<string, number>();
+  /** #2029: pending mail per away row, counted up to WAITING_CAP. */
+  const waiting = new Map<string, number>();
   if (withAway) {
     const ids = rows.filter((r) => r.live !== 1).map((r) => r.id);
     if (ids.length > 0)
@@ -2129,6 +2223,18 @@ function roster(
         JSON.stringify(ids),
       ))
         if (r.t !== null) awaySince.set(r.id, r.t);
+    if (withWaiting && ids.length > 0)
+      for (const r of all<{ id: string; n: number }>(
+        sql,
+        `select to_agent as id, count(*) as n from (
+           select to_agent, row_number() over (partition by to_agent order by rowid) as rn
+             from receipts indexed by receipts_to
+            where to_agent in (select value from json_each(?)) and state = 'pending'
+         ) where rn <= ? group by to_agent`,
+        JSON.stringify(ids),
+        WAITING_CAP,
+      ))
+        waiting.set(r.id, r.n);
   }
   const online = new Map<string, boolean>();
   const stateOf = (machineId: string): "live" | "queued" => {
@@ -2160,6 +2266,9 @@ function roster(
         ...(r.live !== 1 && awaySince.has(r.id)
           ? { since: new Date(awaySince.get(r.id) as number).toISOString() }
           : {}),
+        ...(r.live !== 1 && waiting.has(r.id)
+          ? { waiting: waiting.get(r.id) as number }
+          : {}),
         // The key is omitted, never null, if a row's machine has no label.
         ...(label === undefined ? {} : { machine_label: label }),
         ...statusWire(r),
@@ -2168,6 +2277,9 @@ function roster(
     }),
   };
 }
+
+/** #2029: the most pending mail a roster away row counts. */
+const WAITING_CAP = 100;
 
 /**
  * R393b: each row's live former names for the roster (OpenBus #451: those
@@ -3369,8 +3481,81 @@ type NoticeRow = {
   toLname: string;
   ckey: string;
   text: string;
+  ack: string | null;
+  foldN: number;
+  foldRef: string | null;
+  foldAcks: string | null;
 };
-const NOTICE_COLS = "to_ns as toNs, to_lname as toLname, ckey, text";
+const NOTICE_COLS =
+  "to_ns as toNs, to_lname as toLname, ckey, text, ack, fold_n as foldN, fold_ref as foldRef, fold_acks as foldAcks";
+
+/** #1752: folded targets a waiting notice keeps; older ones settle as gone at once. */
+const NOTICE_FOLD_MAX = 50;
+
+type AckTarget = { a: string; c: string; k: "mention" | "asker"; key: string };
+
+function parseAcks(s: string | null): string[] {
+  if (!s) return [];
+  try {
+    const v = JSON.parse(s);
+    return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The text a waiting notice is sent with: its own, plus the fold line when earlier ones were replaced by it. */
+function noticeTextOf(r: NoticeRow): string {
+  if (r.foldN <= 0 || !r.foldRef) return r.text;
+  try {
+    return `${r.text}\n${r.foldN} more comment${r.foldN === 1 ? "" : "s"} on artifact ${r.foldRef}. Read them with list_comments.`;
+  } catch {
+    return r.text;
+  }
+}
+
+/** The ack recorded for a send: the notice's own target, then the folded ones as `more`. */
+function noticeSendAck(r: NoticeRow): string | null {
+  const all = [r.ack, ...parseAcks(r.foldAcks)].filter(
+    (x): x is string => typeof x === "string",
+  );
+  if (all.length <= 1) return all[0] ?? null;
+  try {
+    const [first, ...rest] = all;
+    return JSON.stringify({
+      ...JSON.parse(first as string),
+      more: rest.map((x) => JSON.parse(x)),
+    });
+  } catch {
+    return all[0] ?? null;
+  }
+}
+
+/**
+ * #1752: the comment target a notice reports back to, as the JSON stored with
+ * it, or null when the notice carries none (or a malformed one).
+ */
+function noticeAckOf(n: BusNotice): string | null {
+  const t = n.target;
+  if (
+    !t ||
+    (t.kind !== "mention" && t.kind !== "asker") ||
+    typeof t.key !== "string" ||
+    t.key.length === 0 ||
+    t.key.length > 256 ||
+    typeof n.artifactId !== "string" ||
+    n.artifactId.length === 0 ||
+    typeof n.commentId !== "string" ||
+    n.commentId.length === 0
+  )
+    return null;
+  return JSON.stringify({
+    a: n.artifactId,
+    c: n.commentId,
+    k: t.kind,
+    key: t.key,
+  });
+}
 
 /** #1317: the shape deliverNotice trusts: the Worker is the only caller, but the hub still checks. */
 function wellFormedNotice(n: BusNotice): boolean {
@@ -3408,6 +3593,10 @@ function noticeFrame(agent: AgentRow, text: string): ServerFrame {
     body: text,
   };
 }
+
+/** #1752: tries (and the base wait, ms) to settle a comment target after an ack. */
+const NOTICE_SETTLE_TRIES = 3;
+const NOTICE_SETTLE_RETRY_MS = 200;
 
 /**
  * The bus hub: one SQLite Durable Object per member (#1291). Reached only
@@ -3462,6 +3651,7 @@ export class BusHub extends DurableObject<Env> {
             or exists (select 1 from agents indexed by agents_status_due where status_due is not null)
             or exists (select 1 from former_names)
             or exists (select 1 from notices)
+            or exists (select 1 from notice_acks)
             or exists (select 1 from rename_rl)
             or exists (select 1 from machines where ${OFFLINE_LIVE_WHERE})
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)
@@ -4690,7 +4880,9 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.links) ||
           hasCap(f, BUS_CAPS.reach) ||
           hasCap(f, BUS_CAPS.follow) ||
-          hasCap(f, BUS_CAPS.link)
+          hasCap(f, BUS_CAPS.noticeAck) ||
+          hasCap(f, BUS_CAPS.link) ||
+          hasCap(f, BUS_CAPS.waiting)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -4800,6 +4992,7 @@ export class BusHub extends DurableObject<Env> {
               mailboxGated(ws),
               linksGated(ws),
               reachGated(ws),
+              waitingGated(ws),
             ),
           );
         return;
@@ -4808,6 +5001,16 @@ export class BusHub extends DurableObject<Env> {
         return;
       case "ack":
       case "refuse":
+        // A notice sent to this machine's notice_ack socket (#1752) settles
+        // its comment target; everything else is mail.
+        if (
+          this.#settleNoticeAck(
+            machineId,
+            f.msg_id,
+            f.type === "ack" ? "delivered" : "refused",
+          )
+        )
+          return;
         // No reply either way: anything but the recipient's own pending mail
         // is silently ignored.
         this.#settle(
@@ -6281,55 +6484,236 @@ export class BusHub extends DurableObject<Env> {
     return all2 >= NOTICES_OLD_MAX ? "old_daemon_cap" : null;
   }
 
+  /**
+   * Sends one notice frame. On a notice_ack socket, a notice with a comment
+   * target is recorded (bounded, expiring) so the daemon's ack or refuse can
+   * settle it (#1752). False when the socket refused the frame.
+   */
+  #sendNotice(
+    ws: WebSocket,
+    agent: AgentRow,
+    text: string,
+    ack: string | null,
+  ): boolean {
+    const frame = noticeFrame(agent, text);
+    if (!trySendFrame(ws, frame)) return false;
+    if (ack !== null && !noticeAckGated(ws)) {
+      // #2062: no notice_ack on this socket, so a send is the delivery: the
+      // row's target and every folded one settle now (#2065). This includes
+      // the live path's own target: the Worker settles it too, and doing both
+      // is idempotent, while a Worker-budget "gone" is lifted to delivered.
+      // With no own ack, the first folded target takes the first slot and is
+      // settled like the rest.
+      try {
+        const t = JSON.parse(ack) as AckTarget & { more?: AckTarget[] };
+        const all = [t, ...(t.more ?? [])];
+        for (const x of all) this.#settleTarget(x, "delivered");
+      } catch {
+        // a malformed target has nothing to settle
+      }
+    }
+    if (ack !== null && noticeAckGated(ws) && frame.type === "deliver") {
+      const sql = this.ctx.storage.sql;
+      const expiresAt = this.#now() + NOTICE_ACK_TTL_MS;
+      sql.exec(
+        "insert or replace into notice_acks (msg_id, machine_id, ack, expires_at) values (?, ?, ?, ?)",
+        frame.msg_id,
+        agent.machineId,
+        ack,
+        expiresAt,
+      );
+      const over =
+        (one<{ n: number }>(sql, "select count(*) as n from notice_acks")?.n ??
+          0) - NOTICE_ACKS_MAX;
+      if (over > 0)
+        sql.exec(
+          "delete from notice_acks where rowid in (select rowid from notice_acks order by rowid limit ?)",
+          over,
+        );
+      this.#arm(expiresAt);
+    }
+    return true;
+  }
+
+  /**
+   * #1752: an ack or refuse for a notice sent to `machineId`'s notice_ack
+   * socket. Settles the comment target once (the row goes first, so a
+   * duplicate or another machine's frame finds nothing). True when the id was
+   * a recorded notice of this machine.
+   */
+  #settleNoticeAck(
+    machineId: string,
+    msgId: string,
+    outcome: "delivered" | "refused",
+  ): boolean {
+    const sql = this.ctx.storage.sql;
+    const r = one<{ ack: string }>(
+      sql,
+      "select ack from notice_acks where msg_id = ? and machine_id = ?",
+      msgId,
+      machineId,
+    );
+    if (!r) return false;
+    sql.exec("delete from notice_acks where msg_id = ?", msgId);
+    let t: AckTarget & { more?: AckTarget[] };
+    try {
+      t = JSON.parse(r.ack);
+    } catch {
+      return true;
+    }
+    // #1752: targets of notices this one replaced settle with it.
+    for (const x of [t, ...(Array.isArray(t.more) ? t.more : [])])
+      this.#settleTarget(x, outcome === "delivered" ? "delivered" : "gone");
+    return true;
+  }
+
+  #settleTarget(t: AckTarget, state: "delivered" | "gone"): void {
+    // The runtime DO moves a target only out of "queued" (never past seen).
+    // A failed call is retried a few times (bounded), as it is idempotent.
+    const settle = async () => {
+      for (let i = 0; i < NOTICE_SETTLE_TRIES; i++) {
+        try {
+          await runtimeStub(this.env, t.a).commentsTargetSettle({
+            commentId: t.c,
+            kind: t.k,
+            key: t.key,
+            state,
+          });
+          return;
+        } catch {
+          if (i + 1 < NOTICE_SETTLE_TRIES)
+            await new Promise((r) =>
+              setTimeout(r, NOTICE_SETTLE_RETRY_MS * (i + 1)),
+            );
+        }
+      }
+      logEvent("notice_ack_failed", {});
+    };
+    this.ctx.waitUntil(settle());
+  }
+
+  /**
+   * #1752: a waiting notice that will never be sent (expired, dropped, its
+   * address gone): its target and every folded target settle as gone, as a
+   * refuse does, and the row goes.
+   */
+  #dropHeld(toNs: string, toLname: string, ckey: string): void {
+    const sql = this.ctx.storage.sql;
+    const r = one<{ ack: string | null; fa: string | null }>(
+      sql,
+      "select ack, fold_acks as fa from notices where to_ns = ? and to_lname = ? and ckey = ?",
+      toNs,
+      toLname,
+      ckey,
+    );
+    if (r) this.#settleGone([r.ack, ...parseAcks(r.fa)]);
+    sql.exec(
+      "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+      toNs,
+      toLname,
+      ckey,
+    );
+  }
+
+  #settleGone(acks: (string | null)[]): void {
+    for (const x of acks) {
+      if (!x) continue;
+      try {
+        this.#settleTarget(JSON.parse(x), "gone");
+      } catch {
+        // a malformed target has nothing to settle
+      }
+    }
+  }
+
   #acceptNotice(n: BusNotice): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
-    // #1752: a follow row still at an address the agent has since left (the
-    // re-key is best effort, and a notice can be in flight) reaches it by its
-    // live former name, as mail does. The notice is then kept at the current
-    // address, so the flush paths find it.
+    // #1752: as a send resolves (role > live > former): a role address in
+    // the notice's own namespace reaches its current live holder (same org
+    // and namespace scope; a vacant role falls through). A follow row still at
+    // an address the agent has since left (the re-key is best effort, and a
+    // notice can be in flight) reaches it by its live former name. The notice
+    // is then kept at the resolved agent's address, so the flush paths find it.
     const sent = n.to.name.toLowerCase();
+    const byRole = resolveRoleIn(sql, OWNER_ORG_ID, n.to.namespace, sent);
+    const liveNamed = liveVisibleIn(sql, n.to.namespace, sent);
     const former =
-      liveVisibleIn(sql, n.to.namespace, sent) === null
-        ? liveFormer(sql, sent, now, { ns: n.to.namespace }, 2)
-        : [];
-    const byFormer = former.length === 1 ? former[0] : undefined;
-    const lname = byFormer ? byFormer.name.toLowerCase() : sent;
-    const to = byFormer
-      ? { namespace: byFormer.namespace, name: byFormer.name }
+      byRole !== null || liveNamed !== null
+        ? []
+        : liveFormer(sql, sent, now, { ns: n.to.namespace }, 2);
+    const byAlias = byRole?.ok
+      ? byRole.agent
+      : former.length === 1
+        ? former[0]
+        : undefined;
+    const lname = byAlias ? byAlias.name.toLowerCase() : sent;
+    const to = byAlias
+      ? { namespace: byAlias.namespace, name: byAlias.name }
       : n.to;
-    const agent = byFormer ?? liveVisibleIn(sql, to.namespace, lname);
+    const agent = byAlias ?? liveVisibleIn(sql, to.namespace, lname);
     const key = [to.namespace, lname, n.coalesceKey] as const;
     // No live session at the address: nothing is kept (and a waiting notice
     // for it is stale, so it goes too).
     if (!agent) {
-      sql.exec(
-        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-        ...key,
-      );
+      this.#dropHeld(...key);
       return "dropped";
     }
     const live = liveSocket(this.ctx, agent.machineId);
     // A socket that cannot decode a notice counts as offline (noticeGated).
     const socket = live && noticeGated(live) ? live : null;
     const notBefore = n.notBefore ?? now;
+    const old = one<{
+      ack: string | null;
+      foldN: number;
+      foldAcks: string | null;
+    }>(
+      sql,
+      "select ack, fold_n as foldN, fold_acks as foldAcks from notices where to_ns = ? and to_lname = ? and ckey = ?",
+      ...key,
+    );
+    // #1752: the replaced notice's target and fold count move to the new one.
+    const folds = old
+      ? [...parseAcks(old.foldAcks), ...(old.ack ? [old.ack] : [])]
+      : [];
+    // Oldest first beyond the bound: those targets settle as gone now.
+    this.#settleGone(
+      folds.splice(0, Math.max(0, folds.length - NOTICE_FOLD_MAX)),
+    );
+    const foldN = old && n.kind === "comment" ? old.foldN + 1 : 0;
     if (socket && notBefore <= now) {
       // A socket that refuses the frame (#1752) leaves the notice held
-      // (parked) for the next agent_up, never stored as delivered.
-      if (trySendFrame(socket, noticeFrame(agent, n.text))) {
+      // (parked) for the next agent_up, never stored as delivered. An older
+      // held notice of the key is folded in and goes only once this is sent.
+      const ack = noticeAckOf(n);
+      const merged: NoticeRow = {
+        toNs: to.namespace,
+        toLname: lname,
+        ckey: n.coalesceKey,
+        text: n.text,
+        ack,
+        foldN,
+        foldRef: foldN > 0 ? n.artifactId : null,
+        foldAcks: folds.length > 0 ? JSON.stringify(folds) : null,
+      };
+      if (
+        this.#sendNotice(
+          socket,
+          agent,
+          noticeTextOf(merged),
+          noticeSendAck(merged),
+        )
+      ) {
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
           ...key,
         );
-        return "delivered";
+        // #1752: on a notice_ack socket the notice counts as delivered only
+        // at the daemon's ack, so it reads held (queued) until then.
+        return ack !== null && noticeAckGated(socket) ? "held" : "delivered";
       }
     }
-    const exists =
-      one<{ x: number }>(
-        sql,
-        "select 1 as x from notices where to_ns = ? and to_lname = ? and ckey = ?",
-        ...key,
-      ) !== null;
+    const exists = old !== null;
     // Due with no usable socket: parked until the machine's agent_up (1), or
     // held for a live daemon too old to read it (2, own caps).
     // A socket that can read notices but refused the frame (#1752) is
@@ -6338,10 +6722,7 @@ export class BusHub extends DurableObject<Env> {
     if (parked === 2) {
       const reason = this.#oldHeldOver(to.namespace, lname, n.coalesceKey);
       if (reason) {
-        sql.exec(
-          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-          ...key,
-        );
+        this.#dropHeld(...key);
         logEvent("notice_dropped", { reason });
         return "dropped";
       }
@@ -6357,15 +6738,20 @@ export class BusHub extends DurableObject<Env> {
       }
     }
     const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
+    const foldRef = foldN > 0 ? n.artifactId : null;
     sql.exec(
-      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked)
-       values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack, fold_n, fold_ref, fold_acks)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ...key,
       n.id,
       n.text,
       notBefore,
       expiresAt,
       parked,
+      noticeAckOf(n),
+      foldN,
+      foldRef,
+      folds.length > 0 ? JSON.stringify(folds) : null,
     );
     this.#arm(parked > 0 ? expiresAt : notBefore);
     this.#arm(expiresAt);
@@ -6396,7 +6782,8 @@ export class BusHub extends DurableObject<Env> {
     for (const r of rows) {
       // The address resolves to this agent now, or the notice is not its.
       if (liveVisibleIn(sql, r.toNs, r.toLname)?.id !== agent.id) continue;
-      if (!trySendFrame(ws, noticeFrame(agent, r.text))) break;
+      if (!this.#sendNotice(ws, agent, noticeTextOf(r), noticeSendAck(r)))
+        break;
       sql.exec(
         "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
         r.toNs,
@@ -6426,14 +6813,22 @@ export class BusHub extends DurableObject<Env> {
   #sweepNotices(now: number): boolean {
     const sql = this.ctx.storage.sql;
     // #1828: an expired notice was never delivered: count it (ids and counts only).
-    const expired = all<{ rid: number; id: string; parked: number }>(
+    const expired = all<{
+      rid: number;
+      id: string;
+      parked: number;
+      ack: string | null;
+      fa: string | null;
+    }>(
       sql,
-      "select rowid as rid, id, parked from notices where expires_at <= ? limit ?",
+      "select rowid as rid, id, parked, ack, fold_acks as fa from notices where expires_at <= ? limit ?",
       now,
       BATCH,
     );
-    for (const r of expired)
+    for (const r of expired) {
+      this.#settleGone([r.ack, ...parseAcks(r.fa)]);
       sql.exec("delete from notices where rowid = ?", r.rid);
+    }
     if (expired.length > 0)
       logEvent("notice_expired", {
         count: expired.length,
@@ -6443,6 +6838,8 @@ export class BusHub extends DurableObject<Env> {
           .map((r) => r.id)
           .join(","),
       });
+    // #1752: an ack that never came leaves the target queued.
+    sql.exec("delete from notice_acks where expires_at <= ?", now);
     const gone = expired.length >= BATCH;
     const due = all<NoticeRow>(
       sql,
@@ -6461,7 +6858,11 @@ export class BusHub extends DurableObject<Env> {
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
       const live = agent && liveSocket(this.ctx, agent.machineId);
       const socket = live && noticeGated(live) ? live : null;
-      if (agent && socket && trySendFrame(socket, noticeFrame(agent, r.text))) {
+      if (
+        agent &&
+        socket &&
+        this.#sendNotice(socket, agent, noticeTextOf(r), noticeSendAck(r))
+      ) {
         sent++;
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
@@ -6477,12 +6878,7 @@ export class BusHub extends DurableObject<Env> {
           ? this.#oldHeldOver(r.toNs, r.toLname, r.ckey)
           : null;
         if (reason) {
-          sql.exec(
-            "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-            r.toNs,
-            r.toLname,
-            r.ckey,
-          );
+          this.#dropHeld(r.toNs, r.toLname, r.ckey);
           logEvent("notice_dropped", { reason });
         } else {
           sql.exec(
@@ -6494,12 +6890,7 @@ export class BusHub extends DurableObject<Env> {
           );
         }
       } else {
-        sql.exec(
-          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-          r.toNs,
-          r.toLname,
-          r.ckey,
-        );
+        this.#dropHeld(r.toNs, r.toLname, r.ckey);
       }
     }
     // A full step: the rest go out a pace later (#1752), not at once.
@@ -6695,6 +7086,7 @@ export class BusHub extends DurableObject<Env> {
       min("select min(expires_at) as t from former_names"),
       min("select min(not_before) as t from notices where parked = 0"),
       min("select min(expires_at) as t from notices"),
+      min("select min(expires_at) as t from notice_acks"),
       min("select min(at) as t from rename_rl", HOUR_MS),
       this.#offlineReapDeadline(),
     ].filter((t): t is number => t !== null);

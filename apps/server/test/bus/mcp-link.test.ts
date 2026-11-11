@@ -9,7 +9,7 @@ import {
   type ClientFrame,
   LINK_PROOF_HEADER,
 } from "@oa/bus-protocol";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createPat } from "../../src/auth/pat.js";
 import {
   type BusHubRpc,
@@ -95,7 +95,11 @@ describe("linkRequest (#1822)", () => {
     );
     expect(r.identity?.name).toMatch(/^Lead/);
     expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
-    expect(asked).toEqual([`bus:${a.userId}`]);
+    // The lookup follows a D1 read and is not cancelled by the bound, so the ask
+    // can land after linkRequest returned: wait for it.
+    await vi.waitFor(() => expect(asked).toEqual([`bus:${a.userId}`]), {
+      timeout: 5000,
+    });
   });
 
   it("a proof of person A sent with person B's credential is unlinked, and only B's hub is asked", async () => {
@@ -110,7 +114,11 @@ describe("linkRequest (#1822)", () => {
     );
     expect(r.identity).toBeUndefined();
     expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
-    expect(asked).toEqual([`bus:${b.userId}`]);
+    // The lookup follows a D1 read and is not cancelled by the bound, so the ask
+    // can land after linkRequest returned: wait for it.
+    await vi.waitFor(() => expect(asked).toEqual([`bus:${b.userId}`]), {
+      timeout: 5000,
+    });
     expect(asked).not.toContain(`bus:${a.userId}`);
   });
 
@@ -127,7 +135,11 @@ describe("linkRequest (#1822)", () => {
       expect(r.req.headers.has(LINK_PROOF_HEADER)).toBe(false);
     }
     // Only the well-formed unknown one reached the hub.
-    expect(asked).toEqual([`bus:${a.userId}`]);
+    // The lookup follows a D1 read and is not cancelled by the bound, so the ask
+    // can land after linkRequest returned: wait for it.
+    await vi.waitFor(() => expect(asked).toEqual([`bus:${a.userId}`]), {
+      timeout: 5000,
+    });
   });
 
   it("a hub that fails or is slow leaves the request unlinked", async () => {
