@@ -178,6 +178,13 @@ describe("review: pid reuse", () => {
             : pid >= 8000
               ? "/usr/local/bin/opencode"
               : "node",
+        // The TUI is attached to whichever service is up (#1950).
+        attach: {
+          exeOf: (pid) => (pid === 4321 || pid >= 8000 ? "/oc" : null),
+          ppidOf: () => null,
+          listenPorts: (pid) => new Set([pid]),
+          connectedPorts: () => new Set([8001, 8002]),
+        },
       },
     });
     const oc = (pid: number) => ({

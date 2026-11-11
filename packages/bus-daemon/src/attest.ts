@@ -12,6 +12,11 @@ import { type Hello, systemTool } from "@oa/bus-ipc";
 import { type CodexAttestor, codexAttestor } from "./codex-attest.ts";
 import { isRunning } from "./liveness/claude.ts";
 import {
+  type AttachDeps,
+  attachedTo,
+  defaultAttachDeps,
+} from "./presence/attached.ts";
+import {
   lstartEpoch,
   opencodePresenceDir,
   openSessions,
@@ -27,7 +32,10 @@ export type AttestDeps = {
    * /proc start ticks (default claudeProcStartOf) and Pi's lstart (procStartOf).
    */
   procStart?: (pid: number) => string | null;
-  openSessions?: () => Set<string>;
+  /** Root sessions open in TUIs; `service` limits them to TUIs attached to that service pid. */
+  openSessions?: (service: number) => Set<string>;
+  /** OS reads that tie a TUI to its service (exe, ppid, sockets). */
+  attach?: AttachDeps;
   /** The executable a pid runs (`ps -o comm=`), null when it cannot be told. */
   comm?: (pid: number) => string | null;
   /** The daemon's codex attestor: it pins state across hellos, so one per daemon. */
@@ -124,8 +132,13 @@ function attestOpenCode(hello: Hello, deps: AttestDeps): Attest {
   );
   if (service === undefined)
     return { ok: false, reason: "not running under an OpenCode service" };
-  if (!(deps.openSessions ?? defaultOpenSessions)().has(hello.agent_ref))
-    return { ok: false, reason: "opencode session is not open in a TUI" };
+  const open =
+    deps.openSessions ?? ((s) => defaultOpenSessions(s, deps.attach));
+  if (!open(service).has(hello.agent_ref))
+    return {
+      ok: false,
+      reason: "opencode session is not open in a TUI attached to this service",
+    };
   return { ok: true, pid: service };
 }
 
@@ -144,8 +157,12 @@ export function commOf(pid: number): string | null {
   }
 }
 
-function defaultOpenSessions(): Set<string> {
+function defaultOpenSessions(
+  service: number,
+  attach?: AttachDeps,
+): Set<string> {
   return openSessions(opencodePresenceDir(), {
+    accept: attachedTo(service, attach ?? defaultAttachDeps),
     isRunning,
     procStartEpoch: (pid) => lstartEpoch(procStartOf(pid)),
   });

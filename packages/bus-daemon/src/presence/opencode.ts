@@ -12,6 +12,8 @@ export type PresenceDeps = {
   isRunning: (pid: number) => boolean;
   /** Epoch seconds the pid's current process started; null when it cannot be told. `stamp` names the file's version. */
   procStartEpoch: (pid: number, stamp?: string) => number | null;
+  /** When set, only TUIs it accepts count (attached to one service, #1950). */
+  accept?: (tuiPid: number) => boolean;
 };
 
 /**
@@ -41,6 +43,7 @@ export function openSessions(dir: string, deps: PresenceDeps): Set<string> {
     if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 1)
       continue;
     if (!Array.isArray(data.sessionIDs) || !deps.isRunning(pid)) continue;
+    if (deps.accept && !deps.accept(pid)) continue;
     const started = deps.procStartEpoch(pid, String(mtime));
     if (started !== null && started > mtime + START_TOLERANCE_SECONDS) continue;
     for (const id of data.sessionIDs) if (typeof id === "string") out.add(id);

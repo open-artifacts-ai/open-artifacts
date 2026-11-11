@@ -535,6 +535,14 @@ describe("opencode through runDaemon", () => {
         // MCP server 7xxx runs under OpenCode service 8xxx.
         ancestors: (pid) => [pid, pid + 1000, 1],
         comm: (pid) => (pid >= 8000 ? "/usr/local/bin/opencode" : "node"),
+        // TUI 4321 is attached to both services (#1950), so the registry's own
+        // in-use rule is what this test exercises.
+        attach: {
+          exeOf: (pid) => (pid === 4321 || pid >= 8000 ? "/oc" : null),
+          ppidOf: () => null,
+          listenPorts: (pid) => new Set([pid]),
+          connectedPorts: () => new Set([8001, 8002]),
+        },
       },
     });
   }

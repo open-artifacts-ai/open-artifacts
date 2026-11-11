@@ -89,6 +89,11 @@ import {
 import { remotesFile } from "./namespaces.ts";
 import { Outbox } from "./outbox.ts";
 import {
+  type AttachDeps,
+  attachedTo,
+  defaultAttachDeps,
+} from "./presence/attached.ts";
+import {
   lstartEpoch,
   opencodePresenceDir,
   openSessions,
@@ -138,6 +143,7 @@ export * from "./namespace.ts";
 export * from "./namespaces.ts";
 export * from "./outbox.ts";
 export { readOwnFile } from "./own-file.ts";
+export * from "./presence/attached.ts";
 export * from "./presence/opencode.ts";
 export * from "./resend.ts";
 export * from "./routes.ts";
@@ -241,6 +247,8 @@ export type DaemonDeps = {
     presenceDir?: string;
     /** Replaces reading presence files: the open root session ids. */
     openSessions?: () => Set<string>;
+    /** OS reads tying a TUI to its service (#1950); default the real /proc, ps and lsof. */
+    attach?: AttachDeps;
     /** Runs `opencode api`; default execFile with a 20 s kill timeout. */
     spawn?: Spawn;
     procStart?: (pid: number) => string | null;
@@ -529,6 +537,15 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         isRunning: ocRunning,
         procStartEpoch: (pid, stamp) => lstartEpoch(ocStart(pid, stamp)),
       }));
+  /** A hello counts only sessions in TUIs attached to its own service (#1950). */
+  const openCodeSessionsFor = (service: number): Set<string> =>
+    oc.openSessions
+      ? oc.openSessions()
+      : openSessions(presenceDir, {
+          isRunning: ocRunning,
+          procStartEpoch: (pid, stamp) => lstartEpoch(ocStart(pid, stamp)),
+          accept: attachedTo(service, oc.attach ?? defaultAttachDeps),
+        });
   const ocSpawn = oc.spawn ?? execSpawn(20_000);
   /** Unknown until read, just before the hub link starts: no delivery comes sooner. */
   let promptIdSupported = false;
@@ -1519,7 +1536,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             : attest(h, {
                 // The dir liveness reads: a session is attested where it is seen.
                 sessionsDir: claudeSessions.dir,
-                openSessions: openCodeSessions,
+                openSessions: openCodeSessionsFor,
                 ancestors: oc.ancestors,
                 comm: oc.comm,
                 codex: codexCheck,
