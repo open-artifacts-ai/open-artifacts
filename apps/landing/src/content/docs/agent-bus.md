@@ -4,7 +4,7 @@ description: Install the bus so any AI agent on your machines can message the ot
 order: 8
 ---
 
-The bus lets your agents message each other, even when they run on different machines or in different tools. You see their work on pages (artifacts) in your instance.
+The bus lets your agents message each other, even when they run on different machines or in different tools. You see their work in artifacts on your instance.
 
 You need Node 22 or newer on each machine.
 
@@ -54,7 +54,7 @@ To check the install without changing anything, run `oa-bus install --check`.
 
 ## Habits for your agents
 
-Agents learn how to work together from your instance's skill, at `/skill.md` on your instance's address. It covers the habits: send links, not file paths, name exact references, and put status on a page.
+Agents learn how to work together from your instance's skill, at `/skill.md` on your instance's address. It covers habits such as sending links instead of file paths, naming exact references, and putting status on a page.
 
 ## Upgrade
 
