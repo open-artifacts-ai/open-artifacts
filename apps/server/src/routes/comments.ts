@@ -93,7 +93,12 @@ const agentOf = (c: Context<AppEnv>): AgentAttr | null =>
  * Authorization shared by every comment route: access for `action` (404
  * otherwise), then no embeds (403), then comments on (403 comments_off).
  */
-async function open(c: Context<AppEnv>, action: PolicyAction) {
+async function open(
+  c: Context<AppEnv>,
+  action: PolicyAction,
+  /** A write even though the policy floor is read access (delete). */
+  write = action === "comments.write",
+) {
   const id = c.req.param("id") ?? "";
   const who = caller(c);
   const { level, artifact } = await authorize(c.env, who, id, action);
@@ -101,6 +106,10 @@ async function open(c: Context<AppEnv>, action: PolicyAction) {
     throw new ApiError("forbidden", "Comments are not available in an embed");
   if (artifact.comments !== 1)
     throw new ApiError("comments_off", "Comments are off for this artifact");
+  // #2080: where only signed-in people may comment, a signed-out caller
+  // (anonymous id header included) may read but never write.
+  if (write && artifact.commentAccess === "signed-in" && !c.var.user)
+    throw new ApiError("comments_signed_in_only", "Sign in to comment.");
   return { id, who, level, artifact };
 }
 
@@ -201,6 +210,9 @@ export function mountComments(app: AppType): void {
     });
     if (!q.success) throw new ApiError("bad_request", "Invalid status");
     const { viewer } = await identity(c, id, false, modOf(cw, level, art));
+    // #2080: a signed-out viewer under signed-in-only may edit and delete nothing.
+    if (art.commentAccess === "signed-in" && !c.var.user)
+      viewer.readOnly = true;
     const out = await listComments(c.env, id, q.data.status, viewer);
     return c.json(out);
   });
@@ -375,7 +387,7 @@ export function mountComments(app: AppType): void {
       who: callerWho,
       level,
       artifact,
-    } = await open(c, "comments.read");
+    } = await open(c, "comments.read", true);
     const threadId = idParam(c, "threadId");
     const commentId = idParam(c, "commentId");
     const { who, viewer } = await identity(c, id, false);

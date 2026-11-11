@@ -342,10 +342,16 @@ export const artifacts = sqliteTable(
      */
     comments: integer("comments").notNull().default(1),
     /**
+     * #2080: who may post when comments are on: "everyone" (the column default,
+     * so every artifact from before keeps today's behavior) or "signed-in"
+     * (set on insert for new artifacts).
+     */
+    commentAccess: text("comment_access").notNull().default("everyone"),
+    /**
      * #1100: 1 when the artifact is a collaborative doc. Its `format` column
      * stays "markdown" (the stored text, rendered as markdown until the doc
      * editor lands) and the API reports format "doc". Set on create only:
-     * other artifacts never become docs. The CHECK is inline in 0033's ADD
+     * other artifacts never become docs. The CHECK is inline in 0034's ADD
      * COLUMN, as for comments.
      */
     doc: integer("doc").notNull().default(0),

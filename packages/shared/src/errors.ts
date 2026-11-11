@@ -61,6 +61,7 @@ export const ERROR_CODES = [
   "not_an_ask",
   "anchor_not_in_version",
   "comments_off",
+  "comments_signed_in_only",
   "forbidden",
   // Publish with expectedVersion or edits (#1216, #1540).
   "version_conflict",
@@ -174,6 +175,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   not_an_ask: 400,
   anchor_not_in_version: 422,
   comments_off: 403,
+  /** #2080: a signed-out caller wrote a comment where only signed-in people may. */
+  comments_signed_in_only: 403,
   forbidden: 403,
   /** Publish with an expectedVersion that is no longer current, or an edits publish whose base version was replaced first (#1216, #1540); details { currentVersion }. Nothing is published. */
   version_conflict: 409,

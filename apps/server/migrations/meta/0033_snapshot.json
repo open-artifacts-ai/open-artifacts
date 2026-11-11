@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "9802a946-af35-4404-8e4f-b6e63f64eddc",
+  "id": "ffc8aaad-8775-41dc-a582-730f0446a21a",
   "prevId": "ed414ab7-c1ca-4ffa-bf72-fc07ff33f796",
   "tables": {
     "agent_grants": {
@@ -246,13 +246,13 @@
           "autoincrement": false,
           "default": 1
         },
-        "doc": {
-          "name": "doc",
-          "type": "integer",
+        "comment_access": {
+          "name": "comment_access",
+          "type": "text",
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false,
-          "default": 0
+          "default": "'everyone'"
         },
         "has_thumbnail": {
           "name": "has_thumbnail",
