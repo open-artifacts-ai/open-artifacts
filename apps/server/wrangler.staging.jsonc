@@ -49,7 +49,9 @@
         // P3 T13a (#571): the class ships unbound one release before #575 binds and uses it.
         { "tag": "v3", "new_sqlite_classes": ["DirectorySync"] },
         // #1291: the class shipped unbound (0.109.0) one release before #1315 bound BUS_HUB.
-        { "tag": "v4", "new_sqlite_classes": ["BusHub"] }
+        { "tag": "v4", "new_sqlite_classes": ["BusHub"] },
+        // #1100: the class ships unbound one release before the doc route binds DOC_ROOM.
+        { "tag": "v5", "new_sqlite_classes": ["DocRoom"] }
       ],
       // Browser Run (server-side thumbnails). Workers edit suffices to deploy.
       "browser": { "binding": "BROWSER" },
