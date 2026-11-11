@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.152.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.152.0...v0.152.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **bus:** a comment notice reaches a role address's holder ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2051](https://github.com/open-artifacts-ai/open-artifacts/issues/2051)) ([8254d8c](https://github.com/open-artifacts-ai/open-artifacts/commit/8254d8c1da5a98afbd16c8b0940f933fcbf08b39))
+* **bus:** a daemon restart keeps live Claude sessions linked ([#2050](https://github.com/open-artifacts-ai/open-artifacts/issues/2050)) ([#2053](https://github.com/open-artifacts-ai/open-artifacts/issues/2053)) ([e1b69a1](https://github.com/open-artifacts-ai/open-artifacts/commit/e1b69a1fcc3e9d2dd36f7d294998d72e18eabf4c))
+* **bus:** notice-ack settle follow-ups from [#2037](https://github.com/open-artifacts-ai/open-artifacts/issues/2037) ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2052](https://github.com/open-artifacts-ai/open-artifacts/issues/2052)) ([2d9a78e](https://github.com/open-artifacts-ai/open-artifacts/commit/2d9a78ea28a4239828d94556e4b1084f05a6dcc4))
+
 ## [0.152.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.151.1...v0.152.0) (2026-11-11)
 
 
