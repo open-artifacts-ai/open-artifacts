@@ -6552,7 +6552,7 @@ export class BusHub extends DurableObject<Env> {
     this.#settleGone(
       folds.splice(0, Math.max(0, folds.length - NOTICE_FOLD_MAX)),
     );
-    const foldN = old ? old.foldN + 1 : 0;
+    const foldN = old && n.kind === "comment" ? old.foldN + 1 : 0;
     if (socket && notBefore <= now) {
       // A socket that refuses the frame (#1752) leaves the notice held
       // (parked) for the next agent_up, never stored as delivered. An older
