@@ -13,6 +13,7 @@ import {
   NOTICES_MAX,
   NOTICES_OLD_MAX,
   NOTICES_OLD_PER_ADDRESS,
+  OWNER_ORG_ID,
 } from "../../src/bus/hub.js";
 import { hubNoticeDelivery } from "../../src/services/bus.js";
 import {
@@ -1140,6 +1141,63 @@ describe("a notice to a role address (#1752)", () => {
       ),
     ).toBe("dropped");
     expect(await waiting(s.userId)).toBe(0);
+  });
+
+  it("a vacant role does not fall through to a former name of the same text", async () => {
+    const m = await member();
+    const mach = await machine("Laptop", m.userId);
+    const d = await daemon(mach.token);
+    d.send({
+      ...plainHello(id("h")),
+      caps: [BUS_CAPS.follow, "rename"],
+    } as never);
+    await waitFor(d, "hello_ok");
+    const namespace = ns("notice");
+    const ref = id("ref");
+    const old = uniq("lead");
+    d.send(up(id("u"), ref, old, namespace));
+    const oldName = (await waitFor(d, "agent_ok")).bus_name;
+    d.send({
+      v: 1,
+      id: id("r"),
+      type: "rename",
+      agent_ref: ref,
+      proposed_name: uniq("new"),
+    } as never);
+    await waitFor(d, "renamed");
+    const stub = await hubOf(m.userId);
+    const other = uniq("other");
+    const d2 = await daemon((await machine("Desk", m.userId)).token);
+    d2.send({ ...plainHello(id("h")), caps: [BUS_CAPS.follow] } as never);
+    await waitFor(d2, "hello_ok");
+    d2.send(up(id("u"), id("ref"), other, namespace));
+    await waitFor(d2, "agent_ok");
+    const y = (await stub.snapshot()).agents.find((a) => a.name === other);
+    if (!y) throw new Error("no agent");
+    // putRole refuses a name that is a live former name (name_taken), but a
+    // role created before the rename can still hold it: seed that state.
+    await inHub(m.userId, (_i, st) => {
+      st.storage.sql.exec(
+        "insert into roles (id, org_id, namespace, name, lname, agent_id, set_at) values (?, ?, ?, ?, ?, ?, ?)",
+        id("role"),
+        OWNER_ORG_ID,
+        namespace,
+        oldName,
+        oldName.toLowerCase(),
+        y.id,
+        Date.now(),
+      );
+    });
+    d2.close();
+    await vi.waitFor(async () => {
+      const a = (await stub.snapshot()).agents.find((z) => z.name === other);
+      expect(a).toBeUndefined();
+    });
+    expect(await stub.deliverNotice(note({ namespace, name: oldName }))).toBe(
+      "dropped",
+    );
+    expect(delivers(d)).toEqual([]);
+    expect(await waiting(m.userId)).toBe(0);
   });
 
   it("a role in another namespace does not resolve", async () => {

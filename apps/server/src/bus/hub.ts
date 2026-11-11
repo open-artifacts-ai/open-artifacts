@@ -6433,7 +6433,7 @@ export class BusHub extends DurableObject<Env> {
     const byRole = resolveRoleIn(sql, OWNER_ORG_ID, n.to.namespace, sent);
     const liveNamed = liveVisibleIn(sql, n.to.namespace, sent);
     const former =
-      byRole?.ok || liveNamed !== null
+      byRole !== null || liveNamed !== null
         ? []
         : liveFormer(sql, sent, now, { ns: n.to.namespace }, 2);
     const byAlias = byRole?.ok
