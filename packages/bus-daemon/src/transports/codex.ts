@@ -291,7 +291,7 @@ export type CodexTransportOptions = {
    */
   taken: Pick<
     TakenWatch,
-    "state" | "maybe" | "attempt" | "queued" | "drop" | "reconcile"
+    "state" | "maybe" | "attempt" | "queued" | "drop" | "reconcile" | "info"
   >;
   /** Codex's own queue store, read only; default reads `queue_1.sqlite` in `home`. Undefined: cannot tell. */
   queueStore?: (thread: string, head: string) => QueueRead | undefined;
@@ -385,6 +385,57 @@ export class CodexTransport {
     return r.taken === "maybe" ? ("maybe" as const) : ("failed" as const);
   }
 
+  #peek(thread: string, head: string): QueueRead | undefined {
+    return (
+      this.opts.queueStore ?? ((t, h) => readQueue(this.opts.home, t, h))
+    )(thread, head);
+  }
+
+  /** One look at where an interrupted item may be: the rollout, then Codex's queue. */
+  #look(id: string, ref: string, head: string) {
+    const rc = this.opts.taken.reconcile(id);
+    if (rc === "taken") return { k: "taken" } as const;
+    // Not found, and the scan did not read to the real end: unknown.
+    if (rc === "pending") return { k: "unsettled" } as const;
+    const q = this.#peek(ref, head);
+    if (!q) return { k: "unsettled" } as const;
+    if (q.present) {
+      this.opts.taken.queued(id);
+      return { k: "known" } as const;
+    }
+    return { k: "absent", rev: q.revision } as const;
+  }
+
+  /**
+   * What to answer for an interrupted attempt, or undefined to queue it once
+   * more. That needs the item nowhere: not in the rollout, and absent from
+   * Codex's queue on two looks (a turn deletes the row and appends to the
+   * rollout, so one look can land on the hand-over) with the thread's queue
+   * revision equal to the one saved with the attempt (nothing was added since:
+   * our row never committed) and the attempt older than `codex queue`'s
+   * timeout (an orphaned child has finished). Anything unreadable, moved or
+   * too young stays queued; it expires and that is reported.
+   */
+  #recover(id: string, ref: string, head: string): Queue | undefined {
+    const unsettled = { ok: false, taken: "maybe" } as const;
+    const answer = (k: "taken" | "known" | "unsettled"): Queue =>
+      k === "unsettled" ? unsettled : { ok: true, how: k };
+    const a = this.#look(id, ref, head);
+    if (a.k !== "absent") return answer(a.k);
+    const b = this.#look(id, ref, head);
+    if (b.k !== "absent") return answer(b.k);
+    const info = this.opts.taken.info(id);
+    if (
+      info === undefined ||
+      info.rev === undefined ||
+      a.rev !== b.rev ||
+      b.rev !== info.rev ||
+      info.age <= CODEX_QUEUE_TIMEOUT_MS
+    )
+      return unsettled;
+    return undefined;
+  }
+
   #wakes(agent: AgentRecord): Promise<boolean> {
     return agent.live ? this.opts.wakes(agent.pid) : Promise.resolve(false);
   }
@@ -404,40 +455,16 @@ export class CodexTransport {
         : { ok: true, how: "known" };
     if (this.#flight.has(id)) return { ok: false, taken: "maybe" };
     const head = text.split("\n", 1)[0] ?? "";
-    // An interrupted attempt: the rollout may hold the item already.
-    if (st === "attempt" && watch) {
+    if (st === "attempt") {
       // An interrupted attempt, resolved only here, from a hub delivery to a
-      // thread that rejoined. Spawn again only when the item is nowhere:
-      // not in the rollout, and absent from Codex's queue on two checks with
-      // the thread's revision unchanged between them (a turn deletes the row
-      // and appends to the rollout; one look can land on the hand-over).
-      // Anything unreadable or unsettled stays queued: never a spawn on a guess.
-      const unsettled = { ok: false, taken: "maybe" } as const;
-      const peek =
-        this.opts.queueStore ?? ((t, h) => readQueue(this.opts.home, t, h));
-      const inQueue = (): QueueRead | undefined => peek(ref, head);
-      const rc = this.opts.taken.reconcile(id);
-      if (rc === "taken") return { ok: true, how: "taken" };
-      if (rc === "pending") return unsettled;
-      const q1 = inQueue();
-      if (!q1) return unsettled;
-      if (q1.present) {
-        this.opts.taken.queued(id);
-        return { ok: true, how: "known" };
-      }
-      const rc2 = this.opts.taken.reconcile(id);
-      if (rc2 === "taken") return { ok: true, how: "taken" };
-      if (rc2 === "pending") return unsettled;
-      const q2 = inQueue();
-      if (!q2) return unsettled;
-      if (q2.present) {
-        this.opts.taken.queued(id);
-        return { ok: true, how: "known" };
-      }
-      if (q2.revision !== q1.revision) return unsettled;
-      // Absent twice and unchanged: Codex never got it. A fresh attempt follows
-      // ("once" per interrupted attempt: N crashes in the spawn window can leave
-      // N copies; a copy beats a silent loss).
+      // thread that rejoined. A bus wake or notice has no head to match, so it
+      // is never blindly sent again.
+      if (!watch) return { ok: false, taken: "maybe" };
+      const r = this.#recover(id, ref, head);
+      if (r) return r;
+      // Nothing of ours is anywhere: a fresh attempt follows ("once" per
+      // interrupted attempt: N crashes in the spawn window can leave N copies;
+      // a copy beats a silent loss).
     }
     this.#bin ??= this.opts.resolve();
     const bin = this.#bin;
@@ -456,15 +483,17 @@ export class CodexTransport {
     let res: Awaited<ReturnType<CodexRun>>;
     // The attempt is durable BEFORE the queue runs (a check may read the new
     // user item before `codex queue` exits, and a crash must not forget it).
-    // Without a written record nothing is spawned: a retryable failure.
-    // A re-queue after an interrupted attempt may duplicate the item; that
-    // beats a silent loss.
+    // It carries Codex's queue revision for the thread, so a recovery can tell
+    // whether anything reached the queue since. Without a written record
+    // nothing is spawned: a retryable failure.
+    const rev = watch ? this.#peek(ref, head) : undefined;
     if (
       !this.opts.taken.attempt(
         id,
         ref,
         watch ? head : undefined,
         watch ? watch.ttlMs : undefined,
+        rev ? rev.revision : undefined,
       )
     ) {
       this.opts.event?.("codex_queue_failed", {

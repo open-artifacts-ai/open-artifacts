@@ -47,6 +47,10 @@ export type TakenRecord = {
   sig?: string;
   /** The last pass stepped over a line longer than the budget: the next read starts mid-line, so it skips to the next newline. */
   skip?: true;
+  /** Codex's queue revision for the thread when the attempt was written (null: never touched); absent: it could not be read, so the attempt is never re-queued blind. */
+  rev?: number | null;
+  /** The late ack of `taken` was sent (a lost one is repeated until then). */
+  acked?: true;
 };
 
 /** What a record needs to give back after a failed save. */
@@ -155,6 +159,14 @@ export class TakenWatch {
     return this.#recs.get(id)?.state;
   }
 
+  /** How old an attempt is (ms) and the queue revision saved with it (undefined: unreadable then). */
+  info(
+    id: string,
+  ): { age: number; rev: number | null | undefined } | undefined {
+    const r = this.#recs.get(id);
+    return r ? { age: this.#now() - r.at, rev: r.rev } : undefined;
+  }
+
   /** Whether `codex queue` was killed at its timeout for this id. */
   maybe(id: string): boolean {
     return this.#recs.get(id)?.maybe === true;
@@ -177,7 +189,13 @@ export class TakenWatch {
    * written: the caller must not spawn, and must report a retryable failure.
    * Replaces any earlier record (a re-queue after an interrupted attempt).
    */
-  attempt(id: string, thread: string, head?: string, ttlMs?: number): boolean {
+  attempt(
+    id: string,
+    thread: string,
+    head?: string,
+    ttlMs?: number,
+    rev?: number | null,
+  ): boolean {
     const prev = this.#recs.get(id);
     const rollout = this.#rollout(thread);
     let startOffset = 0;
@@ -204,6 +222,7 @@ export class TakenWatch {
       at: this.#now(),
       ...(head === undefined ? {} : { head }),
       ...(ttlMs === undefined ? {} : { ttlMs }),
+      ...(rev === undefined ? {} : { rev }),
       ...(rollout ? { rollout } : {}),
       startOffset,
       scannedTo: startOffset,
@@ -271,6 +290,11 @@ export class TakenWatch {
     const now = this.#now();
     let changed = false;
     const taken: string[] = [];
+    // A saved `taken` whose ack may have been lost (a restart in between) is acked again; the ack is idempotent.
+    for (const [id, r] of this.#recs)
+      if (r.state === "taken" && r.head !== undefined && !r.acked) {
+        taken.push(id);
+      }
     const was = new Map<string, Snap>();
     for (const [id, r] of this.#recs) {
       const ttl = r.ttlMs ?? this.opts.ttlMs ?? MAILBOX_RETAIN_MS;
@@ -315,15 +339,22 @@ export class TakenWatch {
       }
       return;
     }
+    let acked = false;
     for (const id of taken) {
       try {
         this.opts.onTaken(id);
+        const r = this.#recs.get(id);
+        if (r) {
+          r.acked = true;
+          acked = true;
+        }
       } catch (e) {
         this.opts.log?.(
           `ack of taken ${id} failed: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
     }
+    if (acked) this.#save();
   }
 
   #rollout(thread: string): string | undefined {
@@ -334,18 +365,19 @@ export class TakenWatch {
   }
 
   /** Scans forward from `scannedTo`, at most `budget` bytes; pushes `id` into `found` on a match. */
-  /** Whether the pass reached the end of the rollout (or there is none to read). */
+  /** Whether the pass read to the real end of the rollout; false when it stopped short or could not read it. */
   #scan(id: string, r: TakenRecord, found: string[], budget: number): boolean {
     if (!r.rollout) {
       r.rollout = this.#rollout(r.thread);
-      if (!r.rollout) return true;
+      // Cannot locate it (a read error, a glob miss): unknown, never the end.
+      if (!r.rollout) return false;
     }
     let fd: number;
     try {
       fd = openSync(r.rollout, "r");
     } catch {
       r.rollout = undefined; // moved: found again next time
-      return true;
+      return false;
     }
     try {
       const stat = fstatSync(fd);
@@ -428,6 +460,10 @@ export class TakenWatch {
               ? { scannedTo: p.scannedTo }
               : {}),
             ...(p.skip === true ? { skip: true as const } : {}),
+            ...(p.acked === true ? { acked: true as const } : {}),
+            ...(p.rev === null || typeof p.rev === "number"
+              ? { rev: p.rev }
+              : {}),
             ...(typeof p.ino === "number" ? { ino: p.ino } : {}),
             ...(typeof p.sig === "string" ? { sig: p.sig } : {}),
           };

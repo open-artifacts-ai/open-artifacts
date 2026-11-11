@@ -20,6 +20,15 @@ export type QueueRead = {
   revision: number | null;
 };
 
+/**
+ * Node before 22.13 has node:sqlite only behind a flag, and `readOnly` can be
+ * ignored there: not trusted to leave Codex's store alone, so unknown.
+ */
+export function sqliteReadOnlyHolds(version: string): boolean {
+  const [major = 0, minor = 0] = version.split(".").map(Number);
+  return major > 22 || (major === 22 && minor >= 13);
+}
+
 /** Whether Codex's queue holds the item, or undefined when that cannot be read. */
 export function readQueue(
   home: string,
@@ -27,6 +36,7 @@ export function readQueue(
   head: string,
 ): QueueRead | undefined {
   try {
+    if (!sqliteReadOnlyHolds(process.versions.node)) return undefined;
     const sqlite = process.getBuiltinModule?.("node:sqlite") as
       | typeof import("node:sqlite")
       | undefined;
@@ -53,15 +63,20 @@ export function readQueue(
         try {
           payload = JSON.parse(row.payload_json);
         } catch {
-          continue; // not ours to read; another item's payload
+          // Unparseable: it could be ours, so nothing can be said.
+          return undefined;
         }
         const text = (
           payload as {
             UserInput?: { content?: { text?: unknown }[] };
           } | null
         )?.UserInput?.content?.[0]?.text;
-        if (typeof text === "string" && startsWithHead(text, head))
-          present = true;
+        if (typeof text === "string") {
+          if (startsWithHead(text, head)) present = true;
+        } else if (row.payload_json.includes(head)) {
+          // Another shape that names our item: unknown, never absent.
+          return undefined;
+        }
       }
       return {
         present,
