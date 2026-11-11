@@ -10,14 +10,14 @@ const c = (delivery: "withdrawn" | "delivered") =>
   }) as unknown as Comment;
 
 describe("#2175 withdrawn delivery line", () => {
-  it("reads 'Not sent: removed from this thread' for a mention and a thread reply", () => {
+  it("reads 'Removed before delivery' for a mention and a thread reply", () => {
     const { container } = render(<Delivery c={c("withdrawn")} />);
     const lines = [...container.querySelectorAll("li")].map(
       (l) => l.textContent,
     );
     expect(lines).toEqual([
-      "Claude: Not sent: removed from this thread",
-      "Claude: Not sent: removed from this thread",
+      "Claude: Removed before delivery",
+      "Claude: Removed before delivery",
     ]);
   });
 });
