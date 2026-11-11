@@ -10,16 +10,13 @@ import { startsWithHead } from "./codex-taken.ts";
  * - `queued_items(id, thread_id, payload_json, …)`: the item's text is at
  *   `payload_json.UserInput.content[0].text`. A row is deleted when a turn
  *   takes it.
- * - `queued_thread_revisions(revision, thread_id)`: bumped on every insert,
- *   update and delete for the thread. The re-queue rule (revision equal to the
- *   one saved with the attempt) assumes this row is monotonic and never
- *   deleted; if a future Codex deletes it, a pinned `null` compare could pass.
+ *
+ * Only "present" is read: absence proves nothing (a turn deletes the row, and
+ * a suspended `codex queue` child may still commit one).
  */
 export type QueueRead = {
   /** An item of this thread starts with `${head}\n\n`. */
   present: boolean;
-  /** The thread's revision (null: the thread was never touched). */
-  revision: number | null;
 };
 
 /**
@@ -48,13 +45,6 @@ export function readQueue(
       readOnly: true,
     });
     try {
-      const rev = db
-        .prepare(
-          "SELECT revision FROM queued_thread_revisions WHERE thread_id = ?",
-        )
-        .get(thread) as { revision?: unknown } | undefined;
-      if (rev !== undefined && typeof rev.revision !== "number")
-        return undefined;
       const rows = db
         .prepare("SELECT payload_json FROM queued_items WHERE thread_id = ?")
         .all(thread) as { payload_json?: unknown }[];
@@ -80,10 +70,7 @@ export function readQueue(
           return undefined;
         }
       }
-      return {
-        present,
-        revision: typeof rev?.revision === "number" ? rev.revision : null,
-      };
+      return { present };
     } finally {
       db.close();
     }

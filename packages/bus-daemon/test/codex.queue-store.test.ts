@@ -15,10 +15,7 @@ describe("codex queue store reader (codex-cli 0.166 schema)", () => {
       rows: [{ thread: THREAD, text: "[oa-bus] a\n\nbody" }],
       revision: { [THREAD]: 3 },
     });
-    expect(readQueue(h, THREAD, "[oa-bus] a")).toEqual({
-      present: true,
-      revision: 3,
-    });
+    expect(readQueue(h, THREAD, "[oa-bus] a")).toEqual({ present: true });
   });
 
   it("absent: other thread, other head, a head only quoted in a body, another item shape that does not name ours", () => {
@@ -31,10 +28,7 @@ describe("codex queue store reader (codex-cli 0.166 schema)", () => {
         { thread: THREAD, raw: JSON.stringify({ Other: { n: 1 } }) },
       ],
     });
-    expect(readQueue(h, THREAD, "[oa-bus] a")).toEqual({
-      present: false,
-      revision: null,
-    });
+    expect(readQueue(h, THREAD, "[oa-bus] a")).toEqual({ present: false });
   });
 
   it("unknown, never absent: an unparseable row of the thread, or another shape that names our item", () => {
@@ -62,8 +56,5 @@ describe("codex queue store reader (codex-cli 0.166 schema)", () => {
     const h = home();
     queueDb(h, { noItemsTable: true });
     expect(readQueue(h, THREAD, "h")).toBeUndefined();
-    const g = home();
-    queueDb(g, { rows: [{ thread: THREAD, raw: "42" }], badRevision: true });
-    expect(readQueue(g, THREAD, "h")).toBeUndefined();
   });
 });

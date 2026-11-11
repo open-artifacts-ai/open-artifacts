@@ -110,7 +110,7 @@ function transport(
     queueStore?: (
       thread: string,
       head: string,
-    ) => { present: boolean; revision: number | null } | undefined;
+    ) => { present: boolean } | undefined;
     event?: (
       name: string,
       fields: Record<string, string | number | undefined>,
@@ -852,40 +852,24 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     expect(f.runs()).toHaveLength(1);
   });
 
-  describe("an interrupted attempt and Codex's own queue (#2029)", () => {
+  describe("an interrupted attempt is never queued again (#2029)", () => {
     const ID = "mmmmmmmmmmmmmmm1";
     const text = codexText(agent(), mail("hi"));
     const head = text.split("\n", 1)[0] as string;
     type Store = NonNullable<CodexTransportOptions["queueStore"]>;
-    /**
-     * An attempt written by a daemon that died: `age` ms ago, with the queue
-     * revision `rev` saved (undefined: it could not be read then).
-     */
+    /** An attempt written by a daemon that died. */
     const setup = (
       rows: { thread: string; text?: string }[] | undefined,
-      o: {
-        rev?: number | null;
-        age?: number;
-        headless?: boolean;
-        noRollout?: boolean;
-      } = {},
+      o: { headless?: boolean; noRollout?: boolean } = {},
     ) => {
       const f = fakeCodex();
       const takenFile = join(tmp("ob-cxp-"), "p.json");
       const home = tmp("ob-cxh-");
-      const age = o.age ?? 60_000;
       if (!o.noRollout) writeRollout(home, [userItem("earlier")]);
-      new TakenWatch({
-        home,
-        file: takenFile,
-        onTaken: vi.fn(),
-        now: () => Date.now() - age,
-      }).attempt(
+      new TakenWatch({ home, file: takenFile, onTaken: vi.fn() }).attempt(
         o.headless ? `notice:${ID}` : ID,
         THREAD,
         o.headless ? undefined : head,
-        undefined,
-        "rev" in o ? o.rev : null,
       );
       if (rows) queueDb(home, { rows });
       return { f, takenFile, home };
@@ -894,6 +878,10 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       x: ReturnType<typeof setup>,
       queueStore?: Store,
       scanBudget?: number,
+      event?: (
+        name: string,
+        fields: Record<string, string | number | undefined>,
+      ) => void,
     ) =>
       transport(
         { path: x.f.bin, from: "path" },
@@ -902,14 +890,9 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
           home: x.home,
           ...(queueStore ? { queueStore } : {}),
           ...(scanBudget ? { scanBudget } : {}),
+          ...(event ? { event } : {}),
         },
       );
-    const absent =
-      (revision: number | null): Store =>
-      () => ({
-        present: false,
-        revision,
-      });
 
     it("a crash after Codex committed the queue row: found in its queue, queued, no second spawn", async () => {
       const x = setup([{ thread: THREAD, text }]);
@@ -921,6 +904,20 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       expect(x.f.runs()).toHaveLength(0);
     });
 
+    it("in neither the rollout nor Codex's queue: never spawned, stays pending, and says so", async () => {
+      const x = setup([]);
+      const event = vi.fn();
+      const r = go(x, undefined, undefined, event);
+      for (let i = 0; i < 3; i++)
+        await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+      expect(x.f.runs()).toHaveLength(0);
+      expect(r.watch.state(ID)).toBe("attempt");
+      expect(event).toHaveBeenCalledWith("codex_undelivered_unknown", {
+        thread: THREAD,
+        reason: "not_seen",
+      });
+    });
+
     it("the queue store cannot be read: no spawn, still an attempt", async () => {
       const x = setup(undefined);
       const r = go(x);
@@ -929,81 +926,25 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       expect(r.watch.state(ID)).toBe("attempt");
     });
 
-    it("absent on one check but the revision moved before the second: no spawn", async () => {
+    it("the item is in the rollout: taken, acked, no spawn", async () => {
       const x = setup([]);
-      let rev = 0;
-      const r = go(x, () => ({ present: false, revision: rev++ }));
-      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
-      expect(x.f.runs()).toHaveLength(0);
-      expect(r.watch.state(ID)).toBe("attempt");
-    });
-
-    it("the hand-over instant: gone from the queue, and the rollout item shows between the checks: acked, no spawn", async () => {
-      const x = setup([]);
-      let calls = 0;
-      const r = go(x, () => {
-        if (calls++ === 0) writeRollout(x.home, [userItem(text)]);
-        return { present: false, revision: null };
-      });
+      writeRollout(x.home, [userItem(text)], true);
+      const r = go(x);
       await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual({
         ok: true,
       });
       expect(x.f.runs()).toHaveLength(0);
     });
 
-    it("absent twice, the revision as saved with the attempt, and the attempt old enough: spawns exactly once", async () => {
-      const x = setup([]);
-      const r = go(x);
-      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
-      expect(x.f.runs()).toHaveLength(1);
-      expect(r.watch.state(ID)).toBe("queued");
-    });
-
-    it("the queue's revision differs from the one saved with the attempt (an orphaned `codex queue` may have committed): no spawn", async () => {
-      const x = setup([], { rev: 4 });
-      const r = go(x, absent(5));
-      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
-      expect(x.f.runs()).toHaveLength(0);
-      expect(r.watch.state(ID)).toBe("attempt");
-    });
-
-    it("the revision could not be read when the attempt was written: never re-queued", async () => {
-      const x = setup([], { rev: undefined });
-      const r = go(x, absent(null));
-      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
-      expect(x.f.runs()).toHaveLength(0);
-    });
-
-    it("an attempt younger than 60 s may still have an orphaned `codex queue` child: no spawn", async () => {
-      const x = setup([], { age: 30_000 });
-      const r = go(x);
-      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
-      expect(x.f.runs()).toHaveLength(0);
-    });
-
-    it("a fresh attempt for an item already in Codex's queue (a lost record file) is recorded queued, not spawned", async () => {
-      const f = fakeCodex();
-      const home = tmp("ob-cxh-");
-      queueDb(home, { rows: [{ thread: THREAD, text }] });
-      const r = transport(
-        { path: f.bin, from: "path" },
-        { home, takenFile: join(tmp("ob-cxp-"), "p.json") },
-      );
-      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
-      expect(f.runs()).toHaveLength(0);
-      expect(r.watch.state(ID)).toBe("queued");
-    });
-
-    it("the rollout cannot be located: unknown, not the end, no spawn", async () => {
+    it("the rollout cannot be located: unknown, no spawn", async () => {
       const x = setup([], { noRollout: true });
-      const r = go(x); // no rollout file under this home
+      const r = go(x);
       await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
       expect(x.f.runs()).toHaveLength(0);
     });
 
-    it("the rollout cannot be opened: unknown, not the end, no spawn", async () => {
+    it("the rollout cannot be opened: unknown, no spawn", async () => {
       const x = setup([]);
-      writeRollout(x.home, [userItem("other")]);
       const recs = JSON.parse(readFileSync(x.takenFile, "utf8"));
       recs[ID].rollout = join(x.home, "gone.jsonl");
       writeFileSync(x.takenFile, JSON.stringify(recs));
@@ -1012,7 +953,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       expect(x.f.runs()).toHaveLength(0);
     });
 
-    it("a scan that stopped short of the end: no spawn, however the queue looks", async () => {
+    it("a scan that stopped short of the end: no spawn", async () => {
       const x = setup([]);
       const pad = JSON.stringify({
         type: "event_msg",
@@ -1022,7 +963,7 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
         x.home,
         Array.from({ length: 30 }, () => pad),
       );
-      const r = go(x, absent(null), 50_000);
+      const r = go(x, () => ({ present: false }), 50_000);
       await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
       expect(x.f.runs()).toHaveLength(0);
     });
@@ -1035,6 +976,53 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       ).resolves.toBe(true);
       expect(x.f.runs()).toHaveLength(0);
     });
+
+    it("the item appears in the rollout between the boundary capture and the spawn: still found, acked", async () => {
+      const f = fakeCodex();
+      const home = tmp("ob-cxh-");
+      let written = false;
+      writeRollout(home, [userItem("earlier")]);
+      const r = transport(
+        { path: f.bin, from: "path" },
+        {
+          home,
+          takenFile: join(tmp("ob-cxp-"), "p.json"),
+          // The peek runs after the boundary is captured and before the spawn.
+          queueStore: () => {
+            if (!written) writeRollout(home, [userItem(text)], true);
+            written = true;
+            return { present: false };
+          },
+        },
+      );
+      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+      r.watch.check();
+      expect(r.onTaken.mock.calls).toEqual([[ID]]);
+    });
+  });
+
+  it("a legacy codex-queued.json marker suppresses a spawn, is never deleted or written", async () => {
+    const f = fakeCodex();
+    const dir = tmp("ob-cxp-");
+    const legacy = join(dir, "codex-queued.json");
+    const body = JSON.stringify({
+      mmmmmmmmmmmmmmm1: Date.now(),
+      "maybe:mmmmmmmmmmmmmmm2": Date.now(),
+    });
+    writeFileSync(legacy, body);
+    const r = transport(
+      { path: f.bin, from: "path" },
+      { takenFile: join(dir, "p.json") },
+    );
+    await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+    await expect(
+      r.t.deliver(agent(), mail("hi", "mmmmmmmmmmmmmmm2")),
+    ).resolves.toEqual(QUEUED);
+    expect(f.runs()).toHaveLength(0);
+    expect(readFileSync(legacy, "utf8")).toBe(body);
+    // An id the marker does not list is queued as usual.
+    await r.t.deliver(agent(), mail("hi", "mmmmmmmmmmmmmmm3"));
+    expect(f.runs()).toHaveLength(1);
   });
 
   it("a saved taken record whose ack may have been lost is acked again, once", () => {
@@ -1300,17 +1288,6 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
         ["mmmmmmmmmmmmmmm1"],
       ]);
     });
-  });
-
-  it("a legacy codex-queued.json beside the record file is removed", () => {
-    const dir = tmp("ob-cxp-");
-    writeFileSync(join(dir, "codex-queued.json"), "{}");
-    new TakenWatch({
-      home: tmp("ob-cxh-"),
-      file: join(dir, "p.json"),
-      onTaken: vi.fn(),
-    });
-    expect(existsSync(join(dir, "codex-queued.json"))).toBe(false);
   });
 
   it("only a taken record acks: a missing or unreadable record never does", async () => {

@@ -6,7 +6,6 @@ import {
   readFileSync,
   readSync,
   renameSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
@@ -47,8 +46,6 @@ export type TakenRecord = {
   sig?: string;
   /** The last pass stepped over a line longer than the budget: the next read starts mid-line, so it skips to the next newline. */
   skip?: true;
-  /** Codex's queue revision for the thread when the attempt was written (null: never touched); absent: it could not be read, so the attempt is never re-queued blind. */
-  rev?: number | null;
   /** The late ack of `taken` was sent (a lost one is repeated until then). */
   acked?: true;
 };
@@ -145,31 +142,42 @@ export const startsWithHead = (text: string, head: string): boolean =>
  */
 export class TakenWatch {
   readonly #recs = new Map<string, TakenRecord>();
+  /** Ids (or `maybe:<id>`) an earlier build's marker file lists. */
+  readonly #legacy = new Set<string>();
   readonly #now: () => number;
 
   constructor(private readonly opts: TakenOptions) {
     this.#now = opts.now ?? Date.now;
     for (const [id, r] of Object.entries(this.#load())) this.#recs.set(id, r);
-    // The queue marker file of an earlier build: one record file now (pre-launch, no migration).
-    rmSync(join(dirname(opts.file), "codex-queued.json"), { force: true });
+    // The queue marker of an earlier build: read as suppression only (a listed
+    // id counts as queued until it expires), never written, never deleted.
+    try {
+      const raw = JSON.parse(
+        readFileSync(join(dirname(opts.file), "codex-queued.json"), "utf8"),
+      ) as Record<string, unknown>;
+      const keep = this.#now() - (opts.ttlMs ?? MAILBOX_RETAIN_MS);
+      for (const [k, at] of Object.entries(raw))
+        if (typeof at === "number" && at >= keep) this.#legacy.add(k);
+    } catch {
+      // none
+    }
   }
 
   /** The record's state, or none. */
   state(id: string): TakenRecord["state"] | undefined {
-    return this.#recs.get(id)?.state;
-  }
-
-  /** How old an attempt is (ms) and the queue revision saved with it (undefined: unreadable then). */
-  info(
-    id: string,
-  ): { age: number; rev: number | null | undefined } | undefined {
-    const r = this.#recs.get(id);
-    return r ? { age: this.#now() - r.at, rev: r.rev } : undefined;
+    return (
+      this.#recs.get(id)?.state ??
+      (this.#legacy.has(id) || this.#legacy.has(`maybe:${id}`)
+        ? "queued"
+        : undefined)
+    );
   }
 
   /** Whether `codex queue` was killed at its timeout for this id. */
   maybe(id: string): boolean {
-    return this.#recs.get(id)?.maybe === true;
+    const r = this.#recs.get(id);
+    if (!r) return this.#legacy.has(`maybe:${id}`);
+    return r.maybe === true;
   }
 
   /** How many records still wait for a turn. */
@@ -189,13 +197,7 @@ export class TakenWatch {
    * written: the caller must not spawn, and must report a retryable failure.
    * Replaces any earlier record (a re-queue after an interrupted attempt).
    */
-  attempt(
-    id: string,
-    thread: string,
-    head?: string,
-    ttlMs?: number,
-    rev?: number | null,
-  ): boolean {
+  attempt(id: string, thread: string, head?: string, ttlMs?: number): boolean {
     const prev = this.#recs.get(id);
     const rollout = this.#rollout(thread);
     let startOffset = 0;
@@ -222,7 +224,6 @@ export class TakenWatch {
       at: this.#now(),
       ...(head === undefined ? {} : { head }),
       ...(ttlMs === undefined ? {} : { ttlMs }),
-      ...(rev === undefined ? {} : { rev }),
       ...(rollout ? { rollout } : {}),
       startOffset,
       scannedTo: startOffset,
@@ -461,9 +462,6 @@ export class TakenWatch {
               : {}),
             ...(p.skip === true ? { skip: true as const } : {}),
             ...(p.acked === true ? { acked: true as const } : {}),
-            ...(p.rev === null || typeof p.rev === "number"
-              ? { rev: p.rev }
-              : {}),
             ...(typeof p.ino === "number" ? { ino: p.ino } : {}),
             ...(typeof p.sig === "string" ? { sig: p.sig } : {}),
           };
