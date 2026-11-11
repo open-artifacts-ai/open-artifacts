@@ -1100,7 +1100,10 @@ describe("round 3: homes", () => {
 describe("#2099: another HOME never reaches the real service manager", () => {
   for (const platform of ["darwin", "linux"] as const) {
     it(`${platform}: ensure and remove make no call when HOME is not the account's`, async () => {
-      const { d, calls } = deps(platform, { accountHome: tmp() });
+      const { d, calls } = deps(platform, {
+        accountHome: tmp(),
+        tmpDir: "/nonexistent-tmp",
+      });
       const s = systemService(d);
       expect(s.isolated).toBe("home");
       // The bus still runs, as a plain daemon.
@@ -1147,6 +1150,7 @@ describe("#2099: another HOME never reaches the real service manager", () => {
         userHome: account,
         accountHome: account,
         home: () => join(tmp(), "bus"),
+        tmpDir: "/nonexistent-tmp",
       });
       const s = systemService(d);
       expect(await s.ensure()).toEqual({ skipped: "bus-home" });
@@ -1222,10 +1226,24 @@ describe("#2099: a bus home that is the account's own is never touched", () => {
     expect(readFileSync(file, "utf8")).toBe(before);
   });
 
+  it("a bus home under the temp dir starts no daemon", async () => {
+    // deps() homes live under os.tmpdir(): the default tmpDir applies.
+    const { d, calls, home } = deps("linux", { accountHome: tmp() });
+    expect(await systemService(d).ensure()).toEqual({
+      skipped: "home",
+      idle: true,
+    });
+    expect(d.spawnDaemon).not.toHaveBeenCalled();
+    expect(d.kill).not.toHaveBeenCalled();
+    expect(existsSync(join(home, "bin"))).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
   describe("a container-style HOME: the bus home is outside the account's", () => {
     it("never signals a daemon this home did not record", async () => {
       const { d, calls, home } = deps("linux", {
         accountHome: tmp(),
+        tmpDir: "/nonexistent-tmp",
         daemonPid: vi.fn(async () => 4242),
       });
       // A daemon of ours by its command line, but not recorded here.
@@ -1240,6 +1258,7 @@ describe("#2099: a bus home that is the account's own is never touched", () => {
       let alive = true;
       const { d, calls, home } = deps("linux", {
         accountHome: tmp(),
+        tmpDir: "/nonexistent-tmp",
         daemonPid: vi.fn(async () => (alive ? 4242 : undefined)),
         processArgs: () => undefined,
         kill: vi.fn(() => {

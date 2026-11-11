@@ -10,6 +10,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import {
   basename,
   delimiter,
@@ -379,6 +380,8 @@ export type ServiceDeps = {
    * it, no service call is made (#2099). Unset: no check.
    */
   accountHome?: string;
+  /** Default `os.tmpdir()`: a bus home under it gets no daemon when isolated. */
+  tmpDir?: string;
   /** OA_BUS_HOME, read on each call: `--home` sets it after the ctx is made. */
   home: () => string;
   env: Env;
@@ -563,6 +566,12 @@ export function systemService(d: ServiceDeps): Service {
       // Its bus home is the account's own (a throwaway XDG, an explicit real
       // OA_BUS_HOME): that daemon, bin and install.json are the real ones.
       if (skipped && insideAccount(home())) return { skipped, idle: true };
+      // A throwaway home (tests, review harnesses, CI): a daemon would outlive it.
+      if (skipped) {
+        const r = relative(fold(d.tmpDir ?? tmpdir()), fold(home()));
+        if (r === "" || (!r.startsWith("..") && !isAbsolute(r)))
+          return { skipped, idle: true };
+      }
       const h = home();
       const src = d.source();
       const logs = join(h, "logs");
