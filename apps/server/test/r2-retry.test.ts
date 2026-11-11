@@ -18,7 +18,9 @@ function fakeBucket(outcomes: unknown[]) {
   let n = 0;
   const next = () => {
     const o = outcomes[n++];
-    return o instanceof Error ? Promise.reject(o) : Promise.resolve(o === undefined ? "ok" : o);
+    return o instanceof Error
+      ? Promise.reject(o)
+      : Promise.resolve(o === undefined ? "ok" : o);
   };
   return {
     get: vi.fn(next),
