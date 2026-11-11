@@ -1526,8 +1526,7 @@ export async function deleteSpaceMapping(
   const cur = knownRole(g?.cur);
   if (!cur) throw notFound();
   if (!admin && !MANAGER_ROLES.includes(cur)) throw forbidden("mapping");
-  // A removal: allowed while frozen too (hosted Team), like deleteOrgMapping.
-  if (directoryMode(env) === "off") throw syncOff(env);
+  if (directoryMode(env) !== "google") throw syncOff(env);
   const out = await env.DB.batch([
     audit(env, "mapping.remove", { type: "mapping", id: groupId }, actor, {
       spaceId: id,
@@ -1654,7 +1653,11 @@ export async function deleteOrgMapping(
 ): Promise<void> {
   // A removal: allowed while frozen too (hosted Team), where an Every space
   // mapping no longer refreshes and the owner must be able to remove it.
-  if (directoryMode(env) === "off") throw syncOff(env);
+  if (
+    directoryMode(env) !== "google" &&
+    !(billingActive(env) && directoryMode(env) === "frozen")
+  )
+    throw syncOff(env);
   const out = await env.DB.batch([
     audit(
       env,

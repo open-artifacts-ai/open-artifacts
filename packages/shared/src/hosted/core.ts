@@ -130,7 +130,9 @@ export const parseFeatures = (raw: string | undefined): FeatureFlag[] => [
  * usage_off on every tier). Directory sync is Business only: Business has
  * sync_google. Team and the invite trial (the Team trial) have sync_frozen:
  * synced rows stay and are edited by hand, user status is still polled, no
- * group data is read, and the dashboard shows no Directory. Solo and free get
+ * group data is read. The dashboard hides Directory for frozen hosted plans
+ * (OA Frontend's #2134); Me.instance.directory still reports state for
+ * owners. Solo and free get
  * neither flag (planFeatures). A downgrade only swaps sync_google for
  * sync_frozen: it never widens access (spec 4.5).
  */

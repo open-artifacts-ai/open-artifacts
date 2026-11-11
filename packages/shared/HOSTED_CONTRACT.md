@@ -198,7 +198,7 @@ Installs in one environment share a single Google client through the auth broker
 | `GET R.spaceMappings(id)` | → `GroupMapping[]` (per-space rows only); personal: 400 `space_personal` | org admin; space manager (any setting). **Manager access pending server implementation (P3 T9/T14)** |
 | `PUT/DELETE R.spaceMapping(id, groupId)` | `GroupMappingPut` → `GroupMapping` / 204; 409 `directory_sync_off` when sync is off or frozen | org admin (any role); space manager for rows that are and stay `viewer \| editor` (`SPACE_MANAGER_MAPPING_ROLES`). Order: personal 400 `space_personal`; no role 404; manager PUT while `spaceManagerMappings` is off 403 `directory_mapping_off` (DELETE always allowed: removing access); a `manager` role (PUT body, or the existing row on PUT or DELETE) 403 `space_forbidden` `{ target: "mapping" }`; sync off 409. **Manager access pending server implementation (P3 T9/T14)** |
 | `GET R.orgMappings` `/directory/org-mappings` | `?cursor&limit` → `Page<GroupMapping>` | org admin. **Pending server implementation (P3 T9/T14)** |
-| `PUT/DELETE R.orgMapping(groupId)` | `GroupMappingPut` → `GroupMapping` (upsert) / 204; 409 `directory_sync_off` when off or frozen (DELETE of an org mapping also passes while frozen); hosted billing answers `plan_required` | org admin; audited `mapping.set` / `mapping.remove` with `spaceId: null`. **Pending server implementation (P3 T9/T14)** |
+| `PUT/DELETE R.orgMapping(groupId)` | `GroupMappingPut` → `GroupMapping` (upsert) / 204; 409 `directory_sync_off` when off or frozen (DELETE of an org mapping also passes while frozen on hosted billing only, since an Every space mapping no longer refreshes; DELETE of a space mapping stays 409, its resync ignores frozen edits); hosted billing answers `plan_required` on the creates | org admin; audited `mapping.set` / `mapping.remove` with `spaceId: null`. **Pending server implementation (P3 T9/T14)** |
 | `GET R.restrictedGroups` | → `RestrictedGroup[]` | org admin |
 | `PUT R.restrictedGroup(groupId)` | (no body) → `RestrictedGroup`; 409 `directory_sync_off` when off or frozen | org admin; audited `restricted.set` |
 | `DELETE R.restrictedGroup(groupId)` | 204, in any mode (lifts a frozen restriction) | org admin; audited `restricted.remove` |
@@ -382,8 +382,10 @@ plan other than Business, the routes that read or create sync (status read,
 connect, callback, confirm, Sync now, groups, held confirm and snooze, and
 mapping or restricted-group creates) answer 403 `plan_required` "Directory
 sync is on the Business plan."; removals pass (disconnect, cancel a pending
-connect, cancel a snooze, delete a mapping or restriction). Self-host is
-unchanged. Every kick,
+connect, cancel a snooze, delete an org mapping or a restriction). Self-host is
+unchanged. The dashboard hides Directory for frozen hosted plans (OA
+Frontend's #2134); `Me.instance.directory` still reports `state` for owners.
+Every kick,
 feed and RPC hands DirectorySync the effective directory mode (frozen while
 locked too), so its alarm calls nothing and fails nothing (no
 `transport_no_feed`, no session cap, no alert) until the tier brings
