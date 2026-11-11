@@ -737,19 +737,19 @@ function CommentsChoice({
         {
           mode: "everyone",
           label: "Anyone who can open it",
-          patch: { comments: true, commenters: "everyone" },
+          patch: { comments: "everyone" },
         },
         {
           mode: "signed-in",
           label: "Signed-in people",
           hint: "Visitors who aren't signed in can read comments but not add them.",
-          patch: { comments: true, commenters: "signed-in" },
+          patch: { comments: "signed-in" },
         },
         {
           mode: "off",
           label: "Off",
           hint: "Comments are hidden and nobody can add them.",
-          patch: { comments: false },
+          patch: { comments: "off" },
         },
       ]
     : [

@@ -59,6 +59,7 @@ import {
   type ArtifactSummary,
   type BusAgent,
   type BusMachine,
+  commentsSettingOf,
   type DataDoc,
   DataNameSchema,
   DataPatchBodySchema,
@@ -910,7 +911,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           a.visibility,
         );
         if (noPublic) return noPublic;
-        const { capabilities, ...rest } = r.data;
+        const { capabilities, comments: setting, ...patchRest } = r.data;
+        const rest = { ...patchRest, ...commentsSettingOf(setting) };
         const gone =
           (rest.visibility !== undefined && rest.visibility !== a.visibility) ||
           capabilities !== undefined;

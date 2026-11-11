@@ -761,17 +761,19 @@ describe("share panel: who can comment (#2080)", () => {
     expect(
       within(group).getByText("Comments are hidden and nobody can add them."),
     ).toBeInTheDocument();
-    fireEvent.click(within(group).getByRole("radio", { name: "Signed-in people" }));
+    fireEvent.click(
+      within(group).getByRole("radio", { name: "Signed-in people" }),
+    );
     await waitFor(() =>
-      expect(bodies).toContainEqual({ comments: true, commenters: "signed-in" }),
+      expect(bodies).toContainEqual({ comments: "signed-in" }),
     );
     fireEvent.click(within(group).getByRole("radio", { name: "Off" }));
-    await waitFor(() => expect(bodies).toContainEqual({ comments: false }));
+    await waitFor(() => expect(bodies).toContainEqual({ comments: "off" }));
     fireEvent.click(
       within(group).getByRole("radio", { name: "Anyone who can open it" }),
     );
     await waitFor(() =>
-      expect(bodies).toContainEqual({ comments: true, commenters: "everyone" }),
+      expect(bodies).toContainEqual({ comments: "everyone" }),
     );
   });
 
