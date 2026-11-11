@@ -72,7 +72,6 @@ const planned = (c: Context<AppEnv>) => {
 
 export function mountDirectory(app: AppType): void {
   app.get(R.directory, async (c) => {
-    planned(c);
     const user = requireUser(c);
     if (
       !orgCan(user, "members.manage", {
@@ -81,15 +80,17 @@ export function mountDirectory(app: AppType): void {
       })
     )
       throw notFound();
+    planned(c);
     return c.json(await directoryStatus(c.env, { showProblem: manages(c) }));
   });
 
   // 404 without a transport (HOSTED=1 with direct config, or none) or with
   // directory sync off.
   app.get(R.directoryConnect, async (c) => {
+    if (!manages(c)) throw notFound();
     planned(c);
     const client = connectClient(c.env);
-    if (!client || !manages(c)) throw notFound();
+    if (!client) throw notFound();
     const { location, cookie } = await startConnect(
       c.env,
       client,
@@ -130,9 +131,10 @@ export function mountDirectory(app: AppType): void {
   // Only the owner who connected, still the org owner (the route policy and
   // manages): anyone else 404. Expired: 409 conflict (afterConsent).
   app.post(R.directoryConfirm, async (c) => {
+    if (!manages(c)) throw notFound();
     planned(c);
     const client = connectClient(c.env);
-    if (!client || !manages(c)) throw notFound();
+    if (!client) throw notFound();
     return c.json(
       await afterConsent(c.env, client, requireUser(c), execCtx(c)),
     );
@@ -168,12 +170,12 @@ export function mountDirectory(app: AppType): void {
   // P3 T13. Live group lookup for the mapping pickers (org owner, admin),
   // RL_DIRECTORY per caller (unbound: unlimited, as in the test pool).
   app.get(R.directoryGroups, async (c) => {
-    planned(c);
     const user = requireUser(c);
     if (
       !orgCan(user, "org.mappings", { cap: capOfCaller(caller(c)), read: true })
     )
       throw notFound();
+    planned(c);
     const rl = c.env.RL_DIRECTORY;
     if (rl && !(await rl.limit({ key: `dir:${user.id}` })).success)
       throw new ApiError(
@@ -187,8 +189,9 @@ export function mountDirectory(app: AppType): void {
 
   // "Sync now" and a held sweep's confirmation (org owner): 202 SyncStatus.
   app.post(R.directorySync, async (c) => {
+    if (!manages(c)) throw notFound();
     planned(c);
-    if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
+    if (!c.env.DIRECTORY_SYNC) throw notFound();
     const status = await syncStub(c.env).kick(
       "manual",
       syncModeFor(c.env),
@@ -199,8 +202,9 @@ export function mountDirectory(app: AppType): void {
   });
 
   app.post("/api/v1/directory/held/:groupId/confirm", async (c) => {
+    if (!manages(c)) throw notFound();
     planned(c);
-    if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
+    if (!c.env.DIRECTORY_SYNC) throw notFound();
     // Frozen (or off): group sync is stopped, so a confirm can't apply.
     if (directoryMode(c.env) !== "google")
       throw new ApiError(
@@ -226,8 +230,9 @@ export function mountDirectory(app: AppType): void {
   // HELD_SNOOZE_MS. Frozen or off: 409, as for a confirm. No snoozable hold:
   // 409 conflict. DELETE cancels it (any mode; none: no change).
   app.post("/api/v1/directory/held/:groupId/snooze", async (c) => {
+    if (!manages(c)) throw notFound();
     planned(c);
-    if (!manages(c) || !c.env.DIRECTORY_SYNC) throw notFound();
+    if (!c.env.DIRECTORY_SYNC) throw notFound();
     if (directoryMode(c.env) !== "google")
       throw new ApiError(
         "directory_sync_off",
