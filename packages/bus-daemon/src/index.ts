@@ -1016,27 +1016,28 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         ? undefined
         : clearedFrom(s.ref, s.pid, s.procStart, liveRefs);
       if (old) takenOver.add(old.ref);
-      announceUp(
-        agents.up({
-          ...(old ? { replaces: handoverOf(old) } : {}),
-          ref: s.ref,
-          kind: "claude-code",
-          proposedName: old?.busName ?? s.name,
-          busName: prev?.busName ?? old?.busName ?? s.name,
-          namespace: ns.namespace,
-          namespaceSource: ns.source,
-          global: ns.global,
-          pid: s.pid,
-          procStart: s.procStart,
-          // The same process keeps its proof across /clear; agent_ok rebinds it.
-          ...(old?.linkHashes !== undefined
-            ? { linkHashes: old.linkHashes }
-            : {}),
-          sessionName: s.name,
-          cwd: s.cwd,
-          live: true,
-        }),
-      );
+      const rec = agents.up({
+        ...(old ? { replaces: handoverOf(old) } : {}),
+        ref: s.ref,
+        kind: "claude-code",
+        proposedName: old?.busName ?? s.name,
+        busName: prev?.busName ?? old?.busName ?? s.name,
+        namespace: ns.namespace,
+        namespaceSource: ns.source,
+        global: ns.global,
+        pid: s.pid,
+        procStart: s.procStart,
+        // The same process keeps its proof across /clear; agent_ok rebinds it.
+        ...(old?.linkHashes !== undefined
+          ? { linkHashes: old.linkHashes }
+          : {}),
+        sessionName: s.name,
+        cwd: s.cwd,
+        live: true,
+      });
+      // Found by the sync, not by a hello: its join is logged here, once per record.
+      ev("agent_join", { ...agentFields(rec), state: "synced" });
+      announceUp(rec);
       // Its return sockets from before a restart answer again (open-bus #426).
       void claude.revive(s.ref);
       tellOwed(s.ref);

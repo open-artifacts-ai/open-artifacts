@@ -1,9 +1,11 @@
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -97,6 +99,29 @@ describe("createEventLog", () => {
     await log.flush();
     expect(existsSync(`${f}.1`)).toBe(true);
     expect(statSync(f).size).toBeLessThanOrEqual(300);
+  });
+  it("makes an existing loose file and folder owner-only", async () => {
+    const d = tmp();
+    const f = join(d, "logs", "events.log");
+    mkdirSync(join(d, "logs"), { mode: 0o755 });
+    writeFileSync(f, "old\n", { mode: 0o644 });
+    const log = createEventLog(f, { now: () => at });
+    log("e");
+    await log.flush();
+    expect(statSync(f).mode & 0o777).toBe(0o600);
+    expect(statSync(join(d, "logs")).mode & 0o777).toBe(0o700);
+    expect(readFileSync(f, "utf8")).toContain("old\n");
+  });
+  it("does not write through a symlinked events.log", async () => {
+    const d = tmp();
+    const target = join(d, "target");
+    writeFileSync(target, "keep\n");
+    const f = join(d, "events.log");
+    symlinkSync(target, f);
+    const log = createEventLog(f, { now: () => at });
+    log("e");
+    await log.flush();
+    expect(readFileSync(target, "utf8")).toBe("keep\n");
   });
   it("starts from the file's existing size", async () => {
     const f = join(tmp(), "daemon.log");

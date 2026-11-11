@@ -1,4 +1,5 @@
-import { appendFile, mkdir, rename, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { chmod, lstat, mkdir, open, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 import { stripTerminalControls } from "@oa/bus-ipc";
 
@@ -74,17 +75,36 @@ export function createEventLog(
   const write = async (line: string): Promise<void> => {
     try {
       if (size === undefined) {
-        await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-        size = await stat(file).then(
-          (s) => s.size,
-          () => 0,
-        );
+        const dir = dirname(file);
+        await mkdir(dir, { recursive: true, mode: 0o700 });
+        await chmod(dir, 0o700);
+        // Owner-only, and never through a symlink someone planted.
+        size = 0;
+        for (const f of [file, `${file}.1`]) {
+          const st = await lstat(f).catch(() => undefined);
+          if (!st) continue;
+          if (st.isSymbolicLink()) throw new Error("symlink");
+          await chmod(f, 0o600);
+          if (f === file) size = st.size;
+        }
       }
       if (size > 0 && size + Buffer.byteLength(line) > max) {
         await rename(file, `${file}.1`);
         size = 0;
       }
-      await appendFile(file, line, { mode: 0o600 });
+      const fh = await open(
+        file,
+        constants.O_WRONLY |
+          constants.O_APPEND |
+          constants.O_CREAT |
+          constants.O_NOFOLLOW,
+        0o600,
+      );
+      try {
+        await fh.write(line);
+      } finally {
+        await fh.close();
+      }
       size += Buffer.byteLength(line);
     } catch {
       // Best effort: re-measure on the next line.

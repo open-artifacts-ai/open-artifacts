@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -42,5 +42,43 @@ describe("the daemon event log (#2029)", () => {
     const h = await daemonHarness({ events });
     await h.daemon.stop();
     expect(readFileSync(file, "utf8")).toMatch(/ daemon_stop /);
+  });
+  it("logs one agent_join for a Claude session the sync found", async () => {
+    const d = mkdtempSync(join(tmpdir(), "ob-evc-"));
+    const file = join(d, "events.log");
+    const events = createEventLog(file);
+    writeFileSync(
+      join(d, "4242.json"),
+      JSON.stringify({
+        pid: 4242,
+        sessionId: "s4242",
+        procStart: "t0",
+        name: "found",
+        cwd: "/repo",
+      }),
+    );
+    const h = await daemonHarness({
+      events,
+      claude: {
+        sessionsDir: d,
+        socketsDir: join(d, "r"),
+        procStart: () => "t0",
+        isRunning: () => true,
+      },
+    });
+    h.toDaemon({
+      id: "w",
+      type: "hello_ok",
+      machine_id: "1".repeat(16),
+      machine_label: "laptop",
+      server_version: "1",
+    });
+    await h.next("agent_up");
+    await events.flush();
+    const joins = readFileSync(file, "utf8")
+      .split("\n")
+      .filter((l) => l.includes(" agent_join "));
+    expect(joins).toHaveLength(1);
+    expect(joins[0]).toContain("kind=claude-code");
   });
 });
