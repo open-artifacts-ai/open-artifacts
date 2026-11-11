@@ -674,7 +674,7 @@ describe("skill.md frontmatter (agentskills.io)", () => {
     const all = agentClients("{{origin}}/mcp", {
       tokenFile: "~/.open-artifacts/{{hostSlug}}-pat-token",
     });
-    expect(all).toHaveLength(9);
+    expect(all).toHaveLength(14);
     const setup = md.split("\n## Client setup\n")[1]?.split("\n## ")[0] ?? "";
     for (const c of all) {
       expect(setup, `${c.variant}:${c.agent}`).toContain(fill(c.code));

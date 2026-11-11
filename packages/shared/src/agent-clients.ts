@@ -57,11 +57,53 @@ const CLAUDE_RELOAD =
 const CODEX_RELOAD =
   "Restart Codex (the CLI, IDE extension or app). It reads its config when it starts.";
 const OPENCODE_RELOAD = "Restart OpenCode. It reads its config when it starts.";
+const PI_RELOAD = "Run `/reload` in a running pi session, or start a new one.";
+const OMP_RELOAD = "Run `/mcp reload` in omp, or restart omp.";
+const HERMES_RELOAD =
+  "Run `/reload-mcp` in a running Hermes session, or start a new one.";
+const OPENCLAW_RELOAD = "Run `openclaw mcp reload`. The next turn uses it.";
+
+/** The four harnesses added for #2103: the OAuth form (same in both token forms). */
+const harnessOauth = (url: string, name: string): Snippet[] => [
+  {
+    agent: "pi",
+    variant: "oauth",
+    language: "bash",
+    code: `pi mcp add ${name} --url ${sh(url)}`,
+    verify: `Run \`pi mcp login ${name}\` to sign in with your browser. Then \`pi mcp list\` shows ${name} as connected.`,
+    reload: PI_RELOAD,
+  },
+  {
+    agent: "omp",
+    variant: "oauth",
+    language: "json",
+    file: "~/.omp/agent/mcp.json",
+    code: json({ mcpServers: { [name]: { type: "http", url } } }),
+    verify: `Start omp and run \`/mcp reauth ${name}\` to sign in with your browser. Then \`/mcp test ${name}\` connects.`,
+    reload: OMP_RELOAD,
+  },
+  {
+    agent: "Hermes",
+    variant: "oauth",
+    language: "bash",
+    code: `hermes mcp add ${name} --url ${sh(url)} --auth oauth`,
+    verify: `Run \`hermes mcp login ${name}\` to sign in with your browser. Then \`hermes mcp test ${name}\` connects.`,
+    reload: HERMES_RELOAD,
+  },
+  {
+    agent: "OpenClaw",
+    variant: "oauth",
+    language: "bash",
+    code: `openclaw mcp add ${name} --url ${sh(url)} --transport streamable-http --auth oauth --no-probe`,
+    verify: `Run \`openclaw mcp login ${name}\` to sign in with your browser. Then \`openclaw mcp probe\` lists its tools.`,
+    reload: OPENCLAW_RELOAD,
+  },
+];
 
 /**
  * MCP client snippets per agent and auth variant: every oauth variant first,
- * then the token variants, agents in a fixed order (Claude Code, Codex CLI,
- * Cursor, OpenCode, Generic). Never embeds a token. Pure.
+ * then the token variants (none for omp, Hermes, OpenClaw and Cursor: OAuth only), agents in a fixed order (Claude Code, Codex CLI,
+ * Cursor, OpenCode, pi, omp, Hermes, OpenClaw, Generic). Never embeds a token. Pure.
  */
 export function agentClients(
   mcpUrl: string,
@@ -121,6 +163,7 @@ function fileClients(
       verify: `Run \`opencode mcp auth ${name}\` to sign in with your browser. Then \`opencode mcp list\` shows ${name}.`,
       reload: OPENCODE_RELOAD,
     },
+    ...harnessOauth(url, name),
     {
       agent: "Generic",
       variant: "oauth",
@@ -170,6 +213,25 @@ function fileClients(
       hint: "OpenCode reads the token file even when it runs in the background. Don't run `opencode service` from inside an OpenCode session, because it restarts the server.",
       verify: `Run \`opencode mcp list\`. It shows ${name} as connected.`,
       reload: OPENCODE_RELOAD,
+    },
+    {
+      agent: "pi",
+      variant: "token",
+      language: "json",
+      file: "~/.pi/agent/mcp.json",
+      code: json({
+        mcpServers: {
+          [name]: {
+            url,
+            headers: {
+              Authorization: `!T=$(cat ${f}) && printf 'Bearer %s' "$T"`,
+            },
+          },
+        },
+      }),
+      hint: `pi reads the token from ${f} each time it connects.`,
+      verify: `Run \`pi mcp list\`. It shows ${name} as connected.`,
+      reload: PI_RELOAD,
     },
     {
       agent: "Generic",
@@ -277,6 +339,29 @@ unset OA_TOKEN`
         : `Run \`opencode mcp auth ${name}\` to sign in with your browser. Then \`opencode mcp list\` shows ${name}.`,
       reload: OPENCODE_RELOAD,
     });
+    if (!t) {
+      for (const o of harnessOauth(mcpUrl, name)) {
+        const { variant: _v, ...rest } = o;
+        add(rest);
+      }
+    } else {
+      add({
+        agent: "pi",
+        language: "json",
+        code: json({
+          mcpServers: {
+            [name]: {
+              url: mcpUrl,
+              headers: { Authorization: "Bearer ${OA_TOKEN}" },
+            },
+          },
+        }),
+        file: "~/.pi/agent/mcp.json",
+        hint: "Export OA_TOKEN before you start pi.",
+        verify: `Run \`pi mcp list\`. It shows ${name} as connected.`,
+        reload: PI_RELOAD,
+      });
+    }
     add({
       agent: "Generic",
       language: "json",

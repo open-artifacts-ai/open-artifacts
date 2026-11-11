@@ -38,12 +38,12 @@ const startRevoke = async (name: string) => {
 };
 
 describe("snippets", () => {
-  it("covers 5 agents over OAuth, 4 over a token file, url verbatim", () => {
+  it("covers 9 agents over OAuth, 5 over a token file, url verbatim", () => {
     const list = all(URL_);
-    expect(list.filter((s) => s.variant === "oauth")).toHaveLength(5);
+    expect(list.filter((s) => s.variant === "oauth")).toHaveLength(9);
     expect(
       list.filter((s) => s.variant === "token").map((s) => s.agent),
-    ).toEqual(["Claude Code", "Codex CLI", "OpenCode", "Generic"]);
+    ).toEqual(["Claude Code", "Codex CLI", "OpenCode", "pi", "Generic"]);
     for (const s of list)
       if (s.language !== "text") expect(s.code).toContain(URL_);
   });
@@ -116,6 +116,10 @@ describe("Agents settings", () => {
       "Codex CLI",
       "Cursor",
       "OpenCode",
+      "pi",
+      "omp",
+      "Hermes",
+      "OpenClaw",
       "Generic",
     ]);
     const cursor = screen.getByRole("tab", { name: "Cursor" });
@@ -343,13 +347,14 @@ describe("snippets parse in their target format", () => {
         execFileSync("bash", ["-n", "-c", s.code]);
         const argv = execFileSync("bash", [
           "-c",
-          `claude() { printf '%s\\0' "$@"; }; codex() { claude "$@"; }; ${s.code}`,
+          `claude() { printf '%s\\0' "$@"; }; codex() { claude "$@"; }; pi() { claude "$@"; }; hermes() { claude "$@"; }; openclaw() { claude "$@"; }; ${s.code}`,
         ])
           .toString()
           .split("\0");
         // OAuth passes the url as an argument; add-json inside the config.
         const last = argv.at(-2) ?? "";
-        expect(s.variant === "oauth" ? last : JSON.parse(last).url).toBe(evil);
+        if (s.variant === "oauth") expect(argv).toContain(evil);
+        else expect(JSON.parse(last).url).toBe(evil);
       }
     }
   });

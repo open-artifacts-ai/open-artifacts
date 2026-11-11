@@ -110,13 +110,24 @@ function valid(
 describe("agentClients", () => {
   const URL_ = "https://oa.example.com/mcp";
   const FILE = "~/.open-artifacts/oa-example-com-pat-token";
-  const AGENTS = ["Claude Code", "Codex CLI", "Cursor", "OpenCode", "Generic"];
+  const AGENTS = [
+    "Claude Code",
+    "Codex CLI",
+    "Cursor",
+    "OpenCode",
+    "pi",
+    "omp",
+    "Hermes",
+    "OpenClaw",
+    "Generic",
+  ];
+  const NOT_YET = ["omp", "Hermes", "OpenClaw"];
 
-  it("dashboard form: 5 agents per variant, oauth first, each with verify and reload", () => {
+  it("dashboard form: 9 agents per variant, oauth first, each with verify and reload", () => {
     const all = agentClients(URL_);
     expect(all.map((s) => `${s.variant}:${s.agent}`)).toEqual([
       ...AGENTS.map((a) => `oauth:${a}`),
-      ...AGENTS.map((a) => `token:${a}`),
+      ...AGENTS.filter((a) => !NOT_YET.includes(a)).map((a) => `token:${a}`),
     ]);
     for (const s of all) {
       expect(s.verify).toBeTruthy();
@@ -130,7 +141,9 @@ describe("agentClients", () => {
     const all = agentClients(URL_, { tokenFile: FILE });
     expect(all.map((s) => `${s.variant}:${s.agent}`)).toEqual([
       ...AGENTS.map((a) => `oauth:${a}`),
-      ...AGENTS.filter((a) => a !== "Cursor").map((a) => `token:${a}`),
+      ...AGENTS.filter((a) => a !== "Cursor" && !NOT_YET.includes(a)).map(
+        (a) => `token:${a}`,
+      ),
     ]);
     for (const s of all) {
       expect(s.verify).toBeTruthy();
@@ -158,6 +171,8 @@ describe("agentClients", () => {
       `[mcp_servers.open-artifacts]\nurl = "${URL_}"\nhttp_headers_helper = "T=$(cat ${FILE}) && printf '{\\"Authorization\\":\\"Bearer %s\\"}' \\"$T\\""`,
     );
     expect(by("OpenCode")?.code).toContain(`"Bearer {file:${FILE}}"`);
+    expect(by("pi")?.code).toContain(`cat ${FILE}`);
+    for (const a of NOT_YET) expect(by(a), a).toBeUndefined();
     expect(by("Generic")?.language).toBe("text");
     expect(by("Generic")?.code).not.toMatch(/<YOUR_TOKEN>|Bearer/);
   });

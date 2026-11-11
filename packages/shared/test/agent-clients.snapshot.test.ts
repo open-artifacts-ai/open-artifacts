@@ -50,3 +50,31 @@ describe("agentClients snapshots", () => {
       );
   });
 });
+
+describe("agentClients: pi, omp, Hermes, OpenClaw (#2103)", () => {
+  const FILE = "~/.open-artifacts/oa-example-com-pat-token";
+  const URL_ = "https://oa.example.com/mcp";
+  const order = (s: { agent: string }[]) => [...new Set(s.map((x) => x.agent))];
+  it("lists the agents in the fixed order", () => {
+    const want = [
+      "Claude Code",
+      "Codex CLI",
+      "Cursor",
+      "OpenCode",
+      "pi",
+      "omp",
+      "Hermes",
+      "OpenClaw",
+      "Generic",
+    ];
+    expect(order(agentClients(URL_))).toEqual(want);
+    expect(order(agentClients(URL_, { tokenFile: FILE }))).toEqual(want);
+  });
+  it("reads the pi token from the file; the other three are OAuth only", () => {
+    const s = agentClients(URL_, { tokenFile: FILE });
+    const pi = s.find((x) => x.agent === "pi" && x.variant === "token");
+    expect(pi?.code).toContain(`cat ${FILE}`);
+    for (const a of ["omp", "Hermes", "OpenClaw"])
+      expect(s.some((x) => x.agent === a && x.variant === "token")).toBe(false);
+  });
+});

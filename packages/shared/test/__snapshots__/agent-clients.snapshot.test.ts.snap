@@ -54,6 +54,46 @@ url = "https://api.open-artifacts.app/mcp"",
     "verify": "Run \`opencode mcp auth oa-admin\` to sign in with your browser. Then \`opencode mcp list\` shows oa-admin.",
   },
   {
+    "agent": "pi",
+    "code": "pi mcp add oa-admin --url https://api.open-artifacts.app/mcp",
+    "language": "bash",
+    "reload": "Run \`/reload\` in a running pi session, or start a new one.",
+    "variant": "oauth",
+    "verify": "Run \`pi mcp login oa-admin\` to sign in with your browser. Then \`pi mcp list\` shows oa-admin as connected.",
+  },
+  {
+    "agent": "omp",
+    "code": "{
+  "mcpServers": {
+    "oa-admin": {
+      "type": "http",
+      "url": "https://api.open-artifacts.app/mcp"
+    }
+  }
+}",
+    "file": "~/.omp/agent/mcp.json",
+    "language": "json",
+    "reload": "Run \`/mcp reload\` in omp, or restart omp.",
+    "variant": "oauth",
+    "verify": "Start omp and run \`/mcp reauth oa-admin\` to sign in with your browser. Then \`/mcp test oa-admin\` connects.",
+  },
+  {
+    "agent": "Hermes",
+    "code": "hermes mcp add oa-admin --url https://api.open-artifacts.app/mcp --auth oauth",
+    "language": "bash",
+    "reload": "Run \`/reload-mcp\` in a running Hermes session, or start a new one.",
+    "variant": "oauth",
+    "verify": "Run \`hermes mcp login oa-admin\` to sign in with your browser. Then \`hermes mcp test oa-admin\` connects.",
+  },
+  {
+    "agent": "OpenClaw",
+    "code": "openclaw mcp add oa-admin --url https://api.open-artifacts.app/mcp --transport streamable-http --auth oauth --no-probe",
+    "language": "bash",
+    "reload": "Run \`openclaw mcp reload\`. The next turn uses it.",
+    "variant": "oauth",
+    "verify": "Run \`openclaw mcp login oa-admin\` to sign in with your browser. Then \`openclaw mcp probe\` lists its tools.",
+  },
+  {
     "agent": "Generic",
     "code": "{
   "mcpServers": {
@@ -134,6 +174,25 @@ bearer_token_env_var = "OA_TOKEN"",
     "verify": "Run \`opencode mcp list\`. It shows oa-admin as connected.",
   },
   {
+    "agent": "pi",
+    "code": "{
+  "mcpServers": {
+    "oa-admin": {
+      "url": "https://api.open-artifacts.app/mcp",
+      "headers": {
+        "Authorization": "Bearer \${OA_TOKEN}"
+      }
+    }
+  }
+}",
+    "file": "~/.pi/agent/mcp.json",
+    "hint": "Export OA_TOKEN before you start pi.",
+    "language": "json",
+    "reload": "Run \`/reload\` in a running pi session, or start a new one.",
+    "variant": "token",
+    "verify": "Run \`pi mcp list\`. It shows oa-admin as connected.",
+  },
+  {
     "agent": "Generic",
     "code": "{
   "mcpServers": {
@@ -207,6 +266,46 @@ url = "https://oa.example.com/mcp"",
     "reload": "Restart OpenCode. It reads its config when it starts.",
     "variant": "oauth",
     "verify": "Run \`opencode mcp auth open-artifacts\` to sign in with your browser. Then \`opencode mcp list\` shows open-artifacts.",
+  },
+  {
+    "agent": "pi",
+    "code": "pi mcp add open-artifacts --url https://oa.example.com/mcp",
+    "language": "bash",
+    "reload": "Run \`/reload\` in a running pi session, or start a new one.",
+    "variant": "oauth",
+    "verify": "Run \`pi mcp login open-artifacts\` to sign in with your browser. Then \`pi mcp list\` shows open-artifacts as connected.",
+  },
+  {
+    "agent": "omp",
+    "code": "{
+  "mcpServers": {
+    "open-artifacts": {
+      "type": "http",
+      "url": "https://oa.example.com/mcp"
+    }
+  }
+}",
+    "file": "~/.omp/agent/mcp.json",
+    "language": "json",
+    "reload": "Run \`/mcp reload\` in omp, or restart omp.",
+    "variant": "oauth",
+    "verify": "Start omp and run \`/mcp reauth open-artifacts\` to sign in with your browser. Then \`/mcp test open-artifacts\` connects.",
+  },
+  {
+    "agent": "Hermes",
+    "code": "hermes mcp add open-artifacts --url https://oa.example.com/mcp --auth oauth",
+    "language": "bash",
+    "reload": "Run \`/reload-mcp\` in a running Hermes session, or start a new one.",
+    "variant": "oauth",
+    "verify": "Run \`hermes mcp login open-artifacts\` to sign in with your browser. Then \`hermes mcp test open-artifacts\` connects.",
+  },
+  {
+    "agent": "OpenClaw",
+    "code": "openclaw mcp add open-artifacts --url https://oa.example.com/mcp --transport streamable-http --auth oauth --no-probe",
+    "language": "bash",
+    "reload": "Run \`openclaw mcp reload\`. The next turn uses it.",
+    "variant": "oauth",
+    "verify": "Run \`openclaw mcp login open-artifacts\` to sign in with your browser. Then \`openclaw mcp probe\` lists its tools.",
   },
   {
     "agent": "Generic",
@@ -289,6 +388,25 @@ bearer_token_env_var = "OA_TOKEN"",
     "verify": "Run \`opencode mcp list\`. It shows open-artifacts as connected.",
   },
   {
+    "agent": "pi",
+    "code": "{
+  "mcpServers": {
+    "open-artifacts": {
+      "url": "https://oa.example.com/mcp",
+      "headers": {
+        "Authorization": "Bearer \${OA_TOKEN}"
+      }
+    }
+  }
+}",
+    "file": "~/.pi/agent/mcp.json",
+    "hint": "Export OA_TOKEN before you start pi.",
+    "language": "json",
+    "reload": "Run \`/reload\` in a running pi session, or start a new one.",
+    "variant": "token",
+    "verify": "Run \`pi mcp list\`. It shows open-artifacts as connected.",
+  },
+  {
     "agent": "Generic",
     "code": "{
   "mcpServers": {
@@ -360,6 +478,46 @@ exports[`agentClients snapshots > default output is unchanged (file form) 1`] = 
     "verify": "Run \`opencode mcp auth open-artifacts\` to sign in with your browser. Then \`opencode mcp list\` shows open-artifacts.",
   },
   {
+    "agent": "pi",
+    "code": "pi mcp add open-artifacts --url https://oa.example.com/mcp",
+    "language": "bash",
+    "reload": "Run \`/reload\` in a running pi session, or start a new one.",
+    "variant": "oauth",
+    "verify": "Run \`pi mcp login open-artifacts\` to sign in with your browser. Then \`pi mcp list\` shows open-artifacts as connected.",
+  },
+  {
+    "agent": "omp",
+    "code": "{
+  "mcpServers": {
+    "open-artifacts": {
+      "type": "http",
+      "url": "https://oa.example.com/mcp"
+    }
+  }
+}",
+    "file": "~/.omp/agent/mcp.json",
+    "language": "json",
+    "reload": "Run \`/mcp reload\` in omp, or restart omp.",
+    "variant": "oauth",
+    "verify": "Start omp and run \`/mcp reauth open-artifacts\` to sign in with your browser. Then \`/mcp test open-artifacts\` connects.",
+  },
+  {
+    "agent": "Hermes",
+    "code": "hermes mcp add open-artifacts --url https://oa.example.com/mcp --auth oauth",
+    "language": "bash",
+    "reload": "Run \`/reload-mcp\` in a running Hermes session, or start a new one.",
+    "variant": "oauth",
+    "verify": "Run \`hermes mcp login open-artifacts\` to sign in with your browser. Then \`hermes mcp test open-artifacts\` connects.",
+  },
+  {
+    "agent": "OpenClaw",
+    "code": "openclaw mcp add open-artifacts --url https://oa.example.com/mcp --transport streamable-http --auth oauth --no-probe",
+    "language": "bash",
+    "reload": "Run \`openclaw mcp reload\`. The next turn uses it.",
+    "variant": "oauth",
+    "verify": "Run \`openclaw mcp login open-artifacts\` to sign in with your browser. Then \`openclaw mcp probe\` lists its tools.",
+  },
+  {
     "agent": "Generic",
     "code": "{
   "mcpServers": {
@@ -415,6 +573,25 @@ http_headers_helper = "T=$(cat ~/.open-artifacts/oa-example-com-pat-token) && pr
     "reload": "Restart OpenCode. It reads its config when it starts.",
     "variant": "token",
     "verify": "Run \`opencode mcp list\`. It shows open-artifacts as connected.",
+  },
+  {
+    "agent": "pi",
+    "code": "{
+  "mcpServers": {
+    "open-artifacts": {
+      "url": "https://oa.example.com/mcp",
+      "headers": {
+        "Authorization": "!T=$(cat ~/.open-artifacts/oa-example-com-pat-token) && printf 'Bearer %s' \\"$T\\""
+      }
+    }
+  }
+}",
+    "file": "~/.pi/agent/mcp.json",
+    "hint": "pi reads the token from ~/.open-artifacts/oa-example-com-pat-token each time it connects.",
+    "language": "json",
+    "reload": "Run \`/reload\` in a running pi session, or start a new one.",
+    "variant": "token",
+    "verify": "Run \`pi mcp list\`. It shows open-artifacts as connected.",
   },
   {
     "agent": "Generic",
