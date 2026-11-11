@@ -19,9 +19,11 @@ interface Props {
   description: string;
   /** Release-gate fallbacks this page depends on. */
   fallbacks?: GateId[];
+  /** The home page's header links: Pricing and Self-host sections, Docs, GitHub. */
+  homeNav?: boolean;
 }
 
-const { title, description, fallbacks = [] } = Astro.props;
+const { title, description, fallbacks = [], homeNav = false } = Astro.props;
 const active = fallbacks;
 const canonical = new URL(Astro.url.pathname, Astro.site);
 const ogImage = new URL("/og.png", Astro.site);
@@ -62,11 +64,20 @@ const ogImage = new URL("/og.png", Astro.site);
             <img src={logo.src} alt="Open Artifacts" width="124" height="22" />
           </picture>
         </a>
-        <nav aria-label="Site">
-          <a href="/docs/setup/">Docs</a>
-          <a href="/llms.txt">llms.txt</a>
-          <a href={REPO_URL}>GitHub</a>
-        </nav>
+        {homeNav ? (
+          <nav aria-label="Site" class="nav-home">
+            <a href="#pricing">Pricing</a>
+            <a href="#self-host">Self-host</a>
+            <a href="/docs/setup/">Docs</a>
+            <a class="gh" href={REPO_URL}>GitHub</a>
+          </nav>
+        ) : (
+          <nav aria-label="Site">
+            <a href="/docs/setup/">Docs</a>
+            <a href="/llms.txt">llms.txt</a>
+            <a href={REPO_URL}>GitHub</a>
+          </nav>
+        )}
       </div>
     </header>
     <main id="main">
@@ -74,7 +85,7 @@ const ogImage = new URL("/og.png", Astro.site);
     </main>
     <footer class="site-foot">
       <div class="wrap foot-row">
-        <p>Open Artifacts is MIT licensed and runs on your own Cloudflare account.</p>
+        <p>{homeNav ? "Open Artifacts. Open source, MIT licensed." : "Open Artifacts is MIT licensed and runs on your own Cloudflare account."}</p>
         <nav aria-label="Footer">
           <a href="/docs/setup/">Docs</a>
           <a href="/llms.txt">llms.txt</a>

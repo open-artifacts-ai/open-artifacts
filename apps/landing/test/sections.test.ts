@@ -92,6 +92,41 @@ describe("landing sections", () => {
     );
   });
 
+  it("the wall's release tile is a made-up team's, not our roadmap", () => {
+    for (const row of [
+      "Search filters shipped",
+      "CSV export in review",
+      "Dark mode building",
+    ])
+      expect(text).toContain(row);
+    expect(text).not.toContain("Comments on PDFs");
+    expect(text).not.toContain("Custom domains your pick");
+  });
+
+  it("the home header links Pricing, Self-host, Docs and GitHub", () => {
+    const nav =
+      index.match(
+        /<nav aria-label="Site" class="nav-home">[\s\S]*?<\/nav>/,
+      )?.[0] ?? "";
+    expect(nav).toContain('<a href="#pricing">Pricing</a>');
+    expect(nav).toContain('<a href="#self-host">Self-host</a>');
+    expect(nav).toContain('<a href="/docs/setup/">Docs</a>');
+    expect(nav).toMatch(
+      /<a class="gh" href="https:\/\/github\.com[^"]*">GitHub<\/a>/,
+    );
+  });
+
+  it("the home footer says only Open Artifacts. Open source, MIT licensed.", () => {
+    expect(index).toContain(
+      "<p>Open Artifacts. Open source, MIT licensed.</p>",
+    );
+    expect(index).not.toContain("runs on your own Cloudflare account");
+  });
+
+  it("the phone chapter buttons say what to try", () => {
+    expect(text).toContain("Try it: turn on the public link");
+  });
+
   it("shows no presence, export, drawing or collaborative-doc claims", () => {
     for (const claim of [
       /people here/i,
@@ -99,7 +134,7 @@ describe("landing sections", () => {
       /\bonline now\b/i,
       /\b\d+ viewing\b/i,
       /\bpresence\b/i,
-      /\bexport\b/i,
+      /(?<!CSV )\bexport\b/i,
       /\bdraw(ing)?\b/i,
       /collaborative docs?/i,
     ])

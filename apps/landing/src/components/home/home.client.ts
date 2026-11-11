@@ -20,7 +20,7 @@ const $$ = <T extends HTMLElement = HTMLElement>(s: string) => [
 const press = (el: HTMLElement, on: boolean) =>
   el.setAttribute("aria-pressed", String(on));
 const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
-const narrow = () => lp.clientWidth <= 860;
+const narrow = () => lp.clientWidth <= 820;
 lp.classList.add("lp-js");
 
 /* ---- before and after ---- */

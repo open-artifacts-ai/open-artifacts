@@ -293,10 +293,8 @@
   .chs {
     padding-bottom: 42vh;
   }
-  .ch {
-    min-height: 105vh;
-  }
   &.lp-js .ch {
+    min-height: 105vh;
     opacity: 0.38;
     transition: opacity 0.3s;
   }
@@ -1425,7 +1423,7 @@
     margin-top: 22px;
   }
 
-  @container page (max-width: 860px) {
+  @container page (max-width: 820px) {
     .wrap {
       padding: 0 16px;
     }
@@ -2431,7 +2429,7 @@
     text-decoration: none;
   }
 
-  @container page (max-width: 860px) {
+  @container page (max-width: 820px) {
     .x-sec {
       padding: 52px 0;
     }
@@ -2591,7 +2589,7 @@
     background: var(--oa-accent);
     color: var(--oa-accent-text);
   }
-  @container page (max-width: 720px) {
+  @container page (max-width: 820px) {
     .story {
       display: block;
       padding-bottom: 8px;
@@ -2607,6 +2605,7 @@
       gap: 14px;
     }
     &.lp-js .ch {
+      min-height: 0;
       opacity: 1;
       transition: none;
     }
