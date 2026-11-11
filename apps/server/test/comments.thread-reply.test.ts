@@ -25,6 +25,7 @@ import {
   addReply,
   addThread,
   type CommentWho,
+  listComments,
   setThreadAgent,
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
@@ -921,6 +922,18 @@ describe("the thread's agents, removable (#2035)", () => {
     expect((await list(s.id, owner)).threads[0]?.agents?.[0]?.removed).toBe(
       true,
     );
+    // A capped (restricted) member reading through the service gets no agents, live or removed.
+    const asCapped = await listComments(E, s.id, "open", {
+      userId: viewer.userId,
+      short: null,
+      capped: true,
+    });
+    expect(asCapped.threads[0]?.agents).toBeUndefined();
+    const asMember = await listComments(E, s.id, "open", {
+      userId: viewer.userId,
+      short: null,
+    });
+    expect(asMember.threads[0]?.agents?.[0]?.removed).toBe(true);
   });
 
   it("a third member's @-mention puts back an agent another person removed (by design)", async () => {

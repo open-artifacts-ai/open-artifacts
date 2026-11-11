@@ -26,7 +26,7 @@ const Person = ({ a }: { a: CommentAuthor }) => (
   <span
     aria-hidden="true"
     data-avatar=""
-    className="flex size-5 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[9px] ring-2 ring-background font-medium text-foreground"
+    className="flex size-5 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[9px] font-medium text-foreground"
   >
     {initials(a.name)}
   </span>
@@ -85,14 +85,31 @@ export function ThreadParticipants({
   useEffect(() => () => clearTimeout(timer.current), []);
   if (n === 0) return null;
 
-  const faces: React.ReactNode[] = [
-    ...people.map((p) => <Person key={`p-${p.id ?? p.name}`} a={p} />),
-    ...list.map((a) => (
-      <span key={a.key} className="rounded-md ring-2 ring-background">
-        <PartyFace p={a} medium />
+  // 20px faces overlapping by 6px, each ringed in the card's colour; the first
+  // sits on top so every face shows its full initials or mark.
+  const faces = [
+    ...people.map((p) => ({
+      key: `p-${p.id ?? p.name}`,
+      round: true,
+      el: <Person a={p} />,
+    })),
+    ...list.map((a) => ({
+      key: a.key,
+      round: false,
+      el: <PartyFace p={a} medium />,
+    })),
+  ]
+    .slice(0, SHOWN)
+    .map((f, i, all) => (
+      <span
+        key={f.key}
+        data-face=""
+        style={{ zIndex: all.length - i, marginLeft: i === 0 ? 0 : -6 }}
+        className={`relative inline-flex shrink-0 bg-card ring-[1.5px] ring-card ${f.round ? "rounded-full" : "rounded-md"}`}
+      >
+        {f.el}
       </span>
-    )),
-  ].slice(0, SHOWN);
+    ));
   const names = [
     `${people.length} ${people.length === 1 ? "person" : "people"}`,
     ...(member
@@ -157,7 +174,7 @@ export function ThreadParticipants({
           setOpen((o) => (mouse.current ? true : !o));
         }}
       >
-        <span aria-hidden="true" className="flex items-center -space-x-1.5">
+        <span aria-hidden="true" className="flex items-center">
           {faces}
         </span>
         <span data-participants-count="">

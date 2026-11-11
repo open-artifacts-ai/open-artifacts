@@ -98,3 +98,32 @@ for (const w of [1280, 390])
       await shot("4-guest");
     });
   }
+
+// A close crop of the closed pill at 3x, to check the overlap and the rings.
+test.describe("pill crop", () => {
+  test.use({ deviceScaleFactor: 3 });
+  for (const theme of ["light", "dark"] as const)
+    test(`pill 1280 ${theme}`, async ({ page }) => {
+      await page.emulateMedia({ colorScheme: theme });
+      await page.setViewportSize({ width: 1280, height: 900 });
+      await openComments(page, "agents", 1280);
+      const trig = page
+        .locator("li[data-thread]")
+        .filter({ hasText: "Can the pricing section be shorter?" })
+        .locator("[data-participants-trigger]");
+      await expect(trig).toBeVisible();
+      if (!OUT) return;
+      mkdirSync(OUT, { recursive: true });
+      const b = await trig.boundingBox();
+      if (!b) throw new Error("no pill");
+      await page.screenshot({
+        path: `${OUT}/7-pill-1280-${theme}.png`,
+        clip: {
+          x: b.x - 70,
+          y: b.y - 8,
+          width: b.width + 80,
+          height: b.height + 16,
+        },
+      });
+    });
+});
