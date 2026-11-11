@@ -573,9 +573,8 @@ describe("InstallSummary billingTier (#2058)", () => {
   it("is optional, nullable, and any billing tier", () => {
     for (const billingTier of [undefined, null, "solo", "free", "team"]) {
       expect(
-        InstallSummarySchema.safeParse(
-          fixtureSummary({ billingTier } as never),
-        ).success,
+        InstallSummarySchema.safeParse(fixtureSummary({ billingTier } as never))
+          .success,
       ).toBe(true);
     }
     expect(
