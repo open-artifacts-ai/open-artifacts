@@ -8,7 +8,7 @@ The plugin uses your existing Open Artifacts MCP connection. It adds no MCP serv
 
 `oa-bus install` adds this plugin and the Artifacts Teammate output style through Claude Code's own plugin commands, at user scope, when Claude Code is among your harnesses. It points the plugin at your instance and at your existing Open Artifacts MCP connection. Run `claude plugin install open-artifacts-shortcuts --marketplace open-artifacts-ai/open-artifacts` to install it by hand.
 
-The user-scope install is not verified in Claude Desktop's Code tab: use the project-local loader below there.
+We haven't verified the user-scope install in Claude Desktop's Code tab. There, use the project-local loader below.
 
 ## Load and configure
 

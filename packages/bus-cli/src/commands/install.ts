@@ -252,9 +252,7 @@ async function harnessesStep(
     else if (plugins.keptStyleFirst)
       say(ctx, c.outputStyleKept(plugins.keptStyle));
   } catch (e) {
-    say(ctx, [
-      `Could not set up the Claude Code plugins: ${e instanceof Error ? e.message : String(e)}`,
-    ]);
+    say(ctx, c.pluginsSetupFailed(e instanceof Error ? e.message : String(e)));
   }
   // Written quietly: the harnesses line above is the user-visible outcome, and
   // a run that writes nothing has nothing to say.

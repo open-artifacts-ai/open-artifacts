@@ -39,7 +39,7 @@ hub answers, the line is erased and replaced by:
 [[success]]✓[[/success]]  Restarted the OpenCode service to load the plugin
 [[success]]✓[[/success]]  Installed the Claude Code plugins: session shortcuts and output style
 [[success]]✓[[/success]]  Turned on the Artifacts Teammate output style
-   Restart Claude Code sessions to use it.
+   Restart your Claude Code sessions to use it.
 [[success]]✓[[/success]]  Daemon running as a launchd service  [[muted]]pid 48213[[/muted]]
 
 5 agents in namespace [[accent]]github.com/open-artifacts-ai/oa-bus[[/accent]]  [[muted]]4 live · 1 queued[[/muted]]
@@ -228,7 +228,7 @@ oa-bus 0.1.0
 [[success]]✓[[/success]]  Restarted the OpenCode service to load the plugin
 [[success]]✓[[/success]]  Installed the Claude Code plugins: session shortcuts and output style
 [[success]]✓[[/success]]  Turned on the Artifacts Teammate output style
-   Restart Claude Code sessions to use it.
+   Restart your Claude Code sessions to use it.
 [[success]]✓[[/success]]  Daemon running as a launchd service  [[muted]]pid 48213[[/muted]]
 
 5 agents in namespace [[accent]]github.com/open-artifacts-ai/oa-bus[[/accent]]  [[muted]]4 live · 1 queued[[/muted]]

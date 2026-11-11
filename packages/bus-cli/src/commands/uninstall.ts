@@ -73,9 +73,7 @@ export async function uninstall(
     });
     for (const n of plugins.notes) say(ctx, [n]);
   } catch (e) {
-    say(ctx, [
-      `Could not remove the Claude Code plugins: ${e instanceof Error ? e.message : String(e)}`,
-    ]);
+    say(ctx, c.pluginsRemoveFailed(e instanceof Error ? e.message : String(e)));
   }
   // The Claude Code output style setting, and an older install's marked file.
   try {

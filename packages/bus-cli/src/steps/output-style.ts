@@ -213,7 +213,7 @@ export function selectOutputStyle(deps: Where): OutputStyleResult {
   const path = outputStyleFile(deps);
   if (isLink(dir) || isLink(path)) {
     out.notes.push(
-      `Left ${isLink(dir) ? dir : path} alone: it is a symlink, so an older output style file was not removed there.`,
+      `Left ${isLink(dir) ? dir : path} alone: it's a symlink, so the older output style file there wasn't removed.\n   If Artifacts Teammate shows twice in /output-style, remove it yourself.`,
     );
   } else {
     try {
@@ -223,7 +223,7 @@ export function selectOutputStyle(deps: Where): OutputStyleResult {
         if (readdirSync(dir).length === 0) rmdirSync(dir);
       } else if (exists(path)) {
         out.notes.push(
-          `Kept your own ${path}: it has no Open Artifacts marker. /output-style may list Artifacts Teammate twice; delete that file if you want only the plugin's.`,
+          `Kept ${path}: it has no Open Artifacts marker, so it may be yours.\n   If Artifacts Teammate shows twice in /output-style, delete that file.`,
         );
       }
     } catch (e) {

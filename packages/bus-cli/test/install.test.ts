@@ -74,9 +74,12 @@ const allHarnesses = (over: Partial<Ctx> = {}) => ({
       if (args[0] === "--version")
         return { code: 0, stdout: "2.1.322 (Claude Code)\n", stderr: "" };
       if (args[0] === "mcp")
-        return { code: 0, stdout: `open-artifacts: ${HUB}/mcp (HTTP) - connected\n`, stderr: "" };
-      if (args.includes("list"))
-        return { code: 0, stdout: "[]", stderr: "" };
+        return {
+          code: 0,
+          stdout: `open-artifacts: ${HUB}/mcp (HTTP) - connected\n`,
+          stderr: "",
+        };
+      if (args.includes("list")) return { code: 0, stdout: "[]", stderr: "" };
       return ok({});
     }
     return { code: 0, stdout: "", stderr: "" };
@@ -928,7 +931,7 @@ describe("install: the Claude Code output style (#1970, #2095)", () => {
       "Installed the Claude Code plugins: session shortcuts and output style",
     );
     expect(out).toContain(
-      "Turned on the Artifacts Teammate output style\n   Restart Claude Code sessions to use it.",
+      "Turned on the Artifacts Teammate output style\n   Restart your Claude Code sessions to use it.",
     );
     const settings = join(ctx.userHome, ".claude/settings.json");
     expect(JSON.parse(readFileSync(settings, "utf8"))).toEqual({

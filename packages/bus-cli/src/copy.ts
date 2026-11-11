@@ -671,7 +671,7 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     // The Claude Code plugins (#2095). Drafts for OA Product: wording is theirs.
     outputStyleOn: () => [
       done("Turned on the Artifacts Teammate output style"),
-      next("Restart Claude Code sessions to use it."),
+      next("Restart your Claude Code sessions to use it."),
     ],
     // `style` is undefined when the choice is not a style name (null, a number, "default").
     outputStyleKept: (style?: string) =>
@@ -694,53 +694,68 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     ],
     pluginsForeignMarketplace: (name: string) => [
       warn(
-        `Left your "${name}" Claude Code marketplace alone: it isn't from Open Artifacts.`,
+        `A Claude Code marketplace named "${name}" already exists and isn't from Open Artifacts, so it was left alone and the plugins weren't installed.`,
       ),
-      next("The plugins were not installed."),
+      next(`Rename or remove that marketplace, then run ${bus} again.`),
     ],
     pluginsFailed: (what: string, why: string) => [
-      warn(`Could not ${clip(what, 20)}: ${clip(why, 30)}`),
+      warn(`Couldn't ${clip(what, 20)}: ${clip(why, 30)}.`),
       next(`The bus tools are set up. Run ${bus} again to retry the plugins.`),
     ],
     pluginsNoNamespace: (timedOut: boolean, fallback: string) => [
       warn(
         timedOut
-          ? `Claude Code did not list your MCP servers in time, so the shortcuts use "${fallback}".`
-          : `No Claude Code MCP connection to this instance was found, so the shortcuts use "${fallback}".`,
+          ? `Claude Code didn't list your MCP servers in time, so the shortcuts assume your Open Artifacts tools are named "${fallback}".`
+          : `Found no Claude Code MCP server for this instance, so the shortcuts assume it's named "${fallback}".`,
       ),
       next(
-        "If your tools have another name, run claude plugin configure open-artifacts-shortcuts.",
+        "If they have another name, run: claude plugin configure open-artifacts-shortcuts",
       ),
     ],
     pluginsUninstallNoClaude: (manual: string[]) => [
       warn(
-        "Claude Code isn't on PATH, so its Open Artifacts plugins were not removed.",
+        "Claude Code isn't on PATH, so its Open Artifacts plugins weren't removed.",
       ),
       next(`Once it is, run: ${manual.join("; ")}`),
     ],
     pluginsUninstallFailed: (what: string, why: string) => [
-      warn(`Could not remove ${clip(what, 20)}: ${clip(why, 30)}`),
+      warn(`Couldn't remove ${clip(what, 20)}: ${clip(why, 30)}.`),
       next(`Run ${bus} uninstall again to finish.`),
     ],
     // Doctor and status.
     pluginsDoctor: () =>
       done("Claude Code plugins installed: session shortcuts, output style"),
     pluginsDoctorMissing: (ids: string[]) => [
-      fail(`Claude Code plugin missing: ${ids.join(", ")}`),
-      next(`Run ${bus} to install it.`),
+      fail(
+        ids.length === 1
+          ? `Claude Code plugin missing: ${ids[0]}.`
+          : `Claude Code plugins missing: ${ids.join(", ")}.`,
+      ),
+      next(`Run ${bus} to install ${ids.length === 1 ? "it" : "them"}.`),
     ],
     pluginsDoctorUnconfigured: () => [
       warn("The session shortcuts plugin has no instance URL"),
       next(`Run ${bus} to set it.`),
     ],
     pluginsDoctorUnknown: () => [
-      warn("Could not ask Claude Code about the Open Artifacts plugins"),
+      warn("Couldn't ask Claude Code about the Open Artifacts plugins."),
+      next(
+        `Check that \`claude plugin list\` runs, then run ${bus} doctor again.`,
+      ),
     ],
     styleFileOld: (where: string) => [
       warn(
-        `An older output style file lists Artifacts Teammate twice (${clip(where, 20)}).`,
+        `An older output style file (${clip(where, 20)}) also lists Artifacts Teammate, so it shows twice.`,
       ),
-      next(`Run ${bus} to remove it.`),
+      next(`Run ${bus} to remove the old file.`),
+    ],
+    pluginsSetupFailed: (why: string) => [
+      warn(`Couldn't set up the Claude Code plugins: ${clip(why, 30)}.`),
+      next(`The bus tools are set up. Run ${bus} again to retry.`),
+    ],
+    pluginsRemoveFailed: (why: string) => [
+      warn(`Couldn't remove the Claude Code plugins: ${clip(why, 30)}.`),
+      next(`Run ${bus} uninstall again to finish.`),
     ],
     pluginsStatus: () =>
       done("Claude Code plugins: session shortcuts, output style"),

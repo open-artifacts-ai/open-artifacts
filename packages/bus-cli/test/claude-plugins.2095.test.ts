@@ -299,7 +299,7 @@ describe("installClaudePlugins", () => {
     const f = fake({ failAdd: true });
     const r = await run(f, w);
     expect(r.ok).toBeUndefined();
-    expect(r.notes.join(" ")).toContain("Could not add the plugin source");
+    expect(r.notes.join(" ")).toContain("Couldn't add the plugin source");
     expect(record(w.busHome)).toBeUndefined();
   });
 
@@ -450,7 +450,7 @@ describe("uninstallClaudePlugins", () => {
         ? bad("boom", "boom")
         : orig(cmd, args, o);
     const r = await uninstallClaudePlugins({ ...w, exec: f.exec, copy: c });
-    expect(r.notes.join(" ")).toContain("Could not remove");
+    expect(r.notes.join(" ")).toContain("Couldn't remove");
     expect(record(w.busHome)).toBeDefined();
   });
 });

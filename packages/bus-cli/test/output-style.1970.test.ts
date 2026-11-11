@@ -75,7 +75,7 @@ describe("selectOutputStyle (#2095)", () => {
     const r = selectOutputStyle({ home: h });
     expect(readFileSync(file(h), "utf8")).toBe("my own style\n");
     expect(r.notes).toHaveLength(1);
-    expect(r.notes[0]).toContain("Kept your own");
+    expect(r.notes[0]).toContain("so it may be yours");
   });
 
   it("does not treat a marker outside the line after the frontmatter as ours", () => {
@@ -408,7 +408,7 @@ describe("turning the style on in settings.json", () => {
     });
     expect(readFileSync(file(h), "utf8")).toBe("my own style\n");
     // The unmarked file stays and the person is told it may show twice.
-    expect(r.notes.join(" ")).toContain("may list Artifacts Teammate twice");
+    expect(r.notes.join(" ")).toContain("shows twice in /output-style");
   });
 
   it("honors CLAUDE_CONFIG_DIR for settings.json and uninstall", () => {
