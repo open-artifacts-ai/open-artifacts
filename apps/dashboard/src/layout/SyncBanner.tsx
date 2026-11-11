@@ -170,19 +170,15 @@ export function SyncBanner({
 }
 
 /**
- * Directory sync as the dashboard shows it (#2009). Hosted, the plan decides:
- * Solo and free report the trial's features so paywalls can show them, but
- * have no directory (off); a Team that never synced has none either; the
- * rest follows the server's mode (Team frozen, trial and Business google). Self-host (no billing block) follows the server's mode.
+ * Directory sync as the dashboard shows it (#2009, #2113). Hosted, it is
+ * Business only: Solo, free, Team and the invite trial (a Team trial) have no
+ * Directory, whatever mode an older server still reports (Team used to be
+ * frozen). Business and self-host (no billing block) follow the server's mode.
  */
 export function shownDirectoryMode(me: Me | null): DirectoryMode {
   const mode = me?.instance.directory?.mode ?? "off";
   const tier = me?.instance.billing?.tier;
-  if (tier === "solo" || tier === "free") return "off";
-  // Team's features are sync_frozen (the server's mode); a Team that never
-  // synced has nothing to show (owners and admins see state "never").
-  if (tier === "team" && me?.instance.directory?.state === "never")
-    return "off";
+  if (tier && tier !== "business") return "off";
   return mode;
 }
 

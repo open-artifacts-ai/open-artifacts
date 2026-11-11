@@ -612,7 +612,7 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
     ).toEqual({ pill: { label: "Active", tone: "ok" } });
   });
 
-  it("the Business trial keeps trialEndsAt and its Trial pill", () => {
+  it("the Team trial keeps trialEndsAt and its Trial pill (#2113)", () => {
     const r = planStatus({
       ...TRIAL,
       tier: "trial",
@@ -621,7 +621,7 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
     });
     expect(r.pill.label).toBe("Trial");
     expect(r.note?.text).toBe(
-      "Trial ends Nov 20, 2026. Everything in Business is on.",
+      "Trial ends Nov 20, 2026. Everything in Team is on.",
     );
   });
 });
@@ -684,10 +684,12 @@ describe("plan cards and comparison (#2007)", () => {
     );
   });
 
-  it("a Business trial offers both upgrades and marks Business as the trial", async () => {
+  it("the Team trial offers both upgrades and marks Team as the trial (#2113)", async () => {
     mountHosted("/settings/plan", { billing: { ...TEAM, tier: "trial" } });
     await screen.findByTestId("plan-card-business");
-    expect(within(card("business")).getByText("Your trial")).toBeVisible();
+    expect(within(card("team")).getByText("Your trial")).toBeVisible();
+    expect(within(card("business")).queryByText("Your trial")).toBeNull();
+    expect(screen.getByText("Team trial")).toBeVisible();
     expect(
       within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
     ).toBeEnabled();
