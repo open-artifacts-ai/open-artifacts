@@ -511,11 +511,22 @@ describe("POST AUTH.codeVerify", () => {
     const guest = uniq("g", "x.com");
     await seedUser(guest, "guest");
     const ip = "192.0.2.99";
-    let s = await start(direct(), guest);
+    // RL_AUTH lets everything through, so the D1 failure cap is what refuses.
+    // The pool's own RL_AUTH (20 a minute, shared by every test) refused
+    // first, and a minute rolling over mid-loop let the last one through.
+    const open = () =>
+      direct({
+        RL_AUTH: {
+          limit: async () => ({ success: true }),
+        } as unknown as RateLimit,
+      });
+    let s = await start(open(), guest);
     let last: Response | undefined;
     for (let i = 0; i < 31; i++) {
-      if (i % 5 === 0) s = await start(direct(), guest);
+      if (i % 5 === 0) s = await start(open(), guest);
       last = await verify(s.e, "00000000", s.cookie, { ip });
+      // Every guess under the cap is a plain wrong code.
+      if (i < 30) expect(last.status).toBe(401);
     }
     expect(last?.status).toBe(429);
     expect((await errOf(last as Response)).details).toMatchObject({
