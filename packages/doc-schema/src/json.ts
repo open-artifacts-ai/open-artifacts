@@ -22,3 +22,19 @@ export function docFromJSON(json: DocJSON): PMNode {
   doc.check();
   return doc;
 }
+
+/**
+ * A doc node or JSON as a node of docSchema. A node from another schema is
+ * rebuilt from its JSON, so its marks and attributes are checked against
+ * docSchema, not the schema it came from.
+ */
+export function toDocNode(doc: PMNode | DocJSON): PMNode {
+  if (doc instanceof PMNode || "check" in doc) {
+    const node = doc as PMNode;
+    if (node.type.schema !== docSchema)
+      return docFromJSON(node.toJSON() as DocJSON);
+    node.check();
+    return node;
+  }
+  return docFromJSON(doc as DocJSON);
+}

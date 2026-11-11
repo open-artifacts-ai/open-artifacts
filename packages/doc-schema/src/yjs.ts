@@ -4,7 +4,7 @@ import {
   yXmlFragmentToProseMirrorRootNode,
 } from "y-prosemirror";
 import * as Y from "yjs";
-import { type DocJSON, docFromJSON } from "./json.ts";
+import { type DocJSON, toDocNode } from "./json.ts";
 import { docSchema } from "./schema.ts";
 
 /** The Y.Doc field that holds a doc: Tiptap Collaboration's default. */
@@ -27,8 +27,7 @@ export function docToYXmlFragment(
   if (fragment.length > 0) {
     throw new Error("docToYXmlFragment needs an empty fragment");
   }
-  const node = "check" in doc ? (doc as PMNode) : docFromJSON(doc as DocJSON);
-  node.check();
+  const node = toDocNode(doc);
   return prosemirrorToYXmlFragment(node, fragment);
 }
 
