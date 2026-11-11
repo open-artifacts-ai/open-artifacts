@@ -511,7 +511,7 @@ export function createComments(
     btn?.remove();
   }
 
-  /** The selection's box: its widest horizontal span, first line's top, last line's bottom. */
+  /** The first line's selected part (the pill centers over it), and the last line's bottom. */
   function selRect(): {
     left: number;
     right: number;
@@ -526,14 +526,14 @@ export function createComments(
     const last = rects[rects.length - 1];
     if (!first || !last) return null;
     return {
-      left: Math.min(...rects.map((r) => r.left)),
-      right: Math.max(...rects.map((r) => r.right)),
+      left: first.left,
+      right: first.right,
       top: first.top,
       bottom: last.bottom,
     };
   }
 
-  /** Centered above the selection (below it when there is no room), kept inside the viewport. */
+  /** Centered above the first line of the selection (below it when there is no room), kept inside the viewport. */
   function place(rect: {
     left: number;
     right: number;

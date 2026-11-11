@@ -473,7 +473,7 @@ describe("selection button", () => {
     expect(b?.style.top).toBe("41px");
   });
 
-  it("centers over a multi-line selection's widest span, from its first line's top", async () => {
+  it("centers over the selected part of the FIRST line of a wrapped selection, not the bounding box", async () => {
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
     vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(30);
     vi.mocked(Range.prototype.getClientRects).mockReturnValue([
@@ -482,9 +482,30 @@ describe("selection button", () => {
     ] as unknown as DOMRectList);
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
-    // Spans 100..600: centered at 350, minus half the width.
-    expect(button()?.style.left).toBe("300px");
+    // First line spans 400..600: centered at 500, minus half the width.
+    expect(button()?.style.left).toBe("450px");
     expect(button()?.style.top).toBe("159px");
+  });
+
+  it("clamps a wrapped selection's pill inside the frame's edges", async () => {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(30);
+    const vw = document.documentElement.clientWidth || innerWidth;
+    await start("select");
+    // The first line is a sliver at the left edge.
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, top: 200, bottom: 220, left: 0, right: 20 },
+      { ...rect, top: 220, bottom: 240, left: 0, right: 500 },
+    ] as unknown as DOMRectList);
+    select(textOf("a"), 4, textOf("a"), 9);
+    expect(button()?.style.left).toBe("4px");
+    // ...and at the right edge.
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, top: 200, bottom: 220, left: vw - 20, right: vw + 40 },
+      { ...rect, top: 220, bottom: 240, left: 0, right: 100 },
+    ] as unknown as DOMRectList);
+    select(textOf("a"), 3, textOf("a"), 9);
+    expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
   });
 
   it("does not show for an empty selection or when off", async () => {
