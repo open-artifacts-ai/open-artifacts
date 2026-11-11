@@ -14,6 +14,7 @@ import {
   newId,
   PLAN_STALE_MS,
   R,
+  TRIAL_DAYS,
 } from "@oa/shared";
 import {
   afterEach,
@@ -135,7 +136,7 @@ const gate = {
         row = {
           ...row,
           tier: "trial",
-          trialEndsAt: Date.now() + 14 * DAY,
+          trialEndsAt: Date.now() + TRIAL_DAYS * DAY,
           version: row.version + 1,
         };
       return Response.json({ ...row, asOf: Date.now() });

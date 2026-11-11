@@ -153,6 +153,8 @@ const formatPaths: Record<Format, ReactNode> = {
       <path d="m1.5 12 4-4 3 3 2-2 4 4" />
     </>
   ),
+  // #1100 placeholder until Design's doc options: a page of text lines.
+  doc: <path d={`${page}M6 8h5M6 10h5M6 12h3`} />,
 };
 
 const formatLabels: Record<Format, string> = {
@@ -161,6 +163,7 @@ const formatLabels: Record<Format, string> = {
   code: "Code",
   pdf: "PDF",
   image: "Image",
+  doc: "Doc",
 };
 
 export const FormatIcon = ({

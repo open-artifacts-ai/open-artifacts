@@ -36,7 +36,7 @@ const NAME: Record<BillingTier, string> = {
 const PRICE: Record<BillingTier, string> = {
   free: "$1 a month or $10 a year",
   solo: "$1 a month or $10 a year",
-  trial: "Free for 14 days",
+  trial: "Free for 30 days",
   team: "$10 per creator per month",
   business: "$25 per creator per month",
 };
@@ -162,6 +162,17 @@ export function Plan() {
   // Absent means billing's answer predates the field: keep the button.
   const portal = (paid && !lapsedPaid) || billing.status === "past_due";
   const operatorPlan = portal && billing.hasCustomer === false;
+  // A paying Solo (a Stripe customer, active or past_due, past its free month)
+  // manages its plan in the portal and sees no Pay buttons. During the free
+  // month the Pay buttons stay: they are the way to start paying or pick yearly.
+  const soloTrialing =
+    !!billing.soloTrialEndsAt &&
+    Date.parse(billing.soloTrialEndsAt) > Date.now();
+  const soloPaid =
+    billing.tier === "solo" &&
+    billing.hasCustomer === true &&
+    (billing.status === "active" || billing.status === "past_due") &&
+    !soloTrialing;
   return (
     <div className={STACK}>
       <SettingsCard id="plan-card" title="Plan and billing">
@@ -213,7 +224,12 @@ export function Plan() {
             ))
           ) : (
             <>
-              {column === "solo" && (
+              {column === "solo" && soloPaid && (
+                <Button disabled={busy} onClick={() => go.mutate("portal")}>
+                  Manage billing
+                </Button>
+              )}
+              {column === "solo" && !soloPaid && (
                 <>
                   <Button
                     disabled={busy}

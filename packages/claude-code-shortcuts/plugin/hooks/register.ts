@@ -14,6 +14,78 @@ import {
   undeletion,
 } from "./model.ts";
 
+const WIDE: [number, number][] = [
+  [0x1100, 0x115f],
+  [0x2329, 0x232a],
+  [0x2e80, 0x303e],
+  [0x3041, 0x33ff],
+  [0x3400, 0x4dbf],
+  [0x4dc0, 0x4dff],
+  [0x4e00, 0xa4cf],
+  [0xa960, 0xa97f],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe10, 0xfe19],
+  [0xfe30, 0xfe6f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x16fe0, 0x16fe3],
+  [0x17000, 0x18d08],
+  [0x1aff0, 0x1b2fb],
+  [0x1d300, 0x1d376],
+  [0x1f200, 0x1f265],
+  [0x1f300, 0x1faff],
+  [0x20000, 0x3fffd],
+];
+
+// Terminal cells for one code point: combining marks, ZWJ and variation
+// selectors 0, East Asian wide 2, the rest 1.
+function cellOf(c: number): number {
+  if (
+    /^[\p{Mn}\p{Me}]$/u.test(String.fromCodePoint(c)) ||
+    c === 0x200b ||
+    c === 0x200d ||
+    (c >= 0xfe00 && c <= 0xfe0f)
+  )
+    return 0;
+  return WIDE.some(([lo, hi]) => c >= lo && c <= hi) ? 2 : 1;
+}
+
+const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function graphemes(text: string): string[] {
+  return Array.from(segmenter.segment(text), (x) => x.segment);
+}
+
+// Terminal cells for one grapheme. Emoji, flags and keycaps take 2.
+function cellsOf(g: string): number {
+  if (/\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3/u.test(g))
+    return 2;
+  let n = 0;
+  for (const ch of g) n += cellOf(ch.codePointAt(0) ?? 0);
+  return n;
+}
+
+function cells(text: string): number {
+  let n = 0;
+  for (const g of graphemes(text)) n += cellsOf(g);
+  return n;
+}
+
+// The text cut with "…" to at most `room` cells, never inside a grapheme.
+function clip(text: string, room: number): string {
+  if (cells(text) <= room) return text;
+  let out = "";
+  let used = 0;
+  for (const g of graphemes(text)) {
+    const w = cellsOf(g);
+    if (used + w > room - 1) break;
+    out += g;
+    used += w;
+  }
+  return `${out}…`;
+}
+
 // The small public API surface this plugin uses; no client internals or credentials.
 type Event = Record<string, unknown>;
 type Next = (event: Event) => Promise<unknown>;
@@ -291,22 +363,40 @@ export function register(
         flexDirection: "column",
         children: [
           ...rows.slice(0, count).map((a) => {
-            const prefix = `Published v${a.publishedVersion} · `;
-            const length = Math.max(1, columns - prefix.length - 1);
-            const title = Array.from(a.title);
-            const label =
-              title.length > length
-                ? `${title.slice(0, Math.max(0, length - 1)).join("")}…`
-                : a.title;
+            const prefix = "↗ ";
+            const suffix = ` v${a.publishedVersion}`;
+            const dim = (text: string) =>
+              Box({
+                flexShrink: 0,
+                children: [Text({ dimColor: true, children: [text] })],
+              });
+            // One column of slack: filling the last column can wrap or clip.
+            const usable = columns - 1;
+            const room = usable - 2 - cells(suffix);
+            // Narrow: drop the title, then the prefix; the suffix stays whole.
+            const children =
+              room >= 1
+                ? [
+                    dim(prefix),
+                    Box({
+                      flexShrink: 1,
+                      minWidth: 0,
+                      overflow: "hidden",
+                      children: [
+                        Link({ href: a.url, label: clip(a.title, room) }),
+                      ],
+                    }),
+                    dim(suffix),
+                  ]
+                : usable >= 2 + cells(suffix)
+                  ? [dim(prefix), dim(suffix)]
+                  : [dim(suffix)];
             return Box({
               flexDirection: "row",
               width: columns,
               height: 1,
               overflow: "hidden",
-              children: [
-                Text({ children: [prefix] }),
-                Link({ href: a.url, label }),
-              ],
+              children,
             });
           }),
           ...(previous ? [previous] : []),

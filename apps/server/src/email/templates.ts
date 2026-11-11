@@ -107,6 +107,7 @@ const FORMAT_LABEL: Record<Format, string> = {
   code: "Code",
   pdf: "PDF",
   image: "Image",
+  doc: "Doc",
 };
 const ROLE_LABEL: Record<ShareRole, string> = {
   viewer: "Viewer",

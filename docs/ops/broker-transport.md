@@ -3,7 +3,7 @@
 How an install reaches the auth broker (`auth.<zone>`) and the directory
 broker (`directory.<zone>`), and what to expect across versions. Code:
 `apps/server/src/auth/broker-transport.ts`. Platform's side (the BrokerGate in
-dispatch and the scheduler) is in `docs/ops/hosted.md`.
+dispatch and the scheduler) is in the [cloud runbook](https://github.com/open-artifacts-ai/open-artifacts-cloud/blob/main/docs/ops/hosted.md).
 
 ## Precedence
 

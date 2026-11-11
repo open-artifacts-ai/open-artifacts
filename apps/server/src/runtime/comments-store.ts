@@ -745,9 +745,14 @@ export function setTargetState(
   key: string,
   state: string,
 ): void {
-  // A late "queued" never undoes a daemon's ack that landed first (#1752).
+  // A late write never undoes a daemon's ack that landed first (#1752):
+  // "queued" only replaces queued, "gone" never replaces delivered or seen,
+  // and nothing replaces seen.
   sql.exec(
-    "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ? and (? != 'queued' or state = 'queued')",
+    `update comment_targets set state = ? where comment_id = ? and kind = ? and key = ?
+     and case ? when 'queued' then state = 'queued'
+                when 'gone' then state in ('queued', 'gone')
+                else state != 'seen' end`,
     state,
     commentId,
     kind,
@@ -757,8 +762,12 @@ export function setTargetState(
 }
 
 /**
- * #1752: a daemon's ack ("delivered") or refusal ("gone") of a notice. Moves
- * a target only out of "queued": seen, delivered and gone stay. True when it moved.
+ * #1752/#2062: a daemon's ack ("delivered") or refusal ("gone") of a notice, or
+ * a send to a socket without notice_ack. Moves a queued target to `state`. A
+ * late "delivered" also lifts a "gone" target (a notice held past the Worker's
+ * budget); "seen" and "delivered" stay final. The asker bound refunded when
+ * the target went gone is NOT re-spent: one extra ask is accepted. Only
+ * queued->gone refunds, so no path refunds twice. True when it moved.
  */
 export function settleTarget(
   sql: SqlStorage,
@@ -769,13 +778,35 @@ export function settleTarget(
 ): boolean {
   return (
     sql.exec(
-      "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ? and state = 'queued'",
+      "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ? and (state = 'queued' or (? = 'delivered' and state = 'gone'))",
       state,
       commentId,
       kind,
       key,
+      state,
     ).rowsWritten > 0
   );
+}
+
+/**
+ * #1752: after a refused asker notice, gives the asker bound back when every
+ * target of the comment reads gone (as the Worker does after a send).
+ */
+export function refundAskerIfAllGone(sql: SqlStorage, commentId: string): void {
+  const c = sql
+    .exec<{ threadId: string; at: string }>(
+      "select thread_id as threadId, created_at as at from comments where id = ?",
+      commentId,
+    )
+    .toArray()[0];
+  if (!c) return;
+  const open = sql
+    .exec(
+      "select 1 from comment_targets where comment_id = ? and state != 'gone' limit 1",
+      commentId,
+    )
+    .toArray();
+  if (open.length === 0) refundAsker(sql, c.threadId, c.at);
 }
 
 /** Drops the ask and targets of comments (`commentId`, or every comment of `threadId`). */

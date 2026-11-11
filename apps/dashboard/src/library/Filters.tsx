@@ -17,6 +17,7 @@ const LABEL: Record<Format, string> = {
   code: "Code",
   pdf: "PDF",
   image: "Image",
+  doc: "Doc",
 };
 // Radix items can't hold "", so "All" travels as a sentinel.
 const ALL = "__all";
@@ -27,7 +28,10 @@ const VIA = "__via";
 const AGENT = "agent:";
 const FORMATS = [
   { value: ALL, label: "All formats" },
-  ...FormatSchema.options.map((value) => ({ value, label: LABEL[value] })),
+  // #1100: no Doc filter until the doc editor lands.
+  ...FormatSchema.options
+    .filter((value) => value !== "doc")
+    .map((value) => ({ value, label: LABEL[value] })),
 ];
 const WAITING = [
   { value: ALL, label: "All" },

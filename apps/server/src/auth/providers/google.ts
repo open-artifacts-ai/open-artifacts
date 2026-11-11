@@ -128,6 +128,7 @@ export const googleProvider: OidcProvider = {
         code_challenge: a.challenge,
         // The broker adds max_age=0 (T18 break-glass).
         ...(a.reauth ? { reauth: "1" } : {}),
+        ...(a.silent && !a.reauth ? { silent: a.silent } : {}),
       }).toString();
       return u.toString();
     }

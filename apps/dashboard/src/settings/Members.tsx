@@ -139,7 +139,7 @@ function RoleSelect({
 /** Design's notice where a person is added or restored and the trial starts (#1836). */
 function TrialNotice({ endsOn }: { endsOn: string }) {
   return (
-    <Notice tone="info" title="This starts your 14-day trial of Business.">
+    <Notice tone="info" title="This starts your 30-day trial of Business.">
       Trial ends {endsOn}.
     </Notice>
   );
@@ -378,7 +378,7 @@ function InviteDialog({ onClose }: { onClose: () => void }) {
         {trial && (
           <Notice
             tone="info"
-            title="This starts your 14-day trial of Business."
+            title="This starts your 30-day trial of Business."
           >
             Trial ends {trial.endsOn}.
           </Notice>

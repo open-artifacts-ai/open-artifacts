@@ -59,6 +59,7 @@ import {
   type ArtifactSummary,
   type BusAgent,
   type BusMachine,
+  commentsSettingOf,
   type DataDoc,
   DataNameSchema,
   DataPatchBodySchema,
@@ -113,6 +114,8 @@ export type MockOptions = {
   commentAsks?: boolean;
   /** #1822: the "Landing page" artifact carries agent-authored comments. */
   commentAgents?: boolean;
+  /** #2080: the "Landing page" artifact is public and only signed-in people may comment. */
+  commentersSignedIn?: boolean;
   /**
    * The R.events mock (createArtifactEvents()): hello reports the store's
    * currentVersion; publish/restore emit `version`, delete and
@@ -167,6 +170,7 @@ const DEFAULT_ENTRY = {
   code: "file.txt",
   pdf: "document.pdf",
   image: "image.svg",
+  doc: "doc.md",
 } as const;
 
 /**
@@ -244,9 +248,18 @@ const isAnon = (req: Request) =>
   (!req.headers.has("cookie") &&
     !/^bearer\s/i.test(req.headers.get("authorization") ?? ""));
 const hideEmail = (u: UserRef): UserRef => ({ ...u, email: null });
+/** #2080: an anonymous caller may not comment where commenters is "signed-in". */
+const guestBarred = (a: ArtifactSummary, req: Request) =>
+  a.visibility === "public" && a.commenters === "signed-in" && isAnon(req);
 const redactArt = (a: ArtifactSummary, req: Request): ArtifactSummary =>
   a.visibility === "public" && isAnon(req)
-    ? { ...a, owner: hideEmail(a.owner) }
+    ? {
+        ...a,
+        owner: hideEmail(a.owner),
+        ...(a.can && guestBarred(a, req)
+          ? { can: { ...a.can, comment: false } }
+          : {}),
+      }
     : a;
 
 const userRef = (u: UserRef): UserRef => ({
@@ -338,6 +351,12 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     opts.events.currentVersion = (id) =>
       artifacts.find((x) => x.id === id && x.deletedAt === null)
         ?.currentVersion;
+  if (opts.commentersSignedIn)
+    for (const a of artifacts)
+      if (a.title === "Landing page") {
+        a.visibility = "public";
+        a.commenters = "signed-in";
+      }
   const versions = f.versions;
   const files = new Map(Object.entries(f.files));
   const shares = f.shares;
@@ -579,6 +598,19 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
     http.all("*/api/v1/*", async ({ request }) => {
       if (latencyMs) await delay(latencyMs);
       if (quotaExceeded) return err("quota_exceeded", QUOTA_MESSAGE);
+      {
+        const m = /\/artifacts\/([^/]+)\/comments(?:\/|$)/.exec(
+          new URL(request.url).pathname,
+        );
+        const target = m && artifacts.find((x) => x.id === m[1]);
+        if (
+          m &&
+          target &&
+          !["GET", "HEAD", "OPTIONS"].includes(request.method) &&
+          guestBarred(target, request)
+        )
+          return err("comments_signed_in_only", "Sign in to comment.");
+      }
       const mutating = !["GET", "HEAD", "OPTIONS"].includes(request.method);
       const path = new URL(request.url).pathname.replace(/^.*\/api\/v1/, "");
       // Signed-URL uploads carry no session; public artifact reads are anonymous-OK.
@@ -880,7 +912,8 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
           a.visibility,
         );
         if (noPublic) return noPublic;
-        const { capabilities, ...rest } = r.data;
+        const { capabilities, comments: setting, ...patchRest } = r.data;
+        const rest = { ...patchRest, ...commentsSettingOf(setting) };
         const gone =
           (rest.visibility !== undefined && rest.visibility !== a.visibility) ||
           capabilities !== undefined;
