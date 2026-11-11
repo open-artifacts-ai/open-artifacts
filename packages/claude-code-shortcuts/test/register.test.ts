@@ -553,6 +553,20 @@ describe("native presentation contract", () => {
     }
   });
 
+  it("counts spacing marks as cells in a Devanagari title", async () => {
+    const h = host();
+    await h.publish(result(5, "dev"), { title: "किताब ".repeat(10) });
+    const row = JSON.stringify((await h.draw(1, 30)).value);
+    expect(row).toContain('"children":[" v5"]');
+    const label = JSON.parse(
+      `"${/"label":"([^"]*)"/.exec(row)?.[1]}"`,
+    ) as string;
+    expect(label.endsWith("…")).toBe(true);
+    // Every code point here (no nonspacing marks) takes one cell.
+    expect(2 + Array.from(label).length + 3).toBeLessThanOrEqual(29);
+    expect(Array.from(label).length).toBeGreaterThan(15);
+  });
+
   it("keeps a three digit version whole at a tiny width", async () => {
     const h = host();
     await h.publish(result(123, "tiny"), { title: "A long title" });

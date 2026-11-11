@@ -42,7 +42,7 @@ const WIDE: [number, number][] = [
 // selectors 0, East Asian wide 2, the rest 1.
 function cellOf(c: number): number {
   if (
-    /^\p{M}$/u.test(String.fromCodePoint(c)) ||
+    /^[\p{Mn}\p{Me}]$/u.test(String.fromCodePoint(c)) ||
     c === 0x200b ||
     c === 0x200d ||
     (c >= 0xfe00 && c <= 0xfe0f)
