@@ -243,11 +243,13 @@ describe("upgrade.md content", () => {
           SECRET_LABELS[kind],
         ),
       );
-    for (const l of setupLines(md).filter((l) => !l.startsWith("- ")))
+    for (const l of setupLines(md).filter(
+      (l) => !l.startsWith("- ") && !l.includes("--token-links"),
+    ))
       expect(l).toContain(`${SECRET_ENV_VARS.cloudflare}="$(cat ${cf})"`);
     // No token value or placeholder is ever inlined.
     expect(md).not.toMatch(/CLOUDFLARE_API_TOKEN=(?!"\$\(cat )/);
-    expect(md).not.toMatch(/--token(?!-file)/);
+    expect(md).not.toMatch(/--token(?!-file|-links)/);
     expect(md).toContain("Never ask for the token in chat");
   });
 

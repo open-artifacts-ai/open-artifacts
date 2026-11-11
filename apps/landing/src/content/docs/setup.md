@@ -19,7 +19,7 @@ The agent follows the steps below. The only thing you do yourself is approve the
 
 ## Steps
 
-1. **Check the prerequisites.** Run `node --version`, `pnpm --version`, and `git --version`. If anything is missing, or the user has no Cloudflare account or no domain on Cloudflare, explain what it is and how to get it, then wait.
+1. **Check the prerequisites.** Run `node --version` (needs 22.13 or later), `pnpm --version` (the repo pins pnpm 11.25.0 in `packageManager`; `corepack enable` installs it), and `git --version`. If anything is missing, or the user has no Cloudflare account or no domain on Cloudflare, explain what it is and how to get it, then wait.
 2. **Clone the latest release.** Open Artifacts installs from the latest stable GitHub release, not `main` and not a pre-release. Release tags look like `vX.Y.Z`:
 
    ```sh
@@ -30,6 +30,8 @@ The agent follows the steps below. The only thing you do yourself is approve the
    ```
 
    Clone outside any existing git repository (the command uses `~/open-artifacts`), and tell the user the path: upgrades run from there.
+
+   If `~/open-artifacts` already exists, the clone fails with "destination path already exists". An install is already there: go to "Update an existing install" instead.
 
    If `TAG` comes back empty or `curl` fails, stop and tell the user: "Open Artifacts has no stable release yet; check back later."
 3. **Install dependencies:** `pnpm install`. pnpm may print "Ignored build scripts: esbuild, workerd". That's expected, so don't run `pnpm approve-builds`.
