@@ -743,7 +743,12 @@ export function SpacePeople({
     return {
       ...m,
       // This space's own group role reads as one set by hand.
-      manualRole: m.manualRole ?? own,
+      manualRole:
+        m.manualRole && own
+          ? RANK[own] > RANK[m.manualRole]
+            ? own
+            : m.manualRole
+          : (m.manualRole ?? own),
       // What the server computes: the Every space groups' highest role.
       syncRole: top(every),
       groups: every,

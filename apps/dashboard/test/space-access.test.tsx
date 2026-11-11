@@ -629,3 +629,54 @@ it("Business shows no such line", async () => {
   await row(/eng@example.com/);
   expect(screen.queryByText(ENDED)).toBeNull();
 });
+
+// -- hosted frozen below Business: the Every space mapping can still be removed
+
+for (const tier of ["team", "trial"] as const) {
+  it(`${tier} + frozen: Every space shows Remove only, and it sends the same DELETE`, async () => {
+    const put = calls("PUT");
+    const del = calls("DELETE");
+    mountHosted("/settings/spaces", { directory: "frozen" }, asTier(tier), [
+      serveOrg,
+    ]);
+    const card = await screen.findByRole(
+      "region",
+      { name: "Every space" },
+      firstLoad,
+    );
+    const r = await within(card).findByRole("row", {
+      name: /exec@example.com/,
+    });
+    expect(within(r).queryByRole("combobox")).toBeNull();
+    expect(
+      within(card).queryByRole("combobox", {
+        name: "Add a group to every space",
+      }),
+    ).toBeNull();
+    fireEvent.click(
+      within(r).getByRole("button", { name: "Remove exec@example.com" }),
+    );
+    const d = await screen.findByRole("alertdialog", {
+      name: "Remove exec@example.com from every space?",
+    });
+    expect(d).not.toHaveTextContent(/sync/i);
+    fireEvent.click(within(d).getByRole("button", { name: "Remove" }));
+    await waitFor(() =>
+      expect(del.at(-1)?.path).toBe("/api/v1/directory/org-mappings/gExec02"),
+    );
+    expect(put).toHaveLength(0);
+  });
+}
+
+it("Business + frozen: Every space stays read-only", async () => {
+  mountHosted("/settings/spaces", { directory: "frozen" }, asTier("business"), [
+    serveOrg,
+  ]);
+  const card = await screen.findByRole(
+    "region",
+    { name: "Every space" },
+    firstLoad,
+  );
+  const r = await within(card).findByRole("row", { name: /exec@example.com/ });
+  expect(within(r).queryByRole("button", { name: /Remove/ })).toBeNull();
+});
