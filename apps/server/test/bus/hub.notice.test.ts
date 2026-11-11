@@ -1170,7 +1170,8 @@ describe("a notice to a role address (#1752)", () => {
     const d2 = await daemon((await machine("Desk", m.userId)).token);
     d2.send({ ...plainHello(id("h")), caps: [BUS_CAPS.follow] } as never);
     await waitFor(d2, "hello_ok");
-    d2.send(up(id("u"), id("ref"), other, namespace));
+    const yRef = id("ref");
+    d2.send(up(id("u"), yRef, other, namespace));
     await waitFor(d2, "agent_ok");
     const y = (await stub.snapshot()).agents.find((a) => a.name === other);
     if (!y) throw new Error("no agent");
@@ -1188,10 +1189,21 @@ describe("a notice to a role address (#1752)", () => {
         Date.now(),
       );
     });
-    d2.close();
+    d2.send({
+      v: 1,
+      id: id("d"),
+      type: "agent_down",
+      agent_ref: yRef,
+    } as never);
     await vi.waitFor(async () => {
-      const a = (await stub.snapshot()).agents.find((z) => z.name === other);
-      expect(a).toBeUndefined();
+      const live = await inHub(
+        m.userId,
+        (_i, st) =>
+          st.storage.sql
+            .exec("select live from agents where id = ?", y.id)
+            .one().live,
+      );
+      expect(live).toBe(0);
     });
     expect(await stub.deliverNotice(note({ namespace, name: oldName }))).toBe(
       "dropped",
