@@ -12,6 +12,9 @@ import { isStorageFailure } from "./storage-failure.js";
  * - D1: only `first`, `all` and `raw` of a statement whose SQL is read-only
  *   (isReadOnlySql). Never `run`, never `batch`, never `exec`.
  * - KV: only `get`. Never put, delete or list.
+ * - R2 (FILES, #2218): get, head, list and delete retry (delete of a missing
+ *   key is a no-op, so repeating it is safe). put never retries here; use
+ *   putIdempotent where the bytes are in memory and the key is fresh.
  * - Bounds: RETRY.attempts tries in all; before try n+1 a random wait in
  *   [0, baseMs * 2^(n-1)); at most RETRY.maxWaitMs of waiting per call, and
  *   per request or cron run inside withReadBudget (fetch and scheduled).
@@ -38,7 +41,7 @@ export const RETRY = {
   breakerOpenMs: 30_000,
 } as const;
 
-export type StoreKind = "d1" | "kv";
+export type StoreKind = "d1" | "kv" | "r2";
 
 export interface RetryDeps {
   now(): number;
@@ -265,6 +268,68 @@ export function retryingKv<T extends KVNamespace | undefined>(kv: T): T {
   return w as T;
 }
 
+// ---------------------------------------------------------------- r2
+
+const r2Memo = new WeakMap<R2Bucket, R2Bucket>();
+const R2_RETRIED = new Set(["get", "head", "list", "delete"]);
+
+/** Fixed fields for a final R2 failure: operation, binding, error code. Never keys. */
+function logR2Failure(op: string, e: unknown): void {
+  const msg = e instanceof Error ? e.message : "";
+  logWarn("r2_failed", undefined, {
+    op,
+    bucket: "FILES",
+    class: e instanceof Error ? e.name : typeof e,
+    code: /\((\d+)\)$/.exec(msg)?.[1] ?? null,
+    transient: isStorageFailure(e),
+  });
+}
+
+/** `bucket` whose get, head, list and delete retry; every failure is logged. */
+export function retryingR2<T extends R2Bucket | undefined>(bucket: T): T {
+  if (!bucket || wrappers.has(bucket)) return bucket;
+  const hit = r2Memo.get(bucket);
+  if (hit) return hit as T;
+  const target = bucket as R2Bucket;
+  const w = new Proxy(target, {
+    get(t, p) {
+      const v = Reflect.get(t, p, t);
+      if (typeof v !== "function") return v;
+      const op = String(p);
+      const call = (...a: unknown[]) =>
+        (v as (...x: unknown[]) => Promise<unknown>).apply(t, a);
+      if (op === "put")
+        return (...a: unknown[]) =>
+          call(...a).catch((e) => {
+            logR2Failure(op, e);
+            throw e;
+          });
+      if (!R2_RETRIED.has(op)) return v.bind(t);
+      return (...a: unknown[]) =>
+        retryRead("r2", () => call(...a)).catch((e) => {
+          logR2Failure(op, e);
+          throw e;
+        });
+    },
+  });
+  wrappers.add(w);
+  r2Memo.set(target, w);
+  return w as T;
+}
+
+/**
+ * put for a fresh key with bytes held in memory (string or buffer, never a
+ * stream, no onlyIf): same key and same bytes each time, so a repeat is safe.
+ */
+export async function putIdempotent(
+  bucket: R2Bucket,
+  key: string,
+  value: string | ArrayBuffer | ArrayBufferView,
+  options?: R2PutOptions,
+): Promise<R2Object | null> {
+  return retryRead("r2", () => bucket.put(key, value, options));
+}
+
 // ---------------------------------------------------------------- env
 
 /**
@@ -281,6 +346,7 @@ export function withRetries<E extends object>(env: E): E {
       const v = Reflect.get(t, p, t);
       if (p === "DB") return retryingD1(v as D1Database | undefined);
       if (p === "OAUTH_KV") return retryingKv(v as KVNamespace | undefined);
+      if (p === "FILES") return retryingR2(v as R2Bucket | undefined);
       return v;
     },
   });
