@@ -90,7 +90,7 @@ import { remotesFile } from "./namespaces.ts";
 import { Outbox } from "./outbox.ts";
 import {
   type AttachDeps,
-  attachedTo,
+  cachedAttach,
   defaultAttachDeps,
 } from "./presence/attached.ts";
 import {
@@ -537,6 +537,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         isRunning: ocRunning,
         procStartEpoch: (pid, stamp) => lstartEpoch(ocStart(pid, stamp)),
       }));
+  const ocAttached = cachedAttach(
+    oc.attach ?? defaultAttachDeps,
+    deps.bindingNow,
+  );
   /** A hello counts only sessions in TUIs attached to its own service (#1950). */
   const openCodeSessionsFor = (service: number): Set<string> =>
     oc.openSessions
@@ -544,7 +548,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       : openSessions(presenceDir, {
           isRunning: ocRunning,
           procStartEpoch: (pid, stamp) => lstartEpoch(ocStart(pid, stamp)),
-          accept: attachedTo(service, oc.attach ?? defaultAttachDeps),
+          accept: ocAttached(service),
         });
   const ocSpawn = oc.spawn ?? execSpawn(20_000);
   /** Unknown until read, just before the hub link starts: no delivery comes sooner. */

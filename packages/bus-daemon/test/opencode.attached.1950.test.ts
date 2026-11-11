@@ -8,6 +8,7 @@ import { attest } from "../src/attest.ts";
 import {
   type AttachDeps,
   attachedTo,
+  cachedAttach,
   defaultAttachDeps,
   lsofConnectedPorts,
   lsofListenPorts,
@@ -113,6 +114,47 @@ describe("attachedTo (#1950)", () => {
     a(21);
     a(11);
     expect(listens).toBe(1);
+  });
+});
+
+describe("cachedAttach (#1950)", () => {
+  it("reads the OS once within the TTL, and again after it", () => {
+    let reads = 0;
+    const d = world({
+      exe: { 10: OC, 11: OC, 12: OC },
+      listen: { 10: [4001] },
+      conn: { 11: [4001], 12: [] },
+    });
+    const counted: AttachDeps = {
+      ...d,
+      connectedPorts: (p) => {
+        reads++;
+        return d.connectedPorts(p);
+      },
+    };
+    let t = 0;
+    const attached = cachedAttach(counted, () => t, 2000);
+    expect(attached(10)(11)).toBe(true);
+    expect(attached(10)(12)).toBe(false);
+    t = 1999;
+    expect(attached(10)(11)).toBe(true);
+    expect(attached(10)(12)).toBe(false);
+    expect(reads).toBe(2); // 11 and 12 once each
+    t = 2000;
+    expect(attached(10)(11)).toBe(true);
+    expect(reads).toBe(3);
+  });
+  it("a cached 'not attached' expires as fast as a cached 'attached'", () => {
+    const conn: Record<number, number[]> = {};
+    const d = world({ exe: { 10: OC, 11: OC }, listen: { 10: [4001] }, conn });
+    let t = 0;
+    const attached = cachedAttach(d, () => t, 2000);
+    expect(attached(10)(11)).toBe(false);
+    conn[11] = [4001];
+    t = 1000;
+    expect(attached(10)(11)).toBe(false);
+    t = 2000;
+    expect(attached(10)(11)).toBe(true);
   });
 });
 

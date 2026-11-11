@@ -527,8 +527,10 @@ describe("opencode through runDaemon", () => {
     dir: string,
     alive: Set<number>,
     conn: Set<number> = new Set([8001, 8002]),
+    now: () => number = Date.now,
   ) {
     return daemonHarness({
+      bindingNow: now,
       attest: undefined, // the real attest, as runDaemon wires it
       claude: { syncMs: 3_600_000 },
       opencode: {
@@ -573,10 +575,14 @@ describe("opencode through runDaemon", () => {
     expect(h.of("agent_up")).toEqual([]);
   });
 
-  const claimed = async (alive: Set<number>, conn: Set<number>) => {
+  const claimed = async (
+    alive: Set<number>,
+    conn: Set<number>,
+    now?: () => number,
+  ) => {
     const dir = presenceDir();
     presence(dir, 4321, ["ses_root"]);
-    const h = await attested(dir, alive, conn);
+    const h = await attested(dir, alive, conn, now);
     (await h.adapter("ses_root", oc(7001))).close();
     expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
     return h;
@@ -600,8 +606,10 @@ describe("opencode through runDaemon", () => {
 
   it("lets a second service take it once the first no longer has it attached", async () => {
     const conn = new Set([8001, 8002]);
-    const h = await claimed(new Set([4321, 8001, 8002]), conn);
+    let t = Date.now();
+    const h = await claimed(new Set([4321, 8001, 8002]), conn, () => t);
     conn.delete(8001); // the TUI reopened the session under the second service
+    t += 3000; // past the attach cache's TTL
     expect((await h.adapter("ses_root", oc(7002))).welcome).toMatchObject({
       type: "welcome",
     });

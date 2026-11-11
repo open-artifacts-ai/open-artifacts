@@ -62,6 +62,42 @@ export function attachedTo(
   };
 }
 
+/** How long an attach answer (attached or not) is reused: one tool call is one hello. */
+export const ATTACH_TTL_MS = 2000;
+
+/**
+ * `attachedTo` behind a short cache, so the OS reads (ps and lsof on macOS)
+ * are paid once per TTL, not once per hello. An entry covers one service and
+ * every TUI asked about for it, and dies as a whole after `ttlMs`; expired
+ * entries are dropped on each call, so a gone pid never lingers. The clock is
+ * injected; the cache sets no timers.
+ */
+export function cachedAttach(
+  deps: AttachDeps,
+  now: () => number = Date.now,
+  ttlMs: number = ATTACH_TTL_MS,
+): (service: number) => (tui: number) => boolean {
+  const entries = new Map<
+    number,
+    { at: number; pred: (tui: number) => boolean; seen: Map<number, boolean> }
+  >();
+  return (service) => (tui) => {
+    const t = now();
+    for (const [k, e] of entries) if (t - e.at >= ttlMs) entries.delete(k);
+    let e = entries.get(service);
+    if (!e) {
+      e = { at: t, pred: attachedTo(service, deps), seen: new Map() };
+      entries.set(service, e);
+    }
+    let r = e.seen.get(tui);
+    if (r === undefined) {
+      r = e.pred(tui);
+      e.seen.set(tui, r);
+    }
+    return r;
+  };
+}
+
 // ---- Linux: /proc ----
 
 type TcpRow = {
