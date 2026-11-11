@@ -11,11 +11,6 @@
     transform: scale(1.12);
   }
 }
-@keyframes sbsroll {
-  to {
-    transform: translateY(-50%);
-  }
-}
 @keyframes sbscur {
   50% {
     opacity: 0;

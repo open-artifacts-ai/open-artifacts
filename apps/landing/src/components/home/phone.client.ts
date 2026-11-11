@@ -101,8 +101,10 @@ export function initPhone(lp: HTMLElement, reduce: boolean) {
   /* versions */
   const ver = mp("ver");
   const list = $(".vlist", ver);
-  let top = 3;
-  let cur = 3;
+  // The newest version is the one marked Current in the list.
+  const current = list.querySelector<HTMLElement>("em:not(:empty)");
+  let top = Number(current?.closest<HTMLElement>("button")?.dataset.v);
+  let cur = top;
   const view = (v: number) => {
     cur = v;
     for (const b of $$("button", list))

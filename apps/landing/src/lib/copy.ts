@@ -14,3 +14,9 @@ export const HOME_TITLE = "Open Artifacts: stop reading transcripts";
 export const HOME_DESCRIPTION = `${HERO_COPY.headline} ${HERO_COPY.question}`;
 export const OG_ALT =
   "Stop reading transcripts. The same work in a transcript and in an artifact.";
+
+/**
+ * Whether Gemini's mark shows next to "coming soon". A logo can read as support
+ * we do not have yet, so this is one switch: false shows the name only.
+ */
+export const GEMINI_MARK = true;

@@ -67,8 +67,7 @@ let userPick: string | null = null,
 const user: Record<number, boolean> = {};
 const flag = (n: string, v: boolean) =>
   v ? stage.setAttribute(n, "") : stage.removeAttribute(n);
-const line = () =>
-  narrow() ? stage.getBoundingClientRect().height + 60 : innerHeight * 0.58;
+const line = () => innerHeight * 0.58;
 
 // t = step * 10 + progress (0..3). The first chapter is step 2 (the scene above
 // is steps 1 to 4 of nine, the chapters are 5 to 9), and the stage opens on the
@@ -90,6 +89,8 @@ function read() {
   return Math.max(23, step * 10 + Math.floor(p * 4));
 }
 function render(force = false) {
+  // At 820px and under the stage is hidden and the chapters are cards.
+  if (narrow()) return;
   const t = read();
   if (t === T && !force) return;
   T = t;
@@ -181,13 +182,7 @@ function render(force = false) {
     0,
     Math.min($("#plh").offsetTop - 10, track.scrollHeight - clip.clientHeight),
   );
-  const lnTop = Math.max(0, ln.offsetTop - 10);
-  track.style.transform =
-    step === 4
-      ? `translateY(-${need}px)`
-      : narrow() && (step === 2 || step === 3)
-        ? `translateY(-${lnTop}px)`
-        : "";
+  track.style.transform = step === 4 ? `translateY(-${need}px)` : "";
   $("#pop").classList.toggle("on", step === 6);
   $("#tog").classList.toggle("on", t >= 62);
   const pub = t >= 62,
@@ -233,7 +228,7 @@ render(true);
 /* ---- pause the animations when their section is off screen ---- */
 if ("IntersectionObserver" in window) {
   const seen = new Set<Element>();
-  const targets = ["header.hero", ".sc", ".sbs", ".x-ba", "#story", ".x-intro"]
+  const targets = ["header.hero", ".sc", "#story"]
     .map((s) => lp.querySelector(s))
     .filter((e): e is Element => !!e);
   const io = new IntersectionObserver((es) => {

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { GEMINI_MARK } from "../src/lib/copy";
 
 // The landing page (#1457), read from the built HTML: no script runs here, so
 // everything below is what a reader gets with scripts off.
@@ -183,7 +184,7 @@ describe("landing sections", () => {
     expect(text).not.toContain("Custom domains your pick");
   });
 
-  it("lists the agents it works with: seven single-colour marks and the Hermes tile, nothing loaded from outside", () => {
+  it("lists the agents it works with: single-colour marks and the Hermes tile, nothing loaded from outside", () => {
     const sec =
       index.match(
         /<section class="x-sec x-band x-agents"[\s\S]*?<\/section>/,
@@ -207,7 +208,13 @@ describe("landing sections", () => {
     ]);
     expect(sec).toMatch(/<li class="soon">/);
     const marks = sec.match(/<svg [^>]*>/g) ?? [];
-    expect(marks).toHaveLength(7);
+    // six marks, plus Gemini's while GEMINI_MARK is on (name only when off)
+    expect(marks).toHaveLength(GEMINI_MARK ? 7 : 6);
+    expect(sec).toMatch(
+      GEMINI_MARK
+        ? /<li class="soon"><svg [^>]*>[\s\S]*<\/svg>Gemini <small>coming soon<\/small><\/li>/
+        : /<li class="soon">Gemini <small>coming soon<\/small><\/li>/,
+    );
     for (const m of marks) expect(m).toContain('aria-hidden="true"');
     // Hermes is the project's PNG, inline
     const imgs = sec.match(/<img [^>]*>/g) ?? [];
