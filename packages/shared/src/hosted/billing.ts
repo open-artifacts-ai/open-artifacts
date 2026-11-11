@@ -138,10 +138,12 @@ export const PLAN_STALE_MS = 7 * 86_400_000;
 export const TRIAL_DAYS = 30;
 
 /**
- * POST R.billingCheckout body: the plan to buy. Solo also names the billing
- * interval (month or year); the billing service maps solo+month and
- * solo+year to the Solo prices. Any other tier refuses an interval. The
- * answer is BillingUrl, the Stripe Checkout page to open; nothing else.
+ * POST R.billingCheckout body: the plan to buy. Solo requires an interval
+ * (month or year) and refuses seats. Team and Business may omit the interval
+ * (older callers; absent means monthly) or send month, and refuse seats then.
+ * Team and Business with interval "year" require seats, the prepaid seat
+ * count (1..10000); seats beyond that bill as overage at the monthly price.
+ * The answer is BillingUrl, the Stripe Checkout page to open; nothing else.
  */
 export const BillingIntervalSchema = z.enum(["month", "year"]);
 export type BillingInterval = z.infer<typeof BillingIntervalSchema>;
@@ -149,10 +151,37 @@ export const BillingCheckoutInputSchema = z
   .strictObject({
     tier: z.enum(["solo", "team", "business"]),
     interval: BillingIntervalSchema.optional(),
+    seats: z.number().int().min(1).max(10_000).optional(),
   })
-  .refine((v) => (v.tier === "solo") === (v.interval !== undefined), {
-    message: "interval is required for solo and refused for other tiers",
-    path: ["interval"],
+  .superRefine((v, ctx) => {
+    if (v.tier === "solo") {
+      if (v.interval === undefined)
+        ctx.addIssue({
+          code: "custom",
+          path: ["interval"],
+          message: "interval is required for solo",
+        });
+      if (v.seats !== undefined)
+        ctx.addIssue({
+          code: "custom",
+          path: ["seats"],
+          message: "seats is refused for solo",
+        });
+      return;
+    }
+    const yearly = v.interval === "year";
+    if (yearly && v.seats === undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["seats"],
+        message: "seats is required for a yearly team or business plan",
+      });
+    if (!yearly && v.seats !== undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["seats"],
+        message: "seats is only for a yearly team or business plan",
+      });
   });
 export type BillingCheckoutInput = z.infer<typeof BillingCheckoutInputSchema>;
 
