@@ -46,6 +46,6 @@ advice for contributors.
   flake cannot hide behind a green rerun.
 - **Platform releases.** A feature session does not deploy.
 - **Leads act on their own PRs without asking.** Mark your own reviewed PR
-  ready, rerun its whole workflow, and merge main into it. Run each `gh` write
-  as one plain command (`gh pr ready 2196`), with no `cd`, pipe or chaining, so
+  ready, rerun its whole workflow, and merge main into it while it isn't armed
+  or queued. Run each `gh` write as one plain command (`gh pr ready 2196`), with no `cd`, pipe or chaining, so
   the allow rule matches it.
