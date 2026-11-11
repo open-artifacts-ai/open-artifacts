@@ -195,7 +195,7 @@ export type ClaudeTransportOptions = {
    * re-read a few times; unreachable closes as a delivery refusal; gone closes
    * as a liveness miss, which the sync reopens when the session is seen again.
    */
-  state?: (agent: AgentRecord) => "unknown" | "unreachable" | "gone";
+  state?: (agent: AgentRecord) => "unknown" | "unreachable" | "gone" | "dead";
   /** Production 100 ms between the re-reads of an unknown target. */
   unknownRetryMs?: number;
   /** Production 2000 ms: how long a hold status may take to arrive. */
@@ -344,7 +344,7 @@ export class ClaudeTransport {
       target = this.opts.target(agent.ref);
     }
     if (!target) {
-      const why = this.opts.state?.(agent) ?? "gone";
+      const why = this.opts.state?.(agent) ?? "dead";
       // Still unknown: not a close; the receipt stays pending.
       if (why === "unknown")
         return { ok: false, reason: "timeout", retryable: true };

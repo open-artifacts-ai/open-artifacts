@@ -47,7 +47,10 @@ function setup(outcomes: (n: number) => DeliverOutcome) {
       },
     },
     transports: { pi: async () => outcomes(++calls) },
-    onClosed: (_a, by) => void closed.push(by),
+    onClosed: (_a, by) => {
+      closed.push(by);
+      return by;
+    },
   });
   return { d, agent, sent, closed, calls: () => calls };
 }
@@ -117,5 +120,50 @@ describe("local retry of a retryable timeout (#2110)", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(t.calls()).toBe(1);
     expect(t.sent).toEqual([]);
+  });
+
+  it("stop() while an attempt is in flight leaves no chain behind", async () => {
+    let finish!: (o: DeliverOutcome) => void;
+    const agents = new AgentTable();
+    agents.up({
+      ref: "A",
+      kind: "pi",
+      proposedName: "a",
+      busName: "a",
+      namespace: "ns",
+      global: false,
+      pid: 1,
+      cwd: "/",
+      live: true,
+    });
+    let calls = 0;
+    const d = createDeliver({
+      agents,
+      hub: { send: () => true },
+      transports: {
+        pi: () =>
+          new Promise<DeliverOutcome>((r) => {
+            calls++;
+            finish = r;
+          }),
+      },
+      onClosed: () => {},
+    });
+    const p = d.deliver(frame());
+    d.stop();
+    finish(RETRYABLE);
+    await p;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(calls).toBe(1);
+  });
+
+  it("after 3 chain-exhaustion closes in 10 minutes the record stays closed as a delivery close", async () => {
+    const t = setup(() => RETRYABLE);
+    for (let i = 1; i <= 4; i++) {
+      t.agent.live = true;
+      await t.d.deliver(frame(`mmmmmmmmmmmmmmm${i}`));
+      await vi.advanceTimersByTimeAsync(22_000);
+    }
+    expect(t.closed).toEqual(["liveness", "liveness", "liveness", "delivery"]);
   });
 });

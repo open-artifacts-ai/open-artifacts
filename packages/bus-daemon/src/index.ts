@@ -1258,6 +1258,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       a.closedBy = closedBy ?? claude.closeReason(a.ref);
       ev("agent_leave", agentFields(a, "delivery_closed"));
       announceSessions();
+      return a.closedBy;
     },
     log,
   });
