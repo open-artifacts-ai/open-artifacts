@@ -3,7 +3,7 @@ import {
   prosemirrorToYXmlFragment,
   yXmlFragmentToProseMirrorRootNode,
 } from "y-prosemirror";
-import type * as Y from "yjs";
+import * as Y from "yjs";
 import { type DocJSON, docFromJSON } from "./json.ts";
 import { docSchema } from "./schema.ts";
 
@@ -32,13 +32,54 @@ export function docToYXmlFragment(
   return prosemirrorToYXmlFragment(node, fragment);
 }
 
-/** Read a Y.XmlFragment as a doc node checked against the schema. */
+/**
+ * Read a Y.XmlFragment as a doc node checked against the schema.
+ *
+ * y-prosemirror deletes any Y element it cannot build against the schema
+ * (createNodeFromYElement and createTextNodesFromYText catch the error and
+ * call `_item.delete`). So the live fragment is never read: it is copied into
+ * a fresh Y.Doc, and if the read deleted anything in the copy this throws,
+ * leaving the live doc untouched.
+ */
 export function yXmlFragmentToDoc(fragment: Y.XmlFragment): PMNode {
-  const doc =
-    fragment.length === 0
-      ? docSchema.topNodeType.createAndFill()
-      : yXmlFragmentToProseMirrorRootNode(fragment, docSchema);
-  if (!doc) throw new Error("Could not build an empty doc");
-  doc.check();
-  return doc;
+  if (fragment.length === 0) {
+    const empty = docSchema.topNodeType.createAndFill();
+    if (!empty) throw new Error("Could not build an empty doc");
+    empty.check();
+    return empty;
+  }
+  const source = fragment.doc;
+  if (!source) {
+    throw new Error(
+      "yXmlFragmentToDoc needs a fragment that belongs to a Y.Doc",
+    );
+  }
+  let key: string | null = null;
+  for (const [name, type] of source.share) {
+    if ((type as unknown) === fragment) key = name;
+  }
+  if (key === null) {
+    throw new Error(
+      "yXmlFragmentToDoc: the fragment is not a top-level field of its Y.Doc",
+    );
+  }
+  const copy = new Y.Doc();
+  Y.applyUpdate(copy, Y.encodeStateAsUpdate(source));
+  let deleted = false;
+  copy.on("afterTransaction", (tr: Y.Transaction) => {
+    if (tr.deleteSet.clients.size > 0) deleted = true;
+  });
+  const node = yXmlFragmentToProseMirrorRootNode(
+    copy.getXmlFragment(key),
+    docSchema,
+  );
+  const lost = deleted;
+  copy.destroy();
+  if (lost) {
+    throw new Error(
+      "The doc has content the schema can't read. Nothing was changed.",
+    );
+  }
+  node.check();
+  return node;
 }

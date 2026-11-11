@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  docFromJSON,
+  docSchema,
   docToMarkdown,
   type ImportChangeKind,
+  isAllowedHref,
   markdownToDoc,
 } from "../src/index.ts";
 
@@ -25,6 +28,32 @@ const CASES: {
     md: "a <span>b</span> c\n",
     out: "a \\<span>b\\</span> c\n",
     kinds: ["html", "html"],
+  },
+  {
+    name: "relative link",
+    md: "[x](docs/a.md)\n",
+    out: "x\n",
+    kinds: ["link"],
+  },
+  { name: "fragment link", md: "[x](#top)\n", out: "x\n", kinds: ["link"] },
+  { name: "empty link", md: "[x]()\n", out: "x\n", kinds: ["link"] },
+  {
+    name: "ftp link",
+    md: "[x](ftp://e.example/f)\n",
+    out: "x\n",
+    kinds: ["link"],
+  },
+  {
+    name: "javascript link",
+    md: "[x](javascript:alert(1))\n",
+    out: "x\n",
+    kinds: ["link"],
+  },
+  {
+    name: "data link",
+    md: "[x](data:text/html,hi)\n",
+    out: "x\n",
+    kinds: ["link"],
   },
   {
     name: "image",
@@ -95,6 +124,26 @@ const NORMALIZED: { name: string; md: string; out: string }[] = [
     md: "[x][r]\n\n[r]: https://e.example\n",
     out: "[x](https://e.example)\n",
   },
+  {
+    name: "mailto link",
+    md: "[x](mailto:a@e.example)\n",
+    out: "[x](mailto:a@e.example)\n",
+  },
+  {
+    name: "https link",
+    md: "[x](https://e.example)\n",
+    out: "[x](https://e.example)\n",
+  },
+  {
+    name: "uppercase scheme",
+    md: "[x](HTTPS://e.example)\n",
+    out: "[x](HTTPS://e.example)\n",
+  },
+  {
+    name: "autolink",
+    md: "<https://e.example>\n",
+    out: "<https://e.example>\n",
+  },
   { name: "entity", md: "&copy; &amp;\n", out: "© &\n" },
   { name: "uppercase task", md: "- [X] done\n", out: "- [x] done\n" },
   { name: "CRLF", md: "a\r\n\r\nb\r\n", out: "a\n\nb\n" },
@@ -160,4 +209,57 @@ describe("any input", () => {
       expect(docToMarkdown(second.doc)).toBe(first);
     });
   }
+});
+
+describe("link hrefs", () => {
+  it("allows only http, https and mailto, case-insensitively", () => {
+    for (const ok of ["http://a", "https://a", "HTTPS://a", "mailto:a@b"])
+      expect(isAllowedHref(ok)).toBe(true);
+    for (const bad of [
+      "javascript:x",
+      "JavaScript:x",
+      "data:x",
+      "#x",
+      "a/b",
+      "",
+      " https://a",
+    ])
+      expect(isAllowedHref(bad)).toBe(false);
+    expect(isAllowedHref(undefined)).toBe(false);
+  });
+
+  it("refuses to create a link mark with a disallowed href", () => {
+    expect(() =>
+      docSchema.marks.link.create({ href: "javascript:alert(1)" }),
+    ).toThrow();
+    expect(() =>
+      docSchema.marks.link.create({ href: "https://e.example" }),
+    ).not.toThrow();
+  });
+
+  it("rejects a doc JSON with a javascript: link", () => {
+    expect(() =>
+      docFromJSON({
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: "x",
+                marks: [{ type: "link", attrs: { href: "javascript:x" } }],
+              },
+            ],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("keeps the text of a link it drops, between other marks", () => {
+    const r = markdownToDoc("a [**b**](docs/x) c\n");
+    expect(r.changes.map((c) => c.kind)).toEqual(["link"]);
+    expect(docToMarkdown(r.doc)).toBe("a **b** c\n");
+  });
 });
