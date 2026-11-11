@@ -274,6 +274,41 @@ describe("runDaemon claude session sync", () => {
     );
   });
 
+  it("#2110: an unreadable start time keeps a session live only for the grace window", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: {
+        ...syncDeps(d, running),
+        procStart: () => null,
+        unknownGraceMs: 150,
+      },
+    });
+    await h.next("agent_up");
+    await new Promise((r) => setTimeout(r, 60));
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef("s4242")?.live).toBe(false),
+    );
+  });
+
+  it("#2110: a delivery while the session file is mid-rewrite neither drops the mail nor closes the session", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: { ...syncDeps(d, running), syncMs: 60_000 },
+    });
+    await h.next("agent_up");
+    writeFileSync(join(d, "4242.json"), '{"pid":4242,');
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    await new Promise((r) => setTimeout(r, 200));
+    expect(h.of("refuse")).toEqual([]);
+    expect(h.of("ack")).toEqual([]);
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+  });
+
   it("#2110: an unreadable start time lists the session as unknown", () => {
     const d = dir();
     writeSession(d, 4242);

@@ -168,6 +168,24 @@ export function claudeTarget(
   return peerToken ? { socketPath: s.socketPath, peerToken } : null;
 }
 
+/**
+ * #2110: a null `claudeTarget` can mean "cannot tell". True when the pid runs
+ * and its session file is unreadable right now, or the file is there but the
+ * start time could not be read.
+ */
+export function claudeTargetUnknown(
+  ref: string,
+  pid: number,
+  deps: ClaudeLivenessDeps,
+): boolean {
+  if (!deps.isRunning(pid)) return false;
+  const scan = scanSessions(deps.dir);
+  if (scan.unreadable.has(pid)) return true;
+  return scan.files.some(
+    (x) => x.ref === ref && aliveState(x, deps) === "unknown",
+  );
+}
+
 /** A live pid's start time never changes, so a long TTL is safe. */
 export const PROC_START_TTL_MS = 60_000;
 

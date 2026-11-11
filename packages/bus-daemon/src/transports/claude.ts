@@ -190,6 +190,11 @@ export type ClaudeTransportOptions = {
   socketsDir: string;
   /** Where to inject for a session right now; null when the session is gone. */
   target: (ref: string) => { socketPath: string; peerToken: string } | null;
+  /**
+   * #2110: true when a null target means "cannot tell" (the process runs but
+   * its session file is mid-rewrite or its start time unreadable), not "gone".
+   */
+  unknown?: (agent: AgentRecord) => boolean;
   /** Production 2000 ms: how long a hold status may take to arrive. */
   statusWindowMs?: number;
   /** How long a held message waits for the user; the mail TTL bounds it anyway. */
@@ -316,7 +321,13 @@ export class ClaudeTransport {
       return { ok: true };
     }
     const target = this.opts.target(agent.ref);
-    if (!target) return { ok: false, reason: "closed" };
+    if (!target) {
+      // Unknown is not gone: the hub retries. Gone is a liveness close, which
+      // the sync reopens if the session is seen again.
+      if (this.opts.unknown?.(agent)) return { ok: false, reason: "timeout" };
+      agent.closedBy = "liveness";
+      return { ok: false, reason: "closed" };
+    }
     const unsafe = unsafeClaudeSocket(target.socketPath);
     if (unsafe) {
       if (!this.#unsafeLogged.has(target.socketPath)) {
