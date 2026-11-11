@@ -479,12 +479,37 @@ describe("native presentation contract", () => {
     expect(tree).toContain(`${origin}/a/artifact4`);
     expect(tree).not.toContain(`${origin}/a/artifact3`);
     expect(tree).toContain('"type":"ExistingBand"');
-    expect(tree).toContain("Published v5");
+    expect(tree).toContain("↗");
+    expect(tree).toContain(" v5");
+    expect(tree).toContain('"dimColor":true');
+    expect(tree).not.toContain("Published");
     expect(tree).toContain('"width":30');
     expect(tree).toContain('"height":1');
     expect(tree).not.toContain("maxWidth");
     expect(tree).not.toContain("autoFocus");
     expect(tree).not.toContain("focus");
+  });
+
+  it("keeps the version suffix and cuts the title to fit the width", async () => {
+    for (const [n, width] of [
+      [5, 30],
+      [12, 30],
+      [123, 20],
+    ] as const) {
+      const h = host();
+      await h.publish(result(n, "wide"), {
+        title: "A very long accessible artifact title",
+      });
+      const { value } = await h.draw(1, width);
+      const row = JSON.stringify(value);
+      const suffix = ` v${n}`;
+      expect(row).toContain(`"children":["${suffix}"]`);
+      const label = /"label":"([^"]*)"/.exec(row)?.[1] ?? "";
+      expect(label.endsWith("…")).toBe(true);
+      expect(2 + Array.from(label).length + suffix.length).toBeLessThanOrEqual(
+        width,
+      );
+    }
   });
 
   it("leaves surveys, hidden bands, empty sessions and unconfigured instances alone", async () => {

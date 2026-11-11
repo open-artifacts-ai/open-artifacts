@@ -291,8 +291,9 @@ export function register(
         flexDirection: "column",
         children: [
           ...rows.slice(0, count).map((a) => {
-            const prefix = `Published v${a.publishedVersion} · `;
-            const length = Math.max(1, columns - prefix.length - 1);
+            const prefix = "↗ ";
+            const suffix = ` v${a.publishedVersion}`;
+            const length = Math.max(1, columns - prefix.length - suffix.length);
             const title = Array.from(a.title);
             const label =
               title.length > length
@@ -304,8 +305,9 @@ export function register(
               height: 1,
               overflow: "hidden",
               children: [
-                Text({ children: [prefix] }),
+                Text({ dimColor: true, children: [prefix] }),
                 Link({ href: a.url, label }),
+                Text({ dimColor: true, children: [suffix] }),
               ],
             });
           }),
