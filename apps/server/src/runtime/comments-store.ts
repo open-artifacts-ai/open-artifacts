@@ -790,7 +790,9 @@ export function settleTarget(
 
 /**
  * #1752: after a refused asker notice, gives the asker bound back when every
- * target of the comment reads gone (as the Worker does after a send).
+ * mention and asker target of the comment reads gone (as the Worker does
+ * after a send). A thread-reply row (#2035) is not the asker's: it never holds
+ * the refund back.
  */
 export function refundAskerIfAllGone(sql: SqlStorage, commentId: string): void {
   const c = sql
@@ -802,7 +804,7 @@ export function refundAskerIfAllGone(sql: SqlStorage, commentId: string): void {
   if (!c) return;
   const open = sql
     .exec(
-      "select 1 from comment_targets where comment_id = ? and state != 'gone' limit 1",
+      "select 1 from comment_targets where comment_id = ? and kind != 'reply' and state != 'gone' limit 1",
       commentId,
     )
     .toArray();

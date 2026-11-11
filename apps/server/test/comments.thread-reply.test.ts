@@ -25,11 +25,12 @@ import {
   addReply,
   addThread,
   type CommentWho,
+  setThreadAgent,
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
-import { api, login } from "./helpers.js";
+import { api, errOf, login } from "./helpers.js";
 
 // #1900: an agent in a thread hears later replies from people.
 
@@ -847,7 +848,53 @@ describe("the thread's agents, removable (#2035)", () => {
       method: "DELETE",
       headers: { "cf-connecting-ip": "198.51.100.22" },
     });
-    expect([401, 403, 404]).toContain(g.status);
+    expect(g.status).toBe(403);
+    expect(await errOf(g)).toMatchObject({ code: "forbidden" });
+    const gr = await login(`tr-guestrole-${tag}@x.com`, "guest");
+    await api(app, R.shares(s.id), owner.cookie, {
+      method: "PUT",
+      body: { email: `tr-guestrole-${tag}@x.com`, role: "editor" },
+    });
+    for (const method of ["DELETE", "PUT"]) {
+      const r = await api(
+        app,
+        R.commentThreadAgent(s.id, t.id, s.claude),
+        gr.cookie,
+        { method },
+      );
+      // The policy floor hides the route from a guest role: 404, as for any comment write.
+      expect(r.status).toBe(404);
+      expect(await errOf(r)).toMatchObject({ code: "not_found" });
+    }
+    // A capped (guest or restricted) member who reaches the service is refused too.
+    for (const removed of [true, false])
+      await expect(
+        setThreadAgent(
+          E,
+          s.id,
+          t.id,
+          s.claude,
+          { userId: viewer.userId, short: null, capped: true },
+          removed,
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
     expect((await list(s.id, owner)).threads[0]?.agents).toHaveLength(1);
+  });
+
+  it("a third member's @-mention puts back an agent another person removed (by design)", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, owner, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    expect((await stop(s.id, t.id, s.claude, owner)).status).toBe(204);
+    expect((await list(s.id, owner)).threads[0]?.agents).toBeUndefined();
+    // The editor, a third person, @-mentions it: it is back for everyone.
+    await reply(s.id, t.id, editor, { mentions: [{ key: s.claude }] });
+    expect(
+      (await list(s.id, viewer)).threads[0]?.agents?.map((a) => a.name),
+    ).toEqual(["Claude"]);
+    bus.clear();
+    await reply(s.id, t.id, viewer);
+    expect(names()).toEqual(["Claude"]);
   });
 });
