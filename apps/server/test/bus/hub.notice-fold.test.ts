@@ -292,4 +292,14 @@ describe("comment notice folding (#1752)", () => {
     const f = await waitFor(await comeBack(s), "deliver");
     expect(f.body).not.toContain("more comment");
   });
+
+  it("asker and thread_reply notices of the two tiers never share a slot", async () => {
+    const s = await setup();
+    const art = `art${++seq}`;
+    for (const kind of ["asker", "thread_reply"] as const) {
+      await notifyAgent(e, art, 1, "t1", "c1", kind, s.to, true);
+      await notifyAgent(e, art, 1, "t1", "c2", kind, s.to, false);
+    }
+    expect(await rows(s)).toHaveLength(4);
+  });
 });

@@ -6595,7 +6595,6 @@ export class BusHub extends DurableObject<Env> {
       const reason = this.#oldHeldOver(to.namespace, lname, n.coalesceKey);
       if (reason) {
         this.#dropHeld(...key);
-        this.#settleGone(folds);
         logEvent("notice_dropped", { reason });
         return "dropped";
       }

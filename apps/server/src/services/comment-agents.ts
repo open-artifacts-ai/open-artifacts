@@ -375,12 +375,13 @@ export async function notifyAgent(
     ),
     // A reply to an ask's author coalesces per thread (#1614): replies sent
     // while its agent is away leave one waiting notice, never a pile.
+    // The tier is in every key: a "yours" notice never replaces an "others" one (#1797).
     coalesceKey:
       kind === "asker"
-        ? `${artifactId}:${threadId}:asker`
+        ? `${artifactId}:${threadId}:asker:${fromYourUser ? "yours" : "others"}`
         : kind === "thread_reply"
           ? // One waiting notice per agent per thread (#1900): replies while it is unread replace it, so it points at the latest comment.
-            `${artifactId}:${threadId}:thread_reply:${to.key}`
+            `${artifactId}:${threadId}:thread_reply:${to.key}:${fromYourUser ? "yours" : "others"}`
           : // #1752: one waiting notice per artifact, agent, kind and tier: later
             // ones replace it and the hub says how many it folded. The tier is in
             // the key so one tier's text never replaces the other's (#1797).
