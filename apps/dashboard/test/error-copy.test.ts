@@ -159,7 +159,7 @@ it.each([
 it("plan_required before a trial ever ran offers the trial", () => {
   const e = planErr("plan_required", reason("solo"));
   expect(errorCopy(e, "x", { owner: true, trialNeverRan: true })).toBe(
-    "Spaces are a team feature. Invite someone to start your free 14-day trial, or choose a plan.",
+    "Spaces are a team feature. Invite someone to start your free 30-day trial, or choose a plan.",
   );
   expect(errorCopy(e, "x", { owner: true, trialNeverRan: false })).toBe(
     "Spaces are a team feature. Choose a plan to continue.",
