@@ -4,7 +4,7 @@
 // hub, real daemon sockets, real runtime DO; notifyAgent builds the notices.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS } from "@oa/bus-protocol";
-import { NOTICE_SENDER, newId } from "@oa/shared";
+import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
   notifyAgent,
@@ -205,9 +205,9 @@ describe("comment notice folding (#1752)", () => {
     const d = await comeBack(s);
     await waitFor(d, "agent_ok");
     for (const c of ["c1", "c2"]) await seedTarget(art, c, s.to.key);
-    const mk = (c: string, notBefore?: number) => ({
+    const mk = (c: string, notBefore?: number): BusNotice => ({
       id: newId(),
-      kind: "comment" as const,
+      kind: "comment",
       from: NOTICE_SENDER,
       artifactId: art,
       version: 1,
@@ -217,7 +217,7 @@ describe("comment notice folding (#1752)", () => {
       coalesceKey: `${art}:mention:${s.to.key}:others`,
       threadId: "t1",
       commentId: c,
-      target: { kind: "mention" as const, key: s.to.key },
+      target: { kind: "mention", key: s.to.key },
       ...(notBefore ? { notBefore } : {}),
     });
     // c1 waits (not due); c2 is due and goes out live.
