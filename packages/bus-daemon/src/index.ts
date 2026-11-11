@@ -96,6 +96,7 @@ import {
   isRunning,
   liveClaudeFiles,
   liveClaudeSessions,
+  unreadableClaudePids,
 } from "./liveness/claude.ts";
 import {
   gitRecordRoot,
@@ -949,6 +950,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const takenOver = new Set<string>();
   /** Order in which this process's sessions were last seen (higher is later). */
   const seenAt = new Map<string, number>();
+  const REOPEN_SAME_PROC_MS = 30_000;
+  const reopenedAt = new Map<string, number>();
   let seenSeq = 0;
 
   /** rename ids awaiting the hub's answer, to their agent_ref; cleared with the link. */
@@ -1105,8 +1108,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         renameIfChanged(prev, s.name, s.pid);
         continue;
       }
-      // Closed by a failed delivery and still the same process.
-      if (prev && prev.pid === s.pid) continue;
+      // #2110: a record closed while its process and session file are still
+      // there (a missed read, a failed delivery) reopens when seen again: the
+      // up below replays its link hashes. A different process under the ref is
+      // the /resume case, handled the same way. The same process reopens at
+      // most once per REOPEN_SAME_PROC_MS, so a session that really refuses
+      // deliveries does not flap.
+      if (prev && prev.pid === s.pid) {
+        const last = reopenedAt.get(s.ref);
+        if (last !== undefined && Date.now() - last < REOPEN_SAME_PROC_MS)
+          continue;
+        reopenedAt.set(s.ref, Date.now());
+      }
       if (!isAbsolute(s.cwd)) continue;
       let ns: Namespace;
       try {
@@ -1152,8 +1165,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     }
     claimProofs();
     let closed = false;
+    const unreadable = unreadableClaudePids(claudeSessions.dir);
     for (const a of agents.all()) {
       if (a.kind !== "claude-code" || !a.live || liveRefs.has(a.ref)) continue;
+      // #2110: an unreadable session file of a running process is unknown, not
+      // gone: keep it live. Only positive evidence closes (pid not running, a
+      // different start time, the file removed).
+      if (unreadable.has(a.pid) && claudeSessions.isRunning(a.pid)) continue;
       a.live = false;
       closed = true;
       ev("agent_leave", agentFields(a, "session_gone"));

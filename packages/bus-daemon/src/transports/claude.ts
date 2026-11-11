@@ -355,8 +355,10 @@ export class ClaudeTransport {
         timeoutMs: this.opts.injectTimeoutMs,
       });
     } catch (e) {
-      // Nothing listening: the session is gone. Anything after connecting: retry.
-      return e instanceof InjectError && !e.connected
+      // Nothing listening: the session is gone. Anything after connecting, or
+      // a timeout (#2110: the timer can fire before 'connect' on a busy
+      // machine, which proves nothing about the session): retry.
+      return e instanceof InjectError && !e.connected && e.code !== "ETIMEDOUT"
         ? { ok: false, reason: "closed" }
         : { ok: false, reason: "timeout" };
     }

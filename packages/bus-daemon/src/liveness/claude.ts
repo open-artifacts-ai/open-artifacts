@@ -67,8 +67,37 @@ function sessionFiles(dir: string): SessionFile[] {
   return out;
 }
 
-const alive = (s: SessionFile, deps: ClaudeLivenessDeps) =>
-  deps.isRunning(s.pid) && deps.procStart(s.pid, s.stamp) === s.procStart;
+/**
+ * #2110: closed only on positive evidence. A running pid whose start time
+ * could not be read (null) is unknown and stays live; a different start time
+ * (a reused pid) or a pid that is not running is gone.
+ */
+const alive = (s: SessionFile, deps: ClaudeLivenessDeps) => {
+  if (!deps.isRunning(s.pid)) return false;
+  const start = deps.procStart(s.pid, s.stamp);
+  return start === null || start === s.procStart;
+};
+
+/** Pids whose session file exists but cannot be read or parsed right now (a rewrite in flight): unknown, not gone. */
+export function unreadableClaudePids(dir: string): Set<number> {
+  const out = new Set<number>();
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return out;
+  }
+  for (const fn of names) {
+    const m = /^(\d+)\.json$/.exec(fn);
+    if (!m) continue;
+    try {
+      JSON.parse(readFileSync(join(dir, fn), "utf8"));
+    } catch {
+      out.add(Number(m[1]));
+    }
+  }
+  return out;
+}
 
 const strip = ({ stamp: _, ...s }: SessionFile): LiveClaude => s;
 

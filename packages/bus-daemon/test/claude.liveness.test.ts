@@ -64,7 +64,6 @@ describe("claude liveness", () => {
         ...over,
       });
     expect(live({ procStart: () => "t1" })).toEqual([]);
-    expect(live({ procStart: () => null })).toEqual([]);
     expect(live({ isRunning: () => false })).toEqual([]);
     writeSession(d, 4242, { parkedJobId: "j" });
     expect(live()).toEqual([]);
@@ -224,6 +223,61 @@ describe("runDaemon claude session sync", () => {
       pid: 5151,
       live: true,
     });
+  });
+
+  it("#2110: a closed record reopens when the same process is seen again", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({ claude: syncDeps(d, running) });
+    await h.next("agent_up");
+    // Closed (a failed delivery, a missed read) while the process still runs.
+    const rec = h.daemon.agents.byRef("s4242");
+    if (!rec) throw new Error("no record");
+    rec.live = false;
+    expect(await h.next("agent_up", 2)).toMatchObject({ agent_ref: "s4242" });
+    expect(h.daemon.agents.byRef("s4242")).toMatchObject({
+      pid: 4242,
+      live: true,
+    });
+  });
+
+  it("#2116: a same-process reopen is bounded, so a refusing session does not flap", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({ claude: syncDeps(d, running) });
+    await h.next("agent_up");
+    const rec = h.daemon.agents.byRef("s4242");
+    if (!rec) throw new Error("no record");
+    rec.live = false;
+    await h.next("agent_up", 2);
+    rec.live = false; // closed again at once
+    await new Promise((r) => setTimeout(r, 200));
+    expect(h.of("agent_up")).toHaveLength(2);
+    expect(rec.live).toBe(false);
+  });
+
+  it("#2110: an unknown start time or unreadable file never closes a live session", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    let start: string | null = "t0";
+    const h = await daemonHarness({
+      claude: {
+        ...syncDeps(d, running),
+        procStart: () => start,
+      },
+    });
+    await h.next("agent_up");
+    start = null; // ps failed: unknown
+    await new Promise((r) => setTimeout(r, 150)); // several sync ticks
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+    start = "t0";
+    writeFileSync(join(d, "4242.json"), '{"pid":4242,'); // a rewrite in flight
+    await new Promise((r) => setTimeout(r, 150));
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+    expect(h.of("sessions").flatMap((x) => x.closed)).toEqual([]);
   });
 
   it("accepts the session's MCP hello after the daemon announced it", async () => {
