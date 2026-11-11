@@ -1091,3 +1091,39 @@ it("Business still says kept from when frozen", async () => {
   );
   expect(await people()).toHaveTextContent("Group sync is paused.");
 });
+
+// Team and the trial stay server-frozen: a synced person's role change and
+// removal send the same requests as Business frozen.
+for (const tier of ["business", "team", "trial"] as const) {
+  it(`${tier} + frozen: a synced person's role change PUTs and Remove DELETEs by user id`, async () => {
+    const puts = calls("PUT");
+    const dels = calls("DELETE");
+    mountHosted(ENG, { directory: "frozen" }, asTier(tier));
+    const bob = await row("Bob Builder");
+    fireEvent.click(
+      within(bob).getByRole("combobox", { name: "Role for Bob Builder" }),
+    );
+    fireEvent.click(await screen.findByRole("option", { name: "Viewer" }));
+    await waitFor(() =>
+      expect(puts.at(-1)).toEqual(
+        expect.objectContaining({
+          path: `/api/v1/spaces/${ID}/members/${BOB}`,
+          body: { role: "viewer" },
+        }),
+      ),
+    );
+    fireEvent.click(
+      within(await openMenu("Bob Builder")).getByRole("menuitem", {
+        name: "Remove from Engineering…",
+      }),
+    );
+    fireEvent.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", {
+        name: "Remove",
+      }),
+    );
+    await waitFor(() =>
+      expect(dels.at(-1)?.path).toBe(`/api/v1/spaces/${ID}/members/${BOB}`),
+    );
+  });
+}
