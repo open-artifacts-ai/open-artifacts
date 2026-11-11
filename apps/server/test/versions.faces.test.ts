@@ -104,13 +104,14 @@ describe("version faces (REST)", () => {
     expect(a?.animal?.color).toBeGreaterThanOrEqual(0);
   });
 
-  it("an unlinked publish and a person have none", async () => {
+  it("an unlinked publish reads linked false with no animal; a person has no agent", async () => {
     for (const u of [owner, memberV]) {
       const l = await rest(u);
-      for (const v of [1, 2]) {
-        const a = byV(l, v)?.agent;
-        for (const k of FACE) expect(a ?? {}).not.toHaveProperty(k);
-      }
+      expect(byV(l, 1)?.agent).toBeNull();
+      const a = byV(l, 2)?.agent;
+      expect(a?.linked).toBe(false);
+      expect(a).not.toHaveProperty("animal");
+      expect(a).not.toHaveProperty("product");
     }
   });
 

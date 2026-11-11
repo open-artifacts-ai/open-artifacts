@@ -1,9 +1,10 @@
-// #2118 item 11: agent faces in the version list (mock=agents).
+// #2118 item 11: faces in the version list (mock=agents): the newest four rows
+// are an unlinked agent, a linked agent, an outsider's view, and a person.
 import { mkdirSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 
-const ID = "Cd5fGhJkLm6nPqRs"; // Landing page
 const OUT = process.env.VERSION_SHOTS_DIR;
+const ID = "Ef7hJkLmNp8qRsTv"; // Parser script: v25..v22 are unlinked, linked, outsider, person
 
 for (const width of [1280, 390])
   for (const theme of ["light", "dark"] as const)
@@ -13,9 +14,11 @@ for (const width of [1280, 390])
       await page.goto(`/a/${ID}?mock=agents&panel=open&tab=versions`);
       const list = page.getByRole("list", { name: "Versions" });
       await expect(list).toBeVisible();
-      await expect(
-        list.locator("[data-avatar='agent'][data-linked='true']"),
-      ).toHaveCount(1);
+      const first = list.locator("li").first();
+      await expect(first.locator("[data-linked='false']")).toBeVisible();
+      await page.addStyleTag({
+        content: "ol li:nth-child(n+5){display:none}",
+      });
       await page.waitForTimeout(300);
       if (OUT) {
         mkdirSync(OUT, { recursive: true });

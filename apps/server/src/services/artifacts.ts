@@ -1361,15 +1361,20 @@ export const VERSIONS_PAGE_BYTES = 1024 * 1024;
 function versionFace(
   raw: string | null,
   outsider: boolean,
-): ReturnType<typeof linkedFields> {
-  if (!raw) return {};
+): {
+  linked?: boolean;
+  product?: string;
+  animal?: { id: string; color: number };
+} {
+  // Unlinked, to a viewer who may see faces: linked false (a dashed tile), as comments do.
+  if (!raw) return outsider ? {} : { linked: false };
   try {
     const i = JSON.parse(raw) as { identityId?: unknown; kind?: unknown };
     if (typeof i.identityId !== "string" || typeof i.kind !== "string")
-      return {};
+      return outsider ? {} : { linked: false };
     return linkedFields({ identityId: i.identityId, kind: i.kind }, outsider);
   } catch {
-    return {};
+    return outsider ? {} : { linked: false };
   }
 }
 
