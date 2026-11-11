@@ -72,7 +72,15 @@ const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
     : d === "gone"
       ? `${name} is gone · mention another agent`
       : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
-/** Delivery of each mention, in plain words. Names are text, never HTML. */
+/** #2035: how a reply reached an agent the thread already notifies. */
+const notifiedWord = (d: CommentMention["delivery"]) =>
+  d === "queued"
+    ? "Held until it's back"
+    : d === "gone"
+      ? "Expired"
+      : "Delivered";
+
+/** Delivery of each mention, and of each thread agent a reply also told, in plain words. Names are text, never HTML. */
 export function Delivery({
   c,
   guest = false,
@@ -80,7 +88,7 @@ export function Delivery({
   c: CommentT;
   guest?: boolean;
 }) {
-  if (!c.mentions?.length) return null;
+  if (!c.mentions?.length && !c.notified?.length) return null;
   return (
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>
       {c.mentions?.map((m) => (
@@ -91,6 +99,16 @@ export function Delivery({
         >
           <PartyFace p={m} guest={guest} />
           {deliveryLine(m.name, m.delivery)}
+        </li>
+      ))}
+      {c.notified?.map((m) => (
+        <li
+          key={`n-${m.key}`}
+          data-notified={m.key}
+          className="flex items-center gap-1"
+        >
+          <PartyFace p={m} guest={guest} />
+          {m.name}: {notifiedWord(m.delivery)}
         </li>
       ))}
     </ul>

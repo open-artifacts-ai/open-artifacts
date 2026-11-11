@@ -12,6 +12,7 @@ import { useCan } from "../../auth/permissions";
 import { personName } from "../../layout/person";
 import { AppLink } from "../../library/AppLink";
 import { useSentinel } from "../../library/useInfinite";
+import { AuthorFace, PartyFace } from "../comments/AuthorFace";
 import { RestoreDialog } from "../RestoreDialog";
 import { LINK_BTN, SM, TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
@@ -300,8 +301,24 @@ export function Versions({
                         )}
                         <span className="sr-only">,</span>
                       </span>{" "}
-                      <span className="text-[length:var(--oa-text-xs)] text-muted-foreground">
-                        <Marked text={author(x)} q={counting ? query : ""} />
+                      <span className="flex items-center gap-1.5 text-[length:var(--oa-text-xs)] text-muted-foreground">
+                        {/* #2118: a person's circle; a linked agent's animal or an unlinked one's dashed tile; nothing for an outsider's or an older server's agent (no fields). */}
+                        {x.agent ? (
+                          <PartyFace p={x.agent} />
+                        ) : (
+                          <AuthorFace
+                            small
+                            a={{
+                              kind: "user",
+                              id: x.createdBy.id,
+                              name: personName(x.createdBy),
+                              me: false,
+                            }}
+                          />
+                        )}
+                        <span className="min-w-0">
+                          <Marked text={author(x)} q={counting ? query : ""} />
+                        </span>
                       </span>
                     </button>
                     {/* Viewing Current: nothing to do from its row. */}

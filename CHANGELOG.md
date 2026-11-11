@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.157.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.156.0...v0.157.0) (2026-11-11)
+
+
+### Features
+
+* **docs:** doc artifact format ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2089](https://github.com/open-artifacts-ai/open-artifacts/issues/2089)) ([42c537a](https://github.com/open-artifacts-ai/open-artifacts/commit/42c537ad66649ea6da4b15f9f3f62da2e1996566))
+* **viewer:** the comments column matches the landing prototype ([#2118](https://github.com/open-artifacts-ai/open-artifacts/issues/2118), part 1) ([#2131](https://github.com/open-artifacts-ai/open-artifacts/issues/2131)) ([a974a16](https://github.com/open-artifacts-ai/open-artifacts/commit/a974a16ba24154989b210c2b3a3971908cf8369c))
+
+
+### Bug Fixes
+
+* **billing:** Solo with a Stripe customer gets Manage billing ([#2129](https://github.com/open-artifacts-ai/open-artifacts/issues/2129)) ([d1fb0a2](https://github.com/open-artifacts-ai/open-artifacts/commit/d1fb0a224996357ba45377eff11bb4b1ef164687))
+* **viewer:** full screen's controls sit in a strip above the artifact ([#2112](https://github.com/open-artifacts-ai/open-artifacts/issues/2112)) ([#2126](https://github.com/open-artifacts-ai/open-artifacts/issues/2126)) ([3d8b2b9](https://github.com/open-artifacts-ai/open-artifacts/commit/3d8b2b942693da894bb10cccbc2268d4ca02b503))
+
 ## [0.156.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.155.0...v0.156.0) (2026-11-11)
 
 

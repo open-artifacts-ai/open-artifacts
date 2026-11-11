@@ -272,6 +272,31 @@ const LinkBound = z.strictObject({
   type: z.literal("link_bound"),
 });
 
+/** #2079: most refs one `waiting_query` names. */
+export const MAX_WAITING_QUERY = 64;
+
+/**
+ * Pending mail for this machine's own away agents, by `agent_ref`
+ * (`BUS_CAPS.waitingQuery`). Answered by `waiting_counts`.
+ */
+const WaitingQuery = z.strictObject({
+  ...base,
+  type: z.literal("waiting_query"),
+  agent_refs: z.array(AgentRefSchema).min(1).max(MAX_WAITING_QUERY),
+});
+
+/**
+ * Counts (1 to 100) per asked ref. A ref that is unknown, live, on another
+ * machine, or has nothing waiting is omitted.
+ */
+const WaitingCounts = z.strictObject({
+  ...base,
+  type: z.literal("waiting_counts"),
+  counts: z
+    .record(AgentRefSchema, z.number().int().min(1).max(100))
+    .refine((c) => Object.keys(c).length <= MAX_WAITING_QUERY, "too many refs"),
+});
+
 /**
  * Most follows one member holds, so the most `follows` lists. Equals
  * FOLLOW_LIMIT in @oa/shared (a server test pins the two).
@@ -476,6 +501,7 @@ export const CLIENT_FRAMES = [
   "unfollow",
   "following",
   "link_bind",
+  "waiting_query",
 ] as const;
 export const SERVER_FRAMES = [
   "hello_ok",
@@ -492,6 +518,7 @@ export const SERVER_FRAMES = [
   "unfollowed",
   "follows",
   "link_bound",
+  "waiting_counts",
 ] as const;
 
 export const ClientFrameSchema = z.discriminatedUnion("type", [
@@ -510,6 +537,7 @@ export const ClientFrameSchema = z.discriminatedUnion("type", [
   Unfollow,
   Following,
   LinkBind,
+  WaitingQuery,
 ]);
 export const ServerFrameSchema = z.discriminatedUnion("type", [
   HelloOk,
@@ -526,6 +554,7 @@ export const ServerFrameSchema = z.discriminatedUnion("type", [
   Unfollowed,
   Follows,
   LinkBound,
+  WaitingCounts,
 ]);
 export const FrameSchema = z.discriminatedUnion("type", [
   Hello,
@@ -543,6 +572,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   Unfollow,
   Following,
   LinkBind,
+  WaitingQuery,
   HelloOk,
   AgentOk,
   ReceiptFrame,
@@ -557,6 +587,7 @@ export const FrameSchema = z.discriminatedUnion("type", [
   Unfollowed,
   Follows,
   LinkBound,
+  WaitingCounts,
 ]);
 
 export type ClientFrame = z.infer<typeof ClientFrameSchema>;

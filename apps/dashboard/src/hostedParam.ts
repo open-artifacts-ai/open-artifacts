@@ -28,7 +28,7 @@ const TOKENS: Record<string, HostedMockOptions> = {
       readOnly: false,
     },
   },
-  // Solo after a used Business trial: trialEndsAt is the past trial, so no note.
+  // Solo after a used Team trial: trialEndsAt is the past trial, so no note.
   "solo-used-trial": {
     billing: {
       tier: "solo",
@@ -37,6 +37,17 @@ const TOKENS: Record<string, HostedMockOptions> = {
       soloTrialEndsAt: null,
       graceUntil: null,
       creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  // The invite trial, a Team trial (#2113), 20 days left.
+  "plan-trial": {
+    billing: {
+      tier: "trial",
+      status: "active",
+      trialEndsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      graceUntil: null,
+      creatorsThisMonth: 2,
       readOnly: false,
     },
   },
