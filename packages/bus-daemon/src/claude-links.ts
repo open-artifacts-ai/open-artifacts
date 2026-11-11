@@ -1,4 +1,4 @@
-import { chmodSync, renameSync, writeFileSync } from "node:fs";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
 import { z } from "zod";
 import { LINK_HASHES_MAX } from "./agents.ts";
 import { readOwnFile } from "./own-file.ts";
@@ -56,14 +56,20 @@ export function readClaudeLinks(
   }
 }
 
-/** Replaces the file atomically, mode 0600. */
+/** Replaces the file atomically, mode 0600; the tmp is created fresh, never followed. */
 export function writeClaudeLinks(file: string, links: ClaudeLink[]): void {
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(
-    tmp,
-    JSON.stringify({ v: 1, links: links.slice(0, CLAUDE_LINKS_MAX) }),
-    { mode: 0o600 },
-  );
-  chmodSync(tmp, 0o600);
-  renameSync(tmp, file);
+  // A stale or planted tmp (a symlink included) is removed, not written through.
+  rmSync(tmp, { force: true });
+  try {
+    writeFileSync(
+      tmp,
+      JSON.stringify({ v: 1, links: links.slice(0, CLAUDE_LINKS_MAX) }),
+      { mode: 0o600, flag: "wx" },
+    );
+    renameSync(tmp, file);
+  } catch (e) {
+    rmSync(tmp, { force: true });
+    throw e;
+  }
 }

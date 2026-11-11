@@ -506,7 +506,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
    */
   const linksFile = cl.linksFile ?? join(home(), "claude-links.json");
   const sameProc = (pid: number, procStart: string) =>
-    running(pid) && claudeSessions.procStart(pid) === procStart;
+    running(pid) && claudeSessions.procStart(pid, procStart) === procStart;
   let saved: ClaudeLink[] = readClaudeLinks(linksFile, undefined, log).filter(
     (e) => sameProc(e.pid, e.procStart),
   );
@@ -1740,7 +1740,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         });
         if (rec.kind === "opencode") ocServiceStart.set(rec.ref, ocStart(pid));
         if (rec.kind === "codex") persistCodex();
-        if (rec.kind === "claude-code") void claude.revive(rec.ref);
+        if (rec.kind === "claude-code") {
+          // The first sync may have missed the file: seed from the saved hashes (#2050).
+          seedLinks(rec);
+          void claude.revive(rec.ref);
+        }
         conns.set(rec.ref, (conns.get(rec.ref) ?? 0) + 1);
         claimProofs();
         announceUp(rec);

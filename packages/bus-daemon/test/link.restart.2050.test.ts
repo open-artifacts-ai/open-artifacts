@@ -2,7 +2,13 @@
 // re-runs its headersHelper, so the daemon keeps the proof hashes (never the
 // proofs) in its home, keyed by pid + procStart, and replays them after the
 // restart. Waits are signals, never sleeps.
-import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { daemonLinkProof } from "@oa/bus-ipc";
@@ -83,6 +89,48 @@ describe("link hashes survive a daemon restart (#2050)", () => {
       { agent_ref: "s-a", hash: HASH },
       { agent_ref: "s-a", hash: HASH2 },
     ]);
+  });
+
+  it("a hello that beats the first sync is seeded too", async () => {
+    const w = world();
+    const one = await w.boot();
+    await daemonLinkProof({ path: one.socketPath, pid: 4242, hash: HASH });
+    await vi.waitFor(() => expect(one.of("link_bind")).toHaveLength(1));
+    await one.daemon.stop();
+
+    // The session file is not there at the restart: only the MCP hello knows it.
+    const file = join(w.dir, "4242.json");
+    const body = readFileSync(file, "utf8");
+    rmSync(file);
+    const two = await daemonHarness({
+      claude: {
+        sessionsDir: w.dir,
+        socketsDir: join(w.dir, "r"),
+        syncMs: 3_600_000,
+        procStart: () => "t0",
+        isRunning: () => true,
+        linksFile: w.linksFile,
+      },
+    });
+    two.toDaemon({
+      id: "w",
+      type: "hello_ok",
+      machine_id: "1".repeat(16),
+      machine_label: "laptop",
+      server_version: "1",
+      caps: [BUS_CAPS.ids, BUS_CAPS.link],
+    });
+    writeFileSync(file, body);
+    await two.adapter("s-a", { kind: "claude-code", pid: 4242, cwd: "/repo" });
+    const up = await two.next("agent_up");
+    two.toDaemon({
+      id: up.id,
+      type: "agent_ok",
+      agent_ref: "s-a",
+      bus_name: "open-artifacts-9e",
+    });
+    await two.next("link_bind");
+    expect(two.of("link_bind").map((f) => f.hash)).toEqual([HASH]);
   });
 
   it("a reused pid with another procStart gets nothing", async () => {
