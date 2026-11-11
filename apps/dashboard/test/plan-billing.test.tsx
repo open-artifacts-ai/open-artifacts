@@ -640,9 +640,10 @@ describe("plan cards and comparison (#2007)", () => {
     // No price checkout can't charge: Team and Business stay monthly.
     expect(card("team")).toHaveTextContent("$10 per creator a month");
     expect(card("business")).toHaveTextContent("$25 per creator a month");
-    expect(screen.queryByText(/\$8|\$20|Proposed/)).toBeNull();
+    expect(screen.queryByText(/\$100|\$250|Proposed/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Monthly" }));
     expect(card("solo")).toHaveTextContent("$1 a month");
+    expect(card("solo")).toHaveTextContent("or $10 a year");
     expect(card("team")).toHaveTextContent("$10 per creator a month");
   });
 

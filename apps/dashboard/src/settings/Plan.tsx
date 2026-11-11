@@ -253,7 +253,8 @@ export function Plan() {
             : // A paid plan changes in the billing portal, never a second checkout.
               portal
               ? () => go.mutate("portal")
-              : (tier) => go.mutate({ tier })
+              : (tier, interval) =>
+                  go.mutate(interval ? { tier, interval } : { tier })
         }
       />
     </div>

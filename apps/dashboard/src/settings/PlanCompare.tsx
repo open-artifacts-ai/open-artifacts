@@ -17,12 +17,13 @@ import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { muted } from "./ui";
 
 export type Column = "solo" | "team" | "business";
-type Interval = "month" | "year";
+export type Interval = "month" | "year";
 
 /**
- * Yearly Team and Business prices ($8 and $20 a creator a month) wait for the
- * user's yes and Billing's Stripe prices (#2007). Until then the toggle changes
- * Solo only, and nothing shows a price checkout can't charge.
+ * Yearly Team and Business ($100 and $250 a creator a year, monthly x10, the
+ * user's call 2026-11-11) wait for Billing's checkout schema and Stripe prices.
+ * Until then the toggle changes Solo only, and nothing shows a price checkout
+ * can't charge. Flipping this shows them and sends the interval to checkout.
  */
 const YEARLY_TEAM_BUSINESS = false;
 
@@ -42,32 +43,24 @@ const PRICE: Record<
   Record<Interval, { amount: string; unit: string; line: string }>
 > = {
   solo: {
-    month: { amount: "$1", unit: "a month", line: "Per instance" },
+    month: { amount: "$1", unit: "a month", line: "or $10 a year" },
     year: { amount: "$10", unit: "a year", line: "2 months free" },
   },
   team: {
     month: {
       amount: "$10",
       unit: "per creator a month",
-      line: "Billed monthly",
+      line: YEARLY_TEAM_BUSINESS ? "or $100 a year" : "Billed monthly",
     },
-    year: {
-      amount: "$8",
-      unit: "per creator a month",
-      line: "$96 a year, billed yearly",
-    },
+    year: { amount: "$100", unit: "per creator a year", line: "2 months free" },
   },
   business: {
     month: {
       amount: "$25",
       unit: "per creator a month",
-      line: "Billed monthly",
+      line: YEARLY_TEAM_BUSINESS ? "or $250 a year" : "Billed monthly",
     },
-    year: {
-      amount: "$20",
-      unit: "per creator a month",
-      line: "$240 a year, billed yearly",
-    },
+    year: { amount: "$250", unit: "per creator a year", line: "2 months free" },
   },
 };
 const POINTS: Record<Column, string[]> = {
@@ -200,7 +193,7 @@ function Toggle({
         ))}
       </fieldset>
       <span className="text-[length:var(--oa-text-sm)] font-medium text-[var(--oa-success)]">
-        {YEARLY_TEAM_BUSINESS ? "Save up to 20%" : "2 months free on Solo"}
+        {YEARLY_TEAM_BUSINESS ? "2 months free" : "2 months free on Solo"}
       </span>
     </div>
   );
@@ -215,7 +208,7 @@ export function PlanCompare({
   /** The current plan's column (a Business trial is Business). */
   column: Column;
   /** Start the existing upgrade flow; absent: no buttons (can't buy here). */
-  upgrade?: (tier: "team" | "business") => void;
+  upgrade?: (tier: "team" | "business", interval?: Interval) => void;
   busy: boolean;
   /** A Business trial: nothing is paid yet, so both upgrades show and Business says "Your trial". */
   trial?: boolean;
@@ -288,7 +281,9 @@ export function PlanCompare({
                   <Button
                     variant={c === "team" ? "default" : "outline"}
                     disabled={busy}
-                    onClick={() => upgrade(c)}
+                    onClick={() =>
+                      upgrade(c, YEARLY_TEAM_BUSINESS ? interval : undefined)
+                    }
                   >
                     Upgrade to {NAMES[c]}
                   </Button>
