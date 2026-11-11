@@ -115,7 +115,10 @@ describe("attestation", () => {
           comm: () => "opencode",
         },
       ),
-    ).toEqual({ ok: false, reason: "opencode session is not open in a TUI" });
+    ).toEqual({
+      ok: false,
+      reason: "opencode session is not open in a TUI attached to this service",
+    });
   });
 
   it("attests an opencode hello only from a process under an opencode service", () => {

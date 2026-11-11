@@ -1,6 +1,5 @@
 import { normalizeEmail } from "@oa/auth-core";
 import {
-  type Format,
   type Member,
   type Role,
   type Share,
@@ -30,6 +29,7 @@ import { logInfo, logWarn } from "../log.js";
 import { revokeAllGrants } from "../mcp/oauth-api.js";
 import { closeRuntimeSockets, revokeUserLive } from "../runtime/revoke.js";
 import { audit, userActor } from "./audit.js";
+import { apiFormat } from "./doc-format.js";
 import { inBackground, notifyShared } from "./follows.js";
 import { getSettings } from "./members.js";
 import { guestRecipients, shareReach } from "./reach.js";
@@ -250,7 +250,7 @@ export async function putShare(
 async function emailShare(
   env: Env,
   user: Member,
-  artifact: { id: string; title: string; format: string },
+  artifact: { id: string; title: string; format: string; doc: number },
   email: string,
   role: ShareRole,
   /** The methods that admit the recipient and, with none, why (shareReach). */
@@ -277,7 +277,7 @@ async function emailShare(
           appHost: env.APP_HOST,
           title: artifact.title,
           path: viewerPath(artifact.id),
-          format: artifact.format as Format,
+          format: apiFormat(artifact.format, artifact.doc),
           role: viewOnly ? "viewer" : role,
           signIn: reach.methods,
           cantSignIn: reach.recipient?.reason,

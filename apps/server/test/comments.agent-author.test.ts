@@ -136,7 +136,7 @@ describe("comment author kind (#1789)", () => {
     const id = await pub();
     const pr = await api(app, `/api/v1/artifacts/${id}`, owner.cookie, {
       method: "PATCH",
-      body: { visibility: "public" },
+      body: { visibility: "public", comments: "everyone" },
     });
     expect(pr.status).toBe(200);
     const r = await post(id, null, { guestName: "Ada" });

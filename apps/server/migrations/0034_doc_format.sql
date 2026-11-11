@@ -1,0 +1,11 @@
+-- #1100, additive. Hand-edited from the drizzle-kit output: the doc CHECK is
+-- inline in the ADD COLUMN (schema.ts can't express a column-level check
+-- without a table rebuild), as 0026 does for comments.
+-- A collaborative doc is stored with format 'markdown' and doc = 1; the API
+-- reports format "doc". This keeps the format CHECKs on artifacts and
+-- versions unchanged: widening them needs a table rebuild (0017's guarded
+-- path), which a flag column avoids. No backfill: every existing artifact
+-- gets the default, 0 (not a doc). The previous release neither reads nor
+-- writes the column, so a rollback is safe: it shows a doc as a markdown
+-- artifact.
+ALTER TABLE `artifacts` ADD `doc` integer DEFAULT 0 NOT NULL CONSTRAINT "artifacts_doc_check" CHECK("doc" in (0, 1));

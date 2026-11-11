@@ -191,7 +191,7 @@ function FullSwapped({
 }
 
 /**
- * /full and embeds: a pill 8px left of the peek chip, in its recipe. Held:
+ * /full and embeds: a pill 8px left of Comments in the strip. Held:
  * widened 4 s on arrival, then a 32px circle (embeds rest collapsed); hover
  * and focus widen it. Embedded, it opens /a/<id> in a new tab.
  */
@@ -279,13 +279,13 @@ export function FullLive({
   return null;
 }
 
-/** /full when gone: the peek chip's replacement. A link out, except embedded. */
+/** /full when gone: the strip's replacement for the exit link. A link out, except embedded. */
 export function FullGone({ id, embed }: { id: string; embed: boolean }) {
   const dot = <span className="oa-lwdot" aria-hidden="true" />;
   return embed ? (
     <span className="oa-lpill oa-lpill-gone" data-open="true">
       {dot}
-      No longer available
+      <span className="oa-lpill-text">No longer available</span>
     </span>
   ) : (
     <Link
@@ -294,7 +294,7 @@ export function FullGone({ id, embed }: { id: string; embed: boolean }) {
       data-open="true"
     >
       {dot}
-      No longer available · Exit
+      <span className="oa-lpill-text">No longer available · Exit</span>
     </Link>
   );
 }

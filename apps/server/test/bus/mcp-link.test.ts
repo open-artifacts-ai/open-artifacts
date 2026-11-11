@@ -176,6 +176,39 @@ describe("linkRequest (#1822)", () => {
     expect(asked).toEqual([]);
   });
 
+  it("#2110: an unresolved lookup logs its reason and elapsed ms, never the proof", async () => {
+    const proof = proofOf();
+    const a = await bound(proof);
+    const hash = await sha256Hex(proof);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    try {
+      const req = () => mcpReq("x", { [LINK_PROOF_HEADER]: proof });
+      await linkRequest(
+        spyHubs({ agentByProof: () => new Promise(() => {}) }).ev,
+        a.userId,
+        req(),
+      );
+      await linkRequest(
+        spyHubs({ agentByProof: async () => null }).ev,
+        a.userId,
+        req(),
+      );
+      const lines = log.mock.calls.map((c) => String(c[0]));
+      const none = lines.filter((l) => l.includes("bus_link_lookup_none"));
+      expect(none.map((l) => JSON.parse(l).reason)).toEqual([
+        "timeout",
+        "miss",
+      ]);
+      for (const l of none) {
+        expect(typeof JSON.parse(l).ms).toBe("number");
+        expect(l).not.toContain(proof);
+        expect(l).not.toContain(hash);
+      }
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it("with the bus off the header is stripped and no hub is asked", async () => {
     const proof = proofOf();
     const a = await bound(proof);

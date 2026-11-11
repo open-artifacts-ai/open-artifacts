@@ -2,10 +2,12 @@
 // until the daemon's ack, then the comment target becomes delivered; a refuse
 // makes it gone. Real hub, real daemon sockets, real runtime DO for the
 // target row. Waits are signals (a roster round trip, a state poll).
+
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
+import { SWEEP_BATCH } from "../../src/bus/hub.js";
 import { setTargetState } from "../../src/runtime/comments-store.js";
 import * as runtimeMod from "../../src/runtime/do.js";
 import { runtimeStub } from "../../src/runtime/do.js";
@@ -474,19 +476,69 @@ describe("notice_ack (#1752)", () => {
       );
   });
 
-  it("an acked notice is unaffected by the sweep (#2082)", async () => {
+  it("the sweep settles only expired rows: an acked one stays delivered, a pending one stays queued (#2082)", async () => {
     const s = await setup(ACK);
     const art = uniq("art");
-    await seedTarget(art, "c1", "k1");
-    await (await hubOf(s.userId)).deliverNotice(note(addr(s), art, "c1", "k1"));
-    const f = await waitFor(s.d, "deliver");
-    s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
+    for (const c of ["c1", "c2", "c3"]) await seedTarget(art, c, `k${c}`);
+    const hub = await hubOf(s.userId);
+    const sent: Record<string, string> = {};
+    for (const c of ["c1", "c2", "c3"]) {
+      await hub.deliverNotice(note(addr(s), art, c, `k${c}`));
+      sent[c] = (await waitFor(s.d, "deliver")).msg_id as string;
+    }
+    s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: sent.c1 });
     await vi.waitFor(async () =>
       expect(await targetState(art, "c1")).toBe("delivered"),
     );
-    await expireAcks(s);
-    await settled(s.d, s.ref);
+    // Only c2's row is past its TTL; c3 is still pending.
+    await runInDurableObject(hub, (_i, st) =>
+      st.storage.sql.exec(
+        "update notice_acks set expires_at = 1 where msg_id = ?",
+        sent.c2,
+      ),
+    );
+    await runDurableObjectAlarm(hub);
+    await vi.waitFor(async () =>
+      expect(await targetState(art, "c2")).toBe("gone"),
+    );
     expect(await targetState(art, "c1")).toBe("delivered");
+    expect(await targetState(art, "c3")).toBe("queued");
+  });
+
+  it("more than a batch of expired ack rows: the alarm re-arms and every one settles gone (#2082)", async () => {
+    const s = await setup(ACK);
+    const art = uniq("art");
+    const hub = await hubOf(s.userId);
+    const N = SWEEP_BATCH + 10;
+    for (let i = 0; i < N; i++) await seedTarget(art, `c${i}`, `k${i}`);
+    await seedTarget(art, "live", "klive");
+    // A real send arms the hub's alarm; then N expired rows sit beside it.
+    await hub.deliverNotice(note(addr(s), art, "live", "klive"));
+    await waitFor(s.d, "deliver");
+    await runInDurableObject(hub, (_i, st) => {
+      for (let i = 0; i < N; i++)
+        st.storage.sql.exec(
+          "insert into notice_acks (msg_id, machine_id, ack, expires_at) values (?, 'x', ?, 1)",
+          `exp${i}`,
+          JSON.stringify({ a: art, c: `c${i}`, k: "mention", key: `k${i}` }),
+        );
+    });
+    const left = () =>
+      runInDurableObject(
+        hub,
+        (_i, st) =>
+          st.storage.sql
+            .exec("select count(*) as n from notice_acks where expires_at = 1")
+            .one().n as number,
+      );
+    await runDurableObjectAlarm(hub);
+    expect(await left()).toBe(10);
+    // The hub set its alarm again for the rest: it fires on its own.
+    await vi.waitFor(async () => expect(await left()).toBe(0));
+    for (const i of [0, SWEEP_BATCH - 1, SWEEP_BATCH, N - 1])
+      await vi.waitFor(async () =>
+        expect(await targetState(art, `c${i}`)).toBe("gone"),
+      );
   });
 
   it("evicting the oldest ack row at the cap settles its targets gone (#2082)", async () => {

@@ -31,6 +31,7 @@ import {
   type ClientFrame,
   ClientFrameSchema,
   frameId,
+  MAX_WAITING_QUERY,
   type SendFrame,
   WireNamespaceSchema,
 } from "@oa/bus-protocol";
@@ -105,9 +106,15 @@ import {
 import { remotesFile } from "./namespaces.ts";
 import { Outbox } from "./outbox.ts";
 import {
+  type AttachDeps,
+  cachedAttach,
+  defaultAttachDeps,
+} from "./presence/attached.ts";
+import {
   lstartEpoch,
   opencodePresenceDir,
   openSessions,
+  openState,
 } from "./presence/opencode.ts";
 import { proposeReach } from "./reach.ts";
 import { Resends } from "./resend.ts";
@@ -156,6 +163,7 @@ export * from "./namespace.ts";
 export * from "./namespaces.ts";
 export * from "./outbox.ts";
 export { readOwnFile } from "./own-file.ts";
+export * from "./presence/attached.ts";
 export * from "./presence/opencode.ts";
 export * from "./resend.ts";
 export * from "./routes.ts";
@@ -269,6 +277,8 @@ export type DaemonDeps = {
     presenceDir?: string;
     /** Replaces reading presence files: the open root session ids. */
     openSessions?: () => Set<string>;
+    /** OS reads tying a TUI to its service (#1950); default the real /proc, ps and lsof. */
+    attach?: AttachDeps;
     /** Runs `opencode api`; default execFile with a 20 s kill timeout. */
     spawn?: Spawn;
     procStart?: (pid: number) => string | null;
@@ -604,7 +614,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ttlMs: cl.syncMs ?? 2000,
     jitter: 0,
   });
-  const ocComm = oc.comm ?? commOf;
   const cx = deps.codex ?? {};
   /** One per daemon: it pins each Codex process's start and the call ids used. */
   /** Hellos admitted from a proxied call (#1856): link_proof only. */
@@ -619,12 +628,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let codexTicks = 0;
   /** Each OpenCode record's service start time, taken at hello: a reused pid is not that service. */
   const ocServiceStart = new Map<string, string | null>();
+  const ocComm = oc.comm ?? commOf;
   const ocServiceGone = (ref: string, pid: number) => {
     if (!ocRunning(pid)) return true;
     const comm = ocComm(pid);
     if (comm !== null && basename(comm) !== "opencode") return true;
+    // Gone needs positive evidence: a start time that cannot be read is unknown.
     const start = ocServiceStart.get(ref);
-    return start != null && ocStart(pid) !== start;
+    if (start == null) return false;
+    const now = ocStart(pid);
+    return now !== null && now !== start;
   };
   const presenceDir = oc.presenceDir ?? opencodePresenceDir();
   /** Read on every delivery, hello and tick: the TUI decides, not the adapter's connection. */
@@ -635,6 +648,26 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         isRunning: ocRunning,
         procStartEpoch: (pid, stamp) => lstartEpoch(ocStart(pid, stamp)),
       }));
+  const ocAttached = cachedAttach(
+    oc.attach ?? defaultAttachDeps,
+    deps.bindingNow,
+  );
+  /** A hello counts only sessions in TUIs attached to its own service (#1950). */
+  const openCodeStateFor = (service: number, ref: string): boolean | null =>
+    oc.openSessions
+      ? oc.openSessions().has(ref)
+      : openState(
+          presenceDir,
+          {
+            isRunning: ocRunning,
+            procStartEpoch: (pid, stamp) => lstartEpoch(ocStart(pid, stamp)),
+            accept: ocAttached(service),
+          },
+          ref,
+        );
+  /** Only a definite yes counts: unknown (a failed OS read) is refused. */
+  const openCodeSessionsFor = (service: number, ref: string): Set<string> =>
+    openCodeStateFor(service, ref) === true ? new Set([ref]) : new Set();
   const ocSpawn = oc.spawn ?? execSpawn(20_000);
   /** Unknown until read, just before the hub link starts: no delivery comes sooner. */
   let promptIdSupported = false;
@@ -1195,6 +1228,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubVersion: string | undefined;
   /** The hub's last hello_ok listed BUS_CAPS.waiting: away roster rows carry `waiting` (#2029). */
   let hubWaiting = false;
+  /** The hub's last hello_ok listed BUS_CAPS.waitingQuery: it counts waiting mail by this machine's own away refs (#2079). */
+  let hubWaitingQuery = false;
+  /** In-flight waiting_query frames by id. */
+  const waitingAsks = new Map<
+    string,
+    (counts: Record<string, number> | undefined) => void
+  >();
   const hub = new HubConnection({
     url: `${cfg.hub.replace(/^http/, "ws").replace(/\/+$/, "")}${BUS_ROUTES.connect}`,
     token: cfg.machine_token,
@@ -1269,6 +1309,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "error": {
           if (statusRelay.answer(frame)) return;
+          if (waitingAsks.has(frame.id)) {
+            waitingAsks.get(frame.id)?.(undefined);
+            return;
+          }
           const renamed = renameIds.get(frame.id);
           if (renamed !== undefined) {
             const renamedRef = renamed.ref;
@@ -1318,6 +1362,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "link_bound":
           return;
+        case "waiting_counts":
+          waitingAsks.get(frame.id)?.(frame.counts);
+          return;
         case "body":
           // A fetched body is a peer's text, like a delivered one.
           pending.settle({ ...frame, body: stripTerminalControls(frame.body) });
@@ -1330,6 +1377,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
           hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
           hubWaiting = frame.caps?.includes(BUS_CAPS.waiting) ?? false;
+          hubWaitingQuery =
+            frame.caps?.includes(BUS_CAPS.waitingQuery) ?? false;
           hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
           hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
           hubHelloed = true;
@@ -1396,6 +1445,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubFollow = false;
       hubLink = false;
       hubLinkArg = false;
+      hubWaitingQuery = false;
       hubHelloed = false;
       statusRelay.dropped();
       receipts.release();
@@ -1441,6 +1491,24 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         }
       },
     );
+  /** #2079: pending mail for this machine's own away refs, one frame; undefined if the hub did not answer. */
+  const hubWaitingCounts = (refs: string[]) =>
+    new Promise<Record<string, number> | undefined>((resolve) => {
+      const id = frameId();
+      const done = (c: Record<string, number> | undefined) => {
+        clearTimeout(timer);
+        waitingAsks.delete(id);
+        resolve(c);
+      };
+      const timer = setTimeout(() => {
+        hub.cancel(id);
+        done(undefined);
+      }, deps.statusRosterMs ?? 1500);
+      timer.unref();
+      waitingAsks.set(id, done);
+      if (!hub.send({ v: 1, id, type: "waiting_query", agent_refs: refs }))
+        done(undefined);
+    });
   // Another live daemon holds the socket, or the path cannot be bound: a restart cannot fix either.
   const socketInUse = (e: unknown): never => {
     const code = (e as { code?: unknown })?.code;
@@ -1641,7 +1709,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
             : attest(h, {
                 // The dir liveness reads: a session is attested where it is seen.
                 sessionsDir: claudeSessions.dir,
-                openSessions: openCodeSessions,
+                openSessions: openCodeSessionsFor,
                 ancestors: oc.ancestors,
                 comm: oc.comm,
                 codex: codexCheck,
@@ -1702,13 +1770,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           )
             prev.pid = pid;
         }
-        // `opencode service restart`: the session moves only once its old service is gone.
+        // The incumbent keeps a live record (#1950). It moves to another
+        // service only once its own service is gone (`opencode service
+        // restart`, a reused pid) or no longer has the session open in a TUI
+        // attached to it (reopened under another service). Otherwise a second
+        // service could take B's record and deliveries. Residual, accepted
+        // under #1856 option A: a same-user process under one service that
+        // claims first can block B through another service until then (DoS).
         if (
           prev?.live &&
           prev.kind === "opencode" &&
           hello.kind === "opencode" &&
           prev.pid !== pid &&
-          ocServiceGone(prev.ref, prev.pid)
+          (ocServiceGone(prev.ref, prev.pid) ||
+            openCodeStateFor(prev.pid, prev.ref) === false)
         ) {
           prev.pid = pid;
           ocServiceStart.set(prev.ref, ocStart(pid));
@@ -2162,6 +2237,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (wakeLogged.size > 500) wakeLogged.clear();
         log(msg);
       };
+      // #2079: one frame for every held row, no live agent needed.
+      let counts: Record<string, number> | undefined;
+      if (hubWaitingQuery && hub.open && hubVersion !== undefined) {
+        const refs = rows
+          .filter((r) => held.has(r.ref))
+          .map((r) => r.ref)
+          .slice(0, MAX_WAITING_QUERY);
+        if (refs.length) {
+          counts = await hubWaitingCounts(refs);
+          if (!counts) log("codex wake skipped: the hub did not answer");
+        }
+      }
       for (const r of rows) {
         const h = held.get(r.ref);
         if (!h) continue;
@@ -2180,35 +2267,47 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           )
             continue;
         }
-        const asker = agents.all().find((a) => a.live);
-        if (!asker || !hub.open || hubVersion === undefined) {
-          once(key, `${who} skipped: no live agent to ask the hub`);
-          continue;
+        let waitingN: number | undefined;
+        if (hubWaitingQuery) {
+          if (!counts) continue;
+          waitingN = counts[r.ref];
+        } else {
+          // Prefer an asker in the thread's namespace, then a global one.
+          const live = agents.all().filter((a) => a.live);
+          const asker =
+            live.find((a) => a.namespace === r.namespace) ??
+            live.find((a) => a.global) ??
+            live[0];
+          if (!asker || !hub.open || hubVersion === undefined) {
+            once(key, `${who} skipped: no live agent to ask the hub`);
+            continue;
+          }
+          if (!hubWaiting) {
+            once(key, `${who} skipped: the hub does not report waiting mail`);
+            continue;
+          }
+          const last = wakeAsked.get(key);
+          if (last !== undefined && now - last < (cx.wakeAskMs ?? 300_000))
+            continue;
+          wakeAsked.set(key, now);
+          const roster = await hubRoster(asker.ref);
+          if (!roster) {
+            once(key + now, `${who} skipped: the hub did not answer`);
+            continue;
+          }
+          waitingN = roster.find(
+            (a) =>
+              a.state === "away" &&
+              a.name === r.name &&
+              a.namespace === r.namespace &&
+              (a.machine_label === undefined || a.machine_label === cfg.label),
+          )?.waiting;
         }
-        if (!hubWaiting) {
-          once(key, `${who} skipped: the hub does not report waiting mail`);
-          continue;
-        }
-        const last = wakeAsked.get(key);
-        if (last !== undefined && now - last < (cx.wakeAskMs ?? 300_000))
-          continue;
-        wakeAsked.set(key, now);
-        const roster = await hubRoster(asker.ref);
-        if (!roster) {
-          once(key + now, `${who} skipped: the hub did not answer`);
-          continue;
-        }
-        const row = roster.find(
-          (a) =>
-            a.state === "away" &&
-            a.name === r.name &&
-            a.namespace === r.namespace &&
-            (a.machine_label === undefined || a.machine_label === cfg.label),
-        );
-        if (!row?.waiting) {
+        if (!waitingN) {
           once(key, `${who} skipped: no mail waiting`);
           continue;
         }
+        const row = { waiting: waitingN };
         if (
           n > 1 &&
           row.waiting === wakeWaiting.get(key) &&

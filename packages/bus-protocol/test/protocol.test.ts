@@ -168,6 +168,7 @@ describe("frames", () => {
       "unfollow",
       "following",
       "link_bind",
+      "waiting_query",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -184,6 +185,7 @@ describe("frames", () => {
       "unfollowed",
       "follows",
       "link_bound",
+      "waiting_counts",
     ]);
   });
   it("formats a rejection with the frame id when there is one", () => {

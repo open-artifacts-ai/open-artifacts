@@ -393,7 +393,21 @@ export function createCommentMock({
       const bad = guard(params.id);
       if (bad) return bad;
       const s = new URL(request.url).searchParams.get("status") ?? "all";
-      const all = list(String(params.id));
+      // A signed-out caller (no session, no guest token) can edit or delete nothing (#2080).
+      const anon =
+        !request.headers.has("cookie") &&
+        !/^bearer\s/i.test(request.headers.get("authorization") ?? "");
+      const all = list(String(params.id)).map((t) =>
+        anon
+          ? {
+              ...t,
+              comments: t.comments.map((c) => ({
+                ...c,
+                can: { edit: false, delete: false },
+              })),
+            }
+          : t,
+      );
       return HttpResponse.json({
         threads: all.filter((t) => s === "all" || t.status === s),
         open: open(String(params.id)),

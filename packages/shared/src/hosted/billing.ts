@@ -7,7 +7,7 @@ import { z } from "zod";
 /**
  * The tier billing stores (oa-<p>-billing `tiers.tier`): solo is one person
  * and their agents ($1/month or $10/year after a 30-day no-card trial), trial
- * is everything in Business for 14 days from the first invite, team and
+ * is everything in Business for 30 days from the first invite, team and
  * business are paid per creator. free is the pre-Solo value: hosted billing
  * that predates Solo still answers it, and it keeps today's rules (the solo
  * lock, the first invite starts the trial). Billing must report a Solo whose
@@ -37,7 +37,7 @@ export type BillingStatus = z.infer<typeof BillingStatusSchema>;
  * - solo: a Solo instance (one person); team features need a plan.
  * - solo_unpaid: no paid Solo subscription (lapsed, past due after the
  *   grace period, on tier solo): view-only for everyone, the owner too.
- * - trial_ended: the 14-day trial is over and no plan was bought.
+ * - trial_ended: the 30-day trial is over and no plan was bought.
  * - lapsed: the subscription ended or was never paid (billing said lapsed).
  * - payment_failed: past due and the grace period is over.
  * - suspended: an operator suspended the instance.
@@ -135,7 +135,7 @@ export type PlanLimitDetails = z.infer<typeof PlanLimitDetailsSchema>;
 /** Last good tier kept this long when billing is unreachable (OUR outage). */
 export const PLAN_STALE_MS = 7 * 86_400_000;
 /** The trial billing starts at the first invite. */
-export const TRIAL_DAYS = 14;
+export const TRIAL_DAYS = 30;
 
 /**
  * POST R.billingCheckout body: the plan to buy. Solo also names the billing

@@ -14,7 +14,7 @@ type Snippet = {
  * What setup prints. Claude Code, Codex, OpenCode and Cursor default to OAuth: the
  * snippet is only the MCP URL and the user signs in, so no token is ever in a
  * command line or config. Token fallbacks use Codex's
- * `bearer_token_env_var` (env only), OpenCode's `{file:}` and the
+ * `http_headers_helper` (Codex 0.163+, reads the file), OpenCode's `{file:}` and the
  * generic JSON. `tokenFile` is the absolute PAT file; undefined under --ci,
  * where no file exists.
  */
@@ -57,8 +57,10 @@ export function fileSnippets(
     out.codexToken = {
       title: "Codex CLI (token file, for no OAuth)",
       path: "~/.codex/config.toml",
-      note: `only if OAuth is unavailable; launch it as: OA_TOKEN="$(cat ${tokenFile})" codex . Don't edit shell profiles.`,
-      text: `[mcp_servers.${name}]\nurl = "${url}"\nbearer_token_env_var = "OA_TOKEN"`,
+      note: `only if OAuth is unavailable; needs Codex 0.163 or later, which runs the helper to read ${tokenFile} each time it connects`,
+      text: `[mcp_servers.${name}]\nurl = "${url}"\nhttp_headers_helper = ${JSON.stringify(
+        `T=$(cat ${tokenFile}) && printf '{"Authorization":"Bearer %s"}' "$T"`,
+      )}`,
     };
     out.opencodeToken = {
       title: "OpenCode (token file, for no OAuth)",
