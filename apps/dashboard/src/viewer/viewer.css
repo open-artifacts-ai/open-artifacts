@@ -192,9 +192,9 @@
 }
 
 /* /full and embeds (#2189): one compact group at the top right, over the
-   artifact. 32px high on a solid kit surface with a border; 55% opacity at
-   rest, solid on hover, focus within, or a pointer near (data-near). It never
-   hides and never moves. Comments (icon and count), the new-version pill,
+   artifact. 32px high on a solid kit surface with a border, always. At rest
+   only the icons and count are muted; on hover, focus within, or while the
+   new-version pill shows they are full contrast. It never hides or moves. Comments (icon and count), the new-version pill,
    then Exit. It comes before the frame in the DOM, so Tab reaches it first. */
 .oa-fsbar {
   position: fixed;
@@ -215,19 +215,6 @@
   box-shadow:
     0 0 0 1px var(--oa-border-strong),
     0 1px 4px rgb(0 0 0 / 0.16);
-  opacity: 0.55;
-  transition: opacity 150ms cubic-bezier(0.2, 0, 0, 1);
-}
-.oa-fsbar:hover,
-.oa-fsbar:focus-within,
-.oa-fsbar[data-near="true"],
-.oa-fsbar:has(.oa-lpill) {
-  opacity: 1;
-}
-@media (prefers-reduced-motion: reduce) {
-  .oa-fsbar {
-    transition: none;
-  }
 }
 .oa-fsbar > * + * {
   border-left: 1px solid var(--oa-border);
@@ -251,12 +238,27 @@
   border-radius: 0;
   background: transparent;
   box-shadow: none;
-  color: var(--oa-text);
+  color: var(--oa-text-muted);
   font: inherit;
   font-weight: 500;
   white-space: nowrap;
   text-decoration: none;
   cursor: pointer;
+  transition: color 150ms cubic-bezier(0.2, 0, 0, 1);
+}
+.oa-fsbar:hover :is(.oa-fsx, .oa-fscomments, .oa-opencomment),
+.oa-fsbar:focus-within :is(.oa-fsx, .oa-fscomments, .oa-opencomment),
+.oa-fsbar:has(.oa-lpill) :is(.oa-fsx, .oa-fscomments, .oa-opencomment),
+.oa-fsbar .oa-lpill {
+  color: var(--oa-text);
+}
+@media (prefers-reduced-motion: reduce) {
+  .oa-fsx,
+  .oa-fsbar .oa-fscomments,
+  .oa-fsbar .oa-opencomment,
+  .oa-fsbar .oa-lpill {
+    transition: none;
+  }
 }
 .oa-fsbar > :first-child {
   border-radius: 8px 0 0 8px;
@@ -270,7 +272,6 @@
 .oa-fsx:hover,
 .oa-fsx:focus,
 .oa-fsx:visited {
-  color: var(--oa-text);
   text-decoration: none;
 }
 .oa-fsx:hover,

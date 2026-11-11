@@ -99,11 +99,16 @@ const box = async (l: import("@playwright/test").Locator) =>
     width: number;
     height: number;
   };
-const opacity = (l: import("@playwright/test").Locator) =>
-  l.evaluate((e) => getComputedStyle(e).opacity);
+const color = (l: import("@playwright/test").Locator) =>
+  l.evaluate((e) => getComputedStyle(e).color);
+const surface = (l: import("@playwright/test").Locator) =>
+  l.evaluate((e) => {
+    const s = getComputedStyle(e);
+    return [s.opacity, s.backgroundColor];
+  });
 
 test.describe("full-screen controls", () => {
-  test("a 32px group 8px from the top right, 55% at rest, icons only, names stable", async ({
+  test("a 32px solid group 8px from the top right, icons only, names stable", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
@@ -114,7 +119,9 @@ test.describe("full-screen controls", () => {
     await expect(chip).toBeVisible();
     await expect(chip).toHaveAttribute("href", `/a/${ID}`);
     await expect(chip).toHaveText("");
-    expect(await opacity(bar)).toBe("0.55");
+    const [op, bg] = await surface(bar);
+    expect(op).toBe("1");
+    expect(bg).not.toMatch(/rgba\(.*, 0\)$|transparent/);
     expect(await bar.evaluate((e) => getComputedStyle(e).position)).toBe(
       "fixed",
     );
@@ -135,7 +142,7 @@ test.describe("full-screen controls", () => {
     });
   });
 
-  test("full opacity on hover, on focus, and with the pointer near", async ({
+  test("the surface stays solid; the icons are muted at rest and full contrast on hover and focus", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 1280, height: 800 });
@@ -143,31 +150,15 @@ test.describe("full-screen controls", () => {
     const chip = page.getByRole("link", { name: TOP });
     const bar = page.locator(".oa-fsbar");
     await expect(chip).toBeVisible();
-    await chip.hover();
-    await expect.poll(() => opacity(bar)).toBe("1");
     await page.mouse.move(10, 400);
-    await expect.poll(() => opacity(bar)).toBe("0.55");
-    // Near is measured from pointermove on the top document (events over the
-    // artifact's frame never reach it), so the zone is driven with synthetic ones.
-    const g = await box(bar);
-    const move = (x: number, y: number) =>
-      page.evaluate(
-        ([cx, cy]) =>
-          document.dispatchEvent(
-            new PointerEvent("pointermove", {
-              clientX: cx,
-              clientY: cy,
-              pointerType: "mouse",
-            }),
-          ),
-        [x, y],
-      );
-    await move(g.x - 60, g.y + g.height / 2);
-    await expect.poll(() => opacity(bar)).toBe("1");
-    await move(g.x - 200, 400);
-    await expect.poll(() => opacity(bar)).toBe("0.55");
+    const rest = await color(chip);
+    await chip.hover();
+    await expect.poll(() => color(chip)).not.toBe(rest);
+    expect((await surface(bar))[0]).toBe("1");
+    await page.mouse.move(10, 400);
+    await expect.poll(() => color(chip)).toBe(rest);
     await page.keyboard.press("Tab");
-    await expect.poll(() => opacity(bar)).toBe("1");
+    await expect.poll(() => color(chip)).not.toBe(rest);
   });
 
   test("Tab reaches Comments and Exit before the artifact; the tooltip and an inset ring show on focus", async ({
@@ -211,22 +202,22 @@ test.describe("full-screen controls", () => {
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   });
 
-  test("reduced motion: no opacity transition", async ({ page }) => {
+  test("reduced motion: no colour transition", async ({ page }) => {
     await page.emulateMedia({ reducedMotion: "reduce" });
     await page.goto(FULL);
-    const bar = page.locator(".oa-fsbar");
-    await expect(bar).toBeVisible();
+    const chip = page.getByRole("link", { name: TOP });
+    await expect(chip).toBeVisible();
     expect(
-      await bar.evaluate((e) => getComputedStyle(e).transitionDuration),
+      await chip.evaluate((e) => getComputedStyle(e).transitionDuration),
     ).toBe("0s");
   });
 
-  test("motion: opacity 150ms cubic-bezier(.2,0,0,1)", async ({ page }) => {
+  test("motion: colour 150ms cubic-bezier(.2,0,0,1)", async ({ page }) => {
     await page.goto(FULL);
-    const bar = page.locator(".oa-fsbar");
-    await expect(bar).toBeVisible();
+    const chip = page.getByRole("link", { name: TOP });
+    await expect(chip).toBeVisible();
     expect(
-      await bar.evaluate((e) => {
+      await chip.evaluate((e) => {
         const s = getComputedStyle(e);
         return [
           s.transitionProperty,
@@ -234,7 +225,7 @@ test.describe("full-screen controls", () => {
           s.transitionTimingFunction,
         ];
       }),
-    ).toEqual(["opacity", "0.15s", "cubic-bezier(0.2, 0, 0, 1)"]);
+    ).toEqual(["color", "0.15s", "cubic-bezier(0.2, 0, 0, 1)"]);
   });
 
   test("hidden when printed", async ({ page }) => {

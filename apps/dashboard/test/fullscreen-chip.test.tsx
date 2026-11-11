@@ -5,7 +5,6 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import {
   act,
-  cleanup,
   fireEvent,
   render,
   screen,
@@ -16,7 +15,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeQueryClient } from "../src/api/queryClient";
 import { RedirectProvider } from "../src/auth/redirect";
 import { createAppRouter } from "../src/router";
-import { NEAR_PX } from "../src/viewer/FullScreenEscape";
 import { installHarness } from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
@@ -54,7 +52,7 @@ const chip = (name = TOP) => screen.findByRole("link", { name });
 const tick = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
 beforeEach(() => {
   vi.useFakeTimers({
-    toFake: ["setTimeout", "clearTimeout", "Date"],
+    toFake: ["setTimeout", "clearTimeout"],
     shouldAdvanceTime: true,
   });
 });
@@ -93,53 +91,6 @@ describe("full-screen controls, top level", () => {
     expect(
       a.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-  });
-
-  it("is near when the pointer is within NEAR_PX of the group, and clears on leave", async () => {
-    mount(FULL);
-    const a = await chip();
-    const bar = a.closest(".oa-fsbar") as HTMLElement;
-    vi.spyOn(bar, "getBoundingClientRect").mockReturnValue({
-      left: 900,
-      right: 1000,
-      top: 8,
-      bottom: 40,
-      width: 100,
-      height: 32,
-      x: 900,
-      y: 8,
-      toJSON: () => ({}),
-    });
-    expect(bar).toHaveAttribute("data-near", "false");
-    fireEvent.pointerMove(document, {
-      clientX: 900 - NEAR_PX + 1,
-      clientY: 40,
-      pointerType: "mouse",
-    });
-    expect(bar).toHaveAttribute("data-near", "true");
-    await tick(100);
-    fireEvent.pointerMove(document, {
-      clientX: 900 - NEAR_PX - 20,
-      clientY: 40,
-      pointerType: "mouse",
-    });
-    expect(bar).toHaveAttribute("data-near", "false");
-    await tick(100);
-    fireEvent.pointerMove(document, { clientX: 950, clientY: 20 });
-    expect(bar).toHaveAttribute("data-near", "true");
-    fireEvent.pointerLeave(document.documentElement);
-    expect(bar).toHaveAttribute("data-near", "false");
-  });
-
-  it("stops listening when it unmounts", async () => {
-    const remove = vi.spyOn(document, "removeEventListener");
-    const { unmount } = (() => {
-      mount(FULL);
-      return { unmount: () => cleanup() };
-    })();
-    await chip();
-    unmount();
-    expect(remove.mock.calls.some(([t]) => t === "pointermove")).toBe(true);
   });
 
   it("a click follows the link", async () => {

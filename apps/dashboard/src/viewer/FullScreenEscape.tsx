@@ -7,13 +7,8 @@ import {
 } from "@oa/ui/shadcn";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, X } from "lucide-react";
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { FullGone } from "./LiveChip";
-
-/** The pointer counts as near the group within this many px of it. */
-export const NEAR_PX = 80;
-/** pointermove is handled at most this often. */
-const THROTTLE_MS = 50;
 
 const embedded = () => {
   try {
@@ -43,9 +38,9 @@ export function FsTip({
 
 /** The full-screen view's controls (#2189): one compact group floating at the
     top right, over the artifact. Comments (`live`, with the new-version pill)
-    then Exit. Embedded, Exit opens the viewer in a new tab instead. It rests
-    at 55% opacity and is solid on hover, focus within, or a pointer within
-    NEAR_PX; it never hides or moves. `gone` swaps Exit for "No longer
+    then Exit. Embedded, Exit opens the viewer in a new tab instead. The surface
+    is always solid; the icons are muted at rest and full contrast on hover or
+    focus within. It never hides or moves. `gone` swaps Exit for "No longer
     available". */
 export function FullScreenEscape({
   artifact,
@@ -57,51 +52,8 @@ export function FullScreenEscape({
   gone?: boolean;
 }) {
   const [inFrame] = useState(embedded);
-  const [near, setNear] = useState(false);
-  const bar = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const to = viewerPath(artifact.id);
-
-  useEffect(() => {
-    let last = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const measure = (x: number, y: number) => {
-      const r = bar.current?.getBoundingClientRect();
-      if (!r) return;
-      setNear(
-        x >= r.left - NEAR_PX &&
-          x <= r.right + NEAR_PX &&
-          y >= r.top - NEAR_PX &&
-          y <= r.bottom + NEAR_PX,
-      );
-    };
-    // Throttled, with a trailing call so the last position always lands.
-    const onMove = (e: PointerEvent) => {
-      if (e.pointerType === "touch") return;
-      clearTimeout(timer);
-      const wait = last + THROTTLE_MS - Date.now();
-      if (wait <= 0) {
-        last = Date.now();
-        measure(e.clientX, e.clientY);
-      } else {
-        timer = setTimeout(() => {
-          last = Date.now();
-          measure(e.clientX, e.clientY);
-        }, wait);
-      }
-    };
-    const onLeave = () => {
-      clearTimeout(timer);
-      setNear(false);
-    };
-    document.addEventListener("pointermove", onMove);
-    document.documentElement.addEventListener("pointerleave", onLeave);
-    return () => {
-      clearTimeout(timer);
-      document.removeEventListener("pointermove", onMove);
-      document.documentElement.removeEventListener("pointerleave", onLeave);
-    };
-  }, []);
 
   useEffect(() => {
     if (inFrame) return;
@@ -115,14 +67,7 @@ export function FullScreenEscape({
   const label = inFrame ? "Open in Open Artifacts" : "Exit full screen";
   return (
     <TooltipProvider delayDuration={300}>
-      <div
-        className="oa-fsbar"
-        ref={bar}
-        data-near={near}
-        // The artifact's frame swallows pointer events, so leaving the group
-        // into it is the last signal the top document gets.
-        onPointerLeave={() => setNear(false)}
-      >
+      <div className="oa-fsbar">
         {live}
         {gone ? (
           <FullGone id={artifact.id} embed={inFrame} />
