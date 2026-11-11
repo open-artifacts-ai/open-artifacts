@@ -187,10 +187,17 @@ const recordedStateDir = (deps: AdapterDeps): string | undefined => {
   const d = (r as { stateDir?: unknown } | null)?.stateDir;
   return typeof d === "string" ? d : undefined;
 };
+const thisStateDir = (deps: AdapterDeps): string =>
+  openclawStateDir(deps.home, deps.env ?? {});
+/** Clears the record only when it is for this state dir: another one's stays. */
 const forgetInstall = (deps: AdapterDeps) => {
-  if (recordedStateDir(deps) !== undefined)
+  if (recordedStateDir(deps) === thisStateDir(deps))
     updateInstallFile(installFile(deps), { openclaw: {} });
 };
+const rememberInstall = (deps: AdapterDeps) =>
+  updateInstallFile(installFile(deps), {
+    openclaw: { stateDir: thisStateDir(deps) },
+  });
 
 const exec = async (
   deps: Pick<AdapterDeps, "exec" | "home" | "env">,
@@ -307,6 +314,7 @@ export async function installOpenclaw(
     if (optedOut && kind(dest) === "dir") rmSync(habitsFile, { force: true });
   };
   if (state === "current") {
+    rememberInstall(deps);
     dropHabitsIfOptedOut();
     // Nothing to install; nothing to enable if it already loads.
     if ((await openclawVerify(deps)) === undefined) return "done";
@@ -348,9 +356,7 @@ export async function installOpenclaw(
       join(dest, OPENCLAW_MARKER),
       `managed by the Open Artifacts bus installer: edits are replaced on reinstall. ${pluginHash(shipped)}\n`,
     );
-    updateInstallFile(installFile(deps), {
-      openclaw: { stateDir: openclawStateDir(deps.home, deps.env ?? {}) },
-    });
+    rememberInstall(deps);
     // A habits.on in the shipped folder is not the user's yes.
     rmSync(habitsFile, { force: true });
     restore();
@@ -383,7 +389,7 @@ export async function uninstallOpenclaw(
     // its config. Nothing to keep here, so a failure is a note, not an error.
     // Only when our install record says we put the plugin in this state dir.
     if (
-      recordedStateDir(deps) !== openclawStateDir(deps.home, deps.env ?? {}) ||
+      recordedStateDir(deps) !== thisStateDir(deps) ||
       openclawNix(deps.env) ||
       !deps.which("openclaw")
     )
@@ -394,10 +400,9 @@ export async function uninstallOpenclaw(
       "--force",
       OPENCLAW_PLUGIN_ID,
     ]);
-    if (r.code === 0) {
-      forgetInstall(deps);
-      return "done";
-    }
+    // Success or not, the note shows once: a failed run clears the record too.
+    forgetInstall(deps);
+    if (r.code === 0) return "done";
     notes.push(OPENCLAW_STRAY_NOTE(why(r)));
     return "none";
   }

@@ -8,7 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { build } from "esbuild";
 
 const root = join(import.meta.dirname, "..");
@@ -17,6 +17,11 @@ const at = (p) => join(root, p);
 const out = process.env.OA_BUS_OPENCLAW_OUT
   ? resolve(process.env.OA_BUS_OPENCLAW_OUT)
   : at("dist");
+// The folder is removed before the build: never one that is not a plugin output.
+if (!["openclaw", "dist"].includes(basename(out)))
+  throw new Error(
+    `OA_BUS_OPENCLAW_OUT must end in "openclaw" or "dist", got ${out}`,
+  );
 const pkg = JSON.parse(readFileSync(at("package.json"), "utf8"));
 const version = process.env.OA_BUS_CLI_VERSION || pkg.version;
 
