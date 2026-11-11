@@ -19,7 +19,7 @@ import { type ArtifactRow, accessLevel, callerOf } from "../auth/authz.js";
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
-import { logInfo } from "../log.js";
+import { logError, logInfo } from "../log.js";
 import {
   bodyOk,
   type NewExtras,
@@ -53,7 +53,7 @@ import {
   indexStatus,
   reconcileAsks,
 } from "./asks.js";
-import { agentIdentityOf, agentNamesOf } from "./bus.js";
+import { agentIdentityOf, agentNamesOf, busHub } from "./bus.js";
 import {
   agentKey,
   agentRoster,
@@ -1692,6 +1692,54 @@ export async function setThreadAgent(
   await call(() =>
     stub(env, artifactId).commentsParticipantSet({ threadId, key, removed }),
   );
+  if (removed) await withdrawHeldFor(env, artifactId, threadId, p);
+}
+
+/**
+ * #2175: removing an agent withdraws the notices from the thread still held
+ * for it on its owner's hub. Never throws: a failure leaves them to expire.
+ */
+async function withdrawHeldFor(
+  env: Env,
+  artifactId: string,
+  threadId: string,
+  p: ParticipantRow,
+): Promise<void> {
+  try {
+    const hub = busHub(env, p.owner);
+    if (!hub) return;
+    const held = await call(() =>
+      stub(env, artifactId).commentsHeldTargets({ threadId, key: p.key }),
+    );
+    if (held.length === 0) return;
+    const { withdrawn } = await hub.withdrawHeld({
+      namespace: p.namespace,
+      name: p.name,
+      ...(p.identity ? { identityId: p.identity.identityId } : {}),
+      artifactId,
+      commentIds: [...new Set(held.map((h) => h.commentId))],
+    });
+    const targets = withdrawn
+      .filter(
+        (w) =>
+          w.key === p.key &&
+          (w.kind === "mention" || w.kind === "asker" || w.kind === "reply"),
+      )
+      .map((w) => ({
+        commentId: w.commentId,
+        kind: w.kind as "mention" | "asker" | "reply",
+      }));
+    if (targets.length === 0) return;
+    await call(() =>
+      stub(env, artifactId).commentsTargetsWithdraw({
+        threadId,
+        key: p.key,
+        targets,
+      }),
+    );
+  } catch (e) {
+    logError("comment_withdraw_held_failed", e);
+  }
 }
 
 /** Edits a comment's body: its author only (403 forbidden). */
