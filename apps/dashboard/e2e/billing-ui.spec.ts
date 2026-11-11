@@ -69,7 +69,7 @@ for (const width of WIDTHS)
         name: "Add member and start trial",
       });
       const notice = dialog.getByText(
-        "This starts your 30-day trial of Business.",
+        "This starts your 30-day Team trial.",
       );
       if (token === "solo") {
         await expect(notice).toBeVisible();
@@ -106,7 +106,7 @@ for (const width of WIDTHS)
       await expect(dialog).toBeVisible();
       await expect(dialog).toHaveCSS("opacity", "1");
       const notice = dialog.getByText(
-        "This starts your 30-day trial of Business.",
+        "This starts your 30-day Team trial.",
       );
       if (label === "never-ran") {
         await expect(notice).toBeVisible();
