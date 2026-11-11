@@ -71,7 +71,10 @@ const breakers = new Map<
 >();
 const breakerOf = (store: StoreKind) => {
   let b = breakers.get(store);
-  if (!b) breakers.set(store, (b = { failures: [], openUntil: 0 }));
+  if (!b) {
+    b = { failures: [], openUntil: 0 };
+    breakers.set(store, b);
+  }
   return b;
 };
 
