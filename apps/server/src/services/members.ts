@@ -282,7 +282,7 @@ export async function inviteMember(
     );
   }
   // Hosted billing: the first invite on a free instance passes only if the
-  // 14-day trial starts (signed POST /trial/start, idempotent). Billing
+  // 30-day trial starts (signed POST /trial/start, idempotent). Billing
   // unreachable, no gate or a non-2xx: 503 billing_unavailable and no user
   // is created. An address that already exists is the usual conflict, and
   // starts nothing.

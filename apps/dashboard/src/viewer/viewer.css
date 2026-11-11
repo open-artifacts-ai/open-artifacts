@@ -105,94 +105,89 @@
   }
 }
 
-/* Full-screen escape (#290, option A): the peek chip. It floats on the
-   artifact, so its colors ignore the app theme. */
+/* Full-screen strip (#2112, option B): the exit link sits in the strip, on the
+   app's chrome colors. */
 .oa-fsx {
-  position: fixed;
-  right: max(12px, env(safe-area-inset-right));
-  bottom: max(12px, env(safe-area-inset-bottom));
-  z-index: 10;
+  position: relative;
   box-sizing: border-box;
   display: inline-flex;
+  flex: none;
   align-items: center;
   gap: 6px;
-  height: 32px;
-  max-width: 32px;
-  padding: 0 6px;
-  overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 0.26);
-  border-radius: 16px;
-  background: rgb(21 24 28 / 0.84);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 2px 10px rgb(0 0 0 / 0.22);
-  color: #e9ebee;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--oa-border);
+  border-radius: 6px;
+  background: var(--oa-bg);
+  color: var(--oa-text);
   font-family: var(--oa-font-sans);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1;
   white-space: nowrap;
   text-decoration: none;
-  opacity: 0.72;
-  transition:
-    max-width 200ms cubic-bezier(0.2, 0, 0, 1),
-    padding 200ms cubic-bezier(0.2, 0, 0, 1),
-    opacity 200ms cubic-bezier(0.2, 0, 0, 1);
 }
-/* The hit area reaches 6px past every edge: 44px tall on touch. */
+/* The hit area reaches 4px past every edge: 36px tall on touch. */
 .oa-fsx::before {
   content: "";
   position: absolute;
-  inset: -6px;
-}
-.oa-fsx[data-open="true"] {
-  max-width: 260px;
-  padding: 0 12px 0 8px;
-  opacity: 1;
+  inset: -4px;
 }
 .oa-fsx:hover,
 .oa-fsx:focus,
 .oa-fsx:visited {
-  color: #e9ebee;
+  color: var(--oa-text);
   text-decoration: none;
 }
+.oa-fsx:hover {
+  background: var(--oa-chrome);
+}
 .oa-fsx:focus-visible {
-  outline: 2px solid #fff;
+  outline: 2px solid var(--oa-accent);
   outline-offset: 1px;
-  box-shadow: 0 0 0 5px #2350d0;
+}
+.oa-fsx img,
+.oa-fsx-arrow,
+.oa-fsx-x {
+  flex: none;
 }
 .oa-fsx img {
-  flex: none;
   width: 18px;
   height: 18px;
 }
-/* The label stays in the DOM when collapsed, so the name never changes. */
-.oa-fsx-label,
-.oa-fsx-arrow {
-  opacity: 0;
-  transition: opacity 200ms cubic-bezier(0.2, 0, 0, 1);
+/* The light-ink mark on dark chrome, the dark-ink mark on light. */
+.oa-fsx-dk {
+  display: none;
 }
-.oa-fsx-arrow {
-  flex: none;
-  width: 12px;
-  height: 12px;
-}
-.oa-fsx[data-open="true"] .oa-fsx-label {
-  opacity: 1;
-}
-.oa-fsx[data-open="true"] .oa-fsx-arrow {
-  opacity: 0.8;
-}
-@media (prefers-reduced-motion: reduce) {
-  .oa-fsx,
-  .oa-fsx-label,
-  .oa-fsx-arrow {
-    transition: none;
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .oa-fsx-lt {
+    display: none;
+  }
+  :root:not([data-theme="light"]) .oa-fsx-dk {
+    display: block;
   }
 }
-@media print {
-  .oa-fsx {
+:root[data-theme="dark"] .oa-fsx-lt {
+  display: none;
+}
+:root[data-theme="dark"] .oa-fsx-dk {
+  display: block;
+}
+.oa-fsx-arrow,
+.oa-fsx-x {
+  width: 14px;
+  height: 14px;
+}
+.oa-fsx-arrow {
+  opacity: 0.8;
+}
+/* Under 600px the label goes; the accessible name stays on the link. */
+@media (max-width: 600px) {
+  .oa-fsx-label {
     display: none;
+  }
+  .oa-fsx {
+    padding: 0 8px;
   }
 }
 
@@ -219,13 +214,6 @@
 .oa-lchip-done {
   padding-left: 10px;
 }
-.oa-lchip-quiet {
-  padding: 0 10px;
-  border: 1px dashed var(--oa-border);
-  background: transparent;
-  color: var(--oa-text-muted);
-  cursor: pointer;
-}
 .oa-ldot {
   flex: none;
   width: 6px;
@@ -245,10 +233,6 @@
   border-radius: 999px;
   font-size: 13px;
   font-weight: 600;
-}
-.oa-lchip-quiet:focus-visible {
-  outline: 2px solid var(--oa-accent);
-  outline-offset: 2px;
 }
 /* 44px hit areas on phones. */
 .oa-hit {
@@ -282,105 +266,93 @@
   }
 }
 
-/* /full and embeds: the top-right toolbar holds the live pill, Comments, then
-   the exit chip. Phones: the three share one pill. */
+/* /full and embeds: a 36px strip above the frame (never over it). Title on the
+   left; the live pill, Comments and the exit link on the right. It comes
+   before the frame in the DOM, so its controls are the first Tab stops. */
 .oa-fsbar {
-  position: fixed;
-  right: max(12px, env(safe-area-inset-right));
-  top: max(12px, env(safe-area-inset-top));
-  z-index: 10;
+  container-type: inline-size;
+  flex: none;
+  box-sizing: border-box;
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: 36px;
+  padding: 0 max(12px, env(safe-area-inset-right)) 0
+    max(12px, env(safe-area-inset-left));
+  border-bottom: 1px solid var(--oa-border);
+  background: var(--oa-chrome);
+  color: var(--oa-text);
+  font-family: var(--oa-font-sans);
+}
+.oa-fstitle {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.oa-fsactions {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
   align-items: center;
   gap: 8px;
 }
-.oa-fsbar .oa-fsx {
-  position: relative;
-  right: auto;
-  bottom: auto;
-}
-/* Comments in the toolbar: the chip's recipe, theme independent. */
 .oa-fsbar .oa-fscomments {
-  height: 32px;
-  padding: 0 12px;
-  border: 1px solid rgb(255 255 255 / 0.26);
-  border-radius: 16px;
-  background: rgb(21 24 28 / 0.84);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 2px 10px rgb(0 0 0 / 0.22);
-  color: #e9ebee;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--oa-border);
+  border-radius: 6px;
+  background: var(--oa-bg);
+  color: var(--oa-text);
   font-size: 13px;
 }
 .oa-fsbar .oa-fscomments:hover {
-  background: rgb(21 24 28 / 0.94);
-  color: #fff;
+  background: var(--oa-chrome);
 }
-/* The phone pill's icons; desktop shows words and the mark. */
-.oa-fsicon {
+/* Phones: Comments is its icon and count. */
+.oa-fscomments .oa-fsicon {
   display: none;
 }
 @media (max-width: 600px) {
-  .oa-fsbar:has(.oa-fscomments) .oa-fsicon {
+  .oa-fscomments .oa-fsicon {
     display: block;
     flex: none;
     width: 16px;
     height: 16px;
   }
-  .oa-fsbar:has(.oa-fscomments) .oa-fsword,
-  .oa-fsbar:has(.oa-fscomments) .oa-fsx > img,
-  .oa-fsbar:has(.oa-fscomments) .oa-fsx-label {
+  .oa-fscomments .oa-fsword {
     display: none;
   }
-  .oa-fsbar:has(.oa-fscomments) .oa-fscomments {
+  .oa-fsbar .oa-fscomments {
     gap: 5px;
-    padding: 0 10px;
-  }
-  .oa-fsbar:has(.oa-fscomments) {
-    gap: 0;
-    height: 32px;
-    border: 1px solid rgb(255 255 255 / 0.26);
-    border-radius: 16px;
-    background: rgb(21 24 28 / 0.84);
-    backdrop-filter: blur(8px);
-    -webkit-backdrop-filter: blur(8px);
-    box-shadow: 0 2px 10px rgb(0 0 0 / 0.22);
-  }
-  .oa-fsbar:has(.oa-fscomments) .oa-fscomments,
-  .oa-fsbar:has(.oa-fscomments) .oa-fsx {
-    border: 0;
-    background: transparent;
-    box-shadow: none;
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-  .oa-fsbar:has(.oa-fscomments) .oa-fscomments {
-    border-right: 1px solid rgb(255 255 255 / 0.26);
-    border-radius: 0;
+    padding: 0 8px;
   }
 }
-/* The peek chip's recipe, theme independent. */
+/* The live and gone pills: the strip's buttons (28px, theme tokens). */
 .oa-lpill {
   position: relative;
   box-sizing: border-box;
   display: inline-flex;
+  flex: 0 1 auto;
   align-items: center;
   gap: 7px;
-  height: 32px;
-  min-width: 32px;
-  max-width: 32px;
+  height: 28px;
+  min-width: 28px;
+  max-width: 28px;
   padding: 0;
   justify-content: center;
   overflow: hidden;
-  border: 1px solid rgb(255 255 255 / 0.26);
-  border-radius: 16px;
-  background: rgb(21 24 28 / 0.84);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  box-shadow: 0 2px 10px rgb(0 0 0 / 0.22);
-  color: #e9ebee;
+  border: 1px solid var(--oa-border);
+  border-radius: 6px;
+  background: var(--oa-bg);
+  color: var(--oa-text);
   font-family: var(--oa-font-sans);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1;
   white-space: nowrap;
   text-decoration: none;
@@ -390,21 +362,24 @@
     max-width 200ms cubic-bezier(0.2, 0, 0, 1),
     padding 200ms cubic-bezier(0.2, 0, 0, 1);
 }
+/* The hit area stays inside the 36px strip: 4px past the 28px pill. */
 .oa-lpill::before {
   content: "";
   position: absolute;
-  inset: -6px;
+  inset: -4px;
 }
 .oa-lpill:hover,
 .oa-lpill:focus,
 .oa-lpill:visited {
-  color: #e9ebee;
+  color: var(--oa-text);
   text-decoration: none;
 }
+.oa-lpill:hover {
+  background: var(--oa-chrome);
+}
 .oa-lpill:focus-visible {
-  outline: 2px solid #fff;
+  outline: 2px solid var(--oa-accent);
   outline-offset: 1px;
-  box-shadow: 0 0 0 5px #2350d0;
 }
 .oa-lpill[data-open="true"] {
   max-width: 320px;
@@ -412,7 +387,7 @@
   justify-content: flex-start;
 }
 .oa-lpill .oa-ldot {
-  background: #7f9cff;
+  background: var(--oa-accent);
 }
 .oa-lpill-icon {
   display: none;
@@ -421,7 +396,15 @@
   display: none;
 }
 .oa-lpill[data-open="true"] .oa-lpill-label {
-  display: inline;
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.oa-lpill-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 /* Collapsed: a 32px circle, refresh icon, 7px dot top right. */
 .oa-lpill[data-open="false"] .oa-lpill-icon {
@@ -433,7 +416,7 @@
   right: 3px;
   width: 7px;
   height: 7px;
-  box-shadow: 0 0 0 2px rgb(21 24 28);
+  box-shadow: 0 0 0 2px var(--oa-bg);
 }
 .oa-lpill-note,
 .oa-lpill-gone {
@@ -441,9 +424,6 @@
 }
 a.oa-lpill-gone {
   cursor: pointer;
-}
-.oa-lpill-gone {
-  background: rgb(21 24 28 / 0.9);
 }
 .oa-lwdot {
   flex: none;
@@ -478,6 +458,33 @@ a.oa-lpill-gone {
   }
   .oa-vlayer[data-arrived="true"] {
     animation: none;
+  }
+}
+/* Touch: a 44px strip and 40px buttons. */
+@media (pointer: coarse) {
+  .oa-fsbar {
+    height: 44px;
+  }
+  .oa-fsx,
+  .oa-fsbar .oa-fscomments,
+  .oa-fsbar .oa-opencomment,
+  .oa-fsbar .oa-lpill {
+    min-width: 40px;
+    min-height: 40px;
+    justify-content: center;
+  }
+  .oa-fsx::before,
+  .oa-lpill::before {
+    display: none;
+  }
+}
+/* A narrow strip (a small embed): the exit link is icon only. */
+@container (max-width: 420px) {
+  .oa-fsx-label {
+    display: none;
+  }
+  .oa-fsx {
+    padding: 0 8px;
   }
 }
 @media print {
@@ -573,6 +580,8 @@ a.oa-lpill-gone {
 /* Embeds show no comments, only a way to open the artifact and add one (#682).
    It sits in the full-screen bar, left of the chip, so it never covers it. */
 .oa-opencomment {
+  display: inline-flex;
+  align-items: center;
   padding: 2px 8px;
   border-radius: 6px;
   background: var(--oa-bg);
@@ -591,16 +600,28 @@ a.oa-lpill-gone {
   /* biome-ignore lint/suspicious/noDuplicateProperties: svh fallback */
   height: 100svh;
 }
+/* #2172: with a viewer mounted the app never scrolls the document, and clip
+   (unlike hidden) can't be scrolled by scrollIntoView or focus either. Only
+   the frame and the comments panel scroll, inside themselves. The full-page
+   panels (not public, not found, error) have no viewer and keep scrolling. */
+.oa-bare:has(> .oa-viewer, > .oa-vstack) {
+  overflow: clip;
+}
+html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack),
+html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
+  overflow: hidden;
+}
 .oa-bare > .oa-viewer,
 .oa-bare > .oa-vstack {
   flex: 1;
   height: auto;
   min-height: 0;
 }
-/* A tall panel grows and the page scrolls; it is never clipped at the top. */
+/* A tall full-page panel scrolls inside the column; it is never clipped at the top. */
 .oa-bare > .oa-edge {
-  flex: 1 0 auto;
+  flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
 }
 .oa-bare > .oa-vstack {
   grid-template-rows: minmax(0, 1fr);
@@ -867,4 +888,20 @@ a.oa-lpill-gone {
   .oa-doc-prose {
     font-size: var(--oa-text-md);
   }
+}
+/* #2172: the load-error panel fills the body below the toolbar; 100vh would overflow by it. */
+.oa-vbody > .oa-edge {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* A scrolling edge panel taller than its box would overflow above the scroll
+   origin if centered by align-items; auto margins center it only when it fits. */
+.oa-bare > .oa-edge,
+.oa-vbody > .oa-edge {
+  align-items: flex-start;
+}
+.oa-bare > .oa-edge > .oa-panel,
+.oa-vbody > .oa-edge > .oa-panel {
+  margin-block: auto;
 }

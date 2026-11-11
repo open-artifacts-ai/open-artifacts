@@ -6,6 +6,7 @@ import {
   type ArtifactPatchResult,
   type ArtifactSummary,
   artifactCan,
+  commentsSettingOf,
   type DataWriters,
   dataWritersWarning,
   type Format,
@@ -45,7 +46,7 @@ import {
   sharingCaller,
   suspendedMember,
 } from "../auth/authz.js";
-import { can, dataWritersOf } from "../auth/policy.js";
+import { can, capsReads, dataWritersOf, isGuestRole } from "../auth/policy.js";
 import { requireFreeStorage } from "../billing/caps.js";
 import { creatorStmt } from "../billing/creators.js";
 import { featuresOf } from "../billing/features.js";
@@ -65,12 +66,24 @@ import { closeRuntimeSockets } from "../runtime/revoke.js";
 import {
   agentFor,
   isPrivateAgent,
+  linkedFields,
   ownersAgent,
   SCRUBBED_VIA,
   shownName,
 } from "./agent-display.js";
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { audit, userActor } from "./audit.js";
+import {
+  apiFormat,
+  docPlanInput,
+  docsNeedPaid,
+  docsUnavailable,
+  notConvertible,
+  refuseDocSettings,
+  useEditDoc,
+} from "./doc-format.js";
+import { DOC_SWITCH } from "./doc-switch.js";
+import { docsAvailable } from "./docs-available.js";
 import { deleteFollowsStmt, notifyChanged } from "./follows.js";
 import {
   type ManifestEntry,
@@ -199,8 +212,12 @@ export async function publish(
   refuseSuspendedPublic(user, input.visibility);
   // An unpaid Solo is view-only: no new artifact and no new version.
   refuseViewOnly(planOfMember(user));
-  // An edits publish plans from the current version, once it is known.
-  let plan: Plan | null = input.edits ? null : planFiles(input);
+  // An edits publish plans from the current version, once it is known; a
+  // doc (#1100) once it is known to be a create.
+  const asDoc = input.format === "doc";
+  if (asDoc && !docsAvailable(env))
+    throw DOC_SWITCH.creation ? docsNeedPaid() : docsUnavailable();
+  let plan: Plan | null = input.edits || asDoc ? null : planFiles(input);
   const db = env.DB;
   const now = Date.now();
   // Wall ms per step (D1 checks, R2, the batch, the DO calls): hosted
@@ -261,6 +278,9 @@ export async function publish(
           { path: "spaceId", reason: "use_move" },
         );
       create = false;
+      // #1100: a doc changes through edit_doc; other artifacts never become docs.
+      if (a.doc === 1) throw useEditDoc();
+      if (asDoc) throw notConvertible();
       title ??= a.title;
       seen = a.currentVersion;
       const sharing =
@@ -350,6 +370,8 @@ export async function publish(
     if (!cur) throw notFound();
     plan = await planEdits(env, input.edits, cur);
   }
+  // A new doc: its Markdown as one file (an existing id never gets here).
+  if (!plan && asDoc) plan = planFiles(docPlanInput(input));
   if (!plan) throw notFound();
   if (expected !== undefined)
     cas = {
@@ -396,6 +418,7 @@ export async function publish(
     input.visibility ??
     (create ? (await getSettings(env)).defaultVisibility : undefined);
   if (create) dataWriters = resolveDataWriters(input, visibility) ?? "viewers";
+  const newComments = commentsSettingOf(input.comments);
 
   // Hosted billing: a free instance at its storage cap (off until set)
   // publishes nothing new; restores and renames never land here.
@@ -439,8 +462,8 @@ export async function publish(
       db
         .prepare(
           `insert into artifacts (id, owner_id, space_id, title, description, format, visibility,
-             current_version, capabilities, data_writers, allow_anonymous_writes, comments, created_at, updated_at)
-           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ? where 1${links}${
+             current_version, capabilities, data_writers, allow_anonymous_writes, comments, comment_access, doc, created_at, updated_at)
+           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ? where 1${links}${
              role.sql ? ` and ${role.sql} >= 2` : ""
            }${guard}`,
         )
@@ -458,7 +481,10 @@ export async function publish(
           dataWriters,
           // Kept in step for one release (#681): a rollback reads it.
           dataWriters === "viewers" ? 1 : 0,
-          input.comments === false ? 0 : 1,
+          newComments.comments === false ? 0 : 1,
+          // #2080: new artifacts default to signed-in people.
+          newComments.commenters ?? "signed-in",
+          asDoc ? 1 : 0,
           now,
           now,
           ...(links ? [spaceId] : []),
@@ -486,8 +512,13 @@ export async function publish(
       ["data_writers", dataWriters],
       [
         "comments",
-        input.comments === undefined ? undefined : input.comments ? 1 : 0,
+        newComments.comments === undefined
+          ? undefined
+          : newComments.comments
+            ? 1
+            : 0,
       ],
+      ["comment_access", newComments.commenters],
       // Kept in step for one release (#681): a rollback reads it.
       [
         "allow_anonymous_writes",
@@ -821,7 +852,7 @@ export function toSummary(
     id: a.id,
     title: a.title,
     description: a.description,
-    format: a.format as Format,
+    format: apiFormat(a.format, a.doc),
     visibility: a.visibility as ArtifactSummary["visibility"],
     owner,
     currentVersion: a.currentVersion,
@@ -844,6 +875,7 @@ export function toSummary(
     // Deprecated (#681): derived for one release.
     allowAnonymousWrites: dataWritersOf(a) === "viewers",
     comments: a.comments === 1,
+    commenters: a.commentAccess === "signed-in" ? "signed-in" : "everyone",
   };
 }
 
@@ -1017,6 +1049,15 @@ export const spaceCols = (
     : sql<number>`0`,
 });
 
+/** Whether the caller may post: comments on, not capped, and signed in where only signed-in people may (#2080). */
+function canComment(
+  caller: Caller,
+  out: Pick<ArtifactSummary, "comments" | "commenters">,
+): boolean {
+  if (capOfCaller(caller) || out.comments === false) return false;
+  return !(out.commenters === "signed-in" && caller.kind === "anonymous");
+}
+
 /**
  * `comments` after `can`, the schema's key order (responses are byte-equal to
  * their schema's parse).
@@ -1024,8 +1065,11 @@ export const spaceCols = (
 function commentsLast<T extends ArtifactSummary>(out: T): T {
   const c = out.comments;
   if (c === undefined) return out;
+  const k = out.commenters;
   delete out.comments;
+  delete out.commenters;
   out.comments = c;
+  if (k !== undefined) out.commenters = k;
   return out;
 }
 
@@ -1067,7 +1111,7 @@ export function withSpace<T extends ArtifactSummary>(
     cap: capOfCaller(caller),
     dataWriters: out.dataWriters,
   });
-  out.can.comment = !capOfCaller(caller) && out.comments !== false;
+  out.can.comment = canComment(caller, out);
   return commentsLast(sharingFree(caller, out, !shared, sp?.rank ?? 0));
 }
 
@@ -1116,7 +1160,7 @@ export function withCan<T extends ArtifactSummary>(
     }),
     move: false,
     transfer: false,
-    comment: !capOfCaller(caller) && out.comments !== false,
+    comment: canComment(caller, out),
   };
   return commentsLast(sharingFree(caller, out, true));
 }
@@ -1133,7 +1177,13 @@ export function decorate<T extends ArtifactSummary>(
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
 ): T {
-  if (caller.kind !== "user") return out;
+  if (caller.kind !== "user") {
+    // #2080: a signed-out viewer of a signed-in-only artifact learns it
+    // cannot comment (the viewer gates on can.comment); otherwise no `can`.
+    if (out.comments !== false && out.commenters === "signed-in")
+      return withCan(caller, out, level);
+    return out;
+  }
   return decorates(env, caller)
     ? withSpace(caller, out, level, spaceId, sp)
     : withCan(caller, out, level);
@@ -1189,7 +1239,10 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
   const conds: (SQL | undefined)[] = [
     listFilterSql(caller, q.scope, q.includeDeleted, q.spaceId),
   ];
-  if (q.format) conds.push(eq(artifacts.format, q.format));
+  // #1100: a doc is stored as markdown with doc = 1.
+  if (q.format === "doc") conds.push(eq(artifacts.doc, 1));
+  else if (q.format)
+    conds.push(eq(artifacts.format, q.format), eq(artifacts.doc, 0));
   if (q.visibility) conds.push(eq(artifacts.visibility, q.visibility));
   if (q.agent !== undefined)
     conds.push(eq(artifacts.lastAgentName, q.agent), agentShownSql(caller));
@@ -1315,6 +1368,7 @@ type VersionRow = {
   agent_name: string | null;
   agent_version: string | null;
   agent_via: string | null;
+  agent_identity: string | null;
   created_by: string;
   created_at: number;
   text_indexed: number;
@@ -1326,6 +1380,27 @@ type VersionRow = {
 
 /** A versions page stops once its manifests' cumulative length passes this. */
 export const VERSIONS_PAGE_BYTES = 1024 * 1024;
+
+/** The face fields of a version's stored bus identity; none when unlinked, malformed or outsider. */
+function versionFace(
+  raw: string | null,
+  outsider: boolean,
+): {
+  linked?: boolean;
+  product?: string;
+  animal?: { id: string; color: number };
+} {
+  // Unlinked, to a viewer who may see faces: linked false (a dashed tile), as comments do.
+  if (!raw) return outsider ? {} : { linked: false };
+  try {
+    const i = JSON.parse(raw) as { identityId?: unknown; kind?: unknown };
+    if (typeof i.identityId !== "string" || typeof i.kind !== "string")
+      return outsider ? {} : { linked: false };
+    return linkedFields({ identityId: i.identityId, kind: i.kind }, outsider);
+  } catch {
+    return outsider ? {} : { linked: false };
+  }
+}
 
 /**
  * Viewer+; newest first, keyset `version < before`: at most VERSIONS_PAGE_SIZE,
@@ -1350,9 +1425,10 @@ export async function listVersions(
        from page window w as (order by version desc)
      )
      select v.version, v.entry, v.manifest, v.language, v.message, v.agent_name,
-       v.agent_version, v.agent_via, v.created_by, v.created_at, v.text_indexed,
-       coalesce(v.format, a.format) as format, u.email, u.name,
-       u.display_name as displayName
+       v.agent_version, v.agent_via, v.agent_identity, v.created_by,
+       v.created_at, v.text_indexed,
+       case when a.doc = 1 then 'doc' else coalesce(v.format, a.format) end as format,
+       u.email, u.name, u.display_name as displayName
      from cut
      join versions v on v.artifact_id = ?1 and v.version = cut.version
      join artifacts a on a.id = v.artifact_id
@@ -1368,18 +1444,26 @@ export async function listVersions(
     )
     .all<VersionRow>();
   const viewerId = caller.kind === "user" ? caller.user.id : null;
+  // #2004: signed out, a guest role, or a guest or restricted cap gets no face.
+  const outsider =
+    caller.kind !== "user" ||
+    isGuestRole(caller.user.role) ||
+    capsReads(capOfCaller(caller));
   return results.map((v) => ({
     version: v.version,
     message: v.message,
     agent:
       v.agent_name == null
         ? null
-        : agentFor(
-            { name: v.agent_name, version: v.agent_version },
-            v.agent_via,
-            publisherOf(v.created_by, v),
-            viewerId,
-          ),
+        : {
+            ...agentFor(
+              { name: v.agent_name, version: v.agent_version },
+              v.agent_via,
+              publisherOf(v.created_by, v),
+              viewerId,
+            ),
+            ...versionFace(v.agent_identity, outsider),
+          },
     createdBy: redact(
       {
         id: v.created_by,
@@ -1678,6 +1762,8 @@ export async function patch(
     id,
     lock ? "visibility" : "publish",
   );
+  // #1100: a doc has no capabilities or live data.
+  if (a.doc === 1) refuseDocSettings(p);
   refuseSuspendedPublic(user, p.visibility);
   const sharing =
     p.visibility !== undefined ||
@@ -1706,7 +1792,9 @@ export async function patch(
       "capabilities = json_patch(capabilities, ?)",
       JSON.stringify(p.capabilities),
     );
-  if (p.comments !== undefined) set("comments = ?", p.comments ? 1 : 0);
+  const cs = commentsSettingOf(p.comments);
+  if (cs.comments !== undefined) set("comments = ?", cs.comments ? 1 : 0);
+  if (cs.commenters !== undefined) set("comment_access = ?", cs.commenters);
   if (dataWriters !== undefined) {
     set("data_writers = ?", dataWriters);
     // Kept in step for one release (#681): a rollback reads it.

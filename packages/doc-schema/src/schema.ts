@@ -36,7 +36,7 @@ const nodes: Record<string, NodeSpec> = {
   },
   blockquote: { content: "block+", group: "block", defining: true },
   codeBlock: {
-    attrs: { language: { default: null } },
+    attrs: { language: { default: null, validate: validateLanguage } },
     content: "text*",
     marks: "",
     group: "block",
@@ -66,7 +66,7 @@ const ALLOWED_HREF =
   // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it rejects
   /^(?:https?|mailto):[^\s\u0000-\u001f\u007f-\u009f<>"`\\]*$/i;
 // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it rejects
-const CONTROL_OR_QUOTE = /[\u0000-\u001f\u007f-\u009f"]/;
+const CONTROL_QUOTE_BACKSLASH = /[\u0000-\u001f\u007f-\u009f"\\]/;
 
 /**
  * Only http:, https: and mailto: links are allowed (scheme is
@@ -76,11 +76,11 @@ export function isAllowedHref(href: unknown): href is string {
   return typeof href === "string" && ALLOWED_HREF.test(href);
 }
 
-/** A link title is a string without line breaks, control characters or quotes. */
+/** A link title is a string without line breaks, control characters, quotes or backslashes. */
 export function isAllowedTitle(title: unknown): title is string | null {
   return (
     title === null ||
-    (typeof title === "string" && !CONTROL_OR_QUOTE.test(title))
+    (typeof title === "string" && !CONTROL_QUOTE_BACKSLASH.test(title))
   );
 }
 
@@ -95,6 +95,24 @@ function validateTitle(title: unknown): void {
     throw new RangeError(
       "A link title must be text without quotes or line breaks",
     );
+  }
+}
+
+const LANGUAGE = /^[A-Za-z0-9_+#.-]{1,32}$/;
+
+/** A code block language: null, or a short plain name like "ts" or "c++". */
+export function isAllowedLanguage(
+  language: unknown,
+): language is string | null {
+  return (
+    language === null ||
+    (typeof language === "string" && LANGUAGE.test(language))
+  );
+}
+
+function validateLanguage(language: unknown): void {
+  if (!isAllowedLanguage(language)) {
+    throw new RangeError("A code block language must be a short plain name");
   }
 }
 

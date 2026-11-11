@@ -46,10 +46,12 @@ empty = today's behaviour. `parseFeatures(raw)` (the only parser, in
 `Me.instance.features` reports every flag that is on.
 
 `TIER_FEATURES` (`Record<Tier, EnvFeatureFlag[]>`) is what each hosted tier
-sets: trial and business `spaces, sync_google, content_revocation`; team
-`spaces, sync_frozen, content_revocation`. Hosted adds `usage_off` on every
-tier. A downgrade only swaps `sync_google` for `sync_frozen`: it never
-widens access. `directoryModeOf(features)` gives `DirectoryMode`
+sets: business `spaces, sync_google, content_revocation`; team and trial
+(the Team trial) `spaces, sync_frozen, content_revocation`; solo and free
+report the trial's (frozen). Directory sync is Business only: Business is mode `google`;
+Team, the Team trial, Solo and free are `frozen` (the dashboard shows no
+Directory): sign-in and user-status checks keep running, nothing syncs. Hosted adds `usage_off` on every tier. A downgrade only swaps
+`sync_google` for `sync_frozen`: it never widens access. `directoryModeOf(features)` gives `DirectoryMode`
 (`sync_google` → `google`, else `sync_frozen` → `frozen`, else `off`), as
 `Me.instance.directory.mode` reports it.
 
@@ -57,7 +59,7 @@ widens access. `directoryModeOf(features)` gives `DirectoryMode`
 |---|---|---|
 | `spaces` | FEATURES | Spaces and roles on; space routes 404 without it (authz identical either way) |
 | `sync_google` | FEATURES | Directory sync running |
-| `sync_frozen` | FEATURES | Team after trial: synced rows kept (`source: "sync"`), edited by hand (an edit becomes a manual override), user status still polled, no group reads; `lastSuccessAt`/`staleAt` keep the last run that read groups. Each frozen hand edit is recorded in D1 `frozen_edits` (server migration `0013_frozen_edits`). The first reconcile after return to Business, after its walks: an override's pre-freeze manual row comes back exactly (none: removed); an explicit frozen DELETE is final; a frozen manual add (no synced row) is kept; then the synced role is derived again from fresh membership and the narrowed are revoked. Audited by `sync`: `space.member.role` / `.add` / `.remove` with `{ thaw: true, role? }`, or `directory.sync` with `{ thaw: "removal_kept" }` / `{ thaw: "manual_kept", role }`. A live admin edit after sync returns, before that reconcile, supersedes the pending outcome (never undone). Synced-row changes at the thaw: `directory.sync` `{ thaw: "sync", from?, to? }` |
+| `sync_frozen` | FEATURES | Team and the Team trial, and self-host: synced rows kept (`source: "sync"`), edited by hand (an edit becomes a manual override), user status still polled, no group reads; `lastSuccessAt`/`staleAt` keep the last run that read groups. Each frozen hand edit is recorded in D1 `frozen_edits` (server migration `0013_frozen_edits`). The first reconcile after return to Business, after its walks: an override's pre-freeze manual row comes back exactly (none: removed); an explicit frozen DELETE is final; a frozen manual add (no synced row) is kept; then the synced role is derived again from fresh membership and the narrowed are revoked. Audited by `sync`: `space.member.role` / `.add` / `.remove` with `{ thaw: true, role? }`, or `directory.sync` with `{ thaw: "removal_kept" }` / `{ thaw: "manual_kept", role }`. A live admin edit after sync returns, before that reconcile, supersedes the pending outcome (never undone). Synced-row changes at the thaw: `directory.sync` `{ thaw: "sync", from?, to? }` |
 | `guests_read_only` | **reported only** | Guests capped at viewer, no data writes. One source: `authConfig.guestsReadOnly`, true on every install, Access-only ones included (parity 2; not configurable; no `GUEST_ACCESS` var). Share rows keep their role; the cap lowers it at read time. FEATURES can't set it |
 | `content_revocation` | FEATURES | Accepted, no longer needed (parity 1): every install binds `/c/` content tokens minted for a signed-in user (REST content-url, MCP download URLs) to the user and their `session_epoch`, and the content host re-checks their status. A space's `publicLinks` is never part of the `/p/` check: off only refuses new public links |
 | `usage_off` | FEATURES | Hosted: the Usage page and `R.usage` are 404 |
@@ -190,13 +192,13 @@ Installs in one environment share a single Google client through the auth broker
 | `DELETE R.space(id)` | 204; 409 `space_not_empty` | org owner, admin |
 | `GET R.spaceMembers(id)` | `SpaceMembersQuery { q?, group?, cursor?, limit? }` → `SpaceMembersPage` (`Page<SpaceMember>` + `total`, the count matching `q`/`group`) | member, org admin; personal: 400 `space_personal`. `q`: case-insensitive prefix of the email or of any word of the name; `group`: a groupId (either `via`) |
 | `GET R.spaceCandidates(id)` `/spaces/:id/candidates` | `SpaceCandidatesQuery { q?, cursor?, limit? }` (limit 1 to `SPACE_CANDIDATES_MAX` (50), default 20) → `Page<SpaceCandidate>` by email, then id | the "Add people" search: an uncapped org admin, or an uncapped manager of this space; anyone else 404 (as a space they can't see). Personal: 400 `space_personal`. Active org members (owner, admin, member; never guests) of the whole org; `q` as `R.spaceMembers`'s. Each row: `{ id, email, name, role, restriction, spaceRole }`; `spaceRole` is their `SpaceMember.role` here (null when not in the space) |
-| `PUT R.spaceMember(id, userId)` | `SpaceMemberPut` → `SpaceMember` | space manager, org admin. The target must be an existing, active member (else 404). Only an org admin grants Manager or changes a peer manager (a member with a manager row, by hand or synced; the frozen override included): else 403 `space_forbidden` `{ target: "member" }`. **Sync frozen**, on a row with a `syncRole`: any role, raise or lower, is a manual grant under the rules above (admins any role; managers up to editor) and becomes a manual override (`source: "manual"`, `syncRole: null`, `groups: []`) that the next reconcile after unfreezing undoes (the pre-freeze manual row restored exactly, see `sync_frozen`). **Every space floor** (sync live or frozen): an Every space group's role (`everyRole`) can't be lowered here, so a role below it is 409 `managed_by_org_mapping` `{ userId, everyRole }`; equal to it with no row of the space's own is a no-op (nothing written or audited); above it is a manual grant. An Every space group's Manager counts as a peer manager. Audited `space.member.add` / `space.member.role` (frozen override: detail `{ syncFrozen: true, role }`) |
-| `DELETE R.spaceMember(id, userId)` | 204, or 200 `SpaceMember` when they keep a role here (an Every space group's, or a synced row while sync is live) | space manager, org admin. Removes the manual row. Only an org admin removes a peer manager (a manager row, by hand or synced, or an Every space group's Manager; frozen included): else 403 `space_forbidden` `{ target: "member" }`, checked before `member_synced`. Only an Every space group's role (no row of the space's own), sync live or frozen: 409 `managed_by_org_mapping` `{ userId, everyRole }`; a manual row on top comes off, and the 200 shows the Every space role they keep. A synced-only row while sync is live: 409 `member_synced`. **Sync frozen**: also removes a synced row (removing access is always allowed), and the removal is final: the thaw after unfreezing restores no manual row (fresh group membership can re-add the synced row). Audited `space.member.remove` (frozen: detail `{ syncFrozen: true }`) |
+| `PUT R.spaceMember(id, userId)` | `SpaceMemberPut` → `SpaceMember` | space manager, org admin. The target must be an existing, active member (else 404). Only an org admin grants Manager or changes a peer manager (a member with a manager row, by hand or synced; the frozen override included): else 403 `space_forbidden` `{ target: "member" }`. **Sync frozen** (including hosted Team and the Team trial), on a row with a `syncRole`: any role, raise or lower, is a manual grant under the rules above (admins any role; managers up to editor) and becomes a manual override (`source: "manual"`, `syncRole: null`, `groups: []`) that the next reconcile after unfreezing undoes (the pre-freeze manual row restored exactly, see `sync_frozen`). **Every space floor** (sync live or frozen): an Every space group's role (`everyRole`) can't be lowered here, so a role below it is 409 `managed_by_org_mapping` `{ userId, everyRole }`; equal to it with no row of the space's own is a no-op (nothing written or audited); above it is a manual grant. An Every space group's Manager counts as a peer manager. Audited `space.member.add` / `space.member.role` (frozen override: detail `{ syncFrozen: true, role }`) |
+| `DELETE R.spaceMember(id, userId)` | 204, or 200 `SpaceMember` when they keep a role here (an Every space group's, or a synced row while sync is live) | space manager, org admin. Removes the manual row. Only an org admin removes a peer manager (a manager row, by hand or synced, or an Every space group's Manager; frozen included): else 403 `space_forbidden` `{ target: "member" }`, checked before `member_synced`. Only an Every space group's role (no row of the space's own), sync live or frozen: 409 `managed_by_org_mapping` `{ userId, everyRole }`; a manual row on top comes off, and the 200 shows the Every space role they keep. A synced-only row while sync is live: 409 `member_synced`. **Sync frozen** (including hosted Team and the Team trial): also removes a synced row (removing access is always allowed), and the removal is final: the thaw after unfreezing restores no manual row (fresh group membership can re-add the synced row). Audited `space.member.remove` (frozen: detail `{ syncFrozen: true }`) |
 | `POST R.spaceMemberSelf(id)` `/spaces/:id/members/self` | `SpaceMemberPut` → 201 `SpaceMember` | org admin adds themselves; shared spaces only (400 `space_personal`); audited `space.admin_self_add`; managers notified |
 | `GET R.spaceMappings(id)` | → `GroupMapping[]` (per-space rows only); personal: 400 `space_personal` | org admin; space manager (any setting). **Manager access pending server implementation (P3 T9/T14)** |
 | `PUT/DELETE R.spaceMapping(id, groupId)` | `GroupMappingPut` → `GroupMapping` / 204; 409 `directory_sync_off` when sync is off or frozen | org admin (any role); space manager for rows that are and stay `viewer \| editor` (`SPACE_MANAGER_MAPPING_ROLES`). Order: personal 400 `space_personal`; no role 404; manager PUT while `spaceManagerMappings` is off 403 `directory_mapping_off` (DELETE always allowed: removing access); a `manager` role (PUT body, or the existing row on PUT or DELETE) 403 `space_forbidden` `{ target: "mapping" }`; sync off 409. **Manager access pending server implementation (P3 T9/T14)** |
 | `GET R.orgMappings` `/directory/org-mappings` | `?cursor&limit` → `Page<GroupMapping>` | org admin. **Pending server implementation (P3 T9/T14)** |
-| `PUT/DELETE R.orgMapping(groupId)` | `GroupMappingPut` → `GroupMapping` (upsert) / 204; 409 `directory_sync_off` when off or frozen | org admin; audited `mapping.set` / `mapping.remove` with `spaceId: null`. **Pending server implementation (P3 T9/T14)** |
+| `PUT/DELETE R.orgMapping(groupId)` | `GroupMappingPut` → `GroupMapping` (upsert) / 204; 409 `directory_sync_off` when off or frozen (DELETE of an org mapping also passes while frozen on hosted billing only, since an Every space mapping no longer refreshes; DELETE of a space mapping stays refused while frozen, its resync ignores frozen edits: 409 on self-host, 403 `plan_required` on hosted billing off Business); hosted billing answers `plan_required` on the creates | org admin; audited `mapping.set` / `mapping.remove` with `spaceId: null`. **Pending server implementation (P3 T9/T14)** |
 | `GET R.restrictedGroups` | → `RestrictedGroup[]` | org admin |
 | `PUT R.restrictedGroup(groupId)` | (no body) → `RestrictedGroup`; 409 `directory_sync_off` when off or frozen | org admin; audited `restricted.set` |
 | `DELETE R.restrictedGroup(groupId)` | 204, in any mode (lifts a frozen restriction) | org admin; audited `restricted.remove` |
@@ -317,9 +319,11 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `version_conflict` | 409 | publish with `expectedVersion` (or `edits`, which takes the version it read) when the artifact's current version differs; details `{ currentVersion }`; nothing is published (#1216, #1540) |
 | `edit_failed` | 400 | publish with `edits` where an `old` is not found or found more than once in the text at its step; details `{ index, reason: "not_found" \| "ambiguous", count }`; nothing is published (#1540) |
 | `revoke_not_closed` | 503 | `DELETE R.busMachine(id)` where the revoke landed in D1 but the bus hub could not close the machine's open connection: the machine is already revoked and cannot reconnect, and a repeat closes the connection (#1453). Nothing else answers it |
+| `use_edit_doc` | 400 | publish with content, files or edits to an existing doc (#1100): a doc changes through `edit_doc`, never a whole rewrite; nothing is published |
+| `docs_need_paid` | 400 | publish with format `doc` on a self-host whose PLAN is not paid (#1100): the message names the Workers Paid plan and hosted Solo; nothing is published |
 | `invalid_successor` | 400 | transfer target isn't an active, non-guest, non-restricted member |
 | `member_active` | 409 | member transfer on an active non-guest member |
-| `directory_sync_off` | 409 | mapping or restricted-group change while sync is off or frozen (also Sync now) |
+| `directory_sync_off` | 409 | mapping or restricted-group change while sync is off or frozen (also Sync now); hosted billing answers `plan_required` instead |
 | `turnstile_required` | 400 | code request with no Turnstile token while Turnstile is configured |
 | `turnstile_failed` | 403 | Turnstile token rejected |
 | `code_unavailable` | 503 | code sign-in can't run: `SESSION_SECRET` is under 32 characters, so the code keys can't be derived, or the `RL_AUTH` rate-limit binding is missing |
@@ -369,10 +373,19 @@ Which tier applies (in this order):
    trial allowed) until the first good read, never unenforced.
 
 Features (`Me.instance.features` and every check) follow that tier at read
-time through `TIER_FEATURES` (the trial, solo and free report Business's; hosted
+time through `TIER_FEATURES` (the trial, solo and free report the trial's, Team's; hosted
 adds `usage_off`), not the provisioned `FEATURES`. `Me.instance.tier` is the
 same tier (null for solo and free). Business to Team swaps `sync_google` for
-`sync_frozen`: the binding and synced rows stay, sync stops. Every kick,
+`sync_frozen`: the binding and synced rows stay, sync stops (hand edits and
+removals apply under sync frozen, which includes hosted Team). On a hosted
+plan other than Business, the routes that read or create sync (status read,
+connect, callback, confirm, Sync now, groups, held confirm and snooze, and
+mapping or restricted-group creates) answer 403 `plan_required` "Directory
+sync is on the Business plan."; removals pass (disconnect, cancel a pending
+connect, cancel a snooze, delete an org mapping or a restriction). Self-host is
+unchanged. The dashboard hides Directory for frozen hosted plans (OA
+Frontend's #2134); `Me.instance.directory` still reports `state` for owners.
+Every kick,
 feed and RPC hands DirectorySync the effective directory mode (frozen while
 locked too), so its alarm calls nothing and fails nothing (no
 `transport_no_feed`, no session cap, no alert) until the tier brings
@@ -384,8 +397,8 @@ locked too), so its alarm calls nothing and fails nothing (no
 suspended. Everyone gets `tier`, `readOnly`, `reason`. `status`,
 `trialEndsAt`, `soloTrialEndsAt`, `graceUntil` (ISO) and `creatorsThisMonth`
 go to the org owner and admins only, the plan cap included; everyone else gets
-null and no count. `trialEndsAt` is the Business trial's alone (a Solo row
-with one is a used Business trial); `soloTrialEndsAt` is the Solo 30-day
+null and no count. `trialEndsAt` is the Team trial's alone (a Solo row
+with one is a used Team trial); `soloTrialEndsAt` is the Solo 30-day
 trial's end, optional, absent when billing's answer predates it.
 `hasCustomer` (boolean, optional) says whether billing has a Stripe customer
 for the instance (a provisioned or comped plan has none, so no portal): owner
@@ -394,8 +407,8 @@ billing's answer predates it (unknown: the dashboard keeps Manage billing).
 
 | State | What it does | `reason` |
 |---|---|---|
-| solo or free, active, or past_due within `graceUntil` | one person and their agents ($1/month or $10/year after a 30-day no-card trial). Team features answer `plan_required`; the first invite passes while the Business trial never ran and starts the 14-day trial. Billing MUST report a Solo whose 30-day trial ended with no card as status `lapsed` | `solo` |
-| solo lapsed, or solo past_due past grace | **view-only** for everyone, the org owner included (lock mode `viewOnly`, `readOnly: true`): publishing (a new artifact or version, REST and MCP) and live-data writes (artifact data set, update, delete, anonymous visitors too), uploads for a new artifact, restoring a version, and runtime storage writes (PUT and DELETE) answer 403 `plan_read_only`; team features answer `plan_read_only` too, and the Business trial does not start. Every read, sharing and visibility, the owner's and admins' billing POSTs, revoking tokens and machines, and profile edits keep working. Non-owners carry the `plan` cap as under solo (so a member's other writes, comments included, are refused); the owner has no cap, and the lock binds them for publishing and live-data writes | `solo_unpaid` |
+| solo or free, active, or past_due within `graceUntil` | one person and their agents ($1/month or $10/year after a 30-day no-card trial). Team features answer `plan_required`; the first invite passes while the Team trial never ran and starts the 30-day trial. Billing MUST report a Solo whose 30-day trial ended with no card as status `lapsed` | `solo` |
+| solo lapsed, or solo past_due past grace | **view-only** for everyone, the org owner included (lock mode `viewOnly`, `readOnly: true`): publishing (a new artifact or version, REST and MCP) and live-data writes (artifact data set, update, delete, anonymous visitors too), uploads for a new artifact, restoring a version, and runtime storage writes (PUT and DELETE) answer 403 `plan_read_only`; team features answer `plan_read_only` too, and the Team trial does not start. Every read, sharing and visibility, the owner's and admins' billing POSTs, revoking tokens and machines, and profile edits keep working. Non-owners carry the `plan` cap as under solo (so a member's other writes, comments included, are refused); the owner has no cap, and the lock binds them for publishing and live-data writes | `solo_unpaid` |
 | trial (until `trialEndsAt`), team, business, past_due within `graceUntil` | today's behaviour | none |
 | trial ended, lapsed, past_due past grace, suspended | read-only (`readOnly: true`): team features answer `plan_read_only` | `trial_ended`, `lapsed`, `payment_failed`, `suspended` |
 | billing unreachable over 7 days (`PLAN_STALE_MS`) | read-only; never falls back upward | `billing_unreachable` |
@@ -445,7 +458,7 @@ and anonymous writes never count.
 
 Routes, the org owner or an admin only (the plan cap included; else 404; 404
 off hosted):
-`POST R.billingCheckout` `BillingCheckoutInput { tier: solo | team | business, interval?: month | year }` (interval required for solo, 400 for any other tier) →
+`POST R.billingCheckout` `BillingCheckoutInput { tier: solo | team | business, interval?: month | year, seats?: integer 1..10000 }` (interval required for solo, optional for team and business, where absent means monthly; seats required with interval year; refused (400) with month, with no interval, and for solo) →
 `BillingUrl { url }` (Stripe Checkout); `POST R.billingPortal` → `BillingUrl`
 (Customer Portal); `POST R.billingUsage` → `BillingUsage { month, count }`.
 503 `billing_unavailable` when billing can't be reached. `POST R.billingPortal`
@@ -453,7 +466,7 @@ answers 409 `no_billing_customer` when billing has no Stripe customer for the
 instance (billing's 409 `no_customer`; no other route or status maps to it). Billing's 503
 `{ error: "retry" }` (Stripe still running the same idempotent request) is
 retried once, with the same signed body, after a short backoff. Checkout
-sends billing `{ install, ts, plan }`, plus `interval` for solo only; the billing service maps solo+month and solo+year to the Solo prices (hosted half, #1568). Checkout and Portal
+sends billing `{ install, ts, plan }`, plus `interval` and `seats` when the body had them, unchanged; the billing service maps solo+month and solo+year to the Solo prices (hosted half, #1568). A yearly Team or Business plan prepays `seats` creators; extra creators bill as overage at the monthly price ($10 per creator for Team, $25 for Business; Team and Business prices are per creator) (decided 2026-11-11). Checkout and Portal
 depend on Platform's billing routes (#849 gate allowlist for `POST /checkout`
 and `/portal`); until those ship they answer 503 `billing_unavailable`.
 

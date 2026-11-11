@@ -341,6 +341,7 @@ const HUB_CAPS = [
   BUS_CAPS.link,
   BUS_CAPS.linkArg,
   BUS_CAPS.waiting,
+  BUS_CAPS.waitingQuery,
   BUS_CAPS.noticeAck,
 ];
 
@@ -352,6 +353,12 @@ const HUB_CAPS = [
 const followGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.follow);
+};
+
+/** #2079: waiting_query goes only to a socket whose hello listed BUS_CAPS.waitingQuery. */
+const waitingQueryGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.waitingQuery);
 };
 
 /** #1822: link_bind goes only to a socket whose hello listed BUS_CAPS.link. */
@@ -384,7 +391,7 @@ const noticeAckGated = (ws: WebSocket): boolean => {
   );
 };
 
-/** #1752: how long a sent notice waits for its ack; past it the target stays queued. */
+/** #1752/#2082: how long a sent notice waits for its ack; past it its targets settle as gone (not confirmed delivered). */
 export const NOTICE_ACK_TTL_MS = 6 * HOUR_MS;
 /** #1752: notices waiting for an ack at once; the oldest go first. */
 export const NOTICE_ACKS_MAX = 2000;
@@ -2224,17 +2231,7 @@ function roster(
       ))
         if (r.t !== null) awaySince.set(r.id, r.t);
     if (withWaiting && ids.length > 0)
-      for (const r of all<{ id: string; n: number }>(
-        sql,
-        `select to_agent as id, count(*) as n from (
-           select to_agent, row_number() over (partition by to_agent order by rowid) as rn
-             from receipts indexed by receipts_to
-            where to_agent in (select value from json_each(?)) and state = 'pending'
-         ) where rn <= ? group by to_agent`,
-        JSON.stringify(ids),
-        WAITING_CAP,
-      ))
-        waiting.set(r.id, r.n);
+      for (const [id, n] of waitingCounts(sql, ids)) waiting.set(id, n);
   }
   const online = new Map<string, boolean>();
   const stateOf = (machineId: string): "live" | "queued" => {
@@ -2280,6 +2277,57 @@ function roster(
 
 /** #2029: the most pending mail a roster away row counts. */
 const WAITING_CAP = 100;
+
+/** Pending mail per agent id, each counted up to WAITING_CAP; ids with none are absent. */
+function waitingCounts(
+  sql: SqlStorage,
+  ids: readonly string[],
+): Map<string, number> {
+  const out = new Map<string, number>();
+  if (ids.length === 0) return out;
+  for (const r of all<{ id: string; n: number }>(
+    sql,
+    `select to_agent as id, count(*) as n from (
+       select to_agent, row_number() over (partition by to_agent order by rowid) as rn
+         from receipts indexed by receipts_to
+        where to_agent in (select value from json_each(?)) and state = 'pending'
+     ) where rn <= ? group by to_agent`,
+    JSON.stringify(ids),
+    WAITING_CAP,
+  ))
+    out.set(r.id, r.n);
+  return out;
+}
+
+/**
+ * #2079: pending mail for `refs`, only those that are away agents of
+ * `machineId` (a ref of another machine, unknown or live is left out).
+ */
+function waitingByRef(
+  sql: SqlStorage,
+  machineId: string,
+  refs: readonly string[],
+): Record<string, number> {
+  const rows = all<{ id: string; ref: string }>(
+    sql,
+    `select id, native_ref as ref from agents
+      where org_id = ? and machine_id = ? and live = 0
+        and native_ref in (select value from json_each(?))`,
+    OWNER_ORG_ID,
+    machineId,
+    JSON.stringify(refs),
+  );
+  const counts = waitingCounts(
+    sql,
+    rows.map((r) => r.id),
+  );
+  const out: Record<string, number> = {};
+  for (const r of rows) {
+    const n = counts.get(r.id);
+    if (n) out[r.ref] = n;
+  }
+  return out;
+}
 
 /**
  * R393b: each row's live former names for the roster (OpenBus #451: those
@@ -3492,7 +3540,12 @@ const NOTICE_COLS =
 /** #1752: folded targets a waiting notice keeps; older ones settle as gone at once. */
 const NOTICE_FOLD_MAX = 50;
 
-type AckTarget = { a: string; c: string; k: "mention" | "asker"; key: string };
+type AckTarget = {
+  a: string;
+  c: string;
+  k: "mention" | "asker" | "reply";
+  key: string;
+};
 
 function parseAcks(s: string | null): string[] {
   if (!s) return [];
@@ -3539,7 +3592,7 @@ function noticeAckOf(n: BusNotice): string | null {
   const t = n.target;
   if (
     !t ||
-    (t.kind !== "mention" && t.kind !== "asker") ||
+    (t.kind !== "mention" && t.kind !== "asker" && t.kind !== "reply") ||
     typeof t.key !== "string" ||
     t.key.length === 0 ||
     t.key.length > 256 ||
@@ -4840,6 +4893,12 @@ export class BusHub extends DurableObject<Env> {
       return;
     }
 
+    // #2079: as unknown as it is to an older hub without the cap.
+    if (f.type === "waiting_query" && !waitingQueryGated(ws)) {
+      reject(ws, machineId, f.id, "bad_frame", "Unreadable frame");
+      return;
+    }
+
     // Review Focus 1: a socket acts only for agents it registered itself.
     const ref = senderRef(f);
     const sender = ref === null ? null : registeredAgent(sql, machineId, ref);
@@ -4882,7 +4941,8 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.follow) ||
           hasCap(f, BUS_CAPS.noticeAck) ||
           hasCap(f, BUS_CAPS.link) ||
-          hasCap(f, BUS_CAPS.waiting)
+          hasCap(f, BUS_CAPS.waiting) ||
+          hasCap(f, BUS_CAPS.waitingQuery)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -5029,6 +5089,15 @@ export class BusHub extends DurableObject<Env> {
       case "unfollow":
       case "following":
         return sender ? this.#follows(ws, f, sender) : undefined;
+      case "waiting_query":
+        // Machine-authenticated: only this machine's own away agents answer.
+        sendFrame(ws, {
+          v: 1,
+          id: f.id,
+          type: "waiting_counts",
+          counts: waitingByRef(sql, machineId, f.agent_refs),
+        });
+        return;
       case "link_bind":
         // Only an agent this socket registered (the check above): a machine
         // can bind a proof only for a session it hosts.
@@ -6525,11 +6594,18 @@ export class BusHub extends DurableObject<Env> {
       const over =
         (one<{ n: number }>(sql, "select count(*) as n from notice_acks")?.n ??
           0) - NOTICE_ACKS_MAX;
-      if (over > 0)
-        sql.exec(
-          "delete from notice_acks where rowid in (select rowid from notice_acks order by rowid limit ?)",
+      if (over > 0) {
+        // #2082: an evicted row never gets its ack: its targets settle gone.
+        const old = all<{ rid: number; ack: string }>(
+          sql,
+          "select rowid as rid, ack from notice_acks order by rowid limit ?",
           over,
         );
+        for (const r of old) {
+          this.#settleAckRow(r.ack);
+          sql.exec("delete from notice_acks where rowid = ?", r.rid);
+        }
+      }
       this.#arm(expiresAt);
     }
     return true;
@@ -6613,6 +6689,17 @@ export class BusHub extends DurableObject<Env> {
       toLname,
       ckey,
     );
+  }
+
+  /** #2082: a notice_acks row that will never be acked: its target and every folded one settle as gone. */
+  #settleAckRow(ack: string): void {
+    try {
+      const t = JSON.parse(ack) as AckTarget & { more?: AckTarget[] };
+      for (const x of [t, ...(Array.isArray(t.more) ? t.more : [])])
+        this.#settleTarget(x, "gone");
+    } catch {
+      // a malformed target has nothing to settle
+    }
   }
 
   #settleGone(acks: (string | null)[]): void {
@@ -6838,8 +6925,18 @@ export class BusHub extends DurableObject<Env> {
           .map((r) => r.id)
           .join(","),
       });
-    // #1752: an ack that never came leaves the target queued.
-    sql.exec("delete from notice_acks where expires_at <= ?", now);
+    // #1752/#2082: an ack that never came settles its targets gone, and the
+    // row goes: an ack after that finds no row and is ignored. Bounded by
+    // BATCH per pass; the alarm re-arms for the rest.
+    for (const r of all<{ rid: number; ack: string }>(
+      sql,
+      "select rowid as rid, ack from notice_acks where expires_at <= ? order by expires_at limit ?",
+      now,
+      BATCH,
+    )) {
+      this.#settleAckRow(r.ack);
+      sql.exec("delete from notice_acks where rowid = ?", r.rid);
+    }
     const gone = expired.length >= BATCH;
     const due = all<NoticeRow>(
       sql,

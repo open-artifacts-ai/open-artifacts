@@ -1,0 +1,1 @@
+ALTER TABLE `artifacts` ADD `comment_access` text DEFAULT 'everyone' NOT NULL;

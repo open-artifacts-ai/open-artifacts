@@ -61,12 +61,17 @@ export const ERROR_CODES = [
   "not_an_ask",
   "anchor_not_in_version",
   "comments_off",
+  "comments_signed_in_only",
   "forbidden",
   // Publish with expectedVersion or edits (#1216, #1540).
   "version_conflict",
   "edit_failed",
   // Bus machine revoke (#1453).
   "revoke_not_closed",
+  // Collaborative docs (#1100): a whole-content publish to a doc.
+  "use_edit_doc",
+  // Collaborative docs (#1100): a self-host needs Workers Paid for docs.
+  "docs_need_paid",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -170,6 +175,8 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   not_an_ask: 400,
   anchor_not_in_version: 422,
   comments_off: 403,
+  /** #2080: a signed-out caller wrote a comment where only signed-in people may. */
+  comments_signed_in_only: 403,
   forbidden: 403,
   /** Publish with an expectedVersion that is no longer current, or an edits publish whose base version was replaced first (#1216, #1540); details { currentVersion }. Nothing is published. */
   version_conflict: 409,
@@ -177,6 +184,10 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   edit_failed: 400,
   /** DELETE R.busMachine(id) where the revoke landed but the hub could not close the machine's open connection (#1453): the machine is revoked and cannot reconnect; retrying closes the connection. */
   revoke_not_closed: 503,
+  /** A whole-content publish (content, files or edits) to an existing doc (#1100): docs change through edit_doc, so a rewrite never erases people's edits. Nothing is published. */
+  use_edit_doc: 400,
+  /** Publishing format "doc" on a self-host whose PLAN is not paid (#1100). Nothing is published. */
+  docs_need_paid: 400,
 };
 
 /**

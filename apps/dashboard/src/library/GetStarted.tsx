@@ -218,7 +218,7 @@ export function GetStarted({
         >
           {soloTrial && (
             <p className="m-0">
-              Inviting someone starts a 14-day trial of Business.
+              Inviting someone starts a 30-day Team trial.
               {keepsSolo && " Your Solo plan stays as it is."}
             </p>
           )}

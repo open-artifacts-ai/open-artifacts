@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   hostSlug,
   R,
@@ -38,12 +41,12 @@ const startRevoke = async (name: string) => {
 };
 
 describe("snippets", () => {
-  it("covers 5 agents over OAuth, 4 over a token file, url verbatim", () => {
+  it("covers 9 agents over OAuth, 5 over a token file, url verbatim", () => {
     const list = all(URL_);
-    expect(list.filter((s) => s.variant === "oauth")).toHaveLength(5);
+    expect(list.filter((s) => s.variant === "oauth")).toHaveLength(9);
     expect(
       list.filter((s) => s.variant === "token").map((s) => s.agent),
-    ).toEqual(["Claude Code", "Codex CLI", "OpenCode", "Generic"]);
+    ).toEqual(["Claude Code", "Codex CLI", "OpenCode", "pi", "Generic"]);
     for (const s of list)
       if (s.language !== "text") expect(s.code).toContain(URL_);
   });
@@ -116,6 +119,10 @@ describe("Agents settings", () => {
       "Codex CLI",
       "Cursor",
       "OpenCode",
+      "pi",
+      "oh-my-pi (omp)",
+      "Hermes",
+      "OpenClaw",
       "Generic",
     ]);
     const cursor = screen.getByRole("tab", { name: "Cursor" });
@@ -341,15 +348,33 @@ describe("snippets parse in their target format", () => {
       }
       if (s.language === "bash") {
         execFileSync("bash", ["-n", "-c", s.code]);
-        const argv = execFileSync("bash", [
-          "-c",
-          `claude() { printf '%s\\0' "$@"; }; codex() { claude "$@"; }; ${s.code}`,
-        ])
+        // Every agent CLI is a shell function that only prints its argv, and
+        // PATH is empty with a throwaway HOME, so no real binary or config can
+        // be reached (a snippet once ran the real pi).
+        const stubs = [
+          "claude",
+          "codex",
+          "pi",
+          "omp",
+          "hermes",
+          "openclaw",
+          "opencode",
+          "oa-bus",
+        ]
+          .map((n) => `${n}() { printf '%s\\0' "$@"; };`)
+          .join(" ");
+        const argv = execFileSync("/bin/bash", ["-c", `${stubs} ${s.code}`], {
+          env: {
+            HOME: mkdtempSync(join(tmpdir(), "oa-snip-")),
+            PATH: "/nonexistent",
+          },
+        })
           .toString()
           .split("\0");
         // OAuth passes the url as an argument; add-json inside the config.
         const last = argv.at(-2) ?? "";
-        expect(s.variant === "oauth" ? last : JSON.parse(last).url).toBe(evil);
+        if (s.variant === "oauth") expect(argv).toContain(evil);
+        else expect(JSON.parse(last).url).toBe(evil);
       }
     }
   });

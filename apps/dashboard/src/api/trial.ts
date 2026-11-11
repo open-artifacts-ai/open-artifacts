@@ -1,10 +1,10 @@
-// #1836: when an invite starts the 14-day Business trial, and when it ends.
+// #1836: when an invite starts the 30-day Team trial, and when it ends.
 import { type Me, TRIAL_DAYS } from "@oa/shared";
 import { formatDate } from "../settings/date";
 
 /**
  * The server's trialEligible, read off Me: hosted billing is on, the tier is
- * Solo (free before Solo), the Business trial never ran, the plan is active
+ * Solo (free before Solo), the Team trial never ran, the plan is active
  * (a paused Solo is view-only, and a past_due one is refused) and the caller
  * isn't capped: on Solo everyone but the owner carries the "plan" cap, which
  * the server refuses an invite on, admins included. trialEndsAt reads null

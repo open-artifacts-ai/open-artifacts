@@ -32,7 +32,7 @@ import { useNarrow } from "./comments/surfaces";
 import { VersionsDot } from "./LiveChip";
 import { VERSIONS_PANEL_ID } from "./panels/Versions";
 import { fullPath } from "./paths";
-import { ICON, LINK_BTN, SM, TXT, VisibilityBadge } from "./ui";
+import { BAR, ICON, TXT, VisibilityBadge } from "./ui";
 import { useOfferUndo } from "./useOfferUndo";
 import { versionDate } from "./versionDate";
 
@@ -280,7 +280,7 @@ export function TitleBar({
             size="xs"
             data-asks-for-you
             aria-label={`${asks.count} ask${asks.count === 1 ? "" : "s"} for you`}
-            className={`${SM} border-0 bg-[var(--oa-warning-soft)] font-semibold text-[var(--oa-warning)] shadow-[inset_0_0_0_1px_var(--oa-warning)] hover:bg-[var(--oa-warning-soft)] hover:text-[var(--oa-warning)]`}
+            className={`${BAR} border-0 bg-[var(--oa-warning-soft)] font-semibold text-[var(--oa-warning)] shadow-[inset_0_0_0_1px_var(--oa-warning)] hover:bg-[var(--oa-warning-soft)] hover:text-[var(--oa-warning)]`}
             disabled={gone}
             onClick={asks.onClick}
           >
@@ -302,8 +302,8 @@ export function TitleBar({
             size="xs"
             className={
               comments.selecting
-                ? `${SM} border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)] hover:bg-[var(--oa-accent-soft)] hover:text-[var(--oa-accent-fg)]`
-                : SM
+                ? `${BAR} border-[var(--oa-accent)] bg-[var(--oa-accent-soft)] text-[var(--oa-accent-fg)] hover:bg-[var(--oa-accent-soft)] hover:text-[var(--oa-accent-fg)]`
+                : BAR
             }
             aria-label={
               comments.selecting
@@ -340,7 +340,7 @@ export function TitleBar({
           <ShButton
             variant="outline"
             size="xs"
-            className={SM}
+            className={BAR}
             aria-label={`Version: ${label}`}
             aria-expanded={versionsOpen}
             aria-controls={versionsOpen ? VERSIONS_PANEL_ID : undefined}
@@ -363,7 +363,7 @@ export function TitleBar({
           <ShButton
             variant="outline"
             size="xs"
-            className={`${SM} ${authed ? "max-[600px]:hidden" : ""}`}
+            className={`${BAR} ${authed ? "max-[600px]:hidden" : ""}`}
             disabled
           >
             {MAXIMIZE}
@@ -374,7 +374,7 @@ export function TitleBar({
             asChild
             variant="outline"
             size="xs"
-            className={`${LINK_BTN} ${authed ? "max-[600px]:hidden" : ""}`}
+            className={`${BAR} text-foreground hover:text-accent-foreground ${authed ? "max-[600px]:hidden" : ""}`}
           >
             <a href={full} target="_blank" rel="noopener noreferrer">
               {MAXIMIZE}
@@ -383,7 +383,7 @@ export function TitleBar({
           </ShButton>
         )}
         {canShare && (
-          <ShButton size="xs" className={SM} disabled={gone} onClick={onShare}>
+          <ShButton size="xs" className={BAR} disabled={gone} onClick={onShare}>
             Share
           </ShButton>
         )}
@@ -396,7 +396,7 @@ export function TitleBar({
                     <ShButton
                       variant="outline"
                       size="xs"
-                      className={SM}
+                      className={BAR}
                       aria-label="More actions"
                     >
                       •••
@@ -442,7 +442,7 @@ export function TitleBar({
           <ShButton
             asChild
             size="xs"
-            className={`${SM} text-primary-foreground hover:text-primary-foreground`}
+            className={`${BAR} text-primary-foreground hover:text-primary-foreground`}
           >
             <a href={`${AUTH.login}?next=${encodeURIComponent(next)}`}>
               Sign in

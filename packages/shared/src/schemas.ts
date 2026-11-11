@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { FORMATS } from "./formats.js";
+import { FORMATS, STORED_FORMATS } from "./formats.js";
 import { PlanViewSchema } from "./hosted/billing.js";
 import {
   ArtifactCanSchema,
@@ -35,6 +35,27 @@ export type Visibility = z.infer<typeof VisibilitySchema>;
  * managers); others get 403 data_editors_only.
  */
 export const DataWritersSchema = z.enum(["viewers", "editors"]);
+
+/** #2080: who may post comments when they are on. */
+export const CommentersSchema = z.enum(["everyone", "signed-in"]);
+export type Commenters = z.infer<typeof CommentersSchema>;
+/** #2080: the `comments` input: on/off, or a named setting ("off" is off). */
+export const CommentsSettingSchema = z
+  .union([z.boolean(), z.enum(["everyone", "signed-in", "off"])])
+  .describe(
+    'Comments: "everyone" (anyone who can open it may comment), "signed-in" (signed-out visitors read but cannot post; the default for new artifacts), or "off". true turns comments on and keeps who may comment; false is off.',
+  );
+export type CommentsSetting = z.infer<typeof CommentsSettingSchema>;
+/** #2080: a `comments` input as the stored pair; a field is absent when the input leaves it alone. */
+export function commentsSettingOf(v: CommentsSetting | undefined): {
+  comments?: boolean;
+  commenters?: Commenters;
+} {
+  if (v === undefined) return {};
+  if (typeof v === "boolean") return { comments: v };
+  if (v === "off") return { comments: false };
+  return { comments: true, commenters: v };
+}
 export type DataWriters = z.infer<typeof DataWritersSchema>;
 
 /**
@@ -110,6 +131,17 @@ export const AgentRefSchema = z.object({
   version: z.string().nullable(),
   /** Set only when `name` is a stand-in: "<owner name>'s agent" or "A member's agent". */
   masked: z.literal(true).optional(),
+  /**
+   * #2118: set on a version's agent when the publish was bus-linked and the
+   * viewer is no outsider. Absent: unlinked, an outsider, or an older server.
+   */
+  linked: z.boolean().optional(),
+  /** A linked agent only: its product (for example "Claude Code"), from the bus. */
+  product: z.string().optional(),
+  /** A linked agent only: its face. `color` is a presence palette index. */
+  animal: z
+    .object({ id: z.string(), color: z.number().int().min(0) })
+    .optional(),
 });
 export type AgentRef = z.infer<typeof AgentRefSchema>;
 
@@ -136,46 +168,52 @@ export type PublishEdit = z.infer<typeof PublishEditSchema>;
 /** Most edits in one publish. */
 export const MAX_EDITS = 64;
 
-const PublishShape = z.strictObject({
-  id: z.string().optional(),
-  title: z.string().trim().min(1).max(200).optional(),
-  description: z.string().max(2000).optional(),
-  format: FormatSchema.optional(),
-  content: z.string().optional(),
-  files: z.record(z.string(), InlineFileSchema).optional(),
-  entry: z.string().optional(),
-  language: z.string().optional(),
-  message: z.string().max(500).optional(),
-  visibility: VisibilitySchema.optional(),
-  capabilities: CapabilitiesPatchSchema.optional(),
-  /** #681: who may change live data. Wins over allowAnonymousWrites. */
-  dataWriters: DataWritersSchema.optional(),
-  /** Deprecated (#681): true means dataWriters "viewers"; false, "editors" on a public artifact. */
-  allowAnonymousWrites: z.boolean().optional(),
-  /** #682: switch the built-in comments layer on or off (owner and managers). */
-  comments: z.boolean().optional(),
-  /**
-   * Hosted M1: the space to create the artifact in (default: the caller's
-   * personal space). Create only: with the id of an existing artifact it is
-   * 400 use_move. A space the caller can't publish to is 403
-   * space_forbidden; so is any create by a capped caller.
-   */
-  spaceId: z.string().optional(),
-  /**
-   * #1216: publish only if this is still the artifact's current version, else
-   * 409 version_conflict (the message gives the current version). Needs `id`.
-   * A settings-only publish with it is 400 (it creates no version).
-   */
-  expectedVersion: z.number().int().min(1).optional(),
-  /**
-   * #1540: small edits to the current version's entry file (html, markdown or
-   * code), applied in order; each `old` must occur exactly once at its step,
-   * else 400 edit_failed and nothing is published. Needs `id`; not with
-   * content, files, entry, format or language. Takes the current version as
-   * its expectedVersion; other files are reused unchanged.
-   */
-  edits: z.array(PublishEditSchema).min(1).max(MAX_EDITS).optional(),
-});
+const publishShape = (format: typeof FormatSchema) =>
+  z.strictObject({
+    id: z.string().optional(),
+    title: z.string().trim().min(1).max(200).optional(),
+    description: z.string().max(2000).optional(),
+    format: format.optional(),
+    content: z.string().optional(),
+    files: z.record(z.string(), InlineFileSchema).optional(),
+    entry: z.string().optional(),
+    language: z.string().optional(),
+    message: z.string().max(500).optional(),
+    visibility: VisibilitySchema.optional(),
+    capabilities: CapabilitiesPatchSchema.optional(),
+    /** #681: who may change live data. Wins over allowAnonymousWrites. */
+    dataWriters: DataWritersSchema.optional(),
+    /** Deprecated (#681): true means dataWriters "viewers"; false, "editors" on a public artifact. */
+    allowAnonymousWrites: z.boolean().optional(),
+    /**
+     * #682, #2080: switch the built-in comments layer, and who may post (owner
+     * and managers). A boolean is on/off (true keeps the current commenters); a
+     * string sets both: "everyone" | "signed-in" (on) or "off".
+     */
+    comments: CommentsSettingSchema.optional(),
+    /**
+     * Hosted M1: the space to create the artifact in (default: the caller's
+     * personal space). Create only: with the id of an existing artifact it is
+     * 400 use_move. A space the caller can't publish to is 403
+     * space_forbidden; so is any create by a capped caller.
+     */
+    spaceId: z.string().optional(),
+    /**
+     * #1216: publish only if this is still the artifact's current version, else
+     * 409 version_conflict (the message gives the current version). Needs `id`.
+     * A settings-only publish with it is 400 (it creates no version).
+     */
+    expectedVersion: z.number().int().min(1).optional(),
+    /**
+     * #1540: small edits to the current version's entry file (html, markdown or
+     * code), applied in order; each `old` must occur exactly once at its step,
+     * else 400 edit_failed and nothing is published. Needs `id`; not with
+     * content, files, entry, format or language. Takes the current version as
+     * its expectedVersion; other files are reused unchanged.
+     */
+    edits: z.array(PublishEditSchema).min(1).max(MAX_EDITS).optional(),
+  });
+const PublishShape = publishShape(FormatSchema);
 
 const refinePublish =
   (tool: boolean) =>
@@ -189,6 +227,13 @@ const refinePublish =
     const hasEdits = v.edits !== undefined;
     const settingsOnly =
       tool && v.id !== undefined && !hasContent && !hasFiles && !hasEdits;
+    // #1100: a new doc may start empty (no content).
+    const emptyDoc =
+      v.format === "doc" &&
+      v.id === undefined &&
+      !hasContent &&
+      !hasFiles &&
+      !hasEdits;
     if (hasEdits) {
       if (v.id === undefined) issue("edits need an id", ["edits"]);
       for (const k of [
@@ -199,7 +244,7 @@ const refinePublish =
         "language",
       ] as const)
         if (v[k] !== undefined) issue(`edits can't be combined with ${k}`, [k]);
-    } else if (hasContent === hasFiles && !settingsOnly) {
+    } else if (hasContent === hasFiles && !settingsOnly && !emptyDoc) {
       issue("Provide exactly one of content or files", [
         hasContent ? "files" : "content",
       ]);
@@ -269,6 +314,23 @@ export const PublishInputSchema = PublishShape.superRefine(
 export const PublishToolInputSchema = PublishShape.superRefine(
   refinePublish(true),
 );
+/** A publish names the doc format on a self-host that isn't on Workers Paid (#1100). */
+export const DOCS_NEED_PAID_MESSAGE =
+  "Collaborative docs need Cloudflare's Workers Paid plan when you self-host. Or use hosted Open Artifacts: Solo is $1 a month.";
+/**
+ * PublishToolInputSchema without the doc format: tools/list and the skill list
+ * only the formats that can be created, and format "doc" is refused with
+ * DOCS_UNAVAILABLE_MESSAGE (#1100).
+ */
+/** A publish names the doc format before docs can be created at all (#1100). */
+export const DOCS_UNAVAILABLE_MESSAGE =
+  "Docs aren't available yet. Publish markdown instead, or leave format out.";
+export const PublishToolInputNoDocSchema = publishShape(
+  z.enum(STORED_FORMATS, {
+    error: (iss) =>
+      iss.input === "doc" ? DOCS_UNAVAILABLE_MESSAGE : undefined,
+  }) as unknown as typeof FormatSchema,
+).superRefine(refinePublish(true));
 export type PublishInput = z.infer<typeof PublishInputSchema>;
 
 export const PublishResultSchema = z.object({
@@ -313,6 +375,8 @@ export const ArtifactSummarySchema = z.object({
   can: ArtifactCanSchema.optional(),
   /** #682: the Comments setting (on by default). Absent: the server has no comments (older than #1496), so the shell shows none. */
   comments: z.boolean().optional(),
+  /** #2080: who may post when comments are on. Absent: older server, read as "everyone". */
+  commenters: CommentersSchema.optional(),
   /** #1535: open asks addressed to the caller. Absent reads as 0. */
   asksForYou: z.number().int().min(0).optional(),
 });
@@ -478,8 +542,8 @@ export const ArtifactPatchSchema = z
     dataWriters: DataWritersSchema,
     /** Deprecated (#681): see resolveDataWriters. */
     allowAnonymousWrites: z.boolean(),
-    /** #682: owner and managers. */
-    comments: z.boolean(),
+    /** #682, #2080: owner and managers; a boolean, or "everyone" | "signed-in" | "off". */
+    comments: CommentsSettingSchema,
   })
   .partial();
 export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
@@ -961,7 +1025,8 @@ export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
 export const UploadCreateInputSchema = z.strictObject({
   artifactId: IdSchema.optional(),
   path: z.string(),
-  size: z.number().int().positive(),
+  /** Exact byte size the PUT must match. Omit it and the server measures the bytes at PUT (up to 25 MB). */
+  size: z.number().int().positive().optional(),
   contentType: z.string().optional(),
   sha256: z
     .string()

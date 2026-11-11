@@ -196,6 +196,19 @@ it("Plan and billing: a Solo trial shows its end and the two upgrades", async ()
   expect(screen.queryByRole("button", { name: "Manage billing" })).toBeNull();
 });
 
+it("Plan and billing: links to how to leave hosted, in a new tab (#2108)", async () => {
+  mountHosted("/settings/plan", { billing: TRIAL });
+  const link = await screen.findByRole("link", {
+    name: /Leaving\? Here's how/,
+  });
+  expect(link).toHaveAttribute(
+    "href",
+    "https://open-artifacts.com/docs/hosted/",
+  );
+  expect(link).toHaveAttribute("target", "_blank");
+  expect(link).toHaveAttribute("rel", "noopener");
+});
+
 it("Plan and billing: Team shows Manage billing, which opens the portal", async () => {
   const posts = calls("POST");
   mountHosted("/settings/plan", { billing: TEAM });
@@ -241,6 +254,107 @@ it("Plan and billing: a solo plan with no customer still offers Checkout", async
     await screen.findByRole("button", { name: "Upgrade to Team" }),
   ).toBeVisible();
   expect(screen.queryByText(/set up this plan for you/)).toBeNull();
+});
+
+describe("Plan and billing: Manage billing for Solo (#2127)", () => {
+  const PAID = { ...TRIAL, soloTrialEndsAt: null, hasCustomer: true };
+  const manage = () => screen.queryByRole("button", { name: "Manage billing" });
+  const pay = () => screen.queryByRole("button", { name: "Pay $1/month" });
+  const pinNovember = () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-09T12:00:00.000Z"));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+  };
+  const payShown = async () => {
+    expect(
+      await screen.findByRole("button", { name: "Pay $1/month" }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Pay $10/year" })).toBeVisible();
+    expect(manage()).toBeNull();
+  };
+  it("paid Solo (customer, active, no free month): only Manage billing, primary", async () => {
+    mountHosted("/settings/plan", { billing: PAID });
+    const b = await screen.findByRole("button", { name: "Manage billing" });
+    expect(b).toBeVisible();
+    expect(b.className).toContain("bg-primary");
+    expect(pay()).toBeNull();
+    expect(screen.queryByRole("button", { name: "Pay $10/year" })).toBeNull();
+    expect(screen.queryByText(/set up this plan for you/)).toBeNull();
+  });
+  it("a Solo whose free month has passed counts as paid", async () => {
+    pinNovember();
+    mountHosted("/settings/plan", {
+      billing: {
+        ...PAID,
+        soloTrialEndsAt: "2026-11-01T00:00:00.000Z",
+      },
+    });
+    expect(
+      await screen.findByRole("button", { name: "Manage billing" }),
+    ).toBeVisible();
+    expect(pay()).toBeNull();
+  });
+  it("trialing Solo with a customer: Pay buttons, no Manage billing", async () => {
+    pinNovember();
+    mountHosted("/settings/plan", { billing: { ...TRIAL, hasCustomer: true } });
+    await payShown();
+  });
+  it("past_due Solo with a customer: Manage billing (regression guard, shown before too)", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...PAID, status: "past_due" },
+    });
+    expect(
+      await screen.findByRole("button", { name: "Manage billing" }),
+    ).toBeVisible();
+  });
+  it("Solo with no customer, or an unknown one: Pay buttons, no Manage billing", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...PAID, hasCustomer: false },
+    });
+    await payShown();
+    cleanup();
+    const { hasCustomer: _, ...unknown } = PAID;
+    mountHosted("/settings/plan", { billing: unknown });
+    await payShown();
+  });
+  it("tier free with a customer keeps the Pay buttons", async () => {
+    mountHosted("/settings/plan", { billing: { ...PAID, tier: "free" } });
+    await payShown();
+  });
+  it("lapsed Solo with a customer: unchanged", async () => {
+    mountHosted("/settings/plan", {
+      billing: { ...PAUSED, hasCustomer: true },
+    });
+    await payShown();
+  });
+  it("Solo's Upgrade to Team still goes to Checkout, not the portal", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", { billing: PAID });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Upgrade to Team" }),
+    );
+    await waitFor(() =>
+      expect(posts.some((c) => c.path.endsWith("/billing/checkout"))).toBe(
+        true,
+      ),
+    );
+    expect(posts.some((c) => c.path.endsWith("/billing/portal"))).toBe(false);
+  });
+  it("clicking Solo's Manage billing opens the portal", async () => {
+    const posts = calls("POST");
+    mountHosted("/settings/plan", { billing: PAID });
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Manage billing" }),
+    );
+    await waitFor(() =>
+      expect(lastRedirect).toHaveBeenCalledWith(
+        "https://checkout.stripe.com/c/pay/cs_test_mock_portal",
+      ),
+    );
+    expect(posts.some((c) => c.path.endsWith("/billing/portal"))).toBe(true);
+  });
 });
 
 it("Plan and billing: Upgrade starts Checkout for the chosen tier", async () => {
@@ -570,7 +684,7 @@ it("planStatus: a past_due Team gets the past-due note", () => {
   );
 });
 
-describe("planStatus: the Solo month and the Business trial are separate dates", () => {
+describe("planStatus: the Solo month and the Team trial are separate dates", () => {
   beforeAll(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-11-09T12:00:00.000Z"));
@@ -581,7 +695,7 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
 
   it("a Solo trial reads soloTrialEndsAt", () => {
     const r = planStatus(TRIAL);
-    // #1843: not "Trial", the Business trial's word.
+    // #1843: not "Trial", the Team trial's word.
     expect(r.pill.label).toBe("Free month");
     expect(r.note?.text).toBe(
       "Your free month ends Dec 1, 2026. Then $1/month or $10/year.",
@@ -612,7 +726,7 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
     ).toEqual({ pill: { label: "Active", tone: "ok" } });
   });
 
-  it("the Business trial keeps trialEndsAt and its Trial pill", () => {
+  it("the Team trial keeps trialEndsAt and its Trial pill (#2113)", () => {
     const r = planStatus({
       ...TRIAL,
       tier: "trial",
@@ -621,7 +735,7 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
     });
     expect(r.pill.label).toBe("Trial");
     expect(r.note?.text).toBe(
-      "Trial ends Nov 20, 2026. Everything in Business is on.",
+      "Trial ends Nov 20, 2026. Everything in Team is on.",
     );
   });
 });
@@ -684,10 +798,12 @@ describe("plan cards and comparison (#2007)", () => {
     );
   });
 
-  it("a Business trial offers both upgrades and marks Business as the trial", async () => {
+  it("the Team trial offers both upgrades and marks Team as the trial (#2113)", async () => {
     mountHosted("/settings/plan", { billing: { ...TEAM, tier: "trial" } });
     await screen.findByTestId("plan-card-business");
-    expect(within(card("business")).getByText("Your trial")).toBeVisible();
+    expect(within(card("team")).getByText("Your trial")).toBeVisible();
+    expect(within(card("business")).queryByText("Your trial")).toBeNull();
+    expect(screen.getByText("Team trial")).toBeVisible();
     expect(
       within(card("team")).getByRole("button", { name: "Upgrade to Team" }),
     ).toBeEnabled();

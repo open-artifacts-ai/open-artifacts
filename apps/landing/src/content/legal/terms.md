@@ -1,7 +1,7 @@
 ---
 title: Terms of Service
 description: The rules for using hosted Open Artifacts and this website.
-updated: "October 28, 2026"
+updated: "November 11, 2026"
 ---
 
 These terms are an agreement between you and **Leo Urbina Consulting LLC** ("we", "us"), 8913 Bar K Ranch Road, Leander, Texas 78645, USA. They cover:
@@ -57,9 +57,9 @@ We may remove content or suspend access that breaks these rules, or that puts th
 
 ## Plans and payment
 
-- **Individuals:** free forever.
-- **Team:** $10 per creator per month, with a 14-day free trial.
-- **Business:** $25 per creator per month.
+- **Solo:** free for 30 days, then $1 a month or $10 a year.
+- **Team:** $10 per creator per month, or $100 per creator per year, with a 30-day free trial that starts when you invite someone.
+- **Business:** $25 per creator per month, or $250 per creator per year.
 
 Paid plans aren't on sale yet. Before we charge anyone, we'll add billing, renewal, refund and tax terms here, and tell instance owners first.
 

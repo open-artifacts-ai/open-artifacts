@@ -10,6 +10,7 @@ import {
 } from "../context.ts";
 import { ago, forHowLong, type HubLink } from "../copy.ts";
 import { readMachine } from "../machine.ts";
+import { readRecord as readClaudePluginsRecord } from "../steps/claude-plugins.ts";
 import { claudeConfigFile, proofState } from "../steps/claude-proof.ts";
 import { openclawPluginDir, openclawPluginState } from "../steps/openclaw.ts";
 import { habitsLine } from "./habits.ts";
@@ -191,6 +192,9 @@ export async function status(ctx: Ctx): Promise<number> {
   if (update) say(ctx, c.updateAvailable(update, st.version));
   const habits = habitsLine(ctx);
   if (habits) say(ctx, habits);
+  // From the install record only: status never starts Claude Code.
+  if (readClaudePluginsRecord(ctx.home)?.plugins?.length)
+    say(ctx, c.pluginsStatus());
   const proof = proofLine(ctx, m.hub, st.link === true);
   if (proof) say(ctx, proof);
   // Static text, only where the plugin is installed: nothing in OpenClaw's config is read.

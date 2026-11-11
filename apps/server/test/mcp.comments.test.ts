@@ -96,6 +96,7 @@ const pub = async (extra: Record<string, unknown> = {}) =>
         title: "doc",
         format: "html",
         content: "<p>The quick brown fox jumps over the lazy dog</p>",
+        comments: "everyone",
         ...extra,
       } as never,
       null,
