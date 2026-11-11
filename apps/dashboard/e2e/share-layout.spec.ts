@@ -148,7 +148,8 @@ test("opening Share focuses the active tab, not the panel", async ({
 test("Live data hints line up with their label text", async ({ page }) => {
   await openShare(page);
   const x = await page
-    .locator(".oa-cap")
+    // The Live data rows (checkboxes); "Who can comment" radios come first (#2080).
+    .locator(".oa-cap:has(input[type=checkbox], button[role=checkbox])")
     .first()
     .evaluate((cap) => {
       const label = cap.querySelector("label")?.getBoundingClientRect();
