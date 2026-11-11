@@ -9,7 +9,9 @@ import {
   stripTerminalControls,
   systemTool,
 } from "@oa/bus-ipc";
+import { INSTANCE_SENDER_NAME } from "@oa/bus-protocol";
 import type { AgentRecord } from "../agents.ts";
+import { NOTICE_WATCH_MS } from "../codex-taken.ts";
 import type { DeliverOutcome, Mail } from "../deliver.ts";
 
 /** How long `codex queue` may run; it writes one sqlite row. */
@@ -289,7 +291,7 @@ export type CodexTransportOptions = {
    * queued item then waits for the next client.
    */
   taken: {
-    watch: (id: string, thread: string, head: string) => void;
+    watch: (id: string, thread: string, head: string, ttlMs?: number) => void;
     has: (id: string) => boolean;
   };
   log?: (msg: string) => void;
@@ -326,7 +328,12 @@ export class CodexTransport {
     if (!(await this.#wakes(agent))) return { ok: false, reason: "queued" };
     const text = codexText(agent, mail);
     const fresh = !this.#has(mail.msg_id);
-    const r = await this.#queue(agent, mail.msg_id, text, true);
+    const r = await this.#queue(agent, mail.msg_id, text, {
+      // A hub notice (the instance's own sender) is kept 6 h by the hub.
+      ...(mail.from_name === INSTANCE_SENDER_NAME
+        ? { ttlMs: NOTICE_WATCH_MS }
+        : {}),
+    });
     // Queued before and no longer watched: a turn took it (or it was acked before #2029).
     if (r.ok) return fresh ? { ok: false, reason: "queued" } : { ok: true };
     return { ok: false, reason: r.taken === "no" ? "timeout" : "queued" };
@@ -371,7 +378,7 @@ export class CodexTransport {
     agent: AgentRecord,
     id: string,
     text: string,
-    watch = false,
+    watch: false | { ttlMs?: number } = false,
   ): Promise<Queue> {
     if (this.#has(id)) return { ok: true };
     // Maybe never landed: stays queued, so it ends expired, never a false Delivered.
@@ -406,7 +413,12 @@ export class CodexTransport {
     if (res.code === 0) {
       // Queued is not taken: the header line is what the turn's user item will start with.
       if (watch)
-        this.opts.taken.watch(id, agent.ref, text.split("\n", 1)[0] ?? "");
+        this.opts.taken.watch(
+          id,
+          agent.ref,
+          text.split("\n", 1)[0] ?? "",
+          watch.ttlMs,
+        );
       return this.#keep(id) ? { ok: true } : { ok: false, taken: "maybe" };
     }
     if (res.code === null) {

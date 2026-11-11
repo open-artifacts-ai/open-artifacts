@@ -713,4 +713,29 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     expect(log).toHaveBeenCalledOnce();
     expect(w.size()).toBe(0);
   });
+
+  it("a hub notice watch is dropped after 6 h, mail keeps the longer window", async () => {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const one = transport({ path: f.bin, from: "path" }, { takenFile });
+    await one.t.deliver(agent(), {
+      ...mail("n", "nnnnnnnnnnnnnnn1"),
+      from_name: "open-artifacts",
+    });
+    await one.t.deliver(agent(), mail("m"));
+    const log = vi.fn();
+    let now = Date.now();
+    const w = new TakenWatch({
+      home: one.home,
+      file: takenFile,
+      onTaken: vi.fn(),
+      log,
+      now: () => now,
+    });
+    now += 6 * 3600_000 + 1000;
+    w.check();
+    expect(w.has("nnnnnnnnnnnnnnn1")).toBe(false);
+    expect(w.has("mmmmmmmmmmmmmmm1")).toBe(true);
+    expect(log).toHaveBeenCalledOnce();
+  });
 });

@@ -11,6 +11,9 @@ import { MAILBOX_RETAIN_MS } from "@oa/bus-protocol";
 import { globRollout, readLines, threadRow } from "./codex-attest.ts";
 
 /** What a restart reads of a rollout when it has no offset: its last 2 MB. */
+/** The hub keeps a notice record this long (#1752); a notice watch is dropped then. */
+export const NOTICE_WATCH_MS = 6 * 60 * 60 * 1000;
+
 export const TAKEN_TAIL_CAP = 2 * 1024 * 1024;
 
 /** A queued item waiting for a turn to take it. */
@@ -20,6 +23,8 @@ export type TakenPending = {
   at: number;
   /** The first line of the text the transport queued; a user item is "taken" only if it starts with it. */
   head: string;
+  /** Own retention (ms); a hub notice is kept 6 h, mail MAILBOX_RETAIN_MS. */
+  ttlMs?: number;
 };
 
 export type TakenOptions = {
@@ -99,18 +104,23 @@ export class TakenWatch {
     return this.#pending.size;
   }
 
-  watch(id: string, thread: string, head: string): void {
-    this.#pending.set(id, { thread, head, at: this.#now() });
+  watch(id: string, thread: string, head: string, ttlMs?: number): void {
+    this.#pending.set(id, {
+      thread,
+      head,
+      at: this.#now(),
+      ...(ttlMs === undefined ? {} : { ttlMs }),
+    });
     this.#save();
   }
 
   /** Reads each watched thread's new rollout lines; acks what a turn took. */
   check(): void {
     if (!this.#pending.size) return;
-    const cutoff = this.#now() - (this.opts.ttlMs ?? MAILBOX_RETAIN_MS);
+    const now = this.#now();
     let changed = false;
     for (const [id, p] of this.#pending)
-      if (p.at < cutoff) {
+      if (now - p.at > (p.ttlMs ?? this.opts.ttlMs ?? MAILBOX_RETAIN_MS)) {
         this.#pending.delete(id);
         changed = true;
         this.opts.log?.(
@@ -196,7 +206,12 @@ export class TakenWatch {
           typeof p.head === "string" &&
           typeof p.at === "number"
         )
-          out[id] = { thread: p.thread, head: p.head, at: p.at };
+          out[id] = {
+            thread: p.thread,
+            head: p.head,
+            at: p.at,
+            ...(typeof p.ttlMs === "number" ? { ttlMs: p.ttlMs } : {}),
+          };
       return out;
     } catch {
       return {};
