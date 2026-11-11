@@ -766,7 +766,7 @@ describe("release-please", () => {
     );
     expect(w.on.push.branches).toContain("main");
     // T3b: no workflow-wide grant. release-please writes with the release
-    // App's token, so its GITHUB_TOKEN only reads; only hosted-attach writes.
+    // App's token, so its GITHUB_TOKEN only reads; no job here writes.
     expect(w.permissions).toEqual({});
     // release-please uses the App token (token: steps.app.outputs.token) and
     // nothing uses GITHUB_TOKEN, so it gets none.
@@ -1203,6 +1203,7 @@ describe("prod and staging tokens never cross", () => {
       uses?: string;
       with?: Record<string, unknown>;
       env?: Record<string, string>;
+      "continue-on-error"?: unknown;
       run?: string;
     }[];
     const tok = "${{ secrets.PROD_CLOUDFLARE_API_TOKEN }}";
@@ -1224,6 +1225,28 @@ describe("prod and staging tokens never cross", () => {
         group: "prod",
         "cancel-in-progress": false,
       });
+    });
+    it("checks the release bundle before Upgrade (moved from the cloud repo's hosted-release tests)", () => {
+      // Stable release, and not held by the non-additive migration guard.
+      const GATE =
+        "steps.guard.outputs.deploy == 'true' && steps.migration.outputs.hold == 'false'";
+      const at = (m: string) =>
+        steps.findIndex((s) => (s.run ?? "").includes(m));
+      const build = at("build-release-bundle.ts");
+      const hooks = at("pnpm check-no-test-hooks");
+      const fake = at('pnpm check-no-fake-idp "$RUNNER_TEMP/release-bundle"');
+      const up = at("prod-setup.sh upgrade");
+      expect(build).toBeGreaterThan(-1);
+      expect(hooks).toBeGreaterThan(build);
+      expect(fake).toBeGreaterThan(hooks);
+      expect(up).toBeGreaterThan(fake);
+      for (const i of [build, hooks, fake]) {
+        expect(steps[i]?.if).toBe(GATE);
+        expect(JSON.stringify(steps[i]?.env ?? {})).not.toContain("secrets.");
+        expect(steps[i]?.["continue-on-error"]).toBeUndefined();
+      }
+      expect(steps[build]?.run).toContain("--variant release");
+      expect(steps[up]?.env?.OA_CHECK_NO_TEST_HOOKS).toBe("1");
     });
     it("guards stable-only (prerelease and latest)", () => {
       const g = steps.find((s) => s.id === "guard");

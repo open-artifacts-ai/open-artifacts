@@ -1,4 +1,4 @@
-import { normalizeEmail } from "@oa/auth-core";
+import { normalizeEmail, SILENT_TICKET_MAX_LEN } from "@oa/auth-core";
 import {
   AUTH,
   PAGES,
@@ -7,6 +7,7 @@ import {
   type SignInError,
   type SignInVia,
 } from "@oa/shared";
+import { getCookie } from "hono/cookie";
 import { z } from "zod";
 import { logAuth, oidcStage } from "../auth/audit.js";
 import { authConfig } from "../auth/config.js";
@@ -16,6 +17,7 @@ import {
   handleCallback,
   logOidcFail,
   OidcRedeemError,
+  OidcSilentFallback,
   OidcStateError,
   pickStateCookie,
   safeNext,
@@ -24,7 +26,9 @@ import { accessProvider } from "../auth/providers/access.js";
 import { googleProvider } from "../auth/providers/google.js";
 import {
   clearSessionCookie,
+  readSession,
   sessionCookie,
+  sessionCookieName,
   signSession,
 } from "../auth/session.js";
 import { signInMode } from "../auth/sign-in.js";
@@ -214,7 +218,23 @@ export function mountAuth(app: AppType): void {
   });
 
   app.get(AUTH.loginGoogle, async (c) => {
-    if (!authConfig(c.env).google) throw new ApiError("not_found", "Not found");
+    const g = authConfig(c.env).google;
+    if (!g) throw new ApiError("not_found", "Not found");
+    // Silent sign-in (#2026): the sign-up host's ticket rides this URL to the
+    // broker, which alone decides (prompt=none + login_hint, or the picker).
+    // Never with reauth, off the hosted broker, or when ANY session already
+    // exists here (a silent result must not replace another user's session).
+    const ticket = c.req.query("silent") ?? "";
+    const reauth = c.req.query("reauth") === "1";
+    const silent =
+      ticket &&
+      ticket.length <= SILENT_TICKET_MAX_LEN &&
+      /^[A-Za-z0-9._-]+$/.test(ticket) &&
+      g.transport.kind === "broker" &&
+      !reauth &&
+      !(await readSession(c.env, getCookie(c, sessionCookieName(c.env))))
+        ? ticket
+        : undefined;
     const { location, stateCookie, evict } = await buildAuthorizeRedirect(
       c.env,
       googleProvider,
@@ -223,9 +243,11 @@ export function mountAuth(app: AppType): void {
         retry: c.req.query("retry") === "1",
         cookieHeader: c.req.header("cookie"),
         // The owner's break-glass sign-in (P3 T18): Google re-authenticates.
-        reauth: c.req.query("reauth") === "1",
+        reauth,
+        ...(silent ? { silent } : {}),
       },
     );
+    // A URL that carried a ticket is never cached or sent on as a Referer.
     return redirect(location, [...evict, stateCookie]);
   });
 
@@ -241,6 +263,25 @@ export function mountAuth(app: AppType): void {
     try {
       const id = await handleCallback(c.env, googleProvider, c.req.raw);
       next = id.next;
+      // A silent result never touches a session that appeared mid-flow (the
+      // login route only starts one with none). Checked before admit() and
+      // the directory sync, so a refusal leaves no user row or other effect.
+      // The uid is unknown until admit, so any session refuses; the person is
+      // already signed in and lands on `next`.
+      if (id.silent) {
+        const have = await readSession(
+          c.env,
+          getCookie(c, sessionCookieName(c.env)),
+        );
+        if (have) {
+          logAuth({
+            provider: "google",
+            outcome: "refused",
+            stage: "silent_other_session",
+          });
+          return redirect(id.next, clear);
+        }
+      }
       const r = await admit(c.env, authConfig(c.env), id);
       if (!r.ok) {
         logOidcFail(r.reason);
@@ -285,6 +326,21 @@ export function mountAuth(app: AppType): void {
         id.authTime <= now + 60_000
           ? id.authTime
           : undefined;
+      // A silent result never replaces a session that belongs to someone else.
+      if (id.silent) {
+        const have = await readSession(
+          c.env,
+          getCookie(c, sessionCookieName(c.env)),
+        );
+        if (have && have.uid !== r.user.id) {
+          logAuth({
+            provider: "google",
+            outcome: "refused",
+            stage: "silent_other_session",
+          });
+          return redirect(id.next, clear);
+        }
+      }
       const sess = sessionCookie(
         await signSession(c.env, r.user.id, now, {
           provider: "google",
@@ -302,6 +358,19 @@ export function mountAuth(app: AppType): void {
       });
       return redirect(id.next, [...clear, sess]);
     } catch (e) {
+      // A silent attempt that needs the user: ONE retry with the picker (fresh
+      // state and PKCE, no ticket, so it cannot loop).
+      if (e instanceof OidcSilentFallback) {
+        logAuth({
+          provider: "google",
+          outcome: "refused",
+          stage: "silent_fallback",
+        });
+        return redirect(
+          `${AUTH.loginGoogle}?next=${encodeURIComponent(e.next)}`,
+          clear,
+        );
+      }
       logAuth({
         provider: "google",
         outcome: e instanceof ApiError ? "refused" : "error",

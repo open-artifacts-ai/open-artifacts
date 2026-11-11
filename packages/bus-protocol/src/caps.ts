@@ -79,6 +79,22 @@ export const BUS_CAPS = {
    * only when the hub listed both `link` and this.
    */
   linkArg: "link_arg",
+  /**
+   * Waiting mail (#2029): the client decodes roster `waiting` on `away` rows.
+   * The hub sends it only to a socket whose hello listed it (with `mailbox`),
+   * and lists it in `hello_ok.caps`: a strict decoder without it would refuse
+   * the whole roster.
+   */
+  waiting: "waiting",
+  /**
+   * Notice acks (#1752): a daemon listing it sends the existing `ack` frame
+   * with a notice deliver frame's `msg_id` only once the harness took the
+   * notice (nothing while it waits), and `refuse` (reason `closed`) if it is
+   * dropped or the session is gone. The hub then reads the notice as held,
+   * not delivered, until that ack. A socket without it keeps today's rule:
+   * accepted by the socket is delivered.
+   */
+  noticeAck: "notice_ack",
 } as const;
 export type BusCap = (typeof BUS_CAPS)[keyof typeof BUS_CAPS];
 

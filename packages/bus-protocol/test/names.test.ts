@@ -3,7 +3,9 @@ import {
   BusNameSchema,
   candidateName,
   droppedRefusedChars,
+  impersonates,
   isReservedBusName,
+  looksLikeProse,
   suffixName,
 } from "../src/names.ts";
 
@@ -263,5 +265,66 @@ describe("fork session names (#1916)", () => {
     expect(droppedRefusedChars("OA Manager \u2442 hello")).toBe(true);
     expect(droppedRefusedChars("\u2442 hello")).toBe(true);
     expect(droppedRefusedChars("OA Manager")).toBe(false);
+  });
+});
+
+describe("prose harness titles (#1916)", () => {
+  const h = { harness: true };
+  it("the real case becomes the fallback, cleaned or raw", () => {
+    expect(
+      candidateName(
+        "OA Manager One thing I noticed If I -mention an agent in a c",
+        h,
+      ),
+    ).toBe("agent");
+    expect(
+      candidateName(
+        "OA Manager One thing I noticed: If I @-mention an agent in a c",
+        h,
+      ),
+    ).toBe("agent");
+    expect(
+      droppedRefusedChars(
+        "OA Manager One thing I noticed: If I @-mention an agent in a c",
+        h,
+      ),
+    ).toBe(false);
+  });
+  it("real names stay", () => {
+    for (const n of [
+      "OA Hermes",
+      "OA Agent Experience",
+      "OA Platform B",
+      "Pi Permissions",
+      "oa-wt-overlay-signup-r2-ac",
+      "OA Manager fork",
+      "open-artifacts-e6",
+    ])
+      expect(candidateName(n, h)).toBe(n);
+  });
+  it("edges: 4 vs 5 words, 32 vs 33 chars", () => {
+    expect(candidateName("a b c d", h)).toBe("a b c d");
+    expect(candidateName("a b c d e", h)).toBe("agent");
+    expect(candidateName("x".repeat(32), h)).toBe("x".repeat(32));
+    expect(candidateName("x".repeat(33), h)).toBe("agent");
+    expect(looksLikeProse("x".repeat(33))).toBe(true);
+    expect(looksLikeProse("x".repeat(32))).toBe(false);
+  });
+  it("without harness the name is kept (a user's rename)", () => {
+    expect(candidateName("a b c d e f g")).toBe("a b c d e f g");
+    expect(candidateName("x".repeat(40))).toBe("x".repeat(40));
+  });
+  it("a fork keeps its handling", () => {
+    expect(
+      candidateName("OA Manager \u2442 do a long thing here now please", h),
+    ).toBe("OA Manager fork");
+  });
+  it("impersonates: another name plus more than one word", () => {
+    expect(impersonates("OA Platform B", "OA Platform")).toBe(false);
+    expect(impersonates("OA Platform-2", "OA Platform")).toBe(false);
+    expect(impersonates("OA Platform fork", "OA Platform")).toBe(false);
+    expect(impersonates("oa platform one two", "OA Platform")).toBe(true);
+    expect(impersonates("OA Platformer one two", "OA Platform")).toBe(false);
+    expect(impersonates("OA Platform", "OA Platform")).toBe(false);
   });
 });

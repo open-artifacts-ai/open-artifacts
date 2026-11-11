@@ -143,6 +143,8 @@ const summaryOf = (d: InstallDetail): InstallSummary => ({
   servingMode: d.servingMode,
   version: d.version,
   tier: d.tier,
+  ...(d.billingTier !== undefined ? { billingTier: d.billingTier } : {}),
+  ...(d.billingStatus !== undefined ? { billingStatus: d.billingStatus } : {}),
   auth: { providers: d.auth.providers, domainCount: d.auth.domains.length },
   health: d.health,
   source: d.source,

@@ -588,13 +588,18 @@ function CommentRow({
           next={nextAsk ? () => api.reveal(nextAsk) : undefined}
           reply={api.canComment ? () => api.select(thread.id, true) : undefined}
           askQuestion={askQuestion}
+          guest={api.guest}
         />
       ) : (
         <p className={`whitespace-pre-wrap break-words ${TXT}`}>
-          <MentionedText body={c.body} mentions={c.mentions} />
+          <MentionedText
+            body={c.body}
+            mentions={c.mentions}
+            guest={api.guest}
+          />
         </p>
       )}
-      <Delivery c={c} />
+      <Delivery c={c} guest={api.guest} />
       {mode === "delete" && (
         <div
           role="alertdialog"

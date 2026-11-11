@@ -907,6 +907,8 @@ describe("comment notice text", () => {
     expect(wire).not.toContain("secret-999");
     expect(wire.toLowerCase()).not.toContain("evil");
     expect(n.from).toBe(NOTICE_SENDER);
+    // #1752: the target is the roster key, never body text.
+    expect(n.target).toEqual({ kind: "mention", key });
     expect(Object.keys(n).sort()).toEqual(
       [
         "artifactId",
@@ -915,6 +917,7 @@ describe("comment notice text", () => {
         "from",
         "id",
         "kind",
+        "target",
         "text",
         "threadId",
         "to",
