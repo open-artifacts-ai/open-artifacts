@@ -90,12 +90,12 @@ describe("full-screen strip, top level", () => {
     expect(comments.querySelector("svg.oa-fsicon")).not.toBeNull();
   });
 
-  it("comes after the frame in the document", async () => {
+  it("comes before the frame in the document, so its controls are the first Tab stops", async () => {
     mount(FULL);
     const a = await chip();
     const frame = document.querySelector("iframe") as HTMLIFrameElement;
     expect(
-      frame.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING,
+      a.compareDocumentPosition(frame) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 

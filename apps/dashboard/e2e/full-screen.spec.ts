@@ -187,16 +187,24 @@ test.describe("full-screen strip", () => {
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
   });
 
-  test("the exit link is the last Tab stop and shows a focus ring", async ({
+  test("Tab goes through the strip first (Comments, Exit), then the frame; the focus ring shows", async ({
     page,
   }) => {
     await page.goto(FULL);
-    const chip = page.getByRole("link", { name: TOP });
-    await expect(chip).toBeVisible();
-    await page.keyboard.press("Shift+Tab");
-    await expect(chip).toBeFocused();
-    expect(await chip.evaluate((e) => getComputedStyle(e).outlineStyle)).toBe(
+    const exit = page.getByRole("link", { name: TOP });
+    const comments = page.getByRole("button", { name: /^Comments/ });
+    await expect(exit).toBeVisible();
+    await page.keyboard.press("Tab");
+    await expect(comments).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(exit).toBeFocused();
+    expect(await exit.evaluate((e) => getComputedStyle(e).outlineStyle)).toBe(
       "solid",
+    );
+    await page.keyboard.press("Tab");
+    await expect(exit).not.toBeFocused();
+    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe(
+      "IFRAME",
     );
   });
 
@@ -244,6 +252,41 @@ test.describe("full-screen strip", () => {
       .locator("iframe.oa-vframe")
       .boundingBox()) as Box;
     expect(strip.y + strip.height).toBeLessThanOrEqual(inner.y);
+  });
+
+  test("a 300px embed: the strip does not overflow, even gone", async ({
+    page,
+  }) => {
+    await page.route("**/__embed", (r) =>
+      r.fulfill({
+        contentType: "text/html",
+        body: `<iframe src="${PUBLIC_FULL}" style="width:300px;height:400px;border:0"></iframe>`,
+      }),
+    );
+    await page.goto("/__embed");
+    const frame = page.frameLocator("iframe");
+    const bar = frame.locator(".oa-fsbar");
+    await expect(bar).toBeVisible();
+    const fits = () =>
+      bar.evaluate((e) => ({ s: e.scrollWidth, c: e.clientWidth }));
+    const a = await fits();
+    expect(a.s).toBeLessThanOrEqual(a.c);
+    // Gone: the long pill truncates instead of pushing the strip wider.
+    await frame.owner().evaluate(async (el) => {
+      await (el as HTMLIFrameElement).contentWindow?.fetch(
+        "/api/v1/artifacts/Gh9kLmNpQrAsTuVx",
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ visibility: "private" }),
+        },
+      );
+    });
+    await expect(
+      frame.getByText("No longer available", { exact: true }),
+    ).toBeVisible({ timeout: 15_000 });
+    const g = await fits();
+    expect(g.s).toBeLessThanOrEqual(g.c);
   });
 
   test("Full screen has the Maximize2 icon on the button and the menu item", async ({

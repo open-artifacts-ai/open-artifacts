@@ -18,6 +18,8 @@ button{font:inherit;padding:4px 10px}</style>
 <script>
   const nonce = new URLSearchParams(location.hash.slice(1)).get("oa");
   parent.postMessage({ oa: 1, type: "hello", protocol: 1, kind: "html", nonce }, "*");
+  addEventListener("pointerdown", () =>
+    parent.postMessage({ oa: 1, type: "interacted", nonce }, "*"), { once: true });
 </script><div class="tools"><button>Filter</button><button>Export</button></div>
 <h1>Q3 pipeline</h1><p>The artifact's own controls sit at its top right corner.</p>`;
 
@@ -89,4 +91,26 @@ for (const theme of ["light", "dark"] as const)
       app.frameLocator("iframe.oa-vframe").getByText("Q3 pipeline"),
     ).toBeVisible();
     await shot(page, `strip-embedded-${theme}`);
+  });
+
+for (const theme of ["light", "dark"] as const)
+  test(`strip with the new-version pill (${theme})`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: theme });
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`/a/${LANDING}/full`);
+    const frame = page.frameLocator("iframe.oa-vframe");
+    await expect(frame.getByText("Q3 pipeline")).toBeVisible();
+    // Touch the frame, so a new version is held as the pill, not swapped.
+    await frame.getByRole("heading").click();
+    await page.evaluate(async (id) => {
+      await fetch(`/api/v1/artifacts/${id}/versions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id, format: "html", content: "<p>next</p>" }),
+      });
+    }, LANDING);
+    const pill = page.getByRole("button", { name: /^View version/ });
+    await expect(pill).toBeVisible({ timeout: 10_000 });
+    await expect(pill).toHaveAttribute("data-open", "true");
+    await shot(page, `strip-pill-1280-${theme}`);
   });
