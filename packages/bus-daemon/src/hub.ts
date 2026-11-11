@@ -53,6 +53,7 @@ export const HUB_HELLO_CAPS = [
   BUS_CAPS.follow,
   BUS_CAPS.link,
   BUS_CAPS.waiting,
+  BUS_CAPS.waitingQuery,
 ] as const;
 
 export class HubConnection {

@@ -91,6 +91,7 @@ Client to hub (`CLIENT_FRAMES`):
 - `rename {agent_ref, proposed_name, name_kind?}`: rename a live agent; `proposed_name` 1..256 chars. Answered by `renamed` or `error`.
 - `follow {from_ref, artifact}`, `unfollow {from_ref, artifact}`, `following {from_ref}` (`BUS_CAPS.follow`, see Follows): `artifact` is an id or the page URL, 1..2048 chars.
 - `link_bind {agent_ref, hash}` (`BUS_CAPS.link`, see Session links).
+- `waiting_query {agent_refs}` (`BUS_CAPS.waitingQuery`, up to 64): pending mail for this machine's own away agents.
 
 Hub to client (`SERVER_FRAMES`):
 
@@ -106,6 +107,7 @@ Hub to client (`SERVER_FRAMES`):
 - `renamed {agent_ref, bus_name, former?}`: reply to `rename`. `former` is the name left, absent on a no-op. Names compare case-insensitively.
 - `followed {artifact_id, url, followed_at}`, `unfollowed {removed}`, `follows {follows: [{artifact_id, url, followed_at}]}` (at most `MAX_FOLLOWS`, 200): replies to `follow`, `unfollow`, `following`.
 - `link_bound {}`: reply to `link_bind`.
+- `waiting_counts {counts}`: reply to `waiting_query`: `agent_ref` to pending count (1 to 100). A ref that is unknown, live, on another machine or has nothing waiting is omitted.
 
 Targeting, idempotency (a send's `id` is unique per sender for at least 1 h;
 a resend reuses it) and the decoder bounds are unchanged from OpenBus:

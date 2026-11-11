@@ -120,6 +120,7 @@ describe("reply ids in the daemon", () => {
       "follow",
       "link",
       "waiting",
+      "waiting_query",
     ]);
   });
 

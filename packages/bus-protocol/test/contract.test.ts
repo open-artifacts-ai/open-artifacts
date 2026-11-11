@@ -53,6 +53,7 @@ describe("contract is pinned", () => {
       "unfollow",
       "following",
       "link_bind",
+      "waiting_query",
     ]);
     expect(SERVER_FRAMES).toEqual([
       "hello_ok",
@@ -69,6 +70,7 @@ describe("contract is pinned", () => {
       "unfollowed",
       "follows",
       "link_bound",
+      "waiting_counts",
     ]);
   });
 
