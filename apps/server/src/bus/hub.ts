@@ -6856,9 +6856,9 @@ export class BusHub extends DurableObject<Env> {
           .map((r) => r.id)
           .join(","),
       });
-    // #1752/#2082: an ack that never came settles its targets gone (a late
-    // ack still lifts gone to delivered). Bounded by BATCH per pass; the
-    // alarm re-arms for the rest.
+    // #1752/#2082: an ack that never came settles its targets gone, and the
+    // row goes: an ack after that finds no row and is ignored. Bounded by
+    // BATCH per pass; the alarm re-arms for the rest.
     for (const r of all<{ rid: number; ack: string }>(
       sql,
       "select rowid as rid, ack from notice_acks where expires_at <= ? order by expires_at limit ?",
