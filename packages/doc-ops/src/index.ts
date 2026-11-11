@@ -8,6 +8,7 @@ export {
   INLINE_MARKS,
   type InlineMark,
   MAX_OPS,
+  MAX_QUOTE_CHARS,
   type OpImportChange,
   type PlanResult,
   type QuoteContext,

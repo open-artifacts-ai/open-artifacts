@@ -493,11 +493,19 @@ describe("link schemes", () => {
     "",
   ];
   it("refuses a format link with a bad href", () => {
-    for (const href of bad) {
+    expect(
+      failure("see docs\n", [
+        { op: "format", quote: "docs", mark: "link", href: "" },
+      ]).message,
+    ).toBe("Op 0: href must be a non-empty string.");
+    for (const href of bad.filter(Boolean)) {
       const error = failure("see docs\n", [
         { op: "format", quote: "docs", mark: "link", href },
       ]);
-      expect(error.message).toMatch(/http:, https: or mailto:|href/);
+      expect(error.code).toBe("invalid_op");
+      expect(error.message).toMatch(
+        /^Op 0: A link must start with http:, https: or mailto:\./,
+      );
     }
   });
   it("never leaves a bad link mark from Markdown", () => {

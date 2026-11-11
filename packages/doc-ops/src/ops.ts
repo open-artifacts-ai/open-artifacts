@@ -79,6 +79,7 @@ export type DocOpErrorCode =
   | "quote_ambiguous"
   | "doc_too_large"
   | "too_many_ops"
+  | "quote_too_long"
   | "invalid_op";
 
 /** Why an edit was refused, with the next step in `message`. Nothing applied. */
@@ -236,10 +237,22 @@ function str(value: unknown, name: string, allowEmpty = false): string {
   return value;
 }
 
+export const MAX_QUOTE_CHARS = 1000;
+
+function tooLong(name: string): OpFailure {
+  return new OpFailure({
+    code: "quote_too_long",
+    message: `${name} is over ${MAX_QUOTE_CHARS} characters. Quote a shorter span that is unique, and add a prefix or suffix if it repeats.`,
+  });
+}
+
 function quoteOf(value: unknown, name: string): string {
   if (typeof value !== "string" || normalizeQuote(value) === "") {
-    throw invalid(`${name} must be a quote: the text to find, not empty.`);
+    throw invalid(
+      `${name} must be a quote: the text to find, not empty or only line breaks.`,
+    );
   }
+  if (value.length > MAX_QUOTE_CHARS) throw tooLong(name);
   return value;
 }
 
@@ -247,6 +260,10 @@ function context(o: Record<string, unknown>): QuoteContext {
   const out: QuoteContext = {};
   if (o.prefix !== undefined) out.prefix = str(o.prefix, "prefix", true);
   if (o.suffix !== undefined) out.suffix = str(o.suffix, "suffix", true);
+  if (out.prefix && out.prefix.length > MAX_QUOTE_CHARS)
+    throw tooLong("prefix");
+  if (out.suffix && out.suffix.length > MAX_QUOTE_CHARS)
+    throw tooLong("suffix");
   return out;
 }
 
@@ -341,7 +358,20 @@ function locate(
   ctx: QuoteContext,
 ): { from: number; to: number } {
   const found = findQuote(tr.doc, quote, ctx.prefix, ctx.suffix);
-  if (found.kind === "found") return found.match;
+  if (found.kind === "found") {
+    const { from, to } = found.match;
+    if (!(from >= 0 && from < to && to <= tr.doc.content.size)) {
+      throw invalid(
+        "That quote does not map to a clear stretch of text. Quote text inside one block, or a shorter span.",
+      );
+    }
+    return found.match;
+  }
+  if (found.kind === "spans_hidden") {
+    throw invalid(
+      "The quote runs across a rule or empty block that the quote does not show. Quote the text on each side separately.",
+    );
+  }
   if (found.kind === "ambiguous") {
     throw new OpFailure({
       code: "quote_ambiguous",

@@ -11,18 +11,33 @@ export interface VisibleText {
   pos: number[];
 }
 
+/** pos value of a line break between two blocks. */
+export const BREAK = -1;
+/** pos value of a line break with a rule or empty block between its blocks. */
+export const HIDDEN_BREAK = -2;
+
 export function visibleText(doc: PMNode): VisibleText {
   const parts: string[] = [];
   const pos: number[] = [];
+  // A rule or an empty block shows no text; a quote spanning one would
+  // delete it unseen, so its break is marked and matches over it are refused.
+  let hidden = false;
   doc.descendants((node, at) => {
-    if (!node.isTextblock) return true;
+    if (!node.isTextblock) {
+      if (node.isBlock && node.isLeaf) hidden = true;
+      return true;
+    }
     // Slice-1 textblocks hold only text nodes, so character i sits at at+1+i.
     const text = node.textContent;
-    if (text.length === 0) return false;
+    if (text.length === 0) {
+      hidden = true;
+      return false;
+    }
     if (parts.length > 0) {
       parts.push("\n");
-      pos.push(-1);
+      pos.push(hidden ? HIDDEN_BREAK : BREAK);
     }
+    hidden = false;
     parts.push(text);
     for (let i = 0; i < text.length; i++) pos.push(at + 1 + i);
     return false;
@@ -30,10 +45,19 @@ export function visibleText(doc: PMNode): VisibleText {
   return { text: parts.join(""), pos };
 }
 
-/** Line endings to "\n", and line breaks at either end dropped. */
+/**
+ * Line endings to "\n", and line breaks at either end dropped together with
+ * the spaces around them ("target.\n " is "target.").
+ */
 export function normalizeQuote(quote: string): string {
-  return quote.replace(/\r\n?/g, "\n").replace(/^\n+|\n+$/g, "");
+  return quote
+    .replace(/\r\n?/g, "\n")
+    .replace(/^[ \t]*\n\s*/, "")
+    .replace(/\s*\n[ \t]*$/, "");
 }
+
+/** The most matches counted; more than this is ambiguous all the same. */
+const MAX_MATCHES = 50;
 
 function escapeRegExp(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -58,7 +82,8 @@ export interface QuoteMatch {
 export type QuoteLookup =
   | { kind: "found"; match: QuoteMatch }
   | { kind: "not_found"; closest: string | null; withoutContext: number }
-  | { kind: "ambiguous"; matches: number };
+  | { kind: "ambiguous"; matches: number }
+  | { kind: "spans_hidden" };
 
 function matchesOf(
   text: string,
@@ -69,7 +94,12 @@ function matchesOf(
   for (;;) {
     const m = re.exec(text);
     if (!m) break;
+    if (m[0].length === 0) {
+      re.lastIndex = m.index + 1;
+      continue;
+    }
     out.push({ index: m.index, end: m.index + m[0].length });
+    if (out.length >= MAX_MATCHES) break;
     // Overlapping matches count too ("aa" twice in "aaa").
     re.lastIndex = m.index + 1;
   }
@@ -94,9 +124,15 @@ export function findQuote(
     ? `(?<=${pattern(prefix.replace(/\r\n?/g, "\n"))})`
     : "";
   const after = suffix ? `(?=${pattern(suffix.replace(/\r\n?/g, "\n"))})` : "";
-  const found = matchesOf(text, before + body + after);
+  // A match must start and end on a character, never on a block break.
+  const found = matchesOf(text, before + body + after).filter(
+    (m) => pos[m.index] >= 0 && pos[m.end - 1] >= 0,
+  );
   if (found.length === 1) {
     const { index, end } = found[0];
+    if (pos.slice(index, end).some((p) => p === HIDDEN_BREAK)) {
+      return { kind: "spans_hidden" };
+    }
     return { kind: "found", match: { from: pos[index], to: pos[end - 1] + 1 } };
   }
   if (found.length > 1) return { kind: "ambiguous", matches: found.length };
