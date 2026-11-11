@@ -6521,21 +6521,29 @@ export class BusHub extends DurableObject<Env> {
   #acceptNotice(n: BusNotice): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
-    // #1752: a follow row still at an address the agent has since left (the
-    // re-key is best effort, and a notice can be in flight) reaches it by its
-    // live former name, as mail does. The notice is then kept at the current
-    // address, so the flush paths find it.
+    // #1752: as a send resolves (role > live > former): a role address in
+    // the notice's own namespace reaches its current live holder (same org
+    // and namespace scope; a vacant role falls through). A follow row still at
+    // an address the agent has since left (the re-key is best effort, and a
+    // notice can be in flight) reaches it by its live former name. The notice
+    // is then kept at the resolved agent's address, so the flush paths find it.
     const sent = n.to.name.toLowerCase();
+    const byRole = resolveRoleIn(sql, OWNER_ORG_ID, n.to.namespace, sent);
+    const liveNamed = liveVisibleIn(sql, n.to.namespace, sent);
     const former =
-      liveVisibleIn(sql, n.to.namespace, sent) === null
-        ? liveFormer(sql, sent, now, { ns: n.to.namespace }, 2)
-        : [];
-    const byFormer = former.length === 1 ? former[0] : undefined;
-    const lname = byFormer ? byFormer.name.toLowerCase() : sent;
-    const to = byFormer
-      ? { namespace: byFormer.namespace, name: byFormer.name }
+      byRole !== null || liveNamed !== null
+        ? []
+        : liveFormer(sql, sent, now, { ns: n.to.namespace }, 2);
+    const byAlias = byRole?.ok
+      ? byRole.agent
+      : former.length === 1
+        ? former[0]
+        : undefined;
+    const lname = byAlias ? byAlias.name.toLowerCase() : sent;
+    const to = byAlias
+      ? { namespace: byAlias.namespace, name: byAlias.name }
       : n.to;
-    const agent = byFormer ?? liveVisibleIn(sql, to.namespace, lname);
+    const agent = byAlias ?? liveVisibleIn(sql, to.namespace, lname);
     const key = [to.namespace, lname, n.coalesceKey] as const;
     // No live session at the address: nothing is kept (and a waiting notice
     // for it is stale, so it goes too).
