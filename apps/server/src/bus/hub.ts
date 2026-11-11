@@ -1859,12 +1859,16 @@ function agentUp(
     { kind: f.kind },
     // #1916: agent_up carries the harness's title (the daemon sends renames,
     // user-made, as `rename` frames). An agent keeping its own current name
-    // is not a new title, so neither rule touches it.
-    !(
-      existing &&
-      candidateName(f.proposed_name).toLowerCase() ===
-        existing.name.toLowerCase()
-    ),
+    // is not a new title, so neither rule touches it. Claude Code only writes a
+    // session name from /rename or /fork, never an auto prose title, so its
+    // agent_up is the user's choice (a fork title is still cut to "<parent>
+    // fork" by candidateName itself).
+    f.kind !== "claude-code" &&
+      !(
+        existing &&
+        candidateName(f.proposed_name).toLowerCase() ===
+          existing.name.toLowerCase()
+      ),
   );
   const wasLive = existing?.live === 1;
   const to: Scope = { namespace: f.namespace, global: f.global };

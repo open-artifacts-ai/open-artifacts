@@ -37,6 +37,19 @@ async function reg(
   return (await waitFor(d, "agent_ok")).bus_name;
 }
 
+async function regKind(
+  d: Daemon,
+  kind: string,
+  name: string,
+  namespace: string,
+): Promise<string> {
+  d.send({
+    ...up(id("u"), uniq("ref"), name, namespace),
+    kind,
+  } as ClientFrame);
+  return (await waitFor(d, "agent_ok")).bus_name;
+}
+
 async function regRef(
   d: Daemon,
   ref: string,
@@ -119,5 +132,24 @@ describe("prose and impersonating harness names (#1916)", () => {
     const long = `${base} one two three four five`;
     await rename(d, ref, long);
     expect(await regRef(d, ref, long, n)).toBe(long);
+  });
+
+  it("claude-code agent_up is a user choice: both rules are off", async () => {
+    const d = await connect();
+    const n = ns("cc");
+    const long = uniq("Why does this one keep failing");
+    expect(await regKind(d, "claude-code", long, n)).toBe(long);
+    const base = uniq("Prime");
+    await reg(d, base, n);
+    const imp = `${base} two words`;
+    expect(await regKind(d, "claude-code", imp, n)).toBe(imp);
+  });
+
+  it("a codex agent_up with the same long title still falls back", async () => {
+    const d = await connect();
+    const n = ns("cx");
+    expect(
+      await regKind(d, "codex", uniq("Why does this one keep failing"), n),
+    ).toMatch(FALLBACK);
   });
 });
