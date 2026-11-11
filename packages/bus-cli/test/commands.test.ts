@@ -1288,6 +1288,18 @@ describe("logs, mcp, version", () => {
     expect(b.out()[0]).toBe("l10");
   });
 
+  it("logs skips an events.log that is a symlink, and prints none of its target", async () => {
+    const c = fakeCtx();
+    mkdirSync(join(c.home, "logs"), { recursive: true });
+    writeFileSync(join(c.home, "logs/daemon.log"), "d\n");
+    const secret = join(c.home, "secret.txt");
+    writeFileSync(secret, "TOP-SECRET\n");
+    symlinkSync(secret, join(c.home, "logs/events.log"));
+    expect(await logs(c)).toBe(0);
+    expect(c.out().join("\n")).not.toContain("TOP-SECRET");
+    expect(c.out().join("\n")).toContain("not a regular file");
+  });
+
   it("mcp runs the adapter entry, and explains Pi", async () => {
     const load = vi.fn(async () => ({}));
     expect(await mcp("claude", fakeCtx(), load)).toBeUndefined();
