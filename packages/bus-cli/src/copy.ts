@@ -331,7 +331,7 @@ export function copy(style: Style, bus: string = BUS_CMD) {
             ],
     // install --no-service: the service step is skipped, nothing is started.
     // install: the bus then runs as a plain daemon (daemonRunning says so).
-    serviceOtherHome: (why: Isolation, removing = false) => [
+    serviceOtherHome: (why: Isolation, removing = false, plain = false) => [
       warn(
         `Skipped ${removing ? "removing " : ""}the background service: ${
           why === "home"
@@ -339,7 +339,7 @@ export function copy(style: Style, bus: string = BUS_CMD) {
             : why === "bus-home"
               ? "the bus home is outside your account's home"
               : "XDG_CONFIG_HOME is outside your account's home"
-        }.${removing ? "" : " Use --no-service to skip it on purpose."}`,
+        }.${removing ? "" : plain ? " It never gets a background service there, so the bus runs as a plain daemon." : " Use --no-service to skip it on purpose."}`,
       ),
     ],
     serviceSkipped: () => [

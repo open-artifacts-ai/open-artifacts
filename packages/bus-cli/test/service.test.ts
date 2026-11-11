@@ -1169,6 +1169,93 @@ describe("#2099: another HOME never reaches the real service manager", () => {
   }
 });
 
+describe("#2099: a bus home that is the account's own is never touched", () => {
+  const seed = (home: string, install: object) => {
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "install.json"), JSON.stringify(install));
+    return join(home, "install.json");
+  };
+  const real = { service: { kind: "systemd", unit: "/x/oa-bus.service" } };
+
+  for (const platform of ["darwin", "linux"] as const) {
+    it(`${platform}: a throwaway HOME with the real OA_BUS_HOME kills, writes and spawns nothing`, async () => {
+      const account = tmp();
+      const home = join(account, ".oa-bus");
+      const file = seed(home, real);
+      const before = readFileSync(file, "utf8");
+      const { d, calls } = deps(platform, {
+        userHome: tmp(),
+        accountHome: account,
+        home: () => home,
+        daemonPid: vi.fn(async () => 4242),
+      });
+      const s = systemService(d);
+      expect(await s.ensure()).toEqual({ skipped: "home", idle: true });
+      expect(calls).toEqual([]);
+      expect(d.kill).not.toHaveBeenCalled();
+      expect(d.spawnDaemon).not.toHaveBeenCalled();
+      expect(existsSync(join(home, "bin"))).toBe(false);
+      expect(readFileSync(file, "utf8")).toBe(before);
+    });
+  }
+
+  it("linux: the real HOME with a throwaway XDG_CONFIG_HOME kills, writes and spawns nothing", async () => {
+    const account = tmp();
+    const home = join(account, ".oa-bus");
+    const file = seed(home, real);
+    const before = readFileSync(file, "utf8");
+    const { d, calls } = deps("linux", {
+      userHome: account,
+      accountHome: account,
+      home: () => home,
+      env: { PATH: "/usr/bin", XDG_CONFIG_HOME: tmp() },
+      daemonPid: vi.fn(async () => 4242),
+    });
+    expect(await systemService(d).ensure()).toEqual({
+      skipped: "xdg",
+      idle: true,
+    });
+    expect(calls).toEqual([]);
+    expect(d.kill).not.toHaveBeenCalled();
+    expect(d.spawnDaemon).not.toHaveBeenCalled();
+    expect(existsSync(join(home, "bin"))).toBe(false);
+    expect(readFileSync(file, "utf8")).toBe(before);
+  });
+
+  describe("a container-style HOME: the bus home is outside the account's", () => {
+    it("never signals a daemon this home did not record", async () => {
+      const { d, calls, home } = deps("linux", {
+        accountHome: tmp(),
+        daemonPid: vi.fn(async () => 4242),
+      });
+      // A daemon of ours by its command line, but not recorded here.
+      expect(await systemService(d).ensure()).toEqual({ running: 4242 });
+      void home;
+      expect(d.kill).not.toHaveBeenCalled();
+      expect(d.spawnDaemon).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+    });
+
+    it("stops only its recorded fallback pid, then starts its own daemon", async () => {
+      let alive = true;
+      const { d, calls, home } = deps("linux", {
+        accountHome: tmp(),
+        daemonPid: vi.fn(async () => (alive ? 4242 : undefined)),
+        processArgs: () => undefined,
+        kill: vi.fn(() => {
+          alive = false;
+        }),
+        spawnDaemon: vi.fn(() => 5151),
+      });
+      seed(home, { service: { fallback: true, pid: 4242 } });
+      expect(await systemService(d).ensure()).toEqual({ skipped: "home" });
+      expect(d.kill).toHaveBeenCalledExactlyOnceWith(4242);
+      expect(d.spawnDaemon).toHaveBeenCalledOnce();
+      expect(calls).toEqual([]);
+    });
+  });
+});
+
 describe("#2099: the real context", () => {
   it("is isolated under a sentinel HOME that is not the account's", () => {
     expect(realCtx(true).service.isolated).toBe("home");

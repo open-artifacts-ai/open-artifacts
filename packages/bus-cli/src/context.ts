@@ -46,7 +46,7 @@ export type Service = {
    * `running`: a daemon that would not stop holds the socket, and nothing
    * was started.
    */
-  ensure: () => Promise<{ running?: number; skipped?: Isolation }>;
+  ensure: () => Promise<{ running?: number; skipped?: Isolation; idle?: true }>;
   /** HOME or the bus home is not the account's: no service call is made (#2099). */
   isolated?: Isolation;
   /** install could not start a service and runs the daemon itself. */

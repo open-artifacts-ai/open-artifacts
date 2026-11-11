@@ -461,19 +461,22 @@ export function systemService(d: ServiceDeps): Service {
   };
   const installed = () => manager !== undefined && present(file());
   /** HOME or the bus home points away from the account's: its manager is not ours to touch. */
+  const fold = (p: string) =>
+    d.platform === "darwin" ? real(p, true).toLowerCase() : real(p, true);
+  const insideAccount = (p: string) => {
+    if (d.accountHome === undefined) return true;
+    const r = relative(fold(d.accountHome), fold(p));
+    return r === "" || (!r.startsWith("..") && !isAbsolute(r));
+  };
   const isolated = (): Isolation | undefined => {
     if (manager === undefined || d.accountHome === undefined) return undefined;
-    // macOS volumes are case-insensitive.
-    const fold = (p: string) =>
-      d.platform === "darwin" ? real(p, true).toLowerCase() : real(p, true);
+    // macOS volumes are case-insensitive (fold).
     const account = fold(d.accountHome);
     if (fold(d.userHome) !== account) return "home";
-    const inside = (p: string) => {
-      const r = relative(account, fold(p));
-      return r === "" || (!r.startsWith("..") && !isAbsolute(r));
-    };
-    if (!inside(home())) return "bus-home";
-    return manager === "systemd" && !inside(configHome) ? "xdg" : undefined;
+    if (!insideAccount(home())) return "bus-home";
+    return manager === "systemd" && !insideAccount(configHome)
+      ? "xdg"
+      : undefined;
   };
   const domain = `gui/${d.uid}`;
   const systemctl = (...args: string[]) =>
@@ -489,13 +492,14 @@ export function systemService(d: ServiceDeps): Service {
   }
 
   /** SIGTERMs the daemon on the socket if it is ours; the pid left answering. */
-  async function stopDaemon(): Promise<number | undefined> {
+  async function stopDaemon(strict = false): Promise<number | undefined> {
     const pid = await d.daemonPid();
     if (pid === undefined) return undefined;
     const args = d.processArgs(pid);
     // A pid we cannot tie to our daemon is someone else's: never signal it.
-    const ours =
-      args === undefined
+    const ours = strict
+      ? record().fallback === true && record().pid === pid
+      : args === undefined
         ? record().fallback === true && record().pid === pid
         : isOurDaemon(args, entryOf());
     if (!ours) return pid;
@@ -556,6 +560,9 @@ export function systemService(d: ServiceDeps): Service {
     async ensure() {
       // Isolated: no service-manager call, but the bus still runs as a daemon.
       const skipped = isolated();
+      // Its bus home is the account's own (a throwaway XDG, an explicit real
+      // OA_BUS_HOME): that daemon, bin and install.json are the real ones.
+      if (skipped && insideAccount(home())) return { skipped, idle: true };
       const h = home();
       const src = d.source();
       const logs = join(h, "logs");
@@ -585,7 +592,8 @@ export function systemService(d: ServiceDeps): Service {
         await d.exec("launchctl", ["bootout", `${domain}/${names().label}`]);
       else if (manager === "systemd" && installed())
         await systemctl("stop", names().unit);
-      const left = await stopDaemon();
+      // Isolated: only the fallback daemon this home recorded is ours to stop.
+      const left = await stopDaemon(skipped !== undefined);
       if (left !== undefined) return { running: left };
       installCli(h, src, launcherNode());
       mkdirSync(logs, { recursive: true, mode: 0o700 });
