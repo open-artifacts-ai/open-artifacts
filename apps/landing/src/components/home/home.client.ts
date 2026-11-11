@@ -162,7 +162,10 @@ else {
   if (hit)
     trs.scrollTop = Math.max(
       0,
-      hit.offsetTop - trs.offsetTop - trs.clientHeight / 2,
+      hit.offsetTop -
+        trs.offsetTop -
+        trs.clientHeight / 2 +
+        hit.offsetHeight / 2,
     );
 }
 
@@ -235,6 +238,9 @@ function render(force = false) {
   const step = Math.floor(t / 10);
   stage.dataset.step = String(step);
   for (const e of ons) e.classList.toggle("on", t >= Number(e.dataset.on));
+  // The checklist is out of reach until it has appeared.
+  ($("#cl") as HTMLElement & { inert: boolean }).inert =
+    !$("#cl").classList.contains("on");
   chs.forEach((c, i) => {
     c.classList.toggle("cur", i + 1 === step || (step === 0 && i === 0));
   });
@@ -292,6 +298,7 @@ function render(force = false) {
     const auto = i < 4 && t >= 40 + i,
       on = i in user ? user[i] : auto;
     li.classList.toggle("ck", on);
+    li.querySelector("button")?.setAttribute("aria-pressed", String(on));
     if (on) n++;
     const who = li.querySelector(".who") as HTMLElement;
     if (i in user && user[i]) who.innerHTML = '<span class="pp you">You</span>';
@@ -348,7 +355,7 @@ render(true);
 /* ---- pause the animations when their section is off screen ---- */
 if ("IntersectionObserver" in window) {
   const seen = new Set<Element>();
-  const targets = [$(".x-busg"), $("#story"), $(".x-intro")];
+  const targets = [$(".x-ba"), $(".x-busg"), $("#story"), $(".x-intro")];
   const io = new IntersectionObserver((es) => {
     for (const e of es)
       if (e.isIntersecting) seen.add(e.target);

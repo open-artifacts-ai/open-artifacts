@@ -95,7 +95,7 @@ describe("landing sections", () => {
   it("the wall's release tile is a made-up team's, not our roadmap", () => {
     for (const row of [
       "Search filters shipped",
-      "CSV export in review",
+      "Saved views in review",
       "Dark mode building",
     ])
       expect(text).toContain(row);
@@ -127,6 +127,15 @@ describe("landing sections", () => {
     expect(text).toContain("Try it: turn on the public link");
   });
 
+  it("the proof thread names a made-up person, and the checklist buttons say if they are pressed", () => {
+    expect(text).toContain("Dana Is the pin work already done?");
+    expect(text).not.toMatch(/\bLeo\b|\bLU\b/);
+    const list = index.match(/<ul class="cl asm"[\s\S]*?<\/ul>/)?.[0] ?? "";
+    expect(
+      list.match(/<button type="button" aria-pressed="false">/g),
+    ).toHaveLength(5);
+  });
+
   it("shows no presence, export, drawing or collaborative-doc claims", () => {
     for (const claim of [
       /people here/i,
@@ -134,7 +143,7 @@ describe("landing sections", () => {
       /\bonline now\b/i,
       /\b\d+ viewing\b/i,
       /\bpresence\b/i,
-      /(?<!CSV )\bexport\b/i,
+      /\bexport\b/i,
       /\bdraw(ing)?\b/i,
       /collaborative docs?/i,
     ])

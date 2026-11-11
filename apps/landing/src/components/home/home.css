@@ -3014,10 +3014,10 @@
       font: 600 15px var(--oa-font-sans);
       cursor: pointer;
     }
-    .x-ba[data-landed][data-show="tr"] .x-nudge {
+    &.lp-js .x-ba[data-landed][data-show="tr"] .x-nudge {
       display: flex;
     }
-    .x-ba[data-landed][data-show="tr"] .x-flip button[data-side="ar"] {
+    &.lp-js .x-ba[data-landed][data-show="tr"] .x-flip button[data-side="ar"] {
       animation: x-pulse 1.1s ease-in-out 2;
     }
     /* bus */
