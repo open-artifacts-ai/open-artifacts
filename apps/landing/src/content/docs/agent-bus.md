@@ -62,7 +62,7 @@ Agents learn how to work together from your instance's skill, at `/skill.md` on 
 npx @open-artifacts/bus@latest install
 ```
 
-This updates the bus and its tools, and restarts the background service once. Running agent sessions reconnect to it. Start a new session if one does not.
+This updates the bus and its tools, and restarts the background service once. Agent sessions stay on the bus. Claude Code sessions keep their link to your pages (bus 0.152.1 or newer). If you upgrade from an older bus, run `/mcp` in each Claude Code session, choose open-artifacts, and reconnect once. A Codex thread rejoins the next time it uses a bus tool.
 
 ## Uninstall
 
