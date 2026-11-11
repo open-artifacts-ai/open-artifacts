@@ -272,13 +272,18 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
                 control={
                   canRemove ? (
                     <WriteLock>
-                      {syncOn && (
+                      {syncOn ? (
                         <RoleSelect
                           label={`Role for ${g.email}`}
                           value={pending[g.groupId] ?? g.role}
                           roles={ALL_ROLES}
                           onChange={(r) => r && change(g.groupId, r)}
                         />
+                      ) : (
+                        // Frozen on Team or the trial (#2176): the role stays visible next to Remove.
+                        <span className="text-[length:var(--oa-text-sm)]">
+                          {ROLE_LABEL[g.role]}
+                        </span>
                       )}
                       <Button
                         size="sm"

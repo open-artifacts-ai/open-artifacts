@@ -648,6 +648,8 @@ for (const tier of ["team", "trial"] as const) {
       name: /exec@example.com/,
     });
     expect(within(r).queryByRole("combobox")).toBeNull();
+    // The role still shows next to Remove, so the owner sees what Remove takes away.
+    expect(r).toHaveTextContent("Viewer");
     expect(
       within(card).queryByRole("combobox", {
         name: "Add a group to every space",
