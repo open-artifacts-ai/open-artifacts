@@ -37,7 +37,9 @@ import {
   addReply,
   addThread,
   answerAsk,
+  type CommentViewer,
   type CommentWho,
+  listComments,
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { deleteShare } from "../src/services/shares.js";
@@ -170,6 +172,26 @@ const answer = (
     headers: u ? {} : { "cf-connecting-ip": "198.51.100.8" },
   });
 const who = (u: U): CommentWho => ({ kind: "user", id: u.userId });
+/** An agent of `u` with a verified bus identity (#1822, #2224). */
+const agentOf = (
+  u: U,
+  name: string,
+  ns = `ns-${name.toLowerCase()}`,
+): CommentWho => ({
+  kind: "user",
+  id: u.userId,
+  agent: {
+    name,
+    version: null,
+    via: { kind: "token", id: "tok1" },
+    identity: {
+      identityId: `id-${ns}-${name}`,
+      namespace: ns,
+      name,
+      kind: "x",
+    },
+  },
+});
 const view = (u: U) => ({ userId: u.userId, short: null, moderator: true });
 
 /** An ask from the owner's agent to the viewer, through the service (MCP-only on the wire). */
@@ -666,6 +688,7 @@ describe("asks", () => {
 });
 
 describe("ask_answered notice (#1535)", () => {
+  const ASKER = { namespace: "ns-owner", name: "Claude" };
   const answered = () =>
     bus.sent.filter((x) => x.notice.kind === "ask_answered");
   /** An ask from `u` (through the service, as MCP does) to the viewer. */
@@ -674,12 +697,16 @@ describe("ask_answered notice (#1535)", () => {
     id: string,
     extra: Record<string, unknown> = {},
     opts: { question?: string; options?: typeof OPTS } = {},
+    asker?: CommentWho,
   ) {
     const art = { id, format: "html", currentVersion: 1 } as never;
     const t = await addThread(
       E,
       art,
-      who(u),
+      asker ??
+        (u === editor
+          ? agentOf(u, "Codex", "ns-editor")
+          : agentOf(u, "Claude", "ns-owner")),
       view(u),
       {
         anchor: NOTE,
@@ -748,30 +775,102 @@ describe("ask_answered notice (#1535)", () => {
     const s = await setup();
     const { t, cid } = await askFrom(owner, s.id);
     bus.clear();
-    await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId, false, -1);
+    await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId, ASKER, false, -1);
     expect(answered()).toHaveLength(0);
     // Exactly at the boundary (clock frozen, budget 0) is still in time.
     const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
     try {
-      await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId, false, 0);
+      await notifyAnswered(
+        E,
+        s.id,
+        1,
+        t.id,
+        cid,
+        owner.userId,
+        ASKER,
+        false,
+        0,
+      );
     } finally {
       now.mockRestore();
     }
     expect(answered()).toHaveLength(1);
     bus.clear();
-    await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId);
+    await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId, ASKER);
     expect(answered()).toHaveLength(1);
   });
 
-  it("a person-authored ask whose author has no following agent sends nothing", async () => {
+  it("a person-authored ask notifies no agent, even the person's followers (#2224)", async () => {
     const s = await setup();
-    const { t, cid } = await askFrom(owner, s.id);
-    await E.DB.prepare("delete from follows where user_id = ?")
-      .bind(owner.userId)
-      .run();
+    const { t, cid } = await askFrom(owner, s.id, {}, {}, who(owner));
     bus.clear();
     expect((await answer(s.id, t.id, cid, viewer, "wide")).status).toBe(200);
     expect(answered()).toHaveLength(0);
+  });
+
+  it("another agent of the asker's member, even following, hears nothing; the asking agent does (#2224)", async () => {
+    const s = await setup();
+    // A second Claude-like agent of the owner follows the page too.
+    await follow(
+      E,
+      owner.userId,
+      { namespace: "ns-owner", name: "Other" },
+      s.id,
+    );
+    const { t, cid } = await askFrom(owner, s.id);
+    bus.clear();
+    await answer(s.id, t.id, cid, viewer, "wide");
+    expect(answered().map((x) => x.notice.to)).toEqual([
+      { namespace: "ns-owner", name: "Claude" },
+    ]);
+  });
+
+  it("an asker with no bus identity (unlinked) notifies nobody (#2224)", async () => {
+    const s = await setup();
+    const { t, cid } = await askFrom(
+      owner,
+      s.id,
+      {},
+      {},
+      {
+        kind: "user",
+        id: owner.userId,
+        agent: { name: "Claude Code", version: null },
+      },
+    );
+    bus.clear();
+    await answer(s.id, t.id, cid, viewer, "wide");
+    expect(answered()).toHaveLength(0);
+  });
+
+  it("answer.yes is true only for the agent that posted the ask (#2224)", async () => {
+    const s = await setup();
+    const { t, cid } = await askFrom(owner, s.id, {
+      to: [{ key: owner.userId }],
+    });
+    expect((await answer(s.id, t.id, cid, owner, "wide")).status).toBe(200);
+    const yesFor = async (v: CommentViewer) => {
+      const l = await listComments(E, s.id, "all", v);
+      const c = l.threads
+        .find((x) => x.id === t.id)
+        ?.comments.find((x) => x.id === cid);
+      return c?.ask?.answer?.yes;
+    };
+    const base = { userId: owner.userId, short: null };
+    const me = (agentWho: CommentWho) =>
+      (agentWho as { agent: NonNullable<CommentViewer["agent"]> }).agent;
+    expect(
+      await yesFor({
+        ...base,
+        agent: me(agentOf(owner, "Claude", "ns-owner")),
+      }),
+    ).toBe(true);
+    expect(
+      await yesFor({ ...base, agent: me(agentOf(owner, "Other", "ns-owner")) }),
+    ).toBe(false);
+    expect(await yesFor({ ...base, agent: null })).toBe(false);
+    // The person in the web app keeps their view.
+    expect(await yesFor(base)).toBe(true);
   });
 
   it("a follower who lost access hears nothing and its follow is cleaned", async () => {
@@ -838,13 +937,26 @@ describe("ask_answered notice (#1535)", () => {
   it("a failing follow read never fails the answer (it runs in the background)", async () => {
     const s = await setup();
     const { t, cid } = await askFrom(owner, s.id);
-    // A D1 whose follows read throws: a bare await of the notice would reject the answer.
+    // A D1 whose member read throws: a bare await of the notice would reject the answer.
     const db = new Proxy(E.DB, {
       get(target, k) {
         if (k === "prepare")
           return (q: string) => {
-            if (/from follows/.test(q)) throw new Error("d1 down");
-            return target.prepare(q);
+            const st = target.prepare(q);
+            // The asker's member read (not the answerer's) fails.
+            if (/status = 'active'/.test(q))
+              return new Proxy(st, {
+                get(t2, k2) {
+                  if (k2 === "bind")
+                    return (...a: unknown[]) => {
+                      if (a[0] === owner.userId) throw new Error("d1 down");
+                      return t2.bind(...a);
+                    };
+                  const v2 = Reflect.get(t2, k2);
+                  return typeof v2 === "function" ? v2.bind(t2) : v2;
+                },
+              });
+            return st;
           };
         const v = Reflect.get(target, k);
         return typeof v === "function" ? v.bind(target) : v;
@@ -903,7 +1015,7 @@ describe("ask_answered notice (#1535)", () => {
       E,
       s.id,
       root.id,
-      who(owner),
+      agentOf(owner, "Claude", "ns-owner"),
       view(owner),
       "and a question",
       {
@@ -918,11 +1030,7 @@ describe("ask_answered notice (#1535)", () => {
     const viaAgent = await addThread(
       E,
       art,
-      {
-        kind: "user",
-        id: owner.userId,
-        agent: { name: "Claude Code" },
-      } as never,
+      agentOf(owner, "Claude", "ns-owner"),
       view(owner),
       {
         anchor: NOTE,

@@ -124,7 +124,27 @@ async function setup(extra: Record<string, unknown> = {}) {
 }
 
 const view = (u: U) => ({ userId: u.userId, short: null, moderator: true });
-const asAgent = (u: U): CommentWho => ({
+/** A verified bus agent (#1822): the owner's Claude, the editor's Codex (#2224). */
+const asAgent = (u: U, name?: string, ns?: string): CommentWho => {
+  const n = name ?? (u === editor ? "Codex" : "Claude");
+  const space = ns ?? (u === editor ? "ns-editor" : "ns-owner");
+  return {
+    kind: "user",
+    id: u.userId,
+    agent: {
+      name: n,
+      version: null,
+      identity: {
+        identityId: `id-${space}-${n}`,
+        namespace: space,
+        name: n,
+        kind: "x",
+      },
+    },
+  };
+};
+/** An agent with no bus identity (unlinked). */
+const asUnlinked = (u: U): CommentWho => ({
   kind: "user",
   id: u.userId,
   agent: { name: "Claude Code", version: null },
@@ -157,7 +177,8 @@ const reply = (id: string, tid: string, u: U, body: object) =>
     method: "POST",
     body: { body: "Use the wide one", ...body },
   });
-const toAsker = () => bus.sent.filter((x) => x.notice.text.includes("replied"));
+const toAsker = () =>
+  bus.sent.filter((x) => x.notice.text.includes("question you asked"));
 
 describe("reply toAsker (#1614)", () => {
   it("a viewer reaches the asker's own following agent only, with fixed text and the ids", async () => {
@@ -263,17 +284,32 @@ describe("reply toAsker (#1614)", () => {
     expect(bus.sent).toHaveLength(0);
   });
 
-  it("an asker with no following agent: the reply is stored, nobody is told", async () => {
+  it("an asker with no bus identity: the reply is stored, nobody is told (#2224)", async () => {
     const s = await setup();
-    const t = await askBy(s.id, asAgent(owner), owner);
-    await E.DB.prepare("delete from follows where user_id = ?")
-      .bind(owner.userId)
-      .run();
+    const t = await askBy(s.id, asUnlinked(owner), owner);
     bus.clear();
     const res = await reply(s.id, t.id, viewer, { toAsker: true });
     expect(res.status).toBe(201);
     expect(((await res.json()) as Comment).mentions).toBeUndefined();
     expect(bus.sent).toHaveLength(0);
+  });
+
+  it("a follower agent of the same member gets nothing, only the asking agent (#2224)", async () => {
+    const s = await setup();
+    await follow(
+      E,
+      owner.userId,
+      { namespace: "ns-owner", name: "Other" },
+      s.id,
+    );
+    const t = await askBy(s.id, asAgent(owner, "Other", "ns-owner"), owner);
+    bus.clear();
+    expect((await reply(s.id, t.id, viewer, { toAsker: true })).status).toBe(
+      201,
+    );
+    expect(bus.sent.map((x) => x.notice.to)).toEqual([
+      { namespace: "ns-owner", name: "Other" },
+    ]);
   });
 
   it("is bounded per thread: a second reply inside the window tells no one", async () => {

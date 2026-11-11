@@ -47,6 +47,7 @@ export function registerCommentTools(server: McpServer, t: ToolEnv): void {
         "Comments are off for this artifact. The owner can turn them on in its settings.",
       );
     const viewer: CommentViewer = {
+      agent: t.agentNow() ?? null,
       userId: t.user.id,
       short: null,
       guest: isGuestRole(t.user.role),

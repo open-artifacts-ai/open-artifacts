@@ -413,11 +413,9 @@ export const ANSWER_WINDOW_MS = 10_000;
 
 /**
  * `ask_answered` (#1535): a person answered the ask at (`threadId`,
- * `commentId`). It goes to the agents that follow the artifact and belong to
- * `askerId`, the member who posted the ask. That is the honest target for now:
- * an MCP caller has no bus address, so until a publisher/asker link exists
- * (an open user decision) the asker's member is the only link to an agent. A
- * person-authored ask with no following agent gets nothing. The member is
+ * `commentId`). It goes only to the agent that posted the ask (`asker`, its
+ * bus address; #2224), never to followers or the member's other agents. A
+ * person-authored ask, or an agent with no bus address, gets nothing. The member is
  * re-checked at send time as the follows fan-out does (a lapsed one loses
  * their follows on the artifact and hears nothing). The coalesce key is one
  * per ask comment (a thread can hold two asks). A notice is sent after
@@ -437,12 +435,14 @@ export async function notifyAnswered(
   threadId: string,
   commentId: string,
   askerId: string,
+  /** The asking agent's bus address; null sends nothing (#2224). */
+  asker: BusAddress | null,
   /** The answer was picked in the web app by `askerId` themselves (#1797). */
   fromYourUser = false,
   /** Time the send may take; tests shrink it. */
   budgetMs = FANOUT_BUDGET_MS,
 ): Promise<void> {
-  const targets = await askerAgents(env, artifactId, askerId);
+  const targets = await askerAgents(env, artifactId, askerId, asker);
   if (targets.length === 0) return;
   const url = appOrigin(env) + viewerPath(artifactId);
   const scope = newDeliveryScope();
@@ -482,29 +482,20 @@ export async function notifyAnswered(
 }
 
 /**
- * The agents of an ask's author that can be told of something on the ask (#1535,
- * #1614): the agents that follow the artifact and belong to `askerId`. That is
- * the honest target for now: an MCP caller has no bus address, so until a
- * publisher/asker link exists (an open user decision) the asker's member is
- * the only link to an agent. A person-authored ask with no following agent
- * gets nothing. The member is re-checked at send time as the follows fan-out
- * does (a lapsed one loses their follows on the artifact and hears nothing).
- * Reads at most FANOUT_MAX follow rows of one member. Never another member's.
+ * The one agent that can be told of something on an ask (#1535, #1614, #2224):
+ * the agent that posted it, by its own bus address. Never a follower or the
+ * member's other agents: an answer is a yes for the asker alone. A person's
+ * ask, or an agent with no bus address, gets nobody. The member is re-checked
+ * at send time (a lapsed one loses their follows and hears nothing).
  */
 export async function askerAgents(
   env: Env,
   artifactId: string,
   askerId: string,
+  /** The asking agent's own bus address, or null: a person's ask, or an agent with no bus address (#2224). */
+  address: BusAddress | null,
 ): Promise<BusAddress[]> {
-  const { results } = await stmt(
-    env.DB,
-    `select namespace, agent_name as name from follows
-     where artifact_id = ? and user_id = ?
-     order by created_at, namespace, agent_name limit ?`,
-  )
-    .bind(artifactId, askerId, FANOUT_MAX)
-    .all<{ namespace: string; name: string }>();
-  if (results.length === 0) return [];
+  if (!address) return [];
   const user = await getUser(env, askerId);
   if (!user || !(await accessLevel(env, callerOf(user), artifactId))) {
     await stmt(env.DB, DROP_MEMBER_FOLLOWS).bind(askerId, artifactId).run();
@@ -516,7 +507,7 @@ export async function askerAgents(
     return [];
   }
   if (!canConnect(user)) return [];
-  return results;
+  return [address];
 }
 
 /** `askerAgents` as roster entries, for the card's delivery marks (#1614). */
@@ -524,9 +515,10 @@ export async function askerRoster(
   env: Env,
   artifactId: string,
   askerId: string,
+  asker: BusAddress | null,
 ): Promise<RosterAgent[]> {
   const out: RosterAgent[] = [];
-  for (const address of await askerAgents(env, artifactId, askerId))
+  for (const address of await askerAgents(env, artifactId, askerId, asker))
     out.push({
       key: await agentKey(artifactId, askerId, address),
       name: address.name,
