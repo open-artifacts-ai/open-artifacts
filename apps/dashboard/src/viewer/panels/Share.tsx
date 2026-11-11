@@ -754,7 +754,12 @@ function CommentsChoice({
       ]
     : [
         { mode: "everyone", label: "On", patch: { comments: true } },
-        { mode: "off", label: "Off", patch: { comments: false } },
+        {
+          mode: "off",
+          label: "Off",
+          hint: "Comments are hidden and nobody can add them.",
+          patch: { comments: false },
+        },
       ];
   return (
     <fieldset className="m-0 grid gap-[var(--oa-space-2)] border-0 p-0">
