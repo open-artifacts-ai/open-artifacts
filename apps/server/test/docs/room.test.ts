@@ -760,8 +760,9 @@ describe("DocRoom review fixes (#2154)", () => {
 
   it("an over-cap write does not pull the alarm earlier", async () => {
     const stub = roomStub();
+    const t0 = Date.now() + 600_000;
     await inRoom(stub, (r) => {
-      (r as unknown as { now: () => number }).now = () => 1_000_000;
+      (r as unknown as { now: () => number }).now = () => t0;
     });
     const a = await connect(stub);
     type(a, "x");
@@ -777,6 +778,7 @@ describe("DocRoom review fixes (#2154)", () => {
     const after = await runInDurableObject(stub, (_r, st) =>
       st.storage.getAlarm(),
     );
+    expect(before).toBe(t0 + 1000);
     expect(after).toBe(before);
   });
 
