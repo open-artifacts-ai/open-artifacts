@@ -341,6 +341,12 @@ export const artifacts = sqliteTable(
      * CHECK is inline in 0025's ADD COLUMN, as for data_writers.
      */
     comments: integer("comments").notNull().default(1),
+    /**
+     * #2080: who may post when comments are on: "everyone" (the column default,
+     * so every artifact from before keeps today's behavior) or "signed-in"
+     * (set on insert for new artifacts).
+     */
+    commentAccess: text("comment_access").notNull().default("everyone"),
     hasThumbnail: integer("has_thumbnail").notNull().default(0),
     /** The version thumbs/{id}.webp depicts; null = unknown (pre-0005) or none. */
     thumbnailVersion: integer("thumbnail_version"),
