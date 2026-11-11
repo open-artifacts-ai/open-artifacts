@@ -21,7 +21,6 @@ describe("landing sections", () => {
   it("renders every section heading without JS", () => {
     for (const h of [
       "Stop reading transcripts.",
-      "Transcripts are a bad place to do work.",
       "Ask your agent to publish.",
       "Comment where it matters.",
       "Decide with one click.",
@@ -29,6 +28,7 @@ describe("landing sections", () => {
       "Every publish is a version.",
       "Share it with anyone.",
       "One place for everything your agents make.",
+      "Works with the agents you already use.",
       "Simple pricing.",
       "Self-host in three steps.",
       "Where people and agents come to do their best work, together.",
@@ -43,27 +43,74 @@ describe("landing sections", () => {
     );
   });
 
-  it("the default hero is the side-by-side demo, readable without script", () => {
-    expect(text).toContain(
-      "In a transcript The decision is in there somewhere.",
+  it("the default hero is the four-moment scene, stacked and readable without script", () => {
+    expect(index).toMatch(
+      /id="sc" role="group" aria-label="The same work in a transcript and in an artifact, step by step"/,
     );
-    expect(text).toContain("In an artifact The decision is at the top.");
+    const cards = index.match(/<ol class="sc-cards"[\s\S]*?<\/ol>/)?.[0] ?? "";
+    expect(cards.match(/<li>\s*<span class="n">/g)).toHaveLength(4);
+    for (const moment of [
+      "You ask a question.",
+      "The agent works.",
+      "A teammate weighs in.",
+      "A week later: what did we decide?",
+    ])
+      expect(text).toContain(moment);
+    expect(text).toContain("1 of 4");
+    expect(text).toContain("4 of 4");
+    // the last moment lands on the decision, in both panels
+    expect(text).toContain("The decision is in there somewhere.");
+    expect(text).toContain("The decision is at the top.");
+    expect(text).toContain("> wait, what did we decide?");
     expect(text).toContain(
       "Same work. One is a scroll you search. The other is a page your team works on.",
     );
-    expect(text).toContain(
-      "A long agent chat transcript where the decision is hard to find, next to the same work as a short page with the decision at the top.",
-    );
-    expect(text).toContain("> wait, what did we decide?");
-    expect(index).toMatch(/class="x-term sbs-term" aria-hidden="true"/);
-    expect(index).toMatch(/class="x-blk hit"><h4>Decision<\/h4>/);
-    // two comments in the artifact, and no question chips
-    const art = index.slice(
-      index.indexOf('class="x-art sbs-art"'),
-      index.indexOf('class="sbs-cap"'),
-    );
-    expect(art.match(/class="x-cm"/g)).toHaveLength(2);
     expect(index).not.toContain('data-q="dec"');
+  });
+
+  it("has no problem section", () => {
+    expect(text).not.toContain("Transcripts are a bad place to do work.");
+    expect(text).not.toContain("forgets it after compaction");
+    expect(index).not.toContain('class="x-sec x-problem"');
+  });
+
+  it("lists the agents it works with, with marks that load nothing from outside", () => {
+    const sec =
+      index.match(
+        /<section class="x-sec x-band x-agents"[\s\S]*?<\/section>/,
+      )?.[0] ?? "";
+    const chips = [...sec.matchAll(/<li[^>]*>([\s\S]*?)<\/li>/g)].map((m) =>
+      m[1]
+        .replace(/<svg[\s\S]*?<\/svg>/g, "")
+        .replace(/<[^>]+>/g, "")
+        .trim(),
+    );
+    expect(chips).toEqual([
+      "Claude Code",
+      "Codex",
+      "Cursor",
+      "OpenCode",
+      "pi",
+      "Hermes",
+      "OpenClaw",
+      "Gemini coming soon",
+      "and any AI agent that speaks MCP",
+    ]);
+    expect(sec).toMatch(/<li class="soon">/);
+    const marks = sec.match(/<svg [^>]*>/g) ?? [];
+    expect(marks).toHaveLength(5);
+    for (const m of marks) expect(m).toContain('aria-hidden="true"');
+    expect(sec).not.toMatch(/<img|<image|http|url\(/);
+    expect(sec.match(/fill="/g) ?? []).toHaveLength(0);
+  });
+
+  it("breaks the close headline in three lines, and says it as one sentence", () => {
+    const h2 =
+      index.match(/<h2 id="close-h" class="x-cl">[\s\S]*?<\/h2>/)?.[0] ?? "";
+    expect(h2.match(/<br\s*\/?>/g)).toHaveLength(2);
+    expect(text).toContain(
+      "Where people and agents come to do their best work, together.",
+    );
   });
 
   it("says once that the demo replies are scripted", () => {

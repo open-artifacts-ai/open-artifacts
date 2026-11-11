@@ -10,6 +10,7 @@ import {
   transcriptStatus,
 } from "../../lib/transcript";
 import { initPhone } from "./phone.client";
+import { initScene } from "./scene.client";
 
 const lp = document.getElementById("lp") as HTMLElement;
 const $ = <T extends HTMLElement = HTMLElement>(s: string) =>
@@ -176,6 +177,9 @@ if (lp.querySelector("#ba")) {
 
 /* ---- phone chapters ---- */
 initPhone(lp, reduce);
+
+/* ---- hero scene ---- */
+initScene(lp, reduce);
 
 /* ---- pricing ---- */
 // A fade on the right edge says the table scrolls sideways, until the end.
@@ -385,7 +389,7 @@ render(true);
 /* ---- pause the animations when their section is off screen ---- */
 if ("IntersectionObserver" in window) {
   const seen = new Set<Element>();
-  const targets = ["header.hero", ".sbs", ".x-ba", "#story", ".x-intro"]
+  const targets = ["header.hero", ".sc", ".sbs", ".x-ba", "#story", ".x-intro"]
     .map((s) => lp.querySelector(s))
     .filter((e): e is Element => !!e);
   const io = new IntersectionObserver((es) => {
