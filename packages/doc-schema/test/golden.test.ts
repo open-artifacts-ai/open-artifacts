@@ -104,3 +104,100 @@ describe("golden round trip", () => {
     ]);
   });
 });
+
+describe("hard breaks (#2178)", () => {
+  const breakCount = (doc: PMNode) => {
+    let n = 0;
+    doc.descendants((node) => {
+      if (node.type.name === "hardBreak") n++;
+      return true;
+    });
+    return n;
+  };
+
+  it("reads a backslash break and a two-space break as hardBreak, with no change", () => {
+    for (const src of ["a\\\nb\n", "a  \nb\n"]) {
+      const { doc, changes } = markdownToDoc(src);
+      expect(changes).toEqual([]);
+      expect(doc.firstChild?.childCount).toBe(3);
+      expect(doc.firstChild?.child(1).type.name).toBe("hardBreak");
+      expect(docToMarkdown(doc)).toBe("a\\\nb\n");
+    }
+  });
+
+  it("drops a break at the end of a block", () => {
+    const trailing = docSchema.nodeFromJSON({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "a" }, { type: "hardBreak" }],
+        },
+      ],
+    });
+    expect(docToMarkdown(trailing)).toBe("a\n");
+    expect(breakCount(markdownToDoc("a  \n").doc)).toBe(0);
+    expect(breakCount(markdownToDoc("a  \nb  \n").doc)).toBe(1);
+  });
+
+  it("keeps several breaks in a row", () => {
+    const doc = docSchema.nodeFromJSON({
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: "a" },
+            { type: "hardBreak" },
+            { type: "hardBreak" },
+            { type: "text", text: "b" },
+          ],
+        },
+      ],
+    });
+    const md = docToMarkdown(doc);
+    expect(md).toBe("a\\\n\\\nb\n");
+    expect(markdownToDoc(md).doc.eq(doc)).toBe(true);
+  });
+
+  it("a heading is one line: the break becomes a space", () => {
+    const doc = docSchema.nodeFromJSON({
+      type: "doc",
+      content: [
+        {
+          type: "heading",
+          attrs: { level: 2 },
+          content: [
+            { type: "text", text: "a" },
+            { type: "hardBreak" },
+            { type: "text", text: "b" },
+          ],
+        },
+      ],
+    });
+    expect(docToMarkdown(doc)).toBe("## a b\n");
+  });
+
+  it("is refused in a code block", () => {
+    expect(() =>
+      docSchema
+        .nodeFromJSON({
+          type: "doc",
+          content: [
+            {
+              type: "codeBlock",
+              attrs: { language: null },
+              content: [{ type: "hardBreak" }],
+            },
+          ],
+        })
+        .check(),
+    ).toThrow();
+  });
+
+  it("survives Yjs inside a list item and a quote", () => {
+    const { doc } = markdownToDoc(GOLDEN.hardBreakInBlocks);
+    expect(breakCount(doc)).toBe(3);
+    expect(viaYjs(doc).eq(doc)).toBe(true);
+  });
+});

@@ -23,7 +23,6 @@ export type ImportChangeKind =
   | "heading_level" // a heading 4 to 6: kept as a paragraph
   | "link" // a link that isn't http(s) or mailto:: kept as plain text
   | "code_language" // a code fence info string that isn't a plain language name: dropped
-  | "hard_break" // a hard line break: became a space
   | "mixed_task_list"; // a list with some task items: kept as a bullet list, "[ ]" as text
 
 export interface ImportChange {
@@ -166,6 +165,8 @@ function rewriteInline(inline: Token, changes: ImportChange[]): void {
   if (!children) return;
   const line = lineOf(inline);
   let dropClose = false;
+  // A hard break at the very end of a block means nothing: drop it.
+  while (children.at(-1)?.type === "hardbreak") children.pop();
   inline.children = children.flatMap((child) => {
     if (child.type === "link_open") {
       const href = child.attrGet("href") ?? "";
@@ -196,10 +197,6 @@ function rewriteInline(inline: Token, changes: ImportChange[]): void {
       const source = `![${child.content}](${src}${title ? ` "${title}"` : ""})`;
       changes.push({ kind: "image", line, text: short(source) });
       return textToken(source, child.level);
-    }
-    if (child.type === "hardbreak") {
-      changes.push({ kind: "hard_break", line, text: short(inline.content) });
-      return textToken(" ", child.level);
     }
     return child;
   }
@@ -356,6 +353,7 @@ function parserFor(changes: ImportChange[]): MarkdownParser {
       noCloseToken: true,
     },
     hr: { node: "horizontalRule" },
+    hardbreak: { node: "hardBreak" },
     em: { mark: "italic" },
     strong: { mark: "bold" },
     s: { mark: "strike" },
@@ -473,6 +471,16 @@ const serializer = new MarkdownSerializer(
     taskItem(state, node) {
       state.write(node.attrs.checked ? "[x] " : "[ ] ");
       state.renderContent(node);
+    },
+    hardBreak(state, node, parent, index) {
+      // A break at the end of a block is dropped. A heading is one line in
+      // Markdown, so a break there is written as a space.
+      for (let i = index + 1; i < parent.childCount; i++) {
+        if (parent.child(i).type !== node.type) {
+          state.write(parent.type.name === "heading" ? " " : "\\\n");
+          return;
+        }
+      }
     },
     text(state, node, parent, index) {
       const text = node.text ?? "";

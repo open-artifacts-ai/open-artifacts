@@ -7,7 +7,7 @@ import { type MarkSpec, type NodeSpec, Schema } from "prosemirror-model";
 // match the choices made here; test/tiptap.test.ts pins them. y-prosemirror
 // deletes a Yjs element this schema cannot read, so drift loses text:
 //
-// - StarterKit without hardBreak and underline (not in the content set).
+// - StarterKit without underline (not in the content set); hardBreak is in it.
 // - Heading levels [1, 2, 3].
 // - TaskItem.configure({ nested: true }): task items hold nested blocks, as in
 //   GitHub Markdown.
@@ -37,7 +37,7 @@ const nodes: Record<string, NodeSpec> = {
   blockquote: { content: "block+", group: "block", defining: true },
   codeBlock: {
     attrs: { language: { default: null, validate: validateLanguage } },
-    content: "text*",
+   
     marks: "",
     group: "block",
     code: true,
@@ -58,6 +58,15 @@ const nodes: Record<string, NodeSpec> = {
     defining: true,
   },
   text: { group: "inline" },
+  // Tiptap's HardBreak (Shift+Enter): an inline line break. Wherever inline
+  // content is allowed (paragraphs, headings, so list items and quotes too);
+  // never in a code block, where a newline is just text.
+  hardBreak: {
+    inline: true,
+    group: "inline",
+    selectable: false,
+    linebreakReplacement: true,
+  },
 };
 
 // Order matters for Markdown output: marks open in this order, so code is

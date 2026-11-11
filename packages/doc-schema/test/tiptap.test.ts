@@ -20,7 +20,6 @@ import { GOLDEN } from "./golden.ts";
 // here so a Tiptap upgrade that drifts from the schema fails this test.
 const tiptapSchema = getSchema([
   StarterKit.configure({
-    hardBreak: false,
     underline: false,
     heading: { levels: [1, 2, 3] },
   }).extend({
