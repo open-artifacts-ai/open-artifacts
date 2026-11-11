@@ -43,6 +43,12 @@ import {
   procStartOf,
 } from "./attest.ts";
 import {
+  CLAUDE_LINKS_MAX,
+  type ClaudeLink,
+  readClaudeLinks,
+  writeClaudeLinks,
+} from "./claude-links.ts";
+import {
   type CodexAgent,
   readCodexAgents,
   writeCodexAgents,
@@ -244,6 +250,8 @@ export type DaemonDeps = {
     syncMs?: number;
     procStart?: (pid: number) => string | null;
     isRunning?: (pid: number) => boolean;
+    /** Proof hashes of live sessions kept across a restart (#2050); default ~/.oa-bus/claude-links.json. */
+    linksFile?: string;
   };
   opencode?: {
     /** TUI presence files; default ~/.oa-bus/opencode-tui. */
@@ -511,6 +519,51 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     dir: cl.sessionsDir ?? claudeSessionsDir(),
     procStart: cachedProcStart(cl.procStart ?? claudeProcStartOf, running),
     isRunning: running,
+  };
+  /**
+   * #2050: proof hashes of live Claude sessions, kept across a restart. `saved`
+   * holds entries no record has claimed yet; a pid + procStart that no longer
+   * runs is dropped.
+   */
+  const linksFile = cl.linksFile ?? join(home(), "claude-links.json");
+  const sameProc = (pid: number, procStart: string) =>
+    running(pid) && claudeSessions.procStart(pid, procStart) === procStart;
+  let saved: ClaudeLink[] = readClaudeLinks(linksFile, undefined, log).filter(
+    (e) => sameProc(e.pid, e.procStart),
+  );
+  let linksWritten: string | undefined = JSON.stringify(saved);
+  const seedLinks = (rec: AgentRecord) => {
+    if (rec.linkHashes !== undefined || rec.pid === undefined) return;
+    const hit = saved.find(
+      (e) => e.pid === rec.pid && e.procStart === rec.procStart,
+    );
+    if (!hit) return;
+    rec.linkHashes = [...hit.hashes];
+    saved = saved.filter((e) => e !== hit);
+  };
+  const persistLinks = () => {
+    const rows: ClaudeLink[] = [];
+    for (const a of agents.all()) {
+      if (
+        a.kind !== "claude-code" ||
+        !a.live ||
+        a.pid === undefined ||
+        a.procStart === undefined ||
+        !a.linkHashes?.length
+      )
+        continue;
+      rows.push({ pid: a.pid, procStart: a.procStart, hashes: a.linkHashes });
+    }
+    saved = saved.filter((e) => sameProc(e.pid, e.procStart));
+    const all = [...rows, ...saved].slice(0, CLAUDE_LINKS_MAX);
+    const text = JSON.stringify(all);
+    if (text === linksWritten) return;
+    try {
+      writeClaudeLinks(linksFile, all);
+      linksWritten = text;
+    } catch (e) {
+      log(`could not save ${linksFile}: ${e instanceof Error ? e.message : e}`);
+    }
   };
   const oc = deps.opencode ?? {};
   const ocRunning = oc.isRunning ?? isRunning;
@@ -942,6 +995,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (!p || p.procStart !== rec.procStart) continue;
       pendingProofs.delete(rec.pid);
       rec.linkHashes = withLinkHash(rec.linkHashes, p.hash);
+      persistLinks();
       sendLink(rec, p.hash);
     }
   };
@@ -1025,6 +1079,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           live: true,
         }),
       );
+      {
+        const rec = agents.byRef(s.ref);
+        if (rec) seedLinks(rec);
+      }
       // Its return sockets from before a restart answer again (open-bus #426).
       void claude.revive(s.ref);
       tellOwed(s.ref);
@@ -1037,6 +1095,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       closed = true;
       void claude.drop(a.ref);
     }
+    persistLinks();
     if (closed) announceSessions();
   };
 
@@ -1387,6 +1446,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       if (rec && rec.procStart !== undefined) {
         if (rec.procStart !== start) return { bound: false };
         rec.linkHashes = withLinkHash(rec.linkHashes, req.hash);
+        persistLinks();
         sendLink(rec, req.hash);
         return { bound: true };
       }
@@ -1707,7 +1767,11 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           persistCodex();
           trackAway();
         }
-        if (rec.kind === "claude-code") void claude.revive(rec.ref);
+        if (rec.kind === "claude-code") {
+          // The first sync may have missed the file: seed from the saved hashes (#2050).
+          seedLinks(rec);
+          void claude.revive(rec.ref);
+        }
         conns.set(rec.ref, (conns.get(rec.ref) ?? 0) + 1);
         claimProofs();
         announceUp(rec);
@@ -1780,6 +1844,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           const rec = agents.byRef(ref);
           if (!rec?.live) return false;
           rec.linkHashes = withLinkHash(rec.linkHashes, hash);
+          persistLinks();
           sendLink(rec, hash);
           return true;
         },
