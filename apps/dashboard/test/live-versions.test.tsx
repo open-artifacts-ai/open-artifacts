@@ -511,7 +511,7 @@ describe("live versions: gone", () => {
 });
 
 describe("live versions: embed", () => {
-  it("collapsed pill opens /a/<id> in a new tab; never a name", async () => {
+  it("pill opens /a/<id> in a new tab; never a name", async () => {
     setEmbedForTests(true);
     const first = await open(fullPath(POLL), POLL);
     post(first, "interacted");
@@ -526,7 +526,7 @@ describe("live versions: embed", () => {
       { name: "Version 2 available, open Team poll in a new tab" },
       LONG,
     );
-    expect(pill.getAttribute("data-open")).toBe("false");
+    expect(pill.getAttribute("data-open")).toBe("true");
     expect(pill.getAttribute("target")).toBe("_blank");
     expect(pill.getAttribute("rel")).toBe("noopener");
     expect(pill.getAttribute("href")).toBe(
