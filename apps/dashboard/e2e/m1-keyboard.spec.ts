@@ -36,7 +36,7 @@ test("library tabs: Tab goes from the tab list to the filters (no empty tab pane
 test("restore dialog offers a keyboard-reachable Cancel", async ({ page }) => {
   // Restore sits on the viewed row, so view an older version (#471).
   await page.goto("/a/Cd5fGhJkLm6nPqRs/v/1?panel=open&tab=versions");
-  await page.getByRole("button", { name: "Restore" }).focus();
+  await page.getByRole("button", { name: "Restore", exact: true }).focus();
   await page.keyboard.press("Enter");
   await expect(page.getByRole("alertdialog")).toBeVisible();
   await expect(

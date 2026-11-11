@@ -119,7 +119,11 @@ for (const scheme of ["light", "dark"] as const)
         );
 
         await page.goto(`/a/${ID}/v/1?panel=open&tab=versions`);
-        const restore = page.getByRole("button", { name: "Restore" });
+        // The older-version banner has its own "Restore this version": the row's is the exact "Restore".
+        const restore = page.getByRole("button", {
+          name: "Restore",
+          exact: true,
+        });
         await restore.click();
         await expect(
           page.getByRole("alertdialog", { name: "Restore v1?" }),
