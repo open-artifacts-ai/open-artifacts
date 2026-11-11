@@ -11,7 +11,6 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HUB_HELLO_CAPS } from "../src/hub.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "ob-ids-"));
@@ -114,7 +113,14 @@ const deliver = (from_id?: string) => ({
 describe("reply ids in the daemon", () => {
   it("says hello with the ids cap", async () => {
     const { h } = await session(undefined);
-    expect(h.of("hello")[0]?.caps).toEqual([...HUB_HELLO_CAPS]);
+    expect(h.of("hello")[0]?.caps).toEqual([
+      "ids",
+      "mailbox",
+      "links",
+      "follow",
+      "link",
+      "waiting",
+    ]);
   });
 
   it("a reply names the agent that wrote, when the hub listed ids", async () => {
