@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import type { Env } from "../src/env.js";
-import { publish } from "../src/services/artifacts.js";
+import { listVersions, publish } from "../src/services/artifacts.js";
 import { getUser } from "../src/services/users.js";
 import { api, login } from "./helpers.js";
 import { connect, textOf, tool } from "./mcp-helpers.js";
@@ -58,7 +58,7 @@ beforeAll(async () => {
       "create",
     )
   ).id;
-  for (const n of [2, 3]) {
+  for (const n of [2, 3, 4]) {
     await publish(
       E,
       owner.member,
@@ -76,6 +76,17 @@ beforeAll(async () => {
       .bind(via, identity, id, v)
       .run();
   await set(2, "g:grant000000000001", null);
+  // v4: a token (t:) publish, so its label is masked to others, with an identity.
+  await set(
+    4,
+    "t:token000000000001",
+    JSON.stringify({
+      identityId: "id-run-0002",
+      namespace: "ns",
+      name: "Secret label",
+      kind: "codex",
+    }),
+  );
   await set(
     3,
     "g:grant000000000002",
@@ -126,6 +137,28 @@ describe("version faces (REST)", () => {
       for (const k of FACE) expect(v.agent ?? {}).not.toHaveProperty(k);
     expect(JSON.stringify(l)).not.toContain("animal");
     expect(JSON.stringify(l)).not.toContain("id-run-0001");
+    // The masked v4 stays masked and gets no face either.
+    const m = byV(l, 4)?.agent;
+    expect(m?.masked).toBe(true);
+    for (const k of FACE) expect(m ?? {}).not.toHaveProperty(k);
+  });
+
+  it("a guest cap and a restricted cap on a member row get none (service)", async () => {
+    for (const [role, cap] of [
+      ["guest", "guest"],
+      ["member", "restricted"],
+      ["guest", null],
+    ] as const) {
+      const u = await mk(`vf-svc-${role}-${cap}`, role);
+      const caller = { kind: "user" as const, user: u.member, cap };
+      const l = await listVersions(E, caller, id);
+      expect(l.length).toBeGreaterThan(0);
+      expect(JSON.stringify(l)).not.toContain("animal");
+      expect(JSON.stringify(l)).not.toContain("linked");
+    }
+    // Control: the same service call uncapped keeps the face.
+    const l = await listVersions(E, { kind: "user", user: memberV.member }, id);
+    expect(byV(l, 3)?.agent?.animal).toBeDefined();
   });
 });
 
@@ -150,16 +183,12 @@ describe("version faces (MCP)", () => {
     await E.DB.prepare("update users set restricted_manual = 1 where id = ?")
       .bind(u.userId)
       .run();
-    // Refused outright (canConnect on each request), or served with no face.
+    // A capped caller never reaches the tools: canConnect refuses it on each
+    // request. The real capped list is covered by the service test above.
     const r = await tool(client, "list_versions", { id }).catch(
       (e: unknown) => e,
     );
-    if (r instanceof Error) {
-      expect(r.message).toContain("Only members can connect agents");
-      return;
-    }
-    const ok = r as Awaited<ReturnType<typeof tool>>;
-    expect(JSON.stringify(ok.structuredContent)).not.toContain("animal");
-    expect(JSON.stringify(ok.structuredContent)).not.toContain("id-run-0001");
+    expect(r).toBeInstanceOf(Error);
+    expect((r as Error).message).toContain("Only members can connect agents");
   });
 });
