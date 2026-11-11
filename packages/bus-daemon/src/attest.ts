@@ -19,7 +19,7 @@ import {
 import {
   lstartEpoch,
   opencodePresenceDir,
-  openSessions,
+  openState,
 } from "./presence/opencode.ts";
 
 export { ancestorChain, claudeProcStartOf, procStartOf };
@@ -162,7 +162,8 @@ function defaultOpenSessions(
   ref: string,
   attach?: AttachDeps,
 ): Set<string> {
-  return openSessions(
+  // Unknown (a failed OS read) is a refusal: fail closed.
+  const open = openState(
     opencodePresenceDir(),
     {
       accept: attachedTo(service, attach ?? defaultAttachDeps),
@@ -171,4 +172,5 @@ function defaultOpenSessions(
     },
     ref,
   );
+  return open === true ? new Set([ref]) : new Set();
 }

@@ -97,6 +97,7 @@ import {
   lstartEpoch,
   opencodePresenceDir,
   openSessions,
+  openState,
 } from "./presence/opencode.ts";
 import { proposeReach } from "./reach.ts";
 import { Resends } from "./resend.ts";
@@ -542,10 +543,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     deps.bindingNow,
   );
   /** A hello counts only sessions in TUIs attached to its own service (#1950). */
-  const openCodeSessionsFor = (service: number, ref: string): Set<string> =>
+  const openCodeStateFor = (service: number, ref: string): boolean | null =>
     oc.openSessions
-      ? oc.openSessions()
-      : openSessions(
+      ? oc.openSessions().has(ref)
+      : openState(
           presenceDir,
           {
             isRunning: ocRunning,
@@ -554,6 +555,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           },
           ref,
         );
+  /** Only a definite yes counts: unknown (a failed OS read) is refused. */
+  const openCodeSessionsFor = (service: number, ref: string): Set<string> =>
+    openCodeStateFor(service, ref) === true ? new Set([ref]) : new Set();
   const ocSpawn = oc.spawn ?? execSpawn(20_000);
   /** Unknown until read, just before the hub link starts: no delivery comes sooner. */
   let promptIdSupported = false;
@@ -1611,7 +1615,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hello.kind === "opencode" &&
           prev.pid !== pid &&
           (ocServiceGone(prev.ref, prev.pid) ||
-            !openCodeSessionsFor(prev.pid, prev.ref).has(prev.ref))
+            openCodeStateFor(prev.pid, prev.ref) === false)
         ) {
           prev.pid = pid;
           ocServiceStart.set(prev.ref, ocStart(pid));

@@ -12,6 +12,9 @@ const READ_TIMEOUT_MS = 1500;
 /** One established socket: `local` and `remote` as `addr:port`, `[v6]:port` for v6. */
 export type Pair = { local: string; remote: string };
 
+/** Attached, definitely not, or unknown because an OS read failed (never treated as attached). */
+export type Attached = boolean | null;
+
 export type AttachDeps = {
   /** Real path of the pid's executable. */
   exeOf: (pid: number) => string | null;
@@ -47,25 +50,29 @@ export const exePath = (exe: string | null): string | null =>
 export function attachedTo(
   service: number,
   deps: AttachDeps,
-): (tui: number) => boolean {
-  let svcExe: string | null | undefined;
-  let svcSockets: Pair[] | null | undefined;
-  let parent: number | null | undefined;
+): (tui: number) => Attached {
+  let svcExe: string | null = null;
+  let svcSockets: Pair[] | null = null;
+  let parent: number | null = null;
   return (tui) => {
-    if (svcExe === undefined) svcExe = exePath(deps.exeOf(service));
-    if (!svcExe) return false;
-    if (exePath(deps.exeOf(tui)) !== svcExe) return false;
-    if (parent === undefined) parent = deps.ppidOf(service);
+    // A read that failed is read again next time: unknown is never kept.
+    svcExe ??= exePath(deps.exeOf(service));
+    const tuiExe = exePath(deps.exeOf(tui));
+    if (!svcExe || !tuiExe) return null;
+    if (tuiExe !== svcExe) return false;
+    parent ??= deps.ppidOf(service);
     if (parent === tui) return true;
-    if (svcSockets === undefined) svcSockets = deps.established(service);
-    if (!svcSockets || svcSockets.length === 0) return false;
+    svcSockets ??= deps.established(service);
     const mine = deps.established(tui);
-    if (!mine) return false;
+    if (!svcSockets || !mine) return null;
     // Socket pairs, not ports: the TUI's socket and the service's are the two
     // ends of one connection, so 127.0.0.2:4096 is not 127.0.0.1:4096.
-    return mine.some((t) =>
+    const found = mine.some((t) =>
       svcSockets?.some((x) => x.remote === t.local && x.local === t.remote),
     );
+    if (found) return true;
+    // Without the parent we cannot rule out a standalone TUI.
+    return parent === null ? null : false;
   };
 }
 
@@ -83,10 +90,10 @@ export function cachedAttach(
   deps: AttachDeps,
   now: () => number = Date.now,
   ttlMs: number = ATTACH_TTL_MS,
-): (service: number) => (tui: number) => boolean {
+): (service: number) => (tui: number) => Attached {
   const entries = new Map<
     number,
-    { at: number; pred: (tui: number) => boolean; seen: Map<number, boolean> }
+    { at: number; pred: (tui: number) => Attached; seen: Map<number, boolean> }
   >();
   return (service) => (tui) => {
     const t = now();
@@ -96,11 +103,11 @@ export function cachedAttach(
       e = { at: t, pred: attachedTo(service, deps), seen: new Map() };
       entries.set(service, e);
     }
-    let r = e.seen.get(tui);
-    if (r === undefined) {
-      r = e.pred(tui);
-      e.seen.set(tui, r);
-    }
+    const hit = e.seen.get(tui);
+    if (hit !== undefined) return hit;
+    const r = e.pred(tui);
+    // Unknown is never cached: the next hello reads the OS again.
+    if (r !== null) e.seen.set(tui, r);
     return r;
   };
 }

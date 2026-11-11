@@ -13,7 +13,7 @@ import {
   lsofEstablished,
   parseProcNetTcp,
 } from "../src/presence/attached.ts";
-import { openSessions } from "../src/presence/opencode.ts";
+import { openState } from "../src/presence/opencode.ts";
 import { daemonHarness, hello, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
@@ -32,7 +32,7 @@ function world(w: {
 }): AttachDeps {
   return {
     exeOf: (p) => w.exe?.[p] ?? null,
-    ppidOf: (p) => w.ppid?.[p] ?? null,
+    ppidOf: (p) => w.ppid?.[p] ?? 1,
     established: (p) => w.sockets?.[p] ?? null,
   };
 }
@@ -109,22 +109,27 @@ describe("attachedTo (#1950)", () => {
     });
     expect(attachedTo(10, flipped)(11)).toBe(true);
   });
-  it("fails closed on every read failure", () => {
+  it("answers unknown, never attached, on every read failure", () => {
     const ok = world({ exe, sockets });
-    expect(attachedTo(10, { ...ok, exeOf: () => null })(11)).toBe(false);
+    expect(attachedTo(10, ok)(11)).toBe(true);
+    expect(attachedTo(10, { ...ok, exeOf: () => null })(11)).toBeNull();
     expect(
       attachedTo(10, { ...ok, exeOf: (p) => (p === 10 ? OC : null) })(11),
-    ).toBe(false);
-    expect(attachedTo(10, { ...ok, established: () => null })(11)).toBe(false);
+    ).toBeNull();
+    expect(attachedTo(10, { ...ok, established: () => null })(11)).toBeNull();
     expect(
       attachedTo(10, { ...ok, established: (p) => (p === 10 ? [] : null) })(11),
-    ).toBe(false);
+    ).toBeNull();
     expect(
       attachedTo(10, {
         ...ok,
         established: (p) => (p === 10 ? ok.established(p) : null),
       })(11),
-    ).toBe(false);
+    ).toBeNull();
+    // Sockets read fine but the parent could not be told: a standalone TUI is not ruled out.
+    const noMatch = world({ exe, sockets: { 10: [one.svc], 11: [] } });
+    expect(attachedTo(10, { ...noMatch, ppidOf: () => null })(11)).toBeNull();
+    expect(attachedTo(10, noMatch)(11)).toBe(false);
   });
   it("reads the service once per hello, not once per TUI", () => {
     let reads = 0;
@@ -169,6 +174,28 @@ describe("cachedAttach (#1950)", () => {
     t = 2000;
     expect(attached(10)(11)).toBe(true);
     expect(reads).toBe(5);
+  });
+  it("never caches unknown: the next hello reads the OS again", () => {
+    let fail = true;
+    let reads = 0;
+    const d = world({
+      exe: { 10: OC, 11: OC },
+      sockets: { 10: [one.svc], 11: [one.tui] },
+    });
+    const flaky: AttachDeps = {
+      ...d,
+      established: (p) => {
+        reads++;
+        return p === 11 && fail ? null : d.established(p);
+      },
+    };
+    const t = 0;
+    const attached = cachedAttach(flaky, () => t, 2000);
+    expect(attached(10)(11)).toBeNull();
+    const after = reads;
+    fail = false;
+    expect(attached(10)(11)).toBe(true); // same instant, inside the TTL
+    expect(reads).toBeGreaterThan(after);
   });
   it("a cached 'not attached' expires as fast as a cached 'attached'", () => {
     const sockets: Record<number, { local: string; remote: string }[]> = {
@@ -249,7 +276,7 @@ describe("open sessions for one ref (#1950)", () => {
       );
     const asked: number[] = [];
     const running: number[] = [];
-    const open = openSessions(
+    const open = openState(
       dir,
       {
         isRunning: (p) => {
@@ -264,17 +291,37 @@ describe("open sessions for one ref (#1950)", () => {
       },
       "ses_B",
     );
-    expect(open).toEqual(new Set(["ses_B"]));
+    expect(open).toBe(true);
     expect(running).toHaveLength(1);
     expect(asked).toHaveLength(1);
     expect([12, 13]).toContain(asked[0]);
     expect(
-      openSessions(
+      openState(
         dir,
         { isRunning: () => true, procStartEpoch: () => null },
         "ses_none",
       ),
-    ).toEqual(new Set());
+    ).toBe(false);
+  });
+});
+
+describe("open state with an unknown candidate (#1950)", () => {
+  it("is unknown when no row passes and one could not be told, true when another passes", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ob-unk-"));
+    for (const pid of [12, 13])
+      writeFileSync(
+        join(dir, `${pid}.json`),
+        JSON.stringify({ pid, sessionIDs: ["ses_B"] }),
+      );
+    const deps = (verdict: Record<number, boolean | null>) => ({
+      isRunning: () => true,
+      procStartEpoch: () => null,
+      accept: (p: number) =>
+        p in verdict ? (verdict[p] as boolean | null) : false,
+    });
+    expect(openState(dir, deps({ 12: null, 13: false }), "ses_B")).toBeNull();
+    expect(openState(dir, deps({ 12: false, 13: false }), "ses_B")).toBe(false);
+    expect(openState(dir, deps({ 12: null, 13: true }), "ses_B")).toBe(true);
   });
 });
 
@@ -291,7 +338,7 @@ describe("attest scopes presence to the attested service", () => {
     ancestors: (pid: number) => [pid],
     comm: (pid: number) => comms[pid] ?? null,
     openSessions: (service: number, ref: string) =>
-      openSessions(
+      openState(
         dir,
         {
           isRunning: () => true,
@@ -299,7 +346,9 @@ describe("attest scopes presence to the attested service", () => {
           accept: attachedTo(service, attach),
         },
         ref,
-      ),
+      )
+        ? new Set([ref])
+        : new Set<string>(),
   });
   const one = link("127.0.0.1:4001", "127.0.0.1:50001");
   const two = link("127.0.0.1:4002", "127.0.0.1:50002");
@@ -418,7 +467,7 @@ describe.skipIf(process.platform !== "linux")("real /proc (#1950)", () => {
       // Port equality would pass here; the socket pairs do not.
       expect(d.established(other.pid as number)?.length).toBeGreaterThan(0);
       expect(attachedTo(other.pid as number, d)(tuiPid)).toBe(false);
-      expect(attachedTo(1, d)(tuiPid)).toBe(false);
+      expect(attachedTo(1, d)(tuiPid)).not.toBe(true);
     } finally {
       client.destroy();
       server.close();

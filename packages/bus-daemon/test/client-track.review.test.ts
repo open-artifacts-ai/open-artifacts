@@ -181,7 +181,7 @@ describe("review: pid reuse", () => {
         // The TUI is attached to whichever service is up (#1950).
         attach: {
           exeOf: (pid) => (pid === 4321 || pid >= 8000 ? "/oc" : null),
-          ppidOf: () => null,
+          ppidOf: () => 1,
           // A service holds the accepted end of each TUI connection; the TUI the other end.
           established: (pid) =>
             pid >= 8000

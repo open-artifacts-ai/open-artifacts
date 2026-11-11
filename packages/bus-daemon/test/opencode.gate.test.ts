@@ -528,6 +528,7 @@ describe("opencode through runDaemon", () => {
     alive: Set<number>,
     conn: Set<number> = new Set([8001, 8002]),
     now: () => number = Date.now,
+    failReads: () => boolean = () => false,
   ) {
     return daemonHarness({
       bindingNow: now,
@@ -545,20 +546,22 @@ describe("opencode through runDaemon", () => {
         // per-service policy is what these tests exercise.
         attach: {
           exeOf: (pid) => (pid === 4321 || pid >= 8000 ? "/oc" : null),
-          ppidOf: () => null,
+          ppidOf: () => 1,
           // A service holds the accepted end of each TUI connection; the TUI the other end.
           established: (pid) =>
-            pid >= 8000
-              ? [
-                  {
-                    local: `127.0.0.1:${pid}`,
-                    remote: `127.0.0.1:${50000 + pid}`,
-                  },
-                ]
-              : [...conn].map((svc) => ({
-                  local: `127.0.0.1:${50000 + svc}`,
-                  remote: `127.0.0.1:${svc}`,
-                })),
+            failReads()
+              ? null
+              : pid >= 8000
+                ? [
+                    {
+                      local: `127.0.0.1:${pid}`,
+                      remote: `127.0.0.1:${50000 + pid}`,
+                    },
+                  ]
+                : [...conn].map((svc) => ({
+                    local: `127.0.0.1:${50000 + svc}`,
+                    remote: `127.0.0.1:${svc}`,
+                  })),
         },
       },
     });
@@ -590,10 +593,11 @@ describe("opencode through runDaemon", () => {
     alive: Set<number>,
     conn: Set<number>,
     now?: () => number,
+    failReads?: () => boolean,
   ) => {
     const dir = presenceDir();
     presence(dir, 4321, ["ses_root"]);
-    const h = await attested(dir, alive, conn, now);
+    const h = await attested(dir, alive, conn, now, failReads);
     (await h.adapter("ses_root", oc(7001))).close();
     expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
     return h;
@@ -602,6 +606,21 @@ describe("opencode through runDaemon", () => {
   it("keeps the incumbent: a second service cannot take a live record the first still has attached (#1950)", async () => {
     const h = await claimed(new Set([4321, 8001, 8002]), new Set([8001, 8002]));
     await expect(h.adapter("ses_root", oc(7002))).rejects.toThrow(/in use/);
+    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
+  });
+
+  it("keeps the incumbent when its attach cannot be read: unknown is not detached (#1950)", async () => {
+    let flaky = false;
+    const h = await claimed(
+      new Set([4321, 8001, 8002]),
+      new Set([8001, 8002]),
+      undefined,
+      () => flaky,
+    );
+    flaky = true; // the OS reads for the incumbent's TUI now fail
+    await expect(h.adapter("ses_root", oc(7002))).rejects.toThrow(
+      /not open in a TUI attached|in use/,
+    );
     expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
   });
 
