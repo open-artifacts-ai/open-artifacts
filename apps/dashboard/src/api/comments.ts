@@ -260,6 +260,7 @@ export function commentError(
     case "bad_request":
       return "That comment couldn't be found.";
     case "unauthorized":
+    case "comments_signed_in_only":
       return "Sign in to comment.";
     default:
       return "Couldn't post your comment. Try again.";

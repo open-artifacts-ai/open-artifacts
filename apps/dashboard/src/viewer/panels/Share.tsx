@@ -19,7 +19,7 @@ import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@oa/ui/shadcn";
-import { useState } from "react";
+import { useId, useState } from "react";
 import { ApiClientError } from "../../api/client";
 import type { ShareRecipient } from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
@@ -46,7 +46,6 @@ import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { isOrgAdmin } from "../../settings/spaces/access";
 import { visibilityHint } from "../../spaces/SpaceMarker";
-import { guestsMayComment } from "../comments/useComments";
 
 const VIS: { value: Visibility; label: string }[] = [
   { value: "private", label: "Private" },
@@ -601,22 +600,11 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
       {/* Absent: a server without comments (older than #1496). */}
       {artifact.comments !== undefined && (
         <section>
-          <h3 className={H3}>Comments</h3>
-          <div className="oa-cap">
-            <LabelledCheckbox
-              id="oa-comments"
-              describedBy="oa-comments-hint"
-              label="Comments"
-              checked={artifact.comments}
-              disabled={!vis || patch.isPending}
-              onCheckedChange={(on) => save({ comments: on })}
-            />
-            <small id="oa-comments-hint" className="oa-muted">
-              {guestsMayComment(artifact)
-                ? "Anyone with the link can comment. Signed-out visitors pick a display name."
-                : "People who can open this can comment on it."}
-            </small>
-          </div>
+          <CommentsChoice
+            artifact={artifact}
+            disabled={!vis || patch.isPending}
+            onSave={save}
+          />
         </section>
       )}
 
@@ -717,5 +705,86 @@ export function Share({ artifact }: { artifact: ArtifactSummary }) {
         }
       />
     </div>
+  );
+}
+
+type CommentsMode = "everyone" | "signed-in" | "off";
+
+/** "Who can comment" (#2080): three choices on a public artifact, two otherwise, where "everyone" and "signed-in" mean the same. */
+function CommentsChoice({
+  artifact,
+  disabled,
+  onSave,
+}: {
+  artifact: ArtifactSummary;
+  disabled: boolean;
+  onSave: (p: ArtifactPatch) => void;
+}) {
+  const name = useId();
+  const isPublic = artifact.visibility === "public";
+  const current: CommentsMode = !artifact.comments
+    ? "off"
+    : isPublic && artifact.commenters === "signed-in"
+      ? "signed-in"
+      : "everyone";
+  const options: {
+    mode: CommentsMode;
+    label: string;
+    hint?: string;
+    patch: ArtifactPatch;
+  }[] = isPublic
+    ? [
+        {
+          mode: "everyone",
+          label: "Anyone who can open it",
+          patch: { comments: "everyone" },
+        },
+        {
+          mode: "signed-in",
+          label: "Signed-in people",
+          hint: "Visitors who aren't signed in can read comments but not add them.",
+          patch: { comments: "signed-in" },
+        },
+        {
+          mode: "off",
+          label: "Off",
+          hint: "Comments are hidden and nobody can add them.",
+          patch: { comments: "off" },
+        },
+      ]
+    : [
+        { mode: "everyone", label: "On", patch: { comments: true } },
+        {
+          mode: "off",
+          label: "Off",
+          hint: "Comments are hidden and nobody can add them.",
+          patch: { comments: false },
+        },
+      ];
+  return (
+    <fieldset className="m-0 grid gap-[var(--oa-space-2)] border-0 p-0">
+      <legend className={`${H3} p-0`}>Who can comment</legend>
+      {options.map((o) => (
+        <div className="oa-cap" key={o.mode}>
+          <label className="inline-flex items-center gap-[var(--oa-space-2)] text-[length:var(--oa-text-sm)]">
+            <input
+              type="radio"
+              name={name}
+              value={o.mode}
+              checked={current === o.mode}
+              disabled={disabled}
+              aria-describedby={o.hint ? `${name}-${o.mode}` : undefined}
+              onChange={() => current !== o.mode && onSave(o.patch)}
+            />
+            {o.label}
+          </label>
+          {o.hint && (
+            <small id={`${name}-${o.mode}`} className="oa-muted">
+              {o.hint}
+            </small>
+          )}
+        </div>
+      ))}
+    </fieldset>
   );
 }

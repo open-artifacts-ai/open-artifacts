@@ -105,7 +105,9 @@ describe("embed mode", () => {
   it("a public artifact renders anonymously, with no /me and no credentials", async () => {
     const { id, title } = byTitle("Team poll"); // public
     const redirect = mount(`/a/${id}/full`);
-    expect(await screen.findByTitle(title)).toBeInstanceOf(HTMLIFrameElement);
+    // The full-screen strip repeats the title (#2112); the frame is the iframe.
+    const named = await screen.findAllByTitle(title);
+    expect(named.some((el) => el instanceof HTMLIFrameElement)).toBe(true);
     expect(redirect).not.toHaveBeenCalled();
     expect(seen.some((u) => u.pathname === "/api/v1/me")).toBe(false);
     expect(credentialed).toEqual([]);

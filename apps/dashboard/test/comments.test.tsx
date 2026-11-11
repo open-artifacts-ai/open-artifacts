@@ -1094,9 +1094,9 @@ describe("comments: actions", () => {
   it("the Comments setting in Share turns comments off", async () => {
     const patches = calls("PATCH");
     mount(`${viewerPath(OWNED)}?panel=open&tab=share`);
-    const box = await screen.findByRole("checkbox", { name: "Comments" });
+    const box = await screen.findByRole("radio", { name: "On" });
     expect(box).toBeChecked();
-    fireEvent.click(box);
+    fireEvent.click(screen.getByRole("radio", { name: "Off" }));
     await waitFor(() =>
       expect(
         patches.some(
@@ -1301,12 +1301,57 @@ describe("comments: live and signed out", () => {
     );
     mount(viewerPath(PUBLIC));
     const c = await col();
-    expect(
-      await within(c).findByText("Sign in to comment."),
-    ).toBeInTheDocument();
+    const link = await within(c).findByRole("link", {
+      name: "Sign in to comment",
+    });
+    expect(link).toHaveAttribute(
+      "href",
+      `/sign-in?next=${encodeURIComponent(window.location.pathname + window.location.search)}`,
+    );
     expect(within(c).getByText("From someone")).toBeInTheDocument();
     expect(within(c).queryByRole("button", { name: "Resolve" })).toBeNull();
     expect(within(c).queryByRole("textbox")).toBeNull();
+  });
+
+  it("#2080: commenters signed-in bars a guest without can.comment, and the refusal reads Sign in to comment.", async () => {
+    server.use(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json(
+          { error: { code: "unauthorized", message: "no" } },
+          { status: 401 },
+        ),
+      ),
+      http.get(`*${R.artifact(PUBLIC)}`, () =>
+        HttpResponse.json({
+          ...fixtures.artifacts.find((a) => a.id === PUBLIC),
+          visibility: "public",
+          commenters: "signed-in",
+          comments: true,
+        }),
+      ),
+      http.get(`*${R.comments(PUBLIC)}`, () =>
+        HttpResponse.json({ threads: [oneThread], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(PUBLIC));
+    const c = await col();
+    expect(
+      await within(c).findByRole("link", { name: "Sign in to comment" }),
+    ).toBeInTheDocument();
+    expect(within(c).getByText("From someone")).toBeInTheDocument();
+    expect(within(c).queryByRole("textbox")).toBeNull();
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    expect(
+      commentError(
+        new ApiClientError(
+          "comments_signed_in_only",
+          "Sign in to comment.",
+          403,
+        ),
+        false,
+      ),
+    ).toBe("Sign in to comment.");
   });
 
   it("a guest on a public artifact that allows anonymous writes gets a name field", async () => {
@@ -1947,24 +1992,15 @@ describe("comments: review round 1", () => {
       ),
     );
   it.each([
-    [
-      { visibility: "public", dataWriters: "viewers" },
-      /Anyone with the link can comment/,
-    ],
-    [
-      // Public is enough: signed-out visitors can comment on public artifacts.
-      { visibility: "public", dataWriters: "editors" },
-      /Anyone with the link can comment/,
-    ],
-    [
-      { visibility: "team", dataWriters: "viewers" },
-      /People who can open this can comment on it\./,
-    ],
-  ])("M3: the Share hint for %j", async (over, hint) => {
+    [{ visibility: "public", dataWriters: "viewers" }, 3],
+    // Public is enough: dataWriters does not change who can comment.
+    [{ visibility: "public", dataWriters: "editors" }, 3],
+    [{ visibility: "team", dataWriters: "viewers" }, 2],
+  ])("M3: the Who can comment choices for %j", async (over, n) => {
     art(over);
     mount(`${viewerPath(OWNED)}?panel=open&tab=share`);
-    await screen.findByRole("checkbox", { name: "Comments" });
-    expect(await screen.findByText(hint)).toBeInTheDocument();
+    const g = await screen.findByRole("group", { name: "Who can comment" });
+    expect(within(g).getAllByRole("radio")).toHaveLength(n);
   });
 
   it("M5: only a minting write takes the mint lock; reads and other writes never do", async () => {
@@ -2302,7 +2338,7 @@ describe("comments: a server without comments", () => {
     expect(
       screen.queryByRole("complementary", { name: "Comments" }),
     ).toBeNull();
-    expect(screen.queryByRole("checkbox", { name: "Comments" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Who can comment" })).toBeNull();
     expect(setMode).not.toHaveBeenCalledWith("select");
   });
 

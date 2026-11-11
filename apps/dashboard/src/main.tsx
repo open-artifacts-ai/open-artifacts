@@ -426,10 +426,11 @@ async function startMocks() {
   // can't see the cookie header, so authenticate with a bearer token instead.
   // Like the cookie it stands in for, it never rides on a credentials:"omit" request.
   const realFetch = window.fetch.bind(window);
+  // ?mock=signed-out (#2080): no token, so every request is anonymous.
+  const signedOut = params.get("mock") === "signed-out";
   window.fetch = (input, init) => {
     const req = new Request(input, init);
-    // ?mock=signed-out: no session, so public artifacts open anonymously.
-    if (req.credentials !== "omit" && params.get("mock") !== "signed-out")
+    if (!signedOut && req.credentials !== "omit")
       req.headers.set("Authorization", "Bearer mock");
     return realFetch(req);
   };
@@ -457,6 +458,8 @@ async function startMocks() {
       commentAsks: params.get("mock") === "asks",
       // ?mock=agents (#1822): agent-authored comments, linked and not.
       commentAgents: params.get("mock") === "agents",
+      // ?mock=signed-out (#2080): a signed-out viewer on the public "Landing page", where only signed-in people may comment.
+      commentersSignedIn: params.get("mock") === "signed-out",
       // ?mock=bus (#1293): the bus is on, with machines and agents.
       bus: params.get("mock") === "bus",
     }),

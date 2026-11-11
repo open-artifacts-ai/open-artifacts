@@ -546,7 +546,7 @@ describe("deploy, owner-token, selftest, agent-config", () => {
     expect(cfg).toContain(`${file}`);
     expect(cfg).not.toMatch(/--header|Bearer \$\(cat/);
     expect(cfg).not.toContain(pat);
-    expect(cfg).toContain("bearer_token_env_var");
+    expect(cfg).toContain("http_headers_helper");
     patContained(w, pat);
   });
 

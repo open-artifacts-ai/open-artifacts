@@ -63,6 +63,7 @@ export async function llmsTxt(): Promise<string> {
     section(byId("upgrade"), "Steps"),
     "## Connect another agent",
     section(byId("connect-agents"), "Steps"),
+    `To let agents on your user's machines message each other, install the bus: see ${SITE}/docs/agent-bus.md`,
     "## Tools",
     tools.map((t) => `- \`${t.name}\`: ${t.description}`).join("\n"),
     section(byId("mcp-tools"), "Large files"),
