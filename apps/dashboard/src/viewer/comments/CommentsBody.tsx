@@ -146,18 +146,22 @@ function GuestName({ api }: { api: CommentsApi }) {
   );
 }
 
-/** A guest's way to sign in, back to this page. */
-function SignInLink() {
+/** A guest's way to sign in, back to this page. `box` fills the composer's place. */
+function SignInLink({ box = false }: { box?: boolean }) {
   return (
     <a
-      className={`${TXT} text-[var(--oa-accent-fg)] underline`}
+      className={
+        box
+          ? `${TXT} flex min-h-9 w-full items-center justify-center rounded-md border border-[var(--oa-border)] px-3 text-[var(--oa-accent-fg)] underline focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)]`
+          : `${TXT} text-[var(--oa-accent-fg)] underline`
+      }
       href={`/sign-in?next=${encodeURIComponent(
         `${window.location.pathname}${window.location.search}`,
       )}`}
       target={isEmbed() ? "_blank" : undefined}
       rel="noopener noreferrer"
     >
-      Sign in
+      {box ? "Sign in to comment" : "Sign in"}
     </a>
   );
 }
@@ -1169,7 +1173,7 @@ export function CommentsBody({
         {api.canComment ? (
           <NoteComposer api={api} />
         ) : (
-          api.guest && <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
+          api.guest && <SignInLink box />
         )}
       </div>
       {api.error != null && !api.threads.length ? (

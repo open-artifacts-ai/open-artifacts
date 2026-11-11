@@ -2,6 +2,8 @@ import {
   docSchema,
   type ImportChange,
   isAllowedHref,
+  isAllowedLanguage,
+  isAllowedTitle,
   markdownToDoc,
 } from "@oa/doc-schema";
 import {
@@ -137,7 +139,22 @@ function checkHref(href: unknown): void {
 function checkLinks(doc: PMNode): void {
   doc.descendants((node) => {
     for (const m of node.marks) {
-      if (m.type === docSchema.marks.link) checkHref(m.attrs.href);
+      if (m.type === docSchema.marks.link) {
+        checkHref(m.attrs.href);
+        if (!isAllowedTitle(m.attrs.title ?? null)) {
+          throw invalid(
+            "A link title must be plain text without quotes or line breaks. Leave the title out.",
+          );
+        }
+      }
+    }
+    if (
+      node.type === docSchema.nodes.codeBlock &&
+      !isAllowedLanguage(node.attrs.language ?? null)
+    ) {
+      throw invalid(
+        "A code block language must be a short plain name like ts or c++. Leave it out.",
+      );
     }
     return true;
   });

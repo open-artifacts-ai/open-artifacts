@@ -99,6 +99,7 @@ async function setup(
       title: "doc",
       format: "html",
       content: "<p>The quick brown fox</p>",
+      comments: "everyone",
       ...extra,
     } as never,
     publisher,

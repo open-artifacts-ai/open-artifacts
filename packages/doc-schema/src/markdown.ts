@@ -6,8 +6,13 @@ import {
   type MarkdownSerializerState,
 } from "prosemirror-markdown";
 import type { Node as PMNode } from "prosemirror-model";
-import { type DocJSON, docFromJSON } from "./json.ts";
-import { docSchema, isAllowedHref } from "./schema.ts";
+import { type DocJSON, toDocNode } from "./json.ts";
+import {
+  docSchema,
+  isAllowedHref,
+  isAllowedLanguage,
+  isAllowedTitle,
+} from "./schema.ts";
 
 /** What a Markdown import changed because the doc cannot hold it. */
 export type ImportChangeKind =
@@ -17,6 +22,7 @@ export type ImportChangeKind =
   | "footnote" // a footnote definition: kept as plain text
   | "heading_level" // a heading 4 to 6: kept as a paragraph
   | "link" // a link that isn't http(s) or mailto:: kept as plain text
+  | "code_language" // a code fence info string that isn't a plain language name: dropped
   | "hard_break" // a hard line break: became a space
   | "mixed_task_list"; // a list with some task items: kept as a bullet list, "[ ]" as text
 
@@ -163,7 +169,10 @@ function rewriteInline(inline: Token, changes: ImportChange[]): void {
   inline.children = children.flatMap((child) => {
     if (child.type === "link_open") {
       const href = child.attrGet("href") ?? "";
-      if (!isAllowedHref(href)) {
+      if (
+        !isAllowedHref(href) ||
+        !isAllowedTitle(child.attrGet("title") ?? null)
+      ) {
         changes.push({ kind: "link", line, text: short(href) });
         dropClose = true;
         return [];
@@ -219,6 +228,17 @@ function rewriteBlocks(tokens: Token[], changes: ImportChange[]): Token[] {
         text: short(t.content),
       });
       out.push(...plainParagraphs(t.content, t.level, t.map));
+    } else if (
+      t.type === "fence" &&
+      !isAllowedLanguage(t.info.trim() || null)
+    ) {
+      changes.push({
+        kind: "code_language",
+        line: lineOf(t),
+        text: short(t.info),
+      });
+      t.info = "";
+      out.push(t);
     } else if (t.type === "table_open") {
       const close = matchingClose(tokens, i);
       const lines = tableLines(tokens, i, close);
@@ -365,13 +385,31 @@ type ListName = "bulletList" | "taskList" | "orderedList";
 
 // Two lists of the same kind in a row would merge on re-import unless their
 // markers differ, so alternate the marker.
+// Computed once per parent and kind set: each list's place in its run.
+const flips = new WeakMap<PMNode, Map<string, boolean[]>>();
+
 function alternate(parent: PMNode, index: number, kinds: ListName[]): boolean {
-  let flip = false;
-  for (let i = index - 1; i >= 0; i--) {
-    if (!kinds.includes(parent.child(i).type.name as ListName)) break;
-    flip = !flip;
+  let byKinds = flips.get(parent);
+  if (!byKinds) {
+    byKinds = new Map();
+    flips.set(parent, byKinds);
   }
-  return flip;
+  const key = kinds.join(",");
+  let list = byKinds.get(key);
+  if (!list) {
+    list = [];
+    let flip = false;
+    for (let i = 0; i < parent.childCount; i++) {
+      flip = kinds.includes(parent.child(i).type.name as ListName)
+        ? !flip
+        : false;
+      // flip is now whether list i is an odd step after the run's start.
+      list.push(flip);
+    }
+    byKinds.set(key, list);
+  }
+  // Run start: flip=true after the first list means index 0 of run is false.
+  return index > 0 ? (list[index - 1] ?? false) : false;
 }
 
 const BULLETS: ListName[] = ["bulletList", "taskList"];
@@ -482,10 +520,7 @@ const serializer = new MarkdownSerializer(
 
 /** A doc (node or JSON) to Markdown, ending in one newline unless empty. */
 export function docToMarkdown(doc: PMNode | DocJSON): string {
-  const node =
-    "type" in doc && typeof doc.type === "string"
-      ? docFromJSON(doc as DocJSON)
-      : (doc as PMNode);
+  const node = toDocNode(doc);
   const out = serializer.serialize(node).replace(/\s+$/, "");
   return out === "" ? "" : `${out}\n`;
 }

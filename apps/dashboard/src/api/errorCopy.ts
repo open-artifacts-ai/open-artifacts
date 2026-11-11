@@ -101,7 +101,7 @@ const planCopy = (
           ? `${INVITE_FEATURE}. Choose a plan to continue.`
           : `${INVITE_FEATURE}. This instance is on Solo. Ask an owner to choose a plan.`;
       if (owner && trialNeverRan)
-        return `${TEAM_FEATURE}. Invite someone to start your free 14-day trial, or choose a plan.`;
+        return `${TEAM_FEATURE}. Invite someone to start your free 30-day trial, or choose a plan.`;
       return owner
         ? `${TEAM_FEATURE}. Choose a plan to continue.`
         : `${TEAM_FEATURE}. This instance is on Solo. Ask an owner to invite someone or choose a plan.`;

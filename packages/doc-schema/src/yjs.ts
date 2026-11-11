@@ -4,7 +4,7 @@ import {
   yXmlFragmentToProseMirrorRootNode,
 } from "y-prosemirror";
 import * as Y from "yjs";
-import { type DocJSON, docFromJSON } from "./json.ts";
+import { type DocJSON, toDocNode } from "./json.ts";
 import { docSchema } from "./schema.ts";
 
 /** The Y.Doc field that holds a doc: Tiptap Collaboration's default. */
@@ -27,8 +27,7 @@ export function docToYXmlFragment(
   if (fragment.length > 0) {
     throw new Error("docToYXmlFragment needs an empty fragment");
   }
-  const node = "check" in doc ? (doc as PMNode) : docFromJSON(doc as DocJSON);
-  node.check();
+  const node = toDocNode(doc);
   return prosemirrorToYXmlFragment(node, fragment);
 }
 
@@ -64,22 +63,128 @@ export function yXmlFragmentToDoc(fragment: Y.XmlFragment): PMNode {
     );
   }
   const copy = new Y.Doc();
-  Y.applyUpdate(copy, Y.encodeStateAsUpdate(source));
-  let deleted = false;
-  copy.on("afterTransaction", (tr: Y.Transaction) => {
-    if (tr.deleteSet.clients.size > 0) deleted = true;
-  });
-  const node = yXmlFragmentToProseMirrorRootNode(
-    copy.getXmlFragment(key),
-    docSchema,
-  );
-  const lost = deleted;
-  copy.destroy();
-  if (lost) {
-    throw new Error(
-      "The doc has content the schema can't read. Nothing was changed.",
+  const scratch = new Y.Doc();
+  try {
+    Y.applyUpdate(copy, Y.encodeStateAsUpdate(source));
+    let deleted = false;
+    copy.on("afterTransaction", (tr: Y.Transaction) => {
+      if (tr.deleteSet.clients.size > 0) deleted = true;
+    });
+    const copied = copy.getXmlFragment(key);
+    const node = yXmlFragmentToProseMirrorRootNode(copied, docSchema);
+    if (deleted) throw UNREADABLE;
+    node.check();
+    // y-prosemirror also drops things without deleting them (embeds, unknown
+    // attributes). Writing the node back must give the same content.
+    node.descendants((n) => {
+      if (n.isText && (typeof n.text !== "string" || n.text === "")) {
+        throw UNREADABLE;
+      }
+    });
+    const back = scratch.getXmlFragment("check");
+    prosemirrorToYXmlFragment(node, back);
+    if (canonical(back) !== canonical(copied)) throw UNREADABLE;
+    return node;
+  } catch (e) {
+    if (e === UNREADABLE) throw new Error(UNREADABLE.message);
+    throw new Error(UNREADABLE.message, { cause: e });
+  } finally {
+    copy.destroy();
+    scratch.destroy();
+  }
+}
+
+const UNREADABLE = new Error(
+  "The doc has content the schema can't read. Nothing was changed.",
+);
+
+// Attributes Tiptap's own extensions add to what the doc writes (link target,
+// rel and class; null-valued element attributes). They carry no content.
+const TIPTAP_MARK_EXTRAS = new Set(["target", "rel", "class"]);
+
+function stripTiptap(value: unknown, inMark = false): unknown {
+  if (Array.isArray(value)) return value.map((v) => stripTiptap(v, inMark));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(
+          ([k, v]) => v !== null && !(inMark && TIPTAP_MARK_EXTRAS.has(k)),
+        )
+        .map(([k, v]) => [k, stripTiptap(v, inMark)]),
     );
   }
-  node.check();
-  return node;
+  return value;
+}
+
+function sorted(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sorted);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([k, v]) => [k, sorted(v)]),
+    );
+  }
+  return value;
+}
+
+// A structural form of a Y tree: elements with attributes, text deltas with
+// embeds and formats. Two trees with the same form hold the same content.
+function canonical(fragment: Y.XmlFragment): string {
+  type Run = { insert: unknown; attributes?: Record<string, unknown> };
+  const attrsOf = (d: Run) =>
+    d.attributes
+      ? sorted(
+          Object.fromEntries(
+            Object.entries(d.attributes).map(([k, v]) => [
+              k,
+              stripTiptap(v, true),
+            ]),
+          ),
+        )
+      : undefined;
+  // Consecutive Y.XmlText siblings read as one run of text (an empty one as
+  // nothing), and adjacent inserts with equal formats are one insert.
+  const children = (list: unknown[]): unknown[] => {
+    const out: unknown[] = [];
+    let runs: { insert: unknown; attributes?: unknown }[] = [];
+    const flush = () => {
+      if (runs.length > 0) out.push({ text: runs });
+      runs = [];
+    };
+    for (const node of list) {
+      if (node instanceof Y.XmlText) {
+        for (const d of node.toDelta() as Run[]) {
+          const attributes = attrsOf(d);
+          const last = runs[runs.length - 1];
+          if (
+            last &&
+            typeof last.insert === "string" &&
+            typeof d.insert === "string" &&
+            JSON.stringify(last.attributes) === JSON.stringify(attributes)
+          ) {
+            last.insert += d.insert;
+          } else {
+            runs.push({ insert: d.insert, attributes });
+          }
+        }
+      } else {
+        flush();
+        out.push(walk(node));
+      }
+    }
+    flush();
+    return out;
+  };
+  const walk = (node: unknown): unknown => {
+    if (node instanceof Y.XmlElement) {
+      return {
+        name: node.nodeName,
+        attrs: sorted(stripTiptap(node.getAttributes())),
+        children: children(node.toArray()),
+      };
+    }
+    return { other: String(node) };
+  };
+  return JSON.stringify(sorted(children(fragment.toArray())));
 }

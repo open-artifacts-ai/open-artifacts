@@ -1,10 +1,14 @@
+import { Schema } from "prosemirror-model";
 import { describe, expect, it } from "vitest";
+import * as Y from "yjs";
 import {
   docFromJSON,
   docSchema,
   docToMarkdown,
+  docToYXmlFragment,
   type ImportChangeKind,
   isAllowedHref,
+  isAllowedTitle,
   markdownToDoc,
 } from "../src/index.ts";
 
@@ -261,5 +265,209 @@ describe("link hrefs", () => {
     const r = markdownToDoc("a [**b**](docs/x) c\n");
     expect(r.changes.map((c) => c.kind)).toEqual(["link"]);
     expect(docToMarkdown(r.doc)).toBe("a **b** c\n");
+  });
+});
+
+describe("hostile link attributes", () => {
+  const badHrefs = [
+    "https://a\n\n<script>alert(1)</script>",
+    "https://a b",
+    "https://a<b",
+    'https://a"b',
+    "https://a`b",
+    "mailto:a@b\u0000",
+  ];
+  const badTitles: unknown[] = [
+    'x"\n\n<img src=x onerror=alert(1)>',
+    { x: 1 },
+    "a\nb",
+    5,
+  ];
+  const json = (attrs: object) => ({
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "x", marks: [{ type: "link", attrs }] },
+        ],
+      },
+    ],
+  });
+  for (const href of badHrefs) {
+    it(`refuses href ${JSON.stringify(href)}`, () => {
+      expect(() => docFromJSON(json({ href }) as never)).toThrow();
+      expect(() => docSchema.marks.link.create({ href })).toThrow();
+    });
+  }
+  for (const title of badTitles) {
+    it(`refuses title ${JSON.stringify(title)}`, () => {
+      expect(() =>
+        docFromJSON(json({ href: "https://a", title }) as never),
+      ).toThrow();
+      expect(() =>
+        docSchema.marks.link.create({ href: "https://a", title }),
+      ).toThrow();
+    });
+  }
+  it("refuses a trailing backslash in an href", () => {
+    expect(isAllowedHref("https://a\\")).toBe(false);
+    expect(() =>
+      docSchema.marks.link.create({ href: "https://a\\" }),
+    ).toThrow();
+  });
+
+  it("round-trips a Markdown href with a backslash", () => {
+    const r = markdownToDoc("[click](<https://a\\>)\n");
+    const out = docToMarkdown(r.doc);
+    const again = markdownToDoc(out);
+    expect(again.changes).toEqual([]);
+    expect(docToMarkdown(again.doc)).toBe(out);
+  });
+
+  it("keeps a link with a quote in its title as plain text", () => {
+    const r = markdownToDoc('[x](https://a "t\\"q")\n');
+    expect(r.changes.map((c) => c.kind)).toEqual(["link"]);
+    expect(docToMarkdown(r.doc)).toBe("x\n");
+  });
+
+  it("percent-encodes odd characters, so no raw HTML comes out", () => {
+    for (const md of [
+      "[x](<https://a b>)\n",
+      "[x](https://a`b)\n",
+      "[x](https://a<b)\n",
+    ]) {
+      const out = docToMarkdown(markdownToDoc(md).doc);
+      expect(out).not.toMatch(/[ `<]\S*\)/);
+      expect(markdownToDoc(out).changes).toEqual([]);
+    }
+  });
+});
+
+describe("foreign schemas and code languages", () => {
+  const permissive = new Schema({
+    nodes: {
+      doc: { content: "paragraph+" },
+      paragraph: { content: "text*" },
+      text: {},
+    },
+    marks: { link: { attrs: { href: {}, title: { default: null } } } },
+  });
+  const bad = permissive.node("doc", null, [
+    permissive.node("paragraph", null, [
+      permissive.text("x", [
+        permissive.marks.link.create({ href: "javascript:alert(1)" }),
+      ]),
+    ]),
+  ]);
+  const good = permissive.node("doc", null, [
+    permissive.node("paragraph", null, [
+      permissive.text("x", [
+        permissive.marks.link.create({ href: "https://e.example" }),
+      ]),
+    ]),
+  ]);
+
+  it("re-validates a node from another schema", () => {
+    expect(() => docToMarkdown(bad)).toThrow();
+    expect(() =>
+      docToYXmlFragment(bad, new Y.Doc().getXmlFragment("d")),
+    ).toThrow();
+    expect(docToMarkdown(good)).toBe("[x](https://e.example)\n");
+    expect(() =>
+      docToYXmlFragment(good, new Y.Doc().getXmlFragment("d")),
+    ).not.toThrow();
+  });
+
+  it("re-validates a foreign mark on a docSchema node, and refuses a non-doc root", () => {
+    // ProseMirror lets a docSchema paragraph carry another schema's mark.
+    const mixed = docSchema.node("doc", null, [
+      docSchema.node("paragraph", null, [
+        docSchema.text("x", [
+          permissive.marks.link.create({ href: "javascript:x" }),
+        ]),
+      ]),
+    ]);
+    expect(() => docToMarkdown(mixed)).toThrow();
+    expect(() =>
+      docToYXmlFragment(mixed, new Y.Doc().getXmlFragment("d")),
+    ).toThrow();
+    const para = docSchema.node("paragraph", null, [docSchema.text("x")]);
+    expect(() => docToMarkdown(para)).toThrow();
+    expect(() =>
+      docToYXmlFragment(para, new Y.Doc().getXmlFragment("d")),
+    ).toThrow();
+  });
+
+  const codeJSON = (language: unknown, text = "a") => ({
+    type: "doc",
+    content: [
+      {
+        type: "codeBlock",
+        attrs: { language },
+        content: [{ type: "text", text }],
+      },
+    ],
+  });
+
+  it("refuses an injecting code language", () => {
+    for (const language of [
+      "js\n```\n<img src=x onerror=alert(1)>\n\n```js",
+      "a b",
+      "`x",
+      5,
+      "x".repeat(33),
+    ])
+      expect(() => docFromJSON(codeJSON(language) as never)).toThrow();
+    expect(() => docFromJSON(codeJSON("c++") as never)).not.toThrow();
+    expect(() => docFromJSON(codeJSON(null) as never)).not.toThrow();
+  });
+
+  it("round-trips code containing fences", () => {
+    for (const text of ["```", "a\n```\nb\n````\nc", "~~~\nx"]) {
+      const out = docToMarkdown(docFromJSON(codeJSON("ts", text) as never));
+      const again = markdownToDoc(out);
+      expect(again.changes).toEqual([]);
+      expect(again.doc.firstChild?.textContent).toBe(text);
+      expect(docToMarkdown(again.doc)).toBe(out);
+    }
+  });
+
+  it("drops a fence info string that isn't a plain name", () => {
+    for (const md of ["~~~a`b\ncode\n~~~\n", "```js onerror=x\ncode\n```\n"]) {
+      const r = markdownToDoc(md);
+      expect(r.changes.map((c) => c.kind)).toEqual(["code_language"]);
+      expect(r.doc.firstChild?.textContent).toBe("code");
+      const out = docToMarkdown(r.doc);
+      expect(markdownToDoc(out).changes).toEqual([]);
+    }
+  });
+
+  it("refuses a title ending in a backslash", () => {
+    expect(isAllowedTitle("t\\")).toBe(false);
+    expect(() =>
+      docSchema.marks.link.create({ href: "https://a", title: "t\\" }),
+    ).toThrow();
+    const r = markdownToDoc('[x](https://a "t\\\\")\n');
+    expect(r.changes.map((c) => c.kind)).toEqual(["link"]);
+  });
+
+  it("numbers alternating lists in one pass", () => {
+    const small = "- a\n\n* b\n\n- c\n";
+    expect(docToMarkdown(markdownToDoc(small).doc).match(/^[-*]/gm)).toEqual([
+      "-",
+      "*",
+      "-",
+    ]);
+    const n = 5000;
+    const md = Array.from(
+      { length: n },
+      (_, i) => `${i % 2 ? "*" : "-"} x`,
+    ).join("\n\n");
+    const doc = markdownToDoc(md).doc;
+    const t = performance.now();
+    const out = docToMarkdown(doc);
+    expect(performance.now() - t).toBeLessThan(1000);
+    expect(out.match(/^[-*] x$/gm)?.length).toBe(n);
   });
 });

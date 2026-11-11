@@ -36,7 +36,7 @@ const nodes: Record<string, NodeSpec> = {
   },
   blockquote: { content: "block+", group: "block", defining: true },
   codeBlock: {
-    attrs: { language: { default: null } },
+    attrs: { language: { default: null, validate: validateLanguage } },
     content: "text*",
     marks: "",
     group: "block",
@@ -62,22 +62,66 @@ const nodes: Record<string, NodeSpec> = {
 
 // Order matters for Markdown output: marks open in this order, so code is
 // always innermost.
-const ALLOWED_HREF = /^(?:https?|mailto):/i;
+const ALLOWED_HREF =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it rejects
+  /^(?:https?|mailto):[^\s\u0000-\u001f\u007f-\u009f<>"`\\]*$/i;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it rejects
+const CONTROL_QUOTE_BACKSLASH = /[\u0000-\u001f\u007f-\u009f"\\]/;
 
-/** Only http:, https: and mailto: links are allowed (scheme is case-insensitive). */
+/**
+ * Only http:, https: and mailto: links are allowed (scheme is
+ * case-insensitive), with no whitespace, control characters or backslash, < > " `.
+ */
 export function isAllowedHref(href: unknown): href is string {
   return typeof href === "string" && ALLOWED_HREF.test(href);
 }
 
+/** A link title is a string without line breaks, control characters, quotes or backslashes. */
+export function isAllowedTitle(title: unknown): title is string | null {
+  return (
+    title === null ||
+    (typeof title === "string" && !CONTROL_QUOTE_BACKSLASH.test(title))
+  );
+}
+
 function validateHref(href: unknown): void {
   if (!isAllowedHref(href)) {
-    throw new RangeError("A link must be http:, https: or mailto:");
+    throw new RangeError("A link must be a plain http:, https: or mailto: URL");
+  }
+}
+
+function validateTitle(title: unknown): void {
+  if (!isAllowedTitle(title)) {
+    throw new RangeError(
+      "A link title must be text without quotes or line breaks",
+    );
+  }
+}
+
+const LANGUAGE = /^[A-Za-z0-9_+#.-]{1,32}$/;
+
+/** A code block language: null, or a short plain name like "ts" or "c++". */
+export function isAllowedLanguage(
+  language: unknown,
+): language is string | null {
+  return (
+    language === null ||
+    (typeof language === "string" && LANGUAGE.test(language))
+  );
+}
+
+function validateLanguage(language: unknown): void {
+  if (!isAllowedLanguage(language)) {
+    throw new RangeError("A code block language must be a short plain name");
   }
 }
 
 const marks: Record<string, MarkSpec> = {
   link: {
-    attrs: { href: { validate: validateHref }, title: { default: null } },
+    attrs: {
+      href: { validate: validateHref },
+      title: { default: null, validate: validateTitle },
+    },
     inclusive: false,
   },
   bold: {},

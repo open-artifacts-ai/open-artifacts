@@ -562,3 +562,23 @@ describe("link schemes", () => {
     ).toBe("see docs\n");
   });
 });
+
+describe("link titles and code languages", () => {
+  const run = (md: string) => {
+    const r = applyOpsToDoc(markdownToDoc("see docs\n").doc, [
+      { op: "replace", quote: "docs", with: md },
+    ]);
+    return r.ok ? docToMarkdown(r.doc) : r.error.message;
+  };
+  it("keeps a plain title and drops a link whose title is unsafe", () => {
+    expect(run('[x](https://a.test "Plain title")')).toContain("Plain title");
+    expect(run('[x](https://a.test "bad\\\\title")')).toBe("see x\n");
+    expect(run("[x](https://a.test 'say \"hi\"')")).toBe("see x\n");
+  });
+  it("keeps a plain code language and drops an unsafe one", () => {
+    expect(run("```c++\nx\n```")).toContain("```c++");
+    const bad = run(`\`\`\`${"a".repeat(40)}\nx\n\`\`\``);
+    expect(bad).not.toContain("a".repeat(40));
+    expect(bad).toContain("x");
+  });
+});

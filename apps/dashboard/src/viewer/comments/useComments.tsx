@@ -130,9 +130,9 @@ export function useCommentsApi(): CommentsApi {
  */
 const HELD_QUOTE_MS = 1500;
 
-/** Signed-out visitors may comment on public artifacts (the approved spec); dataWriters is a separate, live-data setting. */
+/** Signed-out visitors may comment on public artifacts (the approved spec) unless commenters is "signed-in" (#2080); dataWriters is a separate, live-data setting. */
 export const guestsMayComment = (a: ArtifactSummary) =>
-  a.visibility === "public";
+  a.visibility === "public" && a.commenters !== "signed-in";
 
 export const canComment = (
   a: ArtifactSummary,

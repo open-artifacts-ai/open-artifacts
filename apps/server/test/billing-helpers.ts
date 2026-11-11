@@ -3,7 +3,7 @@
 // signature over the route path and the exact body text.
 import { env } from "cloudflare:workers";
 import { publicFromPkcs8, verifyRequest } from "@oa/auth-core";
-import type { BillingStatus, BillingTier } from "@oa/shared";
+import { type BillingStatus, type BillingTier, TRIAL_DAYS } from "@oa/shared";
 import { createApp } from "../src/app.js";
 import { storePlan } from "../src/billing/store.js";
 import type { Env } from "../src/env.js";
@@ -101,7 +101,7 @@ export function fakeBilling(install = INSTALL) {
           s.row = {
             ...s.row,
             tier: "trial",
-            trialEndsAt: Date.now() + 14 * DAY,
+            trialEndsAt: Date.now() + TRIAL_DAYS * DAY,
             version: s.row.version + 1,
           };
         return answer(
