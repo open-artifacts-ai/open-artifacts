@@ -14,52 +14,73 @@ import {
   undeletion,
 } from "./model.ts";
 
-// Terminal cells for one character: combining marks 0, East Asian wide and
-// emoji 2, the rest 1.
-function cellsOf(ch: string): number {
-  const c = ch.codePointAt(0) ?? 0;
+const WIDE: [number, number][] = [
+  [0x1100, 0x115f],
+  [0x2329, 0x232a],
+  [0x2e80, 0x303e],
+  [0x3041, 0x33ff],
+  [0x3400, 0x4dbf],
+  [0x4dc0, 0x4dff],
+  [0x4e00, 0xa4cf],
+  [0xa960, 0xa97f],
+  [0xac00, 0xd7a3],
+  [0xf900, 0xfaff],
+  [0xfe10, 0xfe19],
+  [0xfe30, 0xfe6f],
+  [0xff00, 0xff60],
+  [0xffe0, 0xffe6],
+  [0x16fe0, 0x16fe3],
+  [0x17000, 0x18d08],
+  [0x1aff0, 0x1b2fb],
+  [0x1d300, 0x1d376],
+  [0x1f200, 0x1f265],
+  [0x1f300, 0x1faff],
+  [0x20000, 0x3fffd],
+];
+
+// Terminal cells for one code point: combining marks, ZWJ and variation
+// selectors 0, East Asian wide 2, the rest 1.
+function cellOf(c: number): number {
   if (
-    /^\p{M}$/u.test(ch) ||
+    /^\p{M}$/u.test(String.fromCodePoint(c)) ||
     c === 0x200b ||
     c === 0x200d ||
     (c >= 0xfe00 && c <= 0xfe0f)
   )
     return 0;
-  if (
-    /^\p{Extended_Pictographic}$/u.test(ch) ||
-    (c >= 0x1100 && c <= 0x115f) ||
-    (c >= 0x2e80 && c <= 0x303e) ||
-    (c >= 0x3041 && c <= 0x33ff) ||
-    (c >= 0x3400 && c <= 0x4dbf) ||
-    (c >= 0x4e00 && c <= 0xa4cf) ||
-    (c >= 0xa960 && c <= 0xa97f) ||
-    (c >= 0xac00 && c <= 0xd7a3) ||
-    (c >= 0xf900 && c <= 0xfaff) ||
-    (c >= 0xfe30 && c <= 0xfe6f) ||
-    (c >= 0xff00 && c <= 0xff60) ||
-    (c >= 0xffe0 && c <= 0xffe6) ||
-    (c >= 0x1f300 && c <= 0x1faff) ||
-    (c >= 0x20000 && c <= 0x3fffd)
-  )
-    return ch === "↗" ? 1 : 2;
-  return 1;
+  return WIDE.some(([lo, hi]) => c >= lo && c <= hi) ? 2 : 1;
+}
+
+const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+function graphemes(text: string): string[] {
+  return Array.from(segmenter.segment(text), (x) => x.segment);
+}
+
+// Terminal cells for one grapheme. Emoji, flags and keycaps take 2.
+function cellsOf(g: string): number {
+  if (/\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3/u.test(g))
+    return 2;
+  let n = 0;
+  for (const ch of g) n += cellOf(ch.codePointAt(0) ?? 0);
+  return n;
 }
 
 function cells(text: string): number {
   let n = 0;
-  for (const ch of text) n += cellsOf(ch);
+  for (const g of graphemes(text)) n += cellsOf(g);
   return n;
 }
 
-// The text cut with "…" to at most `room` cells.
+// The text cut with "…" to at most `room` cells, never inside a grapheme.
 function clip(text: string, room: number): string {
   if (cells(text) <= room) return text;
   let out = "";
   let used = 0;
-  for (const ch of Array.from(text)) {
-    const w = cellsOf(ch);
+  for (const g of graphemes(text)) {
+    const w = cellsOf(g);
     if (used + w > room - 1) break;
-    out += ch;
+    out += g;
     used += w;
   }
   return `${out}…`;
@@ -344,28 +365,38 @@ export function register(
           ...rows.slice(0, count).map((a) => {
             const prefix = "↗ ";
             const suffix = ` v${a.publishedVersion}`;
+            const dim = (text: string) =>
+              Box({
+                flexShrink: 0,
+                children: [Text({ dimColor: true, children: [text] })],
+              });
             // One column of slack: filling the last column can wrap or clip.
-            const room = Math.max(
-              1,
-              columns - cells(prefix) - cells(suffix) - 1,
-            );
-            const label = clip(a.title, room);
+            const usable = columns - 1;
+            const room = usable - 2 - cells(suffix);
+            // Narrow: drop the title, then the prefix; the suffix stays whole.
+            const children =
+              room >= 1
+                ? [
+                    dim(prefix),
+                    Box({
+                      flexShrink: 1,
+                      minWidth: 0,
+                      overflow: "hidden",
+                      children: [
+                        Link({ href: a.url, label: clip(a.title, room) }),
+                      ],
+                    }),
+                    dim(suffix),
+                  ]
+                : usable >= 2 + cells(suffix)
+                  ? [dim(prefix), dim(suffix)]
+                  : [dim(suffix)];
             return Box({
               flexDirection: "row",
               width: columns,
               height: 1,
               overflow: "hidden",
-              children: [
-                Box({
-                  flexShrink: 0,
-                  children: [Text({ dimColor: true, children: [prefix] })],
-                }),
-                Link({ href: a.url, label }),
-                Box({
-                  flexShrink: 0,
-                  children: [Text({ dimColor: true, children: [suffix] })],
-                }),
-              ],
+              children,
             });
           }),
           ...(previous ? [previous] : []),

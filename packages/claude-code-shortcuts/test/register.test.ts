@@ -526,6 +526,61 @@ describe("native presentation contract", () => {
     expect(2 + wide + 3).toBeLessThanOrEqual(29);
   });
 
+  it("never splits a grapheme and keeps the suffix", async () => {
+    const segment = (t: string) =>
+      Array.from(
+        new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(t),
+        (x) => x.segment,
+      );
+    for (const unit of [
+      "5\u{FE0F}\u{20E3}",
+      "\u{1F1E9}\u{1F1EA}",
+      "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}",
+    ]) {
+      const h = host();
+      const title = unit.repeat(20);
+      await h.publish(result(5, "gr"), { title });
+      const { value } = await h.draw(1, 30);
+      const row = JSON.stringify(value);
+      expect(row).toContain('"children":[" v5"]');
+      const label = JSON.parse(
+        `"${/"label":"([^"]*)"/.exec(row)?.[1]}"`,
+      ) as string;
+      expect(label.endsWith("…")).toBe(true);
+      const kept = segment(label.slice(0, -1));
+      expect(kept.every((g) => g === unit)).toBe(true);
+      expect(kept.length * 2 + 2 + 1 + 3).toBeLessThanOrEqual(29);
+    }
+  });
+
+  it("keeps a three digit version whole at a tiny width", async () => {
+    const h = host();
+    await h.publish(result(123, "tiny"), { title: "A long title" });
+    const row = JSON.stringify((await h.draw(1, 8)).value);
+    expect(row).toContain('" v123"');
+    expect(row).not.toContain('"type":"Link"');
+  });
+
+  it("lays out dim, non-shrinking prefix and suffix around a shrinkable title", async () => {
+    const h = host();
+    await h.publish(result(5, "lay"), {
+      title: "A very long accessible artifact title",
+    });
+    type Node = { type: string; props: Record<string, unknown> };
+    const kids = (n: Node) => n.props.children as Node[];
+    const { value } = await h.draw(1, 30);
+    const row = kids(value as Node)[0];
+    const [pre, mid, suf] = kids(row);
+    expect(pre.props.flexShrink).toBe(0);
+    expect(kids(pre)[0].props.dimColor).toBe(true);
+    expect(suf.props.flexShrink).toBe(0);
+    expect(kids(suf)[0].props.dimColor).toBe(true);
+    expect(mid.props.flexShrink).toBe(1);
+    expect(mid.props.minWidth).toBe(0);
+    expect(mid.props.overflow).toBe("hidden");
+    expect(kids(mid)[0].type).toBe("Link");
+  });
+
   it("leaves surveys, hidden bands, empty sessions and unconfigured instances alone", async () => {
     const h = host();
     expect((await h.draw()).value).toEqual({ type: "ExistingBand" });
