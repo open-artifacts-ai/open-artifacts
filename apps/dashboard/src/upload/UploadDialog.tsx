@@ -1,9 +1,14 @@
-import { normalizePath, viewerPath } from "@oa/shared";
+import {
+  ArtifactSummarySchema,
+  normalizePath,
+  R,
+  viewerPath,
+} from "@oa/shared";
 import { Button, Input, Textarea } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { ApiClientError } from "../api/client";
+import { ApiClientError, api } from "../api/client";
 import { errorCopy } from "../api/errorCopy";
 import { qk } from "../api/queries";
 import { useHosted } from "../auth/permissions";
@@ -57,7 +62,10 @@ export function UploadDialog({
   const abort = useRef<AbortController | null>(null);
   // Kept after a finished upload so Retry repeats only the create call.
   const uploaded = useRef<Uploaded | null>(null);
-  const [retryable, setRetryable] = useState(false);
+  // The title at the last unanswered create; while it matches, the button says "Try again".
+  const [retryTitle, setRetryTitle] = useState<string | null>(null);
+  // A create was sent; it may have landed without us hearing.
+  const createSent = useRef(false);
   const qc = useQueryClient();
   const navigate = useNavigate();
   const busy = progress !== null;
@@ -78,9 +86,32 @@ export function UploadDialog({
     onClose();
   };
 
+  const finish = async (r: { id: string; version: number }) => {
+    await Promise.all([
+      qc.invalidateQueries({ queryKey: ["artifacts"] }),
+      qc.invalidateQueries({ queryKey: ["search"] }),
+      qc.invalidateQueries({ queryKey: qk.artifact(r.id) }),
+    ]);
+    if (!alive.current) return;
+    toast({ title: "Artifact created" });
+    onClose();
+    void navigate({ to: viewerPath(r.id, r.version) as never });
+  };
+
+  /** The artifact a lost create may have made, if it exists. */
+  const landed = async (id: string | undefined) => {
+    if (!id) return null;
+    try {
+      const a = await api.get(R.artifact(id), ArtifactSummarySchema);
+      return { id: a.id, version: a.currentVersion };
+    } catch {
+      return null;
+    }
+  };
+
   const submit = async () => {
     setError(null);
-    setRetryable(false);
+    setRetryTitle(null);
     abort.current = new AbortController();
     const signal = abort.current.signal;
     const input = {
@@ -99,6 +130,16 @@ export function UploadDialog({
       uploaded.current ??= await uploadFiles(input, setProgress, signal);
       const n = Object.keys(uploaded.current.files).length;
       setProgress({ done: n, total: n });
+      if (createSent.current) {
+        const done = await landed(uploaded.current.reserved);
+        if (done) return await finish(done);
+      }
+      // The entry can change after the first upload: the latest choice wins.
+      const given = entry === undefined ? undefined : normalizePath(entry);
+      const current = {
+        ...uploaded.current,
+        entry: given?.ok ? given.path : uploaded.current.entry,
+      };
       const create = new AbortController();
       const relay = () => create.abort();
       signal.addEventListener("abort", relay, { once: true });
@@ -106,21 +147,14 @@ export function UploadDialog({
         timedOut = true;
         create.abort();
       }, CREATE_TIMEOUT_MS);
+      createSent.current = true;
       let r: Awaited<ReturnType<typeof createArtifact>>;
       try {
-        r = await createArtifact(input, uploaded.current, create.signal);
+        r = await createArtifact(input, current, create.signal);
       } finally {
         signal.removeEventListener("abort", relay);
       }
-      await Promise.all([
-        qc.invalidateQueries({ queryKey: ["artifacts"] }),
-        qc.invalidateQueries({ queryKey: ["search"] }),
-        qc.invalidateQueries({ queryKey: qk.artifact(r.id) }),
-      ]);
-      if (!alive.current) return;
-      toast({ title: "Artifact created" });
-      onClose();
-      void navigate({ to: viewerPath(r.id, r.version) as never });
+      await finish(r);
     } catch (e) {
       const aborted = (e as { name?: string }).name === "AbortError";
       if (aborted && !timedOut) return;
@@ -131,9 +165,22 @@ export function UploadDialog({
         (uploaded.current !== null &&
           e instanceof ApiClientError &&
           (e.status === 0 || e.status === 503));
+      if (
+        createSent.current &&
+        e instanceof ApiClientError &&
+        (e.code === "conflict" ||
+          (e.code === "bad_request" &&
+            (e.details as { reason?: string } | undefined)?.reason ===
+              "invalid_upload"))
+      ) {
+        const done = await landed(uploaded.current?.reserved);
+        if (done && alive.current) return await finish(done);
+      }
       if (down) {
-        setRetryable(true);
-        setError("Couldn't create it. The server didn't answer.");
+        setRetryTitle(title);
+        setError(
+          "Couldn't create the artifact: the server didn't answer. Your file is still here.",
+        );
         return;
       }
       setError(
@@ -164,7 +211,11 @@ export function UploadDialog({
             disabled={busy || invalid}
             onClick={() => void submit()}
           >
-            {busy ? "Creating…" : "Create"}
+            {busy
+              ? "Creating…"
+              : retryTitle !== null && title === retryTitle
+                ? "Try again"
+                : "Create"}
           </Button>
         </>
       }
@@ -222,19 +273,6 @@ export function UploadDialog({
         {error && (
           <p role="alert" className="up-error">
             {error}
-            {retryable && (
-              <>
-                {" "}
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => void submit()}
-                >
-                  Retry
-                </Button>
-              </>
-            )}
           </p>
         )}
       </form>

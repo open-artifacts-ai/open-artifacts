@@ -1,10 +1,10 @@
-// #2152: the Create dialog after a create that fails with a 503, light and dark.
+// #2152: the Create dialog after a create that fails with a 503 (button reads Try again), light and dark.
 import { expect, test } from "@playwright/test";
 
 for (const scheme of ["light", "dark"] as const) {
   test.describe(scheme, () => {
     test.use({ colorScheme: scheme, viewport: { width: 1280, height: 800 } });
-    test(`create error with Retry (${scheme})`, async ({ page }, info) => {
+    test(`create error with Try again (${scheme})`, async ({ page }, info) => {
       await page.goto("/?mock=create-503");
       await page.waitForLoadState("networkidle");
       await page.getByTestId("upload-files").setInputFiles({
@@ -14,7 +14,7 @@ for (const scheme of ["light", "dark"] as const) {
       });
       const d = page.getByRole("dialog", { name: "Create artifact" });
       await d.getByRole("button", { name: "Create" }).click();
-      await expect(d.getByRole("button", { name: "Retry" })).toBeVisible();
+      await expect(d.getByRole("button", { name: "Try again" })).toBeVisible();
       await page.screenshot({
         path: info.outputPath(`create-error-${scheme}.png`),
       });
