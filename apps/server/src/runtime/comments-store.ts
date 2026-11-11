@@ -644,15 +644,12 @@ export function setTargetState(
 }
 
 /**
- * #1752: a daemon's ack ("delivered") or refusal ("gone") of a notice. Moves
- * a target only out of "queued": seen, delivered and gone stay. True when it moved.
- */
-/**
- * #2062: moves a queued target to `state`. A late "delivered" also lifts a
- * "gone" target (a notice held past the Worker's budget, acked afterwards);
- * "seen" and "delivered" stay final. The asker bound refunded when the target
- * went gone is NOT re-spent: one extra ask is accepted. Only queued->gone
- * refunds, so no path refunds twice.
+ * #1752/#2062: a daemon's ack ("delivered") or refusal ("gone") of a notice, or
+ * a send to a socket without notice_ack. Moves a queued target to `state`. A
+ * late "delivered" also lifts a "gone" target (a notice held past the Worker's
+ * budget); "seen" and "delivered" stay final. The asker bound refunded when
+ * the target went gone is NOT re-spent: one extra ask is accepted. Only
+ * queued->gone refunds, so no path refunds twice. True when it moved.
  */
 export function settleTarget(
   sql: SqlStorage,

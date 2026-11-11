@@ -207,7 +207,7 @@ describe("notice_ack (#1752)", () => {
     const f = await waitFor(s.d, "deliver");
     s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
     await settled(s.d, s.ref);
-    expect(await targetState(art, "c1")).toBe("queued");
+    expect(await targetState(art, "c1")).toBe("delivered");
   });
 
   it("a parked notice flushed on agent_up to a notice_ack socket settles on ack", async () => {
