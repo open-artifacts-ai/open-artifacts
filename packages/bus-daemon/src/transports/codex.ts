@@ -424,12 +424,7 @@ export class CodexTransport {
     let res: Awaited<ReturnType<CodexRun>>;
     // Watched BEFORE the queue runs: a check may read the new user item before `codex queue` exits.
     if (watch)
-      this.opts.taken.watch(
-        id,
-        ref,
-        text.split("\n", 1)[0] ?? "",
-        watch.ttlMs,
-      );
+      this.opts.taken.watch(id, ref, text.split("\n", 1)[0] ?? "", watch.ttlMs);
     try {
       res = await this.opts.run(bin.path, args, {
         ...process.env,
