@@ -164,6 +164,38 @@ describe("a folded thread (#2179)", () => {
   });
 });
 
+describe("what was visible on load (#2179)", () => {
+  it("the latest reply on load stays visible after two live replies; only replies folded at load stay folded", async () => {
+    const t1 = (more: ReturnType<typeof comment>[] = []) =>
+      thread("t1", [
+        comment("c1", "First"),
+        comment("c2", "Folded at load"),
+        comment("c3", "Latest on load"),
+        ...more,
+      ]);
+    let list = [t1()];
+    serve(() => list);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Latest on load");
+    expect(within(c).queryByText("Folded at load")).toBeNull();
+    list = [t1([comment("c4", "Live one", "agent")])];
+    await arrive();
+    await within(c).findByText("Live one");
+    list = [
+      t1([comment("c4", "Live one", "agent"), comment("c5", "Live two")]),
+    ];
+    await arrive();
+    await within(c).findByText("Live two");
+    expect(within(c).getByText("Latest on load")).toBeInTheDocument();
+    expect(within(c).getByText("Live one")).toBeInTheDocument();
+    expect(within(c).queryByText("Folded at load")).toBeNull();
+    expect(
+      within(c).getByRole("button", { name: "Show 1 earlier reply" }),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("a live reply (#2179)", () => {
   const base = () => [
     thread("t1", [comment("c1", "First"), comment("c2", "Old")]),
@@ -194,7 +226,7 @@ describe("a live reply (#2179)", () => {
       const row = await within(c).findByText("From an agent");
       const li = row.closest("[data-comment]") as HTMLElement;
       expect(li).toHaveAttribute("data-live");
-      // A newer reply folds the older one, but the live one stays.
+      // A second live reply: everything already shown stays.
       list = [
         thread("t1", [
           ...(list[0] as ReturnType<typeof thread>).comments,
@@ -205,8 +237,9 @@ describe("a live reply (#2179)", () => {
       await arrive();
       await within(c).findByText("Newest");
       expect(within(c).getByText("From an agent")).toBeInTheDocument();
-      expect(within(c).queryByText("Old")).toBeNull();
-      expect(within(c).getByText("Show 1 earlier reply")).toBeInTheDocument();
+      // The latest reply on load never folds away mid-visit.
+      expect(within(c).getByText("Old")).toBeInTheDocument();
+      expect(within(c).queryByText(/earlier repl/)).toBeNull();
       await act(async () => {
         vi.advanceTimersByTime(LIVE_TINT_MS + 10);
       });

@@ -793,7 +793,9 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const [first, ...rest] = t.comments;
   const expanded = isActive || rest.length === 0;
   // #2179: a folded thread keeps its first comment and its latest reply in
-  // view, plus any reply that arrived live; older ones fold behind a button.
+  // view, and nothing the reader saw folds away mid-visit: the latest reply on
+  // load and every reply since stay (api.live.kept). Only replies folded at
+  // load stay behind the button.
   const last = rest[rest.length - 1];
   const shown = expanded
     ? rest
