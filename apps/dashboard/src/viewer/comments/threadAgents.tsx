@@ -7,7 +7,7 @@ import {
   useThreadAgent,
 } from "../../api/comments";
 import { TXT } from "../ui";
-import { AuthorFace } from "./AuthorFace";
+import { PartyFace } from "./AuthorFace";
 import type { CommentsApi } from "./useComments";
 
 const MUTED = "text-muted-foreground";
@@ -82,17 +82,7 @@ export function ThreadAgents({
                 a.canRemove ? "pr-0.5" : "pr-2.5"
               }`}
             >
-              <AuthorFace
-                small
-                a={{
-                  kind: "agent",
-                  name: a.name,
-                  ...(a.linked !== undefined ? { linked: a.linked } : {}),
-                  ...(a.product ? { product: a.product } : {}),
-                  ...(a.animal ? { animal: a.animal } : {}),
-                  me: false,
-                }}
-              />
+              <PartyFace p={a} />
               {a.name}
               {a.canRemove && (
                 <button

@@ -14,7 +14,7 @@ import {
 } from "../../api/comments";
 import { TXT } from "../ui";
 import { versionDate } from "../versionDate";
-import { AuthorFace } from "./AuthorFace";
+import { PartyFace } from "./AuthorFace";
 import { linkify } from "./linkify";
 
 const MUTED = "text-muted-foreground";
@@ -81,12 +81,23 @@ const notifiedWord = (d: CommentMention["delivery"]) =>
       : "Delivered";
 
 /** Delivery of each mention, and of each thread agent a reply also told, in plain words. Names are text, never HTML. */
-export function Delivery({ c }: { c: CommentT }) {
+export function Delivery({
+  c,
+  guest = false,
+}: {
+  c: CommentT;
+  guest?: boolean;
+}) {
   if (!c.mentions?.length && !c.notified?.length) return null;
   return (
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>
       {c.mentions?.map((m) => (
-        <li key={m.key} data-mention={m.key}>
+        <li
+          key={m.key}
+          data-mention={m.key}
+          className="flex items-center gap-1"
+        >
+          <PartyFace p={m} guest={guest} />
           {deliveryLine(m.name, m.delivery)}
         </li>
       ))}
@@ -94,18 +105,9 @@ export function Delivery({ c }: { c: CommentT }) {
         <li
           key={`n-${m.key}`}
           data-notified={m.key}
-          className="flex items-center gap-1.5"
+          className="flex items-center gap-1"
         >
-          <AuthorFace
-            small
-            a={{
-              kind: "agent",
-              name: m.name,
-              ...(m.linked !== undefined ? { linked: m.linked } : {}),
-              ...(m.animal ? { animal: m.animal } : {}),
-              me: false,
-            }}
-          />
+          <PartyFace p={m} guest={guest} />
           {m.name}: {notifiedWord(m.delivery)}
         </li>
       ))}
@@ -135,8 +137,11 @@ export function AskBlock({
   next,
   reply,
   askQuestion,
+  guest = false,
 }: {
   artifactId: string;
+  /** A guest sees the masked name and no tile (#1890). */
+  guest?: boolean;
   thread: CommentThread;
   c: CommentT;
   /** Jump to the next unanswered ask, when there is one. */
@@ -162,6 +167,11 @@ export function AskBlock({
   }, [picked]);
   if (!ask) return null;
   const mine = ask.to.some((a) => a.me);
+  // Addressed agents with identity fields; legacy ones add no line, and the
+  // server sends none to a signed-out, guest or restricted viewer (#1890).
+  const asked = ask.to.filter(
+    (a) => a.kind === "agent" && a.linked !== undefined,
+  );
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
@@ -303,6 +313,23 @@ export function AskBlock({
               )}
             </p>
           )}
+          {asked.length > 0 && (
+            <p
+              data-ask-to=""
+              className={`flex flex-wrap items-center gap-x-2 gap-y-1 ${TXT} ${MUTED}`}
+            >
+              To
+              {asked.map((a, i) => (
+                <span
+                  key={a.id ?? `${a.name}-${i}`}
+                  className="inline-flex items-center gap-1"
+                >
+                  <PartyFace p={a} />
+                  {a.name}
+                </span>
+              ))}
+            </p>
+          )}
           {!mine && !ask.closed && (
             <p className={`${TXT} ${MUTED}`}>
               Only the people asked can answer.
@@ -429,9 +456,14 @@ export function removeMention(
 export function MentionedText({
   body,
   mentions,
+  guest = false,
 }: {
   body: string;
-  mentions?: readonly { key: string; name: string }[];
+  mentions?: readonly (Parameters<typeof PartyFace>[0]["p"] & {
+    key: string;
+    name: string;
+  })[];
+  guest?: boolean;
 }) {
   if (!mentions?.length) return <>{linked(body, 0)}</>;
   const names = [...new Set(mentions.map((m) => m.name))]
@@ -443,13 +475,20 @@ export function MentionedText({
   for (const m of body.matchAll(re)) {
     const at = m.index + (m[1]?.length ?? 0);
     const end = at + 1 + (m[2]?.length ?? 0);
+    // The chip is text, so it has only a name: two agents sharing it are
+    // ambiguous and get no face rather than the wrong one.
+    const same = mentions.filter(
+      (x) => x.name.toLowerCase() === (m[2] ?? "").toLowerCase(),
+    );
+    const face = same.length === 1 ? same[0] : undefined;
     if (at > last) out.push(...linked(body.slice(last, at), last));
     out.push(
       <span
         key={at}
         data-mention-chip=""
-        className="rounded-full bg-[var(--oa-accent-soft)] px-1 py-0.5 text-[var(--oa-accent-fg)]"
+        className="inline-flex items-center gap-1 rounded-full bg-[var(--oa-accent-soft)] px-1 py-0.5 align-middle text-[var(--oa-accent-fg)]"
       >
+        {face && <PartyFace p={face} guest={guest} />}
         {body.slice(at, end)}
       </span>,
     );
