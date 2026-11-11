@@ -127,3 +127,32 @@ test.describe("pill crop", () => {
       });
     });
 });
+
+// The pill of the nine-participant thread (three people shown), a 3x crop.
+test.describe("nine pill crop", () => {
+  test.use({ deviceScaleFactor: 3 });
+  test("nine pill 1280 light", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await openComments(page, "agents", 1280);
+    const trig = page
+      .locator("li[data-thread]")
+      .filter({ hasText: "Nine-person review" })
+      .locator("[data-participants-trigger]");
+    await trig.scrollIntoViewIfNeeded();
+    await expect(trig).toBeVisible();
+    if (!OUT) return;
+    mkdirSync(OUT, { recursive: true });
+    const b = await trig.boundingBox();
+    if (!b) throw new Error("no pill");
+    await page.screenshot({
+      path: `${OUT}/8-nine-pill-1280-light.png`,
+      clip: {
+        x: b.x - 70,
+        y: b.y - 8,
+        width: b.width + 80,
+        height: b.height + 16,
+      },
+    });
+  });
+});

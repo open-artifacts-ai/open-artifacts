@@ -85,7 +85,7 @@ export function ThreadParticipants({
   useEffect(() => () => clearTimeout(timer.current), []);
   if (n === 0) return null;
 
-  // 20px faces overlapping by 6px, each ringed in the card's colour; the first
+  // 20px faces overlapping by 3px, each ringed in the card's colour; the first
   // sits on top so every face shows its full initials or mark.
   const faces = [
     ...people.map((p) => ({
@@ -104,7 +104,7 @@ export function ThreadParticipants({
       <span
         key={f.key}
         data-face=""
-        style={{ zIndex: all.length - i, marginLeft: i === 0 ? 0 : -6 }}
+        style={{ zIndex: all.length - i, marginLeft: i === 0 ? 0 : -3 }}
         className={`relative inline-flex shrink-0 bg-card ring-[1.5px] ring-card ${f.round ? "rounded-full" : "rounded-md"}`}
       >
         {f.el}
