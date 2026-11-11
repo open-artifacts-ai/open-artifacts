@@ -160,6 +160,21 @@ async function startMocks() {
       http.post("*/api/v1/artifacts/:id/move", conflict),
     );
   }
+  // ?mock=create-503: creating an artifact answers 503 temporarily_unavailable (the upload itself works).
+  if (params.get("mock") === "create-503")
+    extra.push(
+      http.post("*/api/v1/artifacts", () =>
+        HttpResponse.json(
+          {
+            error: {
+              code: "temporarily_unavailable",
+              message: "Try again shortly",
+            },
+          },
+          { status: 503, headers: { "Retry-After": "5" } },
+        ),
+      ),
+    );
   // ?mock=name: no display name yet (suggested "Ada Lovelace"); after a PATCH the shared mock answers.
   if (params.get("mock") === "name") {
     let named = false;

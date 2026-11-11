@@ -14,12 +14,17 @@ import { toast } from "../layout/toast";
 import { OptionSelect } from "../settings/OptionSelect";
 import {
   commonFolder,
+  createArtifact,
   defaultEntry,
   type Progress,
   relativePaths,
+  type Uploaded,
   UploadValidationError,
-  uploadArtifact,
+  uploadFiles,
 } from "./uploadPipeline";
+
+/** How long the create call may take before the dialog gives up on it. */
+export const CREATE_TIMEOUT_MS = 30_000;
 
 const stem = (p: string) => (p.split("/").pop() ?? p).replace(/\.[^.]*$/, "");
 
@@ -50,6 +55,9 @@ export function UploadDialog({
   const [progress, setProgress] = useState<Progress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const abort = useRef<AbortController | null>(null);
+  // Kept after a finished upload so Retry repeats only the create call.
+  const uploaded = useRef<Uploaded | null>(null);
+  const [retryable, setRetryable] = useState(false);
   const qc = useQueryClient();
   const navigate = useNavigate();
   const busy = progress !== null;
@@ -72,22 +80,38 @@ export function UploadDialog({
 
   const submit = async () => {
     setError(null);
+    setRetryable(false);
     abort.current = new AbortController();
+    const signal = abort.current.signal;
+    const input = {
+      files,
+      title,
+      message,
+      entry,
+      // Personal is the server's default: only a shared space is sent.
+      ...(spaces && space && space !== personalSpaceId
+        ? { spaceId: space }
+        : {}),
+    };
+    let timedOut = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const r = await uploadArtifact(
-        {
-          files,
-          title,
-          message,
-          entry,
-          // Personal is the server's default: only a shared space is sent.
-          ...(spaces && space && space !== personalSpaceId
-            ? { spaceId: space }
-            : {}),
-        },
-        setProgress,
-        abort.current.signal,
-      );
+      uploaded.current ??= await uploadFiles(input, setProgress, signal);
+      const n = Object.keys(uploaded.current.files).length;
+      setProgress({ done: n, total: n });
+      const create = new AbortController();
+      const relay = () => create.abort();
+      signal.addEventListener("abort", relay, { once: true });
+      timer = setTimeout(() => {
+        timedOut = true;
+        create.abort();
+      }, CREATE_TIMEOUT_MS);
+      let r: Awaited<ReturnType<typeof createArtifact>>;
+      try {
+        r = await createArtifact(input, uploaded.current, create.signal);
+      } finally {
+        signal.removeEventListener("abort", relay);
+      }
       await Promise.all([
         qc.invalidateQueries({ queryKey: ["artifacts"] }),
         qc.invalidateQueries({ queryKey: ["search"] }),
@@ -98,9 +122,20 @@ export function UploadDialog({
       onClose();
       void navigate({ to: viewerPath(r.id, r.version) as never });
     } catch (e) {
-      if ((e as { name?: string }).name === "AbortError") return;
+      const aborted = (e as { name?: string }).name === "AbortError";
+      if (aborted && !timedOut) return;
       if (!alive.current) return;
       setProgress(null);
+      const down =
+        timedOut ||
+        (uploaded.current !== null &&
+          e instanceof ApiClientError &&
+          (e.status === 0 || e.status === 503));
+      if (down) {
+        setRetryable(true);
+        setError("Couldn't create it. The server didn't answer.");
+        return;
+      }
       setError(
         e instanceof ApiClientError
           ? errorCopy(e, e.message)
@@ -108,6 +143,8 @@ export function UploadDialog({
             ? e.message
             : "Upload failed. Try again.",
       );
+    } finally {
+      clearTimeout(timer);
     }
   };
 
@@ -185,6 +222,19 @@ export function UploadDialog({
         {error && (
           <p role="alert" className="up-error">
             {error}
+            {retryable && (
+              <>
+                {" "}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void submit()}
+                >
+                  Retry
+                </Button>
+              </>
+            )}
           </p>
         )}
       </form>
