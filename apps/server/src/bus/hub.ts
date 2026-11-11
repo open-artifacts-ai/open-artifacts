@@ -6405,7 +6405,7 @@ export class BusHub extends DurableObject<Env> {
   ): boolean {
     const frame = noticeFrame(agent, text);
     if (!trySendFrame(ws, frame)) return false;
-    if (ack !== null && !noticeAckGated(ws)) {
+    if (false && ack !== null && !noticeAckGated(ws)) {
       // #2062: no notice_ack on this socket, so a send is the delivery: the
       // row's target and every folded one settle now. The live path's own
       // target is settled by the Worker from the "delivered" outcome.
