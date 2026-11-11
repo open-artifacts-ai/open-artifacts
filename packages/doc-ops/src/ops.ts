@@ -112,6 +112,40 @@ function invalid(message: string): OpFailure {
   return new OpFailure({ code: "invalid_op", message });
 }
 
+/**
+ * Links an agent writes may use http:, https: or mailto: only. The scheme is
+ * read the way a browser reads it: whitespace and control characters go, so
+ * "java\tscript:" is still javascript:. A relative link has no scheme and no
+ * base to resolve against in a doc, so it fails too. A failing link refuses the
+ * whole op with a next-step error (nothing is applied); it is never dropped
+ * silently.
+ */
+export function isSafeHref(href: string): boolean {
+  const clean = href.replace(
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: browsers drop these
+    /[\u0000-\u0020\u007f-\u009f\u200b-\u200d\u2028\u2029\ufeff]/g,
+    "",
+  );
+  return /^(https?|mailto):/i.test(clean);
+}
+
+function checkHref(href: unknown): void {
+  if (typeof href !== "string" || !isSafeHref(href)) {
+    throw invalid(
+      "A link must start with http:, https: or mailto:. Use a full URL, or leave the link out and keep the text.",
+    );
+  }
+}
+
+function checkLinks(doc: PMNode): void {
+  doc.descendants((node) => {
+    for (const m of node.marks) {
+      if (m.type === docSchema.marks.link) checkHref(m.attrs.href);
+    }
+    return true;
+  });
+}
+
 const nodes = docSchema.nodes;
 const ITEM_OF: Record<string, NodeType> = {
   bulletList: nodes.listItem,
@@ -161,6 +195,7 @@ export function applyOpsToDoc(doc: PMNode, ops: unknown): PlanResult {
         tr,
         md: (src) => {
           const parsed = markdownToDoc(src);
+          checkLinks(parsed.doc);
           for (const c of parsed.changes) changes.push({ ...c, opIndex: i });
           return parsed.doc;
         },
@@ -590,6 +625,7 @@ function insertBlocks(
 function format({ tr }: OpContext, op: Extract<DocOp, { op: "format" }>): void {
   const { from, to } = locate(tr, op.quote, op);
   const mark = op.mark;
+  if (mark === "link" && !op.remove) checkHref(op.href);
   if ((INLINE_MARKS as readonly string[]).includes(mark)) {
     const type = docSchema.marks[mark];
     if (op.remove) tr.removeMark(from, to, type);

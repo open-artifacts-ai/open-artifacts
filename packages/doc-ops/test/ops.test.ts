@@ -1,6 +1,6 @@
 import { markdownToDoc } from "@oa/doc-schema";
 import { describe, expect, it } from "vitest";
-import { applyOpsToDoc, MAX_OPS } from "../src/index.ts";
+import { applyOpsToDoc, isSafeHref, MAX_OPS } from "../src/index.ts";
 import { edit, failure } from "./helpers.ts";
 
 describe("replace", () => {
@@ -471,5 +471,80 @@ describe("a call", () => {
     expect(result.ok && result.changes).toEqual([
       expect.objectContaining({ kind: "heading_level", opIndex: 0 }),
     ]);
+  });
+});
+
+describe("link schemes", () => {
+  const bad = [
+    "javascript:alert(1)",
+    "JaVaScRiPt:alert(1)",
+    "  javascript:alert(1)",
+    "java\tscript:alert(1)",
+    "java\nscript:alert(1)",
+    "\u0001javascript:alert(1)",
+    "java​script:alert(1)",
+    "data:text/html,<b>x</b>",
+    "vbscript:msgbox(1)",
+    "file:///etc/passwd",
+    "/relative",
+    "//host/x",
+    "#frag",
+    "docs/a.md",
+    "",
+  ];
+  it("refuses a format link with a bad href", () => {
+    for (const href of bad) {
+      const error = failure("see docs\n", [
+        { op: "format", quote: "docs", mark: "link", href },
+      ]);
+      expect(error.message).toMatch(/http:, https: or mailto:|href/);
+    }
+  });
+  it("never leaves a bad link mark from Markdown", () => {
+    for (const href of bad.filter(
+      (h) =>
+        h &&
+        h === h.trim() &&
+        !/\s/.test(h) &&
+        !h.includes("\u0001") &&
+        !h.includes("\u200b"),
+    )) {
+      for (const op of [
+        { op: "replace", quote: "docs", with: `[x](<${href}>)` },
+        { op: "insert", at: "end", markdown: `[x](<${href}>)` },
+        { op: "insert", after: "docs", markdown: `<${href}>` },
+      ]) {
+        const result = applyOpsToDoc(markdownToDoc("see docs\n").doc, [op]);
+        if (!result.ok) continue;
+        result.doc.descendants((n) => {
+          for (const m of n.marks)
+            if (m.type.name === "link")
+              expect(isSafeHref(m.attrs.href)).toBe(true);
+          return true;
+        });
+      }
+    }
+  });
+  it("refuses a Markdown link with a relative target", () => {
+    const error = failure("see docs\n", [
+      { op: "replace", quote: "docs", with: "[x](/relative)" },
+    ]);
+    expect(error.message).toMatch(/http:, https: or mailto:/);
+  });
+  it("allows http, https and mailto, any case", () => {
+    for (const href of ["https://x.test", "HTTP://x.test", "mailto:a@b.test"]) {
+      expect(
+        edit("see docs\n", [
+          { op: "format", quote: "docs", mark: "link", href },
+        ]),
+      ).toContain("[docs]");
+    }
+  });
+  it("still removes a link", () => {
+    expect(
+      edit("see [docs](https://x.test)\n", [
+        { op: "format", quote: "docs", mark: "link", remove: true },
+      ]),
+    ).toBe("see docs\n");
   });
 });
