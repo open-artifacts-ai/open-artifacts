@@ -4,6 +4,7 @@ import {
   TEST_HOOK_REFUSALS,
 } from "@oa/shared";
 import { z } from "zod";
+import { SIGNUPS_ENABLED_VALUES } from "./constants.js";
 import {
   ALERT_KEYS,
   AuthProviderSchema,
@@ -26,7 +27,6 @@ import {
   RequestIdSchema,
   TokenIdSchema,
 } from "./ids.js";
-import { SIGNUPS_ENABLED_VALUES } from "./constants.js";
 import { OAUTH_STORE_MODES } from "./oauth-store.js";
 import { SLUG_RE, slugRule } from "./slugs.js";
 
