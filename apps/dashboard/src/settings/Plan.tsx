@@ -24,6 +24,9 @@ import { formatDate } from "./date";
 import { type Column, PlanCompare } from "./PlanCompare";
 import { muted, SettingsCard, STACK } from "./ui";
 
+/** The public docs page on leaving hosted (#2108). */
+const LEAVE_HOSTED_URL = "https://open-artifacts.com/docs/hosted/";
+
 type Buy = Pick<BillingCheckoutInput, "tier" | "interval">;
 
 const NAME: Record<BillingTier, string> = {
@@ -242,6 +245,17 @@ export function Plan() {
             </span>
           )}
         </div>
+        <p className={muted}>
+          <a
+            className="text-[var(--oa-accent-fg)] underline underline-offset-2"
+            href={LEAVE_HOSTED_URL}
+            target="_blank"
+            rel="noopener"
+          >
+            Leaving? Here&apos;s how.
+            <span className="sr-only"> (opens in new tab)</span>
+          </a>
+        </p>
       </SettingsCard>
       <PlanCompare
         column={column}
