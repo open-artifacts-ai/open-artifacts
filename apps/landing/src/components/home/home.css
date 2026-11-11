@@ -1461,11 +1461,6 @@
   .x-seg button:focus-visible {
     outline-offset: -2px;
   }
-  .x-eb {
-    font: 500 15px var(--oa-font-sans);
-    color: var(--oa-accent-fg);
-    margin-bottom: 14px;
-  }
   .hero {
     padding-top: clamp(44px, 7vh, 84px);
   }
