@@ -570,7 +570,7 @@ it("planStatus: a past_due Team gets the past-due note", () => {
   );
 });
 
-describe("planStatus: the Solo month and the Business trial are separate dates", () => {
+describe("planStatus: the Solo month and the Team trial are separate dates", () => {
   beforeAll(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-11-09T12:00:00.000Z"));
@@ -581,7 +581,7 @@ describe("planStatus: the Solo month and the Business trial are separate dates",
 
   it("a Solo trial reads soloTrialEndsAt", () => {
     const r = planStatus(TRIAL);
-    // #1843: not "Trial", the Business trial's word.
+    // #1843: not "Trial", the Team trial's word.
     expect(r.pill.label).toBe("Free month");
     expect(r.note?.text).toBe(
       "Your free month ends Dec 1, 2026. Then $1/month or $10/year.",

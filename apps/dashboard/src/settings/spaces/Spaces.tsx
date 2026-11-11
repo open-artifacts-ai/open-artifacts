@@ -7,12 +7,7 @@ import { Badge, Button, Input, Label } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { useEffect, useId, useState } from "react";
 import { ApiClientError } from "../../api/client";
-import {
-  directoryMode,
-  type GroupMapping,
-  type Space,
-  type SpaceRole,
-} from "../../api/contract";
+import type { GroupMapping, Space, SpaceRole } from "../../api/contract";
 import { errorCopy } from "../../api/errorCopy";
 import {
   useAddSelfToSpace,
@@ -30,6 +25,7 @@ import { useMe } from "../../auth/useMe";
 import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
 import { LoadError } from "../../layout/LoadError";
 import { Modal } from "../../layout/Modal";
+import { shownDirectoryMode } from "../../layout/SyncBanner";
 import { useDocumentTitle } from "../../layout/useDocumentTitle";
 import { AppLink } from "../../library/AppLink";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -663,7 +659,7 @@ function SpaceDetail({
   useDocumentTitle(space.name);
   const state = useMe();
   const frozen =
-    state.status === "authed" && directoryMode(state.me) === "frozen";
+    state.status === "authed" && shownDirectoryMode(state.me) === "frozen";
   // A kept group's "Edit people" narrows People to it.
   const [group, setGroup] = useState("");
   return (
@@ -716,7 +712,7 @@ export function Spaces() {
   const state = useMe();
   const me = state.status === "authed" ? state.me : null;
   const admin = isOrgAdmin(me);
-  const syncOn = !!me && directoryMode(me) === "google";
+  const syncOn = !!me && shownDirectoryMode(me) === "google";
   const orgName = me?.instance.name ?? "your organization";
   const { space: spaceId } = useSearch({ strict: false }) as { space?: string };
   const navigate = useNavigate();

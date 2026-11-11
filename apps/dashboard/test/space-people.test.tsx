@@ -1041,3 +1041,53 @@ it("409 managed_by_org_mapping shows the Every space line by the row", async () 
   ).toBeVisible();
   expect(screen.queryByText("server text")).toBeNull();
 });
+
+const asTier =
+  (tier: "team" | "trial" | "business") =>
+  (m: Me): Me => ({
+    ...m,
+    instance: {
+      ...m.instance,
+      billing: m.instance.billing && { ...m.instance.billing, tier },
+    },
+  });
+
+// -- below Business (#2113): a synced person reads as an ordinary member
+
+for (const [name, tier, directory] of [
+  ["Team, synced before (sync_google)", "team", "google"],
+  ["Team, frozen", "team", "frozen"],
+  ["the Team trial", "trial", "google"],
+] as const) {
+  it(`${name}: no sync wording, no role floor, the normal menu`, async () => {
+    mountHosted(ENG, { directory }, asTier(tier));
+    const card = await people();
+    const bob = await row("Bob Builder");
+    expect(bob).toHaveTextContent("bob@example.com · manually added");
+    expect(card).not.toHaveTextContent(/kept from|Group sync|via eng@/);
+    fireEvent.click(
+      within(bob).getByRole("combobox", { name: "Role for Bob Builder" }),
+    );
+    expect(
+      (await screen.findAllByRole("option")).map((o) => o.textContent),
+    ).toEqual(["Viewer", "Editor", "Manager"]);
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    fireEvent.click(
+      within(await openMenu("Bob Builder")).getByRole("menuitem", {
+        name: "Remove from Engineering…",
+      }),
+    );
+    expect(screen.getByRole("alertdialog")).toHaveTextContent(
+      "Bob keeps Viewer through All members.",
+    );
+    expect(screen.getByRole("alertdialog")).not.toHaveTextContent(/sync/i);
+  });
+}
+
+it("Business still says kept from when frozen", async () => {
+  mountHosted(ENG, { directory: "frozen" }, asTier("business"));
+  expect(await row("Bob Builder")).toHaveTextContent(
+    "bob@example.com · kept from eng@",
+  );
+  expect(await people()).toHaveTextContent("Group sync is paused.");
+});

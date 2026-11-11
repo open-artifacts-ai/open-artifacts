@@ -25,7 +25,9 @@ import {
   usePutMapping,
   useSpaceMappings,
 } from "../../api/queries";
+import { useMe } from "../../auth/useMe";
 import { LoadError } from "../../layout/LoadError";
+import { groupSyncHidden } from "../../layout/SyncBanner";
 import { AppLink } from "../../library/AppLink";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { GroupPicker } from "../GroupPicker";
@@ -245,6 +247,8 @@ export function SpaceAccess({
   frozen?: boolean;
   onEditPeople?: (groupId: string) => void;
 }) {
+  const me = useMe();
+  const hideSync = me.status === "authed" && groupSyncHidden(me.me);
   const mappings = useSpaceMappings(space.id);
   // Every-space rows: org admins only (R.orgMappings is admin-only).
   const org = useOrgMappings(admin);
@@ -460,17 +464,19 @@ export function SpaceAccess({
           }}
         />
       )}
-      <p className={muted}>
-        {frozen
-          ? "Group sync is paused, so groups can't change here. Each space kept the people it had at the last sync. You can still add and remove people under People."
-          : !syncOn
-            ? "Group sync is off, so mappings can't change. Edit people manually under People."
-            : admin
-              ? "Someone in more than one group gets the highest role. Changes apply within a minute and are recorded in the audit log."
-              : canMap
-                ? "You can give a group Viewer or Editor. Only an admin can make a group a manager. Changes are recorded in the audit log."
-                : "An admin has turned off group mapping by space managers. Ask an admin to add or change groups."}
-      </p>
+      {!hideSync && (
+        <p className={muted}>
+          {frozen
+            ? "Group sync is paused, so groups can't change here. Each space kept the people it had at the last sync. You can still add and remove people under People."
+            : !syncOn
+              ? "Group sync is off, so mappings can't change. Edit people manually under People."
+              : admin
+                ? "Someone in more than one group gets the highest role. Changes apply within a minute and are recorded in the audit log."
+                : canMap
+                  ? "You can give a group Viewer or Editor. Only an admin can make a group a manager. Changes are recorded in the audit log."
+                  : "An admin has turned off group mapping by space managers. Ask an admin to add or change groups."}
+        </p>
+      )}
     </SettingsCard>
   );
 }

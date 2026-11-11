@@ -183,6 +183,15 @@ export function shownDirectoryMode(me: Me | null): DirectoryMode {
 }
 
 /**
+ * Hosted below Business (Solo, free, Team, the Team trial): group sync is not
+ * shown at all, so people and groups it created read as ordinary ones (#2113).
+ */
+export function groupSyncHidden(me: Me | null): boolean {
+  const tier = me?.instance.billing?.tier;
+  return !!tier && tier !== "business";
+}
+
+/**
  * The dot's tone while sync needs an owner's or admin's attention (any state
  * but ok, or a held sweep), else null. Members and guests get null: the
  * server sends them no state and no held count.

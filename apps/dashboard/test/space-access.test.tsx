@@ -548,3 +548,39 @@ describe("the Remove confirm's copy", () => {
     });
   });
 });
+
+const asTier =
+  (tier: "team" | "trial" | "business") =>
+  (m: Me): Me => ({
+    ...m,
+    instance: {
+      ...m.instance,
+      billing: m.instance.billing && { ...m.instance.billing, tier },
+    },
+  });
+
+// -- below Business (#2113): no group sync UI
+
+for (const [name, tier, directory] of [
+  ["Team, synced before", "team", "google"],
+  ["Team, frozen", "team", "frozen"],
+  ["the Team trial", "trial", "google"],
+] as const) {
+  it(`${name}: no group pickers and no sync wording`, async () => {
+    mountHosted(ENG, { directory }, asTier(tier));
+    await row(/eng@example.com/);
+    expect(screen.queryByRole("combobox", { name: "Add a group" })).toBeNull();
+    expect(
+      screen.queryByRole("combobox", { name: "Add a group to every space" }),
+    ).toBeNull();
+    expect(screen.queryByText(/Group sync|Changes apply within/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /Edit people/ })).toBeNull();
+  });
+}
+
+it("Business keeps the group picker and the apply note", async () => {
+  mountHosted(ENG, { directory: "google" }, asTier("business"));
+  await row(/eng@example.com/);
+  expect(screen.getByRole("combobox", { name: "Add a group" })).toBeVisible();
+  expect(screen.getByText(/Changes apply within a minute/)).toBeVisible();
+});
