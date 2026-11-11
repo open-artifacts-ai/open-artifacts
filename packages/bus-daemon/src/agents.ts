@@ -12,6 +12,8 @@ export type AgentRecord = {
   pid: number;
   cwd: string;
   live: boolean;
+  /** #2110: why a Claude record closed. Only a liveness miss ('liveness') is reopened by the sync; a delivery refusal stays closed until a hello or a new process. */
+  closedBy?: "liveness" | "delivery";
   /** A Claude session's process start, from its session file; tells a reused pid. */
   procStart?: string;
   /**

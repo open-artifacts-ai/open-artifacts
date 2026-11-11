@@ -1276,7 +1276,7 @@ it("frozen (Team after Business): the tab shows with no dot, read-only, with the
 
 // #2009: hosted Solo reports the trial's features (directory mode google) so
 // paywalls can show them; the plan decides the tab.
-const plan = (tier: "solo" | "team" | "business") => ({
+const plan = (tier: "solo" | "team" | "business" | "trial") => ({
   billing: {
     tier,
     status: "active",
@@ -1300,17 +1300,26 @@ it("Solo with the trial's sync_google: no Directory tab, no dot, no banner", asy
   expect(screen.queryByRole("alert", { name: "Directory sync" })).toBeNull();
 });
 
-it("Team: the Directory tab shows read-only with the way back to Business", async () => {
-  mountHosted("/settings/directory", {
+it("Team that synced before: no Directory tab, even if the server still says frozen (#2113)", async () => {
+  const router = mountHosted("/settings/directory", {
     ...plan("team"),
     directory: "frozen",
     unhealthy: true,
   } as never);
-  const s = await status();
-  expect(s).toHaveTextContent("Google group sync is part of Business.");
-  expect(screen.getByRole("link", { name: /^Directory/ })).toHaveAccessibleName(
-    "Directory",
+  await waitFor(() =>
+    expect(router.state.location.pathname).toBe("/settings/connections"),
   );
+  expect((await tabs()).some((t) => t.startsWith("Directory"))).toBe(false);
+});
+
+it("the invite trial: no Directory tab (#2113)", async () => {
+  const router = mountHosted("/settings/directory", {
+    ...plan("trial"),
+  } as never);
+  await waitFor(() =>
+    expect(router.state.location.pathname).toBe("/settings/connections"),
+  );
+  expect((await tabs()).some((t) => t.startsWith("Directory"))).toBe(false);
 });
 
 it("Business: the Directory tab and its dot are unchanged", async () => {

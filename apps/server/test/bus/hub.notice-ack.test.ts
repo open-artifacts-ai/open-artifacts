@@ -2,10 +2,12 @@
 // until the daemon's ack, then the comment target becomes delivered; a refuse
 // makes it gone. Real hub, real daemon sockets, real runtime DO for the
 // target row. Waits are signals (a roster round trip, a state poll).
+
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
+import { SWEEP_BATCH } from "../../src/bus/hub.js";
 import { setTargetState } from "../../src/runtime/comments-store.js";
 import * as runtimeMod from "../../src/runtime/do.js";
 import { runtimeStub } from "../../src/runtime/do.js";
@@ -41,7 +43,12 @@ async function setup(caps: string[]) {
 }
 
 /** A runtime DO with one comment target row, state queued. */
-async function seedTarget(artifactId: string, commentId: string, key: string) {
+async function seedTarget(
+  artifactId: string,
+  commentId: string,
+  key: string,
+  kind: "mention" | "asker" | "reply" = "mention",
+) {
   const ns_ = e.ARTIFACT_RUNTIME;
   await runInDurableObject(
     ns_.get(ns_.idFromName(artifactId)),
@@ -49,8 +56,9 @@ async function seedTarget(artifactId: string, commentId: string, key: string) {
       (inst as { ensureSchema(): void }).ensureSchema();
       st.storage.sql.exec(
         `insert into comment_targets (comment_id, thread_id, kind, key, name, state)
-         values (?, 't1', 'mention', ?, 'a', 'queued')`,
+         values (?, 't1', ?, ?, 'a', 'queued')`,
         commentId,
+        kind,
         key,
       );
     },
@@ -323,6 +331,68 @@ describe("notice_ack (#1752)", () => {
     expect(n0).toBe(0);
   });
 
+  it("a thread-reply row beside it does not hold the asker refund back (#2035)", async () => {
+    const s = await setup(ACK);
+    const art = uniq("art");
+    const ns_ = e.ARTIFACT_RUNTIME;
+    const at = "2026-01-01T00:00:00.000Z";
+    await runInDurableObject(
+      ns_.get(ns_.idFromName(art)),
+      (inst: unknown, st) => {
+        (inst as { ensureSchema(): void }).ensureSchema();
+        st.storage.sql.exec(
+          "insert into comments (id, thread_id, body, author, created_at) values ('c1', 't1', 'b', 'a', ?)",
+          at,
+        );
+        st.storage.sql.exec(
+          `insert into comment_targets (comment_id, thread_id, kind, key, name, state)
+           values ('c1', 't1', 'asker', 'k1', 'a', 'queued'),
+                  ('c1', 't1', 'reply', 'k2', 'b', 'delivered')`,
+        );
+        st.storage.sql.exec(
+          "insert into comment_asker_notices (thread_id, last_at, prev_at, n) values ('t1', ?, null, 1)",
+          at,
+        );
+      },
+    );
+    const n = note(addr(s), art, "c1", "k1");
+    n.target = { kind: "asker", key: "k1" };
+    await (await hubOf(s.userId)).deliverNotice(n);
+    const f = await waitFor(s.d, "deliver");
+    s.d.send({
+      v: 1,
+      id: id("rf"),
+      type: "refuse",
+      msg_id: f.msg_id,
+      reason: "closed",
+      detail: "dropped",
+    } as never);
+    await vi.waitFor(async () =>
+      expect(
+        await runInDurableObject(
+          ns_.get(ns_.idFromName(art)),
+          (_i, st) =>
+            st.storage.sql
+              .exec("select state from comment_targets where key = 'k1'")
+              .one().state as string,
+        ),
+      ).toBe("gone"),
+    );
+    await vi.waitFor(async () =>
+      expect(
+        await runInDurableObject(
+          ns_.get(ns_.idFromName(art)),
+          (_i, st) =>
+            st.storage.sql
+              .exec(
+                "select n from comment_asker_notices where thread_id = 't1'",
+              )
+              .one().n as number,
+        ),
+      ).toBe(0),
+    );
+  });
+
   it("a refused asker notice does not refund while another target is still queued", async () => {
     const s = await setup(ACK);
     const art = uniq("art");
@@ -474,19 +544,95 @@ describe("notice_ack (#1752)", () => {
       );
   });
 
-  it("an acked notice is unaffected by the sweep (#2082)", async () => {
+  it("a thread-reply target settles on the ack, as the notice's own and as a folded one (#2035)", async () => {
     const s = await setup(ACK);
     const art = uniq("art");
-    await seedTarget(art, "c1", "k1");
-    await (await hubOf(s.userId)).deliverNotice(note(addr(s), art, "c1", "k1"));
+    await seedTarget(art, "c1", "k1", "reply");
+    await seedTarget(art, "c2", "k2", "reply");
+    const hub = await hubOf(s.userId);
+    const n = note(addr(s), art, "c1", "k1");
+    n.target = { kind: "reply", key: "k1" };
+    await hub.deliverNotice(n);
     const f = await waitFor(s.d, "deliver");
+    // The ack carries this notice's target and a folded one, both replies.
+    const t = (c: string, k: string) => ({ a: art, c, k: "reply", key: k });
+    await runInDurableObject(hub, (_i, st) =>
+      st.storage.sql.exec(
+        "update notice_acks set ack = ? where msg_id = ?",
+        JSON.stringify({ ...t("c1", "k1"), more: [t("c2", "k2")] }),
+        f.msg_id,
+      ),
+    );
     s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
+    for (const c of ["c1", "c2"])
+      await vi.waitFor(async () =>
+        expect(await targetState(art, c)).toBe("delivered"),
+      );
+  });
+
+  it("the sweep settles only expired rows: an acked one stays delivered, a pending one stays queued (#2082)", async () => {
+    const s = await setup(ACK);
+    const art = uniq("art");
+    for (const c of ["c1", "c2", "c3"]) await seedTarget(art, c, `k${c}`);
+    const hub = await hubOf(s.userId);
+    const sent: Record<string, string> = {};
+    for (const c of ["c1", "c2", "c3"]) {
+      await hub.deliverNotice(note(addr(s), art, c, `k${c}`));
+      sent[c] = (await waitFor(s.d, "deliver")).msg_id as string;
+    }
+    s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: sent.c1 });
     await vi.waitFor(async () =>
       expect(await targetState(art, "c1")).toBe("delivered"),
     );
-    await expireAcks(s);
-    await settled(s.d, s.ref);
+    // Only c2's row is past its TTL; c3 is still pending.
+    await runInDurableObject(hub, (_i, st) =>
+      st.storage.sql.exec(
+        "update notice_acks set expires_at = 1 where msg_id = ?",
+        sent.c2,
+      ),
+    );
+    await runDurableObjectAlarm(hub);
+    await vi.waitFor(async () =>
+      expect(await targetState(art, "c2")).toBe("gone"),
+    );
     expect(await targetState(art, "c1")).toBe("delivered");
+    expect(await targetState(art, "c3")).toBe("queued");
+  });
+
+  it("more than a batch of expired ack rows: the alarm re-arms and every one settles gone (#2082)", async () => {
+    const s = await setup(ACK);
+    const art = uniq("art");
+    const hub = await hubOf(s.userId);
+    const N = SWEEP_BATCH + 10;
+    for (let i = 0; i < N; i++) await seedTarget(art, `c${i}`, `k${i}`);
+    await seedTarget(art, "live", "klive");
+    // A real send arms the hub's alarm; then N expired rows sit beside it.
+    await hub.deliverNotice(note(addr(s), art, "live", "klive"));
+    await waitFor(s.d, "deliver");
+    await runInDurableObject(hub, (_i, st) => {
+      for (let i = 0; i < N; i++)
+        st.storage.sql.exec(
+          "insert into notice_acks (msg_id, machine_id, ack, expires_at) values (?, 'x', ?, 1)",
+          `exp${i}`,
+          JSON.stringify({ a: art, c: `c${i}`, k: "mention", key: `k${i}` }),
+        );
+    });
+    const left = () =>
+      runInDurableObject(
+        hub,
+        (_i, st) =>
+          st.storage.sql
+            .exec("select count(*) as n from notice_acks where expires_at = 1")
+            .one().n as number,
+      );
+    await runDurableObjectAlarm(hub);
+    expect(await left()).toBe(10);
+    // The hub set its alarm again for the rest: it fires on its own.
+    await vi.waitFor(async () => expect(await left()).toBe(0));
+    for (const i of [0, SWEEP_BATCH - 1, SWEEP_BATCH, N - 1])
+      await vi.waitFor(async () =>
+        expect(await targetState(art, `c${i}`)).toBe("gone"),
+      );
   });
 
   it("evicting the oldest ack row at the cap settles its targets gone (#2082)", async () => {

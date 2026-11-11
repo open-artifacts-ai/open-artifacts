@@ -25,11 +25,12 @@ import {
   addReply,
   addThread,
   type CommentWho,
+  setThreadAgent,
 } from "../src/services/comments.js";
 import { follow } from "../src/services/follows.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
-import { api, login } from "./helpers.js";
+import { api, errOf, login } from "./helpers.js";
 
 // #1900: an agent in a thread hears later replies from people.
 
@@ -42,9 +43,12 @@ class FakeBus implements NoticeDelivery {
   outcome: DeliveryOutcome = "delivered";
   /** What an offline agent has waiting: one per (member, address, coalesceKey), the newer replacing. */
   waiting = new Map<string, BusNotice>();
+  /** Runs while a notice is being delivered, before the sender hears the outcome (a daemon's ack that arrives first). */
+  during?: (notice: BusNotice) => Promise<void>;
   async deliver(_e: Env, userId: string, notice: BusNotice) {
     if (notice.kind === "commented") return "delivered" as const;
     this.sent.push({ userId, notice });
+    await this.during?.(notice);
     if (this.outcome === "held")
       this.waiting.set(
         [userId, notice.to.namespace, notice.to.name, notice.coalesceKey].join(
@@ -58,6 +62,7 @@ class FakeBus implements NoticeDelivery {
     this.waiting = new Map();
     this.sent = [];
     this.outcome = "delivered";
+    this.during = undefined;
   }
 }
 const bus = new FakeBus();
@@ -99,6 +104,7 @@ async function setup(
       title: "doc",
       format: "html",
       content: "<p>The quick brown fox</p>",
+      comments: "everyone",
       ...extra,
     } as never,
     publisher,
@@ -707,5 +713,188 @@ describe("the publishing agent joins page-wide threads (#1968)", () => {
       { moderator: true },
     );
     expect(bus.sent).toHaveLength(0);
+  });
+});
+
+describe("the thread's agents, removable (#2035)", () => {
+  const list = async (id: string, u: U | null) =>
+    (await (await api(app, R.comments(id), u?.cookie ?? null)).json()) as {
+      threads: Thread[];
+    };
+  const stop = (
+    id: string,
+    tid: string,
+    key: string,
+    u: U,
+    method = "DELETE",
+  ) => api(app, R.commentThreadAgent(id, tid, key), u.cookie, { method });
+
+  it("members see the thread's agents; only the agent's person or the owner can remove", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, editor, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    const asOwner = (await list(s.id, owner)).threads[0];
+    expect(asOwner?.agents?.map((a) => [a.name, a.canRemove])).toEqual([
+      ["Claude", true],
+    ]);
+    const asEditor = (await list(s.id, editor)).threads[0];
+    expect(asEditor?.agents?.map((a) => [a.name, a.canRemove])).toEqual([
+      ["Claude", false],
+    ]);
+    expect((await stop(s.id, t.id, s.claude, editor)).status).toBe(403);
+    expect((await stop(s.id, t.id, s.claude, viewer)).status).toBe(403);
+    expect((await list(s.id, owner)).threads[0]?.agents).toHaveLength(1);
+  });
+
+  it("the agent's own person may remove it, though not the owner of the artifact", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, owner, { mentions: [{ key: s.codex }] })
+    ).json()) as Thread;
+    expect((await stop(s.id, t.id, s.codex, editor)).status).toBe(204);
+    expect((await list(s.id, owner)).threads[0]?.agents).toBeUndefined();
+  });
+
+  it("a removed agent hears no later reply; an @-mention puts it back", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, editor, {
+        mentions: [{ key: s.claude }, { key: s.pi }],
+      })
+    ).json()) as Thread;
+    expect((await stop(s.id, t.id, s.claude, owner)).status).toBe(204);
+    bus.clear();
+    await reply(s.id, t.id, viewer);
+    expect(names()).toEqual(["Pi"]);
+    expect(
+      (await list(s.id, owner)).threads[0]?.agents?.map((a) => a.name),
+    ).toEqual(["Pi"]);
+    // Mentioned again: it is back and hears this one as the mention.
+    await reply(s.id, t.id, editor, { mentions: [{ key: s.claude }] });
+    expect(
+      (await list(s.id, owner)).threads[0]?.agents?.map((a) => a.name).sort(),
+    ).toEqual(["Claude", "Pi"]);
+    bus.clear();
+    await reply(s.id, t.id, viewer);
+    expect(names()).toEqual(["Claude", "Pi"]);
+  });
+
+  it("undo (PUT) puts it back", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, owner, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    await stop(s.id, t.id, s.claude, owner);
+    expect((await stop(s.id, t.id, s.claude, owner, "PUT")).status).toBe(204);
+    bus.clear();
+    await reply(s.id, t.id, viewer);
+    expect(names()).toEqual(["Claude"]);
+  });
+
+  it("an agent that is not in the thread is 404", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, owner, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    expect((await stop(s.id, t.id, s.pi, owner)).status).toBe(404);
+  });
+
+  it("the reply carries a delivery line per agent it told", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, editor, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    const ok = (await (await reply(s.id, t.id, viewer)).json()) as Comment;
+    expect(ok.notified?.map((n) => [n.name, n.delivery])).toEqual([
+      ["Claude", "delivered"],
+    ]);
+    bus.outcome = "held";
+    const held = (await (await reply(s.id, t.id, viewer)).json()) as Comment;
+    expect(held.notified?.map((n) => n.delivery)).toEqual(["queued"]);
+    // The stored thread shows it too.
+    const stored = (await list(s.id, owner)).threads[0]?.comments;
+    expect(stored?.[1]?.notified?.[0]?.delivery).toBe("delivered");
+  });
+
+  it("an ack that beats the recording still settles the line", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, editor, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    bus.outcome = "held";
+    bus.during = async (n) => {
+      if (!n.coalesceKey.includes(":thread_reply:")) return;
+      const ok = await runtimeStub(E, s.id).commentsTargetSettle({
+        commentId: n.commentId as string,
+        kind: "reply",
+        key: s.claude,
+        state: "delivered",
+      });
+      expect(ok).toBe(true);
+    };
+    const c = (await (await reply(s.id, t.id, viewer)).json()) as Comment;
+    expect(c.notified?.map((n) => n.delivery)).toEqual(["delivered"]);
+  });
+
+  it("outsiders get no agents and no delivery lines, and cannot remove", async () => {
+    const s = await setup({ visibility: "public" });
+    const t = (await (
+      await post(s.id, owner, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    const anon = await list(s.id, null);
+    expect(anon.threads[0]?.agents).toBeUndefined();
+    const g = await api(app, R.commentThreadAgent(s.id, t.id, s.claude), null, {
+      method: "DELETE",
+      headers: { "cf-connecting-ip": "198.51.100.22" },
+    });
+    expect(g.status).toBe(403);
+    expect(await errOf(g)).toMatchObject({ code: "forbidden" });
+    const gr = await login(`tr-guestrole-${tag}@x.com`, "guest");
+    await api(app, R.shares(s.id), owner.cookie, {
+      method: "PUT",
+      body: { email: `tr-guestrole-${tag}@x.com`, role: "editor" },
+    });
+    for (const method of ["DELETE", "PUT"]) {
+      const r = await api(
+        app,
+        R.commentThreadAgent(s.id, t.id, s.claude),
+        gr.cookie,
+        { method },
+      );
+      // The policy floor hides the route from a guest role: 404, as for any comment write.
+      expect(r.status).toBe(404);
+      expect(await errOf(r)).toMatchObject({ code: "not_found" });
+    }
+    // A capped (guest or restricted) member who reaches the service is refused too.
+    for (const removed of [true, false])
+      await expect(
+        setThreadAgent(
+          E,
+          s.id,
+          t.id,
+          s.claude,
+          { userId: viewer.userId, short: null, capped: true },
+          removed,
+        ),
+      ).rejects.toMatchObject({ code: "forbidden" });
+    expect((await list(s.id, owner)).threads[0]?.agents).toHaveLength(1);
+  });
+
+  it("a third member's @-mention puts back an agent another person removed (by design)", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, owner, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    expect((await stop(s.id, t.id, s.claude, owner)).status).toBe(204);
+    expect((await list(s.id, owner)).threads[0]?.agents).toBeUndefined();
+    // The editor, a third person, @-mentions it: it is back for everyone.
+    await reply(s.id, t.id, editor, { mentions: [{ key: s.claude }] });
+    expect(
+      (await list(s.id, viewer)).threads[0]?.agents?.map((a) => a.name),
+    ).toEqual(["Claude"]);
+    bus.clear();
+    await reply(s.id, t.id, viewer);
+    expect(names()).toEqual(["Claude"]);
   });
 });

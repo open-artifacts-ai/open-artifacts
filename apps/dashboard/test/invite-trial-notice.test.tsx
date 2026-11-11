@@ -1,5 +1,5 @@
-// #1836: the first invite on an instance whose Business trial never ran starts
-// that 14-day trial (the server's trialEligible). The invite dialog says so
+// #1836: the first invite on an instance whose Team trial never ran starts
+// that 30-day trial (the server's trialEligible). The invite dialog says so
 // with Design's approved copy (Self-serve screens v6, decision 2), and only
 // then: billing active, a Solo instance, trial never used, caller sees the
 // billing details (owner or admin).
@@ -24,7 +24,7 @@ const SOLO: PlanView = {
   readOnly: false,
   reason: "solo",
 };
-const NOTICE = "This starts your 14-day trial of Business.";
+const NOTICE = "This starts your 30-day Team trial.";
 const START = "Add member and start trial";
 
 const pin = (iso: string) => {
@@ -46,7 +46,7 @@ const meOf = (billing: PlanView | undefined) =>
   ({ instance: { billing } }) as unknown as Me;
 
 describe("trialWouldStart", () => {
-  it("is true for a Solo instance whose Business trial never ran", () => {
+  it("is true for a Solo instance whose Team trial never ran", () => {
     expect(trialWouldStart(meOf(SOLO))).toBe(true);
     // A server from before Solo called this tier free.
     expect(trialWouldStart(meOf({ ...SOLO, tier: "free" }))).toBe(true);
@@ -54,7 +54,7 @@ describe("trialWouldStart", () => {
     expect(trialWouldStart(meOf({ ...SOLO, reason: undefined }))).toBe(true);
   });
 
-  it("is false once the Business trial ran, on any other tier or lock, or with no billing", () => {
+  it("is false once the Team trial ran, on any other tier or lock, or with no billing", () => {
     const at = "2026-10-01T00:00:00.000Z";
     expect(trialWouldStart(meOf({ ...SOLO, trialEndsAt: at }))).toBe(false);
     for (const tier of ["trial", "team", "business"] as const)
@@ -101,22 +101,22 @@ describe("trialWouldStart", () => {
 });
 
 describe("trialEndsOn", () => {
-  it("is 14 days from now, as a UTC date", () => {
+  it("is 30 days from now, as a UTC date", () => {
     expect(trialEndsOn(Date.parse("2026-11-09T12:00:00.000Z"))).toBe(
-      "Nov 23, 2026",
+      "Dec 9, 2026",
     );
     // Month and year rollovers.
     expect(trialEndsOn(Date.parse("2026-12-25T00:00:00.000Z"))).toBe(
-      "Jan 8, 2027",
+      "Jan 24, 2027",
     );
   });
 
   it("flips at UTC midnight, not before", () => {
     expect(trialEndsOn(Date.parse("2026-11-09T23:59:59.999Z"))).toBe(
-      "Nov 23, 2026",
+      "Dec 9, 2026",
     );
     expect(trialEndsOn(Date.parse("2026-11-10T00:00:00.000Z"))).toBe(
-      "Nov 24, 2026",
+      "Dec 10, 2026",
     );
   });
 });
@@ -126,7 +126,7 @@ describe("the invite dialog", () => {
     pin("2026-11-09T12:00:00.000Z");
     const dialog = await openInvite(SOLO);
     expect(within(dialog).getByText(NOTICE)).toBeVisible();
-    expect(within(dialog).getByText("Trial ends Nov 23, 2026.")).toBeVisible();
+    expect(within(dialog).getByText("Trial ends Dec 9, 2026.")).toBeVisible();
     expect(within(dialog).getByRole("button", { name: START })).toBeEnabled();
     expect(within(dialog).queryByRole("button", { name: "Add member" })).toBe(
       null,
@@ -136,7 +136,7 @@ describe("the invite dialog", () => {
   it("the trial date follows the clock", async () => {
     pin("2026-11-10T00:00:00.000Z");
     const dialog = await openInvite(SOLO);
-    expect(within(dialog).getByText("Trial ends Nov 24, 2026.")).toBeVisible();
+    expect(within(dialog).getByText("Trial ends Dec 10, 2026.")).toBeVisible();
   });
 
   it("the start button sends the same invite as Add member does", async () => {
@@ -253,7 +253,7 @@ describe("the invite dialog", () => {
     expect(within(dialog).queryByRole("button", { name: START })).toBe(null);
   });
 
-  it("says nothing once the Business trial ran", async () => {
+  it("says nothing once the Team trial ran", async () => {
     const dialog = await openInvite({
       ...SOLO,
       trialEndsAt: "2026-10-01T00:00:00.000Z",
@@ -335,7 +335,7 @@ describe("the Restore dialog", () => {
     pin("2026-11-09T12:00:00.000Z");
     const { dialog, posts } = await openRestore(SOLO);
     expect(within(dialog).getByText(NOTICE)).toBeVisible();
-    expect(within(dialog).getByText("Trial ends Nov 23, 2026.")).toBeVisible();
+    expect(within(dialog).getByText("Trial ends Dec 9, 2026.")).toBeVisible();
     expect(
       within(dialog).getByRole("button", { name: "Restore and start trial" }),
     ).toBeVisible();

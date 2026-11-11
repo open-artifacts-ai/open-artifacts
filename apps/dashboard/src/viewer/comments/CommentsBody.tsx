@@ -10,7 +10,7 @@ import {
 } from "@oa/shared";
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
-import { Check, FileText, Quote as QuoteIcon } from "lucide-react";
+import { Check, FileText } from "lucide-react";
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ApiClientError } from "../../api/client";
@@ -26,7 +26,7 @@ import {
   useSetThreadStatus,
 } from "../../api/comments";
 import { isEmbed } from "../../embed";
-import { TXT } from "../ui";
+import { CTXT, TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
 import { AuthorFace, AuthorSub, initials } from "./AuthorFace";
 import { useActionRowSlot } from "./actionRow";
@@ -47,6 +47,7 @@ import {
   removeMention,
 } from "./asks";
 import { numbering, pinChanged, pinNumbering } from "./model";
+import { ThreadAgents } from "./threadAgents";
 import { type CommentsApi, useCommentsApi } from "./useComments";
 
 const touch = () =>
@@ -146,19 +147,60 @@ function GuestName({ api }: { api: CommentsApi }) {
   );
 }
 
-/** A guest's way to sign in, back to this page. */
-function SignInLink() {
+/** A guest's way to sign in, back to this page. `box` fills the composer's place. */
+function SignInLink({ box = false }: { box?: boolean }) {
   return (
     <a
-      className={`${TXT} text-[var(--oa-accent-fg)] underline`}
+      className={
+        box
+          ? `${TXT} flex min-h-9 w-full items-center justify-center rounded-md border border-[var(--oa-border)] px-3 text-[var(--oa-accent-fg)] underline focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)]`
+          : `${TXT} text-[var(--oa-accent-fg)] underline`
+      }
       href={`/sign-in?next=${encodeURIComponent(
         `${window.location.pathname}${window.location.search}`,
       )}`}
       target={isEmbed() ? "_blank" : undefined}
       rel="noopener noreferrer"
     >
-      Sign in
+      {box ? "Sign in to comment" : "Sign in"}
     </a>
+  );
+}
+
+/** What the box really does: ⌘ Enter (Ctrl Enter elsewhere) sends. */
+const isCoarse = () =>
+  typeof window !== "undefined" &&
+  !!window.matchMedia?.("(pointer: coarse)").matches;
+
+function SendHint({ id }: { id?: string }) {
+  // A touch screen has no ⌘ or Ctrl key to press: show it for fine pointers only.
+  if (
+    typeof window !== "undefined" &&
+    window.matchMedia?.("(pointer: coarse)").matches
+  )
+    return null;
+  const mac =
+    typeof navigator !== "undefined" &&
+    /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+  return (
+    <span id={id} data-send-hint="" className={`${TXT} ${MUTED}`}>
+      {mac ? "⌘ Enter" : "Ctrl Enter"} to send
+    </span>
+  );
+}
+
+/** The quoted line under a 3px amber bar, two lines at most (#2118). */
+function QuoteBar({
+  children,
+  ...rest
+}: { children: React.ReactNode } & React.HTMLAttributes<HTMLQuoteElement>) {
+  return (
+    <blockquote
+      {...rest}
+      className={`m-0 border-0 border-l-[3px] border-l-[color-mix(in_srgb,var(--oa-warning)_60%,transparent)] pl-2.5 ${TXT} ${MUTED} ${rest.className ?? ""}`}
+    >
+      <span className="line-clamp-2 min-w-0 break-words">{children}</span>
+    </blockquote>
   );
 }
 
@@ -181,7 +223,16 @@ function Composer({
   float = false,
   buttonsRight = false,
   lead,
+  card = false,
+  keepOnEsc = false,
+  quote,
 }: {
+  /** The composer as a card: quote on top, hint and button always visible (#2118). */
+  card?: boolean;
+  /** Esc is swallowed here and the draft stays (the box never closes). */
+  keepOnEsc?: boolean;
+  /** Shown at the top of the card, under an amber bar. */
+  quote?: React.ReactNode;
   /** Offer @mentions: the agent list is fetched on the composer's first focus. */
   mentionable?: boolean;
   /** The action row's own surface while it floats in the short sheet (#1657). */
@@ -221,6 +272,8 @@ function Composer({
   const [menuOff, setMenuOff] = useState(false);
   const [activeOpt, setActiveOpt] = useState(0);
   const menuId = useId();
+  const hintId = useId();
+  const coarse = isCoarse();
   // The list is fetched lazily: first focus of a composer an owner/editor can
   // use (then kept), never on column open. A transient error is retried on the
   // next focus; a 404 (no route) stays answered.
@@ -307,9 +360,14 @@ function Composer({
   };
   return (
     <div
-      className="flex flex-col gap-2"
+      className={
+        card
+          ? "flex flex-col gap-2 rounded-lg border border-input bg-card p-3 focus-within:border-ring focus-within:ring-1 focus-within:ring-ring"
+          : "flex flex-col gap-2"
+      }
       data-oa-composing={composing ? "" : undefined}
     >
+      {quote}
       <Textarea
         ref={ref}
         aria-label={label}
@@ -321,7 +379,11 @@ function Composer({
         value={text}
         maxLength={COMMENT_BODY_MAX}
         rows={open ? 3 : 1}
-        className={TXT}
+        className={
+          card
+            ? `${CTXT} border-0 bg-transparent p-0 shadow-none focus-visible:outline-none`
+            : CTXT
+        }
         onFocus={() => {
           setOpen(true);
           retryAgents();
@@ -332,6 +394,7 @@ function Composer({
           setMenuOff(false);
           setActiveOpt(0);
         }}
+        aria-describedby={card && !coarse ? hintId : undefined}
         aria-controls={menuOpen ? menuId : undefined}
         aria-activedescendant={menuOpen ? `${menuId}-${activeOpt}` : undefined}
         onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
@@ -367,6 +430,10 @@ function Composer({
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();
             void go();
+          }
+          if (e.key === "Escape" && keepOnEsc) {
+            e.stopPropagation();
+            return;
           }
           if (e.key === "Escape" && (onCancel || !alwaysOpen)) {
             e.stopPropagation();
@@ -422,12 +489,13 @@ function Composer({
             >
               <div className="flex flex-wrap items-center gap-2">
                 {lead}
+                {card && <SendHint id={hintId} />}
                 <div className="ml-auto flex items-center gap-2">
                   {extra}
                   {cancelBtn}
                   <Button
                     size="xs"
-                    className="bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]"
+                    className={`bg-[var(--oa-accent)] text-[var(--oa-accent-text)] hover:bg-[var(--oa-accent-fg)]${card ? " h-8 px-4" : ""}`}
                     disabled={!body || busy}
                     onClick={() => void go()}
                   >
@@ -474,7 +542,7 @@ function Who({
     <div className="flex min-w-0 items-start gap-2">
       <AuthorFace a={a} />
       <div className="flex min-w-0 flex-col self-center">
-        <p className={`m-0 flex min-w-0 items-baseline gap-x-1 ${TXT}`}>
+        <p className={`m-0 flex min-w-0 items-baseline gap-x-1 ${CTXT}`}>
           <b className="min-w-0 truncate" title={a.name}>
             {a.name}
           </b>
@@ -487,7 +555,7 @@ function Who({
             </span>
           )}
           <span
-            className={`${MUTED} shrink-0 whitespace-nowrap`}
+            className={`${MUTED} shrink-0 whitespace-nowrap ${TXT}`}
             title={exactDate(at)}
           >
             {versionDate(at)}
@@ -539,104 +607,114 @@ function CommentRow({
           </Button>
         )}
       </div>
-      {menu && mode === "view" && (
-        <div className="flex gap-2">
-          {c.can.edit && (
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => {
-                setMode("edit");
-                setMenu(false);
-              }}
-            >
-              Edit
-            </Button>
-          )}
-          {c.can.delete && (
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => {
-                setMode("delete");
-                setMenu(false);
-              }}
-            >
-              Delete
-            </Button>
-          )}
-        </div>
-      )}
-      {mode === "edit" ? (
-        <Composer
-          label="Edit comment"
-          placeholder="Edit comment"
-          submit="Save"
-          initial={c.body}
-          autoFocus
-          onCancel={() => setMode("view")}
-          onSubmit={async (body) => {
-            await edit.mutateAsync({ thread: thread.id, comment: c.id, body });
-            setMode("view");
-          }}
-        />
-      ) : c.ask ? (
-        <AskBlock
-          artifactId={api.artifactId}
-          thread={thread}
-          c={c}
-          next={nextAsk ? () => api.reveal(nextAsk) : undefined}
-          reply={api.canComment ? () => api.select(thread.id, true) : undefined}
-          askQuestion={askQuestion}
-          guest={api.guest}
-        />
-      ) : (
-        <p className={`whitespace-pre-wrap break-words ${TXT}`}>
-          <MentionedText
-            body={c.body}
-            mentions={c.mentions}
+      {/* #2118: the face hangs in its own column; the text lines up with the name. */}
+      <div className="flex flex-col gap-1 pl-8" data-comment-body="">
+        {menu && mode === "view" && (
+          <div className="flex gap-2">
+            {c.can.edit && (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  setMode("edit");
+                  setMenu(false);
+                }}
+              >
+                Edit
+              </Button>
+            )}
+            {c.can.delete && (
+              <Button
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  setMode("delete");
+                  setMenu(false);
+                }}
+              >
+                Delete
+              </Button>
+            )}
+          </div>
+        )}
+        {mode === "edit" ? (
+          <Composer
+            label="Edit comment"
+            actions={ACTIONS_PLAIN}
+            placeholder="Edit comment"
+            submit="Save"
+            initial={c.body}
+            autoFocus
+            onCancel={() => setMode("view")}
+            onSubmit={async (body) => {
+              await edit.mutateAsync({
+                thread: thread.id,
+                comment: c.id,
+                body,
+              });
+              setMode("view");
+            }}
+          />
+        ) : c.ask ? (
+          <AskBlock
+            artifactId={api.artifactId}
+            thread={thread}
+            c={c}
+            next={nextAsk ? () => api.reveal(nextAsk) : undefined}
+            reply={
+              api.canComment ? () => api.select(thread.id, true) : undefined
+            }
+            askQuestion={askQuestion}
             guest={api.guest}
           />
-        </p>
-      )}
-      <Delivery c={c} guest={api.guest} />
-      {mode === "delete" && (
-        <div
-          role="alertdialog"
-          aria-label="Delete"
-          className="flex flex-col gap-2"
-        >
-          <p className={TXT}>
-            {root
-              ? "Delete this thread? Its replies go too."
-              : "Delete this reply?"}
+        ) : (
+          <p className={`whitespace-pre-wrap break-words ${CTXT}`}>
+            <MentionedText
+              body={c.body}
+              mentions={c.mentions}
+              guest={api.guest}
+            />
           </p>
-          {delError != null && (
-            <p role="alert" className={`${TXT} text-destructive`}>
-              {commentError(delError, api.capped, errCtx)}
+        )}
+        <Delivery c={c} guest={api.guest} />
+        {mode === "delete" && (
+          <div
+            role="alertdialog"
+            aria-label="Delete"
+            className="flex flex-col gap-2"
+          >
+            <p className={TXT}>
+              {root
+                ? "Delete this thread? Its replies go too."
+                : "Delete this reply?"}
             </p>
-          )}
-          <div className="flex gap-2">
-            <Button
-              size="xs"
-              variant="destructive"
-              disabled={del.isPending}
-              onClick={() => {
-                setDelError(null);
-                del.mutate(
-                  { thread: thread.id, comment: c.id },
-                  { onError: setDelError },
-                );
-              }}
-            >
-              Delete
-            </Button>
-            <Button size="xs" variant="ghost" onClick={() => setMode("view")}>
-              Keep
-            </Button>
+            {delError != null && (
+              <p role="alert" className={`${TXT} text-destructive`}>
+                {commentError(delError, api.capped, errCtx)}
+              </p>
+            )}
+            <div className="flex gap-2">
+              <Button
+                size="xs"
+                variant="destructive"
+                disabled={del.isPending}
+                onClick={() => {
+                  setDelError(null);
+                  del.mutate(
+                    { thread: thread.id, comment: c.id },
+                    { onError: setDelError },
+                  );
+                }}
+              >
+                Delete
+              </Button>
+              <Button size="xs" variant="ghost" onClick={() => setMode("view")}>
+                Keep
+              </Button>
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </li>
   );
 }
@@ -687,19 +765,10 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
           Text changed since this {isAsk ? "ask" : "comment"}
         </p>
       )}
-      <blockquote
-        className={`flex items-start gap-1.5 border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED}`}
-      >
-        <QuoteIcon
-          aria-hidden="true"
-          data-quote-chip=""
-          className="mt-0.5 size-3.5 shrink-0"
-        />
-        <span className="line-clamp-3 min-w-0 break-words">
-          {original ? "Original text: " : ""}
-          {original ? `“${a.exact}”` : a.exact}
-        </span>
-      </blockquote>
+      <QuoteBar>
+        {original ? "Original text: " : ""}
+        {original ? `“${a.exact}”` : a.exact}
+      </QuoteBar>
     </div>
   );
 }
@@ -804,7 +873,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
       data-thread={t.id}
       data-active={isActive ? "" : undefined}
       tabIndex={-1}
-      className="rounded-lg border focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] border-border bg-background p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
+      className="rounded-lg border focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] border-border bg-card p-3 data-[active]:border-ring data-[active]:ring-1 data-[active]:ring-ring"
     >
       <div className="flex flex-col gap-2">
         <button
@@ -870,7 +939,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
           <Button
             size="xs"
             variant="ghost"
-            className="self-start"
+            className="-my-1.5 ml-8 h-auto min-h-6 self-start px-0 py-1.5 max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5"
             onClick={() => api.select(t.id, true)}
           >
             {rest.length === 1 ? "1 reply" : `${rest.length} replies`}
@@ -887,6 +956,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             <Composer
               key="ask"
               label="Question"
+              actions={ACTIONS_PLAIN}
               placeholder={`Ask ${asking} a question`}
               submit="Send"
               autoFocus
@@ -911,8 +981,10 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         ) : api.canComment && isActive ? (
           <>
             {api.guest && <GuestName api={api} />}
+            {!api.guest && !api.capped && <ThreadAgents t={t} api={api} />}
             <Composer
               label="Reply"
+              actions={ACTIONS_PLAIN}
               placeholder="Reply"
               mentionPlaceholder="Reply. Type @ to mention an agent."
               submit="Reply"
@@ -940,7 +1012,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
           </>
         ) : (
           api.canComment && (
-            <div className="flex gap-2">
+            <div className="flex gap-2 pl-8">
               <Button
                 size="xs"
                 variant="outline"
@@ -971,25 +1043,11 @@ function NewThread({ api }: { api: CommentsApi }) {
   if (!draft) return null;
   const guest = api.guest ? { guestName: api.guestName.trim() } : {};
   return (
-    <div
-      className="flex flex-col gap-2 rounded-lg border border-ring bg-background p-3"
-      data-oa-composing=""
-    >
+    <div className="flex flex-col gap-2" data-oa-composing="">
       {api.older && (
         <p className={`${TXT} ${MUTED}`}>
           You're commenting on version {api.version}.
         </p>
-      )}
-      {"pin" in draft ? (
-        <p className={`${TXT} font-medium ${MUTED}`}>
-          {draft.pin.page ? `Page ${draft.pin.page} · ` : ""}New pin
-        </p>
-      ) : (
-        <blockquote
-          className={`border-0 border-l-2 border-l-border pl-2 ${TXT} ${MUTED} line-clamp-3 break-words`}
-        >
-          {draft.anchor.exact}
-        </blockquote>
       )}
       <GuestName api={api} />
       <Composer
@@ -999,6 +1057,17 @@ function NewThread({ api }: { api: CommentsApi }) {
         submit="Comment"
         autoFocus
         buttonsRight
+        card
+        actions={ACTIONS_PLAIN}
+        quote={
+          "pin" in draft ? (
+            <p className={`${TXT} font-medium ${MUTED}`}>
+              {draft.pin.page ? `Page ${draft.pin.page} · ` : ""}New pin
+            </p>
+          ) : (
+            <QuoteBar>{draft.anchor.exact}</QuoteBar>
+          )
+        }
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
         onDirty={api.setDraftDirty}
@@ -1058,8 +1127,9 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         placeholder="Comment on the whole page"
         mentionPlaceholder="Add a comment. Type @ to mention an agent."
         submit="Comment"
-        alwaysOpen={false}
         buttonsRight
+        card
+        keepOnEsc
         actions={ACTIONS_PLAIN}
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
@@ -1104,7 +1174,10 @@ export function CommentsBody({
   grow = true,
   /** The phone sheet's short height, kept for reading one pinned card (#1783). */
   short = false,
+  /** The "Comments" heading with the open count; the phone sheet has its own row. */
+  heading = true,
 }: {
+  heading?: boolean;
   textFormat?: boolean;
   grow?: boolean;
   short?: boolean;
@@ -1119,6 +1192,9 @@ export function CommentsBody({
   const orphans = visible(api.orphans);
   const none = api.threads.length === 0;
   const forMe = asksForMe([...api.ordered, ...api.orphans]);
+  // #2118: one composer at a time: a quote open hides the whole-page box
+  // (mounted still, so a typed note survives) until Cancel or send.
+  const draftOpen = api.draft != null && api.canComment;
   return (
     // #1711: in the short sheet the list keeps its content height (`flex-none`:
     // no grow, no shrink, no zero basis), so the action row's outlet sits after
@@ -1127,10 +1203,17 @@ export function CommentsBody({
     <div
       className={`flex min-h-0 ${grow ? "flex-1" : "flex-none"} flex-col gap-3 p-4`}
     >
-      <div className={`flex items-center justify-between gap-2 ${TXT}`}>
-        <span>{api.listedOpen} open</span>
-        <div className="flex items-center gap-2">
-          {forMe.length > 0 && (
+      {heading && (
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 className={`m-0 font-semibold ${CTXT}`}>Comments</h2>
+          {api.listedOpen > 0 && (
+            <span className={`${TXT} ${MUTED}`}>{api.listedOpen} open</span>
+          )}
+        </div>
+      )}
+      {(forMe.length > 0 || resolvedCount > 0) && (
+        <div className={`flex items-center justify-between gap-2 ${TXT}`}>
+          {forMe.length > 0 ? (
             <AsksForYou
               count={forMe.length}
               onClick={() => {
@@ -1138,21 +1221,23 @@ export function CommentsBody({
                 if (id) api.reveal(id);
               }}
             />
+          ) : (
+            <span />
           )}
           {resolvedCount > 0 && (
-            <Button
-              size="xs"
-              variant="ghost"
+            <button
+              type="button"
               aria-pressed={api.showResolved}
+              className={`-my-1.5 min-h-6 cursor-pointer border-0 bg-transparent px-0 py-1.5 underline max-sm:-my-2.5 max-sm:min-h-8 max-sm:py-2.5 underline-offset-2 hover:text-foreground focus-visible:outline-2 focus-visible:outline-[var(--oa-focus)] ${MUTED}`}
               onClick={() => api.setShowResolved(!api.showResolved)}
             >
               {api.showResolved
                 ? "Hide resolved"
                 : `Show resolved (${resolvedCount})`}
-            </Button>
+            </button>
           )}
         </div>
-      </div>
+      )}
       <Tools api={api} />
       {api.draft && api.canComment && (
         <NewThread
@@ -1165,11 +1250,14 @@ export function CommentsBody({
       {/* #1783: the short sheet is for the pinned card, so the whole-page box
           is not shown there. Hidden with CSS, never unmounted: a typed draft has
           to survive a pin tap, and dragging the sheet up brings the box back. */}
-      <div className={short ? "hidden" : "contents"}>
+      <div
+        hidden={draftOpen}
+        className={short || draftOpen ? "hidden" : "contents"}
+      >
         {api.canComment ? (
           <NoteComposer api={api} />
         ) : (
-          api.guest && <p className={`${TXT} ${MUTED}`}>Sign in to comment.</p>
+          api.guest && <SignInLink box />
         )}
       </div>
       {api.error != null && !api.threads.length ? (

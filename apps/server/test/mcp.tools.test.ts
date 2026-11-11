@@ -133,7 +133,11 @@ describe("MCP tools over PAT", () => {
     expect(got.artifact).toMatchObject({ id: pub.id, format: "markdown" });
     expect(got.version.version).toBe(1);
     // PAT attribution: the token label, no version.
-    expect(got.version.agent).toEqual({ name: "my-agent", version: null });
+    expect(got.version.agent).toEqual({
+      name: "my-agent",
+      version: null,
+      linked: false,
+    });
     expect(textOf(r)).toContain(pub.id);
   });
 
@@ -819,7 +823,11 @@ describe("MCP 2026-07-28 era (per-request envelope)", () => {
       await tool(c, "get_artifact", { id: pub.id }),
     );
     expect(got.content).toBe("# modern");
-    expect(got.version.agent).toEqual({ name: "my-agent", version: null });
+    expect(got.version.agent).toEqual({
+      name: "my-agent",
+      version: null,
+      linked: false,
+    });
     await c.close();
   });
 });

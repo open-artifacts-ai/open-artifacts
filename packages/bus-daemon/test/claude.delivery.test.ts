@@ -224,6 +224,7 @@ describe("claude delivery acknowledgement", () => {
     expect(await t.deliver(agent, mail())).toEqual({
       ok: false,
       reason: "closed",
+      closedBy: "delivery",
     });
     expect(f.seen).toEqual([]);
   });

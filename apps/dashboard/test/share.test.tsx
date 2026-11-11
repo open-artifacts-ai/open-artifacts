@@ -741,3 +741,67 @@ describe("one request per action (useSingleFlight)", () => {
     expect(dels).toHaveLength(1);
   });
 });
+
+describe("share panel: who can comment (#2080)", () => {
+  it("a public artifact offers three choices, each saving its patch", async () => {
+    const bodies = patches();
+    mount(panel(POLL));
+    const group = await screen.findByRole("group", { name: "Who can comment" });
+    const radios = within(group).getAllByRole("radio");
+    expect(radios.map((r) => r.parentElement?.textContent)).toEqual([
+      "Anyone who can open it",
+      "Signed-in people",
+      "Off",
+    ]);
+    expect(
+      within(group).getByText(
+        "Visitors who aren't signed in can read comments but not add them.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(group).getByText("Comments are hidden and nobody can add them."),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      within(group).getByRole("radio", { name: "Signed-in people" }),
+    );
+    await waitFor(() =>
+      expect(bodies).toContainEqual({ comments: "signed-in" }),
+    );
+    fireEvent.click(within(group).getByRole("radio", { name: "Off" }));
+    await waitFor(() => expect(bodies).toContainEqual({ comments: "off" }));
+    fireEvent.click(
+      within(group).getByRole("radio", { name: "Anyone who can open it" }),
+    );
+    await waitFor(() =>
+      expect(bodies).toContainEqual({ comments: "everyone" }),
+    );
+  });
+
+  it("a private artifact offers On and Off only", async () => {
+    const bodies = patches();
+    mount(panel(OWNED));
+    const group = await screen.findByRole("group", { name: "Who can comment" });
+    expect(
+      within(group)
+        .getAllByRole("radio")
+        .map((r) => r.parentElement?.textContent),
+    ).toEqual(["On", "Off"]);
+    expect(within(group).getByRole("radio", { name: "On" })).toBeChecked();
+    fireEvent.click(within(group).getByRole("radio", { name: "Off" }));
+    await waitFor(() => expect(bodies).toContainEqual({ comments: false }));
+  });
+
+  it("an older server (no comments field) hides the section", async () => {
+    server.use(
+      http.get(`*${R.artifact(OWNED)}`, () => {
+        const { comments: _c, ...rest } = fixtures.artifacts.find(
+          (a) => a.id === OWNED,
+        ) as Record<string, unknown>;
+        return HttpResponse.json(rest);
+      }),
+    );
+    mount(panel(OWNED));
+    await screen.findByRole("radiogroup", { name: "Visibility" });
+    expect(screen.queryByRole("group", { name: "Who can comment" })).toBeNull();
+  });
+});
