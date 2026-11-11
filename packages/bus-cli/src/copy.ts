@@ -719,14 +719,16 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     ],
     pluginsKeptSource: (ref?: string) => [
       warn(
-        `Kept the existing Open Artifacts plugin source at ${ref ?? "its default branch"}.`,
+        `Kept the Open Artifacts plugins on ${ref ?? "their default branch"}, as you set them.`,
       ),
     ],
     pluginsBadInstance: () => [
       warn(
-        "Couldn't read this instance's address, so the shortcuts have no instance URL yet.",
+        "Couldn't read this instance's address, so the shortcuts don't know where your pages are yet.",
       ),
-      next("Run: claude plugin configure open-artifacts-shortcuts"),
+      next(
+        "Run: claude plugin configure open-artifacts-shortcuts and enter your instance's URL.",
+      ),
     ],
     pluginsUninstallNoClaude: (manual: string[]) => [
       warn(

@@ -345,7 +345,7 @@ describe("installClaudePlugins", () => {
     expect(f.markets[0]).toMatchObject({ ref: "v0.153.0" });
     expect(f.calls.some((x) => x[3] === "remove")).toBe(false);
     expect(r.notes.join(" ")).toContain(
-      "Kept the existing Open Artifacts plugin source at v0.153.0",
+      "Kept the Open Artifacts plugins on v0.153.0, as you set them.",
     );
     expect(f.updated).toEqual([STYLE_PLUGIN]);
     expect(f.installed).toContain("someone-else@open-artifacts");
@@ -368,7 +368,7 @@ describe("installClaudePlugins", () => {
       false,
     );
     expect(r.notes.join(" ")).toContain(
-      "Kept the existing Open Artifacts plugin source",
+      "Kept the Open Artifacts plugins on their default branch, as you set them.",
     );
     expect(record(w.busHome).marketplace).toBe(false);
   });
