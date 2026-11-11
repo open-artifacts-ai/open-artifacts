@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { claudeTarget, liveClaudeSessions } from "../src/liveness/claude.ts";
+import {
+  claudeTarget,
+  claudeTargetState,
+  liveClaudeSessions,
+} from "../src/liveness/claude.ts";
 import { ClaudeTransport } from "../src/transports/claude.ts";
 import { daemonHarness, deliverFrame, stopAll } from "./helpers.ts";
 
@@ -71,6 +75,25 @@ describe("claude liveness", () => {
     expect(live()).toEqual([]);
     writeSession(d, 4242, { agentBus: true });
     expect(live()).toEqual([]);
+  });
+
+  it("#2110: claudeTargetState tells unknown, dead, gone and unreachable apart", () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const st = (over: object = {}, pid = 4242, ref = "s4242") =>
+      claudeTargetState(ref, pid, {
+        dir: d,
+        procStart: () => "t0",
+        isRunning: () => true,
+        ...over,
+      });
+    expect(st({ procStart: () => null })).toBe("unknown"); // never dead
+    expect(st({ procStart: () => "t1" })).toBe("dead"); // a changed start, not gone
+    expect(st({ isRunning: () => false })).toBe("dead");
+    expect(st({}, 4242, "other")).toBe("gone"); // running, no file lists it
+    expect(st()).toBe("unreachable"); // alive, no peer token
+    writeFileSync(join(d, "4242.json"), '{"pid":4242,');
+    expect(st()).toBe("unknown"); // unreadable file
   });
 
   it("lists a session without a socket, which can send but not receive", () => {

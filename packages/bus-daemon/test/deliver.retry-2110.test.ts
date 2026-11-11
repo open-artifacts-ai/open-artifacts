@@ -166,4 +166,18 @@ describe("local retry of a retryable timeout (#2110)", () => {
     }
     expect(t.closed).toEqual(["liveness", "liveness", "liveness", "delivery"]);
   });
+
+  it("the exhaustion budget expires after 10 minutes", async () => {
+    const t = setup(() => RETRYABLE);
+    for (let i = 1; i <= 3; i++) {
+      t.agent.live = true;
+      await t.d.deliver(frame(`mmmmmmmmmmmmmmm${i}`));
+      await vi.advanceTimersByTimeAsync(22_000);
+    }
+    await vi.advanceTimersByTimeAsync(600_000);
+    t.agent.live = true;
+    await t.d.deliver(frame("mmmmmmmmmmmmmmm4"));
+    await vi.advanceTimersByTimeAsync(22_000);
+    expect(t.closed).toEqual(["liveness", "liveness", "liveness", "liveness"]);
+  });
 });

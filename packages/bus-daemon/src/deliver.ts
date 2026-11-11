@@ -110,12 +110,12 @@ export function createDeliver(ctx: {
    */
   const retry = (frame: DeliverFrame, agent: AgentRecord) => {
     const { msg_id } = frame;
+    if (stopped) return;
     let c = chains.get(msg_id);
     if (!c) {
       c = { n: 0 };
       chains.set(msg_id, c);
     }
-    if (stopped) return;
     if (c.timer) return; // joined: one chain per id
     const chain = c;
     const delay = delays[chain.n];
@@ -129,6 +129,13 @@ export function createDeliver(ctx: {
         );
         recent.push(now);
         exhausted.set(agent.ref, recent);
+        // Drop refs that are gone or whose window has expired.
+        for (const [ref, ts] of exhausted)
+          if (
+            !ctx.agents.byRef(ref) ||
+            ts.every((t) => now - t >= EXHAUST_WINDOW_MS)
+          )
+            exhausted.delete(ref);
         // After EXHAUST_MAX liveness closes in the window it stays closed.
         ctx.onClosed(
           agent,
