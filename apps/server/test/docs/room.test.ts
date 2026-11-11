@@ -32,6 +32,8 @@ interface Client {
   doc: Y.Doc;
   awareness: awarenessProtocol.Awareness;
   texts: string[];
+  /** The hello frames (JSON), kept apart from the room's other text frames. */
+  hellos: string[];
   /** Server state vectors seen in sync step 1. */
   serverSvs: Uint8Array[];
   /** Resolves when `pred` holds (checked on every frame). */
@@ -72,6 +74,7 @@ async function connect(
   const doc = new Y.Doc();
   const awareness = new awarenessProtocol.Awareness(doc);
   const texts: string[] = [];
+  const hellos: string[] = [];
   const serverSvs: Uint8Array[] = [];
   const checks = new Set<() => void>();
   let pongs = 0;
@@ -80,7 +83,8 @@ async function connect(
   );
   ws.addEventListener("message", (e) => {
     if (typeof e.data === "string") {
-      texts.push(e.data);
+      if (e.data.startsWith('{"type":"hello"')) hellos.push(e.data);
+      else texts.push(e.data);
     } else {
       const dec = decoding.createDecoder(new Uint8Array(e.data as ArrayBuffer));
       const type = decoding.readVarUint(dec);
@@ -140,6 +144,7 @@ async function connect(
     doc,
     awareness,
     texts,
+    hellos,
     serverSvs,
     until,
     ping,
@@ -384,7 +389,19 @@ describe("DocRoom sockets", () => {
         [AUTHZ_AT_HEADER]: String(Date.now()),
       },
     });
-    expect(res.status).toBe(429);
+    // A full room joins read-only (room_full), not refused.
+    expect(res.status).toBe(101);
+    const extra = res.webSocket as WebSocket;
+    const first = new Promise<string>((r) =>
+      extra.addEventListener("message", (e) => r(String(e.data))),
+    );
+    extra.accept();
+    expect(JSON.parse(await first)).toMatchObject({
+      type: "hello",
+      role: "read",
+      reason: "room_full",
+    });
+    extra.close();
     // Readers have their own pool.
     await connect(stub, { role: "read", actor: "u:reader" });
     const stub2 = roomStub();

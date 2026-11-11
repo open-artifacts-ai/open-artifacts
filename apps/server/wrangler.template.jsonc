@@ -33,7 +33,6 @@
       { "name": "USER_PRESENCE", "class_name": "UserPresence" },
       { "name": "DIRECTORY_SYNC", "class_name": "DirectorySync" },
       { "name": "BUS_HUB", "class_name": "BusHub" },
-      // #1100: bound one release after the class shipped unbound (tag v5).
       { "name": "DOC_ROOM", "class_name": "DocRoom" }
     ]
   },

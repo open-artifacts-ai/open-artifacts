@@ -47,9 +47,9 @@ import { cappedJson, readCapped } from "../http/body.js";
 import { ApiError, appOrigin } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import type { AppType } from "../routes/index.js";
-import { docsAvailable } from "../services/docs-available.js";
-import { DOC_SWITCH } from "../services/doc-switch.js";
 import { docsNeedPaid, docsUnavailable } from "../services/doc-format.js";
+import { DOC_SWITCH } from "../services/doc-switch.js";
+import { docsAvailable } from "../services/docs-available.js";
 import { type AnonId, resolveAnonId } from "./anon-id.js";
 import {
   ACTOR_HEADER,

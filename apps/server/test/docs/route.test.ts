@@ -1,7 +1,7 @@
 // R.doc (#1100): the doc room socket through the live-socket checks.
 import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { type Member, newId, R } from "@oa/shared";
+import { type Member, newId, R, retryAfterFromClose } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../../src/app.js";
 import { createPat } from "../../src/auth/pat.js";
@@ -64,8 +64,14 @@ const mkDoc = async (visibility: "private" | "team" | "public" = "private") => {
   });
   expect(r.status).toBe(201);
   const id = ((await r.json()) as { id: string }).id;
-  await putShare(env, owner.member, id, { email: editor.email, role: "editor" });
-  await putShare(env, owner.member, id, { email: viewer.email, role: "viewer" });
+  await putShare(env, owner.member, id, {
+    email: editor.email,
+    role: "editor",
+  });
+  await putShare(env, owner.member, id, {
+    email: viewer.email,
+    role: "viewer",
+  });
   return id;
 };
 
@@ -243,15 +249,12 @@ describe("spoofed client headers are ignored", () => {
     expect(h.version).not.toBe(999);
     const ns = env.DOC_ROOM;
     if (!ns) throw new Error("DOC_ROOM unbound");
-    await runInDurableObject(
-      ns.get(ns.idFromName(id)),
-      (r: DocRoom) => {
-        const held = (t: string) => r.ctx.getWebSockets(t).length;
-        expect(held("a:u:somebody-else")).toBe(0);
-        expect(held(`a:u:${viewer.userId}`)).toBe(1);
-        expect(held("role:edit")).toBe(0);
-      },
-    );
+    await runInDurableObject(ns.get(ns.idFromName(id)), (r: DocRoom) => {
+      const held = (t: string) => r.ctx.getWebSockets(t).length;
+      expect(held("a:u:somebody-else")).toBe(0);
+      expect(held(`a:u:${viewer.userId}`)).toBe(1);
+      expect(held("role:edit")).toBe(0);
+    });
     s.ws.close();
   });
 });
@@ -338,10 +341,12 @@ describe("room full, TTL, access change, delete", () => {
     expect(await s.hello).toMatchObject({ role: "edit" });
     await putShare(env, owner.member, id, { email: u.email, role: "viewer" });
     expect((await s.closed).code).toBe(4403);
-    // The reconnect gets the new role.
+    // A reconnect inside the skew window of the change is refused too, with
+    // a retry hint, like the live sockets.
     const again = await sock(id, u.cookie);
-    expect(await again.hello).toMatchObject({ role: "read" });
-    again.ws.close();
+    const c = await again.closed;
+    expect(c.code).toBe(4403);
+    expect(retryAfterFromClose(c.reason)).toBeGreaterThan(0);
   });
 
   it("removing a share closes the socket 4403; a reconnect is 404", async () => {
