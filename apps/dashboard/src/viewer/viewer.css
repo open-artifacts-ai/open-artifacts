@@ -610,6 +610,14 @@ a.oa-lpill-gone {
   height: 100vh;
   /* biome-ignore lint/suspicious/noDuplicateProperties: svh fallback */
   height: 100svh;
+  /* #2172: the app never scrolls the document, and clip (unlike hidden) can't
+     be scrolled by scrollIntoView or focus either. Only the frame and the
+     comments panel scroll, inside themselves. */
+  overflow: clip;
+}
+html:has(.oa-bare),
+html:has(.oa-bare) body {
+  overflow: hidden;
 }
 .oa-bare > .oa-viewer,
 .oa-bare > .oa-vstack {
@@ -683,4 +691,9 @@ a.oa-lpill-gone {
   .oa-resizer::after {
     transition: none;
   }
+}
+/* #2172: the load-error panel fills the body below the toolbar; 100vh would overflow by it. */
+.oa-vbody > .oa-edge {
+  flex: 1;
+  min-height: 0;
 }

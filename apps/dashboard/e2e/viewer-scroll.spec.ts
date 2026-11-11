@@ -1,0 +1,97 @@
+// #2172: the viewer never scrolls the document. The app fills the window; only
+// the frame and the comments panel scroll inside themselves.
+import { expect, type Page, test } from "@playwright/test";
+
+const ID = "Cd5fGhJkLm6nPqRs"; // Landing page
+const TALL = `<!doctype html><body style="margin:0"><div style="height:3000px;background:linear-gradient(#fff,#ccc)">tall</div>`;
+
+test.use({
+  launchOptions: { args: ["--disable-features=LocalNetworkAccessChecks"] },
+});
+
+test.beforeEach(async ({ context }) => {
+  await context.route("https://content.example.com/**", (r) =>
+    r.fulfill({ contentType: "text/html", body: TALL }),
+  );
+});
+
+const doc = (page: Page) =>
+  page.evaluate(() => {
+    const s = document.scrollingElement as HTMLElement;
+    window.scrollTo(0, 99999);
+    return {
+      scrollHeight: s.scrollHeight,
+      innerHeight: innerHeight,
+      scrollY: Math.round(scrollY),
+    };
+  });
+
+async function scrollInner(page: Page) {
+  await page.evaluate(() => {
+    for (const el of document.querySelectorAll<HTMLElement>("*"))
+      if (el.scrollHeight > el.clientHeight + 1) {
+        const o = getComputedStyle(el).overflowY;
+        if (o === "auto" || o === "scroll") el.scrollTop = el.scrollHeight;
+      }
+  });
+}
+
+for (const [w, h] of [
+  [1280, 800],
+  [390, 844],
+] as const)
+  for (const full of [false, true])
+    test(`${w}px${full ? " full screen" : ""}: the document never scrolls`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: w, height: h });
+      await page.goto(`/a/${ID}${full ? "/full" : ""}?mock=agents`);
+      const open = page.getByRole("button", { name: /^Comments/ });
+      await open.click();
+      await expect(
+        page.getByRole("textbox", { name: "Comment on the whole page" }),
+      ).toBeVisible();
+      const before = await doc(page);
+      console.log(`PROBE ${w} full=${full} before`, JSON.stringify(before));
+      await scrollInner(page);
+      const after = await doc(page);
+      console.log(`PROBE ${w} full=${full} after`, JSON.stringify(after));
+      for (const m of [before, after]) {
+        expect(m.scrollHeight).toBe(m.innerHeight);
+        expect(m.scrollY).toBe(0);
+      }
+    });
+
+// The user's repro: expanding "N replies" scrolls the open card into view. A
+// stray overflowing element (a popover, a tall child) must never make the
+// document scroll, and scrolling the card must stay inside the panel.
+for (const [w, h] of [
+  [1280, 800],
+  [390, 844],
+] as const)
+  for (const stray of [false, true])
+    test(`${w}px: expanding replies${stray ? " with an overflowing child" : ""} leaves the document alone`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: w, height: h });
+      await page.goto(`/a/${ID}?mock=agents`);
+      await page.getByRole("button", { name: /^Comments/ }).click();
+      await expect(
+        page.getByRole("textbox", { name: "Comment on the whole page" }),
+      ).toBeVisible();
+      if (stray)
+        await page.evaluate(() => {
+          const d = document.createElement("div");
+          d.style.cssText =
+            "position:absolute;left:0;top:100%;height:300px;width:10px";
+          document.querySelector(".oa-vbody")?.append(d);
+        });
+      await page
+        .getByRole("button", { name: /\d+ replies/ })
+        .first()
+        .click();
+      await page.waitForTimeout(700);
+      const m = await doc(page);
+      expect(m.scrollHeight).toBe(m.innerHeight);
+      expect(m.scrollY).toBe(0);
+    });
