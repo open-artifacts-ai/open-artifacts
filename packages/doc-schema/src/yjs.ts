@@ -64,22 +64,101 @@ export function yXmlFragmentToDoc(fragment: Y.XmlFragment): PMNode {
     );
   }
   const copy = new Y.Doc();
-  Y.applyUpdate(copy, Y.encodeStateAsUpdate(source));
-  let deleted = false;
-  copy.on("afterTransaction", (tr: Y.Transaction) => {
-    if (tr.deleteSet.clients.size > 0) deleted = true;
-  });
-  const node = yXmlFragmentToProseMirrorRootNode(
-    copy.getXmlFragment(key),
-    docSchema,
-  );
-  const lost = deleted;
-  copy.destroy();
-  if (lost) {
-    throw new Error(
-      "The doc has content the schema can't read. Nothing was changed.",
+  const scratch = new Y.Doc();
+  try {
+    Y.applyUpdate(copy, Y.encodeStateAsUpdate(source));
+    let deleted = false;
+    copy.on("afterTransaction", (tr: Y.Transaction) => {
+      if (tr.deleteSet.clients.size > 0) deleted = true;
+    });
+    const copied = copy.getXmlFragment(key);
+    const node = yXmlFragmentToProseMirrorRootNode(copied, docSchema);
+    if (deleted) throw UNREADABLE;
+    node.check();
+    // y-prosemirror also drops things without deleting them (embeds, unknown
+    // attributes). Writing the node back must give the same content.
+    node.descendants((n) => {
+      if (n.isText && (typeof n.text !== "string" || n.text === "")) {
+        throw UNREADABLE;
+      }
+    });
+    const back = scratch.getXmlFragment("check");
+    prosemirrorToYXmlFragment(node, back);
+    if (canonical(back) !== canonical(copied)) throw UNREADABLE;
+    return node;
+  } catch (e) {
+    if (e === UNREADABLE) throw new Error(UNREADABLE.message);
+    throw new Error(UNREADABLE.message, { cause: e });
+  } finally {
+    copy.destroy();
+    scratch.destroy();
+  }
+}
+
+const UNREADABLE = new Error(
+  "The doc has content the schema can't read. Nothing was changed.",
+);
+
+// Attributes Tiptap's own extensions add to what the doc writes (link target,
+// rel and class; null-valued element attributes). They carry no content.
+const TIPTAP_MARK_EXTRAS = new Set(["target", "rel", "class"]);
+
+function stripTiptap(value: unknown, inMark = false): unknown {
+  if (Array.isArray(value)) return value.map((v) => stripTiptap(v, inMark));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(
+          ([k, v]) => v !== null && !(inMark && TIPTAP_MARK_EXTRAS.has(k)),
+        )
+        .map(([k, v]) => [k, stripTiptap(v, inMark)]),
     );
   }
-  node.check();
-  return node;
+  return value;
+}
+
+function sorted(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sorted);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([k, v]) => [k, sorted(v)]),
+    );
+  }
+  return value;
+}
+
+// A structural form of a Y tree: elements with attributes, text deltas with
+// embeds and formats. Two trees with the same form hold the same content.
+function canonical(fragment: Y.XmlFragment): string {
+  const walk = (node: unknown): unknown => {
+    if (node instanceof Y.XmlText) {
+      const delta = (
+        node.toDelta() as { attributes?: Record<string, unknown> }[]
+      ).map((d) =>
+        d.attributes
+          ? {
+              ...d,
+              attributes: Object.fromEntries(
+                Object.entries(d.attributes).map(([k, v]) => [
+                  k,
+                  stripTiptap(v, true),
+                ]),
+              ),
+            }
+          : d,
+      );
+      return { text: sorted(delta) };
+    }
+    if (node instanceof Y.XmlElement) {
+      return {
+        name: node.nodeName,
+        attrs: sorted(stripTiptap(node.getAttributes())),
+        children: node.toArray().map(walk),
+      };
+    }
+    return { other: String(node) };
+  };
+  return JSON.stringify(fragment.toArray().map(walk));
 }

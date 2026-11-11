@@ -263,3 +263,64 @@ describe("link hrefs", () => {
     expect(docToMarkdown(r.doc)).toBe("a **b** c\n");
   });
 });
+
+describe("hostile link attributes", () => {
+  const badHrefs = [
+    "https://a\n\n<script>alert(1)</script>",
+    "https://a b",
+    "https://a<b",
+    'https://a"b',
+    "https://a`b",
+    "mailto:a@b\u0000",
+  ];
+  const badTitles: unknown[] = [
+    'x"\n\n<img src=x onerror=alert(1)>',
+    { x: 1 },
+    "a\nb",
+    5,
+  ];
+  const json = (attrs: object) => ({
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: "x", marks: [{ type: "link", attrs }] },
+        ],
+      },
+    ],
+  });
+  for (const href of badHrefs) {
+    it(`refuses href ${JSON.stringify(href)}`, () => {
+      expect(() => docFromJSON(json({ href }) as never)).toThrow();
+      expect(() => docSchema.marks.link.create({ href })).toThrow();
+    });
+  }
+  for (const title of badTitles) {
+    it(`refuses title ${JSON.stringify(title)}`, () => {
+      expect(() =>
+        docFromJSON(json({ href: "https://a", title }) as never),
+      ).toThrow();
+      expect(() =>
+        docSchema.marks.link.create({ href: "https://a", title }),
+      ).toThrow();
+    });
+  }
+  it("keeps a link with a quote in its title as plain text", () => {
+    const r = markdownToDoc('[x](https://a "t\\"q")\n');
+    expect(r.changes.map((c) => c.kind)).toEqual(["link"]);
+    expect(docToMarkdown(r.doc)).toBe("x\n");
+  });
+
+  it("percent-encodes odd characters, so no raw HTML comes out", () => {
+    for (const md of [
+      "[x](<https://a b>)\n",
+      "[x](https://a`b)\n",
+      "[x](https://a<b)\n",
+    ]) {
+      const out = docToMarkdown(markdownToDoc(md).doc);
+      expect(out).not.toMatch(/[ `<]\S*\)/);
+      expect(markdownToDoc(out).changes).toEqual([]);
+    }
+  });
+});
