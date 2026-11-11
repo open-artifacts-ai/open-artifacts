@@ -569,18 +569,18 @@ describe("bodyHash", () => {
   });
 });
 
-describe("InstallSummary billingTier (#2058)", () => {
-  it("is optional, nullable, and any billing tier", () => {
-    for (const billingTier of [undefined, null, "solo", "free", "team"]) {
-      expect(
-        InstallSummarySchema.safeParse(fixtureSummary({ billingTier } as never))
-          .success,
-      ).toBe(true);
-    }
-    expect(
-      InstallSummarySchema.safeParse(
-        fixtureSummary({ billingTier: "gold" } as never),
-      ).success,
-    ).toBe(false);
+describe("InstallSummary billingTier and billingStatus (#2058)", () => {
+  const parse = (o: Record<string, unknown>) =>
+    InstallSummarySchema.parse({ ...fixtureSummary(), ...o });
+  it("are optional, nullable, and any billing tier and status", () => {
+    for (const billingTier of [undefined, null, "solo", "free", "team"])
+      expect(parse({ billingTier }).billingTier).toBe(billingTier);
+    for (const billingStatus of [undefined, null, "active", "lapsed"])
+      expect(parse({ billingStatus }).billingStatus).toBe(billingStatus);
+  });
+  it("an unknown value from version skew parses to null, never fails", () => {
+    const r = parse({ billingTier: "gold", billingStatus: "frozen" });
+    expect(r.billingTier).toBeNull();
+    expect(r.billingStatus).toBeNull();
   });
 });
