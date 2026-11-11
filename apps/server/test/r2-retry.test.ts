@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  breakerOpen,
   putIdempotent,
   resetBreaker,
   retryingR2,
@@ -125,5 +126,24 @@ describe("R2 transient errors (#2218)", () => {
     const e = withRetries({ FILES: b });
     expect(e.FILES).toBe(e.FILES);
     expect(e.FILES).not.toBe(b);
+  });
+
+  it("R2 failures trip only R2's breaker, and a retried put logs no r2_failed", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const b = fakeBucket(Array.from({ length: 20 }, () => r2Down()));
+    for (let i = 0; i < 5; i++)
+      await retryingR2(b)
+        .get("k")
+        .catch(() => {});
+    expect(breakerOpen(undefined, "r2")).toBe(true);
+    expect(breakerOpen(undefined, "d1")).toBe(false);
+    expect(breakerOpen(undefined, "kv")).toBe(false);
+    resetBreaker();
+    warn.mockClear();
+    const p = fakeBucket([r2Down("put"), "stored"]);
+    await putIdempotent(retryingR2(p), "k", "v");
+    expect(warn.mock.calls.map((c) => String(c[0])).join("")).not.toContain(
+      "r2_failed",
+    );
   });
 });

@@ -456,8 +456,9 @@ describe("breaker", () => {
     ).rejects.toThrow();
     expect(c.calls).toBe(1); // open: fails at once
     const k = fakeKv(new Script([kvDown(), "v"]));
-    await expect(retryingKv(k).get("x")).rejects.toThrow();
-    expect(k.get).toHaveBeenCalledTimes(1);
+    // D1's open breaker leaves KV's retries alone (per store).
+    expect(await retryingKv(k).get("x")).toBe("v");
+    expect(k.get).toHaveBeenCalledTimes(2);
 
     clock += 1_001; // 30 s after opening
     expect(breakerOpen()).toBe(false);
