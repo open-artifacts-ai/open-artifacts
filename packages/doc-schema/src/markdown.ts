@@ -23,6 +23,7 @@ export type ImportChangeKind =
   | "heading_level" // a heading 4 to 6: kept as a paragraph
   | "link" // a link that isn't http(s) or mailto:: kept as plain text
   | "code_language" // a code fence info string that isn't a plain language name: dropped
+  | "heading_break" // a line break inside a heading: became a space
   | "mixed_task_list"; // a list with some task items: kept as a bullet list, "[ ]" as text
 
 export interface ImportChange {
@@ -160,7 +161,11 @@ function tableLines(tokens: Token[], from: number, to: number): string[] {
   return lines;
 }
 
-function rewriteInline(inline: Token, changes: ImportChange[]): void {
+function rewriteInline(
+  inline: Token,
+  changes: ImportChange[],
+  inHeading: boolean,
+): void {
   const children = inline.children;
   if (!children) return;
   const line = lineOf(inline);
@@ -197,6 +202,15 @@ function rewriteInline(inline: Token, changes: ImportChange[]): void {
       const source = `![${child.content}](${src}${title ? ` "${title}"` : ""})`;
       changes.push({ kind: "image", line, text: short(source) });
       return textToken(source, child.level);
+    }
+    // A heading is one line: a break in a (setext) heading becomes a space.
+    if (child.type === "hardbreak" && inHeading) {
+      changes.push({
+        kind: "heading_break",
+        line,
+        text: short(inline.content),
+      });
+      return textToken(" ", child.level);
     }
     return child;
   }
@@ -260,7 +274,8 @@ function rewriteBlocks(tokens: Token[], changes: ImportChange[]): Token[] {
       tokens[close].tag = "p";
       out.push(t);
     } else {
-      if (t.type === "inline") rewriteInline(t, changes);
+      if (t.type === "inline")
+        rewriteInline(t, changes, tokens[i - 1]?.type === "heading_open");
       out.push(t);
     }
   }
@@ -374,8 +389,10 @@ function parserFor(changes: ImportChange[]): MarkdownParser {
  */
 export function markdownToDoc(source: string): MarkdownImport {
   const changes: ImportChange[] = [];
-  const doc = parserFor(changes).parse(source.replace(/\r\n?/g, "\n"));
-  doc.check();
+  // toDocNode rebuilds the doc: a break carries no marks.
+  const doc = toDocNode(
+    parserFor(changes).parse(source.replace(/\r\n?/g, "\n")),
+  );
   return { doc, json: doc.toJSON() as DocJSON, changes };
 }
 
@@ -473,11 +490,10 @@ const serializer = new MarkdownSerializer(
       state.renderContent(node);
     },
     hardBreak(state, node, parent, index) {
-      // A break at the end of a block is dropped. A heading is one line in
-      // Markdown, so a break there is written as a space.
+      // A break at the end of a block is dropped.
       for (let i = index + 1; i < parent.childCount; i++) {
         if (parent.child(i).type !== node.type) {
-          state.write(parent.type.name === "heading" ? " " : "\\\n");
+          state.write("\\\n");
           return;
         }
       }

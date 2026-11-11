@@ -30,14 +30,17 @@ const nodes: Record<string, NodeSpec> = {
         },
       },
     },
-    content: "inline*",
+    // Not "inline*": a heading is one line in Markdown, so a hardBreak there
+    // would be lost on export and re-import. Text is its only inline node
+    // otherwise, so "text*" is the same set without the break.
+    content: "text*",
     group: "block",
     defining: true,
   },
   blockquote: { content: "block+", group: "block", defining: true },
   codeBlock: {
     attrs: { language: { default: null, validate: validateLanguage } },
-   
+    content: "text*",
     marks: "",
     group: "block",
     code: true,
@@ -60,7 +63,8 @@ const nodes: Record<string, NodeSpec> = {
   text: { group: "inline" },
   // Tiptap's HardBreak (Shift+Enter): an inline line break. Wherever inline
   // content is allowed (paragraphs, headings, so list items and quotes too);
-  // never in a code block, where a newline is just text.
+  // never in a heading or a code block (a break carries no marks: toDocNode
+  // strips them), where a newline is just text.
   hardBreak: {
     inline: true,
     group: "inline",

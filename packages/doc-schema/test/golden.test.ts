@@ -160,22 +160,56 @@ describe("hard breaks (#2178)", () => {
     expect(markdownToDoc(md).doc.eq(doc)).toBe(true);
   });
 
-  it("a heading is one line: the break becomes a space", () => {
-    const doc = docSchema.nodeFromJSON({
+  it("is refused in a heading", () => {
+    expect(() =>
+      docSchema
+        .nodeFromJSON({
+          type: "doc",
+          content: [
+            {
+              type: "heading",
+              attrs: { level: 2 },
+              content: [
+                { type: "text", text: "a" },
+                { type: "hardBreak" },
+                { type: "text", text: "b" },
+              ],
+            },
+          ],
+        })
+        .check(),
+    ).toThrow();
+  });
+
+  it("a break in a setext heading imports as a space, reported", () => {
+    const { doc, changes } = markdownToDoc("Foo\\\nbar\n===\n");
+    expect(breakCount(doc)).toBe(0);
+    expect(docToMarkdown(doc)).toBe("# Foo bar\n");
+    expect(changes.map((c) => c.kind)).toEqual(["heading_break"]);
+  });
+
+  it("a break carries no marks: bold across one is two bold runs", () => {
+    const { doc } = markdownToDoc("**a\\\nb**\n");
+    const kids = doc.firstChild?.content.content ?? [];
+    expect(kids.map((k) => k.type.name)).toEqual(["text", "hardBreak", "text"]);
+    expect(kids[1].marks).toEqual([]);
+    expect(docToMarkdown(doc)).toBe("**a**\\\n**b**\n");
+    expect(markdownToDoc(docToMarkdown(doc)).doc.eq(doc)).toBe(true);
+    // JSON from an editor that marked the break is cleaned the same way.
+    const marked = docToMarkdown({
       type: "doc",
       content: [
         {
-          type: "heading",
-          attrs: { level: 2 },
+          type: "paragraph",
           content: [
-            { type: "text", text: "a" },
-            { type: "hardBreak" },
-            { type: "text", text: "b" },
+            { type: "text", text: "a", marks: [{ type: "bold" }] },
+            { type: "hardBreak", marks: [{ type: "bold" }] },
+            { type: "text", text: "b", marks: [{ type: "bold" }] },
           ],
         },
       ],
     });
-    expect(docToMarkdown(doc)).toBe("## a b\n");
+    expect(marked).toBe("**a**\\\n**b**\n");
   });
 
   it("is refused in a code block", () => {

@@ -25,7 +25,11 @@ const tiptapSchema = getSchema([
   }).extend({
     addExtensions() {
       return (this.parent?.() ?? []).map((ext) =>
-        ext.name === "code" ? ext.extend({ excludes: "" }) : ext,
+        ext.name === "code"
+          ? ext.extend({ excludes: "" })
+          : ext.name === "heading"
+            ? ext.extend({ content: "text*" })
+            : ext,
       );
     },
   }),
