@@ -587,6 +587,46 @@ describe("uninstallAdapters: openclaw", () => {
     expect(existsSync(dest)).toBe(false);
   });
 
+  it("removes only our config entry when the folder was deleted by hand", async () => {
+    const { deps, dest, calls } = setup();
+    await installAdapters(deps);
+    const cfgPath = join(
+      openclawStateDir(deps.home, deps.env ?? {}),
+      "openclaw.json",
+    );
+    const other = { enabled: true, config: { k: [1, 2, { z: "a" }] } };
+    const cfg = {
+      theme: "dark",
+      plugins: { entries: { "oa-bus": { enabled: true }, other } },
+    };
+    writeFileSync(cfgPath, `${JSON.stringify(cfg, null, 2)}\n`);
+    rmSync(dest, { recursive: true, force: true });
+    calls.length = 0;
+    const out = await uninstallAdapters(deps);
+    expect(out.removed).toContain("openclaw");
+    expect(calls).toEqual([]);
+    expect(readFileSync(cfgPath, "utf8")).toBe(
+      `${JSON.stringify({ theme: "dark", plugins: { entries: { other } } }, null, 2)}\n`,
+    );
+    const again = await uninstallAdapters(deps);
+    expect(again.removed).not.toContain("openclaw");
+  });
+
+  it("leaves a config it cannot rewrite exactly, with a note", async () => {
+    const { deps, dest } = setup();
+    await installAdapters(deps);
+    const cfgPath = join(
+      openclawStateDir(deps.home, deps.env ?? {}),
+      "openclaw.json",
+    );
+    const text = '{ "plugins": {"entries": {"oa-bus": {}}} }';
+    writeFileSync(cfgPath, text);
+    rmSync(dest, { recursive: true, force: true });
+    const out = await uninstallAdapters(deps);
+    expect(out.removed).not.toContain("openclaw");
+    expect(readFileSync(cfgPath, "utf8")).toBe(text);
+  });
+
   it("is none when nothing is installed", async () => {
     const { deps, calls } = setup();
     const out = await uninstallAdapters(deps);
