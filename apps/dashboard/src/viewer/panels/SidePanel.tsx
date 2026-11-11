@@ -133,21 +133,25 @@ export function SidePanel({
         onValueChange={(t) => isPanelTab(t) && onTab(t)}
         className="min-h-0 flex-1 gap-0"
       >
+        {/* The tabs end before the close button (mr-9) and scroll sideways
+            when the panel is too narrow for all four, never running under it. */}
         <div className="px-4 pt-4">
-          <TabsList
-            variant="line"
-            className="h-auto w-full justify-start gap-1 border-0 border-b border-border p-0 pr-9"
-          >
-            {tabs.map((t) => (
-              <TabsTrigger
-                key={t}
-                value={t}
-                className={`h-[34px] flex-none rounded-sm px-3 ${TXT} ${PROGRAMMATIC}`}
-              >
-                {LABELS[t]}
-              </TabsTrigger>
-            ))}
-          </TabsList>
+          <div className="border-b border-border">
+            <TabsList
+              variant="line"
+              className="mr-9 flex h-auto w-auto justify-start gap-0 overflow-x-auto border-0 p-0 [scrollbar-width:thin]"
+            >
+              {tabs.map((t) => (
+                <TabsTrigger
+                  key={t}
+                  value={t}
+                  className={`h-[34px] flex-none rounded-sm px-2.5 ${TXT} ${PROGRAMMATIC}`}
+                >
+                  {LABELS[t]}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
         </div>
         {/* Versions scrolls its list under a fixed search box; the others scroll whole. */}
         {authed && (
