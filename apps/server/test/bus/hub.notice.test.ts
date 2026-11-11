@@ -1113,7 +1113,8 @@ describe("a notice to a role address (#1752)", () => {
     // A later agent registering the role's name gets a different bus name
     // (the role holds it), so force the clash: the live row wins in the hub.
     const other = uniq("other");
-    s.d.send(up(id("u"), id("ref"), other, s.namespace));
+    const otherRef = id("ref");
+    s.d.send(up(id("u"), otherRef, other, s.namespace));
     const ok = await waitFor(s.d, "agent_ok");
     await inHub(s.userId, (_i, st) => {
       st.storage.sql.exec(
@@ -1125,7 +1126,7 @@ describe("a notice to a role address (#1752)", () => {
     const n = note({ namespace: s.namespace, name: s.role });
     expect(await s.stub.deliverNotice(n)).toBe("delivered");
     const f = await waitFor(s.d, "deliver");
-    expect(f.to_ref).not.toBe(undefined);
+    expect(f.to_ref).toBe(otherRef);
   });
 
   it("a vacant role is an offline agent: the notice is dropped", async () => {
