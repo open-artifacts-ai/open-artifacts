@@ -170,6 +170,7 @@ const DEFAULT_ENTRY = {
   code: "file.txt",
   pdf: "document.pdf",
   image: "image.svg",
+  doc: "doc.md",
 } as const;
 
 /**

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { FORMATS } from "./formats.js";
+import { FORMATS, STORED_FORMATS } from "./formats.js";
 import { PlanViewSchema } from "./hosted/billing.js";
 import {
   ArtifactCanSchema,
@@ -168,50 +168,52 @@ export type PublishEdit = z.infer<typeof PublishEditSchema>;
 /** Most edits in one publish. */
 export const MAX_EDITS = 64;
 
-const PublishShape = z.strictObject({
-  id: z.string().optional(),
-  title: z.string().trim().min(1).max(200).optional(),
-  description: z.string().max(2000).optional(),
-  format: FormatSchema.optional(),
-  content: z.string().optional(),
-  files: z.record(z.string(), InlineFileSchema).optional(),
-  entry: z.string().optional(),
-  language: z.string().optional(),
-  message: z.string().max(500).optional(),
-  visibility: VisibilitySchema.optional(),
-  capabilities: CapabilitiesPatchSchema.optional(),
-  /** #681: who may change live data. Wins over allowAnonymousWrites. */
-  dataWriters: DataWritersSchema.optional(),
-  /** Deprecated (#681): true means dataWriters "viewers"; false, "editors" on a public artifact. */
-  allowAnonymousWrites: z.boolean().optional(),
-  /**
-   * #682, #2080: switch the built-in comments layer, and who may post (owner
-   * and managers). A boolean is on/off (true keeps the current commenters); a
-   * string sets both: "everyone" | "signed-in" (on) or "off".
-   */
-  comments: CommentsSettingSchema.optional(),
-  /**
-   * Hosted M1: the space to create the artifact in (default: the caller's
-   * personal space). Create only: with the id of an existing artifact it is
-   * 400 use_move. A space the caller can't publish to is 403
-   * space_forbidden; so is any create by a capped caller.
-   */
-  spaceId: z.string().optional(),
-  /**
-   * #1216: publish only if this is still the artifact's current version, else
-   * 409 version_conflict (the message gives the current version). Needs `id`.
-   * A settings-only publish with it is 400 (it creates no version).
-   */
-  expectedVersion: z.number().int().min(1).optional(),
-  /**
-   * #1540: small edits to the current version's entry file (html, markdown or
-   * code), applied in order; each `old` must occur exactly once at its step,
-   * else 400 edit_failed and nothing is published. Needs `id`; not with
-   * content, files, entry, format or language. Takes the current version as
-   * its expectedVersion; other files are reused unchanged.
-   */
-  edits: z.array(PublishEditSchema).min(1).max(MAX_EDITS).optional(),
-});
+const publishShape = (format: typeof FormatSchema) =>
+  z.strictObject({
+    id: z.string().optional(),
+    title: z.string().trim().min(1).max(200).optional(),
+    description: z.string().max(2000).optional(),
+    format: format.optional(),
+    content: z.string().optional(),
+    files: z.record(z.string(), InlineFileSchema).optional(),
+    entry: z.string().optional(),
+    language: z.string().optional(),
+    message: z.string().max(500).optional(),
+    visibility: VisibilitySchema.optional(),
+    capabilities: CapabilitiesPatchSchema.optional(),
+    /** #681: who may change live data. Wins over allowAnonymousWrites. */
+    dataWriters: DataWritersSchema.optional(),
+    /** Deprecated (#681): true means dataWriters "viewers"; false, "editors" on a public artifact. */
+    allowAnonymousWrites: z.boolean().optional(),
+    /**
+     * #682, #2080: switch the built-in comments layer, and who may post (owner
+     * and managers). A boolean is on/off (true keeps the current commenters); a
+     * string sets both: "everyone" | "signed-in" (on) or "off".
+     */
+    comments: CommentsSettingSchema.optional(),
+    /**
+     * Hosted M1: the space to create the artifact in (default: the caller's
+     * personal space). Create only: with the id of an existing artifact it is
+     * 400 use_move. A space the caller can't publish to is 403
+     * space_forbidden; so is any create by a capped caller.
+     */
+    spaceId: z.string().optional(),
+    /**
+     * #1216: publish only if this is still the artifact's current version, else
+     * 409 version_conflict (the message gives the current version). Needs `id`.
+     * A settings-only publish with it is 400 (it creates no version).
+     */
+    expectedVersion: z.number().int().min(1).optional(),
+    /**
+     * #1540: small edits to the current version's entry file (html, markdown or
+     * code), applied in order; each `old` must occur exactly once at its step,
+     * else 400 edit_failed and nothing is published. Needs `id`; not with
+     * content, files, entry, format or language. Takes the current version as
+     * its expectedVersion; other files are reused unchanged.
+     */
+    edits: z.array(PublishEditSchema).min(1).max(MAX_EDITS).optional(),
+  });
+const PublishShape = publishShape(FormatSchema);
 
 const refinePublish =
   (tool: boolean) =>
@@ -225,6 +227,13 @@ const refinePublish =
     const hasEdits = v.edits !== undefined;
     const settingsOnly =
       tool && v.id !== undefined && !hasContent && !hasFiles && !hasEdits;
+    // #1100: a new doc may start empty (no content).
+    const emptyDoc =
+      v.format === "doc" &&
+      v.id === undefined &&
+      !hasContent &&
+      !hasFiles &&
+      !hasEdits;
     if (hasEdits) {
       if (v.id === undefined) issue("edits need an id", ["edits"]);
       for (const k of [
@@ -235,7 +244,7 @@ const refinePublish =
         "language",
       ] as const)
         if (v[k] !== undefined) issue(`edits can't be combined with ${k}`, [k]);
-    } else if (hasContent === hasFiles && !settingsOnly) {
+    } else if (hasContent === hasFiles && !settingsOnly && !emptyDoc) {
       issue("Provide exactly one of content or files", [
         hasContent ? "files" : "content",
       ]);
@@ -305,6 +314,23 @@ export const PublishInputSchema = PublishShape.superRefine(
 export const PublishToolInputSchema = PublishShape.superRefine(
   refinePublish(true),
 );
+/** A publish names the doc format on a self-host that isn't on Workers Paid (#1100). */
+export const DOCS_NEED_PAID_MESSAGE =
+  "Collaborative docs need Cloudflare's Workers Paid plan when you self-host. Or use hosted Open Artifacts: Solo is $1 a month.";
+/**
+ * PublishToolInputSchema without the doc format: tools/list and the skill list
+ * only the formats that can be created, and format "doc" is refused with
+ * DOCS_UNAVAILABLE_MESSAGE (#1100).
+ */
+/** A publish names the doc format before docs can be created at all (#1100). */
+export const DOCS_UNAVAILABLE_MESSAGE =
+  "Docs aren't available yet. Publish markdown instead, or leave format out.";
+export const PublishToolInputNoDocSchema = publishShape(
+  z.enum(STORED_FORMATS, {
+    error: (iss) =>
+      iss.input === "doc" ? DOCS_UNAVAILABLE_MESSAGE : undefined,
+  }) as unknown as typeof FormatSchema,
+).superRefine(refinePublish(true));
 export type PublishInput = z.infer<typeof PublishInputSchema>;
 
 export const PublishResultSchema = z.object({
