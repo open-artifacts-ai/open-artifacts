@@ -114,15 +114,12 @@ function transport(
   const home = over.home ?? tmp("ob-cxh-");
   const log = vi.fn();
   const onTaken = vi.fn();
-  // The tick queues an interrupted attempt again through the transport.
-  let tr: CodexTransport | undefined;
   const watch = new TakenWatch({
     home,
     file: over.takenFile ?? join(tmp("ob-cxp-"), "p.json"),
     onTaken,
     log,
     ...(over.scanBudget === undefined ? {} : { scanBudget: over.scanBudget }),
-    requeue: (id, r) => void tr?.requeue(id, r),
   });
   const resolve = vi.fn(over.resolve ?? (() => bin));
   const t = new CodexTransport({
@@ -134,7 +131,6 @@ function transport(
     log,
     ...(over.event ? { event: over.event } : {}),
   });
-  tr = t;
   return { t, home, log, resolve, watch, onTaken };
 }
 
@@ -387,6 +383,41 @@ describe("createDeliver with codex", () => {
 });
 
 describe("the daemon delivers to codex threads", () => {
+  it("an interrupted record found at startup spawns nothing, however long the daemon ticks", async () => {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const home = tmp("ob-cxh-");
+    writeRollout(home, [userItem("something else")]);
+    // As an interrupted attempt is left on disk (a stored text is an older build's).
+    writeFileSync(
+      takenFile,
+      JSON.stringify({
+        mmmmmmmmmmmmmmm1: {
+          state: "attempt",
+          thread: THREAD,
+          at: Date.now(),
+          head: "[oa-bus] head",
+          startOffset: 0,
+          text: "[oa-bus] head\n\nbody",
+        },
+      }),
+    );
+    const one = await daemonHarness({
+      codex: {
+        home,
+        resolveBin: () => ({ path: f.bin, from: "path" as const }),
+        run: execCodex(5_000),
+        wakes: async () => true,
+        takenFile,
+      },
+      claude: { syncMs: 30 },
+    });
+    await one.adapter(THREAD, { kind: "codex" });
+    await new Promise((r) => setTimeout(r, 400));
+    expect(f.runs()).toHaveLength(0);
+    expect(one.of("ack")).toEqual([]);
+  });
+
   it("acks only once a turn takes the queued item, late, and a retry after a restart runs nothing (#2029)", async () => {
     const f = fakeCodex();
     const takenFile = join(tmp("ob-cxp-"), "p.json");
@@ -963,12 +994,10 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     const head = text.split("\n", 1)[0] as string;
     const crash = (takenFile: string, home: string) => {
       const c = new TakenWatch({ home, file: takenFile, onTaken: vi.fn() });
-      expect(c.attempt("mmmmmmmmmmmmmmm1", THREAD, head, undefined, text)).toBe(
-        true,
-      );
+      expect(c.attempt("mmmmmmmmmmmmmmm1", THREAD, head)).toBe(true);
     };
 
-    it("a rollout that grew past one pass without the item: re-queued exactly once, with no further deliver", async () => {
+    it("a restart with an interrupted record spawns nothing on its own: not at load, not on any tick", async () => {
       const f = fakeCodex();
       const takenFile = join(tmp("ob-cxp-"), "p.json");
       const home = tmp("ob-cxh-");
@@ -981,13 +1010,10 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
         { path: f.bin, from: "path" },
         { takenFile, home, scanBudget: 100_000 },
       );
-      for (let i = 0; i < 10; i++) r.watch.check();
-      await vi.waitFor(() => expect(f.runs()).toHaveLength(1));
-      for (let i = 0; i < 10; i++) r.watch.check();
-      await new Promise((res) => setTimeout(res, 100));
-      expect(f.runs()).toHaveLength(1);
-      expect(f.text(0)).toBe(text);
-      expect(r.watch.state("mmmmmmmmmmmmmmm1")).toBe("queued");
+      for (let i = 0; i < 12; i++) r.watch.check();
+      await new Promise((res) => setTimeout(res, 150));
+      expect(f.runs()).toHaveLength(0);
+      expect(r.watch.state("mmmmmmmmmmmmmmm1")).toBe("attempt");
     });
 
     it("the item found later in the grown rollout: acked, nothing re-queued", async () => {
@@ -1010,31 +1036,43 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     });
   });
 
-  it("past its window an attempt is lost and its text is gone from the saved file", () => {
+  it("a replaced rollout resets the scan once, stores the new file's identity, and then reads forward", () => {
     const takenFile = join(tmp("ob-cxp-"), "p.json");
     const home = tmp("ob-cxh-");
-    let now = Date.now();
+    const w = new TakenWatch({ home, file: takenFile, onTaken: vi.fn() });
+    w.attempt("mmmmmmmmmmmmmmm1", THREAD, "[oa-bus] h");
+    w.queued("mmmmmmmmmmmmmmm1");
+    const pad = JSON.stringify({
+      type: "event_msg",
+      payload: { pad: "x".repeat(20_000) },
+    });
+    writeRollout(
+      home,
+      Array.from({ length: 30 }, () => pad),
+    );
+    const recs = JSON.parse(readFileSync(takenFile, "utf8"));
+    // Another file's identity: a different inode and a different first line.
+    Object.assign(recs.mmmmmmmmmmmmmmm1, {
+      ino: 1,
+      sig: "z".repeat(512),
+      scannedTo: 5,
+    });
+    writeFileSync(takenFile, JSON.stringify(recs));
     const mk = () =>
       new TakenWatch({
         home,
         file: takenFile,
         onTaken: vi.fn(),
-        now: () => now,
-        ttlMs: 1000,
+        scanBudget: 100_000,
       });
-    mk().attempt(
-      "mmmmmmmmmmmmmmm1",
-      THREAD,
-      "[oa-bus] h",
-      undefined,
-      "[oa-bus] h\n\nSECRET",
-    );
-    expect(readFileSync(takenFile, "utf8")).toContain("SECRET");
-    now += 5000;
-    const w = mk();
-    w.check();
-    expect(w.state("mmmmmmmmmmmmmmm1")).toBe("lost");
-    expect(readFileSync(takenFile, "utf8")).not.toContain("SECRET");
+    const rec = () =>
+      JSON.parse(readFileSync(takenFile, "utf8")).mmmmmmmmmmmmmmm1;
+    mk().check();
+    const first = rec();
+    expect(first.scannedTo).toBeGreaterThan(0);
+    expect(first.ino).not.toBe(1);
+    mk().check();
+    expect(rec().scannedTo).toBeGreaterThan(first.scannedTo);
   });
 
   describe("a stepped-over partial line is skipped only when the same bytes are read on", () => {
