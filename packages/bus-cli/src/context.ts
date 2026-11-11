@@ -35,6 +35,9 @@ export type ServiceProblem =
  * The OS service that keeps the daemon running: launchd or systemd --user
  * (steps/service.ts). Without one, `oa-bus daemon` runs in a terminal.
  */
+/** Why no service manager is touched: HOME, the bus home or XDG_CONFIG_HOME is outside the account's home (#2099). */
+export type Isolation = "home" | "bus-home" | "xdg";
+
 export type Service = {
   /** The installed service; undefined when none is. */
   kind?: "launchd" | "systemd";
@@ -43,9 +46,9 @@ export type Service = {
    * `running`: a daemon that would not stop holds the socket, and nothing
    * was started.
    */
-  ensure: () => Promise<{ running?: number; skipped?: "home" | "bus-home" }>;
+  ensure: () => Promise<{ running?: number; skipped?: Isolation }>;
   /** HOME or the bus home is not the account's: no service call is made (#2099). */
-  isolated?: "home" | "bus-home";
+  isolated?: Isolation;
   /** install could not start a service and runs the daemon itself. */
   fallback?: boolean;
   /**
@@ -56,7 +59,7 @@ export type Service = {
     unit?: "launchd" | "systemd";
     stopped?: boolean;
     running?: number;
-    skipped?: "home" | "bus-home";
+    skipped?: Isolation;
   }>;
   problems?: () => ServiceProblem[];
   /** The installed service's environment, as install recorded it; empty when none is. */

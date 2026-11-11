@@ -1103,12 +1103,42 @@ describe("#2099: another HOME never reaches the real service manager", () => {
       const { d, calls } = deps(platform, { accountHome: tmp() });
       const s = systemService(d);
       expect(s.isolated).toBe("home");
+      // The bus still runs, as a plain daemon.
       expect(await s.ensure()).toEqual({ skipped: "home" });
+      expect(d.spawnDaemon).toHaveBeenCalledOnce();
+      expect(s.kind).toBeUndefined();
       expect(await s.remove()).toEqual({ skipped: "home" });
       expect(calls).toEqual([]);
       expect(d.exec).not.toHaveBeenCalled();
-      expect(d.spawnDaemon).not.toHaveBeenCalled();
       expect(d.kill).not.toHaveBeenCalled();
+    });
+
+    it(`${platform}: a real HOME with XDG_CONFIG_HOME elsewhere drops no unit and runs no manager`, async () => {
+      const account = tmp();
+      const xdg = tmp();
+      const { d, calls, home } = deps(platform, {
+        userHome: account,
+        accountHome: account,
+        home: () => join(account, ".oa-bus"),
+        env: { PATH: "/usr/bin", XDG_CONFIG_HOME: xdg },
+      });
+      // A unit install recorded under the old XDG: it must survive.
+      const old = join(account, ".config/systemd/user", SYSTEMD_UNIT);
+      mkdirSync(join(old, ".."), { recursive: true });
+      writeFileSync(old, "[Unit]\n");
+      mkdirSync(join(account, ".oa-bus"), { recursive: true });
+      writeFileSync(
+        join(account, ".oa-bus/install.json"),
+        JSON.stringify({ service: { kind: "systemd", unit: old } }),
+      );
+      const s = systemService(d);
+      void home;
+      if (platform === "linux") {
+        expect(s.isolated).toBe("xdg");
+        await s.ensure();
+        expect(calls).toEqual([]);
+        expect(existsSync(old)).toBe(true);
+      } else expect(s.isolated).toBeUndefined();
     });
 
     it(`${platform}: a bus home outside the account's home makes no call`, async () => {
@@ -1137,6 +1167,12 @@ describe("#2099: another HOME never reaches the real service manager", () => {
       expect(calls.length).toBeGreaterThan(0);
     });
   }
+});
+
+describe("#2099: the real context", () => {
+  it("is isolated under a sentinel HOME that is not the account's", () => {
+    expect(realCtx(true).service.isolated).toBe("home");
+  });
 });
 
 describe("#2105: the service PATH drops only transient folders", () => {

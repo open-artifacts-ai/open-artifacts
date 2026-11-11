@@ -1091,7 +1091,7 @@ describe("uninstall: transcript states 9 and 10", () => {
     approve(ctx);
     expect(await uninstall({ purge: false }, ctx)).toBe(0);
     expect(ctx.all().join("\n")).toContain(
-      "Skipped the background service: this HOME isn't your account's home.",
+      "Skipped removing the background service: this HOME isn't your account's home.",
     );
     expect(ctx.all().join("\n")).not.toContain("No service to remove");
   });

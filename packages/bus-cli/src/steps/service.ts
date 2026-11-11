@@ -21,7 +21,7 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BUS_CMD } from "@oa/bus-protocol";
-import type { Service, ServiceProblem } from "../context.ts";
+import type { Isolation, Service, ServiceProblem } from "../context.ts";
 import type { Deps } from "../deps.ts";
 import type { Env } from "../term.ts";
 import { codexHomeEnv } from "./codex.ts";
@@ -321,13 +321,13 @@ function writeReplacing(path: string, text: string): void {
  * The path with symlinks resolved through its nearest existing ancestor, the
  * missing tail appended: identical before and after the path is created.
  */
-const real = (path: string): string => {
+const real = (path: string, native = false): string => {
   const abs = resolve(path);
   try {
-    return realpathSync.native(abs);
+    return (native ? realpathSync.native : realpathSync)(abs);
   } catch {
     const parent = dirname(abs);
-    return parent === abs ? abs : join(real(parent), basename(abs));
+    return parent === abs ? abs : join(real(parent, native), basename(abs));
   }
 };
 
@@ -461,17 +461,19 @@ export function systemService(d: ServiceDeps): Service {
   };
   const installed = () => manager !== undefined && present(file());
   /** HOME or the bus home points away from the account's: its manager is not ours to touch. */
-  const isolated = () => {
+  const isolated = (): Isolation | undefined => {
     if (manager === undefined || d.accountHome === undefined) return undefined;
     // macOS volumes are case-insensitive.
     const fold = (p: string) =>
-      d.platform === "darwin" ? real(p).toLowerCase() : real(p);
+      d.platform === "darwin" ? real(p, true).toLowerCase() : real(p, true);
     const account = fold(d.accountHome);
     if (fold(d.userHome) !== account) return "home";
-    const r = relative(account, fold(home()));
-    return r === "" || (!r.startsWith("..") && !isAbsolute(r))
-      ? undefined
-      : "bus-home";
+    const inside = (p: string) => {
+      const r = relative(account, fold(p));
+      return r === "" || (!r.startsWith("..") && !isAbsolute(r));
+    };
+    if (!inside(home())) return "bus-home";
+    return manager === "systemd" && !inside(configHome) ? "xdg" : undefined;
   };
   const domain = `gui/${d.uid}`;
   const systemctl = (...args: string[]) =>
@@ -552,10 +554,8 @@ export function systemService(d: ServiceDeps): Service {
     },
 
     async ensure() {
-      {
-        const why = isolated();
-        if (why) return { skipped: why };
-      }
+      // Isolated: no service-manager call, but the bus still runs as a daemon.
+      const skipped = isolated();
       const h = home();
       const src = d.source();
       const logs = join(h, "logs");
@@ -579,7 +579,9 @@ export function systemService(d: ServiceDeps): Service {
       // Stop the unit's daemon, then whatever else holds the socket (a
       // terminal's, the fallback's): the service's daemon would find it
       // taken. If it will not stop, start nothing.
-      if (manager === "launchd")
+      if (skipped) {
+        // Nothing of the account's manager is touched.
+      } else if (manager === "launchd")
         await d.exec("launchctl", ["bootout", `${domain}/${names().label}`]);
       else if (manager === "systemd" && installed())
         await systemctl("stop", names().unit);
@@ -590,12 +592,13 @@ export function systemService(d: ServiceDeps): Service {
       const f = fresh();
       // XDG_CONFIG_HOME moved since the last install: drop the old unit.
       const old = recorded();
-      if (old && old !== f) {
+      if (!skipped && old && old !== f) {
         if (manager === "systemd") await systemctl("disable", names().unit);
         rmSync(old, { force: true });
       }
-      const started =
-        manager === "launchd"
+      const started = skipped
+        ? "failed"
+        : manager === "launchd"
           ? await startLaunchd(f, unit)
           : manager === "systemd"
             ? await startSystemd(f, unit)
@@ -614,7 +617,8 @@ export function systemService(d: ServiceDeps): Service {
       }
       // A booted-out daemon can answer a moment longer: wait it out.
       const still = await quiet();
-      if (still !== undefined) return { running: still };
+      if (still !== undefined)
+        return { running: still, ...(skipped ? { skipped } : {}) };
       const pid = d.spawnDaemon(u.node, [u.entry, "daemon"], {
         env: u.env,
         out: u.out,
@@ -623,7 +627,7 @@ export function systemService(d: ServiceDeps): Service {
       updateInstallFile(installFile(), {
         service: { fallback: true, pid } satisfies Record_,
       });
-      return {};
+      return skipped ? { skipped } : {};
     },
 
     async remove() {

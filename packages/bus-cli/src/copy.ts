@@ -1,5 +1,6 @@
 import { displayKind, type StatusFields, statusSaysText } from "@oa/bus-ipc";
 import { type AgentKind, BUS_CMD, BUS_ROUTES } from "@oa/bus-protocol";
+import type { Isolation } from "./context.ts";
 import { box, glyph, paint, type Style, type Tone } from "./term.ts";
 
 /**
@@ -329,11 +330,16 @@ export function copy(style: Style, bus: string = BUS_CMD) {
               next(`Run ${bus} install.`),
             ],
     // install --no-service: the service step is skipped, nothing is started.
-    serviceOtherHome: (why: "home" | "bus-home") => [
+    // install: the bus then runs as a plain daemon (daemonRunning says so).
+    serviceOtherHome: (why: Isolation, removing = false) => [
       warn(
-        why === "home"
-          ? "Skipped the background service: this HOME isn't your account's home. Use --no-service, or run without a custom HOME."
-          : "Skipped the background service: the bus home is outside your account's home. Use --no-service, or run without a custom OA_BUS_HOME.",
+        `Skipped ${removing ? "removing " : ""}the background service: ${
+          why === "home"
+            ? "this HOME isn't your account's home"
+            : why === "bus-home"
+              ? "the bus home is outside your account's home"
+              : "XDG_CONFIG_HOME is outside your account's home"
+        }.${removing ? "" : " Use --no-service to skip it on purpose."}`,
       ),
     ],
     serviceSkipped: () => [
