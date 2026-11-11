@@ -151,6 +151,32 @@ describe("agent CLI guard (#2168)", () => {
       );
     });
 
+    it("scans `--flag=<abs>` words too", () => {
+      expect(() =>
+        cp.spawnSync("node", [`--require=${cli}`, "-e", "0"]),
+      ).toThrow(blocked);
+    });
+
+    it("ignores a shared shim and its siblings", () => {
+      const shim = mkdtempSync(join(tmpdir(), "oa-shim-"));
+      const out = join(dir, "shim-bin");
+      mkdirSync(out);
+      // volta-style: pi and node both point at one shim; pi also -> a .txt
+      writeFileSync(join(out, "volta-shim"), "#!/bin/sh\n");
+      chmodSync(join(out, "volta-shim"), 0o755);
+      symlinkSync(join(out, "volta-shim"), join(out, "pi"));
+      symlinkSync(join(out, "volta-shim"), join(out, "node"));
+      // a JS entry that a non-guarded tool in the same dir also resolves to
+      writeFileSync(join(out, "tool.js"), "");
+      chmodSync(join(out, "tool.js"), 0o755);
+      symlinkSync(join(out, "tool.js"), join(out, "codex"));
+      symlinkSync(join(out, "tool.js"), join(out, "npx"));
+      guardEntriesOn(out);
+      expect(cp.spawnSync("echo", [join(out, "volta-shim")]).status).toBe(0);
+      expect(cp.spawnSync("echo", [join(out, "tool.js")]).status).toBe(0);
+      rmSync(shim, { recursive: true, force: true });
+    });
+
     it("leaves other node scripts alone", () => {
       const r = cp.spawnSync(
         process.execPath,
@@ -238,8 +264,11 @@ describe("agent CLI guard (#2168)", () => {
       const arrays = [
         ...src.matchAll(/setupFiles:\s*\[([^\]]*(?:\([^)]*\)[^\]]*)*)\]/g),
       ];
-      return arrays.length === 0
-        ? ["<no setupFiles>"]
+      // A projects config needs one array per project: a new block without
+      // setupFiles would otherwise ride on a sibling's.
+      const projects = (src.match(/\binclude:/g) ?? []).length;
+      return arrays.length === 0 || arrays.length < projects
+        ? ["<missing setupFiles>"]
         : arrays.map((m) => {
             const entries = (m[1] ?? "")
               .split(/,(?![^(]*\))/)
@@ -251,7 +280,11 @@ describe("agent CLI guard (#2168)", () => {
     const unwired = testConfigs.filter(
       (f) =>
         !(f in skip) &&
-        !lastSetup(f).every((e) => e.includes("agent-cli-guard")),
+        !lastSetup(f).every((e) =>
+          /scripts\/test\/agent-cli-guard\.ts["']|\.\.\/test\/agent-cli-guard\.ts["']/.test(
+            e,
+          ),
+        ),
     );
     expect(unwired).toEqual([]);
     for (const f of Object.keys(skip))

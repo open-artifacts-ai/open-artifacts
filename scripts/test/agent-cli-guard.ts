@@ -45,6 +45,7 @@ import {
   chmodSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   realpathSync,
   rmSync,
   statSync,
@@ -139,16 +140,27 @@ place("HERMES_HOME", ".hermes");
 // `pi -> ../lib/node_modules/.../dist/cli.js` runs the same code as
 // `node <abs>/cli.js`. Anything under the stub dir or a temp dir is left out.
 const ENTRIES = new Set<string>();
+// Kept only when the target looks like the CLI's own entry: a guarded
+// basename or a JS file. A shared shim (volta-shim, mise) is not an entry,
+// nor is a target that a non-guarded executable in the same dir also
+// resolves to (blocking it would block `node`, `npm`, ...).
 export function guardEntriesOn(path: string): void {
-  for (const d of path.split(delimiter))
+  for (const d of path.split(delimiter)) {
+    if (!d) continue;
+    let siblings: string[] | undefined;
     for (const n of AGENT_CLIS) {
-      if (!d) continue;
       const f = join(d, n);
       if (!isExecFile(f)) continue;
       const r = real(f);
-      if (!(under(r, STUB_DIR) || TMP_ROOTS.some((t) => under(r, t))))
-        ENTRIES.add(r);
+      if (under(r, STUB_DIR) || TMP_ROOTS.some((t) => under(r, t))) continue;
+      if (!CLI_SET.has(basename(r)) && !/\.[cm]?js$/.test(r)) continue;
+      siblings ??= readdirSync(d)
+        .filter((e) => !CLI_SET.has(e))
+        .map((e) => real(join(d, e)));
+      if (siblings.includes(r)) continue;
+      ENTRIES.add(r);
     }
+  }
 }
 function isExecFile(p: string): boolean {
   try {
@@ -187,11 +199,12 @@ const WRAPPERS = new Set(["env", "nohup", "exec", "command"]);
 /** Throws on any word that is an absolute path to a real guarded CLI. */
 function scanWords(parts: readonly string[], cwd: string | undefined): void {
   for (const part of parts)
-    for (const w of part.split(/[\s;&|()"'`$<>]+/))
+    for (const w of part.split(/[\s;&|()"'`$<>=]+/))
       if (w.startsWith("/")) {
         const abs = resolve(cwd ?? process.cwd(), w);
         if (CLI_SET.has(basename(w))) refuse(basename(w), abs);
-        else if (ENTRIES.has(real(abs))) refuse(basename(w), real(abs));
+        else if (ENTRIES.size > 0 && ENTRIES.has(real(abs)))
+          refuse(basename(w), real(abs));
       }
 }
 

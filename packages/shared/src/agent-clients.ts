@@ -356,6 +356,9 @@ unset OA_TOKEN`
               // keep env interpolation; only a leading `!` runs a command):
               // https://github.com/nicobailon/pi-mcp-adapter/blob/1382423d353a06146f1b720631dccbfe81a1905d/utils.ts#L146-L180
               // and docs/auth.md "Headers, bearer tokens, and secret commands".
+              // Headers reach it through server-manager.ts:1698-1709 and
+              // utils.ts:228-236 (same commit). An unset OA_TOKEN expands to
+              // an empty string: pi silently sends "Bearer " with no token.
               // Read from source, not run. Pi's own built-in MCP (before the
               // adapter replaces it on pi 0.99+) is not proven to do the same;
               // the file-based `!` form is the proven one (#2193).
