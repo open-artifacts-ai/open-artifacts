@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { lstatSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, isAbsolute, join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { claudeSessionsDir } from "@oa/bus-adapter-claude-code";
 import {
   MIN_PROMPT_ID_VERSION,
@@ -38,7 +38,6 @@ import {
   type Attest,
   attest,
   claudeProcStartOf,
-  commOf,
   procStartOf,
 } from "./attest.ts";
 import {
@@ -506,7 +505,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     ttlMs: cl.syncMs ?? 2000,
     jitter: 0,
   });
-  const ocComm = oc.comm ?? commOf;
   const cx = deps.codex ?? {};
   /** One per daemon: it pins each Codex process's start and the call ids used. */
   /** Hellos admitted from a proxied call (#1856): link_proof only. */
@@ -519,15 +517,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   /** Lock proofs run lsof (about 50-100 ms each), so not on every sync. */
   const relockEvery = cx.relockEvery ?? 15;
   let codexTicks = 0;
-  /** Each OpenCode record's service start time, taken at hello: a reused pid is not that service. */
-  const ocServiceStart = new Map<string, string | null>();
-  const ocServiceGone = (ref: string, pid: number) => {
-    if (!ocRunning(pid)) return true;
-    const comm = ocComm(pid);
-    if (comm !== null && basename(comm) !== "opencode") return true;
-    const start = ocServiceStart.get(ref);
-    return start != null && ocStart(pid) !== start;
-  };
   const presenceDir = oc.presenceDir ?? opencodePresenceDir();
   /** Read on every delivery, hello and tick: the TUI decides, not the adapter's connection. */
   const openCodeSessions =
@@ -1590,17 +1579,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           )
             prev.pid = pid;
         }
-        // `opencode service restart`: the session moves only once its old service is gone.
+        // #1950: a claim through one OpenCode service never blocks the same
+        // agent_ref through another. A real OpenCode process connected to a
+        // service can write a presence file, so attestation alone cannot tell
+        // a session's own service from one that merely lists it. The newer
+        // hello wins and the record follows it; the older service's next
+        // hello wins it back, so neither is ever locked out. This also covers
+        // `opencode service restart`.
         if (
           prev?.live &&
           prev.kind === "opencode" &&
           hello.kind === "opencode" &&
-          prev.pid !== pid &&
-          ocServiceGone(prev.ref, prev.pid)
-        ) {
+          prev.pid !== pid
+        )
           prev.pid = pid;
-          ocServiceStart.set(prev.ref, ocStart(pid));
-        }
         // A thread resumed in another Codex process (attest proved it holds the
         // lock) moves only once its old process is gone or no longer holds it.
         if (
@@ -1695,7 +1687,6 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           cwd,
           live: true,
         });
-        if (rec.kind === "opencode") ocServiceStart.set(rec.ref, ocStart(pid));
         if (rec.kind === "codex") persistCodex();
         if (rec.kind === "claude-code") void claude.revive(rec.ref);
         conns.set(rec.ref, (conns.get(rec.ref) ?? 0) + 1);

@@ -535,8 +535,8 @@ describe("opencode through runDaemon", () => {
         // MCP server 7xxx runs under OpenCode service 8xxx.
         ancestors: (pid) => [pid, pid + 1000, 1],
         comm: (pid) => (pid >= 8000 ? "/usr/local/bin/opencode" : "node"),
-        // TUI 4321 is attached to both services (#1950), so the registry's own
-        // in-use rule is what this test exercises.
+        // TUI 4321 is attached to both services (#1950), so the registry's
+        // per-service policy is what these tests exercise.
         attach: {
           exeOf: (pid) => (pid === 4321 || pid >= 8000 ? "/oc" : null),
           ppidOf: () => null,
@@ -569,19 +569,20 @@ describe("opencode through runDaemon", () => {
     expect(h.of("agent_up")).toEqual([]);
   });
 
-  it("binds a live session to its service: another service cannot take it until that one stops", async () => {
+  it("a claim through one service never blocks the same session through another (#1950)", async () => {
     const dir = presenceDir();
     presence(dir, 4321, ["ses_root"]);
     const alive = new Set([4321, 8001, 8002]);
     const h = await attested(dir, alive);
+    // Service 8001 claims first; service 8002's hello for the same session still succeeds.
     (await h.adapter("ses_root", oc(7001))).close();
     expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
-    await expect(h.adapter("ses_root", oc(7002))).rejects.toThrow(/in use/);
-    // `opencode service restart`: the old service is gone.
-    alive.delete(8001);
     const again = await h.adapter("ses_root", oc(7002));
     expect(again.welcome).toMatchObject({ type: "welcome" });
     expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8002);
+    // The older service is not locked out either: the newer hello wins.
+    (await h.adapter("ses_root", oc(7001))).close();
+    expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
   });
 });
 
