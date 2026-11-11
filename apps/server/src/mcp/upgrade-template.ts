@@ -252,5 +252,7 @@ Then tell the user the upgrade was rolled back, with the \`message\` of the fail
 ## 9. Report
 
 \`GET ${T("origin")}/healthz\` again and tell the user the version that is now running. If it is not the version you upgraded to, say so.
+
+If your user's machines run the agent bus, tell them to update it with \`npx @open-artifacts/bus@latest install\` (see https://open-artifacts.com/docs/agent-bus/).
 `;
 }

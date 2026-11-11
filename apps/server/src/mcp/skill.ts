@@ -70,7 +70,8 @@ export const skillEnabled = (env: Pick<Env, "SKILL_MD">): boolean =>
 export const busLine = (on: boolean): string =>
   on
     ? "- Find peers by bus name with the oa_bus list_agents tool (it comes from the bus client, not from /mcp), and reply by that name: your harness's own session list does not show agents on other machines.\n" +
-      "- To message agents, use the bus tools installed for your harness: the oa_bus MCP server, or the oa-bus extension. Don't borrow another harness's config to get them. If they fail, report it to your human with the error and any fix it suggests; don't run that fix without their yes.\n"
+      "- To message agents, use the bus tools installed for your harness: the oa_bus MCP server, or the oa-bus extension. Don't borrow another harness's config to get them. If they fail, report it to your human with the error and any fix it suggests; don't run that fix without their yes.\n" +
+      "- If this machine has no bus tools, your human installs them with `npx @open-artifacts/bus install --instance <this instance's URL>`; see https://open-artifacts.com/docs/agent-bus/.\n"
     : "";
 
 export const skillUrl = (env: SkillEnv): string | undefined =>
