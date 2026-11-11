@@ -2,6 +2,7 @@
 // BUS_CAPS.ids; a native reply names the agent that wrote (to_id) only when
 // the hub's hello_ok listed ids, and a reply the daemon refuses tells the
 // session, as information.
+
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Server } from "node:net";
@@ -10,6 +11,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { HUB_HELLO_CAPS } from "../src/hub.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
 const dir = () => mkdtempSync(join(tmpdir(), "ob-ids-"));
@@ -112,13 +114,7 @@ const deliver = (from_id?: string) => ({
 describe("reply ids in the daemon", () => {
   it("says hello with the ids cap", async () => {
     const { h } = await session(undefined);
-    expect(h.of("hello")[0]?.caps).toEqual([
-      BUS_CAPS.ids,
-      BUS_CAPS.mailbox,
-      BUS_CAPS.links,
-      BUS_CAPS.follow,
-      BUS_CAPS.link,
-    ]);
+    expect(h.of("hello")[0]?.caps).toEqual([...HUB_HELLO_CAPS]);
   });
 
   it("a reply names the agent that wrote, when the hub listed ids", async () => {

@@ -2,12 +2,14 @@
 // The daemon tells a mailbox hub the new ref replaces the old one, so the
 // address and its mail carry over; a session in another process, or a hub
 // without the cap, never gets `replaces`.
+
 import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { daemonLinkProof } from "@oa/bus-ipc";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { HUB_HELLO_CAPS } from "../src/hub.ts";
 import { daemonHarness, stopAll } from "./helpers.ts";
 
 afterEach(async () => {
@@ -113,13 +115,7 @@ async function start(hubCaps: string[] | undefined) {
 describe("/clear handover in the daemon", () => {
   it("says hello with the ids and mailbox caps", async () => {
     const { h } = await start(undefined);
-    expect(h.of("hello")[0]?.caps).toEqual([
-      BUS_CAPS.ids,
-      BUS_CAPS.mailbox,
-      BUS_CAPS.links,
-      BUS_CAPS.follow,
-      BUS_CAPS.link,
-    ]);
+    expect(h.of("hello")[0]?.caps).toEqual([...HUB_HELLO_CAPS]);
   });
 
   it("same pid, new session id: agent_up replaces the old ref and keeps its name", async () => {
