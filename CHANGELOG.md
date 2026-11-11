@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.156.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.155.0...v0.156.0) (2026-11-11)
+
+
+### Features
+
+* **viewer:** Who can comment, the UI ([#2080](https://github.com/open-artifacts-ai/open-artifacts/issues/2080)) ([#2083](https://github.com/open-artifacts-ai/open-artifacts/issues/2083)) ([e962933](https://github.com/open-artifacts-ai/open-artifacts/commit/e9629336eb167e5143c0f52b9e2702b104aa49ea))
+
+
+### Bug Fixes
+
+* **bus:** log every unresolved /mcp proof lookup ([#2110](https://github.com/open-artifacts-ai/open-artifacts/issues/2110)) ([#2122](https://github.com/open-artifacts-ai/open-artifacts/issues/2122)) ([34723e3](https://github.com/open-artifacts-ai/open-artifacts/commit/34723e3aee534984b83f0da9098e68e485f3087a))
+
 ## [0.155.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.154.0...v0.155.0) (2026-11-11)
 
 
