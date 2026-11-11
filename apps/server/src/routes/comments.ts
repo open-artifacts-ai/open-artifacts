@@ -389,7 +389,7 @@ export function mountComments(app: AppType): void {
     ["put", false],
   ] as const)
     app[method](THREAD_AGENT, async (c) => {
-      const { id, who: cw, level, artifact } = await open(c, "comments.read");
+      const { id, who: cw, level, artifact } = await open(c, "comments.write");
       const threadId = idParam(c, "threadId");
       const key = c.req.param("key") ?? "";
       if (!COMMENT_KEY_RE.test(key))

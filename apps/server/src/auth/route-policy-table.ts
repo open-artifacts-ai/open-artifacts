@@ -268,9 +268,14 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   ),
   [`GET ${ARTS}/agents`]: art("comments.read"),
   // #2035: stop (or undo) a thread's reply notices to one agent. The floor is
-  // read access; the service allows only the agent's person and the owner.
-  [`DELETE ${ARTS}/comments/:threadId/agents/:key`]: art("comments.read"),
-  [`PUT ${ARTS}/comments/:threadId/agents/:key`]: art("comments.read"),
+  // comments.write (never a guest or restricted cap); the service allows only
+  // the agent's person and the owner.
+  [`DELETE ${ARTS}/comments/:threadId/agents/:key`]: art("comments.write", {
+    anon401: COMMENT,
+  }),
+  [`PUT ${ARTS}/comments/:threadId/agents/:key`]: art("comments.write", {
+    anon401: COMMENT,
+  }),
   [`DELETE ${ARTS}/comments/:threadId/comments/:commentId`]:
     art("comments.read"),
   "GET /api/v1/tokens": { user: "the caller's tokens" },
