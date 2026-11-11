@@ -62,22 +62,48 @@ const nodes: Record<string, NodeSpec> = {
 
 // Order matters for Markdown output: marks open in this order, so code is
 // always innermost.
-const ALLOWED_HREF = /^(?:https?|mailto):/i;
+const ALLOWED_HREF =
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it rejects
+  /^(?:https?|mailto):[^\s\u0000-\u001f\u007f-\u009f<>"`\\]*$/i;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: control characters are what it rejects
+const CONTROL_OR_QUOTE = /[\u0000-\u001f\u007f-\u009f"]/;
 
-/** Only http:, https: and mailto: links are allowed (scheme is case-insensitive). */
+/**
+ * Only http:, https: and mailto: links are allowed (scheme is
+ * case-insensitive), with no whitespace, control characters or backslash, < > " `.
+ */
 export function isAllowedHref(href: unknown): href is string {
   return typeof href === "string" && ALLOWED_HREF.test(href);
 }
 
+/** A link title is a string without line breaks, control characters or quotes. */
+export function isAllowedTitle(title: unknown): title is string | null {
+  return (
+    title === null ||
+    (typeof title === "string" && !CONTROL_OR_QUOTE.test(title))
+  );
+}
+
 function validateHref(href: unknown): void {
   if (!isAllowedHref(href)) {
-    throw new RangeError("A link must be http:, https: or mailto:");
+    throw new RangeError("A link must be a plain http:, https: or mailto: URL");
+  }
+}
+
+function validateTitle(title: unknown): void {
+  if (!isAllowedTitle(title)) {
+    throw new RangeError(
+      "A link title must be text without quotes or line breaks",
+    );
   }
 }
 
 const marks: Record<string, MarkSpec> = {
   link: {
-    attrs: { href: { validate: validateHref }, title: { default: null } },
+    attrs: {
+      href: { validate: validateHref },
+      title: { default: null, validate: validateTitle },
+    },
     inclusive: false,
   },
   bold: {},

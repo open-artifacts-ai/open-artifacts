@@ -6,7 +6,7 @@ export {
   type MarkdownImport,
   markdownToDoc,
 } from "./markdown.ts";
-export { docSchema, isAllowedHref } from "./schema.ts";
+export { docSchema, isAllowedHref, isAllowedTitle } from "./schema.ts";
 export {
   DOC_FRAGMENT,
   docFragment,

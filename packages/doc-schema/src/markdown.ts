@@ -7,7 +7,7 @@ import {
 } from "prosemirror-markdown";
 import type { Node as PMNode } from "prosemirror-model";
 import { type DocJSON, docFromJSON } from "./json.ts";
-import { docSchema, isAllowedHref } from "./schema.ts";
+import { docSchema, isAllowedHref, isAllowedTitle } from "./schema.ts";
 
 /** What a Markdown import changed because the doc cannot hold it. */
 export type ImportChangeKind =
@@ -163,7 +163,10 @@ function rewriteInline(inline: Token, changes: ImportChange[]): void {
   inline.children = children.flatMap((child) => {
     if (child.type === "link_open") {
       const href = child.attrGet("href") ?? "";
-      if (!isAllowedHref(href)) {
+      if (
+        !isAllowedHref(href) ||
+        !isAllowedTitle(child.attrGet("title") ?? null)
+      ) {
         changes.push({ kind: "link", line, text: short(href) });
         dropClose = true;
         return [];
