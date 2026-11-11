@@ -528,7 +528,7 @@ describe("opencode through runDaemon", () => {
     alive: Set<number>,
     conn: Set<number> = new Set([8001, 8002]),
     now: () => number = Date.now,
-    failReads: () => boolean = () => false,
+    failReads: (pid: number) => boolean = () => false,
     startOf?: (pid: number) => string | null,
   ) {
     return daemonHarness({
@@ -552,7 +552,7 @@ describe("opencode through runDaemon", () => {
           ppidOf: () => 1,
           // A service holds the accepted end of each TUI connection; the TUI the other end.
           established: (pid) =>
-            failReads()
+            failReads(pid)
               ? null
               : pid >= 8000
                 ? [
@@ -596,7 +596,7 @@ describe("opencode through runDaemon", () => {
     alive: Set<number>,
     conn: Set<number>,
     now?: () => number,
-    failReads?: () => boolean,
+    failReads?: (pid: number) => boolean,
     startOf?: (pid: number) => string | null,
   ) => {
     const dir = presenceDir();
@@ -613,18 +613,18 @@ describe("opencode through runDaemon", () => {
     expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
   });
 
-  it("keeps the incumbent when its attach cannot be read: unknown is not detached (#1950)", async () => {
+  it("keeps the incumbent when only its own socket read fails: the challenger reads fine and is refused as in use (#1950)", async () => {
+    let t = Date.now();
     let flaky = false;
     const h = await claimed(
       new Set([4321, 8001, 8002]),
       new Set([8001, 8002]),
-      undefined,
-      () => flaky,
+      () => t,
+      (pid) => flaky && pid === 8001,
     );
-    flaky = true; // the OS reads for the incumbent's TUI now fail
-    await expect(h.adapter("ses_root", oc(7002))).rejects.toThrow(
-      /not open in a TUI attached|in use/,
-    );
+    t += 3000; // past the attach cache's TTL: the incumbent is read afresh
+    flaky = true; // only service 8001's sockets cannot be read
+    await expect(h.adapter("ses_root", oc(7002))).rejects.toThrow(/in use/);
     expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
   });
 
@@ -661,9 +661,7 @@ describe("opencode through runDaemon", () => {
     const file = join(dir, "4321.json");
     writeFileSync(file, "{torn");
     // Unknown whether 4321 still holds it under 8001: no move.
-    await expect(h.adapter("ses_root", oc(7002))).rejects.toThrow(
-      /not open in a TUI attached|in use/,
-    );
+    await expect(h.adapter("ses_root", oc(7002))).rejects.toThrow(/in use/);
     expect(h.daemon.agents.byRef("ses_root")?.pid).toBe(8001);
     rmSync(file); // 4321 really left
     expect((await h.adapter("ses_root", oc(7002))).welcome).toMatchObject({

@@ -11,6 +11,7 @@ import {
   cachedAttach,
   defaultAttachDeps,
   lsofEstablished,
+  lsofResult,
   parseProcNetTcp,
 } from "../src/presence/attached.ts";
 import { openState } from "../src/presence/opencode.ts";
@@ -259,6 +260,34 @@ describe("parsers", () => {
       { local: "127.0.0.1:5000", remote: "127.0.0.1:49374" },
       { local: "127.0.0.1:6000", remote: "127.0.0.1:49374" },
     ]);
+  });
+});
+
+describe("lsof results (#1950)", () => {
+  const ok = {
+    status: 0,
+    stdout: "p2\nn127.0.0.1:1->127.0.0.1:2\n",
+    stderr: "",
+  };
+  it("exit 1 with nothing printed, for a live pid, is an empty set", () => {
+    const none = { status: 1, stdout: "", stderr: "" };
+    expect(lsofResult(none, true)).toEqual([]);
+    expect(lsofResult(none, false)).toBeNull();
+  });
+  it("every other failure is unknown", () => {
+    expect(lsofResult(ok, true)).toEqual([
+      { local: "127.0.0.1:1", remote: "127.0.0.1:2" },
+    ]);
+    expect(
+      lsofResult({ status: 1, stdout: "", stderr: "lsof: WARNING" }, true),
+    ).toBeNull();
+    expect(
+      lsofResult({ status: 1, stdout: "p2\n", stderr: "" }, true),
+    ).toBeNull();
+    expect(lsofResult({ status: 2, stdout: "", stderr: "" }, true)).toBeNull();
+    expect(
+      lsofResult({ status: null, stdout: "", stderr: "", failed: true }, true),
+    ).toBeNull();
   });
 });
 

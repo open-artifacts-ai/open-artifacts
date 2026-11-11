@@ -1,6 +1,7 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { systemTool } from "@oa/bus-ipc";
+import { isRunning } from "../liveness/claude.ts";
 
 /** Every OS read is bounded like `commOf`: a slow or failing read means "not attached". */
 const READ_TIMEOUT_MS = 1500;
@@ -222,6 +223,27 @@ export function parseLsofNames(text: string): string[] {
     .map((l) => l.slice(1));
 }
 
+/**
+ * lsof exits 1 with nothing on either stream for a live pid that has no
+ * matching sockets: an empty set. Every other failure (a timeout, another
+ * exit code, anything on stderr, a pid that is gone) is unknown.
+ */
+export function lsofResult(
+  r: {
+    status: number | null;
+    stdout: string;
+    stderr: string;
+    failed?: boolean;
+  },
+  alive: boolean,
+): Pair[] | null {
+  if (r.failed) return null;
+  if (r.status === 0) return lsofEstablished(r.stdout);
+  if (r.status === 1 && alive && !r.stdout.trim() && !r.stderr.trim())
+    return [];
+  return null;
+}
+
 /** `[::ffff:127.0.0.1]:5` and `127.0.0.1:5` are one endpoint. */
 function lsofEndpoint(e: string): string {
   const m = /^\[::ffff:(\d+\.\d+\.\d+\.\d+)\](:\d+)$/i.exec(e);
@@ -258,15 +280,23 @@ export const defaultAttachDeps: AttachDeps = {
   },
   established(pid) {
     if (process.platform === "linux") return linuxEstablished(pid);
-    const out = run("lsof", [
-      "-nP",
-      "-a",
-      "-p",
-      String(pid),
-      "-iTCP",
-      "-sTCP:ESTABLISHED",
-      "-Fn",
-    ]);
-    return out === null ? null : lsofEstablished(out);
+    const r = spawnSync(
+      systemTool("lsof"),
+      ["-nP", "-a", "-p", String(pid), "-iTCP", "-sTCP:ESTABLISHED", "-Fn"],
+      {
+        encoding: "utf8",
+        timeout: READ_TIMEOUT_MS,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    return lsofResult(
+      {
+        status: r.status,
+        stdout: r.stdout ?? "",
+        stderr: r.stderr ?? "",
+        failed: r.error !== undefined || r.signal !== null,
+      },
+      isRunning(pid),
+    );
   },
 };
