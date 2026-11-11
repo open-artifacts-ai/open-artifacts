@@ -144,6 +144,33 @@ describe("doc room error frames", () => {
     room.destroy();
   });
 
+  it("after doc_too_large reconnects the provider once to resync", () => {
+    const room = open();
+    fake.connect();
+    expect([fake.connects, fake.disconnects]).toEqual([1, 0]);
+    const frame = JSON.stringify({ type: "error", code: "doc_too_large" });
+    fake.frame(frame);
+    vi.advanceTimersByTime(1);
+    expect([fake.connects, fake.disconnects]).toEqual([2, 1]);
+    expect(room.getSnapshot().error).toBe("doc_too_large");
+    // Synced again: the room is back to Saved, the error still shown.
+    expect(room.getSnapshot().status).toBe("saved");
+    // The new socket is watched too, and a repeat does not reconnect again.
+    fake.frame(frame);
+    vi.advanceTimersByTime(1000);
+    expect([fake.connects, fake.disconnects]).toEqual([2, 1]);
+    room.destroy();
+  });
+
+  it("does not reconnect for other errors", () => {
+    const room = open();
+    fake.connect();
+    fake.frame(JSON.stringify({ type: "error", code: "forbidden" }));
+    vi.advanceTimersByTime(1000);
+    expect([fake.connects, fake.disconnects]).toEqual([1, 0]);
+    room.destroy();
+  });
+
   it("ignores text that is not an error frame", () => {
     const room = open();
     fake.connect();

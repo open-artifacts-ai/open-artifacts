@@ -1,18 +1,33 @@
 import { docSchema, yXmlFragmentToDoc } from "@oa/doc-schema";
 import { TooltipProvider } from "@oa/ui/shadcn";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { Editor, getSchema } from "@tiptap/core";
 import Collaboration from "@tiptap/extension-collaboration";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
+import { CaretActivity, FLAG_MS, renderCaret } from "../src/viewer/doc/cursors";
 import { DocEditor } from "../src/viewer/doc/DocEditor";
+import { isDocArtifact, setMockDoc } from "../src/viewer/doc/docMock";
 import {
   contentExtensions,
   LINK_REFUSED,
   toAllowedHref,
 } from "../src/viewer/doc/extensions";
-import { Toolbar } from "../src/viewer/doc/Toolbar";
+import { ariaShortcut, shortcutText, Toolbar } from "../src/viewer/doc/Toolbar";
 import { fakeProviders } from "./doc-fake-provider";
+
+// Radix's tooltip measures its arrow; jsdom has no ResizeObserver.
+globalThis.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+};
 
 const editors: Editor[] = [];
 afterEach(() => {
@@ -109,9 +124,161 @@ describe("toolbar", () => {
       "Bulleted list",
       "Numbered list",
       "Task list",
-      "Code",
+      "Inline code",
       "Code block",
     ]);
+  });
+
+  it("puts a thin divider before the code buttons, after the lists", () => {
+    setup();
+    const bar = screen.getByRole("toolbar");
+    const seps = [...bar.querySelectorAll(".oa-doc-sep")];
+    expect(seps).toHaveLength(2);
+    expect(seps[1].nextElementSibling).toHaveAttribute("data-tool", "code");
+    expect(seps[1].previousElementSibling).toHaveAttribute("data-tool", "task");
+    expect(seps[1]).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("names every button's shortcut: in a tooltip and in aria-keyshortcuts", async () => {
+    setup();
+    const want: Record<string, [string, string]> = {
+      "Heading 1": ["Ctrl+Alt+1", "Control+Alt+1"],
+      "Heading 2": ["Ctrl+Alt+2", "Control+Alt+2"],
+      "Heading 3": ["Ctrl+Alt+3", "Control+Alt+3"],
+      Bold: ["Ctrl+B", "Control+B"],
+      Italic: ["Ctrl+I", "Control+I"],
+      Link: ["Ctrl+K", "Control+K"],
+      "Bulleted list": ["Ctrl+Shift+8", "Control+Shift+8"],
+      "Numbered list": ["Ctrl+Shift+7", "Control+Shift+7"],
+      "Task list": ["Ctrl+Shift+9", "Control+Shift+9"],
+      "Inline code": ["Ctrl+E", "Control+E"],
+      "Code block": ["Ctrl+Alt+C", "Control+Alt+C"],
+    };
+    for (const [name, [text, aria]] of Object.entries(want)) {
+      const button = screen.getByRole("button", { name });
+      expect(button, name).toHaveAttribute("aria-keyshortcuts", aria);
+      act(() => {
+        fireEvent.focus(button);
+      });
+      const tip = await screen.findByRole("tooltip");
+      expect(tip.textContent, name).toBe(`${name} ${text}`);
+      act(() => {
+        fireEvent.blur(button);
+      });
+    }
+  });
+
+  it("shows the Mac glyphs on a Mac and Ctrl names elsewhere", () => {
+    const h1 = { mod: true, alt: true, key: "1" } as const;
+    expect(shortcutText(h1, true)).toBe("⌘⌥1");
+    expect(shortcutText(h1, false)).toBe("Ctrl+Alt+1");
+    expect(shortcutText({ mod: true, key: "b" }, true)).toBe("⌘B");
+    expect(shortcutText({ mod: true, shift: true, key: "8" }, true)).toBe(
+      "⌘⇧8",
+    );
+    expect(ariaShortcut(h1, true)).toBe("Meta+Alt+1");
+  });
+
+  it("each shown shortcut is the one Tiptap binds", () => {
+    const { editor } = collab("<p>hello world</p>");
+    editor.commands.setTextSelection({ from: 1, to: 6 });
+    const press = (key: string, code: number, mods: object) =>
+      editor.view.someProp("handleKeyDown", (f) =>
+        f(
+          editor.view,
+          new KeyboardEvent("keydown", {
+            key,
+            keyCode: code,
+            ctrlKey: true,
+            ...mods,
+          }),
+        ),
+      );
+    press("b", 66, {});
+    expect(editor.isActive("bold")).toBe(true);
+    press("i", 73, {});
+    expect(editor.isActive("italic")).toBe(true);
+    press("e", 69, {});
+    expect(editor.isActive("code")).toBe(true);
+    press("2", 50, { altKey: true });
+    expect(editor.isActive("heading", { level: 2 })).toBe(true);
+    press("2", 50, { altKey: true });
+    press("8", 56, { shiftKey: true });
+    expect(editor.isActive("bulletList")).toBe(true);
+    press("8", 56, { shiftKey: true });
+    press("7", 55, { shiftKey: true });
+    expect(editor.isActive("orderedList")).toBe(true);
+    press("7", 55, { shiftKey: true });
+    press("9", 57, { shiftKey: true });
+    expect(editor.isActive("taskList")).toBe(true);
+    press("9", 57, { shiftKey: true });
+    press("c", 67, { altKey: true });
+    expect(editor.isActive("codeBlock")).toBe(true);
+  });
+
+  it("Shift+Enter never puts a line break node in a heading (hardBreak is not in the schema yet, #2178)", () => {
+    const { editor } = collab("<h2>Title</h2>");
+    editor.commands.setTextSelection(3);
+    editor.view.someProp("handleKeyDown", (f) =>
+      f(
+        editor.view,
+        new KeyboardEvent("keydown", {
+          key: "Enter",
+          keyCode: 13,
+          shiftKey: true,
+        }),
+      ),
+    );
+    expect(JSON.stringify(editor.getJSON())).not.toContain("hardBreak");
+    expect(editor.schema.nodes.hardBreak).toBeUndefined();
+  });
+
+  it("Mod-K in the editor opens the link popover", async () => {
+    const editor = setup();
+    act(() => {
+      editor.view.dom.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          key: "k",
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    expect(await screen.findByLabelText("Link URL")).toBeVisible();
+  });
+
+  it("shows the formats at the caret as pressed, and follows the selection", () => {
+    const { editor } = collab(
+      "<h2>Title</h2><p>plain <strong>bold</strong> text</p>",
+    );
+    render(
+      <TooltipProvider>
+        <Toolbar editor={editor} />
+      </TooltipProvider>,
+    );
+    const pressed = () =>
+      screen
+        .getAllByRole("button")
+        .filter((b) => b.getAttribute("aria-pressed") === "true")
+        .map((b) => b.getAttribute("aria-label"));
+    act(() => {
+      editor.commands.setTextSelection(3);
+    });
+    expect(pressed()).toEqual(["Heading 2"]);
+    // Inside "bold" (the heading is 7 wide with its tags: p starts at 8).
+    act(() => {
+      editor.commands.setTextSelection(8 + 1 + 6 + 2);
+    });
+    expect(pressed()).toEqual(["Bold"]);
+    act(() => {
+      editor.commands.setTextSelection(8 + 1 + 2);
+    });
+    expect(pressed()).toEqual([]);
+    expect(screen.getByRole("button", { name: "Bold" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
   });
 
   it("toggles marks", () => {
@@ -126,7 +293,7 @@ describe("toolbar", () => {
     expect(editor.isActive("bold")).toBe(false);
     click("Italic");
     expect(editor.isActive("italic")).toBe(true);
-    click("Code");
+    click("Inline code");
     expect(editor.isActive("code")).toBe(true);
   });
 
@@ -296,6 +463,33 @@ describe("DocEditor", () => {
     );
   });
 
+  it("on doc_too_large goes read-only with the size message, then reconnects once", async () => {
+    const p = fakeProviders();
+    render(<DocEditor {...base} canEdit makeProvider={p.make} />);
+    await screen.findByRole("toolbar");
+    const fake = p.made.last as NonNullable<typeof p.made.last>;
+    act(() => fake.connect());
+    expect(fake.connects).toBe(1);
+    const frame = JSON.stringify({ type: "error", code: "doc_too_large" });
+    act(() => fake.frame(frame));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "This doc is at its size limit for your plan.",
+    );
+    await waitFor(() =>
+      expect(
+        document.querySelector(".ProseMirror")?.getAttribute("contenteditable"),
+      ).toBe("false"),
+    );
+    expect(screen.queryByRole("toolbar")).toBeNull();
+    // The provider reconnects to resync: a disconnect, then a connect.
+    await waitFor(() => expect(fake.connects).toBe(2));
+    expect(fake.disconnects).toBe(1);
+    // A second frame does not start a reconnect loop.
+    act(() => fake.frame(frame));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fake.connects).toBe(2);
+  });
+
   it("reports Saving, Saved and Offline for the title bar", async () => {
     const p = fakeProviders();
     const seen: (string | null)[] = [];
@@ -323,5 +517,130 @@ describe("DocEditor", () => {
     const fake = p.made.last;
     view.unmount();
     expect(fake?.destroyed).toBe(true);
+  });
+});
+
+describe("cursor name flags", () => {
+  it("renders a caret with a flag and a collapsed dot; an agent's mark is a square", () => {
+    const user = renderCaret(
+      { name: "Maya", color: "#c2410c", kind: "user" },
+      false,
+    );
+    expect(user.dataset.kind).toBe("user");
+    expect(user.querySelector(".oa-doc-dot")).not.toBeNull();
+    expect(user.querySelector(".oa-doc-flag")?.textContent).toBe("Maya");
+    expect(user.hasAttribute("data-active")).toBe(false);
+    const agent = renderCaret(
+      { name: "Docs agent", color: "#9333ea", kind: "agent" },
+      false,
+    );
+    expect(agent.dataset.kind).toBe("agent");
+    expect(agent.querySelector(".oa-doc-flag-mark")).not.toBeNull();
+  });
+
+  it("opens a flag on a move and closes it after 2 s", () => {
+    vi.useFakeTimers();
+    try {
+      const root = document.createElement("div");
+      const a = renderCaret({ name: "Maya" }, false);
+      const b = renderCaret({ name: "Sam" }, false);
+      root.append(a, b);
+      const activity = new CaretActivity(() => root);
+      activity.touch("Maya");
+      expect(a.hasAttribute("data-active")).toBe(true);
+      expect(b.hasAttribute("data-active")).toBe(false);
+      vi.advanceTimersByTime(FLAG_MS - 1);
+      expect(a.hasAttribute("data-active")).toBe(true);
+      // A move resets the 2 s.
+      activity.touch("Maya");
+      vi.advanceTimersByTime(FLAG_MS - 1);
+      expect(a.hasAttribute("data-active")).toBe(true);
+      vi.advanceTimersByTime(1);
+      expect(a.hasAttribute("data-active")).toBe(false);
+      // A caret built while a flag is open starts open.
+      activity.touch("Sam");
+      expect(renderCaret({ name: "Sam" }, false, activity).dataset.active).toBe(
+        "",
+      );
+      expect(FLAG_MS).toBe(2000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a remote cursor that moves opens its flag in the editor; one that does not, does not", async () => {
+    const p = fakeProviders();
+    render(
+      <DocEditor
+        {...{
+          artifactId: "A1",
+          title: "Plan",
+          viewer: { name: "Leo" },
+          outsider: false,
+        }}
+        canEdit
+        makeProvider={p.make}
+      />,
+    );
+    await screen.findByRole("toolbar");
+    const fake = p.made.last as NonNullable<typeof p.made.last>;
+    act(() => fake.connect());
+    const ydoc = fake.doc;
+    act(() => {
+      ydoc.getXmlFragment("default").insert(0, [new Y.XmlElement("paragraph")]);
+    });
+    const para = ydoc.getXmlFragment("default").get(0) as Y.XmlElement;
+    const text = new Y.XmlText("hello world");
+    act(() => para.insert(0, [text]));
+    const remote = new Y.Doc();
+    const { Awareness, encodeAwarenessUpdate, applyAwarenessUpdate } =
+      await import("y-protocols/awareness");
+    const ra = new Awareness(remote);
+    const at = (i: number) =>
+      Y.relativePositionToJSON(Y.createRelativePositionFromTypeIndex(text, i));
+    const send = (
+      i: number,
+      user = { name: "Maya Chen", color: "#c2410c", kind: "user" },
+    ) => {
+      ra.setLocalState({ user, cursor: { anchor: at(i), head: at(i) } });
+      applyAwarenessUpdate(
+        fake.awareness,
+        encodeAwarenessUpdate(ra, [ra.clientID]),
+        "remote",
+      );
+    };
+    const caret = () =>
+      document.querySelector<HTMLElement>(
+        '.oa-doc-caret[data-key="Maya Chen"]',
+      );
+    send(3);
+    await waitFor(() => expect(caret()).not.toBeNull());
+    expect(caret()?.hasAttribute("data-active")).toBe(true);
+    await waitFor(
+      () => expect(caret()?.hasAttribute("data-active")).toBe(false),
+      {
+        timeout: FLAG_MS + 1500,
+      },
+    );
+    // The same position again (a heartbeat): no flag.
+    send(3);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(caret()?.hasAttribute("data-active")).toBe(false);
+    // A move: open again.
+    send(6);
+    await waitFor(() =>
+      expect(caret()?.hasAttribute("data-active")).toBe(true),
+    );
+  }, 10000);
+});
+
+describe("isDocArtifact", () => {
+  it("is the doc format, or the mock's named id", () => {
+    expect(isDocArtifact({ id: "a", format: "doc" })).toBe(true);
+    expect(isDocArtifact({ id: "a", format: "markdown" })).toBe(false);
+    setMockDoc("m");
+    expect(isDocArtifact({ id: "m", format: "html" })).toBe(true);
+    setMockDoc(null);
+    expect(isDocArtifact({ id: "m", format: "html" })).toBe(false);
   });
 });

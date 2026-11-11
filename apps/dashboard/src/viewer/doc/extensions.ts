@@ -7,7 +7,13 @@ import type { Fragment, Mark } from "@tiptap/pm/model";
 import { Plugin } from "@tiptap/pm/state";
 import StarterKit from "@tiptap/starter-kit";
 import type * as Y from "yjs";
-import { renderCaret, renderSelection } from "./cursors";
+import {
+  CaretActivity,
+  type CaretUser,
+  caretKey,
+  renderCaret,
+  renderSelection,
+} from "./cursors";
 
 /** The one message for a link the doc would refuse. */
 export const LINK_REFUSED =
@@ -73,6 +79,57 @@ export interface DocUser {
   name: string;
   color: string;
   kind: "user" | "agent";
+  /** Our Y.Doc client id, so other tabs can tell two carets of one name apart. */
+  cid?: number;
+}
+
+/**
+ * Opens a remote caret's name flag when that client's cursor moves (or first
+ * appears). Reads the provider's awareness; never writes to it.
+ */
+function caretFlags(
+  // biome-ignore lint/suspicious/noExplicitAny: Tiptap types the provider as any.
+  provider: any,
+  activity: CaretActivity,
+) {
+  return Extension.create({
+    name: "caretFlags",
+    addProseMirrorPlugins() {
+      return [
+        new Plugin({
+          view() {
+            const awareness = provider.awareness;
+            const last = new Map<number, string>();
+            const onChange = (c: {
+              added: number[];
+              updated: number[];
+              removed: number[];
+            }) => {
+              for (const id of c.removed) last.delete(id);
+              for (const id of [...c.added, ...c.updated]) {
+                if (id === awareness.clientID) continue;
+                const state = awareness.getStates().get(id) as
+                  | { user?: CaretUser; cursor?: unknown }
+                  | undefined;
+                const cursor = JSON.stringify(state?.cursor ?? null);
+                if (!state?.user || !state.cursor) continue;
+                if (last.get(id) === cursor) continue;
+                last.set(id, cursor);
+                activity.touch(caretKey(state.user));
+              }
+            };
+            awareness.on("change", onChange);
+            return {
+              destroy() {
+                awareness.off("change", onChange);
+                activity.destroy();
+              },
+            };
+          },
+        }),
+      ];
+    },
+  });
 }
 
 /**
@@ -126,14 +183,18 @@ export function collabExtensions(opts: {
   user: DocUser;
   /** Signed-out or guest viewers never see agent details. */
   outsider: boolean;
+  /** Where the carets live, for the flag timers; the editor's DOM. */
+  root?: () => ParentNode | null;
 }): Extensions {
+  const activity = new CaretActivity(opts.root ?? (() => document));
   return [
     Collaboration.configure({ document: opts.ydoc, field: "default" }),
     CollaborationCaret.configure({
       provider: opts.provider,
-      user: opts.user,
-      render: (u) => renderCaret(u, opts.outsider),
+      user: { ...opts.user, cid: opts.ydoc.clientID },
+      render: (u) => renderCaret(u, opts.outsider, activity),
       selectionRender: (u) => renderSelection(u, opts.outsider),
     }),
+    caretFlags(opts.provider, activity),
   ];
 }

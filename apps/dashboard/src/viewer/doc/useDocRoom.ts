@@ -12,12 +12,14 @@ const DRAIN_POLL_MS = 50;
 export type DocStatus = "connecting" | "saving" | "saved" | "offline";
 
 export const DOC_TOO_LARGE = "This doc is at its size limit for your plan.";
+/** The server's code for a rejected write that would grow the doc past its limit. */
+export const DOC_TOO_LARGE_CODE = "doc_too_large";
 const GENERIC_ERROR = "This doc can't save changes right now.";
 
 /** The error copy for a server error code, or null for none. */
 export function errorCopy(code: string | null): string | null {
   if (!code) return null;
-  return code === "doc_too_large" ? DOC_TOO_LARGE : GENERIC_ERROR;
+  return code === DOC_TOO_LARGE_CODE ? DOC_TOO_LARGE : GENERIC_ERROR;
 }
 
 export interface DocSnapshot {
@@ -40,6 +42,9 @@ export interface RoomProvider {
   // biome-ignore lint/suspicious/noExplicitAny: as above.
   off(event: string, cb: (...a: any[]) => void): void;
   destroy(): void;
+  /** y-websocket's socket control; the room uses them to resync after doc_too_large. */
+  disconnect?(): void;
+  connect?(): void;
   // y-websocket's own senders. The room replaces them with batched ones.
   _updateHandler?: (update: Uint8Array, origin: unknown) => void;
   _awarenessUpdateHandler?: (
@@ -100,6 +105,8 @@ export function createDocRoom(
   let batchTimer: ReturnType<typeof setTimeout> | undefined;
   let drainTimer: ReturnType<typeof setTimeout> | undefined;
   let error: string | null = null;
+  let resynced = false;
+  let destroyed = false;
 
   const compute = (): DocStatus => {
     if (!connected) return sawDisconnect ? "offline" : "connecting";
@@ -201,6 +208,17 @@ export function createDocRoom(
         if (frame.type === "error") {
           error = typeof frame.code === "string" ? frame.code : "error";
           publish();
+          // The server dropped that edit and y-protocols will not send it
+          // again: reconnect (once) so the sync exchange brings us back to
+          // what the server holds. The editor is read-only meanwhile.
+          if (error === DOC_TOO_LARGE_CODE && !resynced) {
+            resynced = true;
+            setTimeout(() => {
+              if (destroyed) return;
+              provider.disconnect?.();
+              provider.connect?.();
+            }, 0);
+          }
         }
       } catch {
         // Not JSON: ignore.
@@ -239,6 +257,7 @@ export function createDocRoom(
     },
     getSnapshot: () => snapshot,
     destroy() {
+      destroyed = true;
       clearTimeout(batchTimer);
       clearTimeout(drainTimer);
       // Send what is still waiting, then leave.

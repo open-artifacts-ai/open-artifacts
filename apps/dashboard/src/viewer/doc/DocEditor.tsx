@@ -1,5 +1,5 @@
 import { EditorContent, useEditor } from "@tiptap/react";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type * as Y from "yjs";
 import { colorFor } from "./cursors";
 import {
@@ -9,6 +9,7 @@ import {
 } from "./extensions";
 import { Toolbar } from "./Toolbar";
 import {
+  DOC_TOO_LARGE_CODE,
   type DocStatus,
   defaultProvider,
   errorCopy,
@@ -69,6 +70,10 @@ function Loaded({
     () => ({ name, color: colorFor(name), kind: "user" }),
     [name],
   );
+  const page = useRef<HTMLDivElement>(null);
+  // At the size limit the server refuses edits: read-only until it is under.
+  const tooLarge = error === DOC_TOO_LARGE_CODE;
+  const editable = canEdit && !tooLarge;
   const extensions = useMemo(
     () => [
       ...contentExtensions(),
@@ -77,6 +82,7 @@ function Loaded({
         provider: room.provider,
         user,
         outsider,
+        root: () => page.current,
       }),
     ],
     [room, user, outsider],
@@ -84,7 +90,7 @@ function Loaded({
   const editor = useEditor(
     {
       extensions,
-      editable: canEdit,
+      editable,
       editorProps: {
         attributes: {
           class: "oa-doc-prose",
@@ -99,19 +105,21 @@ function Loaded({
     [extensions],
   );
   useEffect(() => {
-    editor?.setEditable(canEdit);
-  }, [editor, canEdit]);
+    editor?.setEditable(editable);
+  }, [editor, editable]);
   const message = errorCopy(error);
   return (
-    <div className="oa-doc" data-editable={canEdit ? "" : undefined}>
-      {canEdit && editor && <Toolbar editor={editor} />}
+    <div className="oa-doc" data-editable={editable ? "" : undefined}>
+      {editable && editor && <Toolbar editor={editor} />}
       {message && (
         <p role="alert" className="oa-doc-error">
           {message}
         </p>
       )}
       <div className="oa-doc-scroll">
-        <EditorContent editor={editor} className="oa-doc-page" />
+        <div ref={page} className="oa-doc-page">
+          <EditorContent editor={editor} />
+        </div>
       </div>
     </div>
   );

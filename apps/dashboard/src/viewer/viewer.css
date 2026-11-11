@@ -744,6 +744,466 @@ html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
   min-height: 0;
   overflow-y: auto;
 }
+/*
+ * The editing column mirrors how a Markdown artifact renders (packages/render/
+ * src/theme.css, .oa-doc): the same measure, sizes, line heights and spacing,
+ * so switching between reading and editing does not move the text. Keep the
+ * two in step; e2e/doc-editor-shots.spec.ts overlays one on the other.
+ */
+.oa-doc-page {
+  max-width: 70ch;
+  margin: 0 auto;
+  padding: 48px 24px 96px;
+  box-sizing: content-box;
+  font-family: var(--oa-font-sans);
+  font-size: 16px;
+  line-height: 1.65;
+  overflow-wrap: break-word;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+.oa-doc-prose {
+  outline: none;
+  color: var(--oa-text);
+  min-height: 50vh;
+}
+.oa-doc-prose > :first-child {
+  margin-top: 0;
+}
+.oa-doc-prose :is(h1, h2, h3) {
+  color: var(--oa-text);
+  font-weight: 600;
+  text-wrap: balance;
+}
+.oa-doc-prose h1 {
+  margin: 48px 0 14px;
+  font-size: 32px;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+.oa-doc-prose h2 {
+  margin: 44px 0 10px;
+  font-size: 21px;
+  line-height: 1.3;
+  letter-spacing: -0.015em;
+}
+.oa-doc-prose h3 {
+  margin: 30px 0 6px;
+  font-size: 17px;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+.oa-doc-prose p {
+  margin: 0 0 16px;
+}
+.oa-doc-prose strong {
+  font-weight: 600;
+}
+.oa-doc-prose a {
+  color: var(--oa-accent-fg);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  cursor: text;
+}
+.oa-doc-prose a:hover {
+  text-decoration-color: currentColor;
+}
+.oa-doc-prose :is(ul, ol) {
+  margin: 0 0 16px;
+  padding-left: 1.5em;
+}
+.oa-doc-prose ul {
+  list-style: disc;
+}
+.oa-doc-prose ol {
+  list-style: decimal;
+}
+.oa-doc-prose ul ul {
+  list-style-type: circle;
+}
+.oa-doc-prose ul ul ul {
+  list-style-type: square;
+}
+.oa-doc-prose li {
+  margin: 4px 0;
+  padding-left: 2px;
+}
+.oa-doc-prose li > :is(ul, ol) {
+  margin: 4px 0 0;
+}
+/* A rendered tight list has no <p>; the editor always has one. */
+.oa-doc-prose li > p {
+  margin: 0;
+}
+.oa-doc-prose li > p + p {
+  margin-top: 8px;
+}
+.oa-doc-prose li::marker {
+  color: var(--oa-text-muted);
+}
+.oa-doc-prose ol > li::marker {
+  font-variant-numeric: tabular-nums;
+}
+/* Task lists: the kit checkbox (packages/ui shadcn/ui/checkbox.tsx) in the
+   rendered position. */
+.oa-doc-prose ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0;
+}
+.oa-doc-prose ul[data-type="taskList"] li {
+  position: relative;
+  padding-left: 26px;
+}
+.oa-doc-prose ul[data-type="taskList"] li > label {
+  position: absolute;
+  left: 0;
+  top: 0.32em;
+  display: block;
+  line-height: 0;
+  user-select: none;
+}
+.oa-doc-prose ul[data-type="taskList"] li > div {
+  min-width: 0;
+}
+.oa-doc-prose ul[data-type="taskList"] li > div > :last-child {
+  margin-bottom: 0;
+}
+.oa-doc-prose ul[data-type="taskList"] ul[data-type="taskList"] {
+  padding-left: 0;
+}
+.oa-doc-prose ul[data-type="taskList"] li[data-checked="true"] {
+  color: var(--oa-text-muted);
+}
+.oa-doc-prose input[type="checkbox"] {
+  appearance: none;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  border: 1px solid var(--input);
+  border-radius: 4px;
+  background: var(--card);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.05);
+  cursor: pointer;
+  transition: box-shadow var(--oa-duration-fast) var(--oa-ease);
+}
+.oa-doc-prose input[type="checkbox"]:checked {
+  border-color: var(--primary);
+  background: var(--primary);
+}
+.oa-doc-prose input[type="checkbox"]:checked::after {
+  content: "";
+  width: 4px;
+  height: 8px;
+  margin-top: -2px;
+  border: solid var(--primary-foreground);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.oa-doc-prose input[type="checkbox"]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+.oa-doc-prose input[type="checkbox"]:disabled {
+  cursor: default;
+}
+.oa-doc-prose blockquote {
+  margin: 20px 0 24px;
+  padding: 2px 0 2px 16px;
+  border-left: 3px solid var(--oa-border);
+  color: var(--oa-text-2);
+}
+.oa-doc-prose blockquote > :last-child {
+  margin-bottom: 0;
+}
+.oa-doc-prose hr {
+  height: 1px;
+  margin: 40px 0;
+  border: 0;
+  background: var(--oa-divider);
+}
+.oa-doc-prose :is(code, samp) {
+  font-family: var(--oa-font-mono);
+  font-size: 0.875em;
+}
+.oa-doc-prose :not(pre) > code {
+  padding: 0.1em 0.35em;
+  border: 1px solid var(--oa-divider);
+  border-radius: var(--oa-radius-sm);
+  background: var(--oa-surface-2);
+  overflow-wrap: anywhere;
+}
+.oa-doc-prose pre {
+  margin: 8px 0 24px;
+  padding: 14px 16px;
+  overflow-x: auto;
+  border: 1px solid var(--oa-divider);
+  border-radius: var(--oa-radius-md);
+  background: var(--oa-surface-2);
+  color: var(--oa-text);
+  font: 400 14px / 1.6 var(--oa-font-mono);
+  tab-size: 2;
+}
+.oa-doc-prose pre code {
+  font-size: inherit;
+}
+.oa-docstate {
+  font-size: var(--oa-text-xs);
+  color: var(--oa-text-muted);
+  white-space: nowrap;
+}
+/* Remote cursors: a 2px caret. Its name flag opens for 2 s after the cursor
+   moves, or while the caret is hovered; collapsed, a dot (an agent: a rounded
+   square) marks the caret. */
+.oa-doc-caret {
+  position: relative;
+  margin-left: -1px;
+  margin-right: -1px;
+  border-left: 2px solid var(--oa-caret);
+  word-break: normal;
+}
+/* A wider target for the hover, around the 2px line. */
+.oa-doc-caret::before {
+  content: "";
+  position: absolute;
+  top: -0.25em;
+  bottom: 0;
+  left: -7px;
+  width: 12px;
+}
+.oa-doc-dot {
+  position: absolute;
+  top: -3px;
+  left: -4px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--oa-caret);
+  opacity: 1;
+  transition: opacity 150ms var(--oa-ease);
+  pointer-events: none;
+}
+.oa-doc-caret[data-kind="agent"] .oa-doc-dot {
+  border-radius: 2px;
+}
+.oa-doc-flag {
+  position: absolute;
+  top: -1.45em;
+  left: -2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  font-style: normal;
+  white-space: nowrap;
+  user-select: none;
+  color: var(--oa-flag-fg);
+  background: var(--oa-caret);
+  border-radius: 999px;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 150ms var(--oa-ease),
+    visibility 150ms;
+  pointer-events: none;
+}
+.oa-doc-caret:is([data-active], :hover) .oa-doc-flag {
+  opacity: 1;
+  visibility: visible;
+}
+.oa-doc-caret:is([data-active], :hover) .oa-doc-dot {
+  opacity: 0;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oa-doc-flag,
+  .oa-doc-dot {
+    transition: none;
+  }
+}
+.oa-doc-flag[data-kind="agent"] {
+  border-radius: 4px;
+  padding-left: 4px;
+}
+.oa-doc-flag-mark {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--oa-flag-fg);
+  opacity: 0.85;
+}
+.oa-doc-selection {
+  background-color: color-mix(in srgb, var(--oa-caret) 22%, transparent);
+}
+.oa-doc-keys {
+  margin-left: 6px;
+  opacity: 0.7;
+}
+.oa-doc-toolbar button[aria-pressed="true"] {
+  background: var(--oa-accent-soft);
+  color: var(--oa-accent-fg);
+}
+@media (max-width: 600px) {
+  .oa-doc-page {
+    padding: 28px 16px 64px;
+  }
+  .oa-doc-prose h1 {
+    font-size: 26px;
+  }
+  .oa-doc-prose h2 {
+    font-size: 19px;
+  }
+}
+/* #2172: with a viewer mounted the app never scrolls the document, and clip
+   (unlike hidden) can't be scrolled by scrollIntoView or focus either. Only
+   the frame and the comments panel scroll, inside themselves. The full-page
+   panels (not public, not found, error) have no viewer and keep scrolling. */
+.oa-bare:has(> .oa-viewer, > .oa-vstack) {
+  overflow: clip;
+}
+html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack),
+html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
+  overflow: hidden;
+}
+.oa-bare > .oa-viewer,
+.oa-bare > .oa-vstack {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+}
+/* A tall full-page panel scrolls inside the column; it is never clipped at the top. */
+.oa-bare > .oa-edge {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.oa-bare > .oa-vstack {
+  grid-template-rows: minmax(0, 1fr);
+}
+.oa-bare .oa-vlayer > .oa-viewer {
+  height: 100%;
+}
+
+/* Presence (#949, 4A): one set of nine, no dark override; white on each. */
+:root {
+  --oa-presence-0: #0e6e8c;
+  --oa-presence-1: #1f6f5a;
+  --oa-presence-2: #2456c4;
+  --oa-presence-3: #4d6b12;
+  --oa-presence-4: #5b48b8;
+  --oa-presence-5: #7a3f99;
+  --oa-presence-6: #8a4d0f;
+  --oa-presence-7: #a3305f;
+  --oa-presence-8: #b04a14;
+}
+
+/* #1986: the comments column's drag handle; invisible until hover or focus. */
+.oa-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: calc(var(--oa-comments-w) - 5px);
+  z-index: 11;
+  width: 10px;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.oa-resizer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.oa-resizer:hover::after,
+.oa-resizer:focus-visible::after,
+.oa-vbody[data-resizing] .oa-resizer::after {
+  background: var(--oa-accent);
+}
+.oa-resizer:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--oa-accent);
+  border-radius: 3px;
+}
+.oa-vbody[data-resizing] {
+  user-select: none;
+}
+.oa-vbody[data-resizing] .oa-vframe {
+  pointer-events: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oa-resizer::after {
+    transition: none;
+  }
+}
+
+/* Collaborative docs (#1100): the editor in place of the frame. */
+.oa-doc {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  background: var(--oa-bg);
+}
+.oa-doc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--oa-border);
+  overflow-x: auto;
+  flex: none;
+  scrollbar-width: none;
+}
+.oa-doc-toolbar::-webkit-scrollbar {
+  display: none;
+}
+.oa-doc-toolbar > * {
+  flex: none;
+}
+.oa-doc-sep {
+  width: 1px;
+  height: 16px;
+  margin: 0 6px;
+  background: var(--oa-border);
+}
+.oa-doc-linkform {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.oa-doc-linkform input {
+  flex: 1;
+  min-width: 0;
+}
+.oa-doc-linkerr {
+  flex-basis: 100%;
+  margin: 0;
+  font-size: var(--oa-text-sm);
+  color: var(--oa-danger, #b42318);
+}
+.oa-doc-error {
+  margin: 0;
+  padding: 8px 16px;
+  font-size: var(--oa-text-sm);
+  border-bottom: 1px solid var(--oa-border);
+  background: var(--oa-accent-soft);
+  color: var(--oa-text);
+}
+.oa-doc-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
 .oa-doc-page {
   max-width: 760px;
   margin: 0 auto;

@@ -20,6 +20,8 @@ export class FakeProvider implements RoomProvider {
   sentUpdates: Uint8Array[] = [];
   sentAwareness: number[][] = [];
   destroyed = false;
+  connects = 0;
+  disconnects = 0;
   private handlers = new Map<string, Set<Cb>>();
   _updateHandler: (update: Uint8Array, origin: unknown) => void;
   _awarenessUpdateHandler: (c: {
@@ -52,6 +54,7 @@ export class FakeProvider implements RoomProvider {
   }
   /** The socket opens; `sync` also completes the sync exchange. */
   connect(sync = true) {
+    this.connects++;
     this.ws = { onmessage: null, bufferedAmount: 0 };
     this.wsconnected = true;
     this.emit("status", { status: "connected" });
@@ -61,6 +64,7 @@ export class FakeProvider implements RoomProvider {
     }
   }
   disconnect() {
+    this.disconnects++;
     this.wsconnected = false;
     this.synced = false;
     this.emit("status", { status: "disconnected" });

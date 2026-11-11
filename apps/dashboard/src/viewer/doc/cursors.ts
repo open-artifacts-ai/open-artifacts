@@ -1,11 +1,68 @@
 // Remote cursors (design rule 3): a 2px caret with a small name flag. People's
 // flags are pill-shaped; an agent's flag has a rounded-square mark in the
 // agent's own colour. Outsiders see a generic "Agent".
+//
+// The flag shows for FLAG_MS after that person's cursor moves, or while the
+// caret is hovered; otherwise only the coloured caret and a small dot (a
+// rounded square for an agent) stay.
 
 export interface CaretUser {
   name?: string;
   color?: string;
   kind?: "user" | "agent";
+  /** The sender's client id, when it sends one: tells two tabs of one name apart. */
+  cid?: number;
+}
+
+/** How long a name flag stays open after its cursor moves. */
+export const FLAG_MS = 2000;
+
+/** What identifies a caret: its client id if sent, else its name. */
+export const caretKey = (u: CaretUser) => String(u.cid ?? u.name ?? "");
+
+/**
+ * Which carets recently moved. A caret's flag is open while its key is active;
+ * touch() opens it and closes it again after FLAG_MS. Open flags are marked
+ * data-active on the caret element, found under root().
+ */
+export class CaretActivity {
+  private open = new Set<string>();
+  private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  constructor(private root: () => ParentNode | null) {}
+
+  isActive(key: string) {
+    return this.open.has(key);
+  }
+  touch(key: string) {
+    this.open.add(key);
+    clearTimeout(this.timers.get(key));
+    this.timers.set(
+      key,
+      setTimeout(() => {
+        this.open.delete(key);
+        this.timers.delete(key);
+        this.mark(key, false);
+      }, FLAG_MS),
+    );
+    this.mark(key, true);
+    // The caret widget may be (re)built just after this; render() checks
+    // isActive, and this catches one that was already in place.
+    queueMicrotask(() => this.open.has(key) && this.mark(key, true));
+  }
+  private mark(key: string, on: boolean) {
+    for (const el of this.root()?.querySelectorAll<HTMLElement>(
+      ".oa-doc-caret",
+    ) ?? []) {
+      if (el.dataset.key !== key) continue;
+      if (on) el.dataset.active = "";
+      else delete el.dataset.active;
+    }
+  }
+  destroy() {
+    for (const t of this.timers.values()) clearTimeout(t);
+    this.timers.clear();
+    this.open.clear();
+  }
 }
 
 const OUTSIDER_AGENT = { name: "Agent", color: "#6b7280" };
@@ -32,10 +89,18 @@ function resolve(u: CaretUser, outsider: boolean) {
   };
 }
 
-export function renderCaret(u: CaretUser, outsider: boolean): HTMLElement {
+export function renderCaret(
+  u: CaretUser,
+  outsider: boolean,
+  activity?: CaretActivity,
+): HTMLElement {
   const { agent, name, color } = resolve(u, outsider);
   const caret = document.createElement("span");
   caret.className = "oa-doc-caret";
+  const key = caretKey(u);
+  caret.dataset.key = key;
+  caret.dataset.kind = agent ? "agent" : "user";
+  if (activity?.isActive(key)) caret.dataset.active = "";
   caret.style.setProperty("--oa-caret", color);
   const flag = document.createElement("span");
   flag.className = "oa-doc-flag";
@@ -48,7 +113,11 @@ export function renderCaret(u: CaretUser, outsider: boolean): HTMLElement {
     flag.append(mark);
   }
   flag.append(document.createTextNode(name));
-  caret.append(flag);
+  // The collapsed mark: a dot, or a rounded square for an agent.
+  const dot = document.createElement("span");
+  dot.className = "oa-doc-dot";
+  dot.setAttribute("aria-hidden", "true");
+  caret.append(dot, flag);
   return caret;
 }
 
