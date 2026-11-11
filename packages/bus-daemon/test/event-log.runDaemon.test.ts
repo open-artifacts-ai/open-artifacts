@@ -36,4 +36,11 @@ describe("the daemon event log (#2029)", () => {
     expect(text).toMatch(/ agent_join kind=pi /);
     expect(text).not.toMatch(/CANARY|body|SECRET/);
   });
+  it("stop() waits for the log to flush, so daemon_stop is written", async () => {
+    const file = join(mkdtempSync(join(tmpdir(), "ob-ev-")), "events.log");
+    const events = createEventLog(file);
+    const h = await daemonHarness({ events });
+    await h.daemon.stop();
+    expect(readFileSync(file, "utf8")).toMatch(/ daemon_stop /);
+  });
 });

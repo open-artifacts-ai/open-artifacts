@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -44,6 +45,14 @@ describe("formatEvent", () => {
     expect(line).toBe('2026-11-11T10:00:00.000Z x reason="a b"');
     expect(line).not.toContain("\n");
   });
+  it("strips C1, bidi, format and line-separator characters", () => {
+    const line = formatEvent(at, "x", {
+      name: "a\u009bb\u202ec\u2028d\u2029e\u200bf",
+    });
+    // biome-ignore lint/suspicious/noMisleadingCharacterClass: the test is about these characters
+    expect(line).not.toMatch(/[\p{Cc}\p{Cf}\u2028\u2029]/u);
+    expect(line).toContain('name="a c d e f"');
+  });
   it("truncates long values", () => {
     expect(formatEvent(at, "x", { name: "n".repeat(500) }).length).toBeLessThan(
       200,
@@ -80,6 +89,14 @@ describe("createEventLog", () => {
     expect(existsSync(`${f}.2`)).toBe(false);
     expect(readFileSync(f, "utf8").length).toBeLessThanOrEqual(200);
     expect(readFileSync(f, "utf8")).toContain("id=19");
+  });
+  it("rotates by bytes, not characters", async () => {
+    const f = join(tmp(), "daemon.log");
+    const log = createEventLog(f, { maxBytes: 300, now: () => at });
+    for (let i = 0; i < 6; i++) log("e", { name: "é".repeat(40) });
+    await log.flush();
+    expect(existsSync(`${f}.1`)).toBe(true);
+    expect(statSync(f).size).toBeLessThanOrEqual(300);
   });
   it("starts from the file's existing size", async () => {
     const f = join(tmp(), "daemon.log");

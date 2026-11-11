@@ -1,5 +1,6 @@
 import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import { dirname } from "node:path";
+import { stripTerminalControls } from "@oa/bus-ipc";
 
 /** Rotate at about 1 MB; one old file (`.1`) is kept. */
 export const EVENT_LOG_MAX_BYTES = 1_000_000;
@@ -36,10 +37,10 @@ export type EventLog = {
 };
 
 const one = (v: string | number | boolean): string => {
-  // Control characters and newlines never reach the file: one line per event.
-  const s = [...String(v)]
-    .map((c) => (c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127 ? " " : c))
-    .join("")
+  // Terminal controls (C0, C1, escape sequences), invisible and bidi format
+  // characters and line separators never reach the file: one line per event.
+  const s = stripTerminalControls(String(v))
+    .replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, " ")
     .replace(/ +/g, " ")
     .slice(0, MAX_VALUE);
   return /^[\w.:/@+-]+$/.test(s) ? s : JSON.stringify(s);
@@ -79,12 +80,12 @@ export function createEventLog(
           () => 0,
         );
       }
-      if (size > 0 && size + line.length > max) {
+      if (size > 0 && size + Buffer.byteLength(line) > max) {
         await rename(file, `${file}.1`);
         size = 0;
       }
       await appendFile(file, line, { mode: 0o600 });
-      size += line.length;
+      size += Buffer.byteLength(line);
     } catch {
       // Best effort: re-measure on the next line.
       size = undefined;

@@ -190,7 +190,10 @@ export type DaemonDeps = {
    * The always-on event log (#2029): joins, refusals, liveness, hub link.
    * Fields are ids and keys, never a body or a token. Default: none.
    */
-  events?: (event: string, fields?: EventFields) => void;
+  events?: ((event: string, fields?: EventFields) => void) & {
+    /** Resolves when queued lines are written; stop() awaits it. */
+    flush?: () => Promise<void>;
+  };
   /** Log each successful attestation; default: OA_BUS_DEBUG=1, read at startup. */
   debug?: boolean;
   /**
@@ -2065,6 +2068,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       pending.failAll("hub_unavailable", "the daemon is stopping");
       sent.flush();
       await Promise.all([server.close(), claude.close()]);
+      // daemon_stop must reach the file before the process exits.
+      await deps.events?.flush?.().catch(() => {});
     },
   };
 }
