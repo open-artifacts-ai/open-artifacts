@@ -257,6 +257,19 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
     expect(screen.queryByText(/set up this plan for you/)).toBeNull();
     expect(screen.getByText("Price")).toBeVisible();
   });
+  it("keeps the Pay buttons, no Manage billing, during the free month even with a customer", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-09T12:00:00.000Z"));
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    mountHosted("/settings/plan", { billing: { ...TRIAL, hasCustomer: true } });
+    expect(
+      await screen.findByRole("button", { name: "Pay $10/year" }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "Pay $1/month" })).toBeVisible();
+    expect(manage()).toBeNull();
+  });
   it("shows for a past_due Solo with a customer", async () => {
     mountHosted("/settings/plan", {
       billing: { ...SOLO_PAID, status: "past_due", hasCustomer: true },

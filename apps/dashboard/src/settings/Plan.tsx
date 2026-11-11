@@ -162,8 +162,14 @@ export function Plan() {
   // Absent means billing's answer predates the field: keep the button.
   // A Solo reaches the portal only with a customer explicitly reported (never
   // from an absent field) and a live subscription: active or past_due.
+  // The free month (no card) already has a customer: it keeps the Pay buttons,
+  // the only way to start paying or pick yearly.
+  const soloTrialing =
+    !!billing.soloTrialEndsAt &&
+    Date.parse(billing.soloTrialEndsAt) > Date.now();
   const soloSubscriber =
     solo &&
+    !soloTrialing &&
     billing.hasCustomer === true &&
     (billing.status === "active" || billing.status === "past_due");
   const portal =
