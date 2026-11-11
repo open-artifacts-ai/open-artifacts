@@ -12,6 +12,7 @@
  * frames; errors are text frames `{"type":"error","code":...}`.
  */
 import { DurableObject } from "cloudflare:workers";
+import { docFragment, docFromJSON, docToYXmlFragment } from "@oa/doc-schema";
 import { accessChangedCloseReason } from "@oa/shared";
 import * as decoding from "lib0/decoding";
 import * as encoding from "lib0/encoding";
@@ -20,9 +21,21 @@ import type { Env } from "../env.js";
 import { logError } from "../log.js";
 import { ACTOR_HEADER, AUTHZ_AT_HEADER } from "../runtime/do.js";
 import { SKEW_MS } from "../runtime/presence.js";
+import { type Contributor, writeDocVersion } from "./versions.js";
 
 /** Trusted headers from the route: the socket's role ("edit" | "read"). */
 export const DOC_ROLE_HEADER = "X-OA-Doc-Role";
+
+/** Trusted header from the route: the socket's display name (agents). */
+export const DOC_NAME_HEADER = "X-OA-Doc-Name";
+
+/** Automatic versions: after this long without an edit... */
+export const AUTOSAVE_IDLE_MS = 2 * 60_000;
+/** ...and at least this often while editing continues. */
+export const AUTOSAVE_MAX_MS = 30 * 60_000;
+/** A failed save is retried this long after. */
+export const SAVE_RETRY_MS = 60_000;
+const MAX_VERSION_NAME = 200;
 
 /** Doc size cap, one for every plan (docs need Workers Paid): snapshot + pending. */
 export const DOC_MAX_BYTES = 2 * 1024 * 1024;
@@ -88,6 +101,8 @@ interface Attachment {
   /** May write (set once at accept from the trusted route header). */
   write: boolean;
   actor: string;
+  /** Display name of an agent socket (trusted header, optional). */
+  name?: string;
   /** Awareness [clientId, clock] pairs this socket announced (for removal). */
   aw: [number, number][];
 }
@@ -112,6 +127,80 @@ function awarenessFrame(
   return encoding.toUint8Array(enc);
 }
 
+/** Edits since the last version (persisted by the flush, not per message). */
+interface VsState {
+  dirty: boolean;
+  /** First and latest unsaved edit. */
+  firstAt: number;
+  lastAt: number;
+  /** Counts edits; a save clears only contributors seen up to its capture. */
+  seq: number;
+  /** Whoever edited last: the next automatic version's author. */
+  last: Contributor | null;
+  who: Map<string, { c: Contributor; seq: number }>;
+  changed: boolean;
+  /** No automatic save before this (a failed save backs off). */
+  retryAt: number;
+}
+type PersistedVs = {
+  dirty: boolean;
+  firstAt: number;
+  lastAt: number;
+  seq: number;
+  last: Contributor | null;
+  who: { c: Contributor; seq: number }[];
+};
+const whoKey = (c: Contributor) => `${c.kind}:${c.key}`;
+const freshVs = (): VsState => ({
+  dirty: false,
+  firstAt: 0,
+  lastAt: 0,
+  seq: 0,
+  last: null,
+  who: new Map(),
+  changed: false,
+  retryAt: 0,
+});
+
+const str = (v: unknown, max: number): string | null =>
+  typeof v === "string" && v.length > 0 ? v.slice(0, max) : null;
+
+/** A contributor from an RPC argument (the caller is trusted code; shape is checked). */
+function parseContributor(x: unknown): Contributor {
+  const o = (x ?? {}) as Record<string, unknown>;
+  const key = str(o.key, 250);
+  if ((o.kind !== "person" && o.kind !== "agent") || key === null)
+    throw new Error("bad_contributor");
+  return {
+    kind: o.kind,
+    key,
+    userId: str(o.userId, 64),
+    ...(o.kind === "agent"
+      ? {
+          agentName: str(o.agentName, 80),
+          agentVersion: str(o.agentVersion, 40),
+          agentVia: str(o.agentVia, 80),
+        }
+      : {}),
+  };
+}
+
+/** Who a socket's edits count as. */
+function contributorOf(att: Attachment): Contributor {
+  if (att.actor.startsWith("agent:"))
+    return {
+      kind: "agent",
+      key: att.actor,
+      agentName: att.name ?? null,
+    };
+  if (att.actor.startsWith("u:")) {
+    const id = att.actor.slice(2);
+    return { kind: "person", key: id, userId: id };
+  }
+  // Anonymous editors share one key; no address is kept.
+  return { kind: "person", key: "anon" };
+}
+
 export class DocRoom extends DurableObject<Env> {
   private readonly sql: SqlStorage;
   private buffer: Uint8Array[] = [];
@@ -124,6 +213,8 @@ export class DocRoom extends DurableObject<Env> {
   /** Times a Y.Doc was loaded in this instance (tests: relay never loads). */
   docLoads = 0;
   private squeeze = false;
+  private vs: VsState = freshVs();
+  private chain: Promise<unknown> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -156,6 +247,26 @@ export class DocRoom extends DurableObject<Env> {
       .one();
     this.rowCount = rows.n;
     this.rowBytes = rows.b;
+    const vs = this.sql
+      .exec<{ v: string }>("SELECT v FROM meta WHERE k = 'vs'")
+      .toArray()[0];
+    if (vs) {
+      try {
+        const o = JSON.parse(String(vs.v)) as PersistedVs;
+        this.vs = {
+          dirty: o.dirty,
+          firstAt: o.firstAt,
+          lastAt: o.lastAt,
+          seq: o.seq,
+          last: o.last,
+          who: new Map(o.who.map((w) => [whoKey(w.c), w])),
+          changed: false,
+          retryAt: 0,
+        };
+      } catch (e) {
+        logError("doc_room_vs_unreadable", e);
+      }
+    }
   }
 
   protected now(): number {
@@ -201,9 +312,11 @@ export class DocRoom extends DurableObject<Env> {
       anon ? "pool:anon" : "pool:user",
       `a:${actor}`,
     ]);
+    const rawName = req.headers.get(DOC_NAME_HEADER);
     server.serializeAttachment({
       write: role === "edit",
       actor,
+      ...(rawName ? { name: rawName.slice(0, 80) } : {}),
       aw: [],
     } satisfies Attachment);
     if (limited) {
@@ -379,6 +492,7 @@ export class DocRoom extends DurableObject<Env> {
     for (const [c, to] of cursor) this.sv.set(c, to);
     this.buffer.push(update);
     this.bufferBytes += update.byteLength;
+    this.touch(contributorOf(att));
     void this.armAlarm(this.now() + FLUSH_MS);
     const out = encoding.createEncoder();
     encoding.writeVarUint(out, MSG_SYNC);
@@ -546,7 +660,7 @@ export class DocRoom extends DurableObject<Env> {
     this.broadcast(awarenessFrame(keep), ws);
   }
 
-  private broadcast(msg: Uint8Array, except: WebSocket) {
+  private broadcast(msg: Uint8Array | string, except: WebSocket | null) {
     for (const ws of this.ctx.getWebSockets()) {
       if (ws === except) continue;
       try {
@@ -557,12 +671,14 @@ export class DocRoom extends DurableObject<Env> {
     }
   }
 
-  override webSocketClose(ws: WebSocket) {
+  override async webSocketClose(ws: WebSocket) {
     this.dropAwareness(ws);
+    await this.lastEditorLeft(ws);
   }
 
-  override webSocketError(ws: WebSocket) {
+  override async webSocketError(ws: WebSocket) {
     this.dropAwareness(ws);
+    await this.lastEditorLeft(ws);
   }
 
   /** Tells everyone the closed socket's cursors are gone (state "null"). */
@@ -610,6 +726,8 @@ export class DocRoom extends DurableObject<Env> {
       this.squeeze = false;
       if (this.rowCount > 0) this.compact();
     }
+    this.persistVs();
+    await this.autosaveTick();
   }
 
   /** Writes the buffer as ONE merged row; compacts past the thresholds. */
@@ -723,6 +841,298 @@ export class DocRoom extends DurableObject<Env> {
     } finally {
       doc.destroy();
     }
+  }
+
+  // ------------------------------------------------------------ versions
+
+  private artifactId(): string {
+    const id = this.ctx.id.name;
+    if (!id) throw new Error("DocRoom needs a named id");
+    return id;
+  }
+
+  /** Records an edit by `c` (in memory; the flush persists it). */
+  private touch(c: Contributor) {
+    const t = this.now();
+    const v = this.vs;
+    if (!v.dirty) {
+      v.dirty = true;
+      v.firstAt = t;
+    }
+    v.lastAt = t;
+    v.seq++;
+    v.last = c;
+    v.who.set(whoKey(c), { c, seq: v.seq });
+    v.changed = true;
+  }
+
+  /**
+   * An edit that did not come over a socket (edit_doc): counts `by` as a
+   * contributor and schedules the automatic save.
+   */
+  noteEdit(by: Contributor) {
+    this.touch(parseContributor(by));
+    void this.armAlarm(this.now() + FLUSH_MS);
+  }
+
+  private persistVs() {
+    if (!this.vs.changed) return;
+    const v = this.vs;
+    const o: PersistedVs = {
+      dirty: v.dirty,
+      firstAt: v.firstAt,
+      lastAt: v.lastAt,
+      seq: v.seq,
+      last: v.last,
+      who: [...v.who.values()],
+    };
+    this.sql.exec(
+      "INSERT OR REPLACE INTO meta (k, v) VALUES ('vs', ?)",
+      JSON.stringify(o),
+    );
+    v.changed = false;
+  }
+
+  /** When the next automatic save is due; null when nothing is unsaved. */
+  private saveDue(): number | null {
+    const v = this.vs;
+    if (!v.dirty) return null;
+    return Math.max(
+      v.retryAt,
+      Math.min(v.lastAt + AUTOSAVE_IDLE_MS, v.firstAt + AUTOSAVE_MAX_MS),
+    );
+  }
+
+  private async autosaveTick() {
+    const due = this.saveDue();
+    if (due === null) return;
+    if (this.now() < due) {
+      await this.armAlarm(due);
+      return;
+    }
+    try {
+      await this.save({ name: null, by: null, frame: "saved" });
+    } catch {
+      // save() backed off and logged; the retry is armed.
+      await this.armAlarm(this.vs.retryAt);
+    }
+  }
+
+  /** The last editor socket closed with unsaved edits: save now. */
+  private async lastEditorLeft(ws: WebSocket) {
+    if (!this.vs.dirty) return;
+    const others = this.ctx
+      .getWebSockets("role:edit")
+      .some((s) => s !== ws && s.readyState === WebSocket.OPEN);
+    if (others) return;
+    try {
+      await this.save({ name: null, by: null, frame: "saved" });
+    } catch {
+      await this.armAlarm(this.vs.retryAt);
+    }
+  }
+
+  /** Runs `fn` after every earlier save or restore (one at a time). */
+  private serial<T>(fn: () => Promise<T>): Promise<T> {
+    const p = this.chain.then(fn);
+    this.chain = p.catch(() => {});
+    return p;
+  }
+
+  /** Loads the doc from snapshot + rows (the buffer is written first). */
+  private loadDoc(): Y.Doc {
+    this.writeBuffer();
+    const doc = new Y.Doc({ gc: true });
+    this.docLoads++;
+    const snap = this.sql
+      .exec<{ state: ArrayBuffer }>("SELECT state FROM snapshot WHERE id = 1")
+      .toArray()[0];
+    const rows = this.sql
+      .exec<{ data: ArrayBuffer }>("SELECT data FROM updates ORDER BY seq")
+      .toArray();
+    doc.transact(() => {
+      if (snap) Y.applyUpdate(doc, new Uint8Array(snap.state));
+      for (const r of rows) {
+        try {
+          Y.applyUpdate(doc, new Uint8Array(r.data));
+        } catch (e) {
+          logError("doc_room_load_bad_row", e);
+        }
+      }
+    });
+    return doc;
+  }
+
+  /**
+   * One version: files, then the row with its contributors (writeDocVersion),
+   * then compaction and the frame. Any failure leaves every edit in the room,
+   * keeps it unsaved, and backs off before the next automatic try.
+   */
+  private async doSave(o: {
+    name: string | null;
+    by: Contributor | null;
+    frame: "saved" | "restored";
+    restoredFrom?: number;
+    /** An automatic save with nothing unsaved is skipped. */
+    auto: boolean;
+  }): Promise<{ version: number } | null> {
+    const v = this.vs;
+    if (o.auto && !v.dirty) return null;
+    const seq0 = v.seq;
+    const captured = [...v.who.values()];
+    const author = o.by ?? v.last;
+    let version: number;
+    try {
+      const doc = this.loadDoc();
+      let state: Uint8Array;
+      try {
+        state = Y.encodeStateAsUpdate(doc);
+      } finally {
+        doc.destroy();
+      }
+      ({ version } = await writeDocVersion(this.env, {
+        artifactId: this.artifactId(),
+        state,
+        author,
+        message: o.name,
+        contributors: captured.map((w) => w.c),
+        now: this.now(),
+        ...(o.restoredFrom === undefined
+          ? {}
+          : { restoredFrom: o.restoredFrom }),
+      }));
+    } catch (e) {
+      logError("doc_room_save_failed", e);
+      v.retryAt = this.now() + SAVE_RETRY_MS;
+      throw e;
+    }
+    v.retryAt = 0;
+    for (const w of captured)
+      if (v.who.get(whoKey(w.c))?.seq === w.seq) v.who.delete(whoKey(w.c));
+    if (v.seq === seq0) {
+      v.dirty = false;
+      v.last = null;
+    } else v.firstAt = this.now();
+    v.changed = true;
+    this.persistVs();
+    try {
+      this.compact();
+    } catch {
+      // logged by compact; the flush alarm compacts later
+    }
+    this.broadcast(
+      JSON.stringify(
+        o.frame === "restored"
+          ? { type: "restored", from: o.restoredFrom, version }
+          : {
+              type: "saved",
+              version,
+              ...(o.name ? { name: o.name } : {}),
+              auto: o.name === null,
+            },
+      ),
+      null,
+    );
+    return { version };
+  }
+
+  /** Runs doSave after earlier saves; an automatic one is skipped if clean. */
+  private save(o: {
+    name: string | null;
+    by: Contributor | null;
+    frame: "saved" | "restored";
+  }) {
+    return this.serial(() => this.doSave({ ...o, auto: o.name === null }));
+  }
+
+  /** "Save version": a named version of the room's current state. */
+  async saveVersion(o: {
+    name: string;
+    by: Contributor;
+  }): Promise<{ version: number }> {
+    const name = typeof o?.name === "string" ? o.name.trim() : "";
+    if (name.length === 0 || name.length > MAX_VERSION_NAME)
+      throw new Error("bad_version_name");
+    const by = parseContributor(o.by);
+    const r = await this.save({ name, by, frame: "saved" });
+    return r as { version: number };
+  }
+
+  /**
+   * Before an agent edit: saves only if people edited since the last version,
+   * so their text is in history before the agent changes it.
+   */
+  async saveBeforeAgentEdit(): Promise<{ version: number } | null> {
+    const people = [...this.vs.who.values()].some((w) => w.c.kind === "person");
+    if (!people) return null;
+    return this.save({ name: null, by: null, frame: "saved" });
+  }
+
+  /**
+   * Restore: saves unsaved edits, applies version `version`'s content as ONE
+   * Yjs transaction replacing the current content (everyone sees it live),
+   * then saves "Restored v{n}". Nothing is rewound.
+   */
+  async restore(o: {
+    version: number;
+    by: Contributor;
+  }): Promise<{ version: number }> {
+    if (!Number.isSafeInteger(o?.version) || o.version < 1)
+      throw new Error("bad_version");
+    const by = parseContributor(o.by);
+    const from = o.version;
+    return this.serial(async () => {
+      if (this.vs.dirty)
+        await this.doSave({
+          name: null,
+          by: null,
+          frame: "saved",
+          auto: true,
+        });
+      const row = await this.env.DB.prepare(
+        "select manifest from versions where artifact_id = ? and version = ?",
+      )
+        .bind(this.artifactId(), from)
+        .first<{ manifest: string }>();
+      if (!row) throw new Error("version_not_found");
+      const entry = (
+        JSON.parse(row.manifest) as { path: string; key: string }[]
+      ).find((f) => f.path === "doc.json");
+      const obj = entry ? await this.env.FILES.get(entry.key) : null;
+      if (!obj) throw new Error("version_not_found");
+      const node = docFromJSON(JSON.parse(await obj.text()));
+      const doc = this.loadDoc();
+      try {
+        const before = Y.encodeStateVector(doc);
+        doc.transact(() => {
+          const frag = docFragment(doc);
+          frag.delete(0, frag.length);
+          docToYXmlFragment(node, frag);
+        });
+        const update = Y.encodeStateAsUpdate(doc, before);
+        if (this.storedBytes() + update.byteLength > DOC_MAX_BYTES)
+          throw new Error("doc_too_large");
+        this.sv = Y.decodeStateVector(Y.encodeStateVector(doc));
+        this.buffer.push(update);
+        this.bufferBytes += update.byteLength;
+        const out = encoding.createEncoder();
+        encoding.writeVarUint(out, MSG_SYNC);
+        encoding.writeVarUint(out, SYNC_UPDATE);
+        encoding.writeVarUint8Array(out, update);
+        this.broadcast(encoding.toUint8Array(out), null);
+      } finally {
+        doc.destroy();
+      }
+      this.touch(by);
+      const r = await this.doSave({
+        name: `Restored v${from}`,
+        by,
+        frame: "restored",
+        restoredFrom: from,
+        auto: false,
+      });
+      return r as { version: number };
+    });
   }
 
   /** Stored size in bytes: snapshot + rows + buffer (tests, route reads). */
