@@ -43,7 +43,12 @@ async function setup(caps: string[]) {
 }
 
 /** A runtime DO with one comment target row, state queued. */
-async function seedTarget(artifactId: string, commentId: string, key: string) {
+async function seedTarget(
+  artifactId: string,
+  commentId: string,
+  key: string,
+  kind: "mention" | "asker" | "reply" = "mention",
+) {
   const ns_ = e.ARTIFACT_RUNTIME;
   await runInDurableObject(
     ns_.get(ns_.idFromName(artifactId)),
@@ -51,8 +56,9 @@ async function seedTarget(artifactId: string, commentId: string, key: string) {
       (inst as { ensureSchema(): void }).ensureSchema();
       st.storage.sql.exec(
         `insert into comment_targets (comment_id, thread_id, kind, key, name, state)
-         values (?, 't1', 'mention', ?, 'a', 'queued')`,
+         values (?, 't1', ?, ?, 'a', 'queued')`,
         commentId,
+        kind,
         key,
       );
     },
@@ -473,6 +479,32 @@ describe("notice_ack (#1752)", () => {
     for (const c of ["c1", "c2"])
       await vi.waitFor(async () =>
         expect(await targetState(art, c)).toBe("gone"),
+      );
+  });
+
+  it("a thread-reply target settles on the ack, as the notice's own and as a folded one (#2035)", async () => {
+    const s = await setup(ACK);
+    const art = uniq("art");
+    await seedTarget(art, "c1", "k1", "reply");
+    await seedTarget(art, "c2", "k2", "reply");
+    const hub = await hubOf(s.userId);
+    const n = note(addr(s), art, "c1", "k1");
+    n.target = { kind: "reply", key: "k1" };
+    await hub.deliverNotice(n);
+    const f = await waitFor(s.d, "deliver");
+    // The ack carries this notice's target and a folded one, both replies.
+    const t = (c: string, k: string) => ({ a: art, c, k: "reply", key: k });
+    await runInDurableObject(hub, (_i, st) =>
+      st.storage.sql.exec(
+        "update notice_acks set ack = ? where msg_id = ?",
+        JSON.stringify({ ...t("c1", "k1"), more: [t("c2", "k2")] }),
+        f.msg_id,
+      ),
+    );
+    s.d.send({ v: 1, id: id("ak"), type: "ack", msg_id: f.msg_id });
+    for (const c of ["c1", "c2"])
+      await vi.waitFor(async () =>
+        expect(await targetState(art, c)).toBe("delivered"),
       );
   });
 
