@@ -6440,11 +6440,7 @@ export class BusHub extends DurableObject<Env> {
         ? resolveRoleIn(sql, OWNER_ORG_ID, n.to.namespace, sent)
         : null;
     const byAlias =
-      former.length === 1
-        ? former[0]
-        : byRole?.ok
-          ? byRole.agent
-          : undefined;
+      former.length === 1 ? former[0] : byRole?.ok ? byRole.agent : undefined;
     const lname = byAlias ? byAlias.name.toLowerCase() : sent;
     const to = byAlias
       ? { namespace: byAlias.namespace, name: byAlias.name }

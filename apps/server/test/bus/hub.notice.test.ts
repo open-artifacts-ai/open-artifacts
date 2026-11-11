@@ -1092,8 +1092,7 @@ describe("a notice to a role address (#1752)", () => {
     const agent = (await stub.snapshot()).agents.find((a) => a.name === name);
     if (!agent) throw new Error("no agent");
     const role = uniq("lead");
-    const put = (ns2: string, ag: string | null) =>
-      stub.putRole(ns2, role, ag);
+    const put = (ns2: string, ag: string | null) => stub.putRole(ns2, role, ag);
     const r = await put(namespace, agent.id);
     if (!r.ok) throw new Error(`putRole refused: ${r.reason}`);
     return { d, stub, userId: m.userId, namespace, name, role, put, agent };
