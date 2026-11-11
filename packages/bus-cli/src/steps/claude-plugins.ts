@@ -265,23 +265,26 @@ export async function installClaudePlugins(
       "--json",
     ]);
   let marketplace = prior?.marketplace ?? false;
+  // A failed or timed-out add may still have landed: if it did, it is ours and recorded.
+  const recordIfLanded = async (plugins: string[]) => {
+    const again = await claude(exec, [
+      "plugin",
+      "marketplace",
+      "list",
+      "--json",
+    ]);
+    const landed =
+      again.ok &&
+      Array.isArray(again.data) &&
+      (again.data as Market[]).some((m) => m.name === MARKETPLACE && isOurs(m));
+    if (landed) saveRecord(deps.busHome, true, plugins);
+  };
+  // The shortcuts' saved options, read before a re-pin deletes them.
+  let saved: { instanceUrl?: string; mcpServer?: string } | undefined;
   if (!there) {
     const r = await addSource();
     if (!r.ok) {
-      // A timed-out add may still have landed: if it did, it is ours and recorded.
-      const again = await claude(exec, [
-        "plugin",
-        "marketplace",
-        "list",
-        "--json",
-      ]);
-      const landed =
-        again.ok &&
-        Array.isArray(again.data) &&
-        (again.data as Market[]).some(
-          (m) => m.name === MARKETPLACE && isOurs(m),
-        );
-      if (landed) saveRecord(deps.busHome, true, prior?.plugins ?? []);
+      await recordIfLanded(prior?.plugins ?? []);
       out.notes.push(...copy.pluginsFailed("add the plugin source", r.message));
       return out;
     }
@@ -300,6 +303,7 @@ export async function installClaudePlugins(
     if (!mayRepin) {
       out.notes.push(...copy.pluginsKeptSource(there.ref));
     } else {
+      saved = readShortcutOptions(deps);
       const gone = await claude(exec, [
         "plugin",
         "marketplace",
@@ -319,6 +323,7 @@ export async function installClaudePlugins(
       marketplace = false;
       const r = await addSource();
       if (!r.ok) {
+        await recordIfLanded([]);
         out.notes.push(
           ...copy.pluginsFailed("add the plugin source", r.message),
         );
@@ -353,9 +358,20 @@ export async function installClaudePlugins(
     const ns = await mcpNamespace(exec, origin);
     if ("name" in ns) config.push("--config", `mcpServer=${ns.name}`);
     else {
-      if (fresh) config.push("--config", `mcpServer=${DEFAULT_MCP_SERVER}`);
+      if (fresh)
+        config.push(
+          "--config",
+          `mcpServer=${saved?.mcpServer ?? DEFAULT_MCP_SERVER}`,
+        );
       out.notes.push(...copy.pluginsNoNamespace(ns.why, DEFAULT_MCP_SERVER));
     }
+  }
+  // No address to derive: put back what the re-pin removed.
+  if (ownShortcuts && origin === undefined && saved) {
+    if (saved.instanceUrl)
+      config.push("--config", `instanceUrl=${saved.instanceUrl}`);
+    if (saved.mcpServer)
+      config.push("--config", `mcpServer=${saved.mcpServer}`);
   }
   for (const id of [STYLE_PLUGIN, SHORTCUTS_PLUGIN]) {
     const opts = id === SHORTCUTS_PLUGIN ? config : [];
@@ -387,7 +403,17 @@ export async function installClaudePlugins(
       if (!u.ok) {
         out.notes.push(...copy.pluginsFailed(`update ${id}`, u.message));
       } else if (opts.length) {
-        await claude(exec, ["plugin", "install", id, ...opts, "--json"]);
+        const again = await claude(exec, [
+          "plugin",
+          "install",
+          id,
+          ...opts,
+          "--json",
+        ]);
+        if (!again.ok)
+          out.notes.push(
+            ...copy.pluginsFailed(`set the options for ${id}`, again.message),
+          );
       }
     }
   }
@@ -547,16 +573,28 @@ export async function claudePluginsState(
   return { missing, unconfigured };
 }
 
-/** The shortcuts' instanceUrl from settings.json; "" when set up without one, undefined when the file cannot be read. */
-function readInstanceUrl(deps: Where): string | undefined {
+type Options = { instanceUrl?: string; mcpServer?: string };
+
+/** The shortcuts' saved options from settings.json (keys instanceUrl and mcpServer only); undefined when the file cannot be read. */
+function readShortcutOptions(deps: Where): Options | undefined {
   try {
     const text = readFileSync(claudeSettingsFile(deps), "utf8");
     const o = JSON.parse(text) as {
-      pluginConfigs?: Record<string, { options?: { instanceUrl?: unknown } }>;
+      pluginConfigs?: Record<string, { options?: Record<string, unknown> }>;
     };
-    const u = o.pluginConfigs?.[SHORTCUTS_PLUGIN]?.options?.instanceUrl;
-    return typeof u === "string" ? u : "";
+    const opts = o.pluginConfigs?.[SHORTCUTS_PLUGIN]?.options;
+    const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+    return {
+      instanceUrl: str(opts?.instanceUrl),
+      mcpServer: str(opts?.mcpServer),
+    };
   } catch {
     return undefined;
   }
+}
+
+/** The shortcuts' instanceUrl; "" when set up without one, undefined when the file cannot be read. */
+function readInstanceUrl(deps: Where): string | undefined {
+  const o = readShortcutOptions(deps);
+  return o === undefined ? undefined : (o.instanceUrl ?? "");
 }

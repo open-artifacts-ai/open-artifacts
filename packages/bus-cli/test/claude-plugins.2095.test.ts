@@ -37,6 +37,9 @@ type Fake = {
   versions: Record<string, [string, string]>;
   updated: string[];
   installArgs: string[][];
+  /** Where claude's settings.json is, so saved options live there as in the real one. */
+  home?: string;
+  removedOnce?: boolean;
   failAdd?: boolean;
   failInstall?: string;
   exec: (
@@ -60,6 +63,18 @@ const line = (o: object, code = 0) => ({
 });
 const bad = (failureCode: string, message: string) =>
   line({ command: "x", outcome: "failed", message, failureCode }, 1);
+
+const settingsFile = (home: string) => join(home, ".claude/settings.json");
+const editSettings = (
+  home: string,
+  fn: (o: Record<string, Record<string, unknown>>) => void,
+) => {
+  const p = settingsFile(home);
+  const o = existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : {};
+  fn(o);
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  writeFileSync(p, JSON.stringify(o));
+};
 
 const fake = (over: Partial<Fake> = {}): Fake => {
   const f: Fake = {
@@ -121,13 +136,30 @@ const fake = (over: Partial<Fake> = {}): Fake => {
             ...(ref ? { ref } : {}),
           },
         ];
-        return line(fx(was ? "add-same.json" : "add-fresh.json"));
+        return line(
+          fx(
+            was
+              ? "add-same.json"
+              : f.removedOnce
+                ? "add-after-remove.json"
+                : "add-fresh.json",
+          ),
+        );
       }
       if (b === "marketplace" && d === "remove") {
         if (!f.markets.length) return line(fx("remove-again.json"), 1);
         f.markets = [];
+        // Real claude: removing the marketplace uninstalls its plugins, deletes their
+        // saved options, and clears the "declared" entry (so a re-add at another ref works).
+        const had = f.installed.some((i) => i.endsWith("@open-artifacts"));
         f.installed = f.installed.filter((i) => !i.endsWith("@open-artifacts"));
-        return line(fx("remove.json"));
+        f.config = {};
+        f.removedOnce = true;
+        if (f.home)
+          editSettings(f.home, (o) => {
+            delete o.pluginConfigs;
+          });
+        return line(fx(had ? "remove.json" : "remove-empty.json"));
       }
       if (b === "list")
         return {
@@ -149,6 +181,17 @@ const fake = (over: Partial<Fake> = {}): Fake => {
           if (args[i] === "--config") {
             const [k, ...v] = (args[i + 1] as string).split("=");
             f.config[k as string] = v.join("=");
+            if (f.home && d === SHORTCUTS_PLUGIN)
+              editSettings(f.home, (o) => {
+                const all = (o.pluginConfigs ?? {}) as Record<
+                  string,
+                  { options: Record<string, string> }
+                >;
+                const c = all[SHORTCUTS_PLUGIN] ?? { options: {} };
+                all[SHORTCUTS_PLUGIN] = c;
+                o.pluginConfigs = all;
+                c.options[k as string] = v.join("=");
+              });
           }
         const v = f.versions[id];
         // Real claude: a fresh install reports no versions, an installed one reports both.
@@ -195,8 +238,9 @@ const record = (busHome: string) => {
     ? JSON.parse(readFileSync(p, "utf8")).claudePlugins
     : undefined;
 };
-const run = (f: Fake, w: { home: string; busHome: string }, over = {}) =>
-  installClaudePlugins(
+const run = (f: Fake, w: { home: string; busHome: string }, over = {}) => {
+  f.home = w.home;
+  return installClaudePlugins(
     {
       ...w,
       exec: f.exec,
@@ -207,6 +251,7 @@ const run = (f: Fake, w: { home: string; busHome: string }, over = {}) =>
     },
     ["claude"],
   );
+};
 const FOUND = fxText("mcp-get.txt").replace(
   "https://x.example.com/mcp",
   "https://oa.example.com/mcp",
@@ -703,6 +748,60 @@ describe("claudePluginsState", () => {
 });
 
 describe("review fixes", () => {
+  it("a re-pin puts a custom mcpServer back after the remove deleted the saved options", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    editSettings(w.home, (o) => {
+      (
+        (o.pluginConfigs as Record<string, { options: object }>)[
+          SHORTCUTS_PLUGIN
+        ] as { options: Record<string, string> }
+      ).options.mcpServer = "oa-prod";
+    });
+    f.mcpList = "none";
+    const r = await run(f, w, { version: "0.154.0" });
+    expect(f.markets[0]).toMatchObject({ ref: "v0.154.0" });
+    expect(f.config.mcpServer).toBe("oa-prod");
+    expect(r.ok).toBe(true);
+  });
+
+  it("a re-pin whose add fails records what landed", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    const orig = f.exec;
+    f.exec = async (cmd, args, o) => {
+      const r = await orig(cmd, args, o);
+      return args[1] === "marketplace" && args[2] === "add"
+        ? bad("timeout", "timed out")
+        : r;
+    };
+    const r = await run(f, w, { version: "0.154.0" });
+    expect(r.notes.join(" ")).toContain("Couldn't add the plugin source");
+    expect(record(w.busHome)).toEqual({ marketplace: true, plugins: [] });
+  });
+
+  it("a failed options reinstall after an update is a note", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w);
+    f.versions[SHORTCUTS_PLUGIN] = ["0.1.0", "0.2.0"];
+    const orig = f.exec;
+    let installs = 0;
+    f.exec = async (cmd, args, o) => {
+      if (
+        args[1] === "install" &&
+        args[2] === SHORTCUTS_PLUGIN &&
+        ++installs === 2
+      )
+        return bad("boom", "boom");
+      return orig(cmd, args, o);
+    };
+    const r = await run(f, w);
+    expect(r.notes.join(" ")).toContain("set the options for");
+  });
+
   it("uninstall does not remove a marketplace of the same name that is no longer ours", async () => {
     const w = setup();
     const f = fake({ mcpList: FOUND });
