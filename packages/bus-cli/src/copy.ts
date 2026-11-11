@@ -164,7 +164,7 @@ const listing = (names: string[], last: "and" | "or") =>
     ? (names[0] ?? "")
     : `${names.slice(0, -1).join(", ")} ${last} ${names.at(-1)}`;
 
-export function copy(style: Style) {
+export function copy(style: Style, bus: string = BUS_CMD) {
   const p = (tone: Tone, s: string) => paint(style, tone, s);
   const g = (n: Parameters<typeof glyph>[1]) => glyph(style, n);
   const more = g("more");
@@ -228,7 +228,7 @@ export function copy(style: Style) {
     // `login` saved a new token; the running daemon keeps the old one.
     daemonOldToken: (pid: number) => [
       warn(`The daemon (pid ${pid}) still uses the old token.`),
-      next(`Run ${BUS_CMD} install to restart it with the new one.`),
+      next(`Run ${bus} install to restart it with the new one.`),
     ],
     alreadyConnected: (label: string) =>
       done(`Already connected as ${clip(label, 24)}`),
@@ -244,7 +244,7 @@ export function copy(style: Style) {
       warn(
         "No Claude Code, OpenCode, Pi, oh-my-pi, Codex, Hermes or OpenClaw found",
       ),
-      next(`Install one, then run ${BUS_CMD} again.`),
+      next(`Install one, then run ${bus} again.`),
     ],
     restarted: () => done("Restarted the OpenCode service to load the plugin"),
     // After the configured line, when PI_CODING_AGENT_DIR points both at one folder.
@@ -260,7 +260,7 @@ export function copy(style: Style) {
       warn(
         "No codex binary found, so the bus can't wake an idle Codex thread.",
       ),
-      next(`Install the Codex CLI, then run ${BUS_CMD} again.`),
+      next(`Install the Codex CLI, then run ${bus} again.`),
     ],
     // After the configured line, when the Hermes plugin was copied and enabled.
     hermesRestart: () =>
@@ -310,7 +310,7 @@ export function copy(style: Style) {
             warn(
               "Daemon running without a service, so it won't restart after a reboot.",
             ),
-            next(`After a reboot, start it again with ${BUS_CMD} daemon.`),
+            next(`After a reboot, start it again with ${bus} daemon.`),
           ]
         : service
           ? [
@@ -326,25 +326,23 @@ export function copy(style: Style) {
               warn(
                 "Daemon running, but no service will restart it after a reboot.",
               ),
-              next(`Run ${BUS_CMD} install.`),
+              next(`Run ${bus} install.`),
             ],
     // install --no-service: the service step is skipped, nothing is started.
     serviceSkipped: () => [
       warn("Skipped the service, so no daemon is running."),
-      next(`Start it with ${BUS_CMD} daemon, and again after a reboot.`),
+      next(`Start it with ${bus} daemon, and again after a reboot.`),
     ],
     // doctor, after the daemon line.
     serviceNodeMissing: (node: string) => [
       fail(`The service runs a Node that is gone: ${clip(node, 42)}.`),
-      next(`Run ${BUS_CMD} install to point it at your current Node.`),
+      next(`Run ${bus} install to point it at your current Node.`),
     ],
     // doctor, after the service-node line.
     badNode: (node: string, reason: string) => [
       fail(`The service runs a Node that cannot start: ${clip(node, 42)}.`),
       `   ${reason}`,
-      next(
-        `Run ${BUS_CMD} install again with a working Node first on your PATH.`,
-      ),
+      next(`Run ${bus} install again with a working Node first on your PATH.`),
     ],
     lingerOff: () => [
       warn("The daemon stops when you log out (systemd lingering is off)."),
@@ -354,7 +352,7 @@ export function copy(style: Style) {
       const head = `Another daemon is still running (pid ${pid}) on `;
       return [
         fail(`${head}${clip(socket, 3 + len(head) + 1)}.`),
-        next(`Stop it with kill ${pid}, then run ${BUS_CMD} install again.`),
+        next(`Stop it with kill ${pid}, then run ${bus} install again.`),
       ];
     },
     daemonStillRunning: (pid: number) => [
@@ -376,7 +374,7 @@ export function copy(style: Style) {
     ],
     daemonTimeout: () => [
       fail("The daemon did not start within 10 seconds."),
-      next(`Run ${BUS_CMD} doctor to see why.`),
+      next(`Run ${bus} doctor to see why.`),
     ],
 
     rosterHeader: (namespace: string, live: number, queued: number) => {
@@ -403,7 +401,7 @@ export function copy(style: Style) {
       return `    ${p("muted", cutCols(says, WIDTH - 4, more))}`;
     },
     rosterMore: (n: number) =>
-      `  ${p("muted", `and ${n} more ${g("sep")} ${BUS_CMD} status`)}`,
+      `  ${p("muted", `and ${n} more ${g("sep")} ${bus} status`)}`,
     queuedFootnote: () => [
       p(
         "muted",
@@ -438,16 +436,16 @@ export function copy(style: Style) {
     lateQuote: (excerpt: string) => `    "${excerpt}"`,
 
     statusHint: () =>
-      p("muted", `Check this machine anytime with ${BUS_CMD} status.`),
+      p("muted", `Check this machine anytime with ${bus} status.`),
 
     // 3, 4, 6
     denied: () => [
       fail("This machine was not approved."),
-      next(`Run ${BUS_CMD} again to get a new code.`),
+      next(`Run ${bus} again to get a new code.`),
     ],
     expired: (code: string) => [
       fail(`Code ${code} expired after 10 minutes.`),
-      next(`Run ${BUS_CMD} again to get a new code.`),
+      next(`Run ${bus} again to get a new code.`),
     ],
     unreachable: (
       host: string,
@@ -475,18 +473,18 @@ export function copy(style: Style) {
     /** Any failure the transcript does not name. */
     failed: (message: string) => [
       fail(clip(message.split("\n")[0] ?? "", 3)),
-      next(`Run ${BUS_CMD} doctor to see why.`),
+      next(`Run ${bus} doctor to see why.`),
     ],
     // A SOCKET_PATH start failure, in place of `failed`.
     socketPathFailed: (message: string) => [
       fail("The daemon cannot listen on its socket."),
       next(p("muted", clip(message.split("\n")[0] ?? "", 3))),
-      next(`Run ${BUS_CMD} doctor to see why.`),
+      next(`Run ${bus} doctor to see why.`),
     ],
     usage: (message: string) => [
       // The parser's message, as a sentence.
       fail(clip(message.charAt(0).toUpperCase() + message.slice(1), 3)),
-      next(`Run ${BUS_CMD} with install, login, daemon, status, logs,`),
+      next(`Run ${bus} with install, login, daemon, status, logs,`),
       next(
         "doctor, global add|rm|list, uninstall, mcp <claude|opencode|pi|codex>",
       ),
@@ -497,11 +495,11 @@ export function copy(style: Style) {
       warn(
         `Skipped ${HARNESS_LABEL[h]}: ${clip(reason, 14 + len(HARNESS_LABEL[h]))}`,
       ),
-      next(`Fix it, then run ${BUS_CMD} again.`),
+      next(`Fix it, then run ${bus} again.`),
     ],
     noHub: () => [
       fail("No Open Artifacts instance to connect to."),
-      next(`Run ${BUS_CMD} --instance <your instance URL>,`),
+      next(`Run ${bus} --instance <your instance URL>,`),
       next("or set OA_BUS_INSTANCE."),
     ],
     hubMismatch: (approved: string, asked: string, askedUrl: string) => {
@@ -510,8 +508,8 @@ export function copy(style: Style) {
       const b = clip(asked, 39 + len(a));
       return [
         fail(`This machine is approved for ${a}, not ${b}.`),
-        next(`Run ${BUS_CMD} uninstall --purge first, then`),
-        next(`${BUS_CMD} --instance ${clip(askedUrl, 39)}.`),
+        next(`Run ${bus} uninstall --purge first, then`),
+        next(`${bus} --instance ${clip(askedUrl, 39)}.`),
       ];
     },
     checkOk: (label: string) => done(label),
@@ -525,7 +523,7 @@ export function copy(style: Style) {
       warn(
         `Could not remove the bus from ${HARNESS_LABEL[h]}: ${clip(reason, 37 + len(HARNESS_LABEL[h]))}`,
       ),
-      next(`Fix it, then run ${BUS_CMD} uninstall again.`),
+      next(`Fix it, then run ${bus} uninstall again.`),
     ],
     purgeLeftDir: (home: string) => [
       warn(
@@ -542,8 +540,8 @@ export function copy(style: Style) {
       fail(
         `The daemon is still running, so ${clip(home, 52)} was not deleted.`,
       ),
-      next(`Wait a few seconds and run ${BUS_CMD} uninstall --purge again.`),
-      next(`If it keeps running, run ${BUS_CMD} doctor to see why.`),
+      next(`Wait a few seconds and run ${bus} uninstall --purge again.`),
+      next(`If it keeps running, run ${bus} doctor to see why.`),
     ],
 
     // 7. status
@@ -557,14 +555,12 @@ export function copy(style: Style) {
     machineRow: (label: string) => `Machine  ${clip(label, 9)}`,
     statusDaemonDown: () => [
       fail("Daemon not running"),
-      next(`Run ${BUS_CMD} to restart it,`),
-      next(`or ${BUS_CMD} doctor to see why.`),
+      next(`Run ${bus} to restart it,`),
+      next(`or ${bus} doctor to see why.`),
     ],
     statusDaemonStalled: () => [
       fail("Daemon not responding"),
-      next(
-        `It is running but not answering. Try again, or run ${BUS_CMD} doctor.`,
-      ),
+      next(`It is running but not answering. Try again, or run ${bus} doctor.`),
     ],
     hubNotReachable: (
       host: string,
@@ -574,37 +570,37 @@ export function copy(style: Style) {
       `${fail(`Hub not reachable at ${clip(host, 26 + (error ? len(error) + 2 : 0))}`)}${
         error ? `  ${p("muted", error)}` : ""
       }`,
-      next(`Check your network, then run ${BUS_CMD} ${again} again.`),
+      next(`Check your network, then run ${bus} ${again} again.`),
     ],
     notRegistered: () => [
       fail("This computer is not connected to a bus."),
-      next(`Run ${BUS_CMD} to approve it.`),
+      next(`Run ${bus} to approve it.`),
     ],
     revoked: () => [
       fail("This machine was revoked."),
-      next(`Run ${BUS_CMD} install to approve it again.`),
+      next(`Run ${bus} install to approve it again.`),
     ],
 
     // 8. doctor
     nodeOk: (version: string) => done(`Node ${version}`),
     nodeOld: (version: string) => [
       fail(`Node ${clip(version, 39)} is too old (needs 22 or newer)`),
-      next(`Install Node 22 or newer, then run ${BUS_CMD} doctor again.`),
+      next(`Install Node 22 or newer, then run ${bus} doctor again.`),
     ],
     credentials: (path: string, token: string) =>
       done(`Credentials at ${clip(path, 37)}`, tokenTail(token, more)),
     noCredentials: (path: string) => [
       fail(`No credentials at ${clip(path, 21)}`),
-      next(`Run ${BUS_CMD} to approve this machine.`),
+      next(`Run ${bus} to approve this machine.`),
     ],
     revokedCheck: () => [
       fail("This machine was revoked"),
-      next(`Run ${BUS_CMD} install to approve it again.`),
+      next(`Run ${bus} install to approve it again.`),
     ],
     // DRAFT: the short socket folder a long OA_BUS_HOME needs is not ours.
     socketFolderUnsafe: (dir: string, why: string) => [
       fail(`Daemon socket folder ${clip(dir, 33)} is unsafe`),
-      next(`It ${why}. Remove it, then run ${BUS_CMD}.`),
+      next(`It ${why}. Remove it, then run ${bus}.`),
     ],
     // DRAFT: another user made it first; in sticky /tmp only an admin can remove it.
     socketFolderNotYours: (dir: string) => [
@@ -616,7 +612,7 @@ export function copy(style: Style) {
     globalUnusable: (path: string, why: string) => [
       warn(`${clip(path, 45)} can't be used, so no directory is global.`),
       next(p("muted", clip(`It ${why}.`, 3))),
-      next(`Remove it, then run ${BUS_CMD} global add <dir> again.`),
+      next(`Remove it, then run ${bus} global add <dir> again.`),
     ],
     /** doctor (#1570): the folder's namespace and where it comes from. */
     namespaceIs: (
@@ -643,15 +639,15 @@ export function copy(style: Style) {
     ],
     globalAsked: () => [
       warn("This repo's .oa-bus.json asks for global, which is ignored here."),
-      next(`Allow it with ${BUS_CMD} global add .`),
+      next(`Allow it with ${bus} global add .`),
     ],
     daemonNotRunning: () => [
       fail("Daemon is not running"),
-      next(`Run ${BUS_CMD} to restart it.`),
+      next(`Run ${bus} to restart it.`),
     ],
     daemonNotResponding: () => [
       fail("Daemon is not responding"),
-      next(`Try again in a moment, or run ${BUS_CMD} to restart it.`),
+      next(`Try again in a moment, or run ${bus} to restart it.`),
     ],
     hubReachable: (host: string) => done(`Hub reachable at ${clip(host, 20)}`),
     wired: (h: HarnessName, version?: string) =>
@@ -662,7 +658,7 @@ export function copy(style: Style) {
       ),
     notWired: (h: HarnessName) => [
       fail(`${HARNESS_LABEL[h]} is not wired`),
-      next(`Run ${BUS_CMD} to wire it.`),
+      next(`Run ${bus} to wire it.`),
     ],
     claudeAccepts: () =>
       done("Claude Code accepts messages from other machines"),
@@ -734,7 +730,7 @@ export function copy(style: Style) {
     codexSkillTwice: (file: string, block: string) => [
       warn("The Codex skill is installed twice, so it loads twice"),
       next(
-        `It's in both ${clip(file, 30)} and ${clip(block, 20)}. Run ${BUS_CMD} install again to keep just one.`,
+        `It's in both ${clip(file, 30)} and ${clip(block, 20)}. Run ${bus} install again to keep just one.`,
       ),
     ],
     codexSkillSharedTwice: () => [
@@ -745,7 +741,7 @@ export function copy(style: Style) {
     ],
     codexNoWakeCheck: () => [
       warn("No codex binary found, so idle Codex threads are not woken"),
-      next(`Install the Codex CLI, then run ${BUS_CMD} install again.`),
+      next(`Install the Codex CLI, then run ${bus} install again.`),
     ],
     codexHomeMismatch: (shell: string, service: string) => {
       // Both paths share the line: the shell's keeps at least 15 columns.
@@ -753,7 +749,7 @@ export function copy(style: Style) {
       const b = clip(shell, 49 + len(a));
       return [
         warn(`The daemon reads Codex from ${a}, this shell from ${b}`),
-        next(`Run ${BUS_CMD} install from this shell to match it.`),
+        next(`Run ${bus} install from this shell to match it.`),
       ];
     },
     codexFullAccess: (config: string) => [
@@ -775,7 +771,7 @@ export function copy(style: Style) {
       const rest = ` is too old for the plugin (needs ${min} or newer)`;
       return [
         warn(`OpenCode ${clip(version, 12 + len(rest))}${rest}`),
-        next(`Run opencode upgrade, then ${BUS_CMD} install again.`),
+        next(`Run opencode upgrade, then ${bus} install again.`),
       ];
     },
     // doctor: OpenCode's Open Artifacts entry runs oa-bus, and oa-bus is gone (#1856).
@@ -784,7 +780,7 @@ export function copy(style: Style) {
         `OpenCode's ${name} entry runs ${clip(program, 60)}, which is missing.`,
       ),
       next(
-        `Run ${BUS_CMD} install again, or ${BUS_CMD} uninstall to put your own entry back.`,
+        `Run ${bus} install again, or ${bus} uninstall to put your own entry back.`,
       ),
     ],
     // doctor: Codex's Open Artifacts entry runs oa-bus, and oa-bus is gone (#1856).
@@ -793,14 +789,12 @@ export function copy(style: Style) {
         `Codex's ${name} entry runs ${clip(program, 60)}, which is missing.`,
       ),
       next(
-        `Run ${BUS_CMD} install again, or ${BUS_CMD} uninstall to put your own entry back.`,
+        `Run ${bus} install again, or ${bus} uninstall to put your own entry back.`,
       ),
     ],
     opencodeUnknown: () => [
       warn("OpenCode version unknown"),
-      next(
-        `Run opencode --version to check it, then ${BUS_CMD} install again.`,
-      ),
+      next(`Run opencode --version to check it, then ${bus} install again.`),
     ],
     summary: (failed: number, warnings: number, passed: number) =>
       p(
@@ -840,8 +834,8 @@ export function copy(style: Style) {
       done("OpenCode service not running; nothing to restart"),
     kept: (machineFile: string) => [
       `Kept ${clip(machineFile, 46)}. This machine stays approved on the bus;`,
-      `run ${BUS_CMD} to reconnect it.`,
-      p("muted", `To remove everything, run ${BUS_CMD} uninstall --purge.`),
+      `run ${bus} to reconnect it.`,
+      p("muted", `To remove everything, run ${bus} uninstall --purge.`),
     ],
     deleted: (home: string) =>
       done(`Deleted ${clip(home, 35)}, including machine.json`),
@@ -850,7 +844,7 @@ export function copy(style: Style) {
       next(
         `Revoke it in the dashboard at ${clip(host, 56)} to remove it for good.`,
       ),
-      next(`To use this computer again, run ${BUS_CMD}.`),
+      next(`To use this computer again, run ${bus}.`),
     ],
 
     // 11. global
@@ -863,7 +857,7 @@ export function copy(style: Style) {
     globalAlready: (dir: string) => done(`${clip(dir, 22)} is already global.`),
     globalNotDir: (dir: string) => [
       fail(`${clip(dir, 23)} is not a directory.`),
-      next(`Check the path, then run ${BUS_CMD} global add again.`),
+      next(`Check the path, then run ${bus} global add again.`),
     ],
     globalRemoved: (dir: string) => [
       done(`${clip(dir, 24)} is no longer global.`),
@@ -873,7 +867,7 @@ export function copy(style: Style) {
       warn(`${clip(dir, 36)} was not global. Nothing changed.`),
     globalNone: () => [
       "No global directories.",
-      p("muted", `Add one with ${BUS_CMD} global add <dir>.`),
+      p("muted", `Add one with ${bus} global add <dir>.`),
     ],
     globalList: (dirs: string[]) => [
       `${dirs.length} global ${dirs.length === 1 ? "directory" : "directories"}`,
@@ -883,7 +877,7 @@ export function copy(style: Style) {
     // 13. lead templates (#1328). DRAFT: not in the transcript yet.
     leadsNoHub: () => [
       fail("This machine has no instance to check briefs against."),
-      next(`Run ${BUS_CMD} install first.`),
+      next(`Run ${bus} install first.`),
     ],
     leadsFolderUnusable: (dir: string, why: string) => [
       fail(`${clip(dir, 40)} can't be used: ${why}.`),
@@ -915,7 +909,7 @@ export function copy(style: Style) {
     nsUnusable: (path: string, why: string) => [
       warn(`${clip(path, 45)} can't be used, so no namespace is approved.`),
       next(p("muted", clip(`It ${why}.`, 3))),
-      next(`Remove it, then run ${BUS_CMD} namespace approve <dir> again.`),
+      next(`Remove it, then run ${bus} namespace approve <dir> again.`),
     ],
     nsNoFile: (dir: string) => [
       fail(`${clip(dir, 40)} has no .oa-bus.json.`),
@@ -928,7 +922,7 @@ export function copy(style: Style) {
       warn(`${clip(file, 40)} sets no namespace. Nothing to approve.`),
     nsNotDir: (dir: string) => [
       fail(`${clip(dir, 23)} is not a directory.`),
-      next(`Check the path, then run ${BUS_CMD} namespace approve again.`),
+      next(`Check the path, then run ${bus} namespace approve again.`),
     ],
     nsAsk: (dir: string, namespace: string) => [
       `${dir} sets its namespace to ${namespace}.`,
@@ -967,7 +961,7 @@ export function copy(style: Style) {
       warn(`${clip(dir, 36)} was not approved. Nothing changed.`),
     nsNone: () => [
       "No approved namespaces.",
-      p("muted", `Approve one with ${BUS_CMD} namespace approve <dir>.`),
+      p("muted", `Approve one with ${bus} namespace approve <dir>.`),
     ],
     nsList: (rows: { dir: string; namespace: string }[]) => [
       `${rows.length} approved ${rows.length === 1 ? "namespace" : "namespaces"}`,
@@ -984,11 +978,11 @@ export function copy(style: Style) {
     ],
     linkNeedLogin: () => [
       fail("This machine is not signed in to a hub."),
-      next(`Run ${BUS_CMD} login, then try again.`),
+      next(`Run ${bus} login, then try again.`),
     ],
     linkUnauthorized: () => [
       fail("The hub did not accept this machine's token."),
-      next(`Run ${BUS_CMD} login, then try again.`),
+      next(`Run ${bus} login, then try again.`),
     ],
     linkRefused: (reason: string | undefined) =>
       reason === "rate_limited"
@@ -1004,7 +998,7 @@ export function copy(style: Style) {
           : reason === "no_bus"
             ? [
                 fail("The hub has no connected machine for you yet."),
-                next(`Start the daemon with ${BUS_CMD}, then try again.`),
+                next(`Start the daemon with ${bus}, then try again.`),
               ]
             : [fail("The hub refused the request.")],
     linkBadReply: () => [
@@ -1036,11 +1030,11 @@ export function copy(style: Style) {
     // logs, mcp (DRAFT)
     noLog: (path: string) => [
       warn(`No daemon log yet at ${clip(path, 24)}`),
-      next(`Run ${BUS_CMD} daemon to see its output in this terminal.`),
+      next(`Run ${bus} daemon to see its output in this terminal.`),
     ],
     mcpPi: () => [
       warn("Pi uses the bus extension, not an MCP server."),
-      next(`Run ${BUS_CMD} to install the extension.`),
+      next(`Run ${bus} to install the extension.`),
     ],
   };
   return all;

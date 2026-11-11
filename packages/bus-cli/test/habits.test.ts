@@ -12,6 +12,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { BUS_CMD } from "@oa/bus-protocol";
 import { describe, expect, it, vi } from "vitest";
 import { doctor } from "../src/commands/doctor.ts";
 import { habitsLine } from "../src/commands/habits.ts";
@@ -19,6 +20,7 @@ import { install } from "../src/commands/install.ts";
 import { status as statusCmd } from "../src/commands/status.ts";
 import { uninstall } from "../src/commands/uninstall.ts";
 import { parse } from "../src/index.ts";
+import { main } from "../src/main.ts";
 import {
   blockState,
   HABITS_BEGIN,
@@ -32,6 +34,7 @@ import {
   withHabits,
   writeHabits,
 } from "../src/steps/habits.ts";
+import { installShim } from "../src/steps/path-shim.ts";
 import { writeAtomic } from "../src/steps/skill.ts";
 import { fakeCtx, HUB, LABEL, NS, status, TOKEN } from "./fake.ts";
 
@@ -538,5 +541,61 @@ describe("review fixes (#1638)", () => {
     await install({ hub: HUB }, again);
     expect(again.out().join("\n")).toContain("outside your home");
     expect(readFileSync(real, "utf8")).toBe("repo\n");
+  });
+});
+
+describe("install: the printed command (#1998)", () => {
+  /** A claude-only install whose shim is already ours and on PATH. */
+  const withShim = () => {
+    const seen: string[] = [];
+    const ctx = setup({}, false);
+    const base = ctx.service as unknown as Record<string, unknown>;
+    ctx.service = {
+      ...base,
+      argv: () => ["/node", "/index.js"],
+      cli: () => ["/node", "/index.js"],
+    } as never;
+    const bin = join(ctx.userHome, ".local", "bin");
+    ctx.env = { PATH: `${bin}:/usr/bin` };
+    ctx.platform = "linux x64";
+    installShim({
+      userHome: ctx.userHome,
+      busHome: ctx.home,
+      platform: "linux",
+      env: ctx.env,
+      argv: ["/node", "/index.js"],
+    });
+    const status = ctx.status;
+    ctx.status = (async (o: Parameters<typeof status>[0]) => {
+      seen.push(ctx.busCmd);
+      return status(o);
+    }) as typeof status;
+    return { ctx, seen };
+  };
+
+  it("a plain install prints npx until the shim step has run, then oa-bus", async () => {
+    const { ctx, seen } = withShim();
+    expect(await install({ hub: HUB }, ctx)).toBe(0);
+    expect(seen.length).toBeGreaterThan(0);
+    expect(new Set(seen)).toEqual(new Set([BUS_CMD]));
+    const out = ctx.out().join("\n");
+    expect(out).toContain("Yes:  oa-bus install --habits");
+    expect(out).toContain("No:   oa-bus install --no-habits");
+  });
+
+  it("--json: the question's commands keep npx", async () => {
+    const { ctx } = withShim();
+    expect(await install({ hub: HUB, json: true }, ctx)).toBe(0);
+    const j = JSON.parse(ctx.out()[0] as string);
+    expect(j.question.yes).toBe(`${BUS_CMD} install --habits`);
+    expect(j.question.no).toBe(`${BUS_CMD} install --no-habits`);
+  });
+
+  it("daemon and mcp keep npx when the shim is ours", async () => {
+    for (const argv of [["daemon"], ["mcp", "claude"]]) {
+      const { ctx } = withShim();
+      await main(argv, () => ctx).catch(() => undefined);
+      expect(ctx.busCmd).toBe(BUS_CMD);
+    }
   });
 });

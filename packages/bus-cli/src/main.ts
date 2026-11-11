@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { useBusCmd } from "./bus-cmd.ts";
 import { daemon } from "./commands/daemon.ts";
 import { doctor } from "./commands/doctor.ts";
 import { global } from "./commands/global.ts";
@@ -13,6 +14,19 @@ import { status } from "./commands/status.ts";
 import { uninstall } from "./commands/uninstall.ts";
 import { askDaemon, type Ctx, realCtx, say, sayErr } from "./context.ts";
 import { type Command, parse } from "./index.ts";
+
+/** Commands that print to a terminal and survive the shim: see `main`. */
+const TERMINAL = new Set([
+  "login",
+  "status",
+  "logs",
+  "doctor",
+  "global",
+  "namespace",
+  "link",
+  "leads",
+  "version",
+]);
 
 /**
  * `oa-bus <argv>`. Resolves the exit code, or undefined when the command
@@ -32,6 +46,13 @@ export async function main(
   }
   const ctx = makeCtx(cmd.noColor);
   if (cmd.home) ctx.home = resolve(cmd.home);
+  // Only commands whose text goes to a person's terminal print oa-bus. The
+  // daemon writes daemon.log, and mcp, mcp-proxy and mcp-proof write to an
+  // agent's MCP stderr, so they keep npx. An install prints npx until its shim
+  // step has run; uninstall removes the shim, so it prints npx too. Usage
+  // errors keep npx.
+  if (cmd.cmd === "install" ? cmd.check || cmd.habits : TERMINAL.has(cmd.cmd))
+    useBusCmd(ctx);
   try {
     return await dispatch(cmd, ctx);
   } catch (e) {

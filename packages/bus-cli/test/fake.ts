@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { StatusReply } from "@oa/bus-ipc";
+import { BUS_CMD } from "@oa/bus-protocol";
 import { vi } from "vitest";
 import { type Ctx, noService } from "../src/context.ts";
 import { copy } from "../src/copy.ts";
@@ -118,6 +119,7 @@ export function fakeCtx(over: Partial<Ctx> = {}, tty = false): Fake {
     version: "0.1.0",
     style,
     copy: copy(style),
+    busCmd: BUS_CMD,
     platform: "darwin arm64",
     nodeVersion: "v24.0.0",
     ...over,
