@@ -12,7 +12,7 @@ import {
   TooltipTrigger,
 } from "@oa/ui/shadcn";
 import { X } from "lucide-react";
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { TXT } from "../ui";
 import { Details } from "./Details";
 import { Share } from "./Share";
@@ -32,7 +32,7 @@ const LABELS: Record<PanelTab, string> = {
 
 /** Focus moved in on open is programmatic, so :focus-visible may not match. */
 const PROGRAMMATIC =
-  "data-[focus=programmatic]:focus:outline-2 data-[focus=programmatic]:focus:outline-offset-2 data-[focus=programmatic]:focus:outline-solid data-[focus=programmatic]:focus:outline-ring";
+  "data-[focus=programmatic]:focus:outline-2 data-[focus=programmatic]:focus:-outline-offset-2 data-[focus=programmatic]:focus:outline-solid data-[focus=programmatic]:focus:outline-ring";
 
 /** Whatever opened the panel; kept across a remount (row clicks change the route). */
 let opener: HTMLElement | null = null;
@@ -137,20 +137,22 @@ export function SidePanel({
             when the panel is too narrow for all four, never running under it. */}
         <div className="px-4 pt-4">
           <div className="border-b border-border">
-            <TabsList
-              variant="line"
-              className="mr-9 flex h-auto w-auto justify-start gap-0 overflow-x-auto border-0 p-0 [scrollbar-width:thin]"
-            >
-              {tabs.map((t) => (
-                <TabsTrigger
-                  key={t}
-                  value={t}
-                  className={`h-[34px] flex-none rounded-sm px-2.5 ${TXT} ${PROGRAMMATIC}`}
-                >
-                  {LABELS[t]}
-                </TabsTrigger>
-              ))}
-            </TabsList>
+            <TabStrip tab={tab}>
+              <TabsList
+                variant="line"
+                className="flex h-auto w-auto justify-start gap-0 overflow-x-auto border-0 p-0 [scrollbar-width:none]"
+              >
+                {tabs.map((t) => (
+                  <TabsTrigger
+                    key={t}
+                    value={t}
+                    className={`h-[34px] flex-none rounded-sm px-2 ${TXT} ${PROGRAMMATIC}`}
+                  >
+                    {LABELS[t]}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </TabStrip>
           </div>
         </div>
         {/* Versions scrolls its list under a fixed search box; the others scroll whole. */}
@@ -187,5 +189,53 @@ export function SidePanel({
           ))}
       </Tabs>
     </aside>
+  );
+}
+
+/**
+ * The tab row's frame: room for the close button, a right-edge
+ * fade while tabs are off screen, and the active tab scrolled into view. The
+ * focus ring is drawn inset so the scroller never clips it.
+ */
+function TabStrip({ tab, children }: { tab: string; children: ReactNode }) {
+  const box = useRef<HTMLDivElement>(null);
+  const [more, setMore] = useState(false);
+  useEffect(() => {
+    const el = box.current?.querySelector<HTMLElement>('[role="tablist"]');
+    if (!el) return;
+    const update = () =>
+      setMore(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", update);
+      ro.disconnect();
+    };
+  }, []);
+  useEffect(() => {
+    const el = box.current?.querySelector<HTMLElement>('[role="tablist"]');
+    // Radix names each trigger "<base>-trigger-<value>".
+    const on = el?.querySelector<HTMLElement>(
+      `[role="tab"][id$="-trigger-${tab}"]`,
+    );
+    if (!el || !on) return;
+    // Scroll the list itself, never the page.
+    if (on.offsetLeft < el.scrollLeft) el.scrollLeft = on.offsetLeft;
+    else if (on.offsetLeft + on.offsetWidth > el.scrollLeft + el.clientWidth)
+      el.scrollLeft = on.offsetLeft + on.offsetWidth - el.clientWidth;
+  }, [tab]);
+  return (
+    <div ref={box} className="relative mr-9">
+      {children}
+      {more && (
+        <div
+          aria-hidden="true"
+          data-testid="tabs-fade"
+          className="pointer-events-none absolute inset-y-0 right-0 w-8 bg-gradient-to-l from-card to-transparent"
+        />
+      )}
+    </div>
   );
 }
