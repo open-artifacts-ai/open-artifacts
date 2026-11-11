@@ -162,24 +162,27 @@ async function listInstalled(exec: Exec): Promise<string[] | undefined> {
 }
 
 /**
- * The tool namespace of the person's own Open Artifacts connection: the line
- * of `claude mcp list` whose URL has the instance's origin. No secret is
- * read: the list shows name, URL and health only.
+ * Whether the person's Open Artifacts MCP server (`claude mcp get open-artifacts`)
+ * points at this instance. `get` asks about one server only, so no other one
+ * (a stdio server, say) is started. No secret is read: the output shows the
+ * name, type and URL. A non-zero exit that is not "no such server" is an
+ * error, not a timeout.
  */
 export async function mcpNamespace(
   exec: Exec,
   origin: string,
-): Promise<{ name: string } | { why: "timeout" | "none" }> {
-  const r = await exec("claude", ["mcp", "list"], { timeoutMs: MCP_LIST_MS });
-  if (r.code !== 0) return { why: "timeout" };
-  for (const line of r.stdout.split("\n")) {
-    const m = /^(.+?): (https?:\/\/\S+)/.exec(line.trim());
-    if (!m) continue;
-    try {
-      if (new URL(m[2] as string).origin === origin)
-        return { name: m[1] as string };
-    } catch {}
+): Promise<{ name: string } | { why: "timeout" | "none" | "error" }> {
+  const r = await exec("claude", ["mcp", "get", DEFAULT_MCP_SERVER], {
+    timeoutMs: MCP_LIST_MS,
+  });
+  if (r.code !== 0) {
+    const text = `${r.stdout}\n${r.stderr}`;
+    if (/No MCP server named/i.test(text)) return { why: "none" };
+    return { why: /timed out/i.test(text) ? "timeout" : "error" };
   }
+  const m = /^\s*URL:\s*(\S+)/m.exec(r.stdout);
+  if (m && originOf(m[1] as string) === origin)
+    return { name: DEFAULT_MCP_SERVER };
   return { why: "none" };
 }
 
@@ -220,7 +223,7 @@ export async function installClaudePlugins(
     );
     return out;
   }
-  const prior = readRecord(deps.busHome);
+  let prior = readRecord(deps.busHome);
 
   // The marketplace: ours is reused, a foreign one of the same name is left alone.
   const listed = await claude(exec, [
@@ -242,9 +245,8 @@ export async function installClaudePlugins(
   }
   const source = marketplaceSource(deps.version);
   const wantRef = source.includes("#") ? source.split("#")[1] : undefined;
-  let addedNow = false;
-  if (!there || (wantRef && there.ref !== wantRef)) {
-    const r = await claude(exec, [
+  const addSource = () =>
+    claude(exec, [
       "plugin",
       "marketplace",
       "add",
@@ -253,13 +255,69 @@ export async function installClaudePlugins(
       ...SPARSE,
       "--json",
     ]);
+  let marketplace = prior?.marketplace ?? false;
+  if (!there) {
+    const r = await addSource();
     if (!r.ok) {
+      // A timed-out add may still have landed: if it did, it is ours and recorded.
+      const again = await claude(exec, [
+        "plugin",
+        "marketplace",
+        "list",
+        "--json",
+      ]);
+      const landed =
+        again.ok &&
+        Array.isArray(again.data) &&
+        (again.data as Market[]).some(
+          (m) => m.name === MARKETPLACE && isOurs(m),
+        );
+      if (landed) saveRecord(deps.busHome, true, prior?.plugins ?? []);
       out.notes.push(...copy.pluginsFailed("add the plugin source", r.message));
       return out;
     }
-    addedNow = !there;
+    marketplace = true;
+  } else if (wantRef && there.ref !== wantRef) {
+    // Claude Code refuses to re-add the same name from another source ("declared"), so
+    // moving to this release means removing ours first. That uninstalls its plugins, so
+    // it is done only when we added the marketplace and every plugin from it is ours.
+    const have = await listInstalled(exec);
+    const ours = new Set(prior?.plugins ?? []);
+    const fromIt = (have ?? []).filter((id) => id.endsWith(`@${MARKETPLACE}`));
+    const mayRepin =
+      prior?.marketplace === true &&
+      have !== undefined &&
+      fromIt.every((id) => ours.has(id));
+    if (!mayRepin) {
+      out.notes.push(...copy.pluginsKeptSource(there.ref));
+    } else {
+      const gone = await claude(exec, [
+        "plugin",
+        "marketplace",
+        "remove",
+        MARKETPLACE,
+        "--json",
+      ]);
+      if (!gone.ok && gone.code !== "not_configured") {
+        out.notes.push(
+          ...copy.pluginsFailed("move the plugin source", gone.message),
+        );
+        return out;
+      }
+      // Nothing of ours is left in Claude Code; the record follows.
+      writeRecord(deps.busHome, undefined);
+      prior = undefined;
+      marketplace = false;
+      const r = await addSource();
+      if (!r.ok) {
+        out.notes.push(
+          ...copy.pluginsFailed("add the plugin source", r.message),
+        );
+        return out;
+      }
+      marketplace = true;
+    }
   }
-  const marketplace = (prior?.marketplace ?? false) || addedNow;
 
   // The plugins: only ones that were not there are ours.
   const before = await listInstalled(exec);
@@ -275,31 +333,50 @@ export async function installClaudePlugins(
   const config: string[] = [];
   const fresh = !before.includes(SHORTCUTS_PLUGIN);
   const origin = deps.origin;
-  if (origin) {
+  if (origin !== undefined && originOf(origin) !== origin) {
+    out.notes.push(...copy.pluginsBadInstance());
+  } else if (origin) {
     config.push("--config", `instanceUrl=${origin}/mcp`);
     const ns = await mcpNamespace(exec, origin);
     if ("name" in ns) config.push("--config", `mcpServer=${ns.name}`);
     else {
       if (fresh) config.push("--config", `mcpServer=${DEFAULT_MCP_SERVER}`);
-      out.notes.push(
-        ...copy.pluginsNoNamespace(ns.why === "timeout", DEFAULT_MCP_SERVER),
-      );
+      out.notes.push(...copy.pluginsNoNamespace(ns.why, DEFAULT_MCP_SERVER));
     }
   }
   for (const id of [STYLE_PLUGIN, SHORTCUTS_PLUGIN]) {
-    const r = await claude(exec, [
-      "plugin",
-      "install",
-      id,
-      ...(id === SHORTCUTS_PLUGIN ? config : []),
-      "--json",
-    ]);
+    const opts = id === SHORTCUTS_PLUGIN ? config : [];
+    const r = await claude(exec, ["plugin", "install", id, ...opts, "--json"]);
     if (!r.ok) {
       out.notes.push(...copy.pluginsFailed(`install ${id}`, r.message));
       continue;
     }
     live.add(id);
     if (!before.includes(id)) mine.add(id);
+    // Already installed and a newer version is on offer: update, then set the options again.
+    const d = r.data as
+      | { installedVersion?: string; availableVersion?: string }
+      | undefined;
+    if (
+      before.includes(id) &&
+      d?.installedVersion &&
+      d.availableVersion &&
+      d.installedVersion !== d.availableVersion
+    ) {
+      const u = await claude(exec, [
+        "plugin",
+        "update",
+        id,
+        "--scope",
+        "user",
+        "--json",
+      ]);
+      if (!u.ok) {
+        out.notes.push(...copy.pluginsFailed(`update ${id}`, u.message));
+      } else if (opts.length) {
+        await claude(exec, ["plugin", "install", id, ...opts, "--json"]);
+      }
+    }
   }
   saveRecord(deps.busHome, marketplace, [...mine]);
 
@@ -340,7 +417,12 @@ export type ClaudeCopy = {
   pluginsTooOld: (found: string | undefined, min: string) => string[];
   pluginsForeignMarketplace: (name: string) => string[];
   pluginsFailed: (what: string, why: string) => string[];
-  pluginsNoNamespace: (timedOut: boolean, fallback: string) => string[];
+  pluginsNoNamespace: (
+    why: "timeout" | "none" | "error",
+    fallback: string,
+  ) => string[];
+  pluginsKeptSource: (ref: string | undefined) => string[];
+  pluginsBadInstance: () => string[];
 };
 
 /**
@@ -364,8 +446,8 @@ export async function uninstallClaudePlugins(
   ];
   const v = await claudeVersion(exec);
   if (!("version" in v)) {
+    // The record stays, so a later run with Claude Code on PATH finishes the job.
     notes.push(...copy.pluginsUninstallNoClaude(manual));
-    writeRecord(deps.busHome, undefined);
     return { notes };
   }
   let failed = false;

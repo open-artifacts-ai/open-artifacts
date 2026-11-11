@@ -30,7 +30,10 @@ type Fake = {
   markets: Market[];
   installed: string[];
   config: Record<string, string>;
-  mcpList: string | "timeout";
+  mcpList: string | "timeout" | "none" | "error";
+  /** installed -> available version, for plugins whose install reports both. */
+  versions: Record<string, [string, string]>;
+  updated: string[];
   failAdd?: boolean;
   failInstall?: string;
   exec: (
@@ -60,6 +63,8 @@ const fake = (over: Partial<Fake> = {}): Fake => {
     installed: [],
     config: {},
     mcpList: "",
+    versions: {},
+    updated: [],
     ...over,
     exec: async (cmd, args, opts) => {
       f.calls.push([cmd, ...args]);
@@ -73,6 +78,15 @@ const fake = (over: Partial<Fake> = {}): Fake => {
       if (a === "mcp") {
         if (f.mcpList === "timeout")
           return { code: 1, stdout: "", stderr: "timed out after 20000 ms" };
+        if (f.mcpList === "none")
+          return {
+            code: 1,
+            stdout: "",
+            stderr:
+              'No MCP server named "open-artifacts". Configured servers: x',
+          };
+        if (f.mcpList === "error")
+          return { code: 2, stdout: "", stderr: "boom" };
         return { code: 0, stdout: f.mcpList, stderr: "" };
       }
       if (b === "marketplace" && d === "list")
@@ -81,6 +95,10 @@ const fake = (over: Partial<Fake> = {}): Fake => {
         if (f.failAdd) return bad("clone_failed", "Clone failed");
         const src = args[3] as string;
         const [url, ref] = src.split("#");
+        // Real claude 2.1.322: the same name from another source is refused.
+        const was = f.markets[0];
+        if (was && (was.url !== url || (was.ref ?? "") !== (ref ?? "")))
+          return bad("declared", "its source doesn't match its entry");
         f.markets = [
           {
             name: "open-artifacts",
@@ -112,6 +130,17 @@ const fake = (over: Partial<Fake> = {}): Fake => {
             const [k, ...v] = (args[i + 1] as string).split("=");
             f.config[k as string] = v.join("=");
           }
+        const v = f.versions[id];
+        return ok({
+          pluginId: id,
+          ...(v ? { installedVersion: v[0], availableVersion: v[1] } : {}),
+        });
+      }
+      if (b === "update") {
+        const id = d as string;
+        f.updated.push(id);
+        const v = f.versions[id];
+        if (v) f.versions[id] = [v[1], v[1]];
         return ok({ pluginId: id });
       }
       if (b === "uninstall") {
@@ -156,7 +185,9 @@ const run = (f: Fake, w: { home: string; busHome: string }, over = {}) =>
     ["claude"],
   );
 const FOUND =
-  "oa: https://oa.example.com/mcp (HTTP) - ✓ Connected\nother: https://x.example/mcp (HTTP) - ✓ Connected\n";
+  "open-artifacts:\n  Scope: User config\n  Status: ✓ Connected\n  Type: http\n  URL: https://oa.example.com/mcp\n";
+const ELSEWHERE =
+  "open-artifacts:\n  Type: http\n  URL: https://x.example/mcp\n";
 
 describe("marketplaceSource", () => {
   it("pins a release to its tag and a dev build to the default branch", () => {
@@ -178,7 +209,10 @@ describe("installClaudePlugins", () => {
     expect(r.ok).toBe(true);
     expect(f.markets[0]).toMatchObject({ ref: "v0.154.0" });
     expect(f.installed.sort()).toEqual([SHORTCUTS_PLUGIN, STYLE_PLUGIN].sort());
-    expect(f.config).toEqual({ instanceUrl: `${ORIGIN}/mcp`, mcpServer: "oa" });
+    expect(f.config).toEqual({
+      instanceUrl: `${ORIGIN}/mcp`,
+      mcpServer: "open-artifacts",
+    });
     expect(record(w.busHome)).toEqual({
       marketplace: true,
       plugins: [STYLE_PLUGIN, SHORTCUTS_PLUGIN],
@@ -188,22 +222,33 @@ describe("installClaudePlugins", () => {
     expect(f.calls.some((x) => x.includes("--sparse"))).toBe(true);
   });
 
-  it("uses open-artifacts with a note when the list times out, and when nothing matches", async () => {
-    for (const mcpList of [
-      "timeout",
-      "other: https://x.example/mcp (HTTP)\n",
-    ]) {
+  it("uses open-artifacts with a note on a timeout, an error, no server, and another instance", async () => {
+    const wording = {
+      timeout: "in time",
+      error: "Couldn't ask Claude Code",
+      none: "Found no Claude Code MCP server",
+    } as const;
+    for (const [mcpList, text] of [
+      ["timeout", wording.timeout],
+      ["error", wording.error],
+      ["none", wording.none],
+      [ELSEWHERE, wording.none],
+    ] as const) {
       const w = setup();
       const f = fake({ mcpList });
       const r = await run(f, w);
       expect(f.config.mcpServer).toBe("open-artifacts");
-      expect(r.notes.join(" ")).toContain('"open-artifacts"');
+      expect(r.notes.join(" ")).toContain(text);
     }
+  });
+
+  it("asks about the one server, never the whole list", async () => {
     const w = setup();
-    const f = fake({ mcpList: "timeout" });
+    const f = fake({ mcpList: FOUND });
     await run(f, w);
-    const timeoutCall = f.calls.find((x) => x[1] === "mcp");
-    expect(timeoutCall).toEqual(["claude", "mcp", "list"]);
+    expect(f.calls.filter((x) => x[1] === "mcp")).toEqual([
+      ["claude", "mcp", "get", "open-artifacts"],
+    ]);
   });
 
   it("is idempotent: a second run adds nothing and records nothing new", async () => {
@@ -224,12 +269,65 @@ describe("installClaudePlugins", () => {
     const w = setup();
     const f = fake({ mcpList: FOUND });
     await run(f, w);
+    f.config.mcpServer = "custom";
     f.mcpList = "timeout";
     await run(f, w);
-    expect(f.config.mcpServer).toBe("oa");
+    expect(f.config.mcpServer).toBe("custom");
   });
 
-  it("repoints our own marketplace to this release, and does not claim it", async () => {
+  it("moves to a new release: removes our marketplace, adds the new ref, reinstalls with the options", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    expect(f.markets[0]).toMatchObject({ ref: "v0.153.0" });
+    // Real claude refuses a re-add from another ref ("declared"); without the remove it fails.
+    const r = await run(f, w, { version: "0.154.0" });
+    expect(r.ok).toBe(true);
+    expect(r.notes).toEqual([]);
+    expect(f.markets[0]).toMatchObject({ ref: "v0.154.0" });
+    expect(
+      f.calls.some((x) => x[2] === "marketplace" && x[3] === "remove"),
+    ).toBe(true);
+    expect(f.installed.sort()).toEqual([SHORTCUTS_PLUGIN, STYLE_PLUGIN].sort());
+    expect(f.config).toEqual({
+      instanceUrl: `${ORIGIN}/mcp`,
+      mcpServer: "open-artifacts",
+    });
+    expect(record(w.busHome)).toEqual({
+      marketplace: true,
+      plugins: [STYLE_PLUGIN, SHORTCUTS_PLUGIN],
+    });
+  });
+
+  it("a same-ref rerun does not touch the marketplace", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w);
+    await run(f, w);
+    expect(
+      f.calls.filter(
+        (x) => x[2] === "marketplace" && (x[3] === "add" || x[3] === "remove"),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("keeps the source, with a note, when another plugin from it is installed, and still updates ours", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    f.installed.push("someone-else@open-artifacts");
+    f.versions[STYLE_PLUGIN] = ["1", "2"];
+    const r = await run(f, w, { version: "0.154.0" });
+    expect(f.markets[0]).toMatchObject({ ref: "v0.153.0" });
+    expect(f.calls.some((x) => x[3] === "remove")).toBe(false);
+    expect(r.notes.join(" ")).toContain(
+      "Kept the existing Open Artifacts plugin source at v0.153.0",
+    );
+    expect(f.updated).toEqual([STYLE_PLUGIN]);
+    expect(f.installed).toContain("someone-else@open-artifacts");
+  });
+
+  it("keeps a marketplace we did not add, with a note", async () => {
     const w = setup();
     const f = fake({
       mcpList: FOUND,
@@ -241,9 +339,71 @@ describe("installClaudePlugins", () => {
         },
       ],
     });
-    await run(f, w);
-    expect(f.markets[0]).toMatchObject({ ref: "v0.154.0" });
+    const r = await run(f, w);
+    expect(f.calls.some((x) => x[3] === "remove" || x[3] === "add")).toBe(
+      false,
+    );
+    expect(r.notes.join(" ")).toContain(
+      "Kept the existing Open Artifacts plugin source",
+    );
     expect(record(w.busHome).marketplace).toBe(false);
+  });
+
+  it("updates an installed plugin that has a newer version, then sets the options again", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w);
+    f.versions[SHORTCUTS_PLUGIN] = ["0.1.0", "0.2.0"];
+    f.config = {};
+    await run(f, w);
+    expect(f.updated).toEqual([SHORTCUTS_PLUGIN]);
+    expect(f.config.instanceUrl).toBe(`${ORIGIN}/mcp`);
+    const u = f.calls.find((x) => x[2] === "update" || x[1] === "update");
+    expect(u).toEqual([
+      "claude",
+      "plugin",
+      "update",
+      SHORTCUTS_PLUGIN,
+      "--scope",
+      "user",
+      "--json",
+    ]);
+  });
+
+  it("does not update when the versions match", async () => {
+    const w = setup();
+    const f = fake({
+      mcpList: FOUND,
+      versions: { [STYLE_PLUGIN]: ["1", "1"] },
+    });
+    await run(f, w);
+    await run(f, w);
+    expect(f.updated).toEqual([]);
+  });
+
+  it("records our marketplace when an add fails but it landed", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    const orig = f.exec;
+    f.exec = async (cmd, args, o) => {
+      const r = await orig(cmd, args, o);
+      return args[2] === "add" ? bad("timeout", "timed out") : r;
+    };
+    const r = await run(f, w);
+    expect(r.notes.join(" ")).toContain("Couldn't add the plugin source");
+    expect(record(w.busHome)).toEqual({ marketplace: true, plugins: [] });
+  });
+
+  it("skips instanceUrl with a note when the address does not parse", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    const r = await run(f, w, { origin: "not a url" });
+    expect(f.config).toEqual({});
+    expect(f.calls.some((x) => x.join(" ").includes("not a url"))).toBe(false);
+    expect(r.notes.join(" ")).toContain(
+      "Couldn't read this instance's address",
+    );
+    expect(f.installed).toContain(SHORTCUTS_PLUGIN);
   });
 
   it("leaves a foreign marketplace of the same name alone, with a note", async () => {
@@ -440,6 +600,14 @@ describe("uninstallClaudePlugins", () => {
     expect(r.notes.join(" ")).toContain(
       "claude plugin marketplace remove open-artifacts",
     );
+    // The record stays, so a later run finishes the job.
+    expect(record(w2.busHome)).toBeDefined();
+    f2.version = "2.1.322";
+    f2.installed = [STYLE_PLUGIN, SHORTCUTS_PLUGIN];
+    expect(
+      (await uninstallClaudePlugins({ ...w2, exec: f2.exec, copy: c })).notes,
+    ).toEqual([]);
+    expect(record(w2.busHome)).toBeUndefined();
   });
 
   it("an uninstall that fails keeps the record, so a rerun finishes", async () => {

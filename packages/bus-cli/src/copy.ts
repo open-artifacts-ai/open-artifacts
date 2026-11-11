@@ -702,15 +702,31 @@ export function copy(style: Style, bus: string = BUS_CMD) {
       warn(`Couldn't ${clip(what, 20)}: ${clip(why, 30)}.`),
       next(`The bus tools are set up. Run ${bus} again to retry the plugins.`),
     ],
-    pluginsNoNamespace: (timedOut: boolean, fallback: string) => [
+    pluginsNoNamespace: (
+      why: "timeout" | "none" | "error",
+      fallback: string,
+    ) => [
       warn(
-        timedOut
+        why === "timeout"
           ? `Claude Code didn't list your MCP servers in time, so the shortcuts assume your Open Artifacts tools are named "${fallback}".`
-          : `Found no Claude Code MCP server for this instance, so the shortcuts assume it's named "${fallback}".`,
+          : why === "error"
+            ? `Couldn't ask Claude Code about your "${fallback}" MCP server, so the shortcuts assume your Open Artifacts tools are named "${fallback}".`
+            : `Found no Claude Code MCP server for this instance, so the shortcuts assume it's named "${fallback}".`,
       ),
       next(
         "If they have another name, run: claude plugin configure open-artifacts-shortcuts",
       ),
+    ],
+    pluginsKeptSource: (ref?: string) => [
+      warn(
+        `Kept the existing Open Artifacts plugin source at ${ref ?? "its default branch"}.`,
+      ),
+    ],
+    pluginsBadInstance: () => [
+      warn(
+        "Couldn't read this instance's address, so the shortcuts have no instance URL yet.",
+      ),
+      next("Run: claude plugin configure open-artifacts-shortcuts"),
     ],
     pluginsUninstallNoClaude: (manual: string[]) => [
       warn(

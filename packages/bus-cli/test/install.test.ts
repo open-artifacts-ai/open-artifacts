@@ -76,7 +76,7 @@ const allHarnesses = (over: Partial<Ctx> = {}) => ({
       if (args[0] === "mcp")
         return {
           code: 0,
-          stdout: `open-artifacts: ${HUB}/mcp (HTTP) - connected\n`,
+          stdout: `open-artifacts:\n  Type: http\n  URL: ${HUB}/mcp\n`,
           stderr: "",
         };
       if (args.includes("list")) return { code: 0, stdout: "[]", stderr: "" };
