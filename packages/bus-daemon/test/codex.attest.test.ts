@@ -909,8 +909,9 @@ describe("codex code-mode attestation (C27)", () => {
         home: codexHome({ thread: CM_THREAD, rollout }).home,
         ...fakeProcs(),
       });
-    expect(CODEX_REFUSALS.dynamicLookup.length).toBeLessThan(100);
-    expect(CODEX_REFUSALS.dynamicLookup).toContain("mcp__oa_bus__self");
+    expect(CODEX_REFUSALS.dynamicLookup).toBe(
+      "Call the bus tool by its exact name, for example tools.mcp__oa_bus__self(), not through a dynamic lookup.",
+    );
     expect(
       homeOf(cmMeta() + turnEv("task_started") + lookup()).attestNow(hello()),
     ).toEqual(refusal);

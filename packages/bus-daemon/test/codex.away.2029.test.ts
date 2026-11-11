@@ -456,7 +456,7 @@ describe("waking an away Codex thread (#2029)", () => {
           },
         }),
       ),
-    ).rejects.toThrow(/literal name/);
+    ).rejects.toThrow(/exact name/);
     expect(two.daemon.agents.byRef(THREAD)).toBeUndefined();
     // Then it calls mcp__oa_bus__self by name: admitted by today's rules.
     writeFileSync(

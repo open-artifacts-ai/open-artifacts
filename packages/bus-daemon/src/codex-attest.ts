@@ -31,11 +31,8 @@ export const CODEX_REFUSALS = {
   notLoaded: "Codex does not have this thread loaded.",
   callNotFound:
     "this call is not an open Open Artifacts bus call in the thread. Call the tool again.",
-  /**
-   * DRAFT, pending Design: an open code-mode exec in this turn that did not name an
-   * Open Artifacts bus tool literally (a lookup such as `tools[name]`).
-   */
-  dynamicLookup: `Call the bus tool by its literal name, e.g. tools.${CODEX_TOOL_NAMESPACE}__self(), not through a lookup.`,
+  /** An open code-mode exec in this turn that did not name an Open Artifacts bus tool literally (a lookup such as `tools[name]`). */
+  dynamicLookup: `Call the bus tool by its exact name, for example tools.${CODEX_TOOL_NAMESPACE}__self(), not through a dynamic lookup.`,
   subagent:
     "only the main Codex thread can use Open Artifacts bus, not a subagent.",
   /** DRAFT (C27), pending Design. */
