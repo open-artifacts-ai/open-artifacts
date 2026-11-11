@@ -44,7 +44,7 @@ const billing = (over: Record<string, unknown>) => (m: Me) => {
     } as Me["instance"],
   };
 };
-const trialLine = /14-day trial of Business/;
+const trialLine = /30-day trial of Business/;
 const heading = () => screen.findByRole("heading", { name: "Get started" });
 
 describe("Get started checklist", () => {
@@ -166,7 +166,7 @@ describe("Get started checklist", () => {
     await heading();
     expect(
       screen.getByText(
-        "Inviting someone starts a 14-day trial of Business. Your Solo plan stays as it is.",
+        "Inviting someone starts a 30-day trial of Business. Your Solo plan stays as it is.",
       ),
     ).toBeInTheDocument();
   });

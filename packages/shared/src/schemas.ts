@@ -35,6 +35,27 @@ export type Visibility = z.infer<typeof VisibilitySchema>;
  * managers); others get 403 data_editors_only.
  */
 export const DataWritersSchema = z.enum(["viewers", "editors"]);
+
+/** #2080: who may post comments when they are on. */
+export const CommentersSchema = z.enum(["everyone", "signed-in"]);
+export type Commenters = z.infer<typeof CommentersSchema>;
+/** #2080: the `comments` input: on/off, or a named setting ("off" is off). */
+export const CommentsSettingSchema = z
+  .union([z.boolean(), z.enum(["everyone", "signed-in", "off"])])
+  .describe(
+    'Comments: "everyone" (anyone who can open it may comment), "signed-in" (signed-out visitors read but cannot post; the default for new artifacts), or "off". true turns comments on and keeps who may comment; false is off.',
+  );
+export type CommentsSetting = z.infer<typeof CommentsSettingSchema>;
+/** #2080: a `comments` input as the stored pair; a field is absent when the input leaves it alone. */
+export function commentsSettingOf(v: CommentsSetting | undefined): {
+  comments?: boolean;
+  commenters?: Commenters;
+} {
+  if (v === undefined) return {};
+  if (typeof v === "boolean") return { comments: v };
+  if (v === "off") return { comments: false };
+  return { comments: true, commenters: v };
+}
 export type DataWriters = z.infer<typeof DataWritersSchema>;
 
 /**
@@ -152,8 +173,12 @@ const PublishShape = z.strictObject({
   dataWriters: DataWritersSchema.optional(),
   /** Deprecated (#681): true means dataWriters "viewers"; false, "editors" on a public artifact. */
   allowAnonymousWrites: z.boolean().optional(),
-  /** #682: switch the built-in comments layer on or off (owner and managers). */
-  comments: z.boolean().optional(),
+  /**
+   * #682, #2080: switch the built-in comments layer, and who may post (owner
+   * and managers). A boolean is on/off (true keeps the current commenters); a
+   * string sets both: "everyone" | "signed-in" (on) or "off".
+   */
+  comments: CommentsSettingSchema.optional(),
   /**
    * Hosted M1: the space to create the artifact in (default: the caller's
    * personal space). Create only: with the id of an existing artifact it is
@@ -313,6 +338,8 @@ export const ArtifactSummarySchema = z.object({
   can: ArtifactCanSchema.optional(),
   /** #682: the Comments setting (on by default). Absent: the server has no comments (older than #1496), so the shell shows none. */
   comments: z.boolean().optional(),
+  /** #2080: who may post when comments are on. Absent: older server, read as "everyone". */
+  commenters: CommentersSchema.optional(),
   /** #1535: open asks addressed to the caller. Absent reads as 0. */
   asksForYou: z.number().int().min(0).optional(),
 });
@@ -478,8 +505,8 @@ export const ArtifactPatchSchema = z
     dataWriters: DataWritersSchema,
     /** Deprecated (#681): see resolveDataWriters. */
     allowAnonymousWrites: z.boolean(),
-    /** #682: owner and managers. */
-    comments: z.boolean(),
+    /** #682, #2080: owner and managers; a boolean, or "everyone" | "signed-in" | "off". */
+    comments: CommentsSettingSchema,
   })
   .partial();
 export type ArtifactPatch = z.infer<typeof ArtifactPatchSchema>;
@@ -961,7 +988,8 @@ export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
 export const UploadCreateInputSchema = z.strictObject({
   artifactId: IdSchema.optional(),
   path: z.string(),
-  size: z.number().int().positive(),
+  /** Exact byte size the PUT must match. Omit it and the server measures the bytes at PUT (up to 25 MB). */
+  size: z.number().int().positive().optional(),
   contentType: z.string().optional(),
   sha256: z
     .string()

@@ -1,4 +1,4 @@
-// #1836: when an invite starts the 14-day Business trial, and when it ends.
+// #1836: when an invite starts the 30-day Business trial, and when it ends.
 import { type Me, TRIAL_DAYS } from "@oa/shared";
 import { formatDate } from "../settings/date";
 

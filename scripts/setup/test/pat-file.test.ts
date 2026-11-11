@@ -112,14 +112,13 @@ describe("#2: the minted PAT goes to a file, not stdout", () => {
     expect(sn.opencodeToken).not.toContain("{env:OA_TOKEN}");
   });
 
-  it("#2: Codex token fallback is launched with OA_TOKEN from the absolute file; no shell-profile edits", async () => {
+  it("#2: Codex token fallback reads the absolute file through a helper; no env var, no shell-profile edits", async () => {
     const w = await go();
     const codex = (
       line(w, "agent-config").data.configs as { client: string; note: string }[]
     ).find((c) => c.client === "Codex CLI (token file, for no OAuth)");
-    expect(codex?.note).toContain(`OA_TOKEN="$(cat ${FILE})" codex`);
-    expect(codex?.note).toContain("Don't edit shell profiles");
-    expect(codex?.note).not.toMatch(/export OA_TOKEN|exported/);
+    expect(codex?.note).toContain(FILE);
+    expect(codex?.note).not.toMatch(/OA_TOKEN|export OA_TOKEN|exported/);
   });
 
   it("#2: --ci snippets reference no token file", async () => {
@@ -307,7 +306,8 @@ describe("#22: the docs have no OA_TOKEN export or shell-profile guidance", () =
       "claude mcp add --transport http -s user open-artifacts https://artifacts.example.com/mcp",
     );
     expect(md).toContain("{file:<token file>}");
-    expect(md).toContain('OA_TOKEN="$(cat <token file>)" codex');
+    expect(md).toContain('http_headers_helper = "T=$(cat <token file>)');
+    expect(md).not.toContain("OA_TOKEN");
   });
 });
 

@@ -36,7 +36,7 @@ const NAME: Record<BillingTier, string> = {
 const PRICE: Record<BillingTier, string> = {
   free: "$1 a month or $10 a year",
   solo: "$1 a month or $10 a year",
-  trial: "Free for 14 days",
+  trial: "Free for 30 days",
   team: "$10 per creator per month",
   business: "$25 per creator per month",
 };
