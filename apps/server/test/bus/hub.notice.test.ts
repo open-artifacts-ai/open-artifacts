@@ -1107,25 +1107,28 @@ describe("a notice to a role address (#1752)", () => {
     expect(await waiting(s.userId)).toBe(0);
   });
 
-  it("a live agent's name beats a role of the same name", async () => {
-    const s = await held();
-    // A later agent registering the role's name gets a different bus name
-    // (the role holds it), so force the clash: the live row wins in the hub.
-    const other = uniq("other");
-    const otherRef = id("ref");
-    s.d.send(up(id("u"), otherRef, other, s.namespace));
-    const ok = await waitFor(s.d, "agent_ok");
-    await inHub(s.userId, (_i, st) => {
-      st.storage.sql.exec(
-        "update agents set name = ? where id = (select id from agents where name = ? and live = 1)",
-        s.role,
-        ok.bus_name,
-      );
-    });
-    const n = note({ namespace: s.namespace, name: s.role });
-    expect(await s.stub.deliverNotice(n)).toBe("delivered");
-    const f = await waitFor(s.d, "deliver");
-    expect(f.to_ref).toBe(otherRef);
+  it("reaches a global holder homed in another namespace", async () => {
+    const m = await member();
+    const mach = await machine("Laptop", m.userId);
+    const d = await daemon(mach.token);
+    d.send({ ...plainHello(id("h")), caps: [BUS_CAPS.follow] } as never);
+    await waitFor(d, "hello_ok");
+    const home = ns("home");
+    const x = ns("rolens");
+    const name = uniq("globalholder");
+    d.send({ ...up(id("u"), id("ref"), name, home), global: true } as never);
+    await waitFor(d, "agent_ok");
+    const stub = await hubOf(m.userId);
+    const agent = (await stub.snapshot()).agents.find((a) => a.name === name);
+    if (!agent) throw new Error("no agent");
+    const role = uniq("lead");
+    const r = await stub.putRole(x, role, agent.id);
+    if (!r.ok) throw new Error(`putRole refused: ${r.reason}`);
+    const n = note({ namespace: x, name: role });
+    expect(await stub.deliverNotice(n)).toBe("delivered");
+    const f = await waitFor(d, "deliver");
+    expect(f.body).toBe(n.text);
+    expect(await waiting(m.userId)).toBe(0);
   });
 
   it("a vacant role is an offline agent: the notice is dropped", async () => {
