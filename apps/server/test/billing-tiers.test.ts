@@ -4,6 +4,7 @@
 // added to the gate; the cron's directory feed under a lock; and the
 // free-tier caps, off until configured. Billing is a fake BillingGate
 // (billing-helpers.ts); no Stripe or network call is made.
+import { runInDurableObject } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import {
   type BillingTier,
@@ -224,14 +225,14 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
     return getMe(owner.cookie);
   };
 
-  it("the trial gets Business's features; Me's two tiers agree; provisioned FEATURES don't count", async () => {
+  it("the trial gets Team's features (frozen, no group sync); Me's two tiers agree; provisioned FEATURES don't count", async () => {
     const me = await featuresAt("trial", 2);
     expect(
       new Set(me.instance.features?.filter((f) => f !== "guests_read_only")),
-    ).toEqual(new Set([...TIER_FEATURES.business, "usage_off"]));
+    ).toEqual(new Set([...TIER_FEATURES.team, "usage_off"]));
     expect(me.instance.tier).toBe("trial");
     expect(me.instance.billing?.tier).toBe("trial");
-    expect(me.instance.directory?.mode).toBe("google");
+    expect(me.instance.directory?.mode).toBe("frozen");
     // H provisions FEATURES "spaces,content_revocation" only.
     expect(H.FEATURES).toBe("spaces,content_revocation");
   });
@@ -281,6 +282,30 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
     ).toEqual({ value: '{"kept":true}' });
   });
 
+  it("the directory mode per tier and lock: Business google; everything else frozen", async () => {
+    const mode = async (r: Partial<BillingRow>, v: number) => {
+      await cachePlan(row({ ...r, version: v }), mid);
+      const me = await getMe(owner.cookie);
+      expect(me.instance.features).not.toContain(
+        r.tier === "business" ? "sync_frozen" : "sync_google",
+      );
+      return me.instance.directory?.mode ?? "off";
+    };
+    expect(await mode({ tier: "solo", trialEndsAt: 1 }, 10)).toBe("frozen");
+    expect(await mode({ tier: "solo", trialEndsAt: mid + DAY }, 11)).toBe(
+      "frozen",
+    );
+    expect(await mode({ tier: "trial", trialEndsAt: mid + DAY }, 12)).toBe(
+      "frozen",
+    );
+    expect(await mode({ tier: "team" }, 13)).toBe("frozen");
+    expect(await mode({ tier: "team", status: "lapsed" }, 14)).toBe("frozen");
+    expect(await mode({ tier: "business" }, 15)).toBe("google");
+    expect(await mode({ tier: "business", status: "lapsed" }, 16)).toBe(
+      "google",
+    );
+  });
+
   it("the cron pauses directory sync only on a locked plan (Team stays unpaused)", async () => {
     const lines: string[] = [];
     vi.spyOn(console, "log").mockImplementation((...a: unknown[]) => {
@@ -309,15 +334,15 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
     await tick();
     expect(paused()).toBe(teamN);
     // A lapse and free: paused, nothing disconnected.
-    for (const r of [
-      row({ tier: "team", status: "lapsed", version: 3 }),
-      row({ tier: "solo", trialEndsAt: 1, version: 4 }),
-    ]) {
+    for (const [r, by] of [
+      [row({ tier: "team", status: "lapsed", version: 3 }), 1],
+      [row({ tier: "solo", trialEndsAt: 1, version: 4 }), 1],
+    ] as const) {
       b.s.row = r;
       await cachePlan(r, mid);
       const n = paused();
       await tick();
-      expect(paused()).toBe(n + 1);
+      expect(paused()).toBe(n + by);
     }
   });
 });
@@ -357,6 +382,209 @@ describe("the gate's team routes", () => {
     await cachePlan(row({ tier: "solo", trialEndsAt: 1, version: 3 }), mid);
     for (const f of DIRECTORY_WRITES)
       expect(await code(await f())).toBe("plan_required");
+  });
+
+  it("Directory reads and creates are plan_required off Business; removals pass; nothing is deleted", async () => {
+    const reads = [
+      () => send(props, R.directory, owner.cookie),
+      () => send(props, R.directoryConnect, owner.cookie),
+      () => send(props, R.directoryCallback, owner.cookie),
+      () =>
+        send(props, R.directoryConfirm, owner.cookie, {
+          method: "POST",
+          body: {},
+        }),
+      () => send(props, R.directoryGroups, owner.cookie),
+      () =>
+        send(props, R.directorySync, owner.cookie, {
+          method: "POST",
+          body: {},
+        }),
+      () =>
+        send(props, R.directoryHeldConfirm("g1"), owner.cookie, {
+          method: "POST",
+          body: {},
+        }),
+      () =>
+        send(props, R.directoryHeldSnooze("g1"), owner.cookie, {
+          method: "POST",
+          body: {},
+        }),
+      () =>
+        send(props, R.orgMapping("g1"), owner.cookie, {
+          method: "PUT",
+          body: { role: "viewer" },
+        }),
+      () =>
+        send(props, R.restrictedGroup("g1"), owner.cookie, {
+          method: "PUT",
+          body: {},
+        }),
+    ];
+    // [call, the exact success status]
+    const removals: [() => Promise<Response>, number][] = [
+      [
+        () =>
+          send(props, R.directoryCancel, owner.cookie, {
+            method: "POST",
+            body: {},
+          }),
+        // No pending connect to cancel: the handler runs and answers 404.
+        404,
+      ],
+      [
+        () =>
+          send(props, R.directoryDisconnect, owner.cookie, { method: "POST" }),
+        200,
+      ],
+      [
+        () =>
+          send(props, R.directoryHeldSnooze("g1"), owner.cookie, {
+            method: "DELETE",
+          }),
+        200,
+      ],
+    ];
+    await cachePlan(row({ tier: "business", version: 1 }), mid);
+    for (const f of reads)
+      expect(await code(await f())).not.toBe("plan_required");
+    await env.DB.prepare(
+      "insert into directory_state (key, value) values (?, ?) on conflict (key) do nothing",
+    )
+      .bind(`test.kept.refuse.${tag}`, '{"kept":true}')
+      .run();
+    let v = 2;
+    for (const r of [
+      row({ tier: "team" }),
+      row({ tier: "trial", trialEndsAt: mid + DAY }),
+      row({ tier: "solo", trialEndsAt: mid + DAY }),
+    ]) {
+      await cachePlan({ ...r, version: v++ }, mid);
+      for (const f of reads) {
+        const res = await f();
+        expect(res.status).toBe(403);
+        const e = await errOf(res);
+        expect(e.code).toBe("plan_required");
+        // Solo's lock gate may speak first on a write; the code is the same.
+        if (r.tier !== "solo")
+          expect(e.message).toBe("Directory sync is on the Business plan.");
+      }
+      for (const [f, status] of removals) {
+        const r0 = await f();
+        expect(r0.status).toBe(status);
+      }
+    }
+    expect(
+      await env.DB.prepare("select value from directory_state where key = ?")
+        .bind(`test.kept.refuse.${tag}`)
+        .first(),
+    ).toEqual({ value: '{"kept":true}' });
+  });
+
+  it("Team: a hand edit of a synced row records frozen_edits", async () => {
+    await cachePlan(row({ tier: "business", version: 1 }), mid);
+    const sp = await send(props, R.spaces, owner.cookie, {
+      method: "POST",
+      body: { name: `Hand ${tag}` },
+    });
+    const space = (await sp.json()) as { id: string };
+    const m = await login(`t-synced-${uniq()}@a.com`, "member");
+    await env.DB.prepare(
+      "insert into space_members (space_id, user_id, role, source, created_at) values (?, ?, 'editor', 'sync', 1)",
+    )
+      .bind(space.id, m.userId)
+      .run();
+    await cachePlan(row({ tier: "team", version: 2 }), mid);
+    const put = await send(
+      props,
+      R.spaceMember(space.id, m.userId),
+      owner.cookie,
+      { method: "PUT", body: { role: "viewer" } },
+    );
+    expect(put.status).toBe(200);
+    expect(
+      await env.DB.prepare(
+        "select count(*) as n from frozen_edits where space_id = ? and user_id = ?",
+      )
+        .bind(space.id, m.userId)
+        .first<{ n: number }>(),
+    ).toEqual({ n: 1 });
+  });
+
+  it("Team: a space mapping DELETE answers 403 plan_required and removes nothing", async () => {
+    await cachePlan(row({ tier: "business", version: 1 }), mid);
+    const sp = await send(props, R.spaces, owner.cookie, {
+      method: "POST",
+      body: { name: `Map ${tag}` },
+    });
+    const space = (await sp.json()) as { id: string };
+    const gid = `g${newId().slice(0, 10)}`;
+    await env.DB.prepare(
+      "insert into group_mappings (space_id, group_id, group_email, role) values (?, ?, 'x@x.com', 'viewer')",
+    )
+      .bind(space.id, gid)
+      .run();
+    await cachePlan(row({ tier: "team", version: 2 }), mid);
+    const del = await send(props, R.spaceMapping(space.id, gid), owner.cookie, {
+      method: "DELETE",
+    });
+    expect(del.status).toBe(403);
+    expect((await errOf(del)).code).toBe("plan_required");
+    expect(
+      await env.DB.prepare(
+        "select count(*) as n from group_mappings where space_id = ? and group_id = ?",
+      )
+        .bind(space.id, gid)
+        .first<{ n: number }>(),
+    ).toEqual({ n: 1 });
+  });
+
+  it("Team: deleting an Every space org mapping drops its members' access and revokes them", async () => {
+    await cachePlan(row({ tier: "business", version: 1 }), mid);
+    const sp = await send(props, R.spaces, owner.cookie, {
+      method: "POST",
+      body: { name: `Every ${tag}` },
+    });
+    const space = (await sp.json()) as { id: string };
+    const m = await login(`t-every-${uniq()}@a.com`, "member");
+    const gid = `g${newId().slice(0, 10)}`;
+    const art = `art-${gid}`;
+    await env.DB.batch([
+      env.DB.prepare(
+        "insert into directory_groups (group_id, email) values (?, ?)",
+      ).bind(gid, `${gid.toLowerCase()}@x.com`),
+      env.DB.prepare(
+        "insert into directory_members (group_id, user_id) values (?, ?)",
+      ).bind(gid, m.userId),
+      env.DB.prepare(
+        "insert into org_group_mappings (group_id, group_email, role) values (?, ?, 'viewer')",
+      ).bind(gid, `${gid.toLowerCase()}@x.com`),
+      env.DB.prepare(
+        "insert into artifacts (id, owner_id, space_id, title, format, visibility, created_at, updated_at) values (?, ?, ?, 't', 'html', 'private', 1, 1)",
+      ).bind(art, owner.userId, space.id),
+    ]);
+    await cachePlan(row({ tier: "team", version: 2 }), mid);
+    const visible = async () =>
+      (
+        (await (
+          await send(props, `${R.artifacts}?limit=100`, m.cookie)
+        ).json()) as {
+          items: { id: string }[];
+        }
+      ).items.some((a) => a.id === art);
+    expect(await visible()).toBe(true);
+    const del = await send(props, R.orgMapping(gid), owner.cookie, {
+      method: "DELETE",
+    });
+    expect(del.status).toBe(204);
+    expect(await visible()).toBe(false);
+    const ns = env.USER_PRESENCE;
+    if (!ns) throw new Error("USER_PRESENCE unbound");
+    const revoked = await runInDurableObject(
+      ns.get(ns.idFromName(m.userId)),
+      (p) => (p as unknown as { revokedAt(): number | null }).revokedAt(),
+    );
+    expect(revoked).not.toBeNull();
   });
 
   it("cancelling a snooze is a removal: it passes the plan gate under a lock", async () => {

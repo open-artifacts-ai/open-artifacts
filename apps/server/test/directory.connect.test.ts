@@ -417,6 +417,43 @@ describe("hosted", () => {
     expect(await inGroup()).toBe(true);
   });
 
+  it("after Business to Solo, a user suspended in Google is still refused at sign-in (frozen keeps the checks)", async () => {
+    const email = uniq("dir-solo-signin");
+    const uid = await seedUser(email, "member");
+    const sub = `g-${crypto.randomUUID()}`;
+    g.addUser({ id: sub, primaryEmail: email });
+    const h = hostedEnv();
+    await connect(h, owner.cookie, g, { sub: admin.sub });
+    const member = async () => (await getUser(h, uid)) as Member;
+    const signIn = () =>
+      withBrokerProps(
+        { props: { ...hostedProps(), ...fakeBilling().props } },
+        () =>
+          withPlanScope(h, async () => {
+            await planNow(h);
+            await directorySignIn(h, await member());
+          }),
+      );
+    await env.DB.prepare(
+      "delete from settings where key like 'billing.%'",
+    ).run();
+    // The binding stays through the downgrade; Solo keeps the sign-in checks.
+    await storePlan(
+      h,
+      {
+        tier: "solo",
+        status: "active",
+        trialEndsAt: 1,
+        graceUntil: null,
+        version: 7,
+        asOf: Date.now(),
+      },
+      Date.now(),
+    );
+    (g.users.get(sub) as { suspended?: boolean }).suspended = true;
+    await expect(signIn()).rejects.toMatchObject({ why: "suspended" });
+  });
+
   it("an existing user is linked by email in the initial pass", async () => {
     const email = uniq("linked");
     const uid = await seedUser(email, "member");

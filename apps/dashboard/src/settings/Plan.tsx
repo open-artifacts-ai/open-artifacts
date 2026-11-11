@@ -24,12 +24,15 @@ import { formatDate } from "./date";
 import { type Column, PlanCompare } from "./PlanCompare";
 import { muted, SettingsCard, STACK } from "./ui";
 
+/** The public docs page on leaving hosted (#2108). */
+const LEAVE_HOSTED_URL = "https://open-artifacts.com/docs/hosted/";
+
 type Buy = Pick<BillingCheckoutInput, "tier" | "interval">;
 
 const NAME: Record<BillingTier, string> = {
   free: "Solo",
   solo: "Solo",
-  trial: "Business trial",
+  trial: "Team trial",
   team: "Team",
   business: "Business",
 };
@@ -40,11 +43,11 @@ const PRICE: Record<BillingTier, string> = {
   team: "$10 per creator per month",
   business: "$25 per creator per month",
 };
-/** The tier's column in the comparison; the trial is Business until it ends. */
+/** The tier's column in the comparison; the invite trial is Team until it ends (#2113). */
 const COLUMN: Record<BillingTier, Column> = {
   free: "solo",
   solo: "solo",
-  trial: "business",
+  trial: "team",
   team: "team",
   business: "business",
 };
@@ -91,20 +94,20 @@ export const planStatus = (
         }. After that, this instance becomes read-only.`,
       },
     };
-  // trialEndsAt is the Business trial's only: a Solo row with one is a used
-  // Business trial and shows no note. The Solo month has its own date, and a
+  // trialEndsAt is the Team trial's only: a Solo row with one is a used
+  // Team trial and shows no note. The Solo month has its own date, and a
   // date already past (a paid Solo) shows nothing.
   if (b.tier === "trial" && b.trialEndsAt)
     return {
       pill: { label: "Trial", tone: "info" },
       note: {
         tone: "info",
-        text: `Trial ends ${date(b.trialEndsAt)}. Everything in Business is on.`,
+        text: `Trial ends ${date(b.trialEndsAt)}. Everything in Team is on.`,
       },
     };
   if (solo && b.soloTrialEndsAt && Date.parse(b.soloTrialEndsAt) > Date.now())
     return {
-      // Not "Trial": that is the Business trial's word.
+      // Not "Trial": that is the Team trial's word.
       pill: { label: "Free month", tone: "info" },
       note: {
         tone: "info",
@@ -162,6 +165,17 @@ export function Plan() {
   // Absent means billing's answer predates the field: keep the button.
   const portal = (paid && !lapsedPaid) || billing.status === "past_due";
   const operatorPlan = portal && billing.hasCustomer === false;
+  // A paying Solo (a Stripe customer, active or past_due, past its free month)
+  // manages its plan in the portal and sees no Pay buttons. During the free
+  // month the Pay buttons stay: they are the way to start paying or pick yearly.
+  const soloTrialing =
+    !!billing.soloTrialEndsAt &&
+    Date.parse(billing.soloTrialEndsAt) > Date.now();
+  const soloPaid =
+    billing.tier === "solo" &&
+    billing.hasCustomer === true &&
+    (billing.status === "active" || billing.status === "past_due") &&
+    !soloTrialing;
   return (
     <div className={STACK}>
       <SettingsCard id="plan-card" title="Plan and billing">
@@ -213,7 +227,12 @@ export function Plan() {
             ))
           ) : (
             <>
-              {column === "solo" && (
+              {column === "solo" && soloPaid && (
+                <Button disabled={busy} onClick={() => go.mutate("portal")}>
+                  Manage billing
+                </Button>
+              )}
+              {column === "solo" && !soloPaid && (
                 <>
                   <Button
                     disabled={busy}
@@ -242,6 +261,17 @@ export function Plan() {
             </span>
           )}
         </div>
+        <p className={muted}>
+          <a
+            className="text-[var(--oa-accent-fg)] underline underline-offset-2"
+            href={LEAVE_HOSTED_URL}
+            target="_blank"
+            rel="noopener"
+          >
+            Leaving? Here&apos;s how.
+            <span className="sr-only"> (opens in new tab)</span>
+          </a>
+        </p>
       </SettingsCard>
       <PlanCompare
         column={column}

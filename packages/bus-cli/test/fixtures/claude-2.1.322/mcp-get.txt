@@ -1,0 +1,8 @@
+open-artifacts:
+  Scope: User config (available in all your projects)
+  Status: ✘ Failed to connect
+  Issue: ENOTFOUND: getaddrinfo ENOTFOUND x.example.com
+  Type: http
+  URL: https://x.example.com/mcp
+
+To remove this server, run: claude mcp remove open-artifacts -s user

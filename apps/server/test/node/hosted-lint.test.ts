@@ -54,6 +54,8 @@ const READS: Record<string, string> = {
     "tightens: hosted billing's plan lock (the plan cap, plan_required, plan_read_only) and its reads and reports; self-hosted installs keep TIER/FEATURES with no gate",
   "billing/plan.ts: planOfRaw":
     "type only: the env pick for billingOn (HOSTED) and the seed tier (TIER)",
+  "services/docs-available.ts: docsAvailable":
+    "loosens: hosted installs run on paid Workers, so docs are available whatever PLAN says (#1100)",
   "directory/transport.ts: resolve":
     "fail closed: hosted directory sync requires the broker; direct vars or no broker resolve to none",
 };

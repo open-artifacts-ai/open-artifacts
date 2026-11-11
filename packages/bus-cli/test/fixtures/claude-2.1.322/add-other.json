@@ -1,0 +1,1 @@
+{"command":"marketplace-add","outcome":"failed","message":"Cannot add marketplace \"open-artifacts\": its source doesn't match its extraKnownMarketplaces entry in user or managed settings; add it from the source that entry lists, or change the entry.","failureCode":"declared"}

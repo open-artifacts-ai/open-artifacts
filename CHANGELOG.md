@@ -1,5 +1,72 @@
 # Changelog
 
+## [0.158.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.157.0...v0.158.0) (2026-11-11)
+
+
+### Features
+
+* **billing:** checkout takes a yearly interval and seats for Team and Business ([#2144](https://github.com/open-artifacts-ai/open-artifacts/issues/2144)) ([8f05ee3](https://github.com/open-artifacts-ai/open-artifacts/commit/8f05ee3143e07ea90cef23837093998604309040))
+* **bus-cli:** oa-bus install sets up the Open Artifacts Claude Code plugins ([#2095](https://github.com/open-artifacts-ai/open-artifacts/issues/2095)) ([#2164](https://github.com/open-artifacts-ai/open-artifacts/issues/2164)) ([e020f46](https://github.com/open-artifacts-ai/open-artifacts/commit/e020f463cbc9bad6f74f52e6fc2ee6d0976f8880))
+* **comments:** the reply box shows the thread's agents, removable ([#2035](https://github.com/open-artifacts-ai/open-artifacts/issues/2035)) ([#2059](https://github.com/open-artifacts-ai/open-artifacts/issues/2059)) ([258029f](https://github.com/open-artifacts-ai/open-artifacts/commit/258029fb1816efc14fd98db0dd09b03b4cec0513))
+* **connect:** connect cards for pi, oh-my-pi, Hermes and OpenClaw ([#2103](https://github.com/open-artifacts-ai/open-artifacts/issues/2103)) ([#2170](https://github.com/open-artifacts-ai/open-artifacts/issues/2170)) ([01f13ed](https://github.com/open-artifacts-ai/open-artifacts/commit/01f13ed54c3dbade928aa1e84e85c5abe1157f78))
+* **docs:** agent edit operations ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2094](https://github.com/open-artifacts-ai/open-artifacts/issues/2094)) ([72686bf](https://github.com/open-artifacts-ai/open-artifacts/commit/72686bf7c4741ba9d4ff2ca25cd92469a7ed1e26))
+* **viewer:** agent faces in the version list ([#2118](https://github.com/open-artifacts-ai/open-artifacts/issues/2118), item 11) ([#2151](https://github.com/open-artifacts-ai/open-artifacts/issues/2151)) ([b52b097](https://github.com/open-artifacts-ai/open-artifacts/commit/b52b097c4df3e6544c60a592e1014ac3cde0ccdf))
+* **viewer:** title bar, Comment bubble, ask cards, version faces and banner match the prototype ([#2118](https://github.com/open-artifacts-ai/open-artifacts/issues/2118), part 2) ([#2148](https://github.com/open-artifacts-ai/open-artifacts/issues/2148)) ([82d2ee5](https://github.com/open-artifacts-ai/open-artifacts/commit/82d2ee524a0431232fdf2484b8fbf5fb36c5ea9b))
+
+
+### Bug Fixes
+
+* **bus:** a missed liveness read or an inject timeout never closes a Claude session ([#2110](https://github.com/open-artifacts-ai/open-artifacts/issues/2110)) ([#2125](https://github.com/open-artifacts-ai/open-artifacts/issues/2125)) ([c3ece75](https://github.com/open-artifacts-ai/open-artifacts/commit/c3ece750f8c37fd7f7989fd8784080e043d13a50))
+* **bus:** Codex mail and notices count as delivered only once a turn takes them ([#2029](https://github.com/open-artifacts-ai/open-artifacts/issues/2029), [#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2039](https://github.com/open-artifacts-ai/open-artifacts/issues/2039)) ([7a8cb8e](https://github.com/open-artifacts-ai/open-artifacts/commit/7a8cb8ecac0beed20182c7cde8d761b6c7f20dc0))
+* **bus:** Codex wake needs no live asker and no lsof ([#2079](https://github.com/open-artifacts-ai/open-artifacts/issues/2079)) ([#2081](https://github.com/open-artifacts-ai/open-artifacts/issues/2081)) ([c1ebb50](https://github.com/open-artifacts-ai/open-artifacts/commit/c1ebb50848743abaac344b49e8a3cad384f2e2cd))
+* **bus:** the event log and oa-bus logs never follow a symlinked dir or a non-regular file ([#2088](https://github.com/open-artifacts-ai/open-artifacts/issues/2088)) ([#2132](https://github.com/open-artifacts-ai/open-artifacts/issues/2132)) ([4f18b6e](https://github.com/open-artifacts-ai/open-artifacts/commit/4f18b6eca18a8652b54af99283b5f0221f6273f4))
+* **e2e:** T19 retries the test session hook once on a dropped connection ([#2153](https://github.com/open-artifacts-ai/open-artifacts/issues/2153)) ([af1f485](https://github.com/open-artifacts-ai/open-artifacts/commit/af1f4850134baae72c2259dca8f2e7e5529f0c75))
+* **oauth:** a transient D1 or KV error on the token endpoint is 503 temporarily_unavailable ([#2155](https://github.com/open-artifacts-ai/open-artifacts/issues/2155)) ([#2182](https://github.com/open-artifacts-ai/open-artifacts/issues/2182)) ([d9808ae](https://github.com/open-artifacts-ai/open-artifacts/commit/d9808ae5b34388c2f3ef42d9e69032a52536d01d))
+* **settings:** Directory is Business only; the invite trial is a Team trial ([#2113](https://github.com/open-artifacts-ai/open-artifacts/issues/2113)) ([#2134](https://github.com/open-artifacts-ai/open-artifacts/issues/2134)) ([c5e971b](https://github.com/open-artifacts-ai/open-artifacts/commit/c5e971b3e7bf35efcfff5dcb9c887a7f8fd99bf8))
+
+## [0.157.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.156.0...v0.157.0) (2026-11-11)
+
+
+### Features
+
+* **docs:** doc artifact format ([#1100](https://github.com/open-artifacts-ai/open-artifacts/issues/1100)) ([#2089](https://github.com/open-artifacts-ai/open-artifacts/issues/2089)) ([42c537a](https://github.com/open-artifacts-ai/open-artifacts/commit/42c537ad66649ea6da4b15f9f3f62da2e1996566))
+* **viewer:** the comments column matches the landing prototype ([#2118](https://github.com/open-artifacts-ai/open-artifacts/issues/2118), part 1) ([#2131](https://github.com/open-artifacts-ai/open-artifacts/issues/2131)) ([a974a16](https://github.com/open-artifacts-ai/open-artifacts/commit/a974a16ba24154989b210c2b3a3971908cf8369c))
+
+
+### Bug Fixes
+
+* **billing:** Solo with a Stripe customer gets Manage billing ([#2129](https://github.com/open-artifacts-ai/open-artifacts/issues/2129)) ([d1fb0a2](https://github.com/open-artifacts-ai/open-artifacts/commit/d1fb0a224996357ba45377eff11bb4b1ef164687))
+* **viewer:** full screen's controls sit in a strip above the artifact ([#2112](https://github.com/open-artifacts-ai/open-artifacts/issues/2112)) ([#2126](https://github.com/open-artifacts-ai/open-artifacts/issues/2126)) ([3d8b2b9](https://github.com/open-artifacts-ai/open-artifacts/commit/3d8b2b942693da894bb10cccbc2268d4ca02b503))
+
+## [0.156.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.155.0...v0.156.0) (2026-11-11)
+
+
+### Features
+
+* **viewer:** Who can comment, the UI ([#2080](https://github.com/open-artifacts-ai/open-artifacts/issues/2080)) ([#2083](https://github.com/open-artifacts-ai/open-artifacts/issues/2083)) ([e962933](https://github.com/open-artifacts-ai/open-artifacts/commit/e9629336eb167e5143c0f52b9e2702b104aa49ea))
+
+
+### Bug Fixes
+
+* **bus:** log every unresolved /mcp proof lookup ([#2110](https://github.com/open-artifacts-ai/open-artifacts/issues/2110)) ([#2122](https://github.com/open-artifacts-ai/open-artifacts/issues/2122)) ([34723e3](https://github.com/open-artifacts-ai/open-artifacts/commit/34723e3aee534984b83f0da9098e68e485f3087a))
+
+## [0.155.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.154.0...v0.155.0) (2026-11-11)
+
+
+### Features
+
+* **billing:** the invite-started Business trial is 30 days ([#2093](https://github.com/open-artifacts-ai/open-artifacts/issues/2093)) ([e75a40d](https://github.com/open-artifacts-ai/open-artifacts/commit/e75a40d20f1f6528d7933c66551bd697b68a69e5))
+* **comments:** signed-out visitors can read but not post ([#2080](https://github.com/open-artifacts-ai/open-artifacts/issues/2080)) ([#2086](https://github.com/open-artifacts-ai/open-artifacts/issues/2086)) ([88a091d](https://github.com/open-artifacts-ai/open-artifacts/commit/88a091d8b1cfcf3966509736f4d096dad54ab9e4))
+* create_upload without a size ([#1540](https://github.com/open-artifacts-ai/open-artifacts/issues/1540)) ([#1543](https://github.com/open-artifacts-ai/open-artifacts/issues/1543)) ([876f42b](https://github.com/open-artifacts-ai/open-artifacts/commit/876f42b59e3d0bd8bcdbd25578d1c7964ecd6e9e))
+
+
+### Bug Fixes
+
+* **bus-daemon:** OpenCode hello needs a TUI attached to the attested service ([#1950](https://github.com/open-artifacts-ai/open-artifacts/issues/1950)) ([#2041](https://github.com/open-artifacts-ai/open-artifacts/issues/2041)) ([7bd92f2](https://github.com/open-artifacts-ai/open-artifacts/commit/7bd92f2cded302a417948160cf38b86fffae39b0))
+* **bus:** an un-acked comment notice reads gone after the ack TTL ([#2082](https://github.com/open-artifacts-ai/open-artifacts/issues/2082)) ([#2084](https://github.com/open-artifacts-ai/open-artifacts/issues/2084)) ([ea7e57c](https://github.com/open-artifacts-ai/open-artifacts/commit/ea7e57cf26d8b79f79512519f4175864dfd68033))
+* **bus:** the daemon logs joins, refusals and liveness always ([#2029](https://github.com/open-artifacts-ai/open-artifacts/issues/2029)) ([#2030](https://github.com/open-artifacts-ai/open-artifacts/issues/2030)) ([97923a9](https://github.com/open-artifacts-ai/open-artifacts/commit/97923a9f706cf078b323eb4f5557b42c9802e183))
+* **viewer:** panel tabs stop before the close button ([#2085](https://github.com/open-artifacts-ai/open-artifacts/issues/2085)) ([474a67e](https://github.com/open-artifacts-ai/open-artifacts/commit/474a67ea70604545472bc5f28ee9b291ca672c3b))
+
 ## [0.154.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.153.1...v0.154.0) (2026-11-11)
 
 

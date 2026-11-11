@@ -51,7 +51,8 @@ import {
   isOrgAdmin,
   orgCan,
 } from "../auth/policy.js";
-import { featuresOf } from "../billing/features.js";
+import { featuresOf, scopedPlan } from "../billing/features.js";
+import { billingActive, directoryPlanError } from "../billing/plan.js";
 import { getDb } from "../db/client.js";
 import { spaces } from "../db/schema.js";
 import { stmt } from "../db/stmt.js";
@@ -168,8 +169,11 @@ const SUPERSEDE_BY_DELETE = `update frozen_edits set kind = 'delete'
 const notFound = () => new ApiError("not_found", "Not found");
 const personalError = (what: string) =>
   new ApiError("space_personal", `Personal spaces ${what}`);
-const syncOff = () =>
-  new ApiError("directory_sync_off", "Directory sync is off or frozen");
+/** Hosted billing: a plan without Google sync is plan_required; else 409. */
+const syncOff = (env: Env) =>
+  billingActive(env)
+    ? directoryPlanError(scopedPlan()?.tier)
+    : new ApiError("directory_sync_off", "Directory sync is off or frozen");
 const forbidden = (target: "member" | "mapping") =>
   new ApiError(
     "space_forbidden",
@@ -1455,7 +1459,7 @@ export async function putSpaceMapping(
   const cur = knownRole(g?.cur);
   if (!admin && [role, cur].some((x) => x && !MANAGER_ROLES.includes(x)))
     throw forbidden("mapping");
-  if (directoryMode(env) !== "google") throw syncOff();
+  if (directoryMode(env) !== "google") throw syncOff(env);
   if (!g?.email) throw notFound();
   const now = Date.now();
   const out = await env.DB.batch([
@@ -1522,7 +1526,7 @@ export async function deleteSpaceMapping(
   const cur = knownRole(g?.cur);
   if (!cur) throw notFound();
   if (!admin && !MANAGER_ROLES.includes(cur)) throw forbidden("mapping");
-  if (directoryMode(env) !== "google") throw syncOff();
+  if (directoryMode(env) !== "google") throw syncOff(env);
   const out = await env.DB.batch([
     audit(env, "mapping.remove", { type: "mapping", id: groupId }, actor, {
       spaceId: id,
@@ -1600,7 +1604,7 @@ export async function putOrgMapping(
   role: SpaceRole,
   ctx?: Ctx,
 ): Promise<GroupMapping> {
-  if (directoryMode(env) !== "google") throw syncOff();
+  if (directoryMode(env) !== "google") throw syncOff(env);
   const g = await stmt(env.DB, ORG_GROUP_OF)
     .bind(groupId)
     .first<{ cur: string | null; email: string | null; n: number }>();
@@ -1647,7 +1651,13 @@ export async function deleteOrgMapping(
   groupId: string,
   ctx?: Ctx,
 ): Promise<void> {
-  if (directoryMode(env) !== "google") throw syncOff();
+  // A removal: allowed while frozen too (hosted Team), where an Every space
+  // mapping no longer refreshes and the owner must be able to remove it.
+  if (
+    directoryMode(env) !== "google" &&
+    !(billingActive(env) && directoryMode(env) === "frozen")
+  )
+    throw syncOff(env);
   const out = await env.DB.batch([
     audit(
       env,
@@ -1715,7 +1725,7 @@ export async function putRestrictedGroup(
   groupId: string,
   ctx?: Ctx,
 ): Promise<RestrictedGroup> {
-  if (directoryMode(env) !== "google") throw syncOff();
+  if (directoryMode(env) !== "google") throw syncOff(env);
   const g = await stmt(
     env.DB,
     "select email from directory_groups where group_id = ?",

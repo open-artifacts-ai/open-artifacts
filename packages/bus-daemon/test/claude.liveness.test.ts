@@ -1,11 +1,15 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { connect, createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { claudeTarget, liveClaudeSessions } from "../src/liveness/claude.ts";
+import {
+  claudeTarget,
+  claudeTargetState,
+  liveClaudeSessions,
+} from "../src/liveness/claude.ts";
 import { ClaudeTransport } from "../src/transports/claude.ts";
 import { daemonHarness, deliverFrame, stopAll } from "./helpers.ts";
 
@@ -64,7 +68,6 @@ describe("claude liveness", () => {
         ...over,
       });
     expect(live({ procStart: () => "t1" })).toEqual([]);
-    expect(live({ procStart: () => null })).toEqual([]);
     expect(live({ isRunning: () => false })).toEqual([]);
     writeSession(d, 4242, { parkedJobId: "j" });
     expect(live()).toEqual([]);
@@ -72,6 +75,48 @@ describe("claude liveness", () => {
     expect(live()).toEqual([]);
     writeSession(d, 4242, { agentBus: true });
     expect(live()).toEqual([]);
+  });
+
+  it("#2110: a failed key read is unknown; only an absent key is unreachable", () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const sock = "/tmp/cc-socks/4242.sock";
+    const sha = (x: string) => createHash("sha256").update(x).digest("hex");
+    const keyPath = join(d, `4242.${sha(sock)}.key`);
+    const st = () =>
+      claudeTargetState("s4242", 4242, {
+        dir: d,
+        procStart: () => "t0",
+        isRunning: () => true,
+      });
+    expect(st()).toBe("unreachable"); // ENOENT
+    writeFileSync(keyPath, '{"peerToken":'); // a partial write: parse fails
+    expect(st()).toBe("unknown");
+    rmSync(keyPath);
+    mkdirSync(keyPath); // unreadable (EISDIR)
+    expect(st()).toBe("unknown");
+    rmSync(keyPath, { recursive: true });
+    writeFileSync(keyPath, JSON.stringify({ procStart: "t0" })); // no token
+    expect(st()).toBe("unreachable");
+  });
+
+  it("#2110: claudeTargetState tells unknown, dead, gone and unreachable apart", () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const st = (over: object = {}, pid = 4242, ref = "s4242") =>
+      claudeTargetState(ref, pid, {
+        dir: d,
+        procStart: () => "t0",
+        isRunning: () => true,
+        ...over,
+      });
+    expect(st({ procStart: () => null })).toBe("unknown"); // never dead
+    expect(st({ procStart: () => "t1" })).toBe("dead"); // a changed start, not gone
+    expect(st({ isRunning: () => false })).toBe("dead");
+    expect(st({}, 4242, "other")).toBe("gone"); // running, no file lists it
+    expect(st()).toBe("unreachable"); // alive, no peer token
+    writeFileSync(join(d, "4242.json"), '{"pid":4242,');
+    expect(st()).toBe("unknown"); // unreadable file
   });
 
   it("lists a session without a socket, which can send but not receive", () => {
@@ -135,6 +180,7 @@ describe("claude liveness", () => {
     expect(await t.deliver(agent, mail("m2"))).toEqual({
       ok: false,
       reason: "closed",
+      closedBy: "delivery",
     });
     await new Promise((r) => setTimeout(r, 50)); // absence: an injection would land here
     expect(seen).toEqual([]);
@@ -145,6 +191,7 @@ describe("claude liveness", () => {
     expect(await t.deliver(agent, mail("m3"))).toEqual({
       ok: false,
       reason: "closed",
+      closedBy: "delivery",
     });
     expect(seen).toEqual([]);
     await t.close();
@@ -224,6 +271,250 @@ describe("runDaemon claude session sync", () => {
       pid: 5151,
       live: true,
     });
+  });
+
+  it("#2110: a closed record reopens when the same process is seen again", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({ claude: syncDeps(d, running) });
+    await h.next("agent_up");
+    // Closed (a failed delivery, a missed read) while the process still runs.
+    const rec = h.daemon.agents.byRef("s4242");
+    if (!rec) throw new Error("no record");
+    rec.live = false;
+    rec.closedBy = "liveness";
+    expect(await h.next("agent_up", 2)).toMatchObject({ agent_ref: "s4242" });
+    expect(h.daemon.agents.byRef("s4242")).toMatchObject({
+      pid: 4242,
+      live: true,
+    });
+  });
+
+  it("#2110: a record closed by a delivery refusal is not reopened by the sync", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({ claude: syncDeps(d, running) });
+    await h.next("agent_up");
+    const rec = h.daemon.agents.byRef("s4242");
+    if (!rec) throw new Error("no record");
+    rec.live = false;
+    rec.closedBy = "delivery";
+    await new Promise((r) => setTimeout(r, 200)); // several sync ticks
+    expect(h.of("agent_up")).toHaveLength(1);
+    expect(rec.live).toBe(false);
+  });
+
+  it("#2110: an unreadable file keeps a running session live only for the grace window", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: { ...syncDeps(d, running), unknownGraceMs: 150 },
+    });
+    await h.next("agent_up");
+    writeFileSync(join(d, "4242.json"), '{"pid":4242,');
+    await new Promise((r) => setTimeout(r, 60));
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef("s4242")?.live).toBe(false),
+    );
+  });
+
+  it("#2110: an unreadable start time keeps a session live only for the grace window", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: {
+        ...syncDeps(d, running),
+        procStart: () => null,
+        unknownGraceMs: 150,
+      },
+    });
+    await h.next("agent_up");
+    await new Promise((r) => setTimeout(r, 60));
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef("s4242")?.live).toBe(false),
+    );
+  });
+
+  it("#2110: a delivery while the session file is mid-rewrite neither drops the mail nor closes the session", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: { ...syncDeps(d, running), syncMs: 60_000 },
+    });
+    await h.next("agent_up");
+    writeFileSync(join(d, "4242.json"), '{"pid":4242,');
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    await new Promise((r) => setTimeout(r, 900)); // past the target re-reads
+    expect(h.of("refuse")).toEqual([]);
+    expect(h.of("ack")).toEqual([]);
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+  });
+
+  it("#2110: a delivery to a gone target closes as a liveness miss, which the sync reopens", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: { ...syncDeps(d, running), syncMs: 1000 },
+    });
+    await h.next("agent_up");
+    rmSync(join(d, "4242.json")); // the process runs, its file is gone
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef("s4242")).toMatchObject({
+        live: false,
+        closedBy: "liveness",
+      }),
+    );
+    // A liveness close leaves the receipt pending: a refuse is final at the hub.
+    expect(h.of("refuse")).toEqual([]);
+    writeSession(d, 4242); // the file returns
+    expect(await h.next("agent_up", 2)).toMatchObject({ agent_ref: "s4242" });
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+  });
+
+  it("#2110: two concurrent deliveries to a gone target refuse neither, and the record reopens", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: { ...syncDeps(d, running), syncMs: 1000 },
+    });
+    await h.next("agent_up");
+    rmSync(join(d, "4242.json"));
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm2", "s4242"));
+    await vi.waitFor(() =>
+      expect(h.daemon.agents.byRef("s4242")?.live).toBe(false),
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    expect(h.of("refuse")).toEqual([]);
+    expect(h.daemon.agents.byRef("s4242")?.closedBy).toBe("liveness");
+    writeSession(d, 4242);
+    expect(await h.next("agent_up", 2)).toMatchObject({ agent_ref: "s4242" });
+  });
+
+  it("#2110: mail for a record closed on a liveness miss is left pending, not refused", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: { ...syncDeps(d, running), syncMs: 60_000 },
+    });
+    await h.next("agent_up");
+    const rec = h.daemon.agents.byRef("s4242");
+    if (!rec) throw new Error("no record");
+    rec.live = false;
+    rec.closedBy = "liveness";
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(h.of("refuse")).toEqual([]);
+    rec.closedBy = "delivery";
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm2", "s4242"));
+    expect(await h.next("refuse")).toMatchObject({
+      msg_id: "mmmmmmmmmmmmmmm2",
+      detail: "dropped",
+    });
+  });
+
+  it("#2110: retries that all time out close the record without a refuse, and the sync reopens it", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: {
+        ...syncDeps(d, running),
+        syncMs: 50,
+        retryDelaysMs: [5, 5, 5],
+      },
+      transports: {
+        "claude-code": async () => ({
+          ok: false,
+          reason: "timeout",
+          retryable: true,
+        }),
+      },
+    });
+    await h.next("agent_up");
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    expect(await h.next("agent_up", 2)).toMatchObject({ agent_ref: "s4242" });
+    expect(h.of("refuse")).toEqual([]);
+    expect(h.of("sessions").flatMap((x) => x.closed)).toContain("s4242");
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+  });
+
+  it("#2110: a session with no socket closes as a delivery refusal and is not churned by the sync", async () => {
+    const d = dir();
+    writeSession(d, 4242, { messagingSocketPath: undefined });
+    const running = new Set([4242]);
+    const h = await daemonHarness({
+      claude: { ...syncDeps(d, running), syncMs: 100 },
+    });
+    await h.next("agent_up");
+    h.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", "s4242"));
+    expect(await h.next("refuse")).toMatchObject({ reason: "closed" });
+    expect(h.daemon.agents.byRef("s4242")?.closedBy).toBe("delivery");
+    await new Promise((r) => setTimeout(r, 400)); // several sync ticks
+    expect(h.of("agent_up")).toHaveLength(1);
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(false);
+  });
+
+  it("#2110: an unreadable start time lists the session as unknown", () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const live = liveClaudeSessions({
+      dir: d,
+      procStart: () => null,
+      isRunning: () => true,
+    });
+    expect(live).toMatchObject([{ ref: "s4242", unknown: true }]);
+  });
+
+  it("#2116: a same-process reopen is bounded, so a refusing session does not flap", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    const h = await daemonHarness({ claude: syncDeps(d, running) });
+    await h.next("agent_up");
+    const rec = h.daemon.agents.byRef("s4242");
+    if (!rec) throw new Error("no record");
+    rec.live = false;
+    rec.closedBy = "liveness";
+    await h.next("agent_up", 2);
+    rec.live = false; // closed again at once
+    rec.closedBy = "liveness";
+    await new Promise((r) => setTimeout(r, 200));
+    expect(h.of("agent_up")).toHaveLength(2);
+    expect(rec.live).toBe(false);
+  });
+
+  it("#2110: an unknown start time or unreadable file never closes a live session", async () => {
+    const d = dir();
+    writeSession(d, 4242);
+    const running = new Set([4242]);
+    let start: string | null = "t0";
+    const h = await daemonHarness({
+      claude: {
+        ...syncDeps(d, running),
+        procStart: () => start,
+      },
+    });
+    await h.next("agent_up");
+    start = null; // ps failed: unknown
+    await new Promise((r) => setTimeout(r, 150)); // several sync ticks
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+    start = "t0";
+    writeFileSync(join(d, "4242.json"), '{"pid":4242,'); // a rewrite in flight
+    await new Promise((r) => setTimeout(r, 150));
+    expect(h.daemon.agents.byRef("s4242")?.live).toBe(true);
+    expect(h.of("sessions").flatMap((x) => x.closed)).toEqual([]);
   });
 
   it("accepts the session's MCP hello after the daemon announced it", async () => {

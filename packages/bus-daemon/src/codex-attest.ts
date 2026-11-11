@@ -99,6 +99,9 @@ export type CodexAttestDeps = {
   holding?: (pairs: Hold[]) => boolean[] | undefined;
   /** #2029: every pid holding each file, for `holders`; default one lsof. */
   holdersOf?: (files: string[]) => Map<string, number[]> | undefined;
+  /** Test overrides (#2079): the OS and the /proc root the default holder lookup reads. */
+  platform?: NodeJS.Platform;
+  procRoot?: string;
   /** Wait before reading an absent call once more; default 50 ms. */
   retryMs?: number;
   /** The wait itself; default a timer, so the daemon keeps serving. */
@@ -538,9 +541,13 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     const home = deps.home ?? codexHome();
     const files = threads.filter((t) => plainFile(lockOf(home, t)));
     if (!files.length) return new Map();
-    const held = (deps.holdersOf ?? lsofHolders)(
-      files.map((t) => lockOf(home, t)),
-    );
+    const lookup =
+      deps.holdersOf ??
+      ((fs: string[]) =>
+        (deps.platform ?? process.platform) === "linux"
+          ? lockHoldersLinux(fs, deps.procRoot)
+          : lsofHolders(fs));
+    const held = lookup(files.map((t) => lockOf(home, t)));
     if (!held) return undefined;
     const pids = new Set<number>();
     for (const t of files)
@@ -1073,6 +1080,88 @@ export function holdingLinux(pairs: Hold[], procRoot = "/proc"): boolean[] {
       return false;
     }
   });
+}
+
+/**
+ * Linux, no lsof (#2079): every pid with one of `files` open that also holds
+ * its lock (the same /proc/locks check admission uses), by file path. An open
+ * file without a lock is not a holder. undefined when /proc cannot be read.
+ */
+export function lockHoldersLinux(
+  files: string[],
+  procRoot = "/proc",
+): Map<string, number[]> | undefined {
+  let pids: number[];
+  try {
+    pids = readdirSync(procRoot)
+      .filter((n) => /^\d+$/.test(n))
+      .map(Number);
+  } catch {
+    return undefined;
+  }
+  const want = new Map<string, string[]>();
+  for (const f of files) {
+    try {
+      const st = statSync(f, { bigint: true });
+      const k = `${st.dev}:${st.ino}`;
+      want.set(k, [...(want.get(k) ?? []), f]);
+    } catch {}
+  }
+  const pairs: Hold[] = [];
+  for (const pid of pids) {
+    const dir = join(procRoot, String(pid), "fd");
+    let fds: string[];
+    try {
+      fds = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    const seen = new Set<string>();
+    for (const fd of fds)
+      try {
+        const st = statSync(join(dir, fd), { bigint: true });
+        for (const f of want.get(`${st.dev}:${st.ino}`) ?? [])
+          if (!seen.has(f)) {
+            seen.add(f);
+            pairs.push({ pid, file: f });
+          }
+      } catch {}
+  }
+  const locked = holdingLinux(pairs, procRoot);
+  const lockers = lockerPids(procRoot);
+  const out = new Map<string, number[]>(files.map((f) => [f, []]));
+  pairs.forEach((p, i) => {
+    if (locked[i]) out.get(p.file)?.push(p.pid);
+  });
+  // The pid /proc/locks names holds the lock itself; any other opener inherited the fd.
+  for (const [f, list] of out) {
+    let key: string | undefined;
+    try {
+      const st = statSync(f, { bigint: true });
+      const { major, minor } = devParts(st.dev);
+      key = `${major}:${minor}:${st.ino}`;
+    } catch {}
+    const first = (pid: number) => (key && lockers.get(key)?.has(pid) ? 0 : 1);
+    list.sort((a, b) => first(a) - first(b));
+  }
+  return out;
+}
+
+/** The pids /proc/locks names as lockers, by `MAJ:MIN:INODE` (decimal). */
+function lockerPids(procRoot: string): Map<string, Set<number>> {
+  const out = new Map<string, Set<number>>();
+  try {
+    for (const l of readFileSync(join(procRoot, "locks"), "utf8").split("\n")) {
+      const f = l.trim().split(/\s+/);
+      const [maj, min, ino] = (f[5] ?? "").split(":");
+      const pid = Number(f[4]);
+      if (!maj || !min || !ino || !pid) continue;
+      if (!/^[0-9a-f]+$/i.test(maj + min) || !/^\d+$/.test(ino)) continue;
+      const k = `${BigInt(`0x${maj}`)}:${BigInt(`0x${min}`)}:${ino}`;
+      out.set(k, (out.get(k) ?? new Set()).add(pid));
+    }
+  } catch {}
+  return out;
 }
 
 /** `holdingLinux` for one pair. */

@@ -197,14 +197,17 @@ export function SidePanel({
  * fade on each edge with tabs off screen, and the active tab scrolled into view. The
  * focus ring is drawn inset so the scroller never clips it.
  */
-function TabStrip({
+export function TabStrip({
   tab,
   count,
+  className = "mr-9",
   children,
 }: {
   tab: string;
   /** How many tabs show: a change re-measures the fades. */
   count: number;
+  /** Margin around the strip: the panel keeps room for its close button. */
+  className?: string;
   children: ReactNode;
 }) {
   const box = useRef<HTMLDivElement>(null);
@@ -244,7 +247,7 @@ function TabStrip({
       el.scrollLeft = on.offsetLeft + on.offsetWidth - el.clientWidth;
   }, [tab]);
   return (
-    <div ref={box} className="relative mr-9">
+    <div ref={box} className={`relative ${className}`}>
       {children}
       {less && (
         <div

@@ -20,6 +20,7 @@ import { canConnect } from "../auth/agents.js";
 import { callerOf, capOfCaller, requireUser } from "../auth/authz.js";
 import { withCred } from "../auth/cred.js";
 import { orgCan } from "../auth/policy.js";
+import { isStorageFailure } from "../db/storage-failure.js";
 import type { Env } from "../env.js";
 import { jsonBody, readCappedRequest } from "../http/body.js";
 import { ApiError, errorJson } from "../http/errors.js";
@@ -31,7 +32,7 @@ import {
   messagePage,
   sessionUser,
 } from "../http/pages.js";
-import { logError } from "../log.js";
+import { logError, logWarn } from "../log.js";
 import type { AppType } from "../routes/index.js";
 import { ipKey } from "../runtime/routes.js";
 import {
@@ -359,6 +360,40 @@ function explainNoToken(req: Request, res: Response): Response {
   return new Response(JSON.stringify(body), { status: 401, headers });
 }
 
+/**
+ * A transient D1 or KV failure (db/storage-failure.ts, the classifier
+ * db/retry.ts uses) inside the provider: RFC 6749 5.2 JSON, 503, retry soon
+ * (#2155). The log line has the route and the error class only.
+ *
+ * Single-use codes: the provider reads the grant, then saves it with the code
+ * dropped (saveGrantWithTTL), then writes the access token. A 503 before the
+ * grant save leaves the code unredeemed, so the same request may be retried.
+ * A 503 from the access-token write comes after the save: the code is
+ * already consumed and a retry gets invalid_grant; the agent must restart
+ * authorization. Redeem semantics are the provider's and unchanged here.
+ */
+function temporarilyUnavailable(req: Request, e: unknown): Response {
+  logWarn("oauth_storage_unavailable", undefined, {
+    route: new URL(req.url).pathname,
+    class: e instanceof Error ? e.name : typeof e,
+  });
+  return new Response(
+    JSON.stringify({
+      error: "temporarily_unavailable",
+      error_description:
+        "The server's storage is briefly unavailable. Try again in a few seconds. An authorization code that failed this way may already be used; if it is rejected on retry, start authorization again.",
+    }),
+    {
+      status: 503,
+      headers: {
+        "content-type": "application/json",
+        "retry-after": "2",
+        "cache-control": "no-store",
+      },
+    },
+  );
+}
+
 /** Everything on the app host except PAT-authenticated /mcp. */
 export async function serveAppHost(
   req: Request,
@@ -388,8 +423,9 @@ export async function serveAppHost(
     const store: OAuthEnv = oauthEnv(env);
     res = await oauthProvider(env, app).fetch(req, store, ctx);
   } catch (e) {
-    if (!(e instanceof OAuthStoreConfigError)) throw e;
-    return storeMisconfigured(e);
+    if (e instanceof OAuthStoreConfigError) return storeMisconfigured(e);
+    if (isStorageFailure(e)) return temporarilyUnavailable(req, e);
+    throw e;
   }
   if (res.status === 401 && res.body === null) return explainNoToken(req, res);
   if (req.method === "POST" && new URL(req.url).pathname === OAUTH.register)

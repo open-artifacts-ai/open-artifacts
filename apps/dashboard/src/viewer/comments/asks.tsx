@@ -72,7 +72,15 @@ const deliveryLine = (name: string, d: CommentMention["delivery"]) =>
     : d === "gone"
       ? `${name} is gone · mention another agent`
       : `${name}: ${d === "seen" ? "Seen" : "Delivered"}`;
-/** Delivery of each mention, in plain words. Names are text, never HTML. */
+/** #2035: how a reply reached an agent the thread already notifies. */
+const notifiedWord = (d: CommentMention["delivery"]) =>
+  d === "queued"
+    ? "Held until it's back"
+    : d === "gone"
+      ? "Expired"
+      : "Delivered";
+
+/** Delivery of each mention, and of each thread agent a reply also told, in plain words. Names are text, never HTML. */
 export function Delivery({
   c,
   guest = false,
@@ -80,7 +88,7 @@ export function Delivery({
   c: CommentT;
   guest?: boolean;
 }) {
-  if (!c.mentions?.length) return null;
+  if (!c.mentions?.length && !c.notified?.length) return null;
   return (
     <ul className={`m-0 list-none p-0 ${TXT} ${MUTED}`}>
       {c.mentions?.map((m) => (
@@ -93,6 +101,16 @@ export function Delivery({
           {deliveryLine(m.name, m.delivery)}
         </li>
       ))}
+      {c.notified?.map((m) => (
+        <li
+          key={`n-${m.key}`}
+          data-notified={m.key}
+          className="flex items-center gap-1"
+        >
+          <PartyFace p={m} guest={guest} />
+          {m.name}: {notifiedWord(m.delivery)}
+        </li>
+      ))}
     </ul>
   );
 }
@@ -103,6 +121,17 @@ export const actor = (
   a: { kind: string; name: string; me: boolean },
   you: string,
 ) => (a.kind === "agent" ? `${a.name} (agent)` : a.me ? you : a.name);
+
+/** Who an ask is for: " you", else the addressees as the API names them (masked ones stay masked). */
+const askedWho = (to: { name: string }[], mine: boolean) => {
+  if (mine) return " you";
+  const [a, b] = to;
+  if (!a) return "";
+  if (!b) return ` ${a.name}`;
+  return to.length === 2
+    ? ` ${a.name} and ${b.name}`
+    : ` ${a.name} and ${to.length - 1} others`;
+};
 
 const letter = (i: number) => String.fromCharCode(65 + i);
 /** Letters are shown unless every option's id already equals its label ("yes"/"Yes"). */
@@ -157,6 +186,9 @@ export function AskBlock({
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
+  const recIdx = ask.options.findIndex(
+    (o) => o.id === ask.recommended?.optionId,
+  );
   const letters = showLetters(ask.options);
   const locked = !!pickedOpt && !changing;
   const decided = ask.closed && pickedOpt;
@@ -206,8 +238,21 @@ export function AskBlock({
           data-ask=""
           data-needs-you={canAnswer && !pickedOpt ? "" : undefined}
         >
-          {/* The card's own header already names the asker and the time. */}
-          <p className={`${TXT} ${MUTED}`}>Ask</p>
+          <p className={`${TXT} ${MUTED}`} data-ask-from="">
+            {c.author.name}
+            {c.author.kind === "agent" && (
+              <>
+                {" "}
+                <span
+                  data-agent-tag=""
+                  className="rounded-full border border-primary/30 bg-primary/10 px-1.5 text-[length:var(--oa-text-xs)] text-foreground"
+                >
+                  agent
+                </span>
+              </>
+            )}{" "}
+            asks{askedWho(ask.to, mine)}
+          </p>
           <p id={qid} className={`${TXT} font-semibold break-words`}>
             {linked(ask.question, 0)}
           </p>
@@ -223,7 +268,7 @@ export function AskBlock({
                   <Button
                     variant="outline"
                     size="sm"
-                    className={`h-auto w-full items-start justify-start gap-2 py-1 text-left whitespace-normal ${
+                    className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
                       sel
                         ? "bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] disabled:opacity-100"
                         : ""
@@ -251,19 +296,19 @@ export function AskBlock({
                     )}
                     <span className="min-w-0 flex-1 break-words">
                       <b>{o.label}</b>
-                      {rec && (
-                        <span
-                          className={`ml-2 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
-                        >
-                          Recommended
-                        </span>
-                      )}
                       {o.detail && (
                         <span className={`block font-normal ${MUTED}`}>
                           {o.detail}
                         </span>
                       )}
                     </span>
+                    {rec && (
+                      <span
+                        className={`ml-auto shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                      >
+                        Recommended
+                      </span>
+                    )}
                   </Button>
                 </li>
               );
@@ -271,7 +316,8 @@ export function AskBlock({
           </ul>
           {ask.recommended?.why && (
             <p className={`${TXT} ${MUTED} break-words`}>
-              Why: {ask.recommended.why}
+              Why{recIdx >= 0 && letters ? ` ${letter(recIdx)}` : ""}:{" "}
+              {ask.recommended.why}
             </p>
           )}
           {ask.answer && pickedOpt && (

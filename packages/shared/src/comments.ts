@@ -154,8 +154,21 @@ export const CommentSchema = z.object({
   can: z.object({ edit: z.boolean(), delete: z.boolean() }),
   ask: CommentAskSchema.optional(),
   mentions: z.array(CommentMentionSchema).optional(),
+  /** #2035: the thread's agents a person's reply also told, with delivery. Members only. */
+  notified: z.array(CommentMentionSchema).optional(),
 });
 export type Comment = z.infer<typeof CommentSchema>;
+
+/** #2035: an agent the thread's replies reach. `canRemove`: the caller's person owns it, or owns the artifact. */
+export const ThreadAgentSchema = z.object({
+  key,
+  name: z.string(),
+  ...partyFace,
+  /** The person the agent acts for. */
+  for: z.string().optional(),
+  canRemove: z.boolean(),
+});
+export type ThreadAgent = z.infer<typeof ThreadAgentSchema>;
 
 export const CommentThreadSchema = z.object({
   id: z.string(),
@@ -167,6 +180,8 @@ export const CommentThreadSchema = z.object({
   createdAt: z.string(),
   /** The first comment is the root. */
   comments: z.array(CommentSchema),
+  /** #2035: the agents replies in this thread reach. Absent for guests and anyone who cannot reply as a member. */
+  agents: z.array(ThreadAgentSchema).optional(),
 });
 export type CommentThread = z.infer<typeof CommentThreadSchema>;
 

@@ -68,6 +68,10 @@ export const ERROR_CODES = [
   "edit_failed",
   // Bus machine revoke (#1453).
   "revoke_not_closed",
+  // Collaborative docs (#1100): a whole-content publish to a doc.
+  "use_edit_doc",
+  // Collaborative docs (#1100): a self-host needs Workers Paid for docs.
+  "docs_need_paid",
 ] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
@@ -180,6 +184,10 @@ export const STATUS_FOR: Record<ErrorCode, number> = {
   edit_failed: 400,
   /** DELETE R.busMachine(id) where the revoke landed but the hub could not close the machine's open connection (#1453): the machine is revoked and cannot reconnect; retrying closes the connection. */
   revoke_not_closed: 503,
+  /** A whole-content publish (content, files or edits) to an existing doc (#1100): docs change through edit_doc, so a rewrite never erases people's edits. Nothing is published. */
+  use_edit_doc: 400,
+  /** Publishing format "doc" on a self-host whose PLAN is not paid (#1100). Nothing is published. */
+  docs_need_paid: 400,
 };
 
 /**

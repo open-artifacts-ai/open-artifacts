@@ -318,10 +318,16 @@ export function imageSize(
   return null;
 }
 
-const TEXT_FORMATS: ReadonlySet<Format> = new Set(["code", "markdown", "html"]);
+const TEXT_FORMATS: ReadonlySet<Format> = new Set([
+  "code",
+  "markdown",
+  "html",
+  "doc",
+]);
 const NAME: Record<Format, string> = {
   html: "HTML",
   markdown: "Markdown",
+  doc: "a doc",
   code: "code",
   pdf: "a PDF",
   image: "an image",

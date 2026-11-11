@@ -197,7 +197,12 @@ describe("a scrubbed row (agent_via r:) reads as the stand-in forever", () => {
       expect(text).not.toContain("7k3w");
       expect(text).not.toContain("Ivy Instance's agent");
       expect(r.artifact.lastAgent).toEqual(SCRUBBED);
-      expect(r.versions[0]?.agent).toEqual(SCRUBBED);
+      // Members read linked false (#2118); signed out carries no face field.
+      expect(r.versions[0]?.agent).toEqual(
+        auth === null ? SCRUBBED : { ...SCRUBBED, linked: false },
+      );
+      if (auth === null)
+        expect(r.versions[0]?.agent).not.toHaveProperty("linked");
     }
     expect(await row(id, 1)).toEqual({
       agent_name: MEMBERS_AGENT,
@@ -243,8 +248,8 @@ describe("a scrubbed row (agent_via r:) reads as the stand-in forever", () => {
       masked: true,
     });
     expect(shown.versions.map((v) => v.agent)).toEqual([
-      { name: "Dana Doer's agent", version: "1", masked: true },
-      SCRUBBED,
+      { name: "Dana Doer's agent", version: "1", masked: true, linked: false },
+      { ...SCRUBBED, linked: false },
     ]);
   });
 
@@ -265,8 +270,8 @@ describe("a scrubbed row (agent_via r:) reads as the stand-in forever", () => {
     const shown = await reads(id, olive.cookie);
     expect(shown.artifact.lastAgent).toEqual(SCRUBBED);
     expect(shown.versions.map((v) => v.agent)).toEqual([
-      SCRUBBED,
-      { name: olives, version: "1" },
+      { ...SCRUBBED, linked: false },
+      { name: olives, version: "1", linked: false },
     ]);
   });
 

@@ -209,6 +209,9 @@ export const R = {
   /** PATCH { status } -> CommentThread. */
   commentThread: (id: string, thread: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}`,
+  /** DELETE -> 204: stop replies in the thread reaching this agent; PUT -> 204: undo (#2035). The agent's person or the artifact's owner (403). */
+  commentThreadAgent: (id: string, thread: string, key: string) =>
+    `${A}/${seg(id)}/comments/${seg(thread)}/agents/${seg(key)}`,
   /** POST ReplyBody -> 201 Comment (does not reopen). */
   commentReplies: (id: string, thread: string) =>
     `${A}/${seg(id)}/comments/${seg(thread)}/replies`,
