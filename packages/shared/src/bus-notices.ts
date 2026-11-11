@@ -58,11 +58,6 @@ export type BusNotice = {
    * or refuses the notice.
    */
   target?: { kind: "mention" | "asker"; key: string };
-  /**
-   * `comment` notices (#1752): the artifact title (one line, server-sanitized)
-   * the hub names when it folds earlier waiting notices of the same key into this one.
-   */
-  foldTitle?: string;
 };
 
 const BUS_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,62}[A-Za-z0-9_-])?$/;

@@ -3417,8 +3417,7 @@ function parseAcks(s: string | null): string[] {
 function noticeTextOf(r: NoticeRow): string {
   if (r.foldN <= 0 || !r.foldRef) return r.text;
   try {
-    const f = JSON.parse(r.foldRef) as { a: string; t: string };
-    return `${r.text}\n${r.foldN} more comment${r.foldN === 1 ? "" : "s"} on "${f.t}" (${f.a}). Read them with list_comments.`;
+    return `${r.text}\n${r.foldN} more comment${r.foldN === 1 ? "" : "s"} on artifact ${r.foldRef}. Read them with list_comments.`;
   } catch {
     return r.text;
   }
@@ -6473,6 +6472,40 @@ export class BusHub extends DurableObject<Env> {
     );
   }
 
+  /**
+   * #1752: a waiting notice that will never be sent (expired, dropped, its
+   * address gone): its target and every folded target settle as gone, as a
+   * refuse does, and the row goes.
+   */
+  #dropHeld(toNs: string, toLname: string, ckey: string): void {
+    const sql = this.ctx.storage.sql;
+    const r = one<{ ack: string | null; fa: string | null }>(
+      sql,
+      "select ack, fold_acks as fa from notices where to_ns = ? and to_lname = ? and ckey = ?",
+      toNs,
+      toLname,
+      ckey,
+    );
+    if (r) this.#settleGone([r.ack, ...parseAcks(r.fa)]);
+    sql.exec(
+      "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+      toNs,
+      toLname,
+      ckey,
+    );
+  }
+
+  #settleGone(acks: (string | null)[]): void {
+    for (const x of acks) {
+      if (!x) continue;
+      try {
+        this.#settleTarget(JSON.parse(x), "gone");
+      } catch {
+        // a malformed target has nothing to settle
+      }
+    }
+  }
+
   #acceptNotice(n: BusNotice): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
@@ -6495,30 +6528,13 @@ export class BusHub extends DurableObject<Env> {
     // No live session at the address: nothing is kept (and a waiting notice
     // for it is stale, so it goes too).
     if (!agent) {
-      sql.exec(
-        "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-        ...key,
-      );
+      this.#dropHeld(...key);
       return "dropped";
     }
     const live = liveSocket(this.ctx, agent.machineId);
     // A socket that cannot decode a notice counts as offline (noticeGated).
     const socket = live && noticeGated(live) ? live : null;
     const notBefore = n.notBefore ?? now;
-    if (socket && notBefore <= now) {
-      // A socket that refuses the frame (#1752) leaves the notice held
-      // (parked) for the next agent_up, never stored as delivered.
-      const ack = noticeAckOf(n);
-      if (this.#sendNotice(socket, agent, n.text, ack)) {
-        sql.exec(
-          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-          ...key,
-        );
-        // #1752: on a notice_ack socket the notice counts as delivered only
-        // at the daemon's ack, so it reads held (queued) until then.
-        return ack !== null && noticeAckGated(socket) ? "held" : "delivered";
-      }
-    }
     const old = one<{
       ack: string | null;
       foldN: number;
@@ -6528,6 +6544,47 @@ export class BusHub extends DurableObject<Env> {
       "select ack, fold_n as foldN, fold_acks as foldAcks from notices where to_ns = ? and to_lname = ? and ckey = ?",
       ...key,
     );
+    // #1752: the replaced notice's target and fold count move to the new one.
+    const folds = old
+      ? [...parseAcks(old.foldAcks), ...(old.ack ? [old.ack] : [])]
+      : [];
+    // Oldest first beyond the bound: those targets settle as gone now.
+    this.#settleGone(
+      folds.splice(0, Math.max(0, folds.length - NOTICE_FOLD_MAX)),
+    );
+    const foldN = old ? old.foldN + 1 : 0;
+    if (socket && notBefore <= now) {
+      // A socket that refuses the frame (#1752) leaves the notice held
+      // (parked) for the next agent_up, never stored as delivered. An older
+      // held notice of the key is folded in and goes only once this is sent.
+      const ack = noticeAckOf(n);
+      const merged: NoticeRow = {
+        toNs: to.namespace,
+        toLname: lname,
+        ckey: n.coalesceKey,
+        text: n.text,
+        ack,
+        foldN,
+        foldRef: foldN > 0 ? n.artifactId : null,
+        foldAcks: folds.length > 0 ? JSON.stringify(folds) : null,
+      };
+      if (
+        this.#sendNotice(
+          socket,
+          agent,
+          noticeTextOf(merged),
+          noticeSendAck(merged),
+        )
+      ) {
+        sql.exec(
+          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+          ...key,
+        );
+        // #1752: on a notice_ack socket the notice counts as delivered only
+        // at the daemon's ack, so it reads held (queued) until then.
+        return ack !== null && noticeAckGated(socket) ? "held" : "delivered";
+      }
+    }
     const exists = old !== null;
     // Due with no usable socket: parked until the machine's agent_up (1), or
     // held for a live daemon too old to read it (2, own caps).
@@ -6537,10 +6594,8 @@ export class BusHub extends DurableObject<Env> {
     if (parked === 2) {
       const reason = this.#oldHeldOver(to.namespace, lname, n.coalesceKey);
       if (reason) {
-        sql.exec(
-          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-          ...key,
-        );
+        this.#dropHeld(...key);
+        this.#settleGone(folds);
         logEvent("notice_dropped", { reason });
         return "dropped";
       }
@@ -6556,24 +6611,7 @@ export class BusHub extends DurableObject<Env> {
       }
     }
     const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
-    // #1752: the replaced notice's target and fold count move to the new row.
-    const folds = old
-      ? [...parseAcks(old.foldAcks), ...(old.ack ? [old.ack] : [])]
-      : [];
-    // Oldest first beyond the bound: those targets settle as gone now.
-    for (const x of folds.splice(
-      0,
-      Math.max(0, folds.length - NOTICE_FOLD_MAX),
-    ))
-      try {
-        this.#settleTarget(JSON.parse(x), "gone");
-      } catch {
-        // a malformed target has nothing to settle
-      }
-    const foldRef =
-      typeof n.foldTitle === "string" && n.foldTitle.length <= 200
-        ? JSON.stringify({ a: n.artifactId, t: n.foldTitle })
-        : null;
+    const foldRef = foldN > 0 ? n.artifactId : null;
     sql.exec(
       `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack, fold_n, fold_ref, fold_acks)
        values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -6584,7 +6622,7 @@ export class BusHub extends DurableObject<Env> {
       expiresAt,
       parked,
       noticeAckOf(n),
-      old ? old.foldN + 1 : 0,
+      foldN,
       foldRef,
       folds.length > 0 ? JSON.stringify(folds) : null,
     );
@@ -6648,14 +6686,22 @@ export class BusHub extends DurableObject<Env> {
   #sweepNotices(now: number): boolean {
     const sql = this.ctx.storage.sql;
     // #1828: an expired notice was never delivered: count it (ids and counts only).
-    const expired = all<{ rid: number; id: string; parked: number }>(
+    const expired = all<{
+      rid: number;
+      id: string;
+      parked: number;
+      ack: string | null;
+      fa: string | null;
+    }>(
       sql,
-      "select rowid as rid, id, parked from notices where expires_at <= ? limit ?",
+      "select rowid as rid, id, parked, ack, fold_acks as fa from notices where expires_at <= ? limit ?",
       now,
       BATCH,
     );
-    for (const r of expired)
+    for (const r of expired) {
+      this.#settleGone([r.ack, ...parseAcks(r.fa)]);
       sql.exec("delete from notices where rowid = ?", r.rid);
+    }
     if (expired.length > 0)
       logEvent("notice_expired", {
         count: expired.length,
@@ -6705,12 +6751,7 @@ export class BusHub extends DurableObject<Env> {
           ? this.#oldHeldOver(r.toNs, r.toLname, r.ckey)
           : null;
         if (reason) {
-          sql.exec(
-            "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-            r.toNs,
-            r.toLname,
-            r.ckey,
-          );
+          this.#dropHeld(r.toNs, r.toLname, r.ckey);
           logEvent("notice_dropped", { reason });
         } else {
           sql.exec(
@@ -6722,12 +6763,7 @@ export class BusHub extends DurableObject<Env> {
           );
         }
       } else {
-        sql.exec(
-          "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-          r.toNs,
-          r.toLname,
-          r.ckey,
-        );
+        this.#dropHeld(r.toNs, r.toLname, r.ckey);
       }
     }
     // A full step: the rest go out a pace later (#1752), not at once.
