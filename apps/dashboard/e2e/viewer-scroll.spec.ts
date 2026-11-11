@@ -95,3 +95,27 @@ for (const [w, h] of [
       expect(m.scrollHeight).toBe(m.innerHeight);
       expect(m.scrollY).toBe(0);
     });
+
+// #2172 root cause: the sr-only "linked, " spans of linked-agent comments are
+// position:absolute; with the comments column static they escaped its scroll
+// clip and stretched the document.
+for (const [w, h] of [
+  [1280, 800],
+  [390, 844],
+] as const)
+  test(`${w}px: expanding a long linked-agent thread leaves the document alone`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: w, height: h });
+    await page.goto(`/a/${ID}?mock=agents`);
+    await page.getByRole("button", { name: /^Comments/ }).click();
+    await page
+      .getByRole("button", { name: /^1\d replies$/ })
+      .first()
+      .click();
+    await page.waitForTimeout(500);
+    const m = await doc(page);
+    expect(m.scrollHeight).toBe(m.innerHeight);
+    await page.evaluate(() => window.scrollBy(0, 500));
+    expect(await page.evaluate(() => scrollY)).toBe(0);
+  });
