@@ -104,16 +104,21 @@ function transport(
     resolve?: () => CodexBin | undefined;
     takenFile?: string;
     home?: string;
+    scanBudget?: number;
   } = {},
 ) {
   const home = over.home ?? tmp("ob-cxh-");
   const log = vi.fn();
   const onTaken = vi.fn();
+  // The tick queues an interrupted attempt again through the transport.
+  let tr: CodexTransport | undefined;
   const watch = new TakenWatch({
     home,
     file: over.takenFile ?? join(tmp("ob-cxp-"), "p.json"),
     onTaken,
     log,
+    ...(over.scanBudget === undefined ? {} : { scanBudget: over.scanBudget }),
+    requeue: (id, r) => void tr?.requeue(id, r),
   });
   const resolve = vi.fn(over.resolve ?? (() => bin));
   const t = new CodexTransport({
@@ -124,6 +129,7 @@ function transport(
     taken: watch,
     log,
   });
+  tr = t;
   return { t, home, log, resolve, watch, onTaken };
 }
 
@@ -941,6 +947,92 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
       chmodSync(dir, 0o700);
     }
     expect(w.reconcile("mmmmmmmmmmmmmmm1")).toBe("taken");
+  });
+
+  describe("an interrupted attempt is finished by the tick", () => {
+    const padLine = JSON.stringify({
+      type: "event_msg",
+      payload: { pad: "x".repeat(20_000) },
+    });
+    const text = codexText(agent(), mail("hi"));
+    const head = text.split("\n", 1)[0] as string;
+    const crash = (takenFile: string, home: string) => {
+      const c = new TakenWatch({ home, file: takenFile, onTaken: vi.fn() });
+      expect(c.attempt("mmmmmmmmmmmmmmm1", THREAD, head, undefined, text)).toBe(
+        true,
+      );
+    };
+
+    it("a rollout that grew past one pass without the item: re-queued exactly once, with no further deliver", async () => {
+      const f = fakeCodex();
+      const takenFile = join(tmp("ob-cxp-"), "p.json");
+      const home = tmp("ob-cxh-");
+      crash(takenFile, home);
+      writeRollout(
+        home,
+        Array.from({ length: 30 }, () => padLine),
+      );
+      const r = transport(
+        { path: f.bin, from: "path" },
+        { takenFile, home, scanBudget: 100_000 },
+      );
+      for (let i = 0; i < 10; i++) r.watch.check();
+      await vi.waitFor(() => expect(f.runs()).toHaveLength(1));
+      for (let i = 0; i < 10; i++) r.watch.check();
+      await new Promise((res) => setTimeout(res, 100));
+      expect(f.runs()).toHaveLength(1);
+      expect(f.text(0)).toBe(text);
+      expect(r.watch.state("mmmmmmmmmmmmmmm1")).toBe("queued");
+    });
+
+    it("the item found later in the grown rollout: acked, nothing re-queued", async () => {
+      const f = fakeCodex();
+      const takenFile = join(tmp("ob-cxp-"), "p.json");
+      const home = tmp("ob-cxh-");
+      crash(takenFile, home);
+      writeRollout(home, [
+        ...Array.from({ length: 30 }, () => padLine),
+        userItem(text),
+      ]);
+      const r = transport(
+        { path: f.bin, from: "path" },
+        { takenFile, home, scanBudget: 100_000 },
+      );
+      for (let i = 0; i < 10; i++) r.watch.check();
+      expect(r.onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+      await new Promise((res) => setTimeout(res, 100));
+      expect(f.runs()).toHaveLength(0);
+    });
+  });
+
+  describe("a stepped-over partial line is skipped only when the same bytes are read on", () => {
+    const setup = (patch: Record<string, unknown>) => {
+      const takenFile = join(tmp("ob-cxp-"), "p.json");
+      const home = tmp("ob-cxh-");
+      const w = new TakenWatch({ home, file: takenFile, onTaken: vi.fn() });
+      const line = codexText(agent(), mail("hi"));
+      w.attempt("mmmmmmmmmmmmmmm1", THREAD, line.split("\n", 1)[0] as string);
+      w.queued("mmmmmmmmmmmmmmm1");
+      writeRollout(home, [userItem(line)]);
+      const recs = JSON.parse(readFileSync(takenFile, "utf8"));
+      Object.assign(recs.mmmmmmmmmmmmmmm1, { skip: true }, patch);
+      writeFileSync(takenFile, JSON.stringify(recs));
+      const onTaken = vi.fn();
+      new TakenWatch({ home, file: takenFile, onTaken }).check();
+      return onTaken;
+    };
+
+    it("a truncated rollout restarts at 0 and reads its first line", () => {
+      expect(setup({ scannedTo: 99_999_999 }).mock.calls).toEqual([
+        ["mmmmmmmmmmmmmmm1"],
+      ]);
+    });
+
+    it("a replaced rollout restarts at 0 and reads its first line", () => {
+      expect(setup({ scannedTo: 5, ino: 1 }).mock.calls).toEqual([
+        ["mmmmmmmmmmmmmmm1"],
+      ]);
+    });
   });
 
   it("a legacy codex-queued.json beside the record file is removed", () => {

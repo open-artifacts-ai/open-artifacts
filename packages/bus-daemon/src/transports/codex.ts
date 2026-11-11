@@ -377,6 +377,17 @@ export class CodexTransport {
     return r.taken === "maybe" ? ("maybe" as const) : ("failed" as const);
   }
 
+  /**
+   * An interrupted attempt the tick read to the rollout's end without the
+   * item: queue it again from the record (once per interruption).
+   */
+  async requeue(
+    id: string,
+    r: { thread: string; text: string; ttlMs?: number },
+  ): Promise<void> {
+    await this.#queue(r.thread, id, r.text, { ttlMs: r.ttlMs }, true);
+  }
+
   #wakes(agent: AgentRecord): Promise<boolean> {
     return agent.live ? this.opts.wakes(agent.pid) : Promise.resolve(false);
   }
@@ -386,6 +397,7 @@ export class CodexTransport {
     id: string,
     text: string,
     watch: false | { ttlMs?: number } = false,
+    interrupted = false,
   ): Promise<Queue> {
     const st = this.opts.taken.state(id);
     if (st === "taken") return { ok: true, how: "taken" };
@@ -397,7 +409,7 @@ export class CodexTransport {
     if (this.#flight.has(id)) return { ok: false, taken: "maybe" };
     const head = text.split("\n", 1)[0] ?? "";
     // An interrupted attempt: the rollout may hold the item already.
-    if (st === "attempt" && watch) {
+    if (st === "attempt" && watch && !interrupted) {
       const rc = this.opts.taken.reconcile(id);
       if (rc === "taken") return { ok: true, how: "taken" };
       // Not found yet, or not reached the rollout's end: the tick finishes the scan.
@@ -429,6 +441,7 @@ export class CodexTransport {
         ref,
         watch ? head : undefined,
         watch ? watch.ttlMs : undefined,
+        watch ? text : undefined,
       )
     ) {
       this.opts.log?.(

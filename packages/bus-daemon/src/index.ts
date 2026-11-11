@@ -624,6 +624,12 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     home: codexIndexHome,
     file: cx.takenFile ?? join(home(), "codex-pending.json"),
     onTaken: (id) => delivery.delivered(id),
+    requeue: (id, r) =>
+      void codex.requeue(id, r).catch((e: unknown) => {
+        log(
+          `codex ${id} could not be queued again: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }),
     log,
   });
   const codex = new CodexTransport({

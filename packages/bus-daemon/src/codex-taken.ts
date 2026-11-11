@@ -47,6 +47,27 @@ export type TakenRecord = {
   sig?: string;
   /** The last pass stepped over a line longer than the budget: the next read starts mid-line, so it skips to the next newline. */
   skip?: true;
+  /** The text of an attempt (until it is queued): an interrupted one is queued again from it. */
+  text?: string;
+  /** Found as an attempt on load: nothing runs `codex queue` for it now. The tick finishes it. */
+  interrupted?: true;
+};
+
+/** What a record needs to give back after a failed save. */
+type Snap = Pick<TakenRecord, "state" | "scannedTo" | "skip" | "ino" | "sig">;
+const snap = (r: TakenRecord): Snap => ({
+  state: r.state,
+  scannedTo: r.scannedTo,
+  skip: r.skip,
+  ino: r.ino,
+  sig: r.sig,
+});
+const restore = (r: TakenRecord, w: Snap): void => {
+  r.state = w.state;
+  r.scannedTo = w.scannedTo;
+  r.skip = w.skip;
+  r.ino = w.ino;
+  r.sig = w.sig;
 };
 
 export type TakenOptions = {
@@ -62,6 +83,11 @@ export type TakenOptions = {
   ttlMs?: number;
   /** Bytes of one rollout read per record per pass; default TAKEN_SCAN_BUDGET. */
   scanBudget?: number;
+  /** An interrupted attempt whose scan reached the rollout's end without the item: queue it again (once; the new attempt replaces the record). */
+  requeue?: (
+    id: string,
+    r: { thread: string; text: string; ttlMs?: number },
+  ) => void;
 };
 
 /** The rollout's first bytes (up to 512): its first line names the session (timestamp, id), so a replacement differs. */
@@ -160,7 +186,13 @@ export class TakenWatch {
    * written: the caller must not spawn, and must report a retryable failure.
    * Replaces any earlier record (a re-queue after an interrupted attempt).
    */
-  attempt(id: string, thread: string, head?: string, ttlMs?: number): boolean {
+  attempt(
+    id: string,
+    thread: string,
+    head?: string,
+    ttlMs?: number,
+    text?: string,
+  ): boolean {
     const prev = this.#recs.get(id);
     const rollout = this.#rollout(thread);
     let startOffset = 0;
@@ -187,6 +219,7 @@ export class TakenWatch {
       at: this.#now(),
       ...(head === undefined ? {} : { head }),
       ...(ttlMs === undefined ? {} : { ttlMs }),
+      ...(head !== undefined && text !== undefined ? { text } : {}),
       ...(rollout ? { rollout } : {}),
       startOffset,
       scannedTo: startOffset,
@@ -204,6 +237,7 @@ export class TakenWatch {
     const r = this.#recs.get(id);
     if (!r || r.state !== "attempt") return;
     r.state = "queued";
+    r.text = undefined;
     if (maybe) r.maybe = true;
     this.#save();
   }
@@ -231,7 +265,7 @@ export class TakenWatch {
     const r = this.#recs.get(id);
     if (!r || r.state !== "attempt" || r.head === undefined) return "missing";
     const found: string[] = [];
-    const before = { scannedTo: r.scannedTo, skip: r.skip };
+    const before = snap(r);
     const atEof = this.#scan(
       id,
       r,
@@ -240,11 +274,9 @@ export class TakenWatch {
     );
     if (found.length) {
       r.state = "taken";
+      r.text = undefined;
       if (this.#save()) return "taken";
-      r.state = "attempt";
-      r.scannedTo = before.scannedTo;
-      if (before.skip) r.skip = true;
-      else r.skip = undefined;
+      restore(r, before);
       return "pending";
     }
     this.#save();
@@ -257,10 +289,9 @@ export class TakenWatch {
     const now = this.#now();
     let changed = false;
     const taken: string[] = [];
-    const was = new Map<
-      string,
-      { state: TakenRecord["state"]; scannedTo?: number; skip?: true }
-    >();
+    const was = new Map<string, Snap>();
+    const again: [string, { thread: string; text: string; ttlMs?: number }][] =
+      [];
     for (const [id, r] of this.#recs) {
       const ttl = r.ttlMs ?? this.opts.ttlMs ?? MAILBOX_RETAIN_MS;
       if (
@@ -285,19 +316,34 @@ export class TakenWatch {
         (r.state === "attempt" || r.state === "queued")
       ) {
         const found: string[] = [];
-        const before = r.scannedTo;
-        const beforeSkip = r.skip;
-        this.#scan(id, r, found, this.opts.scanBudget ?? TAKEN_SCAN_BUDGET);
+        const before = snap(r);
+        const atEof = this.#scan(
+          id,
+          r,
+          found,
+          this.opts.scanBudget ?? TAKEN_SCAN_BUDGET,
+        );
         if (found.length) {
-          was.set(id, {
-            state: r.state,
-            scannedTo: before,
-            ...(beforeSkip ? { skip: true as const } : {}),
-          });
+          was.set(id, before);
           r.state = "taken";
+          r.text = undefined;
           taken.push(id);
           changed = true;
-        } else if (r.scannedTo !== before) changed = true;
+        } else {
+          if (r.scannedTo !== before.scannedTo) changed = true;
+          // An interrupted attempt read to the end without the item: Codex
+          // never got it (or lost it). Queue it again, once; nothing else
+          // would, since the hub does not redeliver in steady state.
+          if (atEof && r.interrupted && r.text !== undefined)
+            again.push([
+              id,
+              {
+                thread: r.thread,
+                text: r.text,
+                ...(r.ttlMs === undefined ? {} : { ttlMs: r.ttlMs }),
+              },
+            ]);
+        }
       }
     }
     // Only a saved `taken` acks: if the write fails, nothing is reported and the next pass reads again.
@@ -305,13 +351,18 @@ export class TakenWatch {
       for (const id of taken) {
         const r = this.#recs.get(id);
         const w = was.get(id);
-        if (r && w) {
-          r.state = w.state;
-          r.scannedTo = w.scannedTo;
-          r.skip = w.skip;
-        }
+        if (r && w) restore(r, w);
       }
       return;
+    }
+    for (const [id, r] of again) {
+      try {
+        this.opts.requeue?.(id, r);
+      } catch (e) {
+        this.opts.log?.(
+          `codex ${id} could not be queued again: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
     }
     for (const id of taken) {
       try {
@@ -366,7 +417,10 @@ export class TakenWatch {
       )
         r.sig = sig;
       let from = r.scannedTo ?? r.startOffset ?? 0;
-      if (from > size) from = 0; // truncated
+      if (from > size) {
+        from = 0; // truncated
+        r.skip = undefined;
+      }
       const limit = Math.min(size, from + budget);
       const skipFirst = r.skip === true;
       r.skip = undefined;
@@ -421,6 +475,9 @@ export class TakenWatch {
               ? { scannedTo: p.scannedTo }
               : {}),
             ...(p.skip === true ? { skip: true as const } : {}),
+            ...(typeof p.text === "string" ? { text: p.text } : {}),
+            // Nothing runs `codex queue` for an attempt found at load.
+            ...(p.state === "attempt" ? { interrupted: true as const } : {}),
             ...(typeof p.ino === "number" ? { ino: p.ino } : {}),
             ...(typeof p.sig === "string" ? { sig: p.sig } : {}),
           };
