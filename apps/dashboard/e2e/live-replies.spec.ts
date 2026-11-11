@@ -64,7 +64,6 @@ for (const [w, h] of [
       }
     });
     const head = page.locator("[data-comments-header]");
-    if (await head.count()) {
-      await expect(head).toBeInViewport();
-    }
+    await expect(head).toBeInViewport();
+    await expect(head).toContainText("Comments");
   });

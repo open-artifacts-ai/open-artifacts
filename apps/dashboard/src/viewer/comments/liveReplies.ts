@@ -16,7 +16,8 @@ const NONE: ReadonlySet<string> = new Set();
 /**
  * Finds replies that show up in a thread the page already knew (#2179). The
  * first list seeds what is known; a thread that is new on a later list does
- * not count as live, only a new comment under a known thread.
+ * not count as live, only a new comment under a known thread, and the
+ * reader's own replies never do.
  */
 export function useLiveReplies(
   artifactId: string,
@@ -40,9 +41,14 @@ export function useLiveReplies(
     const fresh: string[] = [];
     for (const t of all) {
       const prev = threads.get(t.id);
-      const ids = new Set(t.comments.map((c) => c.id));
-      if (prev) for (const id of ids) if (!prev.has(id)) fresh.push(id);
-      threads.set(t.id, ids);
+      if (prev)
+        for (const c of t.comments) {
+          // The reader's own reply is no news to them; an agent's always is,
+          // even one acting for the reader.
+          const own = c.author.me && c.author.kind !== "agent";
+          if (!prev.has(c.id) && !own) fresh.push(c.id);
+        }
+      threads.set(t.id, new Set(t.comments.map((c) => c.id)));
     }
     if (!fresh.length) return;
     setLive((l) => ({

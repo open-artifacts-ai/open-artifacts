@@ -1220,7 +1220,7 @@ export function CommentsBody({
       ref={box}
       className={`flex ${grow ? "min-h-fit flex-1" : "min-h-0 flex-none"} flex-col gap-3 p-4 [overflow-anchor:none]`}
     >
-      {keep.pill && <NewReplyPill onClick={keep.go} />}
+      {keep.pill && <NewReplyPill onClick={keep.go} under={heading} />}
       {heading && (
         <div
           data-comments-header=""

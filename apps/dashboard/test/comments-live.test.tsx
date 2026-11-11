@@ -79,12 +79,20 @@ const col = async () => {
   return screen.findByRole("complementary", { name: "Comments" });
 };
 
-const comment = (id: string, body: string, agent = false) => ({
+const comment = (
+  id: string,
+  body: string,
+  by: "guest" | "agent" | "me" = "guest",
+) => ({
   id,
   body,
-  author: agent
-    ? { kind: "user", id: "ag", name: "Leo", agent: "OA Product", me: false }
-    : { kind: "guest", name: "Guest", me: false },
+  author:
+    by === "agent"
+      ? // An agent acting for the reader: still news.
+        { kind: "agent", id: "u1", name: "OA Product", for: "Leo", me: true }
+      : by === "me"
+        ? { kind: "user", id: "u1", name: "Leo", me: true }
+        : { kind: "guest", name: "Guest", me: false },
   createdAt: "2026-11-05T10:00:00Z",
   editedAt: null,
   typed: false,
@@ -178,7 +186,7 @@ describe("a live reply (#2179)", () => {
         thread("t1", [
           comment("c1", "First"),
           comment("c2", "Old"),
-          comment("c5", "From an agent", true),
+          comment("c5", "From an agent", "agent"),
         ]),
         list[1] as ReturnType<typeof thread>,
       ];
@@ -220,6 +228,25 @@ describe("a live reply (#2179)", () => {
     const li = (await within(c).findByText("Brand new")).closest(
       "[data-comment]",
     );
+    expect(li).not.toHaveAttribute("data-live");
+  });
+
+  it("the reader's own reply is not tinted", async () => {
+    let list = base();
+    serve(() => list);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Old");
+    list = [
+      thread("t1", [
+        comment("c1", "First"),
+        comment("c2", "Old"),
+        comment("c8", "Mine", "me"),
+      ]),
+      list[1] as ReturnType<typeof thread>,
+    ];
+    await arrive();
+    const li = (await within(c).findByText("Mine")).closest("[data-comment]");
     expect(li).not.toHaveAttribute("data-live");
   });
 

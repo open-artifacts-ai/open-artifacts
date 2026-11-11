@@ -126,9 +126,18 @@ export function useKeepScroll(
   return { pill: pill != null, go };
 }
 
-export function NewReplyPill({ onClick }: { onClick: () => void }) {
+/** `under`: the panel's own sticky header is above it in the scroller. */
+export function NewReplyPill({
+  onClick,
+  under,
+}: {
+  onClick: () => void;
+  under: boolean;
+}) {
   return (
-    <div className="pointer-events-none sticky top-14 z-10 -my-3 flex h-0 justify-center">
+    <div
+      className={`pointer-events-none sticky ${under ? "top-14" : "top-2"} z-10 -my-3 flex h-0 justify-center`}
+    >
       <Button
         size="xs"
         data-new-reply=""
