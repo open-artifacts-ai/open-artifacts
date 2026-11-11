@@ -479,12 +479,120 @@ describe("native presentation contract", () => {
     expect(tree).toContain(`${origin}/a/artifact4`);
     expect(tree).not.toContain(`${origin}/a/artifact3`);
     expect(tree).toContain('"type":"ExistingBand"');
-    expect(tree).toContain("Published v5");
+    expect(tree).toContain("↗");
+    expect(tree).toContain(" v5");
+    expect(tree).toContain('"dimColor":true');
+    expect(tree).not.toContain("Published");
     expect(tree).toContain('"width":30');
     expect(tree).toContain('"height":1');
     expect(tree).not.toContain("maxWidth");
     expect(tree).not.toContain("autoFocus");
     expect(tree).not.toContain("focus");
+  });
+
+  it("keeps the version suffix and cuts the title to fit the width", async () => {
+    for (const [n, width] of [
+      [5, 30],
+      [12, 30],
+      [123, 20],
+    ] as const) {
+      const h = host();
+      await h.publish(result(n, "wide"), {
+        title: "A very long accessible artifact title",
+      });
+      const { value } = await h.draw(1, width);
+      const row = JSON.stringify(value);
+      const suffix = ` v${n}`;
+      expect(row).toContain(`"children":["${suffix}"]`);
+      const label = /"label":"([^"]*)"/.exec(row)?.[1] ?? "";
+      expect(label.endsWith("…")).toBe(true);
+      expect(2 + Array.from(label).length + suffix.length).toBeLessThanOrEqual(
+        width - 1,
+      );
+    }
+  });
+
+  it("cuts a CJK title by display width so the suffix stays", async () => {
+    const h = host();
+    await h.publish(result(5, "cjk"), {
+      title: "研究設計：エージェントチーム".repeat(3),
+    });
+    const { value } = await h.draw(1, 30);
+    const row = JSON.stringify(value);
+    expect(row).toContain('"children":[" v5"]');
+    const label = /"label":"([^"]*)"/.exec(row)?.[1] ?? "";
+    expect(label.endsWith("…")).toBe(true);
+    const wide = Array.from(label.slice(0, -1)).length * 2 + 1;
+    expect(2 + wide + 3).toBeLessThanOrEqual(29);
+  });
+
+  it("never splits a grapheme and keeps the suffix", async () => {
+    const segment = (t: string) =>
+      Array.from(
+        new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(t),
+        (x) => x.segment,
+      );
+    for (const unit of [
+      "5\u{FE0F}\u{20E3}",
+      "\u{1F1E9}\u{1F1EA}",
+      "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}",
+    ]) {
+      const h = host();
+      const title = unit.repeat(20);
+      await h.publish(result(5, "gr"), { title });
+      const { value } = await h.draw(1, 30);
+      const row = JSON.stringify(value);
+      expect(row).toContain('"children":[" v5"]');
+      const label = JSON.parse(
+        `"${/"label":"([^"]*)"/.exec(row)?.[1]}"`,
+      ) as string;
+      expect(label.endsWith("…")).toBe(true);
+      const kept = segment(label.slice(0, -1));
+      expect(kept.every((g) => g === unit)).toBe(true);
+      expect(kept.length * 2 + 2 + 1 + 3).toBeLessThanOrEqual(29);
+    }
+  });
+
+  it("counts spacing marks as cells in a Devanagari title", async () => {
+    const h = host();
+    await h.publish(result(5, "dev"), { title: "किताब ".repeat(10) });
+    const row = JSON.stringify((await h.draw(1, 30)).value);
+    expect(row).toContain('"children":[" v5"]');
+    const label = JSON.parse(
+      `"${/"label":"([^"]*)"/.exec(row)?.[1]}"`,
+    ) as string;
+    expect(label.endsWith("…")).toBe(true);
+    // Every code point here (no nonspacing marks) takes one cell.
+    expect(2 + Array.from(label).length + 3).toBeLessThanOrEqual(29);
+    expect(Array.from(label).length).toBeGreaterThan(15);
+  });
+
+  it("keeps a three digit version whole at a tiny width", async () => {
+    const h = host();
+    await h.publish(result(123, "tiny"), { title: "A long title" });
+    const row = JSON.stringify((await h.draw(1, 8)).value);
+    expect(row).toContain('" v123"');
+    expect(row).not.toContain('"type":"Link"');
+  });
+
+  it("lays out dim, non-shrinking prefix and suffix around a shrinkable title", async () => {
+    const h = host();
+    await h.publish(result(5, "lay"), {
+      title: "A very long accessible artifact title",
+    });
+    type Node = { type: string; props: Record<string, unknown> };
+    const kids = (n: Node) => n.props.children as Node[];
+    const { value } = await h.draw(1, 30);
+    const row = kids(value as Node)[0];
+    const [pre, mid, suf] = kids(row);
+    expect(pre.props.flexShrink).toBe(0);
+    expect(kids(pre)[0].props.dimColor).toBe(true);
+    expect(suf.props.flexShrink).toBe(0);
+    expect(kids(suf)[0].props.dimColor).toBe(true);
+    expect(mid.props.flexShrink).toBe(1);
+    expect(mid.props.minWidth).toBe(0);
+    expect(mid.props.overflow).toBe("hidden");
+    expect(kids(mid)[0].type).toBe("Link");
   });
 
   it("leaves surveys, hidden bands, empty sessions and unconfigured instances alone", async () => {
