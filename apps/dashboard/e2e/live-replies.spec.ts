@@ -9,7 +9,7 @@ test.use({
   launchOptions: { args: ["--disable-features=LocalNetworkAccessChecks"] },
 });
 
-/** Another person's reply, through the mock API (the page sees the socket event). */
+/** An agent's reply, through the mock API (the page sees the socket event). */
 const reply = (page: Page, body: string) =>
   page.evaluate(
     async ({ id, body }) => {
@@ -19,7 +19,8 @@ const reply = (page: Page, body: string) =>
       const t = list.threads.find((t) => t.status === "open");
       await fetch(`/api/v1/artifacts/${id}/comments/${t?.id}/replies`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        // Someone else's reply: the reader's own is not news.
+        headers: { "content-type": "application/json", "x-mock-as": "agent" },
         body: JSON.stringify({ body }),
       });
     },
