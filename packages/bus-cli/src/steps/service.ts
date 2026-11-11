@@ -31,49 +31,42 @@ export const LAUNCHD_LABEL = "com.open-artifacts.bus";
 export const SYSTEMD_UNIT = "oa-bus.service";
 /** EX_CONFIG: the daemon's exit on revoke. systemd never restarts it. */
 export const REVOKED_EXIT = 78;
-/** The harness commands the daemon may run (wake, attestation). */
-const HARNESS_BINS = [
-  "claude",
-  "codex",
-  "opencode",
-  "pi",
-  "omp",
-  "hermes",
-  "openclaw",
-];
-
 /** An npx cache or a package's own .bin: never for a long-lived service. */
 const transient = (dir: string) =>
-  dir.split(/[\\/]/).some((seg) => seg === "node_modules" || seg === "_npx");
+  dir
+    .split(/[\\/]/)
+    .some(
+      (seg) =>
+        seg === "node_modules" || seg === "_npx" || seg === "node-gyp-bin",
+    );
 
 /**
- * The service's PATH: node's folder, the folders of the harness commands found
- * on `env.PATH`, and the system folders. Never npx's or a project's
- * node_modules/.bin (#2105).
+ * The service's PATH (#2105): the user's absolute PATH folders in their order,
+ * minus npx's and a project's node_modules/.bin, node's folder if missing, and
+ * the system folders. win32 keeps its PATH as is.
  */
 export function servicePath(
   env: Env,
   execPath: string,
   platform: NodeJS.Platform,
 ): string {
+  if (platform !== "darwin" && platform !== "linux")
+    return env.PATH ?? "/usr/local/bin:/usr/bin:/bin";
   const system = [
     "/usr/local/bin",
     ...(platform === "darwin" ? ["/opt/homebrew/bin"] : []),
     "/usr/bin",
     "/bin",
   ];
-  const found: string[] = [];
-  const onPath = (env.PATH ?? "")
+  const mine = (env.PATH ?? "")
     .split(delimiter)
     .filter((d) => isAbsolute(d) && !transient(d));
-  for (const bin of HARNESS_BINS) {
-    const dir = onPath.find((d) => present(join(d, bin)));
-    if (dir) found.push(dir);
-  }
-  return [...new Set([dirname(execPath), ...found, ...system])]
-    .filter((d) => isAbsolute(d) && !transient(d))
-    .join(delimiter);
+  const node = dirname(execPath);
+  if (!mine.includes(node) && isAbsolute(node) && !transient(node))
+    mine.unshift(node);
+  return [...new Set([...mine, ...system])].join(delimiter);
 }
+
 const STOP_WAIT_MS = 5000;
 const POLL_MS = 250;
 
@@ -331,7 +324,7 @@ function writeReplacing(path: string, text: string): void {
 const real = (path: string): string => {
   const abs = resolve(path);
   try {
-    return realpathSync(abs);
+    return realpathSync.native(abs);
   } catch {
     const parent = dirname(abs);
     return parent === abs ? abs : join(real(parent), basename(abs));
@@ -469,13 +462,16 @@ export function systemService(d: ServiceDeps): Service {
   const installed = () => manager !== undefined && present(file());
   /** HOME or the bus home points away from the account's: its manager is not ours to touch. */
   const isolated = () => {
-    if (manager === undefined || d.accountHome === undefined) return false;
-    const account = real(d.accountHome);
-    const inside = (p: string) => {
-      const r = relative(account, real(p));
-      return r === "" || (!r.startsWith("..") && !isAbsolute(r));
-    };
-    return real(d.userHome) !== account || !inside(home());
+    if (manager === undefined || d.accountHome === undefined) return undefined;
+    // macOS volumes are case-insensitive.
+    const fold = (p: string) =>
+      d.platform === "darwin" ? real(p).toLowerCase() : real(p);
+    const account = fold(d.accountHome);
+    if (fold(d.userHome) !== account) return "home";
+    const r = relative(account, fold(home()));
+    return r === "" || (!r.startsWith("..") && !isAbsolute(r))
+      ? undefined
+      : "bus-home";
   };
   const domain = `gui/${d.uid}`;
   const systemctl = (...args: string[]) =>
@@ -556,7 +552,10 @@ export function systemService(d: ServiceDeps): Service {
     },
 
     async ensure() {
-      if (isolated()) return { skipped: true };
+      {
+        const why = isolated();
+        if (why) return { skipped: why };
+      }
       const h = home();
       const src = d.source();
       const logs = join(h, "logs");
@@ -628,7 +627,10 @@ export function systemService(d: ServiceDeps): Service {
     },
 
     async remove() {
-      if (isolated()) return { skipped: true };
+      {
+        const why = isolated();
+        if (why) return { skipped: why };
+      }
       if (!installed()) {
         // The fallback's daemon, or one in a terminal.
         if ((await d.daemonPid()) === undefined) return {};

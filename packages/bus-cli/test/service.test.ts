@@ -29,6 +29,7 @@ import {
   type ServiceDeps,
   SYSTEMD_UNIT,
   serviceNames,
+  servicePath,
   systemService,
   type Unit,
 } from "../src/steps/service.ts";
@@ -254,7 +255,7 @@ describe("systemService: launchd", () => {
       `<string>${home}/bin/node</string><string>${home}/bin/dist/index.js</string><string>daemon</string>`,
     );
     expect(plist).toContain(
-      "<key>PATH</key><string>/opt/node/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>",
+      "<key>PATH</key><string>/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:/bin</string>",
     );
     expect(plist).not.toContain("OA_BUS_HOME");
     expect(plist).toContain(`${home}/logs/daemon.log`);
@@ -313,7 +314,7 @@ describe("systemService: launchd", () => {
       `<key>CODEX_HOME</key><string>${codex}</string>`,
     );
     expect(s.env?.()).toEqual({
-      PATH: "/opt/node/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+      PATH: "/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:/bin",
       CODEX_HOME: codex,
     });
     // The default Codex home is not passed.
@@ -324,7 +325,7 @@ describe("systemService: launchd", () => {
     await t.ensure();
     expect(readFileSync(plistOf(userHome), "utf8")).not.toContain("CODEX_HOME");
     expect(t.env?.()).toEqual({
-      PATH: "/opt/node/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+      PATH: "/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:/bin",
     });
   });
 
@@ -401,7 +402,7 @@ describe("systemService: systemd", () => {
       `ExecStart="${home}/bin/node" "${home}/bin/dist/index.js" daemon`,
     );
     expect(u).toContain(
-      'Environment="PATH=/opt/node/bin:/usr/local/bin:/usr/bin:/bin"',
+      'Environment="PATH=/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/bin"',
     );
     expect(calls).toEqual([
       ["systemctl", ["--user", "daemon-reload"]],
@@ -431,7 +432,7 @@ describe("systemService: systemd", () => {
       join(home, "bin/node"),
       [join(home, "bin/dist/index.js"), "daemon"],
       {
-        env: { PATH: "/opt/node/bin:/usr/local/bin:/usr/bin:/bin" },
+        env: { PATH: "/opt/node/bin:/opt/x/bin:/usr/bin:/usr/local/bin:/bin" },
         out: join(home, "logs/daemon.log"),
         err: join(home, "logs/daemon.log"),
       },
@@ -1101,9 +1102,9 @@ describe("#2099: another HOME never reaches the real service manager", () => {
     it(`${platform}: ensure and remove make no call when HOME is not the account's`, async () => {
       const { d, calls } = deps(platform, { accountHome: tmp() });
       const s = systemService(d);
-      expect(s.isolated).toBe(true);
-      expect(await s.ensure()).toEqual({ skipped: true });
-      expect(await s.remove()).toEqual({ skipped: true });
+      expect(s.isolated).toBe("home");
+      expect(await s.ensure()).toEqual({ skipped: "home" });
+      expect(await s.remove()).toEqual({ skipped: "home" });
       expect(calls).toEqual([]);
       expect(d.exec).not.toHaveBeenCalled();
       expect(d.spawnDaemon).not.toHaveBeenCalled();
@@ -1118,8 +1119,8 @@ describe("#2099: another HOME never reaches the real service manager", () => {
         home: () => join(tmp(), "bus"),
       });
       const s = systemService(d);
-      expect(await s.ensure()).toEqual({ skipped: true });
-      expect(await s.remove()).toEqual({ skipped: true });
+      expect(await s.ensure()).toEqual({ skipped: "bus-home" });
+      expect(await s.remove()).toEqual({ skipped: "bus-home" });
       expect(calls).toEqual([]);
     });
 
@@ -1131,27 +1132,39 @@ describe("#2099: another HOME never reaches the real service manager", () => {
         home: () => join(account, ".oa-bus"),
       });
       const s = systemService(d);
-      expect(s.isolated).toBe(false);
+      expect(s.isolated).toBeUndefined();
       await s.ensure();
       expect(calls.length).toBeGreaterThan(0);
     });
   }
 });
 
-describe("#2105: the service PATH is minimal", () => {
-  it("holds no npx or node_modules folder, keeps node's and the harnesses'", async () => {
-    const bins = tmp();
-    writeFileSync(join(bins, "codex"), "");
-    const npx = join(tmp(), ".npm/_npx/abc/node_modules/.bin");
-    mkdirSync(npx, { recursive: true });
-    writeFileSync(join(npx, "claude"), "");
-    const PATH = [
-      npx,
-      "/proj/node_modules/.bin",
-      "/x/node-gyp-bin/../node_modules/.bin",
-      bins,
-      "/usr/bin",
-    ].join(":");
+describe("#2105: the service PATH drops only transient folders", () => {
+  const PATH = [
+    "/home/u/.npm/_npx/abc/node_modules/.bin",
+    "/proj/node_modules/.bin",
+    "/x/node-gyp-bin",
+    "relative/bin",
+    "/home/u/.local/bin",
+    "/home/u/.cargo/bin",
+    "/usr/bin",
+    "/home/u/.local/bin",
+  ].join(":");
+
+  it("keeps the user's folders in order, node's first, system folders last", () => {
+    expect(servicePath({ PATH }, "/opt/node/bin/node", "linux")).toBe(
+      "/opt/node/bin:/home/u/.local/bin:/home/u/.cargo/bin:/usr/bin:/usr/local/bin:/bin",
+    );
+    expect(servicePath({ PATH }, "/home/u/.cargo/bin/node", "darwin")).toBe(
+      "/home/u/.local/bin:/home/u/.cargo/bin:/usr/bin:/usr/local/bin:/opt/homebrew/bin:/bin",
+    );
+  });
+
+  it("keeps win32's PATH as is", () => {
+    expect(servicePath({ PATH }, "C:\\n\\node.exe", "win32")).toBe(PATH);
+  });
+
+  it("writes none of them into the plist or the unit", async () => {
     for (const platform of ["darwin", "linux"] as const) {
       const { d, userHome } = deps(platform, { env: { PATH } });
       await systemService(d).ensure();
@@ -1161,9 +1174,8 @@ describe("#2105: the service PATH is minimal", () => {
           : join(userHome, ".config/systemd/user", SYSTEMD_UNIT),
         "utf8",
       );
-      expect(text).not.toMatch(/_npx|node_modules/);
-      expect(text).toContain("/opt/node/bin");
-      expect(text).toContain(bins);
+      expect(text).not.toMatch(/_npx|node_modules|node-gyp-bin/);
+      expect(text).toContain("/home/u/.cargo/bin");
     }
   });
 });

@@ -329,9 +329,11 @@ export function copy(style: Style, bus: string = BUS_CMD) {
               next(`Run ${bus} install.`),
             ],
     // install --no-service: the service step is skipped, nothing is started.
-    serviceOtherHome: () => [
+    serviceOtherHome: (why: "home" | "bus-home") => [
       warn(
-        "Skipped the background service: this HOME isn't your account's home. Use --no-service, or run without a custom HOME.",
+        why === "home"
+          ? "Skipped the background service: this HOME isn't your account's home. Use --no-service, or run without a custom HOME."
+          : "Skipped the background service: the bus home is outside your account's home. Use --no-service, or run without a custom OA_BUS_HOME.",
       ),
     ],
     serviceSkipped: () => [

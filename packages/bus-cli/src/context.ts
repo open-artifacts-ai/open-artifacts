@@ -43,9 +43,9 @@ export type Service = {
    * `running`: a daemon that would not stop holds the socket, and nothing
    * was started.
    */
-  ensure: () => Promise<{ running?: number; skipped?: boolean }>;
+  ensure: () => Promise<{ running?: number; skipped?: "home" | "bus-home" }>;
   /** HOME or the bus home is not the account's: no service call is made (#2099). */
-  isolated?: boolean;
+  isolated?: "home" | "bus-home";
   /** install could not start a service and runs the daemon itself. */
   fallback?: boolean;
   /**
@@ -56,7 +56,7 @@ export type Service = {
     unit?: "launchd" | "systemd";
     stopped?: boolean;
     running?: number;
-    skipped?: boolean;
+    skipped?: "home" | "bus-home";
   }>;
   problems?: () => ServiceProblem[];
   /** The installed service's environment, as install recorded it; empty when none is. */
@@ -186,6 +186,15 @@ const spawnDaemon = (
   }
 };
 
+/** undefined where the uid has no passwd entry (docker --user): no isolation check. */
+const accountHome = () => {
+  try {
+    return userInfo().homedir;
+  } catch {
+    return undefined;
+  }
+};
+
 const userName = () => {
   try {
     return userInfo().username;
@@ -235,7 +244,9 @@ export function realCtx(noColor: boolean): Ctx {
   ctx.service = systemService({
     platform: process.platform,
     userHome: ctx.userHome,
-    accountHome: userInfo().homedir,
+    ...(accountHome() !== undefined
+      ? { accountHome: accountHome() as string }
+      : {}),
     home: () => ctx.home,
     env,
     exec: ctx.exec,

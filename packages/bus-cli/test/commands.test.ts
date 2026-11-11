@@ -1083,7 +1083,7 @@ describe("uninstall: transcript states 9 and 10", () => {
     const ctx = fakeCtx({
       service: {
         ...launchd(),
-        remove: vi.fn(async () => ({ skipped: true })),
+        remove: vi.fn(async () => ({ skipped: "home" as const })),
       },
       which: ALL,
       exec: execWith(),

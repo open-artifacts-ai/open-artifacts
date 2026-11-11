@@ -402,7 +402,7 @@ describe("#2099: install under another HOME", () => {
     const ctx = fakeCtx({
       fetch: hub([approved]),
       ...allHarnesses(),
-      service: { ...base.service, isolated: true, ensure },
+      service: { ...base.service, isolated: "home" as const, ensure },
     });
     expect(await run(ctx, {})).toBe(0);
     expect(ensure).not.toHaveBeenCalled();

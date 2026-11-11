@@ -313,7 +313,11 @@ export async function waitForDaemon(
   }
 }
 
-async function daemonStep(ctx: Ctx, noService = false): Promise<boolean> {
+async function daemonStep(
+  ctx: Ctx,
+  noService = false,
+  hint = true,
+): Promise<boolean> {
   const c = ctx.copy;
   if (noService) {
     // No service call at all: report the daemon if the user already runs one.
@@ -321,7 +325,7 @@ async function daemonStep(ctx: Ctx, noService = false): Promise<boolean> {
       () => undefined,
     );
     if (!st) {
-      say(ctx, c.serviceSkipped());
+      if (hint) say(ctx, c.serviceSkipped());
       return true;
     }
     // Started by the user: the "without a service" variant, not "run install".
@@ -330,8 +334,8 @@ async function daemonStep(ctx: Ctx, noService = false): Promise<boolean> {
     return true;
   }
   if (ctx.service.isolated) {
-    say(ctx, c.serviceOtherHome());
-    return daemonStep(ctx, true);
+    say(ctx, c.serviceOtherHome(ctx.service.isolated));
+    return daemonStep(ctx, true, false);
   }
   const { running } = await ctx.service.ensure();
   if (running !== undefined) {
