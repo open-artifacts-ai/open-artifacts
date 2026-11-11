@@ -19,6 +19,7 @@
       "!**/dist-assets",
       "!pnpm-lock.yaml",
       "!packages/bus-adapter-hermes/fixtures",
+      "!packages/bus-cli/test/fixtures/claude-2.1.322",
       "!.release-please-manifest.json",
       "!CHANGELOG.md"
     ]

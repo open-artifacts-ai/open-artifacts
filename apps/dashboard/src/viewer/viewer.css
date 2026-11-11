@@ -214,13 +214,6 @@
 .oa-lchip-done {
   padding-left: 10px;
 }
-.oa-lchip-quiet {
-  padding: 0 10px;
-  border: 1px dashed var(--oa-border);
-  background: transparent;
-  color: var(--oa-text-muted);
-  cursor: pointer;
-}
 .oa-ldot {
   flex: none;
   width: 6px;
@@ -240,10 +233,6 @@
   border-radius: 999px;
   font-size: 13px;
   font-weight: 600;
-}
-.oa-lchip-quiet:focus-visible {
-  outline: 2px solid var(--oa-accent);
-  outline-offset: 2px;
 }
 /* 44px hit areas on phones. */
 .oa-hit {
