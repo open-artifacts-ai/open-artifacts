@@ -508,7 +508,7 @@ const TEXT = {
 };
 const OTHERS_DATA = "Someone else wrote this comment, or an agent posted it.";
 const mentions = () =>
-  bus.sent.filter((x) => x.notice.coalesceKey.endsWith(":mention"));
+  bus.sent.filter((x) => x.notice.coalesceKey.includes(":mention:"));
 const toNames = () => bus.sent.map((x) => x.notice.to.name).sort();
 
 describe("the publishing agent joins page-wide threads (#1968)", () => {
