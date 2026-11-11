@@ -428,7 +428,8 @@ async function startMocks() {
   const realFetch = window.fetch.bind(window);
   window.fetch = (input, init) => {
     const req = new Request(input, init);
-    if (req.credentials !== "omit")
+    // ?mock=signed-out: no session, so public artifacts open anonymously.
+    if (req.credentials !== "omit" && params.get("mock") !== "signed-out")
       req.headers.set("Authorization", "Bearer mock");
     return realFetch(req);
   };
