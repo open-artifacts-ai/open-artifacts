@@ -4031,8 +4031,9 @@ export class BusHub extends DurableObject<Env> {
   /**
    * #2175: the notices still HELD for an agent removed from comment thread
    * `threadId` on `artifactId` are withdrawn: every target of `commentIds`, and
-   * the thread's own coalesced rows (`thread_reply`, which carry no target, and
-   * `asker`, whose targets are returned) whatever `commentIds` lists. A row left
+   * the thread's own coalesced rows (`asker` and `thread_reply`, whose targets
+   * are returned; a `thread_reply` from before #2059 has none and is just
+   * deleted) whatever `commentIds` lists. A row left
    * with no target is deleted. Only targets keyed to the removed agent (the
    * roster key notifyAgent builds) go. Notices already sent (notice_acks) count
    * as delivered and stay. Withdrawn targets are returned, never settled: the
@@ -4162,13 +4163,17 @@ export class BusHub extends DurableObject<Env> {
                 r.toLname,
                 r.ckey,
               );
-            if (ownReply(r.ckey)) {
-              // A thread reply has no target: nothing to return or refund.
+            const reply = ownReply(r.ckey);
+            if (reply && r.ack === null && r.foldAcks === null) {
+              // A thread reply queued before #2059 has no target: nothing to
+              // return or refund.
               rowsTouched++;
               del();
               continue;
             }
-            const wholeThread = r.ckey.startsWith(askerPrefix);
+            // The thread's asker and (since #2059, targeted) thread_reply rows
+            // go whole: every target of this agent's is returned.
+            const wholeThread = reply || r.ckey.startsWith(askerPrefix);
             const hit = (s: string | null) => {
               const t = parse(s);
               return t !== null &&

@@ -253,7 +253,25 @@ describe("withdrawHeld (#2175)", () => {
     expect(r).toBe(0);
   });
 
-  it("deletes the thread's held thread_reply row, keeps another thread's", async () => {
+  it("withdraws the thread's targeted thread_reply row and returns its reply target", async () => {
+    const s = await setup();
+    await put(s, {
+      ckey: `artX:T:thread_reply:${s.key}:others`,
+      ack: s.ack("artX", "c5", s.key, "reply"),
+    });
+    await put(s, {
+      ckey: `artX:U:thread_reply:${s.key}:others`,
+      ack: s.ack("artX", "c6", s.key, "reply"),
+    });
+    expect(await call(s, [])).toEqual({
+      withdrawn: [{ commentId: "c5", kind: "reply", key: s.key }],
+    });
+    expect((await rows(s)).map((r) => r.ckey)).toEqual([
+      `artX:U:thread_reply:${s.key}:others`,
+    ]);
+  });
+
+  it("deletes the thread's legacy untargeted thread_reply row, returns nothing, keeps another thread's", async () => {
     const s = await setup();
     await put(s, { ckey: `artX:T:thread_reply:${s.key}:others`, ack: null });
     await put(s, { ckey: `artX:U:thread_reply:${s.key}:others`, ack: null });
