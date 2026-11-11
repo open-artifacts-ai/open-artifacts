@@ -452,11 +452,18 @@ describe("review fixes (#1985)", () => {
     expect(readFileSync(settingsOf(h), "utf8")).not.toContain("outputStyle");
   });
 
-  it("without a record, uninstall drops the key only when it is exactly our name", () => {
+  it("without a record, uninstall drops only the old style's name and leaves the plugin's name and others alone", () => {
     const h = home();
-    put(settingsOf(h), `{"a":1,"outputStyle":"${NAME}"}\n`);
+    put(settingsOf(h), '{"a":1,"outputStyle":"Artifacts Teammate"}\n');
     uninstallOutputStyle(withBus(h));
     expect(JSON.parse(readFileSync(settingsOf(h), "utf8"))).toEqual({ a: 1 });
+    // The plugin's name may be the person's own choice.
+    put(settingsOf(h), `{"a":1,"outputStyle":"${NAME}"}\n`);
+    uninstallOutputStyle(withBus(h));
+    expect(JSON.parse(readFileSync(settingsOf(h), "utf8"))).toEqual({
+      a: 1,
+      outputStyle: NAME,
+    });
     put(settingsOf(h), '{"outputStyle":"Explanatory"}\n');
     uninstallOutputStyle(withBus(h));
     expect(readFileSync(settingsOf(h), "utf8")).toBe(
@@ -464,13 +471,13 @@ describe("review fixes (#1985)", () => {
     );
   });
 
-  it("with a corrupt install.json, uninstall still drops our key", () => {
+  it("with a corrupt install.json, uninstall leaves the plugin's key alone", () => {
     const h = home();
     put(settingsOf(h), "{}\n");
     installOutputStyle(withBus(h), ["claude"]);
     writeFileSync(join(h, ".oa-bus/install.json"), "not json");
     uninstallOutputStyle(withBus(h));
-    expect(readFileSync(settingsOf(h), "utf8")).not.toContain("outputStyle");
+    expect(readFileSync(settingsOf(h), "utf8")).toContain("outputStyle");
   });
 
   it("never sets the key again once we set it and the user removed it", () => {
@@ -587,9 +594,9 @@ describe("the key goes only after our file is gone", () => {
     expect(readFileSync(settingsOf(h), "utf8")).toContain("outputStyle");
   });
 
-  it("drops it when our file is already gone", () => {
+  it("drops the old name when our file is already gone", () => {
     const h = home();
-    withOurKey(h);
+    put(settingsOf(h), '{"a":1,"outputStyle":"Artifacts Teammate"}\n');
     uninstallOutputStyle(withBus(h));
     expect(readFileSync(settingsOf(h), "utf8")).not.toContain("outputStyle");
   });

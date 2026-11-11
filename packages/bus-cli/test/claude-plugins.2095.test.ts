@@ -4,10 +4,12 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { copy } from "../src/copy.ts";
 import {
@@ -34,6 +36,7 @@ type Fake = {
   /** installed -> available version, for plugins whose install reports both. */
   versions: Record<string, [string, string]>;
   updated: string[];
+  installArgs: string[][];
   failAdd?: boolean;
   failInstall?: string;
   exec: (
@@ -43,16 +46,20 @@ type Fake = {
   ) => Promise<{ code: number; stdout: string; stderr: string }>;
 };
 
-const ok = (o: object) => ({
-  code: 0,
-  stdout: `${JSON.stringify({ outcome: "ok", ...o })}\n`,
+// The fake claude replays what claude 2.1.322 printed (test/fixtures/claude-2.1.322).
+const FX = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "fixtures/claude-2.1.322",
+);
+const fx = (name: string) => JSON.parse(readFileSync(join(FX, name), "utf8"));
+const fxText = (name: string) => readFileSync(join(FX, name), "utf8");
+const line = (o: object, code = 0) => ({
+  code,
+  stdout: `${JSON.stringify(o)}\n`,
   stderr: "",
 });
-const bad = (failureCode: string, message: string) => ({
-  code: 1,
-  stdout: `${JSON.stringify({ outcome: "failed", failureCode, message })}\n`,
-  stderr: `x ${message}\n`,
-});
+const bad = (failureCode: string, message: string) =>
+  line({ command: "x", outcome: "failed", message, failureCode }, 1);
 
 const fake = (over: Partial<Fake> = {}): Fake => {
   const f: Fake = {
@@ -65,6 +72,7 @@ const fake = (over: Partial<Fake> = {}): Fake => {
     mcpList: "",
     versions: {},
     updated: [],
+    installArgs: [],
     ...over,
     exec: async (cmd, args, opts) => {
       f.calls.push([cmd, ...args]);
@@ -79,18 +87,24 @@ const fake = (over: Partial<Fake> = {}): Fake => {
         if (f.mcpList === "timeout")
           return { code: 1, stdout: "", stderr: "timed out after 20000 ms" };
         if (f.mcpList === "none")
-          return {
-            code: 1,
-            stdout: "",
-            stderr:
-              'No MCP server named "open-artifacts". Configured servers: x',
-          };
+          return { code: 1, stdout: "", stderr: fxText("mcp-get-missing.txt") };
         if (f.mcpList === "error")
           return { code: 2, stdout: "", stderr: "boom" };
         return { code: 0, stdout: f.mcpList, stderr: "" };
       }
       if (b === "marketplace" && d === "list")
-        return { code: 0, stdout: JSON.stringify(f.markets), stderr: "" };
+        return {
+          code: 0,
+          stdout: `${JSON.stringify(
+            f.markets.map((m) => ({
+              installLocation: fx("list-markets.json")[0].installLocation,
+              ...m,
+            })),
+            null,
+            2,
+          )}\n`,
+          stderr: "",
+        };
       if (b === "marketplace" && d === "add") {
         if (f.failAdd) return bad("clone_failed", "Clone failed");
         const src = args[3] as string;
@@ -98,7 +112,7 @@ const fake = (over: Partial<Fake> = {}): Fake => {
         // Real claude 2.1.322: the same name from another source is refused.
         const was = f.markets[0];
         if (was && (was.url !== url || (was.ref ?? "") !== (ref ?? "")))
-          return bad("declared", "its source doesn't match its entry");
+          return line(fx("add-other.json"), 1);
         f.markets = [
           {
             name: "open-artifacts",
@@ -107,33 +121,47 @@ const fake = (over: Partial<Fake> = {}): Fake => {
             ...(ref ? { ref } : {}),
           },
         ];
-        return ok({ marketplace: "open-artifacts" });
+        return line(fx(was ? "add-same.json" : "add-fresh.json"));
       }
       if (b === "marketplace" && d === "remove") {
-        if (!f.markets.length) return bad("not_configured", "not found");
+        if (!f.markets.length) return line(fx("remove-again.json"), 1);
         f.markets = [];
         f.installed = f.installed.filter((i) => !i.endsWith("@open-artifacts"));
-        return ok({});
+        return line(fx("remove.json"));
       }
       if (b === "list")
         return {
           code: 0,
-          stdout: JSON.stringify(f.installed.map((id) => ({ id }))),
+          stdout: `${JSON.stringify(
+            f.installed.map((id) => ({ ...fx("list-plugins.json")[0], id })),
+            null,
+            2,
+          )}\n`,
           stderr: "",
         };
       if (b === "install") {
         const id = d as string;
         if (f.failInstall === id) return bad("install_failed", "no");
-        if (!f.installed.includes(id)) f.installed.push(id);
+        const already = f.installed.includes(id);
+        if (!already) f.installed.push(id);
+        f.installArgs.push(args);
         for (let i = 3; i < args.length; i++)
           if (args[i] === "--config") {
             const [k, ...v] = (args[i + 1] as string).split("=");
             f.config[k as string] = v.join("=");
           }
         const v = f.versions[id];
-        return ok({
+        // Real claude: a fresh install reports no versions, an installed one reports both.
+        return line({
+          ...fx(already ? "install-again.json" : "install-fresh.json"),
+          plugin: id,
           pluginId: id,
-          ...(v ? { installedVersion: v[0], availableVersion: v[1] } : {}),
+          ...(already
+            ? {
+                installedVersion: v?.[0] ?? "1",
+                availableVersion: v?.[1] ?? v?.[0] ?? "1",
+              }
+            : {}),
         });
       }
       if (b === "update") {
@@ -141,20 +169,15 @@ const fake = (over: Partial<Fake> = {}): Fake => {
         f.updated.push(id);
         const v = f.versions[id];
         if (v) f.versions[id] = [v[1], v[1]];
-        return ok({ pluginId: id });
+        return line({ ...fx("update.json"), plugin: id, pluginId: id });
       }
       if (b === "uninstall") {
         const id = args[2] as string;
-        if (!f.installed.includes(id)) return bad("not_installed", "not found");
+        if (!f.installed.includes(id))
+          return line(fx("uninstall-again.json"), 1);
         f.installed = f.installed.filter((i) => i !== id);
-        return ok({});
+        return line({ ...fx("uninstall.json"), plugin: id, pluginId: id });
       }
-      if (b === SHORTCUTS_PLUGIN || a === "plugin")
-        return {
-          code: 0,
-          stdout: JSON.stringify({ inputs: f.config }),
-          stderr: "",
-        };
       throw new Error(`unexpected claude ${args.join(" ")}`);
     },
   };
@@ -184,10 +207,11 @@ const run = (f: Fake, w: { home: string; busHome: string }, over = {}) =>
     },
     ["claude"],
   );
-const FOUND =
-  "open-artifacts:\n  Scope: User config\n  Status: ✓ Connected\n  Type: http\n  URL: https://oa.example.com/mcp\n";
-const ELSEWHERE =
-  "open-artifacts:\n  Type: http\n  URL: https://x.example/mcp\n";
+const FOUND = fxText("mcp-get.txt").replace(
+  "https://x.example.com/mcp",
+  "https://oa.example.com/mcp",
+);
+const ELSEWHERE = fxText("mcp-get.txt");
 
 describe("marketplaceSource", () => {
   it("pins a release to its tag and a dev build to the default branch", () => {
@@ -623,12 +647,21 @@ describe("uninstallClaudePlugins", () => {
   });
 });
 
+const writeSettings = (home: string, o: object) => {
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  writeFileSync(join(home, ".claude/settings.json"), JSON.stringify(o));
+};
+const withUrl = (url: string) => ({
+  pluginConfigs: { [SHORTCUTS_PLUGIN]: { options: { instanceUrl: url } } },
+});
+
 describe("claudePluginsState", () => {
   it("is undefined when we installed nothing, ok after an install, and names a plugin that went missing", async () => {
     const w = setup();
     const f = fake({ mcpList: FOUND });
     expect(await claudePluginsState({ ...w, exec: f.exec })).toBeUndefined();
     await run(f, w);
+    writeSettings(w.home, withUrl(`${ORIGIN}/mcp`));
     expect(await claudePluginsState({ ...w, exec: f.exec })).toEqual({
       missing: [],
       unconfigured: false,
@@ -638,9 +671,102 @@ describe("claudePluginsState", () => {
       [SHORTCUTS_PLUGIN],
     );
     f.installed = [STYLE_PLUGIN, SHORTCUTS_PLUGIN];
-    f.config = {};
+    writeSettings(w.home, withUrl(""));
     expect(
       (await claudePluginsState({ ...w, exec: f.exec }))?.unconfigured,
     ).toBe(true);
+  });
+
+  it("is read-only: it never runs `plugin configure` or anything but list", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w);
+    writeSettings(w.home, withUrl(`${ORIGIN}/mcp`));
+    f.calls.length = 0;
+    await claudePluginsState({ ...w, exec: f.exec });
+    expect(f.calls).toEqual([["claude", "plugin", "list", "--json"]]);
+  });
+
+  it("reads the options from settings.json: none without the file is no finding, none in a present file is", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w);
+    rmSync(join(w.home, ".claude/settings.json"), { force: true });
+    expect(
+      (await claudePluginsState({ ...w, exec: f.exec }))?.unconfigured,
+    ).toBe(false);
+    writeSettings(w.home, {});
+    expect(
+      (await claudePluginsState({ ...w, exec: f.exec }))?.unconfigured,
+    ).toBe(true);
+  });
+});
+
+describe("review fixes", () => {
+  it("uninstall does not remove a marketplace of the same name that is no longer ours", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w);
+    f.markets = [{ name: "open-artifacts", source: "directory", path: "/x" }];
+    await uninstallClaudePlugins({ ...w, exec: f.exec, copy: c });
+    expect(f.calls.some((x) => x[3] === "remove")).toBe(false);
+    expect(f.markets).toHaveLength(1);
+    expect(record(w.busHome)).toBeUndefined();
+  });
+
+  it("install on a foreign marketplace clears marketplace:true from the record", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w);
+    f.markets = [{ name: "open-artifacts", source: "directory", path: "/x" }];
+    await run(f, w);
+    expect(record(w.busHome)).toEqual({
+      marketplace: false,
+      plugins: [STYLE_PLUGIN, SHORTCUTS_PLUGIN],
+    });
+  });
+
+  it("passes --config only to a shortcuts plugin we installed, never to the person's own", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND, installed: [SHORTCUTS_PLUGIN] });
+    await run(f, w);
+    expect(f.installArgs.some((a) => a.includes("--config"))).toBe(false);
+    expect(f.config).toEqual({});
+    expect(record(w.busHome).plugins).toEqual([STYLE_PLUGIN]);
+    // And once it is ours (recorded), a rerun keeps setting it.
+    const w2 = setup();
+    const f2 = fake({ mcpList: FOUND });
+    await run(f2, w2);
+    f2.installArgs.length = 0;
+    await run(f2, w2);
+    expect(f2.installArgs.some((a) => a.includes("--config"))).toBe(true);
+  });
+
+  it("a failed marketplace remove keeps the record so a rerun retries", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w);
+    const orig = f.exec;
+    f.exec = async (cmd, args, o) =>
+      args[1] === "marketplace" && args[2] === "remove"
+        ? bad("boom", "boom")
+        : orig(cmd, args, o);
+    const r = await uninstallClaudePlugins({ ...w, exec: f.exec, copy: c });
+    expect(r.notes.join(" ")).toContain("Couldn't remove");
+    expect(record(w.busHome)).toBeDefined();
+    f.exec = orig;
+    f.installed = [];
+    await uninstallClaudePlugins({ ...w, exec: f.exec, copy: c });
+    expect(f.markets).toEqual([]);
+    expect(record(w.busHome)).toBeUndefined();
+  });
+
+  it("parses the real multi-line list output", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w);
+    const out = await f.exec("claude", ["plugin", "list", "--json"]);
+    expect(out.stdout.trim().split("\n").length).toBeGreaterThan(3);
+    expect((await run(f, w)).ok).toBe(true);
   });
 });

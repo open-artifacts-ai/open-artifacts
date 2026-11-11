@@ -9,9 +9,10 @@
 // does not come from our repo is never touched. A plugin that was already
 // installed is never recorded, so it is never removed.
 
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Deps } from "../deps.ts";
-import { selectOutputStyle } from "./output-style.ts";
+import { claudeSettingsFile, selectOutputStyle } from "./output-style.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
 export const MARKETPLACE = "open-artifacts";
@@ -57,7 +58,7 @@ export const readRecord = (busHome: string): Record_ | undefined => {
 const writeRecord = (busHome: string, r: Record_ | undefined) =>
   updateInstallFile(join(busHome, "install.json"), { claudePlugins: r });
 
-const cmp = (a: string, b: string) => {
+export const cmpVersion = (a: string, b: string) => {
   const pa = a.split(".").map(Number);
   const pb = b.split(".").map(Number);
   for (let i = 0; i < 3; i++) {
@@ -74,18 +75,18 @@ export const marketplaceSource = (version: string): string =>
     : PLUGIN_REPO_URL;
 
 const json = (stdout: string): unknown => {
-  // The result is the last line on stdout.
+  // `list --json` prints one multi-line document; the others print one line.
+  try {
+    return JSON.parse(stdout);
+  } catch {}
+  // Otherwise the result is the last line on stdout.
   const lines = stdout.trim().split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     try {
       return JSON.parse(lines[i] as string);
     } catch {}
   }
-  try {
-    return JSON.parse(stdout);
-  } catch {
-    return undefined;
-  }
+  return undefined;
 };
 
 type Reply = {
@@ -217,7 +218,7 @@ export async function installClaudePlugins(
     out.notes.push(...copy.pluginsNoClaude());
     return out;
   }
-  if ("unreadable" in v || cmp(v.version, MIN_CLAUDE) < 0) {
+  if ("unreadable" in v || cmpVersion(v.version, MIN_CLAUDE) < 0) {
     out.notes.push(
       ...copy.pluginsTooOld("version" in v ? v.version : undefined, MIN_CLAUDE),
     );
@@ -241,6 +242,14 @@ export async function installClaudePlugins(
   const there = (listed.data as Market[]).find((m) => m.name === MARKETPLACE);
   if (there && !isOurs(there)) {
     out.notes.push(...copy.pluginsForeignMarketplace(MARKETPLACE));
+    // The marketplace of that name is not ours any more: uninstall must not remove it.
+    if (prior?.marketplace)
+      writeRecord(
+        deps.busHome,
+        prior.plugins?.length
+          ? { marketplace: false, plugins: prior.plugins }
+          : undefined,
+      );
     return out;
   }
   const source = marketplaceSource(deps.version);
@@ -332,8 +341,12 @@ export async function installClaudePlugins(
   // The shortcuts' options. The namespace stays as it was when it cannot be found.
   const config: string[] = [];
   const fresh = !before.includes(SHORTCUTS_PLUGIN);
+  // Options go only to a shortcuts plugin we installed: never to the person's own.
+  const ownShortcuts = fresh || mine.has(SHORTCUTS_PLUGIN);
   const origin = deps.origin;
-  if (origin !== undefined && originOf(origin) !== origin) {
+  if (!ownShortcuts) {
+    // The person's own install keeps its options.
+  } else if (origin !== undefined && originOf(origin) !== origin) {
     out.notes.push(...copy.pluginsBadInstance());
   } else if (origin) {
     config.push("--config", `instanceUrl=${origin}/mcp`);
@@ -459,20 +472,37 @@ export async function uninstallClaudePlugins(
     }
   }
   if (rec.marketplace && !failed) {
-    const left = await listInstalled(exec);
-    const others = (left ?? [`?@${MARKETPLACE}`]).filter((id) =>
-      id.endsWith(`@${MARKETPLACE}`),
-    );
-    if (others.length === 0) {
-      const r = await claude(exec, [
-        "plugin",
-        "marketplace",
-        "remove",
-        MARKETPLACE,
-        "--json",
-      ]);
-      if (!r.ok && r.code !== "not_configured")
-        notes.push(...copy.pluginsUninstallFailed(MARKETPLACE, r.message));
+    // The name is ours only while the marketplace still comes from our repo.
+    const markets = await claude(exec, [
+      "plugin",
+      "marketplace",
+      "list",
+      "--json",
+    ]);
+    if (!markets.ok || !Array.isArray(markets.data)) {
+      failed = true;
+      notes.push(...copy.pluginsUninstallFailed(MARKETPLACE, markets.message));
+    } else {
+      const there = (markets.data as Market[]).find(
+        (m) => m.name === MARKETPLACE,
+      );
+      const left = there && isOurs(there) ? await listInstalled(exec) : [];
+      const others = (left ?? [`?@${MARKETPLACE}`]).filter((id) =>
+        id.endsWith(`@${MARKETPLACE}`),
+      );
+      if (there && isOurs(there) && others.length === 0) {
+        const r = await claude(exec, [
+          "plugin",
+          "marketplace",
+          "remove",
+          MARKETPLACE,
+          "--json",
+        ]);
+        if (!r.ok && r.code !== "not_configured") {
+          failed = true;
+          notes.push(...copy.pluginsUninstallFailed(MARKETPLACE, r.message));
+        }
+      }
     }
   }
   // Kept when a step failed, so a rerun finishes the job.
@@ -509,16 +539,24 @@ export async function claudePluginsState(
     rec.plugins.includes(SHORTCUTS_PLUGIN) &&
     !missing.includes(SHORTCUTS_PLUGIN)
   ) {
-    const c = await claude(deps.exec, [
-      "plugin",
-      "configure",
-      SHORTCUTS_PLUGIN,
-      "--json",
-    ]);
-    const d = c.data as { inputs?: { instanceUrl?: string } } | undefined;
-    unconfigured = !(
-      c.ok && originOf(d?.inputs?.instanceUrl ?? "") !== undefined
-    );
+    // Read-only: the options live in Claude Code's settings.json. Keys and the
+    // instance URL are read, nothing else. An unreadable file is not a finding.
+    const url = readInstanceUrl(deps);
+    unconfigured = url !== undefined && originOf(url) === undefined;
   }
   return { missing, unconfigured };
+}
+
+/** The shortcuts' instanceUrl from settings.json; "" when set up without one, undefined when the file cannot be read. */
+function readInstanceUrl(deps: Where): string | undefined {
+  try {
+    const text = readFileSync(claudeSettingsFile(deps), "utf8");
+    const o = JSON.parse(text) as {
+      pluginConfigs?: Record<string, { options?: { instanceUrl?: unknown } }>;
+    };
+    const u = o.pluginConfigs?.[SHORTCUTS_PLUGIN]?.options?.instanceUrl;
+    return typeof u === "string" ? u : "";
+  } catch {
+    return undefined;
+  }
 }

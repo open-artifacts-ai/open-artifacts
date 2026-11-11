@@ -765,6 +765,12 @@ export function copy(style: Style, bus: string = BUS_CMD) {
       ),
       next(`Run ${bus} to remove the old file.`),
     ],
+    styleFileOldNoClaude: (where: string, min: string) => [
+      warn(
+        `An older output style file (${clip(where, 20)}) is still in use. ${bus} can't replace it until Claude Code ${min} or later is on PATH.`,
+      ),
+      next(`Install or update Claude Code, then run ${bus}.`),
+    ],
     pluginsSetupFailed: (why: string) => [
       warn(`Couldn't set up the Claude Code plugins: ${clip(why, 30)}.`),
       next(`The bus tools are set up. Run ${bus} again to retry.`),
