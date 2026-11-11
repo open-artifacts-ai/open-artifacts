@@ -4,6 +4,7 @@ import {
   fstatSync,
   openSync,
   readFileSync,
+  readSync,
   renameSync,
   writeFileSync,
 } from "node:fs";
@@ -42,6 +43,14 @@ export type TakenOptions = {
   ttlMs?: number;
   tailCap?: number;
 };
+
+/** The rollout's first line when complete within 512 bytes: it names the session, so a replacement differs. */
+function firstLine(fd: number, size: number): string | undefined {
+  const buf = Buffer.alloc(Math.min(512, size));
+  if (readSync(fd, buf, 0, buf.length, 0) <= 0) return undefined;
+  const nl = buf.indexOf(10);
+  return nl < 0 ? undefined : buf.subarray(0, nl).toString("utf8");
+}
 
 /** The texts of one rollout line when it is a user item, else none. */
 export function userTexts(line: string): string[] {
@@ -91,7 +100,7 @@ export class TakenWatch {
   readonly #pending = new Map<string, TakenPending>();
   readonly #reads = new Map<
     string,
-    { rollout: string; offset: number; ino?: number }
+    { rollout: string; offset: number; ino?: number; sig?: string }
   >();
   readonly #now: () => number;
 
@@ -200,13 +209,19 @@ export class TakenWatch {
     try {
       const stat = fstatSync(fd);
       const size = stat.size;
-      // A replaced file (another inode): forget the path and offset, find the rollout again.
-      if (st.ino !== undefined && st.ino !== stat.ino) {
+      // A replaced file: another inode, or (Linux reuses inodes) another first line.
+      const sig = firstLine(fd, size);
+      if (
+        st.ino !== undefined &&
+        (st.ino !== stat.ino ||
+          (st.sig !== undefined && sig !== undefined && st.sig !== sig))
+      ) {
         this.#reads.delete(thread);
         if (again) this.#scan(thread, taken, false);
         return;
       }
       st.ino = stat.ino;
+      st.sig ??= sig;
       let skipFirst = false;
       if (st.offset < 0 || st.offset > size) {
         st.offset = Math.max(0, size - (this.opts.tailCap ?? TAKEN_TAIL_CAP));

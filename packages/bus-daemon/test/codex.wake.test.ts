@@ -889,4 +889,26 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     watch.check();
     expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
   });
+
+  it("a rollout rewritten in place (same inode, longer) is read again from its tail", async () => {
+    const f = fakeCodex();
+    const { t, home, watch, onTaken } = transport({
+      path: f.bin,
+      from: "path",
+    });
+    await t.deliver(agent(), mail("hi"));
+    writeRollout(home, [
+      JSON.stringify({ type: "session_meta", payload: { id: "old" } }),
+      userItem("nothing yet"),
+    ]);
+    watch.check();
+    // Truncate-and-write keeps the inode, as a reused inode on Linux does; the new file is longer than the old offset.
+    writeRollout(home, [
+      JSON.stringify({ type: "session_meta", payload: { id: "new" } }),
+      JSON.stringify({ type: "event_msg", payload: { pad: "x".repeat(500) } }),
+      userItem(codexText(agent(), mail("hi"))),
+    ]);
+    watch.check();
+    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+  });
 });
