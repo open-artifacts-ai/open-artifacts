@@ -21,15 +21,34 @@ const reduced = () =>
 
 type Anchor = { el: Element; top: number };
 
-/** The first thread or comment whose bottom is in view, and where its top sits. */
-function pick(box: HTMLElement): Anchor | null {
-  const base = box.getBoundingClientRect().top;
-  for (const el of box.querySelectorAll("[data-thread], [data-comment]")) {
-    const r = el.getBoundingClientRect();
-    if (r.bottom > base) return { el, top: r.top - base };
-  }
-  return null;
+/** Where the scroller's visible area starts: under the sticky header. */
+function viewTop(box: HTMLElement): number {
+  const head = box.querySelector<HTMLElement>("[data-comments-header]");
+  return box.getBoundingClientRect().top + (head?.offsetHeight ?? 0);
 }
+
+/**
+ * The first comment, and the first thread, whose bottom is in view, and where
+ * their tops sit. A comment is the finer anchor; its thread is the fallback
+ * when the comment folds away.
+ */
+function pick(box: HTMLElement): Anchor[] {
+  const base = box.getBoundingClientRect().top;
+  const out: Anchor[] = [];
+  for (const sel of ["[data-comment]", "[data-thread]"]) {
+    for (const el of box.querySelectorAll(sel)) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom > base) {
+        out.push({ el, top: r.top - base });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+const row = (box: HTMLElement, id: string) =>
+  box.querySelector(`[data-comment="${CSS.escape(id)}"]`);
 
 /**
  * #2179: content that appears above the reader never moves what they read.
@@ -42,19 +61,19 @@ export function useKeepScroll(
   root: React.RefObject<HTMLElement | null>,
   tint: ReadonlySet<string>,
 ) {
-  const anchor = useRef<Anchor | null>(null);
+  const anchors = useRef<Anchor[]>([]);
   const seen = useRef(new Set<string>());
   const [pill, setPill] = useState<string | null>(null);
   const record = useCallback(() => {
     const box = scrollerOf(root.current);
-    anchor.current = box ? pick(box) : null;
+    anchors.current = box ? pick(box) : [];
   }, [root]);
   // Every commit: put the remembered element back where it was.
   useLayoutEffect(() => {
     const box = scrollerOf(root.current);
     if (!box) return;
-    const a = anchor.current;
-    if (a && box.scrollTop > 0 && a.el.isConnected) {
+    const a = anchors.current.find((a) => a.el.isConnected);
+    if (a && box.scrollTop > 0) {
       const base = box.getBoundingClientRect().top;
       const delta = a.el.getBoundingClientRect().top - base - a.top;
       if (delta !== 0) box.scrollTop += delta;
@@ -63,47 +82,46 @@ export function useKeepScroll(
     for (const id of tint) {
       if (seen.current.has(id)) continue;
       seen.current.add(id);
-      const el = box.querySelector(`[data-comment="${CSS.escape(id)}"]`);
-      if (
-        el &&
-        el.getBoundingClientRect().bottom <= box.getBoundingClientRect().top
-      )
-        setPill(id);
+      const el = row(box, id);
+      if (el && el.getBoundingClientRect().bottom <= viewTop(box)) setPill(id);
     }
     record();
   });
+  // Capture on the document: the scroller may only start scrolling (or be
+  // swapped, column to sheet) after this mounts.
   useEffect(() => {
-    const box = scrollerOf(root.current);
-    if (!box) return;
-    const onScroll = () => {
+    const onScroll = (e: Event) => {
+      const box = scrollerOf(root.current);
+      if (!box || e.target !== box) return;
       record();
       setPill((id) => {
         if (!id) return id;
-        const el = box.querySelector(`[data-comment="${CSS.escape(id)}"]`);
-        return el &&
-          el.getBoundingClientRect().bottom > box.getBoundingClientRect().top
+        const el = row(box, id);
+        return el && el.getBoundingClientRect().bottom > viewTop(box)
           ? null
           : id;
       });
     };
-    box.addEventListener("scroll", onScroll, { passive: true });
-    return () => box.removeEventListener("scroll", onScroll);
+    document.addEventListener("scroll", onScroll, {
+      capture: true,
+      passive: true,
+    });
+    return () =>
+      document.removeEventListener("scroll", onScroll, { capture: true });
   }, [root, record]);
   const go = () => {
     const box = scrollerOf(root.current);
-    const el =
-      pill && box?.querySelector(`[data-comment="${CSS.escape(pill)}"]`);
+    const el = pill && box ? row(box, pill) : null;
     setPill(null);
     if (!box || !el) return;
-    const head = box.querySelector<HTMLElement>("[data-comments-header]");
     const top =
-      box.scrollTop +
-      el.getBoundingClientRect().top -
-      box.getBoundingClientRect().top -
-      (head?.offsetHeight ?? 0) -
-      8;
-    box.scrollTo?.({ top, behavior: reduced() ? "auto" : "smooth" });
-    if (!box.scrollTo) box.scrollTop = top;
+      box.scrollTop + el.getBoundingClientRect().top - viewTop(box) - 8;
+    if (box.scrollTo) {
+      box.scrollTo({ top, behavior: reduced() ? "auto" : "smooth" });
+    } else box.scrollTop = top;
+    // The pill's removal commits before any scroll event: re-anchor now, or
+    // that commit would undo this scroll.
+    record();
   };
   return { pill: pill != null, go };
 }

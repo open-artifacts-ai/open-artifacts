@@ -18,6 +18,7 @@ import {
   describe,
   expect,
   it,
+  onTestFinished,
   vi,
 } from "vitest";
 import { LIVE_TINT_MS } from "../src/viewer/comments/liveReplies";
@@ -109,10 +110,13 @@ const serve = (get: () => unknown[]) =>
       }),
     ),
   );
-const arrive = () =>
-  act(async () => {
-    events.emitComments(OWNED, 9);
+// The socket must be open, or the event goes nowhere.
+const arrive = async () => {
+  await waitFor(() => expect(events.connections(OWNED)).toBeGreaterThan(0));
+  await act(async () => {
+    expect(events.emitComments(OWNED, 9)).toBeGreaterThan(0);
   });
+};
 
 beforeEach(() => viewport());
 afterEach(() => vi.restoreAllMocks());
@@ -164,7 +168,11 @@ describe("a live reply (#2179)", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     await within(c).findByText("Old");
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    // shouldAdvanceTime: findBy* polls on setTimeout too.
+    vi.useFakeTimers({
+      toFake: ["setTimeout", "clearTimeout"],
+      shouldAdvanceTime: true,
+    });
     try {
       list = [
         thread("t1", [
@@ -238,22 +246,24 @@ describe("a live reply (#2179)", () => {
       );
     };
     const setup = async () => {
-      let list = base();
+      // t1 has no replies yet, so nothing folds when one arrives.
+      const t2 = thread("t2", [
+        comment("c3", "Other"),
+        comment("c4", "Other reply"),
+      ]);
+      let list = [thread("t1", [comment("c1", "First")]), t2];
       serve(() => list);
       mount(viewerPath(OWNED));
       const c = await col();
       c.style.overflowY = "auto";
-      await within(c).findByText("Old");
+      await within(c).findByText("Other reply");
       layout(c);
+      // Rows: c1 0, c3 50, c4 100. The reader is on c3 (top -10).
       c.scrollTop = 60;
       fireEvent.scroll(c);
       list = [
-        thread("t1", [
-          comment("c1", "First"),
-          comment("c2", "Old"),
-          comment("c5", "Arrived"),
-        ]),
-        list[1] as ReturnType<typeof thread>,
+        thread("t1", [comment("c1", "First"), comment("c5", "Arrived")]),
+        t2,
       ];
       return { c, push: arrive };
     };
@@ -261,18 +271,26 @@ describe("a live reply (#2179)", () => {
     it("keeps the reader's place when a reply lands above, and offers New reply", async () => {
       const { c, push } = await setup();
       const scrollIntoView = vi.fn();
+      const was = Element.prototype.scrollIntoView;
       Element.prototype.scrollIntoView = scrollIntoView;
+      onTestFinished(() => {
+        Element.prototype.scrollIntoView = was;
+      });
       const doc = vi.spyOn(window, "scrollTo");
       await push();
       await within(c).findByText("Arrived");
-      // Arrived is row 2 (one more row above the reader): scrollTop moved by one row.
+      // Arrived is row 1, above c3: scrollTop moved by one row, c3 stays put.
       expect(c.scrollTop).toBe(110);
       const pill = await within(c).findByRole("button", { name: "New reply" });
       expect(scrollIntoView).not.toHaveBeenCalled();
       expect(doc).not.toHaveBeenCalled();
+      // jsdom's Element.scrollTo does nothing: record it on the panel.
+      c.scrollTo = ((o: ScrollToOptions) => {
+        c.scrollTop = o.top ?? c.scrollTop;
+      }) as typeof c.scrollTo;
       fireEvent.click(pill);
-      // Row 2 is at 100 - 110 = -10 in view; the panel scrolls it to the top.
-      await waitFor(() => expect(c.scrollTop).toBe(110 + 100 - 110 - 8 - 0));
+      // Row 1 sits at 50 - 110 = -60; the panel scrolls it to the top (8px gap).
+      await waitFor(() => expect(c.scrollTop).toBe(110 - 60 - 8));
       expect(within(c).queryByRole("button", { name: "New reply" })).toBeNull();
     });
 
