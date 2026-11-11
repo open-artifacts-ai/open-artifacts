@@ -63,7 +63,7 @@ describe("Claude on Linux", () => {
     });
   });
 
-  it("keeps a live session live and drops a reused pid", () => {
+  it("keeps a live session live, an unknown start live, and drops a reused pid", () => {
     const live = (starttime: string | null) =>
       liveClaudeSessions({
         dir: sessions(),
@@ -72,7 +72,7 @@ describe("Claude on Linux", () => {
       }).map((s) => s.ref);
     expect(live(TICKS)).toEqual(["s4242"]);
     expect(live("207774020")).toEqual([]);
-    expect(live(null)).toEqual([]);
+    expect(live(null)).toEqual(["s4242"]); // #2110: unreadable start is unknown, not gone
   });
 });
 
