@@ -195,6 +195,44 @@ describe("removing an agent withdraws its held notices (#2175)", () => {
     );
   });
 
+  it("an older untargeted thread-reply row is withdrawn by thread, with nothing tracked", async () => {
+    const s = await setup();
+    const t = (await (
+      await post(s.id, editor, { mentions: [{ key: s.claude }] })
+    ).json()) as Thread;
+    const hub = await hubOf(owner.userId);
+    const ckey = `${s.id}:${t.id}:thread_reply:${s.claude}:others`;
+    await runInDurableObject(hub, (_i, st) => {
+      const sql = st.storage.sql;
+      sql.exec(
+        `insert or ignore into agents (id, org_id, namespace, name, kind, machine_id, native_ref, live, updated_at)
+         values (?, 'owner', 'ns-owner', 'Claude', 'x', 'm1', ?, 0, 0)`,
+        `ag-${tag}`,
+        `ref-${tag}`,
+      );
+      // Sent before #2059: no ack target, so the Worker tracks nothing for it.
+      sql.exec(
+        `insert into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack)
+         values ('ns-owner', 'claude', ?, ?, 'hi', 0, ?, 1, NULL)`,
+        ckey,
+        `n-legacy-${tag}`,
+        Date.now() + 3_600_000,
+      );
+    });
+    expect((await stop(s.id, t.id, s.claude, owner)).status).toBe(204);
+    const left = await runInDurableObject(
+      hub,
+      (_i, st) =>
+        st.storage.sql
+          .exec<{ n: number }>(
+            "select count(*) as n from notices where ckey = ?",
+            ckey,
+          )
+          .toArray()[0]?.n ?? 0,
+    );
+    expect(left).toBe(0);
+  });
+
   it("a delivered notice stays delivered", async () => {
     const s = await setup();
     const t = (await (

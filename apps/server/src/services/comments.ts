@@ -1712,12 +1712,14 @@ async function withdrawHeldFor(
     const held = await call(() =>
       stub(env, artifactId).commentsHeldTargets({ threadId, key: p.key }),
     );
-    if (held.length === 0) return;
+    // Called even with no tracked targets: the hub also drops the thread's
+    // held thread_reply rows by threadId (older ones carry no target).
     const { withdrawn } = await hub.withdrawHeld({
       namespace: p.namespace,
       name: p.name,
       ...(p.identity ? { identityId: p.identity.identityId } : {}),
       artifactId,
+      threadId,
       commentIds: [...new Set(held.map((h) => h.commentId))],
     });
     const targets = withdrawn
