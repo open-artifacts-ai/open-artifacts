@@ -644,3 +644,176 @@ describe("DocRoom awareness hardening", () => {
     expect(b.awareness.getStates().has(3)).toBe(false);
   });
 });
+
+describe("DocRoom review fixes (#2154)", () => {
+  const authorUpdates = (client: number, n: number) => {
+    const d = new Y.Doc();
+    d.clientID = client;
+    const ups: Uint8Array[] = [];
+    d.on("update", (u: Uint8Array) => ups.push(u));
+    for (let i = 0; i < n; i++) d.getText("t").insert(i, "v");
+    return ups;
+  };
+  const step1Frame = () => {
+    const e = encoding.createEncoder();
+    encoding.writeVarUint(e, 0);
+    syncProtocol.writeSyncStep1(e, new Y.Doc());
+    return encoding.toUint8Array(e);
+  };
+
+  it("closes a malformed step 1 and a padded frame", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    a.ws.send(new Uint8Array([0, 0]));
+    await a.closed;
+    const b = await connect(stub);
+    const ups = authorUpdates(31, 1);
+    const padded = new Uint8Array([
+      ...syncFrame(2, ups[0] as Uint8Array),
+      ...new Uint8Array(64),
+    ]);
+    b.ws.send(padded);
+    await b.closed;
+    expect(await inRoom(stub, (r) => r.size())).toBe(0);
+  });
+
+  it("closes a frame past the size bound", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    a.ws.send(new Uint8Array(DOC_MAX_BYTES + 1024));
+    await a.closed;
+  });
+
+  it("answers at most two full-state step 1s per window; extras get an empty step 2", async () => {
+    const stub = roomStub();
+    const w = await connect(stub);
+    type(w, "state");
+    await w.ping();
+    await runDurableObjectAlarm(stub);
+    await inRoom(stub, (r) => {
+      (r as unknown as { now: () => number }).now = () => 50_000;
+    });
+    const r = await connect(stub, { role: "read" });
+    // connect used one reply; one more is allowed, then empty answers.
+    let frames = 0;
+    r.ws.addEventListener("message", () => frames++);
+    for (let i = 0; i < 5; i++) r.ws.send(step1Frame());
+    await r.until(() => frames >= 5);
+    await r.ping();
+    // 1 full reply = update row + snapshot-step2 (2 frames); 4 empty = 4.
+    expect(frames).toBeLessThanOrEqual(2 + 4 + 1);
+  });
+
+  it("a Skip in a merged update never advances the state vector past the hole", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    const ups = authorUpdates(41, 3);
+    const merged = Y.mergeUpdates([ups[0] as Uint8Array, ups[2] as Uint8Array]);
+    a.ws.send(syncFrame(2, merged));
+    await a.ping();
+    const j = await connect(stub);
+    expect(Y.decodeStateVector(j.serverSvs[0] as Uint8Array).get(41)).toBe(1);
+  });
+
+  it("keeps the batch when the SQL write fails and stores it on a later flush", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    type(a, "keep");
+    await a.ping();
+    await inRoom(stub, (r) => {
+      const x = r as unknown as { sql: SqlStorage };
+      const real = x.sql;
+      (globalThis as { __fail?: boolean }).__fail = true;
+      x.sql = {
+        exec: (q: string, ...args: unknown[]) => {
+          if (
+            (globalThis as { __fail?: boolean }).__fail &&
+            /INSERT INTO updates/.test(q)
+          )
+            throw new Error("boom");
+          return real.exec(q, ...args);
+        },
+      } as unknown as SqlStorage;
+      (x as unknown as { realSql: SqlStorage }).realSql = real;
+    });
+    await runDurableObjectAlarm(stub).catch(() => {});
+    expect(await rows(stub)).toBe(0);
+    expect(await inRoom(stub, (r) => r.size())).toBeGreaterThan(0);
+    const sv = await inRoom(stub, (r) => {
+      const x = r as unknown as { realSql: SqlStorage };
+      return x.realSql
+        .exec<{ n: number }>("SELECT count(*) AS n FROM meta WHERE k = 'sv'")
+        .one().n;
+    });
+    expect(sv).toBe(0);
+    expect(
+      await runInDurableObject(stub, (_r, st) => st.storage.getAlarm()),
+    ).not.toBeNull();
+    await inRoom(stub, () => {
+      (globalThis as { __fail?: boolean }).__fail = false;
+    });
+    await runDurableObjectAlarm(stub);
+    expect(await rows(stub)).toBe(1);
+    const j = await connect(stub);
+    await j.until(() => textOf(j) === "keep");
+  });
+
+  it("an over-cap write does not pull the alarm earlier", async () => {
+    const stub = roomStub();
+    await inRoom(stub, (r) => {
+      (r as unknown as { now: () => number }).now = () => 1_000_000;
+    });
+    const a = await connect(stub);
+    type(a, "x");
+    await a.ping();
+    const before = await runInDurableObject(stub, (_r, st) =>
+      st.storage.getAlarm(),
+    );
+    await inRoom(stub, (r) => {
+      (r as unknown as { bufferBytes: number }).bufferBytes = DOC_MAX_BYTES;
+    });
+    a.doc.getText("t").insert(0, "y");
+    await a.until(() => a.texts.some((t) => t.includes("doc_too_large")));
+    const after = await runInDurableObject(stub, (_r, st) =>
+      st.storage.getAlarm(),
+    );
+    expect(after).toBe(before);
+  });
+
+  it("tracks and relays at most 8 new ids from one frame", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    const b = await connect(stub);
+    const seen: number[] = [];
+    b.awareness.on("update", (u: { added: number[] }) => seen.push(...u.added));
+    const entries: [number, number, string][] = [];
+    for (let i = 0; i < 9; i++) entries.push([900 + i, 1, '{"a":1}']);
+    a.ws.send(awFrame(entries));
+    await b.until(() => seen.length >= 8);
+    await a.ping();
+    await b.ping();
+    expect(seen.sort()).toEqual([900, 901, 902, 903, 904, 905, 906, 907]);
+  });
+
+  it("a frame removing one id twice removes only that id", async () => {
+    const stub = roomStub();
+    const a = await connect(stub);
+    const b = await connect(stub);
+    a.ws.send(
+      awFrame([
+        [950, 1, '{"a":1}'],
+        [951, 1, '{"a":2}'],
+      ]),
+    );
+    await b.until(() => b.awareness.getStates().has(951));
+    a.ws.send(
+      awFrame([
+        [950, 2, "null"],
+        [950, 3, "null"],
+      ]),
+    );
+    await b.until(() => !b.awareness.getStates().has(950));
+    a.ws.close();
+    await b.until(() => !b.awareness.getStates().has(951));
+  });
+});

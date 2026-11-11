@@ -45,6 +45,13 @@ export const MAX_SOCKETS_PER_ACTOR = 10;
 export const MAX_ANON_SOCKETS_PER_ACTOR = 4;
 /** Awareness client ids tracked per socket (the attachment is 2 KB). */
 const MAX_AWARENESS_IDS = 8;
+/** Any frame larger than this closes the socket (a doc plus framing). */
+const MAX_FRAME_BYTES = DOC_MAX_BYTES + 64;
+/** A sync step 1 carries a state vector; larger ones are refused. */
+const MAX_SV_BYTES = 64 * 1024;
+/** Full-state replies (sync step 1) per socket per window; extras get nothing. */
+const MAX_STATE_REPLIES = 2;
+const STATE_REPLY_WINDOW_MS = 10_000;
 /** Awareness frames larger than this are dropped. */
 const MAX_AWARENESS_BYTES = 8 * 1024;
 
@@ -77,6 +84,7 @@ interface Attachment {
   aw: [number, number][];
 }
 
+const EMPTY_STEP2 = new Uint8Array([MSG_SYNC, SYNC_STEP2, 2, 0, 0]);
 const EMPTY_UPDATE_LEN = 2;
 const isEmptyUpdate = (u: Uint8Array) =>
   u.byteLength === EMPTY_UPDATE_LEN && u[0] === 0 && u[1] === 0;
@@ -259,11 +267,15 @@ export class DocRoom extends DurableObject<Env> {
     const att = ws.deserializeAttachment() as Attachment | null;
     if (!att) return;
     try {
+      // Bound the WHOLE frame first: lib0 returns views of the input, so a
+      // padded frame would keep its trailer alive past the counted slice.
+      if (data.byteLength > MAX_FRAME_BYTES) throw new BadFrame("frame size");
       const msg = new Uint8Array(data);
       const dec = decoding.createDecoder(msg);
       const type = decoding.readVarUint(dec);
-      if (type === MSG_SYNC) this.onSync(ws, att, dec);
-      else if (type === MSG_AWARENESS) this.onAwareness(ws, att, msg);
+      if (type === MSG_SYNC) {
+        this.onSync(ws, att, dec);
+      } else if (type === MSG_AWARENESS) this.onAwareness(ws, att, msg);
       else throw new BadFrame("unknown message type");
     } catch {
       // Malformed frame (truncated, bad lengths, unknown type): nothing from
@@ -280,14 +292,24 @@ export class DocRoom extends DurableObject<Env> {
   private onSync(ws: WebSocket, att: Attachment, dec: decoding.Decoder) {
     const sub = decoding.readVarUint(dec);
     if (sub === SYNC_STEP1) {
-      this.sendState(ws);
+      const sv = decoding.readVarUint8Array(dec);
+      if (decoding.hasContent(dec)) throw new BadFrame("trailing bytes");
+      if (sv.byteLength > MAX_SV_BYTES) throw new BadFrame("state vector size");
+      try {
+        Y.decodeStateVector(sv);
+      } catch {
+        throw new BadFrame("bad state vector");
+      }
+      if (this.allowStateReply(ws)) this.sendState(ws);
+      else ws.send(EMPTY_STEP2); // cheap: the client still gets its answer
       return;
     }
     if (sub !== SYNC_STEP2 && sub !== SYNC_UPDATE)
       throw new BadFrame("unknown sync message");
     // The room, not the browser, enforces read-only.
-    if (!att.write) return;
     const update = decoding.readVarUint8Array(dec);
+    if (decoding.hasContent(dec)) throw new BadFrame("trailing bytes");
+    if (!att.write) return;
     if (isEmptyUpdate(update)) return;
     this.acceptUpdate(ws, att, update);
   }
@@ -296,10 +318,9 @@ export class DocRoom extends DurableObject<Env> {
     // Decode the whole update (structs and delete set) before accepting it:
     // parseUpdateMeta skips the delete set, so a truncated update would pass
     // and then wedge every flush, compaction and joiner.
-    let meta: { from: Map<number, number>; to: Map<number, number> };
+    let structs: { id: { client: number; clock: number }; length: number }[];
     try {
-      Y.decodeUpdate(update);
-      meta = Y.parseUpdateMeta(update);
+      structs = Y.decodeUpdate(update).structs;
     } catch {
       throw new BadFrame("undecodable update");
     }
@@ -309,29 +330,60 @@ export class DocRoom extends DurableObject<Env> {
       // let the alarm squeeze now so a retry sees the real size.
       if (this.rowCount > 0 || this.buffer.length > 0) {
         this.squeeze = true;
-        void this.ctx.storage.setAlarm(this.now());
+        // Keep the batching cadence: never pull an armed alarm earlier.
+        void this.armAlarm(this.now() + FLUSH_MS);
       }
       ws.send(DOC_TOO_LARGE_FRAME);
       return;
     }
-    // Advance a client's clock only when the update continues what we hold:
-    // a gap (structs at a far clock) must not claim the clocks in between,
-    // or the real author's missing edits would never be requested.
-    // (parseUpdateMeta, not encodeStateVectorFromUpdate, which counts only
-    // from clock 0.) Compaction recomputes the vector from the doc.
-    for (const [c, to] of meta.to) {
-      const have = this.sv.get(c) ?? 0;
-      if (have < to && (meta.from.get(c) ?? 0) <= have) this.sv.set(c, to);
+    // Advance a client's clock only across structs that continue what we
+    // hold: a gap or a Skip struct (a merged update with a hole) must not
+    // claim the clocks in between, or the real author's missing edits would
+    // never be requested. Compaction recomputes the vector from the doc.
+    // Unknown struct kinds do not advance (the safe direction).
+    const cursor = new Map<number, number>();
+    const stopped = new Set<number>();
+    for (const st of structs) {
+      const c = st.id.client;
+      if (stopped.has(c)) continue;
+      const at = cursor.get(c) ?? this.sv.get(c) ?? 0;
+      const end = st.id.clock + st.length;
+      if (end <= at) continue; // already held
+      const known = "content" in st || (st as object).constructor.name === "GC";
+      if (!known || st.id.clock > at) {
+        stopped.add(c);
+        continue;
+      }
+      cursor.set(c, end);
     }
-    const wasEmpty = this.buffer.length === 0;
+    for (const [c, to] of cursor) this.sv.set(c, to);
     this.buffer.push(update);
     this.bufferBytes += update.byteLength;
-    if (wasEmpty) void this.ctx.storage.setAlarm(this.now() + FLUSH_MS);
+    void this.armAlarm(this.now() + FLUSH_MS);
     const out = encoding.createEncoder();
     encoding.writeVarUint(out, MSG_SYNC);
     encoding.writeVarUint(out, SYNC_UPDATE);
     encoding.writeVarUint8Array(out, update);
     this.broadcast(encoding.toUint8Array(out), ws);
+  }
+
+  private stateReplies = new WeakMap<WebSocket, { at: number; n: number }>();
+
+  /** At most MAX_STATE_REPLIES full-state replies per socket per window. */
+  private allowStateReply(ws: WebSocket): boolean {
+    const t = this.now();
+    const r = this.stateReplies.get(ws);
+    if (!r || t - r.at >= STATE_REPLY_WINDOW_MS || t < r.at) {
+      this.stateReplies.set(ws, { at: t, n: 1 });
+      return true;
+    }
+    return ++r.n <= MAX_STATE_REPLIES;
+  }
+
+  /** Arms the alarm at `at` unless one is already armed at or before it. */
+  private async armAlarm(at: number) {
+    const cur = await this.ctx.storage.getAlarm();
+    if (cur === null || cur > at) await this.ctx.storage.setAlarm(at);
   }
 
   private storedBytes(): number {
@@ -391,18 +443,25 @@ export class DocRoom extends DurableObject<Env> {
       const outer = decoding.createDecoder(msg);
       decoding.readVarUint(outer);
       const dec = decoding.createDecoder(decoding.readVarUint8Array(outer));
+      if (decoding.hasContent(outer)) return; // trailing bytes
       const n = decoding.readVarUint(dec);
+      if (n > MAX_AWARENESS_BYTES) return;
+      const seen = new Set<number>();
       for (let i = 0; i < n; i++) {
         const id = decoding.readVarUint(dec);
         const clock = decoding.readVarUint(dec);
         const state = decoding.readVarString(dec);
+        if (seen.has(id)) continue; // one entry per id per frame (the first)
+        seen.add(id);
         entries.push({ id, clock, state });
       }
+      if (decoding.hasContent(dec)) return;
     } catch {
       return; // undecodable awareness: drop it, keep the socket
     }
     // A socket may only set or remove client ids it introduced itself; its
     // state must be a JSON object or null.
+    let tracked = att.aw.length;
     const keep = entries.filter((e) => {
       if (e.state !== "null") {
         try {
@@ -416,9 +475,12 @@ export class DocRoom extends DurableObject<Env> {
       const own = att.aw.some(([c]) => c === e.id);
       if (own) return true;
       if (e.state === "null") return false; // nothing of ours to remove
-      return (
-        att.aw.length < MAX_AWARENESS_IDS && !this.ownedElsewhere(ws, e.id)
-      );
+      // A new id counts against the cap now, so the 9th in one frame is
+      // neither tracked nor relayed.
+      if (tracked >= MAX_AWARENESS_IDS || this.ownedElsewhere(ws, e.id))
+        return false;
+      tracked++;
+      return true;
     });
     // Only a frame with something of ours counts toward the rate limit.
     if (keep.length === 0) return;
@@ -431,21 +493,22 @@ export class DocRoom extends DurableObject<Env> {
     for (const e of keep) {
       const at = att.aw.findIndex(([c]) => c === e.id);
       if (e.state === "null") {
-        att.aw.splice(at, 1);
-        changed = true;
+        if (at >= 0) {
+          att.aw.splice(at, 1);
+          changed = true;
+        }
       } else if (at >= 0) {
         if ((att.aw[at] as [number, number])[1] !== e.clock) {
           att.aw[at] = [e.id, e.clock];
           changed = true;
         }
-      } else if (att.aw.length < MAX_AWARENESS_IDS) {
+      } else {
         att.aw.push([e.id, e.clock]);
         changed = true;
       }
     }
     if (changed) ws.serializeAttachment(att);
-    const out = keep.length === entries.length ? msg : awarenessFrame(keep);
-    this.broadcast(out, ws);
+    this.broadcast(awarenessFrame(keep), ws);
   }
 
   private broadcast(msg: Uint8Array, except: WebSocket) {
@@ -498,7 +561,14 @@ export class DocRoom extends DurableObject<Env> {
   // ------------------------------------------------------------ storage
 
   override async alarm() {
-    this.flush();
+    try {
+      this.flush();
+    } catch (e) {
+      // Write failed: the batch is kept; retry on the next alarm.
+      logError("doc_room_flush_failed", e);
+      await this.armAlarm(this.now() + FLUSH_MS);
+      return;
+    }
     // A refusal at the cap asked for a squeeze (in memory: if lost, the
     // row and byte thresholds still bound the tail).
     if (this.squeeze) {
@@ -516,9 +586,9 @@ export class DocRoom extends DurableObject<Env> {
 
   private writeBuffer(): boolean {
     if (this.buffer.length === 0) return false;
+    // The batch stays in memory until the transaction commits: a failed
+    // write keeps it (and the alarm retries), never loses it.
     const pending = this.buffer;
-    this.buffer = [];
-    this.bufferBytes = 0;
     let merged: Uint8Array;
     try {
       merged =
@@ -536,7 +606,11 @@ export class DocRoom extends DurableObject<Env> {
           return false;
         }
       });
-      if (ok.length === 0) return false;
+      if (ok.length === 0) {
+        this.buffer = [];
+        this.bufferBytes = 0;
+        return false;
+      }
       merged = Y.mergeUpdates(ok);
     }
     this.ctx.storage.transactionSync(() => {
@@ -547,6 +621,10 @@ export class DocRoom extends DurableObject<Env> {
       );
       this.putSv();
     });
+    // Committed: drop exactly what was written (updates may not arrive
+    // mid-call, but be exact anyway).
+    this.buffer = this.buffer.slice(pending.length);
+    this.bufferBytes = this.buffer.reduce((n, u) => n + u.byteLength, 0);
     this.rowCount++;
     this.rowBytes += merged.byteLength;
     return true;
