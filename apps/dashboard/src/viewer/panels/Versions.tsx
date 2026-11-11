@@ -7,19 +7,13 @@ import {
 import { Input, Button as ShButton, Skeleton } from "@oa/ui/shadcn";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { ApiClientError } from "../../api/client";
-import {
-  useRestoreVersion,
-  useVersionInfo,
-  useVersionPages,
-} from "../../api/queries";
-import { useSingleFlight } from "../../api/useSingleFlight";
+import { useVersionInfo, useVersionPages } from "../../api/queries";
 import { useCan } from "../../auth/permissions";
 import { personName } from "../../layout/person";
-import { toast } from "../../layout/toast";
 import { AppLink } from "../../library/AppLink";
 import { useSentinel } from "../../library/useInfinite";
-import { ConfirmDialog } from "../../settings/ConfirmDialog";
+import { AuthorFace, PartyFace } from "../comments/AuthorFace";
+import { RestoreDialog } from "../RestoreDialog";
 import { LINK_BTN, SM, TXT } from "../ui";
 import { exactDate, versionDate } from "../versionDate";
 
@@ -87,8 +81,6 @@ export function Versions({
 }) {
   const { id, currentVersion } = artifact;
   const q = useVersionPages(id);
-  const restore = useRestoreVersion(id);
-  const once = useSingleFlight();
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as Record<string, unknown>;
   const [target, setTarget] = useState<number | null>(null);
@@ -309,8 +301,24 @@ export function Versions({
                         )}
                         <span className="sr-only">,</span>
                       </span>{" "}
-                      <span className="text-[length:var(--oa-text-xs)] text-muted-foreground">
-                        <Marked text={author(x)} q={counting ? query : ""} />
+                      <span className="flex items-center gap-1.5 text-[length:var(--oa-text-xs)] text-muted-foreground">
+                        {/* #2118: a person's circle; a linked agent's animal or an unlinked one's dashed tile; nothing for an outsider's or an older server's agent (no fields). */}
+                        {x.agent ? (
+                          <PartyFace p={x.agent} />
+                        ) : (
+                          <AuthorFace
+                            small
+                            a={{
+                              kind: "user",
+                              id: x.createdBy.id,
+                              name: personName(x.createdBy),
+                              me: false,
+                            }}
+                          />
+                        )}
+                        <span className="min-w-0">
+                          <Marked text={author(x)} q={counting ? query : ""} />
+                        </span>
                       </span>
                     </button>
                     {/* Viewing Current: nothing to do from its row. */}
@@ -391,42 +399,7 @@ export function Versions({
           </div>
         )}
       </div>
-      <ConfirmDialog
-        open={target !== null}
-        onClose={() => setTarget(null)}
-        title={`Restore v${target ?? ""}?`}
-        body={
-          <p>
-            This publishes a new version with the contents of the selected one.
-          </p>
-        }
-        confirm="Restore version"
-        pending="Restoring…"
-        busy={restore.isPending}
-        onConfirm={() =>
-          target !== null &&
-          once((done) =>
-            restore.mutate(target, {
-              onSuccess: (r) => {
-                setTarget(null);
-                void navigate({
-                  to: viewerPath(id, r.version) as string,
-                  search: search as never,
-                });
-              },
-              onError: (e) =>
-                toast({
-                  title:
-                    e instanceof ApiClientError
-                      ? e.message
-                      : "Couldn't restore",
-                  tone: "danger",
-                }),
-              onSettled: done,
-            }),
-          )
-        }
-      />
+      <RestoreDialog id={id} version={target} onClose={() => setTarget(null)} />
     </div>
   );
 }

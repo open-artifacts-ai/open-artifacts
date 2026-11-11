@@ -61,11 +61,29 @@ const approved = {
 
 const allHarnesses = (over: Partial<Ctx> = {}) => ({
   which: (c: string) => ["claude", "opencode", "pi"].includes(c),
-  exec: vi.fn(async (cmd: string, args: string[]) =>
-    cmd === "opencode" && args[0] === "--version"
-      ? { code: 0, stdout: "opencode v2.0.32\n", stderr: "" }
-      : { code: 0, stdout: "", stderr: "" },
-  ),
+  exec: vi.fn(async (cmd: string, args: string[]) => {
+    if (cmd === "opencode" && args[0] === "--version")
+      return { code: 0, stdout: "opencode v2.0.32\n", stderr: "" };
+    // A fake Claude Code (#2095): a current version and no plugins yet.
+    if (cmd === "claude") {
+      const ok = (o: object) => ({
+        code: 0,
+        stdout: `${JSON.stringify({ outcome: "ok", ...o })}\n`,
+        stderr: "",
+      });
+      if (args[0] === "--version")
+        return { code: 0, stdout: "2.1.322 (Claude Code)\n", stderr: "" };
+      if (args[0] === "mcp")
+        return {
+          code: 0,
+          stdout: `open-artifacts:\n  Type: http\n  URL: ${HUB}/mcp\n`,
+          stderr: "",
+        };
+      if (args.includes("list")) return { code: 0, stdout: "[]", stderr: "" };
+      return ok({});
+    }
+    return { code: 0, stdout: "", stderr: "" };
+  }),
   service: {
     kind: "launchd" as const,
     ensure: vi.fn(async () => ({})),
@@ -895,28 +913,31 @@ describe("install and uninstall: the Pi entry notes (#1856)", () => {
   });
 });
 
-describe("install: the Claude Code output style (#1970)", () => {
-  it("writes it, says how to turn it on, and uninstall removes it", async () => {
+describe("install: the Claude Code output style (#1970, #2095)", () => {
+  it("installs the plugins, turns the style on, and uninstall removes what it set", async () => {
     const ctx = fakeCtx({
       fetch: hub([{ status: "pending" }, approved]),
       ...allHarnesses(),
     });
     expect(await run(ctx)).toBe(0);
+    // No style file any more: the plugin carries the style.
     const path = join(
       ctx.userHome,
       ".claude/output-styles/artifacts-teammate.md",
     );
-    expect(readFileSync(path, "utf8")).toContain("name: Artifacts Teammate");
+    expect(existsSync(path)).toBe(false);
     const out = ctx.out().join("\n");
     expect(out).toContain(
-      "Turned on the Artifacts Teammate output style\n   (~/.claude/output-styles/artifacts-teammate.md).\n   Restart Claude Code sessions to use it.",
+      "Installed the Claude Code plugins: session shortcuts and output style",
+    );
+    expect(out).toContain(
+      "Turned on the Artifacts Teammate output style\n   Restart your Claude Code sessions to use it.",
     );
     const settings = join(ctx.userHome, ".claude/settings.json");
     expect(JSON.parse(readFileSync(settings, "utf8"))).toEqual({
-      outputStyle: "Artifacts Teammate",
+      outputStyle: "open-artifacts:Artifacts Teammate",
     });
     expect(await uninstall({ purge: false }, ctx)).toBe(0);
-    expect(existsSync(path)).toBe(false);
     expect(existsSync(settings)).toBe(false);
   });
 

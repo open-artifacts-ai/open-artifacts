@@ -205,12 +205,12 @@ export function PlanCompare({
   busy,
   trial = false,
 }: {
-  /** The current plan's column (a Business trial is Business). */
+  /** The current plan's column (the invite trial is Team, #2113). */
   column: Column;
   /** Start the existing upgrade flow; absent: no buttons (can't buy here). */
   upgrade?: (tier: "team" | "business", interval?: Interval) => void;
   busy: boolean;
-  /** A Business trial: nothing is paid yet, so both upgrades show and Business says "Your trial". */
+  /** The Team trial: nothing is paid yet, so both upgrades show and Team says "Your trial". */
   trial?: boolean;
 }) {
   const [interval, setInterval] = useState<Interval>("year");

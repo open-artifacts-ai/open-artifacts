@@ -46,6 +46,7 @@ import {
   createOpener,
   linkHost,
 } from "./navigate";
+import { OlderBanner } from "./OlderBanner";
 import { isPanelTab, type PanelTab, SidePanel } from "./panels/SidePanel";
 import { RenavNotice } from "./RenavNotice";
 import { SignupNudge } from "./SignupNudge";
@@ -137,6 +138,7 @@ function Viewer({
   artifact,
   version,
   explicitVersion,
+  newest,
   authed,
   anonymous,
   readOnly = false,
@@ -188,6 +190,8 @@ function Viewer({
   artifact: ArtifactSummary;
   version: number;
   explicitVersion: boolean;
+  /** The newest version the live feed has seen (never below the artifact's own). */
+  newest: number;
   authed: boolean;
   /** /me answered 401 (signed out), not loading or errored. */
   anonymous: boolean;
@@ -634,6 +638,15 @@ function Viewer({
               guest={role === "guest"}
               hosted={hosted}
             />
+            {explicitVersion &&
+              gone === null &&
+              version < Math.max(artifact.currentVersion, newest) && (
+                <OlderBanner
+                  artifact={artifact}
+                  version={version}
+                  current={Math.max(artifact.currentVersion, newest)}
+                />
+              )}
             {gone && (
               <GoneBanner
                 gone={gone}
@@ -644,6 +657,46 @@ function Viewer({
               />
             )}
           </>
+        )}
+        {/* Above the frame in the DOM and on screen: the strip is the first Tab stops, then the artifact. */}
+        {chromeless && (
+          <FullScreenEscape
+            artifact={artifact}
+            live={
+              <>
+                {slot}
+                {commentsButton && (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    className="oa-fscomments"
+                    aria-label={
+                      commentsButton.open > 0
+                        ? `Comments, ${commentsButton.open} open`
+                        : "Comments"
+                    }
+                    aria-expanded={commentsButton.expanded}
+                    onClick={commentsButton.onClick}
+                  >
+                    <MessageSquare className="oa-fsicon" aria-hidden="true" />
+                    <span className="oa-fsword">Comments</span>
+                    {commentsButton.open > 0 && ` ${commentsButton.open}`}
+                  </Button>
+                )}
+                {isEmbed() && artifact.comments === true && (
+                  <a
+                    className="oa-opencomment"
+                    href={viewerPath(artifact.id)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    Open to comment
+                  </a>
+                )}
+              </>
+            }
+            gone={gone !== null}
+          />
         )}
         <div className="oa-vbody">
           {!url && (content.current || content.error) ? (
@@ -727,46 +780,6 @@ function Viewer({
             onClose={() => setDialogOpen(false)}
           />
         )}
-        {/* After the frame, so it is the top document's only Tab stop. */}
-        {chromeless && (
-          <FullScreenEscape
-            artifact={artifact}
-            live={
-              <>
-                {commentsButton && (
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    className="oa-fscomments"
-                    aria-label={
-                      commentsButton.open > 0
-                        ? `Comments, ${commentsButton.open} open`
-                        : "Comments"
-                    }
-                    aria-expanded={commentsButton.expanded}
-                    onClick={commentsButton.onClick}
-                  >
-                    <MessageSquare className="oa-fsicon" aria-hidden="true" />
-                    <span className="oa-fsword">Comments</span>
-                    {commentsButton.open > 0 && ` ${commentsButton.open}`}
-                  </Button>
-                )}
-                {isEmbed() && artifact.comments === true && (
-                  <a
-                    className="oa-opencomment"
-                    href={viewerPath(artifact.id)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >
-                    Open to comment
-                  </a>
-                )}
-                {slot}
-              </>
-            }
-            gone={gone !== null}
-          />
-        )}
       </div>
     </CommentsProvider>
   );
@@ -806,7 +819,6 @@ function ArtifactShell({
     prefetchContentUrl(id, v);
   }
   const me = useMe();
-  const navigate = useNavigate();
   const embed = isEmbed();
   // Deleted or made private while open: keep what's on screen (never blank it).
   const last = useRef<ArtifactSummary | undefined>(undefined);
@@ -894,9 +906,7 @@ function ArtifactShell({
     <TitleLive
       held={live.held}
       swapped={live.swapped}
-      current={v !== undefined && live.latest > v ? live.latest : null}
       onView={live.view}
-      onCurrent={() => void navigate({ to: viewerPath(id) })}
       onExpire={live.clearSwapped}
     />
   );
@@ -918,6 +928,7 @@ function ArtifactShell({
               artifact={data}
               version={n}
               explicitVersion={v !== undefined}
+              newest={live.latest}
               chromeless={chromeless}
               colState={colState}
               authed={authed}

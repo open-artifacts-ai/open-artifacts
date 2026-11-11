@@ -16,6 +16,12 @@ import { type Hello, SPAWNED_SOURCES, systemTool } from "@oa/bus-ipc";
 import { lstartEpoch } from "./presence/opencode.ts";
 
 /**
+ * The tool namespace Codex gives our MCP entry: `mcp__<entry name>`, so the
+ * installer must write exactly `[mcp_servers.oa_bus]`.
+ */
+export const CODEX_TOOL_NAMESPACE = "mcp__oa_bus";
+
+/**
  * Refusal reasons for a codex hello (Design-approved copy). The adapter shows
  * each as "Open Artifacts bus did not accept this thread: <reason>".
  */
@@ -25,18 +31,14 @@ export const CODEX_REFUSALS = {
   notLoaded: "Codex does not have this thread loaded.",
   callNotFound:
     "this call is not an open Open Artifacts bus call in the thread. Call the tool again.",
+  /** An open code-mode exec in this turn that did not name an Open Artifacts bus tool literally (a lookup such as `tools[name]`). */
+  dynamicLookup: `Call the bus tool by its exact name, for example tools.${CODEX_TOOL_NAMESPACE}__self(), not through a dynamic lookup.`,
   subagent:
     "only the main Codex thread can use Open Artifacts bus, not a subagent.",
   /** DRAFT (C27), pending Design. */
   oneExec:
     "this exec already made an Open Artifacts bus call. Make each Open Artifacts bus call in its own exec.",
 } as const;
-
-/**
- * The tool namespace Codex gives our MCP entry: `mcp__<entry name>`, so the
- * installer must write exactly `[mcp_servers.oa_bus]`.
- */
-export const CODEX_TOOL_NAMESPACE = "mcp__oa_bus";
 
 /**
  * #1856: where install keeps the instance entry it swapped for the Codex
@@ -95,6 +97,11 @@ export type CodexAttestDeps = {
    * or one /proc/locks read (Linux) for all of them.
    */
   holding?: (pairs: Hold[]) => boolean[] | undefined;
+  /** #2029: every pid holding each file, for `holders`; default one lsof. */
+  holdersOf?: (files: string[]) => Map<string, number[]> | undefined;
+  /** Test overrides (#2079): the OS and the /proc root the default holder lookup reads. */
+  platform?: NodeJS.Platform;
+  procRoot?: string;
   /** Wait before reading an absent call once more; default 50 ms. */
   retryMs?: number;
   /** The wait itself; default a timer, so the daemon keeps serving. */
@@ -134,6 +141,15 @@ export type CodexAttestor = {
     live: { thread: string; pid: number; live?: boolean }[],
     relock: boolean,
   ) => Set<string>;
+  /**
+   * #2029: for each thread given, a `codex` process that holds its writer lock
+   * and has no proof for it, with the start `ps` shows. A thread nobody holds,
+   * or whose holder is proven or not `codex`, is absent. Undefined when lsof
+   * or ps could not run. Admits nothing.
+   */
+  holders: (
+    threads: string[],
+  ) => Map<string, { pid: number; start: string }> | undefined;
   /** The start time pinned for a codex process, if it is pinned (#1748). */
   startOf: (pid: number) => string | undefined;
   /**
@@ -178,6 +194,8 @@ type Seen = {
    * (`_meta.itemId`), closed the same ways.
    */
   execs: Map<string, OpenExec>;
+  /** #2029: open `exec` calls that name no bus tool literally (a dynamic lookup), kept to tell the agent why. */
+  lookups: Map<string, OpenExec>;
   /**
    * The last `task_started` turn: the thread's latest. Codex 0.165 rollouts
    * show no nested turns, so an earlier one never becomes latest again.
@@ -190,6 +208,7 @@ type Seen = {
 const seen = (): Seen => ({
   open: new Map(),
   execs: new Map(),
+  lookups: new Map(),
   latest: undefined,
   done: new Set(),
 });
@@ -378,6 +397,23 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
         !sc.done.has(cx.call_id)
       );
     };
+    const lookupOpen = (sc: Scan) => {
+      if (!item || !cx.turn_id || !EXEC_CALL.test(cx.call_id)) return false;
+      const e = sc.lookups.get(item);
+      return (
+        e !== undefined &&
+        e.at >= since &&
+        e.turn === cx.turn_id &&
+        sc.latest === e.turn &&
+        !sc.done.has(cx.call_id)
+      );
+    };
+    const missing = (sc: Scan) =>
+      no(
+        lookupOpen(sc)
+          ? CODEX_REFUSALS.dynamicLookup
+          : CODEX_REFUSALS.callNotFound,
+      );
     const itemUsed = () =>
       item !== undefined && (usedItems.get(thread)?.has(item) ?? false);
     const ok: CodexAttest = { ok: true, cwd: proof.cwd, pid: p };
@@ -397,7 +433,7 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     // One hello per exec: a second Open Artifacts bus call in it is told to use its own.
     if (itemUsed()) return no(CODEX_REFUSALS.oneExec);
     if (execOpen(scan)) return admitExec();
-    if (!retry || retryMs <= 0) return no(CODEX_REFUSALS.callNotFound);
+    if (!retry || retryMs <= 0) return missing(scan);
     // The live capture saw the call flushed before the MCP request; one short
     // wait covers a slower disk. Spent now: each call id gets one wait.
     spend(thread, cx.call_id);
@@ -406,7 +442,7 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
       advance(sc, ns);
       if (isOpen(sc)) return okFor(sc);
       if (itemUsed()) return no(CODEX_REFUSALS.oneExec);
-      return execOpen(sc) ? admitExec() : no(CODEX_REFUSALS.callNotFound);
+      return execOpen(sc) ? admitExec() : missing(sc);
     });
   };
 
@@ -487,7 +523,54 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     return undefined;
   };
 
+  /** The thread's rollout names a user thread, not a subagent or spawned one. */
+  const isUserThread = (home: string, thread: string): boolean => {
+    const row = threadRow(home, thread);
+    const rollout = row?.rollout_path ?? globRollout(home, thread);
+    if (!rollout || !plainFile(rollout)) return false;
+    const meta = metaOf(rollout, thread);
+    if (!meta) return false;
+    return !(
+      isSubagent(row ? row.source : meta.source) ||
+      isSubagent(meta.source) ||
+      SPAWNED_SOURCES.has(String(meta.thread_source))
+    );
+  };
+
+  const holders: CodexAttestor["holders"] = (threads) => {
+    const home = deps.home ?? codexHome();
+    const files = threads.filter((t) => plainFile(lockOf(home, t)));
+    if (!files.length) return new Map();
+    const lookup =
+      deps.holdersOf ??
+      ((fs: string[]) =>
+        (deps.platform ?? process.platform) === "linux"
+          ? lockHoldersLinux(fs, deps.procRoot)
+          : lsofHolders(fs));
+    const held = lookup(files.map((t) => lockOf(home, t)));
+    if (!held) return undefined;
+    const pids = new Set<number>();
+    for (const t of files)
+      for (const p of held.get(lockOf(home, t)) ?? []) pids.add(p);
+    const rows = pids.size ? procs([...pids]) : new Map<number, Proc>();
+    if (!rows) return undefined;
+    const out = new Map<string, { pid: number; start: string }>();
+    for (const t of files) {
+      // A mapped thread that is a subagent is never woken (the same bar as a hello).
+      if (!isUserThread(home, t)) continue;
+      for (const pid of held.get(lockOf(home, t)) ?? []) {
+        const row = rows.get(pid);
+        if (!row || basename(row.comm) !== "codex") continue;
+        if (proofs.has(`${pid}\0${row.start}\0${t}`)) continue;
+        out.set(t, { pid, start: row.start });
+        break;
+      }
+    }
+    return out;
+  };
+
   return {
+    holders,
     attest: (hello) => check(hello, true),
     attestNow: (hello) => check(hello, false) as CodexAttest,
     sweep,
@@ -606,7 +689,7 @@ function visitLine(
 ): void {
   if (!/call|task_complete|turn_aborted|task_started|item_completed/.test(text))
     return;
-  const { open, execs } = st;
+  const { open, execs, lookups } = st;
   let line: Record<string, unknown> | undefined;
   try {
     line = record(JSON.parse(text));
@@ -624,9 +707,10 @@ function visitLine(
     for (const [id, c] of open)
       if (turn === undefined || c.turn === undefined || c.turn === turn)
         open.delete(id);
-    for (const [id, c] of execs)
-      if (turn === undefined || c.turn === undefined || c.turn === turn)
-        execs.delete(id);
+    for (const m of [execs, lookups])
+      for (const [id, c] of m)
+        if (turn === undefined || c.turn === undefined || c.turn === turn)
+          m.delete(id);
     return;
   }
   if (p.type === "item_completed") {
@@ -650,14 +734,17 @@ function visitLine(
       p.name === "exec" &&
       p.namespace === undefined &&
       typeof p.id === "string" &&
-      typeof p.input === "string" &&
-      (p.input as string).includes(`${CODEX_TOOL_NAMESPACE}__`)
-    )
-      execs.set(p.id, {
+      typeof p.input === "string"
+    ) {
+      const entry = {
         call: p.call_id,
         at: Date.parse(String(line.timestamp)),
         turn: typeof turn === "string" ? turn : undefined,
-      });
+      };
+      if ((p.input as string).includes(`${CODEX_TOOL_NAMESPACE}__`))
+        execs.set(p.id, entry);
+      else lookups.set(p.id, entry);
+    }
     return;
   }
   if (line?.type === "response_item" && p.type === "function_call") {
@@ -684,7 +771,8 @@ function visitLine(
   }
   if (p.type.endsWith("_output") || p.type.endsWith("_end")) {
     open.delete(p.call_id);
-    for (const [id, e] of execs) if (e.call === p.call_id) execs.delete(id);
+    for (const m of [execs, lookups])
+      for (const [id, e] of m) if (e.call === p.call_id) m.delete(id);
   }
 }
 
@@ -899,6 +987,40 @@ export function holdingFiles(pairs: Hold[]): boolean[] | undefined {
   });
 }
 
+/** Every pid `lsof` lists for each file, by the file's real path; undefined when lsof could not run. */
+export function lsofHolders(
+  files: string[],
+): Map<string, number[]> | undefined {
+  let out: string;
+  try {
+    out = execFileSync(systemTool("lsof"), ["-F", "pn", ...files], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2000,
+    });
+  } catch (e) {
+    if (!exitedOne(e)) return undefined;
+    out = String((e as { stdout?: unknown }).stdout ?? "");
+  }
+  const byReal = new Map<string, number[]>();
+  let pid = 0;
+  for (const l of out.split("\n")) {
+    if (l.startsWith("p")) pid = Number(l.slice(1));
+    else if (l.startsWith("n") && pid > 0) {
+      const list = byReal.get(l.slice(1)) ?? [];
+      list.push(pid);
+      byReal.set(l.slice(1), list);
+    }
+  }
+  const res = new Map<string, number[]>();
+  for (const f of files) {
+    try {
+      res.set(f, byReal.get(realpathSync(f)) ?? []);
+    } catch {}
+  }
+  return res;
+}
+
 /** A Linux st_dev split as /proc/locks prints it (glibc's major/minor). */
 export function devParts(dev: bigint): { major: bigint; minor: bigint } {
   return {
@@ -958,6 +1080,88 @@ export function holdingLinux(pairs: Hold[], procRoot = "/proc"): boolean[] {
       return false;
     }
   });
+}
+
+/**
+ * Linux, no lsof (#2079): every pid with one of `files` open that also holds
+ * its lock (the same /proc/locks check admission uses), by file path. An open
+ * file without a lock is not a holder. undefined when /proc cannot be read.
+ */
+export function lockHoldersLinux(
+  files: string[],
+  procRoot = "/proc",
+): Map<string, number[]> | undefined {
+  let pids: number[];
+  try {
+    pids = readdirSync(procRoot)
+      .filter((n) => /^\d+$/.test(n))
+      .map(Number);
+  } catch {
+    return undefined;
+  }
+  const want = new Map<string, string[]>();
+  for (const f of files) {
+    try {
+      const st = statSync(f, { bigint: true });
+      const k = `${st.dev}:${st.ino}`;
+      want.set(k, [...(want.get(k) ?? []), f]);
+    } catch {}
+  }
+  const pairs: Hold[] = [];
+  for (const pid of pids) {
+    const dir = join(procRoot, String(pid), "fd");
+    let fds: string[];
+    try {
+      fds = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    const seen = new Set<string>();
+    for (const fd of fds)
+      try {
+        const st = statSync(join(dir, fd), { bigint: true });
+        for (const f of want.get(`${st.dev}:${st.ino}`) ?? [])
+          if (!seen.has(f)) {
+            seen.add(f);
+            pairs.push({ pid, file: f });
+          }
+      } catch {}
+  }
+  const locked = holdingLinux(pairs, procRoot);
+  const lockers = lockerPids(procRoot);
+  const out = new Map<string, number[]>(files.map((f) => [f, []]));
+  pairs.forEach((p, i) => {
+    if (locked[i]) out.get(p.file)?.push(p.pid);
+  });
+  // The pid /proc/locks names holds the lock itself; any other opener inherited the fd.
+  for (const [f, list] of out) {
+    let key: string | undefined;
+    try {
+      const st = statSync(f, { bigint: true });
+      const { major, minor } = devParts(st.dev);
+      key = `${major}:${minor}:${st.ino}`;
+    } catch {}
+    const first = (pid: number) => (key && lockers.get(key)?.has(pid) ? 0 : 1);
+    list.sort((a, b) => first(a) - first(b));
+  }
+  return out;
+}
+
+/** The pids /proc/locks names as lockers, by `MAJ:MIN:INODE` (decimal). */
+function lockerPids(procRoot: string): Map<string, Set<number>> {
+  const out = new Map<string, Set<number>>();
+  try {
+    for (const l of readFileSync(join(procRoot, "locks"), "utf8").split("\n")) {
+      const f = l.trim().split(/\s+/);
+      const [maj, min, ino] = (f[5] ?? "").split(":");
+      const pid = Number(f[4]);
+      if (!maj || !min || !ino || !pid) continue;
+      if (!/^[0-9a-f]+$/i.test(maj + min) || !/^\d+$/.test(ino)) continue;
+      const k = `${BigInt(`0x${maj}`)}:${BigInt(`0x${min}`)}:${ino}`;
+      out.set(k, (out.get(k) ?? new Set()).add(pid));
+    }
+  } catch {}
+  return out;
 }
 
 /** `holdingLinux` for one pair. */

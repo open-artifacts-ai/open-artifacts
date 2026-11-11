@@ -21,6 +21,7 @@ import {
   ListQuerySchema,
   ListSpacesInputSchema,
   ListVersionsInputSchema,
+  PublishToolInputNoDocSchema,
   PublishToolInputSchema,
   ResolveCommentInputSchema,
   RestoreVersionInputSchema,
@@ -37,7 +38,7 @@ const ID = "7Hq2mXc9KpR4tWbZ";
 export const TOOL_DEFS = [
   {
     name: "publish_artifact",
-    inputSchema: PublishToolInputSchema,
+    inputSchema: PublishToolInputNoDocSchema,
     example: {
       title: "Q3 report",
       format: "markdown",
@@ -49,8 +50,8 @@ export const TOOL_DEFS = [
   {
     name: "create_upload",
     inputSchema: CreateUploadInputSchema,
-    example: { path: "video.mp4", size: 3_000_000, contentType: "video/mp4" },
-    description: `Open Artifacts: Get a signed URL to PUT one large file (over the ${INLINE} inline limit, up to 25 MB), then publish_artifact with \`id\` = the returned artifactId and \`files: { "<path>": { uploadId } }\`. Omit artifactId to reserve a new artifact id; reuse it for the artifact's other uploads. Optional \`sha256\` is the 64-character hex SHA-256 of the exact bytes to PUT; R2 verifies it and preserves a content hash on every plan.`,
+    example: { path: "video.mp4", contentType: "video/mp4" },
+    description: `Open Artifacts: Get a signed URL to PUT one large file (over the ${INLINE} inline limit, up to 25 MB), then publish_artifact with \`id\` = the returned artifactId and \`files: { "<path>": { uploadId } }\`. \`size\` (bytes) is optional: leave it out and the server measures the file at PUT; give it and the PUT must match it exactly. Omit artifactId to reserve a new artifact id; reuse it for the artifact's other uploads. Optional \`sha256\` is the 64-character hex SHA-256 of the exact bytes to PUT; R2 verifies it and preserves a content hash on every plan.`,
   },
   {
     name: "get_artifact",
@@ -278,10 +279,17 @@ export const descriptionFor = (name: ToolName, spaces = true): string => {
  * registerTool's config for `name`: its description and input schema.
  * `spaces` false: the description without the spaces wording.
  */
-export const toolConfig = <N extends ToolName>(name: N, spaces = true) => {
+export const toolConfig = <N extends ToolName>(
+  name: N,
+  spaces = true,
+  docs = false,
+) => {
   const d = defOf(name);
   return {
     description: descriptionFor(name, spaces),
-    inputSchema: d.inputSchema as Extract<ToolDef, { name: N }>["inputSchema"],
+    // A deployment with docs on (DOCS_ENABLED) takes the schema that names doc.
+    inputSchema: (docs && name === "publish_artifact"
+      ? PublishToolInputSchema
+      : d.inputSchema) as Extract<ToolDef, { name: N }>["inputSchema"],
   };
 };

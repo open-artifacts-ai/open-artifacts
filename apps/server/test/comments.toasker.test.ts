@@ -94,6 +94,7 @@ async function setup(extra: Record<string, unknown> = {}) {
       title: "doc",
       format: "html",
       content: "<p>The quick brown fox</p>",
+      comments: "everyone",
       ...extra,
     } as never,
     null,
@@ -175,7 +176,7 @@ describe("reply toAsker (#1614)", () => {
     const { userId, notice: n } = bus.sent[0] as (typeof bus.sent)[number];
     expect(userId).toBe(owner.userId);
     expect(n.to).toEqual({ namespace: "ns-owner", name: "Claude" });
-    expect(n.coalesceKey).toBe(`${s.id}:${t.id}:asker`);
+    expect(n.coalesceKey).toBe(`${s.id}:${t.id}:asker:others`);
     expect(n.text).toContain(`Thread ${t.id}, comment ${c.id}.`);
     expect(n.text).toContain(n.url);
     const all = JSON.stringify(n);

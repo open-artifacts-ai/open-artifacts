@@ -1,5 +1,10 @@
-import { TEST_HOOK_REFUSALS } from "@oa/shared";
+import {
+  BillingStatusSchema,
+  BillingTierSchema,
+  TEST_HOOK_REFUSALS,
+} from "@oa/shared";
 import { z } from "zod";
+import { SIGNUPS_ENABLED_VALUES } from "./constants.js";
 import {
   ALERT_KEYS,
   AuthProviderSchema,
@@ -116,6 +121,16 @@ export const InstallSummarySchema = z.object({
   servingMode: ServingModeSchema,
   version: VersionSchema.nullable(),
   tier: TierSchema.nullable(),
+  /**
+   * The billing tier (billing's tiers row), not the created-as `tier`. Absent
+   * or null: billing is not bound here or did not answer (#2058).
+   */
+  billingTier: BillingTierSchema.nullable().optional().catch(null),
+  /**
+   * billing's status for that tier (active, past_due, lapsed, suspended). An
+   * unknown value from version skew reads null, never fails the list.
+   */
+  billingStatus: BillingStatusSchema.nullable().optional().catch(null),
   auth: z.object({
     providers: z.array(AuthProviderSchema),
     domainCount: z.number(),
@@ -436,6 +451,6 @@ export const WorldSchema = z.object({
   prodClean: z
     .object({ at: z.number(), ok: z.boolean(), code: z.string() })
     .nullable(),
-  signups: z.enum(["false", "true", "test-users"]),
+  signups: z.enum(SIGNUPS_ENABLED_VALUES),
 });
 export type World = z.infer<typeof WorldSchema>;

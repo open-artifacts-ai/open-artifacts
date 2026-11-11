@@ -2,9 +2,10 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    setupFiles: ["./scripts/test/agent-cli-guard.ts"],
     include: ["scripts/**/*.test.ts"],
     // @oa/setup runs its own suite via `pnpm -r test`.
-    exclude: ["scripts/setup/**", "**/node_modules/**"],
+    exclude: ["scripts/setup/**", "scripts/hosted/**", "**/node_modules/**"],
     // These are shell-script tests: most spawn bash, node or a stubbed gh per
     // case. Under load (a busy laptop, a parallel CI job) a spawn can pass
     // vitest's 5 s default even though the script is fine, so a busy machine

@@ -45,6 +45,18 @@ export type HubOptions = {
   rateLimitedMs?: number;
 };
 
+/** What the daemon lists in its hello (the hub then gates new fields on them). */
+export const HUB_HELLO_CAPS = [
+  BUS_CAPS.ids,
+  BUS_CAPS.mailbox,
+  BUS_CAPS.links,
+  BUS_CAPS.follow,
+  BUS_CAPS.link,
+  BUS_CAPS.waiting,
+  BUS_CAPS.waitingQuery,
+  BUS_CAPS.noticeAck,
+] as const;
+
 export class HubConnection {
   #ws?: WebSocket;
   #attempt = 0;
@@ -183,13 +195,7 @@ export class HubConnection {
         // Reply ids: the hub then names each sender's agent (deliver.from_id).
         // Mailboxes: the hub then sends queued/since, away rows and the new
         // refusals, and honours agent_up.replaces (#1295).
-        caps: [
-          BUS_CAPS.ids,
-          BUS_CAPS.mailbox,
-          BUS_CAPS.links,
-          BUS_CAPS.follow,
-          BUS_CAPS.link,
-        ],
+        caps: [...HUB_HELLO_CAPS],
       });
       this.#guard("sessions", () => {
         this.send({

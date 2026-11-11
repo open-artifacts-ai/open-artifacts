@@ -7,7 +7,7 @@ import { z } from "zod";
 /**
  * The tier billing stores (oa-<p>-billing `tiers.tier`): solo is one person
  * and their agents ($1/month or $10/year after a 30-day no-card trial), trial
- * is everything in Business for 14 days from the first invite, team and
+ * is everything in Business for 30 days from the first invite, team and
  * business are paid per creator. free is the pre-Solo value: hosted billing
  * that predates Solo still answers it, and it keeps today's rules (the solo
  * lock, the first invite starts the trial). Billing must report a Solo whose
@@ -37,7 +37,7 @@ export type BillingStatus = z.infer<typeof BillingStatusSchema>;
  * - solo: a Solo instance (one person); team features need a plan.
  * - solo_unpaid: no paid Solo subscription (lapsed, past due after the
  *   grace period, on tier solo): view-only for everyone, the owner too.
- * - trial_ended: the 14-day trial is over and no plan was bought.
+ * - trial_ended: the 30-day trial is over and no plan was bought.
  * - lapsed: the subscription ended or was never paid (billing said lapsed).
  * - payment_failed: past due and the grace period is over.
  * - suspended: an operator suspended the instance.
@@ -69,7 +69,7 @@ export const PlanViewSchema = z.object({
   trialEndsAt: z.string().nullable(),
   /**
    * ISO; the Solo trial's end. Separate from trialEndsAt, which is the
-   * Business trial's only. Owner and admins; null for others; absent when
+   * Team trial's only. Owner and admins; null for others; absent when
    * billing's answer predates it.
    */
   soloTrialEndsAt: z.string().nullable().optional(),
@@ -135,13 +135,15 @@ export type PlanLimitDetails = z.infer<typeof PlanLimitDetailsSchema>;
 /** Last good tier kept this long when billing is unreachable (OUR outage). */
 export const PLAN_STALE_MS = 7 * 86_400_000;
 /** The trial billing starts at the first invite. */
-export const TRIAL_DAYS = 14;
+export const TRIAL_DAYS = 30;
 
 /**
- * POST R.billingCheckout body: the plan to buy. Solo also names the billing
- * interval (month or year); the billing service maps solo+month and
- * solo+year to the Solo prices. Any other tier refuses an interval. The
- * answer is BillingUrl, the Stripe Checkout page to open; nothing else.
+ * POST R.billingCheckout body: the plan to buy. Solo requires an interval
+ * (month or year) and refuses seats. Team and Business may omit the interval
+ * (older callers; absent means monthly) or send month, and refuse seats then.
+ * Team and Business with interval "year" require seats, the prepaid seat
+ * count (1..10000); seats beyond that bill as overage at the monthly price.
+ * The answer is BillingUrl, the Stripe Checkout page to open; nothing else.
  */
 export const BillingIntervalSchema = z.enum(["month", "year"]);
 export type BillingInterval = z.infer<typeof BillingIntervalSchema>;
@@ -149,10 +151,37 @@ export const BillingCheckoutInputSchema = z
   .strictObject({
     tier: z.enum(["solo", "team", "business"]),
     interval: BillingIntervalSchema.optional(),
+    seats: z.number().int().min(1).max(10_000).optional(),
   })
-  .refine((v) => (v.tier === "solo") === (v.interval !== undefined), {
-    message: "interval is required for solo and refused for other tiers",
-    path: ["interval"],
+  .superRefine((v, ctx) => {
+    if (v.tier === "solo") {
+      if (v.interval === undefined)
+        ctx.addIssue({
+          code: "custom",
+          path: ["interval"],
+          message: "interval is required for solo",
+        });
+      if (v.seats !== undefined)
+        ctx.addIssue({
+          code: "custom",
+          path: ["seats"],
+          message: "seats is refused for solo",
+        });
+      return;
+    }
+    const yearly = v.interval === "year";
+    if (yearly && v.seats === undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["seats"],
+        message: "seats is required for a yearly team or business plan",
+      });
+    if (!yearly && v.seats !== undefined)
+      ctx.addIssue({
+        code: "custom",
+        path: ["seats"],
+        message: "seats is only for a yearly team or business plan",
+      });
   });
 export type BillingCheckoutInput = z.infer<typeof BillingCheckoutInputSchema>;
 

@@ -108,6 +108,10 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       sessionsDir: mkdtempSync(join(tmpdir(), "ob-cs-")),
       socketsDir: join(mkdtempSync(join(tmpdir(), "ob-cr-")), "r"),
       heldFile: join(mkdtempSync(join(tmpdir(), "ob-ch-")), "held.json"),
+      linksFile: join(
+        mkdtempSync(join(tmpdir(), "ob-cl-")),
+        "claude-links.json",
+      ),
       ...over.claude,
     },
     // Never a real `opencode` or the real presence files.
@@ -127,10 +131,15 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       run: async () => {
         throw new Error("no codex in tests");
       },
-      queuedFile: join(mkdtempSync(join(tmpdir(), "ob-cq-")), "q.json"),
+      takenFile: join(mkdtempSync(join(tmpdir(), "ob-ct-")), "p.json"),
       agentsFile: join(
         mkdtempSync(join(tmpdir(), "ob-ca-")),
         "codex-agents.json",
+      ),
+      awayFile: join(mkdtempSync(join(tmpdir(), "ob-cw-")), "codex-away.json"),
+      wokenFile: join(
+        mkdtempSync(join(tmpdir(), "ob-cn-")),
+        "codex-woken.json",
       ),
       ...over.codex,
     },
@@ -160,7 +169,11 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
       (f): f is Extract<DaemonToHub, { type: T }> => f.type === type,
     );
   const next = async <T extends DaemonToHub["type"]>(type: T, n = 1) => {
-    await vi.waitFor(() => expect(of(type).length).toBeGreaterThanOrEqual(n));
+    // A signal, so the timeout costs nothing when it passes; a fake codex is a node process, >1 s under a full-package run.
+    await vi.waitFor(() => expect(of(type).length).toBeGreaterThanOrEqual(n), {
+      timeout: 15_000,
+      interval: 10,
+    });
     return of(type)[n - 1] as Extract<DaemonToHub, { type: T }>;
   };
   const toDaemon = (f: object) =>

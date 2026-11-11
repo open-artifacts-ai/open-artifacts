@@ -26,7 +26,11 @@ import type { StoredAgent, StoredIdentity } from "../runtime/comments-store.js";
 import { shownName } from "./agent-display.js";
 import { busView } from "./bus.js";
 import { deliverNotice, newDeliveryScope } from "./bus-delivery.js";
-import { DROP_MEMBER_FOLLOWS, FANOUT_MAX } from "./follows.js";
+import {
+  DROP_MEMBER_FOLLOWS,
+  FANOUT_BUDGET_MS,
+  FANOUT_MAX,
+} from "./follows.js";
 import { getUser } from "./users.js";
 
 /** Most members whose agents the roster reads (each is a few D1 reads and, listed, a hub read). */
@@ -375,26 +379,37 @@ export async function notifyAgent(
     ),
     // A reply to an ask's author coalesces per thread (#1614): replies sent
     // while its agent is away leave one waiting notice, never a pile.
+    // The tier is in every key: a "yours" notice never replaces an "others" one (#1797).
     coalesceKey:
       kind === "asker"
-        ? `${artifactId}:${threadId}:asker`
+        ? `${artifactId}:${threadId}:asker:${fromYourUser ? "yours" : "others"}`
         : kind === "thread_reply"
           ? // One waiting notice per agent per thread (#1900): replies while it is unread replace it, so it points at the latest comment.
-            `${artifactId}:${threadId}:thread_reply:${to.key}`
-          : `${artifactId}:${commentId}:${kind}`,
+            `${artifactId}:${threadId}:thread_reply:${to.key}:${fromYourUser ? "yours" : "others"}`
+          : // #1752: one waiting notice per artifact, agent, kind and tier: later
+            // ones replace it and the hub says how many it folded. The tier is in
+            // the key so one tier's text never replaces the other's (#1797).
+            `${artifactId}:${kind}:${to.key}:${fromYourUser ? "yours" : "others"}`,
     threadId,
     commentId,
-    // #1752: the comment target the hub settles on the daemon's ack. A thread reply has none.
-    ...(kind === "thread_reply"
-      ? {}
-      : {
-          target: { kind: kind === "asker" ? "asker" : "mention", key: to.key },
-        }),
+    // #1752: the comment target the hub settles on the daemon's ack. #2035: a thread reply's is "reply".
+    target: {
+      kind:
+        kind === "thread_reply"
+          ? "reply"
+          : kind === "asker"
+            ? "asker"
+            : "mention",
+      key: to.key,
+    },
   };
   const out = await deliverNotice(env, to.userId, n);
   logInfo("comment_notice", { artifactId, kind, outcome: out });
   return out;
 }
+
+/** #1752: an `ask_answered` notice waits this long, so rapid answer changes send once. */
+export const ANSWER_WINDOW_MS = 10_000;
 
 /**
  * `ask_answered` (#1535): a person answered the ask at (`threadId`,
@@ -405,10 +420,12 @@ export async function notifyAgent(
  * person-authored ask with no following agent gets nothing. The member is
  * re-checked at send time as the follows fan-out does (a lapsed one loses
  * their follows on the artifact and hears nothing). The coalesce key is one
- * per ask comment (a thread can hold two asks): a live agent gets each
- * changed answer at once, and only a notice still waiting for an offline
- * agent is replaced by the newer answer. The caller skips an answer whose
- * option did not change (a retry). Rate: the
+ * per ask comment (a thread can hold two asks). A notice is sent after
+ * ANSWER_WINDOW_MS (#1752), so answers changed within it, for a live or an
+ * offline agent, leave one waiting notice that the newer answer replaces (and
+ * restarts the window). The caller skips an answer whose
+ * option did not change (a retry). The fan-out stops at FANOUT_BUDGET_MS:
+ * the agents not reached hear nothing this time, and it is logged. Rate: the
  * answer itself already counts against the caller's comment limit
  * (commentsAnswer), and the send reads at most FANOUT_MAX follow rows of one
  * member. Text is fixed, with no question, option or name. Never throws.
@@ -422,12 +439,23 @@ export async function notifyAnswered(
   askerId: string,
   /** The answer was picked in the web app by `askerId` themselves (#1797). */
   fromYourUser = false,
+  /** Time the send may take; tests shrink it. */
+  budgetMs = FANOUT_BUDGET_MS,
 ): Promise<void> {
   const targets = await askerAgents(env, artifactId, askerId);
   if (targets.length === 0) return;
   const url = appOrigin(env) + viewerPath(artifactId);
   const scope = newDeliveryScope();
-  for (const to of targets) {
+  const deadline = Date.now() + budgetMs;
+  for (const [i, to] of targets.entries()) {
+    if (Date.now() > deadline) {
+      logInfo("fanout_out_of_time", {
+        kind: "answered",
+        artifactId,
+        skipped: targets.length - i,
+      });
+      break;
+    }
     const n: BusNotice = {
       id: newId(),
       kind: "ask_answered",
@@ -444,6 +472,7 @@ export async function notifyAnswered(
         fromYourUser,
       ),
       coalesceKey: `${artifactId}:${commentId}:answered`,
+      notBefore: Date.now() + ANSWER_WINDOW_MS,
       threadId,
       commentId,
     };

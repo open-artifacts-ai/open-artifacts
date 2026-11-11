@@ -3,7 +3,7 @@
 // nothing else secret; the registry (written by P1 provisioning) holds public
 // keys only.
 //
-// Deploy with --env staging or --env prod only (docs/ops/hosted.md): the top
+// Deploy with --env staging or --env prod only (the cloud runbook, https://github.com/open-artifacts-ai/open-artifacts-cloud/blob/main/docs/ops/hosted.md): the top
 // level has no name and no main, so a deploy without --env is refused, even
 // with --name. No routes, custom
 // domains or workers.dev here: the auth.<domain>/* route is wired by the gated

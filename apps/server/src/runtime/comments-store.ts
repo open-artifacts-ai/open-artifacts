@@ -134,6 +134,8 @@ export type StoredComment = {
   editedAt: string | null;
   ask?: StoredAsk;
   mentions?: StoredTarget[];
+  /** #2035: the participant agents a person's reply also told (comment_targets kind "reply"). */
+  notified?: StoredTarget[];
 };
 
 /** What a new comment carries besides its text (#1535). */
@@ -151,8 +153,10 @@ export type NewExtras = {
  * bus address); `namespace` and `name` are the bus address a notice goes to;
  * `owner` the member whose agent it is.
  */
-export type StoredParticipant = Omit<StoredAgent, "identity"> & {
+export type StoredParticipant = StoredAgent & {
   namespace: string;
+  /** #2035: an @-mention or ask brought it in: it also puts back one a person removed. */
+  readd?: true;
   /** #1968: joined only because it published the page a page-wide thread is on; any other reason clears it. */
   page?: true;
 };
@@ -324,6 +328,7 @@ type AskRow = {
 };
 type TargetRow = {
   comment_id: string;
+  kind: string;
   key: string;
   name: string;
   state: string;
@@ -368,9 +373,9 @@ function attachExtras(
     if (c) c.ask = askOf(r);
   }
   for (const r of sql.exec<TargetRow>(
-    `select g.comment_id, g.key, g.name, g.state, g.owner, g.identity
+    `select g.comment_id, g.kind, g.key, g.name, g.state, g.owner, g.identity
      from comment_targets g
-     where g.kind in ('mention', 'asker') and g.thread_id in (select value from json_each(?)) order by g.rowid`,
+     where g.kind in ('mention', 'asker', 'reply') and g.thread_id in (select value from json_each(?)) order by g.rowid`,
     ids,
   )) {
     const c = byId.get(r.comment_id);
@@ -384,7 +389,8 @@ function attachExtras(
         ? { identity: JSON.parse(r.identity) as StoredIdentity }
         : {}),
     };
-    c.mentions = [...(c.mentions ?? []), t];
+    if (r.kind === "reply") c.notified = [...(c.notified ?? []), t];
+    else c.mentions = [...(c.mentions ?? []), t];
   }
 }
 
@@ -527,16 +533,20 @@ export function refundEmail(
   );
 }
 
-/** Records the agents that joined a thread (#1900); one already there stays as it was. */
+/**
+ * Records the agents that joined a thread (#1900); one already there stays as
+ * it was. #2035: one a person removed stays removed, unless this comment
+ * @-mentions or asks it (`readd`).
+ */
 export function addParticipants(
   sql: SqlStorage,
   threadId: string,
   ps: StoredParticipant[],
 ): void {
-  for (const p of ps)
+  for (const p of ps) {
     sql.exec(
-      `insert into comment_participants (thread_id, key, name, owner, namespace, page)
-       values (?, ?, ?, ?, ?, ?)
+      `insert into comment_participants (thread_id, key, name, owner, namespace, page, identity)
+       values (?, ?, ?, ?, ?, ?, ?)
        on conflict (thread_id, key) do update set page = 0 where excluded.page = 0`,
       threadId,
       p.key,
@@ -544,6 +554,111 @@ export function addParticipants(
       p.owner,
       p.namespace,
       p.page ? 1 : 0,
+      p.identity ? JSON.stringify(p.identity) : null,
+    );
+    // A later comment may know the identity an earlier one did not.
+    if (p.identity)
+      sql.exec(
+        "update comment_participants set identity = ? where thread_id = ? and key = ? and identity is null",
+        JSON.stringify(p.identity),
+        threadId,
+        p.key,
+      );
+    if (p.readd)
+      sql.exec(
+        "update comment_participants set removed = 0 where thread_id = ? and key = ?",
+        threadId,
+        p.key,
+      );
+  }
+}
+
+/** A thread's participant as stored, with whether a person removed it. */
+export type ParticipantRow = StoredParticipant & { removed: boolean };
+
+type ParticipantSql = {
+  key: string;
+  name: string;
+  owner: string;
+  namespace: string;
+  page: number;
+  removed: number;
+  identity: string | null;
+};
+
+const participantOfRow = (r: ParticipantSql): ParticipantRow => ({
+  kind: "agent",
+  key: r.key,
+  name: r.name,
+  owner: r.owner,
+  namespace: r.namespace,
+  ...(r.page === 1 ? { page: true as const } : {}),
+  ...(r.identity ? { identity: JSON.parse(r.identity) as StoredIdentity } : {}),
+  removed: r.removed === 1,
+});
+
+/** The participants of `threadIds`, by thread (#2035). */
+export function participantsOf(
+  sql: SqlStorage,
+  threadIds: string[],
+): Map<string, ParticipantRow[]> {
+  const out = new Map<string, ParticipantRow[]>();
+  if (threadIds.length === 0) return out;
+  for (const r of sql.exec<ParticipantSql & { thread_id: string }>(
+    `select thread_id, key, name, owner, namespace, page, removed, identity from comment_participants
+     where thread_id in (select value from json_each(?)) order by key`,
+    JSON.stringify(threadIds),
+  )) {
+    const list = out.get(r.thread_id) ?? [];
+    list.push(participantOfRow(r));
+    out.set(r.thread_id, list);
+  }
+  return out;
+}
+
+/** Removes (or puts back) one participant (#2035). False when the thread has no such agent. */
+export function setParticipantRemoved(
+  sql: SqlStorage,
+  threadId: string,
+  key: string,
+  removed: boolean,
+): boolean {
+  const there =
+    sql
+      .exec(
+        "select 1 from comment_participants where thread_id = ? and key = ?",
+        threadId,
+        key,
+      )
+      .toArray().length > 0;
+  if (there)
+    sql.exec(
+      "update comment_participants set removed = ? where thread_id = ? and key = ?",
+      removed ? 1 : 0,
+      threadId,
+      key,
+    );
+  return there;
+}
+
+/** Records who a person's reply also told, with how it went (#2035). */
+export function recordReplyTargets(
+  sql: SqlStorage,
+  threadId: string,
+  commentId: string,
+  ts: { p: StoredParticipant; state: string }[],
+): void {
+  for (const { p, state } of ts)
+    sql.exec(
+      `insert or ignore into comment_targets (comment_id, thread_id, kind, key, name, state, owner, identity)
+       values (?, ?, 'reply', ?, ?, ?, ?, ?)`,
+      commentId,
+      threadId,
+      p.key,
+      p.name,
+      state,
+      p.owner,
+      p.identity ? JSON.stringify(p.identity) : null,
     );
 }
 
@@ -574,9 +689,9 @@ export function takeThreadReply(
   let room = max - total;
   const out: StoredParticipant[] = [];
   const rows = sql
-    .exec<Omit<StoredParticipant, "page"> & { page: number }>(
-      `select key, name, owner, namespace, page from comment_participants
-       where thread_id = ? order by key`,
+    .exec<ParticipantSql>(
+      `select key, name, owner, namespace, page, removed, identity from comment_participants
+       where thread_id = ? and removed = 0 order by key`,
       threadId,
     )
     .toArray();
@@ -597,6 +712,9 @@ export function takeThreadReply(
       name: r.name,
       owner: r.owner,
       namespace: r.namespace,
+      ...(r.identity
+        ? { identity: JSON.parse(r.identity) as StoredIdentity }
+        : {}),
     });
   }
   return out;
@@ -623,13 +741,18 @@ export function refundThreadReply(
 export function setTargetState(
   sql: SqlStorage,
   commentId: string,
-  kind: "mention" | "asker",
+  kind: "mention" | "asker" | "reply",
   key: string,
   state: string,
 ): void {
-  // A late "queued" never undoes a daemon's ack that landed first (#1752).
+  // A late write never undoes a daemon's ack that landed first (#1752):
+  // "queued" only replaces queued, "gone" never replaces delivered or seen,
+  // and nothing replaces seen.
   sql.exec(
-    "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ? and (? != 'queued' or state = 'queued')",
+    `update comment_targets set state = ? where comment_id = ? and kind = ? and key = ?
+     and case ? when 'queued' then state = 'queued'
+                when 'gone' then state in ('queued', 'gone')
+                else state != 'seen' end`,
     state,
     commentId,
     kind,
@@ -639,25 +762,53 @@ export function setTargetState(
 }
 
 /**
- * #1752: a daemon's ack ("delivered") or refusal ("gone") of a notice. Moves
- * a target only out of "queued": seen, delivered and gone stay. True when it moved.
+ * #1752/#2062: a daemon's ack ("delivered") or refusal ("gone") of a notice, or
+ * a send to a socket without notice_ack. Moves a queued target to `state`. A
+ * late "delivered" also lifts a "gone" target (a notice held past the Worker's
+ * budget); "seen" and "delivered" stay final. The asker bound refunded when
+ * the target went gone is NOT re-spent: one extra ask is accepted. Only
+ * queued->gone refunds, so no path refunds twice. True when it moved.
  */
 export function settleTarget(
   sql: SqlStorage,
   commentId: string,
-  kind: "mention" | "asker",
+  kind: "mention" | "asker" | "reply",
   key: string,
   state: "delivered" | "gone",
 ): boolean {
   return (
     sql.exec(
-      "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ? and state = 'queued'",
+      "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ? and (state = 'queued' or (? = 'delivered' and state = 'gone'))",
       state,
       commentId,
       kind,
       key,
+      state,
     ).rowsWritten > 0
   );
+}
+
+/**
+ * #1752: after a refused asker notice, gives the asker bound back when every
+ * mention and asker target of the comment reads gone (as the Worker does
+ * after a send). A thread-reply row (#2035) is not the asker's: it never holds
+ * the refund back.
+ */
+export function refundAskerIfAllGone(sql: SqlStorage, commentId: string): void {
+  const c = sql
+    .exec<{ threadId: string; at: string }>(
+      "select thread_id as threadId, created_at as at from comments where id = ?",
+      commentId,
+    )
+    .toArray()[0];
+  if (!c) return;
+  const open = sql
+    .exec(
+      "select 1 from comment_targets where comment_id = ? and kind != 'reply' and state != 'gone' limit 1",
+      commentId,
+    )
+    .toArray();
+  if (open.length === 0) refundAsker(sql, c.threadId, c.at);
 }
 
 /** Drops the ask and targets of comments (`commentId`, or every comment of `threadId`). */

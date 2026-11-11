@@ -1017,6 +1017,21 @@ export const SURFACES: readonly Surface[] = [
     [`GET ${ARTS}/agents`],
     read((id) => `${A(id)}/agents`, 200),
   ),
+  // #2035: stop (DELETE) or undo (PUT) a thread's agent. The floor is comments.write; the service allows the agent's person and the owner. A malformed
+  // thread id stops at 400 bad_request, so nothing is written.
+  ...(["DELETE", "PUT"] as const).map((m) =>
+    rest(
+      `comments thread agent ${m.toLowerCase()}`,
+      "comments.write",
+      [`${m} ${ARTS}/comments/:threadId/agents/:key`],
+      exact(
+        m,
+        (id) => `${A(id)}/comments/${BAD}/agents/${BAD}`,
+        () => ({}),
+        badRequest,
+      ),
+    ),
+  ),
   rest(
     "comments delete",
     "comments.write",

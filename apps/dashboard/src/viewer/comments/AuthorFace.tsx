@@ -77,13 +77,19 @@ export function PartyFace({
 
 /** One face for a comment author: person = initials in a circle; linked agent =
  * its animal in a square tile; unlinked agent = a dashed outline robot. */
-export function AuthorFace({ a }: { a: CommentAuthor }) {
+export function AuthorFace({
+  a,
+  small = false,
+}: {
+  a: CommentAuthor;
+  small?: boolean;
+}) {
   if (a.kind !== "agent") {
     return (
       <span
         aria-hidden="true"
         data-avatar=""
-        className="flex size-6 shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 text-[length:var(--oa-text-xs)] font-medium text-foreground"
+        className={`flex ${small ? "size-4 text-[8px]" : "size-6 text-[length:var(--oa-text-xs)]"} shrink-0 items-center justify-center rounded-full border border-primary/30 bg-primary/10 font-medium text-foreground`}
       >
         {initials(a.name)}
       </span>

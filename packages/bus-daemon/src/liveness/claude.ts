@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -7,6 +8,8 @@ import {
 } from "@oa/bus-adapter-claude-code";
 import { AgentRefSchema } from "@oa/bus-protocol";
 
+const sha256Of = (s: string) => createHash("sha256").update(s).digest("hex");
+
 export type LiveClaude = {
   ref: string;
   name: string;
@@ -15,6 +18,8 @@ export type LiveClaude = {
   cwd: string;
   /** The process start the session file recorded: tells a reused pid from the session's own. */
   procStart: string;
+  /** #2110: running, but its start time could not be read: unknown, kept live for a bounded grace by the caller. */
+  unknown?: true;
 };
 
 export type ClaudeLivenessDeps = {
@@ -27,21 +32,27 @@ export type ClaudeLivenessDeps = {
 
 type SessionFile = LiveClaude & { stamp: string };
 
-/** Every well-formed session file, without asking the OS anything. */
-function sessionFiles(dir: string): SessionFile[] {
+/** Every well-formed session file, without asking the OS anything, and the pids whose file exists but cannot be read or parsed right now (a rewrite in flight: unknown, not gone). */
+function scanSessions(dir: string): {
+  files: SessionFile[];
+  unreadable: Set<number>;
+} {
   const out: SessionFile[] = [];
+  const unreadable = new Set<number>();
   let names: string[];
   try {
     names = readdirSync(dir);
   } catch {
-    return out;
+    return { files: out, unreadable };
   }
   for (const fn of names) {
-    if (!/^\d+\.json$/.test(fn)) continue;
+    const m = /^(\d+)\.json$/.exec(fn);
+    if (!m) continue;
     let rec: Record<string, unknown>;
     try {
       rec = JSON.parse(readFileSync(join(dir, fn), "utf8"));
     } catch {
+      unreadable.add(Number(m[1]));
       continue;
     }
     const pid = Number(rec?.pid);
@@ -64,31 +75,59 @@ function sessionFiles(dir: string): SessionFile[] {
       stamp: rec.procStart,
     });
   }
-  return out;
+  return { files: out, unreadable };
 }
 
+const sessionFiles = (dir: string) => scanSessions(dir).files;
+
+/**
+ * #2110: closed only on positive evidence. A pid that is not running, or a
+ * different start time (a reused pid), is gone; a running pid whose start time
+ * could not be read (null) is unknown.
+ */
+const aliveState = (
+  s: SessionFile,
+  deps: ClaudeLivenessDeps,
+): "yes" | "unknown" | "no" => {
+  if (!deps.isRunning(s.pid)) return "no";
+  const start = deps.procStart(s.pid, s.stamp);
+  if (start === null) return "unknown";
+  return start === s.procStart ? "yes" : "no";
+};
+// An unknown start time counts as alive here, so claudeTarget (and a resume's
+// preferPid) may name a pid whose start time is unconfirmed, for at most the
+// caller's grace window; the key's own procStart check still gates the token.
 const alive = (s: SessionFile, deps: ClaudeLivenessDeps) =>
-  deps.isRunning(s.pid) && deps.procStart(s.pid, s.stamp) === s.procStart;
+  aliveState(s, deps) !== "no";
 
 const strip = ({ stamp: _, ...s }: SessionFile): LiveClaude => s;
 
+function liveOf(files: SessionFile[], deps: ClaudeLivenessDeps): LiveClaude[] {
+  const out: LiveClaude[] = [];
+  for (const s of files) {
+    const st = aliveState(s, deps);
+    if (st === "no") continue;
+    out.push(st === "unknown" ? { ...strip(s), unknown: true } : strip(s));
+  }
+  return out;
+}
+
 /** Every live session file, one per process: a membership test, never deduped. */
 export function liveClaudeFiles(deps: ClaudeLivenessDeps): LiveClaude[] {
-  return sessionFiles(deps.dir)
-    .filter((s) => alive(s, deps))
-    .map(strip);
+  return liveOf(sessionFiles(deps.dir), deps);
 }
 
 /**
  * Claude sessions that are running now, from `~/.claude/sessions`: the process
- * is up and its start time matches. One with no socket (cross-session
- * messaging off) can still send; it just cannot receive.
+ * is up and its start time matches (or could not be read: `unknown`). One with
+ * no socket (cross-session messaging off) can still send; it just cannot
+ * receive. `unreadable` is the pids whose file could not be read this pass.
  */
-export function liveClaudeSessions(
+export function liveClaudeScan(
   deps: ClaudeLivenessDeps,
   /** The pid the caller already knows for a ref (its record's, a hello's): that file wins. */
   preferPid?: (ref: string) => number | undefined,
-): LiveClaude[] {
+): { live: LiveClaude[]; unreadable: Set<number> } {
   // One file per session: a headless `claude --resume` shares the id, and
   // its nameless file must not stand for the session (#1635).
   const byRef = new Map<string, LiveClaude>();
@@ -96,7 +135,8 @@ export function liveClaudeSessions(
     (s.pid === preferPid?.(s.ref) ? 4 : 0) +
     (s.socketPath !== "" ? 2 : 0) +
     (s.name !== `claude-${s.pid}` ? 1 : 0);
-  for (const s of liveClaudeFiles(deps)) {
+  const scan = scanSessions(deps.dir);
+  for (const s of liveOf(scan.files, deps)) {
     const cur = byRef.get(s.ref);
     if (
       !cur ||
@@ -105,7 +145,14 @@ export function liveClaudeSessions(
     )
       byRef.set(s.ref, s);
   }
-  return [...byRef.values()];
+  return { live: [...byRef.values()], unreadable: scan.unreadable };
+}
+
+export function liveClaudeSessions(
+  deps: ClaudeLivenessDeps,
+  preferPid?: (ref: string) => number | undefined,
+): LiveClaude[] {
+  return liveClaudeScan(deps, preferPid).live;
 }
 
 /** Where to inject for one session, read fresh each time; null when it is gone. Asks the OS about that session only. */
@@ -125,6 +172,48 @@ export function claudeTarget(
     deps.sha256,
   );
   return peerToken ? { socketPath: s.socketPath, peerToken } : null;
+}
+
+/**
+ * #2110: why `claudeTarget` is null. "unknown": the pid runs but its session
+ * file is unreadable right now or its start time cannot be read. "unreachable":
+ * the session is there and alive but has no socket or no peer token (messaging
+ * off), so a close would only churn. "gone": the process runs but no file lists
+ * the session (it may be back in a moment). "dead": the process is not running
+ * or its start time changed (positive evidence).
+ */
+export function claudeTargetState(
+  ref: string,
+  pid: number,
+  deps: ClaudeLivenessDeps,
+): "unknown" | "unreachable" | "gone" | "dead" {
+  if (!deps.isRunning(pid)) return "dead";
+  const scan = scanSessions(deps.dir);
+  if (scan.unreadable.has(pid)) return "unknown";
+  const f = scan.files.find((x) => x.ref === ref);
+  if (!f) return "gone";
+  const st = aliveState(f, deps);
+  if (st === "unknown") return "unknown";
+  if (st !== "yes") return "dead";
+  if (f.socketPath === "") return "unreachable";
+  // peerTokenFor says null for a failed read as well as for an absent key:
+  // only an absent key (ENOENT, or a file without the token) is unreachable;
+  // a read or parse failure is unknown (the retry path).
+  try {
+    const key = JSON.parse(
+      readFileSync(
+        join(deps.dir, `${pid}.${(deps.sha256 ?? sha256Of)(f.socketPath)}.key`),
+        "utf8",
+      ),
+    ) as { peerToken?: unknown };
+    return typeof key.peerToken === "string" && key.peerToken
+      ? "unknown" // a good key now: the null was a race
+      : "unreachable";
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "ENOENT"
+      ? "unreachable"
+      : "unknown";
+  }
 }
 
 /** A live pid's start time never changes, so a long TTL is safe. */

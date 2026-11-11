@@ -80,6 +80,21 @@ export const BUS_CAPS = {
    */
   linkArg: "link_arg",
   /**
+   * Waiting mail (#2029): the client decodes roster `waiting` on `away` rows.
+   * The hub sends it only to a socket whose hello listed it (with `mailbox`),
+   * and lists it in `hello_ok.caps`: a strict decoder without it would refuse
+   * the whole roster.
+   */
+  waiting: "waiting",
+  /**
+   * Waiting lookup (#2079): the client may send `waiting_query` (up to 64 of
+   * its own away `agent_ref`s) and decodes `waiting_counts`. The hub answers
+   * only on a socket whose hello listed it (any other gets `bad_frame`, as an
+   * old hub would) and lists it in `hello_ok.caps`; a client sends it only
+   * when it did.
+   */
+  waitingQuery: "waiting_query",
+  /**
    * Notice acks (#1752): a daemon listing it sends the existing `ack` frame
    * with a notice deliver frame's `msg_id` only once the harness took the
    * notice (nothing while it waits), and `refuse` (reason `closed`) if it is

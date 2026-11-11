@@ -857,7 +857,7 @@ describe("comments: actions", () => {
         target: { value: "Overall: great" },
       },
     );
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]?.body).toEqual({
       anchor: { kind: "note" },
@@ -865,6 +865,128 @@ describe("comments: actions", () => {
     });
     expect(await within(c).findByText("Overall: great")).toBeInTheDocument();
     expect(within(c).getAllByText("Whole page").length).toBeGreaterThan(0);
+  });
+
+  it("#2118: the composer card shows its hint and Comment button before focus", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(
+      within(c).getByRole("heading", { name: "Comments" }),
+    ).toBeInTheDocument();
+    const btn = within(c).getByRole("button", { name: "Comment" });
+    expect(btn).toBeDisabled();
+    expect(c.querySelector("[data-send-hint]")?.textContent).toMatch(
+      /(⌘|Ctrl) Enter to send/,
+    );
+  });
+
+  it("#2118: Ctrl+Enter sends the note", async () => {
+    const posts = calls("POST");
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const box = within(c).getByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.change(box, { target: { value: "Sent by key" } });
+    fireEvent.keyDown(box, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(posts).toHaveLength(1));
+    expect(posts[0]?.body).toMatchObject({ body: "Sent by key" });
+  });
+
+  it("#2118: Esc in the note box keeps the draft and does not close the phone sheet", async () => {
+    viewport(400);
+    mount(viewerPath(OWNED));
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Comments, 1 open" }),
+    );
+    const sheet = await screen.findByRole("dialog", { name: "Comments" });
+    const box = await within(sheet).findByRole("textbox", {
+      name: "Comment on the whole page",
+    });
+    fireEvent.change(box, { target: { value: "Keep me" } });
+    fireEvent.keyDown(box, { key: "Escape" });
+    expect(
+      screen.getByRole("dialog", { name: "Comments" }),
+    ).toBeInTheDocument();
+    expect(box).toHaveValue("Keep me");
+  });
+
+  it("#2118: Show resolved has a 24px (32px on phones) hit area", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const btn = await within(c).findByRole("button", {
+      name: "Show resolved (1)",
+    });
+    expect(btn.className).toContain("min-h-6");
+    expect(btn.className).toContain("max-sm:min-h-8");
+  });
+
+  it("#2118: a quoted draft is one composer with the quote at its top", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "Landing",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    const box = await screen.findByRole("textbox", { name: "Add a comment" });
+    const card = box.parentElement as HTMLElement;
+    expect(card.firstElementChild?.textContent).toBe("Landing");
+    expect(card.querySelectorAll("textarea")).toHaveLength(1);
+    expect(
+      c.querySelectorAll('textarea[aria-label="Add a comment"]'),
+    ).toHaveLength(1);
+  });
+
+  it("#2118: only the quote composer shows while a quote is open; the note box returns on Cancel", async () => {
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await hello();
+    await act(async () =>
+      opts.at(-1)?.onCommentSelect({
+        kind: "text",
+        exact: "Landing",
+        prefix: "",
+        suffix: "",
+      }),
+    );
+    await screen.findByRole("textbox", { name: "Add a comment" });
+    expect(
+      within(c).getAllByRole("textbox", { name: /comment/i }),
+    ).toHaveLength(1);
+    expect(screen.getByRole("button", { name: "Comment" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(
+      await within(c).findByRole("textbox", {
+        name: "Comment on the whole page",
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("#2118: the send hint is hidden on a touch screen", async () => {
+    viewport(1280, true);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    expect(
+      within(c).getByRole("button", { name: "Comment" }),
+    ).toBeInTheDocument();
+    expect(c.querySelector("[data-send-hint]")).toBeNull();
+  });
+
+  it("#2118: no open count with no comments", async () => {
+    server.use(
+      http.get("*/api/v1/artifacts/:id/comments", () =>
+        HttpResponse.json({ threads: [], open: 0, truncated: false }),
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText(/No comments yet/);
+    expect(within(c).queryByText(/\d+ open/)).toBeNull();
   });
 
   it("replies, and resolves from the reply box", async () => {
@@ -885,7 +1007,7 @@ describe("comments: actions", () => {
     // Floating over scrolling text needs an opaque surface, never an inherited
     // one: a card's own, and the sheet's in the note composer (#1696).
     expect(actions.className).toContain(
-      "group-data-[sheet-height=pin]/sheet:bg-background",
+      "group-data-[sheet-height=pin]/sheet:bg-card",
     );
     expect(ACTIONS).not.toContain("bg-inherit");
     expect(ACTIONS_PLAIN).toContain(
@@ -905,7 +1027,9 @@ describe("comments: actions", () => {
     fireEvent.click(within(c).getByRole("button", { name: "Resolve" }));
     await waitFor(() => expect(patches).toHaveLength(1));
     expect(patches[0]?.body).toEqual({ status: "resolved" });
-    expect(await within(c).findByText("0 open")).toBeInTheDocument();
+    // #2118: no count at 0.
+    await waitFor(() => expect(within(c).queryByText("1 open")).toBeNull());
+    expect(within(c).queryByText("0 open")).toBeNull();
   });
 
   it("reopens a resolved thread from its card", async () => {
@@ -1094,9 +1218,9 @@ describe("comments: actions", () => {
   it("the Comments setting in Share turns comments off", async () => {
     const patches = calls("PATCH");
     mount(`${viewerPath(OWNED)}?panel=open&tab=share`);
-    const box = await screen.findByRole("checkbox", { name: "Comments" });
+    const box = await screen.findByRole("radio", { name: "On" });
     expect(box).toBeChecked();
-    fireEvent.click(box);
+    fireEvent.click(screen.getByRole("radio", { name: "Off" }));
     await waitFor(() =>
       expect(
         patches.some(
@@ -1115,7 +1239,7 @@ describe("comments: errors", () => {
     });
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: text } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     return c;
   };
   const fail = (status: number, code: string) =>
@@ -1301,12 +1425,57 @@ describe("comments: live and signed out", () => {
     );
     mount(viewerPath(PUBLIC));
     const c = await col();
-    expect(
-      await within(c).findByText("Sign in to comment."),
-    ).toBeInTheDocument();
+    const link = await within(c).findByRole("link", {
+      name: "Sign in to comment",
+    });
+    expect(link).toHaveAttribute(
+      "href",
+      `/sign-in?next=${encodeURIComponent(window.location.pathname + window.location.search)}`,
+    );
     expect(within(c).getByText("From someone")).toBeInTheDocument();
     expect(within(c).queryByRole("button", { name: "Resolve" })).toBeNull();
     expect(within(c).queryByRole("textbox")).toBeNull();
+  });
+
+  it("#2080: commenters signed-in bars a guest without can.comment, and the refusal reads Sign in to comment.", async () => {
+    server.use(
+      http.get("*/api/v1/me", () =>
+        HttpResponse.json(
+          { error: { code: "unauthorized", message: "no" } },
+          { status: 401 },
+        ),
+      ),
+      http.get(`*${R.artifact(PUBLIC)}`, () =>
+        HttpResponse.json({
+          ...fixtures.artifacts.find((a) => a.id === PUBLIC),
+          visibility: "public",
+          commenters: "signed-in",
+          comments: true,
+        }),
+      ),
+      http.get(`*${R.comments(PUBLIC)}`, () =>
+        HttpResponse.json({ threads: [oneThread], open: 1, truncated: false }),
+      ),
+    );
+    mount(viewerPath(PUBLIC));
+    const c = await col();
+    expect(
+      await within(c).findByRole("link", { name: "Sign in to comment" }),
+    ).toBeInTheDocument();
+    expect(within(c).getByText("From someone")).toBeInTheDocument();
+    expect(within(c).queryByRole("textbox")).toBeNull();
+    const { ApiClientError } = await import("../src/api/client");
+    const { commentError } = await import("../src/api/comments");
+    expect(
+      commentError(
+        new ApiClientError(
+          "comments_signed_in_only",
+          "Sign in to comment.",
+          403,
+        ),
+        false,
+      ),
+    ).toBe("Sign in to comment.");
   });
 
   it("a guest on a public artifact that allows anonymous writes gets a name field", async () => {
@@ -1355,7 +1524,7 @@ describe("comments: live and signed out", () => {
     });
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: "hello" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(posts).toHaveLength(1));
     expect(posts[0]?.body).toEqual({
       anchor: { kind: "note" },
@@ -1521,7 +1690,7 @@ describe("comments: guests and Retry-After", () => {
     });
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: "hi" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(writes).toEqual([null]));
     await waitFor(() => expect(localStorage.getItem("oa.anonId")).toBe(TOKEN));
     // The refetch after the post carries the stored token.
@@ -1609,7 +1778,7 @@ describe("comments: guests and Retry-After", () => {
     });
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: "hi" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     return c;
   };
 
@@ -1947,24 +2116,15 @@ describe("comments: review round 1", () => {
       ),
     );
   it.each([
-    [
-      { visibility: "public", dataWriters: "viewers" },
-      /Anyone with the link can comment/,
-    ],
-    [
-      // Public is enough: signed-out visitors can comment on public artifacts.
-      { visibility: "public", dataWriters: "editors" },
-      /Anyone with the link can comment/,
-    ],
-    [
-      { visibility: "team", dataWriters: "viewers" },
-      /People who can open this can comment on it\./,
-    ],
-  ])("M3: the Share hint for %j", async (over, hint) => {
+    [{ visibility: "public", dataWriters: "viewers" }, 3],
+    // Public is enough: dataWriters does not change who can comment.
+    [{ visibility: "public", dataWriters: "editors" }, 3],
+    [{ visibility: "team", dataWriters: "viewers" }, 2],
+  ])("M3: the Who can comment choices for %j", async (over, n) => {
     art(over);
     mount(`${viewerPath(OWNED)}?panel=open&tab=share`);
-    await screen.findByRole("checkbox", { name: "Comments" });
-    expect(await screen.findByText(hint)).toBeInTheDocument();
+    const g = await screen.findByRole("group", { name: "Who can comment" });
+    expect(within(g).getAllByRole("radio")).toHaveLength(n);
   });
 
   it("M5: only a minting write takes the mint lock; reads and other writes never do", async () => {
@@ -2068,7 +2228,7 @@ describe("comments: capped members", () => {
     });
     fireEvent.focus(box);
     fireEvent.change(box, { target: { value: "hi" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     return c;
   };
 
@@ -2237,7 +2397,7 @@ describe("comments: the quote stays highlighted while writing (#1834)", () => {
     await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
     const box = await screen.findByRole("textbox", { name: "Add a comment" });
     fireEvent.change(box, { target: { value: "Tighten this" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(posts).toHaveLength(1));
     // The draft is closed, but the quote is still sent: no frame without a
     // highlight while the list refetches.
@@ -2268,7 +2428,7 @@ describe("comments: the quote stays highlighted while writing (#1834)", () => {
     await act(async () => opts.at(-1)?.onCommentSelect(quote("Landing")));
     const box = await screen.findByRole("textbox", { name: "Add a comment" });
     fireEvent.change(box, { target: { value: "Tighten this" } });
-    fireEvent.click(within(c).getByRole("button", { name: "Comment" }));
+    fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(posts).toHaveLength(1));
     // Held for a moment (the list is still empty)...
     expect(sentQuote()).toMatchObject({ exact: "Landing" });
@@ -2302,7 +2462,7 @@ describe("comments: a server without comments", () => {
     expect(
       screen.queryByRole("complementary", { name: "Comments" }),
     ).toBeNull();
-    expect(screen.queryByRole("checkbox", { name: "Comments" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Who can comment" })).toBeNull();
     expect(setMode).not.toHaveBeenCalledWith("select");
   });
 

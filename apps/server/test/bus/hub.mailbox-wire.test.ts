@@ -11,6 +11,7 @@ import {
   type ServerFrame,
 } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { BusHub } from "../../src/bus/hub.js";
 import {
   type Daemon,
@@ -308,6 +309,102 @@ describe("mailbox wire (#1295 PR B)", () => {
     rcv.close();
     snd.close();
     old.close();
+  });
+
+  it("#2029: waiting is sent only to a socket that listed the waiting cap; an old strict decoder still reads the roster", async () => {
+    const { rcv, snd, ref, name, n } = await trio([...MB, "waiting"]);
+    await close(rcv, ref);
+    await send(snd, "snd", name);
+    await send(snd, "snd", name);
+    const row = (await list(snd, "snd")).r.agents.find(
+      (a) => a.bus_name === name,
+    );
+    expect(row).toMatchObject({ state: "away", waiting: 2 });
+
+    // A mailbox-only socket (a daemon since v0.125.0): no `waiting` key, and
+    // main's strict row schema (without it) reads the whole roster.
+    const om = await machine("Old");
+    const old = await connect(om.token, MB);
+    await reg(old, "oldsnd", uniq("Old"), n);
+    const { r, raw } = await list(old, "oldsnd");
+    expect(JSON.stringify(raw)).not.toContain("waiting");
+    const OldRow = z.strictObject({
+      bus_name: z.string(),
+      kind: z.string(),
+      namespace: z.string(),
+      global: z.boolean(),
+      state: z.enum(["live", "queued", "away"]),
+      since: z.string().optional(),
+      machine_label: z.string().optional(),
+      status: z.string().optional(),
+      status_label: z.string().optional(),
+      status_at: z.string().optional(),
+      former_names: z.array(z.unknown()).optional(),
+    });
+    const away = r.agents.find((a) => a.bus_name === name);
+    expect(away).toMatchObject({ state: "away" });
+    for (const a of r.agents) expect(OldRow.safeParse(a).success).toBe(true);
+    rcv.close();
+    snd.close();
+    old.close();
+  });
+
+  it("#2079: waiting_query counts only this machine's own away refs, and only for a socket that listed the cap", async () => {
+    await setClock(base());
+    const n = ns("wq");
+    const caps = [...MB, "waiting", BUS_CAPS.waitingQuery];
+    const rm = await machine("Rcv");
+    const sm = await machine("Snd");
+    const rcv = await connect(rm.token, caps);
+    const snd = await connect(sm.token, caps);
+    const ref = uniq("r");
+    const name = await reg(rcv, ref, uniq("Rcv"), n);
+    await reg(snd, "snd", uniq("Snd"), n);
+    await close(rcv, ref);
+    await send(snd, "snd", name);
+    await send(snd, "snd", name);
+    // A live agent of the same machine with mail pending (no ack): still not counted.
+    const liveRef = uniq("l");
+    const liveName = await reg(rcv, liveRef, uniq("Live"), n);
+    await send(snd, "snd", liveName);
+    const ask = async (d: Daemon, refs: string[]) => {
+      const fid = id("q");
+      d.send({ v: 1, id: fid, type: "waiting_query", agent_refs: refs });
+      for (;;) {
+        const f = await d.next();
+        if ((f.type === "waiting_counts" || f.type === "error") && f.id === fid)
+          return f;
+      }
+    };
+    // Its own away ref counts; unknown and live refs are left out.
+    const own = await ask(rcv, [ref, liveRef, "nope"]);
+    expect(own).toMatchObject({ type: "waiting_counts" });
+    expect((own as { counts: unknown }).counts).toEqual({ [ref]: 2 });
+    // Another machine never learns this one's refs.
+    const other = await ask(snd, [ref, "snd", liveRef]);
+    expect(other).toMatchObject({ type: "waiting_counts" });
+    expect((other as { counts: unknown }).counts).toEqual({});
+    // A socket without the cap gets what an older hub gives.
+    const om = await machine("Old");
+    const old = await connect(om.token, MB);
+    expect(await ask(old, [ref])).toMatchObject({
+      type: "error",
+      code: "bad_frame",
+    });
+    // The hub lists the cap to a hello that listed it.
+    const d = await daemon((await machine("M")).token);
+    d.send({
+      v: 1,
+      id: "hh2",
+      type: "hello",
+      machine_label: "M",
+      client_version: "0.0.0",
+      caps,
+    });
+    expect((await waitFor(d, "hello_ok")).caps).toContain(
+      BUS_CAPS.waitingQuery,
+    );
+    for (const x of [rcv, snd, old, d]) x.close();
   });
 
   const upReplacing = (ref: string, name: string, n: string, old: string) =>

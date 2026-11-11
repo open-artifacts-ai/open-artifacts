@@ -40,7 +40,7 @@ import type {
 import { stmt } from "../db/stmt.js";
 import type { Env } from "../env.js";
 import { ApiError, appOrigin } from "../http/errors.js";
-import { logError } from "../log.js";
+import { logError, logInfo } from "../log.js";
 import { lookupUserGrant } from "../mcp/oauth-api.js";
 import { b64urlEncode, sha256Hex } from "../util/crypto.js";
 import {
@@ -104,6 +104,17 @@ export type BusHubRpc = {
   ping(): Promise<true>;
   /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */
   deliverNotice(notice: BusNotice): Promise<DeliveryOutcome>;
+  /** #2175: drop the notices still held for an agent removed from thread `threadId` (its thread_reply and asker rows, and `commentIds`' targets); returns the withdrawn targets (not settled). */
+  withdrawHeld(args: {
+    namespace: string;
+    name: string;
+    identityId?: string;
+    artifactId: string;
+    threadId: string;
+    commentIds: string[];
+  }): Promise<{
+    withdrawn: Array<{ commentId: string; kind: string; key: string }>;
+  }>;
   /** #1822: the live session whose proof hashes to `hash`, in this member's own hub; else null. */
   agentByProof(hash: string): Promise<AgentIdentity | null>;
   /** #1890: the identity id and kind of this member's agent at the address (live or away), else null. */
@@ -547,22 +558,37 @@ async function lookupProof(
   userId: string,
   proof: unknown,
 ): Promise<AgentIdentity | null> {
+  const t0 = Date.now();
+  // #2110: one line per lookup that gives no identity, so a flapping link is
+  // visible. Reason and elapsed ms only: never the proof, its hash or a token.
+  const none = (reason: "timeout" | "miss" | "no_machine" | "error") => {
+    logInfo("bus_link_lookup_none", {
+      reason,
+      ms: Date.now() - t0,
+    });
+    return null;
+  };
   try {
     const p = LinkProofSchema.safeParse(proof);
     if (!busOn(env) || !p.success) return null;
     // One bound for the whole lookup, the machine read included, so a slow
     // D1 read cannot slow /mcp either; a timeout is unlinked, like a miss.
-    return await within(
-      (async () => {
-        if (!(await hasConnectedMachine(env, userId))) return null;
+    const r = await within(
+      (async (): Promise<{ id: AgentIdentity | null } | "no_machine"> => {
+        if (!(await hasConnectedMachine(env, userId))) return "no_machine";
         const hub = busHub(env, userId);
-        return hub ? await hub.agentByProof(await sha256Hex(p.data)) : null;
+        return {
+          id: hub ? await hub.agentByProof(await sha256Hex(p.data)) : null,
+        };
       })(),
       LINK_LOOKUP_MS,
     );
+    if (r === null) return none("timeout");
+    if (r === "no_machine") return none("no_machine");
+    return r.id ?? none("miss");
   } catch (e) {
     logError("bus_link_lookup_failed", e);
-    return null;
+    return none("error");
   }
 }
 

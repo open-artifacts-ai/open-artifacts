@@ -250,9 +250,9 @@ for (const [w, h] of [
   });
 }
 
-// A tall edge panel in a short window grows and the page scrolls: the panel
-// starts below the banner above it instead of overlapping it, and its bottom
-// is reachable.
+// A tall edge panel in a short window scrolls inside its own scroller
+// (.oa-edge, #2172: the page itself never scrolls): the panel starts below the
+// banner above it instead of overlapping it, and its bottom is reachable.
 test("edge panel on a short phone window isn't clipped at the top", async ({
   page,
 }) => {
@@ -269,11 +269,18 @@ test("edge panel on a short phone window isn't clipped at the top", async ({
     };
   });
   expect(r.top).toBeGreaterThanOrEqual(r.above);
-  // The panel's own bottom is reachable by scrolling the page.
+  // The panel's own bottom is reachable by scrolling .oa-edge, and the page
+  // itself never scrolls (#2172).
   const reach = await page.evaluate(() => {
+    const e = document.querySelector(".oa-edge") as HTMLElement;
+    e.scrollTo(0, e.scrollHeight);
     window.scrollTo(0, document.documentElement.scrollHeight);
     const p = document.querySelector(".oa-panel")?.getBoundingClientRect();
-    return p ? p.bottom <= window.innerHeight + 1 : false;
+    return {
+      bottom: p ? p.bottom <= window.innerHeight + 1 : false,
+      page: window.scrollY,
+    };
   });
-  expect(reach).toBe(true);
+  expect(reach.bottom).toBe(true);
+  expect(reach.page).toBe(0);
 });

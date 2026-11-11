@@ -663,6 +663,7 @@ describe("RPC surface", () => {
       "viewReachProposal",
       "viewRoleProposal",
       "wipe",
+      "withdrawHeld",
     ]);
   });
 });
