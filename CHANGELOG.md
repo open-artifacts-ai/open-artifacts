@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.153.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.152.1...v0.153.0) (2026-11-11)
+
+
+### Features
+
+* **bus:** one artifact's comment notices fold into one while an agent is away ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2055](https://github.com/open-artifacts-ai/open-artifacts/issues/2055)) ([5453b87](https://github.com/open-artifacts-ai/open-artifacts/commit/5453b879f15895e7c2940ffb7b9acba438793e68))
+* **provisioning-contract:** optional billingTier on installs ([#2058](https://github.com/open-artifacts-ai/open-artifacts/issues/2058)) ([#2061](https://github.com/open-artifacts-ai/open-artifacts/issues/2061)) ([e5dd994](https://github.com/open-artifacts-ai/open-artifacts/commit/e5dd99489def570ee76b3e4b398a86b8fbaa0b7b))
+
 ## [0.152.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.152.0...v0.152.1) (2026-11-11)
 
 
