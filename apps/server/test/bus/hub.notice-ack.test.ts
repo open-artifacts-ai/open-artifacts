@@ -6,8 +6,8 @@ import { runInDurableObject } from "cloudflare:test";
 import { BUS_CAPS } from "@oa/bus-protocol";
 import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
-import * as runtimeMod from "../../src/runtime/do.js";
 import { setTargetState } from "../../src/runtime/comments-store.js";
+import * as runtimeMod from "../../src/runtime/do.js";
 import { runtimeStub } from "../../src/runtime/do.js";
 import {
   type Daemon,
