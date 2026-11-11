@@ -38,6 +38,7 @@ import {
   personFirstAtStart,
   personName,
 } from "../../layout/person";
+import { groupSyncHidden } from "../../layout/SyncBanner";
 import { UserAvatar } from "../../layout/UserAvatar";
 import { AppLink } from "../../library/AppLink";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -725,9 +726,32 @@ export function SpacePeople({
   const list = useSpaceMembers(space.id, { q: term, group });
   const everyone = useSpaceMembers(space.id, {}, term !== "" || group !== "");
   const mappings = useSpaceMappings(space.id);
-  const rows = [...(list.data?.pages.flatMap((p) => p.items) ?? [])].sort(
-    order,
-  );
+  // Below Business a synced person is an ordinary member (#2113): the synced
+  // role reads as one added by hand, with no group behind it.
+  const hideSync = state.status === "authed" && groupSyncHidden(state.me);
+  // Every space groups stay: the server enforces their floor whatever the mode.
+  const ordinary = (m: SpaceMember): SpaceMember => {
+    if (!hideSync || !(m.syncRole || m.groups.length)) return m;
+    const top = (gs: SpaceMember["groups"]) =>
+      gs.reduce<SpaceRole | null>(
+        (best, g) =>
+          best === null || RANK[g.role] > RANK[best] ? g.role : best,
+        null,
+      );
+    const every = m.groups.filter((g) => g.via === "every");
+    const own = top(m.groups.filter((g) => g.via === "space"));
+    return {
+      ...m,
+      // This space's own group role reads as one set by hand.
+      manualRole: m.manualRole ?? own,
+      // What the server computes: the Every space groups' highest role.
+      syncRole: top(every),
+      groups: every,
+    };
+  };
+  const rows = [...(list.data?.pages.flatMap((p) => p.items) ?? [])]
+    .map(ordinary)
+    .sort(order);
   const total = list.data?.pages[0]?.total ?? 0;
   const allTotal =
     term || group ? (everyone.data?.pages[0]?.total ?? 0) : total;

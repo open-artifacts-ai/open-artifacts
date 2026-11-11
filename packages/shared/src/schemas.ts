@@ -131,6 +131,17 @@ export const AgentRefSchema = z.object({
   version: z.string().nullable(),
   /** Set only when `name` is a stand-in: "<owner name>'s agent" or "A member's agent". */
   masked: z.literal(true).optional(),
+  /**
+   * #2118: set on a version's agent when the publish was bus-linked and the
+   * viewer is no outsider. Absent: unlinked, an outsider, or an older server.
+   */
+  linked: z.boolean().optional(),
+  /** A linked agent only: its product (for example "Claude Code"), from the bus. */
+  product: z.string().optional(),
+  /** A linked agent only: its face. `color` is a presence palette index. */
+  animal: z
+    .object({ id: z.string(), color: z.number().int().min(0) })
+    .optional(),
 });
 export type AgentRef = z.infer<typeof AgentRefSchema>;
 

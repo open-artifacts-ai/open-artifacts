@@ -224,19 +224,79 @@ describe("asks on the comments column", () => {
     expect(await within(c).findByText("Which layout?")).toBeInTheDocument();
     expect(within(c).getByText("Detail on its own screen")).toBeInTheDocument();
     expect(within(c).getByText("Recommended")).toBeInTheDocument();
-    expect(within(c).getByText("Why: Both stay in view.")).toBeInTheDocument();
+    expect(
+      within(c).getByText("Why B: Both stay in view."),
+    ).toBeInTheDocument();
     expect(within(c).getByText(/1 ask for you/)).toBeInTheDocument();
     fireEvent.click(within(c).getByRole("button", { name: /List only/ }));
     await waitFor(() => expect(answered).toEqual({ optionId: "a" }));
     expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
   });
 
-  it("heads the ask 'Ask', amber while it needs you, with a key badge per option and a Recommended tag", async () => {
+  it("an agent asker keeps its agent tag in the header", async () => {
+    const base = askThread();
+    serveThreads(() => [
+      askThread({
+        comments: [
+          {
+            ...base.comments[0],
+            author: {
+              kind: "agent",
+              id: "agent:product",
+              name: "OA Product",
+              me: false,
+              linked: true,
+              product: "Claude Code",
+              animal: { id: "fox", color: 1 },
+            },
+          },
+        ],
+      }),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    const head = c.querySelector("[data-ask-from]") as HTMLElement;
+    expect(head.textContent).toMatch(/^OA Product\s+agent\s+asks you$/);
+    expect(head.querySelector("[data-agent-tag]")).not.toBeNull();
+  });
+
+  it.each([
+    [[{ kind: "user", id: "me", name: "Me", me: true }], "Leo asks you"],
+    [[{ kind: "user", id: "u1", name: "Sam", me: false }], "Leo asks Sam"],
+    [
+      [
+        { kind: "user", id: "u1", name: "Sam", me: false },
+        { kind: "user", id: "u2", name: "Maya", me: false },
+      ],
+      "Leo asks Sam and Maya",
+    ],
+    [
+      [
+        { kind: "user", id: "u1", name: "Sam", me: false },
+        { kind: "user", id: "u2", name: "Maya", me: false },
+        { kind: "user", id: "u3", name: "Lee", me: false },
+        { kind: "user", id: "u4", name: "Kim", me: false },
+      ],
+      "Leo asks Sam and 3 others",
+    ],
+    [[], "Leo asks"],
+  ])("names who an ask is for: %#", async (to, expected) => {
+    serveThreads(() => [askThread({}, { to })]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(c.querySelector("[data-ask-from]")?.textContent).toBe(expected);
+  });
+
+  it("says who asks, amber while it needs you, with a key badge per option and a Recommended tag", async () => {
     serveThreads(() => [askThread()]);
     mount(viewerPath(OWNED));
     const c = await col();
     await within(c).findByText("Which layout?");
-    expect(within(c).getByText("Ask", { selector: "p" })).toBeInTheDocument();
+    expect(c.querySelector("[data-ask-from]")?.textContent).toMatch(
+      / asks you$/,
+    );
     expect(c.querySelector("[data-ask]")).toHaveAttribute("data-needs-you");
     const keys = [...c.querySelectorAll("[data-option-key]")].map(
       (k) => k.textContent,

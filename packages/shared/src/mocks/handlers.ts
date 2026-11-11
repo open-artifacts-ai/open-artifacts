@@ -1012,7 +1012,31 @@ export function createHandlers(opts: MockOptions = {}): HttpHandler[] {
             .slice(0, VERSIONS_PAGE_SIZE)
             .map((v) =>
               anon ? { ...v, createdBy: hideEmail(v.createdBy) } : v,
-            ),
+            )
+            // ?mock=agents (#2118): by version % 4, 0 linked agent, 1 unlinked
+            // agent, 2 a person, 3 an outsider's view (masked, no face fields).
+            .map((v) => {
+              if (!opts.commentAgents || anon || !v.agent) return v;
+              const k = v.version % 4;
+              if (k === 2) return { ...v, agent: null };
+              if (k === 3)
+                return {
+                  ...v,
+                  agent: { name: "Ada's agent", version: null, masked: true },
+                };
+              return {
+                ...v,
+                agent:
+                  k === 0
+                    ? {
+                        ...v.agent,
+                        linked: true,
+                        product: "Claude Code",
+                        animal: { id: "fox", color: 2 },
+                      }
+                    : { ...v.agent, linked: false },
+              };
+            }),
         );
       }),
     ),

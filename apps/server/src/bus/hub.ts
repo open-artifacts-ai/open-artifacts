@@ -3554,7 +3554,12 @@ function promotedText(old: string, artifactId: string): string {
   return [line, lines[1], lines[lines.length - 1]].join("\n");
 }
 
-type AckTarget = { a: string; c: string; k: "mention" | "asker"; key: string };
+type AckTarget = {
+  a: string;
+  c: string;
+  k: "mention" | "asker" | "reply";
+  key: string;
+};
 
 function parseAcks(s: string | null): string[] {
   if (!s) return [];
@@ -3601,7 +3606,7 @@ function noticeAckOf(n: BusNotice): string | null {
   const t = n.target;
   if (
     !t ||
-    (t.kind !== "mention" && t.kind !== "asker") ||
+    (t.kind !== "mention" && t.kind !== "asker" && t.kind !== "reply") ||
     typeof t.key !== "string" ||
     t.key.length === 0 ||
     t.key.length > 256 ||

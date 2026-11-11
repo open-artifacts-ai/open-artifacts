@@ -21,9 +21,7 @@ function Slot() {
     <TitleLive
       held={null}
       swapped={swapped}
-      current={null}
       onView={() => {}}
-      onCurrent={() => {}}
       onExpire={(v) => setSwapped((s) => expireSwapped(s, v))}
     />
   );

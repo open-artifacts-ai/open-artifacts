@@ -32,7 +32,7 @@ type Buy = Pick<BillingCheckoutInput, "tier" | "interval">;
 const NAME: Record<BillingTier, string> = {
   free: "Solo",
   solo: "Solo",
-  trial: "Business trial",
+  trial: "Team trial",
   team: "Team",
   business: "Business",
 };
@@ -43,11 +43,11 @@ const PRICE: Record<BillingTier, string> = {
   team: "$10 per creator per month",
   business: "$25 per creator per month",
 };
-/** The tier's column in the comparison; the trial is Business until it ends. */
+/** The tier's column in the comparison; the invite trial is Team until it ends (#2113). */
 const COLUMN: Record<BillingTier, Column> = {
   free: "solo",
   solo: "solo",
-  trial: "business",
+  trial: "team",
   team: "team",
   business: "business",
 };
@@ -94,20 +94,20 @@ export const planStatus = (
         }. After that, this instance becomes read-only.`,
       },
     };
-  // trialEndsAt is the Business trial's only: a Solo row with one is a used
-  // Business trial and shows no note. The Solo month has its own date, and a
+  // trialEndsAt is the Team trial's only: a Solo row with one is a used
+  // Team trial and shows no note. The Solo month has its own date, and a
   // date already past (a paid Solo) shows nothing.
   if (b.tier === "trial" && b.trialEndsAt)
     return {
       pill: { label: "Trial", tone: "info" },
       note: {
         tone: "info",
-        text: `Trial ends ${date(b.trialEndsAt)}. Everything in Business is on.`,
+        text: `Trial ends ${date(b.trialEndsAt)}. Everything in Team is on.`,
       },
     };
   if (solo && b.soloTrialEndsAt && Date.parse(b.soloTrialEndsAt) > Date.now())
     return {
-      // Not "Trial": that is the Business trial's word.
+      // Not "Trial": that is the Team trial's word.
       pill: { label: "Free month", tone: "info" },
       note: {
         tone: "info",

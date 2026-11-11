@@ -1867,8 +1867,14 @@ describe("Me.instance.billing and the billing routes", () => {
     const post = (body: unknown) =>
       send(R.billingCheckout, owner.cookie, { method: "POST", body });
     const before = calls.filter((c) => c.path === "/checkout").length;
-    expect((await post({ tier: "solo" })).status).toBe(400);
-    expect((await post({ tier: "team", interval: "month" })).status).toBe(400);
+    for (const body of [{ tier: "solo" }, { tier: "solo", interval: "week" }]) {
+      const r = await post(body);
+      expect(r.status).toBe(400);
+      expect(await errOf(r)).toMatchObject({ code: "bad_request" });
+    }
+    expect(
+      (await post({ tier: "solo", interval: "year", seats: 2 })).status,
+    ).toBe(400);
     expect((await post({ tier: "solo", interval: "week" })).status).toBe(400);
     expect(calls.filter((c) => c.path === "/checkout").length).toBe(before);
     const r = await post({ tier: "solo", interval: "year" });
@@ -1880,6 +1886,44 @@ describe("Me.instance.billing and the billing routes", () => {
     expect(
       calls.filter((c) => c.path === "/checkout").at(-1)?.body,
     ).not.toHaveProperty("interval");
+  });
+
+  it("checkout team and business: yearly needs seats; interval and seats forwarded; bad bodies 400 before billing", async () => {
+    await cache({ tier: "trial", trialEndsAt: mid + DAY, version: 2 });
+    const post = (body: unknown) =>
+      send(R.billingCheckout, owner.cookie, { method: "POST", body });
+    const n = () => calls.filter((c) => c.path === "/checkout").length;
+    const before = n();
+    for (const body of [
+      { tier: "team", interval: "year" },
+      { tier: "business", interval: "year", seats: 0 },
+      { tier: "business", interval: "year", seats: 10_001 },
+      { tier: "team", interval: "year", seats: 1.5 },
+      { tier: "team", interval: "month", seats: 3 },
+      { tier: "team", seats: 3 },
+    ]) {
+      const r = await post(body);
+      expect(r.status).toBe(400);
+      expect(await errOf(r)).toMatchObject({ code: "bad_request" });
+    }
+    expect(n()).toBe(before);
+    expect(
+      (await post({ tier: "team", interval: "year", seats: 7 })).status,
+    ).toBe(200);
+    expect(
+      calls.filter((c) => c.path === "/checkout").at(-1)?.body,
+    ).toMatchObject({
+      install: INSTALL,
+      plan: "team",
+      interval: "year",
+      seats: 7,
+    });
+    expect((await post({ tier: "business", interval: "month" })).status).toBe(
+      200,
+    );
+    const last = calls.filter((c) => c.path === "/checkout").at(-1)?.body;
+    expect(last).toMatchObject({ plan: "business", interval: "month" });
+    expect(last).not.toHaveProperty("seats");
   });
 
   it("checkout solo is refused (409) on a Team or Business instance, allowed on solo, free and trial", async () => {
