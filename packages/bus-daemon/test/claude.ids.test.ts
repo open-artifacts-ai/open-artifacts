@@ -121,6 +121,7 @@ describe("reply ids in the daemon", () => {
       "link",
       "waiting",
       "waiting_query",
+      "notice_ack",
     ]);
   });
 

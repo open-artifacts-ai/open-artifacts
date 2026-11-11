@@ -217,7 +217,9 @@ describe("a Codex session survives a daemon restart (#1748)", () => {
       wakes: async () => true,
     });
     two.toDaemon(deliverFrame("mmmmmmmmmmmmmmm1", THREAD));
-    expect(await two.next("ack")).toMatchObject({ msg_id: "mmmmmmmmmmmmmmm1" });
+    // Queued is not taken (#2029): no ack until a turn takes the item.
+    await vi.waitFor(() => expect(existsSync(out)).toBe(true));
+    expect(two.of("ack")).toEqual([]);
     const runs = readFileSync(out, "utf8").trim().split("\n");
     expect(runs).toHaveLength(1);
     expect(JSON.parse(runs[0] as string).slice(0, 2)).toEqual([

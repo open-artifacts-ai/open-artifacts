@@ -69,6 +69,7 @@ import {
   writeCodexAway,
 } from "./codex-away.ts";
 import { codexThreadNames } from "./codex-names.ts";
+import { TakenWatch } from "./codex-taken.ts";
 import {
   type Config,
   claudeReturnDir,
@@ -152,6 +153,7 @@ export * from "./agents.ts";
 export * from "./attest.ts";
 export * from "./codex-attest.ts";
 export * from "./codex-names.ts";
+export * from "./codex-taken.ts";
 export * from "./config.ts";
 export * from "./config-issues.ts";
 export * from "./dedupe.ts";
@@ -305,8 +307,8 @@ export type DaemonDeps = {
     run?: CodexTransportOptions["run"];
     /** Whether a Codex process wakes on a queued message; default: not `codex exec`. */
     wakes?: CodexTransportOptions["wakes"];
-    /** msg_ids `codex queue` took; default ~/.oa-bus/codex-queued.json. */
-    queuedFile?: string;
+    /** Queued ids no turn has taken yet; default ~/.oa-bus/codex-pending.json. */
+    takenFile?: string;
     /** Live Codex threads kept across a restart (#1748); default ~/.oa-bus/codex-agents.json. */
     agentsFile?: string;
     /** #2029: Codex threads proved here, kept for wake; default ~/.oa-bus/codex-away.json. */
@@ -688,6 +690,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   });
   /** Where Codex keeps its thread names (#1748). */
   const codexIndexHome = cx.home ?? codexHome();
+  /** Queued Codex mail a turn has not taken yet (#2029): acked late, once it has. */
+  const codexTaken = new TakenWatch({
+    home: codexIndexHome,
+    file: cx.takenFile ?? join(home(), "codex-pending.json"),
+    onTaken: (id) => delivery.delivered(id),
+    log,
+  });
   const codex = new CodexTransport({
     resolve:
       cx.resolveBin ??
@@ -699,7 +708,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     run: cx.run ?? execCodex(),
     home: codexIndexHome,
     wakes: cx.wakes ?? codexHostWakes,
-    queued: new HeldStore(cx.queuedFile ?? join(home(), "codex-queued.json")),
+    taken: codexTaken,
     log,
     event: ev,
   });
@@ -2489,6 +2498,14 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     // prompt it.
     for (const rec of agents.all()) if (rec.live) flushRename(rec);
     sweepBindings();
+    // Queued Codex mail a turn has taken is acked now, late (#2029).
+    try {
+      codexTaken.check();
+    } catch (e) {
+      log(
+        `codex taken check failed: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
   };
   restoreCodex();
   sync();

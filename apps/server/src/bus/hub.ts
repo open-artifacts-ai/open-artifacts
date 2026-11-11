@@ -60,6 +60,7 @@ import {
   MAX_ACTIVE_MACHINES,
 } from "../services/bus.js";
 import type { DeliveryOutcome } from "../services/bus-delivery.js";
+import { agentKey } from "../services/comment-agents.js";
 import {
   follow,
   following,
@@ -3540,6 +3541,19 @@ const NOTICE_COLS =
 /** #1752: folded targets a waiting notice keeps; older ones settle as gone at once. */
 const NOTICE_FOLD_MAX = 50;
 
+/**
+ * #2175: the text of a held notice whose own comment was withdrawn and a fold
+ * promoted. The promoted comment's header and ids are not stored, so a neutral
+ * line stands in; the URL (line 2) and the tier tail (last line) of the
+ * commentNoticeText format are kept when the old text has that shape.
+ */
+function promotedText(old: string, artifactId: string): string {
+  const line = `New comment on artifact ${artifactId}. Read it with list_comments.`;
+  const lines = old.split("\n");
+  if (lines.length < 3 || !/^https?:\/\//.test(lines[1] ?? "")) return line;
+  return [line, lines[1], lines[lines.length - 1]].join("\n");
+}
+
 type AckTarget = {
   a: string;
   c: string;
@@ -4015,18 +4029,24 @@ export class BusHub extends DurableObject<Env> {
   }
 
   /**
-   * #2175: the notices still HELD for an agent removed from a comment thread
-   * lose the targets of `commentIds` on `artifactId`; a row left with none is
-   * deleted. Notices already sent (notice_acks) count as delivered and stay.
-   * Withdrawn targets are returned, never settled: the caller marks them.
-   * The agent is found by identity, else by namespace + name (live or away,
-   * or a live former name in grace). Worker only.
+   * #2175: the notices still HELD for an agent removed from comment thread
+   * `threadId` on `artifactId` are withdrawn: every target of `commentIds`, and
+   * the thread's own coalesced rows (`asker` and `thread_reply`, whose targets
+   * are returned; a `thread_reply` from before #2059 has none and is just
+   * deleted) whatever `commentIds` lists. A row left
+   * with no target is deleted. Only targets keyed to the removed agent (the
+   * roster key notifyAgent builds) go. Notices already sent (notice_acks) count
+   * as delivered and stay. Withdrawn targets are returned, never settled: the
+   * caller marks them. Rows are read at the passed address and at the agent's
+   * own: found by identity, else by namespace + name (live or away, or a live
+   * former name in grace). Worker only.
    */
   async withdrawHeld(a: {
     namespace: string;
     name: string;
     identityId?: string;
     artifactId: string;
+    threadId: string;
     commentIds: string[];
   }): Promise<{
     withdrawn: Array<{ commentId: string; kind: string; key: string }>;
@@ -4038,17 +4058,24 @@ export class BusHub extends DurableObject<Env> {
         typeof a?.namespace !== "string" ||
         typeof a.name !== "string" ||
         typeof a.artifactId !== "string" ||
-        !Array.isArray(a.commentIds) ||
-        a.commentIds.length === 0
+        typeof a.threadId !== "string" ||
+        a.threadId.length === 0 ||
+        !Array.isArray(a.commentIds)
       )
         return { withdrawn };
       const ids = new Set(
         a.commentIds.filter((c): c is string => typeof c === "string"),
       );
       const sql = this.ctx.storage.sql;
+      // Rows are keyed by lowercased name; the roster key hashes the name as
+      // shown, so both spellings are kept for the key check.
       const addrs = new Map<string, [string, string]>();
-      const add = (ns: string, name: string) =>
+      const names: Array<{ namespace: string; name: string }> = [];
+      const add = (ns: string, name: string) => {
         addrs.set(`${ns}\u0000${name.toLowerCase()}`, [ns, name.toLowerCase()]);
+        names.push({ namespace: ns, name });
+      };
+      add(a.namespace, a.name);
       if (typeof a.identityId === "string" && a.identityId.length > 0) {
         for (const r of all<{ namespace: string; name: string }>(
           sql,
@@ -4076,10 +4103,35 @@ export class BusHub extends DurableObject<Env> {
         ))
           add(r.namespace, r.name);
       }
+      // The removed agent's roster keys (agentKey, as notifyAgent builds
+      // `to.key`): a target keyed to another agent is not this agent's. A hub
+      // not named for a member cannot derive them, and skips the check.
+      const userId = this.ctx.id.name?.startsWith("bus:")
+        ? this.ctx.id.name.slice(4)
+        : null;
+      const keys =
+        userId === null
+          ? null
+          : new Set(
+              await Promise.all(
+                names.map((n) => agentKey(a.artifactId, userId, n)),
+              ),
+            );
+      const keyOk = (k: string) => keys === null || keys.has(k);
+      const askerPrefix = `${a.artifactId}:${a.threadId}:asker:`;
+      const replyPrefix = `${a.artifactId}:${a.threadId}:thread_reply:`;
+      // A thread_reply ckey is `${replyPrefix}${to.key}:${tier}`.
+      const ownReply = (ckey: string) => {
+        if (!ckey.startsWith(replyPrefix)) return false;
+        const rest = ckey.slice(replyPrefix.length);
+        const cut = rest.lastIndexOf(":");
+        return cut > 0 && keyOk(rest.slice(0, cut));
+      };
       type Held = {
         toNs: string;
         toLname: string;
         ckey: string;
+        text: string;
         ack: string | null;
         foldN: number;
         foldRef: string | null;
@@ -4094,20 +4146,43 @@ export class BusHub extends DurableObject<Env> {
           return null;
         }
       };
-      const hit = (s: string | null) => {
-        const t = parse(s);
-        return t !== null && t.a === a.artifactId && ids.has(t.c) ? t : null;
-      };
       let rowsTouched = 0;
       this.ctx.storage.transactionSync(() => {
         for (const [ns, lname] of addrs.values()) {
           const held = all<Held>(
             sql,
-            "select to_ns as toNs, to_lname as toLname, ckey, ack, fold_n as foldN, fold_ref as foldRef, fold_acks as foldAcks from notices where to_ns = ? and to_lname = ?",
+            `select ${NOTICE_COLS} from notices where to_ns = ? and to_lname = ?`,
             ns,
             lname,
           );
           for (const r of held) {
+            const del = () =>
+              sql.exec(
+                "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
+                r.toNs,
+                r.toLname,
+                r.ckey,
+              );
+            const reply = ownReply(r.ckey);
+            if (reply && r.ack === null && r.foldAcks === null) {
+              // A thread reply queued before #2059 has no target: nothing to
+              // return or refund.
+              rowsTouched++;
+              del();
+              continue;
+            }
+            // The thread's asker and (since #2059, targeted) thread_reply rows
+            // go whole: every target of this agent's is returned.
+            const wholeThread = reply || r.ckey.startsWith(askerPrefix);
+            const hit = (s: string | null) => {
+              const t = parse(s);
+              return t !== null &&
+                t.a === a.artifactId &&
+                keyOk(t.key) &&
+                (wholeThread || ids.has(t.c))
+                ? t
+                : null;
+            };
             const folds = parseAcks(r.foldAcks);
             const keptFolds: string[] = [];
             let removedFolds = 0;
@@ -4129,19 +4204,12 @@ export class BusHub extends DurableObject<Env> {
             if (own) {
               const next = keptFolds.pop();
               if (next === undefined) {
-                sql.exec(
-                  "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
-                  r.toNs,
-                  r.toLname,
-                  r.ckey,
-                );
+                del();
                 continue;
               }
               ack = next;
               foldN = Math.max(0, foldN - 1);
-              // The promoted comment's text is not stored; a neutral line
-              // stands in rather than text about a removed comment.
-              text = `New comment on artifact ${parse(next)?.a ?? a.artifactId}. Read it with list_comments.`;
+              text = promotedText(r.text, parse(next)?.a ?? a.artifactId);
             }
             sql.exec(
               `update notices set ack = ?, fold_n = ?, fold_ref = ?, fold_acks = ?${text === null ? "" : ", text = ?"}

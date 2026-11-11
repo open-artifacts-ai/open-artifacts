@@ -2,6 +2,7 @@
 // comment thread. Real hub; held rows seeded in the notices table directly.
 import { runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
+import { agentKey } from "../../src/services/comment-agents.js";
 import {
   daemon,
   hello,
@@ -36,12 +37,14 @@ async function setup() {
       lname,
     );
   });
-  return { d, hub, namespace, name: ok.bus_name as string, lname, identityId };
+  const name = ok.bus_name as string;
+  // The roster key notifyAgent gives this agent on artX.
+  const key = await agentKey("artX", m.userId, { namespace, name });
+  const ack = (a: string, c: string, k = key, kind = "mention") =>
+    JSON.stringify({ a, c, k: kind, key: k });
+  return { d, hub, namespace, name, lname, identityId, key, ack, m };
 }
 type S = Awaited<ReturnType<typeof setup>>;
-
-const ack = (a: string, c: string, key = "k") =>
-  JSON.stringify({ a, c, k: "mention", key });
 
 function put(
   s: S,
@@ -105,6 +108,7 @@ const call = (
       namespace: s.namespace,
       name: s.name,
       artifactId,
+      threadId: "T",
       commentIds,
       ...extra,
     }),
@@ -113,9 +117,9 @@ const call = (
 describe("withdrawHeld (#2175)", () => {
   it("removes a single held notice and returns its target", async () => {
     const s = await setup();
-    await put(s, { ckey: "a", ack: ack("artX", "c1") });
+    await put(s, { ckey: "a", ack: s.ack("artX", "c1") });
     expect(await call(s, ["c1"])).toEqual({
-      withdrawn: [{ commentId: "c1", kind: "mention", key: "k" }],
+      withdrawn: [{ commentId: "c1", kind: "mention", key: s.key }],
     });
     expect(await rows(s)).toEqual([]);
   });
@@ -124,16 +128,16 @@ describe("withdrawHeld (#2175)", () => {
     const s = await setup();
     await put(s, {
       ckey: "a",
-      ack: ack("artX", "c3"),
-      foldAcks: [ack("artX", "c1"), ack("artX", "c2")],
+      ack: s.ack("artX", "c3"),
+      foldAcks: [s.ack("artX", "c1"), s.ack("artX", "c2")],
       foldN: 2,
     });
     const r = await call(s, ["c1"]);
     expect(r.withdrawn.map((w) => w.commentId)).toEqual(["c1"]);
     const [row] = await rows(s);
     expect(row.n).toBe(1);
-    expect(row.ack).toBe(ack("artX", "c3"));
-    expect(JSON.parse(row.fa as string)).toEqual([ack("artX", "c2")]);
+    expect(row.ack).toBe(s.ack("artX", "c3"));
+    expect(JSON.parse(row.fa as string)).toEqual([s.ack("artX", "c2")]);
     expect(row.text).toBe("hello");
   });
 
@@ -141,15 +145,15 @@ describe("withdrawHeld (#2175)", () => {
     const s = await setup();
     await put(s, {
       ckey: "a",
-      ack: ack("artX", "c3"),
-      foldAcks: [ack("artX", "c1"), ack("artX", "c2")],
+      ack: s.ack("artX", "c3"),
+      foldAcks: [s.ack("artX", "c1"), s.ack("artX", "c2")],
       foldN: 2,
     });
     await call(s, ["c3"]);
     const [row] = await rows(s);
-    expect(row.ack).toBe(ack("artX", "c2"));
+    expect(row.ack).toBe(s.ack("artX", "c2"));
     expect(row.n).toBe(1);
-    expect(JSON.parse(row.fa as string)).toEqual([ack("artX", "c1")]);
+    expect(JSON.parse(row.fa as string)).toEqual([s.ack("artX", "c1")]);
     expect(row.text).toBe(
       "New comment on artifact artX. Read it with list_comments.",
     );
@@ -159,13 +163,13 @@ describe("withdrawHeld (#2175)", () => {
     const s = await setup();
     await put(s, {
       ckey: "a",
-      ack: ack("artX", "c2"),
-      foldAcks: [ack("artX", "c1")],
+      ack: s.ack("artX", "c2"),
+      foldAcks: [s.ack("artX", "c1")],
       foldN: 1,
     });
     await call(s, ["c2"]);
     const [row] = await rows(s);
-    expect(row.ack).toBe(ack("artX", "c1"));
+    expect(row.ack).toBe(s.ack("artX", "c1"));
     expect(row.n).toBe(0);
     expect(row.ref).toBeNull();
     expect(row.fa).toBeNull();
@@ -176,7 +180,7 @@ describe("withdrawHeld (#2175)", () => {
     await runInDurableObject(s.hub, (_i, st) => {
       st.storage.sql.exec(
         "insert into notice_acks (msg_id, machine_id, ack, expires_at) values ('m1', 'mach', ?, ?)",
-        ack("artX", "c1"),
+        s.ack("artX", "c1"),
         Date.now() + 3_600_000,
       );
     });
@@ -193,26 +197,26 @@ describe("withdrawHeld (#2175)", () => {
     const s = await setup();
     await put(s, {
       ckey: "a",
-      ack: ack("artX", "c1"),
+      ack: s.ack("artX", "c1"),
       toLname: "someone-else",
     });
-    await put(s, { ckey: "b", ack: ack("artY", "c1") });
+    await put(s, { ckey: "b", ack: s.ack("artY", "c1") });
     expect(await call(s, ["c1"])).toEqual({ withdrawn: [] });
     expect(await rows(s)).toHaveLength(2);
   });
 
   it("resolves by identityId and by name, and an unknown agent withdraws nothing", async () => {
     const s = await setup();
-    await put(s, { ckey: "a", ack: ack("artX", "c1") });
+    await put(s, { ckey: "a", ack: s.ack("artX", "c1") });
     expect(
       (await call(s, ["c1"], { identityId: s.identityId, name: "zzz" }))
         .withdrawn,
     ).toHaveLength(1);
-    await put(s, { ckey: "a", ack: ack("artX", "c1") });
+    await put(s, { ckey: "a", ack: s.ack("artX", "c1") });
     expect(
       (await call(s, ["c1"], { name: s.name.toUpperCase() })).withdrawn,
     ).toHaveLength(1);
-    await put(s, { ckey: "a", ack: ack("artX", "c1") });
+    await put(s, { ckey: "a", ack: s.ack("artX", "c1") });
     expect(await call(s, ["c1"], { name: "nobody" })).toEqual({
       withdrawn: [],
     });
@@ -221,7 +225,7 @@ describe("withdrawHeld (#2175)", () => {
 
   it("never settles the withdrawn targets", async () => {
     const s = await setup();
-    await put(s, { ckey: "a", ack: ack("artX", "c1") });
+    await put(s, { ckey: "a", ack: s.ack("artX", "c1") });
     const r = await runInDurableObject(s.hub, async (inst) => {
       const h = inst as unknown as Record<string, unknown> & {
         withdrawHeld(a: unknown): Promise<unknown>;
@@ -237,6 +241,7 @@ describe("withdrawHeld (#2175)", () => {
           namespace: s.namespace,
           name: s.name,
           artifactId: "artX",
+          threadId: "T",
           commentIds: ["c1"],
         });
       } finally {
@@ -246,5 +251,103 @@ describe("withdrawHeld (#2175)", () => {
       return spy.mock.calls.length;
     });
     expect(r).toBe(0);
+  });
+
+  it("withdraws the thread's targeted thread_reply row and returns its reply target", async () => {
+    const s = await setup();
+    await put(s, {
+      ckey: `artX:T:thread_reply:${s.key}:others`,
+      ack: s.ack("artX", "c5", s.key, "reply"),
+    });
+    await put(s, {
+      ckey: `artX:U:thread_reply:${s.key}:others`,
+      ack: s.ack("artX", "c6", s.key, "reply"),
+    });
+    expect(await call(s, [])).toEqual({
+      withdrawn: [{ commentId: "c5", kind: "reply", key: s.key }],
+    });
+    expect((await rows(s)).map((r) => r.ckey)).toEqual([
+      `artX:U:thread_reply:${s.key}:others`,
+    ]);
+  });
+
+  it("deletes the thread's legacy untargeted thread_reply row, returns nothing, keeps another thread's", async () => {
+    const s = await setup();
+    await put(s, { ckey: `artX:T:thread_reply:${s.key}:others`, ack: null });
+    await put(s, { ckey: `artX:U:thread_reply:${s.key}:others`, ack: null });
+    expect(await call(s, [])).toEqual({ withdrawn: [] });
+    expect((await rows(s)).map((r) => r.ckey)).toEqual([
+      `artX:U:thread_reply:${s.key}:others`,
+    ]);
+  });
+
+  it("withdraws the thread's asker row and returns its targets, whatever commentIds lists", async () => {
+    const s = await setup();
+    await put(s, {
+      ckey: "artX:T:asker:others",
+      ack: s.ack("artX", "c9", s.key, "asker"),
+      foldAcks: [s.ack("artX", "c8", s.key, "asker")],
+      foldN: 1,
+    });
+    await put(s, {
+      ckey: "artX:U:asker:others",
+      ack: s.ack("artX", "c7", s.key, "asker"),
+    });
+    const r = await call(s, ["elsewhere"]);
+    expect(r.withdrawn).toEqual([
+      { commentId: "c8", kind: "asker", key: s.key },
+      { commentId: "c9", kind: "asker", key: s.key },
+    ]);
+    expect((await rows(s)).map((x) => x.ckey)).toEqual(["artX:U:asker:others"]);
+  });
+
+  it("leaves targets and thread_reply rows keyed to another agent", async () => {
+    const s = await setup();
+    await put(s, { ckey: "a", ack: s.ack("artX", "c1", "agent:other") });
+    await put(s, { ckey: "artX:T:thread_reply:agent:other:others", ack: null });
+    await put(s, {
+      ckey: "artX:T:asker:others",
+      ack: s.ack("artX", "c9", "agent:other", "asker"),
+    });
+    expect(await call(s, ["c1"])).toEqual({ withdrawn: [] });
+    expect(await rows(s)).toHaveLength(3);
+  });
+
+  it("also reads rows at the passed address when no agent holds it", async () => {
+    const s = await setup();
+    const key = await agentKey("artX", s.m.userId, {
+      namespace: s.namespace,
+      name: "Ghost",
+    });
+    await put(s, {
+      ckey: "a",
+      ack: s.ack("artX", "c1", key),
+      toLname: "ghost",
+    });
+    await put(s, {
+      ckey: `artX:T:thread_reply:${key}:yours`,
+      ack: null,
+      toLname: "ghost",
+    });
+    expect(await call(s, ["c1"], { name: "Ghost" })).toEqual({
+      withdrawn: [{ commentId: "c1", kind: "mention", key }],
+    });
+    expect(await rows(s)).toEqual([]);
+  });
+
+  it("a promoted row keeps the original URL and tier tail", async () => {
+    const s = await setup();
+    await put(s, {
+      ckey: "a",
+      ack: s.ack("artX", "c2"),
+      foldAcks: [s.ack("artX", "c1")],
+      foldN: 1,
+      text: "Open Artifacts: header (version 3).\nhttps://x.test/a/artX\nThread T, comment c2.\nTail line.",
+    });
+    await call(s, ["c2"]);
+    const [row] = await rows(s);
+    expect(row.text).toBe(
+      "New comment on artifact artX. Read it with list_comments.\nhttps://x.test/a/artX\nTail line.",
+    );
   });
 });
