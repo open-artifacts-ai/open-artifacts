@@ -493,9 +493,11 @@ const serializer = new MarkdownSerializer(
       state.renderContent(node);
     },
     hardBreak(state, node, parent, index) {
-      // A break at the end of a block is dropped.
+      // A break with only breaks or whitespace after it is dropped: the empty
+      // line would leave a literal backslash.
       for (let i = index + 1; i < parent.childCount; i++) {
-        if (parent.child(i).type !== node.type) {
+        const sib = parent.child(i);
+        if (sib.type !== node.type && !(sib.isText && !sib.text?.trim())) {
           state.write("\\\n");
           return;
         }

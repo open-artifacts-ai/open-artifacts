@@ -42,4 +42,37 @@ describe("text after a hard break round trips", () => {
     expect(doc.childCount).toBe(1);
     expect(doc.firstChild?.type.name).toBe("paragraph");
   });
+
+  const bold = docSchema.marks.bold;
+  const italic = docSchema.marks.italic;
+  const trailing: [string, () => ReturnType<typeof docSchema.text>[]][] = [
+    ["bold space", () => [docSchema.text(" ", [bold.create()])]],
+    ["italic space", () => [docSchema.text(" ", [italic.create()])]],
+    ["plain space", () => [docSchema.text("  ")]],
+  ];
+  for (const [name, mk] of trailing) {
+    for (const wrap of ["paragraph", "list", "quote"]) {
+      it(`a break then ${name} leaves no literal backslash (${wrap})`, () => {
+        const para = docSchema.node("paragraph", null, [
+          docSchema.text("a"),
+          docSchema.node("hardBreak"),
+          ...mk(),
+        ]);
+        const item = docSchema.node("listItem", null, [para]);
+        const inner =
+          wrap === "list"
+            ? docSchema.node("bulletList", null, [item])
+            : wrap === "quote"
+              ? docSchema.node("blockquote", null, [para])
+              : para;
+        const md = docToMarkdown(docSchema.node("doc", null, [inner]));
+        expect(md).not.toContain("\\");
+        expect(markdownToDoc(md).doc.textContent.trim()).toBe("a");
+      });
+    }
+  }
+
+  // Leading whitespace inside a bold or italic run after a break is moved
+  // outside the mark by prosemirror-markdown before the escape runs.
+  it.todo("keeps leading whitespace inside a marked run after a break");
 });
