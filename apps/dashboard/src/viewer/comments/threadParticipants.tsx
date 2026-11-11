@@ -141,6 +141,8 @@ export function ThreadParticipants({
         if (e.pointerType === "mouse") leave();
       }}
       onBlur={(e) => {
+        // A focused button that leaves the list (Remove, once confirmed) blurs with no target; focus did not go elsewhere.
+        if (asking.current || !e.currentTarget.isConnected) return;
         if (!box.current?.contains(e.relatedTarget as Node | null))
           setOpen(false);
       }}

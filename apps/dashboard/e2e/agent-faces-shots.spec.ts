@@ -21,7 +21,7 @@ for (const width of [1280, 390])
       await page.setViewportSize({ width, height: 900 });
       await page.goto(`/a/${ID}?mock=agents`);
       await page.getByRole("button", { name: /^Comments/ }).click();
-      await page.getByRole("button", { name: /^\d+ replies$/ }).click();
+      await page.getByRole("button", { name: "12 replies" }).click();
       await expect(author(page, "true")).toBeVisible();
       await expect(author(page, "false")).toBeVisible();
       const body = await page.screenshot();
