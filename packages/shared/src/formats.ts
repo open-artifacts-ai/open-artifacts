@@ -1,5 +1,21 @@
-export const FORMATS = ["html", "markdown", "code", "pdf", "image"] as const;
+/**
+ * The formats a row's `format` column holds (the D1 CHECK on artifacts and
+ * versions). A doc (#1100) is stored as `markdown` with `artifacts.doc = 1`
+ * (migration 0033, additive): the API reports it as `doc`.
+ */
+export const STORED_FORMATS = [
+  "html",
+  "markdown",
+  "code",
+  "pdf",
+  "image",
+] as const;
+export type StoredFormat = (typeof STORED_FORMATS)[number];
+/** Every format the API takes and reports; `doc` is a collaborative doc (#1100). */
+export const FORMATS = [...STORED_FORMATS, "doc"] as const;
 export type Format = (typeof FORMATS)[number];
+/** A doc's one Markdown file (its entry) until the doc room lands (#1100). */
+export const DOC_ENTRY = "doc.md";
 
 function basename(path: string): string {
   return path.slice(path.lastIndexOf("/") + 1);

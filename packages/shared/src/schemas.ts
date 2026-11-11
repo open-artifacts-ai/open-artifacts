@@ -189,6 +189,13 @@ const refinePublish =
     const hasEdits = v.edits !== undefined;
     const settingsOnly =
       tool && v.id !== undefined && !hasContent && !hasFiles && !hasEdits;
+    // #1100: a new doc may start empty (no content).
+    const emptyDoc =
+      v.format === "doc" &&
+      v.id === undefined &&
+      !hasContent &&
+      !hasFiles &&
+      !hasEdits;
     if (hasEdits) {
       if (v.id === undefined) issue("edits need an id", ["edits"]);
       for (const k of [
@@ -199,7 +206,7 @@ const refinePublish =
         "language",
       ] as const)
         if (v[k] !== undefined) issue(`edits can't be combined with ${k}`, [k]);
-    } else if (hasContent === hasFiles && !settingsOnly) {
+    } else if (hasContent === hasFiles && !settingsOnly && !emptyDoc) {
       issue("Provide exactly one of content or files", [
         hasContent ? "files" : "content",
       ]);

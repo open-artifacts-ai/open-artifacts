@@ -71,6 +71,13 @@ import {
 } from "./agent-display.js";
 import { type AgentAttr, countVersionStmt, viaKey } from "./agent-usage.js";
 import { audit, userActor } from "./audit.js";
+import {
+  apiFormat,
+  docPlanInput,
+  notConvertible,
+  refuseDocSettings,
+  useEditDoc,
+} from "./doc-format.js";
 import { deleteFollowsStmt, notifyChanged } from "./follows.js";
 import {
   type ManifestEntry,
@@ -199,8 +206,10 @@ export async function publish(
   refuseSuspendedPublic(user, input.visibility);
   // An unpaid Solo is view-only: no new artifact and no new version.
   refuseViewOnly(planOfMember(user));
-  // An edits publish plans from the current version, once it is known.
-  let plan: Plan | null = input.edits ? null : planFiles(input);
+  // An edits publish plans from the current version, once it is known; a
+  // doc (#1100) once it is known to be a create.
+  const asDoc = input.format === "doc";
+  let plan: Plan | null = input.edits || asDoc ? null : planFiles(input);
   const db = env.DB;
   const now = Date.now();
   // Wall ms per step (D1 checks, R2, the batch, the DO calls): hosted
@@ -261,6 +270,9 @@ export async function publish(
           { path: "spaceId", reason: "use_move" },
         );
       create = false;
+      // #1100: a doc changes through edit_doc; other artifacts never become docs.
+      if (a.doc === 1) throw useEditDoc();
+      if (asDoc) throw notConvertible();
       title ??= a.title;
       seen = a.currentVersion;
       const sharing =
@@ -350,6 +362,8 @@ export async function publish(
     if (!cur) throw notFound();
     plan = await planEdits(env, input.edits, cur);
   }
+  // A new doc: its Markdown as one file (an existing id never gets here).
+  if (!plan && asDoc) plan = planFiles(docPlanInput(input));
   if (!plan) throw notFound();
   if (expected !== undefined)
     cas = {
@@ -439,8 +453,8 @@ export async function publish(
       db
         .prepare(
           `insert into artifacts (id, owner_id, space_id, title, description, format, visibility,
-             current_version, capabilities, data_writers, allow_anonymous_writes, comments, created_at, updated_at)
-           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ? where 1${links}${
+             current_version, capabilities, data_writers, allow_anonymous_writes, comments, doc, created_at, updated_at)
+           select ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ? where 1${links}${
              role.sql ? ` and ${role.sql} >= 2` : ""
            }${guard}`,
         )
@@ -459,6 +473,7 @@ export async function publish(
           // Kept in step for one release (#681): a rollback reads it.
           dataWriters === "viewers" ? 1 : 0,
           input.comments === false ? 0 : 1,
+          asDoc ? 1 : 0,
           now,
           now,
           ...(links ? [spaceId] : []),
@@ -821,7 +836,7 @@ export function toSummary(
     id: a.id,
     title: a.title,
     description: a.description,
-    format: a.format as Format,
+    format: apiFormat(a.format, a.doc),
     visibility: a.visibility as ArtifactSummary["visibility"],
     owner,
     currentVersion: a.currentVersion,
@@ -1189,7 +1204,10 @@ export function listQuery(env: Env, caller: Caller, q: ListQuery) {
   const conds: (SQL | undefined)[] = [
     listFilterSql(caller, q.scope, q.includeDeleted, q.spaceId),
   ];
-  if (q.format) conds.push(eq(artifacts.format, q.format));
+  // #1100: a doc is stored as markdown with doc = 1.
+  if (q.format === "doc") conds.push(eq(artifacts.doc, 1));
+  else if (q.format)
+    conds.push(eq(artifacts.format, q.format), eq(artifacts.doc, 0));
   if (q.visibility) conds.push(eq(artifacts.visibility, q.visibility));
   if (q.agent !== undefined)
     conds.push(eq(artifacts.lastAgentName, q.agent), agentShownSql(caller));
@@ -1351,8 +1369,8 @@ export async function listVersions(
      )
      select v.version, v.entry, v.manifest, v.language, v.message, v.agent_name,
        v.agent_version, v.agent_via, v.created_by, v.created_at, v.text_indexed,
-       coalesce(v.format, a.format) as format, u.email, u.name,
-       u.display_name as displayName
+       case when a.doc = 1 then 'doc' else coalesce(v.format, a.format) end as format,
+       u.email, u.name, u.display_name as displayName
      from cut
      join versions v on v.artifact_id = ?1 and v.version = cut.version
      join artifacts a on a.id = v.artifact_id
@@ -1678,6 +1696,8 @@ export async function patch(
     id,
     lock ? "visibility" : "publish",
   );
+  // #1100: a doc has no capabilities or live data.
+  if (a.doc === 1) refuseDocSettings(p);
   refuseSuspendedPublic(user, p.visibility);
   const sharing =
     p.visibility !== undefined ||
