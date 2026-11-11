@@ -522,16 +522,19 @@ export function createCommentMock({
       const bad2 = decorate(c, j, String(params.id));
       if (bad2) return bad2;
       // #2035: a reply also tells the thread's agents; the mock varies the outcome.
-      if (t.agents?.length)
-        c.notified = t.agents.map((x, i) => ({
-          key: x.key,
-          name: x.name,
-          ...(x.for ? { for: x.for } : {}),
-          ...(x.linked !== undefined ? { linked: x.linked } : {}),
-          ...(x.product ? { product: x.product } : {}),
-          ...(x.animal ? { animal: x.animal } : {}),
-          delivery: i % 3 === 0 ? "delivered" : i % 3 === 1 ? "queued" : "gone",
-        }));
+      if (t.agents?.some((x) => !x.removed))
+        c.notified = t.agents
+          .filter((x) => !x.removed)
+          .map((x, i) => ({
+            key: x.key,
+            name: x.name,
+            ...(x.for ? { for: x.for } : {}),
+            ...(x.linked !== undefined ? { linked: x.linked } : {}),
+            ...(x.product ? { product: x.product } : {}),
+            ...(x.animal ? { animal: x.animal } : {}),
+            delivery:
+              i % 3 === 0 ? "delivered" : i % 3 === 1 ? "queued" : "gone",
+          }));
       t.comments.push(c);
       emit(String(params.id), open(String(params.id)));
       return HttpResponse.json(c, { status: 201 });
@@ -550,13 +553,15 @@ export function createCommentMock({
             "forbidden",
             "Only the person whose agent it is, or the owner, can change this",
           );
-        const now = (t.agents ?? []).filter((x) => x.key !== key);
-        t.agents =
-          method === "delete"
-            ? now
-            : THREAD_AGENTS.filter(
-                (x) => x.key === key || now.some((y) => y.key === x.key),
-              ).map((x) => ({ ...x }));
+        // #2174: a removed agent stays in the list, marked.
+        const base = t.agents ?? THREAD_AGENTS.map((x) => ({ ...x }));
+        t.agents = base.map((x) =>
+          x.key !== key
+            ? x
+            : method === "delete"
+              ? { ...x, removed: true }
+              : { ...x, removed: undefined },
+        );
         emit(String(params.id), open(String(params.id)));
         return new HttpResponse(null, { status: 204 });
       }),

@@ -139,10 +139,14 @@ export function useAgentRemoval(t: CommentThread, api: CommentsApi) {
   const [err, setErr] = useState<unknown>(null);
   const back = useRef<HTMLButtonElement | null>(null);
   // The list refetches after a removal; until then the removed chip stays hidden.
-  const agents = (t.agents ?? []).filter((x) => x.key !== gone?.key);
+  const agents = (t.agents ?? []).filter(
+    (x) => !x.removed && x.key !== gone?.key,
+  );
   // An @-mention puts the agent back: once the list has dropped it, seeing it again ends the note.
   const dropped = useRef(false);
-  const listed = (t.agents ?? []).some((x) => x.key === gone?.key);
+  const listed = (t.agents ?? []).some(
+    (x) => !x.removed && x.key === gone?.key,
+  );
   useEffect(() => {
     if (!gone) {
       dropped.current = false;

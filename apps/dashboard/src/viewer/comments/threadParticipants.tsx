@@ -47,7 +47,7 @@ export function ThreadParticipants({
   api: CommentsApi;
 }) {
   const rm = useAgentRemoval(t, api);
-  const { agents, gone, confirm, setConfirm, back } = rm;
+  const { gone, confirm, setConfirm, back, run } = rm;
   const [open, setOpen] = useState(false);
   const box = useRef<HTMLDivElement>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -61,10 +61,12 @@ export function ThreadParticipants({
   const id = useId();
   const member = !api.guest && t.agents !== undefined;
   const people = peopleOf(t);
-  // Agents the list names: the live ones, then the one just removed.
-  const live = member ? agents : [];
-  const off: ThreadAgent[] = member && gone ? [gone] : [];
-  const n = people.length + live.length + off.length;
+  // Every agent of the thread, removed ones too (#2174), in the server's order.
+  // A viewer who cannot reply sees them but no × (the outsider rule alone decides who sees agents).
+  const list = member ? (t.agents ?? []) : [];
+  const isOff = (a: ThreadAgent) => a.removed === true || a.key === gone?.key;
+  const mayRemove = (a: ThreadAgent) => a.canRemove && api.canComment;
+  const n = people.length + list.length;
 
   // The list never grows past the thread card it floats over.
   useLayoutEffect(() => {
@@ -85,7 +87,7 @@ export function ThreadParticipants({
 
   const faces: React.ReactNode[] = [
     ...people.map((p) => <Person key={`p-${p.id ?? p.name}`} a={p} />),
-    ...[...live, ...off].map((a) => (
+    ...list.map((a) => (
       <span key={a.key} className="rounded-md ring-2 ring-background">
         <PartyFace p={a} medium />
       </span>
@@ -94,9 +96,7 @@ export function ThreadParticipants({
   const names = [
     `${people.length} ${people.length === 1 ? "person" : "people"}`,
     ...(member
-      ? [
-          `${live.length + off.length} ${live.length + off.length === 1 ? "agent" : "agents"}`,
-        ]
+      ? [`${list.length} ${list.length === 1 ? "agent" : "agents"}`]
       : []),
   ].join(" and ");
   const leave = () => {
@@ -186,69 +186,72 @@ export function ThreadParticipants({
               ))}
             </>
           )}
-          {live.length + off.length > 0 && (
+          {list.length > 0 && (
             <>
               <h4 className={`m-0 mt-1 ${TXT} font-semibold ${MUTED}`}>
                 Agents
               </h4>
-              {live.map((a) => (
-                <div
-                  key={a.key}
-                  data-participant-agent={a.key}
-                  className={`flex items-center gap-2 ${TXT}`}
-                >
-                  <PartyFace p={a} />
-                  <span className="min-w-0 truncate">{a.name}</span>
-                  <span className={`ml-auto whitespace-nowrap ${MUTED}`}>
-                    Gets replies
-                  </span>
-                  {!a.canRemove && (
-                    <Tip
-                      text={`Only ${a.for ?? "the person"}, whose agent it is, or the artifact's owner can remove it.`}
+              {list.map((a) => {
+                const off = isOff(a);
+                return (
+                  <div
+                    key={a.key}
+                    data-participant-agent={a.key}
+                    data-off={off ? "" : undefined}
+                    className={`flex items-center gap-2 ${TXT}`}
+                  >
+                    <PartyFace p={a} />
+                    <span
+                      className={`min-w-0 truncate ${off ? `line-through ${MUTED}` : ""}`}
                     >
+                      {a.name}
+                    </span>
+                    <span className={`ml-auto whitespace-nowrap ${MUTED}`}>
+                      {off ? "Not notified" : "Gets replies"}
+                    </span>
+                    {!mayRemove(a) && a.canRemove === false && (
+                      <Tip
+                        text={`Only ${a.for ?? "the person"}, whose agent it is, or the artifact's owner can remove it.`}
+                      >
+                        <button
+                          type="button"
+                          data-view-only=""
+                          className="cursor-help whitespace-nowrap rounded-full border border-border px-1.5 text-[length:var(--oa-text-xs)] text-muted-foreground"
+                        >
+                          {a.for
+                            ? `${a.for.split(" ")[0]}'s agent`
+                            : "Another agent"}
+                        </button>
+                      </Tip>
+                    )}
+                    {mayRemove(a) && !off && (
                       <button
                         type="button"
-                        data-view-only=""
-                        className="cursor-help whitespace-nowrap rounded-full border border-border px-1.5 text-[length:var(--oa-text-xs)] text-muted-foreground"
+                        aria-label={`Stop notifying ${a.name} in this thread`}
+                        title={`Stop notifying ${a.name} in this thread`}
+                        className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        onClick={(e) => {
+                          back.current = e.currentTarget;
+                          setConfirm(a);
+                        }}
                       >
-                        {a.for
-                          ? `${a.for.split(" ")[0]}'s agent`
-                          : "Another agent"}
+                        ×
                       </button>
-                    </Tip>
-                  )}
-                  {a.canRemove && (
-                    <button
-                      type="button"
-                      aria-label={`Stop notifying ${a.name} in this thread`}
-                      title={`Stop notifying ${a.name} in this thread`}
-                      className="inline-flex size-6 cursor-pointer items-center justify-center rounded-md border-0 bg-transparent p-0 text-muted-foreground hover:bg-muted hover:text-foreground"
-                      onClick={(e) => {
-                        back.current = e.currentTarget;
-                        setConfirm(a);
-                      }}
-                    >
-                      ×
-                    </button>
-                  )}
-                </div>
-              ))}
-              {off.map((a) => (
-                <div
-                  key={a.key}
-                  data-participant-agent={a.key}
-                  data-off=""
-                  className={`flex items-center gap-2 ${TXT}`}
-                >
-                  <PartyFace p={a} />
-                  <span className={`min-w-0 truncate line-through ${MUTED}`}>
-                    {a.name}
-                  </span>
-                  <span className={`ml-auto whitespace-nowrap ${MUTED}`}>
-                    Not notified
-                  </span>
-                </div>
-              ))}
+                    )}
+                    {mayRemove(a) && off && (
+                      <button
+                        type="button"
+                        data-add-back=""
+                        aria-label={`Notify ${a.name} in this thread again`}
+                        className="cursor-pointer whitespace-nowrap rounded-md border-0 bg-transparent p-0 px-1 text-[length:var(--oa-text-xs)] text-[var(--oa-accent-fg)] underline"
+                        onClick={() => run(a, false)}
+                      >
+                        Add back
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
             </>
           )}
           <RemovalNotices rm={rm} api={api} />

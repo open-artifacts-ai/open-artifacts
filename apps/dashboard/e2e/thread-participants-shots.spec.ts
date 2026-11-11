@@ -52,6 +52,14 @@ for (const w of [1280, 390])
         list.getByText(/won't get replies in this thread/),
       ).toBeVisible();
       await shot("3-removed");
+      // Close and reopen: the removed agent stays listed, with Add back.
+      await page.keyboard.press("Escape");
+      await expect(list).toBeHidden();
+      await trig.focus();
+      await expect(list).toBeVisible();
+      await expect(list.locator("[data-off]")).toContainText("Not notified");
+      await expect(list.locator("[data-add-back]")).toBeVisible();
+      await shot("3b-reopened");
 
       await page.goto(
         `/a/${ID}?mock=signed-out${w < 600 ? "" : "&panel=open&tab=comments"}`,

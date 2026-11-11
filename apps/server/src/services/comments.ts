@@ -498,6 +498,7 @@ const threadAgentView = (
   for: forLine(users.users.get(p.owner), faceViewer(viewer), users.clash),
   ...identityFace({ ...p, name: currentName(p, users) }, viewer, users),
   canRemove: viewer.owner === true || viewer.userId === p.owner,
+  ...(p.removed ? { removed: true } : {}),
 });
 
 async function threadViews(
@@ -523,20 +524,20 @@ async function threadViews(
         ),
       )
     : new Map<string, ParticipantRow[]>();
-  const live = (t: StoredThread) =>
-    (roster.get(t.id) ?? []).filter((p) => !p.removed);
-  for (const t of threads) for (const p of live(t)) ids.add(p.owner);
+  // #2174: removed agents are listed too (marked), for members only.
+  const rows = (t: StoredThread) => roster.get(t.id) ?? [];
+  for (const t of threads) for (const p of rows(t)) ids.add(p.owner);
   const users = await ctxFor(
     env,
     ids,
     threads.some(
       (t) =>
-        t.comments.some(hasAgent) || t.resolvedBy?.agent || live(t).length > 0,
+        t.comments.some(hasAgent) || t.resolvedBy?.agent || rows(t).length > 0,
     ),
     {
       comments: threads.flatMap((t) => t.comments),
       actors: threads.map((t) => t.resolvedBy),
-      agents: threads.flatMap(live),
+      agents: threads.flatMap(rows),
     },
   );
   return threads.map((t) => ({
@@ -548,8 +549,8 @@ async function threadViews(
     resolvedAt: t.resolvedAt,
     createdAt: t.createdAt,
     comments: t.comments.map((c) => commentOf(c, viewer, users)),
-    ...(live(t).length
-      ? { agents: live(t).map((p) => threadAgentView(p, viewer, users)) }
+    ...(rows(t).length
+      ? { agents: rows(t).map((p) => threadAgentView(p, viewer, users)) }
       : {}),
   }));
 }

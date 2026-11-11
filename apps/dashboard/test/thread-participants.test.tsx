@@ -46,8 +46,8 @@ const thread = (agents: ThreadAgent[] | undefined) =>
     ],
     ...(agents ? { agents } : {}),
   }) as unknown as CommentThread;
-const api = (guest = false) =>
-  ({ artifactId: "a1", guest, capped: false }) as never;
+const api = (guest = false, canComment = true) =>
+  ({ artifactId: "a1", guest, capped: false, canComment }) as never;
 const trigger = () =>
   document.querySelector("[data-participants-trigger]") as HTMLElement;
 const count = () =>
@@ -200,6 +200,43 @@ describe("ThreadParticipants", () => {
     const many = ["A", "B", "C"].map((n) => agent(n, true));
     render(<ThreadParticipants t={thread(many)} api={api()} />);
     expect(count()).toBe("+2");
+  });
+
+  it("a removed agent from the server reads Not notified, struck through, with Add back for who may", () => {
+    const gone = { ...agent("OA Billing", true), removed: true };
+    const other = { ...agent("OA Bus", false), removed: true };
+    render(<ThreadParticipants t={thread([gone, other])} api={api()} />);
+    fireEvent.focus(trigger());
+    const rows = document.querySelectorAll("[data-off]");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]?.textContent).toContain("Not notified");
+    expect(screen.queryByRole("button", { name: /Stop notifying/ })).toBeNull();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Notify OA Billing in this thread again",
+      }),
+    );
+    expect(mutate.mock.calls[0]?.[0]).toEqual({
+      thread: "t1",
+      key: "k-OA Billing",
+      removed: false,
+    });
+    // Another person's removed agent offers no Add back.
+    expect(screen.getAllByRole("button", { name: /again/ })).toHaveLength(1);
+  });
+
+  it("a member who cannot reply sees the agents but no × and no Add back", () => {
+    const gone = { ...agent("OA Product", true), removed: true };
+    render(
+      <ThreadParticipants
+        t={thread([agent("OA Billing", true), gone])}
+        api={api(false, false)}
+      />,
+    );
+    fireEvent.focus(trigger());
+    expect(list()?.textContent).toContain("OA Billing");
+    expect(screen.queryByRole("button", { name: /Stop notifying/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /again/ })).toBeNull();
   });
 
   it("a guest sees people only, no agents", () => {
