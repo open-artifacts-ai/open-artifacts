@@ -500,8 +500,9 @@ describe.each(["none", "solo", "readOnly"] as const)(
 );
 
 // The mapping picker's group lookup: a locked admin reaches the lookup itself
-// (409 directory_sync_off here: this test install has no directory), never
-// the cap's 404; a member is still refused.
+// (403 plan_required: Solo and Team (read-only) are not Business, which
+// alone has Directory sync), never the cap's 404; a member is still refused
+// with 404, before the plan is mentioned.
 describe.each(["solo", "readOnly"] as const)(
   "plan %s: directory group lookup",
   (state) => {
@@ -511,9 +512,9 @@ describe.each(["solo", "readOnly"] as const)(
     });
     it("an admin passes the cap; a member is 404", async () => {
       const a = await send(props, R.directoryGroups, cred("admin"));
-      expect(a.status).toBe(409);
+      expect(a.status).toBe(403);
       expect(((await a.json()) as { error: { code: string } }).error.code).toBe(
-        "directory_sync_off",
+        "plan_required",
       );
       expect(
         (await send(props, R.directoryGroups, cred("member"))).status,

@@ -860,10 +860,10 @@ describe("hosted contract schemas", () => {
       expect(parseTier(v)).toBeNull();
   });
 
-  it("TIER_FEATURES: settable flags only; Team swaps sync_google for sync_frozen; directoryModeOf", () => {
+  it("TIER_FEATURES: settable flags only; sync_google is Business only; Team and the trial are frozen; directoryModeOf", () => {
     for (const fs of Object.values(TIER_FEATURES))
       for (const f of fs) expect(ENV_FEATURE_FLAGS).toContain(f);
-    expect(TIER_FEATURES.trial).toEqual(TIER_FEATURES.business);
+    expect(TIER_FEATURES.trial).toEqual(TIER_FEATURES.team);
     const team = new Set(TIER_FEATURES.team);
     const business = new Set(TIER_FEATURES.business);
     expect([...business].filter((f) => !team.has(f))).toEqual(["sync_google"]);
@@ -873,6 +873,7 @@ describe("hosted contract schemas", () => {
     ]);
     expect(directoryModeOf(TIER_FEATURES.business)).toBe("google");
     expect(directoryModeOf(TIER_FEATURES.team)).toBe("frozen");
+    expect(directoryModeOf(TIER_FEATURES.trial)).toBe("frozen");
     expect(directoryModeOf(["sync_frozen", "sync_google"])).toBe("google");
     expect(directoryModeOf([])).toBe("off");
   });
