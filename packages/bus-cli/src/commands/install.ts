@@ -329,7 +329,10 @@ async function daemonStep(ctx: Ctx, noService = false): Promise<boolean> {
     say(ctx, roster(ctx, st), "", c.statusHint());
     return true;
   }
-  const { running } = await ctx.service.ensure();
+  const { running, skipped, idle } = await ctx.service.ensure();
+  if (skipped) say(ctx, c.serviceOtherHome(skipped, false, !idle));
+  // Nothing was started: report a daemon already running, or how to start one.
+  if (idle) return daemonStep(ctx, true);
   if (running !== undefined) {
     sayErr(ctx, c.daemonInTheWay(shownSocket(ctx), running));
     return false;

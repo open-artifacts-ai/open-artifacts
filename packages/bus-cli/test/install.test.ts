@@ -395,6 +395,55 @@ describe("install: daemon confirmation", () => {
   });
 });
 
+describe("#2099: install under another HOME", () => {
+  it("prints the note and still runs the bus as a plain daemon", async () => {
+    const base = fakeCtx({ fetch: hub([approved]), ...allHarnesses() });
+    const ensure = vi.fn(async () => ({ skipped: "home" as const }));
+    const ctx = fakeCtx({
+      fetch: hub([approved]),
+      ...allHarnesses(),
+      service: { ...base.service, kind: undefined, fallback: true, ensure },
+    });
+    expect(await run(ctx, {})).toBe(0);
+    expect(ensure).toHaveBeenCalledOnce();
+    const out = ctx.out().join("\n");
+    expect(out).toContain(
+      "Skipped the background service: this HOME isn't your account's home.",
+    );
+    expect(out).toContain("Daemon running without a service");
+  });
+});
+
+describe("#2099: install where nothing was started", () => {
+  it("prints the note and the hint to start the daemon", async () => {
+    const base = fakeCtx({
+      fetch: hub([approved]),
+      ...allHarnesses({
+        status: vi.fn(async () => {
+          throw new Error("ECONNREFUSED");
+        }),
+      }),
+    });
+    const ensure = vi.fn(async () => ({
+      skipped: "xdg" as const,
+      idle: true as const,
+    }));
+    const ctx = fakeCtx({
+      fetch: hub([approved]),
+      ...allHarnesses({
+        status: vi.fn(async () => {
+          throw new Error("ECONNREFUSED");
+        }),
+      }),
+      service: { ...base.service, kind: undefined, ensure },
+    });
+    expect(await run(ctx, {})).toBe(0);
+    const out = ctx.out().join("\n");
+    expect(out).toContain("XDG_CONFIG_HOME is outside your account's home");
+    expect(out).toContain("npx @open-artifacts/bus daemon");
+  });
+});
+
 describe("install --no-service (C25)", () => {
   it("makes no service call, starts nothing, and says how to run the daemon", async () => {
     const ctx = fakeCtx({
