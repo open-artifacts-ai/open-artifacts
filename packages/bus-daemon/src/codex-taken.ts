@@ -25,6 +25,8 @@ export type TakenPending = {
   head: string;
   /** Own retention (ms); a hub notice is kept 6 h, mail MAILBOX_RETAIN_MS. */
   ttlMs?: number;
+  /** Dropped past its window: never taken, and never to be called delivered. Kept for one more window. */
+  lost?: true;
 };
 
 export type TakenOptions = {
@@ -87,7 +89,10 @@ export const startsWithHead = (text: string, head: string): boolean =>
  */
 export class TakenWatch {
   readonly #pending = new Map<string, TakenPending>();
-  readonly #reads = new Map<string, { rollout: string; offset: number }>();
+  readonly #reads = new Map<
+    string,
+    { rollout: string; offset: number; ino?: number }
+  >();
   readonly #now: () => number;
 
   constructor(private readonly opts: TakenOptions) {
@@ -96,12 +101,25 @@ export class TakenWatch {
       this.#pending.set(id, p);
   }
 
+  /** Still watched. */
   has(id: string): boolean {
-    return this.#pending.has(id);
+    return this.#pending.get(id)?.lost === undefined && this.#pending.has(id);
   }
 
+  /** Dropped past its window. */
+  lost(id: string): boolean {
+    return this.#pending.get(id)?.lost === true;
+  }
+
+  unwatch(id: string): void {
+    if (this.#pending.delete(id)) this.#save();
+  }
+
+  /** How many are watched. */
   size(): number {
-    return this.#pending.size;
+    let n = 0;
+    for (const p of this.#pending.values()) if (!p.lost) n++;
+    return n;
   }
 
   watch(id: string, thread: string, head: string, ttlMs?: number): void {
@@ -119,19 +137,28 @@ export class TakenWatch {
     if (!this.#pending.size) return;
     const now = this.#now();
     let changed = false;
-    for (const [id, p] of this.#pending)
-      if (now - p.at > (p.ttlMs ?? this.opts.ttlMs ?? MAILBOX_RETAIN_MS)) {
-        this.#pending.delete(id);
+    for (const [id, p] of this.#pending) {
+      const ttl = p.ttlMs ?? this.opts.ttlMs ?? MAILBOX_RETAIN_MS;
+      if (p.lost) {
+        if (now - p.at > 2 * ttl) {
+          this.#pending.delete(id);
+          changed = true;
+        }
+      } else if (now - p.at > ttl) {
+        p.lost = true;
         changed = true;
         this.opts.log?.(
           `codex ${id} was never taken by a turn within the retention window; no longer watched`,
         );
       }
+    }
     const taken: string[] = [];
-    for (const thread of new Set(
-      [...this.#pending.values()].map((p) => p.thread),
-    ))
-      this.#scan(thread, taken);
+    const threads = new Set<string>();
+    for (const p of this.#pending.values()) if (!p.lost) threads.add(p.thread);
+    // A thread no longer watched keeps no read state.
+    for (const t of [...this.#reads.keys()])
+      if (!threads.has(t)) this.#reads.delete(t);
+    for (const thread of threads) this.#scan(thread, taken);
     for (const id of taken) {
       this.#pending.delete(id);
       changed = true;
@@ -155,7 +182,7 @@ export class TakenWatch {
     );
   }
 
-  #scan(thread: string, taken: string[]): void {
+  #scan(thread: string, taken: string[], again = true): void {
     let st = this.#reads.get(thread);
     if (!st) {
       const rollout = this.#rollout(thread);
@@ -171,7 +198,15 @@ export class TakenWatch {
       return;
     }
     try {
-      const size = fstatSync(fd).size;
+      const stat = fstatSync(fd);
+      const size = stat.size;
+      // A replaced file (another inode): forget the path and offset, find the rollout again.
+      if (st.ino !== undefined && st.ino !== stat.ino) {
+        this.#reads.delete(thread);
+        if (again) this.#scan(thread, taken, false);
+        return;
+      }
+      st.ino = stat.ino;
       let skipFirst = false;
       if (st.offset < 0 || st.offset > size) {
         st.offset = Math.max(0, size - (this.opts.tailCap ?? TAKEN_TAIL_CAP));
@@ -181,6 +216,7 @@ export class TakenWatch {
         for (const text of userTexts(line))
           for (const [id, p] of this.#pending)
             if (
+              !p.lost &&
               p.thread === thread &&
               !taken.includes(id) &&
               startsWithHead(text, p.head)
@@ -211,6 +247,7 @@ export class TakenWatch {
             head: p.head,
             at: p.at,
             ...(typeof p.ttlMs === "number" ? { ttlMs: p.ttlMs } : {}),
+            ...(p.lost === true ? { lost: true as const } : {}),
           };
       return out;
     } catch {

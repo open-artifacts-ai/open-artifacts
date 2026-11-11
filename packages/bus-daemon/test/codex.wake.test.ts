@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -101,6 +102,8 @@ function transport(
     wakes?: (pid: number) => Promise<boolean>;
     queued?: { has: (id: string) => boolean; add: (id: string) => void };
     queuedFile?: string;
+    /** Built after the watch exists: a run that acts while `codex queue` is running. */
+    runWith?: (w: TakenWatch, home: string) => ReturnType<typeof execCodex>;
     resolve?: () => CodexBin | undefined;
     takenFile?: string;
   } = {},
@@ -117,7 +120,7 @@ function transport(
   const resolve = vi.fn(over.resolve ?? (() => bin));
   const t = new CodexTransport({
     resolve,
-    run: over.run ?? execCodex(5_000),
+    run: over.run ?? over.runWith?.(watch, home) ?? execCodex(5_000),
     home,
     wakes: over.wakes ?? (async () => true),
     queued:
@@ -643,7 +646,10 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     const x =
       codexText(agent(), mail("", "mmmmmmmmmmmmmmm1")).split("\n")[0] ?? "";
     // Mail ID2's own item carries the header of mail 1 inside its body; a raw item buries it after other text.
-    const forged = codexText(agent(), mail(`${x}\n\nmore`, ID2));
+    const forged = codexText(
+      agent(),
+      mail(`${x}\n\nmore, and see (msg_id mmmmmmmmmmmmmmm1)`, ID2),
+    );
     writeRollout(home, [
       userItem(forged),
       userItem(`noise\n${x}\n\nmore`),
@@ -737,5 +743,118 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     expect(w.has("nnnnnnnnnnnnnnn1")).toBe(false);
     expect(w.has("mmmmmmmmmmmmmmm1")).toBe(true);
     expect(log).toHaveBeenCalledOnce();
+  });
+
+  it("a turn that takes the item before `codex queue` exits is still acked (the watch comes first)", async () => {
+    const f = fakeCodex();
+    const hit: string[] = [];
+    const { t, onTaken } = transport(
+      { path: f.bin, from: "path" },
+      {
+        runWith: (w, home) => async (_bin, args) => {
+          const text = (args[2] ?? "").replace("--message=", "");
+          // The thread takes the item and a tick reads it, before the queue process returns.
+          writeRollout(home, [userItem(text)]);
+          w.check();
+          hit.push("checked");
+          return { code: 0, stderr: "" };
+        },
+      },
+    );
+    await t.deliver(agent(), mail("hi"));
+    expect(hit).toEqual(["checked"]);
+    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
+  });
+
+  it("a failed queue leaves no watch", async () => {
+    const f = fakeCodex({ code: 3 });
+    const { t, watch } = transport({ path: f.bin, from: "path" });
+    await expect(t.deliver(agent(), mail("x"))).resolves.toEqual(RETRY);
+    expect(watch.has("mmmmmmmmmmmmmmm1")).toBe(false);
+  });
+
+  it("a watch dropped by its window is lost: a retry is never delivered, nor queued again", async () => {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const queuedFile = join(tmp("ob-cxq-"), "q.json");
+    const one = transport(
+      { path: f.bin, from: "path" },
+      { takenFile, queuedFile },
+    );
+    await one.t.deliver(agent(), mail("hi"));
+    let now = Date.now();
+    const w = new TakenWatch({
+      home: one.home,
+      file: takenFile,
+      onTaken: vi.fn(),
+      now: () => now,
+      ttlMs: 1000,
+    });
+    now += 5000;
+    w.check();
+    expect(w.has("mmmmmmmmmmmmmmm1")).toBe(false);
+    expect(w.lost("mmmmmmmmmmmmmmm1")).toBe(true);
+    const two = transport(
+      { path: f.bin, from: "path" },
+      { takenFile, queuedFile },
+    );
+    await expect(two.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+    expect(f.runs()).toHaveLength(1);
+  });
+
+  it("a restart rescans the bounded tail: an item inside it acks, one beyond it does not, nothing is queued again", async () => {
+    const f = fakeCodex();
+    const takenFile = join(tmp("ob-cxp-"), "p.json");
+    const queuedFile = join(tmp("ob-cxq-"), "q.json");
+    const ID1 = "mmmmmmmmmmmmmmm1";
+    const one = transport(
+      { path: f.bin, from: "path" },
+      { takenFile, queuedFile },
+    );
+    await one.t.deliver(agent(), mail("one", ID1));
+    await one.t.deliver(agent(), mail("two", ID2));
+    writeRollout(one.home, [
+      userItem(codexText(agent(), mail("one", ID1))),
+      JSON.stringify({
+        type: "event_msg",
+        payload: { pad: "x".repeat(20_000) },
+      }),
+      userItem(codexText(agent(), mail("two", ID2))),
+    ]);
+    const onTaken = vi.fn();
+    const w = new TakenWatch({
+      home: one.home,
+      file: takenFile,
+      onTaken,
+      tailCap: 2_000,
+    });
+    w.check();
+    expect(onTaken.mock.calls).toEqual([[ID2]]);
+    // The one beyond the tail stays watched, and a retry runs nothing.
+    const two = transport(
+      { path: f.bin, from: "path" },
+      { takenFile, queuedFile },
+    );
+    await expect(two.t.deliver(agent(), mail("one", ID1))).resolves.toEqual(
+      QUEUED,
+    );
+    expect(f.runs()).toHaveLength(2);
+  });
+
+  it("follows a replaced rollout and forgets threads no longer watched", async () => {
+    const f = fakeCodex();
+    const { t, home, watch, onTaken } = transport({
+      path: f.bin,
+      from: "path",
+    });
+    await t.deliver(agent(), mail("hi"));
+    writeRollout(home, [userItem("nothing yet")]);
+    watch.check();
+    // Replaced by another file (a new inode) that holds the item.
+    const file = rolloutFile(home);
+    rmSync(file);
+    writeRollout(home, [userItem(codexText(agent(), mail("hi")))]);
+    watch.check();
+    expect(onTaken.mock.calls).toEqual([["mmmmmmmmmmmmmmm1"]]);
   });
 });

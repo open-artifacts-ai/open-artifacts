@@ -292,7 +292,10 @@ export type CodexTransportOptions = {
    */
   taken: {
     watch: (id: string, thread: string, head: string, ttlMs?: number) => void;
+    unwatch: (id: string) => void;
     has: (id: string) => boolean;
+    /** Watched too long and dropped: not taken, never to be reported delivered. */
+    lost: (id: string) => boolean;
   };
   log?: (msg: string) => void;
 };
@@ -323,7 +326,7 @@ export class CodexTransport {
 
   async deliver(agent: AgentRecord, mail: Mail): Promise<DeliverOutcome> {
     // Queued, not yet taken: a hub redelivery must not ack it, nor queue it twice.
-    if (this.opts.taken.has(mail.msg_id))
+    if (this.opts.taken.has(mail.msg_id) || this.opts.taken.lost(mail.msg_id))
       return { ok: false, reason: "queued" };
     if (!(await this.#wakes(agent))) return { ok: false, reason: "queued" };
     const text = codexText(agent, mail);
@@ -398,12 +401,21 @@ export class CodexTransport {
     // `=` keeps a value that starts with `-` from reading as an option.
     const args = ["queue", `--thread=${agent.ref}`, `--message=${text}`];
     let res: Awaited<ReturnType<CodexRun>>;
+    // Watched BEFORE the queue runs: a check may read the new user item before `codex queue` exits.
+    if (watch)
+      this.opts.taken.watch(
+        id,
+        agent.ref,
+        text.split("\n", 1)[0] ?? "",
+        watch.ttlMs,
+      );
     try {
       res = await this.opts.run(bin.path, args, {
         ...process.env,
         CODEX_HOME: this.opts.home,
       });
     } catch (e) {
+      if (watch) this.opts.taken.unwatch(id);
       this.#bin = undefined;
       this.opts.log?.(
         `codex queue could not start (${bin.path}): ${e instanceof Error ? e.message : String(e)}`,
@@ -411,14 +423,6 @@ export class CodexTransport {
       return { ok: false, taken: "no" };
     }
     if (res.code === 0) {
-      // Queued is not taken: the header line is what the turn's user item will start with.
-      if (watch)
-        this.opts.taken.watch(
-          id,
-          agent.ref,
-          text.split("\n", 1)[0] ?? "",
-          watch.ttlMs,
-        );
       return this.#keep(id) ? { ok: true } : { ok: false, taken: "maybe" };
     }
     if (res.code === null) {
@@ -429,6 +433,7 @@ export class CodexTransport {
       );
       return { ok: false, taken: "maybe" };
     }
+    if (watch) this.opts.taken.unwatch(id);
     this.#bin = undefined;
     this.opts.log?.(
       `codex queue for ${agent.ref} exited ${res.code}: ${stripTerminalControls(res.stderr.trim()).slice(0, 300)}`,
