@@ -16,6 +16,7 @@ import {
   type Page,
 } from "@playwright/test";
 import { gate } from "../gate";
+import "../dispatcher";
 import {
   clearTestStart,
   hookFailure,
@@ -34,7 +35,8 @@ export const RUN = randomBytes(3).toString("hex");
 /** __Host-oa_session on staging; oa_session on the local pair (a dev Worker). */
 const COOKIE = A.cookieName;
 
-// A POST is sent once (retry.ts); a reset before any response is infra, named.
+// A POST is sent once (retry.ts) except the session hook, which is safe to
+// repeat; a reset before any response is infra, named.
 const post = (path: string, body: unknown, headers: Record<string, string>) =>
   sendRead(
     "POST",
@@ -46,7 +48,7 @@ const post = (path: string, body: unknown, headers: Record<string, string>) =>
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(FETCH_MS),
       }),
-    { route: path },
+    { route: path, repeatable: path === TEST_HOOKS.session },
   );
 
 /**
