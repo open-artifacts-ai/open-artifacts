@@ -31,6 +31,7 @@ import {
   type ClientFrame,
   ClientFrameSchema,
   frameId,
+  MAX_WAITING_QUERY,
   type SendFrame,
   WireNamespaceSchema,
 } from "@oa/bus-protocol";
@@ -1159,6 +1160,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubVersion: string | undefined;
   /** The hub's last hello_ok listed BUS_CAPS.waiting: away roster rows carry `waiting` (#2029). */
   let hubWaiting = false;
+  /** The hub's last hello_ok listed BUS_CAPS.waitingQuery: it counts waiting mail by this machine's own away refs (#2079). */
+  let hubWaitingQuery = false;
+  /** In-flight waiting_query frames by id. */
+  const waitingAsks = new Map<
+    string,
+    (counts: Record<string, number> | undefined) => void
+  >();
   const hub = new HubConnection({
     url: `${cfg.hub.replace(/^http/, "ws").replace(/\/+$/, "")}${BUS_ROUTES.connect}`,
     token: cfg.machine_token,
@@ -1233,6 +1241,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "error": {
           if (statusRelay.answer(frame)) return;
+          if (waitingAsks.has(frame.id)) {
+            waitingAsks.get(frame.id)?.(undefined);
+            return;
+          }
           const renamed = renameIds.get(frame.id);
           if (renamed !== undefined) {
             const renamedRef = renamed.ref;
@@ -1282,6 +1294,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "link_bound":
           return;
+        case "waiting_counts":
+          waitingAsks.get(frame.id)?.(frame.counts);
+          return;
         case "body":
           // A fetched body is a peer's text, like a delivered one.
           pending.settle({ ...frame, body: stripTerminalControls(frame.body) });
@@ -1294,6 +1309,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
           hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
           hubWaiting = frame.caps?.includes(BUS_CAPS.waiting) ?? false;
+          hubWaitingQuery =
+            frame.caps?.includes(BUS_CAPS.waitingQuery) ?? false;
           hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
           hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
           hubHelloed = true;
@@ -1358,6 +1375,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubFollow = false;
       hubLink = false;
       hubLinkArg = false;
+      hubWaitingQuery = false;
       hubHelloed = false;
       statusRelay.dropped();
       receipts.release();
@@ -1403,6 +1421,24 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         }
       },
     );
+  /** #2079: pending mail for this machine's own away refs, one frame; undefined if the hub did not answer. */
+  const hubWaitingCounts = (refs: string[]) =>
+    new Promise<Record<string, number> | undefined>((resolve) => {
+      const id = frameId();
+      const done = (c: Record<string, number> | undefined) => {
+        clearTimeout(timer);
+        waitingAsks.delete(id);
+        resolve(c);
+      };
+      const timer = setTimeout(() => {
+        hub.cancel(id);
+        done(undefined);
+      }, deps.statusRosterMs ?? 1500);
+      timer.unref();
+      waitingAsks.set(id, done);
+      if (!hub.send({ v: 1, id, type: "waiting_query", agent_refs: refs }))
+        done(undefined);
+    });
   // Another live daemon holds the socket, or the path cannot be bound: a restart cannot fix either.
   const socketInUse = (e: unknown): never => {
     const code = (e as { code?: unknown })?.code;
@@ -2112,6 +2148,16 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (wakeLogged.size > 500) wakeLogged.clear();
         log(msg);
       };
+      // #2079: one frame for every held row, no live agent needed.
+      let counts: Record<string, number> | undefined;
+      if (hubWaitingQuery && hub.open && hubVersion !== undefined) {
+        const refs = rows
+          .filter((r) => held.has(r.ref))
+          .map((r) => r.ref)
+          .slice(0, MAX_WAITING_QUERY);
+        if (refs.length) counts = await hubWaitingCounts(refs);
+        if (!counts) log("codex wake skipped: the hub did not answer");
+      }
       for (const r of rows) {
         const h = held.get(r.ref);
         if (!h) continue;
@@ -2130,35 +2176,47 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           )
             continue;
         }
-        const asker = agents.all().find((a) => a.live);
-        if (!asker || !hub.open || hubVersion === undefined) {
-          once(key, `${who} skipped: no live agent to ask the hub`);
-          continue;
+        let waitingN: number | undefined;
+        if (hubWaitingQuery) {
+          if (!counts) continue;
+          waitingN = counts[r.ref];
+        } else {
+          // Prefer an asker in the thread's namespace, then a global one.
+          const live = agents.all().filter((a) => a.live);
+          const asker =
+            live.find((a) => a.namespace === r.namespace) ??
+            live.find((a) => a.global) ??
+            live[0];
+          if (!asker || !hub.open || hubVersion === undefined) {
+            once(key, `${who} skipped: no live agent to ask the hub`);
+            continue;
+          }
+          if (!hubWaiting) {
+            once(key, `${who} skipped: the hub does not report waiting mail`);
+            continue;
+          }
+          const last = wakeAsked.get(key);
+          if (last !== undefined && now - last < (cx.wakeAskMs ?? 300_000))
+            continue;
+          wakeAsked.set(key, now);
+          const roster = await hubRoster(asker.ref);
+          if (!roster) {
+            once(key + now, `${who} skipped: the hub did not answer`);
+            continue;
+          }
+          waitingN = roster.find(
+            (a) =>
+              a.state === "away" &&
+              a.name === r.name &&
+              a.namespace === r.namespace &&
+              (a.machine_label === undefined || a.machine_label === cfg.label),
+          )?.waiting;
         }
-        if (!hubWaiting) {
-          once(key, `${who} skipped: the hub does not report waiting mail`);
-          continue;
-        }
-        const last = wakeAsked.get(key);
-        if (last !== undefined && now - last < (cx.wakeAskMs ?? 300_000))
-          continue;
-        wakeAsked.set(key, now);
-        const roster = await hubRoster(asker.ref);
-        if (!roster) {
-          once(key + now, `${who} skipped: the hub did not answer`);
-          continue;
-        }
-        const row = roster.find(
-          (a) =>
-            a.state === "away" &&
-            a.name === r.name &&
-            a.namespace === r.namespace &&
-            (a.machine_label === undefined || a.machine_label === cfg.label),
-        );
-        if (!row?.waiting) {
+        if (!waitingN) {
           once(key, `${who} skipped: no mail waiting`);
           continue;
         }
+        const row = { waiting: waitingN };
         if (
           n > 1 &&
           row.waiting === wakeWaiting.get(key) &&

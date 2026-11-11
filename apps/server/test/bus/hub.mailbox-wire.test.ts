@@ -349,6 +349,60 @@ describe("mailbox wire (#1295 PR B)", () => {
     old.close();
   });
 
+  it("#2079: waiting_query counts only this machine's own away refs, and only for a socket that listed the cap", async () => {
+    await setClock(base());
+    const n = ns("wq");
+    const caps = [...MB, "waiting", BUS_CAPS.waitingQuery];
+    const rm = await machine("Rcv");
+    const sm = await machine("Snd");
+    const rcv = await connect(rm.token, caps);
+    const snd = await connect(sm.token, caps);
+    const ref = uniq("r");
+    const name = await reg(rcv, ref, uniq("Rcv"), n);
+    await reg(snd, "snd", uniq("Snd"), n);
+    await close(rcv, ref);
+    await send(snd, "snd", name);
+    await send(snd, "snd", name);
+    const ask = async (d: Daemon, refs: string[]) => {
+      const fid = id("q");
+      d.send({ v: 1, id: fid, type: "waiting_query", agent_refs: refs });
+      for (;;) {
+        const f = await d.next();
+        if ((f.type === "waiting_counts" || f.type === "error") && f.id === fid)
+          return f;
+      }
+    };
+    // Its own away ref counts; unknown and live refs are left out.
+    expect(await ask(rcv, [ref, "nope", "snd"])).toMatchObject({
+      type: "waiting_counts",
+      counts: { [ref]: 2 },
+    });
+    // Another machine never learns this one's refs.
+    const other = await ask(snd, [ref, "snd"]);
+    expect(other).toMatchObject({ type: "waiting_counts", counts: {} });
+    // A socket without the cap gets what an older hub gives.
+    const om = await machine("Old");
+    const old = await connect(om.token, MB);
+    expect(await ask(old, [ref])).toMatchObject({
+      type: "error",
+      code: "bad_frame",
+    });
+    // The hub lists the cap to a hello that listed it.
+    const d = await daemon((await machine("M")).token);
+    d.send({
+      v: 1,
+      id: "hh2",
+      type: "hello",
+      machine_label: "M",
+      client_version: "0.0.0",
+      caps,
+    });
+    expect((await waitFor(d, "hello_ok")).caps).toContain(
+      BUS_CAPS.waitingQuery,
+    );
+    for (const x of [rcv, snd, old, d]) x.close();
+  });
+
   const upReplacing = (ref: string, name: string, n: string, old: string) =>
     ({ ...up(id("u"), ref, name, n), replaces: old }) as ClientFrame;
 

@@ -6,13 +6,19 @@ import {
   mkdtempSync,
   readFileSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hello } from "@oa/bus-ipc";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { Proc } from "../src/codex-attest.ts";
+import {
+  codexAttestor,
+  devParts,
+  lockHoldersLinux,
+  type Proc,
+} from "../src/codex-attest.ts";
 import { readCodexAway, writeCodexAway } from "../src/codex-away.ts";
 import {
   CODEX_WAKE_TEXT,
@@ -704,5 +710,204 @@ describe("waking an away Codex thread (#2029)", () => {
     }));
     writeCodexAway(f, rows);
     expect(readCodexAway(f, Date.now())).toHaveLength(64);
+  });
+});
+
+/** Answers each `waiting_query` with `counts(refs)`; hello_ok lists the query cap. */
+function answerQueries(
+  h: H,
+  counts: (refs: string[]) => Record<string, number>,
+) {
+  const done = new Set<string>();
+  h.toDaemon({
+    id: "w",
+    type: "hello_ok",
+    machine_id: "1".repeat(16),
+    machine_label: "laptop",
+    server_version: "1",
+    caps: ["ids", "mailbox", "waiting", "waiting_query"],
+  });
+  const t = setInterval(() => {
+    for (const f of h.of("waiting_query")) {
+      if (done.has(f.id)) continue;
+      done.add(f.id);
+      h.toDaemon({
+        id: f.id,
+        type: "waiting_counts",
+        counts: counts(f.agent_refs),
+      });
+    }
+  }, 5);
+  return () => clearInterval(t);
+}
+
+describe("the wake needs no live asker and no lsof (#2079)", () => {
+  it("a machine with no other live agent: one frame by its own away refs wakes the thread", async () => {
+    const w = world();
+    // The only other thread drops its lock: nobody is live to ask through.
+    const noAsker = (f: string) => f.includes(ASKER);
+    const { two } = await restarted(w, {
+      holdersOf: (fs: string[]) =>
+        new Map(
+          fs.map((f) => [
+            f,
+            noAsker(f)
+              ? []
+              : (w.state.locks.get(
+                  f.split("/").pop()?.replace(".lock", "") ?? "",
+                ) ?? []),
+          ]),
+        ),
+      holding: (pairs: { pid: number; file: string }[]) =>
+        pairs.map(
+          (p) =>
+            !noAsker(p.file) &&
+            (w.state.locks
+              .get(p.file.split("/").pop()?.replace(".lock", "") ?? "")
+              ?.includes(p.pid) ??
+              false),
+        ),
+    });
+    const stop = answerQueries(two, (refs) =>
+      refs.includes(THREAD) ? { [THREAD]: 3 } : ({} as Record<string, number>),
+    );
+    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    expect(two.of("list")).toHaveLength(0);
+    for (const q of two.of("waiting_query"))
+      expect(q.agent_refs).toEqual([THREAD]);
+    stop();
+  });
+
+  it("asks the roster through an asker in the thread's namespace when the hub has no lookup", async () => {
+    const w = world();
+    const NEAR = "01a18536-7f07-7680-b17c-199e3dadf889";
+    writeFileSync(join(w.home, "thread-writer-locks", `${NEAR}.lock`), "");
+    const day = join(w.home, "sessions", "2026", "10", "29");
+    writeFileSync(
+      join(day, `rollout-2026-10-29T02-11-43-${NEAR}.jsonl`),
+      rollout(NEAR, "call_1"),
+    );
+    w.state.locks.set(NEAR, [P]);
+    // ASKER (first) lives in another namespace; NEAR shares the thread's.
+    const other = join(w.home, "sessions", "2026", "10", "29");
+    writeFileSync(
+      join(other, `rollout-2026-10-29T02-11-43-${ASKER}.jsonl`),
+      rollout(ASKER, "call_1").replaceAll("/work/project", "/work/other"),
+    );
+    const resolveNamespace = (cwd: string) => ({
+      namespace: cwd.includes("other") ? "other" : "ns",
+      global: false,
+      source: "cwd" as const,
+    });
+    const one = await daemonHarness({
+      attest: undefined,
+      codex: w.codex,
+      resolveNamespace,
+    });
+    await one.adapter(THREAD, codexHello(THREAD, A1));
+    await one.adapter(ASKER, codexHello(ASKER, A2));
+    await one.adapter(NEAR, codexHello(NEAR, A2));
+    await stopAll();
+    w.state.alive.add(P2);
+    w.state.locks.set(THREAD, [P2]);
+    const two = await daemonHarness({
+      attest: undefined,
+      codex: w.codex,
+      claude: { syncMs: 20 },
+      resolveNamespace,
+    });
+    // Only the namespace's own asker sees the thread's row.
+    const done = new Set<string>();
+    two.toDaemon({
+      id: "w",
+      type: "hello_ok",
+      machine_id: "1".repeat(16),
+      machine_label: "laptop",
+      server_version: "1",
+      caps: ["ids", "mailbox", "waiting"],
+    });
+    const t = setInterval(() => {
+      for (const f of two.of("list")) {
+        if (done.has(f.id)) continue;
+        done.add(f.id);
+        two.toDaemon({
+          id: f.id,
+          type: "roster",
+          agents:
+            f.from_ref === NEAR
+              ? [
+                  {
+                    bus_name: "my-codex",
+                    kind: "codex",
+                    namespace: "ns",
+                    global: false,
+                    state: "away",
+                    machine_label: "laptop",
+                    waiting: 2,
+                  },
+                ]
+              : [],
+        });
+      }
+    }, 5);
+    await vi.waitFor(() => expect(w.runs()).toHaveLength(1));
+    expect(two.of("waiting_query")).toHaveLength(0);
+    expect(two.of("list").every((f) => f.from_ref === NEAR)).toBe(true);
+    clearInterval(t);
+  });
+
+  it("Linux without lsof: a locked thread is found, an open but unlocked one is not", () => {
+    const dir = tmp("ob-l2079-");
+    const locked = join(dir, "a.lock");
+    const open = join(dir, "b.lock");
+    writeFileSync(locked, "");
+    writeFileSync(open, "");
+    const proc = join(dir, "proc");
+    mkdirSync(proc);
+    const st = statSync(locked, { bigint: true });
+    const { major, minor } = devParts(st.dev);
+    writeFileSync(
+      join(proc, "locks"),
+      `1: FLOCK  ADVISORY  WRITE 4242 ${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino} 0 EOF\n`,
+    );
+    for (const [pid, file] of [
+      [100, locked],
+      [101, open],
+    ] as const) {
+      mkdirSync(join(proc, String(pid), "fd"), { recursive: true });
+      symlinkSync(file, join(proc, String(pid), "fd", "7"));
+    }
+    // 102 has `a` open too, but not as a locker's fd set: no lock on `b`.
+    expect(lockHoldersLinux([locked, open], proc)).toEqual(
+      new Map([
+        [locked, [100]],
+        [open, []],
+      ]),
+    );
+    expect(lockHoldersLinux([locked], join(dir, "nope"))).toBeUndefined();
+  });
+
+  it("the attestor's default holder lookup on Linux does not run lsof", () => {
+    const w = world();
+    const proc = tmp("ob-p2079-");
+    const lock = join(w.home, "thread-writer-locks", `${THREAD}.lock`);
+    const st = statSync(lock, { bigint: true });
+    const { major, minor } = devParts(st.dev);
+    writeFileSync(
+      join(proc, "locks"),
+      `1: FLOCK  ADVISORY  WRITE 4242 ${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino} 0 EOF\n`,
+    );
+    mkdirSync(join(proc, "100", "fd"), { recursive: true });
+    symlinkSync(lock, join(proc, "100", "fd", "7"));
+    const a = codexAttestor({
+      home: w.home,
+      platform: "linux",
+      procRoot: proc,
+      procs: w.codex.procs,
+    });
+    expect(a.holders([THREAD])?.get(THREAD)).toMatchObject({ pid: P });
+    // Open, not locked: no holder.
+    writeFileSync(join(proc, "locks"), "");
+    expect(a.holders([THREAD])?.get(THREAD)).toBeUndefined();
   });
 });
