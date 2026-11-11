@@ -49,9 +49,15 @@ test("OAuth command and client tabs wrap at 390px", async ({ page }) => {
       const b = t?.getBoundingClientRect();
       return !!b && b.right <= box.right + 0.5 && b.left >= box.left - 0.5;
     });
-  expect(await selectedInView()).toBe(true);
-  await page.getByRole("tab", { name: "Generic" }).first().click();
-  expect(await selectedInView()).toBe(true);
+  await expect.poll(selectedInView).toBe(true);
+  // By keyboard, so the strip's own scroll-into-view is what is tested (a
+  // click scrolls the tab into view itself): focus the first tab, press End.
+  await page.getByRole("tab", { name: "Claude Code" }).first().focus();
+  await page.keyboard.press("End");
+  await expect(
+    page.getByRole("tab", { name: "Generic" }).first(),
+  ).toHaveAttribute("aria-selected", "true");
+  await expect.poll(selectedInView).toBe(true);
   expect(await sideScroll(page)).toBe(0);
 });
 
@@ -79,10 +85,9 @@ test("Token tab and token-created dialog wrap their commands at 390px", async ({
       const r = d.getBoundingClientRect();
       const strip = d.querySelector("[role=tablist]");
       return {
-        // What a scroller holds (the tab strip) is clipped, not overflowing.
+        // What the tab strip holds is clipped by it, not overflowing.
         outside: [...d.querySelectorAll("*")].filter((el) => {
-          for (let p = el.parentElement; p && p !== d; p = p.parentElement)
-            if (getComputedStyle(p).overflowX !== "visible") return false;
+          if (el.parentElement?.closest("[role=tablist]")) return false;
           const b = el.getBoundingClientRect();
           return b.width && (b.right > r.right + 0.5 || b.left < r.left - 0.5);
         }).length,
