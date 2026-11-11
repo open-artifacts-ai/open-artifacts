@@ -145,7 +145,11 @@ describe("a PAT publish: REST", () => {
     const name = `lbl-owner ${LABEL}`;
     // The owner's copy is the real name: no `masked`.
     expect(r.artifact.lastAgent).toEqual({ name, version: null });
-    expect(r.versions[0]?.agent).toEqual({ name, version: null });
+    expect(r.versions[0]?.agent).toEqual({
+      name,
+      version: null,
+      linked: false,
+    });
     expect(r.list.items.find((i) => i.id === pubId)?.lastAgent.name).toBe(name);
     expect(r.search.items.find((i) => i.id === pubId)?.lastAgent.name).toBe(
       name,
@@ -166,7 +170,13 @@ describe("a PAT publish: REST", () => {
         masked: true,
       };
       expect(r.artifact.lastAgent).toEqual(want);
-      expect(r.versions[0]?.agent).toEqual(want);
+      // #2118: a member's version agent reads unlinked; a guest's carries no
+      // face field at all (#2004).
+      expect(r.versions[0]?.agent).toEqual(
+        u === guest ? want : { ...want, linked: false },
+      );
+      if (u === guest)
+        expect(r.versions[0]?.agent).not.toHaveProperty("linked");
       expect(r.list.items.find((i) => i.id === pubId)?.lastAgent).toEqual(want);
       expect(r.search.items.find((i) => i.id === pubId)?.lastAgent).toEqual(
         want,
@@ -306,7 +316,7 @@ describe("a PAT publish: REST", () => {
     expect(JSON.stringify(r)).not.toContain(LEAK);
     const want = { name: "Olive Owner's agent", version: "1.0", masked: true };
     expect(r.artifact.lastAgent).toEqual(want);
-    expect(r.versions[0]?.agent).toEqual(want);
+    expect(r.versions[0]?.agent).toEqual({ ...want, linked: false });
     const o = (await restReads(pubId, owner.cookie)) as {
       versions: { agent: { name: string } }[];
     };
@@ -380,7 +390,12 @@ describe("a grant publish", () => {
         versions: { agent: unknown }[];
       };
       expect(r.artifact.lastAgent).toEqual(want);
-      expect(r.versions[0]?.agent).toEqual(want);
+      // Signed out: no face field; a member: linked false (#2118).
+      expect(r.versions[0]?.agent).toEqual(
+        auth === null ? want : { ...want, linked: false },
+      );
+      if (auth === null)
+        expect(r.versions[0]?.agent).not.toHaveProperty("linked");
     }
   });
 });
