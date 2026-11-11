@@ -50,6 +50,7 @@ import {
 import type { Env } from "../env.js";
 import { ApiError } from "../http/errors.js";
 import { logError, logInfo } from "../log.js";
+import { runtimeStub } from "../runtime/do.js";
 import { INDEX_REPORT_MS, socketIndexStub } from "../runtime/presence.js";
 import { type AgentIdentity, NAMES_OF_MAX } from "../services/agent-usage.js";
 import {
@@ -338,6 +339,7 @@ const HUB_CAPS = [
   BUS_CAPS.follow,
   BUS_CAPS.link,
   BUS_CAPS.linkArg,
+  BUS_CAPS.noticeAck,
 ];
 
 /**
@@ -365,6 +367,25 @@ const linkGated = (ws: WebSocket): boolean => {
  * socket with the cap. 0.138.x daemons count as old, which is acceptable.
  */
 const noticeGated = (ws: WebSocket): boolean => followGated(ws);
+
+/**
+ * #1752 (BUS_CAPS.noticeAck): a socket that acks a notice only once its
+ * harness took it. A notice sent to one is held until that ack. It also
+ * needs the notice gate, so it never narrows who can read a notice.
+ */
+const noticeAckGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return (
+    noticeGated(ws) &&
+    Array.isArray(caps) &&
+    hasCap({ caps }, BUS_CAPS.noticeAck)
+  );
+};
+
+/** #1752: how long a sent notice waits for its ack; past it the target stays queued. */
+export const NOTICE_ACK_TTL_MS = 6 * HOUR_MS;
+/** #1752: notices waiting for an ack at once; the oldest go first. */
+export const NOTICE_ACKS_MAX = 2000;
 
 /** #1317: follow requests one hub runs at once (each is a D1 round trip); past it, `rate_limited`. */
 const FOLLOWS_IN_FLIGHT_MAX = 8;
@@ -3369,8 +3390,35 @@ type NoticeRow = {
   toLname: string;
   ckey: string;
   text: string;
+  ack: string | null;
 };
-const NOTICE_COLS = "to_ns as toNs, to_lname as toLname, ckey, text";
+const NOTICE_COLS = "to_ns as toNs, to_lname as toLname, ckey, text, ack";
+
+/**
+ * #1752: the comment target a notice reports back to, as the JSON stored with
+ * it, or null when the notice carries none (or a malformed one).
+ */
+function noticeAckOf(n: BusNotice): string | null {
+  const t = n.target;
+  if (
+    !t ||
+    (t.kind !== "mention" && t.kind !== "asker") ||
+    typeof t.key !== "string" ||
+    t.key.length === 0 ||
+    t.key.length > 256 ||
+    typeof n.artifactId !== "string" ||
+    n.artifactId.length === 0 ||
+    typeof n.commentId !== "string" ||
+    n.commentId.length === 0
+  )
+    return null;
+  return JSON.stringify({
+    a: n.artifactId,
+    c: n.commentId,
+    k: t.kind,
+    key: t.key,
+  });
+}
 
 /** #1317: the shape deliverNotice trusts: the Worker is the only caller, but the hub still checks. */
 function wellFormedNotice(n: BusNotice): boolean {
@@ -3462,6 +3510,7 @@ export class BusHub extends DurableObject<Env> {
             or exists (select 1 from agents indexed by agents_status_due where status_due is not null)
             or exists (select 1 from former_names)
             or exists (select 1 from notices)
+            or exists (select 1 from notice_acks)
             or exists (select 1 from rename_rl)
             or exists (select 1 from machines where ${OFFLINE_LIVE_WHERE})
             or exists (select 1 from meta where org_id = ? and key >= ? and key < ?)
@@ -4690,6 +4739,7 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.links) ||
           hasCap(f, BUS_CAPS.reach) ||
           hasCap(f, BUS_CAPS.follow) ||
+          hasCap(f, BUS_CAPS.noticeAck) ||
           hasCap(f, BUS_CAPS.link)
             ? { caps: [...HUB_CAPS] }
             : {}),
@@ -4808,6 +4858,16 @@ export class BusHub extends DurableObject<Env> {
         return;
       case "ack":
       case "refuse":
+        // A notice sent to this machine's notice_ack socket (#1752) settles
+        // its comment target; everything else is mail.
+        if (
+          this.#settleNoticeAck(
+            machineId,
+            f.msg_id,
+            f.type === "ack" ? "delivered" : "refused",
+          )
+        )
+          return;
         // No reply either way: anything but the recipient's own pending mail
         // is silently ignored.
         this.#settle(
@@ -6281,6 +6341,85 @@ export class BusHub extends DurableObject<Env> {
     return all2 >= NOTICES_OLD_MAX ? "old_daemon_cap" : null;
   }
 
+  /**
+   * Sends one notice frame. On a notice_ack socket, a notice with a comment
+   * target is recorded (bounded, expiring) so the daemon's ack or refuse can
+   * settle it (#1752). False when the socket refused the frame.
+   */
+  #sendNotice(
+    ws: WebSocket,
+    agent: AgentRow,
+    text: string,
+    ack: string | null,
+  ): boolean {
+    const frame = noticeFrame(agent, text);
+    if (!trySendFrame(ws, frame)) return false;
+    if (ack !== null && noticeAckGated(ws) && frame.type === "deliver") {
+      const sql = this.ctx.storage.sql;
+      const expiresAt = this.#now() + NOTICE_ACK_TTL_MS;
+      sql.exec(
+        "insert or replace into notice_acks (msg_id, machine_id, ack, expires_at) values (?, ?, ?, ?)",
+        frame.msg_id,
+        agent.machineId,
+        ack,
+        expiresAt,
+      );
+      const over =
+        (one<{ n: number }>(sql, "select count(*) as n from notice_acks")?.n ??
+          0) - NOTICE_ACKS_MAX;
+      if (over > 0)
+        sql.exec(
+          "delete from notice_acks where rowid in (select rowid from notice_acks order by rowid limit ?)",
+          over,
+        );
+      this.#arm(expiresAt);
+    }
+    return true;
+  }
+
+  /**
+   * #1752: an ack or refuse for a notice sent to `machineId`'s notice_ack
+   * socket. Settles the comment target once (the row goes first, so a
+   * duplicate or another machine's frame finds nothing). True when the id was
+   * a recorded notice of this machine.
+   */
+  #settleNoticeAck(
+    machineId: string,
+    msgId: string,
+    outcome: "delivered" | "refused",
+  ): boolean {
+    const sql = this.ctx.storage.sql;
+    const r = one<{ ack: string }>(
+      sql,
+      "select ack from notice_acks where msg_id = ? and machine_id = ?",
+      msgId,
+      machineId,
+    );
+    if (!r) return false;
+    sql.exec("delete from notice_acks where msg_id = ?", msgId);
+    let t: { a: string; c: string; k: "mention" | "asker"; key: string };
+    try {
+      t = JSON.parse(r.ack);
+    } catch {
+      return true;
+    }
+    // The runtime DO moves a target only out of "queued" (never past seen).
+    this.ctx.waitUntil(
+      runtimeStub(this.env, t.a)
+        .commentsTargetSettle({
+          commentId: t.c,
+          kind: t.k,
+          key: t.key,
+          state: outcome === "delivered" ? "delivered" : "gone",
+        })
+        .then(
+          () => undefined,
+          () => logEvent("notice_ack_failed", {}),
+        ),
+    );
+    return true;
+  }
+
   #acceptNotice(n: BusNotice): DeliveryOutcome {
     const sql = this.ctx.storage.sql;
     const now = this.#now();
@@ -6316,12 +6455,15 @@ export class BusHub extends DurableObject<Env> {
     if (socket && notBefore <= now) {
       // A socket that refuses the frame (#1752) leaves the notice held
       // (parked) for the next agent_up, never stored as delivered.
-      if (trySendFrame(socket, noticeFrame(agent, n.text))) {
+      const ack = noticeAckOf(n);
+      if (this.#sendNotice(socket, agent, n.text, ack)) {
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
           ...key,
         );
-        return "delivered";
+        // #1752: on a notice_ack socket the notice counts as delivered only
+        // at the daemon's ack, so it reads held (queued) until then.
+        return ack !== null && noticeAckGated(socket) ? "held" : "delivered";
       }
     }
     const exists =
@@ -6358,14 +6500,15 @@ export class BusHub extends DurableObject<Env> {
     }
     const expiresAt = Math.max(notBefore, now) + NOTICE_HOLD_MS;
     sql.exec(
-      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked)
-       values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `insert or replace into notices (to_ns, to_lname, ckey, id, text, not_before, expires_at, parked, ack)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ...key,
       n.id,
       n.text,
       notBefore,
       expiresAt,
       parked,
+      noticeAckOf(n),
     );
     this.#arm(parked > 0 ? expiresAt : notBefore);
     this.#arm(expiresAt);
@@ -6396,7 +6539,7 @@ export class BusHub extends DurableObject<Env> {
     for (const r of rows) {
       // The address resolves to this agent now, or the notice is not its.
       if (liveVisibleIn(sql, r.toNs, r.toLname)?.id !== agent.id) continue;
-      if (!trySendFrame(ws, noticeFrame(agent, r.text))) break;
+      if (!this.#sendNotice(ws, agent, r.text, r.ack)) break;
       sql.exec(
         "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
         r.toNs,
@@ -6443,6 +6586,8 @@ export class BusHub extends DurableObject<Env> {
           .map((r) => r.id)
           .join(","),
       });
+    // #1752: an ack that never came leaves the target queued.
+    sql.exec("delete from notice_acks where expires_at <= ?", now);
     const gone = expired.length >= BATCH;
     const due = all<NoticeRow>(
       sql,
@@ -6461,7 +6606,7 @@ export class BusHub extends DurableObject<Env> {
       const agent = liveVisibleIn(sql, r.toNs, r.toLname);
       const live = agent && liveSocket(this.ctx, agent.machineId);
       const socket = live && noticeGated(live) ? live : null;
-      if (agent && socket && trySendFrame(socket, noticeFrame(agent, r.text))) {
+      if (agent && socket && this.#sendNotice(socket, agent, r.text, r.ack)) {
         sent++;
         sql.exec(
           "delete from notices where to_ns = ? and to_lname = ? and ckey = ?",
@@ -6695,6 +6840,7 @@ export class BusHub extends DurableObject<Env> {
       min("select min(expires_at) as t from former_names"),
       min("select min(not_before) as t from notices where parked = 0"),
       min("select min(expires_at) as t from notices"),
+      min("select min(expires_at) as t from notice_acks"),
       min("select min(at) as t from rename_rl", HOUR_MS),
       this.#offlineReapDeadline(),
     ].filter((t): t is number => t !== null);

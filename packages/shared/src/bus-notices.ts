@@ -52,6 +52,12 @@ export type BusNotice = {
   /** `comment` notices (#1535): the thread and comment the notice is about, server-generated ids only, for list_comments and add_comment. */
   threadId?: string;
   commentId?: string;
+  /**
+   * `comment` notices (#1752): the comment target (with `artifactId` and
+   * `commentId`) whose delivery state the hub updates when the daemon acks
+   * or refuses the notice.
+   */
+  target?: { kind: "mention" | "asker"; key: string };
 };
 
 const BUS_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,62}[A-Za-z0-9_-])?$/;
