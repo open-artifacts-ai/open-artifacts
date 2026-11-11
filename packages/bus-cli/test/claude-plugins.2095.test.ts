@@ -42,6 +42,9 @@ type Fake = {
   removedOnce?: boolean;
   failAdd?: boolean;
   refreshed?: number;
+  /** Newer versions upstream; install only reports them after `marketplace update`. */
+  upstream?: Record<string, string>;
+  known?: Record<string, string>;
   /** Fail adds of this ref only. */
   failAddRef?: string;
   failInstall?: string;
@@ -153,6 +156,7 @@ const fake = (over: Partial<Fake> = {}): Fake => {
       }
       if (b === "marketplace" && d === "update") {
         f.refreshed = (f.refreshed ?? 0) + 1;
+        f.known = { ...f.upstream };
         return { code: 0, stdout: "Updated 1 marketplace\n", stderr: "" };
       }
       if (b === "marketplace" && d === "remove") {
@@ -211,7 +215,7 @@ const fake = (over: Partial<Fake> = {}): Fake => {
           ...(already
             ? {
                 installedVersion: v?.[0] ?? "1",
-                availableVersion: v?.[1] ?? v?.[0] ?? "1",
+                availableVersion: f.known?.[id] ?? v?.[1] ?? v?.[0] ?? "1",
               }
             : {}),
         });
@@ -220,7 +224,7 @@ const fake = (over: Partial<Fake> = {}): Fake => {
         const id = d as string;
         f.updated.push(id);
         const v = f.versions[id];
-        if (v) f.versions[id] = [v[1], v[1]];
+        if (v) f.versions[id] = [f.known?.[id] ?? v[1], f.known?.[id] ?? v[1]];
         return line({ ...fx("update.json"), plugin: id, pluginId: id });
       }
       if (b === "uninstall") {
@@ -245,6 +249,12 @@ const record = (busHome: string) => {
   const p = join(busHome, "install.json");
   return existsSync(p)
     ? JSON.parse(readFileSync(p, "utf8")).claudePlugins
+    : undefined;
+};
+const styleSetting = (home: string): unknown => {
+  const p = settingsFile(home);
+  return existsSync(p)
+    ? JSON.parse(readFileSync(p, "utf8")).outputStyle
     : undefined;
 };
 const run = (f: Fake, w: { home: string; busHome: string }, over = {}) => {
@@ -787,7 +797,7 @@ describe("review fixes", () => {
         : r;
     };
     const r = await run(f, w, { version: "0.154.0" });
-    expect(r.notes.join(" ")).toContain("Couldn't add the plugin source");
+    expect(r.notes.join(" ")).not.toContain("Couldn't add the plugin source");
     expect(record(w.busHome)).toEqual({
       marketplace: true,
       plugins: [STYLE_PLUGIN, SHORTCUTS_PLUGIN],
@@ -827,6 +837,91 @@ describe("review fixes", () => {
     expect(f.markets).toEqual([]);
     expect(f.installed).toEqual([]);
     expect(record(w.busHome)).toBeUndefined();
+    // outputStyle must not point at a style that is not installed.
+    expect(styleSetting(w.home)).toBeUndefined();
+    expect(text).toContain("output style off");
+  });
+
+  it("a partial rollback says so, and clears the style we set when its plugin did not come back", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    expect(styleSetting(w.home)).toBe("open-artifacts:Artifacts Teammate");
+    f.failAddRef = "v0.154.0";
+    f.failInstall = STYLE_PLUGIN;
+    const r = await run(f, w, { version: "0.154.0" });
+    const text = r.notes.join(" ");
+    expect(text).toContain("only some of the plugins came back");
+    expect(text).not.toContain("as they were");
+    expect(f.installed).toEqual([SHORTCUTS_PLUGIN]);
+    expect(record(w.busHome)).toEqual({
+      marketplace: true,
+      plugins: [SHORTCUTS_PLUGIN],
+    });
+    expect(styleSetting(w.home)).toBeUndefined();
+  });
+
+  it("keeps a style the person chose when the style plugin did not come back", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    editSettings(w.home, (o) => {
+      (o as Record<string, unknown>).outputStyle = "Mine";
+    });
+    f.failAdd = true;
+    await run(f, w, { version: "0.154.0" });
+    expect(styleSetting(w.home)).toBe("Mine");
+  });
+
+  it("does not roll back when the marketplace list fails after the add failed", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    f.failAddRef = "v0.154.0";
+    const orig = f.exec;
+    let removed = false;
+    f.exec = async (cmd, args, o) => {
+      if (args[1] === "marketplace" && args[2] === "remove") removed = true;
+      if (removed && args[1] === "marketplace" && args[2] === "list")
+        return { code: 1, stdout: "", stderr: "boom" };
+      return orig(cmd, args, o);
+    };
+    const adds = () =>
+      f.calls.filter((x) => x[2] === "marketplace" && x[3] === "add").length;
+    const before = adds();
+    const r = await run(f, w, { version: "0.154.0" });
+    expect(adds() - before).toBe(1);
+    expect(r.notes.join(" ")).toContain("Run the install again");
+    expect(r.notes.join(" ")).toContain("couldn't check");
+  });
+
+  it("records the old marketplace as ours when the rollback add times out but landed", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    f.failAddRef = "v0.154.0";
+    const orig = f.exec;
+    f.exec = async (cmd, args, o) => {
+      const res = await orig(cmd, args, o);
+      // The rollback's add lands, then reports a timeout.
+      return args[1] === "marketplace" &&
+        args[2] === "add" &&
+        args[3]?.endsWith("#v0.153.0")
+        ? bad("timeout", "timed out")
+        : res;
+    };
+    const r = await run(f, w, { version: "0.154.0" });
+    expect(f.markets[0]).toMatchObject({ ref: "v0.153.0" });
+    expect(r.notes.join(" ")).toContain("either");
+    expect(record(w.busHome)).toEqual({ marketplace: true, plugins: [] });
+  });
+
+  it("does not refresh a dev build's marketplace that is still on a release pin", async () => {
+    const w = setup();
+    const f = fake({ mcpList: FOUND });
+    await run(f, w, { version: "0.153.0" });
+    await run(f, w, { version: "0.0.0" });
+    expect(f.refreshed ?? 0).toBe(0);
   });
 
   it("a re-pin documents that only the shortcuts' options survive: plugin data goes with the remove", async () => {
@@ -848,7 +943,9 @@ describe("review fixes", () => {
     const f = fake({ mcpList: FOUND });
     await run(f, w, { version: "0.0.0" });
     expect(f.refreshed ?? 0).toBe(0);
-    f.versions[STYLE_PLUGIN] = ["1", "2"];
+    // The new version is upstream only: install sees it only after the refresh.
+    f.versions[STYLE_PLUGIN] = ["1", "1"];
+    f.upstream = { [STYLE_PLUGIN]: "2" };
     await run(f, w, { version: "0.0.0" });
     expect(f.refreshed).toBe(1);
     expect(f.updated).toEqual([STYLE_PLUGIN]);

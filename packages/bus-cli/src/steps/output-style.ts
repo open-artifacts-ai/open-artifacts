@@ -343,6 +343,17 @@ export function uninstallOutputStyle(deps: Where): OutputStyleResult {
   return out;
 }
 
+/**
+ * For a plugin we could not install: clears outputStyle only when our record says we
+ * set it and it still holds the plugin's style name, so it never points at a style
+ * that is not installed. Anything the person chose is left alone.
+ */
+export function clearOutputStyleIfOurs(deps: Where): OutputStyleResult {
+  const out: OutputStyleResult = { written: [], notes: [] };
+  if (setByUs(deps)) turnOff(deps, out);
+  return out;
+}
+
 /** Our record says we set outputStyle, and it still holds the plugin's style name. */
 function setByUs(deps: Where): boolean {
   try {

@@ -722,11 +722,23 @@ export function copy(style: Style, bus: string = BUS_CMD) {
         `Kept the Open Artifacts plugins on ${ref ?? "their default branch"}, as you set them.`,
       ),
     ],
-    pluginsRolledBack: (ok: boolean, why: string) => [
+    pluginsRolledBack: (state: "all" | "some" | "none", why: string) => [
       warn(
-        ok
+        state === "all"
           ? "Put the previous Open Artifacts plugin source back, so your plugins are as they were. Run the install again to retry the move."
-          : `Couldn't put the previous plugin source back either (${why}), so the Open Artifacts plugins are not installed. Run the install again.`,
+          : state === "some"
+            ? "Put the previous Open Artifacts plugin source back, but only some of the plugins came back. Run the install again to finish."
+            : `Couldn't put the previous plugin source back either (${why}), so the Open Artifacts plugins are not installed. Run the install again.`,
+      ),
+    ],
+    pluginsStyleCleared: () => [
+      warn(
+        "Turned the Artifacts Teammate output style off again, because its plugin is not installed. The install turns it back on.",
+      ),
+    ],
+    pluginsAddUnknown: (why: string) => [
+      warn(
+        `Couldn't add the plugin source (${why}) and couldn't check what is installed, so nothing was changed back. Run the install again.`,
       ),
     ],
     pluginsBadInstance: () => [

@@ -12,7 +12,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Deps } from "../deps.ts";
-import { claudeSettingsFile, selectOutputStyle } from "./output-style.ts";
+import {
+  claudeSettingsFile,
+  clearOutputStyleIfOurs,
+  selectOutputStyle,
+} from "./output-style.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
 export const MARKETPLACE = "open-artifacts";
@@ -269,6 +273,15 @@ export async function installClaudePlugins(
   let marketplace = prior?.marketplace ?? false;
   // A re-pin whose add failed: re-add the old ref and reinstall what the remove took
   // away, with the shortcuts' saved options. The record then matches what is installed.
+  // outputStyle must not point at a style that is not installed.
+  const clearStyle = () => {
+    const cleared = clearOutputStyleIfOurs({
+      home: deps.home,
+      env: deps.env,
+      busHome: deps.busHome,
+    });
+    out.notes.push(...cleared.notes, ...copy.pluginsStyleCleared());
+  };
   const rollBack = async (
     ids: string[],
     oldRef: string | undefined,
@@ -284,8 +297,10 @@ export async function installClaudePlugins(
       "--json",
     ]);
     if (!back.ok) {
-      // Both failed: the record stays empty (the remove already cleared it).
-      out.notes.push(...copy.pluginsRolledBack(false, back.message));
+      // Both failed. A rollback that timed out may still have landed: record it as ours.
+      await recordIfLanded([]);
+      out.notes.push(...copy.pluginsRolledBack("none", back.message));
+      clearStyle();
       return;
     }
     const restored: string[] = [];
@@ -302,20 +317,25 @@ export async function installClaudePlugins(
       else out.notes.push(...copy.pluginsFailed(`reinstall ${id}`, i.message));
     }
     saveRecord(deps.busHome, true, restored);
-    out.notes.push(...copy.pluginsRolledBack(true, ""));
+    const all = restored.length === ids.length;
+    out.notes.push(...copy.pluginsRolledBack(all ? "all" : "some", ""));
+    if (!restored.includes(STYLE_PLUGIN)) clearStyle();
   };
   // A failed or timed-out add may still have landed: if it did, it is ours and recorded.
-  const recordIfLanded = async (plugins: string[]) => {
+  // undefined: the list itself failed, so nobody knows; the record is left as it is.
+  const recordIfLanded = async (
+    plugins: string[],
+  ): Promise<boolean | undefined> => {
     const again = await claude(exec, [
       "plugin",
       "marketplace",
       "list",
       "--json",
     ]);
-    const landed =
-      again.ok &&
-      Array.isArray(again.data) &&
-      (again.data as Market[]).some((m) => m.name === MARKETPLACE && isOurs(m));
+    if (!again.ok || !Array.isArray(again.data)) return undefined;
+    const landed = (again.data as Market[]).some(
+      (m) => m.name === MARKETPLACE && isOurs(m),
+    );
     if (landed) saveRecord(deps.busHome, true, plugins);
     return landed;
   };
@@ -369,10 +389,16 @@ export async function installClaudePlugins(
       if (!r.ok) {
         // The add may have landed anyway (a timeout): then the new ref is in place.
         const landed = await recordIfLanded([]);
-        out.notes.push(
-          ...copy.pluginsFailed("add the plugin source", r.message),
-        );
+        if (landed === undefined) {
+          // The list failed too: do not guess, and do not roll back over a marketplace
+          // that may be there. The record is not touched.
+          out.notes.push(...copy.pluginsAddUnknown(r.message));
+          return out;
+        }
         if (!landed) {
+          out.notes.push(
+            ...copy.pluginsFailed("add the plugin source", r.message),
+          );
           // Nothing is left of ours: put the old ref and its plugins back.
           await rollBack(fromIt, there.ref, saved);
           return out;
@@ -384,8 +410,9 @@ export async function installClaudePlugins(
 
   // A dev build follows the default branch, and install does not refresh an unpinned
   // marketplace: refresh it so the update check below sees the newest version.
-  // A pinned release is never refreshed.
-  if (there && !wantRef) {
+  // Only a marketplace that is unpinned (no ref) and wanted unpinned: a pinned release is
+  // never refreshed, and a dev build over an older release pin is the re-pin path's job.
+  if (there && !wantRef && !there.ref) {
     const u = await claude(exec, [
       "plugin",
       "marketplace",
@@ -526,8 +553,12 @@ export type ClaudeCopy = {
     fallback: string,
   ) => string[];
   pluginsKeptSource: (ref: string | undefined) => string[];
-  /** A re-pin's add failed; the old source was put back (ok) or could not be. */
-  pluginsRolledBack: (ok: boolean, why: string) => string[];
+  /** A re-pin's add failed; the old source and all, some or none of the plugins were put back. */
+  pluginsRolledBack: (state: "all" | "some" | "none", why: string) => string[];
+  /** The output style we had turned on was cleared because its plugin is gone. */
+  pluginsStyleCleared: () => string[];
+  /** A re-pin's add failed and the marketplace list failed too. */
+  pluginsAddUnknown: (why: string) => string[];
   pluginsBadInstance: () => string[];
 };
 
