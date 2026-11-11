@@ -19,6 +19,7 @@ import {
   CODEX_TEXT_CAP,
   type CodexBin,
   CodexTransport,
+  type CodexTransportOptions,
   codexAppBin,
   codexBinFile,
   codexBinPin,
@@ -29,6 +30,7 @@ import {
   resolveCodexBin,
   splitArgv0,
 } from "../src/transports/codex.ts";
+import { queueDb } from "./codex-queue-fixture.ts";
 import { daemonHarness, deliverFrame, stopAll } from "./helpers.ts";
 
 afterEach(stopAll);
@@ -105,6 +107,10 @@ function transport(
     takenFile?: string;
     home?: string;
     scanBudget?: number;
+    queueStore?: (
+      thread: string,
+      head: string,
+    ) => { present: boolean; revision: number | null } | undefined;
     event?: (
       name: string,
       fields: Record<string, string | number | undefined>,
@@ -130,6 +136,7 @@ function transport(
     taken: watch,
     log,
     ...(over.event ? { event: over.event } : {}),
+    ...(over.queueStore ? { queueStore: over.queueStore } : {}),
   });
   return { t, home, log, resolve, watch, onTaken };
 }
@@ -845,19 +852,103 @@ describe("queued mail counts as delivered only once a turn takes it (#2029)", ()
     expect(f.runs()).toHaveLength(1);
   });
 
-  it("a crash after the attempt was written and before the spawn: the restart re-queues once, never suppressed", async () => {
+  it("a crash after the attempt was written and before the spawn: the restart absent from the rollout and Codex's queue twice: re-queues once, never suppressed", async () => {
     const f = fakeCodex();
     const takenFile = join(tmp("ob-cxp-"), "p.json");
     const home = tmp("ob-cxh-");
     const crashed = new TakenWatch({ home, file: takenFile, onTaken: vi.fn() });
     expect(crashed.attempt("mmmmmmmmmmmmmmm1", THREAD, "head")).toBe(true);
-    const one = transport({ path: f.bin, from: "path" }, { takenFile });
+    const qhome = tmp("ob-cxh-");
+    queueDb(qhome);
+    const one = transport(
+      { path: f.bin, from: "path" },
+      { takenFile, home: qhome },
+    );
     await expect(one.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
     expect(f.runs()).toHaveLength(1);
     expect(one.watch.state("mmmmmmmmmmmmmmm1")).toBe("queued");
     // And now it is queued, not suppressed and not queued again.
     await expect(one.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
     expect(f.runs()).toHaveLength(1);
+  });
+
+  describe("an interrupted attempt and Codex's own queue (#2029)", () => {
+    const ID = "mmmmmmmmmmmmmmm1";
+    const text = codexText(agent(), mail("hi"));
+    const head = text.split("\n", 1)[0] as string;
+    const setup = (rows: { thread: string; text?: string }[] | undefined) => {
+      const f = fakeCodex();
+      const takenFile = join(tmp("ob-cxp-"), "p.json");
+      const home = tmp("ob-cxh-");
+      new TakenWatch({ home, file: takenFile, onTaken: vi.fn() }).attempt(
+        ID,
+        THREAD,
+        head,
+      );
+      if (rows) queueDb(home, { rows });
+      return { f, takenFile, home };
+    };
+    const go = (
+      x: ReturnType<typeof setup>,
+      queueStore?: NonNullable<CodexTransportOptions["queueStore"]>,
+    ) =>
+      transport(
+        { path: x.f.bin, from: "path" },
+        {
+          takenFile: x.takenFile,
+          home: x.home,
+          ...(queueStore ? { queueStore } : {}),
+        },
+      );
+
+    it("a crash after Codex committed the queue row: found in its queue, queued, no second spawn", async () => {
+      const x = setup([{ thread: THREAD, text }]);
+      const r = go(x);
+      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+      expect(x.f.runs()).toHaveLength(0);
+      expect(r.watch.state(ID)).toBe("queued");
+      // And a later delivery still runs nothing.
+      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+      expect(x.f.runs()).toHaveLength(0);
+    });
+
+    it("the queue store cannot be read: no spawn, still an attempt", async () => {
+      const x = setup(undefined);
+      const r = go(x);
+      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+      expect(x.f.runs()).toHaveLength(0);
+      expect(r.watch.state(ID)).toBe("attempt");
+    });
+
+    it("absent on one check but the revision moved before the second: no spawn", async () => {
+      const x = setup([]);
+      let rev = 0;
+      const r = go(x, () => ({ present: false, revision: rev++ }));
+      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+      expect(x.f.runs()).toHaveLength(0);
+      expect(r.watch.state(ID)).toBe("attempt");
+    });
+
+    it("the hand-over instant: gone from the queue, and the rollout item shows between the checks: acked, no spawn", async () => {
+      const x = setup([]);
+      let calls = 0;
+      const r = go(x, () => {
+        if (calls++ === 0) writeRollout(x.home, [userItem(text)]);
+        return { present: false, revision: 1 };
+      });
+      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual({
+        ok: true,
+      });
+      expect(x.f.runs()).toHaveLength(0);
+    });
+
+    it("absent twice with an unchanged revision spawns exactly once", async () => {
+      const x = setup([]);
+      const r = go(x, () => ({ present: false, revision: 4 }));
+      await expect(r.t.deliver(agent(), mail("hi"))).resolves.toEqual(QUEUED);
+      expect(x.f.runs()).toHaveLength(1);
+      expect(r.watch.state(ID)).toBe("queued");
+    });
   });
 
   it("an interrupted attempt whose item a turn already took is found in the rollout: acked, nothing re-queued", async () => {

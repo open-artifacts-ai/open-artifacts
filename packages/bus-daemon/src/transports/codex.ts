@@ -12,6 +12,7 @@ import {
 import { INSTANCE_SENDER_NAME } from "@oa/bus-protocol";
 import type { AgentRecord } from "../agents.ts";
 import { CODEX_TOOL_NAMESPACE } from "../codex-attest.ts";
+import { type QueueRead, readQueue } from "../codex-queue-store.ts";
 import { NOTICE_WATCH_MS, type TakenWatch } from "../codex-taken.ts";
 import type { DeliverOutcome, Mail } from "../deliver.ts";
 
@@ -292,6 +293,8 @@ export type CodexTransportOptions = {
     TakenWatch,
     "state" | "maybe" | "attempt" | "queued" | "drop" | "reconcile"
   >;
+  /** Codex's own queue store, read only; default reads `queue_1.sqlite` in `home`. Undefined: cannot tell. */
+  queueStore?: (thread: string, head: string) => QueueRead | undefined;
   log?: (msg: string) => void;
   /** The always-on event log: a key and ids, never the message. */
   event?: (
@@ -403,10 +406,38 @@ export class CodexTransport {
     const head = text.split("\n", 1)[0] ?? "";
     // An interrupted attempt: the rollout may hold the item already.
     if (st === "attempt" && watch) {
+      // An interrupted attempt, resolved only here, from a hub delivery to a
+      // thread that rejoined. Spawn again only when the item is nowhere:
+      // not in the rollout, and absent from Codex's queue on two checks with
+      // the thread's revision unchanged between them (a turn deletes the row
+      // and appends to the rollout; one look can land on the hand-over).
+      // Anything unreadable or unsettled stays queued: never a spawn on a guess.
+      const unsettled = { ok: false, taken: "maybe" } as const;
+      const peek =
+        this.opts.queueStore ?? ((t, h) => readQueue(this.opts.home, t, h));
+      const inQueue = (): QueueRead | undefined => peek(ref, head);
       const rc = this.opts.taken.reconcile(id);
       if (rc === "taken") return { ok: true, how: "taken" };
-      // Not found yet, or not reached the rollout's end: the tick finishes the scan.
-      if (rc === "pending") return { ok: false, taken: "maybe" };
+      if (rc === "pending") return unsettled;
+      const q1 = inQueue();
+      if (!q1) return unsettled;
+      if (q1.present) {
+        this.opts.taken.queued(id);
+        return { ok: true, how: "known" };
+      }
+      const rc2 = this.opts.taken.reconcile(id);
+      if (rc2 === "taken") return { ok: true, how: "taken" };
+      if (rc2 === "pending") return unsettled;
+      const q2 = inQueue();
+      if (!q2) return unsettled;
+      if (q2.present) {
+        this.opts.taken.queued(id);
+        return { ok: true, how: "known" };
+      }
+      if (q2.revision !== q1.revision) return unsettled;
+      // Absent twice and unchanged: Codex never got it. A fresh attempt follows
+      // ("once" per interrupted attempt: N crashes in the spawn window can leave
+      // N copies; a copy beats a silent loss).
     }
     this.#bin ??= this.opts.resolve();
     const bin = this.#bin;
