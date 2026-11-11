@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.154.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.153.1...v0.154.0) (2026-11-11)
+
+
+### Features
+
+* **auth:** silent Google sign-in for a new owner after sign-up ([#2026](https://github.com/open-artifacts-ai/open-artifacts/issues/2026)) ([#2028](https://github.com/open-artifacts-ai/open-artifacts/issues/2028)) ([c53fcba](https://github.com/open-artifacts-ai/open-artifacts/commit/c53fcbaf1a7157b4bc19d378c37c6c50316d9b5f))
+* **bus:** prose titles and impersonating prefixes get the default name ([#1916](https://github.com/open-artifacts-ai/open-artifacts/issues/1916)) ([#2076](https://github.com/open-artifacts-ai/open-artifacts/issues/2076)) ([301d1b9](https://github.com/open-artifacts-ai/open-artifacts/commit/301d1b927dd87c8f6ef6b986e1f869ea3af25b67))
+* **shortcuts:** band row reads ↗ title v{n}, version never cut ([#2068](https://github.com/open-artifacts-ai/open-artifacts/issues/2068)) ([#2070](https://github.com/open-artifacts-ai/open-artifacts/issues/2070)) ([d8cec3b](https://github.com/open-artifacts-ai/open-artifacts/commit/d8cec3bccac390ad20ca5becb5de55e83368e479))
+
+
+### Bug Fixes
+
+* **asks:** one waiting answer notice per ask and a fanout deadline ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2074](https://github.com/open-artifacts-ai/open-artifacts/issues/2074)) ([410df2e](https://github.com/open-artifacts-ai/open-artifacts/commit/410df2e7ed269dfecf34076a2f78cb9d9aede810))
+* **bus:** a notice's own target always settles on a non-acking send ([#2065](https://github.com/open-artifacts-ai/open-artifacts/issues/2065)) ([#2069](https://github.com/open-artifacts-ai/open-artifacts/issues/2069)) ([32f8cfd](https://github.com/open-artifacts-ai/open-artifacts/commit/32f8cfdbed4bd114a692d4c919fdf4199f9dcad4))
+* **bus:** wake a restarted Codex thread when mail waits for it ([#2029](https://github.com/open-artifacts-ai/open-artifacts/issues/2029)) ([#2031](https://github.com/open-artifacts-ai/open-artifacts/issues/2031)) ([5912374](https://github.com/open-artifacts-ai/open-artifacts/commit/5912374656518061003d2c5475484271739bf7b3))
+
 ## [0.153.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.153.0...v0.153.1) (2026-11-11)
 
 
