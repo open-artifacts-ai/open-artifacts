@@ -1,0 +1,88 @@
+import { Awareness } from "y-protocols/awareness";
+import type * as Y from "yjs";
+import type { RoomProvider } from "../src/viewer/doc/useDocRoom";
+
+// biome-ignore lint/suspicious/noExplicitAny: event args vary.
+type Cb = (...a: any[]) => void;
+
+/**
+ * A stand-in for y-websocket's WebsocketProvider: the same fields and events
+ * the room uses, and the same registered senders (which record what they send).
+ */
+export class FakeProvider implements RoomProvider {
+  awareness: Awareness;
+  wsconnected = false;
+  synced = false;
+  ws: {
+    onmessage: ((e: { data: unknown }) => void) | null;
+    bufferedAmount: number;
+  } | null = null;
+  sentUpdates: Uint8Array[] = [];
+  sentAwareness: number[][] = [];
+  destroyed = false;
+  private handlers = new Map<string, Set<Cb>>();
+  _updateHandler: (update: Uint8Array, origin: unknown) => void;
+  _awarenessUpdateHandler: (c: {
+    added: number[];
+    updated: number[];
+    removed: number[];
+  }) => void;
+
+  constructor(public doc: Y.Doc) {
+    this.awareness = new Awareness(doc);
+    this._updateHandler = (update, origin) => {
+      if (origin !== this) this.sentUpdates.push(update);
+    };
+    this.doc.on("update", this._updateHandler);
+    this._awarenessUpdateHandler = ({ added, updated, removed }) => {
+      this.sentAwareness.push([...added, ...updated, ...removed]);
+    };
+    this.awareness.on("update", this._awarenessUpdateHandler);
+  }
+  on(event: string, cb: Cb) {
+    const set = this.handlers.get(event) ?? new Set<Cb>();
+    this.handlers.set(event, set);
+    set.add(cb);
+  }
+  off(event: string, cb: Cb) {
+    this.handlers.get(event)?.delete(cb);
+  }
+  private emit(event: string, ...args: unknown[]) {
+    for (const cb of [...(this.handlers.get(event) ?? [])]) cb(...args);
+  }
+  /** The socket opens; `sync` also completes the sync exchange. */
+  connect(sync = true) {
+    this.ws = { onmessage: null, bufferedAmount: 0 };
+    this.wsconnected = true;
+    this.emit("status", { status: "connected" });
+    if (sync) {
+      this.synced = true;
+      this.emit("sync", true);
+    }
+  }
+  disconnect() {
+    this.wsconnected = false;
+    this.synced = false;
+    this.emit("status", { status: "disconnected" });
+  }
+  emitSync() {
+    this.emit("sync", this.synced);
+  }
+  /** The server sends a text frame. */
+  frame(data: string) {
+    this.ws?.onmessage?.({ data });
+  }
+  destroy() {
+    this.destroyed = true;
+  }
+}
+
+/** Builds providers and remembers the last one. */
+export function fakeProviders() {
+  const made: { last: FakeProvider | null } = { last: null };
+  const make = (_id: string, ydoc: Y.Doc) => {
+    made.last = new FakeProvider(ydoc);
+    return made.last;
+  };
+  return { make, made };
+}

@@ -25,6 +25,13 @@ async function startMocks() {
   const quotaExceeded =
     import.meta.env.VITE_MOCK_QUOTA === "1" || params.get("mock") === "quota";
   const extra = [];
+  // ?mock=doc: the "Landing page" mock is a collaborative doc (#1100), served by
+  // e2e/doc-room.mjs at VITE_DOC_WS; ?mock=doc-readonly: viewed without edit.
+  const docMock = params.get("mock");
+  if (docMock === "doc" || docMock === "doc-readonly") {
+    const { setMockDoc } = await import("./viewer/doc/docMock");
+    setMockDoc(fixtures.artifacts[0]?.id ?? null, docMock === "doc-readonly");
+  }
   // ?role=admin|member|guest: sign in as that role.
   const role = params.get("role");
   if (role === "admin" || role === "member" || role === "guest")

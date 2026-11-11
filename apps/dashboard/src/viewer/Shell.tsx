@@ -36,6 +36,9 @@ import {
   useCommentsController,
 } from "./comments/useComments";
 import { CommentsResizer, useCommentsWidthVar } from "./commentsWidth";
+import { DocEditor, STATUS_TEXT } from "./doc/DocEditor";
+import { isDocArtifact, mockDocReadOnly } from "./doc/docMock";
+import type { DocStatus } from "./doc/useDocRoom";
 import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
 import { FullScreenEscape } from "./FullScreenEscape";
 import { frameLoad, SANDBOX, safeContentUrl } from "./frame";
@@ -378,6 +381,13 @@ function Viewer({
   const caps = artifact.capabilities;
   const live = caps.db || caps.viewer || caps.storage;
   const can = useCan(artifact);
+  // #1100: a collaborative doc is edited in place of the frame.
+  const isDoc = isDocArtifact(artifact);
+  const [docStatus, setDocStatus] = useState<DocStatus | null>(null);
+  useEffect(() => {
+    // No frame to wait for: the layer is ready at once.
+    if (isDoc) cbs.current.onReady?.();
+  }, [isDoc]);
   const renavigated = useRef(false);
   const [renav, setRenav] = useState(false);
   const onRenavigated = useCallback(() => {
@@ -548,7 +558,7 @@ function Viewer({
   }, [wantThread, shown, cmt, navigate, surface, panelOpen]);
   if ((content.notFound || signedOut) && isEmbed())
     return <NotPublic id={artifact.id} />;
-  if (content.notFound) return <NotFound />;
+  if (content.notFound && !isDoc) return <NotFound />;
   if (signedOut) return null;
   const loader = (
     <FrameLoader
@@ -622,7 +632,21 @@ function Viewer({
               onVersions={() =>
                 setPanel(!(panelOpen && tab === "versions"), "versions")
               }
-              live={slot}
+              live={
+                <>
+                  {slot}
+                  {isDoc && docStatus && (
+                    <span
+                      className="oa-docstate"
+                      role="status"
+                      aria-live="polite"
+                      data-state={docStatus}
+                    >
+                      {STATUS_TEXT[docStatus]}
+                    </span>
+                  )}
+                </>
+              }
               newer={newer}
               gone={gone !== null}
               comments={commentsButton}
@@ -646,15 +670,27 @@ function Viewer({
           </>
         )}
         <div className="oa-vbody">
-          {!url && (content.current || content.error) ? (
+          {isDoc && shown && (
+            <div className="oa-vmain">
+              <DocEditor
+                artifactId={artifact.id}
+                title={artifact.title}
+                canEdit={can.edit && !readOnly && !mockDocReadOnly()}
+                viewer={viewer}
+                outsider={!authed || role === "guest"}
+                onStatus={setDocStatus}
+              />
+            </div>
+          )}
+          {!isDoc && !url && (content.current || content.error) ? (
             <ErrorPanel onRetry={() => void content.refresh()} />
           ) : null}
-          {!url && !content.current && !content.error && (
+          {!isDoc && !url && !content.current && !content.error && (
             <div className="oa-vmain" aria-busy="true">
               {loader}
             </div>
           )}
-          {url && (
+          {!isDoc && url && (
             <div className="oa-vmain" aria-busy={ready ? undefined : true}>
               {loader}
               {renav && (
