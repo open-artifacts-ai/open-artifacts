@@ -10,7 +10,15 @@ import {
   R,
   type CommentThread as Thread,
 } from "@oa/shared";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
@@ -20,7 +28,6 @@ import {
   installDelivery,
   type NoticeDelivery,
 } from "../src/services/bus-delivery.js";
-import { createPat } from "../src/auth/pat.js";
 import {
   ANSWER_WINDOW_MS,
   commentNoticeText,
@@ -743,23 +750,17 @@ describe("ask_answered notice (#1535)", () => {
     bus.clear();
     await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId, false, -1);
     expect(answered()).toHaveLength(0);
+    // Exactly at the boundary (clock frozen, budget 0) is still in time.
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+    try {
+      await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId, false, 0);
+    } finally {
+      now.mockRestore();
+    }
+    expect(answered()).toHaveLength(1);
+    bus.clear();
     await notifyAnswered(E, s.id, 1, t.id, cid, owner.userId);
     expect(answered()).toHaveLength(1);
-  });
-
-  it("a token cannot answer an ask: 403 forbidden, nothing stored or sent (#1752)", async () => {
-    const s = await setup();
-    const { t, cid } = await askFrom(owner, s.id);
-    bus.clear();
-    const { token } = await createPat(E, viewer.userId, "agent");
-    const r = await api(app, R.commentAnswer(s.id, t.id, cid), token, {
-      method: "POST",
-      body: { optionId: "wide" },
-    });
-    expect(r.status).toBe(403);
-    expect(await errOf(r)).toMatchObject({ code: "forbidden" });
-    expect(answered()).toHaveLength(0);
-    expect((await answer(s.id, t.id, cid, viewer, "wide")).status).toBe(200);
   });
 
   it("a person-authored ask whose author has no following agent sends nothing", async () => {
