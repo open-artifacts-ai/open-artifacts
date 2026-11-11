@@ -113,7 +113,7 @@ async function stripeUrl(
 export function mountBilling(app: AppType): void {
   app.post(R.billingCheckout, async (c) => {
     const user = requireBillingManager(c);
-    const { tier, interval } = await jsonBody(c, BillingCheckoutInputSchema);
+    const { tier, interval, seats } = await jsonBody(c, BillingCheckoutInputSchema);
     // Solo prices are for a Solo instance: a Team or Business instance
     // can't buy them (409, as a state conflict, not a bad body).
     if (tier === "solo") {
@@ -125,11 +125,13 @@ export function mountBilling(app: AppType): void {
         );
     }
     // Billing's /checkout body is { install, ts, plan } (Platform #858), plus
-    // interval for solo only (month or year; hosted half, #1568).
+    // interval (month or year; required for solo) and seats (yearly team or
+    // business), both forwarded unchanged.
     return c.json(
       await stripeUrl(c, CHECKOUT_PATH, {
         plan: tier,
         ...(interval ? { interval } : {}),
+        ...(seats !== undefined ? { seats } : {}),
       }),
     );
   });
