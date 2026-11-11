@@ -340,6 +340,7 @@ const HUB_CAPS = [
   BUS_CAPS.follow,
   BUS_CAPS.link,
   BUS_CAPS.linkArg,
+  BUS_CAPS.waiting,
   BUS_CAPS.noticeAck,
 ];
 
@@ -399,6 +400,15 @@ const FOLLOW_TIMEOUT_MS = 5_000;
  * `agent_up` handover go only to a socket whose hello listed it. Fails
  * closed, like renameGated.
  */
+const waitingGated = (ws: WebSocket | null): boolean => {
+  const caps = ws ? attachmentOf(ws)?.caps : undefined;
+  return (
+    Array.isArray(caps) &&
+    hasCap({ caps }, BUS_CAPS.mailbox) &&
+    hasCap({ caps }, BUS_CAPS.waiting)
+  );
+};
+
 const mailboxGated = (ws: WebSocket | null): boolean => {
   const caps = ws ? attachmentOf(ws)?.caps : undefined;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.mailbox);
@@ -2109,6 +2119,7 @@ function roster(
   withAway = false,
   withLinks = false,
   withReach = false,
+  withWaiting = false,
 ): ServerFrame {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
@@ -2201,6 +2212,8 @@ function roster(
     if (away.length > 0) rows = [...rows, ...away].sort(byScope).slice(0, cap);
   }
   const awaySince = new Map<string, number>();
+  /** #2029: pending mail per away row, counted up to WAITING_CAP. */
+  const waiting = new Map<string, number>();
   if (withAway) {
     const ids = rows.filter((r) => r.live !== 1).map((r) => r.id);
     if (ids.length > 0)
@@ -2210,6 +2223,18 @@ function roster(
         JSON.stringify(ids),
       ))
         if (r.t !== null) awaySince.set(r.id, r.t);
+    if (withWaiting && ids.length > 0)
+      for (const r of all<{ id: string; n: number }>(
+        sql,
+        `select to_agent as id, count(*) as n from (
+           select to_agent, row_number() over (partition by to_agent order by rowid) as rn
+             from receipts indexed by receipts_to
+            where to_agent in (select value from json_each(?)) and state = 'pending'
+         ) where rn <= ? group by to_agent`,
+        JSON.stringify(ids),
+        WAITING_CAP,
+      ))
+        waiting.set(r.id, r.n);
   }
   const online = new Map<string, boolean>();
   const stateOf = (machineId: string): "live" | "queued" => {
@@ -2241,6 +2266,9 @@ function roster(
         ...(r.live !== 1 && awaySince.has(r.id)
           ? { since: new Date(awaySince.get(r.id) as number).toISOString() }
           : {}),
+        ...(r.live !== 1 && waiting.has(r.id)
+          ? { waiting: waiting.get(r.id) as number }
+          : {}),
         // The key is omitted, never null, if a row's machine has no label.
         ...(label === undefined ? {} : { machine_label: label }),
         ...statusWire(r),
@@ -2249,6 +2277,9 @@ function roster(
     }),
   };
 }
+
+/** #2029: the most pending mail a roster away row counts. */
+const WAITING_CAP = 100;
 
 /**
  * R393b: each row's live former names for the roster (OpenBus #451: those
@@ -4850,7 +4881,8 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.reach) ||
           hasCap(f, BUS_CAPS.follow) ||
           hasCap(f, BUS_CAPS.noticeAck) ||
-          hasCap(f, BUS_CAPS.link)
+          hasCap(f, BUS_CAPS.link) ||
+          hasCap(f, BUS_CAPS.waiting)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -4960,6 +4992,7 @@ export class BusHub extends DurableObject<Env> {
               mailboxGated(ws),
               linksGated(ws),
               reachGated(ws),
+              waitingGated(ws),
             ),
           );
         return;

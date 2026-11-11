@@ -850,7 +850,7 @@ describe("codex code-mode attestation (C27)", () => {
       );
       expect(
         codexAttestor({ home, ...fakeProcs() }).attestNow(codeHello()),
-      ).toEqual(no);
+      ).toEqual({ ok: false, reason: CODEX_REFUSALS.dynamicLookup });
     }
   });
 
@@ -892,6 +892,42 @@ describe("codex code-mode attestation (C27)", () => {
       expect(check.attestNow(h)).toEqual(no);
     // None of those spent the exec.
     expect(check.attestNow(codeHello())).toEqual(ok);
+  });
+
+  it("tells a dynamic lookup from a missing call: an open exec in the latest turn that names no bus tool", async () => {
+    const lookup = (turn = TURN) =>
+      exec("ctc_lookup", EXEC1, turn, undefined, {
+        input: "const t = await tools[name]({});",
+      });
+    const refusal = {
+      ok: false,
+      reason: CODEX_REFUSALS.dynamicLookup,
+    };
+    const hello = () => codeHello({ item_id: "ctc_lookup" });
+    const homeOf = (rollout: string) =>
+      codexAttestor({
+        home: codexHome({ thread: CM_THREAD, rollout }).home,
+        ...fakeProcs(),
+      });
+    expect(CODEX_REFUSALS.dynamicLookup).toBe(
+      "Call the bus tool by its exact name, for example tools.mcp__oa_bus__self(), not through a dynamic lookup.",
+    );
+    expect(
+      homeOf(cmMeta() + turnEv("task_started") + lookup()).attestNow(hello()),
+    ).toEqual(refusal);
+    // No such exec, or its turn ended: the ordinary refusal.
+    expect(
+      homeOf(cmMeta() + turnEv("task_started")).attestNow(hello()),
+    ).toEqual(no);
+    expect(
+      homeOf(
+        cmMeta() + turnEv("task_started") + lookup() + turnEv("task_complete"),
+      ).attestNow(hello()),
+    ).toEqual(no);
+    // A call by a proxied entry or a plain miss keeps callNotFound.
+    expect(CODEX_REFUSALS.callNotFound).toBe(
+      "this call is not an open Open Artifacts bus call in the thread. Call the tool again.",
+    );
   });
 
   it("keeps the function_call rule first: an item id changes nothing there", async () => {

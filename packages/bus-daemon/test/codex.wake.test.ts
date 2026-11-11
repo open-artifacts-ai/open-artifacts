@@ -422,6 +422,8 @@ describe("hostWakes", () => {
     [[], true],
     [["resume", THREAD], true],
     [["app-server"], true],
+    // Codex 0.166: the TUI auto-starts a managed app-server that outlives it.
+    [["app-server", "--listen", "unix://", "--managed-daemon"], true],
     [["--model", "exec"], true],
     [["exec", "hi"], false],
     [["e", "hi"], false],
