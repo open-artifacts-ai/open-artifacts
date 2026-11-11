@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.151.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.151.0...v0.151.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **comment-email:** defang non-ASCII domains and bare IPv4 addresses in excerpts ([#1997](https://github.com/open-artifacts-ai/open-artifacts/issues/1997)) ([#2048](https://github.com/open-artifacts-ai/open-artifacts/issues/2048)) ([3e25cd6](https://github.com/open-artifacts-ai/open-artifacts/commit/3e25cd60a341de4e2c599ba3ea3c59867dc0c8cf))
+
 ## [0.151.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.150.0...v0.151.0) (2026-11-11)
 
 
