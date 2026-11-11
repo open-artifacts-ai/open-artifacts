@@ -30,6 +30,7 @@ import {
 import { installClaudePlugins } from "../steps/claude-plugins.ts";
 import { readCodexVersion } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
+import { noteMade } from "../steps/leftovers.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
 import { installShim } from "../steps/path-shim.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
@@ -205,8 +206,14 @@ async function harnessesStep(
   for (const n of unshownNotes(out.notes)) say(ctx, [n]);
   for (const s of out.skipped)
     say(ctx, await skippedLines(ctx, s.harness, s.reason));
-  if (out.installed.includes("opencode"))
-    say(ctx, out.opencodeRestarted ? c.restarted() : c.opencodeNotRunning());
+  if (out.installed.includes("opencode")) {
+    if (out.opencodeRestartByUser) say(ctx, c.opencodeRestartYourself());
+    else if (out.opencodeRestarted) say(ctx, c.restarted());
+    else if (
+      out.notes.some((n) => n.startsWith("opencode service restart failed"))
+    )
+      say(ctx, c.opencodeNotRunning());
+  }
 
   // The skill goes next to the tools, fetched from the instance, never vendored.
   // A fetch failure does not stop later steps: it is recorded and the run exits
@@ -400,6 +407,46 @@ export function roster(ctx: Ctx, st: StatusReply): string[] {
   return ns ? rosters(ctx, [ns]) : [ctx.copy.noNamespace()];
 }
 
+/** States that fail `install --check`. */
+const BAD = new Set(["missing", "disabled", "not loaded"]);
+
+/** Each harness found here and how it is wired; read-only. */
+export async function harnessStates(
+  ctx: Ctx,
+): Promise<Partial<Record<Harness, string>>> {
+  const wiring: Record<string, string> = checkAdapters({
+    home: ctx.userHome,
+    busHome: ctx.home,
+    env: ctx.env,
+    which: ctx.which,
+    codexApp: ctx.codexApp,
+    busBin: ctx.service.argv?.(),
+  });
+  // The plugin files can be right while Hermes has it disabled.
+  if (
+    wiring.hermes === "configured" &&
+    !(await hermesEnabled({
+      home: ctx.userHome,
+      env: ctx.env,
+      exec: ctx.exec,
+    }))
+  )
+    wiring.hermes = "disabled";
+  // Likewise OpenClaw: installed and enabled, and its runtime shows the plugin loaded.
+  if (
+    wiring.openclaw === "configured" &&
+    (await openclawVerify({
+      home: ctx.userHome,
+      env: ctx.env,
+      exec: ctx.exec,
+    })) !== undefined
+  )
+    wiring.openclaw = "not loaded";
+  return Object.fromEntries(
+    Object.entries(wiring).filter(([, st]) => st !== "absent"),
+  );
+}
+
 export const installSteps = (
   opts: InstallOpts,
   bus: string = BUS_CMD,
@@ -421,36 +468,8 @@ export const installSteps = (
     failed: "Harnesses not configured",
     action: `Run ${bus} to configure them.`,
     check: async (ctx) => {
-      const wiring = checkAdapters({
-        home: ctx.userHome,
-        busHome: ctx.home,
-        env: ctx.env,
-        which: ctx.which,
-        codexApp: ctx.codexApp,
-        busBin: ctx.service.argv?.(),
-      });
-      if (Object.values(wiring).includes("missing")) return "todo";
-      // The plugin files can be right while Hermes has it disabled.
-      if (
-        wiring.hermes === "configured" &&
-        !(await hermesEnabled({
-          home: ctx.userHome,
-          env: ctx.env,
-          exec: ctx.exec,
-        }))
-      )
-        return "todo";
-      // Likewise OpenClaw: installed and enabled, and its runtime shows the plugin loaded.
-      if (
-        wiring.openclaw === "configured" &&
-        (await openclawVerify({
-          home: ctx.userHome,
-          env: ctx.env,
-          exec: ctx.exec,
-        })) !== undefined
-      )
-        return "todo";
-      return "done";
+      const states = await harnessStates(ctx);
+      return Object.values(states).some((st) => BAD.has(st)) ? "todo" : "done";
     },
     apply: (ctx) => harnessesStep(ctx, opts.hub),
   },
@@ -502,6 +521,15 @@ export async function install(
   opts: InstallOpts & { check?: boolean },
   realCtx: Ctx,
 ): Promise<number> {
+  // Before anything is written: purge later deletes only what was not there.
+  if (!opts.check)
+    try {
+      noteMade({
+        home: realCtx.userHome,
+        busHome: realCtx.home,
+        env: realCtx.env,
+      });
+    } catch {}
   if (opts.habits) return habitsCommand(opts.habits, realCtx);
   const json = Boolean(opts.json && !opts.check);
   const ctx: Ctx = json ? { ...realCtx, stdout: realCtx.stderr } : realCtx;
@@ -511,8 +539,13 @@ export async function install(
   if (opts.check) {
     const results = await checkSteps(steps, ctx);
     for (const { step, state } of results) {
-      if (state === "done") say(ctx, c.checkOk(step.label));
-      else sayErr(ctx, c.checkFailed(step.failed, step.action));
+      // The harnesses line names each harness found here and how it is wired.
+      const states = step.name === "harnesses" ? await harnessStates(ctx) : {};
+      const details = Object.entries(states).map(([h, st]) =>
+        c.checkHarness(h as Harness, st),
+      );
+      if (state === "done") say(ctx, c.checkOk(step.label, details));
+      else sayErr(ctx, c.checkFailed(step.failed, step.action, details));
     }
     return results.every((r) => r.state === "done") ? 0 : 1;
   }

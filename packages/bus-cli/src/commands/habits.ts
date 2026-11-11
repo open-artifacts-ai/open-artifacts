@@ -19,6 +19,7 @@ import {
   habitsQuestion,
   habitsQuestionLines,
   linkInfo,
+  OMP_NOTE,
   PLUGIN_HARNESSES,
   type PluginHabitsState,
   type PluginHarness,
@@ -162,6 +163,7 @@ function disclosure(
     return [
       `The bus would add ${HABITS_LINES.length} habits for sessions on the bus, to ${files.join(" and ")}:`,
       ...HABITS_LINES.map((l) => `  ${l}`),
+      `  ${OMP_NOTE}`,
     ];
   const first = changed[0]?.s;
   return [

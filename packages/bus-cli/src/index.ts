@@ -39,6 +39,7 @@ export type Command = (
   | { cmd: "link"; sub: "list" }
   | { cmd: "leads"; sub: "check"; name?: string }
   | { cmd: "version" }
+  | { cmd: "help" }
 ) & {
   noColor: boolean;
   /** OA_BUS_HOME for the whole run. */
@@ -115,10 +116,14 @@ export function parse(argv: string[]): Command {
       json: { type: "boolean", default: false },
       purge: { type: "boolean", default: false },
       version: { type: "boolean", short: "v", default: false },
+      help: { type: "boolean", short: "h", default: false },
       "no-color": { type: "boolean", default: false },
     },
   });
   const [head, ...rest] = positionals;
+  // Help wins over everything else on the line, so it never fails on a flag.
+  if (values.help || head === "help")
+    return { cmd: "help", noColor: values["no-color"] };
   const cmd = head ?? "install";
   if (!COMMANDS.has(cmd)) throw new Error(`unknown command: ${cmd}`);
   const tokenFile = values["token-file"];

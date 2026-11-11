@@ -247,6 +247,11 @@ export function copy(style: Style, bus: string = BUS_CMD) {
       next(`Install one, then run ${bus} again.`),
     ],
     restarted: () => done("Restarted the OpenCode service to load the plugin"),
+    // Run from inside OpenCode, where a restart would end the session running this.
+    opencodeRestartYourself: () => [
+      warn("OpenCode was not restarted: this ran inside an OpenCode session"),
+      next("Outside OpenCode, in a terminal, run: opencode service restart"),
+    ],
     // After the configured line, when PI_CODING_AGENT_DIR points both at one folder.
     sharedPiFile: () =>
       next(
@@ -489,7 +494,41 @@ export function copy(style: Style, bus: string = BUS_CMD) {
         "doctor, global add|rm|list, uninstall, mcp <claude|opencode|pi|codex>",
       ),
       next("or version."),
-      next("install takes --no-service to skip the launchd or systemd step."),
+      next(`Run ${bus} --help to list every command and flag.`),
+    ],
+    help: () => [
+      `usage: ${bus} [command] [flags]`,
+      "",
+      "Commands",
+      "  install      Approve this machine, wire your harnesses, start the daemon (the default)",
+      "  login        Approve this machine again",
+      "  uninstall    Remove what install added",
+      "  status       Who is on the bus, from this folder",
+      "  logs         The daemon log",
+      "  doctor       Check the install and say what to fix",
+      "  daemon       Run the daemon in this terminal",
+      "  global       add <dir>, rm <dir> or list: folders shared across namespaces",
+      "  namespace    approve [dir], revoke <dir> or list",
+      "  link         <dir> <dir> or list; unlink <dir> <dir>",
+      "  leads        check [name]",
+      "  mcp          <claude|opencode|codex|pi>: the MCP server a harness runs",
+      "  version      Print the version",
+      "  help         This text",
+      "",
+      "Flags",
+      "  install      --instance <url>   the instance to connect to",
+      "               --check            only report what is set up; change nothing",
+      "               --habits | --no-habits | --show-habits",
+      "                                  add, decline or show the always-on habit lines",
+      "               --no-service       skip the launchd or systemd step",
+      "               --no-open          do not open a browser for approval",
+      "               --json             the result as one JSON line on stdout",
+      "               --yes, -y          answer yes where install asks",
+      "  login        --instance <url>, --no-open",
+      "  daemon       --instance <url>",
+      "  uninstall    --purge            also delete the bus home and what install made",
+      "  namespace    --yes, -y          approve without asking (namespace approve)",
+      "  every command: --home <dir> (bus home), --no-color, --help, -h, --version, -v",
     ],
     skipped: (h: HarnessName, reason: string) => [
       warn(
@@ -512,8 +551,18 @@ export function copy(style: Style, bus: string = BUS_CMD) {
         next(`${bus} --instance ${clip(askedUrl, 39)}.`),
       ];
     },
-    checkOk: (label: string) => done(label),
-    checkFailed: (label: string, action: string) => [fail(label), next(action)],
+    checkOk: (label: string, details: string[] = []) => [
+      done(label),
+      ...details.map((d) => next(d)),
+    ],
+    checkFailed: (label: string, action: string, details: string[] = []) => [
+      fail(label),
+      ...details.map((d) => next(d)),
+      next(action),
+    ],
+    // One harness under the harnesses line of `install --check`.
+    checkHarness: (h: HarnessName, state: string) =>
+      `${HARNESS_LABEL[h]}: ${state}`,
     noNamespace: () =>
       p(
         "muted",
@@ -938,11 +987,10 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     ],
     deleted: (home: string) =>
       done(`Deleted ${clip(home, 35)}, including machine.json`),
-    stillListed: (label: string, host: string) => [
+    stillListed: (label: string, origin: string) => [
       warn(`${clip(label, 30)} is still listed on the bus`),
-      next(
-        `Revoke it in the dashboard at ${clip(host, 56)} to remove it for good.`,
-      ),
+      next("Revoke it on the machines page to remove it for good:"),
+      next(clip(`${origin}/settings/machines`, 3)),
       next(`To use this computer again, run ${bus}.`),
     ],
 

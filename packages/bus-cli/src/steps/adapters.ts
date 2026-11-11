@@ -151,6 +151,8 @@ export type InstallResult = {
   notes: string[];
   /** OpenCode was configured and `opencode service restart` succeeded. */
   opencodeRestarted: boolean;
+  /** OpenCode changed but this runs inside OpenCode: the user restarts it. */
+  opencodeRestartByUser: boolean;
   /** Pi and oh-my-pi resolve to this one extensions file (PI_CODING_AGENT_DIR): written once for both. */
   sharedPiFile?: string;
   /** Codex was configured, but no `codex` binary was found to wake its threads with. */
@@ -170,6 +172,8 @@ export type UninstallResult = {
   folderOnly: Harness[];
   /** OpenCode was touched and `opencode service restart` succeeded. */
   opencodeRestarted: boolean;
+  /** As for install: the restart is left to the user. */
+  opencodeRestartByUser: boolean;
   /** Hermes's plugin folder went with no `hermes` to run `plugins disable`. */
   hermesNoCli: boolean;
   /** OpenClaw's plugin folder went with no `openclaw` to run `plugins uninstall`. */
@@ -220,7 +224,7 @@ const homeLine = (ob: string) =>
 const withHome = (text: string, ob: string | undefined) =>
   ob === undefined ? text : `${homeLine(ob)}\n${text}`;
 
-const paths = (deps: AdapterDeps) => {
+export const paths = (deps: AdapterDeps) => {
   const env = deps.env ?? {};
   const opencode =
     env.OPENCODE_CONFIG_DIR ??
@@ -263,7 +267,7 @@ const paths = (deps: AdapterDeps) => {
  * PI_CODING_AGENT_DIR as one absolute path for Pi and oh-my-pi alike (`~`
  * expanded as Pi does, then resolved), so a shared folder compares equal.
  */
-function agentDirEnv(
+export function agentDirEnv(
   home: string,
   env: Record<string, string | undefined>,
 ): string | undefined {
@@ -489,15 +493,21 @@ function claudeProof(deps: AdapterDeps, notes: string[]) {
   }
 }
 
-const ocEntryIo = (deps: AdapterDeps): OcEntryIo => ({
+const ocEntryIo = (
+  deps: AdapterDeps,
+  touched: { changed: boolean } = { changed: false },
+): OcEntryIo => ({
   files: paths(deps).opencodeConfigs.filter(present),
   moved: paths(deps).opencodeEntry,
   read: readJsonc,
   save: (file, before, next, ok) => {
     target(file);
-    saveText(file, before, next, ok);
+    if (saveText(file, before, next, ok)) touched.changed = true;
   },
-  writeMoved: (data) => writeAtomic(paths(deps).opencodeEntry, data, 0o600),
+  writeMoved: (data) => {
+    writeAtomic(paths(deps).opencodeEntry, data, 0o600);
+    touched.changed = true;
+  },
   home: deps.home,
   busBin: deps.busBin,
   ...(movedHome(deps) ? { busHome: movedHome(deps) as string } : {}),
@@ -641,9 +651,31 @@ const codexHere = (
     app: deps.codexApp,
   });
 
-async function restartOpencode(deps: AdapterDeps, notes: string[]) {
+/** Notes that carry a state to the result; the commands print their own line for them. */
+const OC_RESTARTED = "opencode service restarted";
+const OC_MANUAL = "opencode restart left to the user: running inside OpenCode";
+
+/** True when this process was started by an OpenCode session (it sets OPENCODE in its shells). */
+const insideOpencode = (deps: Pick<AdapterDeps, "env">) =>
+  Boolean(deps.env?.OPENCODE || deps.env?.OPENCODE_PID);
+
+/**
+ * A restart drops running OpenCode sessions, so it runs only when the config or
+ * plugin changed, and never from inside an OpenCode session (that one would die).
+ */
+async function restartOpencode(
+  deps: AdapterDeps,
+  notes: string[],
+  changed: boolean,
+) {
+  if (!changed) return;
+  if (insideOpencode(deps)) {
+    notes.push(OC_MANUAL);
+    return;
+  }
   const r = await run(deps, "opencode", ["service", "restart"]);
   if (r.code !== 0) notes.push(`${RESTART_FAILED}: ${firstLine(r.stderr)}`);
+  else notes.push(OC_RESTARTED);
 }
 
 /** `done` is the harnesses whose step already succeeded in this run. */
@@ -737,25 +769,34 @@ const install: Record<Harness, Step> = {
     if (madeCli.length > 0)
       created[p.opencodeCli] = add(p.opencodeCli, madeCli);
     writeRecord(p.record, record, created);
-    writeAtomic(
-      join(p.opencodePlugin, "tui.js"),
-      withHome(deps.assets.opencodePlugin, movedHome(deps)),
-      0o644,
-    );
-    saveText(configPath, config, nextConfig, (d) =>
-      isDeepStrictEqual(servers(d)?.[NAME], server),
-    );
-    saveText(p.opencodeCli, cli, nextCli, (d) => listed(d, p.opencodePlugin));
+    const pluginFile = join(p.opencodePlugin, "tui.js");
+    const pluginText = withHome(deps.assets.opencodePlugin, movedHome(deps));
+    let pluginBefore: string | undefined;
+    try {
+      pluginBefore = readFileSync(pluginFile, "utf8");
+    } catch {}
+    const touched = { changed: pluginBefore !== pluginText };
+    writeAtomic(pluginFile, pluginText, 0o644);
+    if (
+      saveText(configPath, config, nextConfig, (d) =>
+        isDeepStrictEqual(servers(d)?.[NAME], server),
+      )
+    )
+      touched.changed = true;
+    if (
+      saveText(p.opencodeCli, cli, nextCli, (d) => listed(d, p.opencodePlugin))
+    )
+      touched.changed = true;
     // #1856: never stops the install; the entry just stays as it was.
     if (deps.hub !== undefined)
       try {
-        notes.push(...installOcEntry(ocEntryIo(deps), deps.hub).notes);
+        notes.push(...installOcEntry(ocEntryIo(deps, touched), deps.hub).notes);
       } catch (e) {
         notes.push(
           `could not set up the Open Artifacts entry in OpenCode's config: ${e instanceof Error ? e.message : String(e)}`,
         );
       }
-    await restartOpencode(deps, notes);
+    await restartOpencode(deps, notes, touched.changed);
     return "done";
   },
 
@@ -837,6 +878,11 @@ const uninstall: Record<Harness, Step> = {
         `could not take the proof helper off the Claude entry: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
+    const path = paths(deps).claude;
+    const doc = readDoc(path);
+    // Nothing to remove: say nothing was removed, whatever the CLI exits with.
+    if ((doc.mcpServers as Doc | undefined)?.[NAME] === undefined)
+      return "none";
     if (deps.which("claude")) {
       const r = await run(deps, "claude", [
         "mcp",
@@ -847,8 +893,6 @@ const uninstall: Record<Harness, Step> = {
       ]);
       if (r.code === 0) return "done";
     }
-    const path = paths(deps).claude;
-    const doc = readDoc(path);
     if (!save(path, doc, removeMcpServer(doc, NAME))) return "none";
     notes.push(`removed oa_bus from ${path} directly`);
     return "done";
@@ -901,7 +945,7 @@ const uninstall: Record<Harness, Step> = {
     const hadPlugin = existsSync(p.opencodePlugin);
     rmSync(p.opencodePlugin, { recursive: true, force: true });
     if (!saved.some(Boolean) && !hadPlugin && !restored) return "none";
-    if (deps.which("opencode")) await restartOpencode(deps, notes);
+    if (deps.which("opencode")) await restartOpencode(deps, notes, true);
     // No config named Open Artifacts bus any more: only our plugin folder was left.
     return saved.some(Boolean) || restored ? "done" : "folder";
   },
@@ -1005,6 +1049,8 @@ export const unshownNotes = (notes: string[]) =>
       n !== OPENCLAW_NO_CLI &&
       n !== OPENCLAW_NIX &&
       // The service line says it, and the removal is already in "Removed from".
+      n !== OC_RESTARTED &&
+      n !== OC_MANUAL &&
       !n.startsWith(RESTART_FAILED) &&
       !n.startsWith("removed oa_bus from "),
   );
@@ -1020,9 +1066,8 @@ export async function installAdapters(
     absent,
     skipped,
     notes,
-    opencodeRestarted:
-      done.includes("opencode") &&
-      !notes.some((n) => n.startsWith(RESTART_FAILED)),
+    opencodeRestarted: notes.includes(OC_RESTARTED),
+    opencodeRestartByUser: notes.includes(OC_MANUAL),
     ...(done.includes("pi") && done.includes("omp") && sharedFile(deps)
       ? { sharedPiFile: paths(deps).pi }
       : {}),
@@ -1044,10 +1089,8 @@ export async function uninstallAdapters(
     folderOnly: folder,
     skipped,
     notes,
-    opencodeRestarted:
-      [...done, ...folder].includes("opencode") &&
-      deps.which("opencode") &&
-      !notes.some((n) => n.startsWith(RESTART_FAILED)),
+    opencodeRestarted: notes.includes(OC_RESTARTED),
+    opencodeRestartByUser: notes.includes(OC_MANUAL),
     hermesNoCli: notes.includes(HERMES_NO_CLI),
     openclawNoCli: notes.includes(OPENCLAW_NO_CLI),
     openclawNix: notes.includes(OPENCLAW_NIX),
