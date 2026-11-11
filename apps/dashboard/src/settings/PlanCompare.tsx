@@ -6,6 +6,8 @@
 import {
   Badge,
   Button,
+  Input,
+  Label,
   Table,
   TableBody,
   TableCell,
@@ -15,17 +17,12 @@ import {
 } from "@oa/ui/shadcn";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { muted } from "./ui";
+import { yearlyFlag } from "./yearlyFlag";
 
 export type Column = "solo" | "team" | "business";
 export type Interval = "month" | "year";
 
-/**
- * Yearly Team and Business ($100 and $250 a creator a year, monthly x10, the
- * user's call 2026-11-11) wait for Billing's checkout schema and Stripe prices.
- * Until then the toggle changes Solo only, and nothing shows a price checkout
- * can't charge. Flipping this shows them and sends the interval to checkout.
- */
-const YEARLY_TEAM_BUSINESS = false;
+const SEATS_MAX = 10_000;
 
 const ORDER: readonly Column[] = ["solo", "team", "business"];
 const NAMES: Record<Column, string> = {
@@ -38,10 +35,12 @@ const WHO: Record<Column, string> = {
   team: "Invite your team",
   business: "Controls for your company",
 };
-const PRICE: Record<
+const priceTable = (
+  yearly: boolean,
+): Record<
   Column,
   Record<Interval, { amount: string; unit: string; line: string }>
-> = {
+> => ({
   solo: {
     month: { amount: "$1", unit: "a month", line: "or $10 a year" },
     year: { amount: "$10", unit: "a year", line: "2 months free" },
@@ -50,7 +49,7 @@ const PRICE: Record<
     month: {
       amount: "$10",
       unit: "per creator a month",
-      line: YEARLY_TEAM_BUSINESS ? "or $100 a year" : "Billed monthly",
+      line: yearly ? "or $100 a year" : "Billed monthly",
     },
     year: { amount: "$100", unit: "per creator a year", line: "2 months free" },
   },
@@ -58,11 +57,11 @@ const PRICE: Record<
     month: {
       amount: "$25",
       unit: "per creator a month",
-      line: YEARLY_TEAM_BUSINESS ? "or $250 a year" : "Billed monthly",
+      line: yearly ? "or $250 a year" : "Billed monthly",
     },
     year: { amount: "$250", unit: "per creator a year", line: "2 months free" },
   },
-};
+});
 const POINTS: Record<Column, string[]> = {
   solo: [
     "Artifacts, versions and restore",
@@ -172,9 +171,11 @@ function ScrollFade({ children }: { children: ReactNode }) {
 function Toggle({
   value,
   onChange,
+  yearly,
 }: {
   value: Interval;
   onChange: (v: Interval) => void;
+  yearly: boolean;
 }) {
   return (
     <div className="flex flex-wrap items-center gap-[var(--oa-space-2)]">
@@ -193,9 +194,104 @@ function Toggle({
         ))}
       </fieldset>
       <span className="text-[length:var(--oa-text-sm)] font-medium text-[var(--oa-success)]">
-        {YEARLY_TEAM_BUSINESS ? "2 months free" : "2 months free on Solo"}
+        {yearly ? "2 months free" : "2 months free on Solo"}
       </span>
     </div>
+  );
+}
+
+const parseSeats = (raw: string): number | null => {
+  const t = raw.trim();
+  if (!/^\d+$/.test(t)) return null;
+  const n = Number(t);
+  return n >= 1 && n <= SEATS_MAX ? n : null;
+};
+
+/** The yearly seat count: yearly Team and Business bill a fixed number of creators. */
+function SeatStep({
+  tier,
+  initial,
+  busy,
+  onCancel,
+  onContinue,
+}: {
+  tier: "team" | "business";
+  initial: number;
+  busy: boolean;
+  onCancel: () => void;
+  onContinue: (seats: number) => void;
+}) {
+  const [raw, setRaw] = useState(String(Math.max(1, initial)));
+  const [invalid, setInvalid] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    input.current?.focus();
+  }, []);
+  const seats = parseSeats(raw);
+  const each = tier === "team" ? 100 : 250;
+  const showError = invalid && seats === null;
+  return (
+    <form
+      aria-label="How many creators?"
+      noValidate
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (seats === null) {
+          setInvalid(true);
+          return;
+        }
+        onContinue(seats);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") onCancel();
+      }}
+      className="grid gap-[var(--oa-space-2)] rounded-[var(--oa-radius-md)] border border-[var(--oa-border)] bg-card p-[var(--oa-space-4)]"
+    >
+      <h3 className="m-0 text-[length:var(--oa-text-base)] font-semibold">
+        How many creators? ({NAMES[tier]})
+      </h3>
+      <p className={`m-0 ${muted}`}>
+        Creators are people who publish or edit live data. Viewers are free. You
+        can change this later in billing.
+      </p>
+      <Label htmlFor="seat-count">Creators</Label>
+      <Input
+        id="seat-count"
+        ref={input}
+        type="number"
+        inputMode="numeric"
+        min={1}
+        max={SEATS_MAX}
+        step={1}
+        value={raw}
+        aria-invalid={showError}
+        aria-describedby="seat-help"
+        onChange={(e) => {
+          setRaw(e.target.value);
+          setInvalid(false);
+        }}
+        className="max-w-[10rem]"
+      />
+      <p
+        id="seat-help"
+        role={showError ? "alert" : undefined}
+        className={`m-0 ${showError ? "text-[var(--oa-danger)]" : muted}`}
+      >
+        {showError
+          ? `Enter a whole number from 1 to ${SEATS_MAX.toLocaleString("en-US")}.`
+          : seats !== null
+            ? `${seats} ${seats === 1 ? "creator" : "creators"} × $${each} = $${(seats * each).toLocaleString("en-US")} a year`
+            : "Whole numbers from 1 to 10,000."}
+      </p>
+      <div className="flex gap-[var(--oa-space-2)]">
+        <Button type="submit" disabled={busy}>
+          Continue
+        </Button>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -204,16 +300,31 @@ export function PlanCompare({
   upgrade,
   busy,
   trial = false,
+  seatsDefault,
 }: {
   /** The current plan's column (the invite trial is Team, #2113). */
   column: Column;
   /** Start the existing upgrade flow; absent: no buttons (can't buy here). */
-  upgrade?: (tier: "team" | "business", interval?: Interval) => void;
+  upgrade?: (
+    tier: "team" | "business",
+    interval?: Interval,
+    seats?: number,
+  ) => void;
   busy: boolean;
   /** The Team trial: nothing is paid yet, so both upgrades show and Team says "Your trial". */
   trial?: boolean;
+  /**
+   * Set when an upgrade goes to Checkout: with yearly Team or Business on, it
+   * first asks how many creators, starting from this count. Absent (the portal
+   * path) never asks.
+   */
+  seatsDefault?: number;
 }) {
+  const yearlyOn = yearlyFlag.teamBusiness;
+  const PRICE = priceTable(yearlyOn);
   const [interval, setInterval] = useState<Interval>("year");
+  const [asking, setAsking] = useState<"team" | "business" | null>(null);
+  const opener = useRef<HTMLElement | null>(null);
   // Buttons rank from what is paid for: a trial has paid for nothing yet.
   const rank = trial ? 0 : ORDER.indexOf(column);
   return (
@@ -225,13 +336,19 @@ export function PlanCompare({
         <p className={`m-0 ${muted}`}>
           Viewers and sharing are free on every plan.
         </p>
-        <Toggle value={interval} onChange={setInterval} />
+        <Toggle
+          value={interval}
+          onChange={(v) => {
+            setInterval(v);
+            setAsking(null);
+          }}
+          yearly={yearlyOn}
+        />
       </div>
       <div className="grid gap-[var(--oa-space-3)] md:grid-cols-3">
         {ORDER.map((c, i) => {
           // Team and Business have no yearly price checkout can charge yet: monthly under both.
-          const p =
-            PRICE[c][c === "solo" || YEARLY_TEAM_BUSINESS ? interval : "month"];
+          const p = PRICE[c][c === "solo" || yearlyOn ? interval : "month"];
           const current = c === column;
           return (
             <section
@@ -281,9 +398,19 @@ export function PlanCompare({
                   <Button
                     variant={c === "team" ? "default" : "outline"}
                     disabled={busy}
-                    onClick={() =>
-                      upgrade(c, YEARLY_TEAM_BUSINESS ? interval : undefined)
-                    }
+                    onClick={(e) => {
+                      if (
+                        yearlyOn &&
+                        interval === "year" &&
+                        seatsDefault !== undefined
+                      ) {
+                        opener.current = e.currentTarget;
+                        setAsking(c);
+                        return;
+                      }
+                      // Monthly sends the tier alone: the server adds the creator count.
+                      upgrade(c);
+                    }}
                   >
                     Upgrade to {NAMES[c]}
                   </Button>
@@ -305,6 +432,18 @@ export function PlanCompare({
           );
         })}
       </div>
+      {asking && upgrade && (
+        <SeatStep
+          tier={asking}
+          initial={seatsDefault ?? 1}
+          busy={busy}
+          onCancel={() => {
+            setAsking(null);
+            opener.current?.focus();
+          }}
+          onContinue={(seats) => upgrade(asking, "year", seats)}
+        />
+      )}
       <ScrollFade>
         <Table>
           <TableHeader>
