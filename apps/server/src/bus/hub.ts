@@ -16,6 +16,7 @@ import {
   frameId,
   HUB_MAILBOX_BYTES_CAP,
   hasCap,
+  impersonates,
   isFallbackName,
   isId,
   LIMITS,
@@ -1178,6 +1179,40 @@ type Assigned = {
 };
 
 /**
+ * #1916: the name a harness proposal asks for. A harness-made title that reads
+ * as prose (candidateName's `harness` option) or that starts with another live
+ * agent's full name plus more than one word becomes the fallback. Scope is
+ * nameTaken's: the namespace plus globals (a global: every namespace). Only
+ * LIVE agents count: an away or held name is on no roster, so a newcomer
+ * cannot pose as it, and counting them would block honest names for the
+ * whole retention. `<other>-N`, `<other> fork` and `<other> X` (one extra
+ * word, e.g. `OA Platform B` next to `OA Platform`) stay legit.
+ * A user's rename never comes through here (harness false).
+ */
+function harnessAsked(
+  sql: SqlStorage,
+  namespace: string,
+  proposed: string,
+  global: boolean,
+  selfId: string,
+  harness: boolean,
+): string {
+  const asked = candidateName(proposed, { harness });
+  if (!harness || asked === FALLBACK_BUS_NAME) return asked;
+  const scope = global ? "" : "and (namespace = ? or global = 1)";
+  const live = all<{ name: string }>(
+    sql,
+    `select name from agents where org_id = ? and live = 1 and id != ? ${scope}`,
+    OWNER_ORG_ID,
+    selfId,
+    ...(global ? [] : [namespace]),
+  );
+  return live.some((a) => impersonates(asked, a.name))
+    ? FALLBACK_BUS_NAME
+    : asked;
+}
+
+/**
  * The proposed name, else `-2`, `-3`... up to the roster cap, else the
  * fallback name suffixed the same way, else a random fallback suffix. Never
  * fails: a name collision is not an error. A `default` name is minted
@@ -1192,18 +1227,23 @@ function assignName(
   now: number,
   kind: NameKind = "chosen",
   reclaim?: { kind: string },
+  harness = false,
 ): Assigned {
   if (kind === "default")
     return mintName(sql, namespace, proposed, global, selfId, now);
   const free = (n: string) =>
     !nameTaken(sql, namespace, n, global, selfId, now);
-  const asked = candidateName(proposed);
+  const asked = harnessAsked(sql, namespace, proposed, global, selfId, harness);
   for (const base of new Set([asked, FALLBACK_BUS_NAME])) {
     if (free(base)) return { name: base, mint: null };
     // #1742: only the exact chosen name is ever taken back, never a suffix.
     // #1480: and never one reached by dropping refused characters: `OA Manager!`
     // is not `OA Manager`.
-    if (reclaim && base === asked && !droppedRefusedChars(proposed)) {
+    if (
+      reclaim &&
+      base === asked &&
+      !droppedRefusedChars(proposed, { harness })
+    ) {
       const from = awayHolder(
         sql,
         namespace,
@@ -1473,7 +1513,15 @@ function mintName(
   selfId: string,
   now: number,
 ): Assigned {
-  const proposedBase = candidateName(proposed);
+  // A default name is the harness's own, never a user's (#1916).
+  const proposedBase = harnessAsked(
+    sql,
+    namespace,
+    proposed,
+    global,
+    selfId,
+    true,
+  );
   // Never loops on a base that cannot carry a suffix (not expected).
   const base = BusNameSchema.safeParse(mintedName(proposedBase, "0000")).success
     ? proposedBase
@@ -1809,6 +1857,18 @@ function agentUp(
     now,
     f.name_kind,
     { kind: f.kind },
+    // #1916: agent_up carries the harness's title (the daemon sends renames,
+    // user-made, as `rename` frames). An agent keeping its own current name
+    // is not a new title, so neither rule touches it. Claude Code only writes a
+    // session name from /rename or /fork, never an auto prose title, so its
+    // agent_up is the user's choice (a fork title is still cut to "<parent>
+    // fork" by candidateName itself).
+    f.kind !== "claude-code" &&
+      !(
+        existing &&
+        candidateName(f.proposed_name).toLowerCase() ===
+          existing.name.toLowerCase()
+      ),
   );
   const wasLive = existing?.live === 1;
   const to: Scope = { namespace: f.namespace, global: f.global };
