@@ -1,6 +1,6 @@
 // The doc format (#1100) at the data layer. A doc is stored as one Markdown
 // file (DOC_ENTRY) with format "markdown" and artifacts.doc = 1 (migration
-// 0033); the API reports format "doc". Until the doc room and editor land,
+// 0034); the API reports format "doc". Until the doc room and editor land,
 // the viewer shows the stored Markdown as a markdown artifact.
 //
 // The rules (design "Other fields"): a doc is one file, so files, entry,

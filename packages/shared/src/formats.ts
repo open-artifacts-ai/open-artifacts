@@ -1,7 +1,7 @@
 /**
  * The formats a row's `format` column holds (the D1 CHECK on artifacts and
  * versions). A doc (#1100) is stored as `markdown` with `artifacts.doc = 1`
- * (migration 0033, additive): the API reports it as `doc`.
+ * (migration 0034, additive): the API reports it as `doc`.
  */
 export const STORED_FORMATS = [
   "html",
