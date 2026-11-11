@@ -122,16 +122,7 @@ export async function feedSync(env: Env): Promise<FeedOutcome> {
   const ns = env.DIRECTORY_SYNC;
   const client = directoryClient(env);
   const mode = syncModeFor(env);
-  if (ns && mode === "off") {
-    // A plan with no directory at all (Solo or free, e.g. Business to Solo):
-    // tell a DO that has synced before to go off, or its alarm keeps the
-    // last handed mode. Sets only the mode and pause keys; the binding and
-    // synced rows stay.
-    if (billingActive(env) && (await readBinding(env)).binding)
-      await ns.get(ns.idFromName(SYNC_DO_NAME)).wantsToken("off", false);
-    return "off";
-  }
-  if (!ns || !client) return "off";
+  if (!ns || !client || mode === "off") return "off";
   if (client.kind !== "broker") return "self";
   const kind = brokerTransportKind(env, "directory");
   // Hosted without the capability: nothing can feed the DO from here (its

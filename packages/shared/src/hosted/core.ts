@@ -78,7 +78,7 @@ export type DirectoryMode = z.infer<typeof DirectoryModeSchema>;
 /**
  * Instance feature flags, as Me.instance.features reports them.
  * spaces: spaces and roles; sync_google: directory sync running;
- * sync_frozen: Team and the Team trial, and self-host: synced rows kept and edited by hand;
+ * sync_frozen: Team, the Team trial, Solo and free, and self-host: synced rows kept and edited by hand;
  * guests_read_only: guests capped at viewer (REPORTED ONLY, see below);
  * content_revocation: uid-bound /c/ content tokens re-check the user's
  * status (a space's publicLinks is never part of the /p/ check: off only
@@ -132,8 +132,8 @@ export const parseFeatures = (raw: string | undefined): FeatureFlag[] => [
  * synced rows stay and are edited by hand, user status is still polled, no
  * group data is read. The dashboard hides Directory for frozen hosted plans
  * (OA Frontend's #2134); Me.instance.directory still reports state for
- * owners. Solo and free get
- * neither flag (planFeatures). A downgrade only swaps sync_google for
+ * owners. Solo and free report the trial's flags (planFeatures), so
+ * sign-in and user-status checks keep running after a downgrade. A downgrade only swaps sync_google for
  * sync_frozen: it never widens access (spec 4.5).
  */
 export const TIER_FEATURES: Readonly<Record<Tier, readonly EnvFeatureFlag[]>> =

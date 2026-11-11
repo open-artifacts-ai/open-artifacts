@@ -1151,25 +1151,6 @@ describe("DirectorySync follows the billing tier's directory mode (#857 R1)", ()
     expect((await status()).mode).toBe("frozen");
   });
 
-  it("Business to Solo hands the DO off: no group or user reads, the binding stays", async () => {
-    const t0 = pinMiddayUtc();
-    const m = mailer();
-    e = hostedEnv({ ...m.env, DIRECTORY_SYNC: fakeNs });
-    await tier({ tier: "business" }, t0);
-    await connected(t0);
-    expect(await kv("mode")).toBe("google");
-    const binding0 = (await status()).binding;
-    expect(binding0).not.toBeNull();
-    await tier({ tier: "solo", trialEndsAt: 1 }, t0 + MIN);
-    const google0 = g.adminCalls.length;
-    const t = t0 + FAST_MS;
-    await cronTick(t);
-    await inDo((s) => engine(s).alarm(t));
-    expect(await kv("mode")).toBe("off");
-    expect(g.adminCalls.length).toBe(google0);
-    expect((await status()).binding).toEqual(binding0);
-  });
-
   it("a held confirm: on Team the route refuses (no status), and the DO's own confirm kick reports frozen (#860)", async () => {
     const t0 = pinMiddayUtc();
     const m = mailer();

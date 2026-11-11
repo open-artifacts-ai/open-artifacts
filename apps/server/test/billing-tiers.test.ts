@@ -282,7 +282,7 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
     ).toEqual({ value: '{"kept":true}' });
   });
 
-  it("the directory mode per tier and lock: Business google; Team and the trial frozen; Solo none", async () => {
+  it("the directory mode per tier and lock: Business google; everything else frozen", async () => {
     const mode = async (r: Partial<BillingRow>, v: number) => {
       await cachePlan(row({ ...r, version: v }), mid);
       const me = await getMe(owner.cookie);
@@ -291,9 +291,9 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
       );
       return me.instance.directory?.mode ?? "off";
     };
-    expect(await mode({ tier: "solo", trialEndsAt: 1 }, 10)).toBe("off");
+    expect(await mode({ tier: "solo", trialEndsAt: 1 }, 10)).toBe("frozen");
     expect(await mode({ tier: "solo", trialEndsAt: mid + DAY }, 11)).toBe(
-      "off",
+      "frozen",
     );
     expect(await mode({ tier: "trial", trialEndsAt: mid + DAY }, 12)).toBe(
       "frozen",
@@ -333,11 +333,10 @@ describe("features follow the billing tier (TIER_FEATURES)", () => {
     const teamN = paused();
     await tick();
     expect(paused()).toBe(teamN);
-    // A lapse pauses, nothing disconnected. Free (Solo) has no directory
-    // (mode off), so there is nothing to pause.
+    // A lapse and free: paused, nothing disconnected.
     for (const [r, by] of [
       [row({ tier: "team", status: "lapsed", version: 3 }), 1],
-      [row({ tier: "solo", trialEndsAt: 1, version: 4 }), 0],
+      [row({ tier: "solo", trialEndsAt: 1, version: 4 }), 1],
     ] as const) {
       b.s.row = r;
       await cachePlan(r, mid);
@@ -508,6 +507,34 @@ describe("the gate's team routes", () => {
         "select count(*) as n from frozen_edits where space_id = ? and user_id = ?",
       )
         .bind(space.id, m.userId)
+        .first<{ n: number }>(),
+    ).toEqual({ n: 1 });
+  });
+
+  it("Team: a space mapping DELETE answers 403 plan_required and removes nothing", async () => {
+    await cachePlan(row({ tier: "business", version: 1 }), mid);
+    const sp = await send(props, R.spaces, owner.cookie, {
+      method: "POST",
+      body: { name: `Map ${tag}` },
+    });
+    const space = (await sp.json()) as { id: string };
+    const gid = `g${newId().slice(0, 10)}`;
+    await env.DB.prepare(
+      "insert into group_mappings (space_id, group_id, group_email, role) values (?, ?, 'x@x.com', 'viewer')",
+    )
+      .bind(space.id, gid)
+      .run();
+    await cachePlan(row({ tier: "team", version: 2 }), mid);
+    const del = await send(props, R.spaceMapping(space.id, gid), owner.cookie, {
+      method: "DELETE",
+    });
+    expect(del.status).toBe(403);
+    expect((await errOf(del)).code).toBe("plan_required");
+    expect(
+      await env.DB.prepare(
+        "select count(*) as n from group_mappings where space_id = ? and group_id = ?",
+      )
+        .bind(space.id, gid)
         .first<{ n: number }>(),
     ).toEqual({ n: 1 });
   });

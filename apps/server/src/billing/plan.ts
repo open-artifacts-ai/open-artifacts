@@ -255,19 +255,16 @@ const HOSTED_FLAGS: readonly EnvFeatureFlag[] = ["usage_off"];
 
 /**
  * The feature flags for `plan`'s tier (TIER_FEATURES). A solo or free
- * instance reports the trial's, minus sync_frozen: its team features are
- * refused by the solo lock, so the paywall can show them, but it has no
- * directory. Business alone has sync_google; a downgrade to Team swaps it for
- * sync_frozen: nothing is deleted or disconnected. A lapse keeps the tier's
- * features, read-only (the lock).
+ * instance reports the trial's, so the paywall can show them: its team
+ * features are refused by the solo lock. Only Business has sync_google; every
+ * other plan is sync_frozen, so a downgrade swaps it: nothing is deleted or
+ * disconnected, sign-in and user-status checks keep running, and nothing
+ * syncs. A lapse keeps the tier's features, read-only (the lock).
  */
 export function planFeatures(plan: EffectivePlan): EnvFeatureFlag[] {
-  if (plan.tier === "free" || plan.tier === "solo")
-    return [
-      ...TIER_FEATURES.trial.filter((f) => f !== "sync_frozen"),
-      ...HOSTED_FLAGS,
-    ];
-  return [...TIER_FEATURES[plan.tier], ...HOSTED_FLAGS];
+  const tier =
+    plan.tier === "free" || plan.tier === "solo" ? "trial" : plan.tier;
+  return [...TIER_FEATURES[tier], ...HOSTED_FLAGS];
 }
 
 const READ_PLAN = `select

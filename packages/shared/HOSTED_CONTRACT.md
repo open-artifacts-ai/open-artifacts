@@ -48,9 +48,9 @@ empty = today's behaviour. `parseFeatures(raw)` (the only parser, in
 `TIER_FEATURES` (`Record<Tier, EnvFeatureFlag[]>`) is what each hosted tier
 sets: business `spaces, sync_google, content_revocation`; team and trial
 (the Team trial) `spaces, sync_frozen, content_revocation`; solo and free
-neither flag. Directory sync is Business only: Business is mode `google`;
-Team and the Team trial are `frozen` (the dashboard shows no Directory);
-Solo is `off`. Hosted adds `usage_off` on every tier. A downgrade only swaps
+report the trial's (frozen). Directory sync is Business only: Business is mode `google`;
+Team, the Team trial, Solo and free are `frozen` (the dashboard shows no
+Directory): sign-in and user-status checks keep running, nothing syncs. Hosted adds `usage_off` on every tier. A downgrade only swaps
 `sync_google` for `sync_frozen`: it never widens access. `directoryModeOf(features)` gives `DirectoryMode`
 (`sync_google` → `google`, else `sync_frozen` → `frozen`, else `off`), as
 `Me.instance.directory.mode` reports it.
@@ -198,7 +198,7 @@ Installs in one environment share a single Google client through the auth broker
 | `GET R.spaceMappings(id)` | → `GroupMapping[]` (per-space rows only); personal: 400 `space_personal` | org admin; space manager (any setting). **Manager access pending server implementation (P3 T9/T14)** |
 | `PUT/DELETE R.spaceMapping(id, groupId)` | `GroupMappingPut` → `GroupMapping` / 204; 409 `directory_sync_off` when sync is off or frozen | org admin (any role); space manager for rows that are and stay `viewer \| editor` (`SPACE_MANAGER_MAPPING_ROLES`). Order: personal 400 `space_personal`; no role 404; manager PUT while `spaceManagerMappings` is off 403 `directory_mapping_off` (DELETE always allowed: removing access); a `manager` role (PUT body, or the existing row on PUT or DELETE) 403 `space_forbidden` `{ target: "mapping" }`; sync off 409. **Manager access pending server implementation (P3 T9/T14)** |
 | `GET R.orgMappings` `/directory/org-mappings` | `?cursor&limit` → `Page<GroupMapping>` | org admin. **Pending server implementation (P3 T9/T14)** |
-| `PUT/DELETE R.orgMapping(groupId)` | `GroupMappingPut` → `GroupMapping` (upsert) / 204; 409 `directory_sync_off` when off or frozen (DELETE of an org mapping also passes while frozen on hosted billing only, since an Every space mapping no longer refreshes; DELETE of a space mapping stays 409, its resync ignores frozen edits); hosted billing answers `plan_required` on the creates | org admin; audited `mapping.set` / `mapping.remove` with `spaceId: null`. **Pending server implementation (P3 T9/T14)** |
+| `PUT/DELETE R.orgMapping(groupId)` | `GroupMappingPut` → `GroupMapping` (upsert) / 204; 409 `directory_sync_off` when off or frozen (DELETE of an org mapping also passes while frozen on hosted billing only, since an Every space mapping no longer refreshes; DELETE of a space mapping stays refused while frozen, its resync ignores frozen edits: 409 on self-host, 403 `plan_required` on hosted billing off Business); hosted billing answers `plan_required` on the creates | org admin; audited `mapping.set` / `mapping.remove` with `spaceId: null`. **Pending server implementation (P3 T9/T14)** |
 | `GET R.restrictedGroups` | → `RestrictedGroup[]` | org admin |
 | `PUT R.restrictedGroup(groupId)` | (no body) → `RestrictedGroup`; 409 `directory_sync_off` when off or frozen | org admin; audited `restricted.set` |
 | `DELETE R.restrictedGroup(groupId)` | 204, in any mode (lifts a frozen restriction) | org admin; audited `restricted.remove` |
@@ -373,7 +373,7 @@ Which tier applies (in this order):
    trial allowed) until the first good read, never unenforced.
 
 Features (`Me.instance.features` and every check) follow that tier at read
-time through `TIER_FEATURES` (the trial, solo and free report the trial's, Team's, minus `sync_frozen` for solo and free; hosted
+time through `TIER_FEATURES` (the trial, solo and free report the trial's, Team's; hosted
 adds `usage_off`), not the provisioned `FEATURES`. `Me.instance.tier` is the
 same tier (null for solo and free). Business to Team swaps `sync_google` for
 `sync_frozen`: the binding and synced rows stay, sync stops (hand edits and
