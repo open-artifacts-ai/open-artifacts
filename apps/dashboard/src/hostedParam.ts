@@ -194,6 +194,7 @@ const TOKENS: Record<string, HostedMockOptions> = {
     departedGuestOwner: true,
   },
   "spaces-on": { spaces: true },
+  "every-exec": { everyExec: true },
   "no-spaces": { noSharedSpaces: true },
   "move-target": { moveTarget: true },
   "removed-people": {

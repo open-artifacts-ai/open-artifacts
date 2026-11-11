@@ -600,16 +600,28 @@ a.oa-lpill-gone {
   /* biome-ignore lint/suspicious/noDuplicateProperties: svh fallback */
   height: 100svh;
 }
+/* #2172: with a viewer mounted the app never scrolls the document, and clip
+   (unlike hidden) can't be scrolled by scrollIntoView or focus either. Only
+   the frame and the comments panel scroll, inside themselves. The full-page
+   panels (not public, not found, error) have no viewer and keep scrolling. */
+.oa-bare:has(> .oa-viewer, > .oa-vstack) {
+  overflow: clip;
+}
+html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack),
+html:has(.oa-bare > .oa-viewer, .oa-bare > .oa-vstack) body {
+  overflow: hidden;
+}
 .oa-bare > .oa-viewer,
 .oa-bare > .oa-vstack {
   flex: 1;
   height: auto;
   min-height: 0;
 }
-/* A tall panel grows and the page scrolls; it is never clipped at the top. */
+/* A tall full-page panel scrolls inside the column; it is never clipped at the top. */
 .oa-bare > .oa-edge {
-  flex: 1 0 auto;
+  flex: 1 1 auto;
   min-height: 0;
+  overflow-y: auto;
 }
 .oa-bare > .oa-vstack {
   grid-template-rows: minmax(0, 1fr);
@@ -672,4 +684,20 @@ a.oa-lpill-gone {
   .oa-resizer::after {
     transition: none;
   }
+}
+/* #2172: the load-error panel fills the body below the toolbar; 100vh would overflow by it. */
+.oa-vbody > .oa-edge {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+/* A scrolling edge panel taller than its box would overflow above the scroll
+   origin if centered by align-items; auto margins center it only when it fits. */
+.oa-bare > .oa-edge,
+.oa-vbody > .oa-edge {
+  align-items: flex-start;
+}
+.oa-bare > .oa-edge > .oa-panel,
+.oa-vbody > .oa-edge > .oa-panel {
+  margin-block: auto;
 }

@@ -195,6 +195,8 @@ export type HostedMockOptions = {
    * `to: space` for any id; `to: user` still works.
    */
   spaces?: boolean;
+  /** Seed one "Every space" org mapping (Exec as viewer), for shots of the Every space card. */
+  everyExec?: boolean;
   /** No shared spaces at all: an install that hasn't set any up (#1190). */
   noSharedSpaces?: boolean;
   /** The caller is also an editor in Clients, so Engineering's artifact can move there (#1190). */
@@ -503,7 +505,18 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
     ],
   ]);
   /** "Every space" mappings: one row per group. */
-  const orgMappings: GroupMapping[] = [];
+  const orgMappings: GroupMapping[] = o.everyExec
+    ? [
+        {
+          groupId: G.exec.groupId,
+          email: G.exec.email,
+          name: G.exec.name,
+          role: "viewer",
+          memberCount: 1,
+          lastSyncedAt: null,
+        },
+      ]
+    : [];
   /** Settings.spaceManagerMappings (hosted default on). */
   let spaceManagerMappings = true;
   const restricted: RestrictedGroup[] = [
