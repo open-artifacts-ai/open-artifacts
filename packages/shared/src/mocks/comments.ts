@@ -304,6 +304,47 @@ export function createCommentMock({
         comments: one,
         agents: THREAD_AGENTS.slice(0, 1).map((x) => ({ ...x })),
       });
+      // #2174: a thread of one person and one agent, and one of nine participants (five people, four agents: Sam, Maya, Noor, Ben, you).
+      const solo = [
+        comment("Solo note: is the footer link right?", mine()),
+        comment("Yes, it points at /pricing.", agent(true)),
+      ];
+      faces.push({
+        id: newId(),
+        anchor: { kind: "note" },
+        version: 1,
+        status: "open",
+        resolvedBy: null,
+        resolvedAt: null,
+        createdAt: solo[0]?.createdAt ?? iso(),
+        comments: solo,
+        agents: THREAD_AGENTS.slice(0, 1).map((x) => ({ ...x })),
+      });
+      const crowd = ["Maya Chen", "Noor Ali", "Ben Ortiz"].map((name, i) =>
+        comment(`Nine-person review: my part is ready (${i + 1}).`, {
+          kind: "user",
+          id: `crowd-${i}`,
+          name,
+          me: false,
+        }),
+      );
+      const nine = [
+        comment("Nine-person review: is everyone ready for launch?", other),
+        ...crowd,
+        comment("I am ready too.", mine()),
+        comment("Checked the release notes.", agent(true)),
+      ];
+      faces.push({
+        id: newId(),
+        anchor: { kind: "note" },
+        version: 1,
+        status: "open",
+        resolvedBy: null,
+        resolvedAt: null,
+        createdAt: nine[0]?.createdAt ?? iso(),
+        comments: nine,
+        agents: THREAD_AGENTS.map((x) => ({ ...x })),
+      });
     }
     return [
       {

@@ -61,6 +61,27 @@ for (const w of [1280, 390])
       await expect(list.locator("[data-add-back]")).toBeVisible();
       await shot("3b-reopened");
 
+      await page.keyboard.press("Escape");
+      await page.mouse.move(5, 5);
+      await expect(list).toBeHidden();
+      // A thread with one person and one agent, and one with nine participants.
+      for (const [name, text] of [
+        ["5-one-person-one-agent", "Solo note"],
+        ["6-nine-participants", "Nine-person review"],
+      ] as const) {
+        const c = page.locator("li[data-thread]").filter({ hasText: text });
+        const t = c.locator("[data-participants-trigger]");
+        await t.scrollIntoViewIfNeeded();
+        if (w >= 600) await t.hover();
+        else await t.click();
+        await expect(c.locator("[data-participants-list]")).toBeVisible();
+        await shot(name);
+        // A hover has no focus in the group, so Escape would reach the panel: move away instead.
+        if (w >= 600) await page.mouse.move(5, 5);
+        else await page.keyboard.press("Escape");
+        await expect(c.locator("[data-participants-list]")).toBeHidden();
+      }
+
       await page.goto(
         `/a/${ID}?mock=signed-out${w < 600 ? "" : "&panel=open&tab=comments"}`,
       );
