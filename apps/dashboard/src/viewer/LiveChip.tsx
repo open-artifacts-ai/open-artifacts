@@ -115,22 +115,17 @@ function SwappedChip({
 /**
  * The title bar's live slot, right after the version picker: held (vN
  * available · View), swapped (Updated to vN, for about 3 s) or, on an
- * explicit older version, the quiet "Current is vN" hint.
+ * explicit older version, nothing (the older-version banner says it).
  */
 export function TitleLive({
   held,
   swapped,
-  current,
   onView,
-  onCurrent,
   onExpire,
 }: {
   held: LiveUpdate | null;
   swapped: Swapped | null;
-  /** Set on a pinned older version: the current one. */
-  current: number | null;
   onView: () => void;
-  onCurrent: () => void;
   onExpire: (version: number) => void;
 }) {
   if (held)
@@ -156,16 +151,6 @@ export function TitleLive({
         swapped={swapped}
         onExpire={onExpire}
       />
-    );
-  if (current !== null)
-    return (
-      <button
-        type="button"
-        className="oa-lchip oa-lchip-quiet oa-hit"
-        onClick={onCurrent}
-      >
-        Current is v{current}
-      </button>
     );
   return null;
 }

@@ -224,19 +224,23 @@ describe("asks on the comments column", () => {
     expect(await within(c).findByText("Which layout?")).toBeInTheDocument();
     expect(within(c).getByText("Detail on its own screen")).toBeInTheDocument();
     expect(within(c).getByText("Recommended")).toBeInTheDocument();
-    expect(within(c).getByText("Why: Both stay in view.")).toBeInTheDocument();
+    expect(
+      within(c).getByText("Why B: Both stay in view."),
+    ).toBeInTheDocument();
     expect(within(c).getByText(/1 ask for you/)).toBeInTheDocument();
     fireEvent.click(within(c).getByRole("button", { name: /List only/ }));
     await waitFor(() => expect(answered).toEqual({ optionId: "a" }));
     expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
   });
 
-  it("heads the ask 'Ask', amber while it needs you, with a key badge per option and a Recommended tag", async () => {
+  it("says who asks, amber while it needs you, with a key badge per option and a Recommended tag", async () => {
     serveThreads(() => [askThread()]);
     mount(viewerPath(OWNED));
     const c = await col();
     await within(c).findByText("Which layout?");
-    expect(within(c).getByText("Ask", { selector: "p" })).toBeInTheDocument();
+    expect(c.querySelector("[data-ask-from]")?.textContent).toMatch(
+      / asks you$/,
+    );
     expect(c.querySelector("[data-ask]")).toHaveAttribute("data-needs-you");
     const keys = [...c.querySelectorAll("[data-option-key]")].map(
       (k) => k.textContent,

@@ -157,6 +157,9 @@ export function AskBlock({
   const canAnswer = mine && !ask.closed;
   const pickedIdx = ask.options.findIndex((o) => o.id === picked);
   const pickedOpt = ask.options[pickedIdx];
+  const recIdx = ask.options.findIndex(
+    (o) => o.id === ask.recommended?.optionId,
+  );
   const letters = showLetters(ask.options);
   const locked = !!pickedOpt && !changing;
   const decided = ask.closed && pickedOpt;
@@ -206,8 +209,9 @@ export function AskBlock({
           data-ask=""
           data-needs-you={canAnswer && !pickedOpt ? "" : undefined}
         >
-          {/* The card's own header already names the asker and the time. */}
-          <p className={`${TXT} ${MUTED}`}>Ask</p>
+          <p className={`${TXT} ${MUTED}`} data-ask-from="">
+            {c.author.name} asks{mine ? " you" : ""}
+          </p>
           <p id={qid} className={`${TXT} font-semibold break-words`}>
             {linked(ask.question, 0)}
           </p>
@@ -223,7 +227,7 @@ export function AskBlock({
                   <Button
                     variant="outline"
                     size="sm"
-                    className={`h-auto w-full items-start justify-start gap-2 py-1 text-left whitespace-normal ${
+                    className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
                       sel
                         ? "bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] disabled:opacity-100"
                         : ""
@@ -251,19 +255,19 @@ export function AskBlock({
                     )}
                     <span className="min-w-0 flex-1 break-words">
                       <b>{o.label}</b>
-                      {rec && (
-                        <span
-                          className={`ml-2 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
-                        >
-                          Recommended
-                        </span>
-                      )}
                       {o.detail && (
                         <span className={`block font-normal ${MUTED}`}>
                           {o.detail}
                         </span>
                       )}
                     </span>
+                    {rec && (
+                      <span
+                        className={`ml-auto shrink-0 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                      >
+                        Recommended
+                      </span>
+                    )}
                   </Button>
                 </li>
               );
@@ -271,7 +275,8 @@ export function AskBlock({
           </ul>
           {ask.recommended?.why && (
             <p className={`${TXT} ${MUTED} break-words`}>
-              Why: {ask.recommended.why}
+              Why{recIdx >= 0 && letters ? ` ${letter(recIdx)}` : ""}:{" "}
+              {ask.recommended.why}
             </p>
           )}
           {ask.answer && pickedOpt && (

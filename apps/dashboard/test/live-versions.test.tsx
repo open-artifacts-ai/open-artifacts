@@ -272,12 +272,15 @@ describe("live versions: the safe swap", () => {
     ).toBeTruthy();
   });
 
-  it("an explicit version never swaps or chips: Current is vN", async () => {
+  it("an explicit version never swaps or chips: the older-version banner says so", async () => {
     const first = await open(viewerPath(OWNED, 1));
-    expect(screen.getByRole("button", { name: "Current is v2" })).toBeTruthy();
+    expect(screen.getByText(/an older version of this page/)).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Back to current" }),
+    ).toBeTruthy();
     await publish();
     expect(
-      await screen.findByRole("button", { name: "Current is v3" }, LONG),
+      screen.getByRole("button", { name: "Back to current" }),
     ).toBeTruthy();
     await act(() => new Promise((r) => setTimeout(r, 1_200)));
     expect(screen.queryByRole("button", { name: /View version/ })).toBeNull();

@@ -6,6 +6,8 @@ import { Badge, cn } from "@oa/ui/shadcn";
 export const TXT = "text-[length:var(--oa-text-sm)]";
 /** Chrome buttons are xs (24px); below 600px they grow to 32px to tap. */
 export const SM = `${TXT} max-[600px]:h-8 max-[600px]:px-3`;
+/** Title bar buttons: 32px with 14px text on every width (#2118). */
+export const BAR = "text-[length:var(--oa-text-md)] h-8 px-3";
 /** Icon-only buttons grow the same way. */
 export const ICON = "max-[600px]:size-8";
 /** A link rendered as a shadcn button: no underline, the button's own color. */

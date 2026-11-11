@@ -341,18 +341,18 @@ describe("selection button", () => {
   it("places the button again when a webfont reflows the page (#1648)", async () => {
     // The button's own width is fixed (closed shadow root, system-ui), so the
     // swap cannot change it; what moves is the selection's rect, as the page
-    // reflows. The first rect puts the button at 30px, the second at 90px.
+    // reflows. The first rect puts the button at the 4px margin, the second at 30px.
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
     const f = fonts();
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
-    expect(button()?.style.left).toBe("30px");
+    expect(button()?.style.left).toBe("4px");
     vi.mocked(Range.prototype.getClientRects).mockReturnValue([
       { ...rect, right: 140, bottom: 200 },
     ] as unknown as DOMRectList);
     f.done();
-    expect(button()?.style.left).toBe("90px");
-    expect(button()?.style.top).toBe("206px");
+    expect(button()?.style.left).toBe("30px");
+    expect(button()?.style.top).toBe("89px");
   });
 
   it("leaves the button alone when it is gone by the time the fonts finish (#1648)", async () => {
@@ -410,13 +410,13 @@ describe("selection button", () => {
       );
       await start("select");
       select(textOf("a"), 4, textOf("a"), 9);
-      expect(button()?.style.left).toBe("30px");
+      expect(button()?.style.left).toBe("4px");
       vi.mocked(Range.prototype.getClientRects).mockReturnValue([
         { ...rect, right: 140, bottom: 200 },
       ] as unknown as DOMRectList);
       reflow();
-      expect(button()?.style.left).toBe("90px");
-      expect(button()?.style.top).toBe("206px");
+      expect(button()?.style.left).toBe("30px");
+      expect(button()?.style.top).toBe("89px");
     });
 
     it("observes <html> once and disconnects on dispose", async () => {
@@ -429,58 +429,62 @@ describe("selection button", () => {
     });
   });
 
-  it("has a bubble icon, is centered under the selection end, and clamps to the viewport", async () => {
+  it("has a bubble icon, is centered above the selection, and clamps to the viewport", async () => {
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(30);
+    const vw = document.documentElement.clientWidth || innerWidth;
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, top: 200, left: 300, right: 500, bottom: 220 },
+    ] as unknown as DOMRectList);
     await start("select");
     select(textOf("a"), 4, textOf("a"), 9);
     const b = button();
     expect(b?.querySelector("svg[aria-hidden='true']")).not.toBeNull();
     expect(b?.textContent).toBe("Comment");
-    const vw = document.documentElement.clientWidth || innerWidth;
-    // rect.right = 80, width 100: centered would be 30.
-    expect(b?.style.left).toBe("30px");
-    expect(b?.style.top).toBe("126px");
+    // Selection spans 300..500: centered is 400 - 50 = 350. Above: 200 - 30 - 6 - 5.
+    expect(b?.style.left).toBe("350px");
+    expect(b?.style.top).toBe("159px");
+    expect(b?.classList.contains("below")).toBe(false);
     // Near the left edge: clamped to the margin.
     vi.mocked(Range.prototype.getClientRects).mockReturnValue([
-      { ...rect, right: 10 },
+      { ...rect, left: 0, right: 10 },
     ] as unknown as DOMRectList);
     select(textOf("a"), 3, textOf("a"), 9);
     expect(button()?.style.left).toBe("4px");
     // Near the right edge: clamped to the viewport.
     vi.mocked(Range.prototype.getClientRects).mockReturnValue([
-      { ...rect, right: vw + 50 },
+      { ...rect, left: vw + 50, right: vw + 150 },
     ] as unknown as DOMRectList);
     select(textOf("a"), 4, textOf("a"), 9);
     expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
   });
 
-  it("centers under the RTL selection end, including nested direction and viewport clamps", async () => {
+  it("hangs under the selection when there is no room above it", async () => {
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
-    // happy-dom does not map dir attributes to computed direction.
-    document.body.innerHTML =
-      '<p dir="ltr"><span id="rtl" style="direction:rtl">שלום עולם</span></p>';
-    const text = textOf("rtl");
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(30);
+    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
+      { ...rect, top: 10, bottom: 30, left: 300, right: 500 },
+    ] as unknown as DOMRectList);
     await start("select");
-    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
-      { ...rect, left: 200, right: 300 },
-    ] as unknown as DOMRectList);
-    select(text, 0, text, 4);
-    expect(button()?.style.left).toBe("150px");
-    expect(button()?.style.top).toBe("126px");
-    expect(getSelection()?.toString()).toBe("שלום");
+    select(textOf("a"), 4, textOf("a"), 9);
+    const b = button();
+    expect(b?.classList.contains("below")).toBe(true);
+    // Under the last line: 30 + 6 + 5.
+    expect(b?.style.top).toBe("41px");
+  });
 
+  it("centers over a multi-line selection's widest span, from its first line's top", async () => {
+    vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(100);
+    vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(30);
     vi.mocked(Range.prototype.getClientRects).mockReturnValue([
-      { ...rect, left: 10, right: 110 },
+      { ...rect, top: 200, bottom: 220, left: 400, right: 600 },
+      { ...rect, top: 220, bottom: 240, left: 100, right: 300 },
     ] as unknown as DOMRectList);
-    select(text, 0, text, 3);
-    expect(button()?.style.left).toBe("4px");
-
-    const vw = document.documentElement.clientWidth || innerWidth;
-    vi.mocked(Range.prototype.getClientRects).mockReturnValue([
-      { ...rect, left: vw + 50, right: vw + 150 },
-    ] as unknown as DOMRectList);
-    select(text, 0, text, 4);
-    expect(button()?.style.left).toBe(`${vw - 100 - 4}px`);
+    await start("select");
+    select(textOf("a"), 4, textOf("a"), 9);
+    // Spans 100..600: centered at 350, minus half the width.
+    expect(button()?.style.left).toBe("300px");
+    expect(button()?.style.top).toBe("159px");
   });
 
   it("does not show for an empty selection or when off", async () => {

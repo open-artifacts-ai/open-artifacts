@@ -63,7 +63,10 @@ const FLASH_MS = 1200;
 
 const OVERLAY_CSS = `
 :host{all:initial}
-.btn{position:absolute;display:flex;align-items:center;gap:6px;font:500 13px/1 system-ui,sans-serif;padding:6px 10px;border:1px solid #d4d4d8;border-radius:8px;background:#fff;color:#27272a;cursor:pointer;pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+.btn{position:absolute;display:flex;align-items:center;gap:6px;font:500 13px/1 system-ui,sans-serif;padding:8px 12px;border:0;border-radius:999px;background:#17181a;color:#fff;cursor:pointer;pointer-events:auto;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+.btn::after{content:"";position:absolute;left:var(--ax,50%);top:100%;margin-left:-5px;border:5px solid transparent;border-top-color:#17181a;border-bottom:0}
+.btn.below::after{top:auto;bottom:100%;border-top:0;border-bottom:5px solid #17181a}
+@media(prefers-color-scheme:dark){.btn{background:#eceef1;color:#17181a;box-shadow:0 2px 8px rgba(0,0,0,.5)}.btn::after{border-top-color:#eceef1}.btn.below::after{border-bottom-color:#eceef1}}
 .btn svg{width:14px;height:14px;flex:none}
 .mark{position:absolute;width:6px;height:16px;border-radius:2px;background:#e0a000;pointer-events:auto;cursor:pointer}
 .mark.on{background:#1f5fbf}
@@ -96,9 +99,11 @@ export interface Comments {
 
 const BUBBLE =
   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 3.5a1 1 0 0 1 1-1h9a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H7l-3 3v-3h-.5a1 1 0 0 1-1-1z"/></svg>';
-/** Gap between the selection's end and the button, and the viewport margin. */
+/** Gap between the selection and the button, and the viewport margin. */
 const BTN_GAP = 6;
 const BTN_MARGIN = 4;
+/** The bubble's pointer. */
+const POINTER = 5;
 /** #1732: the shell's touch bar (48px) plus a 12px gap; the selection's last line stays above it. */
 const BAR_CLEAR = 48 + 12;
 const SELECTION_MS = 100;
@@ -506,26 +511,53 @@ export function createComments(
     btn?.remove();
   }
 
-  /** The last rect of the selection: the button hangs under the end of it. */
-  function endRect(): DOMRect | null {
+  /** The selection's box: its widest horizontal span, first line's top, last line's bottom. */
+  function selRect(): {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+  } | null {
     const s = selection();
     if (!s) return null;
-    const rects = s.range.getClientRects();
-    return (rects[rects.length - 1] ?? s.range.getBoundingClientRect()) || null;
+    const list = Array.from(s.range.getClientRects());
+    const rects = list.length ? list : [s.range.getBoundingClientRect()];
+    const first = rects[0];
+    const last = rects[rects.length - 1];
+    if (!first || !last) return null;
+    return {
+      left: Math.min(...rects.map((r) => r.left)),
+      right: Math.max(...rects.map((r) => r.right)),
+      top: first.top,
+      bottom: last.bottom,
+    };
   }
 
-  /** Centered under the end of the selection, kept inside the viewport. */
-  function place(rect: DOMRect) {
-    const s = selection();
-    if (!btn || !s) return;
+  /** Centered above the selection (below it when there is no room), kept inside the viewport. */
+  function place(rect: {
+    left: number;
+    right: number;
+    top: number;
+    bottom: number;
+  }) {
+    if (!btn || !selection()) return;
     const vw = document.documentElement.clientWidth || innerWidth;
     const w = btn.offsetWidth;
-    const end = nodeAtIndex(getIndex(), s.end - 1)?.parentElement;
-    const edge =
-      end && getComputedStyle(end).direction === "rtl" ? rect.left : rect.right;
-    const x = Math.max(BTN_MARGIN, Math.min(edge - w / 2, vw - w - BTN_MARGIN));
+    const h = btn.offsetHeight;
+    const mid = (rect.left + rect.right) / 2;
+    const x = Math.max(BTN_MARGIN, Math.min(mid - w / 2, vw - w - BTN_MARGIN));
+    const above = rect.top - h - BTN_GAP - POINTER >= BTN_MARGIN;
+    btn.classList.toggle("below", !above);
+    btn.style.setProperty(
+      "--ax",
+      `${Math.max(12, Math.min(mid - x, w - 12))}px`,
+    );
     btn.style.left = `${x + scrollX}px`;
-    btn.style.top = `${rect.bottom + scrollY + BTN_GAP}px`;
+    btn.style.top = `${
+      above
+        ? rect.top + scrollY - h - BTN_GAP - POINTER
+        : rect.bottom + scrollY + BTN_GAP + POINTER
+    }px`;
   }
 
   /**
@@ -541,7 +573,7 @@ export function createComments(
    */
   function onFontsLoaded() {
     if (mode !== "select" || !btn?.isConnected) return;
-    const rect = endRect();
+    const rect = selRect();
     if (rect) place(rect);
   }
 
@@ -558,7 +590,7 @@ export function createComments(
 
   function showButton() {
     if (mode !== "select" || coarse()) return hideButton();
-    const rect = endRect();
+    const rect = selRect();
     if (!rect) return hideButton();
     if (!btn) {
       btn = document.createElement("button");

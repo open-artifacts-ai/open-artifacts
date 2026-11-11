@@ -46,6 +46,7 @@ import {
   createOpener,
   linkHost,
 } from "./navigate";
+import { OlderBanner } from "./OlderBanner";
 import { isPanelTab, type PanelTab, SidePanel } from "./panels/SidePanel";
 import { RenavNotice } from "./RenavNotice";
 import { SignupNudge } from "./SignupNudge";
@@ -634,6 +635,11 @@ function Viewer({
               guest={role === "guest"}
               hosted={hosted}
             />
+            {explicitVersion &&
+              gone === null &&
+              version < artifact.currentVersion && (
+                <OlderBanner artifact={artifact} version={version} />
+              )}
             {gone && (
               <GoneBanner
                 gone={gone}
@@ -894,9 +900,7 @@ function ArtifactShell({
     <TitleLive
       held={live.held}
       swapped={live.swapped}
-      current={v !== undefined && live.latest > v ? live.latest : null}
       onView={live.view}
-      onCurrent={() => void navigate({ to: viewerPath(id) })}
       onExpire={live.clearSwapped}
     />
   );
