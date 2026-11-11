@@ -15,11 +15,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  installOutputStyle,
   OUTPUT_STYLE_MARKER,
+  OUTPUT_STYLE_PLUGIN_NAME,
   outputStyleFile,
-  outputStyleSource,
+  outputStyleOn,
   outputStyleState,
+  selectOutputStyle,
   uninstallOutputStyle,
 } from "../src/steps/output-style.ts";
 
@@ -29,65 +30,52 @@ const SOURCE = readFileSync(
   "utf8",
 );
 const text = SOURCE;
+// The file is no longer written (#2095): the plugin carries the style. What runs after the
+// plugin is installed is selectOutputStyle, and only when Claude Code is wired.
+const installOutputStyle = (
+  deps: Parameters<typeof selectOutputStyle>[0] & { text?: string },
+  harnesses: string[],
+) =>
+  harnesses.includes("claude")
+    ? selectOutputStyle(deps)
+    : { written: [], notes: [] };
+// A pre-#2095 install: our marked file, as the old installer wrote it.
+const legacyFile = (h: string, env = {}) => {
+  const p = file(h, env);
+  mkdirSync(join(p, ".."), { recursive: true });
+  const end = SOURCE.indexOf("\n---\n", 3) + 5;
+  writeFileSync(
+    p,
+    `${SOURCE.slice(0, end)}${OUTPUT_STYLE_MARKER}\n${SOURCE.slice(end)}`,
+  );
+  return p;
+};
 const file = (h: string, env = {}) => outputStyleFile({ home: h, env });
 
-describe("the shipped text", () => {
-  it("is the source file unchanged", () => {
-    expect(outputStyleSource()).toBe(SOURCE);
-  });
-
-  it("has frontmatter with name, description and keep-coding-instructions", () => {
-    const m = /^---\n([\s\S]*?)\n---\n/.exec(SOURCE);
-    const keys = (m?.[1] ?? "").split("\n").map((l) => l.split(":", 1)[0]);
-    expect(keys).toEqual(["name", "description", "keep-coding-instructions"]);
-  });
-});
-
-describe("installOutputStyle", () => {
-  it("writes the file with our marker right after the frontmatter, once", () => {
+describe("selectOutputStyle (#2095)", () => {
+  it("writes no style file: the plugin carries the style", () => {
     const h = home();
-    const r = installOutputStyle({ home: h, text }, ["claude"]);
-    expect(r.written).toEqual([
-      join(h, ".claude/output-styles/artifacts-teammate.md"),
-    ]);
-    expect(r.first).toBe(true);
-    const out = readFileSync(file(h), "utf8");
-    const m = /^---\n[\s\S]*?\n---\n/.exec(out) as RegExpExecArray;
-    // The frontmatter is the source's, byte for byte, and parses as before.
-    expect(m[0]).toBe(/^---\n[\s\S]*?\n---\n/.exec(SOURCE)?.[0]);
-    expect(out.slice(m[0].length).split("\n", 1)[0]).toBe(OUTPUT_STYLE_MARKER);
-    expect(out.replace(`${OUTPUT_STYLE_MARKER}\n`, "")).toBe(SOURCE);
+    const r = selectOutputStyle({ home: h });
+    expect(r.written).toEqual([]);
+    expect(existsSync(file(h))).toBe(false);
   });
 
-  it("never touches settings.json", () => {
+  it("removes our marked file from an older install, and the folder it leaves empty", () => {
     const h = home();
-    mkdirSync(join(h, ".claude"), { recursive: true });
-    writeFileSync(join(h, ".claude/settings.json"), '{"outputStyle":"x"}\n');
-    installOutputStyle({ home: h, text }, ["claude"]);
-    expect(readFileSync(join(h, ".claude/settings.json"), "utf8")).toBe(
-      '{"outputStyle":"x"}\n',
-    );
+    legacyFile(h);
+    selectOutputStyle({ home: h });
+    expect(existsSync(file(h))).toBe(false);
+    expect(existsSync(join(h, ".claude/output-styles"))).toBe(false);
   });
 
-  it("refreshes our file on a reinstall and says nothing new", () => {
-    const h = home();
-    installOutputStyle({ home: h, text }, ["claude"]);
-    writeFileSync(file(h), `${readFileSync(file(h), "utf8")}\nedited\n`);
-    const r = installOutputStyle({ home: h, text }, ["claude"]);
-    expect(r.first).toBe(false);
-    expect(r.written).toHaveLength(1);
-    expect(readFileSync(file(h), "utf8")).not.toContain("edited");
-  });
-
-  it("leaves a file without our marker alone, with a note", () => {
+  it("keeps a file without our marker and says it may show twice: it is the user's", () => {
     const h = home();
     mkdirSync(join(h, ".claude/output-styles"), { recursive: true });
     writeFileSync(file(h), "my own style\n");
-    const r = installOutputStyle({ home: h, text }, ["claude"]);
+    const r = selectOutputStyle({ home: h });
     expect(readFileSync(file(h), "utf8")).toBe("my own style\n");
-    expect(r.written).toEqual([]);
-    expect(r.first).toBe(false);
-    expect(r.notes.join(" ")).toContain("no Open Artifacts marker");
+    expect(r.notes).toHaveLength(1);
+    expect(r.notes[0]).toContain("Kept your own");
   });
 
   it("does not treat a marker outside the line after the frontmatter as ours", () => {
@@ -95,27 +83,16 @@ describe("installOutputStyle", () => {
     mkdirSync(join(h, ".claude/output-styles"), { recursive: true });
     const mine = `---\nname: x\n---\nmine\n${OUTPUT_STYLE_MARKER}\n`;
     writeFileSync(file(h), mine);
-    installOutputStyle({ home: h, text }, ["claude"]);
+    selectOutputStyle({ home: h });
     expect(readFileSync(file(h), "utf8")).toBe(mine);
   });
 
   it("honors CLAUDE_CONFIG_DIR", () => {
     const h = home();
-    const dir = join(h, "elsewhere");
-    const r = installOutputStyle(
-      { home: h, env: { CLAUDE_CONFIG_DIR: dir }, text },
-      ["claude"],
-    );
-    expect(r.written).toEqual([
-      join(dir, "output-styles/artifacts-teammate.md"),
-    ]);
-    expect(existsSync(join(h, ".claude"))).toBe(false);
-  });
-
-  it("writes nothing when Claude Code is not among the harnesses", () => {
-    const h = home();
-    const r = installOutputStyle({ home: h, text }, ["pi", "codex"]);
-    expect(r).toEqual({ written: [], notes: [], first: false });
+    const env = { CLAUDE_CONFIG_DIR: join(h, "elsewhere") };
+    legacyFile(h, env);
+    selectOutputStyle({ home: h, env });
+    expect(existsSync(file(h, env))).toBe(false);
     expect(existsSync(join(h, ".claude"))).toBe(false);
   });
 
@@ -125,40 +102,78 @@ describe("installOutputStyle", () => {
     mkdirSync(elsewhere, { recursive: true });
     mkdirSync(join(h, ".claude"), { recursive: true });
     symlinkSync(elsewhere, join(h, ".claude/output-styles"));
-    const r = installOutputStyle({ home: h, text }, ["claude"]);
-    expect(readdirSync(elsewhere)).toEqual([]);
-    expect(r.written).toEqual([]);
+    writeFileSync(
+      join(elsewhere, "artifacts-teammate.md"),
+      readFileSync(legacyFile(home()), "utf8"),
+    );
+    const r = selectOutputStyle({ home: h });
+    expect(readdirSync(elsewhere)).toEqual(["artifacts-teammate.md"]);
     expect(r.notes.join(" ")).toContain("symlink");
   });
 
   it("leaves a symlinked file alone, even when its target is ours", () => {
     const h = home();
-    installOutputStyle({ home: h, text }, ["claude"]);
-    const real = join(h, "real.md");
-    writeFileSync(real, readFileSync(file(h), "utf8"));
-    rmSync(file(h));
+    const real = legacyFile(home());
+    mkdirSync(join(h, ".claude/output-styles"), { recursive: true });
     symlinkSync(real, file(h));
-    writeFileSync(real, "user's file\n");
-    const r = installOutputStyle({ home: h, text }, ["claude"]);
-    expect(readFileSync(real, "utf8")).toBe("user's file\n");
+    const r = selectOutputStyle({ home: h });
+    expect(existsSync(real)).toBe(true);
     expect(lstatSync(file(h)).isSymbolicLink()).toBe(true);
     expect(r.notes.join(" ")).toContain("symlink");
   });
 
-  it("leaves a broken symlink alone", () => {
+  it("moves a value we set to the old name over to the plugin's style", () => {
+    const h = home();
+    const b = mkdtempSync(join(tmpdir(), "oa-style-bus-"));
+    mkdirSync(join(h, ".claude"), { recursive: true });
+    legacyFile(h);
+    writeFileSync(
+      join(h, ".claude/settings.json"),
+      '{"outputStyle":"Artifacts Teammate","x":1}\n',
+    );
+    writeFileSync(
+      join(b, "install.json"),
+      JSON.stringify({
+        outputStyle: {
+          set: true,
+          value: "Artifacts Teammate",
+          before: { state: "absent" },
+        },
+      }),
+    );
+    selectOutputStyle({ home: h, busHome: b });
+    expect(
+      JSON.parse(readFileSync(join(h, ".claude/settings.json"), "utf8"))
+        .outputStyle,
+    ).toBe(OUTPUT_STYLE_PLUGIN_NAME);
+    expect(
+      JSON.parse(readFileSync(join(b, "install.json"), "utf8")).outputStyle
+        .value,
+    ).toBe(OUTPUT_STYLE_PLUGIN_NAME);
+  });
+
+  it("leaves the old name alone when our file could not be removed (the user's own file)", () => {
     const h = home();
     mkdirSync(join(h, ".claude/output-styles"), { recursive: true });
-    symlinkSync(join(h, "missing.md"), file(h));
-    const r = installOutputStyle({ home: h, text }, ["claude"]);
-    expect(existsSync(join(h, "missing.md"))).toBe(false);
-    expect(r.notes.join(" ")).toContain("symlink");
+    writeFileSync(file(h), "mine\n");
+    writeFileSync(
+      join(h, ".claude/settings.json"),
+      '{"outputStyle":"Artifacts Teammate"}\n',
+    );
+    selectOutputStyle({
+      home: h,
+      busHome: mkdtempSync(join(tmpdir(), "oa-style-bus-")),
+    });
+    expect(readFileSync(join(h, ".claude/settings.json"), "utf8")).toBe(
+      '{"outputStyle":"Artifacts Teammate"}\n',
+    );
   });
 });
 
 describe("uninstallOutputStyle", () => {
   it("removes our file and the folder it leaves empty", () => {
     const h = home();
-    installOutputStyle({ home: h, text }, ["claude"]);
+    legacyFile(h);
     const r = uninstallOutputStyle({ home: h });
     expect(r.written).toEqual([file(h)]);
     expect(existsSync(join(h, ".claude/output-styles"))).toBe(false);
@@ -167,7 +182,7 @@ describe("uninstallOutputStyle", () => {
 
   it("keeps the folder when anything else is in it", () => {
     const h = home();
-    installOutputStyle({ home: h, text }, ["claude"]);
+    legacyFile(h);
     writeFileSync(join(h, ".claude/output-styles/mine.md"), "mine\n");
     uninstallOutputStyle({ home: h });
     expect(existsSync(file(h))).toBe(false);
@@ -189,7 +204,7 @@ describe("uninstallOutputStyle", () => {
   it("honors CLAUDE_CONFIG_DIR", () => {
     const h = home();
     const env = { CLAUDE_CONFIG_DIR: join(h, "cfg") };
-    installOutputStyle({ home: h, env, text }, ["claude"]);
+    legacyFile(h, env);
     expect(uninstallOutputStyle({ home: h, env }).written).toHaveLength(1);
     expect(existsSync(join(h, "cfg/output-styles"))).toBe(false);
   });
@@ -203,7 +218,7 @@ describe("uninstallOutputStyle", () => {
 
   it("does not delete through a symlink", () => {
     const h = home();
-    installOutputStyle({ home: h, text }, ["claude"]);
+    legacyFile(h);
     const real = join(h, "real.md");
     writeFileSync(real, readFileSync(file(h), "utf8"));
     rmSync(file(h));
@@ -229,7 +244,7 @@ describe("outputStyleState", () => {
   it("reports our file, and nothing for a user's file or none", () => {
     const h = home();
     expect(outputStyleState({ home: h })).toBeUndefined();
-    installOutputStyle({ home: h, text }, ["claude"]);
+    legacyFile(h);
     expect(outputStyleState({ home: h })).toEqual({ path: file(h), on: false });
     writeFileSync(file(h), "mine\n");
     expect(outputStyleState({ home: h })).toBeUndefined();
@@ -247,7 +262,7 @@ const withBus = (h: string, env = {}) => ({
   env,
   text,
 });
-const NAME = "Artifacts Teammate";
+const NAME = OUTPUT_STYLE_PLUGIN_NAME;
 const put = (path: string, body: string) => {
   mkdirSync(join(path, ".."), { recursive: true });
   writeFileSync(path, body);
@@ -284,7 +299,6 @@ describe("turning the style on in settings.json", () => {
       const r = installOutputStyle(withBus(h), ["claude"]);
       expect(readFileSync(settingsOf(h), "utf8")).toBe(before);
       expect(r.settings).toBe("kept");
-      expect(r.written).toHaveLength(1);
       expect(existsSync(join(h, ".oa-bus/install.json"))).toBe(false);
     }
   });
@@ -361,7 +375,6 @@ describe("turning the style on in settings.json", () => {
     expect(readFileSync(settingsOf(h), "utf8")).toBe(bad);
     expect(r.settings).toBeUndefined();
     expect(r.notes.join(" ")).toContain("settings.json alone");
-    expect(r.written).toHaveLength(1);
     expect(existsSync(join(h, ".oa-bus/install.json"))).toBe(false);
   });
 
@@ -385,12 +398,17 @@ describe("turning the style on in settings.json", () => {
     expect(r.notes.join(" ")).toContain("symlink");
   });
 
-  it("does not turn it on when the style file is the user's", () => {
+  it("turns the plugin's style on even beside a user's own file of the same name", () => {
     const h = home();
     put(file(h), "my own style\n");
     put(settingsOf(h), "{}\n");
-    installOutputStyle(withBus(h), ["claude"]);
-    expect(readFileSync(settingsOf(h), "utf8")).toBe("{}\n");
+    const r = installOutputStyle(withBus(h), ["claude"]);
+    expect(JSON.parse(readFileSync(settingsOf(h), "utf8"))).toEqual({
+      outputStyle: NAME,
+    });
+    expect(readFileSync(file(h), "utf8")).toBe("my own style\n");
+    // The unmarked file stays and the person is told it may show twice.
+    expect(r.notes.join(" ")).toContain("may list Artifacts Teammate twice");
   });
 
   it("honors CLAUDE_CONFIG_DIR for settings.json and uninstall", () => {
@@ -413,13 +431,12 @@ describe("turning the style on in settings.json", () => {
     expect(readFileSync(settingsOf(h), "utf8")).toBe("{}\n");
   });
 
-  it("state says on only when settings.json selects it", () => {
+  it("outputStyleOn says yes only when settings.json selects the plugin's style", () => {
     const h = home();
     put(settingsOf(h), '{"outputStyle":"Explanatory"}');
-    installOutputStyle(withBus(h), ["claude"]);
-    expect(outputStyleState({ home: h })?.on).toBe(false);
+    expect(outputStyleOn({ home: h })).toBe(false);
     put(settingsOf(h), `{"outputStyle":"${NAME}"}`);
-    expect(outputStyleState({ home: h })?.on).toBe(true);
+    expect(outputStyleOn({ home: h })).toBe(true);
   });
 });
 

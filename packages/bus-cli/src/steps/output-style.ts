@@ -1,18 +1,20 @@
-// The "Artifacts Teammate" Claude Code output style (#1970), written to
-// <claude config dir>/output-styles/artifacts-teammate.md next to the Claude
-// skill, and turned on by setting `outputStyle` in settings.json, but only when
-// that key is unset (absent, null or empty): a person's own choice is never replaced. What we did is
-// recorded in install.json, and uninstall undoes exactly that, only while the
-// value is still the one we set.
+// The "Artifacts Teammate" Claude Code output style (#1970) now ships in the
+// `open-artifacts` plugin (#2095), which shows it as "open-artifacts:Artifacts
+// Teammate". This module selects it in settings.json, but only when that key is
+// unset (absent, null or empty): a person's own choice is never replaced. What
+// we did is recorded in install.json, and uninstall undoes exactly that, only
+// while the value is still the one we set.
 //
-// Ownership is the skill step's rule: our marker is the line right after the
-// closing frontmatter `---`. A file without it is the user's and is never
-// replaced or removed. Symlinks (the style file, its folder, settings.json) are
-// left alone, never written or deleted through. settings.json is edited with the
-// JSONC helpers, so every other byte stays; an unparseable file is not touched.
+// It also moves older installs over (#1985 wrote a file): our marked file
+// (the marker is the line right after the closing frontmatter `---`) is removed,
+// because beside the plugin it would list the style twice, and a value we set
+// to the old name becomes the plugin's. A file without the marker is the
+// user's and is never removed. Symlinks (the style file, its folder,
+// settings.json) are left alone, never written or deleted through.
+// settings.json is edited with the JSONC helpers, so every other byte stays; an
+// unparseable file is not touched.
 
 import {
-  existsSync,
   lstatSync,
   readdirSync,
   readFileSync,
@@ -20,14 +22,12 @@ import {
   rmSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   jsoncValue,
   parseJsonc,
   removeJsoncValue,
   setJsoncValue,
 } from "@oa/bus-adapter-mcp-json";
-import type { Harness } from "./adapters.ts";
 import { writeAtomic } from "./skill.ts";
 import { readInstallFile, updateInstallFile } from "./step.ts";
 
@@ -39,6 +39,12 @@ export const OUTPUT_STYLE_MARKER =
 
 /** The style's name in its frontmatter: the value Claude Code's `outputStyle` takes. */
 export const OUTPUT_STYLE_NAME = "Artifacts Teammate";
+
+/** What the plugin's style is called in settings.json and /output-style. */
+export const OUTPUT_STYLE_PLUGIN_NAME = "open-artifacts:Artifacts Teammate";
+
+const isOurName = (v: unknown) =>
+  v === OUTPUT_STYLE_NAME || v === OUTPUT_STYLE_PLUGIN_NAME;
 
 type Where = {
   home: string;
@@ -76,29 +82,6 @@ const styleDir = (w: Where) =>
 
 export const outputStyleFile = (w: Where) =>
   join(styleDir(w), OUTPUT_STYLE_FILE);
-
-/**
- * The shipped text: assets/ next to dist/ in the package, the source file when
- * running from src/. The source is the only copy in the repo; the bundle step
- * copies it unchanged.
- */
-export const outputStyleSource = (): string => {
-  for (const rel of [
-    "../assets/output-styles/artifacts-teammate.md",
-    "../../output-style/artifacts-teammate.md",
-  ]) {
-    const path = fileURLToPath(new URL(rel, import.meta.url));
-    if (existsSync(path)) return readFileSync(path, "utf8");
-  }
-  throw new Error("the Artifacts Teammate output style is missing");
-};
-
-const withMarker = (text: string): string => {
-  const end = text.startsWith("---\n") ? text.indexOf("\n---\n", 3) : -1;
-  if (end === -1) throw new Error("the output style has no frontmatter");
-  const at = end + "\n---\n".length;
-  return `${text.slice(0, at)}${OUTPUT_STYLE_MARKER}\n${text.slice(at)}`;
-};
 
 const isOurs = (text: string): boolean => {
   const m = /^---\n[\s\S]*?\n---\n/.exec(text.replace(/\r\n/g, "\n"));
@@ -174,7 +157,7 @@ function turnOn(deps: Where, out: OutputStyleResult) {
     cur.style === null ||
     (typeof cur.style === "string" && cur.style.trim() === "");
   if (!unset) {
-    if (cur.style !== OUTPUT_STYLE_NAME) {
+    if (!isOurName(cur.style)) {
       out.settings = "kept";
       // Only a real style name is worth saying; "default" or a non-string is the default style.
       if (
@@ -190,7 +173,7 @@ function turnOn(deps: Where, out: OutputStyleResult) {
   try {
     writeRecord(busHome, {
       set: true,
-      value: OUTPUT_STYLE_NAME,
+      value: OUTPUT_STYLE_PLUGIN_NAME,
       before:
         cur.style === undefined
           ? { state: "absent" }
@@ -203,7 +186,7 @@ function turnOn(deps: Where, out: OutputStyleResult) {
     const next =
       cur.text === undefined || cur.text.trim() === ""
         ? createdText()
-        : setJsoncValue(cur.text, ["outputStyle"], OUTPUT_STYLE_NAME);
+        : setJsoncValue(cur.text, ["outputStyle"], OUTPUT_STYLE_PLUGIN_NAME);
     writeAtomic(path, next);
     out.settings = "set";
   } catch (e) {
@@ -218,36 +201,61 @@ function turnOn(deps: Where, out: OutputStyleResult) {
   }
 }
 
-/** Writes the style when Claude Code is wired; a file we do not own is never replaced. */
-export function installOutputStyle(
-  deps: Where & { text: string },
-  harnesses: Harness[],
-): OutputStyleResult {
+/**
+ * After the plugin that carries the style is installed: removes our marked
+ * file from an older install, moves a value we set to the old name over to the
+ * plugin's, and otherwise turns the style on when the key is unset.
+ */
+export function selectOutputStyle(deps: Where): OutputStyleResult {
   const out: OutputStyleResult = { written: [], notes: [], first: false };
-  if (!harnesses.includes("claude")) return out;
+  let removed = false;
   const dir = styleDir(deps);
   const path = outputStyleFile(deps);
   if (isLink(dir) || isLink(path)) {
     out.notes.push(
-      `Left ${isLink(dir) ? dir : path} alone: it is a symlink, so the output style was not written there.`,
+      `Left ${isLink(dir) ? dir : path} alone: it is a symlink, so an older output style file was not removed there.`,
     );
-    return out;
-  }
-  try {
-    const there = exists(path);
-    if (there && !isOurs(readFileSync(path, "utf8"))) {
+  } else {
+    try {
+      if (exists(path) && isOurs(readFileSync(path, "utf8"))) {
+        rmSync(path);
+        removed = true;
+        if (readdirSync(dir).length === 0) rmdirSync(dir);
+      } else if (exists(path)) {
+        out.notes.push(
+          `Kept your own ${path}: it has no Open Artifacts marker. /output-style may list Artifacts Teammate twice; delete that file if you want only the plugin's.`,
+        );
+      }
+    } catch (e) {
       out.notes.push(
-        `Left ${path} alone: it has no Open Artifacts marker, so it is not ours to replace.`,
+        `Left ${path} alone: ${e instanceof Error ? e.message : String(e)}`,
       );
-      return out;
     }
-    writeAtomic(path, withMarker(deps.text));
-    out.written.push(path);
-    out.first = !there;
-  } catch (e) {
-    out.notes.push(
-      `Could not write ${path}: ${e instanceof Error ? e.message : String(e)}`,
-    );
+  }
+  // The old name selects nothing once our file is gone: point it at the plugin's.
+  const busHome = deps.busHome;
+  const rec = readRecord(busHome);
+  const sp = claudeSettingsFile(deps);
+  const cur = readSettings(sp);
+  if (
+    cur.ok &&
+    cur.text !== undefined &&
+    cur.style === OUTPUT_STYLE_NAME &&
+    !exists(path) &&
+    (removed || rec?.set)
+  ) {
+    try {
+      writeAtomic(
+        sp,
+        setJsoncValue(cur.text, ["outputStyle"], OUTPUT_STYLE_PLUGIN_NAME),
+      );
+      if (busHome && rec?.set)
+        writeRecord(busHome, { ...rec, value: OUTPUT_STYLE_PLUGIN_NAME });
+    } catch (e) {
+      out.notes.push(
+        `Left ${sp} alone: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
     return out;
   }
   turnOn(deps, out);
@@ -255,8 +263,8 @@ export function installOutputStyle(
 }
 
 /** What we write when there was no settings.json: a file still equal to this is only ours. */
-const createdText = () =>
-  `${JSON.stringify({ outputStyle: OUTPUT_STYLE_NAME }, null, 2)}\n`;
+const createdText = (name = OUTPUT_STYLE_PLUGIN_NAME) =>
+  `${JSON.stringify({ outputStyle: name }, null, 2)}\n`;
 
 /**
  * Puts settings.json back. With our record: only if the value is still ours.
@@ -269,7 +277,7 @@ function turnOff(deps: Where, out: OutputStyleResult) {
   const path = claudeSettingsFile(deps);
   try {
     const cur = readSettings(path);
-    if (cur.ok && cur.text !== undefined && cur.style === OUTPUT_STYLE_NAME) {
+    if (cur.ok && cur.text !== undefined && isOurName(cur.style)) {
       // Back to exactly what was there: the key absent, null, or the empty string.
       const was = rec?.set ? rec.before : undefined;
       const next =
@@ -279,7 +287,12 @@ function turnOff(deps: Where, out: OutputStyleResult) {
             ? setJsoncValue(cur.text, ["outputStyle"], was.value)
             : removeJsoncValue(cur.text, ["outputStyle"]);
       // A file we created goes again only while it is byte for byte what we wrote.
-      if (rec?.set && rec.createdFile && cur.text === createdText())
+      if (
+        rec?.set &&
+        rec.createdFile &&
+        (cur.text === createdText() ||
+          cur.text === createdText(OUTPUT_STYLE_NAME))
+      )
         rmSync(path);
       else writeAtomic(path, next);
     }
@@ -326,7 +339,13 @@ export function uninstallOutputStyle(deps: Where): OutputStyleResult {
   return out;
 }
 
-/** Where our style is installed and whether settings.json selects it; undefined when there is none of ours. */
+/** Whether settings.json selects the plugin's style. */
+export const outputStyleOn = (deps: Where): boolean => {
+  const s = readSettings(claudeSettingsFile(deps));
+  return s.ok && s.style === OUTPUT_STYLE_PLUGIN_NAME;
+};
+
+/** An older install's marked file, which lists the style twice beside the plugin; undefined when there is none of ours. */
 export const outputStyleState = (
   deps: Where,
 ): { path: string; on: boolean } | undefined => {

@@ -37,8 +37,8 @@ hub answers, the line is erased and replaced by:
 
 [[success]]✓[[/success]]  Configured Claude Code, OpenCode and Pi
 [[success]]✓[[/success]]  Restarted the OpenCode service to load the plugin
+[[success]]✓[[/success]]  Installed the Claude Code plugins: session shortcuts and output style
 [[success]]✓[[/success]]  Turned on the Artifacts Teammate output style
-   (~/.claude/output-styles/artifacts-teammate.md).
    Restart Claude Code sessions to use it.
 [[success]]✓[[/success]]  Daemon running as a launchd service  [[muted]]pid 48213[[/muted]]
 
@@ -55,12 +55,15 @@ hub answers, the line is erased and replaced by:
 ```
 
 Variants inside state 1:
-- The `Turned on the Artifacts Teammate output style` line prints when Claude Code
-  is configured and the install wrote `outputStyle` in its `settings.json` (only
-  when that key was absent). When the person already chose a style, the file is
-  still written and the line is
+- The `Installed the Claude Code plugins` line prints when Claude Code is configured and
+  `claude plugin install` took both plugins (session shortcuts, output style), at user scope.
+  The `Turned on the Artifacts Teammate output style` line prints when the install wrote
+  `outputStyle` in its `settings.json` (only when that key was absent). When the person already
+  chose a style, the line is
   `[[success]]✓[[/success]]  Added the Artifacts Teammate output style. You're on Explanatory; switch with /output-style.`
-  (first write only). A `settings.json` that is a symlink or not valid JSON is left alone, with a note.
+  (first install only). A `settings.json` that is a symlink or not valid JSON is left alone, with a note.
+  Claude Code missing from PATH, older than 2.1.319, or a foreign `open-artifacts` marketplace
+  gives a warning and no plugins; the install still succeeds.
 - `✓  Daemon running` prints only after the CLI has confirmed the service is
   up: the daemon answers on `~/.oa-bus/daemon.sock` and reports its pid. It
   waits at most 10 s; if the daemon has not answered by then, the line is
@@ -223,8 +226,8 @@ oa-bus 0.1.0
 
 [[success]]✓[[/success]]  Configured Claude Code, OpenCode and Pi
 [[success]]✓[[/success]]  Restarted the OpenCode service to load the plugin
+[[success]]✓[[/success]]  Installed the Claude Code plugins: session shortcuts and output style
 [[success]]✓[[/success]]  Turned on the Artifacts Teammate output style
-   (~/.claude/output-styles/artifacts-teammate.md).
    Restart Claude Code sessions to use it.
 [[success]]✓[[/success]]  Daemon running as a launchd service  [[muted]]pid 48213[[/muted]]
 
