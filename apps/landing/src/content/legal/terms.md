@@ -57,7 +57,7 @@ We may remove content or suspend access that breaks these rules, or that puts th
 
 ## Plans and payment
 
-- **Solo:** free for your first month, then $1 a month or $10 a year.
+- **Solo:** free for 30 days, then $1 a month or $10 a year.
 - **Team:** $10 per creator per month, or $100 per creator per year, with a 30-day free trial that starts when you invite someone.
 - **Business:** $25 per creator per month, or $250 per creator per year.
 
