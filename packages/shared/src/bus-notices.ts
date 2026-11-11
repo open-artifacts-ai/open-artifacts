@@ -57,7 +57,7 @@ export type BusNotice = {
    * `commentId`) whose delivery state the hub updates when the daemon acks
    * or refuses the notice.
    */
-  target?: { kind: "mention" | "asker"; key: string };
+  target?: { kind: "mention" | "asker" | "reply"; key: string };
 };
 
 const BUS_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,62}[A-Za-z0-9_-])?$/;
