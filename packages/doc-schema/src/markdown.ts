@@ -439,6 +439,9 @@ function renderBulletLike(
   state.renderList(node, "  ", () => `${bullet} `);
 }
 
+// atBlockStart is read at runtime but missing from the types.
+const lineStart = (state: unknown) => state as { atBlockStart: boolean };
+
 const marks = defaultMarkdownSerializer.marks;
 
 const serializer = new MarkdownSerializer(
@@ -529,16 +532,16 @@ const serializer = new MarkdownSerializer(
         if (ws) {
           state.text(ws[0] === " " ? "&#32;" : "&#9;", false);
           rest = rest.slice(1);
-          state.atBlockStart = false;
+          lineStart(state).atBlockStart = false;
         } else {
-          state.atBlockStart = true;
+          lineStart(state).atBlockStart = true;
           if (
             /^=+[ \t]*$/.test(rest) &&
             (!next || next.type === parent.type.schema.nodes.hardBreak)
           ) {
             state.text("\\=", false);
             rest = rest.slice(1);
-            state.atBlockStart = false;
+            lineStart(state).atBlockStart = false;
           }
         }
         if (rest) state.text(rest, true);
