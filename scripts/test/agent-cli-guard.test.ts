@@ -1,8 +1,17 @@
 import * as cp from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { fileURLToPath } from "node:url";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { AGENT_CLIS, BLOCK_EXIT, STUB_DIR } from "./agent-cli-guard";
 
 const MSG = (n: string) => `real ${n} blocked by the test guard (#2168)`;
@@ -47,24 +56,47 @@ describe("agent CLI guard (#2168)", () => {
     expect(r.stderr).toContain(MSG(name));
   });
 
-  it("throws on an absolute path to a real binary, without running it", () => {
-    const real = ["/usr/bin/pi", "/usr/local/bin/codex"];
-    for (const p of real) {
-      expect(() => cp.spawnSync(p, ["--version"])).toThrow(
-        /blocked by the test guard/,
-      );
-      expect(() => cp.execFileSync(p, [])).toThrow(/blocked by the test guard/);
-      expect(() => cp.execSync(`${p} --version`)).toThrow(
-        /blocked by the test guard/,
-      );
-      expect(() => cp.spawn(p, [])).toThrow(/blocked by the test guard/);
-      expect(() => cp.execFile(p, [], () => {})).toThrow(
-        /blocked by the test guard/,
-      );
-      expect(() => cp.exec(`${p} x`, () => {})).toThrow(
-        /blocked by the test guard/,
-      );
-    }
+  describe("a real executable pi outside any temp dir", () => {
+    // Under node_modules/.cache (git-ignored, not a temp dir). The file
+    // writes a marker if it ever runs.
+    const dir = join(
+      process.cwd().replace(/\/(apps|packages)\/.*$/, ""),
+      "node_modules",
+      ".cache",
+      `agent-cli-guard-${process.pid}`,
+    );
+    const marker = join(dir, "ran");
+    const pi = join(dir, "pi");
+    beforeAll(() => {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(pi, `#!/bin/sh\ntouch "${marker}"\n`);
+      chmodSync(pi, 0o755);
+    });
+    afterAll(() => rmSync(dir, { recursive: true, force: true }));
+    afterEach(() => expect(existsSync(marker)).toBe(false));
+    const blocked = /blocked by the test guard/;
+
+    it("throws on its absolute path for all six functions", () => {
+      expect(() => cp.spawnSync(pi, ["--version"])).toThrow(blocked);
+      expect(() => cp.execFileSync(pi, [])).toThrow(blocked);
+      expect(() => cp.execSync(`${pi} --version`)).toThrow(blocked);
+      expect(() => cp.spawn(pi, [])).toThrow(blocked);
+      expect(() => cp.execFile(pi, [], () => {})).toThrow(blocked);
+      expect(() => cp.exec(`${pi} x`, () => {})).toThrow(blocked);
+    });
+
+    it("throws when a bare `pi` resolves to it through options.env.PATH", () => {
+      expect(() => cp.spawn("pi", { env: { PATH: dir } })).toThrow(blocked);
+      expect(() => cp.spawnSync("pi", { env: { PATH: dir } })).toThrow(blocked);
+    });
+
+    it("throws when it hides behind another command or a shell", () => {
+      expect(() => cp.spawnSync("timeout", ["5", pi])).toThrow(blocked);
+      expect(() => cp.spawnSync("env", ["-u", "FOO", pi])).toThrow(blocked);
+      expect(() => cp.spawnSync("sh", ["-c", pi])).toThrow(blocked);
+      expect(() => cp.execSync(`cd / && ${pi}`)).toThrow(blocked);
+      expect(() => cp.execSync(`echo hi; ${pi} x`)).toThrow(blocked);
+    });
   });
 
   it("leaves other commands and fakes in a temp dir alone", () => {
@@ -72,5 +104,47 @@ describe("agent CLI guard (#2168)", () => {
       "hi\n",
     );
     expect(readFileSync(join(STUB_DIR, "pi"), "utf8")).toContain("exit 97");
+  });
+
+  it("every Node vitest config wires the guard, or is allowlisted with a reason", () => {
+    const root = fileURLToPath(new URL("../../", import.meta.url));
+    const files = execFileSync("git", ["ls-files"], {
+      cwd: root,
+      encoding: "utf8",
+    })
+      .split("\n")
+      .filter((f) =>
+        /(^|\/)(vitest\.[\w.]*config\.ts|vite\.config\.ts)$/.test(f),
+      );
+    // A vite.config.ts is a vitest config only when it has a `test:` block
+    // (vitest.config.ts wins over it when both exist).
+    const isTestConfig = (f: string) =>
+      !f.endsWith("vite.config.ts") ||
+      /\btest:\s*\{/.test(readFileSync(join(root, f), "utf8"));
+    const skip: Record<string, string> = {
+      "apps/auth-broker/vitest.config.ts": "workerd pool",
+      "apps/directory-broker/vitest.config.ts": "workerd pool",
+      "apps/server/vitest.config.ts": "workerd pool",
+      "apps/server/vitest.authz.config.ts": "workerd pool",
+      "apps/server/vitest.cpu.config.ts": "workerd pool",
+      "packages/provisioning-contract/vitest.workerd.config.ts": "workerd pool",
+      "apps/server/vitest.bench.config.ts": "CPU bench",
+      "apps/server/vitest.codecpu.config.ts": "CPU bench",
+      "apps/server/vitest.smoke.config.ts": "live staging",
+      "apps/server/vitest.xt.config.ts":
+        "live staging, reads 0600 credential files",
+      "apps/landing/vitest.browser.config.ts": "Playwright needs the real HOME",
+      "packages/ui/vitest.browser.config.ts": "Playwright needs the real HOME",
+    };
+    expect(files.length).toBeGreaterThan(20);
+    const testConfigs = files.filter(isTestConfig);
+    const unwired = testConfigs.filter(
+      (f) =>
+        !(f in skip) &&
+        !readFileSync(join(root, f), "utf8").includes("agent-cli-guard"),
+    );
+    expect(unwired).toEqual([]);
+    for (const f of Object.keys(skip))
+      expect(files, `stale skip ${f}`).toContain(f);
   });
 });

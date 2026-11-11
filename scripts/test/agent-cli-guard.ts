@@ -1,19 +1,38 @@
 /**
  * Vitest setupFile (#2168): no test may run a real agent CLI or touch the
  * developer's real harness config. Wire it LAST in `setupFiles` of every
- * Node-environment config (after any file that sets its own HOME).
+ * Node-environment config (after any file that sets its own HOME); the
+ * meta-test fails when a Node config is neither wired nor allowlisted.
  *
- * 1. HOME, XDG_CONFIG_HOME, CLAUDE_CONFIG_DIR, CODEX_HOME, OA_BUS_HOME,
- *    PI_CODING_AGENT_DIR and HERMES_HOME point into a temp dir, unless a
- *    test or an earlier setup file already put them inside one.
+ * 1. HOME and every harness-home variable the source honors point into a
+ *    temp dir, unless a test or an earlier setup file already put them
+ *    inside one: XDG_CONFIG_HOME, USERPROFILE, CLAUDE_CONFIG_DIR,
+ *    CODEX_HOME, OA_BUS_HOME, PI_CODING_AGENT_DIR, HERMES_HOME,
+ *    OPENCLAW_STATE_DIR, OPENCODE_CONFIG_DIR. OPENCLAW_HOME and
+ *    OA_BUS_CLAUDE_SESSIONS_DIR are deleted when outside a temp dir (they
+ *    are bases or overrides that otherwise default under HOME). Name-only
+ *    variables (PI_CONFIG_DIR, PI_PROFILE, OMP_PROFILE) resolve under HOME
+ *    and are left alone.
  * 2. A stub bin dir goes first on PATH with claude, codex, pi, omp, hermes,
  *    openclaw, opencode and oa-bus. Each prints a message and exits 97, so
- *    even `bash -c '... pi mcp add ...'` cannot reach a real binary.
- * 3. child_process spawn, spawnSync, execFile, execFileSync, exec and
- *    execSync throw when the command is one of those CLIs and resolves to a
- *    real binary (a path outside the stub dir and the OS temp dir). Tests
- *    that put their own fake CLI in a temp dir, or inject a fake exec
- *    function, are unaffected.
+ *    even `bash -c '... pi mcp add ...'` cannot reach a real binary. This is
+ *    the only protection inside worker_threads, which get an unpatched
+ *    child_process, and inside any child process.
+ * 3. In the main thread of each test worker, child_process spawn,
+ *    spawnSync, execFile, execFileSync, exec and execSync throw when:
+ *    - the command (or the command after env/nohup/exec/command) is a
+ *      guarded CLI that resolves, by path or by the PATH in options.env, to
+ *      a binary outside the stub dir and temp dirs; or
+ *    - ANY argv element or shell word is an absolute path whose basename is
+ *      a guarded CLI outside the stub dir and temp dirs (`timeout 5 /abs/pi`,
+ *      `env -u X /abs/pi`, `sh -c "/abs/pi"`, `cd / && /abs/pi`).
+ *    Not covered: a CLI reached by a bare name inside a shell string after
+ *    the first word (PATH stubs cover it), or by a path built at run time
+ *    inside the child.
+ * Trusted by design: anything under a temp dir (/tmp, /var/tmp, os.tmpdir),
+ * where tests build their own fakes, including symlinks to system tools.
+ * Not exercised: the DEFAULT_PATH fallback and the macOS /private symlink
+ * handling.
  */
 import type * as cpTypes from "node:child_process";
 import {
@@ -60,6 +79,7 @@ const TMP_ROOTS = [...new Set([TMP, real("/tmp"), real("/var/tmp")])];
 const GUARD_DIR = real(mkdtempSync(join(TMP, "oa-agent-cli-guard-")));
 export const STUB_DIR = join(GUARD_DIR, "bin");
 mkdirSync(STUB_DIR);
+mkdirSync(join(GUARD_DIR, "home"));
 for (const name of AGENT_CLIS) {
   const file = join(STUB_DIR, name);
   writeFileSync(
@@ -68,7 +88,17 @@ for (const name of AGENT_CLIS) {
   );
   chmodSync(file, 0o755);
 }
-process.on("exit", () => rmSync(GUARD_DIR, { recursive: true, force: true }));
+// One exit listener per process; setup files re-run for every test file.
+const DIRS = Symbol.for("oa.agentCliGuard.dirs");
+const g = globalThis as unknown as Record<symbol, string[] | undefined>;
+if (!g[DIRS]) {
+  const dirs: string[] = [];
+  g[DIRS] = dirs;
+  process.on("exit", () => {
+    for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  });
+}
+g[DIRS]?.push(GUARD_DIR);
 
 // 1. Config homes. Package-manager caches are not harness config: keep
 // corepack on its real cache (by path only, never read here), or a spawned
@@ -87,6 +117,11 @@ const place = (name: string, rel: string) => {
   if (!inTmp(process.env[name])) process.env[name] = join(HOME, rel);
 };
 place("XDG_CONFIG_HOME", ".config");
+place("USERPROFILE", ".");
+place("OPENCLAW_STATE_DIR", ".openclaw");
+place("OPENCODE_CONFIG_DIR", join(".config", "opencode"));
+for (const k of ["OPENCLAW_HOME", "OA_BUS_CLAUDE_SESSIONS_DIR"])
+  if (!inTmp(process.env[k])) delete process.env[k];
 place("CLAUDE_CONFIG_DIR", ".claude");
 place("CODEX_HOME", ".codex");
 place("OA_BUS_HOME", ".oa-bus");
@@ -118,6 +153,21 @@ const allowed = (p: string) => {
 const DEFAULT_PATH = "/usr/local/bin:/usr/bin:/bin";
 const WRAPPERS = new Set(["env", "nohup", "exec", "command"]);
 
+/** Throws on any word that is an absolute path to a real guarded CLI. */
+function scanWords(parts: readonly string[], cwd: string | undefined): void {
+  for (const part of parts)
+    for (const w of part.split(/[\s;&|()"'`$<>]+/))
+      if (w.startsWith("/") && CLI_SET.has(basename(w)))
+        refuse(basename(w), resolve(cwd ?? process.cwd(), w));
+}
+
+function refuse(name: string, p: string): void {
+  if (!allowed(p))
+    throw new Error(
+      `${blockMessage(name)}: refused to run the real binary ${p}. Put a fake ${name} in a temp dir on PATH, or inject a fake exec function.`,
+    );
+}
+
 function check(
   cmd: string,
   args: readonly string[],
@@ -146,11 +196,7 @@ function check(
         break;
       }
   }
-  for (const p of found)
-    if (!allowed(p))
-      throw new Error(
-        `${blockMessage(name)}: refused to run the real binary ${p}. Put a fake ${name} in a temp dir on PATH, or inject a fake exec function.`,
-      );
+  for (const p of found) refuse(name, p);
 }
 
 /** The command a shell string starts with, skipping VAR=value words. */
@@ -190,6 +236,7 @@ if (!target[GUARDED]) {
       const opts = optsOf(a.slice(1));
       const file = String(a[0]);
       const args = Array.isArray(a[1]) ? (a[1] as string[]) : [];
+      scanWords([file, ...args], cwdOf(opts));
       if (opts.shell) checkShellString(file, opts.env, cwdOf(opts));
       else check(file, args, opts.env, cwdOf(opts));
       return orig.apply(this, a);
@@ -202,6 +249,7 @@ if (!target[GUARDED]) {
       ...a: unknown[]
     ) {
       const opts = optsOf(a.slice(1));
+      scanWords([String(a[0])], cwdOf(opts));
       checkShellString(String(a[0]), opts.env, cwdOf(opts));
       return orig.apply(this, a);
     };
