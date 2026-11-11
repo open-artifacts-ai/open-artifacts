@@ -43,7 +43,12 @@ import { ApiError, appOrigin } from "../http/errors.js";
 import { logError } from "../log.js";
 import { lookupUserGrant } from "../mcp/oauth-api.js";
 import { b64urlEncode, sha256Hex } from "../util/crypto.js";
-import { type AgentIdentity, type Via, viaKey } from "./agent-usage.js";
+import {
+  type AgentIdentity,
+  NAMES_OF_MAX,
+  type Via,
+  viaKey,
+} from "./agent-usage.js";
 import { type AuditActor, audit, userActor } from "./audit.js";
 import type {
   DeliveryOutcome,
@@ -106,6 +111,10 @@ export type BusHubRpc = {
     namespace: string,
     name: string,
   ): Promise<{ identityId: string; kind: string } | null>;
+  /** #1889: the current bus name of each agent identity in this member's own hub; only `{identityId, name}`. */
+  namesOf(
+    identityIds: string[],
+  ): Promise<{ identityId: string; name: string }[]>;
   /** The machines with a live socket now, and the open agents, in one read. */
   snapshot(opts?: {
     away?: boolean;
@@ -484,6 +493,44 @@ export async function agentIdentityOf(
     logError("bus_identity_lookup_failed", e);
     return null;
   }
+}
+
+/**
+ * #1889: the current bus names of `userId`'s own agents by identity id, from
+ * that member's hub only (the caller takes `userId` from the stored owner of a
+ * comment or party). More than NAMES_OF_MAX ids go in several hub calls of
+ * that size, all under the one LINK_LOOKUP_MS bound. The hasConnectedMachine
+ * gate means "ever connected": a member whose machine never connected has no
+ * hub to ask. A miss, a slow or failing hub give an empty map (the caller keeps
+ * the stored name); never throws.
+ */
+export async function agentNamesOf(
+  env: Env,
+  userId: string,
+  identityIds: string[],
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  try {
+    if (!busOn(env) || identityIds.length === 0) return out;
+    const rows = await within(
+      (async () => {
+        if (!(await hasConnectedMachine(env, userId))) return null;
+        const hub = busHub(env, userId);
+        if (!hub) return null;
+        const chunks: string[][] = [];
+        for (let i = 0; i < identityIds.length; i += NAMES_OF_MAX)
+          chunks.push(identityIds.slice(i, i + NAMES_OF_MAX));
+        return (
+          await Promise.all(chunks.map((ids) => hub.namesOf(ids)))
+        ).flat();
+      })(),
+      LINK_LOOKUP_MS,
+    );
+    for (const r of rows ?? []) out.set(r.identityId, r.name);
+  } catch (e) {
+    logError("bus_names_lookup_failed", e);
+  }
+  return out;
 }
 
 /** #1822: how long /mcp waits for a proof lookup before the request goes on unlinked. */

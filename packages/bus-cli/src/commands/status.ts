@@ -1,5 +1,5 @@
 import { stripTerminalControls } from "@oa/bus-ipc";
-import { BUS_CMD, semverGte } from "@oa/bus-protocol";
+import { semverGte } from "@oa/bus-protocol";
 import {
   type Ctx,
   configFileLines,
@@ -139,7 +139,7 @@ const proofLine = (
   const state = proofState(claudeConfigFile(ctx.userHome, ctx.env), origin);
   if (state === "none") return undefined;
   if (state === "missing")
-    return `Claude Code: run ${BUS_CMD} install to set this entry up to show as this session on pages.`;
+    return `Claude Code: run ${ctx.busCmd} install to set this entry up to show as this session on pages.`;
   return daemonKnows
     ? "Claude Code: this entry is set up to show as this session on pages."
     : "Claude Code: update the daemon so this entry can show as this session on pages.";

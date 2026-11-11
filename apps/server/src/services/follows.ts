@@ -120,9 +120,10 @@ function notice(
  * Who gets a `changed` notice: every follower, the publishing member
  * included (the user's decision on #1292), so one person's agents on other
  * machines hear each other's publishes. The one place this rule lives. The
- * publish path has no bus address, so the agent that published, if it
- * follows the artifact, is notified too. Read access is still re-checked
- * per follower at send time.
+ * publish path has no bus address, so a follower is told unless the version
+ * records the verified agent that published it (#2036: see
+ * publisherAgentOf), which is skipped by agent, never by person. Read access
+ * is still re-checked per follower at send time.
  */
 export const shouldNotifyFollower = (
   _followerId: string,
@@ -501,7 +502,59 @@ export async function notifyChanged(
   publisherId: string,
   now = Date.now(),
 ): Promise<void> {
-  await fanOut(env, "changed", artifactId, version, publisherId, now);
+  const self = await publisherAgentOf(env, artifactId, version, publisherId);
+  await fanOut(
+    env,
+    "changed",
+    artifactId,
+    version,
+    publisherId,
+    now,
+    new Set(),
+    self,
+  );
+}
+
+/**
+ * #2036: the agent that published `version`, to be left out of its own
+ * `changed` notice, or null (then everyone is told, as before). Only a
+ * verified one counts: the version records the server-set identity (#1822,
+ * versions.agent_identity), and the follow at that address on the
+ * publisher's OWN hub must still be that identity (a bounded hub read), so
+ * a different agent that took the same name is still told, and so are the
+ * same person's other agents. A web publish, an unlinked agent, a miss, a
+ * slow or failing hub give null. An agent renamed since publishing is told.
+ */
+async function publisherAgentOf(
+  env: Env,
+  artifactId: string,
+  version: number,
+  publisherId: string,
+): Promise<{ userId: string; address: BusAddress } | null> {
+  const row = await stmt(
+    env.DB,
+    "select agent_identity as identity, created_by as userId from versions where artifact_id = ? and version = ?",
+  )
+    .bind(artifactId, version)
+    .first<{ identity: string | null; userId: string }>();
+  if (!row?.identity || row.userId !== publisherId) return null;
+  let id: { identityId?: unknown; namespace?: unknown; name?: unknown };
+  try {
+    id = JSON.parse(row.identity);
+  } catch {
+    return null;
+  }
+  const address = BusAddressSchema.safeParse({
+    namespace: id.namespace,
+    name: id.name,
+  });
+  if (!address.success || typeof id.identityId !== "string") return null;
+  // Loaded here: bus.ts reaches back into this module through comment-agents.
+  const { agentIdentityOf } = await import("./bus.js");
+  const now = await agentIdentityOf(env, publisherId, address.data);
+  return now?.identityId === id.identityId
+    ? { userId: publisherId, address: address.data }
+    : null;
 }
 
 /**
@@ -532,6 +585,8 @@ async function fanOut(
   actorId: string | null,
   now: number,
   skip: ReadonlySet<string> = new Set(),
+  /** `changed`: the agent that published the version, left out (#2036). */
+  self: { userId: string; address: BusAddress } | null = null,
 ): Promise<void> {
   const { results } = await stmt(
     env.DB,
@@ -557,6 +612,13 @@ async function fanOut(
   const byUser = new Map<string, BusAddress[]>();
   for (const r of results) {
     if (kind === "changed" && !shouldNotifyFollower(r.userId, actorId ?? ""))
+      continue;
+    if (
+      self &&
+      r.userId === self.userId &&
+      r.namespace === self.address.namespace &&
+      r.name === self.address.name
+    )
       continue;
     if (kind === "commented" && r.userId === actorId) continue;
     const list = byUser.get(r.userId) ?? [];

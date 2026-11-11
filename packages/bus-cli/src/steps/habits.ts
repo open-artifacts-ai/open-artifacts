@@ -712,9 +712,12 @@ export type HabitsQuestion = {
   no: string;
 };
 
-export const habitsQuestion = (shownFiles: string[]): HabitsQuestion => {
-  const yes = `${BUS_CMD} install --habits`;
-  const no = `${BUS_CMD} install --no-habits`;
+export const habitsQuestion = (
+  shownFiles: string[],
+  bus: string = BUS_CMD,
+): HabitsQuestion => {
+  const yes = `${bus} install --habits`;
+  const no = `${bus} install --no-habits`;
   const text = `The bus would add ${HABITS_LINES.length} habits for sessions on the bus, to ${shownFiles.join(" and ")}:`;
   return { text, lines: HABITS_LINES.slice(), yes, no };
 };

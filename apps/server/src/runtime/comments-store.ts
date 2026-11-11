@@ -627,12 +627,36 @@ export function setTargetState(
   key: string,
   state: string,
 ): void {
+  // A late "queued" never undoes a daemon's ack that landed first (#1752).
   sql.exec(
-    "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ?",
+    "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ? and (? != 'queued' or state = 'queued')",
     state,
     commentId,
     kind,
     key,
+    state,
+  );
+}
+
+/**
+ * #1752: a daemon's ack ("delivered") or refusal ("gone") of a notice. Moves
+ * a target only out of "queued": seen, delivered and gone stay. True when it moved.
+ */
+export function settleTarget(
+  sql: SqlStorage,
+  commentId: string,
+  kind: "mention" | "asker",
+  key: string,
+  state: "delivered" | "gone",
+): boolean {
+  return (
+    sql.exec(
+      "update comment_targets set state = ? where comment_id = ? and kind = ? and key = ? and state = 'queued'",
+      state,
+      commentId,
+      kind,
+      key,
+    ).rowsWritten > 0
   );
 }
 

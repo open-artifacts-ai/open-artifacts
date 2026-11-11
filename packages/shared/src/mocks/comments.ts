@@ -192,10 +192,51 @@ export function createCommentMock({
           : {}),
         me: false,
       });
+      const fox = {
+        linked: true,
+        product: "Claude Code",
+        animal: { id: "fox", color: 2 },
+      };
+      const ask = comment("Which layout should the Agents page use?", other, m);
+      ask.ask = {
+        question: "Which layout should the Agents page use?",
+        options: [
+          { id: "list", label: "List only" },
+          { id: "detail", label: "List and detail" },
+        ],
+        to: [
+          { ...agent(true), id: "agent:product", name: "OA Product" },
+          { ...agent(false), id: "agent:claude", name: "Claude Code" },
+        ],
+        closed: false,
+      };
+      const mention = comment(
+        "Looping in @OA Product and @Claude Code on this.",
+        other,
+        m,
+      );
+      mention.mentions = [
+        {
+          key: "agent:product",
+          name: "OA Product",
+          ...fox,
+          for: "Leo Urbina",
+          delivery: "delivered",
+        },
+        {
+          key: "agent:claude",
+          name: "Claude Code",
+          linked: false,
+          for: "Leo Urbina",
+          delivery: "queued",
+        },
+      ];
       const f = [
         comment("Can the pricing section be shorter?", other, m),
         comment("Shortened to three sentences.", agent(true)),
         comment("Also fixed the footer typo.", agent(false)),
+        mention,
+        ask,
       ];
       faces.push({
         id: newId(),

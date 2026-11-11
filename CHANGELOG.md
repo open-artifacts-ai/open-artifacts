@@ -1,5 +1,54 @@
 # Changelog
 
+## [0.151.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.151.0...v0.151.1) (2026-11-11)
+
+
+### Bug Fixes
+
+* **comment-email:** defang non-ASCII domains and bare IPv4 addresses in excerpts ([#1997](https://github.com/open-artifacts-ai/open-artifacts/issues/1997)) ([#2048](https://github.com/open-artifacts-ai/open-artifacts/issues/2048)) ([3e25cd6](https://github.com/open-artifacts-ai/open-artifacts/commit/3e25cd60a341de4e2c599ba3ea3c59867dc0c8cf))
+
+## [0.151.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.150.0...v0.151.0) (2026-11-11)
+
+
+### Features
+
+* **bus:** a comment notice reads delivered only at the daemon's ack (notice_ack, [#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2037](https://github.com/open-artifacts-ai/open-artifacts/issues/2037)) ([649c081](https://github.com/open-artifacts-ai/open-artifacts/commit/649c081c27d7f487b8cdf6fcfa2197560d141f3c))
+
+
+### Bug Fixes
+
+* **follows:** the agent that published a version isn't told it changed ([#2036](https://github.com/open-artifacts-ai/open-artifacts/issues/2036)) ([#2038](https://github.com/open-artifacts-ai/open-artifacts/issues/2038)) ([8ee6d87](https://github.com/open-artifacts-ai/open-artifacts/commit/8ee6d87988e3d280d18c1a41ea0626b839673760))
+* **openclaw:** uninstall clears OpenClaw's entry when the folder is gone; no build race ([#1805](https://github.com/open-artifacts-ai/open-artifacts/issues/1805)) ([#2043](https://github.com/open-artifacts-ai/open-artifacts/issues/2043)) ([482f8a0](https://github.com/open-artifacts-ai/open-artifacts/commit/482f8a0aa27a7d0cc0ce3444b5d52b272e284261))
+
+## [0.150.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.149.0...v0.150.0) (2026-11-11)
+
+
+### Features
+
+* **bus-cli:** print oa-bus commands when our PATH shim is on PATH ([#1998](https://github.com/open-artifacts-ai/open-artifacts/issues/1998)) ([#2033](https://github.com/open-artifacts-ai/open-artifacts/issues/2033)) ([e9abecc](https://github.com/open-artifacts-ai/open-artifacts/commit/e9abeccaa98a91af7841c0fc7932446cb3d70bf6))
+
+## [0.149.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.148.0...v0.149.0) (2026-11-10)
+
+
+### Features
+
+* **comments:** drop assign, keep only @-mention ([#1792](https://github.com/open-artifacts-ai/open-artifacts/issues/1792)) ([#1801](https://github.com/open-artifacts-ai/open-artifacts/issues/1801)) ([820762e](https://github.com/open-artifacts-ai/open-artifacts/commit/820762e6edf75f84974acca707cf5cebd55f75d4))
+* **comments:** email people about comments ([#1467](https://github.com/open-artifacts-ai/open-artifacts/issues/1467)) ([#1975](https://github.com/open-artifacts-ai/open-artifacts/issues/1975)) ([bd223a7](https://github.com/open-artifacts-ai/open-artifacts/commit/bd223a743e388ecc8e13f5bcbc7b34a9c14a237d))
+* **comments:** Notifications switch for comment email; ?thread= opens the thread ([#1467](https://github.com/open-artifacts-ai/open-artifacts/issues/1467)) ([#1978](https://github.com/open-artifacts-ai/open-artifacts/issues/1978)) ([00d93cf](https://github.com/open-artifacts-ai/open-artifacts/commit/00d93cf0b8b187ee015dfbf73d1a4122a1374754))
+* **comments:** pins on images and pdfs are speech bubbles with the author's face ([#682](https://github.com/open-artifacts-ai/open-artifacts/issues/682)) ([#2020](https://github.com/open-artifacts-ai/open-artifacts/issues/2020)) ([f34e728](https://github.com/open-artifacts-ai/open-artifacts/commit/f34e728ac825ddcd400609c7e36b380cfacc95e2))
+* **dashboard:** an always-on upgrade line in the Version card ([#1924](https://github.com/open-artifacts-ai/open-artifacts/issues/1924)) ([#1999](https://github.com/open-artifacts-ai/open-artifacts/issues/1999)) ([62122e7](https://github.com/open-artifacts-ai/open-artifacts/commit/62122e7bb3b743940fd46b43f304244074fd5c0d))
+* **settings:** plan cards and comparison with a Monthly/Yearly toggle ([#2007](https://github.com/open-artifacts-ai/open-artifacts/issues/2007)) ([#2014](https://github.com/open-artifacts-ai/open-artifacts/issues/2014)) ([5eb484c](https://github.com/open-artifacts-ai/open-artifacts/commit/5eb484c661fe83a70535e4dddf2de2f5a8cdc4f8))
+
+
+### Bug Fixes
+
+* **bus:** a notice to a renamed agent's former address still reaches it ([#1752](https://github.com/open-artifacts-ai/open-artifacts/issues/1752)) ([#2003](https://github.com/open-artifacts-ai/open-artifacts/issues/2003)) ([2f0be28](https://github.com/open-artifacts-ai/open-artifacts/commit/2f0be28a4d7b55a37946c9eccf3ce2a876d1318f))
+* **comments:** guests never see an agent's face, only its masked name ([#2004](https://github.com/open-artifacts-ai/open-artifacts/issues/2004)) ([a50ce98](https://github.com/open-artifacts-ai/open-artifacts/commit/a50ce98c850e080bbf756b67b521c5cc908a1770))
+* **comments:** the short pin sheet hides the whole-page box so the open card fills it ([#1783](https://github.com/open-artifacts-ai/open-artifacts/issues/1783)) ([#1799](https://github.com/open-artifacts-ai/open-artifacts/issues/1799)) ([8e3c2c9](https://github.com/open-artifacts-ai/open-artifacts/commit/8e3c2c9a180ea210c98ece6edc026cbe123a541d))
+* **runtime:** three frame-side comment lows: dropped stylesheet, aborted signal, link clicks ([#1473](https://github.com/open-artifacts-ai/open-artifacts/issues/1473)) ([#1829](https://github.com/open-artifacts-ai/open-artifacts/issues/1829)) ([1065dad](https://github.com/open-artifacts-ai/open-artifacts/commit/1065dad7969471283706727ce6bda1e5117f9341))
+* **settings:** Directory tab and dot only where group sync exists ([#2009](https://github.com/open-artifacts-ai/open-artifacts/issues/2009)) ([#2011](https://github.com/open-artifacts-ai/open-artifacts/issues/2011)) ([3c4db68](https://github.com/open-artifacts-ai/open-artifacts/commit/3c4db68107d973f45609e73387f22c1f8af144de))
+* **shortcuts:** real titles, deleted artifacts leave the band, no 'not checked' noise ([#2015](https://github.com/open-artifacts-ai/open-artifacts/issues/2015), [#2016](https://github.com/open-artifacts-ai/open-artifacts/issues/2016)) ([#2017](https://github.com/open-artifacts-ai/open-artifacts/issues/2017)) ([df876e2](https://github.com/open-artifacts-ai/open-artifacts/commit/df876e21ee93126a0f4bb2ea71eb897ca7244ba1))
+
 ## [0.148.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.147.0...v0.148.0) (2026-11-10)
 
 

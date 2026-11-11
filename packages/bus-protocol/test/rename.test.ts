@@ -110,6 +110,7 @@ describe("hello caps", () => {
       link: "link",
       linkArg: "link_arg",
       waiting: "waiting",
+      noticeAck: "notice_ack",
     });
     expect(hasCap({ caps: ["x", "rename"] }, BUS_CAPS.rename)).toBe(true);
     expect(hasCap({ caps: ["x"] }, BUS_CAPS.rename)).toBe(false);
