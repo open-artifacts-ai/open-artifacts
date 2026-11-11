@@ -285,6 +285,11 @@ export type CodexTransportOptions = {
    */
   queued: { has: (id: string) => boolean; add: (id: string) => void };
   log?: (msg: string) => void;
+  /** The always-on event log: a key and ids, never the message. */
+  event?: (
+    name: string,
+    fields: Record<string, string | number | undefined>,
+  ) => void;
 };
 
 type Queue = { ok: true } | { ok: false; taken: "maybe" | "no" | "nobin" };
@@ -399,6 +404,10 @@ export class CodexTransport {
       });
     } catch (e) {
       this.#bin = undefined;
+      this.opts.event?.("codex_queue_failed", {
+        thread: ref,
+        reason: "start",
+      });
       this.opts.log?.(
         `codex queue could not start (${bin.path}): ${e instanceof Error ? e.message : String(e)}`,
       );
@@ -410,10 +419,19 @@ export class CodexTransport {
     if (res.code === null) {
       // Killed at its timeout: it may have written the row, and a second copy is worse than a late one.
       this.#keep(`maybe:${id}`);
+      this.opts.event?.("codex_queue_failed", {
+        thread: ref,
+        reason: "timeout",
+      });
       this.opts.log?.(`codex queue for ${ref} timed out; not queued again`);
       return { ok: false, taken: "maybe" };
     }
     this.#bin = undefined;
+    this.opts.event?.("codex_queue_failed", {
+      thread: ref,
+      reason: "exit",
+      code: res.code,
+    });
     this.opts.log?.(
       `codex queue for ${ref} exited ${res.code}: ${stripTerminalControls(res.stderr.trim()).slice(0, 300)}`,
     );

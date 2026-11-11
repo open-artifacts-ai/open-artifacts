@@ -12,9 +12,14 @@ import { type Hello, systemTool } from "@oa/bus-ipc";
 import { type CodexAttestor, codexAttestor } from "./codex-attest.ts";
 import { isRunning } from "./liveness/claude.ts";
 import {
+  type AttachDeps,
+  attachedTo,
+  defaultAttachDeps,
+} from "./presence/attached.ts";
+import {
   lstartEpoch,
   opencodePresenceDir,
-  openSessions,
+  openState,
 } from "./presence/opencode.ts";
 
 export { ancestorChain, claudeProcStartOf, procStartOf };
@@ -27,7 +32,10 @@ export type AttestDeps = {
    * /proc start ticks (default claudeProcStartOf) and Pi's lstart (procStartOf).
    */
   procStart?: (pid: number) => string | null;
-  openSessions?: () => Set<string>;
+  /** Root sessions open in TUIs; `service` limits them to TUIs attached to that service pid. */
+  openSessions?: (service: number, ref: string) => Set<string>;
+  /** OS reads that tie a TUI to its service (exe, ppid, sockets). */
+  attach?: AttachDeps;
   /** The executable a pid runs (`ps -o comm=`), null when it cannot be told. */
   comm?: (pid: number) => string | null;
   /** The daemon's codex attestor: it pins state across hellos, so one per daemon. */
@@ -124,8 +132,13 @@ function attestOpenCode(hello: Hello, deps: AttestDeps): Attest {
   );
   if (service === undefined)
     return { ok: false, reason: "not running under an OpenCode service" };
-  if (!(deps.openSessions ?? defaultOpenSessions)().has(hello.agent_ref))
-    return { ok: false, reason: "opencode session is not open in a TUI" };
+  const open =
+    deps.openSessions ?? ((s, ref) => defaultOpenSessions(s, ref, deps.attach));
+  if (!open(service, hello.agent_ref).has(hello.agent_ref))
+    return {
+      ok: false,
+      reason: "opencode session is not open in a TUI attached to this service",
+    };
   return { ok: true, pid: service };
 }
 
@@ -144,9 +157,20 @@ export function commOf(pid: number): string | null {
   }
 }
 
-function defaultOpenSessions(): Set<string> {
-  return openSessions(opencodePresenceDir(), {
-    isRunning,
-    procStartEpoch: (pid) => lstartEpoch(procStartOf(pid)),
-  });
+function defaultOpenSessions(
+  service: number,
+  ref: string,
+  attach?: AttachDeps,
+): Set<string> {
+  // Unknown (a failed OS read) is a refusal: fail closed.
+  const open = openState(
+    opencodePresenceDir(),
+    {
+      accept: attachedTo(service, attach ?? defaultAttachDeps),
+      isRunning,
+      procStartEpoch: (pid) => lstartEpoch(procStartOf(pid)),
+    },
+    ref,
+  );
+  return open === true ? new Set([ref]) : new Set();
 }
