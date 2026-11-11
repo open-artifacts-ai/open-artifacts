@@ -210,6 +210,9 @@ export function mountComments(app: AppType): void {
     });
     if (!q.success) throw new ApiError("bad_request", "Invalid status");
     const { viewer } = await identity(c, id, false, modOf(cw, level, art));
+    // #2080: a signed-out viewer under signed-in-only may edit and delete nothing.
+    if (art.commentAccess === "signed-in" && !c.var.user)
+      viewer.readOnly = true;
     const out = await listComments(c.env, id, q.data.status, viewer);
     return c.json(out);
   });

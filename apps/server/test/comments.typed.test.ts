@@ -547,7 +547,7 @@ describe("notice tier", () => {
       const s = await setup();
       await api(app, `/api/v1/artifacts/${s.id}`, owner.cookie, {
         method: "PATCH",
-        body: { visibility: "public" },
+        body: { visibility: "public", comments: "everyone" },
       });
       const t = await askFrom(s.id, mcpWho(owner), s.claude);
       bus.sent = [];

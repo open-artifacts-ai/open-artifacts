@@ -1155,7 +1155,13 @@ export function decorate<T extends ArtifactSummary>(
   spaceId: string | null,
   sp: SpaceCols | null | undefined,
 ): T {
-  if (caller.kind !== "user") return out;
+  if (caller.kind !== "user") {
+    // #2080: a signed-out viewer of a signed-in-only artifact learns it
+    // cannot comment (the viewer gates on can.comment); otherwise no `can`.
+    if (out.comments !== false && out.commenters === "signed-in")
+      return withCan(caller, out, level);
+    return out;
+  }
   return decorates(env, caller)
     ? withSpace(caller, out, level, spaceId, sp)
     : withCan(caller, out, level);
