@@ -25,7 +25,7 @@ import { useMe } from "../../auth/useMe";
 import { LabelledCheckbox } from "../../layout/LabelledCheckbox";
 import { LoadError } from "../../layout/LoadError";
 import { Modal } from "../../layout/Modal";
-import { shownDirectoryMode } from "../../layout/SyncBanner";
+import { groupSyncHidden, shownDirectoryMode } from "../../layout/SyncBanner";
 import { useDocumentTitle } from "../../layout/useDocumentTitle";
 import { AppLink } from "../../library/AppLink";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -50,6 +50,7 @@ import {
   ROLE_LABEL,
   RoleSelect,
   SpaceAccess,
+  SyncEndedNote,
 } from "./SpaceAccess";
 import { SpacePeople } from "./SpacePeople";
 import { Switch } from "./Switch";
@@ -220,6 +221,8 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
     typeof mappingProblem
   > | null>(null);
   const rows = org.data ?? [];
+  const me = useMe();
+  const hideSync = me.status === "authed" && groupSyncHidden(me.me);
   const change = (groupId: string, role: SpaceRole) => {
     setProblem(null);
     setPending((p) => ({ ...p, [groupId]: role }));
@@ -293,6 +296,7 @@ function EverySpace({ syncOn }: { syncOn: boolean }) {
           </tbody>
         </table>
       )}
+      {hideSync && rows.length > 0 && <SyncEndedNote />}
       {removing && (
         <RemoveMapping
           mapping={removing}

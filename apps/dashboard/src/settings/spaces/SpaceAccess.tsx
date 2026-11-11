@@ -32,6 +32,7 @@ import { AppLink } from "../../library/AppLink";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { GroupPicker } from "../GroupPicker";
 import { errorText, muted, SettingsCard, WriteLock } from "../ui";
+import { isOrgAdmin } from "./access";
 
 export const ROLE_LABEL: Record<SpaceRole, string> = {
   viewer: "Viewer",
@@ -227,6 +228,25 @@ export function AccessRow({
         </tr>
       )}
     </>
+  );
+}
+
+/** Below Business: why the old Google groups listed here no longer update (#2113). */
+export function SyncEndedNote() {
+  const state = useMe();
+  const admin = state.status === "authed" && isOrgAdmin(state.me);
+  return (
+    <p className={muted}>
+      Google group sync is on the{" "}
+      {admin ? (
+        <AppLink href="/settings/plan" className="underline">
+          Business plan
+        </AppLink>
+      ) : (
+        "Business plan"
+      )}
+      . These groups no longer update, and people keep the roles they have now.
+    </p>
   );
 }
 
@@ -463,6 +483,9 @@ export function SpaceAccess({
             });
           }}
         />
+      )}
+      {hideSync && (rows.length > 0 || (org.data ?? []).length > 0) && (
+        <SyncEndedNote />
       )}
       {!hideSync && (
         <p className={muted}>

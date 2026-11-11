@@ -584,3 +584,48 @@ it("Business keeps the group picker and the apply note", async () => {
   expect(screen.getByRole("combobox", { name: "Add a group" })).toBeVisible();
   expect(screen.getByText(/Changes apply within a minute/)).toBeVisible();
 });
+
+// -- the line that explains the old groups (#2113)
+
+const ENDED_TEXT =
+  "Google group sync is on the Business plan. These groups no longer update, and people keep the roles they have now.";
+const ENDED = (_: string, el: Element | null) =>
+  el?.tagName === "P" && el.textContent === ENDED_TEXT;
+for (const tier of ["team", "trial"] as const) {
+  it(`${tier}: the listed groups get one line, linking to Plan for an admin`, async () => {
+    mountHosted(ENG, { directory: "frozen" }, asTier(tier), [serveOrg]);
+    await row(/eng@example.com/);
+    const note = screen.getAllByText(ENDED)[0] as HTMLElement;
+    expect(
+      within(note).getByRole("link", { name: "Business plan" }),
+    ).toHaveAttribute("href", "/settings/plan");
+  });
+
+  it(`${tier}: a space manager reads it as plain text`, async () => {
+    mountHosted(ENG, { directory: "frozen" }, (m) =>
+      asManager(asTier(tier)(m)),
+    );
+    await row(/eng@example.com/);
+    const note = screen.getByText(ENDED);
+    expect(within(note).queryByRole("link")).toBeNull();
+  });
+
+  it(`${tier}: the Every space card carries the line too`, async () => {
+    mountHosted("/settings/spaces", { directory: "frozen" }, asTier(tier), [
+      serveOrg,
+    ]);
+    const card = await screen.findByRole(
+      "region",
+      { name: "Every space" },
+      firstLoad,
+    );
+    await within(card).findByText(/exec@example.com/);
+    expect(within(card).getByText(ENDED)).toBeVisible();
+  });
+}
+
+it("Business shows no such line", async () => {
+  mountHosted(ENG, { directory: "frozen" }, asTier("business"), [serveOrg]);
+  await row(/eng@example.com/);
+  expect(screen.queryByText(ENDED)).toBeNull();
+});

@@ -1127,3 +1127,43 @@ for (const tier of ["business", "team", "trial"] as const) {
     );
   });
 }
+
+// Every space groups keep their floor on Team and the trial, as on Business frozen.
+const everyEditor = person({
+  userId: "e3",
+  user: { id: "e3", name: "Ivy Stone", email: "ivy@example.com" },
+  role: "editor",
+  source: "sync",
+  syncRole: "editor",
+  groups: [
+    { ...eng, role: "editor", via: "space" },
+    { ...exec, role: "editor", via: "every" },
+  ],
+});
+for (const tier of ["business", "team", "trial"] as const) {
+  it(`${tier} + frozen: an Every space group keeps the floor`, async () => {
+    mountHosted(ENG, { directory: "frozen" }, asTier(tier), [
+      serve([everyOnly, everyEditor]),
+    ]);
+    const eve = await row("Eve Park");
+    expect(eve).toHaveTextContent("Set by an Every space group.");
+    fireEvent.click(
+      within(eve).getByRole("combobox", { name: "Role for Eve Park" }),
+    );
+    let roles = (await screen.findAllByRole("option")).map(
+      (o) => o.textContent,
+    );
+    expect(roles.some((t) => t?.startsWith("Viewer"))).toBe(false);
+    fireEvent.keyDown(document.activeElement as Element, { key: "Escape" });
+    const ivy = await row("Ivy Stone");
+    expect(ivy).toHaveTextContent(
+      tier === "business" ? "kept from eng@, exec@" : "manually added",
+    );
+    fireEvent.click(
+      within(ivy).getByRole("combobox", { name: "Role for Ivy Stone" }),
+    );
+    roles = (await screen.findAllByRole("option")).map((o) => o.textContent);
+    expect(roles.some((t) => t?.startsWith("Viewer"))).toBe(false);
+    expect(roles.some((t) => t?.startsWith("Manager"))).toBe(true);
+  });
+}

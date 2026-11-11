@@ -729,15 +729,17 @@ export function SpacePeople({
   // Below Business a synced person is an ordinary member (#2113): the synced
   // role reads as one added by hand, with no group behind it.
   const hideSync = state.status === "authed" && groupSyncHidden(state.me);
-  const ordinary = (m: SpaceMember): SpaceMember =>
-    hideSync && (m.syncRole || m.groups.length)
-      ? {
-          ...m,
-          manualRole: m.manualRole ?? m.syncRole,
-          syncRole: null,
-          groups: [],
-        }
-      : m;
+  // Every space groups stay: the server enforces their floor whatever the mode.
+  const ordinary = (m: SpaceMember): SpaceMember => {
+    if (!hideSync || !(m.syncRole || m.groups.length)) return m;
+    const bySpace = m.groups.some((g) => g.via === "space");
+    return {
+      ...m,
+      manualRole: bySpace ? (m.manualRole ?? m.syncRole) : m.manualRole,
+      syncRole: null,
+      groups: m.groups.filter((g) => g.via === "every"),
+    };
+  };
   const rows = [...(list.data?.pages.flatMap((p) => p.items) ?? [])]
     .map(ordinary)
     .sort(order);
