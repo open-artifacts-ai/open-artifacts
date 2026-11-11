@@ -97,7 +97,7 @@ export function CommentsColumn({ textFormat }: { textFormat: boolean }) {
   return (
     <aside
       aria-label="Comments"
-      className="flex w-[340px] min-[960px]:w-[var(--oa-comments-w)] flex-none flex-col overflow-y-auto border-0 border-l border-l-[var(--oa-border)] bg-card"
+      className="flex w-[340px] min-[960px]:w-[var(--oa-comments-w)] flex-none flex-col overflow-y-auto border-0 border-l border-l-[var(--oa-border)] bg-[var(--oa-bg)]"
     >
       <CommentsBody textFormat={textFormat} />
     </aside>
@@ -119,6 +119,7 @@ export function CommentsDialog({
   pinReplies?: boolean;
 }) {
   const ref = useRef<HTMLElement>(null);
+  const open = useCommentsApi().listedOpen;
   const [full, setFull] = useState(false);
   // #1657: reading a pin card shrinks the sheet, so the image and that pin
   // stay visible; dragging it back up still works. Keyed on the pin, so
@@ -153,7 +154,7 @@ export function CommentsDialog({
         aria-label="Comments"
         data-sheet-height={height}
         data-pin-replies={height === "pin" && pinReplies ? "" : undefined}
-        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-card shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] max-[600px]:data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
+        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-[var(--oa-bg)] shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] max-[600px]:data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
         onFocusCapture={(e) => {
           // The phone keyboard would cover a half-height sheet.
           const t = e.target as HTMLElement;
@@ -197,7 +198,12 @@ export function CommentsDialog({
           <span className="h-1 w-10 rounded-full bg-border" />
         </button>
         <div className={`flex items-center justify-between px-4 pt-3 ${TXT}`}>
-          <h2 className="m-0 font-medium">Comments</h2>
+          <div className="flex items-baseline gap-2">
+            <h2 className="m-0 font-semibold">Comments</h2>
+            {open > 0 && (
+              <span className="text-muted-foreground">{open} open</span>
+            )}
+          </div>
           <Button
             variant="ghost"
             size="icon-sm"
@@ -210,6 +216,7 @@ export function CommentsDialog({
         <ActionRowProvider>
           <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
             <CommentsBody
+              heading={false}
               textFormat={textFormat}
               grow={!floating}
               short={floating}

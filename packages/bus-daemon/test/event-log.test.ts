@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -122,6 +123,28 @@ describe("createEventLog", () => {
     log("e");
     await log.flush();
     expect(readFileSync(target, "utf8")).toBe("keep\n");
+  });
+  it("writes nothing into a symlinked log folder", async () => {
+    const d = tmp();
+    const real = join(d, "real");
+    mkdirSync(real, { mode: 0o755 });
+    symlinkSync(real, join(d, "logs"));
+    const log = createEventLog(join(d, "logs", "events.log"), {
+      now: () => at,
+    });
+    log("e");
+    await log.flush();
+    expect(existsSync(join(real, "events.log"))).toBe(false);
+    expect(statSync(real).mode & 0o777).toBe(0o755);
+  });
+  it("does not hang on, or write to, a FIFO events.log", async () => {
+    const d = tmp();
+    const f = join(d, "events.log");
+    execFileSync("mkfifo", [f]);
+    const log = createEventLog(f, { now: () => at });
+    log("e");
+    await log.flush();
+    expect(statSync(f).isFIFO()).toBe(true);
   });
   it("starts from the file's existing size", async () => {
     const f = join(tmp(), "daemon.log");

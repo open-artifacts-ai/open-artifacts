@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import "../dispatcher";
 import { HOOK_WINDOW_MS } from "../hook-ledger";
 import { clearT19HookWindow } from "../hook-pace";
 import { sendRead } from "../retry";

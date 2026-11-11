@@ -31,6 +31,7 @@ import {
   type ClientFrame,
   ClientFrameSchema,
   frameId,
+  MAX_WAITING_QUERY,
   type SendFrame,
   WireNamespaceSchema,
 } from "@oa/bus-protocol";
@@ -93,8 +94,10 @@ import { HubConnection, type HubOptions } from "./hub.ts";
 import {
   cachedProcStart,
   claudeTarget,
+  claudeTargetState,
   isRunning,
   liveClaudeFiles,
+  liveClaudeScan,
   liveClaudeSessions,
 } from "./liveness/claude.ts";
 import {
@@ -266,6 +269,10 @@ export type DaemonDeps = {
     /** Default: beside heldFile, or ~/.oa-bus/claude-return.json. */
     returnIndexFile?: string;
     syncMs?: number;
+    /** #2110: how long a running session with an unreadable start time or file stays live. Default 10 min. */
+    unknownGraceMs?: number;
+    /** #2110: delays of the local retries of a retryable timeout. Default 2 s, 5 s, 15 s. */
+    retryDelaysMs?: number[];
     procStart?: (pid: number) => string | null;
     isRunning?: (pid: number) => boolean;
     /** Proof hashes of live sessions kept across a restart (#2050); default ~/.oa-bus/claude-links.json. */
@@ -876,6 +883,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     injectTimeoutMs: cl.injectTimeoutMs,
     log,
     target: (ref) => claudeTarget(ref, claudeSessions),
+    state: (a) => claudeTargetState(a.ref, a.pid, claudeSessions),
     // A native reply is a message from the session: the sink names the sender, never the frame.
     // Every reply names the peer's namespace (the deliver's), so a same-named local peer cannot get it.
     onReply: (agentRef, peerName, text, namespace, peerId, unnamed) => {
@@ -949,6 +957,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const takenOver = new Set<string>();
   /** Order in which this process's sessions were last seen (higher is later). */
   const seenAt = new Map<string, number>();
+  const REOPEN_SAME_PROC_MS = 30_000;
+  const reopenedAt = new Map<string, number>();
+  const unknownSince = new Map<string, number>();
+  const UNKNOWN_GRACE_MS = cl.unknownGraceMs ?? 600_000;
   let seenSeq = 0;
 
   /** rename ids awaiting the hub's answer, to their agent_ref; cleared with the link. */
@@ -1080,10 +1092,22 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   };
   /** Claude sessions exist before they call a tool: the daemon announces them from their session files. */
   const syncClaude = () => {
-    const live = liveClaudeSessions(
+    const scan = liveClaudeScan(
       claudeSessions,
       (ref) => agents.byRef(ref)?.pid,
     );
+    const now = Date.now();
+    // #2110: a running session whose start time or file cannot be read is
+    // unknown and stays live, for at most UNKNOWN_GRACE_MS of consecutive
+    // unknowns; then it is treated as gone.
+    const unknownNow = new Set<string>();
+    const live = scan.live.filter((s) => {
+      if (!s.unknown) return true;
+      unknownNow.add(s.ref);
+      const since = unknownSince.get(s.ref) ?? now;
+      unknownSince.set(s.ref, since);
+      return now - since <= UNKNOWN_GRACE_MS;
+    });
     const liveRefs = new Set(live.map((s) => s.ref));
     const livePid = (ref: string, pid: number) =>
       live.some((s) => s.ref === ref && s.pid === pid);
@@ -1105,8 +1129,20 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         renameIfChanged(prev, s.name, s.pid);
         continue;
       }
-      // Closed by a failed delivery and still the same process.
-      if (prev && prev.pid === s.pid) continue;
+      // #2110: a record closed while its process and session file are still
+      // there (a missed read, a failed delivery) reopens when seen again: the
+      // up below replays its link hashes. A different process under the ref is
+      // the /resume case, handled the same way. The same process reopens at
+      // most once per REOPEN_SAME_PROC_MS, so a session that really refuses
+      // deliveries does not flap.
+      if (prev && prev.pid === s.pid && prev.procStart === s.procStart) {
+        // A delivery refusal stays closed until a hello or a new process.
+        if (prev.closedBy !== "liveness") continue;
+        const last = reopenedAt.get(s.ref);
+        if (last !== undefined && Date.now() - last < REOPEN_SAME_PROC_MS)
+          continue;
+        reopenedAt.set(s.ref, Date.now());
+      }
       if (!isAbsolute(s.cwd)) continue;
       let ns: Namespace;
       try {
@@ -1134,9 +1170,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         global: ns.global,
         pid: s.pid,
         procStart: s.procStart,
-        // The same process keeps its proof across /clear; agent_ok rebinds it.
-        ...(old?.linkHashes !== undefined
-          ? { linkHashes: old.linkHashes }
+        // The same process keeps its proof across /clear and a reopen; agent_ok rebinds it.
+        ...((prev?.linkHashes ?? old?.linkHashes) !== undefined
+          ? { linkHashes: (prev?.linkHashes ?? old?.linkHashes) as string[] }
           : {}),
         sessionName: s.name,
         cwd: s.cwd,
@@ -1154,11 +1190,27 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
     let closed = false;
     for (const a of agents.all()) {
       if (a.kind !== "claude-code" || !a.live || liveRefs.has(a.ref)) continue;
+      // #2110: an unreadable session file of a running process is unknown, not
+      // gone: keep it live, for at most UNKNOWN_GRACE_MS of consecutive
+      // unknowns. Otherwise only positive evidence closes (pid not running, a
+      // different start time, the file removed).
+      if (scan.unreadable.has(a.pid) && claudeSessions.isRunning(a.pid)) {
+        unknownNow.add(a.ref);
+        const since = unknownSince.get(a.ref) ?? now;
+        unknownSince.set(a.ref, since);
+        if (now - since <= UNKNOWN_GRACE_MS) continue;
+      }
       a.live = false;
+      a.closedBy = "liveness";
       closed = true;
       ev("agent_leave", agentFields(a, "session_gone"));
       void claude.drop(a.ref);
     }
+    // Consecutive unknowns only; a reopen stamp is dropped once it has expired.
+    for (const r of [...unknownSince.keys()])
+      if (!unknownNow.has(r)) unknownSince.delete(r);
+    for (const [r, at] of reopenedAt)
+      if (now - at >= REOPEN_SAME_PROC_MS) reopenedAt.delete(r);
     persistLinks();
     if (closed) announceSessions();
   };
@@ -1191,6 +1243,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
 
   const delivery = createDeliver({
     agents,
+    ...(cl.retryDelaysMs ? { retryDelaysMs: cl.retryDelaysMs } : {}),
     hub: { send: (f) => hub.send(f) },
     transports: {
       "claude-code": (agent, mail) => claude.deliver(agent, mail),
@@ -1202,9 +1255,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       codex: (agent, mail) => codex.deliver(agent, mail),
       ...deps.transports,
     },
-    onClosed: (a) => {
+    onClosed: (a, closedBy) => {
+      // Never downgrade a liveness close (the sync's or a concurrent
+      // delivery's) to a delivery refusal.
+      if (a.closedBy !== "liveness") a.closedBy = closedBy ?? "delivery";
       ev("agent_leave", agentFields(a, "delivery_closed"));
       announceSessions();
+      return a.closedBy;
     },
     log,
   });
@@ -1227,6 +1284,13 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   let hubVersion: string | undefined;
   /** The hub's last hello_ok listed BUS_CAPS.waiting: away roster rows carry `waiting` (#2029). */
   let hubWaiting = false;
+  /** The hub's last hello_ok listed BUS_CAPS.waitingQuery: it counts waiting mail by this machine's own away refs (#2079). */
+  let hubWaitingQuery = false;
+  /** In-flight waiting_query frames by id. */
+  const waitingAsks = new Map<
+    string,
+    (counts: Record<string, number> | undefined) => void
+  >();
   const hub = new HubConnection({
     url: `${cfg.hub.replace(/^http/, "ws").replace(/\/+$/, "")}${BUS_ROUTES.connect}`,
     token: cfg.machine_token,
@@ -1301,6 +1365,10 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "error": {
           if (statusRelay.answer(frame)) return;
+          if (waitingAsks.has(frame.id)) {
+            waitingAsks.get(frame.id)?.(undefined);
+            return;
+          }
           const renamed = renameIds.get(frame.id);
           if (renamed !== undefined) {
             const renamedRef = renamed.ref;
@@ -1350,6 +1418,9 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           return;
         case "link_bound":
           return;
+        case "waiting_counts":
+          waitingAsks.get(frame.id)?.(frame.counts);
+          return;
         case "body":
           // A fetched body is a peer's text, like a delivered one.
           pending.settle({ ...frame, body: stripTerminalControls(frame.body) });
@@ -1362,6 +1433,8 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           hubMailbox = frame.caps?.includes(BUS_CAPS.mailbox) ?? false;
           hubFollow = frame.caps?.includes(BUS_CAPS.follow) ?? false;
           hubWaiting = frame.caps?.includes(BUS_CAPS.waiting) ?? false;
+          hubWaitingQuery =
+            frame.caps?.includes(BUS_CAPS.waitingQuery) ?? false;
           hubLink = frame.caps?.includes(BUS_CAPS.link) ?? false;
           hubLinkArg = frame.caps?.includes(BUS_CAPS.linkArg) ?? false;
           hubHelloed = true;
@@ -1428,6 +1501,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       hubFollow = false;
       hubLink = false;
       hubLinkArg = false;
+      hubWaitingQuery = false;
       hubHelloed = false;
       statusRelay.dropped();
       receipts.release();
@@ -1473,6 +1547,24 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         }
       },
     );
+  /** #2079: pending mail for this machine's own away refs, one frame; undefined if the hub did not answer. */
+  const hubWaitingCounts = (refs: string[]) =>
+    new Promise<Record<string, number> | undefined>((resolve) => {
+      const id = frameId();
+      const done = (c: Record<string, number> | undefined) => {
+        clearTimeout(timer);
+        waitingAsks.delete(id);
+        resolve(c);
+      };
+      const timer = setTimeout(() => {
+        hub.cancel(id);
+        done(undefined);
+      }, deps.statusRosterMs ?? 1500);
+      timer.unref();
+      waitingAsks.set(id, done);
+      if (!hub.send({ v: 1, id, type: "waiting_query", agent_refs: refs }))
+        done(undefined);
+    });
   // Another live daemon holds the socket, or the path cannot be bound: a restart cannot fix either.
   const socketInUse = (e: unknown): never => {
     const code = (e as { code?: unknown })?.code;
@@ -2201,6 +2293,18 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
         if (wakeLogged.size > 500) wakeLogged.clear();
         log(msg);
       };
+      // #2079: one frame for every held row, no live agent needed.
+      let counts: Record<string, number> | undefined;
+      if (hubWaitingQuery && hub.open && hubVersion !== undefined) {
+        const refs = rows
+          .filter((r) => held.has(r.ref))
+          .map((r) => r.ref)
+          .slice(0, MAX_WAITING_QUERY);
+        if (refs.length) {
+          counts = await hubWaitingCounts(refs);
+          if (!counts) log("codex wake skipped: the hub did not answer");
+        }
+      }
       for (const r of rows) {
         const h = held.get(r.ref);
         if (!h) continue;
@@ -2219,35 +2323,47 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
           )
             continue;
         }
-        const asker = agents.all().find((a) => a.live);
-        if (!asker || !hub.open || hubVersion === undefined) {
-          once(key, `${who} skipped: no live agent to ask the hub`);
-          continue;
+        let waitingN: number | undefined;
+        if (hubWaitingQuery) {
+          if (!counts) continue;
+          waitingN = counts[r.ref];
+        } else {
+          // Prefer an asker in the thread's namespace, then a global one.
+          const live = agents.all().filter((a) => a.live);
+          const asker =
+            live.find((a) => a.namespace === r.namespace) ??
+            live.find((a) => a.global) ??
+            live[0];
+          if (!asker || !hub.open || hubVersion === undefined) {
+            once(key, `${who} skipped: no live agent to ask the hub`);
+            continue;
+          }
+          if (!hubWaiting) {
+            once(key, `${who} skipped: the hub does not report waiting mail`);
+            continue;
+          }
+          const last = wakeAsked.get(key);
+          if (last !== undefined && now - last < (cx.wakeAskMs ?? 300_000))
+            continue;
+          wakeAsked.set(key, now);
+          const roster = await hubRoster(asker.ref);
+          if (!roster) {
+            once(key + now, `${who} skipped: the hub did not answer`);
+            continue;
+          }
+          waitingN = roster.find(
+            (a) =>
+              a.state === "away" &&
+              a.name === r.name &&
+              a.namespace === r.namespace &&
+              (a.machine_label === undefined || a.machine_label === cfg.label),
+          )?.waiting;
         }
-        if (!hubWaiting) {
-          once(key, `${who} skipped: the hub does not report waiting mail`);
-          continue;
-        }
-        const last = wakeAsked.get(key);
-        if (last !== undefined && now - last < (cx.wakeAskMs ?? 300_000))
-          continue;
-        wakeAsked.set(key, now);
-        const roster = await hubRoster(asker.ref);
-        if (!roster) {
-          once(key + now, `${who} skipped: the hub did not answer`);
-          continue;
-        }
-        const row = roster.find(
-          (a) =>
-            a.state === "away" &&
-            a.name === r.name &&
-            a.namespace === r.namespace &&
-            (a.machine_label === undefined || a.machine_label === cfg.label),
-        );
-        if (!row?.waiting) {
+        if (!waitingN) {
           once(key, `${who} skipped: no mail waiting`);
           continue;
         }
+        const row = { waiting: waitingN };
         if (
           n > 1 &&
           row.waiting === wakeWaiting.get(key) &&
@@ -2404,6 +2520,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
       clearInterval(socketWatch);
       clearInterval(watcher);
       clearInterval(retry);
+      delivery.stop();
       outbox.stop();
       resends.stop();
       for (const t of limited.values()) clearTimeout(t);

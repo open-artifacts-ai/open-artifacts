@@ -61,6 +61,45 @@ const TOKENS: Record<string, HostedMockOptions> = {
       readOnly: false,
     },
   },
+  // Solo that pays: a Stripe customer, active, no free month (Manage billing only).
+  "solo-paid": {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: null,
+      soloTrialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: true,
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  // Solo in its free month with a Stripe customer (Pay buttons), and Solo with
+  // no customer.
+  "solo-trial-customer": {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: null,
+      soloTrialEndsAt: new Date(Date.now() + 20 * 86_400_000).toISOString(),
+      graceUntil: null,
+      hasCustomer: true,
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
+  "solo-no-customer": {
+    billing: {
+      tier: "solo",
+      status: "active",
+      trialEndsAt: null,
+      soloTrialEndsAt: null,
+      graceUntil: null,
+      hasCustomer: false,
+      creatorsThisMonth: 1,
+      readOnly: false,
+    },
+  },
   // Business with no Stripe customer (provisioned or comped), and with one.
   "plan-no-customer": {
     billing: {
@@ -183,7 +222,8 @@ const TOKENS: Record<string, HostedMockOptions> = {
 /**
  * Mock-only: `?hosted=` turns on the hosted mocks. Comma tokens: 1 (defaults),
  * access, email-only, turnstile, unhealthy (backoff), auth-failed,
- * scope-missing, customer-mismatch, trial, solo, solo-paused,
+ * scope-missing, customer-mismatch, trial, solo, solo-paid (a paying Solo: customer, active,
+ * Manage billing only), solo-trial-customer, solo-no-customer, solo-paused,
  * plan-team-lapsed, plan-team-payment-failed, plan-team-suspended, plan-team-unreachable, team, business, frozen, sync-off, not-connected,
  * admin (you are an admin, not the owner), guest-notices (an Access-only
  * install with parity 2's notices, spaces off), guest-departed (the same, one

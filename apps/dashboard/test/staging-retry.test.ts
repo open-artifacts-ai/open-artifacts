@@ -1,7 +1,15 @@
 // T19's api helper (e2e/staging/retry.ts): a read that got no response is
 // tried again; a write never is, and an answer that arrived is returned as is.
+
+import { TEST_HOOKS } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
-import { InfraError, isNetworkError, sendRead } from "../e2e/staging/retry";
+import {
+  InfraError,
+  isNetworkError,
+  REPEATABLE_WRITE_ROUTES,
+  sendPacedHook,
+  sendRead,
+} from "../e2e/staging/retry";
 
 /** What undici throws when the connection is cut: TypeError, cause ECONNRESET. */
 const reset = () =>
@@ -133,5 +141,76 @@ describe("sendRead infra classification", () => {
     });
     const send = vi.fn<() => Promise<Response>>().mockRejectedValue(a);
     await expect(sendRead("POST", send, noWait)).rejects.toBe(a);
+  });
+});
+
+// The session hook is idempotent, so it alone may be sent again after a drop.
+describe("sendRead repeatable writes", () => {
+  it("the allow-list is the session hook alone", () => {
+    expect(REPEATABLE_WRITE_ROUTES).toEqual([TEST_HOOKS.session]);
+  });
+
+  it("the session hook POST is sent again on a network error", async () => {
+    const send = vi
+      .fn<() => Promise<Response>>()
+      .mockRejectedValueOnce(reset())
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    const res = await sendRead("POST", send, {
+      ...noWait,
+      route: TEST_HOOKS.session,
+      repeatable: true,
+    });
+    expect(res.status).toBe(200);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it("the session hook without the opt-in is sent once", async () => {
+    const send = vi.fn<() => Promise<Response>>().mockRejectedValue(reset());
+    await expect(
+      sendRead("POST", send, { ...noWait, route: TEST_HOOKS.session }),
+    ).rejects.toThrow("(1 try)");
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["POST", "/__test/other"],
+    ["POST", "/api/v1/spaces"],
+    ["PATCH", "/api/v1/me"],
+  ])("%s %s is sent once even when opted in", async (method, route) => {
+    const send = vi.fn<() => Promise<Response>>().mockRejectedValue(reset());
+    await expect(
+      sendRead(method, send, { ...noWait, route, repeatable: true }),
+    ).rejects.toThrow("(1 try)");
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("sendPacedHook", () => {
+  it("a session retry claims a slot for each attempt", async () => {
+    const pace = vi.fn(async () => 0);
+    const send = vi
+      .fn<() => Promise<Response>>()
+      .mockRejectedValueOnce(reset())
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    await sendPacedHook(TEST_HOOKS.session, pace, send, noWait);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(pace).toHaveBeenCalledTimes(2);
+  });
+
+  it("another hook claims one slot and is sent once", async () => {
+    const pace = vi.fn(async () => 0);
+    const send = vi.fn<() => Promise<Response>>().mockRejectedValue(reset());
+    await expect(
+      sendPacedHook("/__test/other", pace, send, noWait),
+    ).rejects.toThrow("(1 try)");
+    expect(pace).toHaveBeenCalledTimes(1);
+  });
+});
+
+it("the dispatcher caps keep-alive at 1 s both ways", async () => {
+  const { keepAliveOptions } = await import("../e2e/staging/dispatcher");
+  expect(keepAliveOptions).toEqual({
+    keepAliveTimeout: 1000,
+    keepAliveMaxTimeout: 1000,
   });
 });

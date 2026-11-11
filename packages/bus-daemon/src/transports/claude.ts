@@ -190,6 +190,14 @@ export type ClaudeTransportOptions = {
   socketsDir: string;
   /** Where to inject for a session right now; null when the session is gone. */
   target: (ref: string) => { socketPath: string; peerToken: string } | null;
+  /**
+   * #2110: why a null target is null (see claudeTargetState). Unknown is
+   * re-read a few times; unreachable closes as a delivery refusal; gone closes
+   * as a liveness miss, which the sync reopens when the session is seen again.
+   */
+  state?: (agent: AgentRecord) => "unknown" | "unreachable" | "gone" | "dead";
+  /** Production 100 ms between the re-reads of an unknown target. */
+  unknownRetryMs?: number;
   /** Production 2000 ms: how long a hold status may take to arrive. */
   statusWindowMs?: number;
   /** How long a held message waits for the user; the mail TTL bounds it anyway. */
@@ -315,8 +323,28 @@ export class ClaudeTransport {
       this.#heldOp("write", (h) => h.delete(mail.msg_id), this.#injected);
       return { ok: true };
     }
-    const target = this.opts.target(agent.ref);
-    if (!target) return { ok: false, reason: "closed" };
+    let target = this.opts.target(agent.ref);
+    // A mid-rewrite session file clears in milliseconds: look again.
+    for (
+      let i = 0;
+      !target && i < 5 && this.opts.state?.(agent) === "unknown";
+      i++
+    ) {
+      await new Promise((r) => setTimeout(r, this.opts.unknownRetryMs ?? 100));
+      if (this.#closed) return { ok: false, reason: "timeout" };
+      target = this.opts.target(agent.ref);
+    }
+    if (!target) {
+      const why = this.opts.state?.(agent) ?? "dead";
+      // Still unknown: not a close; the receipt stays pending.
+      if (why === "unknown")
+        return { ok: false, reason: "timeout", retryable: true };
+      return {
+        ok: false,
+        reason: "closed",
+        closedBy: why === "gone" ? "liveness" : "delivery",
+      };
+    }
     const unsafe = unsafeClaudeSocket(target.socketPath);
     if (unsafe) {
       if (!this.#unsafeLogged.has(target.socketPath)) {
@@ -355,7 +383,13 @@ export class ClaudeTransport {
         timeoutMs: this.opts.injectTimeoutMs,
       });
     } catch (e) {
-      // Nothing listening: the session is gone. Anything after connecting: retry.
+      // Nothing listening: the session is gone. Anything after connecting: a
+      // timeout the hub or the local retry resolves. A timer that fired before
+      // 'connect' (#2110) proves nothing about the session and nothing was
+      // written, so it is a retryable timeout; after connecting it may have
+      // been delivered, so it is not retried.
+      if (e instanceof InjectError && e.code === "ETIMEDOUT" && !e.connected)
+        return { ok: false, reason: "timeout", retryable: true };
       return e instanceof InjectError && !e.connected
         ? { ok: false, reason: "closed" }
         : { ok: false, reason: "timeout" };

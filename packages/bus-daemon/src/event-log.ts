@@ -76,6 +76,9 @@ export function createEventLog(
     try {
       if (size === undefined) {
         const dir = dirname(file);
+        // A folder that is a symlink (or not a folder) is never written into.
+        const ds = await lstat(dir).catch(() => undefined);
+        if (ds && !ds.isDirectory()) throw new Error("not a folder");
         await mkdir(dir, { recursive: true, mode: 0o700 });
         await chmod(dir, 0o700);
         // Owner-only, and never through a symlink someone planted.
@@ -83,7 +86,8 @@ export function createEventLog(
         for (const f of [file, `${file}.1`]) {
           const st = await lstat(f).catch(() => undefined);
           if (!st) continue;
-          if (st.isSymbolicLink()) throw new Error("symlink");
+          // A symlink, a FIFO or a device is never opened.
+          if (!st.isFile()) throw new Error("not a regular file");
           await chmod(f, 0o600);
           if (f === file) size = st.size;
         }
@@ -97,10 +101,12 @@ export function createEventLog(
         constants.O_WRONLY |
           constants.O_APPEND |
           constants.O_CREAT |
-          constants.O_NOFOLLOW,
+          constants.O_NOFOLLOW |
+          constants.O_NONBLOCK,
         0o600,
       );
       try {
+        if (!(await fh.stat()).isFile()) throw new Error("not a regular file");
         await fh.write(line);
       } finally {
         await fh.close();

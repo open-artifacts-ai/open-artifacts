@@ -92,19 +92,34 @@ codex mcp add open-artifacts --url https://artifacts.example.com/mcp
 codex mcp login open-artifacts
 ```
 
-Sign in with your instance account in the browser, then run `codex mcp list` to check the connection. No PAT or `OA_TOKEN` is needed. If an existing config sets `bearer_token_env_var`, remove that setting before using OAuth.
+Sign in with your instance account in the browser, then run `codex mcp list` to check the connection. No PAT is needed. If an existing config sets `bearer_token_env_var` or `http_headers_helper`, remove that setting before using OAuth.
 
 ### Token fallback
 
-If OAuth is unavailable, use setup's `codexToken` snippet. In `~/.codex/config.toml`:
+If OAuth is unavailable, use the token file. This needs Codex 0.163 or later. In `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.open-artifacts]
 url = "https://artifacts.example.com/mcp"
-bearer_token_env_var = "OA_TOKEN"
+http_headers_helper = "T=$(cat <token file>) && printf '{\"Authorization\":\"Bearer %s\"}' \"$T\""
 ```
 
-Launch it as `OA_TOKEN="$(cat <token file>)" codex`. Don't edit shell profiles.
+Codex runs the helper each time it connects, so you export nothing. Then run `codex mcp list` to check the connection.
+
+## Disconnect an agent
+
+1. **Remove the server from the agent.** Use your server name (`open-artifacts` by default):
+
+   | Agent | Remove it |
+   | --- | --- |
+   | Claude Code | `claude mcp remove -s user open-artifacts` |
+   | Codex CLI | `codex mcp remove open-artifacts` |
+   | Cursor | Delete the `open-artifacts` entry under `mcpServers` in `~/.cursor/mcp.json` (or the project's `.cursor/mcp.json`). |
+   | OpenCode | Delete the `open-artifacts` entry under `mcp` in `opencode.json`. |
+
+   Then restart the agent. If you used the token variant, the entry also holds the `<token file>` path, so deleting the entry removes that too.
+2. **Revoke the token, if the agent used one.** Revoking it in the dashboard under **Settings → Connections** is what cuts the agent off. Removing the entry only stops the agent from trying.
+3. **Delete the token file** `~/.open-artifacts/<host-slug>-pat-token` only when no other agent on this machine uses it. Deleting it doesn't revoke anything.
 
 ## Other clients
 

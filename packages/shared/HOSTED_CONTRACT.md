@@ -317,6 +317,8 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `version_conflict` | 409 | publish with `expectedVersion` (or `edits`, which takes the version it read) when the artifact's current version differs; details `{ currentVersion }`; nothing is published (#1216, #1540) |
 | `edit_failed` | 400 | publish with `edits` where an `old` is not found or found more than once in the text at its step; details `{ index, reason: "not_found" \| "ambiguous", count }`; nothing is published (#1540) |
 | `revoke_not_closed` | 503 | `DELETE R.busMachine(id)` where the revoke landed in D1 but the bus hub could not close the machine's open connection: the machine is already revoked and cannot reconnect, and a repeat closes the connection (#1453). Nothing else answers it |
+| `use_edit_doc` | 400 | publish with content, files or edits to an existing doc (#1100): a doc changes through `edit_doc`, never a whole rewrite; nothing is published |
+| `docs_need_paid` | 400 | publish with format `doc` on a self-host whose PLAN is not paid (#1100): the message names the Workers Paid plan and hosted Solo; nothing is published |
 | `invalid_successor` | 400 | transfer target isn't an active, non-guest, non-restricted member |
 | `member_active` | 409 | member transfer on an active non-guest member |
 | `directory_sync_off` | 409 | mapping or restricted-group change while sync is off or frozen (also Sync now) |
@@ -445,7 +447,7 @@ and anonymous writes never count.
 
 Routes, the org owner or an admin only (the plan cap included; else 404; 404
 off hosted):
-`POST R.billingCheckout` `BillingCheckoutInput { tier: solo | team | business, interval?: month | year }` (interval required for solo, 400 for any other tier) →
+`POST R.billingCheckout` `BillingCheckoutInput { tier: solo | team | business, interval?: month | year, seats?: integer 1..10000 }` (interval required for solo, optional for team and business, where absent means monthly; seats required with interval year; refused (400) with month, with no interval, and for solo) →
 `BillingUrl { url }` (Stripe Checkout); `POST R.billingPortal` → `BillingUrl`
 (Customer Portal); `POST R.billingUsage` → `BillingUsage { month, count }`.
 503 `billing_unavailable` when billing can't be reached. `POST R.billingPortal`
@@ -453,7 +455,7 @@ answers 409 `no_billing_customer` when billing has no Stripe customer for the
 instance (billing's 409 `no_customer`; no other route or status maps to it). Billing's 503
 `{ error: "retry" }` (Stripe still running the same idempotent request) is
 retried once, with the same signed body, after a short backoff. Checkout
-sends billing `{ install, ts, plan }`, plus `interval` for solo only; the billing service maps solo+month and solo+year to the Solo prices (hosted half, #1568). Checkout and Portal
+sends billing `{ install, ts, plan }`, plus `interval` and `seats` when the body had them, unchanged; the billing service maps solo+month and solo+year to the Solo prices (hosted half, #1568). A yearly Team or Business plan prepays `seats` creators; extra creators bill as overage at the monthly price ($10 per creator for Team, $25 for Business; Team and Business prices are per creator) (decided 2026-11-11). Checkout and Portal
 depend on Platform's billing routes (#849 gate allowlist for `POST /checkout`
 and `/portal`); until those ship they answer 503 `billing_unavailable`.
 

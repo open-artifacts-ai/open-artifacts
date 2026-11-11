@@ -1465,10 +1465,15 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       if (r.error) return r.error;
       if (o.billingDown)
         return err("billing_unavailable", "Billing is unavailable");
-      // Solo names its interval (the schema refuses a missing one).
+      // Solo names its interval (the schema refuses a missing one); a yearly
+      // Team or Business echoes its seats so the dashboard can show them.
       return billingUrl(
         "checkout",
-        r.data.tier === "solo" ? `_solo_${r.data.interval}` : "",
+        r.data.tier === "solo"
+          ? `_solo_${r.data.interval}`
+          : r.data.seats !== undefined
+            ? `_${r.data.tier}_year_${r.data.seats}`
+            : "",
       );
     }),
     http.post("*/api/v1/billing/portal", ({ request }) => {

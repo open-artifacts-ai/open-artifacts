@@ -1,9 +1,9 @@
 import {
-  FORMATS,
   RoleSchema,
   ShareRoleSchema,
   SpaceKindSchema,
   SpaceRoleSchema,
+  STORED_FORMATS,
   VisibilitySchema,
 } from "@oa/shared";
 import { sql } from "drizzle-orm";
@@ -347,6 +347,14 @@ export const artifacts = sqliteTable(
      * (set on insert for new artifacts).
      */
     commentAccess: text("comment_access").notNull().default("everyone"),
+    /**
+     * #1100: 1 when the artifact is a collaborative doc. Its `format` column
+     * stays "markdown" (the stored text, rendered as markdown until the doc
+     * editor lands) and the API reports format "doc". Set on create only:
+     * other artifacts never become docs. The CHECK is inline in 0034's ADD
+     * COLUMN, as for comments.
+     */
+    doc: integer("doc").notNull().default(0),
     hasThumbnail: integer("has_thumbnail").notNull().default(0),
     /** The version thumbs/{id}.webp depicts; null = unknown (pre-0005) or none. */
     thumbnailVersion: integer("thumbnail_version"),
@@ -393,7 +401,7 @@ export const artifacts = sqliteTable(
       "artifacts_capabilities_json_check",
       sql`json_valid(${t.capabilities})`,
     ),
-    check("artifacts_format_check", inList("format", FORMATS)),
+    check("artifacts_format_check", inList("format", STORED_FORMATS)),
     check(
       "artifacts_visibility_check",
       inList("visibility", VisibilitySchema.options),
@@ -442,7 +450,7 @@ export const versions = sqliteTable(
   (t) => [
     primaryKey({ columns: [t.artifactId, t.version] }),
     check("versions_manifest_json_check", sql`json_valid(${t.manifest})`),
-    check("versions_format_check", inList("format", FORMATS)),
+    check("versions_format_check", inList("format", STORED_FORMATS)),
   ],
 );
 
