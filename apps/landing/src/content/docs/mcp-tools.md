@@ -39,7 +39,7 @@ It returns the artifact's `id`, the new `version` (the current one for a setting
 Inline `content` and `files` are capped at {LIMIT_INLINE} in total. Send anything larger as an upload, one file at a time. A file can be up to {LIMIT_FILE}, and one publish up to {LIMIT_PUBLISH}.
 
 1. **Reserve the upload:** compute the SHA-256 of the exact file locally (`sha256sum file` or `shasum -a 256 file`), then call `create_upload` with the file's `path` in the artifact, optionally its exact `size` in bytes (leave it out and the server measures the file when you PUT it), and optionally its `contentType` (by default, it's taken from the extension). Pass the 64-character hex checksum as optional `sha256`: R2 verifies it without hashing in the Worker, so Free uploads also get a content hash. Send the same bytes you hashed. Pass `artifactId` to add to an existing artifact you can edit; leave it out to reserve a new artifact id. It returns `uploadId`, `artifactId`, a signed `url`, and `expiresAt`, {LIMIT_UPLOAD_URL_TTL} from now.
-2. **Send the bytes:** a raw `PUT` of the file to `url`, with no auth header (the URL is signed) and, if you declared a `size`, a `Content-Length` equal to it. Each upload takes one PUT; it answers `204` when it's done.
+2. **Send the bytes:** a raw `PUT` of the file to `url`, with no auth header (the URL is signed) and a `Content-Length` header (always required; with a declared `size` it must equal it, and without one the PUT is refused as `length_required`; `curl -T` sends it for you). Each upload takes one PUT; it answers `204` when it's done.
 
    ```sh
    curl -fsS -T report.pdf "$UPLOAD_URL"

@@ -504,6 +504,19 @@ describe("create_upload without a size (#1540)", () => {
     ).toEqual({ size: 3, digest: sha256 });
   });
 
+  it("an unsized upload with a mismatched sha256 is refused and the object released", async () => {
+    const sha256 =
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"; // abc
+    const up = await create(alice.cookie, { path: "m.txt", sha256 });
+    const bad = await put(up.url, "xyz");
+    expect(bad.status).toBe(400);
+    expect((await errOf(bad)).message).toContain("SHA-256");
+    const r = await row(up.uploadId);
+    expect(r).toMatchObject({ size: 0, received_at: null });
+    expect(await env.FILES.head(r?.r2_key ?? "")).toBeNull();
+    expect((await put(up.url, "abc")).status).toBe(204);
+  });
+
   it("a body over the cap is refused and nothing is stored", async () => {
     const up = await create(alice.cookie, { path: "big.bin" });
     const over = new Uint8Array(25 * 1024 * 1024 + 1);
