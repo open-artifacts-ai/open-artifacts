@@ -104,12 +104,13 @@ export type BusHubRpc = {
   ping(): Promise<true>;
   /** #1317: one server notice for one address, sent as the reserved sender; see services/bus-delivery.ts. */
   deliverNotice(notice: BusNotice): Promise<DeliveryOutcome>;
-  /** #2175: drop the notices still held for an agent removed from a thread; returns the withdrawn targets (not settled). */
+  /** #2175: drop the notices still held for an agent removed from thread `threadId` (its thread_reply and asker rows, and `commentIds`' targets); returns the withdrawn targets (not settled). */
   withdrawHeld(args: {
     namespace: string;
     name: string;
     identityId?: string;
     artifactId: string;
+    threadId: string;
     commentIds: string[];
   }): Promise<{
     withdrawn: Array<{ commentId: string; kind: string; key: string }>;
