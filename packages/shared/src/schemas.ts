@@ -988,7 +988,8 @@ export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
 export const UploadCreateInputSchema = z.strictObject({
   artifactId: IdSchema.optional(),
   path: z.string(),
-  size: z.number().int().positive(),
+  /** Exact byte size the PUT must match. Omit it and the server measures the bytes at PUT (up to 25 MB). */
+  size: z.number().int().positive().optional(),
   contentType: z.string().optional(),
   sha256: z
     .string()

@@ -11,6 +11,7 @@ import {
   type ServerFrame,
 } from "@oa/bus-protocol";
 import { afterEach, describe, expect, it } from "vitest";
+import { z } from "zod";
 import { BusHub } from "../../src/bus/hub.js";
 import {
   type Daemon,
@@ -305,6 +306,44 @@ describe("mailbox wire (#1295 PR B)", () => {
     expect(r2.agents.some((a) => a.bus_name === name)).toBe(false);
     expect(JSON.stringify(raw)).not.toContain('"away"');
     expect(JSON.stringify(raw)).not.toContain('"since"');
+    rcv.close();
+    snd.close();
+    old.close();
+  });
+
+  it("#2029: waiting is sent only to a socket that listed the waiting cap; an old strict decoder still reads the roster", async () => {
+    const { rcv, snd, ref, name, n } = await trio([...MB, "waiting"]);
+    await close(rcv, ref);
+    await send(snd, "snd", name);
+    await send(snd, "snd", name);
+    const row = (await list(snd, "snd")).r.agents.find(
+      (a) => a.bus_name === name,
+    );
+    expect(row).toMatchObject({ state: "away", waiting: 2 });
+
+    // A mailbox-only socket (a daemon since v0.125.0): no `waiting` key, and
+    // main's strict row schema (without it) reads the whole roster.
+    const om = await machine("Old");
+    const old = await connect(om.token, MB);
+    await reg(old, "oldsnd", uniq("Old"), n);
+    const { r, raw } = await list(old, "oldsnd");
+    expect(JSON.stringify(raw)).not.toContain("waiting");
+    const OldRow = z.strictObject({
+      bus_name: z.string(),
+      kind: z.string(),
+      namespace: z.string(),
+      global: z.boolean(),
+      state: z.enum(["live", "queued", "away"]),
+      since: z.string().optional(),
+      machine_label: z.string().optional(),
+      status: z.string().optional(),
+      status_label: z.string().optional(),
+      status_at: z.string().optional(),
+      former_names: z.array(z.unknown()).optional(),
+    });
+    const away = r.agents.find((a) => a.bus_name === name);
+    expect(away).toMatchObject({ state: "away" });
+    for (const a of r.agents) expect(OldRow.safeParse(a).success).toBe(true);
     rcv.close();
     snd.close();
     old.close();

@@ -12,6 +12,8 @@ export type PresenceDeps = {
   isRunning: (pid: number) => boolean;
   /** Epoch seconds the pid's current process started; null when it cannot be told. `stamp` names the file's version. */
   procStartEpoch: (pid: number, stamp?: string) => number | null;
+  /** When set, only TUIs it accepts count (attached to one service, #1950). */
+  accept?: (tuiPid: number) => boolean | null;
 };
 
 /**
@@ -40,7 +42,9 @@ export function openSessions(dir: string, deps: PresenceDeps): Set<string> {
     const pid = data?.pid;
     if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 1)
       continue;
-    if (!Array.isArray(data.sessionIDs) || !deps.isRunning(pid)) continue;
+    if (!Array.isArray(data.sessionIDs)) continue;
+    if (!deps.isRunning(pid)) continue;
+    if (deps.accept && deps.accept(pid) !== true) continue;
     const started = deps.procStartEpoch(pid, String(mtime));
     if (started !== null && started > mtime + START_TOLERANCE_SECONDS) continue;
     for (const id of data.sessionIDs) if (typeof id === "string") out.add(id);
@@ -53,4 +57,55 @@ export function lstartEpoch(lstart: string | null): number | null {
   if (!lstart) return null;
   const ms = Date.parse(`${lstart} UTC`);
   return Number.isNaN(ms) ? null : ms / 1000;
+}
+
+/**
+ * Is `ref` open in an accepted TUI? Rows that do not list it cost no OS check,
+ * and the scan stops at the first row that passes. `null` is unknown: no row
+ * passed and at least one candidate could not be told (an OS read failed).
+ */
+export function openState(
+  dir: string,
+  deps: PresenceDeps,
+  ref: string,
+): boolean | null {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return null; // cannot list the directory: unknown, not "no TUI"
+  }
+  let unknown = false;
+  for (const fn of names) {
+    if (!/^\d+\.json$/.test(fn)) continue;
+    let data: { pid?: unknown; sessionIDs?: unknown };
+    let mtime: number;
+    try {
+      mtime = statSync(join(dir, fn)).mtimeMs / 1000;
+      data = JSON.parse(readFileSync(join(dir, fn), "utf8"));
+    } catch (e) {
+      // The file is gone: its TUI really left. Anything else (a read error, or
+      // a parse error: the plugin writes via rename, so a torn file is
+      // unexpected) cannot be told, so the answer is unknown unless another
+      // row is definitely attached.
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") unknown = true;
+      continue;
+    }
+    const pid = data?.pid;
+    if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 1)
+      continue;
+    if (!Array.isArray(data.sessionIDs) || !data.sessionIDs.includes(ref))
+      continue;
+    if (!deps.isRunning(pid)) continue;
+    const ok = deps.accept ? deps.accept(pid) : true;
+    if (ok === null) {
+      unknown = true;
+      continue;
+    }
+    if (!ok) continue;
+    const started = deps.procStartEpoch(pid, String(mtime));
+    if (started !== null && started > mtime + START_TOLERANCE_SECONDS) continue;
+    return true;
+  }
+  return unknown ? null : false;
 }

@@ -136,6 +136,11 @@ export async function daemonHarness(over: Partial<DaemonDeps> = {}) {
         mkdtempSync(join(tmpdir(), "ob-ca-")),
         "codex-agents.json",
       ),
+      awayFile: join(mkdtempSync(join(tmpdir(), "ob-cw-")), "codex-away.json"),
+      wokenFile: join(
+        mkdtempSync(join(tmpdir(), "ob-cn-")),
+        "codex-woken.json",
+      ),
       ...over.codex,
     },
   });

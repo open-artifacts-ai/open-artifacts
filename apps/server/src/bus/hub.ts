@@ -340,6 +340,7 @@ const HUB_CAPS = [
   BUS_CAPS.follow,
   BUS_CAPS.link,
   BUS_CAPS.linkArg,
+  BUS_CAPS.waiting,
   BUS_CAPS.noticeAck,
 ];
 
@@ -383,7 +384,7 @@ const noticeAckGated = (ws: WebSocket): boolean => {
   );
 };
 
-/** #1752: how long a sent notice waits for its ack; past it the target stays queued. */
+/** #1752/#2082: how long a sent notice waits for its ack; past it its targets settle as gone (not confirmed delivered). */
 export const NOTICE_ACK_TTL_MS = 6 * HOUR_MS;
 /** #1752: notices waiting for an ack at once; the oldest go first. */
 export const NOTICE_ACKS_MAX = 2000;
@@ -399,6 +400,15 @@ const FOLLOW_TIMEOUT_MS = 5_000;
  * `agent_up` handover go only to a socket whose hello listed it. Fails
  * closed, like renameGated.
  */
+const waitingGated = (ws: WebSocket | null): boolean => {
+  const caps = ws ? attachmentOf(ws)?.caps : undefined;
+  return (
+    Array.isArray(caps) &&
+    hasCap({ caps }, BUS_CAPS.mailbox) &&
+    hasCap({ caps }, BUS_CAPS.waiting)
+  );
+};
+
 const mailboxGated = (ws: WebSocket | null): boolean => {
   const caps = ws ? attachmentOf(ws)?.caps : undefined;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.mailbox);
@@ -2109,6 +2119,7 @@ function roster(
   withAway = false,
   withLinks = false,
   withReach = false,
+  withWaiting = false,
 ): ServerFrame {
   const sql = ctx.storage.sql;
   const cap = LIMITS.maxRosterAgents;
@@ -2201,6 +2212,8 @@ function roster(
     if (away.length > 0) rows = [...rows, ...away].sort(byScope).slice(0, cap);
   }
   const awaySince = new Map<string, number>();
+  /** #2029: pending mail per away row, counted up to WAITING_CAP. */
+  const waiting = new Map<string, number>();
   if (withAway) {
     const ids = rows.filter((r) => r.live !== 1).map((r) => r.id);
     if (ids.length > 0)
@@ -2210,6 +2223,18 @@ function roster(
         JSON.stringify(ids),
       ))
         if (r.t !== null) awaySince.set(r.id, r.t);
+    if (withWaiting && ids.length > 0)
+      for (const r of all<{ id: string; n: number }>(
+        sql,
+        `select to_agent as id, count(*) as n from (
+           select to_agent, row_number() over (partition by to_agent order by rowid) as rn
+             from receipts indexed by receipts_to
+            where to_agent in (select value from json_each(?)) and state = 'pending'
+         ) where rn <= ? group by to_agent`,
+        JSON.stringify(ids),
+        WAITING_CAP,
+      ))
+        waiting.set(r.id, r.n);
   }
   const online = new Map<string, boolean>();
   const stateOf = (machineId: string): "live" | "queued" => {
@@ -2241,6 +2266,9 @@ function roster(
         ...(r.live !== 1 && awaySince.has(r.id)
           ? { since: new Date(awaySince.get(r.id) as number).toISOString() }
           : {}),
+        ...(r.live !== 1 && waiting.has(r.id)
+          ? { waiting: waiting.get(r.id) as number }
+          : {}),
         // The key is omitted, never null, if a row's machine has no label.
         ...(label === undefined ? {} : { machine_label: label }),
         ...statusWire(r),
@@ -2249,6 +2277,9 @@ function roster(
     }),
   };
 }
+
+/** #2029: the most pending mail a roster away row counts. */
+const WAITING_CAP = 100;
 
 /**
  * R393b: each row's live former names for the roster (OpenBus #451: those
@@ -4850,7 +4881,8 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.reach) ||
           hasCap(f, BUS_CAPS.follow) ||
           hasCap(f, BUS_CAPS.noticeAck) ||
-          hasCap(f, BUS_CAPS.link)
+          hasCap(f, BUS_CAPS.link) ||
+          hasCap(f, BUS_CAPS.waiting)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -4960,6 +4992,7 @@ export class BusHub extends DurableObject<Env> {
               mailboxGated(ws),
               linksGated(ws),
               reachGated(ws),
+              waitingGated(ws),
             ),
           );
         return;
@@ -6492,11 +6525,18 @@ export class BusHub extends DurableObject<Env> {
       const over =
         (one<{ n: number }>(sql, "select count(*) as n from notice_acks")?.n ??
           0) - NOTICE_ACKS_MAX;
-      if (over > 0)
-        sql.exec(
-          "delete from notice_acks where rowid in (select rowid from notice_acks order by rowid limit ?)",
+      if (over > 0) {
+        // #2082: an evicted row never gets its ack: its targets settle gone.
+        const old = all<{ rid: number; ack: string }>(
+          sql,
+          "select rowid as rid, ack from notice_acks order by rowid limit ?",
           over,
         );
+        for (const r of old) {
+          this.#settleAckRow(r.ack);
+          sql.exec("delete from notice_acks where rowid = ?", r.rid);
+        }
+      }
       this.#arm(expiresAt);
     }
     return true;
@@ -6580,6 +6620,17 @@ export class BusHub extends DurableObject<Env> {
       toLname,
       ckey,
     );
+  }
+
+  /** #2082: a notice_acks row that will never be acked: its target and every folded one settle as gone. */
+  #settleAckRow(ack: string): void {
+    try {
+      const t = JSON.parse(ack) as AckTarget & { more?: AckTarget[] };
+      for (const x of [t, ...(Array.isArray(t.more) ? t.more : [])])
+        this.#settleTarget(x, "gone");
+    } catch {
+      // a malformed target has nothing to settle
+    }
   }
 
   #settleGone(acks: (string | null)[]): void {
@@ -6805,8 +6856,18 @@ export class BusHub extends DurableObject<Env> {
           .map((r) => r.id)
           .join(","),
       });
-    // #1752: an ack that never came leaves the target queued.
-    sql.exec("delete from notice_acks where expires_at <= ?", now);
+    // #1752/#2082: an ack that never came settles its targets gone (a late
+    // ack still lifts gone to delivered). Bounded by BATCH per pass; the
+    // alarm re-arms for the rest.
+    for (const r of all<{ rid: number; ack: string }>(
+      sql,
+      "select rowid as rid, ack from notice_acks where expires_at <= ? order by expires_at limit ?",
+      now,
+      BATCH,
+    )) {
+      this.#settleAckRow(r.ack);
+      sql.exec("delete from notice_acks where rowid = ?", r.rid);
+    }
     const gone = expired.length >= BATCH;
     const due = all<NoticeRow>(
       sql,
