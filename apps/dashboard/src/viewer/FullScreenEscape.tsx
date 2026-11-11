@@ -1,16 +1,19 @@
 import { type ArtifactSummary, viewerPath } from "@oa/shared";
-import { brand } from "@oa/ui/brand";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@oa/ui/shadcn";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowUpRight, X } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import { FullGone } from "./LiveChip";
 
-/** Widened on load this long, then it collapses (top level only). */
-export const REVEAL_MS = 3_000;
-/** Collapses this long after the pointer leaves or focus moves. */
-export const LINGER_MS = 400;
-/** A first tap on a coarse pointer widens it this long. */
-export const TAP_MS = 4_000;
+/** The pointer counts as near the group within this many px of it. */
+export const NEAR_PX = 80;
+/** pointermove is handled at most this often. */
+const THROTTLE_MS = 50;
 
 const embedded = () => {
   try {
@@ -19,19 +22,31 @@ const embedded = () => {
     return true; // A cross-origin parent throws on access.
   }
 };
-const coarse = () => window.matchMedia?.("(pointer: coarse)").matches ?? false;
-const focusVisible = (el: Element) => {
-  try {
-    return el.matches(":focus-visible");
-  } catch {
-    return true;
-  }
-};
 
-/** The full-screen view's way back (#290, option A): a small floating toolbar
-    at the top right. Embedded, it opens the viewer in a new tab instead.
-    `live` (the new-version pill) sits 8px to its left and precedes it in tab
-    order; `gone` turns the chip into "No longer available". */
+/** Tooltip on hover and keyboard focus; the control keeps its own name. */
+export function FsTip({
+  label,
+  children,
+}: {
+  label: string;
+  children: ReactNode;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="bottom" align="end" collisionPadding={8}>
+        {label}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** The full-screen view's controls (#2189): one compact group floating at the
+    top right, over the artifact. Comments (`live`, with the new-version pill)
+    then Exit. Embedded, Exit opens the viewer in a new tab instead. It rests
+    at 55% opacity and is solid on hover, focus within, or a pointer within
+    NEAR_PX; it never hides or moves. `gone` swaps Exit for "No longer
+    available". */
 export function FullScreenEscape({
   artifact,
   live,
@@ -42,27 +57,50 @@ export function FullScreenEscape({
   gone?: boolean;
 }) {
   const [inFrame] = useState(embedded);
-  const [open, setOpen] = useState(!inFrame);
-  const held = useRef({ hover: false, focus: false });
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const [near, setNear] = useState(false);
+  const bar = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
   const to = viewerPath(artifact.id);
 
-  const widen = () => {
-    clearTimeout(timer.current);
-    setOpen(true);
-  };
-  const collapseIn = (ms: number) => {
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => {
-      if (!held.current.hover && !held.current.focus) setOpen(false);
-    }, ms);
-  };
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: once, on load
   useEffect(() => {
-    if (!inFrame) collapseIn(REVEAL_MS);
-    return () => clearTimeout(timer.current);
+    let last = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const measure = (x: number, y: number) => {
+      const r = bar.current?.getBoundingClientRect();
+      if (!r) return;
+      setNear(
+        x >= r.left - NEAR_PX &&
+          x <= r.right + NEAR_PX &&
+          y >= r.top - NEAR_PX &&
+          y <= r.bottom + NEAR_PX,
+      );
+    };
+    // Throttled, with a trailing call so the last position always lands.
+    const onMove = (e: PointerEvent) => {
+      if (e.pointerType === "touch") return;
+      clearTimeout(timer);
+      const wait = last + THROTTLE_MS - Date.now();
+      if (wait <= 0) {
+        last = Date.now();
+        measure(e.clientX, e.clientY);
+      } else {
+        timer = setTimeout(() => {
+          last = Date.now();
+          measure(e.clientX, e.clientY);
+        }, wait);
+      }
+    };
+    const onLeave = () => {
+      clearTimeout(timer);
+      setNear(false);
+    };
+    document.addEventListener("pointermove", onMove);
+    document.documentElement.addEventListener("pointerleave", onLeave);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("pointermove", onMove);
+      document.documentElement.removeEventListener("pointerleave", onLeave);
+    };
   }, []);
 
   useEffect(() => {
@@ -74,64 +112,41 @@ export function FullScreenEscape({
     return () => document.removeEventListener("keydown", onKey);
   }, [inFrame, navigate, to]);
 
+  const label = inFrame ? "Open in Open Artifacts" : "Exit full screen";
   return (
-    <div className="oa-fsbar">
-      {live}
-      {gone ? (
-        <FullGone id={artifact.id} embed={inFrame} />
-      ) : (
-        <Link
-          to={to}
-          {...(inFrame ? { target: "_blank", rel: "noopener" } : {})}
-          className="oa-fsx"
-          data-open={open}
-          aria-label={
-            inFrame
-              ? `Open ${artifact.title} in Open Artifacts (opens in new tab)`
-              : `Exit full screen, back to ${artifact.title}`
-          }
-          onPointerEnter={(e) => {
-            if (e.pointerType === "touch") return;
-            held.current.hover = true;
-            widen();
-          }}
-          onPointerLeave={(e) => {
-            if (e.pointerType === "touch") return;
-            held.current.hover = false;
-            collapseIn(LINGER_MS);
-          }}
-          onFocus={(e) => {
-            if (!focusVisible(e.currentTarget)) return;
-            held.current.focus = true;
-            widen();
-          }}
-          onBlur={() => {
-            held.current.focus = false;
-            collapseIn(LINGER_MS);
-          }}
-          onClick={(e) => {
-            if (open || !coarse()) return;
-            e.preventDefault();
-            widen();
-            collapseIn(TAP_MS);
-          }}
-        >
-          <img
-            src={brand.markDark}
-            alt=""
-            aria-hidden="true"
-            width={18}
-            height={18}
-          />
-          <span className="oa-fsx-label">
-            {inFrame ? "Open in Open Artifacts" : "Exit full screen"}
-          </span>
-          {!inFrame && <X className="oa-fsicon" aria-hidden="true" />}
-          {inFrame && (
-            <ArrowUpRight className="oa-fsx-arrow" aria-hidden="true" />
-          )}
-        </Link>
-      )}
-    </div>
+    <TooltipProvider delayDuration={300}>
+      <div
+        className="oa-fsbar"
+        ref={bar}
+        data-near={near}
+        // The artifact's frame swallows pointer events, so leaving the group
+        // into it is the last signal the top document gets.
+        onPointerLeave={() => setNear(false)}
+      >
+        {live}
+        {gone ? (
+          <FullGone id={artifact.id} embed={inFrame} />
+        ) : (
+          <FsTip label={label}>
+            <Link
+              to={to}
+              {...(inFrame ? { target: "_blank", rel: "noopener" } : {})}
+              className="oa-fsx"
+              aria-label={
+                inFrame
+                  ? `Open ${artifact.title} in Open Artifacts (opens in new tab)`
+                  : `Exit full screen, back to ${artifact.title}`
+              }
+            >
+              {inFrame ? (
+                <ArrowUpRight className="oa-fsicon" aria-hidden="true" />
+              ) : (
+                <X className="oa-fsicon" aria-hidden="true" />
+              )}
+            </Link>
+          </FsTip>
+        )}
+      </div>
+    </TooltipProvider>
   );
 }

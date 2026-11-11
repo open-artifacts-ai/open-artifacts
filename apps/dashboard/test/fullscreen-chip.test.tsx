@@ -5,6 +5,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { createMemoryHistory, RouterProvider } from "@tanstack/react-router";
 import {
   act,
+  cleanup,
   fireEvent,
   render,
   screen,
@@ -15,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeQueryClient } from "../src/api/queryClient";
 import { RedirectProvider } from "../src/auth/redirect";
 import { createAppRouter } from "../src/router";
-import { LINGER_MS, REVEAL_MS, TAP_MS } from "../src/viewer/FullScreenEscape";
+import { NEAR_PX } from "../src/viewer/FullScreenEscape";
 import { installHarness } from "./harness";
 
 vi.mock("../src/viewer/bridge", () => ({
@@ -51,20 +52,9 @@ const mount = (path: string) => {
 };
 const chip = (name = TOP) => screen.findByRole("link", { name });
 const tick = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
-const coarse = (matches: boolean) =>
-  vi.spyOn(window, "matchMedia").mockImplementation(
-    (query: string) =>
-      ({
-        matches: query === "(pointer: coarse)" && matches,
-        media: query,
-        addEventListener: () => {},
-        removeEventListener: () => {},
-      }) as unknown as MediaQueryList,
-  );
-
 beforeEach(() => {
   vi.useFakeTimers({
-    toFake: ["setTimeout", "clearTimeout"],
+    toFake: ["setTimeout", "clearTimeout", "Date"],
     shouldAdvanceTime: true,
   });
 });
@@ -73,31 +63,19 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("full-screen chip, top level", () => {
-  it("is widened for 3 s on load, then collapses, with a stable name", async () => {
+describe("full-screen controls, top level", () => {
+  it("Exit is an icon with a stable name, in the group with Comments", async () => {
     mount(FULL);
     const a = await chip();
     expect(a).toHaveAttribute("href", viewerPath(OWNED));
     expect(a).not.toHaveAttribute("target");
-    expect(a).toHaveAttribute("data-open", "true");
-    expect(a).toHaveTextContent("Exit full screen");
-    await tick(REVEAL_MS);
-    expect(a).toHaveAttribute("data-open", "false");
-    // The label stays in the DOM, so the accessible name never changes.
-    expect(a).toHaveTextContent("Exit full screen");
     expect(a).toHaveAccessibleName(TOP);
-    expect(a.querySelector("img")).toHaveAttribute("aria-hidden", "true");
-  });
-
-  it("phone pill: the icons are hidden from AT and both controls keep their names", async () => {
-    mount(FULL);
-    const a = await chip();
+    expect(a).toHaveTextContent("");
+    expect(a).not.toHaveAttribute("data-open");
     const bar = a.closest(".oa-fsbar") as HTMLElement;
     const comments = await within(bar).findByRole("button", {
       name: /^Comments/,
     });
-    // CSS shows only the icons at 600px and below; the names do not change.
-    expect(a).toHaveAccessibleName(TOP);
     expect(comments.getAttribute("aria-label")).toMatch(
       /^Comments(, \d+ open)?$/,
     );
@@ -117,64 +95,56 @@ describe("full-screen chip, top level", () => {
     ).toBeTruthy();
   });
 
-  it("widens on hover and collapses 400 ms after the pointer leaves", async () => {
+  it("is near when the pointer is within NEAR_PX of the group, and clears on leave", async () => {
     mount(FULL);
     const a = await chip();
-    await tick(REVEAL_MS);
-    fireEvent.pointerEnter(a, { pointerType: "mouse" });
-    expect(a).toHaveAttribute("data-open", "true");
-    await tick(REVEAL_MS * 2);
-    expect(a).toHaveAttribute("data-open", "true");
-    fireEvent.pointerLeave(a, { pointerType: "mouse" });
-    await tick(LINGER_MS - 50);
-    expect(a).toHaveAttribute("data-open", "true");
-    await tick(50);
-    expect(a).toHaveAttribute("data-open", "false");
+    const bar = a.closest(".oa-fsbar") as HTMLElement;
+    vi.spyOn(bar, "getBoundingClientRect").mockReturnValue({
+      left: 900,
+      right: 1000,
+      top: 8,
+      bottom: 40,
+      width: 100,
+      height: 32,
+      x: 900,
+      y: 8,
+      toJSON: () => ({}),
+    });
+    expect(bar).toHaveAttribute("data-near", "false");
+    fireEvent.pointerMove(document, {
+      clientX: 900 - NEAR_PX + 1,
+      clientY: 40,
+      pointerType: "mouse",
+    });
+    expect(bar).toHaveAttribute("data-near", "true");
+    await tick(100);
+    fireEvent.pointerMove(document, {
+      clientX: 900 - NEAR_PX - 20,
+      clientY: 40,
+      pointerType: "mouse",
+    });
+    expect(bar).toHaveAttribute("data-near", "false");
+    await tick(100);
+    fireEvent.pointerMove(document, { clientX: 950, clientY: 20 });
+    expect(bar).toHaveAttribute("data-near", "true");
+    fireEvent.pointerLeave(document.documentElement);
+    expect(bar).toHaveAttribute("data-near", "false");
   });
 
-  it("widens on keyboard focus and collapses 400 ms after focus moves", async () => {
-    mount(FULL);
-    const a = await chip();
-    await tick(REVEAL_MS);
-    act(() => a.focus());
-    expect(a).toHaveAttribute("data-open", "true");
-    act(() => a.blur());
-    await tick(LINGER_MS);
-    expect(a).toHaveAttribute("data-open", "false");
+  it("stops listening when it unmounts", async () => {
+    const remove = vi.spyOn(document, "removeEventListener");
+    const { unmount } = (() => {
+      mount(FULL);
+      return { unmount: () => cleanup() };
+    })();
+    await chip();
+    unmount();
+    expect(remove.mock.calls.some(([t]) => t === "pointermove")).toBe(true);
   });
 
-  it("coarse pointer: the first tap widens without navigating, the second follows", async () => {
-    coarse(true);
+  it("a click follows the link", async () => {
     const router = mount(FULL);
     const a = await chip();
-    await tick(REVEAL_MS);
-    fireEvent.click(a);
-    expect(a).toHaveAttribute("data-open", "true");
-    expect(router.state.location.pathname).toBe(FULL);
-    await tick(TAP_MS - 100);
-    expect(a).toHaveAttribute("data-open", "true");
-    fireEvent.click(a);
-    await waitFor(() =>
-      expect(router.state.location.pathname).toBe(viewerPath(OWNED)),
-    );
-  });
-
-  it("coarse pointer: a tap after the 4 s widen collapsed it is a first tap again", async () => {
-    coarse(true);
-    const router = mount(FULL);
-    const a = await chip();
-    await tick(REVEAL_MS);
-    fireEvent.click(a);
-    await tick(TAP_MS);
-    expect(a).toHaveAttribute("data-open", "false");
-    fireEvent.click(a);
-    expect(router.state.location.pathname).toBe(FULL);
-  });
-
-  it("a fine pointer follows on the first click", async () => {
-    const router = mount(FULL);
-    const a = await chip();
-    await tick(REVEAL_MS);
     fireEvent.click(a);
     await waitFor(() =>
       expect(router.state.location.pathname).toBe(viewerPath(OWNED)),
@@ -191,7 +161,7 @@ describe("full-screen chip, top level", () => {
   });
 });
 
-describe("full-screen chip, embedded", () => {
+describe("full-screen controls, embedded", () => {
   beforeEach(() => {
     Object.defineProperty(window, "self", {
       configurable: true,
@@ -205,20 +175,17 @@ describe("full-screen chip, embedded", () => {
     });
   });
 
-  it("opens in a new tab, rests collapsed and ignores Esc", async () => {
+  it("opens in a new tab as an icon and ignores Esc", async () => {
     const router = mount(FULL);
     const a = await chip(EMBED);
     expect(a).toHaveAttribute("href", viewerPath(OWNED));
     expect(a).toHaveAttribute("target", "_blank");
     expect(a).toHaveAttribute("rel", "noopener");
-    expect(a).toHaveTextContent("Open in Open Artifacts");
-    expect(a.querySelector("svg.oa-fsx-arrow")).not.toBeNull();
-    expect(a).toHaveAttribute("data-open", "false");
+    expect(a).toHaveTextContent("");
+    expect(a.querySelector("svg.oa-fsicon")).not.toBeNull();
     fireEvent.keyDown(document, { key: "Escape" });
-    await tick(REVEAL_MS);
+    await tick(100);
     expect(router.state.location.pathname).toBe(FULL);
-    fireEvent.pointerEnter(a, { pointerType: "mouse" });
-    expect(a).toHaveAttribute("data-open", "true");
     expect(a).toHaveAccessibleName(EMBED);
   });
 });

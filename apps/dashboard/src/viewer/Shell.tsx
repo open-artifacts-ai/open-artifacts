@@ -37,7 +37,7 @@ import {
 } from "./comments/useComments";
 import { CommentsResizer, useCommentsWidthVar } from "./commentsWidth";
 import { FrameLoader, LOAD_TIMEOUT_MS, LOADER_DELAY_MS } from "./FrameLoader";
-import { FullScreenEscape } from "./FullScreenEscape";
+import { FsTip, FullScreenEscape } from "./FullScreenEscape";
 import { frameLoad, SANDBOX, safeContentUrl } from "./frame";
 import { FullLive, GoneBanner, LiveAnnouncer, TitleLive } from "./LiveChip";
 import {
@@ -652,22 +652,26 @@ function Viewer({
             live={
               <>
                 {commentsButton && (
-                  <Button
-                    variant="outline"
-                    size="xs"
-                    className="oa-fscomments"
-                    aria-label={
-                      commentsButton.open > 0
-                        ? `Comments, ${commentsButton.open} open`
-                        : "Comments"
-                    }
-                    aria-expanded={commentsButton.expanded}
-                    onClick={commentsButton.onClick}
-                  >
-                    <MessageSquare className="oa-fsicon" aria-hidden="true" />
-                    <span className="oa-fsword">Comments</span>
-                    {commentsButton.open > 0 && ` ${commentsButton.open}`}
-                  </Button>
+                  <FsTip label="Comments">
+                    <button
+                      type="button"
+                      className="oa-fscomments"
+                      aria-label={
+                        commentsButton.open > 0
+                          ? `Comments, ${commentsButton.open} open`
+                          : "Comments"
+                      }
+                      aria-expanded={commentsButton.expanded}
+                      onClick={commentsButton.onClick}
+                    >
+                      <MessageSquare className="oa-fsicon" aria-hidden="true" />
+                      {commentsButton.open > 0 && (
+                        <span className="oa-fscount">
+                          {commentsButton.open}
+                        </span>
+                      )}
+                    </button>
+                  </FsTip>
                 )}
                 {isEmbed() && artifact.comments === true && (
                   <a
