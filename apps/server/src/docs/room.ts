@@ -49,9 +49,15 @@ const MAX_AWARENESS_IDS = 8;
 const MAX_FRAME_BYTES = DOC_MAX_BYTES + 64;
 /** A sync step 1 carries a state vector; larger ones are refused. */
 const MAX_SV_BYTES = 64 * 1024;
-/** Full-state replies (sync step 1) per socket per window; extras get nothing. */
-const MAX_STATE_REPLIES = 2;
-const STATE_REPLY_WINDOW_MS = 10_000;
+/**
+ * Full-state budget per ACTOR per room, across reconnects: a token bucket.
+ * A socket upgrade costs one token and each full-state reply one more.
+ * Anonymous (ip:) actors share one stricter bucket.
+ */
+const BUDGET_CAP = 6;
+const BUDGET_REFILL_MS = 60_000;
+const ANON_BUDGET_CAP = 10;
+const ANON_BUDGET_KEY = "ip:*";
 /** Awareness frames larger than this are dropped. */
 const MAX_AWARENESS_BYTES = 8 * 1024;
 
@@ -71,6 +77,8 @@ const MAX_AWARENESS_PER_SEC = 10;
 /** A frame the room refuses and closes the socket for. */
 class BadFrame extends Error {}
 
+const RATE_LIMITED_FRAME =
+  '{"type":"error","code":"rate_limited","message":"Too many reconnects. Try again shortly."}';
 const BAD_UPDATE_FRAME =
   '{"type":"error","code":"bad_update","message":"That update could not be read."}';
 
@@ -84,7 +92,6 @@ interface Attachment {
   aw: [number, number][];
 }
 
-const EMPTY_STEP2 = new Uint8Array([MSG_SYNC, SYNC_STEP2, 2, 0, 0]);
 const EMPTY_UPDATE_LEN = 2;
 const isEmptyUpdate = (u: Uint8Array) =>
   u.byteLength === EMPTY_UPDATE_LEN && u[0] === 0 && u[1] === 0;
@@ -169,7 +176,7 @@ export class DocRoom extends DurableObject<Env> {
     const rawAt = req.headers.get(AUTHZ_AT_HEADER);
     const authzAt = Number(rawAt ?? Number.NaN);
     const validAt = Number.isSafeInteger(authzAt) && authzAt >= 1;
-    if ((actor.startsWith("u:") || rawAt !== null) && !validAt)
+    if (!validAt)
       return new Response("Missing authorization time", { status: 400 });
 
     const anon = actor.startsWith("ip:");
@@ -186,6 +193,7 @@ export class DocRoom extends DurableObject<Env> {
     )
       return new Response("Too many subscriptions", { status: 429 });
 
+    const limited = !this.takeToken(actor);
     const pair = new WebSocketPair();
     const server = pair[1];
     this.ctx.acceptWebSocket(server, [
@@ -198,6 +206,15 @@ export class DocRoom extends DurableObject<Env> {
       actor,
       aw: [],
     } satisfies Attachment);
+    if (limited) {
+      try {
+        server.send(RATE_LIMITED_FRAME);
+        server.close(1013, "try_again");
+      } catch {
+        // already closed
+      }
+      return new Response(null, { status: 101, webSocket: pair[0] });
+    }
     // Authorized before this doc's last access change: the check may have
     // seen the old access, so refuse (any actor), as ArtifactRuntime does.
     const changed = this.accessChangedAt();
@@ -300,8 +317,11 @@ export class DocRoom extends DurableObject<Env> {
       } catch {
         throw new BadFrame("bad state vector");
       }
-      if (this.allowStateReply(ws)) this.sendState(ws);
-      else ws.send(EMPTY_STEP2); // cheap: the client still gets its answer
+      if (this.takeToken(att.actor)) this.sendState(ws);
+      else {
+        ws.send(RATE_LIMITED_FRAME);
+        ws.close(1013, "try_again");
+      }
       return;
     }
     if (sub !== SYNC_STEP2 && sub !== SYNC_UPDATE)
@@ -367,17 +387,32 @@ export class DocRoom extends DurableObject<Env> {
     this.broadcast(encoding.toUint8Array(out), ws);
   }
 
-  private stateReplies = new WeakMap<WebSocket, { at: number; n: number }>();
+  /** Tokens per actor key (in memory; idle full buckets are evicted). */
+  private budgets = new Map<string, { tokens: number; at: number }>();
+  /** Bucket size for non-anonymous actors (tests may widen it). */
+  budgetCap = BUDGET_CAP;
 
-  /** At most MAX_STATE_REPLIES full-state replies per socket per window. */
-  private allowStateReply(ws: WebSocket): boolean {
+  private takeToken(actor: string): boolean {
+    const anon = actor.startsWith("ip:");
+    const key = anon ? ANON_BUDGET_KEY : actor;
+    const cap = anon
+      ? Math.min(ANON_BUDGET_CAP, this.budgetCap)
+      : this.budgetCap;
     const t = this.now();
-    const r = this.stateReplies.get(ws);
-    if (!r || t - r.at >= STATE_REPLY_WINDOW_MS || t < r.at) {
-      this.stateReplies.set(ws, { at: t, n: 1 });
-      return true;
+    for (const [k, b] of this.budgets)
+      if (k !== key && t - b.at >= BUDGET_REFILL_MS) this.budgets.delete(k);
+    const cur = this.budgets.get(key);
+    let tokens = cap;
+    if (cur) {
+      const refill = (Math.max(0, t - cur.at) / BUDGET_REFILL_MS) * cap;
+      tokens = Math.min(cap, cur.tokens + refill);
     }
-    return ++r.n <= MAX_STATE_REPLIES;
+    if (tokens < 1) {
+      this.budgets.set(key, { tokens, at: t });
+      return false;
+    }
+    this.budgets.set(key, { tokens: tokens - 1, at: t });
+    return true;
   }
 
   /** Arms the alarm at `at` unless one is already armed at or before it. */
@@ -438,6 +473,12 @@ export class DocRoom extends DurableObject<Env> {
    */
   private onAwareness(ws: WebSocket, att: Attachment, msg: Uint8Array) {
     if (msg.byteLength > MAX_AWARENESS_BYTES) return;
+    // Charge every inbound frame before any parsing or ownership scan.
+    const sec = Math.floor(this.now() / 1000);
+    const rate = this.awRate.get(ws);
+    if (rate && rate.sec === sec) {
+      if (++rate.n > MAX_AWARENESS_PER_SEC) return;
+    } else this.awRate.set(ws, { sec, n: 1 });
     const entries: { id: number; clock: number; state: string }[] = [];
     try {
       const outer = decoding.createDecoder(msg);
@@ -482,13 +523,7 @@ export class DocRoom extends DurableObject<Env> {
       tracked++;
       return true;
     });
-    // Only a frame with something of ours counts toward the rate limit.
     if (keep.length === 0) return;
-    const sec = Math.floor(this.now() / 1000);
-    const rate = this.awRate.get(ws);
-    if (rate && rate.sec === sec) {
-      if (++rate.n > MAX_AWARENESS_PER_SEC) return;
-    } else this.awRate.set(ws, { sec, n: 1 });
     let changed = false;
     for (const e of keep) {
       const at = att.aw.findIndex(([c]) => c === e.id);

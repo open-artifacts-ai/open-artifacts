@@ -41,14 +41,24 @@ interface Client {
   closed: Promise<void>;
 }
 
+const widened = new WeakSet<object>();
+
 async function connect(
   stub: Stub,
   o: {
     role?: "edit" | "read";
     actor?: string;
     authzAt?: number;
+    /** Keep the real per-actor full-state budget (default: widened). */
+    strict?: boolean;
   } = {},
 ): Promise<Client> {
+  if (!o.strict && !widened.has(stub)) {
+    widened.add(stub);
+    await runInDurableObject(stub, (r: DocRoom) => {
+      r.budgetCap = 1_000_000;
+    });
+  }
   const headers: Record<string, string> = {
     Upgrade: "websocket",
     [ACTOR_HEADER]: o.actor ?? `u:user-${++seq}`,
@@ -603,20 +613,36 @@ describe("DocRoom awareness hardening", () => {
     expect(a.ws.readyState).toBe(WebSocket.OPEN);
   });
 
-  it("foreign-only frames do not count toward the rate limit", async () => {
+  it("charges the limiter before any parsing or ownership scan", async () => {
     const stub = roomStub();
     await inRoom(stub, (r) => {
-      (r as unknown as { now: () => number }).now = () => 7_000;
+      const x = r as unknown as {
+        now: () => number;
+        ownedElsewhere: (ws: WebSocket, id: number) => boolean;
+      };
+      x.now = () => 7_000;
+      const real = x.ownedElsewhere.bind(r);
+      (globalThis as { __scans?: number }).__scans = 0;
+      x.ownedElsewhere = (ws, id) => {
+        (globalThis as { __scans?: number }).__scans =
+          ((globalThis as { __scans?: number }).__scans ?? 0) + 1;
+        return real(ws, id);
+      };
     });
     const a = await connect(stub);
     const b = await connect(stub);
     b.ws.send(awFrame([[800, 1, '{"b":1}']]));
     await b.ping();
+    await inRoom(stub, () => {
+      (globalThis as { __scans?: number }).__scans = 0;
+    });
     for (let i = 0; i < 30; i++) a.ws.send(awFrame([[800, 2 + i, '{"x":1}']]));
-    a.ws.send(awFrame([[801, 1, '{"a":1}']]));
-    const seen: number[] = [];
-    b.awareness.on("update", (u: { added: number[] }) => seen.push(...u.added));
-    await b.until(() => seen.includes(801));
+    await a.ping();
+    const scans = await inRoom(
+      stub,
+      () => (globalThis as { __scans?: number }).__scans,
+    );
+    expect(scans).toBeLessThanOrEqual(10);
   });
 
   it("drops awareness past the per-second rate", async () => {
@@ -654,13 +680,6 @@ describe("DocRoom review fixes (#2154)", () => {
     for (let i = 0; i < n; i++) d.getText("t").insert(i, "v");
     return ups;
   };
-  const step1Frame = () => {
-    const e = encoding.createEncoder();
-    encoding.writeVarUint(e, 0);
-    syncProtocol.writeSyncStep1(e, new Y.Doc());
-    return encoding.toUint8Array(e);
-  };
-
   it("closes a malformed step 1 and a padded frame", async () => {
     const stub = roomStub();
     const a = await connect(stub);
@@ -682,26 +701,6 @@ describe("DocRoom review fixes (#2154)", () => {
     const a = await connect(stub);
     a.ws.send(new Uint8Array(DOC_MAX_BYTES + 1024));
     await a.closed;
-  });
-
-  it("answers at most two full-state step 1s per window; extras get an empty step 2", async () => {
-    const stub = roomStub();
-    const w = await connect(stub);
-    type(w, "state");
-    await w.ping();
-    await runDurableObjectAlarm(stub);
-    await inRoom(stub, (r) => {
-      (r as unknown as { now: () => number }).now = () => 50_000;
-    });
-    const r = await connect(stub, { role: "read" });
-    // connect used one reply; one more is allowed, then empty answers.
-    let frames = 0;
-    r.ws.addEventListener("message", () => frames++);
-    for (let i = 0; i < 5; i++) r.ws.send(step1Frame());
-    await r.until(() => frames >= 5);
-    await r.ping();
-    // 1 full reply = update row + snapshot-step2 (2 frames); 4 empty = 4.
-    expect(frames).toBeLessThanOrEqual(2 + 4 + 1);
   });
 
   it("a Skip in a merged update never advances the state vector past the hole", async () => {
@@ -817,5 +816,75 @@ describe("DocRoom review fixes (#2154)", () => {
     await b.until(() => !b.awareness.getStates().has(950));
     a.ws.close();
     await b.until(() => !b.awareness.getStates().has(951));
+  });
+});
+
+describe("DocRoom per-actor budget and authorization time (#2154)", () => {
+  const rawOpen = async (stub: Stub, actor: string) => {
+    const res = await stub.fetch("https://room/ws", {
+      headers: {
+        Upgrade: "websocket",
+        [ACTOR_HEADER]: actor,
+        [DOC_ROLE_HEADER]: "read",
+        [AUTHZ_AT_HEADER]: String(Date.now()),
+      },
+    });
+    const ws = res.webSocket as WebSocket;
+    ws.accept();
+    return new Promise<{ code: number | null; opened: boolean }>((resolve) => {
+      let opened = false;
+      ws.addEventListener("message", (e) => {
+        if (typeof e.data !== "string") opened = true;
+        if (opened) resolve({ code: null, opened });
+      });
+      ws.addEventListener("close", (e) => resolve({ code: e.code, opened }));
+    });
+  };
+
+  it("budgets full-state work per actor across reconnects, refills, spares others", async () => {
+    const stub = roomStub();
+    let t = 5_000_000;
+    await inRoom(stub, (r) => {
+      (r as unknown as { now: () => number }).now = () => t;
+    });
+    const actor = "u:budget";
+    for (let i = 0; i < 3; i++) {
+      const c = await connect(stub, { actor, strict: true, role: "read" });
+      c.ws.close();
+    }
+    expect((await rawOpen(stub, actor)).code).toBe(1013);
+    const other = await rawOpen(stub, "u:someone-else");
+    expect(other.opened).toBe(true);
+    t += 61_000;
+    expect((await rawOpen(stub, actor)).opened).toBe(true);
+  });
+
+  it("an over-budget step 1 gets rate_limited and a 1013 close", async () => {
+    const stub = roomStub();
+    await inRoom(stub, (r) => {
+      (r as unknown as { now: () => number }).now = () => 9_000_000;
+    });
+    const a = await connect(stub, { strict: true, role: "read" });
+    const enc = encoding.createEncoder();
+    encoding.writeVarUint(enc, 0);
+    syncProtocol.writeSyncStep1(enc, new Y.Doc());
+    const frame = encoding.toUint8Array(enc);
+    for (let i = 0; i < 8; i++) a.ws.send(frame);
+    await a.closed;
+    expect(a.texts.some((x) => x.includes("rate_limited"))).toBe(true);
+  });
+
+  it("refuses ip: and agent: actors without a trusted authorization time", async () => {
+    const stub = roomStub();
+    for (const actor of ["ip:1.2.3.4", "agent:bot-1"]) {
+      const res = await stub.fetch("https://room/ws", {
+        headers: {
+          Upgrade: "websocket",
+          [ACTOR_HEADER]: actor,
+          [DOC_ROLE_HEADER]: "read",
+        },
+      });
+      expect(res.status).toBe(400);
+    }
   });
 });
