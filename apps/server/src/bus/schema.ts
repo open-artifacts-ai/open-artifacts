@@ -359,6 +359,17 @@ create table if not exists notices (
 create index if not exists notices_due on notices(parked, not_before);
 create index if not exists notices_expiry on notices(expires_at);
 create index if not exists notices_name on notices(to_lname);
+
+-- #1752: notices sent to a notice_ack socket, waiting for its ack or refuse.
+-- ack is the JSON the hub reports back to the comment target. Bounded and
+-- expiring; written and read only by BusHub.
+create table if not exists notice_acks (
+  msg_id text primary key,
+  machine_id text not null,
+  ack text not null,
+  expires_at integer not null
+);
+create index if not exists notice_acks_expiry on notice_acks(expires_at);
 `;
 
 const HUB_SCHEMA_B7_INDEXES = `
@@ -502,6 +513,15 @@ export function migrateHub(sql: SqlStorage, now: number = Date.now()): void {
       now,
     );
   }
+  // #1752: a waiting notice keeps the target JSON it was sent with.
+  const noticeCols = new Set(
+    sql
+      .exec<{ name: string }>("select name from pragma_table_info('notices')")
+      .toArray()
+      .map((r) => r.name),
+  );
+  if (!noticeCols.has("ack"))
+    sql.exec("alter table notices add column ack text");
   sql.exec(HUB_SCHEMA_B7_INDEXES);
   // open-bus #422: when the machine's last daemon socket went (epoch ms);
   // null while it is connected, or not yet seen offline. The alarm closes the
