@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { readdirSync, readFileSync, readlinkSync } from "node:fs";
 import { systemTool } from "@oa/bus-ipc";
 
 /** Every OS read is bounded like `commOf`: a slow or failing read means "not attached". */
@@ -34,6 +34,10 @@ export type AttachDeps = {
  * with session B open can still claim B through this service. The
  * cross-person line is unchanged.
  */
+/** A binary replaced on disk reads `<path> (deleted)`: the same path, so the same program. */
+export const exePath = (exe: string | null): string | null =>
+  exe === null ? null : exe.replace(/ \(deleted\)$/, "");
+
 export function attachedTo(
   service: number,
   deps: AttachDeps,
@@ -42,9 +46,9 @@ export function attachedTo(
   let ports: Set<number> | null | undefined;
   let parent: number | null | undefined;
   return (tui) => {
-    if (svcExe === undefined) svcExe = deps.exeOf(service);
+    if (svcExe === undefined) svcExe = exePath(deps.exeOf(service));
     if (!svcExe) return false;
-    if (deps.exeOf(tui) !== svcExe) return false;
+    if (exePath(deps.exeOf(tui)) !== svcExe) return false;
     if (parent === undefined) parent = deps.ppidOf(service);
     if (parent === tui) return true;
     if (ports === undefined) ports = deps.listenPorts(service);
@@ -195,7 +199,8 @@ export const defaultAttachDeps: AttachDeps = {
   exeOf(pid) {
     if (process.platform === "linux") {
       try {
-        return realpathSync(`/proc/${pid}/exe`);
+        // readlink, not realpath: a binary replaced in place (an update) reads "<path> (deleted)".
+        return readlinkSync(`/proc/${pid}/exe`);
       } catch {
         return null;
       }

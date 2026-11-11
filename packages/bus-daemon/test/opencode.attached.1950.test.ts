@@ -80,6 +80,25 @@ describe("attachedTo (#1950)", () => {
       false,
     );
   });
+  it("treats a binary replaced in place as the same program", () => {
+    const d = world({
+      exe: {
+        10: "/x/opencode (deleted)",
+        11: "/x/opencode",
+        66: "/y/opencode",
+      },
+      listen: { 10: [4001] },
+      conn: { 11: [4001], 66: [4001] },
+    });
+    expect(attachedTo(10, d)(11)).toBe(true);
+    expect(attachedTo(10, d)(66)).toBe(false);
+    const flipped = world({
+      exe: { 10: "/x/opencode", 11: "/x/opencode (deleted)" },
+      listen: { 10: [4001] },
+      conn: { 11: [4001] },
+    });
+    expect(attachedTo(10, flipped)(11)).toBe(true);
+  });
   it("reads the service once per hello, not once per TUI", () => {
     let listens = 0;
     const d = world({ ...base, conn: { 11: [4001], 21: [4002] } });
