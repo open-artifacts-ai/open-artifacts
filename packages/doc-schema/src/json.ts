@@ -24,17 +24,16 @@ export function docFromJSON(json: DocJSON): PMNode {
 }
 
 /**
- * A doc node or JSON as a node of docSchema. A node from another schema is
- * rebuilt from its JSON, so its marks and attributes are checked against
- * docSchema, not the schema it came from.
+ * A doc node or JSON as a doc node of docSchema. A PMNode is always rebuilt
+ * from its JSON: ProseMirror lets a node of this schema carry marks of another
+ * schema (a paragraph with no mark set), and check() validates each mark
+ * against its own type, so only a rebuild checks every node, mark and
+ * attribute against docSchema. A root that isn't a doc is refused.
  */
 export function toDocNode(doc: PMNode | DocJSON): PMNode {
-  if (doc instanceof PMNode || "check" in doc) {
-    const node = doc as PMNode;
-    if (node.type.schema !== docSchema)
-      return docFromJSON(node.toJSON() as DocJSON);
-    node.check();
-    return node;
-  }
-  return docFromJSON(doc as DocJSON);
+  const json =
+    doc instanceof PMNode || "check" in doc
+      ? ((doc as PMNode).toJSON() as DocJSON)
+      : (doc as DocJSON);
+  return docFromJSON(json);
 }

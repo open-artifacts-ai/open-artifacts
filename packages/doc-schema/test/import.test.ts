@@ -379,6 +379,26 @@ describe("foreign schemas and code languages", () => {
     ).not.toThrow();
   });
 
+  it("re-validates a foreign mark on a docSchema node, and refuses a non-doc root", () => {
+    // ProseMirror lets a docSchema paragraph carry another schema's mark.
+    const mixed = docSchema.node("doc", null, [
+      docSchema.node("paragraph", null, [
+        docSchema.text("x", [
+          permissive.marks.link.create({ href: "javascript:x" }),
+        ]),
+      ]),
+    ]);
+    expect(() => docToMarkdown(mixed)).toThrow();
+    expect(() =>
+      docToYXmlFragment(mixed, new Y.Doc().getXmlFragment("d")),
+    ).toThrow();
+    const para = docSchema.node("paragraph", null, [docSchema.text("x")]);
+    expect(() => docToMarkdown(para)).toThrow();
+    expect(() =>
+      docToYXmlFragment(para, new Y.Doc().getXmlFragment("d")),
+    ).toThrow();
+  });
+
   const codeJSON = (language: unknown, text = "a") => ({
     type: "doc",
     content: [
