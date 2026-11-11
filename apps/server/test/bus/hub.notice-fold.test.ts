@@ -7,6 +7,7 @@ import { BUS_CAPS } from "@oa/bus-protocol";
 import { type BusNotice, NOTICE_SENDER, newId } from "@oa/shared";
 import { describe, expect, it, vi } from "vitest";
 import { migrateHub } from "../../src/bus/schema.js";
+import { setTargetState } from "../../src/runtime/comments-store.js";
 import { runtimeStub } from "../../src/runtime/do.js";
 import {
   notifyAgent,
@@ -360,5 +361,82 @@ describe("comment notice folding (#1752)", () => {
         expect.arrayContaining(["fold_n", "fold_ref", "fold_acks"]),
       );
     });
+  });
+
+  const NOACK = [BUS_CAPS.follow];
+  const mkNote = (
+    s: S,
+    art: string,
+    c: string,
+    notBefore?: number,
+  ): BusNotice => ({
+    id: newId(),
+    kind: "comment",
+    from: NOTICE_SENDER,
+    artifactId: art,
+    version: 1,
+    url: `https://app.test/a/${art}`,
+    to: s.to.address,
+    text: "Open Artifacts: someone mentioned you.",
+    coalesceKey: `${art}:mention:${s.to.key}:others`,
+    threadId: "t1",
+    commentId: c,
+    target: { kind: "mention", key: s.to.key },
+    ...(notBefore ? { notBefore } : {}),
+  });
+  const writeState = (art: string, c: string, state: string) =>
+    runInDurableObject(
+      e.ARTIFACT_RUNTIME.get(e.ARTIFACT_RUNTIME.idFromName(art)),
+      (_i, st) =>
+        st.storage.sql.exec(
+          "update comment_targets set state = ? where comment_id = ?",
+          state,
+          c,
+        ),
+    );
+
+  it("a live send folding a held notice to a socket without notice_ack settles own and folded targets (#2065)", async () => {
+    const s = await setup(NOACK);
+    const art = `art${++seq}`;
+    const d = await comeBack(s, NOACK);
+    await waitFor(d, "agent_ok");
+    for (const c of ["c1", "c2"]) await seedTarget(art, c, s.to.key);
+    await s.hub.deliverNotice(mkNote(s, art, "c1", Date.now() + 3_600_000));
+    expect(await s.hub.deliverNotice(mkNote(s, art, "c2"))).toBe("delivered");
+    for (const c of ["c1", "c2"])
+      await vi.waitFor(async () =>
+        expect(await targetState(art, c)).toBe("delivered"),
+      );
+  });
+
+  it("a Worker-budget gone before the hub's send is lifted to delivered (#2065)", async () => {
+    const s = await setup(NOACK);
+    const art = `art${++seq}`;
+    const d = await comeBack(s, NOACK);
+    await waitFor(d, "agent_ok");
+    await seedTarget(art, "c1", s.to.key);
+    await writeState(art, "c1", "gone");
+    await s.hub.deliverNotice(mkNote(s, art, "c1"));
+    await vi.waitFor(async () =>
+      expect(await targetState(art, "c1")).toBe("delivered"),
+    );
+  });
+
+  it("a late Worker gone after the hub's delivered stays delivered (#2065)", async () => {
+    const s = await setup(NOACK);
+    const art = `art${++seq}`;
+    const d = await comeBack(s, NOACK);
+    await waitFor(d, "agent_ok");
+    await seedTarget(art, "c1", s.to.key);
+    await s.hub.deliverNotice(mkNote(s, art, "c1"));
+    await vi.waitFor(async () =>
+      expect(await targetState(art, "c1")).toBe("delivered"),
+    );
+    await runInDurableObject(
+      e.ARTIFACT_RUNTIME.get(e.ARTIFACT_RUNTIME.idFromName(art)),
+      (_i, st) =>
+        setTargetState(st.storage.sql, "c1", "mention", s.to.key, "gone"),
+    );
+    expect(await targetState(art, "c1")).toBe("delivered");
   });
 });
