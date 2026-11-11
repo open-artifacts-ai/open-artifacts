@@ -70,7 +70,8 @@ const BAD_UPDATE_FRAME =
 export type DocRole = "edit" | "read";
 
 interface Attachment {
-  role: DocRole;
+  /** May write (set once at accept from the trusted route header). */
+  write: boolean;
   actor: string;
   /** Awareness [clientId, clock] pairs this socket announced (for removal). */
   aw: [number, number][];
@@ -185,7 +186,7 @@ export class DocRoom extends DurableObject<Env> {
       `a:${actor}`,
     ]);
     server.serializeAttachment({
-      role,
+      write: role === "edit",
       actor,
       aw: [],
     } satisfies Attachment);
@@ -285,7 +286,7 @@ export class DocRoom extends DurableObject<Env> {
     if (sub !== SYNC_STEP2 && sub !== SYNC_UPDATE)
       throw new BadFrame("unknown sync message");
     // The room, not the browser, enforces read-only.
-    if (att.role !== "edit") return;
+    if (!att.write) return;
     const update = decoding.readVarUint8Array(dec);
     if (isEmptyUpdate(update)) return;
     this.acceptUpdate(ws, att, update);
