@@ -169,6 +169,8 @@ test.describe("full-screen controls", () => {
     const comments = page.getByRole("button", { name: /^Comments/ });
     await expect(chip).toBeVisible();
     // The bar is before the frame in the DOM, so it holds the first Tab stops.
+    // The frame mounts after the bar: wait for both before comparing.
+    await expect(page.locator("iframe.oa-vframe")).toBeAttached();
     expect(
       await page.evaluate(() => {
         const bar = document.querySelector(".oa-fsbar");
