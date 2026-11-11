@@ -377,3 +377,10 @@ export const configFileLines = (
       restart: f.file.endsWith("/.oa-bus.json") || f.file.endsWith("/.git"),
     }),
   );
+
+/**
+ * True when HOME or the bus home is not the account's, so no account-wide
+ * service may be touched (#2099's `service.isolated`, read without needing its type).
+ */
+export const isolated = (ctx: Ctx): boolean =>
+  Boolean((ctx.service as { isolated?: unknown }).isolated);

@@ -15,6 +15,7 @@ import { habitsQuestion, habitsQuestionLines } from "../src/steps/habits.ts";
 import {
   leftoverTargets,
   noteMade,
+  pruneMade,
   readMade,
   removeMade,
 } from "../src/steps/leftovers.ts";
@@ -113,6 +114,21 @@ describe("uninstall --purge removes what install made", () => {
     );
     for (const f of [before, agents, oc, join(skills, "mine/SKILL.md")])
       expect(existsSync(f)).toBe(true);
+  });
+
+  it("pruneMade drops paths install never created, so a later user file is safe (#2221)", () => {
+    const { home, deps } = setup();
+    noteMade(deps);
+    const made = join(home, ".claude/skills");
+    mkdirSync(made, { recursive: true });
+    pruneMade(deps);
+    const kept = readMade(join(deps.busHome, "install.json"));
+    expect(kept).toEqual([made]);
+    // No Codex was here; the user adds an empty AGENTS.md later.
+    const later = join(home, ".codex/AGENTS.md");
+    put(later, "");
+    expect(removeMade(kept)).toEqual([made]);
+    expect(existsSync(later)).toBe(true);
   });
 
   it("a rerun of noteMade does not claim files that exist by then", () => {

@@ -263,6 +263,27 @@ describe("installAdapters", () => {
     expect(out.removed).toEqual(["claude"]);
   });
 
+  it("an isolated install never runs opencode, install or uninstall; the user is told", async () => {
+    const { deps, calls } = setup(["opencode"]);
+    deps.isolated = true;
+    const out = await installAdapters(deps);
+    expect(out.opencodeRestartByUser).toBe(true);
+    expect(out.opencodeIsolated).toBe(true);
+    expect(calls.some((c) => c.join() === OC_RESTART.join())).toBe(false);
+    const gone = await uninstallAdapters(deps);
+    expect(gone.opencodeIsolated).toBe(true);
+    expect(calls.some((c) => c.join() === OC_RESTART.join())).toBe(false);
+  });
+
+  it("an OPENCODE_CONFIG_DIR outside the home counts as isolated", async () => {
+    const { h, deps, calls } = setup(["opencode"]);
+    deps.env = { OPENCODE_CONFIG_DIR: mkdtempSync(join(tmpdir(), "ob-oc-")) };
+    const out = await installAdapters(deps);
+    expect(out.opencodeIsolated).toBe(true);
+    expect(calls.some((c) => c.join() === OC_RESTART.join())).toBe(false);
+    expect(h).toBeTruthy();
+  });
+
   it("an uninstall with nothing to remove does not restart OpenCode (#2105)", async () => {
     const { deps, calls } = setup(["opencode"]);
     await uninstallAdapters(deps);

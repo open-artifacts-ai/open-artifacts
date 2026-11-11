@@ -11,7 +11,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { HERMES_PLUGIN } from "@oa/bus-adapter-hermes";
 import {
@@ -137,6 +137,11 @@ export type AdapterDeps = {
   };
   which: (cmd: string) => boolean;
   exec: Exec;
+  /**
+   * HOME or the bus home is not the account's (a throwaway HOME, a review harness):
+   * `opencode service restart` would hit the account-wide service, so it is never run.
+   */
+  isolated?: boolean;
   /** The Codex desktop app's bundle; undefined where there is none to look for. */
   codexApp?: string;
   /** Test seam for the Hermes staging sweep: the clock and the pid check. */
@@ -153,6 +158,8 @@ export type InstallResult = {
   opencodeRestarted: boolean;
   /** OpenCode changed but this runs inside OpenCode: the user restarts it. */
   opencodeRestartByUser: boolean;
+  /** ... because the install is isolated, not because it runs inside OpenCode. */
+  opencodeIsolated: boolean;
   /** Pi and oh-my-pi resolve to this one extensions file (PI_CODING_AGENT_DIR): written once for both. */
   sharedPiFile?: string;
   /** Codex was configured, but no `codex` binary was found to wake its threads with. */
@@ -174,6 +181,7 @@ export type UninstallResult = {
   opencodeRestarted: boolean;
   /** As for install: the restart is left to the user. */
   opencodeRestartByUser: boolean;
+  opencodeIsolated: boolean;
   /** Hermes's plugin folder went with no `hermes` to run `plugins disable`. */
   hermesNoCli: boolean;
   /** OpenClaw's plugin folder went with no `openclaw` to run `plugins uninstall`. */
@@ -654,6 +662,7 @@ const codexHere = (
 /** Notes that carry a state to the result; the commands print their own line for them. */
 const OC_RESTARTED = "opencode service restarted";
 const OC_MANUAL = "opencode restart left to the user: running inside OpenCode";
+const OC_ISOLATED = "opencode restart left to the user: isolated install";
 
 /**
  * True when this ran from a shell OpenCode started: agent tool shells set
@@ -667,9 +676,19 @@ const insideOpencode = (deps: Pick<AdapterDeps, "env">) =>
       deps.env?.OPENCODE_SESSION_ID,
   );
 
+/** The service is the account's; this install is not (a throwaway HOME or config folder). */
+const isolatedInstall = (deps: AdapterDeps) => {
+  if (deps.isolated) return true;
+  const dir = deps.env?.OPENCODE_CONFIG_DIR;
+  if (!dir) return false;
+  const rel = relative(resolve(deps.home), resolve(dir));
+  return rel.startsWith("..") || isAbsolute(rel);
+};
+
 /**
  * A restart drops running OpenCode sessions, so it runs only when the config or
- * plugin changed, and never from inside an OpenCode session (that one would die).
+ * plugin changed, never from inside an OpenCode session (that one would die),
+ * and never for an isolated install (the service is the account's).
  */
 async function restartOpencode(
   deps: AdapterDeps,
@@ -677,6 +696,10 @@ async function restartOpencode(
   changed: boolean,
 ) {
   if (!changed) return;
+  if (isolatedInstall(deps)) {
+    notes.push(OC_ISOLATED);
+    return;
+  }
   if (insideOpencode(deps)) {
     notes.push(OC_MANUAL);
     return;
@@ -1062,6 +1085,7 @@ export const unshownNotes = (notes: string[]) =>
       // The service line says it, and the removal is already in "Removed from".
       n !== OC_RESTARTED &&
       n !== OC_MANUAL &&
+      n !== OC_ISOLATED &&
       !n.startsWith(RESTART_FAILED) &&
       !n.startsWith("removed oa_bus from "),
   );
@@ -1078,7 +1102,9 @@ export async function installAdapters(
     skipped,
     notes,
     opencodeRestarted: notes.includes(OC_RESTARTED),
-    opencodeRestartByUser: notes.includes(OC_MANUAL),
+    opencodeRestartByUser:
+      notes.includes(OC_MANUAL) || notes.includes(OC_ISOLATED),
+    opencodeIsolated: notes.includes(OC_ISOLATED),
     ...(done.includes("pi") && done.includes("omp") && sharedFile(deps)
       ? { sharedPiFile: paths(deps).pi }
       : {}),
@@ -1101,7 +1127,9 @@ export async function uninstallAdapters(
     skipped,
     notes,
     opencodeRestarted: notes.includes(OC_RESTARTED),
-    opencodeRestartByUser: notes.includes(OC_MANUAL),
+    opencodeRestartByUser:
+      notes.includes(OC_MANUAL) || notes.includes(OC_ISOLATED),
+    opencodeIsolated: notes.includes(OC_ISOLATED),
     hermesNoCli: notes.includes(HERMES_NO_CLI),
     openclawNoCli: notes.includes(OPENCLAW_NO_CLI),
     openclawNix: notes.includes(OPENCLAW_NIX),

@@ -11,6 +11,7 @@ import { useBusCmd } from "../bus-cmd.ts";
 import {
   askDaemon,
   type Ctx,
+  isolated,
   say,
   sayErr,
   socketFolderLines,
@@ -30,7 +31,7 @@ import {
 import { installClaudePlugins } from "../steps/claude-plugins.ts";
 import { readCodexVersion } from "../steps/codex.ts";
 import { hermesEnabled } from "../steps/hermes.ts";
-import { noteMade } from "../steps/leftovers.ts";
+import { noteMade, pruneMade } from "../steps/leftovers.ts";
 import { openclawVerify } from "../steps/openclaw.ts";
 import { installShim } from "../steps/path-shim.ts";
 import { fetchSkillText, installSkill } from "../steps/skill.ts";
@@ -195,6 +196,7 @@ async function harnessesStep(
     which: ctx.which,
     exec: ctx.exec,
     codexApp: ctx.codexApp,
+    isolated: isolated(ctx),
   });
   if (out.installed.length > 0) say(ctx, c.configured(out.installed));
   else if (out.skipped.length === 0) say(ctx, c.noHarness());
@@ -207,7 +209,8 @@ async function harnessesStep(
   for (const s of out.skipped)
     say(ctx, await skippedLines(ctx, s.harness, s.reason));
   if (out.installed.includes("opencode")) {
-    if (out.opencodeRestartByUser) say(ctx, c.opencodeRestartYourself());
+    if (out.opencodeRestartByUser)
+      say(ctx, c.opencodeRestartYourself(out.opencodeIsolated));
     else if (out.opencodeRestarted) say(ctx, c.restarted());
     else if (
       out.notes.some((n) => n.startsWith("opencode service restart failed"))
@@ -411,6 +414,7 @@ export function roster(ctx: Ctx, st: StatusReply): string[] {
 const BAD = new Set(["missing", "disabled", "not loaded"]);
 
 /** Each harness found here and how it is wired; read-only. */
+
 export async function harnessStates(
   ctx: Ctx,
 ): Promise<Partial<Record<Harness, string>>> {
@@ -521,16 +525,31 @@ export async function install(
   opts: InstallOpts & { check?: boolean },
   realCtx: Ctx,
 ): Promise<number> {
-  if (opts.habits) return habitsCommand(opts.habits, realCtx);
+  // A read-only run, or one that only sets the habits, makes nothing to record.
+  if (opts.check || opts.habits) return installRun(opts, realCtx);
+  const deps = {
+    home: realCtx.userHome,
+    busHome: realCtx.home,
+    env: realCtx.env,
+  };
   // Before install writes anything: purge later deletes only what was not there.
-  if (!opts.check)
+  try {
+    noteMade(deps);
+  } catch {}
+  try {
+    return await installRun(opts, realCtx);
+  } finally {
     try {
-      noteMade({
-        home: realCtx.userHome,
-        busHome: realCtx.home,
-        env: realCtx.env,
-      });
+      pruneMade(deps);
     } catch {}
+  }
+}
+
+async function installRun(
+  opts: InstallOpts & { check?: boolean },
+  realCtx: Ctx,
+): Promise<number> {
+  if (opts.habits) return habitsCommand(opts.habits, realCtx);
   const json = Boolean(opts.json && !opts.check);
   const ctx: Ctx = json ? { ...realCtx, stdout: realCtx.stderr } : realCtx;
   const c = ctx.copy;

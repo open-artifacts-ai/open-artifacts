@@ -248,9 +248,17 @@ export function copy(style: Style, bus: string = BUS_CMD) {
     ],
     restarted: () => done("Restarted the OpenCode service to load the plugin"),
     // Run from inside OpenCode, where a restart would end the session running this.
-    opencodeRestartYourself: () => [
-      warn("OpenCode was not restarted: this ran inside an OpenCode session"),
-      next("Outside OpenCode, in a terminal, run: opencode service restart"),
+    opencodeRestartYourself: (isolated = false) => [
+      warn(
+        isolated
+          ? "OpenCode was not restarted: this install is not on your account's home"
+          : "OpenCode was not restarted: this ran inside an OpenCode session",
+      ),
+      next(
+        isolated
+          ? "To load the plugin, run on your account: opencode service restart"
+          : "Outside OpenCode, in a terminal, run: opencode service restart",
+      ),
     ],
     // After the configured line, when PI_CODING_AGENT_DIR points both at one folder.
     sharedPiFile: () =>

@@ -85,6 +85,20 @@ export function noteMade(deps: Deps): void {
   updateInstallFile(file, { made });
 }
 
+/**
+ * After install: keep only the paths install really created, so one it never
+ * made (no Codex here) is not claimed, and a file the user adds there later is
+ * never purged.
+ */
+export function pruneMade(deps: Deps): void {
+  const file = paths(deps as AdapterDeps).record;
+  const before = madeOf(file);
+  if (!Array.isArray(readInstallFile(file).made)) return;
+  const made = before.filter(exists);
+  if (made.length === before.length) return;
+  updateInstallFile(file, { made });
+}
+
 /** Empty, or exactly the `{}` install wrote: nothing of the user's. */
 function emptyFile(path: string): boolean {
   try {

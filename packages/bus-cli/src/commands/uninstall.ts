@@ -2,6 +2,7 @@ import { join } from "node:path";
 import {
   askDaemon,
   type Ctx,
+  isolated,
   say,
   sayErr,
   tilde,
@@ -57,6 +58,7 @@ export async function uninstall(
     which: ctx.which,
     exec: ctx.exec,
     codexApp: ctx.codexApp,
+    isolated: isolated(ctx),
   });
   if (r.removed.length > 0) say(ctx, c.removedFrom(r.removed));
   // The skill files go with the wiring: only the ones carrying our header.
@@ -141,7 +143,8 @@ export async function uninstall(
       c.couldNotRemove(s.harness, tildeReason(ctx, s.harness, s.reason)),
     );
   if ([...r.removed, ...r.folderOnly].includes("opencode")) {
-    if (r.opencodeRestartByUser) say(ctx, c.opencodeRestartYourself());
+    if (r.opencodeRestartByUser)
+      say(ctx, c.opencodeRestartYourself(r.opencodeIsolated));
     else if (r.opencodeRestarted) say(ctx, c.restartedUnload());
     else if (
       r.notes.some((n) => n.startsWith("opencode service restart failed"))
