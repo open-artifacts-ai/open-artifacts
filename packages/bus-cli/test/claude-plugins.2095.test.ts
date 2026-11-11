@@ -874,8 +874,9 @@ describe("review fixes", () => {
       (o as Record<string, unknown>).outputStyle = "Mine";
     });
     f.failAdd = true;
-    await run(f, w, { version: "0.154.0" });
+    const r = await run(f, w, { version: "0.154.0" });
     expect(styleSetting(w.home)).toBe("Mine");
+    expect(r.notes.join(" ")).not.toContain("output style off");
   });
 
   it("does not roll back when the marketplace list fails after the add failed", async () => {
@@ -898,6 +899,9 @@ describe("review fixes", () => {
     expect(adds() - before).toBe(1);
     expect(r.notes.join(" ")).toContain("Run the install again");
     expect(r.notes.join(" ")).toContain("couldn't check");
+    // The marketplace may have landed: it stays recorded as ours, and the style is not left dangling.
+    expect(record(w.busHome)).toEqual({ marketplace: true, plugins: [] });
+    expect(styleSetting(w.home)).toBeUndefined();
   });
 
   it("records the old marketplace as ours when the rollback add times out but landed", async () => {

@@ -348,10 +348,13 @@ export function uninstallOutputStyle(deps: Where): OutputStyleResult {
  * set it and it still holds the plugin's style name, so it never points at a style
  * that is not installed. Anything the person chose is left alone.
  */
-export function clearOutputStyleIfOurs(deps: Where): OutputStyleResult {
+export function clearOutputStyleIfOurs(
+  deps: Where,
+): OutputStyleResult & { cleared: boolean } {
   const out: OutputStyleResult = { written: [], notes: [] };
-  if (setByUs(deps)) turnOff(deps, out);
-  return out;
+  if (!setByUs(deps)) return { ...out, cleared: false };
+  turnOff(deps, out);
+  return { ...out, cleared: !outputStyleOn(deps) };
 }
 
 /** Our record says we set outputStyle, and it still holds the plugin's style name. */

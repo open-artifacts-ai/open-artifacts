@@ -280,7 +280,8 @@ export async function installClaudePlugins(
       env: deps.env,
       busHome: deps.busHome,
     });
-    out.notes.push(...cleared.notes, ...copy.pluginsStyleCleared());
+    out.notes.push(...cleared.notes);
+    if (cleared.cleared) out.notes.push(...copy.pluginsStyleCleared());
   };
   const rollBack = async (
     ids: string[],
@@ -393,6 +394,10 @@ export async function installClaudePlugins(
           // The list failed too: do not guess, and do not roll back over a marketplace
           // that may be there. The record is not touched.
           out.notes.push(...copy.pluginsAddUnknown(r.message));
+          // A marketplace that did land stays ours (uninstall re-lists and removes it only
+          // if it is there and ours), and the style plugin is already gone.
+          saveRecord(deps.busHome, true, []);
+          clearStyle();
           return out;
         }
         if (!landed) {
