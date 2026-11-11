@@ -6432,12 +6432,24 @@ export class BusHub extends DurableObject<Env> {
       liveVisibleIn(sql, n.to.namespace, sent) === null
         ? liveFormer(sql, sent, now, { ns: n.to.namespace }, 2)
         : [];
-    const byFormer = former.length === 1 ? former[0] : undefined;
-    const lname = byFormer ? byFormer.name.toLowerCase() : sent;
-    const to = byFormer
-      ? { namespace: byFormer.namespace, name: byFormer.name }
+    // #1752: after a live name and a former name, a role address in the
+    // notice's own namespace reaches its current live holder, as a send does
+    // (same org and namespace scope; vacant is an offline agent).
+    const byRole =
+      former.length === 0 && liveVisibleIn(sql, n.to.namespace, sent) === null
+        ? resolveRoleIn(sql, OWNER_ORG_ID, n.to.namespace, sent)
+        : null;
+    const byAlias =
+      former.length === 1
+        ? former[0]
+        : byRole?.ok
+          ? byRole.agent
+          : undefined;
+    const lname = byAlias ? byAlias.name.toLowerCase() : sent;
+    const to = byAlias
+      ? { namespace: byAlias.namespace, name: byAlias.name }
       : n.to;
-    const agent = byFormer ?? liveVisibleIn(sql, to.namespace, lname);
+    const agent = byAlias ?? liveVisibleIn(sql, to.namespace, lname);
     const key = [to.namespace, lname, n.coalesceKey] as const;
     // No live session at the address: nothing is kept (and a waiting notice
     // for it is stale, so it goes too).

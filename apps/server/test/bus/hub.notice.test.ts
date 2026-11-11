@@ -1075,3 +1075,77 @@ describe("a notice to a renamed agent's former address (#1752)", () => {
     ).toBe("dropped");
   });
 });
+
+describe("a notice to a role address (#1752)", () => {
+  async function held() {
+    const m = await member();
+    const mach = await machine("Laptop", m.userId);
+    const d = await daemon(mach.token);
+    d.send({ ...plainHello(id("h")), caps: [BUS_CAPS.follow] } as never);
+    await waitFor(d, "hello_ok");
+    const namespace = ns("notice");
+    const ref = id("ref");
+    const name = uniq("holder");
+    d.send(up(id("u"), ref, name, namespace));
+    await waitFor(d, "agent_ok");
+    const stub = await hubOf(m.userId);
+    const agent = (await stub.snapshot()).agents.find((a) => a.name === name);
+    if (!agent) throw new Error("no agent");
+    const role = uniq("lead");
+    const put = (ns2: string, ag: string | null) =>
+      stub.putRole(ns2, role, ag);
+    const r = await put(namespace, agent.id);
+    if (!r.ok) throw new Error(`putRole refused: ${r.reason}`);
+    return { d, stub, userId: m.userId, namespace, name, role, put, agent };
+  }
+
+  it("reaches the agent now holding the role", async () => {
+    const s = await held();
+    const n = note({ namespace: s.namespace, name: s.role.toUpperCase() });
+    expect(await s.stub.deliverNotice(n)).toBe("delivered");
+    const f = await waitFor(s.d, "deliver");
+    expect(f.body).toBe(n.text);
+    expect(await waiting(s.userId)).toBe(0);
+  });
+
+  it("a live agent's name beats a role of the same name", async () => {
+    const s = await held();
+    // A later agent registering the role's name gets a different bus name
+    // (the role holds it), so force the clash: the live row wins in the hub.
+    const other = uniq("other");
+    s.d.send(up(id("u"), id("ref"), other, s.namespace));
+    const ok = await waitFor(s.d, "agent_ok");
+    await inHub(s.userId, (_i, st) => {
+      st.storage.sql.exec(
+        "update agents set name = ? where id = (select id from agents where name = ? and live = 1)",
+        s.role,
+        ok.bus_name,
+      );
+    });
+    const n = note({ namespace: s.namespace, name: s.role });
+    expect(await s.stub.deliverNotice(n)).toBe("delivered");
+    const f = await waitFor(s.d, "deliver");
+    expect(f.to_ref).not.toBe(undefined);
+  });
+
+  it("a vacant role is an offline agent: the notice is dropped", async () => {
+    const s = await held();
+    await s.put(s.namespace, null);
+    expect(
+      await s.stub.deliverNotice(
+        note({ namespace: s.namespace, name: s.role }),
+      ),
+    ).toBe("dropped");
+    expect(await waiting(s.userId)).toBe(0);
+  });
+
+  it("a role in another namespace does not resolve", async () => {
+    const s = await held();
+    expect(
+      await s.stub.deliverNotice(
+        note({ namespace: ns("elsewhere"), name: s.role }),
+      ),
+    ).toBe("dropped");
+    expect(delivers(s.d)).toEqual([]);
+  });
+});
