@@ -23,7 +23,7 @@ import {
   markTestStart,
   paceT19Hook,
 } from "../hook-pace";
-import { sendRead } from "../retry";
+import { sendPacedHook, sendRead } from "../retry";
 import { FETCH_MS, hookKey, rlA } from "../targets";
 
 // rl-a's helpers: sessions through TEST_HOOKS.session for users in its
@@ -36,10 +36,12 @@ export const RUN = randomBytes(3).toString("hex");
 const COOKIE = A.cookieName;
 
 // A POST is sent once (retry.ts) except the session hook, which is safe to
-// repeat; a reset before any response is infra, named.
+// repeat; a reset before any response is infra, named. Each attempt claims
+// its own hook-ledger slot (sendPacedHook), as the server spends one each.
 const post = (path: string, body: unknown, headers: Record<string, string>) =>
-  sendRead(
-    "POST",
+  sendPacedHook(
+    path,
+    () => paceT19Hook(A.app),
     () =>
       fetch(`${A.app}${path}`, {
         method: "POST",
@@ -48,15 +50,13 @@ const post = (path: string, body: unknown, headers: Record<string, string>) =>
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(FETCH_MS),
       }),
-    { route: path, repeatable: path === TEST_HOOKS.session },
   );
 
 /**
- * POST a /__test/* hook with rl-a's key: the raw response. Paced first
- * (hook-pace.ts): every /__test/* call counts against RL_ANON.
+ * POST a /__test/* hook with rl-a's key: the raw response. Paced before every
+ * attempt (hook-pace.ts): every /__test/* call counts against RL_ANON.
  */
 export async function hookRes(path: string, body: unknown = {}) {
-  await paceT19Hook(A.app);
   return post(path, body, { authorization: `Bearer ${KEY}` });
 }
 

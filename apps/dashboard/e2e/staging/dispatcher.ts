@@ -6,4 +6,10 @@ import { Agent, setGlobalDispatcher } from "undici";
 
 export const KEEP_ALIVE_TIMEOUT_MS = 1000;
 
-setGlobalDispatcher(new Agent({ keepAliveTimeout: KEEP_ALIVE_TIMEOUT_MS }));
+/** Both: an upstream "Keep-Alive: timeout=60" would otherwise override keepAliveTimeout. */
+export const keepAliveOptions = {
+  keepAliveTimeout: KEEP_ALIVE_TIMEOUT_MS,
+  keepAliveMaxTimeout: KEEP_ALIVE_TIMEOUT_MS,
+} as const;
+
+setGlobalDispatcher(new Agent(keepAliveOptions));

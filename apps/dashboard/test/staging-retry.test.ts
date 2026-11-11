@@ -7,6 +7,7 @@ import {
   InfraError,
   isNetworkError,
   REPEATABLE_WRITE_ROUTES,
+  sendPacedHook,
   sendRead,
 } from "../e2e/staging/retry";
 
@@ -181,5 +182,35 @@ describe("sendRead repeatable writes", () => {
       sendRead(method, send, { ...noWait, route, repeatable: true }),
     ).rejects.toThrow("(1 try)");
     expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("sendPacedHook", () => {
+  it("a session retry claims a slot for each attempt", async () => {
+    const pace = vi.fn(async () => 0);
+    const send = vi
+      .fn<() => Promise<Response>>()
+      .mockRejectedValueOnce(reset())
+      .mockResolvedValueOnce(new Response(null, { status: 200 }));
+    await sendPacedHook(TEST_HOOKS.session, pace, send, noWait);
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(pace).toHaveBeenCalledTimes(2);
+  });
+
+  it("another hook claims one slot and is sent once", async () => {
+    const pace = vi.fn(async () => 0);
+    const send = vi.fn<() => Promise<Response>>().mockRejectedValue(reset());
+    await expect(
+      sendPacedHook("/__test/other", pace, send, noWait),
+    ).rejects.toThrow("(1 try)");
+    expect(pace).toHaveBeenCalledTimes(1);
+  });
+});
+
+it("the dispatcher caps keep-alive at 1 s both ways", async () => {
+  const { keepAliveOptions } = await import("../e2e/staging/dispatcher");
+  expect(keepAliveOptions).toEqual({
+    keepAliveTimeout: 1000,
+    keepAliveMaxTimeout: 1000,
   });
 });

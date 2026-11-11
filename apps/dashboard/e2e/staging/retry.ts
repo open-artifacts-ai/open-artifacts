@@ -95,3 +95,24 @@ export async function sendRead(
     }
   }
 }
+
+/**
+ * A paced hook POST: `pace` (the hook-ledger slot claim) runs inside each
+ * attempt, so a retry after a reset claims its own slot, as the server's
+ * RL_ANON spends one per attempt. Only the session hook is repeatable.
+ */
+export function sendPacedHook(
+  route: string,
+  pace: () => Promise<unknown>,
+  send: () => Promise<Response>,
+  o: { backoff?: readonly number[]; wait?: (ms: number) => Promise<void> } = {},
+): Promise<Response> {
+  return sendRead(
+    "POST",
+    async () => {
+      await pace();
+      return send();
+    },
+    { ...o, route, repeatable: true },
+  );
+}
