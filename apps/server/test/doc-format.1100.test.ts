@@ -4,6 +4,8 @@ import { newId, R } from "@oa/shared";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
+import { DOC_SWITCH } from "../src/services/doc-switch.js";
+import { docsAvailable } from "../src/services/docs-available.js";
 import { api, errOf, login } from "./helpers.js";
 import { close, connect, textOf, tool } from "./mcp-helpers.js";
 
@@ -17,14 +19,17 @@ const app = createApp();
 let owner: { cookie: string; userId: string };
 let client: Client;
 
+DOC_SWITCH.creation = true;
+const savedPlan = (env as { PLAN?: string }).PLAN;
 beforeAll(async () => {
-  // Docs are off by default (doc-switch.1100.test.ts); on for this file.
-  (env as { DOCS_ENABLED?: string }).DOCS_ENABLED = "1";
+  // DOC_SWITCH.creation is opened here; a self-host with PLAN=paid has docs.
+  (env as { PLAN?: string }).PLAN = "paid";
   owner = await login(`doc-${newId().slice(0, 6).toLowerCase()}@x.com`);
   client = await connect((await createPat(env, owner.userId, "doc")).token);
 });
 afterAll(async () => {
-  (env as { DOCS_ENABLED?: string }).DOCS_ENABLED = undefined;
+  (env as { PLAN?: string }).PLAN = savedPlan;
+  DOC_SWITCH.creation = false;
   await close(client);
 });
 
@@ -45,6 +50,43 @@ const makeDoc = async (body: Record<string, unknown> = {}) => {
 
 const versionCount = async (id: string) =>
   ((await (await get(R.versions(id))).json()) as unknown[]).length;
+
+describe("the gate: hosted, or a self-host on Workers Paid", () => {
+  it("docsAvailable by deployment", () => {
+    expect(docsAvailable({ HOSTED: "1" })).toBe(true);
+    expect(docsAvailable({ PLAN: "paid" })).toBe(true);
+    expect(docsAvailable({ PLAN: "free" })).toBe(false);
+    expect(docsAvailable({})).toBe(false);
+  });
+
+  it("a self-host on PLAN=free: docs_need_paid with the next step", async () => {
+    (env as { PLAN?: string }).PLAN = "free";
+    try {
+      const r = await post(R.artifacts, { title: "x", format: "doc" });
+      expect(r.status).toBe(400);
+      const e = await errOf(r);
+      expect(e.code).toBe("docs_need_paid");
+      expect(e.message).toBe(
+        "Collaborative docs need Cloudflare's Workers Paid plan when you self-host. Or use hosted Open Artifacts: Solo is $1 a month.",
+      );
+    } finally {
+      (env as { PLAN?: string }).PLAN = "paid";
+    }
+  });
+
+  it("hosted with PLAN unset: allowed", async () => {
+    const e = env as { PLAN?: string; HOSTED?: string };
+    e.PLAN = undefined;
+    e.HOSTED = "1";
+    try {
+      const r = await post(R.artifacts, { title: "h", format: "doc" });
+      expect(r.status, await r.clone().text()).toBe(201);
+    } finally {
+      e.HOSTED = undefined;
+      e.PLAN = "paid";
+    }
+  });
+});
 
 describe("creating a doc", () => {
   it("from Markdown: format doc, one file doc.md, versions are docs", async () => {

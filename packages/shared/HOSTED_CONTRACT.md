@@ -318,7 +318,7 @@ These are the names P2 and P3 use; the contract wins. There is no
 | `edit_failed` | 400 | publish with `edits` where an `old` is not found or found more than once in the text at its step; details `{ index, reason: "not_found" \| "ambiguous", count }`; nothing is published (#1540) |
 | `revoke_not_closed` | 503 | `DELETE R.busMachine(id)` where the revoke landed in D1 but the bus hub could not close the machine's open connection: the machine is already revoked and cannot reconnect, and a repeat closes the connection (#1453). Nothing else answers it |
 | `use_edit_doc` | 400 | publish with content, files or edits to an existing doc (#1100): a doc changes through `edit_doc`, never a whole rewrite; nothing is published |
-| `docs_disabled` | 400 | publish with format `doc` where doc creation is off (#1100): the message names the Workers Paid plan (self-hosted) or hosted Solo; nothing is published |
+| `docs_need_paid` | 400 | publish with format `doc` on a self-host whose PLAN is not paid (#1100): the message names the Workers Paid plan and hosted Solo; nothing is published |
 | `invalid_successor` | 400 | transfer target isn't an active, non-guest, non-restricted member |
 | `member_active` | 409 | member transfer on an active non-guest member |
 | `directory_sync_off` | 409 | mapping or restricted-group change while sync is off or frozen (also Sync now) |

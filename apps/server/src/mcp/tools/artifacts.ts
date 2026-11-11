@@ -70,7 +70,7 @@ async function downloadUrl(
   return `${contentOrigin(env)}${p}`;
 }
 
-import { docsOn } from "../../services/doc-switch.js";
+import { docsAvailable } from "../../services/docs-available.js";
 
 export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
   const { env, user, caller } = t;
@@ -80,7 +80,7 @@ export function registerArtifactTools(server: McpServer, t: ToolEnv): void {
 
   server.registerTool(
     "publish_artifact",
-    toolConfig("publish_artifact", sp, docsOn(env)),
+    toolConfig("publish_artifact", sp, docsAvailable(env)),
     (input) =>
       guard(async () => {
         // An id with neither content nor files: settings only, no version (#681 D).

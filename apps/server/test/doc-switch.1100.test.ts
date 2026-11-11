@@ -5,7 +5,8 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import { createPat } from "../src/auth/pat.js";
 import { SKILL_TEMPLATE } from "../src/mcp/skill.generated.js";
-import { docsOn } from "../src/services/doc-switch.js";
+import { DOC_SWITCH } from "../src/services/doc-switch.js";
+import { docsAvailable } from "../src/services/docs-available.js";
 import { api, errOf, login } from "./helpers.js";
 import { close, connect, textOf, tool } from "./mcp-helpers.js";
 
@@ -24,11 +25,10 @@ afterAll(async () => {
 });
 
 describe("doc creation switch (off)", () => {
-  it("only DOCS_ENABLED=1 turns it on", () => {
-    expect(docsOn({})).toBe(false);
-    expect(docsOn({ DOCS_ENABLED: "" })).toBe(false);
-    expect(docsOn({ DOCS_ENABLED: "true" })).toBe(false);
-    expect(docsOn({ DOCS_ENABLED: "1" })).toBe(true);
+  it("DOC_SWITCH.creation is off, so no deployment has docs", () => {
+    expect(DOC_SWITCH.creation).toBe(false);
+    for (const e of [{}, { PLAN: "paid" }, { HOSTED: "1" }])
+      expect(docsAvailable(e)).toBe(false);
   });
 
   it("REST: format doc is refused with the next step, nothing created", async () => {
@@ -38,8 +38,8 @@ describe("doc creation switch (off)", () => {
     });
     expect(r.status).toBe(400);
     const e = await errOf(r);
-    expect(e.code).toBe("docs_disabled");
-    expect(e.message).toMatch(/Workers Paid plan.*Solo is \$1 a month/);
+    expect(e.code).toBe("bad_request");
+    expect(e.message).toMatch(/Docs aren't available yet/);
   });
 
   it("MCP: format doc is refused and not advertised", async () => {
@@ -50,7 +50,7 @@ describe("doc creation switch (off)", () => {
       title: "d",
       format: "doc",
     });
-    expect(textOf(r)).toMatch(/Workers Paid plan/);
+    expect(textOf(r)).toMatch(/Docs aren't available yet/);
     expect(r.isError).toBe(true);
   });
 

@@ -1,8 +1,8 @@
 /**
- * The switch for creating docs (#1100): the env var DOCS_ENABLED, "1" = on,
- * anything else or unset = off (off everywhere for now). Off: publishing
- * format "doc" is refused with docs_disabled, and tools/list and the skill
- * don't list it. No imports: the skill and manifest generators load this file.
+ * The switch for creating docs (#1100): `creation` is false until edit_doc and
+ * the doc room ship; the PR that ships them flips it. docsAvailable
+ * (docs-available.ts) also needs a paid plan or a hosted install. An object so
+ * a test can open it for one file. No imports: the skill and manifest
+ * generators load this file.
  */
-export const docsOn = (env: { DOCS_ENABLED?: string }): boolean =>
-  env.DOCS_ENABLED === "1";
+export const DOC_SWITCH: { creation: boolean } = { creation: false };

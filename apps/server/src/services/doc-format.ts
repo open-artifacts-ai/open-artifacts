@@ -11,7 +11,8 @@
 import {
   type ArtifactPatch,
   DOC_ENTRY,
-  DOCS_DISABLED_MESSAGE,
+  DOCS_NEED_PAID_MESSAGE,
+  DOCS_UNAVAILABLE_MESSAGE,
   type Format,
   type PublishInput,
 } from "@oa/shared";
@@ -90,9 +91,13 @@ export const notConvertible = () =>
     "Other artifacts never become docs. Leave id out to create a new doc from this Markdown, or publish this artifact in its own format.",
   );
 
-/** Creating a doc where DOCS_ENABLED is off: 400 docs_disabled. */
-export const docsDisabled = () =>
-  new ApiError("docs_disabled", DOCS_DISABLED_MESSAGE, {
+/** Docs can't be created yet (DOC_SWITCH.creation is off): 400 with the next step. */
+export const docsUnavailable = () =>
+  bad("format", "docs_unavailable", DOCS_UNAVAILABLE_MESSAGE);
+
+/** Docs on a self-host without Workers Paid: 400 docs_need_paid. */
+export const docsNeedPaid = () =>
+  new ApiError("docs_need_paid", DOCS_NEED_PAID_MESSAGE, {
     path: "format",
-    reason: "docs_disabled",
+    reason: "docs_need_paid",
   });

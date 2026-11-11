@@ -278,17 +278,21 @@ export const PublishInputSchema = PublishShape.superRefine(
 export const PublishToolInputSchema = PublishShape.superRefine(
   refinePublish(true),
 );
-/** Why a publish names the doc format where docs are off (#1100). */
-export const DOCS_DISABLED_MESSAGE =
+/** A publish names the doc format on a self-host that isn't on Workers Paid (#1100). */
+export const DOCS_NEED_PAID_MESSAGE =
   "Collaborative docs need Cloudflare's Workers Paid plan when you self-host. Or use hosted Open Artifacts: Solo is $1 a month.";
 /**
  * PublishToolInputSchema without the doc format: tools/list and the skill list
  * only the formats that can be created, and format "doc" is refused with
- * DOCS_DISABLED_MESSAGE (#1100).
+ * DOCS_UNAVAILABLE_MESSAGE (#1100).
  */
+/** A publish names the doc format before docs can be created at all (#1100). */
+export const DOCS_UNAVAILABLE_MESSAGE =
+  "Docs aren't available yet. Publish markdown instead, or leave format out.";
 export const PublishToolInputNoDocSchema = publishShape(
   z.enum(STORED_FORMATS, {
-    error: (iss) => (iss.input === "doc" ? DOCS_DISABLED_MESSAGE : undefined),
+    error: (iss) =>
+      iss.input === "doc" ? DOCS_UNAVAILABLE_MESSAGE : undefined,
   }) as unknown as typeof FormatSchema,
 ).superRefine(refinePublish(true));
 export type PublishInput = z.infer<typeof PublishInputSchema>;
