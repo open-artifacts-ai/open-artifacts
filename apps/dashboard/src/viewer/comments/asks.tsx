@@ -104,6 +104,17 @@ export const actor = (
   you: string,
 ) => (a.kind === "agent" ? `${a.name} (agent)` : a.me ? you : a.name);
 
+/** Who an ask is for: " you", else the addressees as the API names them (masked ones stay masked). */
+const askedWho = (to: { name: string }[], mine: boolean) => {
+  if (mine) return " you";
+  const [a, b] = to;
+  if (!a) return "";
+  if (!b) return ` ${a.name}`;
+  return to.length === 2
+    ? ` ${a.name} and ${b.name}`
+    : ` ${a.name} and ${to.length - 1} others`;
+};
+
 const letter = (i: number) => String.fromCharCode(65 + i);
 /** Letters are shown unless every option's id already equals its label ("yes"/"Yes"). */
 const showLetters = (opts: { id: string; label: string }[]) =>
@@ -210,7 +221,7 @@ export function AskBlock({
           data-needs-you={canAnswer && !pickedOpt ? "" : undefined}
         >
           <p className={`${TXT} ${MUTED}`} data-ask-from="">
-            {c.author.name} asks{mine ? " you" : ""}
+            {c.author.name} asks{askedWho(ask.to, mine)}
           </p>
           <p id={qid} className={`${TXT} font-semibold break-words`}>
             {linked(ask.question, 0)}

@@ -233,6 +233,34 @@ describe("asks on the comments column", () => {
     expect(await within(c).findByText(/You picked A/)).toBeInTheDocument();
   });
 
+  it.each([
+    [[{ kind: "user", id: "me", name: "Me", me: true }], "Leo asks you"],
+    [[{ kind: "user", id: "u1", name: "Sam", me: false }], "Leo asks Sam"],
+    [
+      [
+        { kind: "user", id: "u1", name: "Sam", me: false },
+        { kind: "user", id: "u2", name: "Maya", me: false },
+      ],
+      "Leo asks Sam and Maya",
+    ],
+    [
+      [
+        { kind: "user", id: "u1", name: "Sam", me: false },
+        { kind: "user", id: "u2", name: "Maya", me: false },
+        { kind: "user", id: "u3", name: "Lee", me: false },
+        { kind: "user", id: "u4", name: "Kim", me: false },
+      ],
+      "Leo asks Sam and 3 others",
+    ],
+    [[], "Leo asks"],
+  ])("names who an ask is for: %#", async (to, expected) => {
+    serveThreads(() => [askThread({}, { to })]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(c.querySelector("[data-ask-from]")?.textContent).toBe(expected);
+  });
+
   it("says who asks, amber while it needs you, with a key badge per option and a Recommended tag", async () => {
     serveThreads(() => [askThread()]);
     mount(viewerPath(OWNED));

@@ -274,7 +274,7 @@ describe("live versions: the safe swap", () => {
 
   it("an explicit version never swaps or chips: the older-version banner says so", async () => {
     const first = await open(viewerPath(OWNED, 1));
-    expect(screen.getByText(/an older version of this page/)).toBeTruthy();
+    expect(screen.getByText(/an older version\./)).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Back to current" }),
     ).toBeTruthy();

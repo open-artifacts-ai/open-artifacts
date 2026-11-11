@@ -43,9 +43,7 @@ for (const w of [1280, 390]) {
         height: w < 600 ? 200 : 110,
       });
       await page.goto(`/a/${ID}/v/1?mock=agents`);
-      await expect(
-        page.getByText(/an older version of this page/),
-      ).toBeVisible();
+      await expect(page.getByText(/an older version\./)).toBeVisible();
       await expect(
         page.getByRole("button", { name: "Back to current" }),
       ).toBeVisible();

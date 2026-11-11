@@ -35,7 +35,7 @@ export function OlderBanner({
       className="flex flex-wrap items-center gap-x-3 gap-y-2 border-0 border-b border-border bg-[var(--oa-warning-soft)] px-5 py-2 text-[length:var(--oa-text-md)] leading-[1.45] text-foreground max-[600px]:px-4"
     >
       <span className="min-w-0 flex-1 max-[600px]:basis-full">
-        You're viewing <b>v{version}</b>, an older version of this page.
+        You're viewing <b>v{version}</b>, an older version.
       </span>
       <div className="flex flex-none items-center gap-2">
         {canRestore && (
