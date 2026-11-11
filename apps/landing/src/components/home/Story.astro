@@ -1,39 +1,24 @@
 ---
 import Agent from "./Agent.astro";
-
-interface Props {
-  /** Show the scroll cue (the plain hero carries it in the hero instead). */
-  cue?: boolean;
-  /** Say the demo replies are scripted here (when the hero has no agent demo). */
-  scripted?: boolean;
-}
-const { cue = true, scripted = false } = Astro.props;
 ---
-{cue && <div class="wrap x-intro"><p class="cue"><i aria-hidden="true"></i>Scroll to follow one artifact through its first week.</p></div>}
-{scripted && <div class="wrap"><p class="x-note">The agent replies in these demos are scripted.</p></div>}
 <div class="wrap story" id="story">
   <div class="stage" id="stage" data-step="0" role="group" aria-label="An artifact, shown changing as you scroll">
-    <div class="chat" aria-hidden="true">
-      <div class="bub me rev on">Publish our Q4 launch plan as an artifact.</div>
-      <div class="bub rev" data-on="12"><Agent class="" />Published. <span class="lnk">acme.open-artifacts.app/a/launch-plan</span></div>
-    </div>
-
     <div class="vwrap">
-      <div class="ghost g2" aria-hidden="true"><span>v1</span></div>
-      <div class="ghost g1" aria-hidden="true"><span>v2</span></div>
+      <div class="ghost g2" aria-hidden="true"><span>v3</span></div>
+      <div class="ghost g1" aria-hidden="true"><span>v4</span></div>
 
       <div class="viewer">
         <div class="vbar">
           <span class="t">Launch plan</span>
-          <span class="chip" id="vis">Private</span>
+          <span class="chip" id="vis">Shared with 4</span>
           <span class="sp"></span>
           <span class="avs" id="avs" aria-hidden="true"><span class="pp">MC</span><span class="pp">JW</span><Agent class="b" /><span class="more">Shared with 12</span></span>
-          <span class="chip ver rev" id="ver" data-on="13">v1</span>
+          <span class="chip ver rev" id="ver" data-on="13">v3</span>
           <span class="sbtn" aria-hidden="true">Share</span>
         </div>
         <div class="vbody">
           <div class="doc">
-            <div class="vban" id="vban"><span>Viewing <b>v2</b>, from before the ask</span><span class="r">Restore</span></div>
+            <div class="vban" id="vban"><span>Viewing <b>v4</b>, from before the ask</span><span class="r">Restore</span></div>
             <div class="clip"><div class="track" id="track">
               <h3 class="asm" data-on="10">Q4 launch plan</h3>
               <p class="dmeta asm" data-on="10"><Agent class="" />OA Product, for Sam Rivera</p>
@@ -41,12 +26,12 @@ const { cue = true, scripted = false } = Astro.props;
               <h4 class="asm" data-on="11">Timeline</h4>
               <ul class="tl asm" data-on="12">
                 <li><span>Docs and pricing page ready</span><b>Nov 25</b></li>
-                <li id="ln"><span>Launch day</span><b><span class="old">Tuesday, Dec 2</span><span class="new">Thursday, Dec 4</span></b></li>
-                <li><span>First-week review</span><b>Dec 11</b></li>
+                <li><span>Launch day</span><b>Thursday, Dec 4</b></li>
+                <li id="ln"><span>First-week review</span><b><span class="old">Thursday, Dec 11</span><span class="new">Friday, Dec 12</span></b></li>
                 <li class="add" id="chan"><span>First channel</span><b id="chanv">Email list</b></li>
               </ul>
-              <h4 class="asm" data-on="13" id="plh">Which day do we launch? <span class="live">Live</span><span class="cnt" id="pcnt">4 votes</span></h4>
-              <div class="poll asm" data-on="13" id="poll"><button type="button" aria-pressed="false"><i style="width:25%"></i><span class="lb">Wednesday</span><span class="you">Your vote</span><b>1</b></button><button type="button" aria-pressed="false"><i style="width:75%"></i><span class="lb">Thursday</span><span class="you">Your vote</span><b>3</b></button><button type="button" aria-pressed="false"><i style="width:0%"></i><span class="lb">Friday</span><span class="you">Your vote</span><b>0</b></button></div>
+              <h4 class="asm" data-on="13" id="plh">Which feature leads the demo? <span class="live">Live</span><span class="cnt" id="pcnt">4 votes</span></h4>
+              <div class="poll asm" data-on="13" id="poll"><button type="button" aria-pressed="false"><i style="width:25%"></i><span class="lb">Comments</span><span class="you">Your vote</span><b>1</b></button><button type="button" aria-pressed="false"><i style="width:75%"></i><span class="lb">Live checklists</span><span class="you">Your vote</span><b>3</b></button><button type="button" aria-pressed="false"><i style="width:0%"></i><span class="lb">Versions</span><span class="you">Your vote</span><b>0</b></button></div>
               <h4 class="asm" data-on="13" id="clh">Launch checklist <span class="live">Live</span><span class="cnt" id="cnt">0 of 5</span></h4>
               <div class="bar asm" data-on="13"><i id="cbar"></i></div>
               <ul class="cl asm" data-on="13" id="cl">
@@ -61,11 +46,11 @@ const { cue = true, scripted = false } = Astro.props;
 
           <aside class="side" aria-label="Comments"><div class="sin">
             <div class="sh"><span>Comments</span><span id="sopen">1 open</span></div>
-            <div class="card col hide" id="tcol">Sam and OA Product, 2 comments, resolved</div>
+            <div class="card col hide" id="tcol">Maya and OA Product, 2 comments, resolved</div>
             <div class="card" id="thread">
-              <div class="q">Launch day: Tuesday, Dec 2</div>
-              <div class="cm rev" data-on="21"><span class="pp">SR</span><div><div class="w">Sam Rivera</div><div class="x">Can we move this to Thursday? Tuesday is the board meeting. <span class="men">@OA Product</span></div></div></div>
-              <div class="cm rev" data-on="22"><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Thursday, Dec 4. The timeline is updated in v2.</div></div></div>
+              <div class="q">First-week review: Thursday, Dec 11</div>
+              <div class="cm rev" data-on="21"><span class="pp">MC</span><div><div class="w">Maya Chen</div><div class="x">Can this be Friday? I'm out on Thursday. <span class="men">@OA Product</span></div></div></div>
+              <div class="cm rev" data-on="22"><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Friday, Dec 12. The timeline is updated in v4.</div></div></div>
             </div>
             <div class="card ask hide" id="ask">
               <div class="lab"><Agent class="" />OA Product asks Sam Rivera</div>
@@ -88,42 +73,22 @@ const { cue = true, scripted = false } = Astro.props;
         </div>
       </div>
 
-      <div class="wall" id="wall" aria-hidden="true">
-        <div class="tile"><div class="tb">Launch plan<span>page</span></div><div class="tc"><h6>Q4 launch plan</h6><div class="ln" style="width:92%"></div><div class="ln" style="width:70%"></div><ul class="mck" style="margin-top:8px"><li class="d"><i></i>Pricing page reviewed</li><li class="d"><i></i>Docs links checked</li><li><i></i>Go or no-go call</li></ul></div></div>
-        <div class="tile"><div class="tb">Release status<span>page</span></div><div class="tc"><div class="srow">Search filters <span class="pl g">shipped</span></div><div class="srow">Saved views <span class="pl w">in review</span></div><div class="srow">Dark mode <span class="pl y">building</span></div></div></div>
-        <div class="tile"><div class="tb">Sync spec<span>markdown</span></div><div class="tc"><h6>How sync works</h6><div class="ln" style="width:88%"></div><div class="ln" style="width:64%"></div><div class="flow"><span>Agent</span><i></i><span>Publish</span><i></i><span>Viewer</span></div><div class="ln" style="width:76%;margin-top:9px"></div></div></div>
-        <div class="tile"><div class="tb">Weekly numbers<span>page</span></div><div class="tc"><div class="stat"><div><b>1,284</b><small>artifacts published</small></div><div><b>+18%</b><small>this week</small></div></div><svg class="chart" viewBox="0 0 200 64" preserveAspectRatio="none"><path class="g" d="M0 20h200M0 42h200"/><path class="a" d="M0 54 28 48 56 50 84 38 112 40 140 26 168 22 200 8V64H0z"/><path class="l" d="M0 54 28 48 56 50 84 38 112 40 140 26 168 22 200 8"/></svg></div></div>
-        <div class="tile"><div class="tb">retry.py<span>code</span></div><div class="tc"><pre class="code"><span class="n">1</span><span class="k">def</span> retry(fn, tries=<span class="s">3</span>):
-<span class="n">2</span>    <span class="c"># back off between tries</span>
-<span class="n">3</span>    <span class="k">for</span> i <span class="k">in</span> range(tries):
-<span class="n">4</span>        <span class="k">try</span>:
-<span class="n">5</span>            <span class="k">return</span> fn()
-<span class="n">6</span>        <span class="k">except</span> Timeout:
-<span class="n">7</span>            sleep(<span class="s">2</span> ** i)</pre></div></div>
-        <div class="tile"><div class="tb">Sign-up screen<span>image</span></div><div class="tc"><div class="img"><div class="ph"></div><span class="pin" style="left:40%;top:36%">1</span><span class="pin" style="left:66%;top:70%">2</span></div></div></div>
-      </div>
     </div>
 
     <div class="rail" id="rail" role="group" aria-label="Chapters">
-      <button type="button">Publish</button><button type="button">Comment</button><button type="button">Decide</button><button type="button">Live</button><button type="button">Versions</button><button type="button">Share</button><button type="button">Everything</button>
+      <button type="button">Comment</button><button type="button">Decide</button><button type="button">Live</button><button type="button">Versions</button><button type="button">Share</button>
     </div>
   </div>
 
   <div class="chs">
-    <section class="ch"><div class="ci"><span class="n">Monday</span><h2>Ask your agent to publish.</h2><p>A plan, a spec, a status page, a dashboard. You get a link to a real artifact, private until you share it.</p><div class="mp" data-mp="pub">
-<div class="bub me">Publish our Q4 launch plan as an artifact.</div>
-<div class="mcard rev" data-s="1"><div class="vbar"><span class="t">Launch plan</span><span class="chip">Private</span><span class="sp"></span><span class="chip ver">v1</span></div>
-<div class="mbody"><h3>Q4 launch plan</h3><p class="dmeta"><Agent class="" />OA Product, for Sam Rivera</p><p class="b">Sign-ups open in December with a free first month on Solo. This plan is the one place the team and the agents work from.</p></div></div>
-<div class="bub rev" data-s="2"><Agent class="" />Published. <span class="lnk">acme.open-artifacts.app/a/launch-plan</span></div>
+    <section class="ch"><div class="ci"><span class="n"><span class="dn">5 of 9</span></span><h2>Comment where it matters.</h2><p>A comment sits on the line it is about. Mention your agent and it answers in the thread, then changes the artifact.</p><div class="mp" data-mp="com">
+<div class="mcard"><div class="vbar"><span class="t">Launch plan</span><span class="chip">Shared with 4</span><span class="sp"></span><span class="chip ver" data-ver>v3</span></div>
+<div class="mbody"><ul class="tl"><li class="sel" data-ln><span>First-week review</span><b><span class="old">Thursday, Dec 11</span><span class="new">Friday, Dec 12</span></b></li></ul></div></div>
+<div class="card"><div class="q">First-week review: Thursday, Dec 11</div>
+<div class="cm rev" data-s="1"><span class="pp">MC</span><div><div class="w">Maya Chen</div><div class="x">Can this be Friday? I'm out on Thursday. <span class="men">@OA Product</span></div></div></div>
+<div class="cm rev" data-s="2"><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Friday, Dec 12. The timeline is updated in v4.</div></div></div></div>
 </div></div></section>
-    <section class="ch"><div class="ci"><span class="n">Tuesday</span><h2>Comment where it matters.</h2><p>Select a line and comment, or @-mention your agent. It answers in the thread and updates the artifact itself.</p><div class="mp" data-mp="com">
-<div class="mcard"><div class="vbar"><span class="t">Launch plan</span><span class="chip">Private</span><span class="sp"></span><span class="chip ver" data-ver>v1</span></div>
-<div class="mbody"><ul class="tl"><li class="sel" data-ln><span>Launch day</span><b><span class="old">Tuesday, Dec 2</span><span class="new">Thursday, Dec 4</span></b></li></ul></div></div>
-<div class="card"><div class="q">Launch day: Tuesday, Dec 2</div>
-<div class="cm rev" data-s="1"><span class="pp">SR</span><div><div class="w">Sam Rivera</div><div class="x">Can we move this to Thursday? Tuesday is the board meeting. <span class="men">@OA Product</span></div></div></div>
-<div class="cm rev" data-s="2"><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x">Moved to Thursday, Dec 4. The timeline is updated in v2.</div></div></div></div>
-</div></div></section>
-    <section class="ch"><div class="ci"><span class="n">Wednesday</span><h2>Decide with one click.</h2><p>When your agent needs a call, it asks in the artifact, with options and its recommendation. You pick one and it carries on.</p><span class="try">Try it: pick an option</span><div class="mp" data-mp="ask">
+    <section class="ch"><div class="ci"><span class="n"><span class="dn">6 of 9</span></span><h2>Decide with one click.</h2><p>When your agent needs a call, it asks in the artifact, with options and its recommendation. You pick one and it carries on.</p><span class="try">Try it: pick an option</span><div class="mp" data-mp="ask">
 <div class="card ask"><div class="lab"><Agent class="" />OA Product asks Sam Rivera</div>
 <div class="qq">Which channel goes first on launch day?</div>
 <button type="button" class="mopt" data-k="a" aria-pressed="false"><span class="k">A</span>Hacker News post</button>
@@ -132,39 +97,27 @@ const { cue = true, scripted = false } = Astro.props;
 <div class="picked hide" role="status"></div>
 <div class="cm rev" data-done hidden><Agent class="" /><div><div class="w">OA Product <small>agent</small></div><div class="x"></div></div></div></div>
 </div></div></section>
-    <section class="ch"><div class="ci"><span class="n">Thursday</span><h2>Work on it together, live.</h2><p>Checklists, polls and trackers update for everyone, as people and agents use them.</p><span class="try">Try it: vote, or tick an item</span><div class="mp" data-mp="live" data-steps="4">
-<div class="mcard"><div class="mbody"><h4>Which day do we launch? <span class="live">Live</span><span class="cnt" data-pcnt>4 votes</span></h4><div class="poll"><button type="button" aria-pressed="false"><i style="width:25%"></i><span class="lb">Wednesday</span><span class="you">Your vote</span><b>1</b></button><button type="button" aria-pressed="false"><i style="width:75%"></i><span class="lb">Thursday</span><span class="you">Your vote</span><b>3</b></button><button type="button" aria-pressed="false"><i style="width:0%"></i><span class="lb">Friday</span><span class="you">Your vote</span><b>0</b></button></div><h4>Launch checklist <span class="live">Live</span><span class="cnt" data-cnt>0 of 5</span></h4><div class="bar"><i data-bar></i></div><ul class="cl"><li><button type="button"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Pricing page reviewed</span></button><span class="who"><span class="pp">SR</span><span class="nm">Sam</span></span></li><li><button type="button"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Docs links checked</span></button><span class="who"><Agent class="b" /><span class="nm">OA Docs</span></span></li><li><button type="button"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Press note drafted</span></button><span class="who"><span class="pp">MC</span><span class="nm">Maya</span></span></li><li><button type="button"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Status page ready</span></button><span class="who"><Agent class="" /><span class="nm">OA Product</span></span></li><li><button type="button"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Go or no-go call</span></button><span class="who"><span class="pp you">You</span></span></li></ul></div></div>
+    <section class="ch"><div class="ci"><span class="n"><span class="dn">7 of 9</span></span><h2>Work on it together, live.</h2><p>Checklists, polls and trackers update for everyone, as people and agents use them.</p><span class="try">Try it: vote, or tick an item</span><div class="mp" data-mp="live" data-steps="4">
+<div class="mcard"><div class="mbody"><h4>Which feature leads the demo? <span class="live">Live</span><span class="cnt" data-pcnt>4 votes</span></h4><div class="poll"><button type="button" aria-pressed="false"><i style="width:25%"></i><span class="lb">Comments</span><span class="you">Your vote</span><b>1</b></button><button type="button" aria-pressed="false"><i style="width:75%"></i><span class="lb">Live checklists</span><span class="you">Your vote</span><b>3</b></button><button type="button" aria-pressed="false"><i style="width:0%"></i><span class="lb">Versions</span><span class="you">Your vote</span><b>0</b></button></div><h4>Launch checklist <span class="live">Live</span><span class="cnt" data-cnt>0 of 5</span></h4><div class="bar"><i data-bar></i></div><ul class="cl"><li><button type="button" aria-pressed="false"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Pricing page reviewed</span></button><span class="who"><span class="pp">SR</span><span class="nm">Sam</span></span></li><li><button type="button" aria-pressed="false"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Docs links checked</span></button><span class="who"><Agent class="b" /><span class="nm">OA Docs</span></span></li><li><button type="button" aria-pressed="false"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Press note drafted</span></button><span class="who"><span class="pp">MC</span><span class="nm">Maya</span></span></li><li><button type="button" aria-pressed="false"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Status page ready</span></button><span class="who"><Agent class="" /><span class="nm">OA Product</span></span></li><li><button type="button" aria-pressed="false"><span class="bx"><svg viewBox="0 0 12 12" fill="none" stroke-width="2.2"><path d="M2.5 6.2l2.4 2.4 4.6-5"/></svg></span><span class="lb">Go or no-go call</span></button><span class="who"><span class="pp you">You</span></span></li></ul></div></div>
 </div></div></section>
-    <section class="ch"><div class="ci"><span class="n">Friday</span><h2>Every publish is a version.</h2><p>The link never changes. Look back at any version, and restore one if a change went wrong.</p><span class="try m">Try it: open an older version</span><div class="mp" data-mp="ver">
-<div class="mcard"><div class="vbar"><span class="t">Launch plan</span><span class="sp"></span><span class="chip ver" data-ver>v3</span></div>
-<div class="vban" data-ban><span>Viewing <b data-vb>v2</b>, an older version</span><button type="button" class="r" data-restore>Restore</button></div>
+    <section class="ch"><div class="ci"><span class="n"><span class="dn">8 of 9</span></span><h2>Every publish is a version.</h2><p>The link never changes. Look back at any version, and restore one if a change went wrong.</p><span class="try m">Try it: open an older version</span><div class="mp" data-mp="ver">
+<div class="mcard"><div class="vbar"><span class="t">Launch plan</span><span class="sp"></span><span class="chip ver" data-ver>v5</span></div>
+<div class="vban" data-ban><span>Viewing <b data-vb>v4</b>, an older version</span><button type="button" class="r" data-restore>Restore</button></div>
 <ul class="vlist" aria-label="Versions">
-<li><button type="button" data-v="3" aria-pressed="true"><b>v3</b><span>First channel added<small>OA Product, Wednesday</small></span><em>Current</em></button></li>
-<li><button type="button" data-v="2" aria-pressed="false"><b>v2</b><span>Launch day moved to Thursday<small>OA Product, Tuesday</small></span><em></em></button></li>
-<li><button type="button" data-v="1" aria-pressed="false"><b>v1</b><span>First version<small>OA Product, Monday</small></span><em></em></button></li>
+<li><button type="button" data-v="5" aria-pressed="true"><b>v5</b><span>First channel added<small>OA Product</small></span><em>Current</em></button></li>
+<li><button type="button" data-v="4" aria-pressed="false"><b>v4</b><span>First-week review moved to Friday<small>OA Product</small></span><em></em></button></li>
+<li><button type="button" data-v="3" aria-pressed="false"><b>v3</b><span>Launch day moved to Thursday<small>OA Product</small></span><em></em></button></li>
+<li><button type="button" data-v="2" aria-pressed="false"><b>v2</b><span>Timeline added<small>OA Product</small></span><em></em></button></li>
+<li><button type="button" data-v="1" aria-pressed="false"><b>v1</b><span>First version<small>OA Product</small></span><em></em></button></li>
 </ul><div class="vnote hide" data-note role="status"></div></div>
 </div></div></section>
-    <section class="ch"><div class="ci"><span class="n">Launch day</span><h2>Share it with anyone.</h2><p>Add people as viewers or editors, share with your team, or turn on a public link. Viewers are free.</p><span class="try m">Try it: turn on the public link</span><div class="mp" data-mp="share">
-<div class="mcard"><div class="vbar"><span class="t">Launch plan</span><span class="chip" data-vis>Private</span><span class="sp"></span></div>
+    <section class="ch"><div class="ci"><span class="n"><span class="dn">9 of 9</span></span><h2>Share it with anyone.</h2><p>Add people as viewers or editors, share with your team, or turn on a public link. Viewers are free.</p><span class="try m">Try it: turn on the public link</span><div class="mp" data-mp="share">
+<div class="mcard"><div class="vbar"><span class="t">Launch plan</span><span class="chip" data-vis>Shared with 4</span><span class="sp"></span></div>
 <div class="mbody"><h5>Share "Launch plan"</h5>
 <div class="prow rev" data-s="1"><span class="pp">MC</span>Maya Chen<span class="r">Can view</span></div>
 <div class="prow rev" data-s="1"><span class="pp">JW</span>Jonas Weber<span class="r">Can edit</span></div>
 <button type="button" class="sw msw" role="switch" aria-checked="false" data-sw>Anyone with the link<span class="tog"></span></button>
 <div class="plink rev" data-link>acme.open-artifacts.app/a/launch-plan</div></div></div>
-</div></div></section>
-    <section class="ch"><div class="ci"><span class="n">After that</span><h2>One place for everything your agents make.</h2><p>Pages, Markdown, code, PDFs and images. All versioned, all open to comments.</p><div class="mp mwall" data-mp="wall" aria-hidden="true">
-        <div class="tile"><div class="tb">Launch plan<span>page</span></div><div class="tc"><h6>Q4 launch plan</h6><div class="ln" style="width:92%"></div><div class="ln" style="width:70%"></div><ul class="mck" style="margin-top:8px"><li class="d"><i></i>Pricing page reviewed</li><li class="d"><i></i>Docs links checked</li><li><i></i>Go or no-go call</li></ul></div></div>
-        <div class="tile"><div class="tb">Release status<span>page</span></div><div class="tc"><div class="srow">Search filters <span class="pl g">shipped</span></div><div class="srow">Saved views <span class="pl w">in review</span></div><div class="srow">Dark mode <span class="pl y">building</span></div></div></div>
-        <div class="tile"><div class="tb">Sync spec<span>markdown</span></div><div class="tc"><h6>How sync works</h6><div class="ln" style="width:88%"></div><div class="ln" style="width:64%"></div><div class="flow"><span>Agent</span><i></i><span>Publish</span><i></i><span>Viewer</span></div><div class="ln" style="width:76%;margin-top:9px"></div></div></div>
-        <div class="tile"><div class="tb">Weekly numbers<span>page</span></div><div class="tc"><div class="stat"><div><b>1,284</b><small>artifacts published</small></div><div><b>+18%</b><small>this week</small></div></div><svg class="chart" viewBox="0 0 200 64" preserveAspectRatio="none"><path class="g" d="M0 20h200M0 42h200"/><path class="a" d="M0 54 28 48 56 50 84 38 112 40 140 26 168 22 200 8V64H0z"/><path class="l" d="M0 54 28 48 56 50 84 38 112 40 140 26 168 22 200 8"/></svg></div></div>
-        <div class="tile"><div class="tb">retry.py<span>code</span></div><div class="tc"><pre class="code"><span class="n">1</span><span class="k">def</span> retry(fn, tries=<span class="s">3</span>):
-<span class="n">2</span>    <span class="c"># back off between tries</span>
-<span class="n">3</span>    <span class="k">for</span> i <span class="k">in</span> range(tries):
-<span class="n">4</span>        <span class="k">try</span>:
-<span class="n">5</span>            <span class="k">return</span> fn()
-<span class="n">6</span>        <span class="k">except</span> Timeout:
-<span class="n">7</span>            sleep(<span class="s">2</span> ** i)</pre></div></div>
-        <div class="tile"><div class="tb">Sign-up screen<span>image</span></div><div class="tc"><div class="img"><div class="ph"></div><span class="pin" style="left:40%;top:36%">1</span><span class="pin" style="left:66%;top:70%">2</span></div></div></div>
 </div></div></section>
   </div>
 </div>

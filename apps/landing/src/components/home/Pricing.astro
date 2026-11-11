@@ -1,53 +1,25 @@
 ---
-// The plan comparison. Monthly is the landed state; the script switches the
-// amounts. Every column has a button.
+// The plan comparison. Yearly is the landed state (so it is what scripts-off
+// readers see); the script switches the amounts. Every column has a button.
+import { PLAN_LIST, priceStrings, WORDS } from "../../lib/pricing";
+
 interface Props {
   signup: string;
 }
 const { signup } = Astro.props;
 
-const plans = [
-  {
-    name: "Solo",
-    blurb: "You and your agents",
-    m: "$1",
-    y: "$10",
-    cta: "Start free for 30 days",
-    href: signup,
-    primary: true,
-    pop: false,
-  },
-  {
-    name: "Team",
-    blurb: "Invite your team",
-    m: "$10",
-    y: "$100",
-    cta: "Start free",
-    href: signup,
-    primary: true,
-    pop: true,
-  },
-  {
-    name: "Business",
-    blurb: "Controls for your company",
-    m: "$25",
-    y: "$250",
-    cta: "Start free",
-    href: signup,
-    primary: false,
-    pop: false,
-  },
-  {
-    name: "Self-host",
-    blurb: "In your own account",
-    m: null,
-    y: null,
-    cta: "Self-host it",
-    href: "#self-host",
-    primary: false,
-    pop: false,
-  },
+const CTAS = [
+  "Start free for 30 days",
+  "Start free",
+  "Start free",
+  "Self-host it",
 ];
+const plans = PLAN_LIST.map((p, i) => ({
+  ...p,
+  cta: CTAS[i],
+  href: p.monthly ? signup : "#self-host",
+  strings: p.monthly ? priceStrings(p) : null,
+}));
 
 // Which plans include a row: Solo, Team, Business, Self-host.
 const Y = true,
@@ -88,7 +60,7 @@ const groups: {
 <section class="x-sec" id="pricing" aria-labelledby="pricing-h"><div class="wrap">
   <div class="ptop"><h2 id="pricing-h">Simple pricing.</h2>
     <div class="toggle" role="group" aria-label="Billing period">
-      <button type="button" data-p="m" aria-pressed="true">Monthly</button><button type="button" data-p="y" aria-pressed="false">Yearly <span class="save">2 months free</span></button>
+      <button type="button" data-p="m" aria-pressed="false">Monthly</button><button type="button" data-p="y" aria-pressed="true">Yearly <span class="save">2 months free</span></button>
     </div></div>
   <p class="x-lede x-pl">Viewers and sharing are free on every plan.</p>
   <div class="twf" id="twf"><div class="tw" tabindex="0" role="region" aria-label="Plan comparison, scrolls sideways on a phone"><table class="cmp">
@@ -96,7 +68,7 @@ const groups: {
       {plans.map((p) => (
         <th scope="col" class:list={{ "col-pop": p.pop }}>
           <span class="pn">{p.name}</span><span class="x-pd">{p.blurb}</span>
-          <span class="amt">{p.m ? <><b data-m={p.m} data-y={p.y}>{p.m}</b> <small data-m="a month" data-y="a year">a month</small></> : <><b>Free</b></>}</span>
+          <span class="amt">{p.strings ? <><b data-m={p.strings.price.m} data-y={p.strings.price.y}>{p.strings.price.y}</b> <small>{p.strings.unit}</small><i class="bill" data-m={p.strings.bill.m} data-y={p.strings.bill.y}>{p.strings.bill.y}</i></> : <><b>Free</b> <small>&nbsp;</small><i class="bill">{WORDS.selfHost}</i></>}</span>
           <a class:list={["btn", { p: p.primary }]} href={p.href}>{p.cta}</a>
         </th>
       ))}
@@ -114,5 +86,5 @@ const groups: {
       </>))}
     </tbody>
   </table></div></div>
-  <p class="pnote">Solo is per account; Team and Business are per creator. Solo is free for 30 days, no card. Team starts with a 30-day trial when you invite someone.</p>
+  <p class="pnote">{WORDS.note}</p>
 </div></section>

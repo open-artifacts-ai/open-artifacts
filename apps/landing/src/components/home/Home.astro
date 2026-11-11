@@ -1,52 +1,38 @@
 ---
-// The landing page body (#1457): hero with a demo, a scroll story, the agents
-// it works with, pricing, self-host and the close. Everything renders in its
-// landed state in HTML; home.client.ts enhances it.
+// The landing page body (#1457): the hero with its scroll scene, the artifact's
+// chapters, the kinds of thing agents make, the agents it works with, pricing,
+// self-host and the close. Everything renders in its landed state in HTML;
+// home.client.ts enhances it.
 import { REPO_URL } from "@oa/shared";
+import { HERO_COPY } from "../../lib/copy";
 import { signupHref } from "../../lib/hero";
 import Agents from "./Agents.astro";
-import BeforeAfter from "./BeforeAfter.astro";
 import Pricing from "./Pricing.astro";
 import Scene from "./Scene.astro";
-import SideBySide from "./SideBySide.astro";
 import Story from "./Story.astro";
+import Wall from "./Wall.astro";
 import "./home.css";
-
-// The two picks the page waits on. Each is a one-line change.
-// HERO: "scroll" (a pinned scene in four moments), "static" (a transcript
-// scrolling beside the artifact), "questions" (the interactive before/after
-// with three question chips) or "plain" (no demo).
-// HEADLINE: "stop", "bad" or "coding".
-const HERO = "scroll" as "scroll" | "static" | "questions" | "plain";
-const HEADLINE = "stop" as "stop" | "bad" | "coding";
-
-const HEADLINES = {
-  stop: "Stop reading transcripts.",
-  bad: "Transcripts are a bad place to do work.",
-  coding: "Coding agent transcripts are a bad place to do work.",
-};
-const words = { h1: HEADLINES[HEADLINE] };
 
 const signup = signupHref(import.meta.env.HOSTED_SIGNUP_URL);
 const prompt = "install open-artifacts.com/llms.txt";
 const [promptLead, promptUrl] = prompt.split(/(?<=install )/);
-const cue = "Scroll to follow one artifact through its first week.";
 ---
-<div class="lp" id="lp" data-hl={HEADLINE} data-hero={HERO}>
+<div class="lp" id="lp">
   <header class="hero" id="top"><div class="wrap">
     <p class="x-eb">For people and agents, on any model</p>
-    <h1>{words.h1}</h1>
-    <p class="lede">Your agents put their work in an artifact. Your team reads it, comments and decides, right where the work is. Works with Claude, Codex, Gemini or any agent.</p>
+    <h1>{HERO_COPY.headline}</h1>
+    <p class="lede lead1">{HERO_COPY.lead}</p>
+    <p class="lede lead2">{HERO_COPY.question}</p>
     <div class="btns"><a class="btn p" href={signup}>Start free for 30 days</a><a class="btn" href="#self-host">Self-host it</a></div>
     <p class="fine">No card needed. Then $1 a month. Open source, MIT licensed.</p>
-    {HERO === "plain" && <p class="cue"><i aria-hidden="true"></i>{cue}</p>}
+    <p class="cue hcue"><i aria-hidden="true"></i>{HERO_COPY.cue}</p>
   </div>
-  {HERO === "scroll" && <Scene />}
-  {HERO === "static" && <SideBySide />}
-  {HERO === "questions" && <BeforeAfter />}
+  <Scene />
   </header>
 
-  <Story cue={HERO !== "plain"} scripted={HERO === "plain"} />
+  <Story />
+
+  <Wall />
 
   <Agents />
 

@@ -21,7 +21,6 @@ describe("landing sections", () => {
   it("renders every section heading without JS", () => {
     for (const h of [
       "Stop reading transcripts.",
-      "Ask your agent to publish.",
       "Comment where it matters.",
       "Decide with one click.",
       "Work on it together, live.",
@@ -37,18 +36,45 @@ describe("landing sections", () => {
     expect(index).toMatch(/<h1[^>]*>Stop reading transcripts\.<\/h1>/);
   });
 
-  it("has the title the hand-off asks for", () => {
+  it("has the title and a description built from the headline and the question", () => {
     expect(index).toContain(
       "<title>Open Artifacts: stop reading transcripts</title>",
     );
+    const desc =
+      index.match(/<meta name="description" content="([^"]*)"/)?.[1] ?? "";
+    expect(desc).toBe(
+      "Stop reading transcripts. You work with a mix of agents and people, so why is collaborating between all of them so hard?",
+    );
+    expect(desc.length).toBeLessThanOrEqual(160);
+    expect(desc).not.toContain("Google Docs");
   });
 
-  it("the default hero is the four-moment scene, stacked and readable without script", () => {
+  it("the hero has the lead line, the question and the cue under the buttons", () => {
+    expect(index).toContain(
+      '<p class="lede lead1">Create artifacts just like Google Docs</p>',
+    );
+    expect(text).toContain(
+      "You work with a mix of agents and people, so why is collaborating between all of them so hard?",
+    );
+    expect(text).not.toContain(
+      "Works with Claude, Codex, Gemini or any agent.",
+    );
+    const hero = index.slice(index.indexOf('<header class="hero"'));
+    expect(hero.indexOf('class="btns"')).toBeLessThan(
+      hero.indexOf('class="cue hcue"'),
+    );
+    expect(text).toContain(
+      "Scroll to see the same work in a transcript and in an artifact.",
+    );
+  });
+
+  it("the hero scene is nine steps, stacked and readable without script", () => {
     expect(index).toMatch(
       /id="sc" role="group" aria-label="The same work in a transcript and in an artifact, step by step"/,
     );
     const cards = index.match(/<ol class="sc-cards"[\s\S]*?<\/ol>/)?.[0] ?? "";
     expect(cards.match(/<li>\s*<span class="n">/g)).toHaveLength(4);
+    for (const n of [1, 2, 3, 4]) expect(cards).toContain(`${n} of 9`);
     for (const moment of [
       "You ask a question.",
       "The agent works.",
@@ -56,25 +82,84 @@ describe("landing sections", () => {
       "A week later: what did we decide?",
     ])
       expect(text).toContain(moment);
-    expect(text).toContain("1 of 4");
-    expect(text).toContain("4 of 4");
+    // the turn is a small unnumbered card between steps 4 and 5
+    expect(cards).toMatch(/<li class="sc-turncard">/);
+    expect(text).toContain("That's the last time you scroll for it.");
+    expect(text).toContain(
+      "From here on there is no transcript. The work happens on the artifact.",
+    );
     // the last moment lands on the decision, in both panels
     expect(text).toContain("The decision is in there somewhere.");
     expect(text).toContain("The decision is at the top.");
+    expect(text).toContain("Launch day is Thursday, Dec 4.");
     expect(text).toContain("> wait, what did we decide?");
     expect(text).toContain(
       "Same work. One is a scroll you search. The other is a page your team works on.",
     );
-    expect(index).not.toContain('data-q="dec"');
   });
 
-  it("has no problem section", () => {
+  it("has no problem section and no old hero variants", () => {
     expect(text).not.toContain("Transcripts are a bad place to do work.");
     expect(text).not.toContain("forgets it after compaction");
     expect(index).not.toContain('class="x-sec x-problem"');
+    expect(index).not.toContain('id="ba"');
+    expect(index).not.toContain('id="sbs"');
+    expect(index).not.toContain('data-q="dec"');
   });
 
-  it("lists the agents it works with, with marks that load nothing from outside", () => {
+  it("says once that the demo replies are scripted, under the scene", () => {
+    expect(text.match(/are scripted/g)).toHaveLength(1);
+    expect(index).toMatch(
+      /<p class="x-note">The agent replies in these demos are scripted\.<\/p>/,
+    );
+  });
+
+  it("the story is chapters 5 to 9 of 9, without weekdays, in order, with a rail of real buttons", () => {
+    const chapters = index.match(/<section class="ch">/g) ?? [];
+    expect(chapters).toHaveLength(5);
+    for (const n of [5, 6, 7, 8, 9]) expect(text).toContain(`${n} of 9`);
+    expect(index).not.toMatch(
+      /<span class="n">(Monday|Tuesday|Wednesday|Thursday|Friday|Launch day|After that)<\/span>/,
+    );
+    expect(text).not.toContain("Ask your agent to publish.");
+    expect(text).toContain(
+      "A comment sits on the line it is about. Mention your agent and it answers in the thread, then changes the artifact.",
+    );
+    const rail = index.slice(index.indexOf('id="rail"'));
+    expect(
+      rail.slice(0, rail.indexOf("</div>")).match(/<button type="button">/g),
+    ).toHaveLength(5);
+  });
+
+  it("has a card piece for each chapter on phones", () => {
+    const pieces =
+      index.match(
+        /<div class="mp[ "][^>]*data-mp="(com|ask|live|ver|share)"/g,
+      ) ?? [];
+    expect(pieces).toHaveLength(5);
+  });
+
+  it("the wall is an ordinary section after the story, with Product's release tile", () => {
+    const wall = index.slice(index.indexOf('id="everything"'));
+    expect(wall.indexOf("Release status")).toBeGreaterThan(-1);
+    expect(index.indexOf('id="everything"')).toBeGreaterThan(
+      index.indexOf('id="story"'),
+    );
+    expect(index.indexOf('id="everything"')).toBeLessThan(
+      index.indexOf('id="agents"'),
+    );
+    for (const row of [
+      "Search filters shipped",
+      "Saved views in review",
+      "Dark mode building",
+    ])
+      expect(text).toContain(row);
+    expect(text).not.toContain("Comments on PDFs");
+    expect(text).not.toContain("Launch email");
+    expect(text).not.toContain("Custom domains your pick");
+  });
+
+  it("lists the agents it works with: seven single-colour marks and the Hermes tile, nothing loaded from outside", () => {
     const sec =
       index.match(
         /<section class="x-sec x-band x-agents"[\s\S]*?<\/section>/,
@@ -98,54 +183,14 @@ describe("landing sections", () => {
     ]);
     expect(sec).toMatch(/<li class="soon">/);
     const marks = sec.match(/<svg [^>]*>/g) ?? [];
-    expect(marks).toHaveLength(5);
+    expect(marks).toHaveLength(7);
     for (const m of marks) expect(m).toContain('aria-hidden="true"');
-    expect(sec).not.toMatch(/<img|<image|http|url\(/);
-    expect(sec.match(/fill="/g) ?? []).toHaveLength(0);
-  });
-
-  it("breaks the close headline in three lines, and says it as one sentence", () => {
-    const h2 =
-      index.match(/<h2 id="close-h" class="x-cl">[\s\S]*?<\/h2>/)?.[0] ?? "";
-    expect(h2.match(/<br\s*\/?>/g)).toHaveLength(2);
-    expect(text).toContain(
-      "Where people and agents come to do their best work, together.",
-    );
-  });
-
-  it("says once that the demo replies are scripted", () => {
-    expect(text.match(/are scripted/g)).toHaveLength(1);
-  });
-
-  it("every chapter's text is in the HTML, in order, with a rail of real buttons", () => {
-    const chapters = index.match(/<section class="ch">/g) ?? [];
-    expect(chapters).toHaveLength(7);
-    const rail = index.slice(index.indexOf('id="rail"'));
-    expect(
-      rail.slice(0, rail.indexOf("</div>")).match(/<button type="button">/g),
-    ).toHaveLength(7);
-    expect(index).toMatch(
-      /aria-pressed="false"[^>]*>Hacker News post|data-k="a" aria-pressed="false"/,
-    );
-  });
-
-  it("has a card piece for each chapter on phones", () => {
-    const pieces =
-      index.match(
-        /<div class="mp[ "][^>]*data-mp="(pub|com|ask|live|ver|share|wall)"/g,
-      ) ?? [];
-    expect(pieces).toHaveLength(7);
-  });
-
-  it("the wall's release tile is a made-up team's, not our roadmap", () => {
-    for (const row of [
-      "Search filters shipped",
-      "Saved views in review",
-      "Dark mode building",
-    ])
-      expect(text).toContain(row);
-    expect(text).not.toContain("Comments on PDFs");
-    expect(text).not.toContain("Custom domains your pick");
+    // Hermes is the project's PNG, inline
+    const imgs = sec.match(/<img [^>]*>/g) ?? [];
+    expect(imgs).toHaveLength(1);
+    expect(imgs[0]).toMatch(/src="data:image\/png;base64,/);
+    // names are text, not alt text; nothing is fetched
+    expect(sec).not.toMatch(/src="https?:|href="https?:|url\(/);
   });
 
   it("the home header links Pricing, Self-host, Docs and GitHub", () => {
@@ -170,6 +215,7 @@ describe("landing sections", () => {
 
   it("the phone chapter buttons say what to try", () => {
     expect(text).toContain("Try it: turn on the public link");
+    expect(text).toContain("Try it: vote, or tick an item");
   });
 
   it("has no bus, proof or ownership section, and no trace of the old names", () => {
@@ -184,21 +230,20 @@ describe("landing sections", () => {
   });
 
   it("the Live chapter has a poll that is landed with scripts off, real buttons with aria-pressed", () => {
-    expect(text).toContain("Try it: vote, or tick an item");
-    expect(text.match(/Which day do we launch\?/g)).toHaveLength(2);
+    expect(text.match(/Which feature leads the demo\?/g)).toHaveLength(2);
     const poll = index.match(/<div class="poll asm"[\s\S]*?<\/div>/)?.[0] ?? "";
     expect(
       poll.match(/<button type="button" aria-pressed="false">/g),
     ).toHaveLength(3);
-    // Wednesday 1, Thursday 3, Friday 0 (4 votes)
+    // Comments 1, Live checklists 3, Versions 0 (4 votes)
     expect(poll).toMatch(
-      /Wednesday<\/span><span class="you">Your vote<\/span><b>1<\/b>/,
+      /Comments<\/span><span class="you">Your vote<\/span><b>1<\/b>/,
     );
     expect(poll).toMatch(
-      /Thursday<\/span><span class="you">Your vote<\/span><b>3<\/b>/,
+      /Live checklists<\/span><span class="you">Your vote<\/span><b>3<\/b>/,
     );
     expect(poll).toMatch(
-      /Friday<\/span><span class="you">Your vote<\/span><b>0<\/b>/,
+      /Versions<\/span><span class="you">Your vote<\/span><b>0<\/b>/,
     );
     expect(text).toContain("4 votes");
   });
@@ -224,8 +269,13 @@ describe("landing sections", () => {
       expect(text).not.toMatch(claim);
   });
 
-  it("centres the close", () => {
-    expect(index).toMatch(/<section class="x-sec x-close"/);
+  it("breaks the close headline in three lines, and says it as one sentence", () => {
+    const h2 =
+      index.match(/<h2 id="close-h" class="x-cl">[\s\S]*?<\/h2>/)?.[0] ?? "";
+    expect(h2.match(/<br\s*\/?>/g)).toHaveLength(2);
+    expect(text).toContain(
+      "Where people and agents come to do their best work, together.",
+    );
   });
 
   it("keeps the three self-host steps and the jump to them", () => {

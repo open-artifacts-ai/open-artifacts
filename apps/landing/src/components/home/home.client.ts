@@ -1,14 +1,7 @@
 // Enhances the landing page. The HTML already shows every section in its
-// landed state; this adds the question chips, the scroll story, the pricing
+// landed state; this adds the hero scene, the story, the pricing
 // toggle and the pause-when-off-screen rule. With reduced motion nothing
 // plays or animates: states swap at once.
-import {
-  ARTIFACT_STATUS,
-  type Look,
-  lines,
-  type Question,
-  transcriptStatus,
-} from "../../lib/transcript";
 import { initPhone } from "./phone.client";
 import { initScene } from "./scene.client";
 
@@ -23,157 +16,6 @@ const press = (el: HTMLElement, on: boolean) =>
 const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
 const narrow = () => lp.clientWidth <= 820;
 lp.classList.add("lp-js");
-
-/* ---- before and after (only when the hero has it) ---- */
-if (lp.querySelector("#ba")) {
-  const ba = $("#ba"),
-    term = $("#term"),
-    trs = $("#trs"),
-    trstat = $("#trstat"),
-    arstat = $("#arstat");
-  let look: Look = "claude";
-  let run = 0,
-    cur: Question | "" = "dec",
-    touched = false;
-
-  function draw(l: Look) {
-    look = l;
-    term.dataset.look = l;
-    $("#tname").textContent = l;
-    const none = trs.querySelector(".none") as HTMLElement;
-    trs.replaceChildren(none);
-    for (const ln of lines(l)) {
-      const p = document.createElement("p");
-      if (ln.cls) p.className = ln.cls;
-      if (ln.tag) p.dataset.tag = ln.tag;
-      p.textContent = ln.text;
-      if (ln.sub) {
-        const s = document.createElement("span");
-        s.className = "sub";
-        s.textContent = ln.sub;
-        p.append(s);
-      }
-      trs.append(p);
-    }
-    for (const b of $$(".x-look button")) press(b, b.dataset.look === l);
-  }
-  function targetFor(q: Question) {
-    if (q === "team") return 0;
-    const el = trs.querySelector<HTMLElement>(
-      `[data-tag=${q === "dec" ? "dec" : "chg"}]`,
-    ) as HTMLElement;
-    const max = trs.scrollHeight - trs.clientHeight;
-    return Math.max(
-      0,
-      Math.min(
-        max,
-        el.offsetTop -
-          trs.offsetTop -
-          trs.clientHeight / 2 +
-          el.offsetHeight / 2,
-      ),
-    );
-  }
-  function show(side: string) {
-    ba.dataset.show = side;
-    for (const b of $$(".x-flip button")) press(b, b.dataset.side === side);
-    // Coming back to the transcript, the answer is where the last question left it.
-    if (side === "tr" && cur && ba.hasAttribute("data-landed"))
-      trs.scrollTop = targetFor(cur);
-  }
-  function land(q: Question) {
-    const ps = $$("#trs p:not(.none)");
-    for (const e of ps) e.classList.remove("hit");
-    term.removeAttribute("data-none");
-    if (q === "dec")
-      ps.find((p) => p.dataset.tag === "dec")?.classList.add("hit");
-    else if (q === "chg") {
-      for (const p of ps) if (p.dataset.tag === "chg") p.classList.add("hit");
-    } else term.setAttribute("data-none", "");
-    trstat.textContent = transcriptStatus(q, lines(look));
-  }
-  function ask(q: Question) {
-    const id = ++run;
-    cur = q;
-    ba.dataset.q = q;
-    ba.removeAttribute("data-landed");
-    for (const b of $$(".x-qs button")) press(b, b.dataset.q === q);
-    for (const e of $$("#trs .hit")) e.classList.remove("hit");
-    term.removeAttribute("data-none");
-    for (const b of $$(".x-blk")) b.classList.toggle("hit", b.id === `b-${q}`);
-    const blk = $(`#b-${q}`),
-      body = blk.parentElement as HTMLElement;
-    body.scrollTop = q === "dec" ? 0 : blk.offsetTop - body.offsetTop - 8;
-    arstat.textContent = ARTIFACT_STATUS[q];
-    const max = trs.scrollHeight - trs.clientHeight;
-    const target = targetFor(q);
-    const done = () => {
-      if (id !== run) return;
-      land(q);
-      if (q === "team") trs.scrollTop = 0;
-      // On a phone the "Now see it in an artifact" button shows once this lands.
-      ba.setAttribute("data-landed", "");
-    };
-    // Reduced motion, or the transcript is on the hidden side: land at once.
-    if (reduce || !trs.clientHeight) {
-      trs.scrollTop = target;
-      done();
-      return;
-    }
-    trstat.textContent = "Scrolling back…";
-    trs.scrollTop = max;
-    const dur = q === "team" ? 2600 : q === "chg" ? 2200 : 1800,
-      t0 = performance.now();
-    (function step(now: number) {
-      if (id !== run) return;
-      const p = Math.min(1, (now - t0) / dur),
-        e = p < 0.5 ? 2 * p * p : 1 - (-2 * p + 2) ** 2 / 2;
-      trs.scrollTop = max + (target - max) * e;
-      if (p < 1) requestAnimationFrame(step);
-      else done();
-    })(t0);
-  }
-  for (const b of $$(".x-qs button"))
-    b.addEventListener("click", () => {
-      touched = true;
-      ask(b.dataset.q as Question);
-    });
-  for (const b of $$(".x-flip button"))
-    b.addEventListener("click", () => {
-      touched = true;
-      show(b.dataset.side as string);
-    });
-  $("#nudge").addEventListener("click", () => {
-    touched = true;
-    show("ar");
-    $(".x-flip button[data-side=ar]").focus({ preventScroll: true });
-  });
-  for (const b of $$(".x-look button"))
-    b.addEventListener("click", () => {
-      touched = true;
-      draw(b.dataset.look as Look);
-      if (cur) ask(cur);
-      else trs.scrollTop = trs.scrollHeight;
-    });
-  // The first question plays once on load, unless the reader already picked one.
-  trs.scrollTop = trs.scrollHeight;
-  if (!reduce)
-    setTimeout(() => {
-      if (!touched) ask("dec");
-    }, 900);
-  else {
-    trs.scrollTop = 0;
-    const hit = trs.querySelector<HTMLElement>(".hit");
-    if (hit)
-      trs.scrollTop = Math.max(
-        0,
-        hit.offsetTop -
-          trs.offsetTop -
-          trs.clientHeight / 2 +
-          hit.offsetHeight / 2,
-      );
-  }
-}
 
 /* ---- phone chapters ---- */
 initPhone(lp, reduce);
@@ -228,21 +70,24 @@ const flag = (n: string, v: boolean) =>
 const line = () =>
   narrow() ? stage.getBoundingClientRect().height + 60 : innerHeight * 0.58;
 
-// t = chapter * 10 + progress (0..3). With reduced motion progress is fixed, so
-// each chapter shows its landed still (the versions chapter shows the old one).
+// t = step * 10 + progress (0..3). The first chapter is step 2 (the scene above
+// is steps 1 to 4 of nine, the chapters are 5 to 9), and the stage opens on the
+// plan as the scene left it, so t never drops below 23. With reduced motion
+// progress is fixed, so each chapter shows its landed still (the versions
+// chapter shows the older version).
 function read() {
   const y = line();
-  let step = 0,
+  let step = 1,
     p = 0;
   chs.forEach((c, i) => {
     const r = c.getBoundingClientRect();
     if (r.top <= y) {
-      step = i + 1;
+      step = i + 2;
       p = Math.min(0.999, (y - r.top) / r.height);
     }
   });
-  if (reduce) return step * 10 + (step === 5 ? 1 : 3);
-  return step * 10 + Math.floor(p * 4);
+  if (reduce) return Math.max(23, step * 10 + (step === 5 ? 1 : 3));
+  return Math.max(23, step * 10 + Math.floor(p * 4));
 }
 function render(force = false) {
   const t = read();
@@ -256,17 +101,16 @@ function render(force = false) {
     ($(id) as HTMLElement & { inert: boolean }).inert =
       !$(id).classList.contains("on");
   chs.forEach((c, i) => {
-    c.classList.toggle("cur", i + 1 === step || (step === 0 && i === 0));
+    c.classList.toggle("cur", i + 2 === step || (step <= 1 && i === 0));
   });
   rail.forEach((b, i) => {
-    b.classList.toggle("done", i + 1 < step);
-    if (i + 1 === step) b.setAttribute("aria-current", "step");
+    b.classList.toggle("done", i + 2 < step);
+    if (i + 2 === step) b.setAttribute("aria-current", "step");
     else b.removeAttribute("aria-current");
   });
   flag("data-past1", step >= 2);
   flag("data-side", step === 2 || step === 3);
   flag("data-fan", step === 5);
-  flag("data-wall", step >= 7);
   ln.classList.toggle("sel", t >= 20 && t < 23);
   ln.classList.toggle("sw", t >= 23);
   ln.classList.toggle("chg", t >= 23 && t < 30);
@@ -291,13 +135,13 @@ function render(force = false) {
   }
   $("#adone").classList.toggle("on", done);
   $("#adonex").textContent =
-    `Done. The plan now says the ${pick === "a" ? "Hacker News post" : "email list"} goes first. That's v3.`;
+    `Done. The plan now says the ${pick === "a" ? "Hacker News post" : "email list"} goes first. That's v5.`;
   $("#chanv").textContent = name;
   const viewOld = t >= 51 && t < 53;
   chan.classList.toggle("on", done && !viewOld);
   chan.classList.toggle("chg", done && t < 40);
   $("#vban").classList.toggle("on", viewOld);
-  const v = viewOld ? "v2" : done ? "v3" : t >= 23 ? "v2" : "v1";
+  const v = viewOld ? "v4" : done ? "v5" : t >= 23 ? "v4" : "v3";
   if (v !== lastVer) {
     ver.textContent = v;
     if (lastVer && !reduce) {
@@ -348,7 +192,7 @@ function render(force = false) {
   $("#tog").classList.toggle("on", t >= 62);
   const pub = t >= 62,
     vis = $("#vis");
-  vis.textContent = pub ? "Public link" : "Private";
+  vis.textContent = pub ? "Public link" : "Shared with 4";
   vis.classList.toggle("pub", pub);
 }
 let raf = 0;

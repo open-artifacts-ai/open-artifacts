@@ -1,7 +1,12 @@
-// The pinned scroll scene in the hero. Scroll moves it through four moments and
-// back again. It only pins on a wide screen with motion allowed; otherwise the
-// four moments stay stacked as cards, as the page renders them.
-import { SCENE_CAPTIONS, SCENE_STATES, sceneHtml } from "../../lib/scene";
+// The pinned scroll scene in the hero. Scroll moves it through four moments, then
+// the turn, and back again. It only pins on a wide screen with motion allowed;
+// otherwise the four moments stay stacked as cards, as the page renders them.
+import {
+  SCENE_CAPTIONS,
+  SCENE_STATES,
+  STORY_STEPS,
+  sceneHtml,
+} from "../../lib/scene";
 
 export function initScene(lp: HTMLElement, reduce: boolean) {
   const sc = lp.querySelector<HTMLElement>("#sc");
@@ -10,9 +15,8 @@ export function initScene(lp: HTMLElement, reduce: boolean) {
   const steps = sc.querySelector<HTMLElement>("#scsteps") as HTMLElement;
   const view = sc.querySelector<HTMLElement>("#scview") as HTMLElement;
   const caps = sc.querySelector<HTMLElement>("#sccaps") as HTMLElement;
-  const dots = [...(sc.querySelector("#scdots") as HTMLElement).children];
-  view.innerHTML = sceneHtml(10);
-  const root = view.firstElementChild as HTMLElement;
+  view.insertAdjacentHTML("beforeend", sceneHtml(10));
+  const root = view.querySelector<HTMLElement>(".x-sides") as HTMLElement;
   sc.classList.add("pinned");
 
   const k = (n: string) =>
@@ -52,7 +56,7 @@ export function initScene(lp: HTMLElement, reduce: boolean) {
     const r = steps.getBoundingClientRect();
     const unit = (steps.firstElementChild as HTMLElement).offsetHeight || 1;
     const p = (pin.getBoundingClientRect().bottom - r.top) / unit;
-    const q = Math.max(0, Math.min(3.999, p + 0.35));
+    const q = Math.max(0, Math.min(4.999, p + 0.35));
     const step = Math.floor(q) + 1;
     const sub = Math.floor((q - Math.floor(q)) * 4);
     return { t: step * 10 + sub, done: p >= 3.25 };
@@ -63,19 +67,36 @@ export function initScene(lp: HTMLElement, reduce: boolean) {
     sc?.classList.toggle("done", done);
     if (t === T && !force) return;
     T = t;
-    set(t);
-    const s = Math.floor(t / 10);
+    const turn = t >= 50;
+    sc?.classList.toggle("turn", turn);
+    set(turn ? 49 : t);
+    const s = Math.min(4, Math.floor(t / 10));
+    if (s === 4) {
+      // The last moment lands the transcript on the decision line.
+      const roll = view.querySelector<HTMLElement>(".sc-roll") as HTMLElement;
+      const clip = roll.parentElement as HTMLElement;
+      const dec = roll.querySelector<HTMLElement>("p.dec") as HTMLElement;
+      const y =
+        clip.clientHeight -
+        roll.offsetHeight +
+        (dec.getBoundingClientRect().top - roll.getBoundingClientRect().top) +
+        dec.offsetHeight / 2;
+      roll.style.setProperty(
+        "--land",
+        `${Math.max(0, Math.round(clip.clientHeight / 2 - y))}px`,
+      );
+    }
     if (s !== capS) {
       capS = s;
       const p = document.createElement("p");
+      const n = document.createElement("span");
+      n.className = "sc-n";
+      n.textContent = `${s} of ${STORY_STEPS}`;
       const b = document.createElement("b");
       b.textContent = SCENE_CAPTIONS[s][0];
-      p.append(b, SCENE_CAPTIONS[s][1]);
+      p.append(n, b, SCENE_CAPTIONS[s][1]);
       caps.replaceChildren(p);
     }
-    dots.forEach((d, i) => {
-      d.classList.toggle("on", i < s);
-    });
   }
   let raf = 0;
   const tick = () => {

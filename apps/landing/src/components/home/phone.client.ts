@@ -39,7 +39,7 @@ export function initPhone(lp: HTMLElement, reduce: boolean) {
       const done = $("[data-done]", askCard);
       done.classList.remove("on");
       $(".x", done).textContent =
-        `Done. The plan now says the ${k === "a" ? "Hacker News post" : "email list"} goes first. That's v3.`;
+        `Done. The plan now says the ${k === "a" ? "Hacker News post" : "email list"} goes first. That's v5.`;
       const show = () => {
         done.hidden = false;
         done.classList.add("on");
@@ -154,7 +154,7 @@ export function initPhone(lp: HTMLElement, reduce: boolean) {
     $(".tog", sw).classList.toggle("on", on);
     $("[data-link]", share).classList.toggle("on", on);
     const v = $("[data-vis]", share);
-    v.textContent = on ? "Public link" : "Private";
+    v.textContent = on ? "Public link" : "Shared with 4";
     v.classList.toggle("pub", on);
   };
   sw.addEventListener("click", () => {
@@ -169,7 +169,7 @@ export function initPhone(lp: HTMLElement, reduce: boolean) {
       const l = $("[data-ln]", m);
       l.classList.remove("sel");
       l.classList.add("sw", "chg");
-      bump($("[data-ver]", m), "v2");
+      bump($("[data-ver]", m), "v4");
     },
     live: (_m, k) => {
       arrived[[1, 0, 1, 1][k - 1]]++;
@@ -184,7 +184,7 @@ export function initPhone(lp: HTMLElement, reduce: boolean) {
       if (k === 2 && !swTouched) link(true);
     },
   };
-  const COUNT: Record<string, number> = { pub: 2, com: 3, live: 4, share: 2 };
+  const COUNT: Record<string, number> = { com: 3, live: 4, share: 2 };
   const GAP: Record<string, number> = { com: 800, live: 550, share: 700 };
   const play = (m: HTMLElement) => {
     if (m.dataset.done) return;

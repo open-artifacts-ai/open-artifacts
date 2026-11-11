@@ -1,27 +1,42 @@
 ---
-// The default hero demo: one piece of work in four moments, a transcript beside
-// an artifact. With scripts the sections pin and step as you scroll; without
-// them, on a phone and with reduced motion, the four moments stack as cards.
-import { SCENE_CAPTIONS, SCENE_NOTE, sceneHtml } from "../../lib/scene";
+// The hero demo: one piece of work in four moments, a transcript beside an
+// artifact, then a turn where the transcript leaves. With scripts the section
+// pins and steps as you scroll; without them, on a phone and with reduced
+// motion, the four moments stack as cards ("1 of 9" to "4 of 9") with the turn
+// as a small card of its own.
+import {
+  SCENE_CAPTIONS,
+  SCENE_NOTE,
+  SCENE_TURN,
+  STORY_STEPS,
+  sceneHtml,
+} from "../../lib/scene";
 ---
 <div class="wrap sc" id="sc" role="group" aria-label="The same work in a transcript and in an artifact, step by step">
   <div class="sc-pin" id="scpin">
-    <div class="sc-view" id="scview"></div>
-    <div class="sc-capw">
-      <ol class="sc-dots" id="scdots" aria-hidden="true"><li></li><li></li><li></li><li></li></ol>
-      <div class="sc-caps" id="sccaps" aria-live="polite"></div>
+    <div class="sc-view" id="scview">
+      <div class="sc-turn" aria-hidden="true"><b>{SCENE_TURN[0]}</b><span>{SCENE_TURN[1]}</span></div>
     </div>
+    <div class="sc-capw"><div class="sc-caps" id="sccaps" aria-live="polite"></div></div>
     <p class="sbs-cap sc-end">{SCENE_NOTE}</p>
   </div>
-  <div class="sc-steps" id="scsteps" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+  <div class="sc-steps" id="scsteps" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></div>
   <ol class="sc-cards" id="sccards">
     {[1, 2, 3, 4].map((s) => (
-      <li>
-        <span class="n">{s} of 4</span>
-        <h3>{SCENE_CAPTIONS[s][0]}</h3>
-        <p class="cp">{SCENE_CAPTIONS[s][1]}</p>
-        <Fragment set:html={sceneHtml(s * 10 + 9)} />
-      </li>
+      <>
+        <li>
+          <span class="n">{s} of {STORY_STEPS}</span>
+          <h3>{SCENE_CAPTIONS[s][0]}</h3>
+          <p class="cp">{SCENE_CAPTIONS[s][1]}</p>
+          <Fragment set:html={sceneHtml(s * 10 + 9)} />
+        </li>
+        {s === 4 && (
+          <li class="sc-turncard">
+            <h3>{SCENE_TURN[0]}</h3>
+            <p class="cp">{SCENE_TURN[1]}</p>
+          </li>
+        )}
+      </>
     ))}
   </ol>
   <p class="sbs-cap sc-end2">{SCENE_NOTE}</p>
