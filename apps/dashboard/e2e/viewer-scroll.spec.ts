@@ -95,3 +95,65 @@ for (const [w, h] of [
       expect(m.scrollHeight).toBe(m.innerHeight);
       expect(m.scrollY).toBe(0);
     });
+
+// #2172 root cause: the sr-only "linked, " spans of linked-agent comments are
+// position:absolute; with the comments column static they escaped its scroll
+// clip and stretched the document.
+for (const [w, h] of [
+  [1280, 800],
+  [390, 844],
+] as const)
+  test(`${w}px: expanding a long linked-agent thread leaves the document alone`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: w, height: h });
+    await page.goto(`/a/${ID}?mock=agents`);
+    await page.getByRole("button", { name: /^Comments/ }).click();
+    await page
+      .getByRole("button", { name: /^1\d replies$/ })
+      .first()
+      .click();
+    await page.waitForTimeout(500);
+    const m = await doc(page);
+    expect(m.scrollHeight).toBe(m.innerHeight);
+    await page.evaluate(() => window.scrollBy(0, 500));
+    expect(await page.evaluate(() => scrollY)).toBe(0);
+  });
+
+// The full-page panels under .oa-bare have no viewer: when they are taller
+// than the window they scroll inside the column, so their last button is
+// reachable (the clip applies only while a viewer is mounted).
+test("a tall full-page panel (not found) scrolls to its last action at 390x200", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 200 });
+  await page.goto("/a/Zz9yXwVuTsRqPoNm");
+  const panel = page.locator(".oa-bare > .oa-edge");
+  await expect(panel).toBeVisible();
+  const last = panel.locator("a, button").last();
+  await last.scrollIntoViewIfNeeded();
+  await expect(last).toBeInViewport({ ratio: 1 });
+  const m = await doc(page);
+  expect(m.scrollY).toBe(0);
+  // And the top: the heading is reachable, not cut off above the scroll origin.
+  await panel.evaluate((el) => {
+    el.scrollTop = 0;
+  });
+  const h1 = panel.locator("h1");
+  expect((await h1.boundingBox())?.y ?? -1).toBeGreaterThanOrEqual(0);
+  await expect(h1).toBeInViewport();
+});
+
+test("a short full-page panel stays vertically centered", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/a/Zz9yXwVuTsRqPoNm");
+  const box = await page
+    .locator(".oa-bare > .oa-edge > .oa-panel")
+    .boundingBox();
+  const edge = await page.locator(".oa-bare > .oa-edge").boundingBox();
+  expect(box && edge).toBeTruthy();
+  if (!box || !edge) return;
+  const above = box.y - edge.y;
+  const below = edge.y + edge.height - (box.y + box.height);
+  expect(Math.abs(above - below)).toBeLessThanOrEqual(2);
+});
