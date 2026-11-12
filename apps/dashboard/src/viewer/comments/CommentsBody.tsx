@@ -694,13 +694,9 @@ function Composer({
                 t.selectionEnd,
                 agents,
               );
-              if (cut) {
-                e.preventDefault();
-                setText(cut.text);
-                setCaret(cut.caret);
-                pickedAt.current = cut.caret;
-                return;
-              }
+              // Select the name and let the native delete remove it: the
+              // edit stays in the browser's undo stack.
+              if (cut) t.setSelectionRange(cut.start, cut.end);
             }
             if (menuOpen) {
               if (e.key === "ArrowDown" || e.key === "ArrowUp") {

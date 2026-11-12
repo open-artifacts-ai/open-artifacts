@@ -842,18 +842,18 @@ export function mentionSegments(
   return out;
 }
 
-/** #2317: Backspace with the caret right after a pill removes the whole
-    `@name`. Null when the key should act normally. */
+/** #2317: Backspace with the caret right after a pill: the range of the whole
+    `@name`, to select so the native delete removes it (and stays in the undo
+    stack). Null when the key should act normally. */
 export function atomicBackspace(
   text: string,
   start: number,
   end: number,
   agents: readonly ArtifactAgent[],
-): { text: string; caret: number } | null {
+): { start: number; end: number } | null {
   if (start !== end) return null;
   const s = mentionSpans(text, agents).find((m) => m.end === start);
-  if (!s) return null;
-  return { text: text.slice(0, s.start) + text.slice(s.end), caret: s.start };
+  return s ? { start: s.start, end: s.end } : null;
 }
 
 const MENTION_END = "(?=$|[\\s.,;:!?)\\]]|-(?=$|\\s)|['\u2019]s(?!\\w))";

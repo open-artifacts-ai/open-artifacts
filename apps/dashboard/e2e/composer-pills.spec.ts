@@ -108,9 +108,12 @@ for (const width of [1280, 390])
           path: `${OUT}/pills-wrapped-scrolled-${width}-${theme}.png`,
         });
 
-      // Atomic backspace: caret right after the last pill, then Backspace.
-      await box.fill("hi @Claude Code");
+      // Atomic backspace: caret right after the pill, then Backspace; undo restores it.
+      await box.fill("");
+      await box.pressSequentially("hi @Claude Code");
       await expect(page.locator("[data-oa-pill]")).toHaveCount(1);
       await page.keyboard.press("Backspace");
       await expect(box).toHaveValue("hi ");
+      await page.keyboard.press("ControlOrMeta+z");
+      await expect(box).toHaveValue("hi @Claude Code");
     });

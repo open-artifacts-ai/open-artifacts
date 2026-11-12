@@ -54,12 +54,9 @@ describe("mentionSegments (#2317)", () => {
 });
 
 describe("atomicBackspace (#2317)", () => {
-  it("removes the whole name when the caret is at its end", () => {
+  it("selects the whole name when the caret is at its end", () => {
     const t = "hi @OA Product there";
-    expect(atomicBackspace(t, 14, 14, agents)).toEqual({
-      text: "hi  there",
-      caret: 3,
-    });
+    expect(atomicBackspace(t, 14, 14, agents)).toEqual({ start: 3, end: 14 });
   });
   it("acts normally with a selection, mid-name or after the space", () => {
     const t = "hi @OA Product there";
