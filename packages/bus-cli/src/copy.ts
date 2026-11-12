@@ -1,5 +1,6 @@
 import { displayKind, type StatusFields, statusSaysText } from "@oa/bus-ipc";
 import { type AgentKind, BUS_CMD, BUS_ROUTES } from "@oa/bus-protocol";
+import type { Isolation } from "./context.ts";
 import { box, glyph, paint, type Style, type Tone } from "./term.ts";
 
 /**
@@ -342,6 +343,18 @@ export function copy(style: Style, bus: string = BUS_CMD) {
               next(`Run ${bus} install.`),
             ],
     // install --no-service: the service step is skipped, nothing is started.
+    // install: the bus then runs as a plain daemon (daemonRunning says so).
+    serviceOtherHome: (why: Isolation, removing = false, plain = false) => [
+      warn(
+        `Skipped ${removing ? "removing " : ""}the background service: ${
+          why === "home"
+            ? "this HOME isn't your account's home"
+            : why === "bus-home"
+              ? "the bus home is outside your account's home"
+              : "XDG_CONFIG_HOME is outside your account's home"
+        }.${removing ? "" : plain ? " It never gets a background service there, so the bus runs as a plain daemon." : " Use --no-service to skip it on purpose."}`,
+      ),
+    ],
     serviceSkipped: () => [
       warn("Skipped the service, so no daemon is running."),
       next(`Start it with ${bus} daemon, and again after a reboot.`),

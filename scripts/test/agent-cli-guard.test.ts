@@ -7,6 +7,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,7 +15,12 @@ import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { AGENT_CLIS, BLOCK_EXIT, STUB_DIR } from "./agent-cli-guard";
+import {
+  AGENT_CLIS,
+  BLOCK_EXIT,
+  guardEntriesOn,
+  STUB_DIR,
+} from "./agent-cli-guard";
 
 const pi_ = () => "/usr/bin/pi";
 const MSG = (n: string) => `real ${n} blocked by the test guard (#2168)`;
@@ -102,6 +108,85 @@ describe("agent CLI guard (#2168)", () => {
     });
   });
 
+  describe("a guarded CLI run through its JS entry (#2207)", () => {
+    // Like a global install: bin/pi is a symlink to lib/.../cli.js, outside
+    // any temp dir. The marker proves it never ran.
+    const dir = join(
+      process.cwd().replace(/\/(apps|packages|scripts)\/.*$/, ""),
+      "node_modules",
+      ".cache",
+      `agent-cli-guard-js-${process.pid}`,
+    );
+    const cli = join(dir, "lib", "cli.js");
+    const marker = join(dir, "ran");
+    beforeAll(() => {
+      mkdirSync(join(dir, "lib"), { recursive: true });
+      mkdirSync(join(dir, "bin"));
+      writeFileSync(
+        cli,
+        `require("fs").writeFileSync(${JSON.stringify(marker)}, "x");\n`,
+      );
+      symlinkSync(cli, join(dir, "bin", "pi"));
+      guardEntriesOn(join(dir, "bin"));
+    });
+    afterAll(() => rmSync(dir, { recursive: true, force: true }));
+    afterEach(() => expect(existsSync(marker)).toBe(false));
+    const blocked = /blocked by the test guard/;
+
+    it("throws on `node <abs>/cli.js` and `bun <abs>/cli.js`", () => {
+      expect(() => cp.spawnSync("node", [cli])).toThrow(blocked);
+      expect(() =>
+        cp.execFileSync(process.execPath, ["--no-warnings", cli]),
+      ).toThrow(blocked);
+      expect(() => cp.spawn("bun", [cli])).toThrow(blocked);
+      expect(() => cp.execSync(`node ${cli} mcp add x`)).toThrow(blocked);
+      expect(() => cp.spawnSync("sh", ["-c", `exec node ${cli}`])).toThrow(
+        blocked,
+      );
+    });
+
+    it("also throws through the symlink path", () => {
+      expect(() => cp.spawnSync("node", [join(dir, "bin", "pi")])).toThrow(
+        blocked,
+      );
+    });
+
+    it("scans `--flag=<abs>` words too", () => {
+      expect(() =>
+        cp.spawnSync("node", [`--require=${cli}`, "-e", "0"]),
+      ).toThrow(blocked);
+    });
+
+    it("ignores a shared shim and its siblings", () => {
+      const shim = mkdtempSync(join(tmpdir(), "oa-shim-"));
+      const out = join(dir, "shim-bin");
+      mkdirSync(out);
+      // volta-style: pi and node both point at one shim; pi also -> a .txt
+      writeFileSync(join(out, "volta-shim"), "#!/bin/sh\n");
+      chmodSync(join(out, "volta-shim"), 0o755);
+      symlinkSync(join(out, "volta-shim"), join(out, "pi"));
+      symlinkSync(join(out, "volta-shim"), join(out, "node"));
+      // a JS entry that a non-guarded tool in the same dir also resolves to
+      writeFileSync(join(out, "tool.js"), "");
+      chmodSync(join(out, "tool.js"), 0o755);
+      symlinkSync(join(out, "tool.js"), join(out, "codex"));
+      symlinkSync(join(out, "tool.js"), join(out, "npx"));
+      guardEntriesOn(out);
+      expect(cp.spawnSync("echo", [join(out, "volta-shim")]).status).toBe(0);
+      expect(cp.spawnSync("echo", [join(out, "tool.js")]).status).toBe(0);
+      rmSync(shim, { recursive: true, force: true });
+    });
+
+    it("leaves other node scripts alone", () => {
+      const r = cp.spawnSync(
+        process.execPath,
+        ["-e", "process.stdout.write('ok')"],
+        { encoding: "utf8" },
+      );
+      expect(r.stdout).toBe("ok");
+    });
+  });
+
   it("keeps the exact makeExec call shape: promisify(execFile) with a timeout and a child holding stdout", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ob-guard-shape-"));
     const sh = join(dir, "opencode");
@@ -170,10 +255,36 @@ describe("agent CLI guard (#2168)", () => {
     };
     expect(files.length).toBeGreaterThan(20);
     const testConfigs = files.filter(isTestConfig);
+    // Parse every `setupFiles: [...]` array (comments stripped): the guard
+    // must be its LAST entry, since a later file could reset HOME.
+    const lastSetup = (f: string): string[] => {
+      const src = readFileSync(join(root, f), "utf8")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .replace(/(^|[^:])\/\/.*$/gm, "$1");
+      const arrays = [
+        ...src.matchAll(/setupFiles:\s*\[([^\]]*(?:\([^)]*\)[^\]]*)*)\]/g),
+      ];
+      // A projects config needs one array per project: a new block without
+      // setupFiles would otherwise ride on a sibling's.
+      const projects = (src.match(/\binclude:/g) ?? []).length;
+      return arrays.length === 0 || arrays.length < projects
+        ? ["<missing setupFiles>"]
+        : arrays.map((m) => {
+            const entries = (m[1] ?? "")
+              .split(/,(?![^(]*\))/)
+              .map((e) => e.trim())
+              .filter(Boolean);
+            return entries[entries.length - 1] ?? "<empty>";
+          });
+    };
     const unwired = testConfigs.filter(
       (f) =>
         !(f in skip) &&
-        !readFileSync(join(root, f), "utf8").includes("agent-cli-guard"),
+        !lastSetup(f).every((e) =>
+          /scripts\/test\/agent-cli-guard\.ts["']|\.\.\/test\/agent-cli-guard\.ts["']/.test(
+            e,
+          ),
+        ),
     );
     expect(unwired).toEqual([]);
     for (const f of Object.keys(skip))

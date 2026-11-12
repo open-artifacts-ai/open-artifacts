@@ -1,5 +1,11 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -188,10 +194,20 @@ describe("agentClients", () => {
       (s) => s.agent === "Codex CLI" && s.variant === "token",
     );
     // What Claude Code saves: the add-json argument, as the shell passes it.
-    const saved = execFileSync("bash", [
-      "-c",
-      `claude() { printf '%s' "$6"; }; ${claude?.code}`,
-    ]).toString();
+    // Own HOME and a PATH of just a stub dir (bash builtins plus the tools
+    // the snippet needs), so it never depends on the vitest guard.
+    const bin = mkdtempSync(join(tmpdir(), "oa-claude-bin-"));
+    for (const t of ["bash", "cat", "printf"]) {
+      const real = spawnSync("bash", ["-c", `command -v ${t}`], {
+        encoding: "utf8",
+      }).stdout.trim();
+      if (real.startsWith("/")) symlinkSync(real, join(bin, t));
+    }
+    const saved = execFileSync(
+      "bash",
+      ["-c", `claude() { printf '%s' "$6"; }; ${claude?.code}`],
+      { env: { HOME: home, PATH: bin } },
+    ).toString();
     const helpers = [
       (JSON.parse(saved) as { headersHelper: string }).headersHelper,
       JSON.parse(
