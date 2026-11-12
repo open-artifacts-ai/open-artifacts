@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -29,7 +29,7 @@ const pi_ = () => "/usr/bin/pi";
 // trusts temp dirs. The repo's node_modules/.cache is that dir, except when
 // the repo itself was cloned under /tmp (scripts/ci/public-only.sh does
 // this); then fall back to the runner's RUNNER_TEMP, else skip.
-const REPO = process.cwd().replace(/\/(apps|packages|scripts)\/.*$/, "");
+const REPO = resolve(fileURLToPath(import.meta.url), "..", "..", "..");
 const FAKE_ROOT = [
   join(REPO, "node_modules", ".cache"),
   process.env.RUNNER_TEMP,
@@ -37,6 +37,14 @@ const FAKE_ROOT = [
 const MSG = (n: string) => `real ${n} blocked by the test guard (#2168)`;
 
 describe("agent CLI guard (#2168)", () => {
+  it("has a fake root outside temp dirs under CI (#2254)", () => {
+    if (process.env.CI)
+      expect(
+        FAKE_ROOT,
+        "no dir outside the temp roots for the real-CLI cases: set RUNNER_TEMP to one",
+      ).toBeDefined();
+  });
+
   it("puts the stub dir first on PATH", () => {
     expect(process.env.PATH?.split(delimiter)[0]).toBe(STUB_DIR);
   });

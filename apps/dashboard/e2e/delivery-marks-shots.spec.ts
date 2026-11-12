@@ -8,8 +8,12 @@ const ID = "Cd5fGhJkLm6nPqRs"; // Landing page
 const OUT = process.env.DELIVERY_MARKS_SHOTS_DIR;
 
 async function open(page: Page, text: string) {
+  // The mock seeds comments as just created; a queued notice reads "sending"
+  // until the comment is 30s old, so let the seeded ones age past that.
+  await page.clock.install();
   await page.goto(`/a/${ID}?mock=agents`);
   await page.getByRole("button", { name: /^Comments/ }).click();
+  await page.clock.fastForward(31_000);
   await page
     .locator("li[data-thread]")
     .filter({ hasText: text })
@@ -73,7 +77,7 @@ for (const width of [1280, 390])
       const six = thread
         .locator("[data-delivery-faces]")
         .filter({ has: page.locator("[data-more]") })
-        .first();
+        .last(); // the mention comment above also has a +N now
       await expect(six.locator("[data-avatar]")).toHaveCount(3);
       await expect(six.locator("[data-more]")).toHaveText("+3");
       await six.scrollIntoViewIfNeeded();

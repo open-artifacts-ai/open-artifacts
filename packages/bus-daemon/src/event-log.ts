@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { chmod, lstat, mkdir, open, rename } from "node:fs/promises";
+import { lstat, mkdir, open, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 import { stripTerminalControls } from "@oa/bus-ipc";
 
@@ -72,41 +72,90 @@ export function createEventLog(
   const now = opts.now ?? (() => new Date());
   let chain: Promise<void> = Promise.resolve();
   let size: number | undefined;
+  /**
+   * The logs folder, checked on every call: a real folder (never a link) owned
+   * by this user, opened by descriptor and made owner-only through it. Returns
+   * its identity so the caller can tell a swap during the write.
+   */
+  const checkDir = async (
+    dir: string,
+  ): Promise<{ dev: number; ino: number }> => {
+    const ls = await lstat(dir).catch(() => undefined);
+    if (ls && ls.isSymbolicLink()) throw new Error("folder is a symlink");
+    if (ls && !ls.isDirectory()) throw new Error("not a folder");
+    if (!ls) await mkdir(dir, { recursive: true, mode: 0o700 });
+    const dh = await open(
+      dir,
+      constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+    );
+    try {
+      const st = await dh.stat();
+      if (typeof process.getuid === "function" && st.uid !== process.getuid())
+        throw new Error("folder is not yours");
+      const again = await lstat(dir);
+      if (
+        again.isSymbolicLink() ||
+        again.dev !== st.dev ||
+        again.ino !== st.ino
+      )
+        throw new Error("folder changed");
+      await dh.chmod(0o700);
+      return { dev: st.dev, ino: st.ino };
+    } finally {
+      await dh.close();
+    }
+  };
+  const sameDir = async (dir: string, id: { dev: number; ino: number }) => {
+    const st = await lstat(dir);
+    if (st.isSymbolicLink() || st.dev !== id.dev || st.ino !== id.ino)
+      throw new Error("folder changed");
+  };
+  /** Open without following a link, check it is a regular file, fchmod through the descriptor. */
+  const openChecked = async (f: string, flags: number) => {
+    const fh = await open(
+      f,
+      flags | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+      0o600,
+    );
+    try {
+      // A symlink, a FIFO or a device is never used.
+      if (!(await fh.stat()).isFile()) throw new Error("not a regular file");
+      await fh.chmod(0o600);
+      return fh;
+    } catch (e) {
+      await fh.close();
+      throw e;
+    }
+  };
   const write = async (line: string): Promise<void> => {
     try {
+      const dir = dirname(file);
+      const id = await checkDir(dir);
       if (size === undefined) {
-        const dir = dirname(file);
-        // A folder that is a symlink (or not a folder) is never written into.
-        const ds = await lstat(dir).catch(() => undefined);
-        if (ds && !ds.isDirectory()) throw new Error("not a folder");
-        await mkdir(dir, { recursive: true, mode: 0o700 });
-        await chmod(dir, 0o700);
-        // Owner-only, and never through a symlink someone planted.
         size = 0;
         for (const f of [file, `${file}.1`]) {
           const st = await lstat(f).catch(() => undefined);
           if (!st) continue;
-          // A symlink, a FIFO or a device is never opened.
-          if (!st.isFile()) throw new Error("not a regular file");
-          await chmod(f, 0o600);
-          if (f === file) size = st.size;
+          const fh = await openChecked(f, constants.O_RDONLY);
+          try {
+            if (f === file) size = (await fh.stat()).size;
+          } finally {
+            await fh.close();
+          }
         }
       }
       if (size > 0 && size + Buffer.byteLength(line) > max) {
+        await sameDir(dir, id);
         await rename(file, `${file}.1`);
         size = 0;
       }
-      const fh = await open(
+      const fh = await openChecked(
         file,
-        constants.O_WRONLY |
-          constants.O_APPEND |
-          constants.O_CREAT |
-          constants.O_NOFOLLOW |
-          constants.O_NONBLOCK,
-        0o600,
+        constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT,
       );
       try {
-        if (!(await fh.stat()).isFile()) throw new Error("not a regular file");
+        // The folder is still the one checked: the file was opened inside it.
+        await sameDir(dir, id);
         await fh.write(line);
       } finally {
         await fh.close();

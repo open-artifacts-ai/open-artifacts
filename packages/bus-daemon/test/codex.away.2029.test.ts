@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
@@ -222,6 +223,23 @@ async function restarted(
     ...deps,
   });
   return { two, logs };
+}
+
+/** #2158: the fdinfo a locking fd shows; `held` false is a plain open. */
+function fdinfo(
+  proc: string,
+  pid: number,
+  fd: string,
+  file: string,
+  held: boolean,
+): void {
+  const st = statSync(file, { bigint: true });
+  const { major, minor } = devParts(st.dev);
+  mkdirSync(join(proc, String(pid), "fdinfo"), { recursive: true });
+  writeFileSync(
+    join(proc, String(pid), "fdinfo", fd),
+    `pos:\t0\nflags:\t0100002\n${held ? `lock:\t1: FLOCK  ADVISORY  WRITE ${pid} ${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino} 0 EOF\n` : ""}`,
+  );
 }
 
 describe("waking an away Codex thread (#2029)", () => {
@@ -886,6 +904,7 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
     ] as const) {
       mkdirSync(join(proc, String(pid), "fd"), { recursive: true });
       symlinkSync(file, join(proc, String(pid), "fd", "7"));
+      fdinfo(proc, pid, "7", file, pid === 100);
     }
     // 101 has `b` open but nobody locks it: not a holder.
     expect(lockHoldersLinux([locked, open], proc)).toEqual(
@@ -895,14 +914,25 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
       ]),
     );
     expect(lockHoldersLinux([locked], join(dir, "nope"))).toBeUndefined();
-    // The locker /proc/locks names (99) comes before another opener (100), whatever the directory order.
+    // A forked child sharing the description (99) also shows the lock.
     mkdirSync(join(proc, "99", "fd"), { recursive: true });
     symlinkSync(locked, join(proc, "99", "fd", "3"));
-    writeFileSync(
-      join(proc, "locks"),
-      `1: FLOCK  ADVISORY  WRITE 99 ${major.toString(16).padStart(2, "0")}:${minor.toString(16).padStart(2, "0")}:${st.ino} 0 EOF\n`,
-    );
-    expect(lockHoldersLinux([locked], proc)?.get(locked)).toEqual([99, 100]);
+    fdinfo(proc, 99, "3", locked, true);
+    expect(
+      lockHoldersLinux([locked], proc)
+        ?.get(locked)
+        ?.sort((a, b) => a - b),
+    ).toEqual([99, 100]);
+    // #2158: 99 opened the file on its own; only 100 owns the lock.
+    fdinfo(proc, 99, "3", locked, false);
+    expect(lockHoldersLinux([locked], proc)?.get(locked)).toEqual([100]);
+    // The holder filtered out (no lock on any fd): no candidate.
+    fdinfo(proc, 100, "7", locked, false);
+    expect(lockHoldersLinux([locked], proc)?.get(locked)).toEqual([]);
+    // fdinfo unreadable: fail closed.
+    fdinfo(proc, 100, "7", locked, true);
+    rmSync(join(proc, "100", "fdinfo"), { recursive: true });
+    expect(lockHoldersLinux([locked], proc)?.get(locked)).toEqual([]);
   });
 
   it("the attestor's default holder lookup on Linux does not run lsof", () => {
@@ -917,6 +947,7 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
     );
     mkdirSync(join(proc, "100", "fd"), { recursive: true });
     symlinkSync(lock, join(proc, "100", "fd", "7"));
+    fdinfo(proc, 100, "7", lock, true);
     const a = codexAttestor({
       home: w.home,
       platform: "linux",
@@ -931,6 +962,7 @@ describe("the wake needs no live asker and no lsof (#2079)", () => {
     );
     mkdirSync(join(proc, "200", "fd"), { recursive: true });
     symlinkSync(lock, join(proc, "200", "fd", "7"));
+    fdinfo(proc, 200, "7", lock, true);
     expect(a.holders([THREAD])?.get(THREAD)).toMatchObject({ pid: P });
     // Open, not locked: no holder.
     writeFileSync(join(proc, "locks"), "");

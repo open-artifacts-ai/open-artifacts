@@ -27,6 +27,9 @@ export const CODEX_TOOL_NAMESPACE = "mcp__oa_bus";
  */
 export const CODEX_REFUSALS = {
   notCodex: "it is not running under Codex.",
+  /** `ps` timed out or could not run: unknown, not "not Codex". Retryable. */
+  procUnknown:
+    "the bus could not check the process in time. Call the tool again.",
   restarted: "Codex restarted. Call the tool again.",
   notLoaded: "Codex does not have this thread loaded.",
   callNotFound:
@@ -159,12 +162,18 @@ export type CodexAttestor = {
    * daemon's own earlier attestation; nothing in CODEX_HOME is believed more
    * than at the first hello. A thread that fails leaves nothing behind.
    */
-  restore: (r: {
-    thread: string;
-    pid: number;
-    start: string;
-  }) => { cwd: string } | undefined;
+  restore: (r: { thread: string; pid: number; start: string }) => CodexRestore;
 };
+
+/**
+ * #2202, #2297: how a restore ended. `unknown` is a process read that gave no
+ * answer (ps timed out): retry later, never admit. `dropped` carries a fixed
+ * reason for the event log.
+ */
+export type CodexRestore =
+  | { cwd: string }
+  | { unknown: true }
+  | { dropped: "other_process" | "no_rollout" | "subagent" | "no_lock" };
 
 /** What a thread proved under one (P, start). */
 type Proof = { cwd: string; rollout: string };
@@ -320,7 +329,9 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     const thread = cx.thread_id;
     const p = cx.ppid;
     // 1. Parent: the claimed ppid is the adapter's real parent, and it is codex.
-    const rows = procs([hello.pid, p]) ?? new Map<number, Proc>();
+    const rows = procs([hello.pid, p]);
+    // ps timed out or failed: unknown, never "not Codex" and never admitted.
+    if (!rows) return no(CODEX_REFUSALS.procUnknown);
     const proc = rows.get(p);
     if (!proc || rows.get(hello.pid)?.ppid !== p)
       return no(CODEX_REFUSALS.notCodex);
@@ -492,25 +503,27 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
 
   const restore: CodexAttestor["restore"] = ({ thread, pid, start }) => {
     const home = deps.home ?? codexHome();
-    const proc = procs([pid])?.get(pid);
+    const rows = procs([pid]);
+    if (!rows) return { unknown: true };
+    const proc = rows.get(pid);
     if (!proc || basename(proc.comm) !== "codex" || proc.start !== start)
-      return undefined;
+      return { dropped: "other_process" };
     // Another thread of this process pinned a different start: never mixed.
     const was = pinned.get(pid);
-    if (was !== undefined && was !== start) return undefined;
+    if (was !== undefined && was !== start) return { dropped: "other_process" };
     const row = threadRow(home, thread);
     const rollout = row?.rollout_path ?? globRollout(home, thread);
-    if (!rollout || !plainFile(rollout)) return undefined;
+    if (!rollout || !plainFile(rollout)) return { dropped: "no_rollout" };
     const meta = metaOf(rollout, thread);
     if (!meta || typeof meta.cwd !== "string" || !isAbsolute(meta.cwd))
-      return undefined;
+      return { dropped: "no_rollout" };
     // The same bar as the first hello: never a subagent.
     if (
       isSubagent(row ? row.source : meta.source) ||
       isSubagent(meta.source) ||
       SPAWNED_SOURCES.has(String(meta.thread_source))
     )
-      return undefined;
+      return { dropped: "subagent" };
     const had = was !== undefined;
     pinned.set(pid, start);
     proofs.set(`${pid}\0${start}\0${thread}`, { cwd: meta.cwd, rollout });
@@ -520,7 +533,7 @@ export function codexAttestor(deps: CodexAttestDeps = {}): CodexAttestor {
     lapsed.delete(`${pid}\0${start}\0${thread}`);
     if (!had && ![...proofs.keys()].some((k) => k.startsWith(`${pid}\0`)))
       pinned.delete(pid);
-    return undefined;
+    return { dropped: "no_lock" };
   };
 
   /** The thread's rollout names a user thread, not a subagent or spawned one. */
@@ -1120,48 +1133,49 @@ export function lockHoldersLinux(
     for (const fd of fds)
       try {
         const st = statSync(join(dir, fd), { bigint: true });
+        // #2158: the fd itself must carry the lock, not just be the file.
         for (const f of want.get(`${st.dev}:${st.ino}`) ?? [])
-          if (!seen.has(f)) {
+          if (!seen.has(f) && fdHoldsLock(procRoot, pid, fd, st)) {
             seen.add(f);
             pairs.push({ pid, file: f });
           }
       } catch {}
   }
   const locked = holdingLinux(pairs, procRoot);
-  const lockers = lockerPids(procRoot);
   const out = new Map<string, number[]>(files.map((f) => [f, []]));
   pairs.forEach((p, i) => {
     if (locked[i]) out.get(p.file)?.push(p.pid);
   });
-  // The pid /proc/locks names holds the lock itself; any other opener inherited the fd.
-  for (const [f, list] of out) {
-    let key: string | undefined;
-    try {
-      const st = statSync(f, { bigint: true });
-      const { major, minor } = devParts(st.dev);
-      key = `${major}:${minor}:${st.ino}`;
-    } catch {}
-    const first = (pid: number) => (key && lockers.get(key)?.has(pid) ? 0 : 1);
-    list.sort((a, b) => first(a) - first(b));
-  }
   return out;
 }
 
-/** The pids /proc/locks names as lockers, by `MAJ:MIN:INODE` (decimal). */
-function lockerPids(procRoot: string): Map<string, Set<number>> {
-  const out = new Map<string, Set<number>>();
+/**
+ * #2158: /proc/<pid>/fdinfo/<fd> lists the locks held through that open file
+ * description (flock, fcntl and OFD alike) as `lock:\t1: FLOCK ... MAJ:MIN:INO`.
+ * An fd that inherited the description counts; a separate open of the file does
+ * not. Unreadable fdinfo is no proof.
+ */
+function fdHoldsLock(
+  procRoot: string,
+  pid: number,
+  fd: string,
+  st: { dev: bigint; ino: bigint },
+): boolean {
   try {
-    for (const l of readFileSync(join(procRoot, "locks"), "utf8").split("\n")) {
-      const f = l.trim().split(/\s+/);
-      const [maj, min, ino] = (f[5] ?? "").split(":");
-      const pid = Number(f[4]);
-      if (!maj || !min || !ino || !pid) continue;
-      if (!/^[0-9a-f]+$/i.test(maj + min) || !/^\d+$/.test(ino)) continue;
-      const k = `${BigInt(`0x${maj}`)}:${BigInt(`0x${min}`)}:${ino}`;
-      out.set(k, (out.get(k) ?? new Set()).add(pid));
-    }
-  } catch {}
-  return out;
+    const { major, minor } = devParts(st.dev);
+    const want = `${major}:${minor}:${st.ino}`;
+    return readFileSync(join(procRoot, String(pid), "fdinfo", fd), "utf8")
+      .split("\n")
+      .some((l) => {
+        if (!l.startsWith("lock:")) return false;
+        const [maj, min, ino] = (l.trim().split(/\s+/)[6] ?? "").split(":");
+        if (!maj || !min || !ino) return false;
+        if (!/^[0-9a-f]+$/i.test(maj + min) || !/^\d+$/.test(ino)) return false;
+        return `${BigInt(`0x${maj}`)}:${BigInt(`0x${min}`)}:${ino}` === want;
+      });
+  } catch {
+    return false;
+  }
 }
 
 /** `holdingLinux` for one pair. */
