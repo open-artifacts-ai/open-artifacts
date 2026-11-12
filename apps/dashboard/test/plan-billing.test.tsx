@@ -310,8 +310,9 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
   });
   describe("a scheduled cancel (cancelsAt)", () => {
     const ENDS = "2026-12-20T00:00:00.000Z";
-    const endsLine = "Ends on Dec 20, 2026.";
-    it("a free-month Solo that cancelled: Ends on, Manage billing, no first charge, no price line", async () => {
+    const NOTE =
+      "Your plan ends on Dec 20, 2026. After that you can still read everything, but nothing new can be published or edited. To keep it, resume in Manage billing.";
+    it("a free-month Solo that cancelled: the pill, the warning in place of the free-month banner, Manage billing, no first charge", async () => {
       mountHosted("/settings/plan", {
         billing: {
           ...TRIAL,
@@ -320,17 +321,23 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
           cancelsAt: ENDS,
         },
       });
-      expect(await screen.findByText(endsLine)).toBeVisible();
+      expect(await screen.findByText(NOTE)).toBeVisible();
+      expect(screen.getByText("Ends Dec 20")).toBeVisible();
+      expect(screen.queryByText("Free month")).toBeNull();
+      expect(screen.queryByText(/Your free month ends/)).toBeNull();
+      expect(screen.queryByText(/First charge on/)).toBeNull();
+      expect(screen.queryByText(/^Ends on /)).toBeNull();
+      expect(screen.queryByText(/Then \$1\/month/)).toBeNull();
       expect(
         screen.getByRole("button", { name: "Manage billing" }),
       ).toBeVisible();
-      expect(screen.queryByText(/First charge on/)).toBeNull();
-      expect(screen.queryByText(/Then \$1\/month/)).toBeNull();
       expect(pay()).toBeNull();
     });
     it("a paid Solo that cancelled", async () => {
       mountHosted("/settings/plan", { billing: { ...PAID, cancelsAt: ENDS } });
-      expect(await screen.findByText(endsLine)).toBeVisible();
+      expect(await screen.findByText(NOTE)).toBeVisible();
+      expect(screen.getByText("Ends Dec 20")).toBeVisible();
+      expect(screen.queryByText("Active")).toBeNull();
       expect(
         screen.getByRole("button", { name: "Manage billing" }),
       ).toBeVisible();
@@ -339,7 +346,8 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
       mountHosted("/settings/plan", {
         billing: { ...TEAM, hasCustomer: true, cancelsAt: ENDS },
       });
-      expect(await screen.findByText(endsLine)).toBeVisible();
+      expect(await screen.findByText(NOTE)).toBeVisible();
+      expect(screen.getByText("Ends Dec 20")).toBeVisible();
       expect(
         screen.getByRole("button", { name: "Manage billing" }),
       ).toBeVisible();
@@ -353,17 +361,32 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
           cancelsAt: ENDS,
         },
       });
-      expect(await screen.findByText(endsLine)).toBeVisible();
+      expect(await screen.findByText(NOTE)).toBeVisible();
     });
-    it("null, absent or a past date shows no Ends line", async () => {
+    it("null, absent or a past date: the Active pill and no warning", async () => {
       for (const cancelsAt of [null, undefined, "2026-01-01T00:00:00.000Z"]) {
         cleanup();
         mountHosted("/settings/plan", {
           billing: { ...TEAM, hasCustomer: true, cancelsAt },
         });
         await screen.findByRole("button", { name: "Manage billing" });
-        expect(screen.queryByText(/^Ends on /)).toBeNull();
+        expect(screen.getByText("Active")).toBeVisible();
+        expect(screen.queryByText(/^Ends /)).toBeNull();
+        expect(screen.queryByText(/Your plan ends on/)).toBeNull();
       }
+    });
+    it("planStatus: a warn pill and a warning note; a read-only plan keeps its own status", () => {
+      const r = planStatus({ ...TEAM, cancelsAt: ENDS });
+      expect(r.pill).toEqual({ label: "Ends Dec 20", tone: "warn" });
+      expect(r.note).toEqual({ tone: "warning", text: NOTE });
+      expect(
+        planStatus({
+          ...TEAM,
+          readOnly: true,
+          reason: "suspended",
+          cancelsAt: ENDS,
+        }).pill.label,
+      ).toBe("Suspended");
     });
   });
   it("a paid Solo past its free month shows no charge date", async () => {

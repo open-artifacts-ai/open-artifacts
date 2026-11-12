@@ -20,7 +20,7 @@ import { useMe } from "../auth/useMe";
 import { Notice } from "../layout/Notice";
 import { toast } from "../layout/toast";
 import { useDocumentTitle } from "../layout/useDocumentTitle";
-import { formatDate } from "./date";
+import { formatDate, formatShortDate } from "./date";
 import { type Column, PlanCompare } from "./PlanCompare";
 import { muted, SettingsCard, STACK } from "./ui";
 
@@ -62,6 +62,10 @@ type Status = {
 const cancelsInFuture = (b: PlanView): boolean =>
   !!b.cancelsAt && Date.parse(b.cancelsAt) > Date.now();
 
+/** The warning under a plan set to cancel. */
+const CANCEL_NOTE = (b: PlanView): string =>
+  `Your plan ends on ${date(b.cancelsAt as string)}. After that you can still read everything, but nothing new can be published or edited. To keep it, resume in Manage billing.`;
+
 /** The status pill and the one note under it, from the plan alone. */
 export const planStatus = (
   b: PlanView,
@@ -98,6 +102,12 @@ export const planStatus = (
         }. After that, this instance becomes read-only.`,
       },
     };
+  // A scheduled cancel (#2138): the plan stays on until then, but it ends.
+  if (cancelsInFuture(b) && b.cancelsAt)
+    return {
+      pill: { label: `Ends ${formatShortDate(b.cancelsAt)}`, tone: "warn" },
+      note: { tone: "warning", text: CANCEL_NOTE(b) },
+    };
   // trialEndsAt is the Team trial's only: a Solo row with one is a used
   // Team trial and shows no note. The Solo month has its own date, and a
   // date already past (a paid Solo) shows nothing.
@@ -115,12 +125,10 @@ export const planStatus = (
       pill: { label: "Free month", tone: "info" },
       note: {
         tone: "info",
-        // With a card on file the line under it names the first charge, or the
-        // end when the plan is set to cancel.
-        text:
-          b.soloCheckedOut || cancelsInFuture(b)
-            ? `Your free month ends ${date(b.soloTrialEndsAt)}.`
-            : `Your free month ends ${date(b.soloTrialEndsAt)}. Then $1/month or $10/year.`,
+        // With a card on file the charge line under it names the first charge.
+        text: b.soloCheckedOut
+          ? `Your free month ends ${date(b.soloTrialEndsAt)}.`
+          : `Your free month ends ${date(b.soloTrialEndsAt)}. Then $1/month or $10/year.`,
       },
     };
   return { pill: { label: "Active", tone: "ok" } };
@@ -288,11 +296,6 @@ export function Plan() {
                 </>
               )}
             </>
-          )}
-          {cancelling && (
-            <span className={muted}>
-              Ends on {date(billing.cancelsAt as string)}.
-            </span>
           )}
           {paid && !lapsedPaid && !operatorPlan && (
             <span className={muted}>
