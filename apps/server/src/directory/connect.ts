@@ -614,8 +614,11 @@ export async function disconnectDirectory(
     liveSub(env),
     readPendingAny(env),
   ]);
-  if (!live.binding && !live.sealed && !pend.binding && !pend.sealed && !p)
-    return directoryStatus(env, o);
+  // Any connection row, parsed or not: a corrupt binding with no token is wiped too.
+  const connected = await env.DB.prepare(`select ${CONNECTED} as c`)
+    .bind(...CONNECTED_KEYS)
+    .first<{ c: number }>();
+  if (!connected?.c) return directoryStatus(env, o);
   const revoked = await revokeOutcome(env, live.sealed, "live");
   // The same Google account as the live token: one grant, revoked above.
   const samePending = !!live.sealed && !!p?.s && p.s === sub;

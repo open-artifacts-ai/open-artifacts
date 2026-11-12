@@ -145,4 +145,26 @@ describe("Me.instance.directory.bound", () => {
     expect(left?.n).toBe(0);
     expect((await meDirectory(e, owner.cookie))?.bound).toBe(false);
   });
+
+  it("a corrupt binding row with no tokens: DELETE /directory wipes it, no revoke, /me reads false", async () => {
+    const owner = await login(uniq("bo"), "owner");
+    await env.DB.prepare(UPSERT).bind(K.binding, "not json").run();
+    expect((await meDirectory(e, owner.cookie))?.bound).toBe(true);
+    const r = await fetchAndWait(
+      app,
+      new Request(`http://app.localhost${R.directory}`, {
+        method: "DELETE",
+        headers: { cookie: owner.cookie, "x-oa-request": "1" },
+      }),
+      e,
+    );
+    expect(r.status).toBe(204);
+    const row = await env.DB.prepare(
+      "select count(*) n from directory_state where key = ?",
+    )
+      .bind(K.binding)
+      .first<{ n: number }>();
+    expect(row?.n).toBe(0);
+    expect((await meDirectory(e, owner.cookie))?.bound).toBe(false);
+  });
 });
