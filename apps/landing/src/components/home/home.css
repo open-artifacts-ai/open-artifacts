@@ -3175,6 +3175,10 @@ centred */
   }
   &[data-pl="1"] .plk {
     display: block;
+    /* The locked screen resizes inside itself (a banner opening, a piece
+       fading in). Without this the browser scrolls the page to keep a
+       "stable" node still, which moves the screen off its beat. */
+    overflow-anchor: none;
   }
   &[data-pl="1"] .hero {
     padding-bottom: 20px;

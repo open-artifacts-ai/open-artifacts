@@ -47,6 +47,9 @@ describe("phone versions card at 390px", () => {
     const page = await browser.newPage({
       viewport: { width: 390, height: 844 },
     });
+    // a slow phone: this is how a loaded CI runner behaves
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
     await page.goto(`${base}/`, { waitUntil: "load" });
     // on a phone the story is locked: bring the versions beat (8) up
     await page.evaluate(() => {
@@ -61,17 +64,31 @@ describe("phone versions card at 390px", () => {
     });
     const card = page.locator('.mp[data-mp="ver"]');
     await card.waitFor({ state: "visible" });
+    // A click while the piece is still moving (the fade-in, the banner opening)
+    // can miss; Playwright then retries by scrolling the page, which moves the
+    // locked screen off this beat. So wait for every animation and transition
+    // in the screen to finish before each click.
+    const settled = () =>
+      page.waitForFunction(() =>
+        (document.querySelector(".pl-slot.on") as HTMLElement)
+          .getAnimations({ subtree: true })
+          .every((a) => a.playState === "finished"),
+      );
+    await settled();
     const banner = card.locator("[data-ban]");
     const shown = async () =>
       banner.evaluate((e) => e.classList.contains("on"));
     // the newest version is v5 (marked Current), so it shows no banner
     await card.locator('button[data-v="5"]').click();
     expect(await shown()).toBe(false);
+    await settled();
     await card.locator('button[data-v="3"]').click();
     expect(await shown()).toBe(true);
     expect(await card.locator("[data-vb]").textContent()).toBe("v3");
+    await settled();
     // restore from v2: a new top, v6, current, and no second v4
     await card.locator('button[data-v="2"]').click();
+    await settled();
     try {
       // the banner has finished opening (its box holds the whole button) and
       // the screen is still on the versions beat, so the click needs no scroll
