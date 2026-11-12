@@ -1,6 +1,6 @@
 // #2175: withdrawHeld drops the notices still held for an agent removed from a
 // comment thread. Real hub; held rows seeded in the notices table directly.
-import { runInDurableObject } from "cloudflare:test";
+import { runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { agentKey } from "../../src/services/comment-agents.js";
 import {
@@ -349,5 +349,170 @@ describe("withdrawHeld (#2175)", () => {
     expect(row.text).toBe(
       "New comment on artifact artX. Read it with list_comments.\nhttps://x.test/a/artX\nTail line.",
     );
+  });
+});
+
+const records = (s: S) =>
+  runInDurableObject(
+    s.hub,
+    (_i, st) =>
+      st.storage.sql.exec("select count(*) as n from notice_withdrawals").one()
+        .n as number,
+  );
+
+describe("withdrawHeld follow-ups (#2211, #2205)", () => {
+  it("a repeat call returns the same withdrawn list, each target once", async () => {
+    const s = await setup();
+    await put(s, {
+      ckey: "a",
+      ack: s.ack("artX", "c2"),
+      foldAcks: [s.ack("artX", "c1")],
+      foldN: 1,
+    });
+    await put(s, {
+      ckey: "artX:T:asker:others",
+      ack: s.ack("artX", "c9", s.key, "asker"),
+    });
+    const first = await call(s, ["c1", "c2"]);
+    expect(first.withdrawn).toEqual([
+      { commentId: "c1", kind: "mention", key: s.key },
+      { commentId: "c2", kind: "mention", key: s.key },
+      { commentId: "c9", kind: "asker", key: s.key },
+    ]);
+    expect(await rows(s)).toEqual([]);
+    // The reply was lost: the retry finds nothing held, and returns the same.
+    expect(await call(s, ["c1", "c2"])).toEqual(first);
+    // A new held target since then comes back once, beside the recorded ones.
+    await put(s, { ckey: "b", ack: s.ack("artX", "c1") });
+    expect(await call(s, ["c1", "c2"])).toEqual(first);
+    // Recorded targets of ids not listed stay out, the thread's rows don't.
+    expect((await call(s, ["c2"])).withdrawn).toEqual([
+      { commentId: "c2", kind: "mention", key: s.key },
+      { commentId: "c9", kind: "asker", key: s.key },
+    ]);
+    // Another thread or agent gets nothing from the record.
+    expect(
+      await runInDurableObject(s.hub, (inst) =>
+        (
+          inst as unknown as {
+            withdrawHeld(a: unknown): Promise<{ withdrawn: unknown[] }>;
+          }
+        ).withdrawHeld({
+          namespace: s.namespace,
+          name: s.name,
+          artifactId: "artX",
+          threadId: "U",
+          commentIds: ["c1", "c2"],
+        }),
+      ),
+    ).toEqual({ withdrawn: [] });
+    expect(
+      (await call(s, ["c1"], { identityId: s.identityId })).withdrawn,
+    ).toEqual([]);
+    expect(await records(s)).toBe(3);
+  });
+
+  it("a throwing log still returns the withdrawn list", async () => {
+    const s = await setup();
+    await put(s, { ckey: "a", ack: s.ack("artX", "c1") });
+    const spy = vi.spyOn(console, "log").mockImplementation((line) => {
+      if (String(line).includes("bus_notice_withdrawn"))
+        throw new Error("log down");
+    });
+    try {
+      expect(await call(s, ["c1"])).toEqual({
+        withdrawn: [{ commentId: "c1", kind: "mention", key: s.key }],
+      });
+      expect(
+        spy.mock.calls.some((c) =>
+          String(c[0]).includes("bus_notice_withdrawn"),
+        ),
+      ).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await rows(s)).toEqual([]);
+  });
+
+  it("by identityId, also reads rows held under a live former name in grace", async () => {
+    const s = await setup();
+    const old = `Old${++seq}`;
+    const oldKey = await agentKey("artX", s.m.userId, {
+      namespace: s.namespace,
+      name: old,
+    });
+    await runInDurableObject(s.hub, (_i, st) => {
+      st.storage.sql.exec(
+        `insert into former_names (agent_id, org_id, name, lname, kind, expires_at, namespace, global)
+         select id, org_id, ?, ?, 'chosen', ?, namespace, global from agents where identity_id = ?`,
+        old,
+        old.toLowerCase(),
+        Date.now() + 3_600_000,
+        s.identityId,
+      );
+    });
+    await put(s, {
+      ckey: "a",
+      ack: s.ack("artX", "c1", oldKey),
+      toLname: old.toLowerCase(),
+    });
+    expect(
+      (await call(s, ["c1"], { identityId: s.identityId, name: "zzz" }))
+        .withdrawn,
+    ).toEqual([{ commentId: "c1", kind: "mention", key: oldKey }]);
+    expect(await rows(s)).toEqual([]);
+  });
+
+  it("an own target with only legacy untargeted folds left keeps the row and its count", async () => {
+    const s = await setup();
+    await put(s, { ckey: "a", ack: s.ack("artX", "c1"), foldN: 3 });
+    expect((await call(s, ["c1"])).withdrawn).toHaveLength(1);
+    const [row] = await rows(s);
+    expect(row.ack).toBeNull();
+    expect(row.n).toBe(2);
+    expect(row.ref).toBe("artX");
+    expect(row.fa).toBeNull();
+    expect(row.text).toBe(
+      "New comment on artifact artX. Read it with list_comments.",
+    );
+  });
+
+  it("withdraws the held ask-answered notice of a listed ask, leaves an unlisted one", async () => {
+    const s = await setup();
+    await put(s, { ckey: "artX:q1:answered", ack: null });
+    await put(s, { ckey: "artX:q2:answered", ack: null });
+    await put(s, {
+      ckey: "artX:q3:answered",
+      ack: s.ack("artX", "q3", s.key, "asker"),
+    });
+    await put(s, {
+      ckey: "artX:q4:answered",
+      ack: s.ack("artX", "q4", "agent:other", "asker"),
+    });
+    expect(await call(s, ["q1", "q3", "q4"])).toEqual({
+      withdrawn: [{ commentId: "q3", kind: "asker", key: s.key }],
+    });
+    expect((await rows(s)).map((r) => r.ckey)).toEqual([
+      "artX:q2:answered",
+      "artX:q4:answered",
+    ]);
+  });
+
+  it("the alarm sweeps records past their hour, and keeps fresh ones", async () => {
+    const s = await setup();
+    await put(s, { ckey: "a", ack: s.ack("artX", "c1") });
+    await put(s, { ckey: "b", ack: s.ack("artX", "c2") });
+    await call(s, ["c1", "c2"]);
+    expect(await records(s)).toBe(2);
+    await runInDurableObject(s.hub, (_i, st) => {
+      st.storage.sql.exec(
+        "update notice_withdrawals set at = 1 where comment_id = 'c1'",
+      );
+    });
+    await runDurableObjectAlarm(s.hub);
+    expect(await records(s)).toBe(1);
+    expect((await call(s, ["c1", "c2"])).withdrawn).toEqual([
+      { commentId: "c2", kind: "mention", key: s.key },
+    ]);
   });
 });

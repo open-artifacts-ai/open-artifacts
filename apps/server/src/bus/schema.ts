@@ -376,6 +376,25 @@ create table if not exists notice_acks (
   expires_at integer not null
 );
 create index if not exists notice_acks_expiry on notice_acks(expires_at);
+
+-- #2211: the targets withdrawHeld withdrew, kept about an hour so a retried
+-- call (a lost reply) returns them again. agent is 'i:<identity>' or
+-- 'n:<namespace> NUL <lowercased name>', as the call named it. whole = 1 for a
+-- thread-wide row (asker, thread_reply), returned whatever commentIds lists.
+-- New table: create-if-not-exists adds it on an existing hub's next wake.
+-- Written and read only by BusHub.withdrawHeld; swept by the alarm.
+create table if not exists notice_withdrawals (
+  agent text not null,
+  artifact_id text not null,
+  thread_id text not null,
+  comment_id text not null,
+  kind text not null,
+  key text not null,
+  whole integer not null default 0,
+  at integer not null,
+  primary key (agent, artifact_id, thread_id, comment_id, kind, key)
+);
+create index if not exists notice_withdrawals_at on notice_withdrawals(at);
 `;
 
 const HUB_SCHEMA_B7_INDEXES = `
