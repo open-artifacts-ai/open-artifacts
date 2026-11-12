@@ -67,15 +67,21 @@ export function nextAskFor(
 type DState = CommentMention["delivery"];
 const isWait = (d: DState) => d === "queued" || d === "gone";
 
-/** #2229: the details a mark opens, "Delivered to Sirius, 5 hours ago". */
-export const markText = (name: string, d: DState, when: string) =>
-  d === "queued"
-    ? `${name}: held until it's back`
-    : d === "gone"
-      ? `${name}: expired`
-      : d === "withdrawn"
-        ? `${name}: removed before delivery`
-        : `${d === "seen" ? "Seen by" : "Delivered to"} ${name}, ${when}`;
+/** #2229: the details a mark opens, always "<agent>: <state>". A mention's gone is its own word. */
+export const markText = (name: string, d: DState, mention = false) =>
+  `${name}: ${
+    d === "queued"
+      ? "held until it's back"
+      : d === "gone"
+        ? mention
+          ? "gone"
+          : "expired, offline too long"
+        : d === "withdrawn"
+          ? "removed before delivery"
+          : d === "seen"
+            ? "seen"
+            : "delivered"
+  }`;
 
 /** Two ticks for delivered or seen, a clock for held or expired. */
 export function DeliveryIcon({ d }: { d: DState }) {
@@ -140,7 +146,6 @@ function MarkedChip({
   text,
   face,
   p,
-  when,
   guest,
 }: {
   text: string;
@@ -149,18 +154,17 @@ function MarkedChip({
     delivery: DState;
   };
   p: Parameters<typeof PartyFace>[0]["p"];
-  when: string;
   guest: boolean;
 }) {
   const { open, props } = useDetail();
-  const detail = markText(face.name, face.delivery, when);
+  const detail = markText(face.name, face.delivery, true);
   return (
     <span className="relative inline-block align-middle">
       <button
         type="button"
         data-mention-chip=""
         data-delivery={face.delivery}
-        aria-label={`${text}: ${detail}`}
+        aria-label={detail}
         aria-expanded={open}
         className="inline-flex cursor-pointer items-center gap-1 rounded-full border-0 bg-[var(--oa-accent-soft)] px-1 py-0.5 text-[var(--oa-accent-fg)] font-[inherit] text-[length:inherit]"
         {...props}
@@ -185,9 +189,9 @@ function MarkedChip({
 /** #2229: a problem's sentence, shown on the first comment it happens in. */
 const problemLine = (name: string, d: DState, notified: boolean) =>
   d === "queued"
-    ? `${name}: offline. Held until it's back.`
+    ? `${name} is offline. Held until it's back.`
     : notified
-      ? `${name}: expired.`
+      ? `${name} didn't get this: it was offline too long. @-mention it to try again.`
       : `${name} is gone · mention another agent`;
 
 type Problem = { id: string; m: CommentMention; notified: boolean };
@@ -247,10 +251,11 @@ export function Delivery({
 /** #2229: agents told without a mention, as up to three faces and one summary mark in the header. */
 export function DeliveryFaces({
   told: all,
-  when,
+  compact = false,
 }: {
   told: readonly CommentMention[];
-  when: string;
+  /** A tight header: the summary mark and its count, no faces. */
+  compact?: boolean;
 }) {
   const { open, props } = useDetail();
   if (!all.length) return null;
@@ -263,9 +268,7 @@ export function DeliveryFaces({
   const held = told.length - ok;
   const label = !told.length
     ? "Removed before delivery"
-    : held === 0
-      ? `${ok} of ${told.length} delivered`
-      : `${ok} of ${told.length} delivered, ${held} held`;
+    : `${ok} of ${told.length} delivered`;
   return (
     <span className="relative inline-flex shrink-0" data-delivery-faces="">
       <button
@@ -275,12 +278,22 @@ export function DeliveryFaces({
         className="inline-flex cursor-pointer items-center gap-1 rounded-md border-0 bg-transparent p-0.5 text-muted-foreground"
         {...props}
       >
-        <span className="inline-flex -space-x-1">
-          {sorted.slice(0, 3).map((m) => (
-            <PartyFace key={m.key} p={m} />
-          ))}
-        </span>
-        {told.length > 3 && (
+        {!compact && (
+          // 3px overlap, each face ringed in the card's colour, the first on top (as #2185's stack).
+          <span className="inline-flex">
+            {sorted.slice(0, 3).map((m, i, all) => (
+              <span
+                key={m.key}
+                data-face=""
+                style={{ zIndex: all.length - i, marginLeft: i === 0 ? 0 : -3 }}
+                className="relative inline-flex shrink-0 rounded-md bg-card ring-[1.5px] ring-card"
+              >
+                <PartyFace p={m} />
+              </span>
+            ))}
+          </span>
+        )}
+        {!compact && told.length > 3 && (
           <span className={TXT} data-more="">
             +{told.length - 3}
           </span>
@@ -308,7 +321,7 @@ export function DeliveryFaces({
                 className="flex items-center gap-1.5"
               >
                 <PartyFace p={m} />
-                {markText(m.name, m.delivery, when)}
+                {markText(m.name, m.delivery)}
               </span>
             ),
           )}
@@ -697,8 +710,8 @@ export function MentionedText({
     delivery?: DState;
   })[];
   guest?: boolean;
-  /** #2229: show each mention's delivery in its chip; `when` is the comment's time. */
-  marks?: { when: string };
+  /** #2229: show each mention's delivery in its chip. */
+  marks?: boolean;
 }) {
   if (!mentions?.length) return <>{linked(body, 0)}</>;
   const names = [...new Set(mentions.map((m) => m.name))]
@@ -724,7 +737,6 @@ export function MentionedText({
           text={body.slice(at, end)}
           face={face as typeof face & { delivery: DState }}
           p={face}
-          when={marks.when}
           guest={guest}
         />,
       );

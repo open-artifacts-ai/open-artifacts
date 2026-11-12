@@ -51,7 +51,7 @@ for (const width of [1280, 390])
       await expect(delivered.locator('[data-mark="ok"]')).toBeVisible();
       await expect(held.locator('[data-mark="wait"]')).toBeVisible();
       await expect(
-        thread.getByText("Claude Code: offline. Held until it's back."),
+        thread.getByText("Claude Code is offline. Held until it's back."),
       ).toHaveCount(1);
       const removed = thread.locator(
         '[data-mention-chip][data-delivery="withdrawn"]',
@@ -65,7 +65,7 @@ for (const width of [1280, 390])
       );
       await shot("1b-removed-hover");
       await delivered.hover();
-      await expect(page.getByRole("tooltip")).toContainText("Delivered to");
+      await expect(page.getByRole("tooltip")).toContainText("delivered");
       await shot("2-chip-hover");
       await page.mouse.move(0, 0);
 

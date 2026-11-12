@@ -775,7 +775,9 @@ describe("@mentions in the composer", () => {
     mount(viewerPath(OWNED));
     const c = await col();
     expect(
-      await within(c).findByText("OA Product: offline. Held until it's back."),
+      await within(c).findByText(
+        "OA Product is offline. Held until it's back.",
+      ),
     ).toBeInTheDocument();
     const chip = (n: string) =>
       [...c.querySelectorAll("[data-mention-chip]")].find((e) =>
@@ -843,11 +845,38 @@ describe("#2229 delivery marks in a thread", () => {
     expect(faces[1]).not.toBeNull();
     expect(faces[2]).toBeNull();
     expect(
-      within(c).getAllByText("Sirius: offline. Held until it's back."),
+      within(c).getAllByText("Sirius is offline. Held until it's back."),
     ).toHaveLength(1);
     expect(rows[0]?.querySelector("[data-summary]")?.textContent).toBe(
       "1 of 2",
     );
+  });
+  it("a tight header gives way: time, then faces, only then the name", async () => {
+    const proto = HTMLElement.prototype;
+    const sw = Object.getOwnPropertyDescriptor(proto, "scrollWidth");
+    Object.defineProperty(proto, "scrollWidth", {
+      configurable: true,
+      get() {
+        return this.hasAttribute("data-author-name") ? 200 : 0;
+      },
+    });
+    try {
+      const t = askThread();
+      t.comments = [person("c1", { notified: told("queued") })] as never;
+      serveThreads(() => [t]);
+      mount(viewerPath(OWNED));
+      const c = await col();
+      await within(c).findAllByText("plain reply");
+      const head = c.querySelector("[data-header-stage]") as HTMLElement;
+      // The name stays cut off, so it steps to the end: no time, no faces, the count stays.
+      await waitFor(() => expect(head.dataset.headerStage).toBe("2"));
+      expect(c.querySelector("[data-face]")).toBeNull();
+      expect(c.querySelector("[data-summary]")?.textContent).toBe("1 of 2");
+      expect(head.querySelector("time, .sr-only")).not.toBeNull();
+    } finally {
+      if (sw) Object.defineProperty(proto, "scrollWidth", sw);
+      else delete (proto as unknown as Record<string, unknown>).scrollWidth;
+    }
   });
 });
 

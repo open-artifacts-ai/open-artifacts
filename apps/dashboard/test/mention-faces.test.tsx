@@ -92,7 +92,7 @@ describe("#1890 a mentioned agent shows its face", () => {
     ).not.toBeNull();
     expect(row("agent:old").querySelector("[data-avatar]")).toBeNull();
     expect(row("agent:bot").textContent).toBe(
-      "Claude Code: offline. Held until it's back.",
+      "Claude Code is offline. Held until it's back.",
     );
     rerender(<Delivery c={c} guest />);
     expect(container.querySelector("[data-avatar]")).toBeNull();

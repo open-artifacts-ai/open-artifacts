@@ -19,7 +19,6 @@ const ag = (
   animal: { id: "fox", color: 1 },
   delivery,
 });
-const WHEN = "5 hours ago";
 const comment = (id: string, over: Partial<Comment> = {}) =>
   ({ id, body: "x", ...over }) as unknown as Comment;
 
@@ -33,11 +32,7 @@ describe("#2229 the mark inside the chip", () => {
   for (const [d, mark] of states) {
     it(`${d} shows ${mark === "ok" ? "two ticks" : "a clock"}`, () => {
       const { container } = render(
-        <MentionedText
-          body="hi @Sirius"
-          mentions={[ag("Sirius", d)]}
-          marks={{ when: WHEN }}
-        />,
+        <MentionedText body="hi @Sirius" mentions={[ag("Sirius", d)]} marks />,
       );
       const chip = container.querySelector("[data-mention-chip]");
       expect(chip?.querySelector(`[data-mark="${mark}"]`)).not.toBeNull();
@@ -49,12 +44,7 @@ describe("#2229 the mark inside the chip", () => {
     const a = render(<MentionedText body="hi @Sirius" mentions={m} />);
     expect(a.container.querySelector("[data-mark]")).toBeNull();
     const b = render(
-      <MentionedText
-        body="hi @Sirius"
-        mentions={m}
-        guest
-        marks={{ when: WHEN }}
-      />,
+      <MentionedText body="hi @Sirius" mentions={m} guest marks />,
     );
     expect(b.container.querySelector("[data-mark]")).toBeNull();
     expect(b.container.querySelector("[data-avatar]")).toBeNull();
@@ -64,18 +54,14 @@ describe("#2229 the mark inside the chip", () => {
       <MentionedText
         body="hi @Sirius"
         mentions={[ag("Sirius", "delivered")]}
-        marks={{ when: WHEN }}
+        marks
       />,
     );
     const chip = container.querySelector("[data-mention-chip]") as HTMLElement;
     expect(screen.queryByRole("tooltip")).toBeNull();
-    expect(chip.getAttribute("aria-label")).toBe(
-      "@Sirius: Delivered to Sirius, 5 hours ago",
-    );
+    expect(chip.getAttribute("aria-label")).toBe("Sirius: delivered");
     fireEvent.mouseEnter(chip);
-    expect(screen.getByRole("tooltip").textContent).toBe(
-      "Delivered to Sirius, 5 hours ago",
-    );
+    expect(screen.getByRole("tooltip").textContent).toBe("Sirius: delivered");
     fireEvent.mouseLeave(chip);
     expect(screen.queryByRole("tooltip")).toBeNull();
     fireEvent.focus(chip);
@@ -90,7 +76,7 @@ describe("#2229 the mark inside the chip", () => {
       <MentionedText
         body="hi @Sirius"
         mentions={[ag("Sirius", "queued")]}
-        marks={{ when: WHEN }}
+        marks
       />,
     );
     fireEvent.mouseEnter(
@@ -112,7 +98,7 @@ describe("#2229 faces in the header", () => {
     ag("F", "delivered"),
   ];
   it("shows three faces, +3, and one summary mark with 4 of 6 less the held", () => {
-    const { container } = render(<DeliveryFaces told={six} when={WHEN} />);
+    const { container } = render(<DeliveryFaces told={six} />);
     expect(container.querySelectorAll("[data-avatar]")).toHaveLength(3);
     expect(container.querySelector("[data-more]")?.textContent).toBe("+3");
     expect(container.querySelector("[data-summary]")?.textContent).toBe(
@@ -123,13 +109,11 @@ describe("#2229 faces in the header", () => {
       container.querySelector("[data-mark]")?.getAttribute("data-mark"),
     ).toBe("wait");
     expect(screen.getByRole("button").getAttribute("aria-label")).toBe(
-      "5 of 6 delivered, 1 held",
+      "5 of 6 delivered",
     );
   });
   it("two agents all delivered: two faces, two ticks, no count", () => {
-    const { container } = render(
-      <DeliveryFaces told={six.slice(0, 2)} when={WHEN} />,
-    );
+    const { container } = render(<DeliveryFaces told={six.slice(0, 2)} />);
     expect(container.querySelectorAll("[data-avatar]")).toHaveLength(2);
     expect(container.querySelector("[data-more]")).toBeNull();
     expect(container.querySelector("[data-summary]")).toBeNull();
@@ -139,15 +123,15 @@ describe("#2229 faces in the header", () => {
     );
   });
   it("lists every agent on hover, problems first", () => {
-    const { container } = render(<DeliveryFaces told={six} when={WHEN} />);
+    const { container } = render(<DeliveryFaces told={six} />);
     fireEvent.mouseEnter(container.querySelector("button") as Element);
     const rows = [...container.querySelectorAll("[data-told]")];
     expect(rows).toHaveLength(6);
     expect(rows[0]?.textContent).toBe("E: held until it's back");
-    expect(rows[1]?.textContent).toBe("Delivered to A, 5 hours ago");
+    expect(rows[1]?.textContent).toBe("A: delivered");
   });
   it("opens on focus", () => {
-    const { container } = render(<DeliveryFaces told={six} when={WHEN} />);
+    const { container } = render(<DeliveryFaces told={six} />);
     fireEvent.focus(container.querySelector("button") as Element);
     expect(screen.getByRole("tooltip")).toBeInTheDocument();
   });
@@ -162,7 +146,7 @@ describe("#2229 a problem gets its sentence once", () => {
     expect([...m.keys()]).toEqual(["c1"]);
     const { container } = render(<Delivery c={cs[0] as Comment} />);
     expect(container.textContent).toBe(
-      "Sirius: offline. Held until it's back.",
+      "Sirius is offline. Held until it's back.",
     );
     const again = render(
       <Delivery c={cs[1] as Comment} problems={m.get("c2") ?? []} />,
@@ -185,5 +169,46 @@ describe("#2229 a problem gets its sentence once", () => {
       notified: [ag("Vega", "seen")],
     });
     expect(render(<Delivery c={c} />).container.textContent).toBe("");
+  });
+});
+
+describe("#2229 copy and face stack", () => {
+  it("expired: the sentence once, and the one-shape hover", () => {
+    const c = comment("c1", { notified: [ag("Vega", "gone")] });
+    expect(render(<Delivery c={c} />).container.textContent).toBe(
+      "Vega didn't get this: it was offline too long. @-mention it to try again.",
+    );
+    const { container } = render(<DeliveryFaces told={[ag("Vega", "gone")]} />);
+    fireEvent.mouseEnter(container.querySelector("button") as Element);
+    expect(container.querySelector("[data-told]")?.textContent).toBe(
+      "Vega: expired, offline too long",
+    );
+  });
+  it("faces overlap by 3px in a card-coloured ring, the first on top", () => {
+    const { container } = render(
+      <DeliveryFaces told={[ag("A", "delivered"), ag("B", "delivered")]} />,
+    );
+    const f = [...container.querySelectorAll<HTMLElement>("[data-face]")];
+    expect(f.map((x) => x.style.marginLeft)).toEqual(["0px", "-3px"]);
+    expect(Number(f[0]?.style.zIndex)).toBeGreaterThan(
+      Number(f[1]?.style.zIndex),
+    );
+    expect(f[0]?.className).toContain("ring-[1.5px]");
+    expect(f[0]?.className).toContain("ring-card");
+  });
+  it("compact: the summary mark and its count, no faces", () => {
+    const { container } = render(
+      <DeliveryFaces
+        compact
+        told={[ag("A", "delivered"), ag("B", "queued")]}
+      />,
+    );
+    expect(container.querySelector("[data-face]")).toBeNull();
+    expect(container.querySelector("[data-summary]")?.textContent).toBe(
+      "1 of 2",
+    );
+    expect(screen.getByRole("button").getAttribute("aria-label")).toBe(
+      "1 of 2 delivered",
+    );
   });
 });

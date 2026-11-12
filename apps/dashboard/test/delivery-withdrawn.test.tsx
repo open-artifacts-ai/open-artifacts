@@ -31,7 +31,7 @@ describe("#2175 / #2229 withdrawn delivery", () => {
       <MentionedText
         body="hi @Claude"
         mentions={[m("k1", "withdrawn")]}
-        marks={{ when: "5 hours ago" }}
+        marks
       />,
     );
     const chip = container.querySelector("[data-mention-chip]") as HTMLElement;
@@ -43,10 +43,7 @@ describe("#2175 / #2229 withdrawn delivery", () => {
   });
   it("is listed in the faces' details but not counted", () => {
     const { container } = render(
-      <DeliveryFaces
-        told={[m("a", "delivered"), m("b", "withdrawn")]}
-        when="5 hours ago"
-      />,
+      <DeliveryFaces told={[m("a", "delivered"), m("b", "withdrawn")]} />,
     );
     expect(screen.getByRole("button").getAttribute("aria-label")).toBe(
       "1 of 1 delivered",
@@ -57,7 +54,7 @@ describe("#2175 / #2229 withdrawn delivery", () => {
   });
   it("only withdrawn: a dash and no count", () => {
     const { container } = render(
-      <DeliveryFaces told={[m("b", "withdrawn")]} when="now" />,
+      <DeliveryFaces told={[m("b", "withdrawn")]} />,
     );
     expect(container.querySelector('[data-mark="removed"]')).not.toBeNull();
     expect(container.querySelector("[data-summary]")).toBeNull();
