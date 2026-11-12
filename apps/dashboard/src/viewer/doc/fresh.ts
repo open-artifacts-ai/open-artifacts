@@ -4,3 +4,6 @@ const fresh = new Set<string>();
 export const markFresh = (id: string) => void fresh.add(id);
 export const isFresh = (id: string) => fresh.has(id);
 export const clearFresh = (id: string) => void fresh.delete(id);
+
+/** The toast New doc shows; it goes away once the person starts writing. */
+export const NEW_DOC_TOAST = "new-doc-title";

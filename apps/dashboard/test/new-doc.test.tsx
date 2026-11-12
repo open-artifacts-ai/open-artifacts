@@ -23,6 +23,9 @@ describe("New doc (#1100)", () => {
     const router = mount("/");
     const posts = calls("POST");
     expect(await screen.findByText(AGENT_LINE)).toBeVisible();
+    expect(screen.getByRole("button", { name: "New doc" })).not.toHaveAttribute(
+      "aria-disabled",
+    );
     fireEvent.click(await screen.findByRole("button", { name: "New doc" }));
     await waitFor(() =>
       expect(router.state.location.pathname).toMatch(/^\/a\/.+/),
@@ -61,8 +64,18 @@ describe("New doc (#1100)", () => {
       screen.getByRole("link", { name: "See hosted plans" }),
     ).toHaveAttribute("href", "https://open-artifacts.com");
     const posts = calls("POST");
-    fireEvent.click(screen.getByRole("button", { name: "New doc" }));
+    const button = screen.getByRole("button", { name: "New doc" });
+    // Off, but still pressable: aria-disabled with the disabled look, not disabled.
+    expect(button).toHaveAttribute("aria-disabled", "true");
+    expect(button).toBeEnabled();
+    expect(button.className).toContain("aria-disabled:opacity-50");
+    fireEvent.click(button);
     await waitFor(() => expect(note).toHaveFocus());
+    expect(
+      await screen.findByText(
+        "New doc is off on this instance. The note says why.",
+      ),
+    ).toBeVisible();
     expect(posts).toHaveLength(0);
     expect(router.state.location.pathname).toBe("/");
   });

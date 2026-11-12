@@ -7,7 +7,8 @@ import {
   contentExtensions,
   type DocUser,
 } from "./extensions";
-import { clearFresh } from "./fresh";
+import { dismissToast } from "../../layout/toast";
+import { clearFresh, NEW_DOC_TOAST } from "./fresh";
 import { Toolbar } from "./Toolbar";
 import { TitleField } from "./TitleField";
 import {
@@ -121,6 +122,14 @@ function Loaded({
   // Once the server has said what the doc holds: a new doc puts the cursor in
   // the title (selected), any other doc in the body.
   const titleInput = useRef<HTMLInputElement>(null);
+  // The New doc toast is only a nudge: the first key in the body ends it.
+  useEffect(() => {
+    const dom = editor?.view.dom;
+    if (!dom) return;
+    const gone = () => dismissToast(NEW_DOC_TOAST);
+    dom.addEventListener("keydown", gone, { once: true });
+    return () => dom.removeEventListener("keydown", gone);
+  }, [editor]);
   const placed = useRef(false);
   useEffect(() => {
     if (placed.current || !editor || !editable || status !== "saved") return;
@@ -146,7 +155,10 @@ function Loaded({
             title={title}
             editable={editable}
             onSave={(t) => onRename?.(t)}
-            onEnter={() => editor?.commands.focus("start")}
+            onEnter={() => {
+              dismissToast(NEW_DOC_TOAST);
+              editor?.commands.focus("start");
+            }}
             inputRef={titleInput}
           />
           <EditorContent editor={editor} />

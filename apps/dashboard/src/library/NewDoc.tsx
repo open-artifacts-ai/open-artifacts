@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { api } from "../api/client";
-import { markFresh } from "../viewer/doc/fresh";
+import { markFresh, NEW_DOC_TOAST } from "../viewer/doc/fresh";
 import { toast } from "../layout/toast";
 
 /** Where "See hosted plans" goes. */
@@ -76,6 +76,7 @@ export function NewDocButton({
       toast({
         title: "Type a title, then press Enter to start writing.",
         tone: "neutral",
+        id: NEW_DOC_TOAST,
       });
     } catch (e) {
       toast({
@@ -88,7 +89,13 @@ export function NewDocButton({
     }
   };
   return (
-    <Button disabled={busy} onClick={() => void create()}>
+    <Button
+      disabled={busy}
+      // Off, but still pressable: it brings the note into view.
+      aria-disabled={docs === "needs_paid" ? true : undefined}
+      className="aria-disabled:cursor-not-allowed aria-disabled:opacity-50"
+      onClick={() => void create()}
+    >
       <PlusIcon />
       New doc
     </Button>

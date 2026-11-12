@@ -17,8 +17,9 @@ import Collaboration from "@tiptap/extension-collaboration";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as Y from "yjs";
 import { CaretActivity, FLAG_MS, renderCaret } from "../src/viewer/doc/cursors";
+import { toast, Toaster } from "../src/layout/toast";
 import { DocEditor } from "../src/viewer/doc/DocEditor";
-import { isFresh, markFresh } from "../src/viewer/doc/fresh";
+import { isFresh, markFresh, NEW_DOC_TOAST } from "../src/viewer/doc/fresh";
 import { TITLE_SAVE_MS, TitleField } from "../src/viewer/doc/TitleField";
 import { isDocArtifact, setMockDoc } from "../src/viewer/doc/docMock";
 import {
@@ -616,6 +617,61 @@ describe("DocEditor", () => {
         expect(document.querySelector(".ProseMirror")).toHaveFocus(),
       );
     }
+  });
+
+  describe("the New doc toast", () => {
+    const showToast = () =>
+      toast({
+        title: "Type a title, then press Enter to start writing.",
+        tone: "neutral",
+        id: NEW_DOC_TOAST,
+      });
+    const open = async () => {
+      const p = fakeProviders();
+      render(
+        <>
+          <Toaster />
+          <DocEditor {...base} canEdit makeProvider={p.make} />
+        </>,
+      );
+      await screen.findByRole("toolbar");
+      act(() => void showToast());
+      await screen.findByText(
+        "Type a title, then press Enter to start writing.",
+      );
+    };
+    const gone = () =>
+      waitFor(() =>
+        expect(
+          screen.queryByText(
+            "Type a title, then press Enter to start writing.",
+          ),
+        ).toBeNull(),
+      );
+
+    it("goes away on Enter in the title", async () => {
+      await open();
+      const title = screen.getByRole("textbox", { name: "Title" });
+      fireEvent.keyDown(title, { key: "Enter" });
+      await gone();
+    });
+
+    it("goes away on the first key in the body", async () => {
+      await open();
+      const body = document.querySelector(".ProseMirror") as HTMLElement;
+      fireEvent.keyDown(body, { key: "a" });
+      await gone();
+    });
+
+    it("stays while the person only looks or types in the title", async () => {
+      await open();
+      const title = screen.getByRole("textbox", { name: "Title" });
+      fireEvent.change(title, { target: { value: "Plan B" } });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(
+        screen.getByText("Type a title, then press Enter to start writing."),
+      ).toBeVisible();
+    });
   });
 
   it("a read-only viewer cannot edit the title", async () => {
