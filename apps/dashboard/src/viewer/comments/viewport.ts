@@ -27,6 +27,17 @@ export function keyboardInset(): number {
   return inset > 120 ? inset : 0;
 }
 
+/**
+ * How far to lift a fixed bottom sheet so it ends at the visible bottom. When
+ * iOS pans the visual viewport (offsetTop > 0) that edge is offsetTop + height
+ * in layout coordinates, so this is not keyboardInset().
+ */
+export function sheetLift(): number {
+  const vv = window.visualViewport;
+  if (!vv || keyboardInset() === 0) return 0;
+  return Math.max(0, window.innerHeight - (vv.offsetTop + vv.height));
+}
+
 /** The composer's cap in px: its own cap, or 40% of what is visible. */
 export function fieldCap(own: number): number {
   return Math.min(own, viewHeight() * 0.4 || Number.POSITIVE_INFINITY);
@@ -68,7 +79,7 @@ export function trackViewportVar(): () => void {
   const set = () => {
     root.style.setProperty("--oa-vvh", `${viewHeight() / 100}px`);
     // The phone sheet is fixed to the layout viewport: lift it above the keyboard.
-    root.style.setProperty("--oa-kb", `${keyboardInset()}px`);
+    root.style.setProperty("--oa-kb", `${sheetLift()}px`);
   };
   if (users++ === 0) {
     set();

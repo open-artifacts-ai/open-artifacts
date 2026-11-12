@@ -5,6 +5,7 @@ import {
   fieldCap,
   keyboardInset,
   onViewport,
+  sheetLift,
   trackViewportVar,
   viewBottom,
   viewHeight,
@@ -45,6 +46,17 @@ describe("viewport helpers (#2239)", () => {
   it("panning with the keyboard open (offsetTop 300) is still a keyboard", () => {
     vv(window.innerHeight - 300, 300);
     expect(keyboardInset()).toBe(300);
+  });
+  it("a panned view lifts the sheet to the visible bottom, not by the whole inset", () => {
+    vi.stubGlobal("innerHeight", 844);
+    vv(500, 300);
+    expect(keyboardInset()).toBe(344);
+    expect(sheetLift()).toBe(44);
+    expect(viewBottom()).toBe(800);
+  });
+  it("no lift without a keyboard", () => {
+    vv(window.innerHeight);
+    expect(sheetLift()).toBe(0);
   });
   it("pinch zoom (scale 2, no keyboard) is not a keyboard and keeps the full height", () => {
     const t = vv(window.innerHeight / 2);
