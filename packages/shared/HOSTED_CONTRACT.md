@@ -414,8 +414,12 @@ dashboard then shows Manage billing and the first charge date instead of Pay.
 Absent or false: Pay stays. Owner and admins only, like `hasCustomer`.
 `cancelsAt` (ISO string or null, optional): when a scheduled cancel (cancel at
 period end) takes effect, from billing's `cancelsAt` (ms). null or absent: none.
-Owner and admins only. The dashboard shows "Ends on <date>." while it is in the
-future and keeps Manage billing so the plan can be resumed.
+Owner and admins only. While it is in the future the dashboard shows an "Ends <date>"
+pill and a warning, and keeps Manage billing so the plan can be resumed.
+`overageDue` (`{ amountCents, months }`, optional): the extra-creator charges
+that failed and are unpaid (#2246), total in cents and months as `YYYY-MM`,
+oldest first. Billing sends null for none; the server passes it on only when
+present, owner and admins only. A notice only: it never moves tier or access.
 
 | State | What it does | `reason` |
 |---|---|---|

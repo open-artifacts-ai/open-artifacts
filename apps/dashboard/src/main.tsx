@@ -490,8 +490,19 @@ async function startMocks() {
       events,
       // ?mock=asks (#1535): the "Landing page" artifact carries two asks.
       commentAsks: params.get("mock") === "asks",
+      // ?mock=passkey-cooling | passkey-usable (#2263): the caller has passkeys; default none.
+      passkeys:
+        params.get("mock") === "passkey-cooling"
+          ? "cooling"
+          : params.get("mock") === "passkey-usable"
+            ? "usable"
+            : params.get("mock") === "passkey-pending"
+              ? "pending"
+              : "none",
       // ?mock=agents (#1822): agent-authored comments, linked and not.
       commentAgents: params.get("mock") === "agents",
+      // ?mock=markdown (#2338): agent comments with markdown and a hostile one.
+      commentMarkdown: params.get("mock") === "markdown",
       // ?mock=signed-out (#2080): a signed-out viewer on the public "Landing page", where only signed-in people may comment.
       commentersSignedIn: params.get("mock") === "signed-out",
       // ?mock=bus (#1293): the bus is on, with machines and agents.

@@ -11,6 +11,7 @@ export * from "./ids.js";
 export * from "./limits.js";
 export * from "./meta.js";
 export * from "./nonce.js";
+export * from "./passkeys.js";
 export * from "./paths.js";
 export * from "./protocol.js";
 export * from "./released.js";

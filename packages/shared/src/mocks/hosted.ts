@@ -649,6 +649,7 @@ export function createHostedMock(o: HostedMockOptions, c: HostedCtx) {
       yearlyTeamBusiness: __,
       soloCheckedOut: ___,
       cancelsAt: ____,
+      overageDue: _____,
       ...rest
     } = billing;
     return {

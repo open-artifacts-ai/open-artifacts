@@ -93,6 +93,7 @@ type Row = {
   yearlyTeamBusiness?: boolean;
   soloCheckedOut?: boolean;
   cancelsAt?: number | null;
+  overageDue?: { amountCents: number; months: string[] } | null;
   graceUntil: number | null;
   version: number;
 };
@@ -1781,6 +1782,36 @@ describe("Me.instance.billing and the billing routes", () => {
     await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
     expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
       "cancelsAt",
+    );
+  });
+
+  it("overageDue (#2246): reaches the owner, never a member; null and absent send nothing", async () => {
+    const read = async (r: Partial<Row>) => {
+      row = { ...row, ...r };
+      await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    };
+    const one = { amountCents: 4200, months: ["2026-10"] };
+    await read({ version: 40, overageDue: one });
+    expect((await getMe(owner.cookie)).instance.billing?.overageDue).toEqual(
+      one,
+    );
+    expect((await getMe(member.cookie)).instance.billing).not.toHaveProperty(
+      "overageDue",
+    );
+    const many = { amountCents: 11850, months: ["2026-09", "2026-10"] };
+    await read({ version: 41, overageDue: many });
+    expect((await getMe(owner.cookie)).instance.billing?.overageDue).toEqual(
+      many,
+    );
+    await read({ version: 42, overageDue: null });
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "overageDue",
+    );
+    const { overageDue: _, ...without } = row;
+    row = { ...without, version: 43 };
+    await withBrokerProps({ props: PROPS }, () => refreshPlan(H, Date.now()));
+    expect((await getMe(owner.cookie)).instance.billing).not.toHaveProperty(
+      "overageDue",
     );
   });
 

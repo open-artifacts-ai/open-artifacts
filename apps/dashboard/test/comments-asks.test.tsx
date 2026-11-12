@@ -204,6 +204,44 @@ describe("asks on the comments column", () => {
     expect(a.getAttribute("target")).toBe("_blank");
     expect(a.getAttribute("rel")).toBe("noopener noreferrer");
   });
+  it("option details have no links, keep other formatting, and a click anywhere picks", async () => {
+    let answered: unknown = null;
+    serveThreads(() => [
+      askThread(
+        {},
+        {
+          options: [
+            {
+              id: "a",
+              label: "List only",
+              detail:
+                "See https://a.com/x and [the doc](https://b.com/y) with **bold** and `code`",
+            },
+            { id: "b", label: "Side by side" },
+          ],
+        },
+      ),
+    ]);
+    server.use(
+      http.post(
+        `*${R.commentAnswer(OWNED, "t-ask", "c-ask")}`,
+        async ({ request }) => {
+          answered = await request.json();
+          return HttpResponse.json({});
+        },
+      ),
+    );
+    mount(viewerPath(OWNED));
+    const c = await col();
+    const btn = await within(c).findByRole("button", { name: /List only/ });
+    expect(btn.querySelector("a")).toBeNull();
+    expect(btn.querySelector("strong")?.textContent).toBe("bold");
+    expect(btn.querySelector("code")?.textContent).toBe("code");
+    expect(btn.textContent).toContain("https://a.com/x");
+    expect(btn.textContent).toContain("the doc");
+    fireEvent.click(btn.querySelector("strong") as HTMLElement);
+    await waitFor(() => expect(answered).toEqual({ optionId: "a" }));
+  });
   it("shows the question, options, recommendation and why, and answers with the option id", async () => {
     let answered: unknown = null;
     serveThreads(() => [
@@ -670,6 +708,113 @@ describe("asks on the comments column", () => {
     expect(
       await within(c).findByText("Text changed since this ask"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("#2344 the comment body on an ask", () => {
+  const STEPS = "Steps:\n1. Open the page\n2. Compare the layouts";
+  const withBody = (body: string, over: object = {}, askOver: object = {}) => {
+    const t = askThread(over, askOver) as {
+      comments: { body: string }[];
+    };
+    t.comments[0].body = body;
+    return t;
+  };
+  it("shows the body above the question, line breaks kept", async () => {
+    serveThreads(() => [withBody(STEPS)]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText(/Open the page/);
+    const body = c.querySelector("[data-ask-body]") as HTMLElement;
+    expect(body.textContent).toContain("Steps:");
+    expect(body.querySelectorAll("ol > li").length).toBe(2);
+    const q = within(c).getByText("Which layout?");
+    expect(
+      body.compareDocumentPosition(q) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+  it("renders markdown in the ask body, links allowed, hostile text inert, option buttons link-free", async () => {
+    const hostile = [
+      "Plan:",
+      "- **first** see https://a.com/x",
+      "- second [the doc](https://b.com/y)",
+      "",
+      '<img src=x onerror="alert(1)"> [bad](javascript:alert(1)) [paypal.com ](https://evil.example)',
+    ].join("\n");
+    serveThreads(() => [
+      withBody(
+        hostile,
+        {},
+        {
+          options: [
+            {
+              id: "a",
+              label: "List only",
+              detail: "see https://a.com/x [d](https://b.com)",
+            },
+            { id: "b", label: "Side by side" },
+          ],
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    const body = c.querySelector("[data-ask-body]") as HTMLElement;
+    expect(body.querySelectorAll("ul > li").length).toBe(2);
+    expect(body.querySelector("li strong")?.textContent).toBe("first");
+    expect(
+      [...body.querySelectorAll("a")].map((a) => a.getAttribute("href")),
+    ).toEqual(["https://a.com/x", "https://b.com/y", "https://evil.example"]);
+    expect(body.querySelectorAll("a")[2]?.textContent).toBe(
+      "https://evil.example",
+    );
+    expect(body.querySelector("img, script, iframe")).toBeNull();
+    expect(body.textContent).toContain('<img src=x onerror="alert(1)">');
+    expect(body.textContent).toContain("[bad](javascript:alert(1))");
+    for (const b of within(c).getAllByRole("button"))
+      expect(b.querySelector("a")).toBeNull();
+  });
+  it("hides the body when it only repeats the question", async () => {
+    serveThreads(() => [withBody("  Which   layout?\n")]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(c.querySelector("[data-ask-body]")).toBeNull();
+  });
+  it("hides the body when empty", async () => {
+    serveThreads(() => [withBody("")]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findByText("Which layout?");
+    expect(c.querySelector("[data-ask-body]")).toBeNull();
+  });
+  it("a collapsed decided ask hides the body, expanding shows it", async () => {
+    serveThreads(() => [
+      withBody(
+        STEPS,
+        { status: "resolved" },
+        {
+          closed: true,
+          answer: {
+            optionId: "b",
+            by: { kind: "user", id: "me", name: "Me", me: true },
+            at: "2026-11-05T11:00:00Z",
+            typed: true,
+            yes: true,
+          },
+        },
+      ),
+    ]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    fireEvent.click(
+      await within(c).findByRole("button", { name: /Show resolved/ }),
+    );
+    const line = await within(c).findByRole("button", { name: /Show$/ });
+    expect(c.querySelector("[data-ask-body]")).toBeNull();
+    fireEvent.click(line);
+    expect(c.querySelector("[data-ask-body]")).not.toBeNull();
   });
 });
 

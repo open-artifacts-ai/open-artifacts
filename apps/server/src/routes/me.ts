@@ -168,6 +168,7 @@ async function toMe(
       ...(details && plan.soloCheckedOut !== undefined
         ? { soloCheckedOut: plan.soloCheckedOut }
         : {}),
+      ...(details && plan.overageDue ? { overageDue: plan.overageDue } : {}),
       graceUntil:
         details && plan.graceUntil !== null
           ? new Date(plan.graceUntil).toISOString()

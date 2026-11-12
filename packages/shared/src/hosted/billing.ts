@@ -98,6 +98,17 @@ export const PlanViewSchema = z.object({
    * when none; absent from an older answer. Owner and admins only.
    */
   cancelsAt: z.string().nullable().optional(),
+  /**
+   * Extra-creator charges that failed and are unpaid: the total in cents and
+   * the months ("YYYY-MM"), oldest first. Absent when nothing is due. A notice
+   * only: it never moves tier or access. Owner and admins only.
+   */
+  overageDue: z
+    .object({
+      amountCents: z.number().int().nonnegative(),
+      months: z.array(z.string().regex(/^\d{4}-\d{2}$/)).min(1),
+    })
+    .optional(),
   /** Distinct creators this UTC calendar month so far (CREATOR definition). Owner and admins only. */
   creatorsThisMonth: z.number().int().nonnegative().optional(),
   /**

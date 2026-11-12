@@ -84,6 +84,13 @@ export const TierAnswerSchema = z.object({
   soloCheckedOut: z.boolean().optional(),
   /** When a scheduled cancel takes effect (ms), or null. Absent from an answer that predates it. */
   cancelsAt: z.number().int().nullable().optional(),
+  /** Unpaid extra-creator charges (#2246). Billing sends null for none; absent from an older answer. */
+  overageDue: z
+    .object({
+      amountCents: z.number().int().nonnegative(),
+      months: z.array(z.string().regex(/^\d{4}-\d{2}$/)).min(1),
+    })
+    .nullish(),
   version: z.number().int().nonnegative(),
   asOf: z.number().int().positive(),
 });
@@ -146,6 +153,8 @@ export type EffectivePlan = {
   yearlyTeamBusiness?: boolean;
   soloCheckedOut?: boolean;
   cancelsAt?: number | null;
+  /** Absent when billing's answer carried none or null (nothing due). */
+  overageDue?: { amountCents: number; months: string[] };
   graceUntil: number | null;
   readOnly: boolean;
   reason?: PlanReason;
@@ -200,6 +209,9 @@ export function effectivePlan(
       : {}),
     ...("cancelsAt" in base && base.cancelsAt !== undefined
       ? { cancelsAt: base.cancelsAt }
+      : {}),
+    ...("overageDue" in base && base.overageDue
+      ? { overageDue: base.overageDue }
       : {}),
     graceUntil: base.graceUntil,
     readOnly: mode === "readOnly" || mode === "viewOnly",
