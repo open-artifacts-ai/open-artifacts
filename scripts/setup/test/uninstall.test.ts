@@ -119,6 +119,27 @@ describe("--uninstall --check", () => {
     expect(n.calls).toEqual([]);
   });
 
+  it("--uninstall --rollback without --check, or any other flag, exits 1 with no calls", async () => {
+    for (const argv of [
+      ["--uninstall", "--rollback"],
+      ["--uninstall", "--check", "--yes"],
+      ["--uninstall", "--check", "--plan", "paid"],
+    ]) {
+      const n = setup();
+      expect(await run(argv, n.deps, ROOT)).toBe(1);
+      expect(n.calls).toEqual([]);
+    }
+  });
+
+  it("marks the Worker as destroying data", async () => {
+    const n = setup();
+    await run(["--uninstall", "--check", "--json"], n.deps, ROOT);
+    const r = JSON.parse(n.lines.at(-1) as string);
+    const w = r.data.items.find((i: { kind: string }) => i.kind.startsWith("Worker"));
+    expect(w.destroysData).toBe(true);
+    expect(w.how).toContain("BusHub");
+  });
+
   it("lists an orphaned Access app, the full email records and wrangler.jsonc", async () => {
     const n = setup({
       [STATE]: JSON.stringify({ ...state, pendingAccessAppId: "orphan-1" }),
@@ -132,6 +153,11 @@ describe("--uninstall --check", () => {
     );
     expect(out).toContain("apps/server/wrangler.jsonc");
     expect(out).toContain("Open Artifacts – everyone");
-    expect(out).toContain("d1 export acme --remote --output backup.sql");
+    expect(out).toContain("d1 export acme --remote --table <t> --output <t>.sql");
+    expect(out).not.toContain("--output backup.sql");
+    expect(out).toContain("NOT LIKE 'artifact_search%'");
+    expect(out).toContain("r2 object get acme/<key> --remote");
+    expect(out).toContain("rclone sync r2:acme");
+    expect(out).toContain("only within 7 days");
   });
 });

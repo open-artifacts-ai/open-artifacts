@@ -37,20 +37,24 @@ export async function uninstallCommand(
         ? JSON.stringify({ step: "uninstall", status, message, data })
         : message,
     );
+  const extra = argv.filter(
+    (a) =>
+      a.startsWith("-") &&
+      !["--uninstall", "--check", "--json"].includes(a) &&
+      a !== "--name" &&
+      !a.startsWith("--name="),
+  );
+  if (extra.length) {
+    out(
+      "error",
+      `--uninstall --check runs on its own; drop ${extra.join(", ")} (only --check, --json and --name are allowed). Nothing was changed.`,
+    );
+    return 1;
+  }
   if (!argv.includes("--check")) {
     out(
       "error",
       "--uninstall only has a dry run so far: add --check. Nothing was changed.",
-    );
-    return 1;
-  }
-  const clash = ["--upgrade", "--rollback", "--ci"].filter((f) =>
-    argv.includes(f),
-  );
-  if (clash.length) {
-    out(
-      "error",
-      `--uninstall --check runs on its own; drop ${clash.join(", ")}`,
     );
     return 1;
   }
@@ -111,7 +115,8 @@ export async function uninstallCommand(
     order: 4,
     kind: "Worker (and its Durable Objects)",
     resource: name,
-    how: `${w} delete --name ${name}`,
+    how: `${w} delete --name ${name}. This destroys the Durable Objects (ArtifactRuntime, BusHub, DirectorySync, UserPresence): live-page and agent bus state is not exported and is lost.`,
+    destroysData: true,
   });
   // Names come from setup's own naming (resources.ts), so they hold without saved ids.
   const n = names(name);
@@ -119,7 +124,7 @@ export async function uninstallCommand(
     order: 0,
     kind: "Backup (do this first)",
     resource: `D1 ${n.d1}, R2 ${n.r2}`,
-    how: `${w} d1 export ${n.d1} --remote --output backup.sql ; for R2 copy every object out, e.g. rclone copy r2:${n.r2} ./backup-r2 with R2 S3 credentials (dashboard, R2, Manage API Tokens), or ${w} r2 object get ${n.r2}/<key> --file <path> per key. Lighter option: ask any AI agent to save the latest version of each artifact (latest versions only).`,
+    how: `D1: a whole-database export fails here (the search index is a virtual table). List the tables: ${w} d1 execute ${n.d1} --remote --json --command "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'artifact_search%' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%'" ; then for each table <t>: ${w} d1 export ${n.d1} --remote --table <t> --output <t>.sql . The search index is not exported; it is rebuilt from the artifacts. An export locks the database while it runs. R2: rclone sync r2:${n.r2} ./backup-r2 copies the whole bucket (needs R2 S3 credentials: dashboard, R2, Manage API Tokens); to fetch single keys, list them in the dashboard or with rclone lsf r2:${n.r2}, then ${w} r2 object get ${n.r2}/<key> --remote --file <path>. Lighter option: ask any AI agent to save the latest version of each artifact (latest versions only).`,
   });
   items.push({
     order: 5,
@@ -134,7 +139,7 @@ export async function uninstallCommand(
     order: 6,
     kind: "D1 database",
     resource: s.d1Id ? `${n.d1} (${s.d1Id})` : n.d1,
-    how: `${w} d1 delete ${n.d1}`,
+    how: `${w} d1 delete ${n.d1} . Cloudflare can undelete a D1 database only within 7 days.`,
     destroysData: true,
   });
   items.push({
