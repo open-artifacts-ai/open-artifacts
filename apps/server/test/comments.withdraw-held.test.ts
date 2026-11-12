@@ -796,7 +796,10 @@ describe("removing an agent: its asks and one retry (#2240)", () => {
     }, true);
     await removeVia(f.e2, s, t);
     expect(f.calls()).toBe(2);
-    expect((await read(s.id))?.agents).toBeUndefined();
+    const agents = (await read(s.id))?.agents;
+    // No active agent is left; the removed one stays listed, marked (#2174).
+    expect(agents?.filter((a) => !a.removed) ?? []).toEqual([]);
+    expect(agents?.some((a) => a.removed === true)).toBe(true);
     expect(await spent(s.id, t.id)).toBe(1);
   });
 });
