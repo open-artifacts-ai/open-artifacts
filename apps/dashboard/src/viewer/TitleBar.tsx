@@ -316,6 +316,7 @@ export function TitleBar({
             }
             aria-expanded={comments.selecting ? undefined : comments.expanded}
             disabled={gone}
+            data-oa-keep-selection=""
             onClick={comments.onClick}
           >
             {/* A space in the text: the visible label must read "Comments 3", inside the name "Comments, 3 open". */}

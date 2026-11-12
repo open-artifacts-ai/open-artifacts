@@ -75,7 +75,10 @@ export function SelectionBar() {
       {show && (
         // The bar is the chrome surface; the 48px accent button sits above the
         // home indicator (Design's final: plain bar, no quote line).
-        <div className="fixed inset-x-0 bottom-0 z-20 animate-in border-t border-t-border bg-card px-3 pt-2 pb-[calc(0.5rem_+_env(safe-area-inset-bottom))] duration-200 slide-in-from-bottom motion-reduce:animate-none!">
+        <div
+          data-oa-keep-selection=""
+          className="fixed inset-x-0 bottom-0 z-20 animate-in border-t border-t-border bg-card px-3 pt-2 pb-[calc(0.5rem_+_env(safe-area-inset-bottom))] duration-200 slide-in-from-bottom motion-reduce:animate-none!"
+        >
           <button
             type="button"
             className="flex min-h-12 w-full items-center justify-center gap-2 rounded-lg border-0 bg-[var(--oa-accent)] font-semibold text-[var(--oa-accent-text)] text-[15px] hover:bg-[var(--oa-accent-fg)]"
@@ -97,6 +100,7 @@ export function CommentsColumn({ textFormat }: { textFormat: boolean }) {
   return (
     <aside
       aria-label="Comments"
+      data-oa-keep-selection=""
       className="relative flex w-[340px] min-[960px]:w-[var(--oa-comments-w)] flex-none flex-col overflow-y-auto border-0 border-l border-l-[var(--oa-border)] bg-[var(--oa-bg)]"
     >
       <CommentsBody textFormat={textFormat} />
@@ -136,8 +140,8 @@ export function CommentsDialog({
   const dragged = useRef(false);
   const [opener] = useState(() => document.activeElement as HTMLElement | null);
   useEffect(() => {
-    ref.current?.focus();
-    return () => opener?.focus?.();
+    ref.current?.focus({ preventScroll: true });
+    return () => opener?.focus?.({ preventScroll: true });
   }, [opener]);
   return (
     <>
@@ -145,6 +149,9 @@ export function CommentsDialog({
         data-sheet-backdrop=""
         aria-hidden="true"
         className="fixed inset-0 z-20 bg-black/40 min-[601px]:hidden"
+        // Keep the field's focus through the press: a blur lowers the
+        // keyboard, the sheet drops with it, and the tap's click is lost.
+        onMouseDown={(e) => e.preventDefault()}
         onClick={onClose}
       />
       <section
@@ -154,7 +161,7 @@ export function CommentsDialog({
         aria-label="Comments"
         data-sheet-height={height}
         data-pin-replies={height === "pin" && pinReplies ? "" : undefined}
-        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-[var(--oa-bg)] shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:bottom-[var(--oa-kb,0px)] max-[600px]:max-h-[calc(100dvh-var(--oa-kb,0px)-1rem)] max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] max-[600px]:data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
+        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-clip rounded-t-xl border border-border bg-[var(--oa-bg)] shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:bottom-[var(--oa-kb,0px)] max-[600px]:max-h-[calc(100dvh-var(--oa-kb,0px)-1rem)] max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] max-[600px]:data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
         onFocusCapture={(e) => {
           // The phone keyboard would cover a half-height sheet.
           const t = e.target as HTMLElement;
@@ -213,13 +220,18 @@ export function CommentsDialog({
             variant="ghost"
             size="icon-sm"
             aria-label="Close comments"
+            // As the backdrop: a press must not blur the field first.
+            onMouseDown={(e) => e.preventDefault()}
             onClick={onClose}
           >
             <X aria-hidden="true" />
           </Button>
         </div>
         <ActionRowProvider>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {/* `relative`: the sr-only spans inside are absolute, and without it their
+              containing block is the fixed sheet, so they overflow the sheet's box
+              (a 1000px+ scrollable overflow) instead of this scroller. */}
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
             <CommentsBody
               heading={false}
               textFormat={textFormat}
