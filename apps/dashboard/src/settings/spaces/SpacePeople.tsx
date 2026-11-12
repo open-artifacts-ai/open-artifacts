@@ -15,6 +15,10 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
   Input,
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
 } from "@oa/ui/shadcn";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useId, useState } from "react";
@@ -88,8 +92,19 @@ const syncShort = (m: SpaceMember) =>
     .map((g) => short(g.email))
     .join(", ") || "a group";
 
+/**
+ * A member as the list shows them. `orphan`: below Business, a synced role
+ * that no group lists them for any more (a mapping deleted outside the UI,
+ * #2156); it reads as their own role so Remove works, with its own reason.
+ */
+type PersonView = SpaceMember & { orphan?: boolean };
+const ORPHAN_LINE = "No longer in their group";
+const ORPHAN_HINT =
+  "Added by directory sync. Their group no longer lists them, so they stay until you remove them.";
+
 /** Where access comes from, winning role first. */
-const source = (m: SpaceMember, frozen: boolean) => {
+const source = (m: PersonView, frozen: boolean) => {
+  if (m.orphan) return ORPHAN_LINE;
   if (frozen && m.syncRole) return `kept from ${syncShort(m)}`;
   if (m.manualRole && m.syncRole) {
     const manual = `${ROLE_LABEL[m.manualRole]} (manually added)`;
@@ -126,7 +141,7 @@ const everyLine = (admin: boolean) =>
 
 /** The per-row reason line under the email. */
 const reason = (
-  m: SpaceMember,
+  m: PersonView,
   frozen: boolean,
   restricted: Restriction | null | undefined,
 ) => {
@@ -191,7 +206,7 @@ function PersonRow({
   frozen,
   restricted,
 }: {
-  m: SpaceMember;
+  m: PersonView;
   space: Space;
   admin: boolean;
   you: boolean;
@@ -346,7 +361,23 @@ function PersonRow({
           </b>
           <small className={`block ${muted}`}>
             {!isReleased(m.user) && `${m.user.email} · `}
-            {reason(m, frozen, restricted)}
+            {reason(m, frozen, restricted) === ORPHAN_LINE ? (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="cursor-help border-0 bg-transparent p-0 font-[inherit] text-[length:inherit] text-inherit underline decoration-dotted underline-offset-2"
+                    >
+                      {ORPHAN_LINE}
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent>{ORPHAN_HINT}</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ) : (
+              reason(m, frozen, restricted)
+            )}
           </small>
         </div>
       </div>
@@ -730,7 +761,7 @@ export function SpacePeople({
   // role reads as one added by hand, with no group behind it.
   const hideSync = state.status === "authed" && groupSyncHidden(state.me);
   // Every space groups stay: the server enforces their floor whatever the mode.
-  const ordinary = (m: SpaceMember): SpaceMember => {
+  const ordinary = (m: SpaceMember): PersonView => {
     if (!hideSync || !(m.syncRole || m.groups.length)) return m;
     const top = (gs: SpaceMember["groups"]) =>
       gs.reduce<SpaceRole | null>(
@@ -740,8 +771,10 @@ export function SpacePeople({
       );
     const every = m.groups.filter((g) => g.via === "every");
     const own = top(m.groups.filter((g) => g.via === "space"));
+    const orphan = !m.manualRole && !own && !!m.syncRole && !every.length;
     return {
       ...m,
+      ...(orphan ? { orphan: true } : {}),
       // This space's own group role reads as one set by hand. So does a
       // synced role no group lists them for any more (a mapping deleted
       // outside the UI): else it has no reason and no Remove (#2156).

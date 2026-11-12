@@ -16,6 +16,13 @@ import {
 
 installHarness();
 
+// Radix Tooltip measures its trigger.
+globalThis.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+} as unknown as typeof ResizeObserver;
+
 const ID = "SpEngNpQrSt2uVwX";
 const ENG = `/settings/spaces?space=${ID}`;
 const BOB = "Bc4eFgHjKm5nPqRs";
@@ -1221,11 +1228,19 @@ for (const [name, tier, directory] of [
   ["the Team trial", "trial", "google"],
   ["the Team trial, frozen", "trial", "frozen"],
 ] as const) {
-  it(`${name}: an orphaned synced role shows a reason and Remove (DELETE by user id)`, async () => {
+  it(`${name}: an orphaned synced role reads "No longer in their group" with a keyboard tooltip and Remove`, async () => {
     const dels = calls("DELETE");
     mountHosted(ENG, { directory }, asTier(tier), [serve([orphan])]);
     const olive = await row("Olive Gray");
-    expect(olive).toHaveTextContent("olive@example.com · manually added");
+    expect(olive).toHaveTextContent(
+      "olive@example.com · No longer in their group",
+    );
+    expect(olive).not.toHaveTextContent("manually added");
+    const line = within(olive).getByText("No longer in their group");
+    line.focus();
+    expect(await screen.findByRole("tooltip")).toHaveTextContent(
+      "Added by directory sync. Their group no longer lists them, so they stay until you remove them.",
+    );
     fireEvent.click(
       within(await openMenu("Olive Gray")).getByRole("menuitem", {
         name: "Remove from Engineering…",
