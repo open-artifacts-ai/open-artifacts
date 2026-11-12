@@ -694,7 +694,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const codexTaken = new TakenWatch({
     home: codexIndexHome,
     file: cx.takenFile ?? join(home(), "codex-pending.json"),
-    onTaken: (id) => delivery.delivered(id),
+    onTaken: (id, unsent) => delivery.delivered(id, unsent),
     log,
   });
   const codex = new CodexTransport({
@@ -1253,7 +1253,7 @@ export async function runDaemon(deps: DaemonDeps = {}): Promise<Daemon> {
   const delivery = createDeliver({
     agents,
     ...(cl.retryDelaysMs ? { retryDelaysMs: cl.retryDelaysMs } : {}),
-    hub: { send: (f) => hub.send(f) },
+    hub: { send: (f, unsent) => hub.send(f, unsent) },
     transports: {
       "claude-code": (agent, mail) => claude.deliver(agent, mail),
       opencode: (agent, mail) => opencode.deliver(agent, mail),

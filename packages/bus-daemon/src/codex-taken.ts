@@ -46,7 +46,7 @@ export type TakenRecord = {
   sig?: string;
   /** The last pass stepped over a line longer than the budget: the next read starts mid-line, so it skips to the next newline. */
   skip?: true;
-  /** The late ack of `taken` was sent (a lost one is repeated until then). */
+  /** The late ack of `taken` went onto an open hub link (an unsent one is repeated until then). */
   acked?: true;
 };
 
@@ -72,8 +72,13 @@ export type TakenOptions = {
   home: string;
   /** The records, kept on disk so a restart keeps watching. */
   file: string;
-  /** A turn took `id`: the transport vouches for it (late ack). */
-  onTaken: (id: string) => void;
+  /**
+   * A turn took `id`: the transport vouches for it (late ack). True only when
+   * the ack went onto an open hub link; false keeps the record unacked and the
+   * next pass sends it again. `unsent` is called if a queued ack is never
+   * written (the link dropped): the record is unacked again.
+   */
+  onTaken: (id: string, unsent: () => void) => boolean;
   log?: (msg: string) => void;
   now?: () => number;
   /** Past this, a record is dropped; default the hub's mailbox retention. */
@@ -343,9 +348,15 @@ export class TakenWatch {
     let acked = false;
     for (const id of taken) {
       try {
-        this.opts.onTaken(id);
+        const sent = this.opts.onTaken(id, () => {
+          const r = this.#recs.get(id);
+          if (r?.acked) {
+            r.acked = undefined;
+            this.#save();
+          }
+        });
         const r = this.#recs.get(id);
-        if (r) {
+        if (sent === true && r) {
           r.acked = true;
           acked = true;
         }

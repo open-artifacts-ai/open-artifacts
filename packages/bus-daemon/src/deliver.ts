@@ -250,8 +250,14 @@ export function createDeliver(ctx: {
      * A transport vouches for a delivery whose attempt already settled (a
      * late ack): recorded and acked, so the hub's retry injects nothing.
      */
-    delivered: (msgId: string): void => {
-      if (seen.add(msgId)) ack(msgId);
+    delivered: (msgId: string, onUnsent?: () => void): boolean => {
+      seen.add(msgId);
+      // Always sent, never skipped as seen: the hub's ack is idempotent, and
+      // a first try may have found the link down (#2198). True only when queued on an open link.
+      return ctx.hub.send(
+        { v: 1, id: frameId(), type: "ack", msg_id: msgId },
+        onUnsent,
+      );
     },
   };
 }
