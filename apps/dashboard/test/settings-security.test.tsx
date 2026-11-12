@@ -408,6 +408,44 @@ describe("Settings › Security: passkeys", () => {
     expect(create).not.toHaveBeenCalled();
   });
 
+  it("adding while every passkey is cooling says when one can approve, and nothing was added", async () => {
+    use("cooling");
+    const posts = calls("POST");
+    let usableAt = "";
+    server.use(
+      http.get(`*${R.passkeys}`, () => {
+        usableAt = new Date(Date.now() + 7 * 3600_000).toISOString();
+        return HttpResponse.json([
+          {
+            id: "pk_c",
+            label: "This laptop",
+            createdAt: new Date().toISOString(),
+            lastUsedAt: null,
+            usableAt,
+            usable: false,
+            removesAt: null,
+          },
+        ]);
+      }),
+      http.post(`*${R.passkeyRegisterBegin}`, () =>
+        err("passkey_cooling", 409, { usableAt }),
+      ),
+    );
+    mount("/settings/security");
+    await screen.findByText("This laptop");
+    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    const line = await screen.findByText(
+      /^Your new passkey can approve from .+\. Nothing was added\.$/,
+    );
+    expect(line).toHaveTextContent(webauthn.coolingTime(usableAt));
+    // None can approve, so no approval was asked for and nothing was created.
+    expect(posts.some((c) => c.path === R.passkeyRegisterChallenge)).toBe(
+      false,
+    );
+    expect(get).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+  });
+
   it("a stale list: a 409 from the challenge falls back to begin without an assertion", async () => {
     use("usable");
     server.use(

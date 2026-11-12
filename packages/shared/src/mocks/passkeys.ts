@@ -170,6 +170,9 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
       const sent = (await request.json().catch(() => undefined)) as
         | { assertion?: unknown }
         | undefined;
+      // Passkeys exist but none works yet: nothing can approve another.
+      const cooling = keys.length > 0 && !keys.some((k) => k.usable);
+      if (cooling) return refuse() ?? d.err("no_passkey", "Add a passkey");
       if (keys.some((k) => k.usable && !k.removesAt) && !sent?.assertion)
         return d.err("passkey_required", "Approve with a passkey you have.");
       return HttpResponse.json({
