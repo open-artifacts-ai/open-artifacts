@@ -196,6 +196,42 @@ describe("links", () => {
       html("[good.com](https://evil.com)").querySelector("a")?.textContent,
     ).toBe("https://evil.com");
   });
+  it.each([
+    "[paypal.com ](https://evil.example)",
+    "[ paypal.com](https://evil.example)",
+    "[paypal.com\u00a0](https://evil.example)",
+    "[paypal.com login](https://evil.example)",
+    "[paypal\uff0ecom](https://evil.example)",
+    "[paypal\u2024com](https://evil.example)",
+    "[paypal.\u{e0041}com](https://evil.example)",
+    "[pay\u{e0100}pal.com](https://evil.example)",
+    "[go to https://paypal.com now](https://evil.example)",
+  ])("shows the real address for %j", (s) => {
+    const c = html(s);
+    expect(c.querySelector("a")?.textContent).toBe("https://evil.example");
+    expect(c.textContent).not.toContain("paypal");
+  });
+  it("keeps harmless link text", () => {
+    expect(
+      html("[the guide](https://a.com/g)").querySelector("a")?.textContent,
+    ).toBe("the guide");
+  });
+  it("does not link user@host urls", () => {
+    for (const s of [
+      "https://paypal.com@evil.example/x",
+      "[x](https://paypal.com@evil.example)",
+    ])
+      expect(hrefs(html(s))).toEqual([]);
+    expect(hrefs(html("https://a.com/x@y"))).toEqual(["https://a.com/x@y"]);
+  });
+  it("does not link urls with lookalike characters or astral invisibles", () => {
+    for (const s of [
+      "https://paypal\uff0ecom/x",
+      "https://a.com/\u{e0041}x",
+      "[x](https://a.com/\u{e0100})",
+    ])
+      expect(hrefs(html(s))).toEqual([]);
+  });
   it("an image url is not a [text](url) link", () => {
     const c = html("![x](https://a.com/i.png)");
     expect(c.querySelector("img")).toBeNull();
@@ -271,6 +307,10 @@ describe("performance", () => {
     fences: "```\n".repeat(400),
     headings: "# *a\n".repeat(400),
     escapes: "\\".repeat(2000),
+    httpRepeat: "http://".repeat(300),
+    httpWords: "http://a ".repeat(230),
+    httpAngle: "http://a<".repeat(230),
+    openFences: "```\n".repeat(3) + "x\n".repeat(900),
     closers: `https://a.com/x${")".repeat(1900)}`,
   };
   for (const [name, s] of Object.entries(cases))
@@ -281,6 +321,15 @@ describe("performance", () => {
       expect(performance.now() - t).toBeLessThan(50);
       expect(n).toBeGreaterThan(0);
     });
+  it("5,000 characters of repeated http:// parse in under 20ms", () => {
+    for (const unit of ["http://", "http://a ", "http://a<"]) {
+      const body = unit.repeat(Math.ceil(5000 / unit.length)).slice(0, 5000);
+      parseMarkdown(body); // warm
+      const t = performance.now();
+      parseMarkdown(body);
+      expect(performance.now() - t).toBeLessThan(20);
+    }
+  });
   it("caps oversized input and shows the rest as plain text", () => {
     const body = `${"a".repeat(6000)}**x**`;
     const blocks = parseMarkdown(body);

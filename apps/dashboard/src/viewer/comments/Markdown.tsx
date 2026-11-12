@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, type ReactNode, useMemo } from "react";
 import {
   type Block,
   type Inline,
@@ -118,10 +118,9 @@ export function Markdown({
   body: string;
   text?: TextFn;
 }) {
+  const parsed = useMemo(() => parseMarkdown(body), [body]);
   return (
-    <div className="flex flex-col gap-1.5">
-      {blocks(parseMarkdown(body), text, "m")}
-    </div>
+    <div className="flex flex-col gap-1.5">{blocks(parsed, text, "m")}</div>
   );
 }
 
@@ -136,5 +135,6 @@ export function MarkdownInline({
   /** False: link text shows as plain text (inside a button). */
   links?: boolean;
 }) {
-  return <>{inline(parseInlineOnly(body), text, "m", links)}</>;
+  const parsed = useMemo(() => parseInlineOnly(body), [body]);
+  return <>{inline(parsed, text, "m", links)}</>;
 }

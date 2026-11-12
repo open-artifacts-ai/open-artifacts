@@ -48,11 +48,13 @@ const INVISIBLE_RANGES: [number, number][] = [
   [0xfe00, 0xfe0f],
   [0xfeff, 0xfeff],
   [0xffa0, 0xffa0],
+  [0xe0000, 0xe007f], // tag characters
+  [0xe0100, 0xe01ef], // variation selectors supplement
 ];
-const hex = (n: number) => `\\u${n.toString(16).padStart(4, "0")}`;
+const hex = (n: number) => `\\u{${n.toString(16)}}`;
 const INVISIBLE_SRC = `[${INVISIBLE_RANGES.map(([a, b]) => `${hex(a)}-${hex(b)}`).join("")}]`;
-const INVISIBLE = new RegExp(INVISIBLE_SRC);
-const INVISIBLE_G = new RegExp(INVISIBLE_SRC, "g");
+const INVISIBLE = new RegExp(INVISIBLE_SRC, "u");
+const INVISIBLE_G = new RegExp(INVISIBLE_SRC, "gu");
 const ESCAPABLE = "\\`*_[]()#>-+.!<~|{}";
 
 const isSpace = (c: string | undefined) =>
@@ -90,8 +92,17 @@ function findCodeClose(s: string, from: number, n: number, ctx: Ctx): number {
 /** The href when `url` is exactly one linkify URL with nothing hidden in it. */
 function safeHref(url: string): string | null {
   if (url.length > 2000 || INVISIBLE.test(url) || /\s/.test(url)) return null;
+  // Lookalike characters (full-width dots and the like) fold under NFKC.
+  if (url.normalize("NFKC") !== url) return null;
+  // user@host: the part before the @ reads as the site, the part after is it.
+  const auth = url.slice(url.indexOf("//") + 2).split(/[/?#]/, 1)[0] ?? "";
+  if (auth.includes("@")) return null;
   const p = linkify(url);
   return p.length === 1 && p[0]?.url && p[0].text === url ? url : null;
+}
+
+function looksLikeAddress(word: string): boolean {
+  return word.includes("://") || /[\p{L}\p{N}]\.[\p{L}\p{N}]/u.test(word);
 }
 
 function parseLink(s: string, i: number, ctx: Ctx): [Inline, number] | null {
@@ -112,22 +123,32 @@ function parseLink(s: string, i: number, ctx: Ctx): [Inline, number] | null {
   if (s[k] !== ")") return null;
   const href = safeHref(s.slice(j + 2, k));
   if (!href) return null;
-  let label = s.slice(i + 1, j).replace(INVISIBLE_G, "");
-  if (!label.trim()) return null;
-  // Text that reads as an address but is not this one would spoof the target.
-  const spoof =
-    label.includes("://") || (!/\s/.test(label) && label.includes("."));
-  if (spoof && label !== href) label = href;
+  // Compare the text as it will look: folded, invisibles gone, spaces collapsed.
+  let label = s
+    .slice(i + 1, j)
+    .normalize("NFKC")
+    .replace(INVISIBLE_G, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!label) return null;
+  // Text that reads as an address (any word with :// or x.y) must be this
+  // link's own address, or the address is shown instead.
+  if (label !== href && label.split(" ").some(looksLikeAddress)) label = href;
   return [{ t: "a", href, label }, k + 1];
 }
 
-function urlAt(s: string, i: number): string | null {
+function urlAt(s: string, i: number, ctx: Ctx): string | null {
   if (s[i - 1] === "@") return null; // the name of an @-mention
   const head = s.slice(i, i + 8).toLowerCase();
   if (!head.startsWith("http://") && !head.startsWith("https://")) return null;
   // URL_RE stops at whitespace, so the word alone decides it (linear overall).
   let end = i;
-  while (end < s.length && !/\s/.test(s[end] as string)) end++;
+  if (ctx.steps <= 0) return null;
+  // A URL over 2,000 characters is refused by safeHref anyway.
+  while (end < s.length && end - i <= 2001 && !/\s/.test(s[end] as string))
+    end++;
+  ctx.steps -= end - i;
+  if (ctx.steps < 0) return null;
   const first = linkify(s.slice(i, end))[0];
   return first?.url ? safeHref(first.text) : null;
 }
@@ -206,7 +227,7 @@ function parseInline(s: string, ctx: Ctx, depth: number): Inline[] {
       out.push(l[0]);
       i = l[1];
     } else if (ch === "h" || ch === "H") {
-      const url = urlAt(s, i);
+      const url = urlAt(s, i, ctx);
       if (!url) {
         buf += ch;
         i++;
@@ -273,12 +294,16 @@ function parseBlocks(lines: string[], ctx: Ctx, qd: number): Block[] {
     if (open) {
       const len = open[1]?.length ?? 3;
       let j = i + 1;
-      while (j < lines.length) {
+      let closed = false;
+      while (j < lines.length && --ctx.steps >= 0) {
         const c = FENCE_CLOSE.exec(lines[j] as string);
-        if (c && (c[1]?.length ?? 0) >= len) break;
+        if (c && (c[1]?.length ?? 0) >= len) {
+          closed = true;
+          break;
+        }
         j++;
       }
-      if (j < lines.length) {
+      if (closed) {
         flushPara();
         out.push({ t: "pre", s: lines.slice(i + 1, j).join("\n") });
         i = j + 1;
