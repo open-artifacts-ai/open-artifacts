@@ -227,11 +227,13 @@ const AGENT_PATTERNS: RegExp[] = [
   new RegExp(String.raw`'\s*s\s+${WORD}${NUM}$`, "u"),
   // "Leos agent" (no apostrophe): only the unambiguous words
   new RegExp(String.raw`\S+s\s+(?:agent|assistant)${NUM}$`, "u"),
-  // "Leo, agent", "Leo (agent)", "Leo - agent", "Leo \u2013 agent"
+  // "Leo, agent", "Leo - agent" ("ai" excluded: "Wei, Ai" is a name)
   new RegExp(
-    String.raw`(?:,|\(|\s[-\u2013\u2014]+)\s*(?:agent|assistant|bot|ai)\)?${NUM}$`,
+    String.raw`(?:,|\s[-\u2013\u2014]+)\s*(?:agent|assistant|bot)${NUM}$`,
     "u",
   ),
+  // "Leo (agent)", "Leo (AI)"
+  new RegExp(String.raw`\(\s*(?:agent|assistant|bot|ai)\)?${NUM}$`, "u"),
   // "Agent of Leo", "Assistant to Leo"
   /^(?:agent|assistant|bot|ai)\s+(?:of|to|for)\s+\S/u,
 ];

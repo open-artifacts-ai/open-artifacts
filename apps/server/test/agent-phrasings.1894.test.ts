@@ -20,6 +20,7 @@ const CAUGHT = [
   "Leos agent",
   "Leo Urbina, agent",
   "Leo Urbina (agent)",
+  "Leo Urbina (AI)",
   "Leo Urbina - agent",
   "Leo Urbina's AI",
   "Leo Urbina’s bot",
@@ -40,6 +41,8 @@ const ALLOWED = [
   "Claude Monet",
   "Bob Assistant-Manager",
   "Aiden",
+  "Wei, Ai",
+  "Li - Ai",
   "Leo Urbina",
 ];
 
