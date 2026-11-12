@@ -23,6 +23,7 @@ import { createPortal } from "react-dom";
 import { ApiClientError } from "../../api/client";
 import {
   commentError,
+  isSending,
   TooManyMentions,
   useArtifactAgents,
   useCommentErrorCtx,
@@ -60,14 +61,22 @@ import {
   holdAnchor,
   NewReplyPill,
   scrollerOf,
+  scrollWithin,
   useKeepScroll,
 } from "./keepScroll";
 import { LIVE_TINT_MS } from "./liveReplies";
+import {
+  dropLost,
+  lostKey,
+  putLost,
+  useLostDrafts,
+  useLostPost,
+} from "./lostPosts";
 import { numbering, pinChanged, pinNumbering } from "./model";
 import { useRoving } from "./roving";
 import { ThreadAgents } from "./threadAgents";
 import { ThreadParticipants } from "./threadParticipants";
-import { type CommentsApi, useCommentsApi } from "./useComments";
+import { type CommentsApi, type Lost, useCommentsApi } from "./useComments";
 import {
   fieldCap,
   keyboardInset,
@@ -325,6 +334,63 @@ export function keepCardClear(el: HTMLElement | null) {
   box.scrollTop += Math.max(0, Math.min(over, room));
 }
 
+/** A failed post's text for a composer that has closed, kept outside this component (lostPosts) until a box takes it or the reader posts again. */
+function useLost(key: string) {
+  const lost = useLostPost(key);
+  return {
+    lost: lost ?? null,
+    onLost: (l: Lost) => putLost(key, l),
+    clear: () => dropLost(key),
+  };
+}
+
+/** "Your reply wasn't posted. Restore": a failed post whose box is not on screen. */
+function LostLine({
+  what,
+  onRestore,
+  disabled,
+}: {
+  what: string;
+  onRestore: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <p role="alert" className={`${TXT} text-destructive`} data-lost="">
+      Your {what} wasn&apos;t posted.{" "}
+      <button
+        type="button"
+        disabled={disabled}
+        className="cursor-pointer border-0 bg-transparent p-0 underline disabled:cursor-default disabled:no-underline disabled:opacity-60"
+        onClick={onRestore}
+      >
+        Restore
+      </button>
+    </p>
+  );
+}
+
+/** New comments that failed while another draft was open. Restore reopens one once that draft is done. */
+function LostDrafts({ api }: { api: CommentsApi }) {
+  const items = useLostDrafts(api.artifactId);
+  if (!items.length) return null;
+  return (
+    <>
+      {items.map(([key, l]) => (
+        <LostLine
+          key={key}
+          what="comment"
+          disabled={!!api.draft}
+          onRestore={() => {
+            if (!l.draft) return;
+            dropLost(key);
+            api.reopenDraft(l.draft, l);
+          }}
+        />
+      ))}
+    </>
+  );
+}
+
 /** A box with its buttons; `onSubmit` rejects with the failure to show. */
 function Composer({
   placeholder,
@@ -335,6 +401,8 @@ function Composer({
   onSubmit,
   onCancel,
   initial = "",
+  restore,
+  onText,
   autoFocus = false,
   alwaysOpen = true,
   failure,
@@ -347,7 +415,19 @@ function Composer({
   card = false,
   keepOnEsc = false,
   quote,
+  instant = false,
+  seed,
+  onLost,
 }: {
+  /**
+   * Posting is optimistic: the box clears at once and the text comes back if
+   * `onSubmit` rejects. Off for an edit, which the server may refuse.
+   */
+  instant?: boolean;
+  /** Text (and the error that sent it back) to start with: a post that failed after this box had closed. */
+  seed?: Lost | null;
+  /** The post failed and this box is gone: the owner keeps the text and the error. */
+  onLost?: (lost: Lost) => void;
   /** The composer as a card: quote on top, hint and button always visible (#2118). */
   card?: boolean;
   /** Esc is swallowed here and the draft stays (the box never closes). */
@@ -365,7 +445,7 @@ function Composer({
   /** Shown at the left of the button row (a guest's Sign in link). */
   lead?: React.ReactNode;
   /** Called when the box gains or loses text the reader typed. */
-  onDirty?: (dirty: boolean) => void;
+  onDirty?: (dirty: boolean, unmounting?: boolean) => void;
   placeholder: string;
   /** The placeholder for someone who can mention agents here. */
   mentionPlaceholder?: string;
@@ -375,6 +455,9 @@ function Composer({
   onSubmit: (body: string, extras: Extras) => Promise<unknown>;
   onCancel?: () => void;
   initial?: string;
+  /** Text kept by the owner of the draft across the box unmounting, and where to keep it. */
+  restore?: string;
+  onText?: (text: string) => void;
   autoFocus?: boolean;
   /** Collapsed to one line until focused. */
   alwaysOpen?: boolean;
@@ -383,9 +466,30 @@ function Composer({
   const api = useCommentsApi();
   const { capped, canMention, guest } = api;
   const errCtx = useCommentErrorCtx();
-  const [text, setText] = useState(initial);
+  const [text, setText] = useState(seed?.text ?? restore ?? initial);
   const [open, setOpen] = useState(alwaysOpen);
-  const [error, setError] = useState<unknown>(null);
+  const [error, setError] = useState<unknown>(seed?.error ?? null);
+  const mounted = useRef(true);
+  // A seed is used up when a box takes it: at mount it is the starting text; a
+  // later one (the post failed while this box was already on screen again)
+  // goes in front of whatever is typed, never over it.
+  const seeded = useRef(seed);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed on the seed
+  useEffect(() => {
+    if (!seed) return;
+    if (seed !== seeded.current) {
+      seeded.current = seed;
+      setText((cur) => (cur.trim() ? `${seed.text}\n${cur}` : seed.text));
+      setError(seed.error);
+    }
+    seed.clear?.();
+  }, [seed]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [busy, setBusy] = useState(false);
   const once = useRef(false);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -438,7 +542,7 @@ function Composer({
     const at = pickedAt.current;
     if (at === null) return;
     pickedAt.current = null;
-    ref.current?.focus();
+    ref.current?.focus({ preventScroll: true });
     ref.current?.setSelectionRange(at, at);
   });
   useEffect(() => {
@@ -484,19 +588,41 @@ function Composer({
   // Words in the box, or an edit in progress: a live swap must not drop them.
   const composing = body !== "" || initial !== "";
   useEffect(() => {
+    onText?.(text);
+  }, [text, onText]);
+  useEffect(() => {
     onDirty?.(body !== "");
-    return () => onDirty?.(false);
+    return () => onDirty?.(false, true);
   }, [body, onDirty]);
   const go = async () => {
     if (!body || once.current) return;
     once.current = true;
-    setBusy(true);
     setError(null);
     try {
       // Only agents whose @name is still in the text are mentioned.
       const keys = mentionedKeys(body, agents ?? []);
       if (keys.length > MENTIONS_MAX) throw new TooManyMentions();
       const mentions = keys.map((key) => ({ key }));
+      if (instant) {
+        // Clear now; the empty box is what stops a double submit, so the next
+        // post can start while this one is on its way.
+        setText("");
+        setBusy(false);
+        setTimeout(() => {
+          once.current = false;
+        }, 0);
+        try {
+          await onSubmit(body, { mentions });
+        } catch (e) {
+          // Never lose typed text: it goes back in front of anything typed since.
+          if (mounted.current) {
+            setText((cur) => (cur.trim() ? `${body}\n${cur}` : body));
+            setError(e);
+          } else onLost?.({ text: body, error: e });
+        }
+        return;
+      }
+      setBusy(true);
       await onSubmit(body, {
         mentions,
       });
@@ -505,8 +631,10 @@ function Composer({
     } catch (e) {
       setError(e);
     } finally {
-      once.current = false;
-      setBusy(false);
+      if (!instant) {
+        once.current = false;
+        setBusy(false);
+      }
     }
   };
   const cancel = () => {
@@ -589,7 +717,8 @@ function Composer({
             e.preventDefault();
             void go();
           }
-          if (e.key === "Escape" && keepOnEsc) {
+          // An empty field lets Esc through (the phone sheet closes on it).
+          if (e.key === "Escape" && keepOnEsc && text !== "") {
             e.stopPropagation();
             return;
           }
@@ -836,8 +965,10 @@ function CommentRow({
   const roving = useRoving<HTMLParagraphElement>();
   return (
     <li
-      className="flex flex-col gap-1"
+      className={`flex flex-col gap-1 transition-opacity${isSending(c.id) ? " opacity-60" : ""}`}
       data-comment={c.id}
+      data-sending={isSending(c.id) ? "" : undefined}
+      aria-busy={isSending(c.id) || undefined}
       data-live={api.live.tint.has(c.id) ? "" : undefined}
     >
       <div
@@ -1048,6 +1179,8 @@ function Quote({ t, api }: { t: CommentThread; api: CommentsApi }) {
 function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const isActive = api.active === t.id;
   const reply = useReply(api.artifactId, api.guest);
+  const lostReply = useLost(lostKey.reply(api.artifactId, t.id));
+  const lostAsk = useLost(lostKey.ask(api.artifactId, t.id));
   // The agent a question goes to, kept while the box is open so a pick
   // elsewhere doesn't swap the draft away (the server then says why).
   const [asking, setAsking] = useState<string | null>(null);
@@ -1057,6 +1190,8 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const el = useRef<HTMLLIElement>(null);
   const navigate = useNavigate();
   const resolved = t.status === "resolved";
+  // A thread still on its way has no id the server knows: no reply or resolve yet.
+  const canAct = api.canComment && !isSending(t.id);
   const [first, ...rest] = t.comments;
   const allProblems = useMemo(() => newProblems(t.comments), [t.comments]);
   const expanded = isActive || rest.length === 0;
@@ -1076,7 +1211,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   // biome-ignore lint/correctness/useExhaustiveDependencies: revealTick re-fires it for an already-active card.
   useEffect(() => {
     if (!isActive) return;
-    el.current?.scrollIntoView?.({ block: "nearest" });
+    if (el.current) scrollWithin(el.current, "nearest");
     // #1783: in the short pin sheet a thread with 2+ replies shows its last
     // reply just above the floating action row, not the card's top.
     const card = el.current;
@@ -1104,13 +1239,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
         reply.style.scrollMarginBottom = `${outlet.offsetHeight}px`;
         // One measure is enough: later size changes (typing) don't re-scroll.
         watch?.disconnect();
-        const reduce =
-          window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ===
-          true;
-        reply.scrollIntoView?.({
-          block: "end",
-          behavior: reduce ? "auto" : "smooth",
-        });
+        scrollWithin(reply, "end", true);
       };
       frame = requestAnimationFrame(go);
       if (typeof ResizeObserver !== "undefined") {
@@ -1149,7 +1278,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
     first.author.kind === "agent" &&
     !first.ask.answer &&
     !first.ask.closed &&
-    api.canComment
+    canAct
       ? first.author.name
       : null;
   const toggle = () => {
@@ -1267,6 +1396,19 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             {commentError(statusErr, api.capped, errCtx)}
           </p>
         )}
+        {/* A post that failed after its box closed, with no box on screen to take it back. */}
+        {canAct && lostReply.lost && !(isActive && !(asking && isActive)) && (
+          <LostLine what="reply" onRestore={() => api.select(t.id, true)} />
+        )}
+        {canAct && asker && lostAsk.lost && !(asking && isActive) && (
+          <LostLine
+            what="question"
+            onRestore={() => {
+              setAsking(asker);
+              api.select(t.id, true);
+            }}
+          />
+        )}
         {asking && isActive ? (
           <>
             {api.guest && <GuestName api={api} />}
@@ -1276,6 +1418,13 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               actions={ACTIONS_PLAIN}
               placeholder={`Ask ${asking} a question`}
               submit="Send"
+              instant
+              seed={lostAsk.lost}
+              onLost={(l) => {
+                // Kept outside this card; if the card is still here, the box reopens with it.
+                lostAsk.onLost(l);
+                setAsking(asking);
+              }}
               autoFocus
               buttonsRight
               onCancel={() => setAsking(null)}
@@ -1284,18 +1433,21 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
                   To {asking}, the agent that asked
                 </span>
               }
-              onSubmit={async (body) => {
-                await reply.mutateAsync({
+              onSubmit={(body) => {
+                lostAsk.clear();
+                const done = reply.mutateAsync({
                   thread: t.id,
                   body,
                   toAsker: true,
                   ...(api.guest ? { guestName: api.guestName.trim() } : {}),
                 });
+                // The question shows at once; the box closes with it.
                 setAsking(null);
+                return done;
               }}
             />
           </>
-        ) : api.canComment && isActive ? (
+        ) : canAct && isActive ? (
           <>
             {api.guest && <GuestName api={api} />}
             {!api.guest && !api.capped && <ThreadAgents t={t} api={api} />}
@@ -1307,14 +1459,18 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               submit="Reply"
               mentionable
               float
-              onSubmit={(body, x) =>
-                reply.mutateAsync({
+              instant
+              seed={lostReply.lost}
+              onLost={lostReply.onLost}
+              onSubmit={(body, x) => {
+                lostReply.clear();
+                return reply.mutateAsync({
                   thread: t.id,
                   body,
                   ...extrasBody(x),
                   ...(api.guest ? { guestName: api.guestName.trim() } : {}),
-                })
-              }
+                });
+              }}
               extra={
                 <Button
                   size="xs"
@@ -1328,7 +1484,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
             />
           </>
         ) : (
-          api.canComment && (
+          canAct && (
             <div className="flex gap-2 pl-8">
               <Button
                 size="xs"
@@ -1356,6 +1512,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
 function NewThread({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
   const last = useRef("");
+  const lastDraft = useRef<NonNullable<typeof api.draft> | null>(null);
   const draft = api.draft;
   if (!draft) return null;
   const guest = api.guest ? { guestName: api.guestName.trim() } : {};
@@ -1387,11 +1544,20 @@ function NewThread({ api }: { api: CommentsApi }) {
         }
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
+        instant
+        seed={api.draftSeed}
+        // The box closed with the post and the post failed: open it again with the text and the error.
+        onLost={(l) =>
+          lastDraft.current && api.reopenDraft(lastDraft.current, l)
+        }
         onDirty={api.setDraftDirty}
+        restore={api.draftText.current}
+        onText={api.setDraftText}
         onCancel={api.cancelDraft}
-        onSubmit={async (body, x) => {
+        onSubmit={(body, x) => {
           last.current = body;
-          await create.mutateAsync({
+          lastDraft.current = draft;
+          const done = create.mutateAsync({
             anchor:
               "pin" in draft
                 ? { kind: "pin", version: api.version, ...draft.pin }
@@ -1399,10 +1565,13 @@ function NewThread({ api }: { api: CommentsApi }) {
             body,
             ...extrasBody(x),
             ...guest,
+            contentHash: api.contentHash,
           });
-          // Posted: keep the quote painted until the list carries the thread
-          // (#1834), so the draft highlight becomes the thread's, no gap.
+          // The thread shows at once, so the draft closes now. Keep the quote
+          // painted until the list carries the thread (#1834), so the draft
+          // highlight becomes the thread's, no gap.
           api.cancelDraft(true);
+          return done;
         }}
         failure={(e) =>
           e instanceof ApiClientError && e.code === "anchor_not_in_version" ? (
@@ -1415,7 +1584,7 @@ function NewThread({ api }: { api: CommentsApi }) {
                   void create
                     .mutateAsync({
                       anchor: { kind: "note" },
-                      body: last.current,
+                      body: last.current || api.draftSeed?.text || "",
                       ...guest,
                     })
                     .then(
@@ -1436,6 +1605,7 @@ function NewThread({ api }: { api: CommentsApi }) {
 
 function NoteComposer({ api }: { api: CommentsApi }) {
   const create = useCreateThread(api.artifactId, api.guest);
+  const lost = useLost(lostKey.note(api.artifactId));
   return (
     <div className="flex flex-col gap-2">
       {api.guest && <GuestName api={api} />}
@@ -1450,14 +1620,18 @@ function NoteComposer({ api }: { api: CommentsApi }) {
         actions={ACTIONS_PLAIN}
         lead={api.guest ? <SignInLink /> : undefined}
         mentionable
-        onSubmit={(body, x) =>
-          create.mutateAsync({
+        instant
+        seed={lost.lost}
+        onLost={lost.onLost}
+        onSubmit={(body, x) => {
+          lost.clear();
+          return create.mutateAsync({
             anchor: { kind: "note" },
             body,
             ...extrasBody(x),
             ...(api.guest ? { guestName: api.guestName.trim() } : {}),
-          })
-        }
+          });
+        }}
       />
     </div>
   );
@@ -1575,6 +1749,7 @@ export function CommentsBody({
         </div>
       )}
       <Tools api={api} />
+      <LostDrafts api={api} />
       {api.draft && api.canComment && (
         <NewThread
           key={JSON.stringify(

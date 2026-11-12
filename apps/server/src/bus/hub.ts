@@ -70,6 +70,7 @@ import {
   unfollow,
 } from "../services/follows.js";
 import { VERSION } from "../version.gen.js";
+import { isDefaultAgentName } from "./default-names.js";
 import { type AgentWithMachine, agentDto, validAgents } from "./dto.js";
 import {
   decideLinkProposal,
@@ -344,6 +345,7 @@ const HUB_CAPS = [
   BUS_CAPS.waiting,
   BUS_CAPS.waitingQuery,
   BUS_CAPS.noticeAck,
+  BUS_CAPS.ackConfirm,
 ];
 
 /**
@@ -360,6 +362,12 @@ const followGated = (ws: WebSocket): boolean => {
 const waitingQueryGated = (ws: WebSocket): boolean => {
   const caps = attachmentOf(ws)?.caps;
   return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.waitingQuery);
+};
+
+/** #2198: `acked` goes only to a socket whose hello listed BUS_CAPS.ackConfirm. */
+const ackConfirmGated = (ws: WebSocket): boolean => {
+  const caps = attachmentOf(ws)?.caps;
+  return Array.isArray(caps) && hasCap({ caps }, BUS_CAPS.ackConfirm);
 };
 
 /** #1822: link_bind goes only to a socket whose hello listed BUS_CAPS.link. */
@@ -2459,7 +2467,10 @@ function byNamespaceName(
 const AGENT_DTO_COLS = `a.id, a.namespace, a.name, a.last_name as lastName, a.kind,
   a.machine_id as machineId, a.native_ref as nativeRef, a.global, a.live,
   a.updated_at as updatedAt, m.label as machineLabel, a.status,
-  a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince`;
+  a.status_label as statusLabel, a.status_at as statusAt, a.away_since as awaySince,
+  a.name_chosen as nameChosen,
+  exists (select 1 from minted_names mn where mn.agent_id = a.id and mn.lname = lower(a.name)) as minted,
+  exists (select 1 from roles ro where ro.org_id = a.org_id and ro.agent_id = a.id) as roleHolder`;
 
 /**
  * The dashboard's agent list (snapshot, GET /api/v1/bus/agents). Open agents
@@ -3352,6 +3363,31 @@ function settle(
   return r.fromAgent;
 }
 
+/**
+ * Whether an ack from `machineId` for `msgId` could still settle later: its
+ * own mail, in this session, pending (or lost_body). False for a repeat, an
+ * unknown id, another machine's, or an old session's: the hub then answers
+ * the ack with the same frame as a settled one, revealing nothing (#2198).
+ */
+function canStillSettle(
+  sql: SqlStorage,
+  machineId: string,
+  msgId: string,
+): boolean {
+  return (
+    one<{ n: number }>(
+      sql,
+      `select 1 as n from receipts r join agents a on a.id = r.to_agent
+       where r.id = ? and r.org_id = ? and a.machine_id = ?
+         and (r.state = 'pending' or (r.state = 'expired' and r.reason = 'lost_body'))
+         and r.rowid > a.session_start_rowid`,
+      msgId,
+      OWNER_ORG_ID,
+      machineId,
+    ) !== null
+  );
+}
+
 // ------------------------------------------------------------------- expiry
 //
 // One alarm serves every deadline (B7). Each step touches at most BATCH rows
@@ -3459,6 +3495,18 @@ export const SEND_KEYS_MESSAGE = "Too many sends in flight";
  * that comes back after its row was purged gets a new id.
  */
 export const CLOSED_AGENT_RETAIN_MS = 24 * HOUR_MS;
+/**
+ * #2311: an away agent (live = 0) still carrying a harness default name
+ * (isDefaultAgentName) and with no work left (IDLE_INBOX_SQL, IDLE_OUTBOX_SQL)
+ * is deleted by the alarm this long after it closed, with its away
+ * reservation. Renamed and role-named agents keep CLOSED_AGENT_RETAIN_MS and
+ * the away reservation.
+ */
+export const DEFAULT_NAME_AWAY_MS = HOUR_MS;
+const DEFAULT_PURGE_KEY = "default_away_purge";
+const DEFAULT_PURGE_NEXT_KEY = "default_away_next";
+/** The gap between two default-name sweeps once one ended. */
+const DEFAULT_PURGE_GAP_MS = 10 * 60_000;
 /**
  * Final review M1: closed agents kept per machine. A new agent_up (a ref the
  * machine has no row for) at the cap first purges that machine's oldest idle
@@ -5365,7 +5413,8 @@ export class BusHub extends DurableObject<Env> {
           hasCap(f, BUS_CAPS.noticeAck) ||
           hasCap(f, BUS_CAPS.link) ||
           hasCap(f, BUS_CAPS.waiting) ||
-          hasCap(f, BUS_CAPS.waitingQuery)
+          hasCap(f, BUS_CAPS.waitingQuery) ||
+          hasCap(f, BUS_CAPS.ackConfirm)
             ? { caps: [...HUB_CAPS] }
             : {}),
         });
@@ -5494,13 +5543,21 @@ export class BusHub extends DurableObject<Env> {
           )
         )
           return;
-        // No reply either way: anything but the recipient's own pending mail
-        // is silently ignored.
-        this.#settle(
-          machineId,
-          f.msg_id,
-          f.type === "ack" ? "delivered" : "refused",
-        );
+        // Anything but the recipient's own pending mail is ignored; only a
+        // socket with ackConfirm hears back (#2198), after the settle.
+        {
+          const settled = this.#settle(
+            machineId,
+            f.msg_id,
+            f.type === "ack" ? "delivered" : "refused",
+          );
+          if (
+            f.type === "ack" &&
+            ackConfirmGated(ws) &&
+            (settled || !canStillSettle(sql, machineId, f.msg_id))
+          )
+            sendFrame(ws, { v: 1, id: f.id, type: "acked", msg_id: f.msg_id });
+        }
         return;
       case "fetch":
         if (sender) this.#fetch(ws, f, sender, machineId);
@@ -5794,9 +5851,10 @@ export class BusHub extends DurableObject<Env> {
     for (const t of recordRename(sql, agent.id, former, at, name, at, now))
       this.#arm(t);
     sql.exec(
-      "update agents set name = ?, updated_at = ? where id = ?",
+      "update agents set name = ?, updated_at = ?, name_chosen = ? where id = ?",
       name,
       now,
+      f.name_kind === "default" ? 0 : 1,
       agent.id,
     );
     commitName(sql, agent.id, assigned, at, now);
@@ -6327,7 +6385,7 @@ export class BusHub extends DurableObject<Env> {
     machineId: string,
     msgId: string,
     outcome: "delivered" | "refused",
-  ): void {
+  ): boolean {
     const from = settle(
       this.ctx.storage.sql,
       machineId,
@@ -6335,9 +6393,10 @@ export class BusHub extends DurableObject<Env> {
       outcome,
       this.#now(),
     );
-    if (from === null) return;
+    if (from === null) return false;
     this.#release(msgId);
     this.#tell(msgId, from, outcome, outcome === "refused" ? "closed" : null);
+    return true;
   }
 
   /**
@@ -6633,6 +6692,132 @@ export class BusHub extends DurableObject<Env> {
         AGENT_PURGE_RETRY_KEY,
       );
     return false;
+  }
+
+  /**
+   * #2311: one bounded step of the sweep of away agents with a default name:
+   * up to BATCH closed agents older than DEFAULT_NAME_AWAY_MS, oldest first,
+   * from the persisted cursor; those with a default name and no work left
+   * are deleted with their away reservation (proofs go by trigger). A pass
+   * ends when a step finds fewer than BATCH; the next starts
+   * DEFAULT_PURGE_GAP_MS later. True while the pass has more.
+   */
+  #purgeDefaultNamed(now: number): boolean {
+    const sql = this.ctx.storage.sql;
+    const meta = (k: string) =>
+      one<{ value: string }>(
+        sql,
+        "select value from meta where org_id = ? and key = ?",
+        OWNER_ORG_ID,
+        k,
+      )?.value;
+    const raw = meta(DEFAULT_PURGE_KEY);
+    const cur = raw === undefined ? null : parsePurgeCursor(raw);
+    if (cur === null) {
+      const next = parseDecimal(meta(DEFAULT_PURGE_NEXT_KEY) ?? "");
+      if (next !== null && next > now) return false;
+    }
+    const u = cur?.u ?? -1;
+    const r = cur?.r ?? 0;
+    const rows = all<{
+      rid: number;
+      id: string;
+      u: number;
+      name: string;
+      kind: string;
+      minted: number;
+      chosen: number;
+      holdsBusRole: number;
+      idle: number;
+    }>(
+      sql,
+      `select a.rowid as rid, a.id as id, a.updated_at as u, a.name as name, a.kind as kind, a.name_chosen as chosen,
+          exists (select 1 from roles r where r.org_id = a.org_id and r.agent_id = a.id) as holdsBusRole,
+          exists (select 1 from minted_names m where m.agent_id = a.id and m.lname = lower(a.name)) as minted,
+          (${IDLE_INBOX_SQL} and ${IDLE_OUTBOX_SQL}) as idle
+         from agents a indexed by agents_closed
+        where a.live = 0 and a.updated_at < ?
+          and (a.updated_at > ? or (a.updated_at = ? and a.rowid > ?))
+        order by a.updated_at, a.rowid limit ?`,
+      now - SEND_KEY_RETAIN_MS,
+      now - DEFAULT_NAME_AWAY_MS,
+      u,
+      u,
+      r,
+      BATCH,
+    );
+    const gone = rows.filter(
+      (x) =>
+        x.idle === 1 &&
+        x.chosen === 0 &&
+        x.holdsBusRole === 0 &&
+        isDefaultAgentName(x.name, x.kind, x.minted === 1),
+    );
+    if (gone.length > 0) {
+      const ids = JSON.stringify(gone.map((x) => x.id));
+      sql.exec(
+        "delete from former_names where kind = 'away' and agent_id in (select value from json_each(?))",
+        ids,
+      );
+      sql.exec(
+        "delete from agents where live = 0 and id in (select value from json_each(?))",
+        ids,
+      );
+      logEvent("default_named_purged", { n: gone.length });
+    }
+    const last = rows.at(-1);
+    if (rows.length >= BATCH && last) {
+      sql.exec(
+        "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
+        OWNER_ORG_ID,
+        DEFAULT_PURGE_KEY,
+        JSON.stringify({ u: last.u, r: last.rid, kept: 0 }),
+      );
+      return true;
+    }
+    sql.exec(
+      "delete from meta where org_id = ? and key = ?",
+      OWNER_ORG_ID,
+      DEFAULT_PURGE_KEY,
+    );
+    // A pass that saw no closed agent old enough needs no gap: its deadline is
+    // the oldest one's hour.
+    if (cur !== null || rows.length > 0)
+      sql.exec(
+        "insert into meta (org_id, key, value) values (?, ?, ?) on conflict(org_id, key) do update set value = excluded.value",
+        OWNER_ORG_ID,
+        DEFAULT_PURGE_NEXT_KEY,
+        String(now + DEFAULT_PURGE_GAP_MS),
+      );
+    return false;
+  }
+
+  /**
+   * #2311: when the default-name sweep next has work: a pass under way, else
+   * the later of the oldest closed agent's DEFAULT_NAME_AWAY_MS and the gap
+   * since the last pass (one index lookup). Null with no closed agent.
+   */
+  #defaultPurgeDeadline(): number | null {
+    const sql = this.ctx.storage.sql;
+    // One index lookup, like #purgeDeadline: never a scan of the closed
+    // history. The sweep itself decides which rows it can take (its pass gap
+    // keeps a closed agent that stays from waking the alarm in a loop).
+    const oldest = one<{ t: number | null }>(
+      sql,
+      "select min(updated_at) as t from agents indexed by agents_closed where live = 0",
+    )?.t;
+    if (oldest === null || oldest === undefined) return null;
+    const meta = (k: string) =>
+      one<{ value: string }>(
+        sql,
+        "select value from meta where org_id = ? and key = ?",
+        OWNER_ORG_ID,
+        k,
+      )?.value;
+    if (meta(DEFAULT_PURGE_KEY) !== undefined) return this.#now() + 1;
+    const due = oldest + DEFAULT_NAME_AWAY_MS + 1;
+    const next = parseDecimal(meta(DEFAULT_PURGE_NEXT_KEY) ?? "");
+    return next === null ? due : Math.max(due, next);
   }
 
   /**
@@ -7629,6 +7814,7 @@ export class BusHub extends DurableObject<Env> {
     // M1: closed agents idle past CLOSED_AGENT_RETAIN_MS (after the sweeps
     // above, so work they just cleared counts).
     if (this.#purgeClosedAgents(now)) more = true;
+    if (this.#purgeDefaultNamed(now)) more = true;
 
     const want = this.#armWant;
     this.#armWant = null;
@@ -7671,6 +7857,7 @@ export class BusHub extends DurableObject<Env> {
         SEND_KEY_RETAIN_MS + 1,
       ),
       this.#purgeDeadline(),
+      this.#defaultPurgeDeadline(),
       nextStatusDue(sql),
       min("select min(expires_at) as t from former_names"),
       min("select min(not_before) as t from notices where parked = 0"),

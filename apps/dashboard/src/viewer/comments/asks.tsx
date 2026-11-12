@@ -41,13 +41,20 @@ export const extrasBody = (x: Extras) => ({
   ...(x.mentions.length ? { mentions: x.mentions } : {}),
 });
 
+/** An answer that is only the pick on its way (the optimistic one), not yet the server's record. */
+export const isSendingAnswer = (a: object | undefined) =>
+  !!a && (a as { sending?: boolean }).sending === true;
+
 /** Open asks addressed to the viewer that nobody has answered, in the given order. */
 export function asksForMe(threads: readonly CommentThread[]): string[] {
   return threads
     .filter((t) => t.status === "open")
     .filter((t) =>
       t.comments.some(
-        (c) => c.ask && !c.ask.answer && c.ask.to.some((a) => a.me),
+        (c) =>
+          c.ask &&
+          (!c.ask.answer || isSendingAnswer(c.ask.answer)) &&
+          c.ask.to.some((a) => a.me),
       ),
     )
     .map((t) => t.id);
@@ -507,16 +514,31 @@ export function AskBlock({
   // A confirm ask (#2263) picks through the passkey flow; there is no optimistic answer.
   const answer = ask?.confirm === "passkey" ? passkey : plain;
   const [lastPick, setLastPick] = useState<string | null>(null);
-  const optionRefs = useRef(new Map<string, HTMLButtonElement>());
   const [err, setErr] = useState<unknown>(null);
   const errCtx = useCommentErrorCtx();
   const [open, setOpen] = useState(false);
   const [changing, setChanging] = useState(false);
   const qid = useId();
   const picked = ask?.answer?.optionId;
+  const opts = useRef<HTMLUListElement>(null);
+  const [refocus, setRefocus] = useState<string | null>(null);
+  // Once the failed pick is rolled back and its option is enabled again.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` changes when the rollback lands
+  useEffect(() => {
+    if (!refocus || answer.isPending) return;
+    const el = opts.current?.querySelector<HTMLButtonElement>(
+      `[data-option="${CSS.escape(refocus)}"]`,
+    );
+    if (!el || el.disabled) return;
+    el.focus({ preventScroll: true });
+    setRefocus(null);
+  }, [refocus, answer.isPending, picked]);
   // A later answer, even one made elsewhere, ends the old failure and the Change mode.
   // biome-ignore lint/correctness/useExhaustiveDependencies: `picked` is the trigger.
   useEffect(() => {
+    // The rollback after a failed pick (or a 409's refetch) sets it back to
+    // unanswered: that failure stays. A new answer ends the old one.
+    if (picked === undefined) return;
     setErr(null);
     setChanging(false);
   }, [picked]);
@@ -557,6 +579,7 @@ export function AskBlock({
     (o) => o.id === ask.recommended?.optionId,
   );
   const letters = showLetters(ask.options);
+  const sendingPick = isSendingAnswer(ask.answer) || answer.isPending;
   const locked = !!pickedOpt && !changing;
   const decided = ask.closed && pickedOpt;
   const line = decided && (
@@ -600,10 +623,14 @@ export function AskBlock({
         <div
           // Amber only while it needs this reader: an ask for you with no pick yet.
           className={`flex flex-col gap-2 rounded-md p-2 ring-1 ${
-            canAnswer && !pickedOpt ? "ring-[var(--oa-warning)]" : "ring-border"
+            canAnswer && (!pickedOpt || sendingPick)
+              ? "ring-[var(--oa-warning)]"
+              : "ring-border"
           }`}
           data-ask=""
-          data-needs-you={canAnswer && !pickedOpt ? "" : undefined}
+          data-needs-you={
+            canAnswer && (!pickedOpt || sendingPick) ? "" : undefined
+          }
         >
           <p className={`${TXT} ${MUTED}`} data-ask-from="">
             {c.author.name}
@@ -631,7 +658,10 @@ export function AskBlock({
           )}
           {pk && pkErr && blocked && <PasskeyBlocked f={pkErr} />}
           <ul
+            ref={opts}
             aria-labelledby={qid}
+            aria-busy={answer.isPending || undefined}
+            data-sending={answer.isPending ? "" : undefined}
             className="m-0 flex list-none flex-col gap-1 p-0"
           >
             {ask.options.map((o, i) => {
@@ -642,13 +672,9 @@ export function AskBlock({
                   <Button
                     variant="outline"
                     size="sm"
-                    ref={(el) => {
-                      if (el) optionRefs.current.set(o.id, el);
-                      else optionRefs.current.delete(o.id);
-                    }}
                     className={`h-auto min-h-10 w-full items-center justify-start gap-2 py-1 text-left whitespace-normal ${
                       sel
-                        ? "bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] disabled:opacity-100"
+                        ? `bg-[var(--oa-accent-soft)] ring-2 ring-[var(--oa-accent)] ${answer.isPending ? "disabled:opacity-60" : "disabled:opacity-100"}`
                         : ""
                     } ${pk && answer.isPending ? "opacity-60" : ""}`}
                     disabled={
@@ -668,13 +694,8 @@ export function AskBlock({
                         {
                           onError: (e) => {
                             setErr(e);
-                            if (pk)
-                              // The options are live again: focus goes back to the pick, without scrolling.
-                              requestAnimationFrame(() =>
-                                optionRefs.current
-                                  .get(o.id)
-                                  ?.focus({ preventScroll: true }),
-                              );
+                            // Back to unanswered: focus returns to the option.
+                            setRefocus(o.id);
                           },
                         },
                       );
@@ -735,38 +756,41 @@ export function AskBlock({
               {ask.recommended.why}
             </p>
           )}
-          {ask.answer && pickedOpt && (
-            <>
-              <p className={`${TXT} font-medium`} data-ask-answer="">
-                {actor(ask.answer.by, "You")} picked{" "}
-                {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
-                {versionDate(ask.answer.at)}
-                {ask.closed ? " · closed" : ""}
-                {canAnswer && locked && (
-                  <>
-                    {" · "}
-                    <Button
-                      size="xs"
-                      variant="link"
-                      className="h-auto p-0"
-                      onClick={() => setChanging(true)}
-                    >
-                      Change
-                    </Button>
-                  </>
+          {ask.answer &&
+            pickedOpt &&
+            !isSendingAnswer(ask.answer) &&
+            !answer.isPending && (
+              <>
+                <p className={`${TXT} font-medium`} data-ask-answer="">
+                  {actor(ask.answer.by, "You")} picked{" "}
+                  {letters ? letter(pickedIdx) : pickedOpt.label} ·{" "}
+                  {versionDate(ask.answer.at)}
+                  {ask.closed ? " · closed" : ""}
+                  {canAnswer && locked && (
+                    <>
+                      {" · "}
+                      <Button
+                        size="xs"
+                        variant="link"
+                        className="h-auto p-0"
+                        onClick={() => setChanging(true)}
+                      >
+                        Change
+                      </Button>
+                    </>
+                  )}
+                </p>
+                {ask.answer.verified === "passkey" && !changing && (
+                  <span
+                    data-ask-verified=""
+                    className={`inline-flex w-fit items-center gap-1 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
+                  >
+                    <ShieldCheck aria-hidden="true" className="size-3" />
+                    Verified with passkey
+                  </span>
                 )}
-              </p>
-              {ask.answer.verified === "passkey" && !changing && (
-                <span
-                  data-ask-verified=""
-                  className={`inline-flex w-fit items-center gap-1 rounded bg-[var(--oa-success-soft)] px-1.5 ${TXT} font-semibold text-[var(--oa-success-fg)]`}
-                >
-                  <ShieldCheck aria-hidden="true" className="size-3" />
-                  Verified with passkey
-                </span>
-              )}
-            </>
-          )}
+              </>
+            )}
           {asked.length > 0 && (
             <p
               data-ask-to=""
