@@ -1,5 +1,6 @@
 import { type BusAgent, BusAgentSchema } from "@oa/shared";
 import { logWarn } from "../log.js";
+import { isDefaultAgentName } from "./default-names.js";
 import type { AgentRow } from "./rows.js";
 import { statusFields } from "./status.js";
 
@@ -21,6 +22,10 @@ export type AgentWithMachine = Omit<AgentRow, "sessionStartRowid"> & {
   machineLabel: string;
   /** agents.away_since (#1295): when a closed agent went away. */
   awaySince?: number | null;
+  /** agents.name_chosen (#2311): the name was set by a rename of kind chosen. */
+  nameChosen?: number;
+  /** #2311: the current name is one the hub minted for this agent. */
+  minted?: number;
 };
 
 /**
@@ -47,6 +52,10 @@ export const agentDto = (
       ? iso(a.awaySince)
       : null,
   updatedAt: iso(a.updatedAt),
+  // #2311: still on a harness default name (never renamed by a user or session).
+  ...(a.nameChosen === 0 && isDefaultAgentName(a.name, a.kind, a.minted === 1)
+    ? { unnamed: true }
+    : {}),
   ...statusFields(a),
 });
 
