@@ -87,6 +87,14 @@ async function expectFlush(page: Page, name: string) {
     inner - 3,
   );
   expect(g.sheetBottom, name).toBeGreaterThan(inner - 1);
+  // The sheet's own box never scrolls (it holds the header) and nothing in it
+  // overflows it.
+  const box = await page.locator("[data-sheet-height]").evaluate((el) => ({
+    top: el.scrollTop,
+    over: el.scrollHeight - el.clientHeight,
+  }));
+  expect(box.top, `${name} sheet scrollTop`).toBe(0);
+  expect(box.over, `${name} sheet overflow`).toBeLessThanOrEqual(0);
   // The header (handle, title, close) is in view, not shifted off the top.
   const head = await page
     .locator("[data-comments-header]")
@@ -102,18 +110,6 @@ test("390: no band under the sheet with no keyboard", async ({ page }) => {
   await open(page);
   await expectFlush(page, "open");
   await shot(page, "open");
-});
-
-test("390: browser chrome (a viewport gap, no field focused) is not a keyboard", async ({
-  page,
-}) => {
-  await open(page);
-  // iOS toolbars can leave the visual viewport ~190px shorter than the layout one.
-  await keyboard(page, 190);
-  await shot(page, `toolbar-gap${process.env.SHEET_BAND_DARK ? "-dark" : ""}`);
-  await expectFlush(page, "toolbar gap");
-  await keyboard(page, 0);
-  await expectFlush(page, "toolbar gap closed");
 });
 
 test("390: after a composer opens and closes", async ({ page }) => {
@@ -134,36 +130,6 @@ test("390: after the keyboard opens and closes", async ({ page }) => {
   await keyboard(page, 0);
   await expectFlush(page, "keyboard closed");
   await shot(page, "keyboard-closed");
-});
-
-test("390: a keyboard that closes without a viewport resize leaves no band", async ({
-  page,
-}) => {
-  await open(page);
-  await field(page).focus();
-  await keyboard(page, 320);
-  // iOS can drop focus and leave the viewport event unsent: stale 320px.
-  await field(page).blur();
-  await expectFlush(page, "stale keyboard");
-});
-
-test("390: a field focused with a toolbar gap and no keyboard does not lift", async ({
-  page,
-}) => {
-  // The page already has the toolbar gap when the sheet (and a draft's
-  // autofocused field) opens: iOS focuses it with no keyboard.
-  await page.goto(`/a/${ID}?mock=agents`);
-  await keyboard(page, 190);
-  await page.getByRole("button", { name: /^Comments/ }).click();
-  await expect(page.locator("[data-sheet-height]")).toBeVisible();
-  await field(page).focus();
-  await page.waitForTimeout(400);
-  expect((await gap(page)).kb).toBe("0px");
-  await expectFlush(page, "focused, toolbar gap");
-  await shot(page, "focused-toolbar-gap");
-  // A real keyboard on top of the chrome still lifts.
-  await keyboard(page, 190 + 320);
-  await expect.poll(async () => (await gap(page)).kb).toBe("320px");
 });
 
 const sheets = (page: Page) => page.locator("[data-sheet-height]");
@@ -262,4 +228,33 @@ test("390: tapping '1 ask for you' with the sheet open pans nothing", async ({
   await ask.evaluate((el) => (el as HTMLElement).click());
   await page.waitForTimeout(600);
   await expectNoPan(page, "ask jump");
+});
+
+test("390: a sheet forced to overflow cannot be scrolled by a jump", async ({
+  page,
+}) => {
+  await page.goto(`/a/${ID}?mock=asks`);
+  await page.getByRole("button", { name: /^Comments/ }).click();
+  await expect(sheets(page)).toBeVisible();
+  // Overflow the sheet's own box on purpose: overflow-clip keeps it unscrollable.
+  await sheets(page).evaluate((el) => {
+    const d = document.createElement("div");
+    d.style.cssText = "height:3000px;flex:none";
+    el.append(d);
+  });
+  const ask = page.getByRole("button", { name: /asks? for you$/ }).first();
+  await ask.evaluate((el) => (el as HTMLElement).click());
+  await page.waitForTimeout(600);
+  expect(await sheets(page).evaluate((el) => el.scrollTop)).toBe(0);
+  // Nothing at all can scroll the box that holds the header, script included.
+  expect(
+    await sheets(page).evaluate((el) => {
+      el.scrollTop = 500;
+      el.scrollIntoView?.call(el.lastElementChild as HTMLElement);
+      (el.lastElementChild as HTMLElement).scrollIntoView();
+      return el.scrollTop;
+    }),
+  ).toBe(0);
+  await expect(page.locator("[data-sheet-handle]")).toBeInViewport();
+  await expect(page.locator("[data-comments-header]")).toBeInViewport();
 });

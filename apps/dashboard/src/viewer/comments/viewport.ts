@@ -27,15 +27,6 @@ export function keyboardInset(): number {
   return Math.max(0, inset > 120 ? inset : 0);
 }
 
-/** True while a text field has focus: the only time a keyboard is up. */
-function fieldFocused(): boolean {
-  const a = document.activeElement as HTMLElement | null;
-  if (!a) return false;
-  return (
-    a.tagName === "TEXTAREA" || a.tagName === "INPUT" || a.isContentEditable
-  );
-}
-
 /**
  * How far to lift a fixed bottom sheet so it ends at the visible bottom. When
  * iOS pans the visual viewport (offsetTop > 0) that edge is offsetTop + height
@@ -43,28 +34,9 @@ function fieldFocused(): boolean {
  */
 export function sheetLift(): number {
   const vv = window.visualViewport;
-  if (!vv) return 0;
-  const gap = window.innerHeight - vv.height * (vv.scale || 1);
-  if (!fieldFocused()) {
-    // Nothing editable has focus, so no keyboard: the gap is browser chrome
-    // (iOS toolbars). Remember it. Just after a blur the keyboard may still
-    // be leaving, so that gap is not taken as chrome.
-    if (Date.now() - lastBlur > 800) baseline = Math.max(0, gap);
-    return 0;
-  }
-  // A focused field is not a keyboard (iOS leaves a programmatically focused
-  // field, such as a new draft's, focused with none up): only what the gap
-  // exceeds the chrome by counts, and only a keyboard-sized amount.
-  if (gap - baseline <= 120) return 0;
-  return Math.max(
-    0,
-    window.innerHeight - (vv.offsetTop + vv.height) - baseline,
-  );
+  if (!vv || keyboardInset() === 0) return 0;
+  return Math.max(0, window.innerHeight - (vv.offsetTop + vv.height));
 }
-
-/** The viewport gap while no field was focused: browser chrome, not a keyboard. */
-let baseline = 0;
-let lastBlur = 0;
 
 /** The composer's cap in px: its own cap, or 40% of what is visible. */
 export function fieldCap(own: number): number {
@@ -118,30 +90,8 @@ export function trackViewportVar(): () => void {
     root.style.setProperty("--oa-kb", `${sheetLift()}px`);
   };
   if (users++ === 0) {
-    // The sheet opens with no keyboard up, even if its field is focused
-    // already: the gap now is the browser's chrome.
-    const vv = window.visualViewport;
-    if (vv)
-      baseline = Math.max(0, window.innerHeight - vv.height * (vv.scale || 1));
     set();
-    const off = onViewport(set);
-    // The keyboard goes with the field's focus, and the layout viewport may
-    // settle after the visual one: look again on both.
-    document.addEventListener("focusin", set);
-    const blurred = () => {
-      lastBlur = Date.now();
-      set();
-    };
-    document.addEventListener("focusout", blurred);
-    window.addEventListener("resize", set);
-    window.addEventListener("orientationchange", set);
-    stop = () => {
-      off();
-      document.removeEventListener("focusin", set);
-      document.removeEventListener("focusout", blurred);
-      window.removeEventListener("resize", set);
-      window.removeEventListener("orientationchange", set);
-    };
+    stop = onViewport(set);
   }
   return () => {
     if (--users > 0) return;

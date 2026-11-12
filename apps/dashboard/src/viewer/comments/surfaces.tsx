@@ -157,7 +157,7 @@ export function CommentsDialog({
         aria-label="Comments"
         data-sheet-height={height}
         data-pin-replies={height === "pin" && pinReplies ? "" : undefined}
-        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-hidden rounded-t-xl border border-border bg-[var(--oa-bg)] shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:bottom-[var(--oa-kb,0px)] max-[600px]:max-h-[calc(100dvh-var(--oa-kb,0px)-1rem)] max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] max-[600px]:data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
+        className={`group/sheet fixed inset-x-0 bottom-0 z-30 flex flex-col overflow-clip rounded-t-xl border border-border bg-[var(--oa-bg)] shadow-lg outline-none transition-[height] motion-reduce:transition-none max-[600px]:bottom-[var(--oa-kb,0px)] max-[600px]:max-h-[calc(100dvh-var(--oa-kb,0px)-1rem)] max-[600px]:data-[sheet-height=half]:h-[50dvh] max-[600px]:data-[sheet-height=full]:h-[90dvh] max-[600px]:data-[sheet-height=pin]:h-[34dvh] max-[600px]:data-[pin-replies]:data-[sheet-height=pin]:h-[50dvh] min-[601px]:inset-x-auto min-[601px]:top-14 min-[601px]:right-4 min-[601px]:bottom-4 min-[601px]:w-[360px] min-[601px]:rounded-xl`}
         onFocusCapture={(e) => {
           // The phone keyboard would cover a half-height sheet.
           const t = e.target as HTMLElement;
@@ -224,7 +224,10 @@ export function CommentsDialog({
           </Button>
         </div>
         <ActionRowProvider>
-          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {/* `relative`: the sr-only spans inside are absolute, and without it their
+              containing block is the fixed sheet, so they overflow the sheet's box
+              (a 1000px+ scrollable overflow) instead of this scroller. */}
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-y-auto">
             <CommentsBody
               heading={false}
               textFormat={textFormat}

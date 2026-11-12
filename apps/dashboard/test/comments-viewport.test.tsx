@@ -52,19 +52,8 @@ describe("viewport helpers (#2239)", () => {
     vi.stubGlobal("innerHeight", 844);
     vv(500, 300);
     expect(keyboardInset()).toBe(344);
-    const field = document.createElement("textarea");
-    document.body.append(field);
-    field.focus();
-    // The gap was not seen as chrome (nothing was measured unfocused).
     expect(sheetLift()).toBe(44);
     expect(viewBottom()).toBe(800);
-    field.blur();
-    // Unfocused, the same gap is browser chrome: remembered, and no lift
-    // when a field (a new draft's) takes focus with no keyboard.
-    expect(sheetLift()).toBe(0);
-    field.focus();
-    expect(sheetLift()).toBe(0);
-    field.remove();
   });
   it("no lift without a keyboard", () => {
     vv(window.innerHeight);
