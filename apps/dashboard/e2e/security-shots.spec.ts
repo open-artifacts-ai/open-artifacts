@@ -1,6 +1,7 @@
 // #2263: Settings › Security at 1280 and 390, light and dark, in the three
 // passkey states of the mock API. Shots only when SECURITY_SHOTS_DIR is set.
 // A virtual authenticator (CDP) stands in for the device, in these tests only.
+import { generateKeyPairSync } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { expect, type Page, test } from "@playwright/test";
 
@@ -18,14 +19,33 @@ async function shot(page: Page, name: string) {
 async function authenticator(page: Page) {
   const cdp = await page.context().newCDPSession(page);
   await cdp.send("WebAuthn.enable");
-  await cdp.send("WebAuthn.addVirtualAuthenticator", {
-    options: {
-      protocol: "ctap2",
-      transport: "internal",
-      hasResidentKey: true,
-      hasUserVerification: true,
-      isUserVerified: true,
-      automaticPresenceSimulation: true,
+  const { authenticatorId } = await cdp.send(
+    "WebAuthn.addVirtualAuthenticator",
+    {
+      options: {
+        protocol: "ctap2",
+        transport: "internal",
+        hasResidentKey: true,
+        hasUserVerification: true,
+        isUserVerified: true,
+        automaticPresenceSimulation: true,
+      },
+    },
+  );
+  // The device already holds the member's passkey (the mock's "usable" one
+  // answers for it), so it can approve adding another.
+  const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+  await cdp.send("WebAuthn.addCredential", {
+    authenticatorId,
+    credential: {
+      credentialId: Buffer.from("existing-passkey").toString("base64"),
+      isResidentCredential: true,
+      rpId: "localhost",
+      privateKey: privateKey
+        .export({ type: "pkcs8", format: "der" })
+        .toString("base64"),
+      userHandle: Buffer.from("member").toString("base64"),
+      signCount: 1,
     },
   });
 }

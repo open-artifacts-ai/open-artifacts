@@ -228,10 +228,28 @@ function PasskeyList({
     setNote(null);
     setReturned(false);
     try {
+      // With a passkey that already works, an existing one approves the new
+      // one: challenge (the re-auth check comes first), prompt, then begin
+      // with the assertion. The first passkey needs neither.
+      let assertion: unknown;
+      if (keys?.some((k) => k.usable && !k.removesAt)) {
+        try {
+          const ch = await api.send(
+            "POST",
+            R.passkeyRegisterChallenge,
+            undefined,
+            ChallengeSchema,
+          );
+          assertion = await getAssertion(ch.options);
+        } catch (e) {
+          // 409: none needs to approve after all (our list was stale).
+          if (!(e instanceof ApiClientError && e.status === 409)) throw e;
+        }
+      }
       const begin = await api.send(
         "POST",
         R.passkeyRegisterBegin,
-        undefined,
+        assertion === undefined ? undefined : { assertion },
         ChallengeSchema,
       );
       const credential = await createCredential(begin.options);

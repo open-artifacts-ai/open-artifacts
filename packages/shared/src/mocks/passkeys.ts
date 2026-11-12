@@ -158,9 +158,20 @@ export function createPasskeyMock(state: PasskeyMockState, d: Deps) {
       everyPick = r.data.everyPick;
       return HttpResponse.json(settings());
     }),
-    http.post(`*${R.passkeyRegisterBegin}`, () => {
+    http.post(`*${R.passkeyRegisterChallenge}`, () => {
+      // A usable passkey that is not leaving approves the new one.
+      if (!keys.some((k) => k.usable && !k.removesAt))
+        return d.err("conflict", "No passkey needs to approve this.");
+      return HttpResponse.json(assertOptions());
+    }),
+    http.post(`*${R.passkeyRegisterBegin}`, async ({ request }) => {
       if (keys.length >= MAX)
         return d.err("bad_request", "You can add up to 10 passkeys.");
+      const sent = (await request.json().catch(() => undefined)) as
+        | { assertion?: unknown }
+        | undefined;
+      if (keys.some((k) => k.usable && !k.removesAt) && !sent?.assertion)
+        return d.err("passkey_required", "Approve with a passkey you have.");
       return HttpResponse.json({
         options: {
           challenge: b64url(32),

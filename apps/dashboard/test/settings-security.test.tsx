@@ -367,6 +367,91 @@ describe("Settings › Security: passkeys", () => {
     expect(posts.find((c) => c.path === R.passkeyRegisterFinish)?.body).toEqual(
       { credential: CREDENTIAL },
     );
+    // The first passkey needs no approval.
+    expect(posts.some((c) => c.path === R.passkeyRegisterChallenge)).toBe(
+      false,
+    );
+    expect(get).not.toHaveBeenCalled();
+    expect(
+      posts.find((c) => c.path === R.passkeyRegisterBegin)?.body,
+    ).toBeUndefined();
+  });
+
+  it("with a working passkey, an existing one approves: challenge, prompt, begin with the assertion, create, finish", async () => {
+    use("usable");
+    const posts = calls("POST");
+    mount("/settings/security");
+    await screen.findByText("MacBook");
+    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    expect(await screen.findByText("Passkey")).toBeVisible();
+    const paths = posts.map((c) => c.path);
+    expect(paths.indexOf(R.passkeyRegisterChallenge)).toBeGreaterThanOrEqual(0);
+    expect(paths.indexOf(R.passkeyRegisterChallenge)).toBeLessThan(
+      paths.indexOf(R.passkeyRegisterBegin),
+    );
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(posts.find((c) => c.path === R.passkeyRegisterBegin)?.body).toEqual({
+      assertion: ASSERTION,
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it("a cancelled approval adds nothing: no begin, no create", async () => {
+    use("usable");
+    get.mockRejectedValue(new DOMException("no", "NotAllowedError"));
+    const posts = calls("POST");
+    mount("/settings/security");
+    await screen.findByText("MacBook");
+    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    expect(await screen.findByText("Nothing was added.")).toBeVisible();
+    expect(posts.some((c) => c.path === R.passkeyRegisterBegin)).toBe(false);
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("a stale list: a 409 from the challenge falls back to begin without an assertion", async () => {
+    use("usable");
+    server.use(
+      http.post(`*${R.passkeyRegisterChallenge}`, () => err("conflict", 409)),
+      // The server now agrees nothing needs to approve.
+      http.post(`*${R.passkeyRegisterBegin}`, () =>
+        HttpResponse.json({
+          options: {
+            challenge: "AAAA",
+            rp: { name: "OA" },
+            user: { id: "AAAA", name: "a", displayName: "A" },
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+          },
+          expiresAt: new Date().toISOString(),
+        }),
+      ),
+    );
+    const posts = calls("POST");
+    mount("/settings/security");
+    await screen.findByText("MacBook");
+    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(get).not.toHaveBeenCalled();
+    expect(
+      posts.find((c) => c.path === R.passkeyRegisterBegin)?.body,
+    ).toBeUndefined();
+  });
+
+  it("re-auth from the challenge leaves before any passkey prompt, and marks the return", async () => {
+    use("usable");
+    const redirect = vi
+      .spyOn(webauthn, "redirectTo")
+      .mockImplementation(() => {});
+    server.use(
+      http.post(`*${R.passkeyRegisterChallenge}`, () =>
+        err("reauth_required", 401, { reauthUrl: "/sign-in?reauth=1" }),
+      ),
+    );
+    mount("/settings/security");
+    await screen.findByText("MacBook");
+    fireEvent.click(screen.getByRole("button", { name: "Add a passkey" }));
+    await waitFor(() => expect(redirect).toHaveBeenCalledTimes(1));
+    expect(get).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("oa.passkey.addAfterReauth")).not.toBeNull();
   });
 
   it("a cancelled add says nothing was added", async () => {
