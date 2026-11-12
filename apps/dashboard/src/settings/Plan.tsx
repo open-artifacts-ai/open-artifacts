@@ -68,10 +68,13 @@ const PRICE_BY_INTERVAL: Record<
   Record<"month" | "year", string>
 > = {
   solo: { month: "$1 a month", year: "$10 a year" },
-  team: { month: "$10 per creator a month", year: "$100 per creator a year" },
+  team: {
+    month: "$10 per creator per month",
+    year: "$100 per creator per year",
+  },
   business: {
-    month: "$25 per creator a month",
-    year: "$250 per creator a year",
+    month: "$25 per creator per month",
+    year: "$250 per creator per year",
   },
 };
 
@@ -239,7 +242,10 @@ export function Plan() {
     billing.interval &&
     billing.renewsAt &&
     (tierKey === "solo" || tierKey === "team" || tierKey === "business")
-      ? `${PRICE_BY_INTERVAL[tierKey][billing.interval]}, renews ${date(billing.renewsAt)}`
+      ? soloTrialing
+        ? // A free month with a card on file: "First charge on" gives the date.
+          PRICE_BY_INTERVAL[tierKey][billing.interval]
+        : `${PRICE_BY_INTERVAL[tierKey][billing.interval]}, renews ${date(billing.renewsAt)}`
       : PRICE[billing.tier];
   return (
     <div className={STACK}>

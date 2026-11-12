@@ -427,7 +427,9 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
         },
       });
       await screen.findByRole("button", { name: "Manage billing" });
-      expect(priceRow()).toHaveTextContent("$10 a year, renews Dec 1, 2027");
+      expect(priceRow()).toHaveTextContent("$10 a year");
+      expect(screen.queryByText(/renews/)).toBeNull();
+      expect(screen.getByText("First charge on Dec 1, 2026.")).toBeVisible();
     });
     it("a no-card Solo trial shows no renewal, whatever billing sends", async () => {
       mountHosted("/settings/plan", {
@@ -439,10 +441,10 @@ describe("Plan and billing: Manage billing for Solo (#2127)", () => {
     });
     it("Team and Business show the per-creator price and interval", async () => {
       for (const [tier, interval, text] of [
-        ["team", "month", "$10 per creator a month, renews Dec 1, 2027"],
-        ["team", "year", "$100 per creator a year, renews Dec 1, 2027"],
-        ["business", "month", "$25 per creator a month, renews Dec 1, 2027"],
-        ["business", "year", "$250 per creator a year, renews Dec 1, 2027"],
+        ["team", "month", "$10 per creator per month, renews Dec 1, 2027"],
+        ["team", "year", "$100 per creator per year, renews Dec 1, 2027"],
+        ["business", "month", "$25 per creator per month, renews Dec 1, 2027"],
+        ["business", "year", "$250 per creator per year, renews Dec 1, 2027"],
       ] as const) {
         cleanup();
         mountHosted("/settings/plan", {
