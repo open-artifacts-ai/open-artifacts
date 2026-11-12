@@ -1,6 +1,5 @@
 import type { CommentThread, ThreadAgent } from "@oa/shared";
 import {
-  Button,
   Tooltip,
   TooltipContent,
   TooltipProvider,
@@ -129,15 +128,14 @@ function useFit(count: number, deps: string) {
 
 /**
  * The removal flow shared by the "Notifying" chips and the participants list
- * (#2174): confirm, remove, "won't get replies" with Undo. One set of rules.
+ * (#2174): remove at once, "won't get replies" with Undo. One set of rules.
  */
 export function useAgentRemoval(t: CommentThread, api: CommentsApi) {
   const set = useThreadAgent(api.artifactId, api.guest);
   const errCtx = useCommentErrorCtx();
-  const [confirm, setConfirm] = useState<ThreadAgent | null>(null);
   const [gone, setGone] = useState<ThreadAgent | null>(null);
   const [err, setErr] = useState<unknown>(null);
-  const back = useRef<HTMLButtonElement | null>(null);
+  const undo = useRef<HTMLButtonElement | null>(null);
   // The list refetches after a removal; until then the removed chip stays hidden.
   const agents = (t.agents ?? []).filter(
     (x) => !x.removed && x.key !== gone?.key,
@@ -168,17 +166,15 @@ export function useAgentRemoval(t: CommentThread, api: CommentsApi) {
   return {
     set,
     errCtx,
-    confirm,
-    setConfirm,
+    undo,
     gone,
     err,
     agents,
-    back,
     run,
   };
 }
 
-/** The confirm, the "won't get replies" line with Undo, and an error. */
+/** The "won't get replies" line with Undo, and an error. */
 export function RemovalNotices({
   rm,
   api,
@@ -186,57 +182,19 @@ export function RemovalNotices({
   rm: ReturnType<typeof useAgentRemoval>;
   api: CommentsApi;
 }) {
-  const { set, errCtx, confirm, setConfirm, gone, err, back, run } = rm;
+  const { errCtx, undo, gone, err, run } = rm;
+  // The × that removed the chip is gone; Undo is the next stop.
+  const key = gone?.key;
+  useEffect(() => {
+    if (key) undo.current?.focus();
+  }, [key, undo]);
   return (
     <>
-      {confirm && (
-        <section
-          aria-label={`Remove ${confirm.name} from this thread`}
-          data-thread-agent-confirm=""
-          className="flex flex-col gap-2 rounded-lg border border-border bg-background p-2.5 text-foreground shadow-md"
-          onKeyDown={(e) => {
-            if (e.key === "Escape") {
-              e.stopPropagation();
-              setConfirm(null);
-              back.current?.focus();
-            }
-          }}
-        >
-          <p className="m-0">
-            Remove {confirm.name} from this thread? It won&apos;t get replies
-            here until someone @-mentions it.
-          </p>
-          <div className="flex gap-1.5">
-            <Button
-              size="xs"
-              variant="destructive"
-              disabled={set.isPending}
-              autoFocus
-              onClick={() => {
-                const a = confirm;
-                setConfirm(null);
-                run(a, true);
-              }}
-            >
-              Remove
-            </Button>
-            <Button
-              size="xs"
-              variant="outline"
-              onClick={() => {
-                setConfirm(null);
-                back.current?.focus();
-              }}
-            >
-              Keep
-            </Button>
-          </div>
-        </section>
-      )}
       {gone && (
         <p className="m-0" aria-live="polite" data-thread-agent-gone="">
           {gone.name} won&apos;t get replies in this thread.{" "}
           <button
+            ref={undo}
             type="button"
             className="cursor-pointer border-0 bg-transparent p-0 text-[var(--oa-accent-fg)] underline"
             onClick={() => run(gone, false)}
@@ -256,8 +214,7 @@ export function RemovalNotices({
 
 /**
  * #2035: "Notifying" and a chip for each agent the thread already tells on a
- * reply. The agent's person and the artifact's owner can take one out (after a
- * confirm); everyone else sees the chip with a tooltip that says who can.
+ * reply. The agent's person and the artifact's owner can take one out ; everyone else sees the chip with a tooltip that says who can.
  * Removal is for the whole thread and lasts until someone @-mentions the agent.
  */
 export function ThreadAgents({
@@ -268,7 +225,7 @@ export function ThreadAgents({
   api: CommentsApi;
 }) {
   const rm = useAgentRemoval(t, api);
-  const { setConfirm, gone, agents, back } = rm;
+  const { run, gone, agents } = rm;
   const [all, setAll] = useState(false);
   const { row, ghost, fit } = useFit(
     agents.length,
@@ -304,10 +261,7 @@ export function ThreadAgents({
                     type="button"
                     aria-label={`Stop notifying ${a.name}`}
                     className="inline-flex size-[18px] cursor-pointer items-center justify-center rounded-full border-0 bg-transparent p-0 leading-none text-muted-foreground hover:bg-muted hover:text-foreground"
-                    onClick={(e) => {
-                      back.current = e.currentTarget;
-                      setConfirm(a);
-                    }}
+                    onClick={() => run(a, true)}
                   >
                     ×
                   </button>

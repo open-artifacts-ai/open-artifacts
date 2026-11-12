@@ -129,7 +129,7 @@ describe("ThreadParticipants", () => {
     expect(list()).toBeNull();
   });
 
-  it("× asks first; Keep sends nothing; Remove sends, then the row reads Not notified with Undo", () => {
+  it("× removes at once, no confirm; then the row reads Not notified with Undo", () => {
     render(
       <ThreadParticipants
         t={thread([agent("OA Billing", true)])}
@@ -142,15 +142,6 @@ describe("ThreadParticipants", () => {
         name: "Stop notifying OA Billing in this thread",
       });
     fireEvent.click(x());
-    expect(
-      screen.getByText(
-        "Remove OA Billing from this thread? It won't get replies here until someone @-mentions it.",
-      ),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Keep" }));
-    expect(mutate).not.toHaveBeenCalled();
-    fireEvent.click(x());
-    fireEvent.click(screen.getByRole("button", { name: "Remove" }));
     const call = mutate.mock.calls[0];
     expect(call?.[0]).toEqual({
       thread: "t1",
