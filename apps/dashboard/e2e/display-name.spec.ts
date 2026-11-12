@@ -93,9 +93,17 @@ test("Settings → Profile says when the name is hidden as an agent's", async ({
       [1280, "light"],
       [1280, "dark"],
       [390, "light"],
+      [390, "dark"],
     ] as const) {
       await page.emulateMedia({ colorScheme: theme });
       await page.setViewportSize({ width: w, height: 800 });
+      // Settled: real value, enabled form, theme transitions done.
+      await expect(field).toHaveValue("Ada's agent");
+      await expect(field).toBeEnabled();
+      await expect(hint).toBeVisible();
+      await page.evaluate(() =>
+        Promise.all(document.getAnimations().map((a) => a.finished)),
+      );
       await page.screenshot({ path: `${out}/profile-hint-${w}-${theme}.png` });
     }
   await field.fill("Ada");
