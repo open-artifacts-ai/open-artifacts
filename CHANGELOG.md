@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.161.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.160.0...v0.161.0) (2026-11-12)
+
+
+### Features
+
+* **comments:** who's in a thread, at its top, with × per agent ([#2174](https://github.com/open-artifacts-ai/open-artifacts/issues/2174)) ([#2185](https://github.com/open-artifacts-ai/open-artifacts/issues/2185)) ([1f56212](https://github.com/open-artifacts-ai/open-artifacts/commit/1f56212186851e81d8b7bb23985f8203bee58910))
+
+
+### Bug Fixes
+
+* **test:** guard meta-test works when the repo is cloned under /tmp ([#2253](https://github.com/open-artifacts-ai/open-artifacts/issues/2253)) ([854c834](https://github.com/open-artifacts-ai/open-artifacts/commit/854c834dcaab48d87a2df0020564af5697be6efc))
+
 ## [0.160.0](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.159.0...v0.160.0) (2026-11-12)
 
 
