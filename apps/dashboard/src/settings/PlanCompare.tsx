@@ -25,7 +25,6 @@ import {
 } from "@oa/ui/shadcn";
 import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
 import { muted } from "./ui";
-import { yearlyFlag } from "./yearlyFlag";
 
 export type Column = "solo" | "team" | "business";
 export type Interval = "month" | "year";
@@ -46,7 +45,7 @@ const WHO: Record<Column, string> = {
 /**
  * A card's price from the shared table (#2237). Yearly leads with the monthly
  * figure and says what is billed; monthly points at the yearly price when
- * there is one. Team and Business have no yearly price until the flag is on.
+ * there is one. Team and Business have no yearly price until billing reports them.
  */
 const cardPrice = (
   c: Column,
@@ -323,6 +322,7 @@ export function PlanCompare({
   busy,
   trial = false,
   seatsDefault,
+  yearly: yearlyOn = false,
 }: {
   /** The current plan's column (the invite trial is Team, #2113). */
   column: Column;
@@ -337,8 +337,9 @@ export function PlanCompare({
    * path) never asks.
    */
   seatsDefault?: number;
+  /** Billing says yearly Team and Business prices exist (billing.yearlyTeamBusiness); off: Solo only. */
+  yearly?: boolean;
 }) {
-  const yearlyOn = yearlyFlag.teamBusiness;
   const [interval, setInterval] = useState<Interval>("year");
   const [asking, setAsking] = useState<"team" | "business" | null>(null);
   const opener = useRef<HTMLElement | null>(null);

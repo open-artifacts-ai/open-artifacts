@@ -78,6 +78,8 @@ export const TierAnswerSchema = z.object({
   graceUntil: z.number().int().nullable(),
   /** A Stripe customer exists for this install. Absent from an answer that predates it (unknown). */
   hasCustomer: z.boolean().optional(),
+  /** Yearly Team and Business prices are configured. Absent from an answer that predates it (off). */
+  yearlyTeamBusiness: z.boolean().optional(),
   version: z.number().int().nonnegative(),
   asOf: z.number().int().positive(),
 });
@@ -136,6 +138,8 @@ export type EffectivePlan = {
   soloTrialEndsAt?: number | null;
   /** Absent when billing's answer carried none (unknown). */
   hasCustomer?: boolean;
+  /** Absent when billing's answer carried none (off). */
+  yearlyTeamBusiness?: boolean;
   graceUntil: number | null;
   readOnly: boolean;
   reason?: PlanReason;
@@ -181,6 +185,9 @@ export function effectivePlan(
       : {}),
     ...("hasCustomer" in base && base.hasCustomer !== undefined
       ? { hasCustomer: base.hasCustomer }
+      : {}),
+    ...("yearlyTeamBusiness" in base && base.yearlyTeamBusiness !== undefined
+      ? { yearlyTeamBusiness: base.yearlyTeamBusiness }
       : {}),
     graceUntil: base.graceUntil,
     readOnly: mode === "readOnly" || mode === "viewOnly",
