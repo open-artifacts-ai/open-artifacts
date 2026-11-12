@@ -12,6 +12,7 @@ import {
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 import type { Env } from "../src/env.js";
+import { withdrawTargets } from "../src/runtime/comments-store.js";
 import { type ArtifactRuntime, runtimeStub } from "../src/runtime/do.js";
 import type { AgentAttr } from "../src/services/agent-usage.js";
 import { publish } from "../src/services/artifacts.js";
@@ -28,7 +29,6 @@ import {
   listComments,
   setThreadAgent,
 } from "../src/services/comments.js";
-import { withdrawTargets } from "../src/runtime/comments-store.js";
 import { follow } from "../src/services/follows.js";
 import { deleteShare } from "../src/services/shares.js";
 import { getUser } from "../src/services/users.js";
