@@ -26,6 +26,11 @@ const NO_SIGNUP =
   'Get started free link without a sign-up URL (set HOSTED_SIGNUP_URL for the landing build; its href is "#pricing" or missing)';
 const NO_BUTTONS =
   'no "Get started free" link on the home page (the sign-up buttons are gone)';
+const LOGIN_LABEL = "Log in";
+const NO_LOGIN_URL =
+  "Log in link that does not point at the sign-up URL (it must be the same HOSTED_SIGNUP_URL as the Get started free buttons)";
+const NO_LOGIN =
+  'no "Log in" link in the home page header (it goes to the sign-up URL)';
 const CHARSET = /<head[^>]*>\s*<meta charset="utf-8"\s*\/?>/i;
 const MAX_LINES = 20;
 
@@ -37,15 +42,15 @@ function* walk(dir: string): Generator<string> {
   }
 }
 
-/** Links whose visible text is "Get started free", even with inner tags. */
-function signupLinks(body: string) {
+/** Links whose visible text is `label`, even with inner tags. */
+function linksLabelled(body: string, label: string) {
   const out: { index: number; href: string | undefined }[] = [];
   for (const m of body.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/g)) {
     const text = (m[2] ?? "")
       .replace(/<[^>]+>/g, "")
       .replace(/\s+/g, " ")
       .trim();
-    if (text !== SIGNUP_LABEL) continue;
+    if (text !== label) continue;
     out.push({
       index: m.index ?? 0,
       href: /\bhref="([^"]*)"/.exec(m[1] ?? "")?.[1]?.trim(),
@@ -73,16 +78,25 @@ export function scan(
     // the build gets from HOSTED_SIGNUP_URL. Without it the link falls back to
     // the pricing table. The home page must have them at all.
     if (extname(file).toLowerCase() === ".html") {
-      const links = signupLinks(body);
+      const links = linksLabelled(body, SIGNUP_LABEL);
+      const lineOf = (index: number) => body.slice(0, index).split("\n").length;
+      const dead = (href: string | undefined) =>
+        !href || href === "#pricing" || href === "#";
       for (const l of links)
-        if (!l.href || l.href === "#pricing" || l.href === "#")
-          hits.push({
-            file,
-            line: body.slice(0, l.index).split("\n").length,
-            token: NO_SIGNUP,
-          });
-      if (file === join(dist, "index.html") && links.length === 0)
-        hits.push({ file, line: 1, token: NO_BUTTONS });
+        if (dead(l.href))
+          hits.push({ file, line: lineOf(l.index), token: NO_SIGNUP });
+      if (file === join(dist, "index.html")) {
+        if (links.length === 0) hits.push({ file, line: 1, token: NO_BUTTONS });
+        // The header's "Log in" goes to the same sign-up URL, and is there
+        // whenever the buttons have one.
+        const logins = linksLabelled(body, LOGIN_LABEL);
+        const url = links.find((l) => !dead(l.href))?.href;
+        for (const l of logins)
+          if (dead(l.href) || (url && l.href !== url))
+            hits.push({ file, line: lineOf(l.index), token: NO_LOGIN_URL });
+        if (url && logins.length === 0)
+          hits.push({ file, line: 1, token: NO_LOGIN });
+      }
     }
   }
   return hits;

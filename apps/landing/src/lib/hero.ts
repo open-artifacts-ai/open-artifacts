@@ -18,3 +18,8 @@ export function heroActions(signupUrl: string | undefined): HeroAction[] {
 export function signupHref(signupUrl: string | undefined): string {
   return signupUrl?.trim() || "#pricing";
 }
+
+/** Where the header's "Log in" goes: the same hosted URL. Unset: no link at all. */
+export function loginHref(signupUrl: string | undefined): string | undefined {
+  return signupUrl?.trim() || undefined;
+}

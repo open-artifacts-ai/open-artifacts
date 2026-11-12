@@ -2,12 +2,14 @@
 import Home from "../components/home/Home.astro";
 import Base from "../layouts/Base.astro";
 import { HOME_DESCRIPTION, HOME_TITLE, OG_ALT } from "../lib/copy";
+import { loginHref } from "../lib/hero";
 import { gatesFor } from "../lib/release";
 ---
 
 <Base
   fallbacks={gatesFor("index")}
   homeNav
+  loginHref={loginHref(import.meta.env.HOSTED_SIGNUP_URL)}
   ogPath="/og-home.png"
   ogAlt={OG_ALT}
   title={HOME_TITLE}

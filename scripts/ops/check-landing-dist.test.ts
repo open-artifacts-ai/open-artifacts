@@ -26,6 +26,8 @@ const run = (d = dir, extra: string[] = []) => {
   return { code: r.status, out: r.stdout, err: r.stderr };
 };
 const SIGNUP = '<a class="btn p" href="https://app.example.com/sign-up">';
+const LOGIN =
+  '<a class="login" href="https://app.example.com/sign-up">Log in</a>';
 
 const stub = (status: number, type: ResponseType = "basic") =>
   (async () => ({ status, type })) as unknown as typeof fetch;
@@ -55,7 +57,7 @@ describe("probeSignup (release mode)", () => {
   it("is off unless asked: the CLI only probes with --probe-signup", () => {
     put(
       "index.html",
-      `<html><head><meta charset="utf-8"></head>${SIGNUP}Get started free</a>`,
+      `<html><head><meta charset="utf-8"></head>${LOGIN}${SIGNUP}Get started free</a>`,
     );
     expect(run().code).toBe(0);
     const r = run(dir, ["--probe-signup"]);
@@ -97,7 +99,7 @@ describe("check-landing-dist", () => {
   it("passes on a clean dir", () => {
     put(
       "index.html",
-      `<html><head><meta charset="utf-8"></head><p>hi</p>${SIGNUP}Get started free</a>`,
+      `<html><head><meta charset="utf-8"></head><p>hi</p>${LOGIN}${SIGNUP}Get started free</a>`,
     );
     put("llms.txt", "setup");
     const r = run();
@@ -137,8 +139,39 @@ describe("check-landing-dist", () => {
     expect(r.code).toBe(1);
     expect(r.out).toContain("Get started free link without a sign-up URL");
     expect(r.out).not.toContain('no "Get started free" link');
-    put("index.html", page(`${SIGNUP}<span>Get started free</span></a>`));
+    put(
+      "index.html",
+      page(`${LOGIN}${SIGNUP}<span>Get started free</span></a>`),
+    );
     expect(run().code).toBe(0);
+  });
+  it("a Log in link must point at the same sign-up URL as the buttons", () => {
+    const buttons = `${SIGNUP}Get started free</a>`;
+    put("index.html", page(`<a href="#pricing">Log in</a>${buttons}`));
+    let r = run();
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(
+      "Log in link that does not point at the sign-up URL",
+    );
+    put(
+      "index.html",
+      page(`<a href="https://elsewhere.example.com/">Log in</a>${buttons}`),
+    );
+    r = run();
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(
+      "Log in link that does not point at the sign-up URL",
+    );
+    put("index.html", page(`<a>Log in</a>${buttons}`));
+    expect(run().code).toBe(1);
+    put("index.html", page(`${LOGIN}${buttons}`));
+    expect(run().code).toBe(0);
+  });
+  it("fails when the buttons have a sign-up URL but the header has no Log in", () => {
+    put("index.html", page(`${SIGNUP}Get started free</a>`));
+    const r = run();
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('no "Log in" link in the home page header');
   });
   it("fails when a Get started free link has no href", () => {
     put("index.html", page("<a>Get started free</a>"));
@@ -150,7 +183,7 @@ describe("check-landing-dist", () => {
     put(
       "index.html",
       page(
-        '<a class="btn" href="https://app.example.com/sign-up">Get started free</a>\n<a href="#pricing">Pricing</a>',
+        `${LOGIN}<a class="btn" href="https://app.example.com/sign-up">Get started free</a>\n<a href="#pricing">Pricing</a>`,
       ),
     );
     expect(run().code).toBe(0);

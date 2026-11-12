@@ -21,6 +21,8 @@ interface Props {
   fallbacks?: GateId[];
   /** The home page's header links: Pricing and Self-host sections, Docs, GitHub. */
   homeNav?: boolean;
+  /** Where "Log in" goes (the hosted sign-up URL). No URL, no link. */
+  loginHref?: string;
   /** Link-preview image path under public/, and its alt text. */
   ogPath?: string;
   ogAlt?: string;
@@ -31,6 +33,7 @@ const {
   description,
   fallbacks = [],
   homeNav = false,
+  loginHref,
   ogPath = "/og.png",
   ogAlt = "Open Artifacts",
 } = Astro.props;
@@ -81,6 +84,7 @@ const ogImage = new URL(ogPath, Astro.site);
             <a href="#pricing">Pricing</a>
             <a href="#self-host">Self-host</a>
             <a href="/docs/setup/">Docs</a>
+            {loginHref && <a class="login" href={loginHref}>Log in</a>}
             <a class="gh" href={REPO_URL}>GitHub</a>
           </nav>
         ) : (

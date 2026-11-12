@@ -267,6 +267,15 @@ describe("landing sections", () => {
     expect(nav).toMatch(
       /<a class="gh" href="https:\/\/github\.com[^"]*">GitHub<\/a>/,
     );
+    // "Log in" is the hosted sign-up URL, right before GitHub; with no URL at
+    // build time there is no link at all (never an anchor fallback)
+    const url = process.env.HOSTED_SIGNUP_URL?.trim();
+    if (url) {
+      expect(nav).toContain(`<a class="login" href="${url}">Log in</a>`);
+      expect(nav.indexOf("Log in")).toBeLessThan(nav.indexOf("GitHub"));
+    } else {
+      expect(nav).not.toContain("Log in");
+    }
   });
 
   it("the home footer says only Open Artifacts. Open source, MIT licensed.", () => {
