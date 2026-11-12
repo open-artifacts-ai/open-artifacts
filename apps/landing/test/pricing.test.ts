@@ -114,8 +114,9 @@ describe("pricing", () => {
       "Soon",
       "✓",
     ]);
-    expect(cells("Audit log")).toEqual(["Soon", "Soon", "Soon", "Soon"]);
-    expect(cells("Custom domain")).toEqual(["Soon", "Soon", "Soon", "✓"]);
+    // "Soon" only replaces a tick we cannot deliver yet; a dash stays a dash
+    expect(cells("Audit log")).toEqual(["–", "–", "Soon", "Soon"]);
+    expect(cells("Custom domain")).toEqual(["–", "–", "Soon", "✓"]);
     expect(pricing).toContain(
       '<span class="x-n" aria-hidden="true">Soon</span><span class="sr-only">Coming soon</span>',
     );
