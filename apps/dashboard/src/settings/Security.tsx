@@ -284,26 +284,27 @@ function PasskeyList({
       subtitle="Approve risky actions with your fingerprint, face, device PIN or a security key."
       focusable
       action={
-        <div className="grid flex-none justify-items-end gap-[var(--oa-space-1)] text-right">
-          <Button
-            ref={addRef}
-            size="sm"
-            onClick={add}
-            aria-disabled={adding || full || loading || undefined}
-            aria-busy={adding || undefined}
-            className="aria-disabled:opacity-50"
-          >
-            {adding ? "Adding…" : "Add a passkey"}
-          </Button>
-          {returned && (
-            <small role="status" className={`max-w-[200px] ${muted}`}>
-              {ADD_RETURN_LINE}
-            </small>
-          )}
-          <small className={`max-w-[200px] ${muted}`}>{ADD_REAUTH_NOTE}</small>
-        </div>
+        <Button
+          ref={addRef}
+          size="sm"
+          onClick={add}
+          aria-disabled={adding || full || loading || undefined}
+          aria-busy={adding || undefined}
+          className="flex-none aria-disabled:opacity-50"
+        >
+          {adding ? "Adding…" : "Add a passkey"}
+        </Button>
       }
     >
+      {returned && (
+        <p
+          role="status"
+          className="m-0 text-[length:var(--oa-text-sm)] font-medium text-[var(--oa-success)]"
+        >
+          {ADD_RETURN_LINE}
+        </p>
+      )}
+      <p className={`m-0 ${muted}`}>{ADD_REAUTH_NOTE}</p>
       {failed && <p className={errorText}>Couldn't load your passkeys.</p>}
       {keys?.length === 0 && <p className={`m-0 ${muted}`}>No passkeys yet.</p>}
       {keys && keys.length > 0 && (
