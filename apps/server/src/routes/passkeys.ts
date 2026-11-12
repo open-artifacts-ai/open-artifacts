@@ -1,7 +1,7 @@
 import {
   PasskeyRegisterBodySchema,
   PasskeyRemoveBodySchema,
-  PasskeySettingsPutSchema,
+  PasskeySettingsPatchSchema,
   R,
 } from "@oa/shared";
 import type { Context } from "hono";
@@ -11,6 +11,7 @@ import { jsonBody } from "../http/body.js";
 import { ApiError } from "../http/errors.js";
 import { type AppEnv, execCtx } from "../http/middleware.js";
 import {
+  cancelRemoval,
   getPasskeySettings,
   listPasskeys,
   putPasskeySettings,
@@ -56,13 +57,13 @@ export function mountPasskeys(app: AppType): void {
 
   app.post(R.passkeySettingsChallenge, async (c) => {
     const user = member(c);
-    const body = await jsonBody(c, PasskeySettingsPutSchema);
+    const body = await jsonBody(c, PasskeySettingsPatchSchema);
     return c.json(await settingsChallenge(c.env, user.id, body));
   });
 
-  app.put(R.passkeySettings, async (c) => {
+  app.patch(R.passkeySettings, async (c) => {
     const user = member(c);
-    const body = await jsonBody(c, PasskeySettingsPutSchema);
+    const body = await jsonBody(c, PasskeySettingsPatchSchema);
     return c.json(await putPasskeySettings(c.env, user.id, body));
   });
 
@@ -91,6 +92,12 @@ export function mountPasskeys(app: AppType): void {
     return c.json(await removeChallenge(c.env, user.id, idOf(c)));
   });
 
+  app.post("/api/v1/passkeys/:id/cancel-removal", async (c) => {
+    const user = member(c);
+    await cancelRemoval(c.env, user.id, idOf(c));
+    return c.body(null, 204);
+  });
+
   app.delete("/api/v1/passkeys/:id", async (c) => {
     const user = member(c);
     const id = idOf(c);
@@ -99,12 +106,13 @@ export function mountPasskeys(app: AppType): void {
     if (!parsed.success)
       throw new ApiError("bad_request", "Invalid request body");
     const assertion = parsed.data?.assertion;
-    if (assertion !== undefined && assertion !== null) {
-      await removePasskey(c.env, user.id, id, { assertion });
-    } else {
-      requireFreshReauth(c);
-      await removePasskey(c.env, user.id, id, { reauth: true });
-    }
+    const how =
+      assertion !== undefined && assertion !== null
+        ? { assertion }
+        : (requireFreshReauth(c), { reauth: true as const });
+    const out = await removePasskey(c.env, user, id, how, execCtx(c));
+    // 202: a re-auth alone only schedules it, 24 h out; the member is emailed and can cancel.
+    if (out.removesAt) return c.json(out, 202);
     return c.body(null, 204);
   });
 }

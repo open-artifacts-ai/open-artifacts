@@ -87,11 +87,14 @@ export const R = {
   passkeyRegisterFinish: "/api/v1/passkeys/register/finish",
   /** POST -> { options, expiresAt }: an assertion challenge bound to removing this passkey. */
   passkeyChallenge: (id: string) => `/api/v1/passkeys/${seg(id)}/challenge`,
-  /** DELETE { assertion? } -> 204: needs a passkey assertion for R.passkeyChallenge, or a fresh re-auth. Own passkeys only (else 404). */
+  /** POST -> 204: cancels a pending removal (session only; 409 when none is pending). */
+  passkeyCancelRemoval: (id: string) =>
+    `/api/v1/passkeys/${seg(id)}/cancel-removal`,
+  /** DELETE { assertion? } -> 204 (removed now: an assertion for R.passkeyChallenge) or 202 { removesAt } (a fresh re-auth alone only schedules it 24 h out; the passkey counts until then, the member is emailed and can cancel). Own passkeys only (else 404). */
   passkey: (id: string) => `/api/v1/passkeys/${seg(id)}`,
-  /** GET -> PasskeySettings; PUT PasskeySettingsPut -> PasskeySettings. Turning a switch off needs `assertion` for R.passkeySettingsChallenge of the same body (400 passkey_failed, 403 passkey_required); turning one on needs nothing; `command` can not be turned off (400). */
+  /** GET -> PasskeySettings; PATCH PasskeySettingsPatch -> PasskeySettings. Turning a switch off needs `assertion` for R.passkeySettingsChallenge of the same body (400 passkey_failed, 403 passkey_required); turning one on needs nothing; `command` can not be turned off (400). */
   passkeySettings: "/api/v1/passkeys/settings",
-  /** POST PasskeySettingsPut -> { options, expiresAt }: a challenge bound to exactly that settings change. */
+  /** POST PasskeySettingsPatch -> { options, expiresAt }: a challenge bound to exactly that settings change. */
   passkeySettingsChallenge: "/api/v1/passkeys/settings/challenge",
   /** GET -> Token[]; POST TokenCreateInput -> TokenCreated */
   tokens: "/api/v1/tokens",

@@ -1934,7 +1934,13 @@ export const ORG_WRITES: Readonly<Record<string, OrgWrite>> = {
       allow: code("reauth_required"),
     },
   },
-  "PUT /api/v1/passkeys/settings": {
+  "POST /api/v1/passkeys/:id/cancel-removal": {
+    real: {
+      req: () => ({ path: "/api/v1/passkeys/probe/cancel-removal" }),
+      allow: code("conflict"),
+    },
+  },
+  "PATCH /api/v1/passkeys/settings": {
     refuse: invalid(),
     real: {
       req: () => ({
@@ -2214,8 +2220,9 @@ const ORG: [string, OrgRule, number[]?, "data"?, { hostedOnly: true }?][] = [
   ["POST /api/v1/passkeys/register/finish", U],
   ["POST /api/v1/passkeys/:id/challenge", U],
   ["DELETE /api/v1/passkeys/:id", U],
+  ["POST /api/v1/passkeys/:id/cancel-removal", U],
   ["GET /api/v1/passkeys/settings", U, [200]],
-  ["PUT /api/v1/passkeys/settings", U],
+  ["PATCH /api/v1/passkeys/settings", U],
   ["POST /api/v1/passkeys/settings/challenge", U],
   ["GET /api/v1/tokens", U, [200]],
   ["POST /api/v1/tokens", org("tokens.create")],

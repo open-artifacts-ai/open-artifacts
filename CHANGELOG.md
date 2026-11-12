@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.162.2](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.162.1...v0.162.2) (2026-11-12)
+
+
+### Bug Fixes
+
+* **comments:** remove an agent from a thread without a confirm (user request) ([#2310](https://github.com/open-artifacts-ai/open-artifacts/issues/2310)) ([8d59732](https://github.com/open-artifacts-ai/open-artifacts/commit/8d597327445f3844ab4b33cc7026f0449673f636))
+* **comments:** the top of a comment shows every agent it notified, and no held flash (user report) ([#2312](https://github.com/open-artifacts-ai/open-artifacts/issues/2312)) ([162b983](https://github.com/open-artifacts-ai/open-artifacts/commit/162b983636f2bef72937b51019e4b8715467c04a))
+
 ## [0.162.1](https://github.com/open-artifacts-ai/open-artifacts/compare/v0.162.0...v0.162.1) (2026-11-12)
 
 

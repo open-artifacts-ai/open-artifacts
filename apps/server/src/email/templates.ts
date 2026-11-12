@@ -370,6 +370,54 @@ export function passkeyAddedEmail(p: {
   );
 }
 
+const PASSKEY_REMOVED_TXT = `{{headline}}
+
+{{detail}} Open your security settings: {{securityUrl}}
+
+{{appHost}}
+`;
+
+const PASSKEY_REMOVED_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"><title>Passkey removed</title></head>
+<body style="margin:0;padding:24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif">
+<p><strong>{{headline}}</strong></p>
+<p>{{detail}}</p>
+<p><a href="{{securityUrl}}">Open security settings</a></p>
+<p style="color:#5d636e">{{appHost}}</p>
+</body></html>
+`;
+
+/** To a member when a passkey is removed, or scheduled to be (a re-auth alone: it goes in 24 hours unless cancelled). */
+export function passkeyRemovedEmail(p: {
+  instance: string;
+  recipient: string;
+  appHost: string;
+  label: string;
+  pending: boolean;
+}): EmailContent {
+  const { origin, values } = common({ ...p, inviter: p.instance });
+  const label = oneLine(p.label, NAME_MAX);
+  const name = label ? `The passkey (${label})` : "A passkey";
+  const inst = oneLine(p.instance, NAME_MAX);
+  return render(
+    PASSKEY_REMOVED_HTML,
+    PASSKEY_REMOVED_TXT,
+    p.pending
+      ? "A passkey will be removed from your account"
+      : "A passkey was removed from your account",
+    {
+      ...values,
+      headline: p.pending
+        ? `${name} on your ${inst} account will be removed in 24 hours.`
+        : `${name} was removed from your ${inst} account.`,
+      detail: p.pending
+        ? "It still works until then. If this was not you, cancel the removal in your security settings and sign out of other sessions."
+        : "If this was not you, sign out of other sessions and add a passkey again.",
+      securityUrl: linkOn(origin, "/settings/security"),
+    },
+  );
+}
+
 /** Why the directory alert went out (P3 T13). */
 export type DirectoryAlert =
   | "unhealthy"

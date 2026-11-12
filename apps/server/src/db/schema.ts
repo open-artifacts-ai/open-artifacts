@@ -521,6 +521,10 @@ export const passkeys = sqliteTable(
     label: text("label").notNull(),
     createdAt: integer("created_at").notNull(),
     lastUsedAt: integer("last_used_at"),
+    // Set when a re-auth alone asked to remove it: it still counts (confirm,
+    // challenges) until this time, 24 h later; a passkey assertion removes it
+    // at once, and the member can cancel.
+    removalAt: integer("removal_at"),
   },
   (t) => [index("passkeys_user_idx").on(t.userId)],
 );

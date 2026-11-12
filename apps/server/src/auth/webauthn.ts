@@ -218,6 +218,11 @@ async function importCose(
       const n = b64(-1);
       const e = b64(-2);
       if (!n || !e) return null;
+      // At least 2048 bits: a smaller RSA key is refused.
+      const nb = m.get(-1) as Uint8Array;
+      let lead = 0;
+      while (lead < nb.length && nb[lead] === 0) lead++;
+      if ((nb.length - lead) * 8 < 2048) return null;
       const key = await crypto.subtle.importKey(
         "jwk",
         { kty: "RSA", n, e, alg: "RS256" },

@@ -289,8 +289,9 @@ export const ROUTE_POLICY: Readonly<Record<string, Policy>> = {
   "POST /api/v1/passkeys/register/finish": { user: "the caller's passkeys" },
   "POST /api/v1/passkeys/:id/challenge": { user: "the caller's passkeys" },
   "DELETE /api/v1/passkeys/:id": { user: "the caller's passkeys" },
+  "POST /api/v1/passkeys/:id/cancel-removal": { user: "the caller's passkeys" },
   "GET /api/v1/passkeys/settings": { user: "the caller's passkey settings" },
-  "PUT /api/v1/passkeys/settings": { user: "the caller's passkey settings" },
+  "PATCH /api/v1/passkeys/settings": { user: "the caller's passkey settings" },
   "POST /api/v1/passkeys/settings/challenge": {
     user: "the caller's passkey settings",
   },

@@ -1,4 +1,6 @@
+import { env } from "cloudflare:workers";
 import {
+  newId,
   type Passkey,
   type PasskeyChallenge,
   type PasskeySettings,
@@ -6,27 +8,92 @@ import {
 } from "@oa/shared";
 import { beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
-import { api, errOf } from "./helpers.js";
-import {
-  addPasskey as add,
-  assertFor,
-  DAY,
-  E,
-  mkUser as mk,
-  origin,
-  rpId,
-  type U,
-} from "./passkey-fixtures.js";
+import { createPat } from "../src/auth/pat.js";
+import { sessionCookieName, signSession } from "../src/auth/session.js";
+import { passkeyRemovedEmail } from "../src/email/templates.js";
+import type { Env } from "../src/env.js";
+import { appOrigin } from "../src/http/errors.js";
+import { confirmFor } from "../src/services/passkeys.js";
+import { api, errOf, login } from "./helpers.js";
 import { FakeAuthenticator } from "./passkey-helper.js";
 
 const app = createApp();
+const E = env as unknown as Env;
+const origin = appOrigin(E);
+const rpId = E.APP_HOST.split(":")[0] as string;
+const DAY = 24 * 3600 * 1000;
+const tag = newId().slice(0, 6).toLowerCase();
+
+type U = { cookie: string; fresh: string; userId: string; pat: string };
+async function mk(prefix: string): Promise<U> {
+  const l = await login(`${prefix}-${tag}@x.com`, "member");
+  const row = await E.DB.prepare(
+    "select session_epoch e from users where id = ?",
+  )
+    .bind(l.userId)
+    .first<{ e: number }>();
+  const now = Date.now();
+  const fresh = `${sessionCookieName(E)}=${await signSession(E, l.userId, now, {
+    provider: "access",
+    epoch: row?.e ?? 0,
+    authAt: now,
+  })}`;
+  return {
+    ...l,
+    fresh,
+    pat: (await createPat(E, l.userId, "agent")).token,
+  };
+}
 
 const json = <T>(r: Response) => r.json() as Promise<T>;
 
-const addPasskey = (u: U, auth = u.fresh, age = true) => add(app, u, auth, age);
+/** Registers a passkey through the routes; `age` back-dates it past the cooling. */
+async function addPasskey(
+  u: U,
+  auth = u.fresh,
+  age = true,
+): Promise<{ a: FakeAuthenticator; passkey: Passkey }> {
+  const a = await FakeAuthenticator.create();
+  const begin = await api(app, R.passkeyRegisterBegin, auth, {
+    method: "POST",
+  });
+  expect(begin.status).toBe(200);
+  const { options } = await json<PasskeyChallenge>(begin);
+  const fin = await api(app, R.passkeyRegisterFinish, auth, {
+    method: "POST",
+    body: {
+      credential: await a.attest({
+        challenge: options.challenge as string,
+        origin,
+        rpId,
+      }),
+      label: "Laptop",
+    },
+  });
+  expect(fin.status).toBe(201);
+  const passkey = await json<Passkey>(fin);
+  if (age)
+    await E.DB.prepare("update passkeys set created_at = ? where id = ?")
+      .bind(Date.now() - 2 * DAY, passkey.id)
+      .run();
+  return { a, passkey };
+}
 
 const get = async (u: U, body: object, path: string) =>
   api(app, path, u.cookie, { method: "POST", body });
+
+/** An assertion for the options a challenge route returned. */
+const assertFor = async (
+  a: FakeAuthenticator,
+  c: PasskeyChallenge,
+  extra = {},
+) =>
+  a.assert({
+    challenge: c.options.challenge as string,
+    origin,
+    rpId,
+    ...extra,
+  });
 
 const ALL_ON = {
   actions: {
@@ -165,13 +232,90 @@ describe("removing a passkey", () => {
     );
   });
 
-  it("a re-auth removes one with no assertion", async () => {
+  it("a re-auth alone only schedules it: 24 h out, still counting, cancellable", async () => {
     const u = await mk("rm2");
     const { passkey } = await addPasskey(u);
+    const r = await api(app, R.passkey(passkey.id), u.fresh, {
+      method: "DELETE",
+    });
+    expect(r.status).toBe(202);
+    const { removesAt } = await json<{ removesAt: string }>(r);
+    expect(Date.parse(removesAt) - Date.now()).toBeGreaterThan(DAY - 60_000);
+    expect((await auditOf(u.userId, "passkey.remove"))[0]).toMatchObject({
+      pending: true,
+      passkeyVerified: false,
+    });
+    // It is still there, marked, and still marks new asks.
+    const list = await json<Passkey[]>(await api(app, R.passkeys, u.cookie));
+    expect(list[0]?.removesAt).toBe(removesAt);
+    expect(await confirmFor(E, [u.userId], [{ action: "merge" }])).toBe(
+      "passkey",
+    );
+    // A second request does not move the time.
+    const again = await api(app, R.passkey(passkey.id), u.fresh, {
+      method: "DELETE",
+    });
+    expect((await json<{ removesAt: string }>(again)).removesAt).toBe(
+      removesAt,
+    );
+    // Cancel (session only; nothing pending: 404).
     expect(
-      (await api(app, R.passkey(passkey.id), u.fresh, { method: "DELETE" }))
-        .status,
+      (
+        await api(app, R.passkeyCancelRemoval(passkey.id), u.pat, {
+          method: "POST",
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await api(app, R.passkeyCancelRemoval(passkey.id), u.cookie, {
+          method: "POST",
+        })
+      ).status,
     ).toBe(204);
+    expect(
+      (await json<Passkey[]>(await api(app, R.passkeys, u.cookie)))[0]
+        ?.removesAt,
+    ).toBeNull();
+    expect(
+      (
+        await api(app, R.passkeyCancelRemoval(passkey.id), u.cookie, {
+          method: "POST",
+        })
+      ).status,
+    ).toBe(409);
+  });
+
+  it("a scheduled removal takes effect when its time comes", async () => {
+    const u = await mk("rm4");
+    const { passkey } = await addPasskey(u);
+    await api(app, R.passkey(passkey.id), u.fresh, { method: "DELETE" });
+    await E.DB.prepare("update passkeys set removal_at = ? where id = ?")
+      .bind(Date.now() - 1, passkey.id)
+      .run();
+    expect(await json<Passkey[]>(await api(app, R.passkeys, u.cookie))).toEqual(
+      [],
+    );
+    expect(await confirmFor(E, [u.userId], [{ action: "merge" }])).toBe(
+      undefined,
+    );
+  });
+
+  it("an assertion removes it at once", async () => {
+    const u = await mk("rm5");
+    const { a, passkey } = await addPasskey(u);
+    await api(app, R.passkey(passkey.id), u.fresh, { method: "DELETE" });
+    const c = await json<PasskeyChallenge>(
+      await get(u, {}, R.passkeyChallenge(passkey.id)),
+    );
+    const done = await api(app, R.passkey(passkey.id), u.cookie, {
+      method: "DELETE",
+      body: { assertion: await assertFor(a, c) },
+    });
+    expect(done.status).toBe(204);
+    expect(await json<Passkey[]>(await api(app, R.passkeys, u.cookie))).toEqual(
+      [],
+    );
   });
 
   it("an assertion bound to another passkey's removal fails", async () => {
@@ -209,7 +353,7 @@ describe("the passkey settings", () => {
   it("refuses to turn run-a-command off", async () => {
     const u = await mk("set-cmd");
     const r = await api(app, R.passkeySettings, u.cookie, {
-      method: "PUT",
+      method: "PATCH",
       body: off("command"),
     });
     expect(r.status).toBe(400);
@@ -227,7 +371,7 @@ describe("the passkey settings", () => {
   it("turning a switch on needs nothing, and an unchanged PUT writes nothing", async () => {
     const u = await mk("set-on");
     const r = await api(app, R.passkeySettings, u.cookie, {
-      method: "PUT",
+      method: "PATCH",
       body: { ...ALL_ON, everyPick: true },
     });
     expect(r.status).toBe(200);
@@ -237,7 +381,7 @@ describe("the passkey settings", () => {
       passkeyVerified: false,
     });
     const same = await api(app, R.passkeySettings, u.cookie, {
-      method: "PUT",
+      method: "PATCH",
       body: { ...ALL_ON, everyPick: true },
     });
     expect(same.status).toBe(200);
@@ -247,7 +391,7 @@ describe("the passkey settings", () => {
   it("turning one off: no passkey, cooling passkey, then no assertion", async () => {
     const u = await mk("set-off");
     const put = (body: object) =>
-      api(app, R.passkeySettings, u.cookie, { method: "PUT", body });
+      api(app, R.passkeySettings, u.cookie, { method: "PATCH", body });
     const none = await put(off("merge"));
     expect(none.status).toBe(409);
     expect((await errOf(none)).code).toBe("no_passkey");
@@ -292,13 +436,60 @@ describe("the passkey settings", () => {
     ).toBe(true);
   });
 
+  it("refuses a malformed assertion before verifying (400 bad_request)", async () => {
+    const u = await mk("set-bad");
+    for (const assertion of [
+      { id: "x" },
+      "text",
+      { id: "a!", rawId: "a", type: "public-key", response: {} },
+      {
+        id: "a",
+        rawId: "a",
+        type: "other",
+        response: {
+          clientDataJSON: "a",
+          authenticatorData: "a",
+          signature: "a",
+        },
+      },
+      {
+        id: "a",
+        rawId: "a",
+        type: "public-key",
+        response: {
+          clientDataJSON: "a".repeat(5000),
+          authenticatorData: "a",
+          signature: "a",
+        },
+      },
+      {
+        id: "a",
+        rawId: "a",
+        type: "public-key",
+        extra: 1,
+        response: {
+          clientDataJSON: "a",
+          authenticatorData: "a",
+          signature: "a",
+        },
+      },
+    ]) {
+      const r = await api(app, R.passkeySettings, u.cookie, {
+        method: "PATCH",
+        body: { ...off("merge"), assertion },
+      });
+      expect(r.status).toBe(400);
+      expect((await errOf(r)).code).toBe("bad_request");
+    }
+  });
+
   it("a token cannot read or change them", async () => {
     const u = await mk("set-tok");
     expect((await api(app, R.passkeySettings, u.pat)).status).toBe(403);
     expect(
       (
         await api(app, R.passkeySettings, u.pat, {
-          method: "PUT",
+          method: "PATCH",
           body: ALL_ON,
         })
       ).status,
@@ -320,7 +511,7 @@ describe("challenges", () => {
     expect(second.options.challenge).not.toBe(first.options.challenge);
     const put = (assertion: unknown) =>
       api(app, R.passkeySettings, u.cookie, {
-        method: "PUT",
+        method: "PATCH",
         body: { ...body, assertion },
       });
     // The voided challenge's assertion carries the wrong challenge.
@@ -345,5 +536,37 @@ describe("challenges", () => {
     for (let i = 0; i < 12 && last !== 429; i++)
       last = (await get(u, off("deploy"), R.passkeySettingsChallenge)).status;
     expect(last).toBe(429);
+  });
+});
+
+describe("the removal email", () => {
+  it("says it goes in 24 hours when pending, and that it is gone otherwise", () => {
+    const base = {
+      instance: "Acme",
+      recipient: "a@x.com",
+      appHost: "app.example.com",
+      label: "Laptop",
+    };
+    const pending = passkeyRemovedEmail({ ...base, pending: true });
+    expect(pending.subject).toContain("will be removed");
+    expect(pending.text).toContain("24 hours");
+    expect(pending.text).toContain("/settings/security");
+    const gone = passkeyRemovedEmail({ ...base, pending: false });
+    expect(gone.subject).toContain("was removed");
+  });
+});
+
+describe("a failed check burns the challenge", () => {
+  it("a settings assertion for another change fails, and then the right change finds it spent", async () => {
+    const u = await mk("burn");
+    const { a } = await addPasskey(u);
+    const c = await json<PasskeyChallenge>(
+      await get(u, off("deploy"), R.passkeySettingsChallenge),
+    );
+    const assertion = await assertFor(a, c);
+    const patch = (body: object) =>
+      api(app, R.passkeySettings, u.cookie, { method: "PATCH", body });
+    expect((await patch({ ...off("merge"), assertion })).status).toBe(400);
+    expect((await patch({ ...off("deploy"), assertion })).status).toBe(410);
   });
 });
