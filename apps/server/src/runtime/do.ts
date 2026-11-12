@@ -49,6 +49,7 @@ import {
 } from "../services/thumbs.js";
 import {
   addParticipants,
+  askAuthors,
   askerNoticeDue,
   askRow,
   bodyOk,
@@ -2316,6 +2317,15 @@ export class ArtifactRuntime extends DurableObject<Env> {
     return heldTargets(this.sql, a.threadId, a.key);
   }
 
+  /** #2240: the ask comments of a thread with their authors. */
+  commentsAskAuthors(a: { threadId: string }): {
+    commentId: string;
+    author: StoredActor;
+  }[] {
+    this.ensureSchema();
+    return askAuthors(this.sql, a.threadId);
+  }
+
   /** #2175: marks the targets the hub withdrew and gives back their spends. */
   commentsTargetsWithdraw(a: {
     threadId: string;
@@ -2555,6 +2565,7 @@ type RpcMethods =
   | "commentsParticipants"
   | "commentsParticipantSet"
   | "commentsHeldTargets"
+  | "commentsAskAuthors"
   | "commentsTargetsWithdraw"
   | "commentsReplyTargets"
   | "commentsStatus"

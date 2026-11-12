@@ -1696,6 +1696,33 @@ export async function setThreadAgent(
   if (removed) await withdrawHeldFor(env, artifactId, threadId, p);
 }
 
+/** #2240: how long one withdrawHeld call may take before it is retried. */
+export const withdrawHeldTimeout = { ms: 10_000 };
+
+function withdrawOnce(
+  hub: NonNullable<ReturnType<typeof busHub>>,
+  req: Parameters<NonNullable<ReturnType<typeof busHub>>["withdrawHeld"]>[0],
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, rej) => {
+    timer = setTimeout(
+      () => rej(new Error("withdrawHeld timed out")),
+      withdrawHeldTimeout.ms,
+    );
+  });
+  return Promise.race([hub.withdrawHeld(req), timeout]).finally(() =>
+    clearTimeout(timer),
+  );
+}
+
+/** #2240: the participant wrote this comment (same member, same bus identity or name). */
+function isAuthoredBy(a: StoredActor, p: ParticipantRow): boolean {
+  if (a.kind !== "user" || a.ref !== p.owner || !a.agent) return false;
+  const id = a.agent.identity;
+  if (id && p.identity) return id.identityId === p.identity.identityId;
+  return (id?.name ?? a.agent.name) === p.name;
+}
+
 /**
  * #2175: removing an agent withdraws the notices from the thread still held
  * for it on its owner's hub. Never throws: a failure leaves them to expire.
@@ -1712,16 +1739,28 @@ async function withdrawHeldFor(
     const held = await call(() =>
       stub(env, artifactId).commentsHeldTargets({ threadId, key: p.key }),
     );
+    // #2240: asks the removed agent authored, so the hub also drops their held ask_answered notices.
+    const asks = await call(() =>
+      stub(env, artifactId).commentsAskAuthors({ threadId }),
+    );
+    const own = asks
+      .filter((a) => isAuthoredBy(a.author, p))
+      .map((a) => a.commentId);
     // Called even with no tracked targets: the hub also drops the thread's
     // held thread_reply rows by threadId (older ones carry no target).
-    const { withdrawn } = await hub.withdrawHeld({
+    const req = {
       namespace: p.namespace,
       name: p.name,
       ...(p.identity ? { identityId: p.identity.identityId } : {}),
       artifactId,
       threadId,
-      commentIds: [...new Set(held.map((h) => h.commentId))],
-    });
+      commentIds: [...new Set([...held.map((h) => h.commentId), ...own])],
+    };
+    // #2240: once more on an error or a timeout; the hub's idempotency (#2211)
+    // makes the repeat return what the first call already withdrew.
+    const { withdrawn } = await withdrawOnce(hub, req).catch(() =>
+      withdrawOnce(hub, req),
+    );
     const targets = withdrawn
       .filter(
         (w) =>
