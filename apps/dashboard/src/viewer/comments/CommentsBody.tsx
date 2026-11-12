@@ -11,7 +11,14 @@ import {
 import { Button, Textarea } from "@oa/ui/shadcn";
 import { useNavigate } from "@tanstack/react-router";
 import { Check, FileText } from "lucide-react";
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { ApiClientError } from "../../api/client";
 import {
@@ -619,12 +626,15 @@ function CommentRow({
   thread,
   c,
   root,
+  allProblems,
   askQuestion,
 }: {
   api: CommentsApi;
   thread: CommentThread;
   c: CommentT;
   root: boolean;
+  /** The thread's new delivery problems per comment, computed once in ThreadCard. */
+  allProblems: ReturnType<typeof newProblems>;
   /** Open a question to the agent that asked (#1794). */
   askQuestion?: () => void;
 }) {
@@ -636,9 +646,9 @@ function CommentRow({
   const [mode, setMode] = useState<"view" | "edit" | "delete">("view");
   const [delError, setDelError] = useState<unknown>(null);
   const any = c.can.edit || c.can.delete;
-  // #2229: marks sit on people's comments, for members; an agent's own reply has none.
-  const marks = !api.guest && c.author.kind !== "agent";
-  const problems = newProblems(thread.comments).get(c.id);
+  // #2229: marks sit on people's comments, for members (#2004: not guests, nor the capped); an agent's own reply has none.
+  const marks = !api.guest && !api.capped && c.author.kind !== "agent";
+  const problems = allProblems.get(c.id);
   const tight = useTightHeader(marks && !!c.notified?.length);
   return (
     <li
@@ -858,6 +868,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
   const navigate = useNavigate();
   const resolved = t.status === "resolved";
   const [first, ...rest] = t.comments;
+  const allProblems = useMemo(() => newProblems(t.comments), [t.comments]);
   const expanded = isActive || rest.length === 0;
   // #2179: a folded thread keeps its first comment and its latest reply in
   // view, and nothing the reader saw folds away mid-visit: the latest reply on
@@ -1014,6 +1025,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
               api={api}
               thread={t}
               c={first}
+              allProblems={allProblems}
               root
               askQuestion={
                 asker && !asking
@@ -1050,6 +1062,7 @@ function ThreadCard({ t, api }: { t: CommentThread; api: CommentsApi }) {
                   api={api}
                   thread={t}
                   c={c}
+                  allProblems={allProblems}
                   root={false}
                 />
               ))}

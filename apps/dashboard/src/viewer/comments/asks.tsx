@@ -1,13 +1,15 @@
 import type {
   ArtifactAgent,
   CommentMention,
+  CommentNotified,
   Comment as CommentT,
   CommentThread,
   KeyRef,
+  MentionDelivery,
 } from "@oa/shared";
 import { Button } from "@oa/ui/shadcn";
 import { CheckCheck, Clock, Minus } from "lucide-react";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import {
   answerError,
   useAnswerAsk,
@@ -64,7 +66,7 @@ export function nextAskFor(
   );
 }
 
-type DState = CommentMention["delivery"];
+type DState = MentionDelivery;
 const isWait = (d: DState) => d === "queued" || d === "gone";
 
 /** #2229: the details a mark opens, always "<agent>: <state>". A mention's gone is its own word. */
@@ -108,27 +110,66 @@ export function DeliveryIcon({ d }: { d: DState }) {
   );
 }
 
-/** Open on hover and focus, toggle on tap or click, close on Escape or leaving. */
+/**
+ * Open on hover and focus, toggle on tap or click, close on Escape or leaving.
+ * A touch tap toggles on its own (a second tap closes), whatever hover or focus
+ * the browser fakes after it. Escape while open is swallowed, so it does not
+ * also close the panel, sheet or full screen behind it. `float` keeps the
+ * details inside the comment's column.
+ */
 function useDetail() {
   const [hover, setHover] = useState(false);
   const [focus, setFocus] = useState(false);
   const [tap, setTap] = useState(false);
+  const touch = useRef(false);
+  const float = useRef<HTMLSpanElement>(null);
+  const [shift, setShift] = useState(0);
+  const open = hover || focus || tap;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: measured once per opening
+  useLayoutEffect(() => {
+    const t = float.current;
+    const box = t?.closest("[data-comment]");
+    if (!open || !t || !box) {
+      setShift(0);
+      return;
+    }
+    const r = t.getBoundingClientRect();
+    const b = box.getBoundingClientRect();
+    const left = r.left - shift;
+    const right = r.right - shift;
+    setShift(
+      right > b.right ? b.right - right : left < b.left ? b.left - left : 0,
+    );
+  }, [open]);
   return {
-    open: hover || focus || tap,
+    open,
+    float: {
+      ref: float,
+      style: shift ? { transform: `translateX(${shift}px)` } : undefined,
+    },
     props: {
-      onMouseEnter: () => setHover(true),
+      onPointerDown: (e: React.PointerEvent) => {
+        touch.current = e.pointerType === "touch";
+      },
+      onMouseEnter: () => {
+        if (!touch.current) setHover(true);
+      },
       onMouseLeave: () => {
         setHover(false);
         setTap(false);
       },
-      onFocus: () => setFocus(true),
+      onFocus: () => {
+        if (!touch.current) setFocus(true);
+      },
       onBlur: () => {
         setFocus(false);
         setTap(false);
       },
       onClick: () => setTap((t) => !t),
       onKeyDown: (e: React.KeyboardEvent) => {
-        if (e.key === "Escape") {
+        if (e.key === "Escape" && open) {
+          e.preventDefault();
+          e.stopPropagation();
           setHover(false);
           setFocus(false);
           setTap(false);
@@ -156,7 +197,7 @@ function MarkedChip({
   p: Parameters<typeof PartyFace>[0]["p"];
   guest: boolean;
 }) {
-  const { open, props } = useDetail();
+  const { open, props, float } = useDetail();
   const detail = markText(face.name, face.delivery, true);
   return (
     <span className="relative inline-block align-middle">
@@ -178,6 +219,7 @@ function MarkedChip({
           role="tooltip"
           data-delivery-detail=""
           className={`${FLOAT} left-0 ${TXT}`}
+          {...float}
         >
           {detail}
         </span>
@@ -194,7 +236,7 @@ const problemLine = (name: string, d: DState, notified: boolean) =>
       ? `${name} didn't get this: it was offline too long. @-mention it to try again.`
       : `${name} isn't on the bus anymore. Mention another agent.`;
 
-type Problem = { id: string; m: CommentMention; notified: boolean };
+type Problem = { id: string; m: CommentNotified; notified: boolean };
 
 /** Per comment, the problems that are new in it: an agent held or expired in an
     earlier comment of the thread is not told again, only marked. */
@@ -204,11 +246,15 @@ export function newProblems(comments: readonly CommentT[]) {
   for (const c of comments) {
     const list: Problem[] = [];
     const add = (m: CommentMention, notified: boolean) => {
-      if (!isWait(m.delivery)) return;
+      if (!m.delivery || !isWait(m.delivery)) return;
       const id = `${m.key}:${m.delivery}`;
       if (seen.has(id)) return;
       seen.add(id);
-      list.push({ id: `${notified ? "n" : "m"}-${m.key}`, m, notified });
+      list.push({
+        id: `${notified ? "n" : "m"}-${m.key}`,
+        m: m as CommentNotified,
+        notified,
+      });
     };
     for (const m of c.mentions ?? []) add(m, false);
     for (const m of c.notified ?? []) add(m, true);
@@ -253,11 +299,11 @@ export function DeliveryFaces({
   told: all,
   compact = false,
 }: {
-  told: readonly CommentMention[];
+  told: readonly CommentNotified[];
   /** A tight header: the summary mark and its count, no faces. */
   compact?: boolean;
 }) {
-  const { open, props } = useDetail();
+  const { open, props, float } = useDetail();
   if (!all.length) return null;
   // A removed notice was never sent: it is listed in the details, not counted.
   const told = all.filter((m) => m.delivery !== "withdrawn");
@@ -312,6 +358,7 @@ export function DeliveryFaces({
           role="tooltip"
           data-delivery-detail=""
           className={`${FLOAT} right-0 ${TXT}`}
+          {...float}
         >
           {[...sorted, ...all.filter((m) => m.delivery === "withdrawn")].map(
             (m) => (

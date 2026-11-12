@@ -789,7 +789,10 @@ const commentOf = (
               viewer,
               users,
             ),
-            delivery: m.state as MentionDelivery,
+            // #2004: outsiders learn nothing of an agent's state.
+            ...(outsider(viewer) || viewer.userId === null
+              ? {}
+              : { delivery: m.state as MentionDelivery }),
           })),
         }
       : {}),

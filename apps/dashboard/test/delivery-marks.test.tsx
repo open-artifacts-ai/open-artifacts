@@ -1,6 +1,6 @@
-import type { Comment, CommentMention } from "@oa/shared";
+import type { Comment, CommentNotified } from "@oa/shared";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   Delivery,
   DeliveryFaces,
@@ -10,9 +10,9 @@ import {
 
 const ag = (
   name: string,
-  delivery: CommentMention["delivery"],
+  delivery: CommentNotified["delivery"],
   key = `agent:${name}`,
-): CommentMention => ({
+): CommentNotified => ({
   key,
   name,
   linked: true,
@@ -226,5 +226,90 @@ describe("#2229 copy and face stack", () => {
     expect(screen.getByRole("tooltip").textContent).toBe(
       "Vega: not on the bus",
     );
+  });
+
+  it("Escape on an open mark closes it and goes no further", () => {
+    const outer = vi.fn();
+    const { container } = render(
+      // biome-ignore lint/a11y/noStaticElementInteractions: stands for the panel's key handler
+      <div onKeyDown={outer}>
+        <MentionedText
+          body="hi @Vega"
+          mentions={[ag("Vega", "delivered")]}
+          marks
+        />
+      </div>,
+    );
+    const chip = container.querySelector("[data-mention-chip]") as HTMLElement;
+    // Closed: Escape is not ours, it goes on to the panel.
+    fireEvent.keyDown(chip, { key: "Escape" });
+    expect(outer).toHaveBeenCalledTimes(1);
+    outer.mockClear();
+    fireEvent.mouseEnter(chip);
+    const keep = fireEvent.keyDown(chip, { key: "Escape" });
+    expect(keep).toBe(false);
+    expect(outer).not.toHaveBeenCalled();
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+  it("a second tap closes it, whatever hover or focus the browser fakes", () => {
+    const { container } = render(
+      <MentionedText
+        body="hi @Vega"
+        mentions={[ag("Vega", "delivered")]}
+        marks
+      />,
+    );
+    const chip = container.querySelector("[data-mention-chip]") as HTMLElement;
+    const tap = () => {
+      fireEvent.pointerDown(chip, { pointerType: "touch" });
+      fireEvent.mouseEnter(chip);
+      fireEvent.focus(chip);
+      fireEvent.click(chip);
+    };
+    tap();
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+    tap();
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+  it("details stay inside the comment's column", () => {
+    const rect = (l: number, r: number) =>
+      ({
+        left: l,
+        right: r,
+        top: 0,
+        bottom: 0,
+        width: r - l,
+        height: 0,
+      }) as DOMRect;
+    const spy = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.hasAttribute("data-comment")) return rect(0, 300);
+        if (this.hasAttribute("data-delivery-detail")) {
+          const t = this.style.transform.match(/-?\d+/);
+          return rect(260 + Number(t?.[0] ?? 0), 360 + Number(t?.[0] ?? 0));
+        }
+        return rect(0, 0);
+      });
+    try {
+      const { container } = render(
+        <li data-comment="c">
+          <MentionedText
+            body="hi @Vega"
+            mentions={[ag("Vega", "delivered")]}
+            marks
+          />
+        </li>,
+      );
+      fireEvent.mouseEnter(
+        container.querySelector("[data-mention-chip]") as Element,
+      );
+      expect(
+        (container.querySelector("[data-delivery-detail]") as HTMLElement).style
+          .transform,
+      ).toBe("translateX(-60px)");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

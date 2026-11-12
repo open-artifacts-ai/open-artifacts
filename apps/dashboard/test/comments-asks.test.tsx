@@ -52,6 +52,18 @@ type Opts = {
   onCommentOpen: (id: string) => void;
 };
 const opts: Opts[] = [];
+// #2229: count how often a thread's problems are worked out (passes through).
+const problemCalls = vi.hoisted(() => [] as unknown[]);
+vi.mock("../src/viewer/comments/asks", async (orig) => {
+  const m = await orig<typeof import("../src/viewer/comments/asks")>();
+  return {
+    ...m,
+    newProblems: (cs: Parameters<typeof m.newProblems>[0]) => {
+      problemCalls.push(cs);
+      return m.newProblems(cs);
+    },
+  };
+});
 const setMode = vi.fn();
 const setComments = vi.fn();
 const focus = vi.fn();
@@ -850,6 +862,23 @@ describe("#2229 delivery marks in a thread", () => {
     expect(rows[0]?.querySelector("[data-summary]")?.textContent).toBe(
       "1 of 2",
     );
+  });
+  it("a thread's problems are worked out once, not per comment", async () => {
+    const t = askThread();
+    t.comments = [
+      person("c1", { notified: told("queued") }),
+      person("c2", { notified: told("queued") }),
+      person("c3", { notified: told("queued") }),
+      person("c4", { notified: told("queued") }),
+    ] as never;
+    serveThreads(() => [t]);
+    mount(viewerPath(OWNED));
+    const c = await col();
+    await within(c).findAllByText("plain reply");
+    const mine = problemCalls.filter((x) => (x as unknown[]).length === 4);
+    expect(mine.length).toBeGreaterThan(0);
+    // One call per distinct comments list: more comments does not mean more work.
+    expect(new Set(mine).size).toBe(mine.length);
   });
   it("a tight header gives way: time, then faces, only then the name", async () => {
     const proto = HTMLElement.prototype;
