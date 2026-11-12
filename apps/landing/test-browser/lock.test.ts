@@ -126,7 +126,10 @@ describe("phone locked story", () => {
         (document.getElementById("pl") as HTMLElement).getBoundingClientRect()
           .bottom - innerHeight,
     );
-    if (run > 0) expect((await pinTop(page)).top).toBe(0);
+    const top = (await pinTop(page)).top;
+    // held while the run is on screen, released once it has gone past
+    if (run > 0) expect(top).toBe(0);
+    else expect(top).toBeLessThan(0);
     expect(
       Number(await page.locator("#pl").getAttribute("data-beat")),
     ).toBeGreaterThan(0);
