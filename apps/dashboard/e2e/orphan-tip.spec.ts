@@ -24,8 +24,11 @@ test("orphan tooltip: tap opens, outside tap closes", async ({
   await expect(page.getByRole("tooltip")).toContainText(
     "Their group no longer lists them",
   );
-  // Still open a moment later (no close from the tap's own pointerleave/click).
-  await page.waitForTimeout(400);
+  // Still open after the tap's own click has settled (two frames).
+  await page.evaluate(
+    () =>
+      new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))),
+  );
   await expect(page.getByRole("tooltip")).toContainText(
     "Their group no longer lists them",
   );
