@@ -27,6 +27,15 @@ export function keyboardInset(): number {
   return Math.max(0, inset > 120 ? inset : 0);
 }
 
+/** True while a text field has focus: the only time a keyboard is up. */
+function fieldFocused(): boolean {
+  const a = document.activeElement as HTMLElement | null;
+  if (!a) return false;
+  return (
+    a.tagName === "TEXTAREA" || a.tagName === "INPUT" || a.isContentEditable
+  );
+}
+
 /**
  * How far to lift a fixed bottom sheet so it ends at the visible bottom. When
  * iOS pans the visual viewport (offsetTop > 0) that edge is offsetTop + height
@@ -34,7 +43,10 @@ export function keyboardInset(): number {
  */
 export function sheetLift(): number {
   const vv = window.visualViewport;
-  if (!vv || keyboardInset() === 0) return 0;
+  // Only a focused field has a keyboard. Without one, a gap between the
+  // layout and visual viewports is browser chrome (iOS toolbars, a lagging
+  // resize) and must not lift the sheet off the bottom edge.
+  if (!vv || !fieldFocused() || keyboardInset() === 0) return 0;
   return Math.max(0, window.innerHeight - (vv.offsetTop + vv.height));
 }
 
@@ -91,7 +103,18 @@ export function trackViewportVar(): () => void {
   };
   if (users++ === 0) {
     set();
-    stop = onViewport(set);
+    const off = onViewport(set);
+    // The keyboard goes with the field's focus, and the layout viewport may
+    // settle after the visual one: look again on both.
+    document.addEventListener("focusin", set);
+    document.addEventListener("focusout", set);
+    window.addEventListener("resize", set);
+    stop = () => {
+      off();
+      document.removeEventListener("focusin", set);
+      document.removeEventListener("focusout", set);
+      window.removeEventListener("resize", set);
+    };
   }
   return () => {
     if (--users > 0) return;
