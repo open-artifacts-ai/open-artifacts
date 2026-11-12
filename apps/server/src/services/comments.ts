@@ -1725,7 +1725,8 @@ function isAuthoredBy(a: StoredActor, p: ParticipantRow): boolean {
   if (a.kind !== "user" || a.ref !== p.owner || !a.agent) return false;
   const id = a.agent.identity;
   if (id && p.identity) return id.identityId === p.identity.identityId;
-  return (id?.name ?? a.agent.name) === p.name;
+  // The hub lowercases names, so compare as it does.
+  return (id?.name ?? a.agent.name).toLowerCase() === p.name.toLowerCase();
 }
 
 /**

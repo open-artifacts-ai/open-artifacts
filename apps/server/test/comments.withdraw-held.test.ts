@@ -504,19 +504,20 @@ describe("removing an agent: its asks and one retry (#2240)", () => {
     threadId: string,
     commentId: string,
     agentName: string,
+    opts: { identityId?: string | null; ref?: string } = {},
   ) =>
     rt(id)((_i, st) => {
+      const identityId =
+        opts.identityId === undefined ? `idn-${agentName}` : opts.identityId;
       const author = JSON.stringify({
         kind: "user",
-        ref: owner.userId,
+        ref: opts.ref ?? owner.userId,
         agent: {
           name: agentName,
           via: null,
-          identity: {
-            identityId: `idn-${agentName}`,
-            name: agentName,
-            kind: "x",
-          },
+          ...(identityId
+            ? { identity: { identityId, name: agentName, kind: "x" } }
+            : {}),
         },
       });
       st.storage.sql.exec(
@@ -531,6 +532,15 @@ describe("removing an agent: its asks and one retry (#2240)", () => {
         threadId,
       );
     });
+  /** Gives the thread's participant a linked bus identity. */
+  const linkParticipant = (id: string, key: string, identityId: string) =>
+    rt(id)((_i, st) =>
+      st.storage.sql.exec(
+        "update comment_participants set identity = ? where key = ?",
+        JSON.stringify({ identityId, kind: "x" }),
+        key,
+      ),
+    );
   async function holdAnswered(artifactId: string, commentId: string) {
     const hub = await hubOf(owner.userId);
     await runInDurableObject(hub, (_i, st) => {
@@ -582,6 +592,36 @@ describe("removing an agent: its asks and one retry (#2240)", () => {
     expect(await answeredRows(hub, s.id, "ask-mine")).toBe(1);
     expect((await stop(s.id, t.id, s.claude, owner)).status).toBe(204);
     expect(await answeredRows(hub, s.id, "ask-mine")).toBe(0);
+  });
+
+  it("with a linked identity, a same-name ask by a different identity stays; the same identity goes", async () => {
+    const { s, t } = await threadOnly();
+    await linkParticipant(s.id, s.claude, "idn-A");
+    await seedAsk(s.id, t.id, "ask-a", "Claude", { identityId: "idn-A" });
+    await seedAsk(s.id, t.id, "ask-b", "Claude", { identityId: "idn-B" });
+    const hub = await holdAnswered(s.id, "ask-a");
+    await holdAnswered(s.id, "ask-b");
+    await stop(s.id, t.id, s.claude, owner);
+    expect(await answeredRows(hub, s.id, "ask-a")).toBe(0);
+    expect(await answeredRows(hub, s.id, "ask-b")).toBe(1);
+  });
+
+  it("an ask by another member's agent with the same name stays", async () => {
+    const { s, t } = await threadOnly();
+    await seedAsk(s.id, t.id, "ask-other-member", "Claude", {
+      ref: editor.userId,
+    });
+    const hub = await holdAnswered(s.id, "ask-other-member");
+    await stop(s.id, t.id, s.claude, owner);
+    expect(await answeredRows(hub, s.id, "ask-other-member")).toBe(1);
+  });
+
+  it("an unlinked asker matches by name, ignoring case", async () => {
+    const { s, t } = await threadOnly();
+    await seedAsk(s.id, t.id, "ask-unlinked", "CLAUDE", { identityId: null });
+    const hub = await holdAnswered(s.id, "ask-unlinked");
+    await stop(s.id, t.id, s.claude, owner);
+    expect(await answeredRows(hub, s.id, "ask-unlinked")).toBe(0);
   });
 
   it("a failed read of the asks still withdraws the held mention", async () => {
